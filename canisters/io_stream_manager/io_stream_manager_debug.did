@@ -54,6 +54,7 @@ type InitArgs = record {
   icp_index_principal_text : opt text;
   io_ledger_principal_text : opt text;
   io_index_principal_text : opt text;
+  sns_governance_principal_text : opt text;
 };
 
 type ApiStreamKind = variant {
@@ -88,9 +89,21 @@ type StreamManagerConfig = record {
   icp_index_principal_text : opt text;
   io_ledger_principal_text : opt text;
   io_index_principal_text : opt text;
+  sns_governance_principal_text : opt text;
+};
+
+type DebugTickOutcome = record {
+  scanned_icp_transactions : nat64;
+  scanned_io_transactions : nat64;
+  processed_authorized_streams : nat64;
+  processed_redemptions : nat64;
+  io_issued_e8s : nat;
+  icp_paid_e8s : nat;
+  errors : vec text;
 };
 
 service : (InitArgs) -> {
+  debug_tick : () -> (DebugTickOutcome);
   debug_get_redemption_rate : () -> (variant { Ok : ApiRedemptionRate; Err : ApiError }) query;
   debug_get_state : () -> (ApiState) query;
   debug_process_stream_event : (ProcessStreamEventRequest) -> (

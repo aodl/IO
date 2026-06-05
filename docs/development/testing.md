@@ -6,7 +6,7 @@ The suite follows the Jupiter Faucet convention of running everything through `x
 cargo run -p xtask -- test_all
 ```
 
-The current repository is intentionally test-first. The PocketIC and local-CLI tests are deterministic model harnesses today, with command names and test boundaries prepared for replacement by live PocketIC / `icp-cli` deployments as the canister implementations are fleshed out.
+The repository is intentionally test-first. The PocketIC test files include deterministic model coverage plus real install/call tests that run when `POCKET_IC_BIN` points at a compatible PocketIC server binary.
 
 ## Commands
 
@@ -16,6 +16,8 @@ cargo run -p xtask -- test_pocketic_integration
 cargo run -p xtask -- test_local_integration
 cargo run -p xtask -- test_e2e
 cargo run -p xtask -- test_all
+cargo run -p xtask -- build_canisters
+cargo run -p xtask -- build_debug_canisters
 ```
 
 ## Coverage added in this version
@@ -81,7 +83,9 @@ The expanded suite now includes tests for:
 - cancel-dissolve before and after liquidity return;
 - malicious and duplicate end-to-end input attempts.
 
-The current PocketIC tests remain deterministic model harnesses. They are intentionally shaped around the operations that will map to real PocketIC later: canister install/call boundaries, fast-forward time, NNS maturity disbursement, child-neuron unwind, and e2e protocol composition.
+The real PocketIC tests use debug Wasm from `target/wasm32-unknown-unknown/debug`. `xtask test_pocketic_integration` builds those artifacts first. The tests skip cleanly when `POCKET_IC_BIN` is unset so non-PocketIC development environments can still run the workspace suite.
+
+`xtask test_local_integration` builds release Wasm artifacts, validates the DID guardrail, validates `icp.yaml` with `icp-cli`, runs `icp build`, and then runs the CLI-shaped Rust integration tests. It does not start a local replica or deploy canisters.
 
 
 ## Additional preflight commands

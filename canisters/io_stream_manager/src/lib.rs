@@ -1,3 +1,4 @@
+pub mod clients;
 pub mod logic;
 pub mod scheduler;
 pub mod state;
@@ -11,7 +12,7 @@ pub use io_core_model::{
     StreamKind, StreamOutcome, E8S_PER_TOKEN,
 };
 pub use logic::StreamManagerError;
-pub use state::StreamManager;
+pub use state::{PendingIoAllocation, PendingRedemption, PendingTwoWeekStream, StreamManager};
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct InitArgs {
@@ -25,6 +26,7 @@ pub struct InitArgs {
     pub icp_index_principal_text: Option<String>,
     pub io_ledger_principal_text: Option<String>,
     pub io_index_principal_text: Option<String>,
+    pub sns_governance_principal_text: Option<String>,
 }
 
 impl Default for InitArgs {
@@ -40,6 +42,7 @@ impl Default for InitArgs {
             icp_index_principal_text: None,
             io_ledger_principal_text: None,
             io_index_principal_text: None,
+            sns_governance_principal_text: None,
         }
     }
 }
@@ -56,6 +59,7 @@ pub struct StreamManagerConfig {
     pub icp_index_principal_text: Option<String>,
     pub io_ledger_principal_text: Option<String>,
     pub io_index_principal_text: Option<String>,
+    pub sns_governance_principal_text: Option<String>,
 }
 
 impl Default for StreamManagerConfig {
@@ -102,6 +106,10 @@ impl TryFrom<InitArgs> for StreamManagerConfig {
         validate_optional_principal("icp_index_principal_text", &args.icp_index_principal_text)?;
         validate_optional_principal("io_ledger_principal_text", &args.io_ledger_principal_text)?;
         validate_optional_principal("io_index_principal_text", &args.io_index_principal_text)?;
+        validate_optional_principal(
+            "sns_governance_principal_text",
+            &args.sns_governance_principal_text,
+        )?;
 
         Ok(Self {
             initial_total_io_supply_e8s: args.initial_total_io_supply_e8s,
@@ -114,6 +122,7 @@ impl TryFrom<InitArgs> for StreamManagerConfig {
             icp_index_principal_text: args.icp_index_principal_text,
             io_ledger_principal_text: args.io_ledger_principal_text,
             io_index_principal_text: args.io_index_principal_text,
+            sns_governance_principal_text: args.sns_governance_principal_text,
         })
     }
 }
@@ -138,6 +147,8 @@ fn validate_optional_principal(
 struct CanisterState {
     config: StreamManagerConfig,
     manager: StreamManager,
+    pending_two_week_streams: Vec<PendingTwoWeekStream>,
+    pending_redemptions: Vec<PendingRedemption>,
 }
 
 impl CanisterState {
@@ -152,7 +163,12 @@ impl CanisterState {
             active_staked_io_e8s: 0,
             two_week_pool_backing_bps: config.two_week_pool_backing_bps,
         };
-        Self { config, manager }
+        Self {
+            config,
+            manager,
+            pending_two_week_streams: Vec::new(),
+            pending_redemptions: Vec::new(),
+        }
     }
 }
 
@@ -209,6 +225,98 @@ pub struct StableState {
     pub processed_transactions: Vec<String>,
     pub active_staked_io_e8s: u128,
     pub two_week_pool_backing_bps: u128,
+    pub pending_two_week_streams: Vec<StablePendingTwoWeekStream>,
+    pub pending_redemptions: Vec<StablePendingRedemption>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct StablePendingIoAllocation {
+    pub neuron_id: u64,
+    pub io_e8s: u128,
+    pub transferred: bool,
+}
+
+impl From<PendingIoAllocation> for StablePendingIoAllocation {
+    fn from(value: PendingIoAllocation) -> Self {
+        Self {
+            neuron_id: value.neuron_id,
+            io_e8s: value.io_e8s,
+            transferred: value.transferred,
+        }
+    }
+}
+
+impl From<StablePendingIoAllocation> for PendingIoAllocation {
+    fn from(value: StablePendingIoAllocation) -> Self {
+        Self {
+            neuron_id: value.neuron_id,
+            io_e8s: value.io_e8s,
+            transferred: value.transferred,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct StablePendingTwoWeekStream {
+    pub transaction_id: String,
+    pub post_state: StableProtocolState,
+    pub io_issued_e8s: u128,
+    pub allocations: Vec<StablePendingIoAllocation>,
+}
+
+impl From<PendingTwoWeekStream> for StablePendingTwoWeekStream {
+    fn from(value: PendingTwoWeekStream) -> Self {
+        Self {
+            transaction_id: value.transaction_id,
+            post_state: value.post_state.into(),
+            io_issued_e8s: value.io_issued_e8s,
+            allocations: value.allocations.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<StablePendingTwoWeekStream> for PendingTwoWeekStream {
+    fn from(value: StablePendingTwoWeekStream) -> Self {
+        Self {
+            transaction_id: value.transaction_id,
+            post_state: value.post_state.into(),
+            io_issued_e8s: value.io_issued_e8s,
+            allocations: value.allocations.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct StablePendingRedemption {
+    pub transaction_id: String,
+    pub post_state: StableProtocolState,
+    pub io_redeemed_e8s: u128,
+    pub icp_paid_e8s: u128,
+    pub user_account: String,
+}
+
+impl From<PendingRedemption> for StablePendingRedemption {
+    fn from(value: PendingRedemption) -> Self {
+        Self {
+            transaction_id: value.transaction_id,
+            post_state: value.post_state.into(),
+            io_redeemed_e8s: value.io_redeemed_e8s,
+            icp_paid_e8s: value.icp_paid_e8s,
+            user_account: value.user_account,
+        }
+    }
+}
+
+impl From<StablePendingRedemption> for PendingRedemption {
+    fn from(value: StablePendingRedemption) -> Self {
+        Self {
+            transaction_id: value.transaction_id,
+            post_state: value.post_state.into(),
+            io_redeemed_e8s: value.io_redeemed_e8s,
+            icp_paid_e8s: value.icp_paid_e8s,
+            user_account: value.user_account,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -367,6 +475,17 @@ pub struct ApiState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct DebugTickOutcome {
+    pub scanned_icp_transactions: u64,
+    pub scanned_io_transactions: u64,
+    pub processed_authorized_streams: u64,
+    pub processed_redemptions: u64,
+    pub io_issued_e8s: u128,
+    pub icp_paid_e8s: u128,
+    pub errors: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct ApiError {
     pub code: String,
     pub message: String,
@@ -431,6 +550,18 @@ fn export_stable_state() -> StableState {
                 .collect(),
             active_staked_io_e8s: state.manager.active_staked_io_e8s,
             two_week_pool_backing_bps: state.manager.two_week_pool_backing_bps,
+            pending_two_week_streams: state
+                .pending_two_week_streams
+                .iter()
+                .cloned()
+                .map(Into::into)
+                .collect(),
+            pending_redemptions: state
+                .pending_redemptions
+                .iter()
+                .cloned()
+                .map(Into::into)
+                .collect(),
         }
     })
 }
@@ -445,6 +576,16 @@ fn import_stable_state(state: StableState) {
                 active_staked_io_e8s: state.active_staked_io_e8s,
                 two_week_pool_backing_bps: state.two_week_pool_backing_bps,
             },
+            pending_two_week_streams: state
+                .pending_two_week_streams
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            pending_redemptions: state
+                .pending_redemptions
+                .into_iter()
+                .map(Into::into)
+                .collect(),
         };
     });
 }
@@ -551,6 +692,12 @@ pub fn debug_process_stream_event(
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn debug_redeem(io_e8s: u128) -> Result<ApiRedemptionOutcome, ApiError> {
     redeem_impl(io_e8s)
+}
+
+#[cfg(any(test, debug_assertions))]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn debug_tick() -> DebugTickOutcome {
+    scheduler::scheduler_tick_once().await
 }
 
 #[cfg(test)]
@@ -730,7 +877,7 @@ mod tests {
     fn scheduler_tick_does_not_mutate_value_moving_state() {
         init(InitArgs::default());
         let before = export_stable_state_for_tests();
-        let outcome = crate::scheduler::scheduler_tick_once();
+        let outcome = crate::scheduler::scheduler_tick_plan_only();
         assert_eq!(outcome.processed_authorized_streams, 0);
         assert_eq!(export_stable_state_for_tests(), before);
     }

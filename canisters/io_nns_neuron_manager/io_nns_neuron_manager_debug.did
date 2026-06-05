@@ -14,6 +14,8 @@ type InitArgs = record {
   two_year_maturity_memo : opt nat64;
   two_week_maturity_memo : opt nat64;
   principal_unwind_memo : opt nat64;
+  nns_governance_principal_text : opt text;
+  icp_ledger_principal_text : opt text;
 };
 
 type ApiManagedNeuronKind = variant {
@@ -65,9 +67,20 @@ type NnsNeuronManagerConfig = record {
   two_year_maturity_memo : opt nat64;
   two_week_maturity_memo : opt nat64;
   principal_unwind_memo : opt nat64;
+  nns_governance_principal_text : opt text;
+  icp_ledger_principal_text : opt text;
+};
+
+type DebugTickOutcome = record {
+  disbursed_two_year_maturity_e8s : nat;
+  disbursed_two_week_maturity_e8s : nat;
+  disbursed_unwind_principal_e8s : nat;
+  planned_pool_rebalances : nat64;
+  errors : vec text;
 };
 
 service : (InitArgs) -> {
+  debug_tick : () -> (DebugTickOutcome);
   debug_advance_model_time : (AdvanceModelTimeRequest) -> (ApiState);
   debug_get_config : () -> (NnsNeuronManagerConfig) query;
   debug_get_state : () -> (ApiState) query;

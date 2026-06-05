@@ -9,4 +9,6 @@
   two_year_maturity_memo = null : opt nat64;
   two_week_maturity_memo = null : opt nat64;
   principal_unwind_memo = null : opt nat64;
+  nns_governance_principal_text = null : opt text;
+  icp_ledger_principal_text = null : opt text;
 })

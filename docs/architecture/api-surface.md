@@ -32,8 +32,11 @@ Debug DIDs are for local development, model tests, and PocketIC-shaped tests. Th
 - `debug_get_config`
 - `debug_plan_rebalance`
 - `debug_advance_model_time`
+- `debug_tick`
 
 Debug methods must not become production read/control APIs.
+
+`xtask did_surface` rejects broad state/config/redemption/event methods, any `debug_` method, and `debug_tick` in production DIDs. The production DIDs for `io_stream_manager` and `io_nns_neuron_manager` remain constructor-only services.
 
 Stable-state export/import helpers are host-test/debug-only implementation aids and must not be added to production DIDs.
 

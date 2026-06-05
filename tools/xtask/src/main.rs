@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::path::Path;
 use std::process::{Command, ExitCode};
 
 fn run(label: &str, mut cmd: Command) -> bool {
@@ -35,6 +36,18 @@ fn cargo_check(args: &[&str]) -> Command {
 fn cargo_fmt(args: &[&str]) -> Command {
     let mut c = Command::new("cargo");
     c.arg("fmt").args(args);
+    c
+}
+
+fn build_canister(package: &str, profile: &str) -> Command {
+    let mut c = Command::new("tools/scripts/build-canister");
+    c.arg(package).arg(profile);
+    c
+}
+
+fn icp(args: &[&str]) -> Command {
+    let mut c = Command::new("icp");
+    c.args(args);
     c
 }
 
@@ -87,6 +100,7 @@ fn check_did_surface() -> Result<(), String> {
             " get_redemption_rate :",
             " process_stream_event :",
             " redeem :",
+            " debug_tick :",
             " plan_rebalance :",
             " advance_model_time :",
             "debug_",
@@ -101,6 +115,7 @@ fn check_did_surface() -> Result<(), String> {
             " get_config :",
             " plan_rebalance :",
             " advance_model_time :",
+            " debug_tick :",
             "debug_",
             " get_events :",
         ],
@@ -114,6 +129,7 @@ fn check_did_surface() -> Result<(), String> {
             "debug_get_redemption_rate",
             "debug_process_stream_event",
             "debug_redeem",
+            "debug_tick",
         ],
     )?;
     require_present(
@@ -124,6 +140,7 @@ fn check_did_surface() -> Result<(), String> {
             "debug_get_state",
             "debug_plan_rebalance",
             "debug_advance_model_time",
+            "debug_tick",
         ],
     )?;
 
@@ -151,6 +168,15 @@ fn check_did_surface() -> Result<(), String> {
     Ok(())
 }
 
+fn check_artifacts(paths: &[&str]) -> Result<(), String> {
+    for path in paths {
+        if !Path::new(path).is_file() {
+            return Err(format!("missing artifact {path}"));
+        }
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let cmd = env::args().nth(1).unwrap_or_else(|| "test_all".to_string());
     let mut ok = true;
@@ -171,6 +197,51 @@ fn main() -> ExitCode {
                 ok = false;
             }
         },
+        "build_canisters" => {
+            for package in [
+                "io-stream-manager",
+                "io-nns-neuron-manager",
+                "io-historian",
+                "io-frontend",
+            ] {
+                ok &= run(
+                    &format!("build canister: {package}"),
+                    build_canister(package, "release"),
+                );
+            }
+            match check_artifacts(&[
+                "release-artifacts/io_stream_manager.wasm.gz",
+                "release-artifacts/io_nns_neuron_manager.wasm.gz",
+                "release-artifacts/io_historian.wasm.gz",
+                "release-artifacts/io_frontend.wasm.gz",
+            ]) {
+                Ok(()) => eprintln!("✓ build_canisters artifacts"),
+                Err(err) => {
+                    eprintln!("✗ build_canisters artifacts: {err}");
+                    ok = false;
+                }
+            }
+        }
+        "build_debug_canisters" => {
+            for package in [
+                "io-stream-manager",
+                "io-nns-neuron-manager",
+                "io-historian",
+                "io-frontend",
+                "mock-icp-ledger",
+                "mock-io-ledger",
+                "mock-icp-index",
+                "mock-io-index",
+                "mock-nns-governance",
+                "mock-sns-governance",
+                "mock-jupiter-faucet",
+            ] {
+                ok &= run(
+                    &format!("build debug canister: {package}"),
+                    build_canister(package, "debug"),
+                );
+            }
+        }
         "preflight" => {
             ok &= run_subcommand("check");
             ok &= run_subcommand("did_surface");
@@ -195,6 +266,7 @@ fn main() -> ExitCode {
             );
         }
         "test_pocketic_integration" => {
+            ok &= run_subcommand("build_debug_canisters");
             ok &= run(
                 "pocketic: io-stream-manager",
                 cargo_test(&[
@@ -215,6 +287,10 @@ fn main() -> ExitCode {
             );
         }
         "test_local_integration" => {
+            ok &= run_subcommand("build_canisters");
+            ok &= run_subcommand("did_surface");
+            ok &= run("local-cli: icp project show", icp(&["project", "show"]));
+            ok &= run("local-cli: icp build", icp(&["build"]));
             ok &= run(
                 "local-cli: io-stream-manager",
                 cargo_test(&["-p", "io-stream-manager", "--test", "io_stream_manager_cli"]),
@@ -282,7 +358,7 @@ fn main() -> ExitCode {
         }
         other => {
             eprintln!("unknown xtask command: {other}");
-            eprintln!("known: test_all, preflight, check, fmt_check, did_surface, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+            eprintln!("known: test_all, preflight, check, fmt_check, did_surface, build_canisters, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
             return ExitCode::from(2);
         }
     }

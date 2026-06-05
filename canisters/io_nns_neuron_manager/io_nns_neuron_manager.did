@@ -9,6 +9,8 @@ type InitArgs = record {
   two_year_maturity_memo : opt nat64;
   two_week_maturity_memo : opt nat64;
   principal_unwind_memo : opt nat64;
+  nns_governance_principal_text : opt text;
+  icp_ledger_principal_text : opt text;
 };
 
 service : (InitArgs) -> {}

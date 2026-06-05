@@ -1,3 +1,4 @@
+pub mod clients;
 pub mod scheduler;
 
 use candid::{CandidType, Principal};
@@ -150,6 +151,8 @@ pub struct InitArgs {
     pub two_year_maturity_memo: Option<u64>,
     pub two_week_maturity_memo: Option<u64>,
     pub principal_unwind_memo: Option<u64>,
+    pub nns_governance_principal_text: Option<String>,
+    pub icp_ledger_principal_text: Option<String>,
 }
 
 impl Default for InitArgs {
@@ -165,6 +168,8 @@ impl Default for InitArgs {
             two_year_maturity_memo: None,
             two_week_maturity_memo: None,
             principal_unwind_memo: None,
+            nns_governance_principal_text: None,
+            icp_ledger_principal_text: None,
         }
     }
 }
@@ -181,6 +186,8 @@ pub struct NnsNeuronManagerConfig {
     pub two_year_maturity_memo: Option<u64>,
     pub two_week_maturity_memo: Option<u64>,
     pub principal_unwind_memo: Option<u64>,
+    pub nns_governance_principal_text: Option<String>,
+    pub icp_ledger_principal_text: Option<String>,
 }
 
 impl Default for NnsNeuronManagerConfig {
@@ -196,6 +203,8 @@ pub enum InitArgsError {
     EmptyControllerPrincipal,
     InvalidControllerPrincipal { value: String },
     InvalidStreamManagerPrincipal { value: String },
+    InvalidNnsGovernancePrincipal { value: String },
+    InvalidIcpLedgerPrincipal { value: String },
     ZeroTwoYearNeuronId,
     ZeroTwoWeekDissolveSeconds,
     ModelAnnualBpsTooHigh { bps: u128, max_bps: u128 },
@@ -232,6 +241,20 @@ impl TryFrom<InitArgs> for NnsNeuronManagerConfig {
                 });
             }
         }
+        if let Some(text) = &args.nns_governance_principal_text {
+            if text.trim().is_empty() || Principal::from_text(text).is_err() {
+                return Err(InitArgsError::InvalidNnsGovernancePrincipal {
+                    value: text.clone(),
+                });
+            }
+        }
+        if let Some(text) = &args.icp_ledger_principal_text {
+            if text.trim().is_empty() || Principal::from_text(text).is_err() {
+                return Err(InitArgsError::InvalidIcpLedgerPrincipal {
+                    value: text.clone(),
+                });
+            }
+        }
 
         Ok(Self {
             controller_canister_principal_text: args.controller_canister_principal_text,
@@ -244,6 +267,8 @@ impl TryFrom<InitArgs> for NnsNeuronManagerConfig {
             two_year_maturity_memo: args.two_year_maturity_memo,
             two_week_maturity_memo: args.two_week_maturity_memo,
             principal_unwind_memo: args.principal_unwind_memo,
+            nns_governance_principal_text: args.nns_governance_principal_text,
+            icp_ledger_principal_text: args.icp_ledger_principal_text,
         })
     }
 }
@@ -254,6 +279,7 @@ struct CanisterState {
     config: NnsNeuronManagerConfig,
     model: NnsNeuronManagerModel,
     two_week_pool_state: TwoWeekPoolState,
+    pending_icp_transfers: Vec<PendingIcpTransfer>,
 }
 
 impl CanisterState {
@@ -267,6 +293,7 @@ impl CanisterState {
                 pending_unwind_e8s: 0,
                 pending_restake_e8s: 0,
             },
+            pending_icp_transfers: Vec::new(),
             model,
         }
     }
@@ -389,6 +416,22 @@ pub struct ApiState {
 pub struct AdvanceModelTimeRequest {
     pub elapsed_seconds: u64,
     pub annual_bps: Option<u128>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct DebugTickOutcome {
+    pub disbursed_two_year_maturity_e8s: u128,
+    pub disbursed_two_week_maturity_e8s: u128,
+    pub disbursed_unwind_principal_e8s: u128,
+    pub planned_pool_rebalances: u64,
+    pub errors: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct PendingIcpTransfer {
+    pub amount_e8s: u128,
+    pub memo: String,
+    pub post_model: Option<NnsNeuronManagerModel>,
 }
 
 impl NnsNeuronManagerModel {
@@ -525,6 +568,7 @@ pub struct StableState {
     pub config: NnsNeuronManagerConfig,
     pub model: NnsNeuronManagerModel,
     pub two_week_pool_state: TwoWeekPoolState,
+    pub pending_icp_transfers: Vec<PendingIcpTransfer>,
 }
 
 fn export_stable_state() -> StableState {
@@ -534,6 +578,7 @@ fn export_stable_state() -> StableState {
             config: state.config.clone(),
             model: state.model.clone(),
             two_week_pool_state: state.two_week_pool_state.clone(),
+            pending_icp_transfers: state.pending_icp_transfers.clone(),
         }
     })
 }
@@ -544,6 +589,7 @@ fn import_stable_state(state: StableState) {
             config: state.config,
             model: state.model,
             two_week_pool_state: state.two_week_pool_state,
+            pending_icp_transfers: state.pending_icp_transfers,
         };
     });
 }
@@ -634,6 +680,12 @@ pub fn debug_plan_rebalance(pool_state: ApiTwoWeekPoolState) -> ApiRebalanceActi
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn debug_advance_model_time(request: AdvanceModelTimeRequest) -> ApiState {
     advance_model_time_impl(request)
+}
+
+#[cfg(any(test, debug_assertions))]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn debug_tick() -> DebugTickOutcome {
+    scheduler::scheduler_tick_once().await
 }
 
 #[cfg(test)]
@@ -858,7 +910,7 @@ mod tests {
     fn scheduler_tick_does_not_mutate_model_state() {
         init(InitArgs::default());
         let before = export_stable_state_for_tests();
-        let outcome = crate::scheduler::scheduler_tick_once();
+        let outcome = crate::scheduler::scheduler_tick_plan_only();
         assert_eq!(outcome.planned_pool_rebalances, 0);
         assert_eq!(export_stable_state_for_tests(), before);
     }

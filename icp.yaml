@@ -1,24 +1,29 @@
 # Initial icp-cli configuration. This is intentionally skeletal and mirrors the
 # Jupiter Faucet convention of using icp-cli rather than dfx.
 canisters:
-  io_nns_neuron_manager:
-    type: custom
-    wasm: release-artifacts/io_nns_neuron_manager.wasm.gz
-    candid: canisters/io_nns_neuron_manager/io_nns_neuron_manager.did
-  io_stream_manager:
-    type: custom
-    wasm: release-artifacts/io_stream_manager.wasm.gz
-    candid: canisters/io_stream_manager/io_stream_manager.did
-  io_historian:
-    type: custom
-    wasm: release-artifacts/io_historian.wasm.gz
-    candid: canisters/io_historian/io_historian.did
-  frontend:
-    type: assets
-    source: canisters/frontend/public
+  - name: io_nns_neuron_manager
+    build:
+      steps:
+        - type: pre-built
+          path: release-artifacts/io_nns_neuron_manager.wasm.gz
+  - name: io_stream_manager
+    build:
+      steps:
+        - type: pre-built
+          path: release-artifacts/io_stream_manager.wasm.gz
+  - name: io_historian
+    build:
+      steps:
+        - type: pre-built
+          path: release-artifacts/io_historian.wasm.gz
+  - name: frontend
+    build:
+      steps:
+        - type: pre-built
+          path: release-artifacts/io_frontend.wasm.gz
 
 environments:
-  local:
-    url: http://127.0.0.1:4943
-  mainnet:
-    url: https://icp0.io
+  - name: local
+    network: local
+  - name: mainnet
+    network: ic

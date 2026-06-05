@@ -184,6 +184,18 @@ pub struct RedemptionOutcome {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreviewedStream {
+    pub outcome: StreamOutcome,
+    pub post_state: ProtocolState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreviewedRedemption {
+    pub outcome: RedemptionOutcome,
+    pub post_state: ProtocolState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModelError {
     ArithmeticOverflow,
     DivisionByZero,
@@ -214,6 +226,16 @@ pub fn process_stream(
     kind: StreamKind,
     amount_e8s: u128,
 ) -> Result<StreamOutcome, ModelError> {
+    let preview = preview_stream(state, kind, amount_e8s)?;
+    *state = preview.post_state;
+    Ok(preview.outcome)
+}
+
+pub fn preview_stream(
+    state: &ProtocolState,
+    kind: StreamKind,
+    amount_e8s: u128,
+) -> Result<PreviewedStream, ModelError> {
     let rate_before = state.redemption_rate()?;
     let split = split_40_60(amount_e8s);
     let (recipient_policy, stake_target_is_two_week) = stream_policy(kind);
@@ -225,39 +247,50 @@ pub fn process_stream(
         IoRecipientPolicy::None => 0,
     };
 
-    // Pre-flight reserve checks before any state mutation. This preserves atomicity
-    // in the pure model and mirrors how the canister should guard value-moving work.
-    state.ensure_can_issue_from_reserve(io_issued_e8s)?;
+    let mut post_state = *state;
+    post_state.ensure_can_issue_from_reserve(io_issued_e8s)?;
 
     if stake_target_is_two_week {
-        state.two_week_staked_icp_e8s = state
+        post_state.two_week_staked_icp_e8s = post_state
             .two_week_staked_icp_e8s
             .checked_add(split.stake_e8s)
             .ok_or(ModelError::ArithmeticOverflow)?;
     } else {
-        state.two_year_staked_icp_e8s = state
+        post_state.two_year_staked_icp_e8s = post_state
             .two_year_staked_icp_e8s
             .checked_add(split.stake_e8s)
             .ok_or(ModelError::ArithmeticOverflow)?;
     }
-    state.liquid_icp_e8s = state
+    post_state.liquid_icp_e8s = post_state
         .liquid_icp_e8s
         .checked_add(split.liquid_e8s)
         .ok_or(ModelError::ArithmeticOverflow)?;
-    state.issue_io_from_reserve(io_issued_e8s)?;
+    post_state.issue_io_from_reserve(io_issued_e8s)?;
 
-    let rate_after = state.redemption_rate()?;
-    Ok(StreamOutcome {
-        kind,
-        split,
-        recipient_policy,
-        io_issued_e8s,
-        rate_before,
-        rate_after,
+    let rate_after = post_state.redemption_rate()?;
+    Ok(PreviewedStream {
+        outcome: StreamOutcome {
+            kind,
+            split,
+            recipient_policy,
+            io_issued_e8s,
+            rate_before,
+            rate_after,
+        },
+        post_state,
     })
 }
 
 pub fn redeem_io(state: &mut ProtocolState, io_e8s: u128) -> Result<RedemptionOutcome, ModelError> {
+    let preview = preview_redeem_io(state, io_e8s)?;
+    *state = preview.post_state;
+    Ok(preview.outcome)
+}
+
+pub fn preview_redeem_io(
+    state: &ProtocolState,
+    io_e8s: u128,
+) -> Result<PreviewedRedemption, ModelError> {
     let rate_before = state.redemption_rate()?;
     let icp_paid_e8s = rate_before.icp_for_io(io_e8s)?;
     if icp_paid_e8s > state.liquid_icp_e8s {
@@ -267,18 +300,19 @@ pub fn redeem_io(state: &mut ProtocolState, io_e8s: u128) -> Result<RedemptionOu
         });
     }
 
-    // Pre-flight the supply transition before mutating the liquid reserve.
     let mut post_state = *state;
     post_state.liquid_icp_e8s -= icp_paid_e8s;
     post_state.return_io_to_reserve(io_e8s)?;
-    *state = post_state;
 
-    let rate_after = state.redemption_rate()?;
-    Ok(RedemptionOutcome {
-        io_redeemed_e8s: io_e8s,
-        icp_paid_e8s,
-        rate_before,
-        rate_after,
+    let rate_after = post_state.redemption_rate()?;
+    Ok(PreviewedRedemption {
+        outcome: RedemptionOutcome {
+            io_redeemed_e8s: io_e8s,
+            icp_paid_e8s,
+            rate_before,
+            rate_after,
+        },
+        post_state,
     })
 }
 
@@ -306,6 +340,26 @@ mod tests {
 
     fn state() -> ProtocolState {
         ProtocolState::new(t(1_000_000), t(900_000), t(100_000))
+    }
+
+    #[test]
+    fn preview_stream_does_not_mutate_source_state() {
+        let s = state();
+        let preview = preview_stream(&s, StreamKind::JupiterFaucet, t(100)).unwrap();
+        assert_eq!(s, state());
+        assert_eq!(preview.outcome.io_issued_e8s, t(60));
+        assert_eq!(preview.post_state.liquid_icp_e8s, t(60));
+    }
+
+    #[test]
+    fn preview_redemption_does_not_mutate_source_state() {
+        let mut s = state();
+        process_stream(&mut s, StreamKind::JupiterFaucet, t(100)).unwrap();
+        let before = s;
+        let preview = preview_redeem_io(&s, t(10)).unwrap();
+        assert_eq!(s, before);
+        assert_eq!(preview.outcome.icp_paid_e8s, t(10));
+        assert_eq!(preview.post_state.liquid_icp_e8s, t(50));
     }
 
     #[test]

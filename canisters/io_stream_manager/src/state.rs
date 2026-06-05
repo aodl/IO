@@ -14,6 +14,30 @@ pub struct StreamManager {
     pub two_week_pool_backing_bps: u128,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingIoAllocation {
+    pub neuron_id: u64,
+    pub io_e8s: u128,
+    pub transferred: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingTwoWeekStream {
+    pub transaction_id: String,
+    pub post_state: ProtocolState,
+    pub io_issued_e8s: u128,
+    pub allocations: Vec<PendingIoAllocation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingRedemption {
+    pub transaction_id: String,
+    pub post_state: ProtocolState,
+    pub io_redeemed_e8s: u128,
+    pub icp_paid_e8s: u128,
+    pub user_account: String,
+}
+
 impl StreamManager {
     pub fn default_for_tests() -> Self {
         Self {

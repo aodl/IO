@@ -9,6 +9,7 @@ type InitArgs = record {
   icp_index_principal_text : opt text;
   io_ledger_principal_text : opt text;
   io_index_principal_text : opt text;
+  sns_governance_principal_text : opt text;
 };
 
 service : (InitArgs) -> {}

@@ -6,11 +6,15 @@ license.workspace = true
 
 [lib]
 path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 candid.workspace = true
 ic-cdk.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
+pocket-ic.workspace = true
 
 [[test]]
 name = "io_nns_neuron_manager_pocketic"

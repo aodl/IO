@@ -1,10 +1,10 @@
 # Scheduler Architecture
 
-The value-moving canisters now contain internal scheduler skeletons, but they do not make real external calls yet.
+The value-moving canisters now contain internal scheduler logic for the first mock-driven integration slice.
 
 ## io_stream_manager
 
-The stream-manager scheduler is reserved for timer-driven work that will eventually:
+The stream-manager scheduler is reserved for timer-driven work that:
 
 - scan ICP ledger/index data for Jupiter Faucet deposits
 - scan ICP ledger/index data for NNS maturity deposits
@@ -12,19 +12,23 @@ The stream-manager scheduler is reserved for timer-driven work that will eventua
 - classify observed flows
 - process authorized streams internally
 
-The current `scheduler_tick_once()` is a deterministic no-op that returns planned future steps and leaves value-moving state unchanged.
+In debug/test Wasm, `debug_tick` scans configured mock ICP and IO ledger/index histories. It classifies authorized deposits by source and memo, processes each block index once, issues IO from the mock protocol reserve account, scans IO redemption transfers, pays ICP through the mock ICP ledger, and returns redeemed IO to the mock protocol reserve account.
+
+The production DID does not expose `debug_tick`.
 
 ## io_nns_neuron_manager
 
-The NNS manager scheduler is reserved for timer-driven work that will eventually:
+The NNS manager scheduler is reserved for timer-driven work that:
 
 - check and disburse 2-year maturity
 - check and disburse 2-week maturity
 - rebalance the pooled 2-week neuron
 - disburse ready unwind child neurons
 
-The current `scheduler_tick_once()` is a deterministic no-op that returns planned future steps and leaves model state unchanged.
+In debug/test Wasm, `debug_tick` disburses model maturity, plans two-week pool rebalance work, disburses ready unwind principal, and sends mock ICP ledger transfers to the stream-manager deposit account with classifier memos.
+
+The production DID does not expose `debug_tick`.
 
 ## Integration Boundary
 
-Real ICP ledger, IO ledger, NNS governance, SNS governance, and external canister calls remain future work. Those integrations should be added behind deterministic scheduler/client boundaries with targeted tests before any production wiring.
+Client modules now exist for ICP ledger/index, IO ledger/index, SNS governance, NNS governance, and ICP ledger transfer calls. They currently target mock canisters in debug/test integration. Production wiring remains future work and should preserve ledger/index/timer-driven flows rather than caller-submitted stream kinds.

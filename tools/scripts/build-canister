@@ -1,7 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
-canister="${1:?usage: build-canister <package>}"
-cargo build -p "$canister" --release
-mkdir -p release-artifacts
-artifact="target/release/lib${canister//-/_}.rlib"
-echo "Built Rust package $canister. Wasm generation is intentionally stubbed in this first IO scaffold."
+
+package="${1:?usage: build-canister <package> [release|debug]}"
+profile="${2:-release}"
+
+case "$profile" in
+  release)
+    cargo build -p "$package" --release --target wasm32-unknown-unknown
+    profile_dir="release"
+    artifact_dir="release-artifacts"
+    ;;
+  debug)
+    cargo build -p "$package" --target wasm32-unknown-unknown
+    profile_dir="debug"
+    artifact_dir="debug-artifacts"
+    ;;
+  *)
+    echo "unknown build profile: $profile" >&2
+    exit 2
+    ;;
+esac
+
+crate_name="${package//-/_}"
+wasm="target/wasm32-unknown-unknown/${profile_dir}/${crate_name}.wasm"
+if [[ ! -f "$wasm" ]]; then
+  echo "expected wasm artifact not found: $wasm" >&2
+  exit 1
+fi
+
+mkdir -p "$artifact_dir"
+out="${artifact_dir}/${crate_name}.wasm.gz"
+gzip -cn "$wasm" > "$out"
+sha256sum "$out" > "${out}.sha256"
+echo "$out"

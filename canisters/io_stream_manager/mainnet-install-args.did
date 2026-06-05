@@ -9,4 +9,5 @@
   icp_index_principal_text = null : opt text;
   io_ledger_principal_text = null : opt text;
   io_index_principal_text = null : opt text;
+  sns_governance_principal_text = null : opt text;
 })
