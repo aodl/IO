@@ -1,0 +1,40 @@
+[advisories]
+version = 2
+yanked = "warn"
+ignore = [
+  # Transitive through pocket-ic 14.0.0 in dev/test coverage; no safe upgrade is available yet.
+  "RUSTSEC-2025-0012",
+  # Transitive through backoff/pocket-ic; no safe upgrade is available yet.
+  "RUSTSEC-2024-0384",
+  # Transitive through candid 0.10.x / IC crates; tracked as a known baseline warning.
+  "RUSTSEC-2024-0436",
+  # Transitive through pocket-ic / ic-transport-types; no direct production use in IO canisters.
+  "RUSTSEC-2021-0127",
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-3-Clause",
+  "CC0-1.0",
+  "ISC",
+  "MIT",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+deny = []
+skip = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

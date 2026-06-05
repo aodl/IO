@@ -44,3 +44,11 @@ Stable-state export/import helpers are available only for host tests/debug build
 Host tests exercise stable export/import preservation for journals and cursors. PocketIC tests include upgrade-before-retry coverage for pending stream-manager and NNS-manager operations using debug Wasm.
 
 The stable layout is production-shaped for the integration slice, but it has not been audited for mainnet operation scale.
+
+Upgrade proposals should use artifacts that pass:
+
+```bash
+cargo run -p xtask -- verify_release
+```
+
+The command verifies DID boundaries, rebuilds release Wasm, checks artifact hashes/manifest, validates install args without deployment, and runs the strict security scan.

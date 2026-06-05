@@ -41,3 +41,5 @@ Time fast-forward tests use two layers:
 - real PocketIC tests call `PocketIc::advance_time` and then use debug model time controls until timer-driven production time integration is added.
 
 These tests use mock ledgers, mock indexes, and mock governance canisters. They do not use real NNS, SNS, ICP ledger, IO ledger, or mainnet canisters.
+
+`cargo run -p xtask -- test_ci` requires `POCKET_IC_BIN` and includes the live PocketIC integration suite. GitHub Actions should either provide a compatible PocketIC binary or run the non-PocketIC workflow steps plus document the missing strict gate.

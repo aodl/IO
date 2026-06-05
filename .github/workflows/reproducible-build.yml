@@ -1,0 +1,33 @@
+name: reproducible-build
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+jobs:
+  artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Add Wasm target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: First build
+        run: cargo run -p xtask -- build_canisters
+
+      - name: First manifest
+        run: cp release-artifacts/manifest.json /tmp/io-manifest-first.json
+
+      - name: Clean build outputs
+        run: rm -rf target release-artifacts
+
+      - name: Second build
+        run: cargo run -p xtask -- build_canisters
+
+      - name: Compare manifests
+        run: cmp /tmp/io-manifest-first.json release-artifacts/manifest.json
+
+      - name: Verify artifacts
+        run: cargo run -p xtask -- verify_artifacts

@@ -4,7 +4,7 @@ This slice makes the IO canisters runnable as installable Wasm and adds mock-dri
 
 ## Real Canister Execution
 
-`cargo run -p xtask -- build_canisters` builds release `wasm32-unknown-unknown` `cdylib` outputs and writes raw Wasm, gzipped Wasm, and SHA sidecars under `release-artifacts/`.
+`cargo run -p xtask -- build_canisters` builds release `wasm32-unknown-unknown` `cdylib` outputs and writes raw Wasm, deterministic gzipped Wasm, SHA sidecars, and `manifest.json` under `release-artifacts/`.
 
 For each canister, the expected outputs are:
 
@@ -13,9 +13,10 @@ release-artifacts/<canister>.wasm
 release-artifacts/<canister>.wasm.gz
 release-artifacts/<canister>.wasm.sha256
 release-artifacts/<canister>.wasm.gz.sha256
+release-artifacts/manifest.json
 ```
 
-`cargo run -p xtask -- verify_artifacts` checks existence and SHA consistency.
+`cargo run -p xtask -- verify_artifacts` checks existence, SHA consistency, manifest hashes/sizes, and stale release files.
 
 Debug Wasm builds expose local-only methods such as `debug_get_state`, `debug_tick`, and model time controls. Production DIDs for the value-moving canisters remain constructor-only.
 
@@ -63,4 +64,4 @@ The NNS manager persists operation journal entries and maturity/unwind scheduler
 
 ## Limits
 
-This is not production ledger or governance wiring. The clients intentionally target mock debug APIs and the debug scheduler tick is absent from production DIDs. The operation journals are production-shaped but not audited.
+This is not production ledger or governance wiring. The clients intentionally target mock debug APIs and the debug scheduler tick is absent from production DIDs. The operation journals are production-shaped but not audited. See `docs/security/threat-model.md` and `docs/operations/mainnet-readiness.md` before real-client work.

@@ -26,8 +26,6 @@ dist/
 # environment variables
 .env
 
-release-artifacts/
-
 !canisters/frontend/web/declarations/
 !canisters/frontend/web/declarations/**
 

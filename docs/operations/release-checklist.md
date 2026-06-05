@@ -1,0 +1,21 @@
+# Release Checklist
+
+Use this before every release-oriented commit or artifact proposal.
+
+- [ ] `cargo fmt --all -- --check`
+- [ ] `cargo clippy --workspace --all-targets -- -D warnings`
+- [ ] `cargo check --workspace --all-targets`
+- [ ] `cargo test --workspace`
+- [ ] `cargo check -p io-stream-manager -p io-nns-neuron-manager --target wasm32-unknown-unknown`
+- [ ] `cargo run -p xtask -- did_surface`
+- [ ] `cargo run -p xtask -- build_canisters`
+- [ ] `cargo run -p xtask -- verify_artifacts`
+- [ ] `cargo run -p xtask -- validate_install_args`
+- [ ] `cargo run -p xtask -- security_scan_required`
+- [ ] `POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server cargo run -p xtask -- test_pocketic_required`
+- [ ] `POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server cargo run -p xtask -- test_ci`
+- [ ] `cargo run -p xtask -- verify_release`
+- [ ] `git diff --check`
+- [ ] Review artifact diffs and `release-artifacts/manifest.json`.
+- [ ] Confirm no production API expansion on value-moving canisters.
+- [ ] Confirm no deployment/mainnet calls were made.

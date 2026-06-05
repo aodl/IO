@@ -21,13 +21,19 @@ cargo run -p xtask -- test_ci
 cargo run -p xtask -- build_canisters
 cargo run -p xtask -- verify_artifacts
 cargo run -p xtask -- build_debug_canisters
+cargo run -p xtask -- validate_install_args
+cargo run -p xtask -- security_scan
+cargo run -p xtask -- security_scan_required
+cargo run -p xtask -- verify_release
 ```
 
 `test_all` is the local default. It builds debug Wasm for PocketIC integration and the live install tests skip cleanly when `POCKET_IC_BIN` is unset.
 
 `test_pocketic_required` is strict about PocketIC availability and fails if `POCKET_IC_BIN` is unset.
 
-`test_ci` is strict: it runs formatting, workspace check, DID surface validation, release artifact build and SHA verification, unit tests, required PocketIC integration, local integration, e2e tests, and clippy with `-D warnings`.
+`test_ci` is strict: it runs formatting, workspace check, DID surface validation, release artifact build and manifest/SHA verification, install-args validation, required security scan, unit tests, required PocketIC integration, local integration, e2e tests, and clippy with `-D warnings`.
+
+`verify_release` is release-oriented and intentionally does not call `test_ci`, avoiding command recursion. It runs DID surface, release builds, artifact verification, install-args validation, and `security_scan_required`.
 
 ## Coverage added in this version
 
@@ -111,6 +117,8 @@ cargo run -p xtask -- fmt_check
 cargo run -p xtask -- preflight
 cargo run -p xtask -- did_surface
 cargo run -p xtask -- verify_artifacts
+cargo run -p xtask -- validate_install_args
+cargo run -p xtask -- security_scan
 ```
 
 ## Extra coverage added before first local run

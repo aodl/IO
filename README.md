@@ -74,6 +74,8 @@ Production callers should not be able to simply assert "this is a Jupiter Faucet
 - Debug APIs exist only for development/testing.
 - Real production ledger/NNS/SNS integrations are not yet implemented; the first runnable slice targets mock canisters.
 - Production DIDs are intentionally minimal and expose no production query/control methods on value-moving canisters.
+- Security and operations baselines live under `docs/security/` and `docs/operations/`.
+- Release artifacts include a deterministic-gzip artifact set, SHA sidecars, and `release-artifacts/manifest.json`.
 
 ## Tests
 
@@ -93,9 +95,19 @@ cargo run -p xtask -- test_ci
 cargo run -p xtask -- test_local_integration
 cargo run -p xtask -- stream_manager_unit
 cargo run -p xtask -- nns_neuron_manager_unit
+cargo run -p xtask -- validate_install_args
+cargo run -p xtask -- security_scan
+cargo run -p xtask -- security_scan_required
+cargo run -p xtask -- verify_release
 ```
 
-The PocketIC tests include real install/call/upgrade coverage for the IO and mock canisters when `POCKET_IC_BIN` points at a compatible server. `test_all` is the local default and can run in environments where the live PocketIC tests skip. `test_pocketic_required` fails when `POCKET_IC_BIN` is missing. `test_ci` is the strict command: it requires PocketIC, formatting, clippy, artifact verification, DID guardrails, and the integration suites.
+The PocketIC tests include real install/call/upgrade coverage for the IO and mock canisters when `POCKET_IC_BIN` points at a compatible server. `test_all` is the local default and can run in environments where the live PocketIC tests skip. `test_pocketic_required` fails when `POCKET_IC_BIN` is missing.
+
+Command semantics:
+
+- `test_all`: local default; may skip live PocketIC tests when `POCKET_IC_BIN` is unset, but reports that clearly.
+- `test_ci`: strict test gate; requires PocketIC and runs core checks, security scan, artifacts, DID guardrails, and integration suites.
+- `verify_release`: release-readiness gate; runs DID surface, canister builds, artifact verification, install-args validation, and required security scan. It does not deploy.
 
 ## Build
 
@@ -114,11 +126,22 @@ release-artifacts/<canister>.wasm
 release-artifacts/<canister>.wasm.gz
 release-artifacts/<canister>.wasm.sha256
 release-artifacts/<canister>.wasm.gz.sha256
+release-artifacts/manifest.json
 ```
 
-`cargo run -p xtask -- verify_artifacts` checks that raw/gzipped artifacts and SHA sidecars exist and that the sidecars match the artifacts.
+`cargo run -p xtask -- verify_artifacts` checks that raw/gzipped artifacts and SHA sidecars exist, sidecars match artifacts, the manifest matches paths/hashes/sizes, and no stale release artifacts exist for known canisters.
 
 The frontend artifact is a placeholder Rust Wasm canister matching the current placeholder frontend crate.
+
+## Security And Operations
+
+- Controller and recovery: `docs/security/controller-and-recovery.md`
+- Threat model: `docs/security/threat-model.md`
+- Supply chain: `docs/security/dependency-and-supply-chain.md`
+- Audit readiness: `docs/security/audit-readiness.md`
+- Deployment/runbook/reproducible builds: `docs/operations/`
+
+Current scripts do not deploy, install, upgrade, update settings, or call mainnet.
 
 ## Expanded test suite
 

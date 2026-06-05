@@ -1,0 +1,50 @@
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Add Wasm target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Check
+        run: cargo check --workspace --all-targets
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Wasm check
+        run: cargo check -p io-stream-manager -p io-nns-neuron-manager --target wasm32-unknown-unknown
+
+      - name: DID surface
+        run: cargo run -p xtask -- did_surface
+
+      - name: Build canisters
+        run: cargo run -p xtask -- build_canisters
+
+      - name: Verify artifacts
+        run: cargo run -p xtask -- verify_artifacts
+
+      - name: Validate install args
+        run: cargo run -p xtask -- validate_install_args
+
+      - name: PocketIC required tests
+        if: env.POCKET_IC_BIN != ''
+        run: cargo run -p xtask -- test_pocketic_required
+
+      - name: PocketIC not configured
+        if: env.POCKET_IC_BIN == ''
+        run: echo "POCKET_IC_BIN is not set; live PocketIC required tests are skipped in this workflow."

@@ -83,3 +83,5 @@ The production DID does not expose `debug_tick`.
 ## Integration Boundary
 
 Client modules now exist for ICP ledger/index, IO ledger/index, SNS governance, NNS governance, and ICP ledger transfer calls. They currently target mock canisters in debug/test integration. Production wiring remains future work and should preserve ledger/index/timer-driven flows rather than caller-submitted stream kinds. The journal is production-shaped but not audited.
+
+Operational recovery for stuck journal entries is documented in `docs/security/controller-and-recovery.md` and `docs/operations/emergency-runbook.md`. Recovery must preserve retry/idempotency semantics and must not add production stream-processing or tick APIs.

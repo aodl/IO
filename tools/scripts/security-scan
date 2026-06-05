@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+mode="${1:-permissive}"
+
+case "$mode" in
+  permissive|security_scan)
+    required=0
+    ;;
+  required|security_scan_required|--required)
+    required=1
+    ;;
+  *)
+    echo "usage: tools/scripts/security-scan [permissive|required]" >&2
+    exit 2
+    ;;
+esac
+
+missing=0
+failed=0
+
+run_optional() {
+  local tool="$1"
+  shift
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "security-scan: missing optional tool: $tool" >&2
+    missing=1
+    return 0
+  fi
+
+  echo
+  echo "=== $tool $* ==="
+  if "$tool" "$@"; then
+    echo "security-scan: $tool passed"
+  else
+    echo "security-scan: $tool failed" >&2
+    failed=1
+  fi
+}
+
+run_optional cargo-deny check
+run_optional cargo-audit audit
+run_optional cargo tree -d
+
+if [[ "$required" -eq 1 && "$missing" -ne 0 ]]; then
+  echo "security-scan: required mode failed because one or more tools are missing" >&2
+  exit 1
+fi
+
+if [[ "$failed" -ne 0 ]]; then
+  echo "security-scan: one or more checks failed" >&2
+  exit 1
+fi
+
+if [[ "$missing" -ne 0 ]]; then
+  echo "security-scan: completed with missing optional tools in permissive mode" >&2
+else
+  echo "security-scan: all available checks passed"
+fi

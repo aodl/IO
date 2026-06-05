@@ -1,0 +1,22 @@
+name: security
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+
+      - name: Security scan
+        run: cargo run -p xtask -- security_scan_required
