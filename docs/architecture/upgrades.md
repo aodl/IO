@@ -23,6 +23,8 @@ The stable payloads are dedicated structs, not ad hoc debug API responses. This 
 - active staked IO total
 - two-week pool backing bps
 - scheduler config principals from init args
+- operation journal entries, including phases, retry counts, last errors, downstream transfer blocks, two-week recipient transfer status, and redemption payout/return status
+- scheduler cursors for ICP and IO index scans
 
 `io_nns_neuron_manager` preserves:
 
@@ -30,6 +32,8 @@ The stable payloads are dedicated structs, not ad hoc debug API responses. This 
 - simulated NNS model state
 - two-week pool state
 - scheduler config principals from init args
+- operation journal entries for maturity/unwind ICP transfers and pool operation placeholders
+- scheduler maturity/unwind checkpoints
 
 ## Current Limits
 
@@ -37,4 +41,6 @@ No `ic-stable-structures` layout has been introduced yet. That is intentional wh
 
 Stable-state export/import helpers are available only for host tests/debug builds and are not production API methods.
 
-Future production scheduler cursors should be added as explicit stable fields before mainnet use. Do not infer cursor state from volatile timers or transient in-memory client state.
+Host tests exercise stable export/import preservation for journals and cursors. PocketIC tests include upgrade-before-retry coverage for pending stream-manager and NNS-manager operations using debug Wasm.
+
+The stable layout is production-shaped for the integration slice, but it has not been audited for mainnet operation scale.

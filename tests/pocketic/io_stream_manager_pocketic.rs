@@ -110,6 +110,7 @@ mod live {
     struct StreamFixture {
         pic: PocketIc,
         stream: Principal,
+        stream_wasm: Vec<u8>,
         icp_ledger: Principal,
         icp_index: Principal,
         io_ledger: Principal,
@@ -136,6 +137,13 @@ mod live {
     }
 
     fn setup_stream(with_sns: bool) -> Option<StreamFixture> {
+        setup_stream_with_payout_ledger(with_sns, true)
+    }
+
+    fn setup_stream_with_payout_ledger(
+        with_sns: bool,
+        configure_icp_payout_ledger: bool,
+    ) -> Option<StreamFixture> {
         if !pocketic_available() {
             eprintln!("skipping real PocketIC test because POCKET_IC_BIN is not set");
             return None;
@@ -183,14 +191,14 @@ mod live {
         let jupiter_faucet = create_canister(&pic, faucet_wasm, vec![]);
         let sns_governance = sns_wasm.map(|wasm| create_canister(&pic, wasm, vec![]));
         let stream_args = io_stream_manager::InitArgs {
-            icp_ledger_principal_text: Some(icp_ledger.to_text()),
+            icp_ledger_principal_text: configure_icp_payout_ledger.then(|| icp_ledger.to_text()),
             icp_index_principal_text: Some(icp_index.to_text()),
             io_ledger_principal_text: Some(io_ledger.to_text()),
             io_index_principal_text: Some(io_index.to_text()),
             sns_governance_principal_text: sns_governance.map(|p| p.to_text()),
             ..Default::default()
         };
-        let stream = create_canister(&pic, stream_wasm, encode_one(stream_args).unwrap());
+        let stream = create_canister(&pic, stream_wasm.clone(), encode_one(stream_args).unwrap());
         mint(
             &pic,
             io_ledger,
@@ -202,6 +210,7 @@ mod live {
         Some(StreamFixture {
             pic,
             stream,
+            stream_wasm,
             icp_ledger,
             icp_index,
             io_ledger,
@@ -318,6 +327,13 @@ mod live {
         decode_one::<DebugTickOutcome>(&bytes).unwrap()
     }
 
+    fn upgrade_stream(fixture: &StreamFixture) {
+        fixture
+            .pic
+            .upgrade_canister(fixture.stream, fixture.stream_wasm.clone(), vec![], None)
+            .expect("upgrade stream manager");
+    }
+
     fn faucet_send(
         fixture: &StreamFixture,
         from: &str,
@@ -357,6 +373,28 @@ mod live {
             )
             .expect("state");
         decode_one::<io_stream_manager::ApiState>(&bytes).unwrap()
+    }
+
+    fn process_stream_event(
+        fixture: &StreamFixture,
+        kind: io_stream_manager::ApiStreamKind,
+        amount_e8s: u128,
+        transaction_id: &str,
+    ) {
+        fixture
+            .pic
+            .update_call(
+                fixture.stream,
+                Principal::anonymous(),
+                "debug_process_stream_event",
+                encode_one(io_stream_manager::ProcessStreamEventRequest {
+                    kind,
+                    amount_e8s,
+                    transaction_id: transaction_id.to_string(),
+                })
+                .unwrap(),
+            )
+            .expect("process stream event");
     }
 
     fn add_sns_neuron(pic: &PocketIc, sns: Principal, neuron: MockSnsNeuron) {
@@ -505,6 +543,7 @@ mod live {
         );
 
         clear_rejections(&fixture.pic, fixture.io_ledger);
+        upgrade_stream(&fixture);
         let retry = tick(&fixture);
         assert!(retry.errors.is_empty(), "{:?}", retry.errors);
         assert_eq!(retry.processed_authorized_streams, 1);
@@ -646,6 +685,7 @@ mod live {
         assert_eq!(protocol.liquid_icp_e8s, 0);
 
         clear_rejections(&fixture.pic, fixture.io_ledger);
+        upgrade_stream(&fixture);
         let retry = tick(&fixture);
         assert!(retry.errors.is_empty(), "{:?}", retry.errors);
         assert_eq!(retry.processed_authorized_streams, 1);
@@ -778,6 +818,62 @@ mod live {
     }
 
     #[test]
+    fn pocketic_live_redemption_missing_icp_payout_ledger_is_retryable_failure() {
+        let Some(fixture) = setup_stream_with_payout_ledger(false, false) else {
+            return;
+        };
+
+        process_stream_event(
+            &fixture,
+            io_stream_manager::ApiStreamKind::JupiterFaucet,
+            t(100),
+            "seed-liquid-icp",
+        );
+        let before = state(&fixture).protocol;
+
+        mint(&fixture.pic, fixture.io_ledger, "user", t(10), "user_io");
+        transfer(
+            &fixture.pic,
+            fixture.io_ledger,
+            "user",
+            "redemption",
+            t(10),
+            "redeem",
+        );
+
+        let failed = tick(&fixture);
+        assert!(!failed.errors.is_empty());
+        assert!(failed
+            .errors
+            .iter()
+            .any(|err| err.contains("missing ICP payout ledger principal")));
+        assert_eq!(failed.processed_redemptions, 0);
+        assert_eq!(balance(&fixture.pic, fixture.icp_ledger, "user"), 0);
+        assert_eq!(state(&fixture).protocol, before);
+        assert_eq!(
+            transactions(&fixture.pic, fixture.io_ledger)
+                .iter()
+                .filter(|tx| tx.memo == "redeemed_io_to_reserve")
+                .count(),
+            0
+        );
+
+        upgrade_stream(&fixture);
+        let retry = tick(&fixture);
+        assert!(!retry.errors.is_empty());
+        assert_eq!(retry.processed_redemptions, 0);
+        assert_eq!(balance(&fixture.pic, fixture.icp_ledger, "user"), 0);
+        assert_eq!(state(&fixture).protocol, before);
+        assert_eq!(
+            transactions(&fixture.pic, fixture.io_ledger)
+                .iter()
+                .filter(|tx| tx.memo == "redeemed_io_to_reserve")
+                .count(),
+            0
+        );
+    }
+
+    #[test]
     fn pocketic_live_redemption_io_return_failure_does_not_double_pay_icp() {
         let Some(fixture) = setup_stream(false) else {
             return;
@@ -818,6 +914,7 @@ mod live {
         assert_eq!(state(&fixture).protocol, before);
 
         clear_rejections(&fixture.pic, fixture.io_ledger);
+        upgrade_stream(&fixture);
         let retry = tick(&fixture);
         assert!(retry.errors.is_empty(), "{:?}", retry.errors);
         assert_eq!(retry.processed_redemptions, 1);

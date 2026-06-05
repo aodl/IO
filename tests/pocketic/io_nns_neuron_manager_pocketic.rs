@@ -86,6 +86,7 @@ mod live {
     struct NnsFixture {
         pic: PocketIc,
         manager: Principal,
+        manager_wasm: Vec<u8>,
         ledger: Principal,
         governance: Option<Principal>,
     }
@@ -136,10 +137,11 @@ mod live {
         let mut args = args;
         args.icp_ledger_principal_text = Some(ledger.to_text());
         args.nns_governance_principal_text = governance.map(|p| p.to_text());
-        let manager = create_canister(&pic, manager_wasm, encode_one(args).unwrap());
+        let manager = create_canister(&pic, manager_wasm.clone(), encode_one(args).unwrap());
         Some(NnsFixture {
             pic,
             manager,
+            manager_wasm,
             ledger,
             governance,
         })
@@ -221,6 +223,13 @@ mod live {
             )
             .expect("manager tick");
         decode_one::<DebugTickOutcome>(&bytes).unwrap()
+    }
+
+    fn upgrade_manager(fixture: &NnsFixture) {
+        fixture
+            .pic
+            .upgrade_canister(fixture.manager, fixture.manager_wasm.clone(), vec![], None)
+            .expect("upgrade nns neuron manager");
     }
 
     fn advance_model_time(fixture: &NnsFixture, seconds: u64, annual_bps: u128) {
@@ -388,6 +397,7 @@ mod live {
         );
 
         clear_rejections(&fixture.pic, fixture.ledger);
+        upgrade_manager(&fixture);
         let retry = tick(&fixture);
         assert!(retry.errors.is_empty(), "{:?}", retry.errors);
         assert_eq!(retry.disbursed_two_year_maturity_e8s, maturity_before);

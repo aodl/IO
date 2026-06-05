@@ -13,12 +13,21 @@ The repository is intentionally test-first. The PocketIC test files include dete
 ```bash
 cargo run -p xtask -- test_unit
 cargo run -p xtask -- test_pocketic_integration
+cargo run -p xtask -- test_pocketic_required
 cargo run -p xtask -- test_local_integration
 cargo run -p xtask -- test_e2e
 cargo run -p xtask -- test_all
+cargo run -p xtask -- test_ci
 cargo run -p xtask -- build_canisters
+cargo run -p xtask -- verify_artifacts
 cargo run -p xtask -- build_debug_canisters
 ```
+
+`test_all` is the local default. It builds debug Wasm for PocketIC integration and the live install tests skip cleanly when `POCKET_IC_BIN` is unset.
+
+`test_pocketic_required` is strict about PocketIC availability and fails if `POCKET_IC_BIN` is unset.
+
+`test_ci` is strict: it runs formatting, workspace check, DID surface validation, release artifact build and SHA verification, unit tests, required PocketIC integration, local integration, e2e tests, and clippy with `-D warnings`.
 
 ## Coverage added in this version
 
@@ -56,6 +65,8 @@ cargo run -p xtask -- build_debug_canisters
 - Unknown sources cannot issue IO.
 - Duplicate ledger events are idempotently rejected.
 - Failed IO issuance does not mark a transaction as processed.
+- Durable stream operation journals preserve failed issuance, partial 2-week distribution, and redemption payout/return progress.
+- Ledger/index cursors avoid rescanning completed mock ledger blocks while keeping duplicate source-block protection.
 - Active SNS-neuron snapshots drive the target 2-week NNS staking pool.
 
 ### E2E model tests
@@ -85,6 +96,8 @@ The expanded suite now includes tests for:
 
 The real PocketIC tests use debug Wasm from `target/wasm32-unknown-unknown/debug`. `xtask test_pocketic_integration` builds those artifacts first. The tests skip cleanly when `POCKET_IC_BIN` is unset so non-PocketIC development environments can still run the workspace suite.
 
+The live PocketIC tests include upgrade-before-retry cases for stream-manager IO issuance/redemption return failures and NNS-manager maturity transfer failures. Host-level stable export/import tests preserve the journal entries and cursors directly.
+
 `xtask test_local_integration` builds release Wasm artifacts, validates the DID guardrail, validates `icp.yaml` with `icp-cli`, runs `icp build`, and then runs the CLI-shaped Rust integration tests. It does not start a local replica or deploy canisters.
 
 
@@ -96,6 +109,8 @@ The default `test_all` command now runs a workspace `cargo check --workspace --a
 cargo run -p xtask -- check
 cargo run -p xtask -- fmt_check
 cargo run -p xtask -- preflight
+cargo run -p xtask -- did_surface
+cargo run -p xtask -- verify_artifacts
 ```
 
 ## Extra coverage added before first local run

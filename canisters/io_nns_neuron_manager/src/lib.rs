@@ -279,7 +279,8 @@ struct CanisterState {
     config: NnsNeuronManagerConfig,
     model: NnsNeuronManagerModel,
     two_week_pool_state: TwoWeekPoolState,
-    pending_icp_transfers: Vec<PendingIcpTransfer>,
+    operation_journal: Vec<NnsOperation>,
+    scheduler_cursors: NnsSchedulerCursors,
 }
 
 impl CanisterState {
@@ -293,7 +294,8 @@ impl CanisterState {
                 pending_unwind_e8s: 0,
                 pending_restake_e8s: 0,
             },
-            pending_icp_transfers: Vec::new(),
+            operation_journal: Vec::new(),
+            scheduler_cursors: NnsSchedulerCursors::default(),
             model,
         }
     }
@@ -434,6 +436,109 @@ pub struct PendingIcpTransfer {
     pub post_model: Option<NnsNeuronManagerModel>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum NnsOperationKind {
+    TwoYearMaturityDisbursement,
+    TwoWeekMaturityDisbursement,
+    TwoWeekUnwindPrincipalDisbursement,
+    TwoWeekPoolSplit,
+    TwoWeekPoolMergeBack,
+    TwoWeekPoolRestake,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum NnsOperationPhase {
+    Observed,
+    AwaitingIcpTransfer,
+    Completed,
+    FailedRetryable,
+    FailedTerminal,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum NnsTransferStatus {
+    Pending,
+    Succeeded,
+    FailedRetryable,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct NnsOperation {
+    pub operation_id: String,
+    pub kind: NnsOperationKind,
+    pub phase: NnsOperationPhase,
+    pub amount_e8s: u128,
+    pub memo: String,
+    pub created_at: u64,
+    pub last_updated: u64,
+    pub retry_count: u32,
+    pub last_error: Option<String>,
+    pub icp_transfer_status: NnsTransferStatus,
+    pub icp_transfer_block: Option<u64>,
+    pub post_model: Option<NnsNeuronManagerModel>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
+pub struct NnsSchedulerCursors {
+    pub last_two_year_maturity_check_time: Option<u64>,
+    pub last_two_week_maturity_check_time: Option<u64>,
+    pub last_unwind_check_time: Option<u64>,
+}
+
+#[cfg(target_family = "wasm")]
+fn canister_time() -> u64 {
+    ic_cdk::api::time()
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn canister_time() -> u64 {
+    0
+}
+
+impl NnsOperation {
+    pub fn new(
+        operation_id: String,
+        kind: NnsOperationKind,
+        amount_e8s: u128,
+        memo: String,
+        post_model: Option<NnsNeuronManagerModel>,
+    ) -> Self {
+        let now = canister_time();
+        Self {
+            operation_id,
+            kind,
+            phase: NnsOperationPhase::AwaitingIcpTransfer,
+            amount_e8s,
+            memo,
+            created_at: now,
+            last_updated: now,
+            retry_count: 0,
+            last_error: None,
+            icp_transfer_status: NnsTransferStatus::Pending,
+            icp_transfer_block: None,
+            post_model,
+        }
+    }
+
+    #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+    fn mark_retryable_error(&mut self, err: String) {
+        self.phase = NnsOperationPhase::FailedRetryable;
+        self.icp_transfer_status = NnsTransferStatus::FailedRetryable;
+        self.retry_count = self.retry_count.saturating_add(1);
+        self.last_error = Some(err);
+        self.last_updated = canister_time();
+    }
+
+    #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+    fn mark_completed(&mut self, block: u64) {
+        self.phase = NnsOperationPhase::Completed;
+        self.icp_transfer_status = NnsTransferStatus::Succeeded;
+        self.icp_transfer_block = Some(block);
+        self.last_error = None;
+        self.last_updated = canister_time();
+    }
+}
+
 impl NnsNeuronManagerModel {
     pub fn new(two_year_principal_e8s: u128, two_week_principal_e8s: u128) -> Self {
         Self::new_with_params(
@@ -568,7 +673,8 @@ pub struct StableState {
     pub config: NnsNeuronManagerConfig,
     pub model: NnsNeuronManagerModel,
     pub two_week_pool_state: TwoWeekPoolState,
-    pub pending_icp_transfers: Vec<PendingIcpTransfer>,
+    pub operation_journal: Vec<NnsOperation>,
+    pub scheduler_cursors: NnsSchedulerCursors,
 }
 
 fn export_stable_state() -> StableState {
@@ -578,7 +684,8 @@ fn export_stable_state() -> StableState {
             config: state.config.clone(),
             model: state.model.clone(),
             two_week_pool_state: state.two_week_pool_state.clone(),
-            pending_icp_transfers: state.pending_icp_transfers.clone(),
+            operation_journal: state.operation_journal.clone(),
+            scheduler_cursors: state.scheduler_cursors,
         }
     })
 }
@@ -589,7 +696,8 @@ fn import_stable_state(state: StableState) {
             config: state.config,
             model: state.model,
             two_week_pool_state: state.two_week_pool_state,
-            pending_icp_transfers: state.pending_icp_transfers,
+            operation_journal: state.operation_journal,
+            scheduler_cursors: state.scheduler_cursors,
         };
     });
 }
@@ -903,6 +1011,41 @@ mod tests {
         assert_eq!(
             debug_get_state().two_week_pool_state.target_staked_e8s,
             700_000_000
+        );
+    }
+
+    #[test]
+    fn stable_state_round_trip_preserves_journal_and_scheduler_cursors() {
+        init(InitArgs::default());
+        debug_advance_model_time(AdvanceModelTimeRequest {
+            elapsed_seconds: SECONDS_PER_DAY,
+            annual_bps: Some(1_000),
+        });
+        let post_model = CANISTER_STATE.with(|cell| cell.borrow().model.clone());
+        CANISTER_STATE.with(|cell| {
+            let mut state = cell.borrow_mut();
+            state.operation_journal.push(NnsOperation::new(
+                "two-year:1".to_string(),
+                NnsOperationKind::TwoYearMaturityDisbursement,
+                123,
+                "two_year_maturity".to_string(),
+                Some(post_model),
+            ));
+            state.scheduler_cursors.last_two_year_maturity_check_time = Some(10);
+            state.scheduler_cursors.last_two_week_maturity_check_time = Some(20);
+            state.scheduler_cursors.last_unwind_check_time = Some(30);
+        });
+
+        let stable = export_stable_state_for_tests();
+        init(InitArgs::default());
+        import_stable_state_for_tests(stable.clone());
+        assert_eq!(
+            export_stable_state_for_tests().operation_journal,
+            stable.operation_journal
+        );
+        assert_eq!(
+            export_stable_state_for_tests().scheduler_cursors,
+            stable.scheduler_cursors
         );
     }
 

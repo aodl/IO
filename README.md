@@ -69,6 +69,7 @@ Production callers should not be able to simply assert "this is a Jupiter Faucet
 - Model-level tests are green through the repository `xtask` suite.
 - `io_stream_manager` and `io_nns_neuron_manager` have explicit install args with validation.
 - Both value-moving canisters persist explicit stable snapshots with `ic_cdk::storage::stable_save` / `stable_restore`.
+- Both value-moving canisters persist durable operation journals and scheduler cursors for retryable value-moving work.
 - Internal scheduler modules have debug/test ticks that scan mock ledger/governance canisters and drive the model.
 - Debug APIs exist only for development/testing.
 - Real production ledger/NNS/SNS integrations are not yet implemented; the first runnable slice targets mock canisters.
@@ -87,12 +88,14 @@ Useful subsets:
 ```bash
 cargo run -p xtask -- test_unit
 cargo run -p xtask -- test_pocketic_integration
+cargo run -p xtask -- test_pocketic_required
+cargo run -p xtask -- test_ci
 cargo run -p xtask -- test_local_integration
 cargo run -p xtask -- stream_manager_unit
 cargo run -p xtask -- nns_neuron_manager_unit
 ```
 
-The PocketIC tests include real install/call coverage for the IO and mock canisters when `POCKET_IC_BIN` points at a compatible server. The local-integration command builds release artifacts, validates the production/debug DID surface, checks `icp.yaml` with `icp project show`, runs `icp build`, and then runs the CLI-shaped Rust tests.
+The PocketIC tests include real install/call/upgrade coverage for the IO and mock canisters when `POCKET_IC_BIN` points at a compatible server. `test_all` is the local default and can run in environments where the live PocketIC tests skip. `test_pocketic_required` fails when `POCKET_IC_BIN` is missing. `test_ci` is the strict command: it requires PocketIC, formatting, clippy, artifact verification, DID guardrails, and the integration suites.
 
 ## Build
 
@@ -104,14 +107,16 @@ Build installable release Wasm artifacts with:
 cargo run -p xtask -- build_canisters
 ```
 
-Expected release outputs:
+Expected release outputs for each release canister:
 
 ```text
-release-artifacts/io_stream_manager.wasm.gz
-release-artifacts/io_nns_neuron_manager.wasm.gz
-release-artifacts/io_historian.wasm.gz
-release-artifacts/io_frontend.wasm.gz
+release-artifacts/<canister>.wasm
+release-artifacts/<canister>.wasm.gz
+release-artifacts/<canister>.wasm.sha256
+release-artifacts/<canister>.wasm.gz.sha256
 ```
+
+`cargo run -p xtask -- verify_artifacts` checks that raw/gzipped artifacts and SHA sidecars exist and that the sidecars match the artifacts.
 
 The frontend artifact is a placeholder Rust Wasm canister matching the current placeholder frontend crate.
 
@@ -130,6 +135,8 @@ This now runs unit, PocketIC-shaped integration, local CLI-shaped integration, a
 - Fast-forwarded maturity accrual in `io_nns_neuron_manager`.
 - Two-week unwind splits and cancel-dissolve merge-back behaviour.
 - Duplicate transaction/idempotency checks.
+- Journal-driven retry after failed IO issuance, partial 2-week distribution, redemption payout/return, and NNS maturity transfer failures.
+- Stable-state and PocketIC upgrade/retry checks for pending journal work.
 - Unknown-source rejection.
 - Reward weighting by stake-time and closed-proposal participation.
 - End-to-end stream flow across the NNS manager and stream manager models.

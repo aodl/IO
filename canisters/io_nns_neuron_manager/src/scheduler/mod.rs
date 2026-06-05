@@ -2,7 +2,10 @@
 use crate::clients::{icp_ledger, nns_governance};
 use crate::DebugTickOutcome;
 #[cfg(target_family = "wasm")]
-use crate::{NnsNeuronManagerModel, PendingIcpTransfer, RebalanceAction, CANISTER_STATE};
+use crate::{
+    NnsNeuronManagerModel, NnsOperation, NnsOperationKind, NnsOperationPhase, RebalanceAction,
+    CANISTER_STATE,
+};
 use candid::CandidType;
 #[cfg(target_family = "wasm")]
 use candid::Principal;
@@ -75,8 +78,18 @@ fn record_disbursement(outcome: &mut DebugTickOutcome, amount: u128, memo: &str)
 #[cfg(target_family = "wasm")]
 async fn retry_pending_icp_transfers(ledger: Principal, outcome: &mut DebugTickOutcome) -> bool {
     loop {
-        let pending =
-            CANISTER_STATE.with(|cell| cell.borrow().pending_icp_transfers.first().cloned());
+        let pending = CANISTER_STATE.with(|cell| {
+            cell.borrow().operation_journal.iter().find_map(|op| {
+                (op.phase != NnsOperationPhase::Completed
+                    && matches!(
+                        op.kind,
+                        NnsOperationKind::TwoYearMaturityDisbursement
+                            | NnsOperationKind::TwoWeekMaturityDisbursement
+                            | NnsOperationKind::TwoWeekUnwindPrincipalDisbursement
+                    ))
+                .then(|| op.clone())
+            })
+        });
         let Some(pending) = pending else {
             return true;
         };
@@ -86,18 +99,39 @@ async fn retry_pending_icp_transfers(ledger: Principal, outcome: &mut DebugTickO
             amount_e8s: pending.amount_e8s,
             memo: pending.memo.clone(),
         };
-        if let Err(err) = icp_ledger::transfer(ledger, transfer).await {
-            outcome.errors.push(err);
-            return false;
-        }
-        CANISTER_STATE.with(|cell| {
-            let mut state = cell.borrow_mut();
-            let pending = state.pending_icp_transfers.remove(0);
-            if let Some(post_model) = pending.post_model {
-                state.model = post_model;
+        match icp_ledger::transfer(ledger, transfer).await {
+            Ok(block) => {
+                CANISTER_STATE.with(|cell| {
+                    let mut state = cell.borrow_mut();
+                    if let Some(index) = state
+                        .operation_journal
+                        .iter()
+                        .position(|op| op.operation_id == pending.operation_id)
+                    {
+                        let post_model = state.operation_journal[index].post_model.clone();
+                        if let Some(post_model) = post_model {
+                            state.model = post_model;
+                        }
+                        state.operation_journal[index].mark_completed(block);
+                    }
+                });
+                record_disbursement(outcome, pending.amount_e8s, &pending.memo);
             }
-            record_disbursement(outcome, pending.amount_e8s, &pending.memo);
-        });
+            Err(err) => {
+                CANISTER_STATE.with(|cell| {
+                    if let Some(op) = cell
+                        .borrow_mut()
+                        .operation_journal
+                        .iter_mut()
+                        .find(|op| op.operation_id == pending.operation_id)
+                    {
+                        op.mark_retryable_error(err.clone());
+                    }
+                });
+                outcome.errors.push(err);
+                return false;
+            }
+        }
     }
 }
 
@@ -114,13 +148,27 @@ async fn finish_disbursement_after_ledger(
     }
     if let Some(ledger) = ledger {
         CANISTER_STATE.with(|cell| {
-            cell.borrow_mut()
-                .pending_icp_transfers
-                .push(PendingIcpTransfer {
+            let mut state = cell.borrow_mut();
+            let kind = match memo {
+                TWO_YEAR_MATURITY_MEMO => NnsOperationKind::TwoYearMaturityDisbursement,
+                TWO_WEEK_MATURITY_MEMO => NnsOperationKind::TwoWeekMaturityDisbursement,
+                PRINCIPAL_UNWIND_MEMO => NnsOperationKind::TwoWeekUnwindPrincipalDisbursement,
+                _ => NnsOperationKind::TwoYearMaturityDisbursement,
+            };
+            let operation_id = format!("{memo}:{}:{}", state.model.now_seconds, amount_e8s);
+            if !state
+                .operation_journal
+                .iter()
+                .any(|op| op.operation_id == operation_id)
+            {
+                state.operation_journal.push(NnsOperation::new(
+                    operation_id,
+                    kind,
                     amount_e8s,
-                    memo: memo.to_string(),
+                    memo.to_string(),
                     post_model,
-                });
+                ));
+            }
         });
         retry_pending_icp_transfers(ledger, outcome).await
     } else {
@@ -193,6 +241,11 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                 let amount = post_model.disburse_two_year_maturity();
                 (amount, post_model)
             });
+            CANISTER_STATE.with(|cell| {
+                let mut state = cell.borrow_mut();
+                state.scheduler_cursors.last_two_year_maturity_check_time =
+                    Some(state.model.now_seconds);
+            });
             if !finish_disbursement_after_ledger(
                 icp_ledger,
                 amount,
@@ -211,6 +264,11 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
             let mut post_model = state.model.clone();
             let amount = post_model.disburse_two_week_maturity();
             (amount, post_model)
+        });
+        CANISTER_STATE.with(|cell| {
+            let mut state = cell.borrow_mut();
+            state.scheduler_cursors.last_two_week_maturity_check_time =
+                Some(state.model.now_seconds);
         });
         if !finish_disbursement_after_ledger(
             icp_ledger,
@@ -272,6 +330,10 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
             }
         }
 
+        CANISTER_STATE.with(|cell| {
+            let mut state = cell.borrow_mut();
+            state.scheduler_cursors.last_unwind_check_time = Some(state.model.now_seconds);
+        });
         let ready_ids = CANISTER_STATE.with(|cell| {
             let state = cell.borrow();
             state

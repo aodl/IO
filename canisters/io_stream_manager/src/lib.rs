@@ -12,7 +12,7 @@ pub use io_core_model::{
     StreamKind, StreamOutcome, E8S_PER_TOKEN,
 };
 pub use logic::StreamManagerError;
-pub use state::{PendingIoAllocation, PendingRedemption, PendingTwoWeekStream, StreamManager};
+pub use state::StreamManager;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct InitArgs {
@@ -147,8 +147,8 @@ fn validate_optional_principal(
 struct CanisterState {
     config: StreamManagerConfig,
     manager: StreamManager,
-    pending_two_week_streams: Vec<PendingTwoWeekStream>,
-    pending_redemptions: Vec<PendingRedemption>,
+    operation_journal: Vec<StreamOperation>,
+    scheduler_cursors: SchedulerCursors,
 }
 
 impl CanisterState {
@@ -166,8 +166,8 @@ impl CanisterState {
         Self {
             config,
             manager,
-            pending_two_week_streams: Vec::new(),
-            pending_redemptions: Vec::new(),
+            operation_journal: Vec::new(),
+            scheduler_cursors: SchedulerCursors::default(),
         }
     }
 }
@@ -225,97 +225,166 @@ pub struct StableState {
     pub processed_transactions: Vec<String>,
     pub active_staked_io_e8s: u128,
     pub two_week_pool_backing_bps: u128,
-    pub pending_two_week_streams: Vec<StablePendingTwoWeekStream>,
-    pub pending_redemptions: Vec<StablePendingRedemption>,
+    pub operation_journal: Vec<StreamOperation>,
+    pub scheduler_cursors: SchedulerCursors,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum StreamOperationKind {
+    JupiterFaucetStream,
+    TwoYearMaturityStream,
+    TwoWeekMaturityStream,
+    Redemption,
+    PrincipalUnwind,
+    UnknownIcpDeposit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum OperationPhase {
+    Observed,
+    Previewed,
+    AwaitingIoIssuance,
+    AwaitingIcpPayout,
+    AwaitingIoReturn,
+    PartiallyDistributed,
+    Completed,
+    FailedRetryable,
+    FailedTerminal,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum TransferStatus {
+    Pending,
+    Succeeded,
+    FailedRetryable,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct StablePendingIoAllocation {
+pub struct TwoWeekRecipientTransfer {
     pub neuron_id: u64,
-    pub io_e8s: u128,
-    pub transferred: bool,
-}
-
-impl From<PendingIoAllocation> for StablePendingIoAllocation {
-    fn from(value: PendingIoAllocation) -> Self {
-        Self {
-            neuron_id: value.neuron_id,
-            io_e8s: value.io_e8s,
-            transferred: value.transferred,
-        }
-    }
-}
-
-impl From<StablePendingIoAllocation> for PendingIoAllocation {
-    fn from(value: StablePendingIoAllocation) -> Self {
-        Self {
-            neuron_id: value.neuron_id,
-            io_e8s: value.io_e8s,
-            transferred: value.transferred,
-        }
-    }
+    pub amount_e8s: u128,
+    pub transfer_status: TransferStatus,
+    pub transfer_block_index: Option<u64>,
+    pub last_error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct StablePendingTwoWeekStream {
-    pub transaction_id: String,
+pub struct StreamOperation {
+    pub operation_id: String,
+    pub source_ledger: String,
+    pub source_block_index: Option<u64>,
+    pub source_transaction_id: String,
+    pub kind: StreamOperationKind,
+    pub phase: OperationPhase,
+    pub amount_e8s: u128,
+    pub created_at: u64,
+    pub last_updated: u64,
+    pub retry_count: u32,
+    pub last_error: Option<String>,
     pub post_state: StableProtocolState,
     pub io_issued_e8s: u128,
-    pub allocations: Vec<StablePendingIoAllocation>,
+    pub downstream_io_issuance_block: Option<u64>,
+    pub two_week_recipients: Vec<TwoWeekRecipientTransfer>,
+    pub io_redemption_block: Option<u64>,
+    pub io_amount: u128,
+    pub icp_payout_status: TransferStatus,
+    pub io_return_status: TransferStatus,
+    pub icp_payout_block: Option<u64>,
+    pub io_return_block: Option<u64>,
+    pub user_account: Option<String>,
 }
 
-impl From<PendingTwoWeekStream> for StablePendingTwoWeekStream {
-    fn from(value: PendingTwoWeekStream) -> Self {
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SchedulerCursors {
+    pub last_scanned_icp_index_block: Option<u64>,
+    pub last_scanned_io_index_block: Option<u64>,
+}
+
+#[cfg(target_family = "wasm")]
+fn canister_time() -> u64 {
+    ic_cdk::api::time()
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn canister_time() -> u64 {
+    0
+}
+
+impl StreamOperation {
+    pub fn stream(
+        source_ledger: impl Into<String>,
+        source_block_index: u64,
+        kind: StreamOperationKind,
+        amount_e8s: u128,
+        post_state: ProtocolState,
+        io_issued_e8s: u128,
+        phase: OperationPhase,
+    ) -> Self {
+        let source_ledger = source_ledger.into();
+        let operation_id = format!("{source_ledger}:{source_block_index}");
+        let now = canister_time();
         Self {
-            transaction_id: value.transaction_id,
-            post_state: value.post_state.into(),
-            io_issued_e8s: value.io_issued_e8s,
-            allocations: value.allocations.into_iter().map(Into::into).collect(),
+            operation_id: operation_id.clone(),
+            source_ledger,
+            source_block_index: Some(source_block_index),
+            source_transaction_id: operation_id,
+            kind,
+            phase,
+            amount_e8s,
+            created_at: now,
+            last_updated: now,
+            retry_count: 0,
+            last_error: None,
+            post_state: post_state.into(),
+            io_issued_e8s,
+            downstream_io_issuance_block: None,
+            two_week_recipients: Vec::new(),
+            io_redemption_block: None,
+            io_amount: 0,
+            icp_payout_status: TransferStatus::Pending,
+            io_return_status: TransferStatus::Pending,
+            icp_payout_block: None,
+            io_return_block: None,
+            user_account: None,
         }
     }
-}
 
-impl From<StablePendingTwoWeekStream> for PendingTwoWeekStream {
-    fn from(value: StablePendingTwoWeekStream) -> Self {
-        Self {
-            transaction_id: value.transaction_id,
-            post_state: value.post_state.into(),
-            io_issued_e8s: value.io_issued_e8s,
-            allocations: value.allocations.into_iter().map(Into::into).collect(),
-        }
+    pub fn redemption(
+        source_block_index: u64,
+        io_amount: u128,
+        icp_paid_e8s: u128,
+        user_account: String,
+        post_state: ProtocolState,
+    ) -> Self {
+        let mut op = Self::stream(
+            "io",
+            source_block_index,
+            StreamOperationKind::Redemption,
+            io_amount,
+            post_state,
+            0,
+            OperationPhase::AwaitingIcpPayout,
+        );
+        op.io_redemption_block = Some(source_block_index);
+        op.io_amount = io_amount;
+        op.amount_e8s = icp_paid_e8s;
+        op.user_account = Some(user_account);
+        op
     }
-}
 
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct StablePendingRedemption {
-    pub transaction_id: String,
-    pub post_state: StableProtocolState,
-    pub io_redeemed_e8s: u128,
-    pub icp_paid_e8s: u128,
-    pub user_account: String,
-}
-
-impl From<PendingRedemption> for StablePendingRedemption {
-    fn from(value: PendingRedemption) -> Self {
-        Self {
-            transaction_id: value.transaction_id,
-            post_state: value.post_state.into(),
-            io_redeemed_e8s: value.io_redeemed_e8s,
-            icp_paid_e8s: value.icp_paid_e8s,
-            user_account: value.user_account,
-        }
+    #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+    fn mark_retryable_error(&mut self, err: String, phase: OperationPhase) {
+        self.phase = phase;
+        self.retry_count = self.retry_count.saturating_add(1);
+        self.last_error = Some(err);
+        self.last_updated = canister_time();
     }
-}
 
-impl From<StablePendingRedemption> for PendingRedemption {
-    fn from(value: StablePendingRedemption) -> Self {
-        Self {
-            transaction_id: value.transaction_id,
-            post_state: value.post_state.into(),
-            io_redeemed_e8s: value.io_redeemed_e8s,
-            icp_paid_e8s: value.icp_paid_e8s,
-            user_account: value.user_account,
-        }
+    #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+    fn mark_updated(&mut self, phase: OperationPhase) {
+        self.phase = phase;
+        self.last_error = None;
+        self.last_updated = canister_time();
     }
 }
 
@@ -550,18 +619,8 @@ fn export_stable_state() -> StableState {
                 .collect(),
             active_staked_io_e8s: state.manager.active_staked_io_e8s,
             two_week_pool_backing_bps: state.manager.two_week_pool_backing_bps,
-            pending_two_week_streams: state
-                .pending_two_week_streams
-                .iter()
-                .cloned()
-                .map(Into::into)
-                .collect(),
-            pending_redemptions: state
-                .pending_redemptions
-                .iter()
-                .cloned()
-                .map(Into::into)
-                .collect(),
+            operation_journal: state.operation_journal.clone(),
+            scheduler_cursors: state.scheduler_cursors,
         }
     })
 }
@@ -576,16 +635,8 @@ fn import_stable_state(state: StableState) {
                 active_staked_io_e8s: state.active_staked_io_e8s,
                 two_week_pool_backing_bps: state.two_week_pool_backing_bps,
             },
-            pending_two_week_streams: state
-                .pending_two_week_streams
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-            pending_redemptions: state
-                .pending_redemptions
-                .into_iter()
-                .map(Into::into)
-                .collect(),
+            operation_journal: state.operation_journal,
+            scheduler_cursors: state.scheduler_cursors,
         };
     });
 }
@@ -871,6 +922,62 @@ mod tests {
         assert_eq!(debug_get_state(), before_state);
         assert_eq!(debug_get_redemption_rate().unwrap(), before_rate);
         assert_eq!(debug_get_state().processed_transaction_count, 1);
+    }
+
+    #[test]
+    fn stable_state_round_trip_preserves_operation_journal_and_cursors() {
+        init(InitArgs::default());
+        let mut op = StreamOperation::stream(
+            "icp",
+            7,
+            StreamOperationKind::TwoWeekMaturityStream,
+            t(100),
+            ProtocolState::new(t(1_000_000), t(900_000), t(100_000)),
+            t(60),
+            OperationPhase::PartiallyDistributed,
+        );
+        op.two_week_recipients = vec![
+            TwoWeekRecipientTransfer {
+                neuron_id: 10,
+                amount_e8s: t(40),
+                transfer_status: TransferStatus::Succeeded,
+                transfer_block_index: Some(1),
+                last_error: None,
+            },
+            TwoWeekRecipientTransfer {
+                neuron_id: 11,
+                amount_e8s: t(20),
+                transfer_status: TransferStatus::FailedRetryable,
+                transfer_block_index: None,
+                last_error: Some("reject".to_string()),
+            },
+        ];
+        let redemption = StreamOperation::redemption(
+            9,
+            t(10),
+            t(10),
+            "user".to_string(),
+            ProtocolState::new(t(1_000_000), t(900_000), t(100_000)),
+        );
+        CANISTER_STATE.with(|cell| {
+            let mut state = cell.borrow_mut();
+            state.operation_journal.push(op);
+            state.operation_journal.push(redemption);
+            state.scheduler_cursors.last_scanned_icp_index_block = Some(7);
+            state.scheduler_cursors.last_scanned_io_index_block = Some(9);
+        });
+
+        let stable = export_stable_state_for_tests();
+        init(InitArgs::default());
+        import_stable_state_for_tests(stable.clone());
+        assert_eq!(
+            export_stable_state_for_tests().operation_journal,
+            stable.operation_journal
+        );
+        assert_eq!(
+            export_stable_state_for_tests().scheduler_cursors,
+            stable.scheduler_cursors
+        );
     }
 
     #[test]
