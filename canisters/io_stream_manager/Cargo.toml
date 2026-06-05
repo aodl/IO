@@ -16,8 +16,11 @@ name = "io_stream_manager_cli"
 path = "../../tests/cli/io_stream_manager_cli.rs"
 
 [dependencies]
+candid.workspace = true
+ic-cdk.workspace = true
 io-core-model.workspace = true
 io-reward-policy.workspace = true
+serde.workspace = true
 
 [build-dependencies]
 io-build-support.workspace = true

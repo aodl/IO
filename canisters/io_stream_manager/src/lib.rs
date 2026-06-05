@@ -1,14 +1,326 @@
 pub mod logic;
 pub mod state;
 
+use candid::CandidType;
+use serde::Deserialize;
+use std::cell::RefCell;
+
 pub use io_core_model::{
-    ModelError, ProtocolState, RedemptionOutcome, StreamKind, StreamOutcome, E8S_PER_TOKEN,
+    IoRecipientPolicy, ModelError, ProtocolState, RedemptionOutcome, RedemptionRate, Split,
+    StreamKind, StreamOutcome, E8S_PER_TOKEN,
 };
 pub use logic::StreamManagerError;
 pub use state::StreamManager;
 
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct StreamManagerConfig {
+    pub initial_total_io_supply_e8s: u128,
+    pub initial_protocol_reserve_io_e8s: u128,
+    pub non_redeemable_governance_io_e8s: u128,
+    pub two_week_pool_backing_bps: u128,
+}
+
+impl Default for StreamManagerConfig {
+    fn default() -> Self {
+        Self {
+            initial_total_io_supply_e8s: 1_000_000 * E8S_PER_TOKEN,
+            initial_protocol_reserve_io_e8s: 900_000 * E8S_PER_TOKEN,
+            non_redeemable_governance_io_e8s: 100_000 * E8S_PER_TOKEN,
+            two_week_pool_backing_bps: 10_000,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CanisterState {
+    config: StreamManagerConfig,
+    manager: StreamManager,
+}
+
+impl CanisterState {
+    fn new(config: StreamManagerConfig) -> Self {
+        let manager = StreamManager {
+            state: ProtocolState::new(
+                config.initial_total_io_supply_e8s,
+                config.initial_protocol_reserve_io_e8s,
+                config.non_redeemable_governance_io_e8s,
+            ),
+            processed_transactions: Default::default(),
+            active_staked_io_e8s: 0,
+            two_week_pool_backing_bps: config.two_week_pool_backing_bps,
+        };
+        Self { config, manager }
+    }
+}
+
+impl Default for CanisterState {
+    fn default() -> Self {
+        Self::new(StreamManagerConfig::default())
+    }
+}
+
+thread_local! {
+    static CANISTER_STATE: RefCell<CanisterState> = RefCell::new(CanisterState::default());
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum ApiStreamKind {
+    JupiterFaucet,
+    TwoYearMaturity,
+    TwoWeekMaturity,
+}
+
+impl From<ApiStreamKind> for StreamKind {
+    fn from(value: ApiStreamKind) -> Self {
+        match value {
+            ApiStreamKind::JupiterFaucet => StreamKind::JupiterFaucet,
+            ApiStreamKind::TwoYearMaturity => StreamKind::TwoYearMaturity,
+            ApiStreamKind::TwoWeekMaturity => StreamKind::TwoWeekMaturity,
+        }
+    }
+}
+
+impl From<StreamKind> for ApiStreamKind {
+    fn from(value: StreamKind) -> Self {
+        match value {
+            StreamKind::JupiterFaucet => ApiStreamKind::JupiterFaucet,
+            StreamKind::TwoYearMaturity => ApiStreamKind::TwoYearMaturity,
+            StreamKind::TwoWeekMaturity => ApiStreamKind::TwoWeekMaturity,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum ApiIoRecipientPolicy {
+    JupiterFaucet,
+    EligibleIoSnsNeurons,
+    None,
+}
+
+impl From<IoRecipientPolicy> for ApiIoRecipientPolicy {
+    fn from(value: IoRecipientPolicy) -> Self {
+        match value {
+            IoRecipientPolicy::JupiterFaucet => ApiIoRecipientPolicy::JupiterFaucet,
+            IoRecipientPolicy::EligibleIoSnsNeurons => ApiIoRecipientPolicy::EligibleIoSnsNeurons,
+            IoRecipientPolicy::None => ApiIoRecipientPolicy::None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct ProcessStreamEventRequest {
+    pub kind: ApiStreamKind,
+    pub amount_e8s: u128,
+    pub transaction_id: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct ApiProtocolState {
+    pub liquid_icp_e8s: u128,
+    pub two_year_staked_icp_e8s: u128,
+    pub two_week_staked_icp_e8s: u128,
+    pub total_io_supply_e8s: u128,
+    pub protocol_reserve_io_e8s: u128,
+    pub non_redeemable_governance_io_e8s: u128,
+}
+
+impl From<ProtocolState> for ApiProtocolState {
+    fn from(value: ProtocolState) -> Self {
+        Self {
+            liquid_icp_e8s: value.liquid_icp_e8s,
+            two_year_staked_icp_e8s: value.two_year_staked_icp_e8s,
+            two_week_staked_icp_e8s: value.two_week_staked_icp_e8s,
+            total_io_supply_e8s: value.total_io_supply_e8s,
+            protocol_reserve_io_e8s: value.protocol_reserve_io_e8s,
+            non_redeemable_governance_io_e8s: value.non_redeemable_governance_io_e8s,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct ApiRedemptionRate {
+    pub liquid_icp_e8s: u128,
+    pub redeemable_io_e8s: u128,
+}
+
+impl From<RedemptionRate> for ApiRedemptionRate {
+    fn from(value: RedemptionRate) -> Self {
+        Self {
+            liquid_icp_e8s: value.liquid_icp_e8s,
+            redeemable_io_e8s: value.redeemable_io_e8s,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct ApiSplit {
+    pub stake_e8s: u128,
+    pub liquid_e8s: u128,
+}
+
+impl From<Split> for ApiSplit {
+    fn from(value: Split) -> Self {
+        Self {
+            stake_e8s: value.stake_e8s,
+            liquid_e8s: value.liquid_e8s,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct ApiStreamOutcome {
+    pub kind: ApiStreamKind,
+    pub split: ApiSplit,
+    pub recipient_policy: ApiIoRecipientPolicy,
+    pub io_issued_e8s: u128,
+    pub rate_before: ApiRedemptionRate,
+    pub rate_after: ApiRedemptionRate,
+}
+
+impl From<StreamOutcome> for ApiStreamOutcome {
+    fn from(value: StreamOutcome) -> Self {
+        Self {
+            kind: value.kind.into(),
+            split: value.split.into(),
+            recipient_policy: value.recipient_policy.into(),
+            io_issued_e8s: value.io_issued_e8s,
+            rate_before: value.rate_before.into(),
+            rate_after: value.rate_after.into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct ApiRedemptionOutcome {
+    pub io_redeemed_e8s: u128,
+    pub icp_paid_e8s: u128,
+    pub rate_before: ApiRedemptionRate,
+    pub rate_after: ApiRedemptionRate,
+}
+
+impl From<RedemptionOutcome> for ApiRedemptionOutcome {
+    fn from(value: RedemptionOutcome) -> Self {
+        Self {
+            io_redeemed_e8s: value.io_redeemed_e8s,
+            icp_paid_e8s: value.icp_paid_e8s,
+            rate_before: value.rate_before.into(),
+            rate_after: value.rate_after.into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct ApiState {
+    pub config: StreamManagerConfig,
+    pub protocol: ApiProtocolState,
+    pub processed_transaction_count: u64,
+    pub active_staked_io_e8s: u128,
+    pub two_week_pool_backing_bps: u128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct ApiError {
+    pub code: String,
+    pub message: String,
+}
+
+impl ApiError {
+    fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+        }
+    }
+}
+
+impl From<ModelError> for ApiError {
+    fn from(value: ModelError) -> Self {
+        Self::new("model_error", format!("{value:?}"))
+    }
+}
+
+impl From<StreamManagerError> for ApiError {
+    fn from(value: StreamManagerError) -> Self {
+        match value {
+            StreamManagerError::DuplicateTransaction => {
+                Self::new("duplicate_transaction", "transaction was already processed")
+            }
+            StreamManagerError::InvalidTransactionId => {
+                Self::new("invalid_transaction_id", "transaction id must be non-empty")
+            }
+            StreamManagerError::UnknownOrUnauthorizedStream { source, memo } => Self::new(
+                "unknown_or_unauthorized_stream",
+                format!("stream source {source:?} with memo {memo:?} is not authorized"),
+            ),
+            StreamManagerError::Model(err) => err.into(),
+        }
+    }
+}
+
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::init)]
+pub fn init() {
+    CANISTER_STATE.with(|cell| {
+        *cell.borrow_mut() = CanisterState::default();
+    });
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn get_state() -> ApiState {
+    CANISTER_STATE.with(|cell| {
+        let state = cell.borrow();
+        ApiState {
+            config: state.config.clone(),
+            protocol: state.manager.state.into(),
+            processed_transaction_count: state.manager.processed_transactions.len() as u64,
+            active_staked_io_e8s: state.manager.active_staked_io_e8s,
+            two_week_pool_backing_bps: state.manager.two_week_pool_backing_bps,
+        }
+    })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn get_redemption_rate() -> Result<ApiRedemptionRate, ApiError> {
+    CANISTER_STATE.with(|cell| {
+        cell.borrow()
+            .manager
+            .state
+            .redemption_rate()
+            .map(ApiRedemptionRate::from)
+            .map_err(ApiError::from)
+    })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn process_stream_event(
+    request: ProcessStreamEventRequest,
+) -> Result<ApiStreamOutcome, ApiError> {
+    CANISTER_STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        state
+            .manager
+            .process_authorized_stream(
+                request.kind.into(),
+                request.amount_e8s,
+                request.transaction_id,
+            )
+            .map(ApiStreamOutcome::from)
+            .map_err(ApiError::from)
+    })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn redeem(io_e8s: u128) -> Result<ApiRedemptionOutcome, ApiError> {
+    CANISTER_STATE.with(|cell| {
+        cell.borrow_mut()
+            .manager
+            .redeem(io_e8s)
+            .map(ApiRedemptionOutcome::from)
+            .map_err(ApiError::from)
+    })
 }
 
 #[cfg(test)]
@@ -73,6 +385,47 @@ mod tests {
             StreamManagerError::Model(ModelError::InsufficientProtocolReserve { .. })
         ));
         assert!(!m.processed_transactions.contains("bad-tx"));
+    }
+
+    #[test]
+    fn canister_api_initializes_and_reports_state() {
+        init();
+        let state = get_state();
+        assert_eq!(
+            state.protocol.total_io_supply_e8s,
+            1_000_000 * E8S_PER_TOKEN
+        );
+        assert_eq!(state.processed_transaction_count, 0);
+        assert_eq!(
+            get_redemption_rate().unwrap(),
+            RedemptionRate::one_to_one().into()
+        );
+    }
+
+    #[test]
+    fn canister_api_processes_stream_and_redeems() {
+        init();
+        let outcome = process_stream_event(ProcessStreamEventRequest {
+            kind: ApiStreamKind::JupiterFaucet,
+            amount_e8s: t(100),
+            transaction_id: "api-tx-1".to_string(),
+        })
+        .unwrap();
+        assert_eq!(outcome.io_issued_e8s, t(60));
+        assert_eq!(
+            process_stream_event(ProcessStreamEventRequest {
+                kind: ApiStreamKind::JupiterFaucet,
+                amount_e8s: t(100),
+                transaction_id: "api-tx-1".to_string(),
+            })
+            .unwrap_err()
+            .code,
+            "duplicate_transaction"
+        );
+
+        let redemption = redeem(t(10)).unwrap();
+        assert_eq!(redemption.icp_paid_e8s, t(10));
+        assert_eq!(get_state().processed_transaction_count, 1);
     }
 }
 

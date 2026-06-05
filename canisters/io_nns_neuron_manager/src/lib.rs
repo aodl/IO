@@ -1,3 +1,7 @@
+use candid::CandidType;
+use serde::Deserialize;
+use std::cell::RefCell;
+
 pub const TWO_YEAR_NNS_NEURON_ID: u64 = 6_345_890_886_899_317_159;
 pub const CONTROLLER_CANISTER_PRINCIPAL_TEXT: &str = "oae4c-3iaaa-aaaar-qb5qq-cai";
 pub const SECONDS_PER_DAY: u64 = 86_400;
@@ -131,6 +135,174 @@ pub struct NnsNeuronManagerModel {
     pub unwind_neurons: Vec<SimulatedNnsNeuron>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct NnsNeuronManagerConfig {
+    pub controller_canister_principal_text: String,
+    pub two_year_nns_neuron_id: u64,
+    pub two_week_dissolve_seconds: u64,
+    pub initial_two_year_principal_e8s: u128,
+    pub initial_two_week_principal_e8s: u128,
+    pub model_annual_bps: u128,
+}
+
+impl Default for NnsNeuronManagerConfig {
+    fn default() -> Self {
+        Self {
+            controller_canister_principal_text: CONTROLLER_CANISTER_PRINCIPAL_TEXT.to_string(),
+            two_year_nns_neuron_id: TWO_YEAR_NNS_NEURON_ID,
+            two_week_dissolve_seconds: TWO_WEEK_DISSOLVE_SECONDS,
+            initial_two_year_principal_e8s: 0,
+            initial_two_week_principal_e8s: 0,
+            model_annual_bps: 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CanisterState {
+    config: NnsNeuronManagerConfig,
+    model: NnsNeuronManagerModel,
+    two_week_pool_state: TwoWeekPoolState,
+}
+
+impl CanisterState {
+    fn new(config: NnsNeuronManagerConfig) -> Self {
+        let model = NnsNeuronManagerModel::new(
+            config.initial_two_year_principal_e8s,
+            config.initial_two_week_principal_e8s,
+        );
+        Self {
+            config,
+            two_week_pool_state: TwoWeekPoolState {
+                target_staked_e8s: 0,
+                active_staked_e8s: model.two_week_pool.principal_e8s,
+                pending_unwind_e8s: 0,
+                pending_restake_e8s: 0,
+            },
+            model,
+        }
+    }
+}
+
+impl Default for CanisterState {
+    fn default() -> Self {
+        Self::new(NnsNeuronManagerConfig::default())
+    }
+}
+
+thread_local! {
+    static CANISTER_STATE: RefCell<CanisterState> = RefCell::new(CanisterState::default());
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum ApiManagedNeuronKind {
+    TwoYearProtocol,
+    TwoWeekPooled,
+    TwoWeekUnwind,
+}
+
+impl From<ManagedNeuronKind> for ApiManagedNeuronKind {
+    fn from(value: ManagedNeuronKind) -> Self {
+        match value {
+            ManagedNeuronKind::TwoYearProtocol => ApiManagedNeuronKind::TwoYearProtocol,
+            ManagedNeuronKind::TwoWeekPooled => ApiManagedNeuronKind::TwoWeekPooled,
+            ManagedNeuronKind::TwoWeekUnwind => ApiManagedNeuronKind::TwoWeekUnwind,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct ApiSimulatedNnsNeuron {
+    pub neuron_id: u64,
+    pub kind: ApiManagedNeuronKind,
+    pub principal_e8s: u128,
+    pub maturity_e8s: u128,
+    pub dissolve_delay_seconds: u64,
+    pub is_dissolving: bool,
+    pub dissolve_started_at_seconds: Option<u64>,
+}
+
+impl From<&SimulatedNnsNeuron> for ApiSimulatedNnsNeuron {
+    fn from(value: &SimulatedNnsNeuron) -> Self {
+        Self {
+            neuron_id: value.neuron_id,
+            kind: value.kind.into(),
+            principal_e8s: value.principal_e8s,
+            maturity_e8s: value.maturity_e8s,
+            dissolve_delay_seconds: value.dissolve_delay_seconds,
+            is_dissolving: value.is_dissolving,
+            dissolve_started_at_seconds: value.dissolve_started_at_seconds,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct ApiTwoWeekPoolState {
+    pub target_staked_e8s: u128,
+    pub active_staked_e8s: u128,
+    pub pending_unwind_e8s: u128,
+    pub pending_restake_e8s: u128,
+}
+
+impl From<TwoWeekPoolState> for ApiTwoWeekPoolState {
+    fn from(value: TwoWeekPoolState) -> Self {
+        Self {
+            target_staked_e8s: value.target_staked_e8s,
+            active_staked_e8s: value.active_staked_e8s,
+            pending_unwind_e8s: value.pending_unwind_e8s,
+            pending_restake_e8s: value.pending_restake_e8s,
+        }
+    }
+}
+
+impl From<ApiTwoWeekPoolState> for TwoWeekPoolState {
+    fn from(value: ApiTwoWeekPoolState) -> Self {
+        Self {
+            target_staked_e8s: value.target_staked_e8s,
+            active_staked_e8s: value.active_staked_e8s,
+            pending_unwind_e8s: value.pending_unwind_e8s,
+            pending_restake_e8s: value.pending_restake_e8s,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum ApiRebalanceAction {
+    None,
+    StakeMore { amount_e8s: u128 },
+    SplitAndDissolve { amount_e8s: u128 },
+}
+
+impl From<RebalanceAction> for ApiRebalanceAction {
+    fn from(value: RebalanceAction) -> Self {
+        match value {
+            RebalanceAction::None => ApiRebalanceAction::None,
+            RebalanceAction::StakeMore { amount_e8s } => {
+                ApiRebalanceAction::StakeMore { amount_e8s }
+            }
+            RebalanceAction::SplitAndDissolve { amount_e8s } => {
+                ApiRebalanceAction::SplitAndDissolve { amount_e8s }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct ApiState {
+    pub now_seconds: u64,
+    pub next_neuron_id: u64,
+    pub two_year_neuron: ApiSimulatedNnsNeuron,
+    pub two_week_pool: ApiSimulatedNnsNeuron,
+    pub unwind_neurons: Vec<ApiSimulatedNnsNeuron>,
+    pub two_week_pool_state: ApiTwoWeekPoolState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct AdvanceModelTimeRequest {
+    pub elapsed_seconds: u64,
+    pub annual_bps: Option<u128>,
+}
+
 impl NnsNeuronManagerModel {
     pub fn new(two_year_principal_e8s: u128, two_week_principal_e8s: u128) -> Self {
         Self {
@@ -226,6 +398,55 @@ impl NnsNeuronManagerModel {
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::init)]
+pub fn init() {
+    CANISTER_STATE.with(|cell| {
+        *cell.borrow_mut() = CanisterState::default();
+    });
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn get_config() -> NnsNeuronManagerConfig {
+    CANISTER_STATE.with(|cell| cell.borrow().config.clone())
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn get_state() -> ApiState {
+    CANISTER_STATE.with(|cell| {
+        let state = cell.borrow();
+        ApiState {
+            now_seconds: state.model.now_seconds,
+            next_neuron_id: state.model.next_neuron_id,
+            two_year_neuron: (&state.model.two_year_neuron).into(),
+            two_week_pool: (&state.model.two_week_pool).into(),
+            unwind_neurons: state.model.unwind_neurons.iter().map(Into::into).collect(),
+            two_week_pool_state: state.two_week_pool_state.clone().into(),
+        }
+    })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn plan_rebalance(pool_state: ApiTwoWeekPoolState) -> ApiRebalanceAction {
+    CANISTER_STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        state.two_week_pool_state = pool_state.into();
+        state.two_week_pool_state.plan_rebalance().into()
+    })
+}
+
+#[cfg(any(test, debug_assertions))]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn advance_model_time(request: AdvanceModelTimeRequest) -> ApiState {
+    CANISTER_STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let annual_bps = request.annual_bps.unwrap_or(state.config.model_annual_bps);
+        state
+            .model
+            .advance_time(request.elapsed_seconds, annual_bps);
+    });
+    get_state()
 }
 
 #[cfg(test)]
@@ -332,6 +553,40 @@ mod tests {
             m.split_and_start_unwind(101),
             Err(ManagerError::SplitExceedsMainPool)
         );
+    }
+
+    #[test]
+    fn canister_api_reports_known_config_and_state() {
+        init();
+        let config = get_config();
+        assert_eq!(config.two_year_nns_neuron_id, 6_345_890_886_899_317_159);
+        assert_eq!(
+            config.controller_canister_principal_text,
+            "oae4c-3iaaa-aaaar-qb5qq-cai"
+        );
+
+        let state = get_state();
+        assert_eq!(state.two_year_neuron.neuron_id, TWO_YEAR_NNS_NEURON_ID);
+        assert_eq!(state.two_week_pool_state.active_staked_e8s, 0);
+    }
+
+    #[test]
+    fn canister_api_advances_model_time_and_plans_rebalance() {
+        init();
+        let state = advance_model_time(AdvanceModelTimeRequest {
+            elapsed_seconds: SECONDS_PER_DAY,
+            annual_bps: Some(1_000),
+        });
+        assert_eq!(state.now_seconds, SECONDS_PER_DAY);
+
+        let action = plan_rebalance(ApiTwoWeekPoolState {
+            target_staked_e8s: 150,
+            active_staked_e8s: 100,
+            pending_unwind_e8s: 0,
+            pending_restake_e8s: 0,
+        });
+        assert_eq!(action, ApiRebalanceAction::StakeMore { amount_e8s: 50 });
+        assert_eq!(get_state().two_week_pool_state.target_staked_e8s, 150);
     }
 }
 
