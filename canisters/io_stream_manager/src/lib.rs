@@ -31,6 +31,7 @@ impl Default for StreamManagerConfig {
     }
 }
 
+#[cfg_attr(not(any(test, debug_assertions)), allow(dead_code))]
 #[derive(Clone, Debug)]
 struct CanisterState {
     config: StreamManagerConfig,
@@ -268,8 +269,8 @@ pub fn init() {
     });
 }
 
-#[cfg_attr(target_family = "wasm", ic_cdk::query)]
-pub fn get_state() -> ApiState {
+#[cfg(any(test, debug_assertions))]
+fn state_snapshot() -> ApiState {
     CANISTER_STATE.with(|cell| {
         let state = cell.borrow();
         ApiState {
@@ -282,8 +283,8 @@ pub fn get_state() -> ApiState {
     })
 }
 
-#[cfg_attr(target_family = "wasm", ic_cdk::query)]
-pub fn get_redemption_rate() -> Result<ApiRedemptionRate, ApiError> {
+#[cfg(any(test, debug_assertions))]
+fn redemption_rate() -> Result<ApiRedemptionRate, ApiError> {
     CANISTER_STATE.with(|cell| {
         cell.borrow()
             .manager
@@ -294,8 +295,8 @@ pub fn get_redemption_rate() -> Result<ApiRedemptionRate, ApiError> {
     })
 }
 
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn process_stream_event(
+#[cfg(any(test, debug_assertions))]
+fn process_stream_event_impl(
     request: ProcessStreamEventRequest,
 ) -> Result<ApiStreamOutcome, ApiError> {
     CANISTER_STATE.with(|cell| {
@@ -312,8 +313,8 @@ pub fn process_stream_event(
     })
 }
 
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn redeem(io_e8s: u128) -> Result<ApiRedemptionOutcome, ApiError> {
+#[cfg(any(test, debug_assertions))]
+fn redeem_impl(io_e8s: u128) -> Result<ApiRedemptionOutcome, ApiError> {
     CANISTER_STATE.with(|cell| {
         cell.borrow_mut()
             .manager
@@ -321,6 +322,32 @@ pub fn redeem(io_e8s: u128) -> Result<ApiRedemptionOutcome, ApiError> {
             .map(ApiRedemptionOutcome::from)
             .map_err(ApiError::from)
     })
+}
+
+#[cfg(any(test, debug_assertions))]
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn debug_get_state() -> ApiState {
+    state_snapshot()
+}
+
+#[cfg(any(test, debug_assertions))]
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn debug_get_redemption_rate() -> Result<ApiRedemptionRate, ApiError> {
+    redemption_rate()
+}
+
+#[cfg(any(test, debug_assertions))]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_process_stream_event(
+    request: ProcessStreamEventRequest,
+) -> Result<ApiStreamOutcome, ApiError> {
+    process_stream_event_impl(request)
+}
+
+#[cfg(any(test, debug_assertions))]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_redeem(io_e8s: u128) -> Result<ApiRedemptionOutcome, ApiError> {
+    redeem_impl(io_e8s)
 }
 
 #[cfg(test)]
@@ -390,14 +417,14 @@ mod tests {
     #[test]
     fn canister_api_initializes_and_reports_state() {
         init();
-        let state = get_state();
+        let state = debug_get_state();
         assert_eq!(
             state.protocol.total_io_supply_e8s,
             1_000_000 * E8S_PER_TOKEN
         );
         assert_eq!(state.processed_transaction_count, 0);
         assert_eq!(
-            get_redemption_rate().unwrap(),
+            debug_get_redemption_rate().unwrap(),
             RedemptionRate::one_to_one().into()
         );
     }
@@ -405,7 +432,7 @@ mod tests {
     #[test]
     fn canister_api_processes_stream_and_redeems() {
         init();
-        let outcome = process_stream_event(ProcessStreamEventRequest {
+        let outcome = debug_process_stream_event(ProcessStreamEventRequest {
             kind: ApiStreamKind::JupiterFaucet,
             amount_e8s: t(100),
             transaction_id: "api-tx-1".to_string(),
@@ -413,7 +440,7 @@ mod tests {
         .unwrap();
         assert_eq!(outcome.io_issued_e8s, t(60));
         assert_eq!(
-            process_stream_event(ProcessStreamEventRequest {
+            debug_process_stream_event(ProcessStreamEventRequest {
                 kind: ApiStreamKind::JupiterFaucet,
                 amount_e8s: t(100),
                 transaction_id: "api-tx-1".to_string(),
@@ -423,9 +450,9 @@ mod tests {
             "duplicate_transaction"
         );
 
-        let redemption = redeem(t(10)).unwrap();
+        let redemption = debug_redeem(t(10)).unwrap();
         assert_eq!(redemption.icp_paid_e8s, t(10));
-        assert_eq!(get_state().processed_transaction_count, 1);
+        assert_eq!(debug_get_state().processed_transaction_count, 1);
     }
 }
 

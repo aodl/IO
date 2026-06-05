@@ -158,6 +158,7 @@ impl Default for NnsNeuronManagerConfig {
     }
 }
 
+#[cfg_attr(not(any(test, debug_assertions)), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CanisterState {
     config: NnsNeuronManagerConfig,
@@ -407,13 +408,13 @@ pub fn init() {
     });
 }
 
-#[cfg_attr(target_family = "wasm", ic_cdk::query)]
-pub fn get_config() -> NnsNeuronManagerConfig {
+#[cfg(any(test, debug_assertions))]
+fn config_snapshot() -> NnsNeuronManagerConfig {
     CANISTER_STATE.with(|cell| cell.borrow().config.clone())
 }
 
-#[cfg_attr(target_family = "wasm", ic_cdk::query)]
-pub fn get_state() -> ApiState {
+#[cfg(any(test, debug_assertions))]
+fn state_snapshot() -> ApiState {
     CANISTER_STATE.with(|cell| {
         let state = cell.borrow();
         ApiState {
@@ -427,8 +428,8 @@ pub fn get_state() -> ApiState {
     })
 }
 
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn plan_rebalance(pool_state: ApiTwoWeekPoolState) -> ApiRebalanceAction {
+#[cfg(any(test, debug_assertions))]
+fn plan_rebalance_impl(pool_state: ApiTwoWeekPoolState) -> ApiRebalanceAction {
     CANISTER_STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         state.two_week_pool_state = pool_state.into();
@@ -437,8 +438,7 @@ pub fn plan_rebalance(pool_state: ApiTwoWeekPoolState) -> ApiRebalanceAction {
 }
 
 #[cfg(any(test, debug_assertions))]
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn advance_model_time(request: AdvanceModelTimeRequest) -> ApiState {
+fn advance_model_time_impl(request: AdvanceModelTimeRequest) -> ApiState {
     CANISTER_STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         let annual_bps = request.annual_bps.unwrap_or(state.config.model_annual_bps);
@@ -446,7 +446,31 @@ pub fn advance_model_time(request: AdvanceModelTimeRequest) -> ApiState {
             .model
             .advance_time(request.elapsed_seconds, annual_bps);
     });
-    get_state()
+    state_snapshot()
+}
+
+#[cfg(any(test, debug_assertions))]
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn debug_get_config() -> NnsNeuronManagerConfig {
+    config_snapshot()
+}
+
+#[cfg(any(test, debug_assertions))]
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn debug_get_state() -> ApiState {
+    state_snapshot()
+}
+
+#[cfg(any(test, debug_assertions))]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_plan_rebalance(pool_state: ApiTwoWeekPoolState) -> ApiRebalanceAction {
+    plan_rebalance_impl(pool_state)
+}
+
+#[cfg(any(test, debug_assertions))]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_advance_model_time(request: AdvanceModelTimeRequest) -> ApiState {
+    advance_model_time_impl(request)
 }
 
 #[cfg(test)]
@@ -558,14 +582,14 @@ mod tests {
     #[test]
     fn canister_api_reports_known_config_and_state() {
         init();
-        let config = get_config();
+        let config = debug_get_config();
         assert_eq!(config.two_year_nns_neuron_id, 6_345_890_886_899_317_159);
         assert_eq!(
             config.controller_canister_principal_text,
             "oae4c-3iaaa-aaaar-qb5qq-cai"
         );
 
-        let state = get_state();
+        let state = debug_get_state();
         assert_eq!(state.two_year_neuron.neuron_id, TWO_YEAR_NNS_NEURON_ID);
         assert_eq!(state.two_week_pool_state.active_staked_e8s, 0);
     }
@@ -573,20 +597,20 @@ mod tests {
     #[test]
     fn canister_api_advances_model_time_and_plans_rebalance() {
         init();
-        let state = advance_model_time(AdvanceModelTimeRequest {
+        let state = debug_advance_model_time(AdvanceModelTimeRequest {
             elapsed_seconds: SECONDS_PER_DAY,
             annual_bps: Some(1_000),
         });
         assert_eq!(state.now_seconds, SECONDS_PER_DAY);
 
-        let action = plan_rebalance(ApiTwoWeekPoolState {
+        let action = debug_plan_rebalance(ApiTwoWeekPoolState {
             target_staked_e8s: 150,
             active_staked_e8s: 100,
             pending_unwind_e8s: 0,
             pending_restake_e8s: 0,
         });
         assert_eq!(action, ApiRebalanceAction::StakeMore { amount_e8s: 50 });
-        assert_eq!(get_state().two_week_pool_state.target_staked_e8s, 150);
+        assert_eq!(debug_get_state().two_week_pool_state.target_staked_e8s, 150);
     }
 }
 

@@ -51,8 +51,8 @@ type NnsNeuronManagerConfig = record {
 };
 
 service : {
-  advance_model_time : (AdvanceModelTimeRequest) -> (ApiState);
-  get_config : () -> (NnsNeuronManagerConfig) query;
-  get_state : () -> (ApiState) query;
-  plan_rebalance : (ApiTwoWeekPoolState) -> (ApiRebalanceAction);
+  debug_advance_model_time : (AdvanceModelTimeRequest) -> (ApiState);
+  debug_get_config : () -> (NnsNeuronManagerConfig) query;
+  debug_get_state : () -> (ApiState) query;
+  debug_plan_rebalance : (ApiTwoWeekPoolState) -> (ApiRebalanceAction);
 }

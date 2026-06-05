@@ -1,4 +1,5 @@
 use std::env;
+use std::fs;
 use std::process::{Command, ExitCode};
 
 fn run(label: &str, mut cmd: Command) -> bool {
@@ -44,6 +45,107 @@ fn run_subcommand(sub: &str) -> bool {
     run(sub, c)
 }
 
+fn read_file(path: &str) -> Result<String, String> {
+    fs::read_to_string(path).map_err(|err| format!("{path}: {err}"))
+}
+
+fn require_absent(path: &str, text: &str, needles: &[&str]) -> Result<(), String> {
+    for needle in needles {
+        if text.contains(needle) {
+            return Err(format!("{path} must not contain {needle:?}"));
+        }
+    }
+    Ok(())
+}
+
+fn require_present(path: &str, text: &str, needles: &[&str]) -> Result<(), String> {
+    for needle in needles {
+        if !text.contains(needle) {
+            return Err(format!("{path} must contain {needle:?}"));
+        }
+    }
+    Ok(())
+}
+
+fn check_did_surface() -> Result<(), String> {
+    let stream_production_path = "canisters/io_stream_manager/io_stream_manager.did";
+    let stream_debug_path = "canisters/io_stream_manager/io_stream_manager_debug.did";
+    let nns_production_path = "canisters/io_nns_neuron_manager/io_nns_neuron_manager.did";
+    let nns_debug_path = "canisters/io_nns_neuron_manager/io_nns_neuron_manager_debug.did";
+
+    let stream_production = read_file(stream_production_path)?;
+    let stream_debug = read_file(stream_debug_path)?;
+    let nns_production = read_file(nns_production_path)?;
+    let nns_debug = read_file(nns_debug_path)?;
+
+    require_absent(
+        stream_production_path,
+        &stream_production,
+        &[
+            "get_state",
+            "get_redemption_rate",
+            "process_stream_event",
+            "redeem",
+            "debug_",
+        ],
+    )?;
+    require_absent(
+        nns_production_path,
+        &nns_production,
+        &[
+            "get_state",
+            "get_config",
+            "plan_rebalance",
+            "advance_model_time",
+            "debug_",
+        ],
+    )?;
+
+    require_present(
+        stream_debug_path,
+        &stream_debug,
+        &[
+            "debug_get_state",
+            "debug_get_redemption_rate",
+            "debug_process_stream_event",
+            "debug_redeem",
+        ],
+    )?;
+    require_present(
+        nns_debug_path,
+        &nns_debug,
+        &[
+            "debug_get_config",
+            "debug_get_state",
+            "debug_plan_rebalance",
+            "debug_advance_model_time",
+        ],
+    )?;
+
+    require_absent(
+        stream_debug_path,
+        &stream_debug,
+        &[
+            "  get_state :",
+            "  get_redemption_rate :",
+            "  process_stream_event :",
+            "  redeem :",
+        ],
+    )?;
+    require_absent(
+        nns_debug_path,
+        &nns_debug,
+        &[
+            "  get_config :",
+            "  get_state :",
+            "  plan_rebalance :",
+            "  advance_model_time :",
+        ],
+    )?;
+
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let cmd = env::args().nth(1).unwrap_or_else(|| "test_all".to_string());
     let mut ok = true;
@@ -57,8 +159,16 @@ fn main() -> ExitCode {
         "fmt_check" => {
             ok &= run("fmt: workspace", cargo_fmt(&["--all", "--", "--check"]));
         }
+        "did_surface" => match check_did_surface() {
+            Ok(()) => eprintln!("✓ did_surface"),
+            Err(err) => {
+                eprintln!("✗ did_surface: {err}");
+                ok = false;
+            }
+        },
         "preflight" => {
             ok &= run_subcommand("check");
+            ok &= run_subcommand("did_surface");
         }
         "test_unit" => {
             ok &= run("unit: io-core-model", cargo_test(&["-p", "io-core-model"]));
@@ -167,7 +277,7 @@ fn main() -> ExitCode {
         }
         other => {
             eprintln!("unknown xtask command: {other}");
-            eprintln!("known: test_all, preflight, check, fmt_check, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+            eprintln!("known: test_all, preflight, check, fmt_check, did_surface, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
             return ExitCode::from(2);
         }
     }

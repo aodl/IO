@@ -72,10 +72,10 @@ type StreamManagerConfig = record {
 };
 
 service : {
-  get_redemption_rate : () -> (variant { Ok : ApiRedemptionRate; Err : ApiError }) query;
-  get_state : () -> (ApiState) query;
-  process_stream_event : (ProcessStreamEventRequest) -> (
+  debug_get_redemption_rate : () -> (variant { Ok : ApiRedemptionRate; Err : ApiError }) query;
+  debug_get_state : () -> (ApiState) query;
+  debug_process_stream_event : (ProcessStreamEventRequest) -> (
       variant { Ok : ApiStreamOutcome; Err : ApiError },
     );
-  redeem : (nat) -> (variant { Ok : ApiRedemptionOutcome; Err : ApiError });
+  debug_redeem : (nat) -> (variant { Ok : ApiRedemptionOutcome; Err : ApiError });
 }

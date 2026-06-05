@@ -1,3 +1,8 @@
 # frontend
 
-Placeholder canister for the first IO suite skeleton.
+Placeholder UI canister.
+
+## Role
+
+- UI surface.
+- Should consume historian/read-model APIs, not value-moving canister internals.
