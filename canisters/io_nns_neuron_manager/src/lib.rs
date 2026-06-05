@@ -100,6 +100,38 @@ pub enum RebalanceAction {
     SplitAndDissolve { amount_e8s: u128 },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum TwoWeekPoolLifecyclePlan {
+    None,
+    TwoWeekPoolRestake { amount_e8s: u128 },
+    TwoWeekPoolSplit { amount_e8s: u128 },
+    TwoWeekPoolStartDissolving { neuron_id: u64 },
+    TwoWeekPoolStopDissolving { neuron_id: u64 },
+    TwoWeekPoolMergeBack { neuron_id: u64, amount_e8s: u128 },
+    TwoWeekUnwindPrincipalDisbursement { neuron_id: u64, amount_e8s: u128 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum TwoWeekPoolLifecycleResult {
+    Succeeded,
+    Retryable { message: String },
+    Terminal { message: String },
+}
+
+impl TwoWeekPoolLifecycleResult {
+    pub fn from_governance_error(err: &io_governance_types::NnsGovernanceError) -> Self {
+        if err.is_retryable() {
+            Self::Retryable {
+                message: format!("{err:?}"),
+            }
+        } else {
+            Self::Terminal {
+                message: format!("{err:?}"),
+            }
+        }
+    }
+}
+
 impl TwoWeekPoolState {
     /// Plans a target-based rebalance. Pending unwind/restake is intentionally
     /// included so callers can batch cancel-dissolve and dissolve events before
@@ -119,6 +151,18 @@ impl TwoWeekPoolState {
             }
         } else {
             RebalanceAction::None
+        }
+    }
+
+    pub fn plan_lifecycle(&self) -> TwoWeekPoolLifecyclePlan {
+        match self.plan_rebalance() {
+            RebalanceAction::None => TwoWeekPoolLifecyclePlan::None,
+            RebalanceAction::StakeMore { amount_e8s } => {
+                TwoWeekPoolLifecyclePlan::TwoWeekPoolRestake { amount_e8s }
+            }
+            RebalanceAction::SplitAndDissolve { amount_e8s } => {
+                TwoWeekPoolLifecyclePlan::TwoWeekPoolSplit { amount_e8s }
+            }
         }
     }
 }
@@ -653,6 +697,55 @@ impl NnsNeuronManagerModel {
         Ok(amount)
     }
 
+    pub fn cancel_unwind_plan(
+        &self,
+        neuron_id: u64,
+    ) -> Result<TwoWeekPoolLifecyclePlan, ManagerError> {
+        let neuron = self
+            .unwind_neurons
+            .iter()
+            .find(|n| n.neuron_id == neuron_id)
+            .ok_or(ManagerError::UnknownUnwindNeuron)?;
+        Ok(TwoWeekPoolLifecyclePlan::TwoWeekPoolStopDissolving {
+            neuron_id: neuron.neuron_id,
+        })
+    }
+
+    pub fn merge_back_plan(
+        &self,
+        neuron_id: u64,
+    ) -> Result<TwoWeekPoolLifecyclePlan, ManagerError> {
+        let neuron = self
+            .unwind_neurons
+            .iter()
+            .find(|n| n.neuron_id == neuron_id)
+            .ok_or(ManagerError::UnknownUnwindNeuron)?;
+        Ok(TwoWeekPoolLifecyclePlan::TwoWeekPoolMergeBack {
+            neuron_id: neuron.neuron_id,
+            amount_e8s: neuron.principal_e8s,
+        })
+    }
+
+    pub fn ready_unwind_disbursement_plan(
+        &self,
+        neuron_id: u64,
+    ) -> Result<TwoWeekPoolLifecyclePlan, ManagerError> {
+        let neuron = self
+            .unwind_neurons
+            .iter()
+            .find(|n| n.neuron_id == neuron_id)
+            .ok_or(ManagerError::UnknownUnwindNeuron)?;
+        if !neuron.is_ready_to_disburse(self.now_seconds) {
+            return Err(ManagerError::NeuronNotReady);
+        }
+        Ok(
+            TwoWeekPoolLifecyclePlan::TwoWeekUnwindPrincipalDisbursement {
+                neuron_id: neuron.neuron_id,
+                amount_e8s: neuron.principal_e8s,
+            },
+        )
+    }
+
     pub fn disburse_ready_unwind(&mut self, neuron_id: u64) -> Result<u128, ManagerError> {
         let index = self
             .unwind_neurons
@@ -1170,5 +1263,80 @@ mod additional_manager_tests {
             s.plan_rebalance(),
             RebalanceAction::StakeMore { amount_e8s: 50 }
         );
+    }
+
+    #[test]
+    fn lifecycle_plan_tracks_target_increase_and_decrease() {
+        assert_eq!(
+            TwoWeekPoolState {
+                target_staked_e8s: 200,
+                active_staked_e8s: 100,
+                pending_unwind_e8s: 0,
+                pending_restake_e8s: 0,
+            }
+            .plan_lifecycle(),
+            TwoWeekPoolLifecyclePlan::TwoWeekPoolRestake { amount_e8s: 100 }
+        );
+        assert_eq!(
+            TwoWeekPoolState {
+                target_staked_e8s: 50,
+                active_staked_e8s: 100,
+                pending_unwind_e8s: 0,
+                pending_restake_e8s: 0,
+            }
+            .plan_lifecycle(),
+            TwoWeekPoolLifecyclePlan::TwoWeekPoolSplit { amount_e8s: 50 }
+        );
+    }
+
+    #[test]
+    fn cancel_before_readiness_plans_stop_then_merge_back() {
+        let mut m = NnsNeuronManagerModel::new(0, 1_000);
+        let child = m.split_and_start_unwind(250).unwrap();
+        assert_eq!(
+            m.cancel_unwind_plan(child).unwrap(),
+            TwoWeekPoolLifecyclePlan::TwoWeekPoolStopDissolving { neuron_id: child }
+        );
+        assert_eq!(
+            m.merge_back_plan(child).unwrap(),
+            TwoWeekPoolLifecyclePlan::TwoWeekPoolMergeBack {
+                neuron_id: child,
+                amount_e8s: 250
+            }
+        );
+    }
+
+    #[test]
+    fn ready_child_plans_principal_disbursement() {
+        let mut m = NnsNeuronManagerModel::new(0, 1_000);
+        let child = m.split_and_start_unwind(250).unwrap();
+        assert_eq!(
+            m.ready_unwind_disbursement_plan(child),
+            Err(ManagerError::NeuronNotReady)
+        );
+        m.advance_time(TWO_WEEK_DISSOLVE_SECONDS, 0);
+        assert_eq!(
+            m.ready_unwind_disbursement_plan(child).unwrap(),
+            TwoWeekPoolLifecyclePlan::TwoWeekUnwindPrincipalDisbursement {
+                neuron_id: child,
+                amount_e8s: 250
+            }
+        );
+    }
+
+    #[test]
+    fn governance_errors_map_to_retryable_or_terminal_lifecycle_results() {
+        assert!(matches!(
+            TwoWeekPoolLifecycleResult::from_governance_error(
+                &io_governance_types::NnsGovernanceError::TemporarilyUnavailable
+            ),
+            TwoWeekPoolLifecycleResult::Retryable { .. }
+        ));
+        assert!(matches!(
+            TwoWeekPoolLifecycleResult::from_governance_error(
+                &io_governance_types::NnsGovernanceError::NotAuthorized
+            ),
+            TwoWeekPoolLifecycleResult::Terminal { .. }
+        ));
     }
 }

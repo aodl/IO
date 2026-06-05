@@ -54,6 +54,8 @@ type InitArgs = record {
   icp_index_principal_text : opt text;
   io_ledger_principal_text : opt text;
   io_index_principal_text : opt text;
+  io_sns_ledger_principal_text : opt text;
+  io_sns_index_principal_text : opt text;
   sns_governance_principal_text : opt text;
 };
 
@@ -89,6 +91,8 @@ type StreamManagerConfig = record {
   icp_index_principal_text : opt text;
   io_ledger_principal_text : opt text;
   io_index_principal_text : opt text;
+  io_sns_ledger_principal_text : opt text;
+  io_sns_index_principal_text : opt text;
   sns_governance_principal_text : opt text;
 };
 

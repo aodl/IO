@@ -11,6 +11,7 @@ crate-type = ["rlib", "cdylib"]
 [dependencies]
 candid.workspace = true
 ic-cdk.workspace = true
+io-governance-types.workspace = true
 io-ledger-types.workspace = true
 serde.workspace = true
 

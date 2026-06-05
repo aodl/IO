@@ -1,0 +1,10 @@
+[package]
+name = "io-governance-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+candid.workspace = true
+io-ledger-types.workspace = true
+serde.workspace = true

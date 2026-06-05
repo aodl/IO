@@ -32,7 +32,7 @@ Mock canisters live under `tests/mocks/`:
 - `mock_sns_governance`
 - `mock_jupiter_faucet`
 
-The mock ledgers keep balances and transaction history with source, destination, memo, block index, amount, and timestamp. The mock governance canisters expose debug APIs for maturity, unwind, SNS neurons, proposals, and votes.
+The mock ledgers keep balances and transaction history with source, destination, memo, block index, amount, and timestamp. The mock governance canisters expose debug APIs for maturity, unwind, SNS neurons, proposals, and votes. Production-shaped NNS/SNS governance domain types and client traits live in `io-governance-types`; debug calls remain isolated to mock adapters.
 
 The mock index canisters are thin wrappers around mock ledger history. Live scheduler tests configure the stream manager with the mock index canisters for scans. Downstream value-moving transfers route through `LedgerTransferClient` mock adapters, which still call the mock ledgers underneath.
 
@@ -64,4 +64,4 @@ The NNS manager persists operation journal entries and maturity/unwind scheduler
 
 ## Limits
 
-This is not production ledger or governance wiring. Downstream transfer paths now use the `LedgerTransferClient` boundary, but the debug/PocketIC scan sources still use mock `debug_get_transactions` APIs. Production scan/index adapters and archive traversal are future work. The debug scheduler tick is absent from production DIDs. The `io-ledger-types` crate provides production-shaped ledger/index types, transfer error mapping, fee representation, and index cursor/lag/archive modelling so future real adapters can be introduced without rewriting journal semantics. The operation journals are production-shaped but not audited. See `docs/architecture/ledger-index-clients.md`, `docs/security/threat-model.md`, and `docs/operations/mainnet-readiness.md` before real-client work.
+This is not production ledger or governance wiring. Downstream transfer paths now use the `LedgerTransferClient` boundary, but the debug/PocketIC scan sources still use mock `debug_get_transactions` APIs. NNS/SNS governance clients are production-shaped boundaries with mock adapters, not live governance wiring. Production scan/index adapters, governance adapters, and archive traversal are future work. The debug scheduler tick is absent from production DIDs. The `io-ledger-types` crate provides production-shaped ledger/index types, transfer error mapping, fee representation, and index cursor/lag/archive modelling so future real adapters can be introduced without rewriting journal semantics. The operation journals are production-shaped but not audited. See `docs/architecture/ledger-index-clients.md`, `docs/architecture/governance-clients.md`, `docs/security/threat-model.md`, and `docs/operations/mainnet-readiness.md` before real-client work.

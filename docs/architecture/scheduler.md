@@ -68,7 +68,7 @@ The NNS manager stores durable operation journal entries for:
 - `TwoWeekPoolMergeBack`
 - `TwoWeekPoolRestake`
 
-The implemented disbursement paths use `AwaitingIcpTransfer`, `Completed`, and `FailedRetryable` phases. A maturity or unwind model change is not finalized locally until the boundary ICP transfer to the stream-manager deposit account succeeds. Failed transfers remain retryable, duplicate transfer results require amount/account/memo proof before completion, and successful transfers are not repeated.
+The implemented disbursement paths use `AwaitingIcpTransfer`, `Completed`, and `FailedRetryable` phases. A maturity or unwind model change is not finalized locally until the boundary ICP transfer to the stream-manager deposit account succeeds. Failed transfers remain retryable, duplicate transfer results require amount/account/memo proof before completion, and successful transfers are not repeated. Two-week pool lifecycle planning is explicit for restake, split, start/stop dissolving, merge-back, and ready principal disbursement.
 
 The NNS manager persists scheduler checkpoints:
 
@@ -82,6 +82,6 @@ The production DID does not expose `debug_tick`.
 
 ## Integration Boundary
 
-Client modules now exist for ICP ledger/index, IO ledger/index, SNS governance, NNS governance, and ledger transfer calls. The shared `io-ledger-types` crate defines the production-shaped ledger/index boundary used by future adapters and mock mapping code. Downstream transfer paths now use `LedgerTransferClient`; debug/PocketIC scan sources still use mock `debug_get_transactions` APIs. Production scan/index adapters and archive traversal remain future work. Boundary tests cover transfer errors, duplicate transfer proof, fees, cursor gaps, archive-required pages, and index lag. Production wiring remains future work and should preserve ledger/index/timer-driven flows rather than caller-submitted stream kinds. The journal is production-shaped but not audited.
+Client modules now exist for ICP ledger/index, IO ledger/index, SNS governance, NNS governance, and ledger transfer calls. The shared `io-ledger-types` crate defines the production-shaped ledger/index boundary used by future adapters and mock mapping code. The shared `io-governance-types` crate defines NNS/SNS governance boundaries, Candid fixture models, SNS eligibility snapshots, and SNS participation summaries. Downstream transfer paths now use `LedgerTransferClient`; debug/PocketIC scan sources still use mock `debug_get_transactions` APIs. Production scan/index adapters, real NNS/SNS governance adapters, and archive traversal remain future work. Boundary tests cover transfer errors, duplicate transfer proof, fees, cursor gaps, archive-required pages, index lag, governance Candid fixtures, governance error classification, SNS eligibility, and SNS participation. Production wiring remains future work and should preserve ledger/index/governance/timer-driven flows rather than caller-submitted stream kinds. The journal is production-shaped but not audited.
 
 Operational recovery for stuck journal entries is documented in `docs/security/controller-and-recovery.md` and `docs/operations/emergency-runbook.md`. Recovery must preserve retry/idempotency semantics and must not add production stream-processing or tick APIs.

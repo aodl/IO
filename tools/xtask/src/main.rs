@@ -634,6 +634,8 @@ fn validate_stream_install_args_text(text: &str, mode: InstallArgsMode) -> Resul
         "icp_index_principal_text",
         "io_ledger_principal_text",
         "io_index_principal_text",
+        "io_sns_ledger_principal_text",
+        "io_sns_index_principal_text",
         "sns_governance_principal_text",
     ] {
         if let Some(value) = parse_optional_text_field(text, field)? {
@@ -653,6 +655,8 @@ fn validate_install_args_at(root: &Path, mode: InstallArgsMode) -> Result<(), St
               icp_index_principal_text = null : opt text;
               io_ledger_principal_text = null : opt text;
               io_index_principal_text = null : opt text;
+              io_sns_ledger_principal_text = null : opt text;
+              io_sns_index_principal_text = null : opt text;
               sns_governance_principal_text = null : opt text;
             })"#,
             InstallArgsMode::Local,
@@ -1067,6 +1071,8 @@ mod tests {
               icp_index_principal_text = null : opt text;
               io_ledger_principal_text = null : opt text;
               io_index_principal_text = null : opt text;
+              io_sns_ledger_principal_text = null : opt text;
+              io_sns_index_principal_text = null : opt text;
               sns_governance_principal_text = null : opt text;
             })"#,
             InstallArgsMode::Local,

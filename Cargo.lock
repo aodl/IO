@@ -924,6 +924,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "io-governance-types"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "io-ledger-types",
+ "serde",
+]
+
+[[package]]
 name = "io-historian"
 version = "0.1.0"
 dependencies = [
@@ -949,6 +958,7 @@ dependencies = [
  "candid",
  "ic-cdk",
  "io-build-support",
+ "io-governance-types",
  "io-ledger-types",
  "pocket-ic",
  "serde",
@@ -957,6 +967,9 @@ dependencies = [
 [[package]]
 name = "io-reward-policy"
 version = "0.1.0"
+dependencies = [
+ "io-governance-types",
+]
 
 [[package]]
 name = "io-stream-manager"
@@ -966,6 +979,7 @@ dependencies = [
  "ic-cdk",
  "io-build-support",
  "io-core-model",
+ "io-governance-types",
  "io-ledger-types",
  "io-nns-neuron-manager",
  "io-reward-policy",

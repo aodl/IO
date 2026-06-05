@@ -75,6 +75,8 @@ cargo run -p xtask -- verify_release
 - Ledger/index cursors avoid rescanning completed mock ledger blocks while keeping duplicate source-block protection.
 - Active SNS-neuron snapshots drive the target 2-week NNS staking pool.
 - `io-ledger-types` unit tests cover production-shaped account/subaccount Candid fixtures, ICP/ICRC transfer error mapping, duplicate transfer proof helpers, explicit fee fields, and index cursor/archive/lag behavior.
+- `io-governance-types` unit tests cover NNS/SNS Candid fixtures, governance error classification, SNS eligibility snapshots, and SNS proposal participation summaries.
+- Reward-policy tests cover SNS eligibility and participation feeding TwoWeekMaturity allocation, including excluded governance/protocol neurons and rounding dust.
 
 ### E2E model tests
 

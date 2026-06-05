@@ -26,6 +26,8 @@ pub struct InitArgs {
     pub icp_index_principal_text: Option<String>,
     pub io_ledger_principal_text: Option<String>,
     pub io_index_principal_text: Option<String>,
+    pub io_sns_ledger_principal_text: Option<String>,
+    pub io_sns_index_principal_text: Option<String>,
     pub sns_governance_principal_text: Option<String>,
 }
 
@@ -42,6 +44,8 @@ impl Default for InitArgs {
             icp_index_principal_text: None,
             io_ledger_principal_text: None,
             io_index_principal_text: None,
+            io_sns_ledger_principal_text: None,
+            io_sns_index_principal_text: None,
             sns_governance_principal_text: None,
         }
     }
@@ -59,6 +63,8 @@ pub struct StreamManagerConfig {
     pub icp_index_principal_text: Option<String>,
     pub io_ledger_principal_text: Option<String>,
     pub io_index_principal_text: Option<String>,
+    pub io_sns_ledger_principal_text: Option<String>,
+    pub io_sns_index_principal_text: Option<String>,
     pub sns_governance_principal_text: Option<String>,
 }
 
@@ -107,6 +113,14 @@ impl TryFrom<InitArgs> for StreamManagerConfig {
         validate_optional_principal("io_ledger_principal_text", &args.io_ledger_principal_text)?;
         validate_optional_principal("io_index_principal_text", &args.io_index_principal_text)?;
         validate_optional_principal(
+            "io_sns_ledger_principal_text",
+            &args.io_sns_ledger_principal_text,
+        )?;
+        validate_optional_principal(
+            "io_sns_index_principal_text",
+            &args.io_sns_index_principal_text,
+        )?;
+        validate_optional_principal(
             "sns_governance_principal_text",
             &args.sns_governance_principal_text,
         )?;
@@ -122,6 +136,8 @@ impl TryFrom<InitArgs> for StreamManagerConfig {
             icp_index_principal_text: args.icp_index_principal_text,
             io_ledger_principal_text: args.io_ledger_principal_text,
             io_index_principal_text: args.io_index_principal_text,
+            io_sns_ledger_principal_text: args.io_sns_ledger_principal_text,
+            io_sns_index_principal_text: args.io_sns_index_principal_text,
             sns_governance_principal_text: args.sns_governance_principal_text,
         })
     }

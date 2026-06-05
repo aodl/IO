@@ -4,6 +4,23 @@
 //! SNS maturity is expected to be disabled; this crate allocates protocol-backed
 //! IO released by the stream manager.
 
+use io_governance_types::SnsNeuronId;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SnsNeuronIdConversionError {
+    InvalidLength { actual_len: usize },
+}
+
+pub fn sns_neuron_id_to_u64(id: &SnsNeuronId) -> Result<u64, SnsNeuronIdConversionError> {
+    let bytes: [u8; 8] =
+        id.0.as_slice()
+            .try_into()
+            .map_err(|_| SnsNeuronIdConversionError::InvalidLength {
+                actual_len: id.0.len(),
+            })?;
+    Ok(u64::from_be_bytes(bytes))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NeuronSnapshot {
     pub neuron_id: u64,
@@ -391,5 +408,247 @@ mod additional_policy_safety_tests {
         let out = allocate_rewards(1_000_000, &[genesis, protocol, dissolving]);
         assert!(out.allocations.is_empty());
         assert_eq!(out.dust_e8s, 1_000_000);
+    }
+}
+
+#[cfg(test)]
+mod sns_governance_allocation_tests {
+    use super::*;
+    use io_governance_types::{
+        snapshot_sns_eligibility, summarize_sns_participation, SnsBallot, SnsDissolveState,
+        SnsEligibilityPolicy, SnsNeuron, SnsNeuronEligibility, SnsNeuronId, SnsParticipationPolicy,
+        SnsParticipationSummary, SnsProposal, SnsProposalId, SnsProposalRewardStatus,
+        SnsProposalStatus, SnsVote,
+    };
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn equal_eligible_neurons_get_equal_backed_io_allocation() {
+        let neurons = vec![
+            sns_neuron(1, 1_000, false, false),
+            sns_neuron(2, 1_000, false, false),
+        ];
+        let snapshots = snapshots_from_governance(
+            &neurons,
+            &[
+                proposal(1, 10, &[(1, SnsVote::Yes), (2, SnsVote::No)]),
+                proposal(
+                    2,
+                    20,
+                    &[(1, SnsVote::FollowedYes), (2, SnsVote::FollowedNo)],
+                ),
+            ],
+        );
+        let out = allocate_rewards(200, &snapshots);
+        assert_eq!(out.allocations[0].io_e8s, 100);
+        assert_eq!(out.allocations[1].io_e8s, 100);
+    }
+
+    #[test]
+    fn half_participation_gets_half_weight() {
+        let neurons = vec![
+            sns_neuron(1, 1_000, false, false),
+            sns_neuron(2, 1_000, false, false),
+        ];
+        let snapshots = snapshots_from_governance(
+            &neurons,
+            &[
+                proposal(1, 10, &[(1, SnsVote::Yes), (2, SnsVote::Yes)]),
+                proposal(2, 20, &[(1, SnsVote::Yes)]),
+            ],
+        );
+        let out = allocate_rewards(300, &snapshots);
+        assert_eq!(out.allocations[0].io_e8s, 200);
+        assert_eq!(out.allocations[1].io_e8s, 100);
+    }
+
+    #[test]
+    fn halfway_eligible_neuron_gets_half_stake_time_weight() {
+        let neurons = vec![
+            sns_neuron(1, 1_000, false, false),
+            sns_neuron(2, 1_000, false, false),
+        ];
+        let mut eligibilities = base_eligibilities(&neurons);
+        eligibilities[0].eligible_since_seconds = 0;
+        eligibilities[1].eligible_since_seconds = 50;
+        let summaries = summarize_sns_participation(
+            &eligibilities,
+            &[proposal(1, 75, &[(1, SnsVote::Yes), (2, SnsVote::Yes)])],
+            &participation_policy(),
+        );
+        let snapshots = snapshots_from_eligibility(&eligibilities, &summaries, 100);
+        let out = allocate_rewards(300, &snapshots);
+        assert_eq!(out.allocations[0].io_e8s, 200);
+        assert_eq!(out.allocations[1].io_e8s, 100);
+    }
+
+    #[test]
+    fn jupiter_and_protocol_governance_neurons_are_excluded() {
+        let neurons = vec![
+            sns_neuron(1, 10_000, true, false),
+            sns_neuron(2, 10_000, false, true),
+            sns_neuron(3, 1_000, false, false),
+        ];
+        let snapshots = snapshots_from_governance(
+            &neurons,
+            &[proposal(
+                1,
+                10,
+                &[(1, SnsVote::Yes), (2, SnsVote::Yes), (3, SnsVote::Yes)],
+            )],
+        );
+        let out = allocate_rewards(100, &snapshots);
+        assert_eq!(
+            out.allocations,
+            vec![RewardAllocation {
+                neuron_id: 3,
+                io_e8s: 100
+            }]
+        );
+    }
+
+    #[test]
+    fn no_closed_proposals_gives_full_participation_and_dust_does_not_over_issue() {
+        let neurons = vec![
+            sns_neuron(1, 1, false, false),
+            sns_neuron(2, 1, false, false),
+            sns_neuron(3, 1, false, false),
+        ];
+        let snapshots = snapshots_from_governance(&neurons, &[]);
+        let out = allocate_rewards(100, &snapshots);
+        assert_eq!(out.allocations.iter().map(|a| a.io_e8s).sum::<u128>(), 99);
+        assert_eq!(out.dust_e8s, 1);
+    }
+
+    #[test]
+    fn eight_byte_sns_neuron_id_converts_correctly() {
+        let id = SnsNeuronId(42u64.to_be_bytes().to_vec());
+        assert_eq!(sns_neuron_id_to_u64(&id), Ok(42));
+    }
+
+    #[test]
+    fn non_eight_byte_sns_neuron_id_does_not_convert_to_zero() {
+        let id = SnsNeuronId(vec![0]);
+        assert_eq!(
+            sns_neuron_id_to_u64(&id),
+            Err(SnsNeuronIdConversionError::InvalidLength { actual_len: 1 })
+        );
+    }
+
+    #[test]
+    fn different_invalid_sns_neuron_ids_do_not_collide_as_zero() {
+        let one_byte_id = SnsNeuronId(vec![1]);
+        let nine_byte_id = SnsNeuronId(vec![0; 9]);
+        assert_eq!(
+            sns_neuron_id_to_u64(&one_byte_id),
+            Err(SnsNeuronIdConversionError::InvalidLength { actual_len: 1 })
+        );
+        assert_eq!(
+            sns_neuron_id_to_u64(&nine_byte_id),
+            Err(SnsNeuronIdConversionError::InvalidLength { actual_len: 9 })
+        );
+    }
+
+    fn sns_neuron(
+        id: u64,
+        stake: u128,
+        jupiter_governance: bool,
+        protocol_owned: bool,
+    ) -> SnsNeuron {
+        SnsNeuron {
+            id: SnsNeuronId(id.to_be_bytes().to_vec()),
+            controller: None,
+            stake_e8s: stake,
+            dissolve_delay_seconds: 14 * 24 * 60 * 60,
+            dissolve_state: SnsDissolveState::NotDissolving {
+                dissolve_delay_seconds: 14 * 24 * 60 * 60,
+            },
+            cached_neuron_stake_e8s: stake,
+            voting_power: stake,
+            permissions: Vec::new(),
+            is_io_protocol_neuron: protocol_owned,
+            is_jupiter_governance_neuron: jupiter_governance,
+        }
+    }
+
+    fn base_eligibilities(neurons: &[SnsNeuron]) -> Vec<SnsNeuronEligibility> {
+        snapshot_sns_eligibility(
+            neurons,
+            &SnsEligibilityPolicy {
+                protocol_neuron_ids: BTreeSet::new(),
+                jupiter_governance_neuron_ids: BTreeSet::new(),
+                minimum_dissolve_delay_seconds: 14 * 24 * 60 * 60,
+                require_non_dissolving: true,
+                current_timestamp_seconds: 0,
+            },
+        )
+    }
+
+    fn snapshots_from_governance(
+        neurons: &[SnsNeuron],
+        proposals: &[SnsProposal],
+    ) -> Vec<NeuronSnapshot> {
+        let eligibilities = base_eligibilities(neurons);
+        let summaries =
+            summarize_sns_participation(&eligibilities, proposals, &participation_policy());
+        snapshots_from_eligibility(&eligibilities, &summaries, 100)
+    }
+
+    fn snapshots_from_eligibility(
+        eligibilities: &[SnsNeuronEligibility],
+        summaries: &[SnsParticipationSummary],
+        epoch_seconds: u64,
+    ) -> Vec<NeuronSnapshot> {
+        eligibilities
+            .iter()
+            .filter(|eligibility| eligibility.excluded_reason.is_none())
+            .filter_map(|eligibility| {
+                let summary = summaries
+                    .iter()
+                    .find(|summary| summary.neuron_id == eligibility.neuron_id)?;
+                Some(NeuronSnapshot {
+                    neuron_id: eight_byte_fixture_sns_neuron_id_to_u64(&eligibility.neuron_id),
+                    staked_io_e8s: eligibility.eligible_stake_e8s,
+                    eligible_seconds: epoch_seconds
+                        .saturating_sub(eligibility.eligible_since_seconds.min(epoch_seconds)),
+                    eligible_closed_proposals: summary.eligible_closed_proposals_total,
+                    voted_closed_proposals: summary.voted_proposals,
+                    is_genesis_governance_neuron: false,
+                    is_protocol_owned: false,
+                    is_dissolving: !eligibility.is_non_dissolving,
+                })
+            })
+            .collect()
+    }
+
+    fn eight_byte_fixture_sns_neuron_id_to_u64(id: &SnsNeuronId) -> u64 {
+        sns_neuron_id_to_u64(id).expect("SNS governance allocation fixtures use 8-byte IDs")
+    }
+
+    fn participation_policy() -> SnsParticipationPolicy {
+        SnsParticipationPolicy {
+            count_direct_votes: true,
+            count_followed_votes: true,
+            excluded_topics: BTreeSet::new(),
+            epoch_start_seconds: 0,
+            epoch_end_seconds: 100,
+        }
+    }
+
+    fn proposal(id: u64, decided: u64, votes: &[(u64, SnsVote)]) -> SnsProposal {
+        SnsProposal {
+            id: SnsProposalId(id),
+            topic: Some(1),
+            status: SnsProposalStatus::Adopted,
+            reward_status: SnsProposalRewardStatus::Settled,
+            decided_timestamp_seconds: Some(decided),
+            ballots: votes
+                .iter()
+                .map(|(neuron_id, vote)| SnsBallot {
+                    neuron_id: SnsNeuronId(neuron_id.to_be_bytes().to_vec()),
+                    vote: *vote,
+                })
+                .collect(),
+        }
     }
 }
