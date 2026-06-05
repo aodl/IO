@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+canister="${1:?usage: build-canister <package>}"
+cargo build -p "$canister" --release
+mkdir -p release-artifacts
+artifact="target/release/lib${canister//-/_}.rlib"
+echo "Built Rust package $canister. Wasm generation is intentionally stubbed in this first IO scaffold."

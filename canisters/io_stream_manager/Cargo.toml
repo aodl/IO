@@ -1,0 +1,30 @@
+[package]
+name = "io-stream-manager"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[test]]
+name = "io_stream_manager_pocketic"
+path = "../../tests/pocketic/io_stream_manager_pocketic.rs"
+
+[[test]]
+name = "io_stream_manager_cli"
+path = "../../tests/cli/io_stream_manager_cli.rs"
+
+[dependencies]
+io-core-model.workspace = true
+io-reward-policy.workspace = true
+
+[build-dependencies]
+io-build-support.workspace = true
+
+[[test]]
+name = "io_e2e"
+path = "../../tests/e2e/io_e2e.rs"
+
+[dev-dependencies]
+io-nns-neuron-manager.workspace = true

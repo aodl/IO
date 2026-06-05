@@ -1,0 +1,19 @@
+[package]
+name = "io-nns-neuron-manager"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[test]]
+name = "io_nns_neuron_manager_pocketic"
+path = "../../tests/pocketic/io_nns_neuron_manager_pocketic.rs"
+
+[[test]]
+name = "io_nns_neuron_manager_cli"
+path = "../../tests/cli/io_nns_neuron_manager_cli.rs"
+
+[build-dependencies]
+io-build-support.workspace = true
