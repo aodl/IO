@@ -617,6 +617,7 @@ fn validate_nns_install_args_text(text: &str, mode: InstallArgsMode) -> Result<(
         "io_stream_manager_principal_text",
         "nns_governance_principal_text",
         "icp_ledger_principal_text",
+        "icp_index_principal_text",
     ] {
         if let Some(value) = parse_optional_text_field(text, field)? {
             validate_principal(field, &value, mode)?;
@@ -664,6 +665,7 @@ fn validate_install_args_at(root: &Path, mode: InstallArgsMode) -> Result<(), St
               io_stream_manager_principal_text = opt "oae4c-3iaaa-aaaar-qb5qq-cai";
               nns_governance_principal_text = null : opt text;
               icp_ledger_principal_text = null : opt text;
+              icp_index_principal_text = null : opt text;
             })"#,
             InstallArgsMode::Local,
         )?;

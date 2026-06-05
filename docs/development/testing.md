@@ -74,6 +74,7 @@ cargo run -p xtask -- verify_release
 - Durable stream operation journals preserve failed issuance, partial 2-week distribution, and redemption payout/return progress.
 - Ledger/index cursors avoid rescanning completed mock ledger blocks while keeping duplicate source-block protection.
 - Active SNS-neuron snapshots drive the target 2-week NNS staking pool.
+- `io-ledger-types` unit tests cover production-shaped account/subaccount Candid fixtures, ICP/ICRC transfer error mapping, duplicate transfer proof helpers, explicit fee fields, and index cursor/archive/lag behavior.
 
 ### E2E model tests
 
@@ -103,6 +104,8 @@ The expanded suite now includes tests for:
 The real PocketIC tests use debug Wasm from `target/wasm32-unknown-unknown/debug`. `xtask test_pocketic_integration` builds those artifacts first. The tests skip cleanly when `POCKET_IC_BIN` is unset so non-PocketIC development environments can still run the workspace suite.
 
 The live PocketIC tests include upgrade-before-retry cases for stream-manager IO issuance/redemption return failures and NNS-manager maturity transfer failures. Host-level stable export/import tests preserve the journal entries and cursors directly.
+
+The production-shaped ledger/index tests do not call live ICP, NNS, SNS, IO ledger, or index canisters. They are fixture and boundary tests only.
 
 `xtask test_local_integration` builds release Wasm artifacts, validates the DID guardrail, validates `icp.yaml` with `icp-cli`, runs `icp build`, and then runs the CLI-shaped Rust integration tests. It does not start a local replica or deploy canisters.
 

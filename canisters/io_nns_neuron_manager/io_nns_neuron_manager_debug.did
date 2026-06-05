@@ -16,6 +16,7 @@ type InitArgs = record {
   principal_unwind_memo : opt nat64;
   nns_governance_principal_text : opt text;
   icp_ledger_principal_text : opt text;
+  icp_index_principal_text : opt text;
 };
 
 type ApiManagedNeuronKind = variant {
@@ -69,6 +70,7 @@ type NnsNeuronManagerConfig = record {
   principal_unwind_memo : opt nat64;
   nns_governance_principal_text : opt text;
   icp_ledger_principal_text : opt text;
+  icp_index_principal_text : opt text;
 };
 
 type DebugTickOutcome = record {

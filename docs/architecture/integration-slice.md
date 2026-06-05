@@ -34,7 +34,7 @@ Mock canisters live under `tests/mocks/`:
 
 The mock ledgers keep balances and transaction history with source, destination, memo, block index, amount, and timestamp. The mock governance canisters expose debug APIs for maturity, unwind, SNS neurons, proposals, and votes.
 
-The mock index canisters are thin wrappers around mock ledger history. Live scheduler tests configure the stream manager with the mock index canisters for scans and the mock ledgers for value-moving transfers.
+The mock index canisters are thin wrappers around mock ledger history. Live scheduler tests configure the stream manager with the mock index canisters for scans. Downstream value-moving transfers route through `LedgerTransferClient` mock adapters, which still call the mock ledgers underneath.
 
 ## Scheduler Flows
 
@@ -43,18 +43,18 @@ The mock index canisters are thin wrappers around mock ledger history. Live sche
 - scans mock ICP history for deposits to `stream_manager_deposit`;
 - classifies Jupiter Faucet, 2-year maturity, and 2-week maturity by source/memo;
 - journals each relevant source block and processes completed operations once;
-- transfers issued IO from `protocol_reserve` to Jupiter Faucet or eligible SNS-neuron reward accounts;
+- transfers issued IO from `protocol_reserve` to Jupiter Faucet or eligible SNS-neuron reward accounts through the transfer boundary;
 - scans IO transfers to `redemption`;
-- pays ICP and returns redeemed IO to `protocol_reserve`.
+- pays ICP and returns redeemed IO to `protocol_reserve` through the transfer boundary.
 - resumes retryable operations from the durable journal before scanning new blocks.
 
 `io_nns_neuron_manager::debug_tick`:
 
 - disburses 2-year and 2-week maturity from the model or mock governance;
-- emits mock ICP ledger transfers to `stream_manager_deposit`;
+- emits ICP transfer requests to `stream_manager_deposit` through the transfer boundary;
 - drives mock governance split/start-dissolving, stop/merge, and ready unwind principal disbursement paths;
 - handles two-week rebalance planning and ready unwind disbursement.
-- journals maturity/unwind ICP transfers and finalizes local model state only after the downstream mock ledger transfer succeeds.
+- journals maturity/unwind ICP transfers and finalizes local model state only after the downstream boundary transfer succeeds.
 
 ## Durable State
 
@@ -64,4 +64,4 @@ The NNS manager persists operation journal entries and maturity/unwind scheduler
 
 ## Limits
 
-This is not production ledger or governance wiring. The clients intentionally target mock debug APIs and the debug scheduler tick is absent from production DIDs. The operation journals are production-shaped but not audited. See `docs/security/threat-model.md` and `docs/operations/mainnet-readiness.md` before real-client work.
+This is not production ledger or governance wiring. Downstream transfer paths now use the `LedgerTransferClient` boundary, but the debug/PocketIC scan sources still use mock `debug_get_transactions` APIs. Production scan/index adapters and archive traversal are future work. The debug scheduler tick is absent from production DIDs. The `io-ledger-types` crate provides production-shaped ledger/index types, transfer error mapping, fee representation, and index cursor/lag/archive modelling so future real adapters can be introduced without rewriting journal semantics. The operation journals are production-shaped but not audited. See `docs/architecture/ledger-index-clients.md`, `docs/security/threat-model.md`, and `docs/operations/mainnet-readiness.md` before real-client work.

@@ -20,6 +20,7 @@ path = "../../tests/cli/io_stream_manager_cli.rs"
 candid.workspace = true
 ic-cdk.workspace = true
 io-core-model.workspace = true
+io-ledger-types.workspace = true
 io-reward-policy.workspace = true
 serde.workspace = true
 

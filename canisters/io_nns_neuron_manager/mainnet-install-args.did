@@ -11,4 +11,5 @@
   principal_unwind_memo = null : opt nat64;
   nns_governance_principal_text = null : opt text;
   icp_ledger_principal_text = null : opt text;
+  icp_index_principal_text = null : opt text;
 })

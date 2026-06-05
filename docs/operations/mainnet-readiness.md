@@ -4,8 +4,8 @@ IO is not ready for production mainnet deployment.
 
 Missing before production:
 
-- real ICP ledger and index clients;
-- real IO/SNS ledger and index clients;
+- audited real ICP ledger and index clients built on the `io-ledger-types` boundary;
+- audited real IO/SNS ledger and index clients built on the `io-ledger-types` boundary;
 - real NNS governance client;
 - real SNS governance client;
 - install args validated against final real principals;
@@ -16,4 +16,6 @@ Missing before production:
 - external audit of accounting, retry, upgrade, and controller behavior;
 - production monitoring for ledger/index lag, archive gaps, and journal retries.
 
-The current mock-driven journals and scheduler flows are production-shaped but not audited. No current script deploys to mainnet.
+The current mock-driven journals and scheduler flows are production-shaped but not audited. Downstream transfer paths use `LedgerTransferClient` mock adapters in debug/PocketIC runs; scan sources still use mock `debug_get_transactions`. No current script deploys to mainnet.
+
+The repo contains production-shaped ledger/index Candid models and boundary tests, but no mainnet wiring has been performed. Production scan/index adapters, archive traversal, fee policy, index lag alerting, and duplicate-transfer proof checks against real blocks must be finalized before any mainnet deployment proposal.

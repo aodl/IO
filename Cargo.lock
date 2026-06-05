@@ -934,12 +934,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "io-ledger-types"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "ic-cdk",
+ "serde",
+]
+
+[[package]]
 name = "io-nns-neuron-manager"
 version = "0.1.0"
 dependencies = [
  "candid",
  "ic-cdk",
  "io-build-support",
+ "io-ledger-types",
  "pocket-ic",
  "serde",
 ]
@@ -956,6 +966,7 @@ dependencies = [
  "ic-cdk",
  "io-build-support",
  "io-core-model",
+ "io-ledger-types",
  "io-nns-neuron-manager",
  "io-reward-policy",
  "pocket-ic",

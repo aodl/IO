@@ -11,6 +11,14 @@ use crate::{
 use candid::CandidType;
 #[cfg(target_family = "wasm")]
 use candid::Principal;
+#[cfg(target_family = "wasm")]
+use io_ledger_types::LedgerTransferClient;
+#[cfg(any(target_family = "wasm", test))]
+use io_ledger_types::{
+    duplicate_matches_expected, LedgerBlock, LedgerTransferError, LedgerTransferRequest,
+    LedgerTransferSuccess,
+};
+use io_ledger_types::{BlockIndex, IndexError, IndexScanResult};
 use serde::Deserialize;
 
 pub const STREAM_MANAGER_DEPOSIT_ACCOUNT: &str = "stream_manager_deposit";
@@ -46,6 +54,59 @@ impl SchedulerTickOutcome {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(any(target_family = "wasm", test))]
+enum BoundaryTransferDecision {
+    Succeeded(u64),
+    Retryable(String),
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn boundary_error_message(err: &LedgerTransferError) -> String {
+    match err {
+        LedgerTransferError::TemporarilyUnavailable => {
+            "ledger transfer temporarily unavailable".to_string()
+        }
+        LedgerTransferError::CanisterCallFailed { method, message } => {
+            format!("ledger transfer call {method} failed: {message}")
+        }
+        LedgerTransferError::BadFee { expected_fee_e8s } => {
+            format!("ledger transfer bad fee; expected {expected_fee_e8s} e8s")
+        }
+        LedgerTransferError::InsufficientFunds { balance_e8s } => {
+            format!("ledger transfer insufficient funds; balance {balance_e8s} e8s")
+        }
+        LedgerTransferError::Duplicate { duplicate_of } => {
+            format!("ledger transfer duplicate at block {}", duplicate_of.0)
+        }
+        err => format!("ledger transfer failed: {err:?}"),
+    }
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn classify_boundary_transfer_result(
+    expected: &LedgerTransferRequest,
+    result: Result<LedgerTransferSuccess, LedgerTransferError>,
+    duplicate_block: Option<&LedgerBlock>,
+) -> BoundaryTransferDecision {
+    match result {
+        Ok(success) => BoundaryTransferDecision::Succeeded(success.block_index.0),
+        Err(LedgerTransferError::Duplicate { .. }) => match duplicate_block {
+            Some(block) => match duplicate_matches_expected(expected, block) {
+                Ok(block) => BoundaryTransferDecision::Succeeded(block.0),
+                Err(proof) => BoundaryTransferDecision::Retryable(format!(
+                    "duplicate transfer did not match expected amount/account/memo: {proof:?}"
+                )),
+            },
+            None => BoundaryTransferDecision::Retryable(
+                "duplicate transfer could not be proven against expected amount/account/memo"
+                    .to_string(),
+            ),
+        },
+        Err(err) => BoundaryTransferDecision::Retryable(boundary_error_message(&err)),
+    }
+}
+
 #[cfg(target_family = "wasm")]
 fn principal(text: &Option<String>) -> Option<Principal> {
     text.as_deref()
@@ -63,6 +124,90 @@ fn kind_from_api(kind: ApiStreamKind) -> StreamOperationKind {
 
 pub fn scheduler_tick_plan_only() -> SchedulerTickOutcome {
     SchedulerTickOutcome::no_work_configured()
+}
+
+pub fn boundary_cursor_after_page(
+    current: Option<BlockIndex>,
+    result: &IndexScanResult,
+) -> Result<Option<BlockIndex>, IndexError> {
+    if let (Some(requested), Some(tip)) = (current, result.index_tip) {
+        if tip < requested {
+            return Err(IndexError::IndexLag {
+                requested,
+                tip: Some(tip),
+            });
+        }
+    }
+
+    if result.archive_required {
+        return Err(IndexError::ArchiveRequired {
+            from: current.unwrap_or(BlockIndex(0)),
+        });
+    }
+
+    let mut expected_next = current.map(|block| block.0.saturating_add(1));
+    let mut highest = current;
+    for tx in &result.transactions {
+        if let Some(cursor) = current {
+            if tx.block_index <= cursor {
+                highest = Some(cursor);
+                continue;
+            }
+        }
+        if let Some(expected) = expected_next {
+            if tx.block_index.0 != expected {
+                return Err(IndexError::MissingBlock {
+                    block_index: BlockIndex(expected),
+                });
+            }
+        }
+        expected_next = Some(tx.block_index.0.saturating_add(1));
+        highest = Some(tx.block_index);
+    }
+
+    Ok(highest)
+}
+
+#[cfg(target_family = "wasm")]
+fn mock_transfer_request(
+    from: &str,
+    to: &str,
+    amount_e8s: u128,
+    memo: &str,
+) -> LedgerTransferRequest {
+    LedgerTransferRequest {
+        from_subaccount: Some(icp_ledger::mock_subaccount(from)),
+        to: icp_ledger::mock_account(to),
+        amount_e8s,
+        fee_e8s: None,
+        memo: Some(io_ledger_types::Memo::from(memo)),
+        created_at_time: None,
+    }
+}
+
+#[cfg(target_family = "wasm")]
+async fn duplicate_block(canister: Principal, block_index: BlockIndex) -> Option<LedgerBlock> {
+    icp_ledger::debug_get_transactions(canister)
+        .await
+        .ok()?
+        .into_iter()
+        .find(|tx| tx.block_index == block_index.0)
+        .map(|tx| tx.into_boundary_block())
+}
+
+#[cfg(target_family = "wasm")]
+async fn classify_mock_transfer(
+    canister: Principal,
+    request: &LedgerTransferRequest,
+    result: Result<LedgerTransferSuccess, LedgerTransferError>,
+) -> BoundaryTransferDecision {
+    let duplicate = match result {
+        Err(LedgerTransferError::Duplicate { duplicate_of }) => {
+            duplicate_block(canister, duplicate_of).await
+        }
+        _ => None,
+    };
+    classify_boundary_transfer_result(request, result, duplicate.as_ref())
 }
 
 #[cfg(target_family = "wasm")]
@@ -95,14 +240,25 @@ async fn retry_pending_two_week_streams(
             break;
         };
 
-        let transfer = io_ledger::TransferArgs {
-            from: PROTOCOL_RESERVE_ACCOUNT.to_string(),
-            to: format!("{TWO_WEEK_REWARD_ACCOUNT_PREFIX}{}", recipient.neuron_id),
-            amount_e8s: recipient.amount_e8s,
-            memo: operation_id.clone(),
+        let to = format!("{TWO_WEEK_REWARD_ACCOUNT_PREFIX}{}", recipient.neuron_id);
+        let request = mock_transfer_request(
+            PROTOCOL_RESERVE_ACCOUNT,
+            &to,
+            recipient.amount_e8s,
+            &operation_id,
+        );
+        let client = io_ledger::MockLedgerCanisterClient {
+            canister: io_canister,
+            fee_e8s: 0,
         };
-        match io_ledger::transfer(io_canister, transfer).await {
-            Ok(block) => CANISTER_STATE.with(|cell| {
+        match classify_mock_transfer(
+            io_canister,
+            &request,
+            client.transfer(request.clone()).await,
+        )
+        .await
+        {
+            BoundaryTransferDecision::Succeeded(block) => CANISTER_STATE.with(|cell| {
                 if let Some(op) = cell
                     .borrow_mut()
                     .operation_journal
@@ -117,7 +273,7 @@ async fn retry_pending_two_week_streams(
                     op.mark_updated(OperationPhase::PartiallyDistributed);
                 }
             }),
-            Err(err) => {
+            BoundaryTransferDecision::Retryable(err) => {
                 CANISTER_STATE.with(|cell| {
                     if let Some(op) = cell
                         .borrow_mut()
@@ -204,15 +360,27 @@ async fn retry_pending_io_issuances(
         };
 
         if op.downstream_io_issuance_block.is_none() {
-            let transfer = io_ledger::TransferArgs {
-                from: PROTOCOL_RESERVE_ACCOUNT.to_string(),
-                to: JUPITER_FAUCET_SOURCE.to_string(),
-                amount_e8s: op.io_issued_e8s,
-                memo: op.operation_id.clone(),
+            let request = mock_transfer_request(
+                PROTOCOL_RESERVE_ACCOUNT,
+                JUPITER_FAUCET_SOURCE,
+                op.io_issued_e8s,
+                &op.operation_id,
+            );
+            let client = io_ledger::MockLedgerCanisterClient {
+                canister: io_canister,
+                fee_e8s: 0,
             };
-            match io_ledger::transfer(io_canister, transfer).await {
-                Ok(block) => mark_io_issuance(&op.operation_id, block),
-                Err(err) => {
+            match classify_mock_transfer(
+                io_canister,
+                &request,
+                client.transfer(request.clone()).await,
+            )
+            .await
+            {
+                BoundaryTransferDecision::Succeeded(block) => {
+                    mark_io_issuance(&op.operation_id, block)
+                }
+                BoundaryTransferDecision::Retryable(err) => {
                     mark_operation_error(
                         &op.operation_id,
                         err.clone(),
@@ -286,14 +454,25 @@ async fn retry_pending_redemptions(
                 return false;
             };
 
-            let transfer = icp_ledger::TransferArgs {
-                from: STREAM_MANAGER_DEPOSIT_ACCOUNT.to_string(),
-                to: op.user_account.clone().unwrap_or_default(),
-                amount_e8s: op.amount_e8s,
-                memo: REDEMPTION_PAYOUT_MEMO.to_string(),
+            let user_account = op.user_account.clone().unwrap_or_default();
+            let request = mock_transfer_request(
+                STREAM_MANAGER_DEPOSIT_ACCOUNT,
+                &user_account,
+                op.amount_e8s,
+                REDEMPTION_PAYOUT_MEMO,
+            );
+            let client = icp_ledger::MockLedgerCanisterClient {
+                canister: icp_canister,
+                fee_e8s: 0,
             };
-            match icp_ledger::transfer(icp_canister, transfer).await {
-                Ok(block) => {
+            match classify_mock_transfer(
+                icp_canister,
+                &request,
+                client.transfer(request.clone()).await,
+            )
+            .await
+            {
+                BoundaryTransferDecision::Succeeded(block) => {
                     CANISTER_STATE.with(|cell| {
                         if let Some(op) = cell
                             .borrow_mut()
@@ -307,7 +486,7 @@ async fn retry_pending_redemptions(
                         }
                     });
                 }
-                Err(err) => {
+                BoundaryTransferDecision::Retryable(err) => {
                     CANISTER_STATE.with(|cell| {
                         if let Some(op) = cell
                             .borrow_mut()
@@ -327,14 +506,24 @@ async fn retry_pending_redemptions(
         }
 
         if op.io_return_status != TransferStatus::Succeeded {
-            let transfer = io_ledger::TransferArgs {
-                from: REDEMPTION_ACCOUNT.to_string(),
-                to: PROTOCOL_RESERVE_ACCOUNT.to_string(),
-                amount_e8s: op.io_amount,
-                memo: REDEEMED_IO_MEMO.to_string(),
+            let request = mock_transfer_request(
+                REDEMPTION_ACCOUNT,
+                PROTOCOL_RESERVE_ACCOUNT,
+                op.io_amount,
+                REDEEMED_IO_MEMO,
+            );
+            let client = io_ledger::MockLedgerCanisterClient {
+                canister: io_canister,
+                fee_e8s: 0,
             };
-            match io_ledger::transfer(io_canister, transfer).await {
-                Ok(block) => {
+            match classify_mock_transfer(
+                io_canister,
+                &request,
+                client.transfer(request.clone()).await,
+            )
+            .await
+            {
+                BoundaryTransferDecision::Succeeded(block) => {
                     CANISTER_STATE.with(|cell| {
                         if let Some(op) = cell
                             .borrow_mut()
@@ -348,7 +537,7 @@ async fn retry_pending_redemptions(
                         }
                     });
                 }
-                Err(err) => {
+                BoundaryTransferDecision::Retryable(err) => {
                     CANISTER_STATE.with(|cell| {
                         if let Some(op) = cell
                             .borrow_mut()
@@ -812,6 +1001,56 @@ fn advance_io_cursor(block: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::JUPITER_FAUCET_SOURCE;
+    use io_ledger_types::{
+        Account, IndexTransaction, LedgerBlock, LedgerOperationKind, LedgerTransferRequest, Memo,
+        Subaccount,
+    };
+
+    fn block(index: u64) -> IndexTransaction {
+        let principal = candid::Principal::from_text("aaaaa-aa").unwrap();
+        IndexTransaction {
+            block_index: BlockIndex(index),
+            transaction: LedgerBlock {
+                block_index: BlockIndex(index),
+                timestamp_nanos: index,
+                from: Some(Account::new(principal, Some(Subaccount([1; 32])))),
+                to: Some(Account::new(principal, None)),
+                amount_e8s: 1,
+                fee_e8s: Some(10),
+                memo: Some(Memo::from("scan")),
+                operation_kind: LedgerOperationKind::Transfer,
+            },
+        }
+    }
+
+    fn transfer_request(amount_e8s: u128, to: &str, memo: &str) -> LedgerTransferRequest {
+        LedgerTransferRequest {
+            from_subaccount: Some(crate::clients::icp_ledger::mock_subaccount(
+                PROTOCOL_RESERVE_ACCOUNT,
+            )),
+            to: crate::clients::icp_ledger::mock_account(to),
+            amount_e8s,
+            fee_e8s: None,
+            memo: Some(Memo::from(memo)),
+            created_at_time: None,
+        }
+    }
+
+    fn duplicate_proof_block(amount_e8s: u128, to: &str, memo: &str) -> LedgerBlock {
+        LedgerBlock {
+            block_index: BlockIndex(9),
+            timestamp_nanos: 0,
+            from: Some(crate::clients::icp_ledger::mock_account(
+                PROTOCOL_RESERVE_ACCOUNT,
+            )),
+            to: Some(crate::clients::icp_ledger::mock_account(to)),
+            amount_e8s,
+            fee_e8s: None,
+            memo: Some(Memo::from(memo)),
+            operation_kind: LedgerOperationKind::Transfer,
+        }
+    }
 
     #[test]
     fn plan_only_tick_is_idempotent_without_configured_work() {
@@ -823,5 +1062,171 @@ mod tests {
         let outcome = scheduler_tick_plan_only();
         assert!(format!("{outcome:?}").contains("planned_steps"));
         candid::encode_one(outcome).unwrap();
+    }
+
+    #[test]
+    fn boundary_cursor_empty_page_does_not_advance() {
+        let result = IndexScanResult {
+            transactions: vec![],
+            last_seen_block: None,
+            index_tip: Some(BlockIndex(10)),
+            archive_required: false,
+        };
+        assert_eq!(
+            boundary_cursor_after_page(Some(BlockIndex(5)), &result),
+            Ok(Some(BlockIndex(5)))
+        );
+    }
+
+    #[test]
+    fn boundary_cursor_skips_already_processed_blocks_and_advances_once() {
+        let result = IndexScanResult {
+            transactions: vec![block(4), block(5), block(6)],
+            last_seen_block: Some(BlockIndex(6)),
+            index_tip: Some(BlockIndex(6)),
+            archive_required: false,
+        };
+        assert_eq!(
+            boundary_cursor_after_page(Some(BlockIndex(5)), &result),
+            Ok(Some(BlockIndex(6)))
+        );
+    }
+
+    #[test]
+    fn boundary_cursor_rejects_duplicate_new_blocks() {
+        let result = IndexScanResult {
+            transactions: vec![block(6), block(6)],
+            last_seen_block: Some(BlockIndex(6)),
+            index_tip: Some(BlockIndex(6)),
+            archive_required: false,
+        };
+        assert!(matches!(
+            boundary_cursor_after_page(Some(BlockIndex(5)), &result),
+            Err(IndexError::MissingBlock {
+                block_index: BlockIndex(7)
+            })
+        ));
+    }
+
+    #[test]
+    fn boundary_cursor_rejects_gap_and_does_not_skip_unknown_range() {
+        let result = IndexScanResult {
+            transactions: vec![block(7)],
+            last_seen_block: Some(BlockIndex(7)),
+            index_tip: Some(BlockIndex(7)),
+            archive_required: false,
+        };
+        assert_eq!(
+            boundary_cursor_after_page(Some(BlockIndex(5)), &result),
+            Err(IndexError::MissingBlock {
+                block_index: BlockIndex(6)
+            })
+        );
+    }
+
+    #[test]
+    fn boundary_cursor_reports_archive_required_before_advancing() {
+        let result = IndexScanResult {
+            transactions: vec![block(6)],
+            last_seen_block: Some(BlockIndex(6)),
+            index_tip: Some(BlockIndex(100)),
+            archive_required: true,
+        };
+        assert_eq!(
+            boundary_cursor_after_page(Some(BlockIndex(5)), &result),
+            Err(IndexError::ArchiveRequired {
+                from: BlockIndex(5)
+            })
+        );
+    }
+
+    #[test]
+    fn boundary_cursor_reports_index_lag() {
+        let result = IndexScanResult {
+            transactions: vec![],
+            last_seen_block: None,
+            index_tip: Some(BlockIndex(4)),
+            archive_required: false,
+        };
+        assert_eq!(
+            boundary_cursor_after_page(Some(BlockIndex(5)), &result),
+            Err(IndexError::IndexLag {
+                requested: BlockIndex(5),
+                tip: Some(BlockIndex(4))
+            })
+        );
+    }
+
+    #[test]
+    fn duplicate_transfer_without_proof_is_not_success() {
+        let request = transfer_request(100, JUPITER_FAUCET_SOURCE, "icp:1");
+        assert!(matches!(
+            classify_boundary_transfer_result(
+                &request,
+                Err(LedgerTransferError::Duplicate {
+                    duplicate_of: BlockIndex(9)
+                }),
+                None,
+            ),
+            BoundaryTransferDecision::Retryable(_)
+        ));
+    }
+
+    #[test]
+    fn duplicate_transfer_matching_expected_operation_is_idempotent_success() {
+        let request = transfer_request(100, JUPITER_FAUCET_SOURCE, "icp:1");
+        let duplicate = duplicate_proof_block(100, JUPITER_FAUCET_SOURCE, "icp:1");
+        assert_eq!(
+            classify_boundary_transfer_result(
+                &request,
+                Err(LedgerTransferError::Duplicate {
+                    duplicate_of: BlockIndex(9)
+                }),
+                Some(&duplicate),
+            ),
+            BoundaryTransferDecision::Succeeded(9)
+        );
+    }
+
+    #[test]
+    fn duplicate_transfer_mismatched_amount_account_or_memo_is_not_success() {
+        let request = transfer_request(100, JUPITER_FAUCET_SOURCE, "icp:1");
+        for duplicate in [
+            duplicate_proof_block(99, JUPITER_FAUCET_SOURCE, "icp:1"),
+            duplicate_proof_block(100, "other_account", "icp:1"),
+            duplicate_proof_block(100, JUPITER_FAUCET_SOURCE, "other_memo"),
+        ] {
+            assert!(matches!(
+                classify_boundary_transfer_result(
+                    &request,
+                    Err(LedgerTransferError::Duplicate {
+                        duplicate_of: BlockIndex(9)
+                    }),
+                    Some(&duplicate),
+                ),
+                BoundaryTransferDecision::Retryable(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn boundary_transfer_error_classes_remain_retryable() {
+        let request = transfer_request(100, JUPITER_FAUCET_SOURCE, "icp:1");
+        for err in [
+            LedgerTransferError::TemporarilyUnavailable,
+            LedgerTransferError::CanisterCallFailed {
+                method: "icrc1_transfer".to_string(),
+                message: "reject".to_string(),
+            },
+            LedgerTransferError::BadFee {
+                expected_fee_e8s: 10,
+            },
+            LedgerTransferError::InsufficientFunds { balance_e8s: 1 },
+        ] {
+            assert!(matches!(
+                classify_boundary_transfer_result(&request, Err(err), None),
+                BoundaryTransferDecision::Retryable(_)
+            ));
+        }
     }
 }

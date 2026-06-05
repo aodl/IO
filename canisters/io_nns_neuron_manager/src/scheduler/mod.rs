@@ -9,6 +9,13 @@ use crate::{
 use candid::CandidType;
 #[cfg(target_family = "wasm")]
 use candid::Principal;
+#[cfg(target_family = "wasm")]
+use io_ledger_types::LedgerTransferClient;
+#[cfg(any(target_family = "wasm", test))]
+use io_ledger_types::{
+    duplicate_matches_expected, BlockIndex, LedgerBlock, LedgerTransferError,
+    LedgerTransferRequest, LedgerTransferSuccess,
+};
 use serde::Deserialize;
 
 pub const IO_NNS_NEURON_MANAGER_ACCOUNT: &str = "io_nns_neuron_manager";
@@ -43,6 +50,59 @@ impl SchedulerTickOutcome {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(any(target_family = "wasm", test))]
+enum BoundaryTransferDecision {
+    Succeeded(u64),
+    Retryable(String),
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn boundary_error_message(err: &LedgerTransferError) -> String {
+    match err {
+        LedgerTransferError::TemporarilyUnavailable => {
+            "ledger transfer temporarily unavailable".to_string()
+        }
+        LedgerTransferError::CanisterCallFailed { method, message } => {
+            format!("ledger transfer call {method} failed: {message}")
+        }
+        LedgerTransferError::BadFee { expected_fee_e8s } => {
+            format!("ledger transfer bad fee; expected {expected_fee_e8s} e8s")
+        }
+        LedgerTransferError::InsufficientFunds { balance_e8s } => {
+            format!("ledger transfer insufficient funds; balance {balance_e8s} e8s")
+        }
+        LedgerTransferError::Duplicate { duplicate_of } => {
+            format!("ledger transfer duplicate at block {}", duplicate_of.0)
+        }
+        err => format!("ledger transfer failed: {err:?}"),
+    }
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn classify_boundary_transfer_result(
+    expected: &LedgerTransferRequest,
+    result: Result<LedgerTransferSuccess, LedgerTransferError>,
+    duplicate_block: Option<&LedgerBlock>,
+) -> BoundaryTransferDecision {
+    match result {
+        Ok(success) => BoundaryTransferDecision::Succeeded(success.block_index.0),
+        Err(LedgerTransferError::Duplicate { .. }) => match duplicate_block {
+            Some(block) => match duplicate_matches_expected(expected, block) {
+                Ok(block) => BoundaryTransferDecision::Succeeded(block.0),
+                Err(proof) => BoundaryTransferDecision::Retryable(format!(
+                    "duplicate transfer did not match expected amount/account/memo: {proof:?}"
+                )),
+            },
+            None => BoundaryTransferDecision::Retryable(
+                "duplicate transfer could not be proven against expected amount/account/memo"
+                    .to_string(),
+            ),
+        },
+        Err(err) => BoundaryTransferDecision::Retryable(boundary_error_message(&err)),
+    }
+}
+
 #[cfg(target_family = "wasm")]
 fn principal(text: &Option<String>) -> Option<Principal> {
     text.as_deref()
@@ -51,6 +111,43 @@ fn principal(text: &Option<String>) -> Option<Principal> {
 
 pub fn scheduler_tick_plan_only() -> SchedulerTickOutcome {
     SchedulerTickOutcome::no_work_configured()
+}
+
+#[cfg(target_family = "wasm")]
+fn mock_transfer_request(amount_e8s: u128, memo: &str) -> LedgerTransferRequest {
+    LedgerTransferRequest {
+        from_subaccount: Some(icp_ledger::mock_subaccount(IO_NNS_NEURON_MANAGER_ACCOUNT)),
+        to: icp_ledger::mock_account(STREAM_MANAGER_DEPOSIT_ACCOUNT),
+        amount_e8s,
+        fee_e8s: None,
+        memo: Some(io_ledger_types::Memo::from(memo)),
+        created_at_time: None,
+    }
+}
+
+#[cfg(target_family = "wasm")]
+async fn duplicate_block(canister: Principal, block_index: BlockIndex) -> Option<LedgerBlock> {
+    icp_ledger::debug_get_transactions(canister)
+        .await
+        .ok()?
+        .into_iter()
+        .find(|tx| tx.block_index == block_index.0)
+        .map(|tx| tx.into_boundary_block())
+}
+
+#[cfg(target_family = "wasm")]
+async fn classify_mock_transfer(
+    canister: Principal,
+    request: &LedgerTransferRequest,
+    result: Result<LedgerTransferSuccess, LedgerTransferError>,
+) -> BoundaryTransferDecision {
+    let duplicate = match result {
+        Err(LedgerTransferError::Duplicate { duplicate_of }) => {
+            duplicate_block(canister, duplicate_of).await
+        }
+        _ => None,
+    };
+    classify_boundary_transfer_result(request, result, duplicate.as_ref())
 }
 
 #[cfg(target_family = "wasm")]
@@ -93,14 +190,14 @@ async fn retry_pending_icp_transfers(ledger: Principal, outcome: &mut DebugTickO
         let Some(pending) = pending else {
             return true;
         };
-        let transfer = icp_ledger::TransferArgs {
-            from: IO_NNS_NEURON_MANAGER_ACCOUNT.to_string(),
-            to: STREAM_MANAGER_DEPOSIT_ACCOUNT.to_string(),
-            amount_e8s: pending.amount_e8s,
-            memo: pending.memo.clone(),
+        let request = mock_transfer_request(pending.amount_e8s, &pending.memo);
+        let client = icp_ledger::MockIcpLedgerClient {
+            canister: ledger,
+            fee_e8s: 0,
         };
-        match icp_ledger::transfer(ledger, transfer).await {
-            Ok(block) => {
+        match classify_mock_transfer(ledger, &request, client.transfer(request.clone()).await).await
+        {
+            BoundaryTransferDecision::Succeeded(block) => {
                 CANISTER_STATE.with(|cell| {
                     let mut state = cell.borrow_mut();
                     if let Some(index) = state
@@ -117,7 +214,7 @@ async fn retry_pending_icp_transfers(ledger: Principal, outcome: &mut DebugTickO
                 });
                 record_disbursement(outcome, pending.amount_e8s, &pending.memo);
             }
-            Err(err) => {
+            BoundaryTransferDecision::Retryable(err) => {
                 CANISTER_STATE.with(|cell| {
                     if let Some(op) = cell
                         .borrow_mut()
@@ -391,6 +488,32 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clients::icp_ledger;
+    use io_ledger_types::{LedgerBlock, LedgerOperationKind, Memo};
+
+    fn transfer_request(amount_e8s: u128, memo: &str) -> LedgerTransferRequest {
+        LedgerTransferRequest {
+            from_subaccount: Some(icp_ledger::mock_subaccount(IO_NNS_NEURON_MANAGER_ACCOUNT)),
+            to: icp_ledger::mock_account(STREAM_MANAGER_DEPOSIT_ACCOUNT),
+            amount_e8s,
+            fee_e8s: None,
+            memo: Some(Memo::from(memo)),
+            created_at_time: None,
+        }
+    }
+
+    fn duplicate_proof_block(amount_e8s: u128, memo: &str) -> LedgerBlock {
+        LedgerBlock {
+            block_index: BlockIndex(17),
+            timestamp_nanos: 0,
+            from: Some(icp_ledger::mock_account(IO_NNS_NEURON_MANAGER_ACCOUNT)),
+            to: Some(icp_ledger::mock_account(STREAM_MANAGER_DEPOSIT_ACCOUNT)),
+            amount_e8s,
+            fee_e8s: None,
+            memo: Some(Memo::from(memo)),
+            operation_kind: LedgerOperationKind::Transfer,
+        }
+    }
 
     #[test]
     fn plan_only_tick_is_idempotent_without_configured_work() {
@@ -402,5 +525,65 @@ mod tests {
         let outcome = scheduler_tick_plan_only();
         assert!(format!("{outcome:?}").contains("planned_steps"));
         candid::encode_one(outcome).unwrap();
+    }
+
+    #[test]
+    fn nns_duplicate_transfer_requires_matching_proof_before_completion() {
+        let request = transfer_request(100, TWO_WEEK_MATURITY_MEMO);
+        assert!(matches!(
+            classify_boundary_transfer_result(
+                &request,
+                Err(LedgerTransferError::Duplicate {
+                    duplicate_of: BlockIndex(17)
+                }),
+                None,
+            ),
+            BoundaryTransferDecision::Retryable(_)
+        ));
+
+        let matching = duplicate_proof_block(100, TWO_WEEK_MATURITY_MEMO);
+        assert_eq!(
+            classify_boundary_transfer_result(
+                &request,
+                Err(LedgerTransferError::Duplicate {
+                    duplicate_of: BlockIndex(17)
+                }),
+                Some(&matching),
+            ),
+            BoundaryTransferDecision::Succeeded(17)
+        );
+
+        let mismatched = duplicate_proof_block(99, TWO_WEEK_MATURITY_MEMO);
+        assert!(matches!(
+            classify_boundary_transfer_result(
+                &request,
+                Err(LedgerTransferError::Duplicate {
+                    duplicate_of: BlockIndex(17)
+                }),
+                Some(&mismatched),
+            ),
+            BoundaryTransferDecision::Retryable(_)
+        ));
+    }
+
+    #[test]
+    fn nns_boundary_transfer_error_classes_remain_retryable() {
+        let request = transfer_request(100, PRINCIPAL_UNWIND_MEMO);
+        for err in [
+            LedgerTransferError::TemporarilyUnavailable,
+            LedgerTransferError::CanisterCallFailed {
+                method: "icrc1_transfer".to_string(),
+                message: "reject".to_string(),
+            },
+            LedgerTransferError::BadFee {
+                expected_fee_e8s: 10,
+            },
+            LedgerTransferError::InsufficientFunds { balance_e8s: 1 },
+        ] {
+            assert!(matches!(
+                classify_boundary_transfer_result(&request, Err(err), None),
+                BoundaryTransferDecision::Retryable(_)
+            ));
+        }
     }
 }

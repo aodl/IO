@@ -1,5 +1,11 @@
 use candid::{CandidType, Principal};
+use io_ledger_types::{
+    Account, BlockIndex, LedgerBlock, LedgerOperationKind, LedgerTransferError,
+    LedgerTransferRequest, LedgerTransferSuccess, Memo, Subaccount,
+};
 use serde::Deserialize;
+use std::future::Future;
+use std::pin::Pin;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct LedgerTransaction {
@@ -19,6 +25,27 @@ pub struct TransferArgs {
     pub memo: String,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct MockLedgerCanisterClient {
+    pub canister: Principal,
+    pub fee_e8s: u128,
+}
+
+impl LedgerTransaction {
+    pub fn into_boundary_block(self) -> LedgerBlock {
+        LedgerBlock {
+            block_index: BlockIndex(self.block_index),
+            timestamp_nanos: self.timestamp,
+            from: Some(mock_account(&self.from)),
+            to: Some(mock_account(&self.to)),
+            amount_e8s: self.amount_e8s,
+            fee_e8s: None,
+            memo: Some(Memo::from(self.memo)),
+            operation_kind: LedgerOperationKind::Transfer,
+        }
+    }
+}
+
 pub async fn debug_get_transactions(canister: Principal) -> Result<Vec<LedgerTransaction>, String> {
     let response = ic_cdk::call::Call::bounded_wait(canister, "debug_get_transactions")
         .await
@@ -29,6 +56,91 @@ pub async fn debug_get_transactions(canister: Principal) -> Result<Vec<LedgerTra
                 .map_err(|err| format!("ledger transaction decode failed: {err:?}"))
         })?;
     Ok(response.0)
+}
+
+pub fn mock_subaccount(label: &str) -> Subaccount {
+    let bytes = label.as_bytes();
+    let mut subaccount = [0; 32];
+    let len = bytes.len().min(31);
+    subaccount[0] = len as u8;
+    subaccount[1..=len].copy_from_slice(&bytes[..len]);
+    Subaccount(subaccount)
+}
+
+pub fn mock_account(label: &str) -> Account {
+    Account::new(Principal::anonymous(), Some(mock_subaccount(label)))
+}
+
+fn mock_label_from_subaccount(subaccount: &Subaccount) -> Option<String> {
+    let len = subaccount.0[0] as usize;
+    if len == 0 || len > 31 {
+        return None;
+    }
+    std::str::from_utf8(&subaccount.0[1..=len])
+        .ok()
+        .map(ToString::to_string)
+}
+
+fn mock_label_from_account(account: &Account) -> String {
+    account
+        .subaccount
+        .as_ref()
+        .and_then(mock_label_from_subaccount)
+        .unwrap_or_else(|| account.owner.to_text())
+}
+
+fn mock_transfer_args(request: LedgerTransferRequest) -> TransferArgs {
+    TransferArgs {
+        from: request
+            .from_subaccount
+            .as_ref()
+            .and_then(mock_label_from_subaccount)
+            .unwrap_or_else(|| "boundary_from_subaccount".to_string()),
+        to: mock_label_from_account(&request.to),
+        amount_e8s: request.amount_e8s,
+        memo: request
+            .memo
+            .map(|memo| String::from_utf8_lossy(&memo.0).into_owned())
+            .unwrap_or_default(),
+    }
+}
+
+pub fn map_mock_transfer_result(
+    result: Result<u64, String>,
+) -> Result<LedgerTransferSuccess, LedgerTransferError> {
+    match result {
+        Ok(block) => Ok(LedgerTransferSuccess {
+            block_index: BlockIndex(block),
+        }),
+        Err(err) if err.contains("insufficient funds") => {
+            Err(LedgerTransferError::InsufficientFunds { balance_e8s: 0 })
+        }
+        Err(err) if err.contains("duplicate") => Err(LedgerTransferError::Duplicate {
+            duplicate_of: BlockIndex(0),
+        }),
+        Err(err) => Err(LedgerTransferError::CanisterCallFailed {
+            method: "icrc1_transfer".to_string(),
+            message: err,
+        }),
+    }
+}
+
+impl io_ledger_types::LedgerTransferClient for MockLedgerCanisterClient {
+    fn transfer<'a>(
+        &'a self,
+        request: LedgerTransferRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<LedgerTransferSuccess, LedgerTransferError>> + 'a>>
+    {
+        Box::pin(async move {
+            map_mock_transfer_result(transfer(self.canister, mock_transfer_args(request)).await)
+        })
+    }
+
+    fn fee<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<u128, io_ledger_types::LedgerQueryError>> + 'a>> {
+        Box::pin(async move { Ok(self.fee_e8s) })
+    }
 }
 
 pub async fn transfer(canister: Principal, args: TransferArgs) -> Result<u64, String> {
@@ -42,4 +154,41 @@ pub async fn transfer(canister: Principal, args: TransferArgs) -> Result<u64, St
                 .map_err(|err| format!("ledger transfer decode failed: {err:?}"))
         })?;
     response.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mock_transfer_errors_map_to_boundary_errors() {
+        assert!(matches!(
+            map_mock_transfer_result(Err("insufficient funds".to_string())),
+            Err(LedgerTransferError::InsufficientFunds { .. })
+        ));
+        assert!(matches!(
+            map_mock_transfer_result(Err("duplicate transfer".to_string())),
+            Err(LedgerTransferError::Duplicate { .. })
+        ));
+        assert!(matches!(
+            map_mock_transfer_result(Err("decode failed".to_string())),
+            Err(LedgerTransferError::CanisterCallFailed { .. })
+        ));
+    }
+
+    #[test]
+    fn mock_boundary_request_decodes_debug_account_labels() {
+        let args = mock_transfer_args(LedgerTransferRequest {
+            from_subaccount: Some(mock_subaccount("protocol_reserve")),
+            to: mock_account("sns_neuron_10"),
+            amount_e8s: 42,
+            fee_e8s: None,
+            memo: Some(Memo::from("reward")),
+            created_at_time: None,
+        });
+        assert_eq!(args.from, "protocol_reserve");
+        assert_eq!(args.to, "sns_neuron_10");
+        assert_eq!(args.amount_e8s, 42);
+        assert_eq!(args.memo, "reward");
+    }
 }

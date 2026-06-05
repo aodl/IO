@@ -12,7 +12,7 @@ The stream-manager scheduler is reserved for timer-driven work that:
 - classify observed flows
 - process authorized streams internally
 
-In debug/test Wasm, `debug_tick` scans configured mock ICP and IO ledger/index histories. It classifies authorized deposits by source and memo, journals each relevant block index, issues IO from the mock protocol reserve account, scans IO redemption transfers, pays ICP through the mock ICP ledger, and returns redeemed IO to the mock protocol reserve account.
+In debug/test Wasm, `debug_tick` scans configured mock ICP and IO ledger/index histories. It classifies authorized deposits by source and memo, journals each relevant block index, builds `LedgerTransferRequest`s for downstream IO issuance, two-week IO rewards, ICP redemption payouts, and redeemed IO returns, executes those requests through `LedgerTransferClient` mock adapters, and updates journal status from the resulting boundary success or error.
 
 The stream manager stores durable operation journal entries for:
 
@@ -37,7 +37,7 @@ Stream phases are:
 
 Two-week maturity journal entries track each recipient neuron/account, the IO amount, transfer status, transfer block, and last error. Redemption entries track the observed IO redemption block, IO amount, ICP payout status/block, IO return status/block, and user account.
 
-The scheduler treats the journal as the retry source of truth. Completed operations are not reprocessed. Retryable operations resume at the first incomplete downstream transfer. Successful downstream transfers are not repeated.
+The scheduler treats the journal as the retry source of truth. Completed operations are not reprocessed. Retryable operations resume at the first incomplete downstream transfer. Successful downstream transfers are not repeated. Duplicate transfer results are not treated as success unless the duplicate block matches the expected amount, destination account, and memo. Bad fee and insufficient-funds boundary errors are retryable in this milestone because fee policy and funding reconciliation remain future production work.
 
 The stream manager persists scan cursors:
 
@@ -57,7 +57,7 @@ The NNS manager scheduler is reserved for timer-driven work that:
 - rebalance the pooled 2-week neuron
 - disburse ready unwind child neurons
 
-In debug/test Wasm, `debug_tick` disburses model maturity, plans two-week pool rebalance work, disburses ready unwind principal, and sends mock ICP ledger transfers to the stream-manager deposit account with classifier memos.
+In debug/test Wasm, `debug_tick` disburses model maturity, plans two-week pool rebalance work, disburses ready unwind principal, builds `LedgerTransferRequest`s to the stream-manager deposit account with classifier memos, and executes them through a `LedgerTransferClient` mock adapter.
 
 The NNS manager stores durable operation journal entries for:
 
@@ -68,7 +68,7 @@ The NNS manager stores durable operation journal entries for:
 - `TwoWeekPoolMergeBack`
 - `TwoWeekPoolRestake`
 
-The implemented mock-ledger disbursement paths use `AwaitingIcpTransfer`, `Completed`, and `FailedRetryable` phases. A maturity or unwind model change is not finalized locally until the ICP transfer to the stream-manager deposit account succeeds. Failed transfers remain retryable, and successful transfers are not repeated.
+The implemented disbursement paths use `AwaitingIcpTransfer`, `Completed`, and `FailedRetryable` phases. A maturity or unwind model change is not finalized locally until the boundary ICP transfer to the stream-manager deposit account succeeds. Failed transfers remain retryable, duplicate transfer results require amount/account/memo proof before completion, and successful transfers are not repeated.
 
 The NNS manager persists scheduler checkpoints:
 
@@ -82,6 +82,6 @@ The production DID does not expose `debug_tick`.
 
 ## Integration Boundary
 
-Client modules now exist for ICP ledger/index, IO ledger/index, SNS governance, NNS governance, and ICP ledger transfer calls. They currently target mock canisters in debug/test integration. Production wiring remains future work and should preserve ledger/index/timer-driven flows rather than caller-submitted stream kinds. The journal is production-shaped but not audited.
+Client modules now exist for ICP ledger/index, IO ledger/index, SNS governance, NNS governance, and ledger transfer calls. The shared `io-ledger-types` crate defines the production-shaped ledger/index boundary used by future adapters and mock mapping code. Downstream transfer paths now use `LedgerTransferClient`; debug/PocketIC scan sources still use mock `debug_get_transactions` APIs. Production scan/index adapters and archive traversal remain future work. Boundary tests cover transfer errors, duplicate transfer proof, fees, cursor gaps, archive-required pages, and index lag. Production wiring remains future work and should preserve ledger/index/timer-driven flows rather than caller-submitted stream kinds. The journal is production-shaped but not audited.
 
 Operational recovery for stuck journal entries is documented in `docs/security/controller-and-recovery.md` and `docs/operations/emergency-runbook.md`. Recovery must preserve retry/idempotency semantics and must not add production stream-processing or tick APIs.

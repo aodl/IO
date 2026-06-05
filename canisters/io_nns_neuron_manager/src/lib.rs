@@ -153,6 +153,7 @@ pub struct InitArgs {
     pub principal_unwind_memo: Option<u64>,
     pub nns_governance_principal_text: Option<String>,
     pub icp_ledger_principal_text: Option<String>,
+    pub icp_index_principal_text: Option<String>,
 }
 
 impl Default for InitArgs {
@@ -170,6 +171,7 @@ impl Default for InitArgs {
             principal_unwind_memo: None,
             nns_governance_principal_text: None,
             icp_ledger_principal_text: None,
+            icp_index_principal_text: None,
         }
     }
 }
@@ -188,6 +190,7 @@ pub struct NnsNeuronManagerConfig {
     pub principal_unwind_memo: Option<u64>,
     pub nns_governance_principal_text: Option<String>,
     pub icp_ledger_principal_text: Option<String>,
+    pub icp_index_principal_text: Option<String>,
 }
 
 impl Default for NnsNeuronManagerConfig {
@@ -205,6 +208,7 @@ pub enum InitArgsError {
     InvalidStreamManagerPrincipal { value: String },
     InvalidNnsGovernancePrincipal { value: String },
     InvalidIcpLedgerPrincipal { value: String },
+    InvalidIcpIndexPrincipal { value: String },
     ZeroTwoYearNeuronId,
     ZeroTwoWeekDissolveSeconds,
     ModelAnnualBpsTooHigh { bps: u128, max_bps: u128 },
@@ -255,6 +259,13 @@ impl TryFrom<InitArgs> for NnsNeuronManagerConfig {
                 });
             }
         }
+        if let Some(text) = &args.icp_index_principal_text {
+            if text.trim().is_empty() || Principal::from_text(text).is_err() {
+                return Err(InitArgsError::InvalidIcpIndexPrincipal {
+                    value: text.clone(),
+                });
+            }
+        }
 
         Ok(Self {
             controller_canister_principal_text: args.controller_canister_principal_text,
@@ -269,6 +280,7 @@ impl TryFrom<InitArgs> for NnsNeuronManagerConfig {
             principal_unwind_memo: args.principal_unwind_memo,
             nns_governance_principal_text: args.nns_governance_principal_text,
             icp_ledger_principal_text: args.icp_ledger_principal_text,
+            icp_index_principal_text: args.icp_index_principal_text,
         })
     }
 }
@@ -963,6 +975,16 @@ mod tests {
             InitArgsError::ModelAnnualBpsTooHigh {
                 bps: MAX_MODEL_ANNUAL_BPS + 1,
                 max_bps: MAX_MODEL_ANNUAL_BPS
+            }
+        );
+        assert_eq!(
+            NnsNeuronManagerConfig::try_from(InitArgs {
+                icp_index_principal_text: Some("not a principal".to_string()),
+                ..InitArgs::default()
+            })
+            .unwrap_err(),
+            InitArgsError::InvalidIcpIndexPrincipal {
+                value: "not a principal".to_string()
             }
         );
     }

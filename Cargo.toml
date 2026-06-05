@@ -6,6 +6,7 @@ members = [
   "canisters/io_historian",
   "canisters/frontend",
   "crates/io_core_model",
+  "crates/io_ledger_types",
   "crates/io_reward_policy",
   "crates/io_build_support",
   "tests/mocks/mock_icp_ledger",
@@ -27,6 +28,7 @@ license = "Apache-2.0"
 candid = "0.10.29"
 ic-cdk = "0.20.1"
 io-core-model = { path = "crates/io_core_model" }
+io-ledger-types = { path = "crates/io_ledger_types" }
 io-reward-policy = { path = "crates/io_reward_policy" }
 io-build-support = { path = "crates/io_build_support" }
 io-nns-neuron-manager = { path = "canisters/io_nns_neuron_manager" }
