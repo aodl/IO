@@ -9,9 +9,15 @@ The value-moving canisters are:
 - `io_stream_manager`
 - `io_nns_neuron_manager`
 
-Their production DIDs should remain minimal. Production behavior should be driven by install args, internal state, timers, ledger/index scans, governance observations, and management-canister observations where possible.
+Their production DIDs should remain minimal. Production behavior should be driven by install args, internal state, timers, ledger/index scans, governance observations, and management-canister observations where possible. The current acceptable production shape for value-moving canisters is install-args-only:
+
+```did
+service : (InitArgs) -> {}
+```
 
 Do not add broad production methods such as `get_state`, `get_events`, dashboard views, caller-submitted stream-kind processors, redemption controls that trust arbitrary caller assertions, or debug time controls.
+
+Install-args-only evolution is not considered a broad API expansion. Public query/control methods on `io_stream_manager` or `io_nns_neuron_manager` still require an explicit architecture exception.
 
 ## Debug DID vs Production DID
 
@@ -28,6 +34,8 @@ Debug DIDs are for local development, model tests, and PocketIC-shaped tests. Th
 - `debug_advance_model_time`
 
 Debug methods must not become production read/control APIs.
+
+Stable-state export/import helpers are host-test/debug-only implementation aids and must not be added to production DIDs.
 
 ## Ledger-as-Interface
 

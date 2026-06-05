@@ -1,1 +1,14 @@
-service : {}
+type InitArgs = record {
+  controller_canister_principal_text : text;
+  two_year_nns_neuron_id : nat64;
+  two_week_dissolve_seconds : nat64;
+  initial_two_year_principal_e8s : nat;
+  initial_two_week_principal_e8s : nat;
+  model_annual_bps : nat;
+  io_stream_manager_principal_text : opt text;
+  two_year_maturity_memo : opt nat64;
+  two_week_maturity_memo : opt nat64;
+  principal_unwind_memo : opt nat64;
+};
+
+service : (InitArgs) -> {}

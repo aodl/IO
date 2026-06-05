@@ -325,7 +325,10 @@ dependencies = [
 name = "io-historian"
 version = "0.1.0"
 dependencies = [
+ "candid",
+ "ic-cdk",
  "io-build-support",
+ "serde",
 ]
 
 [[package]]

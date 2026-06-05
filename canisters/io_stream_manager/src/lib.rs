@@ -1,7 +1,8 @@
 pub mod logic;
+pub mod scheduler;
 pub mod state;
 
-use candid::CandidType;
+use candid::{CandidType, Principal};
 use serde::Deserialize;
 use std::cell::RefCell;
 
@@ -13,22 +14,123 @@ pub use logic::StreamManagerError;
 pub use state::StreamManager;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct StreamManagerConfig {
+pub struct InitArgs {
     pub initial_total_io_supply_e8s: u128,
     pub initial_protocol_reserve_io_e8s: u128,
     pub non_redeemable_governance_io_e8s: u128,
     pub two_week_pool_backing_bps: u128,
+    pub jupiter_faucet_principal_text: Option<String>,
+    pub io_nns_neuron_manager_principal_text: Option<String>,
+    pub icp_ledger_principal_text: Option<String>,
+    pub icp_index_principal_text: Option<String>,
+    pub io_ledger_principal_text: Option<String>,
+    pub io_index_principal_text: Option<String>,
 }
 
-impl Default for StreamManagerConfig {
+impl Default for InitArgs {
     fn default() -> Self {
         Self {
             initial_total_io_supply_e8s: 1_000_000 * E8S_PER_TOKEN,
             initial_protocol_reserve_io_e8s: 900_000 * E8S_PER_TOKEN,
             non_redeemable_governance_io_e8s: 100_000 * E8S_PER_TOKEN,
             two_week_pool_backing_bps: 10_000,
+            jupiter_faucet_principal_text: None,
+            io_nns_neuron_manager_principal_text: None,
+            icp_ledger_principal_text: None,
+            icp_index_principal_text: None,
+            io_ledger_principal_text: None,
+            io_index_principal_text: None,
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct StreamManagerConfig {
+    pub initial_total_io_supply_e8s: u128,
+    pub initial_protocol_reserve_io_e8s: u128,
+    pub non_redeemable_governance_io_e8s: u128,
+    pub two_week_pool_backing_bps: u128,
+    pub jupiter_faucet_principal_text: Option<String>,
+    pub io_nns_neuron_manager_principal_text: Option<String>,
+    pub icp_ledger_principal_text: Option<String>,
+    pub icp_index_principal_text: Option<String>,
+    pub io_ledger_principal_text: Option<String>,
+    pub io_index_principal_text: Option<String>,
+}
+
+impl Default for StreamManagerConfig {
+    fn default() -> Self {
+        InitArgs::default()
+            .try_into()
+            .expect("default stream-manager config must be valid")
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InitArgsError {
+    ExcludedSupplyExceedsTotal,
+    InvalidBasisPoints { bps: u128 },
+    InvalidPrincipalText { field: &'static str, value: String },
+}
+
+impl TryFrom<InitArgs> for StreamManagerConfig {
+    type Error = InitArgsError;
+
+    fn try_from(args: InitArgs) -> Result<Self, Self::Error> {
+        let excluded_supply = args
+            .initial_protocol_reserve_io_e8s
+            .checked_add(args.non_redeemable_governance_io_e8s)
+            .ok_or(InitArgsError::ExcludedSupplyExceedsTotal)?;
+        if args.initial_total_io_supply_e8s < excluded_supply {
+            return Err(InitArgsError::ExcludedSupplyExceedsTotal);
+        }
+        if args.two_week_pool_backing_bps > 10_000 {
+            return Err(InitArgsError::InvalidBasisPoints {
+                bps: args.two_week_pool_backing_bps,
+            });
+        }
+
+        validate_optional_principal(
+            "jupiter_faucet_principal_text",
+            &args.jupiter_faucet_principal_text,
+        )?;
+        validate_optional_principal(
+            "io_nns_neuron_manager_principal_text",
+            &args.io_nns_neuron_manager_principal_text,
+        )?;
+        validate_optional_principal("icp_ledger_principal_text", &args.icp_ledger_principal_text)?;
+        validate_optional_principal("icp_index_principal_text", &args.icp_index_principal_text)?;
+        validate_optional_principal("io_ledger_principal_text", &args.io_ledger_principal_text)?;
+        validate_optional_principal("io_index_principal_text", &args.io_index_principal_text)?;
+
+        Ok(Self {
+            initial_total_io_supply_e8s: args.initial_total_io_supply_e8s,
+            initial_protocol_reserve_io_e8s: args.initial_protocol_reserve_io_e8s,
+            non_redeemable_governance_io_e8s: args.non_redeemable_governance_io_e8s,
+            two_week_pool_backing_bps: args.two_week_pool_backing_bps,
+            jupiter_faucet_principal_text: args.jupiter_faucet_principal_text,
+            io_nns_neuron_manager_principal_text: args.io_nns_neuron_manager_principal_text,
+            icp_ledger_principal_text: args.icp_ledger_principal_text,
+            icp_index_principal_text: args.icp_index_principal_text,
+            io_ledger_principal_text: args.io_ledger_principal_text,
+            io_index_principal_text: args.io_index_principal_text,
+        })
+    }
+}
+
+fn validate_optional_principal(
+    field: &'static str,
+    value: &Option<String>,
+) -> Result<(), InitArgsError> {
+    if let Some(text) = value {
+        if text.trim().is_empty() || Principal::from_text(text).is_err() {
+            return Err(InitArgsError::InvalidPrincipalText {
+                field,
+                value: text.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 #[cfg_attr(not(any(test, debug_assertions)), allow(dead_code))]
@@ -62,6 +164,51 @@ impl Default for CanisterState {
 
 thread_local! {
     static CANISTER_STATE: RefCell<CanisterState> = RefCell::new(CanisterState::default());
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct StableProtocolState {
+    pub liquid_icp_e8s: u128,
+    pub two_year_staked_icp_e8s: u128,
+    pub two_week_staked_icp_e8s: u128,
+    pub total_io_supply_e8s: u128,
+    pub protocol_reserve_io_e8s: u128,
+    pub non_redeemable_governance_io_e8s: u128,
+}
+
+impl From<ProtocolState> for StableProtocolState {
+    fn from(value: ProtocolState) -> Self {
+        Self {
+            liquid_icp_e8s: value.liquid_icp_e8s,
+            two_year_staked_icp_e8s: value.two_year_staked_icp_e8s,
+            two_week_staked_icp_e8s: value.two_week_staked_icp_e8s,
+            total_io_supply_e8s: value.total_io_supply_e8s,
+            protocol_reserve_io_e8s: value.protocol_reserve_io_e8s,
+            non_redeemable_governance_io_e8s: value.non_redeemable_governance_io_e8s,
+        }
+    }
+}
+
+impl From<StableProtocolState> for ProtocolState {
+    fn from(value: StableProtocolState) -> Self {
+        Self {
+            liquid_icp_e8s: value.liquid_icp_e8s,
+            two_year_staked_icp_e8s: value.two_year_staked_icp_e8s,
+            two_week_staked_icp_e8s: value.two_week_staked_icp_e8s,
+            total_io_supply_e8s: value.total_io_supply_e8s,
+            protocol_reserve_io_e8s: value.protocol_reserve_io_e8s,
+            non_redeemable_governance_io_e8s: value.non_redeemable_governance_io_e8s,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct StableState {
+    pub config: StreamManagerConfig,
+    pub protocol: StableProtocolState,
+    pub processed_transactions: Vec<String>,
+    pub active_staked_io_e8s: u128,
+    pub two_week_pool_backing_bps: u128,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -263,10 +410,66 @@ pub fn version() -> &'static str {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::init)]
-pub fn init() {
+pub fn init(args: InitArgs) {
+    let config = StreamManagerConfig::try_from(args).expect("invalid io_stream_manager init args");
     CANISTER_STATE.with(|cell| {
-        *cell.borrow_mut() = CanisterState::default();
+        *cell.borrow_mut() = CanisterState::new(config);
     });
+}
+
+fn export_stable_state() -> StableState {
+    CANISTER_STATE.with(|cell| {
+        let state = cell.borrow();
+        StableState {
+            config: state.config.clone(),
+            protocol: state.manager.state.into(),
+            processed_transactions: state
+                .manager
+                .processed_transactions
+                .iter()
+                .cloned()
+                .collect(),
+            active_staked_io_e8s: state.manager.active_staked_io_e8s,
+            two_week_pool_backing_bps: state.manager.two_week_pool_backing_bps,
+        }
+    })
+}
+
+fn import_stable_state(state: StableState) {
+    CANISTER_STATE.with(|cell| {
+        *cell.borrow_mut() = CanisterState {
+            config: state.config,
+            manager: StreamManager {
+                state: state.protocol.into(),
+                processed_transactions: state.processed_transactions.into_iter().collect(),
+                active_staked_io_e8s: state.active_staked_io_e8s,
+                two_week_pool_backing_bps: state.two_week_pool_backing_bps,
+            },
+        };
+    });
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::pre_upgrade)]
+pub fn pre_upgrade() {
+    ic_cdk::storage::stable_save((export_stable_state(),))
+        .expect("failed to save io_stream_manager stable state");
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::post_upgrade)]
+pub fn post_upgrade() {
+    if let Ok((state,)) = ic_cdk::storage::stable_restore::<(StableState,)>() {
+        import_stable_state(state);
+    }
+}
+
+#[cfg(any(test, debug_assertions))]
+pub fn export_stable_state_for_tests() -> StableState {
+    export_stable_state()
+}
+
+#[cfg(any(test, debug_assertions))]
+pub fn import_stable_state_for_tests(state: StableState) {
+    import_stable_state(state);
 }
 
 #[cfg(any(test, debug_assertions))]
@@ -416,7 +619,7 @@ mod tests {
 
     #[test]
     fn canister_api_initializes_and_reports_state() {
-        init();
+        init(InitArgs::default());
         let state = debug_get_state();
         assert_eq!(
             state.protocol.total_io_supply_e8s,
@@ -431,7 +634,7 @@ mod tests {
 
     #[test]
     fn canister_api_processes_stream_and_redeems() {
-        init();
+        init(InitArgs::default());
         let outcome = debug_process_stream_event(ProcessStreamEventRequest {
             kind: ApiStreamKind::JupiterFaucet,
             amount_e8s: t(100),
@@ -453,6 +656,83 @@ mod tests {
         let redemption = debug_redeem(t(10)).unwrap();
         assert_eq!(redemption.icp_paid_e8s, t(10));
         assert_eq!(debug_get_state().processed_transaction_count, 1);
+    }
+
+    #[test]
+    fn init_rejects_supply_and_bps_config_that_cannot_be_valid() {
+        let args = InitArgs {
+            initial_total_io_supply_e8s: 10,
+            initial_protocol_reserve_io_e8s: 9,
+            non_redeemable_governance_io_e8s: 2,
+            ..InitArgs::default()
+        };
+        assert_eq!(
+            StreamManagerConfig::try_from(args).unwrap_err(),
+            InitArgsError::ExcludedSupplyExceedsTotal
+        );
+
+        let args = InitArgs {
+            two_week_pool_backing_bps: 10_001,
+            ..InitArgs::default()
+        };
+        assert_eq!(
+            StreamManagerConfig::try_from(args).unwrap_err(),
+            InitArgsError::InvalidBasisPoints { bps: 10_001 }
+        );
+    }
+
+    #[test]
+    fn init_rejects_invalid_optional_principal_text() {
+        let args = InitArgs {
+            jupiter_faucet_principal_text: Some("not a principal".to_string()),
+            ..InitArgs::default()
+        };
+        assert_eq!(
+            StreamManagerConfig::try_from(args).unwrap_err(),
+            InitArgsError::InvalidPrincipalText {
+                field: "jupiter_faucet_principal_text",
+                value: "not a principal".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn stable_state_round_trip_preserves_config_accounting_and_processed_txs() {
+        init(InitArgs {
+            initial_total_io_supply_e8s: t(2_000),
+            initial_protocol_reserve_io_e8s: t(1_200),
+            non_redeemable_governance_io_e8s: t(300),
+            two_week_pool_backing_bps: 7_500,
+            jupiter_faucet_principal_text: Some("oae4c-3iaaa-aaaar-qb5qq-cai".to_string()),
+            ..InitArgs::default()
+        });
+        debug_process_stream_event(ProcessStreamEventRequest {
+            kind: ApiStreamKind::JupiterFaucet,
+            amount_e8s: t(100),
+            transaction_id: "stable-tx-1".to_string(),
+        })
+        .unwrap();
+        debug_redeem(t(10)).unwrap();
+        let before_state = debug_get_state();
+        let before_rate = debug_get_redemption_rate().unwrap();
+        let stable = export_stable_state_for_tests();
+
+        init(InitArgs::default());
+        assert_ne!(debug_get_state(), before_state);
+
+        import_stable_state_for_tests(stable);
+        assert_eq!(debug_get_state(), before_state);
+        assert_eq!(debug_get_redemption_rate().unwrap(), before_rate);
+        assert_eq!(debug_get_state().processed_transaction_count, 1);
+    }
+
+    #[test]
+    fn scheduler_tick_does_not_mutate_value_moving_state() {
+        init(InitArgs::default());
+        let before = export_stable_state_for_tests();
+        let outcome = crate::scheduler::scheduler_tick_once();
+        assert_eq!(outcome.processed_authorized_streams, 0);
+        assert_eq!(export_stable_state_for_tests(), before);
     }
 }
 

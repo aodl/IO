@@ -10,6 +10,8 @@ Placeholder public read-model canister.
 
 Historian should not depend on broad public query APIs from value-moving canisters. Historian may query observable/public sources and ledgers/indexes.
 
+The current placeholder exposes a small `get_public_status` query and Candid-shaped observation structs. These are deliberately modeled around external observations rather than private core-canister events or broad core-canister query APIs.
+
 Future historian state should be derived from observable sources where possible:
 
 - ICP ledger/index.

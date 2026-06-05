@@ -12,6 +12,26 @@ NNS-only operational canister. Intended deployment target for the already-create
 
 This canister should not calculate IO issuance. This canister should not inspect IO SNS proposal participation. This canister should not expose broad production state APIs.
 
+## Production API and Init Args
+
+The production DID is install-args-only:
+
+```did
+service : (InitArgs) -> {}
+```
+
+`InitArgs` defines the controller canister principal, 2-year NNS neuron id, two-week dissolve delay, initial model principals, model annual bps, and optional placeholder stream-manager target config/memos.
+
+Defaults preserve the known live constants below. Validation rejects empty or malformed controller principal text, a zero 2-year neuron id, a zero two-week dissolve delay, malformed optional stream-manager principal text, and model annual bps above the test/model ceiling.
+
+## Stable State
+
+Upgrade persistence uses an explicit stable snapshot saved with `ic_cdk::storage::stable_save` and restored with `stable_restore`. The snapshot preserves config, simulated NNS model state, unwind children, and two-week pool state. Host tests exercise export/import round trips without exposing stable-state methods in the production DID.
+
+## Scheduler Skeleton
+
+`src/scheduler/` contains a no-op `scheduler_tick_once()` for future timer-driven work. It currently records planned responsibilities only: checking/disbursing 2-year maturity, checking/disbursing 2-week maturity, rebalancing the pooled 2-week neuron, and disbursing ready unwind child neurons. It performs no NNS calls.
+
 ## Known Constants
 
 ```text

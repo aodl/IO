@@ -82,22 +82,27 @@ fn check_did_surface() -> Result<(), String> {
         stream_production_path,
         &stream_production,
         &[
-            "get_state",
-            "get_redemption_rate",
-            "process_stream_event",
-            "redeem",
+            " get_state :",
+            " get_config :",
+            " get_redemption_rate :",
+            " process_stream_event :",
+            " redeem :",
+            " plan_rebalance :",
+            " advance_model_time :",
             "debug_",
+            " get_events :",
         ],
     )?;
     require_absent(
         nns_production_path,
         &nns_production,
         &[
-            "get_state",
-            "get_config",
-            "plan_rebalance",
-            "advance_model_time",
+            " get_state :",
+            " get_config :",
+            " plan_rebalance :",
+            " advance_model_time :",
             "debug_",
+            " get_events :",
         ],
     )?;
 

@@ -43,6 +43,19 @@ type ApiState = record {
   two_week_pool_backing_bps : nat;
 };
 
+type InitArgs = record {
+  initial_total_io_supply_e8s : nat;
+  initial_protocol_reserve_io_e8s : nat;
+  non_redeemable_governance_io_e8s : nat;
+  two_week_pool_backing_bps : nat;
+  jupiter_faucet_principal_text : opt text;
+  io_nns_neuron_manager_principal_text : opt text;
+  icp_ledger_principal_text : opt text;
+  icp_index_principal_text : opt text;
+  io_ledger_principal_text : opt text;
+  io_index_principal_text : opt text;
+};
+
 type ApiStreamKind = variant {
   JupiterFaucet;
   TwoYearMaturity;
@@ -69,9 +82,15 @@ type StreamManagerConfig = record {
   initial_protocol_reserve_io_e8s : nat;
   non_redeemable_governance_io_e8s : nat;
   two_week_pool_backing_bps : nat;
+  jupiter_faucet_principal_text : opt text;
+  io_nns_neuron_manager_principal_text : opt text;
+  icp_ledger_principal_text : opt text;
+  icp_index_principal_text : opt text;
+  io_ledger_principal_text : opt text;
+  io_index_principal_text : opt text;
 };
 
-service : {
+service : (InitArgs) -> {
   debug_get_redemption_rate : () -> (variant { Ok : ApiRedemptionRate; Err : ApiError }) query;
   debug_get_state : () -> (ApiState) query;
   debug_process_stream_event : (ProcessStreamEventRequest) -> (

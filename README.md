@@ -36,7 +36,7 @@ Current controlling canister principal: oae4c-3iaaa-aaaar-qb5qq-cai
 
 Production core canisters:
 
-- Minimal public DID.
+- Minimal public DID, currently install-args-only for the value-moving canisters.
 - Timer/ledger/index driven.
 - No broad `get_state`, `get_events`, or dashboard endpoints.
 - No caller-submitted arbitrary stream-kind processing.
@@ -67,9 +67,12 @@ Production callers should not be able to simply assert "this is a Jupiter Faucet
 ## Current Status
 
 - Model-level tests are green through the repository `xtask` suite.
+- `io_stream_manager` and `io_nns_neuron_manager` have explicit install args with validation.
+- Both value-moving canisters persist explicit stable snapshots with `ic_cdk::storage::stable_save` / `stable_restore`.
+- Internal scheduler modules exist as no-op skeletons for future ledger/index and NNS work.
 - Debug APIs exist only for development/testing.
 - Real ledger/NNS/SNS integrations are not yet implemented.
-- Production DIDs are intentionally minimal.
+- Production DIDs are intentionally minimal and expose no production query/control methods on value-moving canisters.
 
 ## Tests
 

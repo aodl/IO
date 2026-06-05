@@ -1,3 +1,12 @@
+type PublicStatus = record {
+  version : text;
+  model : text;
+  observed_ledger_flow_count : nat64;
+  observed_canister_status_count : nat64;
+  observed_governance_snapshot_count : nat64;
+};
+
 service : {
+  get_public_status : () -> (PublicStatus) query;
   version : () -> (text) query;
 }

@@ -1,1 +1,12 @@
-(record { two_year_neuron_id = 6_345_890_886_899_317_159 : nat64 })
+(record {
+  controller_canister_principal_text = "oae4c-3iaaa-aaaar-qb5qq-cai";
+  two_year_nns_neuron_id = 6_345_890_886_899_317_159 : nat64;
+  two_week_dissolve_seconds = 1_209_600 : nat64;
+  initial_two_year_principal_e8s = 0 : nat;
+  initial_two_week_principal_e8s = 0 : nat;
+  model_annual_bps = 0 : nat;
+  io_stream_manager_principal_text = null : opt text;
+  two_year_maturity_memo = null : opt nat64;
+  two_week_maturity_memo = null : opt nat64;
+  principal_unwind_memo = null : opt nat64;
+})
