@@ -12,10 +12,14 @@ Use this before every release-oriented commit or artifact proposal.
 - [ ] `cargo run -p xtask -- verify_artifacts`
 - [ ] `cargo run -p xtask -- validate_install_args`
 - [ ] `cargo run -p xtask -- security_scan_required`
+- [ ] `cargo run -p xtask -- sns_harness_check`
+- [ ] `cargo run -p xtask -- sns_pocketic_smoke`
 - [ ] `POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server cargo run -p xtask -- test_pocketic_required`
+- [ ] `POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server cargo run -p xtask -- sns_pocketic_required`
 - [ ] `POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server cargo run -p xtask -- test_ci`
 - [ ] `cargo run -p xtask -- verify_release`
 - [ ] `git diff --check`
 - [ ] Review artifact diffs and `release-artifacts/manifest.json`.
 - [ ] Confirm no production API expansion on value-moving canisters.
+- [ ] Confirm local SNS fixture remains local-only and not production launch config.
 - [ ] Confirm no deployment/mainnet calls were made.

@@ -1083,6 +1083,25 @@ mod tests {
     }
 
     #[test]
+    fn init_accepts_local_sns_topology_principals() {
+        let config = NnsNeuronManagerConfig::try_from(InitArgs {
+            controller_canister_principal_text: "aaaaa-aa".to_string(),
+            two_year_nns_neuron_id: 42,
+            io_stream_manager_principal_text: Some("oae4c-3iaaa-aaaar-qb5qq-cai".to_string()),
+            nns_governance_principal_text: Some("rrkah-fqaaa-aaaaa-aaaaq-cai".to_string()),
+            icp_ledger_principal_text: Some("ryjl3-tyaaa-aaaaa-aaaba-cai".to_string()),
+            icp_index_principal_text: Some("qhbym-qaaaa-aaaaa-aaafq-cai".to_string()),
+            ..InitArgs::default()
+        })
+        .unwrap();
+
+        assert_eq!(
+            config.nns_governance_principal_text.as_deref(),
+            Some("rrkah-fqaaa-aaaaa-aaaaq-cai")
+        );
+    }
+
+    #[test]
     fn stable_state_round_trip_preserves_config_model_and_pool_state() {
         init(InitArgs {
             two_year_nns_neuron_id: 42,

@@ -28,6 +28,8 @@ The crate contains production-shaped ICP transfer argument and error models. The
 
 The crate contains ICRC account, transfer argument, Nat conversion, and transfer error mapping models for future IO/SNS ledger work. Fixture tests cover account/subaccount encoding, bad fee, insufficient funds, duplicate transfer, and generic error mapping.
 
+The local SNS harness includes SNS ledger/index placeholder principals in constructor args and fixture docs. It does not wire IO value-moving flows to local SNS ledger/index canisters yet.
+
 ## Index Boundary
 
 `IndexScanRequest` and `IndexScanResult` model account transaction scans with pagination, optional account filters, last-seen block, index tip, and archive-required status.
@@ -45,6 +47,7 @@ Before mainnet, production fee policy must be finalized for ICP payouts, IO tran
 
 - Real ICP ledger/index canister adapters are production-shaped but not audited or wired to mainnet.
 - Real IO/SNS ledger/index canister adapters are production-shaped but not audited or wired to mainnet.
+- Local SNS ledger/index flow tests are not implemented.
 - Archive traversal is not implemented.
 - Fee policy is represented but not final.
 - Production value-moving DIDs remain install-args-only.

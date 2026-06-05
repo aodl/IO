@@ -911,6 +911,65 @@ mod tests {
     }
 
     #[test]
+    fn init_accepts_local_sns_shaped_principals() {
+        let config = StreamManagerConfig::try_from(InitArgs {
+            jupiter_faucet_principal_text: Some("aaaaa-aa".to_string()),
+            io_nns_neuron_manager_principal_text: Some("oae4c-3iaaa-aaaar-qb5qq-cai".to_string()),
+            icp_ledger_principal_text: Some("bkyz2-fmaaa-aaaaa-qaaaq-cai".to_string()),
+            icp_index_principal_text: Some("bd3sg-teaaa-aaaaa-qaaba-cai".to_string()),
+            io_ledger_principal_text: Some("br5f7-7uaaa-aaaaa-qaaca-cai".to_string()),
+            io_index_principal_text: Some("be2us-64aaa-aaaaa-qaabq-cai".to_string()),
+            io_sns_ledger_principal_text: Some("bw4dl-smaaa-aaaaa-qaacq-cai".to_string()),
+            io_sns_index_principal_text: Some("b77ix-eeaaa-aaaaa-qaada-cai".to_string()),
+            sns_governance_principal_text: Some("by6od-j4aaa-aaaaa-qaadq-cai".to_string()),
+            ..InitArgs::default()
+        })
+        .unwrap();
+
+        assert_eq!(
+            config.sns_governance_principal_text.as_deref(),
+            Some("by6od-j4aaa-aaaaa-qaadq-cai")
+        );
+    }
+
+    #[test]
+    fn init_rejects_malformed_local_sns_principals() {
+        assert_eq!(
+            StreamManagerConfig::try_from(InitArgs {
+                sns_governance_principal_text: Some("not-sns-governance".to_string()),
+                ..InitArgs::default()
+            })
+            .unwrap_err(),
+            InitArgsError::InvalidPrincipalText {
+                field: "sns_governance_principal_text",
+                value: "not-sns-governance".to_string()
+            }
+        );
+        assert_eq!(
+            StreamManagerConfig::try_from(InitArgs {
+                io_sns_ledger_principal_text: Some("not-sns-ledger".to_string()),
+                ..InitArgs::default()
+            })
+            .unwrap_err(),
+            InitArgsError::InvalidPrincipalText {
+                field: "io_sns_ledger_principal_text",
+                value: "not-sns-ledger".to_string()
+            }
+        );
+        assert_eq!(
+            StreamManagerConfig::try_from(InitArgs {
+                io_sns_index_principal_text: Some("not-sns-index".to_string()),
+                ..InitArgs::default()
+            })
+            .unwrap_err(),
+            InitArgsError::InvalidPrincipalText {
+                field: "io_sns_index_principal_text",
+                value: "not-sns-index".to_string()
+            }
+        );
+    }
+
+    #[test]
     fn stable_state_round_trip_preserves_config_accounting_and_processed_txs() {
         init(InitArgs {
             initial_total_io_supply_e8s: t(2_000),

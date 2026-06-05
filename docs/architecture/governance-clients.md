@@ -28,6 +28,8 @@ The SNS boundary models neurons, permissions, dissolve states, proposals, ballot
 
 `io_stream_manager::clients::sns_governance::MockSnsGovernanceClient` implements the boundary for mock neuron pages. Proposal reads remain unsupported in that adapter until the mock proposal canister exposes production-shaped proposal records.
 
+The local SNS harness can install IO canisters with SNS-shaped local governance principals, but it does not read local SNS governance canisters yet. Official SNS testing tools are optional reference material and are not part of required IO workflows.
+
 ## Limitations
 
-No code in this boundary calls live NNS or live SNS governance canisters. Real NNS/SNS adapters, audited Candid mappings, pagination, retry policy, and canister principal wiring remain future work. Production DIDs for value-moving canisters remain constructor-only.
+No code in this boundary calls live NNS or live SNS governance canisters. Real NNS/SNS adapters, audited Candid mappings, pagination, retry policy, local SNS governance reads, and final canister principal wiring remain future work. Production DIDs for value-moving canisters remain constructor-only.

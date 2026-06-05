@@ -14,6 +14,9 @@ The repository is intentionally test-first. The PocketIC test files include dete
 cargo run -p xtask -- test_unit
 cargo run -p xtask -- test_pocketic_integration
 cargo run -p xtask -- test_pocketic_required
+cargo run -p xtask -- sns_harness_check
+cargo run -p xtask -- sns_pocketic_smoke
+cargo run -p xtask -- sns_pocketic_required
 cargo run -p xtask -- test_local_integration
 cargo run -p xtask -- test_e2e
 cargo run -p xtask -- test_all
@@ -31,9 +34,13 @@ cargo run -p xtask -- verify_release
 
 `test_pocketic_required` is strict about PocketIC availability and fails if `POCKET_IC_BIN` is unset.
 
+`sns_harness_check` validates local SNS docs, fixture skeletons, and required script guardrails without PocketIC, `dfx`, or mainnet access.
+
+`sns_pocketic_smoke` runs the SNS harness check and skips the live topology install test when `POCKET_IC_BIN` is unset. `sns_pocketic_required` is strict about PocketIC availability and installs IO canisters with SNS-shaped local principals.
+
 `test_ci` is strict: it runs formatting, workspace check, DID surface validation, release artifact build and manifest/SHA verification, install-args validation, required security scan, unit tests, required PocketIC integration, local integration, e2e tests, and clippy with `-D warnings`.
 
-`verify_release` is release-oriented and intentionally does not call `test_ci`, avoiding command recursion. It runs DID surface, release builds, artifact verification, install-args validation, and `security_scan_required`.
+`verify_release` is release-oriented and intentionally does not call `test_ci`, avoiding command recursion. It runs DID surface, release builds, artifact verification, install-args validation, `sns_harness_check`, and `security_scan_required`.
 
 ## Coverage added in this version
 
@@ -108,6 +115,8 @@ The real PocketIC tests use debug Wasm from `target/wasm32-unknown-unknown/debug
 The live PocketIC tests include upgrade-before-retry cases for stream-manager IO issuance/redemption return failures and NNS-manager maturity transfer failures. Host-level stable export/import tests preserve the journal entries and cursors directly.
 
 The production-shaped ledger/index tests do not call live ICP, NNS, SNS, IO ledger, or index canisters. They are fixture and boundary tests only.
+
+Local SNS harness tests are an additional compatibility layer. They do not replace model or mock/PocketIC tests, do not run official `dfx sns` flows, and do not wire IO value-moving flows to SNS ledger/index canisters yet. Future work is local SNS governance reads, then local SNS ledger/index wiring, then SNS root/controller lifecycle coverage.
 
 `xtask test_local_integration` builds release Wasm artifacts, validates the DID guardrail, validates `icp.yaml` with `icp-cli`, runs `icp build`, and then runs the CLI-shaped Rust integration tests. It does not start a local replica or deploy canisters.
 

@@ -13,6 +13,10 @@ name = "io_stream_manager_pocketic"
 path = "../../tests/pocketic/io_stream_manager_pocketic.rs"
 
 [[test]]
+name = "io_sns_topology_pocketic"
+path = "../../tests/pocketic/io_sns_topology_pocketic.rs"
+
+[[test]]
 name = "io_stream_manager_cli"
 path = "../../tests/cli/io_stream_manager_cli.rs"
 

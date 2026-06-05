@@ -76,6 +76,7 @@ Production callers should not be able to simply assert "this is a Jupiter Faucet
 - Production DIDs are intentionally minimal and expose no production query/control methods on value-moving canisters.
 - Security and operations baselines live under `docs/security/` and `docs/operations/`.
 - Release artifacts include a deterministic-gzip artifact set, SHA sidecars, and `release-artifacts/manifest.json`.
+- Local SNS harness documentation and fixture skeletons live under `docs/operations/local-sns-testing.md` and `tools/sns/`. They provide topology/config smoke coverage only; full SNS governance, ledger/index wiring, and SNS root/controller lifecycle tests remain future work.
 
 ## Tests
 
@@ -91,6 +92,8 @@ Useful subsets:
 cargo run -p xtask -- test_unit
 cargo run -p xtask -- test_pocketic_integration
 cargo run -p xtask -- test_pocketic_required
+cargo run -p xtask -- sns_harness_check
+cargo run -p xtask -- sns_pocketic_smoke
 cargo run -p xtask -- test_ci
 cargo run -p xtask -- test_local_integration
 cargo run -p xtask -- stream_manager_unit
@@ -107,7 +110,10 @@ Command semantics:
 
 - `test_all`: local default; may skip live PocketIC tests when `POCKET_IC_BIN` is unset, but reports that clearly.
 - `test_ci`: strict test gate; requires PocketIC and runs core checks, security scan, artifacts, DID guardrails, and integration suites.
-- `verify_release`: release-readiness gate; runs DID surface, canister builds, artifact verification, install-args validation, and required security scan. It does not deploy.
+- `sns_harness_check`: deterministic local SNS docs/fixture/script guardrail; no PocketIC, no `dfx`, and no mainnet calls.
+- `sns_pocketic_smoke`: permissive SNS topology smoke; skips clearly when `POCKET_IC_BIN` is unset.
+- `sns_pocketic_required`: strict SNS topology smoke; fails when `POCKET_IC_BIN` is unset.
+- `verify_release`: release-readiness gate; runs DID surface, canister builds, artifact verification, install-args validation, local SNS harness checks, and required security scan. It does not deploy.
 
 ## Build
 

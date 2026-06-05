@@ -179,6 +179,13 @@ fn require_present(path: &str, text: &str, needles: &[&str]) -> Result<(), Strin
     Ok(())
 }
 
+fn require_file(root: &Path, path: &str) -> Result<String, String> {
+    if !root.join(path).is_file() {
+        return Err(format!("{path}: missing required file"));
+    }
+    read_file(root, path)
+}
+
 fn forbidden_did_methods(text: &str, needles: &[&str]) -> Vec<String> {
     needles
         .iter()
@@ -693,6 +700,123 @@ fn validate_install_args_at(root: &Path, mode: InstallArgsMode) -> Result<(), St
     Ok(())
 }
 
+fn check_required_executable_scripts_at(root: &Path) -> Result<(), String> {
+    for dir in ["tools/scripts", "tools/sns"] {
+        let path = root.join(dir);
+        if !path.exists() {
+            continue;
+        }
+        let entries = fs::read_dir(&path).map_err(|err| format!("{dir}: {err}"))?;
+        for entry in entries {
+            let entry = entry.map_err(|err| format!("{dir}: {err}"))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|err| format!("{}: {err}", entry.path().display()))?;
+            if !file_type.is_file() {
+                continue;
+            }
+            let path = entry.path();
+            let text = fs::read_to_string(&path).unwrap_or_default();
+            if !text.starts_with("#!") {
+                continue;
+            }
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            require_absent(&rel, &text, &["dfx", "--network ic"])?;
+        }
+    }
+    Ok(())
+}
+
+fn check_sns_harness_at(root: &Path) -> Result<(), String> {
+    let local_sns_doc = require_file(root, "docs/operations/local-sns-testing.md")?;
+    require_present(
+        "docs/operations/local-sns-testing.md",
+        &local_sns_doc,
+        &[
+            "Pure model tests remain the main accounting guardrail",
+            "Mock and PocketIC tests remain the main journal, retry, and upgrade guardrail",
+            "Official SNS Testing Flow",
+            "optional, local-only, and not part of `test_ci` or `verify_release`",
+            "IO-Owned PocketIC SNS Harness",
+            "must not call mainnet",
+            "must not use `--network ic`",
+            "not production launch configuration",
+        ],
+    )?;
+
+    let sns_readme = require_file(root, "tools/sns/README.md")?;
+    require_present(
+        "tools/sns/README.md",
+        &sns_readme,
+        &[
+            "not production launch configuration",
+            "must not depend on `dfx`",
+            "must not use `--network ic`",
+            "placeholder principals",
+        ],
+    )?;
+
+    let sns_init = require_file(root, "tools/sns/sns_init.io.local.yaml")?;
+    require_present(
+        "tools/sns/sns_init.io.local.yaml",
+        &sns_init,
+        &[
+            "name: \"IO\"",
+            "symbol: \"IO\"",
+            "transaction_fee_e8s",
+            "proposal_rejection_fee_e8s: 10_000_000_000",
+            "initial_reward_rate_basis_points: 0",
+            "final_reward_rate_basis_points: 0",
+            "age_bonus_percentage: 0",
+            "jupiter_faucet_governance_neuron",
+            "jupiter_faucet_non_dissolvable_neuron",
+            "ordinary_user_neurons",
+            "fallback_controllers",
+            "io_stream_manager",
+            "io_nns_neuron_manager",
+            "io_historian",
+            "frontend",
+            "icp_ledger_principal_text",
+            "icp_index_principal_text",
+            "io_ledger_principal_text",
+            "io_index_principal_text",
+            "io_sns_ledger_principal_text",
+            "io_sns_index_principal_text",
+            "sns_governance_principal_text",
+            "nns_governance_principal_text",
+            "not production-ready",
+            "placeholder",
+        ],
+    )?;
+    require_absent(
+        "tools/sns/sns_init.io.local.yaml",
+        &sns_init,
+        &["--network ic", "ryjl3-tyaaa-aaaaa-aaaba-cai"],
+    )?;
+
+    let official_notes = require_file(root, "tools/sns/official-sns-testing-notes.md")?;
+    require_present(
+        "tools/sns/official-sns-testing-notes.md",
+        &official_notes,
+        &[
+            "optional",
+            "local-only",
+            "not part of `test_ci`",
+            "not used by `verify_release`",
+            "must not call mainnet",
+            "dfx sns",
+            "Do not use --network ic",
+        ],
+    )?;
+
+    check_required_executable_scripts_at(root)?;
+    Ok(())
+}
+
 fn validate_no_install_args_did(root: &Path, path: &str) -> Result<(), String> {
     let text = read_file(root, path)?;
     if text.contains("service : (") {
@@ -713,7 +837,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, sns_harness_check, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -789,6 +913,13 @@ fn main() -> ExitCode {
                 }
             }
         }
+        "sns_harness_check" => match check_sns_harness_at(&root) {
+            Ok(()) => eprintln!("✓ sns_harness_check"),
+            Err(err) => {
+                eprintln!("✗ sns_harness_check: {err}");
+                ok = false;
+            }
+        },
         "security_scan" => {
             ok &= run_security_scan(false);
         }
@@ -801,6 +932,7 @@ fn main() -> ExitCode {
                 "build_canisters",
                 "verify_artifacts",
                 "validate_install_args",
+                "sns_harness_check",
                 "security_scan_required",
             ] {
                 ok &= run_subcommand(sub);
@@ -878,6 +1010,31 @@ fn main() -> ExitCode {
                 ok = false;
             } else {
                 ok &= run_subcommand("test_pocketic_integration");
+            }
+        }
+        "sns_pocketic_smoke" => {
+            ok &= run_subcommand("sns_harness_check");
+            if env::var_os("POCKET_IC_BIN").is_none() {
+                eprintln!("skipping sns_pocketic_smoke: POCKET_IC_BIN is not set");
+            } else {
+                ok &= run_subcommand("sns_pocketic_required");
+            }
+        }
+        "sns_pocketic_required" => {
+            if env::var_os("POCKET_IC_BIN").is_none() {
+                eprintln!("✗ sns_pocketic_required: POCKET_IC_BIN is not set");
+                ok = false;
+            } else {
+                ok &= run_subcommand("build_debug_canisters");
+                ok &= run(
+                    "pocketic: io-sns-topology",
+                    cargo_test(&[
+                        "-p",
+                        "io-stream-manager",
+                        "--test",
+                        "io_sns_topology_pocketic",
+                    ]),
+                );
             }
         }
         "test_local_integration" => {
@@ -1027,6 +1184,74 @@ mod tests {
         write_manifest(root).unwrap();
     }
 
+    fn write_sns_harness_fixture(root: &Path) {
+        write(
+            root,
+            "docs/operations/local-sns-testing.md",
+            r#"# Local SNS Testing
+Pure model tests remain the main accounting guardrail.
+Mock and PocketIC tests remain the main journal, retry, and upgrade guardrail.
+## Official SNS Testing Flow
+dfx-based SNS testing for IO is optional, local-only, and not part of `test_ci` or `verify_release`.
+## IO-Owned PocketIC SNS Harness
+This must not call mainnet, must not use `--network ic`, and is not production launch configuration.
+"#,
+        );
+        write(
+            root,
+            "tools/sns/README.md",
+            "not production launch configuration\nmust not depend on `dfx`\nmust not use `--network ic`\nplaceholder principals\n",
+        );
+        write(
+            root,
+            "tools/sns/sns_init.io.local.yaml",
+            r#"# not production-ready placeholder
+name: "IO"
+symbol: "IO"
+ledger:
+  transaction_fee_e8s: 10_000
+governance:
+  proposal_rejection_fee_e8s: 10_000_000_000
+  initial_reward_rate_basis_points: 0
+  final_reward_rate_basis_points: 0
+  age_bonus_percentage: 0
+neurons:
+  jupiter_faucet_governance_neuron: {}
+  jupiter_faucet_non_dissolvable_neuron: {}
+  ordinary_user_neurons: {}
+fallback_controllers: []
+dapp_canisters:
+  io_stream_manager: "TODO"
+  io_nns_neuron_manager: "TODO"
+  io_historian: "TODO"
+  frontend: "TODO"
+io_constructor_arg_mapping:
+  io_stream_manager:
+    icp_ledger_principal_text: "TODO"
+    icp_index_principal_text: "TODO"
+    io_ledger_principal_text: "TODO"
+    io_index_principal_text: "TODO"
+    io_sns_ledger_principal_text: "TODO"
+    io_sns_index_principal_text: "TODO"
+    sns_governance_principal_text: "TODO"
+  io_nns_neuron_manager:
+    nns_governance_principal_text: "TODO"
+    icp_ledger_principal_text: "TODO"
+    icp_index_principal_text: "TODO"
+"#,
+        );
+        write(
+            root,
+            "tools/sns/official-sns-testing-notes.md",
+            "optional local-only not part of `test_ci` not used by `verify_release` must not call mainnet dfx sns Do not use --network ic\n",
+        );
+        write(
+            root,
+            "tools/scripts/required-check",
+            "#!/usr/bin/env bash\ncargo test\n",
+        );
+    }
+
     #[test]
     fn artifact_manifest_validation_accepts_good_manifest() {
         let root = temp_root("manifest-good");
@@ -1081,6 +1306,38 @@ mod tests {
     }
 
     #[test]
+    fn install_args_validation_accepts_local_sns_shaped_args() {
+        validate_stream_install_args_text(
+            r#"(record {
+              jupiter_faucet_principal_text = opt "aaaaa-aa";
+              io_nns_neuron_manager_principal_text = opt "oae4c-3iaaa-aaaar-qb5qq-cai";
+              icp_ledger_principal_text = opt "bkyz2-fmaaa-aaaaa-qaaaq-cai";
+              icp_index_principal_text = opt "bd3sg-teaaa-aaaaa-qaaba-cai";
+              io_ledger_principal_text = opt "br5f7-7uaaa-aaaaa-qaaca-cai";
+              io_index_principal_text = opt "be2us-64aaa-aaaaa-qaabq-cai";
+              io_sns_ledger_principal_text = opt "bw4dl-smaaa-aaaaa-qaacq-cai";
+              io_sns_index_principal_text = opt "b77ix-eeaaa-aaaaa-qaada-cai";
+              sns_governance_principal_text = opt "by6od-j4aaa-aaaaa-qaadq-cai";
+            })"#,
+            InstallArgsMode::Local,
+        )
+        .unwrap();
+        validate_nns_install_args_text(
+            r#"(record {
+              controller_canister_principal_text = "aaaaa-aa";
+              two_year_nns_neuron_id = 42 : nat64;
+              two_week_dissolve_seconds = 1_209_600 : nat64;
+              io_stream_manager_principal_text = opt "oae4c-3iaaa-aaaar-qb5qq-cai";
+              nns_governance_principal_text = opt "rrkah-fqaaa-aaaaa-aaaaq-cai";
+              icp_ledger_principal_text = opt "ryjl3-tyaaa-aaaaa-aaaba-cai";
+              icp_index_principal_text = opt "qhbym-qaaaa-aaaaa-aaafq-cai";
+            })"#,
+            InstallArgsMode::Local,
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn install_args_validation_accepts_known_live_shaped_args() {
         validate_nns_install_args_text(
             r#"(record {
@@ -1109,6 +1366,36 @@ mod tests {
     }
 
     #[test]
+    fn install_args_validation_rejects_malformed_sns_principals() {
+        let err = validate_stream_install_args_text(
+            r#"(record {
+              sns_governance_principal_text = opt "not-sns-governance";
+            })"#,
+            InstallArgsMode::Local,
+        )
+        .unwrap_err();
+        assert!(err.contains("sns_governance_principal_text"));
+
+        let err = validate_stream_install_args_text(
+            r#"(record {
+              io_sns_ledger_principal_text = opt "not-sns-ledger";
+            })"#,
+            InstallArgsMode::Local,
+        )
+        .unwrap_err();
+        assert!(err.contains("io_sns_ledger_principal_text"));
+
+        let err = validate_stream_install_args_text(
+            r#"(record {
+              io_sns_index_principal_text = opt "not-sns-index";
+            })"#,
+            InstallArgsMode::Local,
+        )
+        .unwrap_err();
+        assert!(err.contains("io_sns_index_principal_text"));
+    }
+
+    #[test]
     fn install_args_validation_rejects_placeholder_in_mainnet_mode() {
         let err = validate_stream_install_args_text(
             r#"(record {
@@ -1118,6 +1405,53 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("placeholder"));
+    }
+
+    #[test]
+    fn sns_harness_check_accepts_fixture() {
+        let root = temp_root("sns-harness-good");
+        write_sns_harness_fixture(&root);
+        check_sns_harness_at(&root).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sns_harness_check_rejects_missing_fixture() {
+        let root = temp_root("sns-harness-missing");
+        write_sns_harness_fixture(&root);
+        fs::remove_file(root.join("tools/sns/sns_init.io.local.yaml")).unwrap();
+        assert!(check_sns_harness_at(&root)
+            .unwrap_err()
+            .contains("missing required file"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sns_harness_check_rejects_network_ic_in_required_script() {
+        let root = temp_root("sns-harness-network-ic");
+        write_sns_harness_fixture(&root);
+        write(
+            &root,
+            "tools/scripts/bad-required",
+            "#!/usr/bin/env bash\ncargo run -- --network ic\n",
+        );
+        assert!(check_sns_harness_at(&root)
+            .unwrap_err()
+            .contains("--network ic"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sns_harness_check_rejects_dfx_in_required_script() {
+        let root = temp_root("sns-harness-dfx");
+        write_sns_harness_fixture(&root);
+        write(
+            &root,
+            "tools/scripts/bad-required",
+            "#!/usr/bin/env bash\ndfx deploy\n",
+        );
+        assert!(check_sns_harness_at(&root).unwrap_err().contains("dfx"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
