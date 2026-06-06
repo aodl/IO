@@ -13,3 +13,15 @@ test("browser code does not import historian debug declarations or value-moving 
   assert.equal(text.includes("io_stream_manager"), false);
   assert.equal(text.includes("io_nns_neuron_manager"), false);
 });
+
+test("tracked historian declarations are production-only and self-contained", () => {
+  const files = [
+    "canisters/frontend/web/declarations/io_historian/index.js",
+    "canisters/frontend/web/declarations/io_historian/io_historian.did.js",
+  ];
+  const text = files.map((file) => readFileSync(file, "utf8")).join("\n");
+  assert.equal(text.includes("src/declarations"), false);
+  assert.equal(text.includes(".dfx"), false);
+  assert.equal(text.includes("io_historian_debug"), false);
+  assert.equal(text.includes("debug_"), false);
+});
