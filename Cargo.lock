@@ -947,8 +947,11 @@ name = "io-ledger-types"
 version = "0.1.0"
 dependencies = [
  "candid",
+ "crc32fast",
+ "hex",
  "ic-cdk",
  "serde",
+ "sha2",
 ]
 
 [[package]]

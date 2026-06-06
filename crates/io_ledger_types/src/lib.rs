@@ -1,5 +1,6 @@
 use candid::{CandidType, Decode, Encode, Nat, Principal};
 use serde::Deserialize;
+use sha2::{Digest, Sha224};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -9,6 +10,22 @@ pub struct Subaccount(pub [u8; 32]);
 impl Subaccount {
     pub fn zero() -> Self {
         Self([0; 32])
+    }
+
+    pub fn from_vec(bytes: Vec<u8>, field: &str) -> Result<Self, LedgerTransferError> {
+        Ok(Self(bytes.try_into().map_err(|bytes: Vec<u8>| {
+            LedgerTransferError::DecodeError {
+                message: format!("{field} must be 32 bytes, got {}", bytes.len()),
+            }
+        })?))
+    }
+
+    pub fn from_vec_for_index(bytes: Vec<u8>, field: &str) -> Result<Self, IndexError> {
+        Ok(Self(bytes.try_into().map_err(|bytes: Vec<u8>| {
+            IndexError::DecodeError {
+                message: format!("{field} must be 32 bytes, got {}", bytes.len()),
+            }
+        })?))
     }
 }
 
@@ -21,6 +38,21 @@ pub struct Account {
 impl Account {
     pub fn new(owner: Principal, subaccount: Option<Subaccount>) -> Self {
         Self { owner, subaccount }
+    }
+
+    pub fn to_icrc_account(&self) -> IcrcAccount {
+        IcrcAccount {
+            owner: self.owner,
+            subaccount: self.subaccount.map(|subaccount| subaccount.0.to_vec()),
+        }
+    }
+
+    pub fn icp_account_identifier_bytes(&self) -> [u8; 32] {
+        icp_account_identifier_bytes(self.owner, self.subaccount)
+    }
+
+    pub fn icp_account_identifier_text(&self) -> String {
+        hex::encode(self.icp_account_identifier_bytes())
     }
 }
 
@@ -40,6 +72,42 @@ impl From<String> for Memo {
     fn from(value: String) -> Self {
         Self(value.into_bytes())
     }
+}
+
+pub fn icrc_memo_bytes(memo: Option<Memo>) -> Option<Vec<u8>> {
+    memo.map(|memo| memo.0)
+}
+
+pub fn memo_to_icp_u64(memo: Option<&Memo>) -> Result<u64, LedgerTransferError> {
+    match memo {
+        None => Ok(0),
+        Some(memo) => {
+            let bytes: [u8; 8] = memo
+                .0
+                .as_slice()
+                .try_into()
+                .map_err(|_| LedgerTransferError::Unsupported)?;
+            Ok(u64::from_le_bytes(bytes))
+        }
+    }
+}
+
+pub fn icp_account_identifier_bytes(owner: Principal, subaccount: Option<Subaccount>) -> [u8; 32] {
+    let subaccount = subaccount.unwrap_or_else(Subaccount::zero);
+    let mut hasher = Sha224::new();
+    hasher.update(b"\x0Aaccount-id");
+    hasher.update(owner.as_slice());
+    hasher.update(subaccount.0);
+    let hash = hasher.finalize();
+    let checksum = crc32fast::hash(&hash).to_be_bytes();
+    let mut bytes = [0_u8; 32];
+    bytes[..4].copy_from_slice(&checksum);
+    bytes[4..].copy_from_slice(&hash);
+    bytes
+}
+
+pub fn icp_account_identifier_text(owner: Principal, subaccount: Option<Subaccount>) -> String {
+    hex::encode(icp_account_identifier_bytes(owner, subaccount))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Deserialize)]
@@ -243,10 +311,7 @@ pub struct IcrcAccount {
 
 impl From<Account> for IcrcAccount {
     fn from(value: Account) -> Self {
-        Self {
-            owner: value.owner,
-            subaccount: value.subaccount.map(|subaccount| subaccount.0.to_vec()),
-        }
+        value.to_icrc_account()
     }
 }
 
@@ -255,11 +320,7 @@ impl TryFrom<IcrcAccount> for Account {
 
     fn try_from(value: IcrcAccount) -> Result<Self, Self::Error> {
         let subaccount = match value.subaccount {
-            Some(bytes) => Some(Subaccount(bytes.try_into().map_err(|bytes: Vec<u8>| {
-                LedgerTransferError::DecodeError {
-                    message: format!("subaccount must be 32 bytes, got {}", bytes.len()),
-                }
-            })?)),
+            Some(bytes) => Some(Subaccount::from_vec(bytes, "subaccount")?),
             None => None,
         };
         Ok(Self {
@@ -288,7 +349,7 @@ impl From<LedgerTransferRequest> for IcrcTransferArg {
             to: value.to.into(),
             amount: Nat::from(value.amount_e8s),
             fee: value.fee_e8s.map(Nat::from),
-            memo: value.memo.map(|memo| memo.0),
+            memo: icrc_memo_bytes(value.memo),
             created_at_time: value.created_at_time,
         }
     }
@@ -367,9 +428,17 @@ pub struct IcpTransferArgs {
     pub memo: u64,
     pub amount: IcpTokens,
     pub fee: IcpTokens,
-    pub from_subaccount: Option<Subaccount>,
+    pub from_subaccount: Option<Vec<u8>>,
     pub to: Vec<u8>,
     pub created_at_time: Option<IcpTimeStamp>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct IcpTransferFeeArgs {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct IcpTransferFee {
+    pub transfer_fee: IcpTokens,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -389,6 +458,8 @@ pub enum IcpTransferError {
     TxTooOld { allowed_window_nanos: u64 },
     TxCreatedInFuture,
     TxDuplicate { duplicate_of: u64 },
+    TemporarilyUnavailable,
+    GenericError { error_code: u64, message: String },
 }
 
 pub fn u128_to_icp_tokens(value: u128, field: &str) -> Result<IcpTokens, LedgerTransferError> {
@@ -406,24 +477,29 @@ pub fn icp_transfer_args(
     to_account_identifier: Vec<u8>,
     default_fee_e8s: u128,
 ) -> Result<IcpTransferArgs, LedgerTransferError> {
-    let memo = request
-        .memo
-        .as_ref()
-        .and_then(|memo| {
-            let bytes: [u8; 8] = memo.0.as_slice().try_into().ok()?;
-            Some(u64::from_le_bytes(bytes))
-        })
-        .unwrap_or(0);
+    let amount = u128_to_icp_tokens(request.amount_e8s, "amount")?;
+    let fee = u128_to_icp_tokens(request.fee_e8s.unwrap_or(default_fee_e8s), "fee")?;
+    let memo = memo_to_icp_u64(request.memo.as_ref())?;
     Ok(IcpTransferArgs {
         memo,
-        amount: u128_to_icp_tokens(request.amount_e8s, "amount")?,
-        fee: u128_to_icp_tokens(request.fee_e8s.unwrap_or(default_fee_e8s), "fee")?,
-        from_subaccount: request.from_subaccount,
+        amount,
+        fee,
+        from_subaccount: request
+            .from_subaccount
+            .map(|subaccount| subaccount.0.to_vec()),
         to: to_account_identifier,
         created_at_time: request
             .created_at_time
             .map(|timestamp_nanos| IcpTimeStamp { timestamp_nanos }),
     })
+}
+
+pub fn icp_transfer_args_for_request(
+    request: LedgerTransferRequest,
+    default_fee_e8s: u128,
+) -> Result<IcpTransferArgs, LedgerTransferError> {
+    let to = request.to.icp_account_identifier_bytes().to_vec();
+    icp_transfer_args(request, to, default_fee_e8s)
 }
 
 pub fn map_icp_transfer_result(
@@ -450,6 +526,16 @@ pub fn map_icp_transfer_result(
                 duplicate_of: BlockIndex(duplicate_of),
             })
         }
+        Err(IcpTransferError::TemporarilyUnavailable) => {
+            Err(LedgerTransferError::TemporarilyUnavailable)
+        }
+        Err(IcpTransferError::GenericError {
+            error_code,
+            message,
+        }) => Err(LedgerTransferError::GenericError {
+            error_code,
+            message,
+        }),
     }
 }
 
@@ -516,7 +602,7 @@ pub fn map_icrc_index_result(
                 });
             }
             let last_seen_block = transactions.iter().map(|tx| tx.block_index).max();
-            Ok(IndexScanResult {
+            let result = IndexScanResult {
                 transactions,
                 last_seen_block,
                 index_tip: page
@@ -525,7 +611,9 @@ pub fn map_icrc_index_result(
                     .map(|tip| nat_to_u64_index(tip, "index tip").map(BlockIndex))
                     .transpose()?,
                 archive_required: page.archive_required,
-            })
+            };
+            result.validate_monotonic()?;
+            Ok(result)
         }
         Err(IcrcIndexError::TemporarilyUnavailable) => Err(IndexError::TemporarilyUnavailable),
         Err(IcrcIndexError::GenericError { message, .. }) if message.contains("archive") => {
@@ -540,6 +628,297 @@ pub fn map_icrc_index_result(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct IndexArchiveCallback {
+    pub canister_id: Principal,
+    pub method: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct IndexArchiveRange {
+    pub start: BlockIndex,
+    pub limit: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct IndexArchiveRequest {
+    pub range: IndexArchiveRange,
+    pub callback: IndexArchiveCallback,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct IndexArchiveTraversal {
+    pub requested: IndexArchiveRange,
+    pub completed: Vec<IndexArchiveRange>,
+    pub incomplete: bool,
+}
+
+impl IndexArchiveTraversal {
+    pub fn validate_no_skipped_ranges(&self) -> Result<(), IndexError> {
+        let mut next = self.requested.start.0;
+        let end = self
+            .requested
+            .start
+            .0
+            .checked_add(self.requested.limit)
+            .ok_or(IndexError::MissingBlock {
+                block_index: self.requested.start,
+            })?;
+        for range in &self.completed {
+            if range.start.0 != next {
+                return Err(IndexError::MissingBlock {
+                    block_index: BlockIndex(next),
+                });
+            }
+            next = range
+                .start
+                .0
+                .checked_add(range.limit)
+                .ok_or(IndexError::MissingBlock {
+                    block_index: range.start,
+                })?;
+            if next > end {
+                return Err(IndexError::MissingBlock {
+                    block_index: BlockIndex(end),
+                });
+            }
+        }
+        if self.incomplete || next < end {
+            return Err(IndexError::ArchiveRequired {
+                from: BlockIndex(next),
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct IcpIndexTokens {
+    pub e8s: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct IcpIndexTimeStamp {
+    pub timestamp_nanos: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum IcpIndexOperation {
+    Approve {
+        fee: IcpIndexTokens,
+        from: String,
+        allowance: IcpIndexTokens,
+        expires_at: Option<IcpIndexTimeStamp>,
+        spender: String,
+        expected_allowance: Option<IcpIndexTokens>,
+    },
+    Burn {
+        from: String,
+        amount: IcpIndexTokens,
+        spender: Option<String>,
+    },
+    Mint {
+        to: String,
+        amount: IcpIndexTokens,
+    },
+    Transfer {
+        to: String,
+        fee: IcpIndexTokens,
+        from: String,
+        amount: IcpIndexTokens,
+        spender: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct IcpIndexTransaction {
+    pub memo: u64,
+    pub icrc1_memo: Option<Vec<u8>>,
+    pub operation: IcpIndexOperation,
+    pub created_at_time: Option<IcpIndexTimeStamp>,
+    pub timestamp: Option<IcpIndexTimeStamp>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct IcpIndexTransactionWithId {
+    pub id: u64,
+    pub transaction: IcpIndexTransaction,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct IcpIndexGetAccountIdentifierTransactionsArgs {
+    pub max_results: u64,
+    pub start: Option<u64>,
+    pub account_identifier: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct IcpIndexGetAccountIdentifierTransactionsError {
+    pub message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct IcpIndexGetAccountIdentifierTransactionsResponse {
+    pub balance: u64,
+    pub transactions: Vec<IcpIndexTransactionWithId>,
+    pub oldest_tx_id: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum IcpIndexGetAccountIdentifierTransactionsResult {
+    Ok(IcpIndexGetAccountIdentifierTransactionsResponse),
+    Err(IcpIndexGetAccountIdentifierTransactionsError),
+}
+
+impl TryFrom<IndexScanRequest> for IcpIndexGetAccountIdentifierTransactionsArgs {
+    type Error = IndexError;
+
+    fn try_from(value: IndexScanRequest) -> Result<Self, Self::Error> {
+        let account = value.account_filter.ok_or(IndexError::Unsupported)?;
+        Ok(Self {
+            max_results: value.limit,
+            start: value.start.map(|block| block.0),
+            account_identifier: account.icp_account_identifier_text(),
+        })
+    }
+}
+
+fn matching_icp_account(
+    legacy_account_identifier: &str,
+    account_filter: Option<&Account>,
+) -> Option<Account> {
+    account_filter.and_then(|account| {
+        (account.icp_account_identifier_text() == legacy_account_identifier)
+            .then(|| account.clone())
+    })
+}
+
+fn icp_index_memo(transaction: &IcpIndexTransaction) -> Memo {
+    transaction
+        .icrc1_memo
+        .clone()
+        .map(Memo)
+        .unwrap_or_else(|| Memo(transaction.memo.to_le_bytes().to_vec()))
+}
+
+fn map_icp_index_transaction(
+    account_filter: Option<&Account>,
+    tx: IcpIndexTransactionWithId,
+) -> IndexTransaction {
+    let timestamp_nanos = tx
+        .transaction
+        .timestamp
+        .as_ref()
+        .or(tx.transaction.created_at_time.as_ref())
+        .map(|timestamp| timestamp.timestamp_nanos)
+        .unwrap_or(0);
+    let memo = Some(icp_index_memo(&tx.transaction));
+    let block_index = BlockIndex(tx.id);
+    let transaction = match tx.transaction.operation {
+        IcpIndexOperation::Transfer {
+            to,
+            fee,
+            from,
+            amount,
+            ..
+        } => LedgerBlock {
+            block_index,
+            timestamp_nanos,
+            from: matching_icp_account(&from, account_filter),
+            to: matching_icp_account(&to, account_filter),
+            amount_e8s: amount.e8s.into(),
+            fee_e8s: Some(fee.e8s.into()),
+            memo,
+            operation_kind: LedgerOperationKind::Transfer,
+        },
+        IcpIndexOperation::Mint { to, amount } => LedgerBlock {
+            block_index,
+            timestamp_nanos,
+            from: None,
+            to: matching_icp_account(&to, account_filter),
+            amount_e8s: amount.e8s.into(),
+            fee_e8s: None,
+            memo,
+            operation_kind: LedgerOperationKind::Mint,
+        },
+        IcpIndexOperation::Burn { from, amount, .. } => LedgerBlock {
+            block_index,
+            timestamp_nanos,
+            from: matching_icp_account(&from, account_filter),
+            to: None,
+            amount_e8s: amount.e8s.into(),
+            fee_e8s: None,
+            memo,
+            operation_kind: LedgerOperationKind::Burn,
+        },
+        IcpIndexOperation::Approve { fee, from, .. } => LedgerBlock {
+            block_index,
+            timestamp_nanos,
+            from: matching_icp_account(&from, account_filter),
+            to: None,
+            amount_e8s: 0,
+            fee_e8s: Some(fee.e8s.into()),
+            memo,
+            operation_kind: LedgerOperationKind::Approve,
+        },
+    };
+
+    IndexTransaction {
+        block_index,
+        transaction,
+    }
+}
+
+pub fn map_icp_index_result(
+    account_filter: Option<&Account>,
+    request_start: Option<BlockIndex>,
+    result: IcpIndexGetAccountIdentifierTransactionsResult,
+) -> Result<IndexScanResult, IndexError> {
+    match result {
+        IcpIndexGetAccountIdentifierTransactionsResult::Ok(response) => {
+            if request_start.is_some() {
+                return Err(IndexError::Unsupported);
+            }
+
+            let mut transactions = response
+                .transactions
+                .into_iter()
+                .map(|tx| map_icp_index_transaction(account_filter, tx))
+                .collect::<Vec<_>>();
+            let mut previous = None;
+            for tx in &transactions {
+                if let Some(previous) = previous {
+                    if tx.block_index >= previous {
+                        return Err(IndexError::MissingBlock {
+                            block_index: tx.block_index,
+                        });
+                    }
+                }
+                previous = Some(tx.block_index);
+            }
+            transactions.reverse();
+            let result = IndexScanResult {
+                last_seen_block: transactions.iter().map(|tx| tx.block_index).max(),
+                index_tip: None,
+                archive_required: false,
+                transactions,
+            };
+            result.validate_monotonic()?;
+            Ok(result)
+        }
+        IcpIndexGetAccountIdentifierTransactionsResult::Err(err)
+            if err.message.contains("archive") =>
+        {
+            Err(IndexError::ArchiveRequired {
+                from: BlockIndex(0),
+            })
+        }
+        IcpIndexGetAccountIdentifierTransactionsResult::Err(err) => Err(IndexError::DecodeError {
+            message: err.message,
+        }),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct DuplicateProof {
     pub expected_amount_e8s: u128,
     pub actual_amount_e8s: u128,
@@ -547,15 +926,30 @@ pub struct DuplicateProof {
     pub actual_to: Account,
     pub expected_memo: Option<Memo>,
     pub actual_memo: Option<Memo>,
+    pub expected_operation_kind: LedgerOperationKind,
+    pub actual_operation_kind: LedgerOperationKind,
+    pub expected_ledger_kind: Option<LedgerKind>,
+    pub actual_ledger_kind: Option<LedgerKind>,
 }
 
 pub fn duplicate_matches_expected(
     expected: &LedgerTransferRequest,
     duplicate_block: &LedgerBlock,
 ) -> Result<BlockIndex, Box<DuplicateProof>> {
+    duplicate_matches_expected_for_ledger(expected, duplicate_block, None, None)
+}
+
+pub fn duplicate_matches_expected_for_ledger(
+    expected: &LedgerTransferRequest,
+    duplicate_block: &LedgerBlock,
+    expected_ledger_kind: Option<LedgerKind>,
+    actual_ledger_kind: Option<LedgerKind>,
+) -> Result<BlockIndex, Box<DuplicateProof>> {
     if duplicate_block.amount_e8s == expected.amount_e8s
         && duplicate_block.to.as_ref() == Some(&expected.to)
         && duplicate_block.memo == expected.memo
+        && duplicate_block.operation_kind == LedgerOperationKind::Transfer
+        && expected_ledger_kind == actual_ledger_kind
     {
         Ok(duplicate_block.block_index)
     } else {
@@ -569,6 +963,10 @@ pub fn duplicate_matches_expected(
             }),
             expected_memo: expected.memo.clone(),
             actual_memo: duplicate_block.memo.clone(),
+            expected_operation_kind: LedgerOperationKind::Transfer,
+            actual_operation_kind: duplicate_block.operation_kind,
+            expected_ledger_kind,
+            actual_ledger_kind,
         }))
     }
 }
@@ -638,6 +1036,57 @@ impl LedgerTransferClient for IcrcLedgerCanisterClient {
 
 #[cfg(target_family = "wasm")]
 #[derive(Clone, Copy, Debug)]
+pub struct IcpLedgerCanisterClient {
+    pub canister: Principal,
+    pub default_fee_e8s: u128,
+}
+
+#[cfg(target_family = "wasm")]
+impl LedgerTransferClient for IcpLedgerCanisterClient {
+    fn transfer<'a>(
+        &'a self,
+        request: LedgerTransferRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<LedgerTransferSuccess, LedgerTransferError>> + 'a>>
+    {
+        Box::pin(async move {
+            let arg = icp_transfer_args_for_request(request, self.default_fee_e8s)?;
+            let response = ic_cdk::call::Call::bounded_wait(self.canister, "transfer")
+                .with_arg(arg)
+                .await
+                .map_err(|err| LedgerTransferError::CanisterCallFailed {
+                    method: "transfer".to_string(),
+                    message: format!("{err:?}"),
+                })?;
+            let (result,) = response
+                .candid_tuple::<(Result<u64, IcpTransferError>,)>()
+                .map_err(|err| LedgerTransferError::DecodeError {
+                    message: format!("{err:?}"),
+                })?;
+            map_icp_transfer_result(result)
+        })
+    }
+
+    fn fee<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<u128, LedgerQueryError>> + 'a>> {
+        Box::pin(async move {
+            let response = ic_cdk::call::Call::bounded_wait(self.canister, "transfer_fee")
+                .with_arg(IcpTransferFeeArgs {})
+                .await
+                .map_err(|err| LedgerQueryError::CanisterCallFailed {
+                    method: "transfer_fee".to_string(),
+                    message: format!("{err:?}"),
+                })?;
+            let (fee,) = response
+                .candid_tuple::<(IcpTransferFee,)>()
+                .map_err(|err| LedgerQueryError::DecodeError {
+                    message: format!("{err:?}"),
+                })?;
+            Ok(fee.transfer_fee.e8s.into())
+        })
+    }
+}
+
+#[cfg(target_family = "wasm")]
+#[derive(Clone, Copy, Debug)]
 pub struct IcrcIndexCanisterClient {
     pub canister: Principal,
 }
@@ -670,22 +1119,53 @@ impl LedgerIndexClient for IcrcIndexCanisterClient {
     fn get_tip<'a>(
         &'a self,
     ) -> Pin<Box<dyn Future<Output = Result<Option<BlockIndex>, IndexError>> + 'a>> {
+        Box::pin(async move { Err(IndexError::Unsupported) })
+    }
+}
+
+#[cfg(target_family = "wasm")]
+#[derive(Clone, Copy, Debug)]
+pub struct IcpIndexCanisterClient {
+    pub canister: Principal,
+}
+
+#[cfg(target_family = "wasm")]
+impl LedgerIndexClient for IcpIndexCanisterClient {
+    fn get_account_transactions<'a>(
+        &'a self,
+        request: IndexScanRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<IndexScanResult, IndexError>> + 'a>> {
+        if request.start.is_some() {
+            return Box::pin(async move { Err(IndexError::Unsupported) });
+        }
+
         Box::pin(async move {
-            let response = ic_cdk::call::Call::bounded_wait(self.canister, "debug_get_tip")
-                .await
-                .map_err(|err| IndexError::CanisterCallFailed {
-                    method: "debug_get_tip".to_string(),
+            let account_filter = request.account_filter.clone();
+            let arg = IcpIndexGetAccountIdentifierTransactionsArgs::try_from(request)?;
+            let request_start = arg.start.map(BlockIndex);
+            let response = ic_cdk::call::Call::bounded_wait(
+                self.canister,
+                "get_account_identifier_transactions",
+            )
+            .with_arg(arg)
+            .await
+            .map_err(|err| IndexError::CanisterCallFailed {
+                method: "get_account_identifier_transactions".to_string(),
+                message: format!("{err:?}"),
+            })?;
+            let (result,) = response
+                .candid_tuple::<(IcpIndexGetAccountIdentifierTransactionsResult,)>()
+                .map_err(|err| IndexError::DecodeError {
                     message: format!("{err:?}"),
                 })?;
-            let (tip,) = response.candid_tuple::<(Option<Nat>,)>().map_err(|err| {
-                IndexError::DecodeError {
-                    message: format!("{err:?}"),
-                }
-            })?;
-            tip.as_ref()
-                .map(|tip| nat_to_u64_index(tip, "index tip").map(BlockIndex))
-                .transpose()
+            map_icp_index_result(account_filter.as_ref(), request_start, result)
         })
+    }
+
+    fn get_tip<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<BlockIndex>, IndexError>> + 'a>> {
+        Box::pin(async move { Err(IndexError::Unsupported) })
     }
 }
 
@@ -701,6 +1181,24 @@ mod tests {
         Account::new(principal(), Some(Subaccount([7; 32])))
     }
 
+    fn icp_index_mint_tx(id: u64) -> IcpIndexTransactionWithId {
+        IcpIndexTransactionWithId {
+            id,
+            transaction: IcpIndexTransaction {
+                memo: id,
+                icrc1_memo: None,
+                operation: IcpIndexOperation::Mint {
+                    to: "mint-destination".to_string(),
+                    amount: IcpIndexTokens { e8s: id },
+                },
+                created_at_time: None,
+                timestamp: Some(IcpIndexTimeStamp {
+                    timestamp_nanos: id,
+                }),
+            },
+        }
+    }
+
     fn request() -> LedgerTransferRequest {
         LedgerTransferRequest {
             from_subaccount: Some(Subaccount([1; 32])),
@@ -709,6 +1207,26 @@ mod tests {
             fee_e8s: Some(10),
             memo: Some(Memo::from("memo")),
             created_at_time: Some(99),
+        }
+    }
+
+    fn icp_request() -> LedgerTransferRequest {
+        LedgerTransferRequest {
+            memo: Some(Memo(42_u64.to_le_bytes().to_vec())),
+            ..request()
+        }
+    }
+
+    fn block(block_index: u64) -> LedgerBlock {
+        LedgerBlock {
+            block_index: BlockIndex(block_index),
+            timestamp_nanos: block_index,
+            from: Some(account()),
+            to: Some(account()),
+            amount_e8s: 7,
+            fee_e8s: Some(10),
+            memo: Some(Memo::from("idx")),
+            operation_kind: LedgerOperationKind::Transfer,
         }
     }
 
@@ -735,6 +1253,61 @@ mod tests {
     }
 
     #[test]
+    fn icrc_account_conversion_rejects_invalid_subaccount_length() {
+        let err = Account::try_from(IcrcAccount {
+            owner: principal(),
+            subaccount: Some(vec![1; 31]),
+        })
+        .unwrap_err();
+        assert!(matches!(err, LedgerTransferError::DecodeError { .. }));
+    }
+
+    #[test]
+    fn icp_account_identifier_matches_known_vectors() {
+        let owner = Principal::from_text("qaa6y-5yaaa-aaaaa-aaafa-cai").unwrap();
+        assert_eq!(
+            icp_account_identifier_text(owner, None),
+            "f3a58ea11bc128ab8a455dd7bce0a29b0a20f400625d1a46871fbfe82efed38d"
+        );
+
+        let mut subaccount = [0_u8; 32];
+        subaccount[31] = 1;
+        assert_eq!(
+            icp_account_identifier_text(owner, Some(Subaccount(subaccount))),
+            "439a264f2ce4d3aeeb10b8ad65dc3610512ef3c6c4bc8c2985a15ce8cc2ce3c0"
+        );
+    }
+
+    #[test]
+    fn memo_conversion_is_explicit_for_icp_and_icrc() {
+        assert_eq!(
+            memo_to_icp_u64(Some(&Memo(42_u64.to_le_bytes().to_vec()))),
+            Ok(42)
+        );
+        assert_eq!(memo_to_icp_u64(None), Ok(0));
+        assert_eq!(
+            memo_to_icp_u64(Some(&Memo::from("lossy"))),
+            Err(LedgerTransferError::Unsupported)
+        );
+        assert_eq!(
+            icrc_memo_bytes(Some(Memo::from("bytes"))),
+            Some(b"bytes".to_vec())
+        );
+    }
+
+    #[test]
+    fn icp_transfer_args_derive_destination_and_preserve_explicit_fee_amounts() {
+        let req = icp_request();
+        let expected_to = req.to.icp_account_identifier_bytes().to_vec();
+        let args = icp_transfer_args_for_request(req, 10_000).unwrap();
+        assert_eq!(args.to, expected_to);
+        assert_eq!(args.amount.e8s, 123);
+        assert_eq!(args.fee.e8s, 10);
+        assert_eq!(args.memo, 42);
+        assert_eq!(args.from_subaccount, Some(vec![1; 32]));
+    }
+
+    #[test]
     fn icrc_error_mapping_preserves_duplicate_and_bad_fee() {
         assert_eq!(
             map_icrc_transfer_result(Err(IcrcTransferError::Duplicate {
@@ -750,6 +1323,62 @@ mod tests {
             })),
             Err(LedgerTransferError::BadFee {
                 expected_fee_e8s: 10
+            })
+        );
+    }
+
+    #[test]
+    fn transfer_success_and_temporal_errors_map_for_icrc_and_icp() {
+        assert_eq!(
+            map_icrc_transfer_result(Ok(Nat::from(12_u64))),
+            Ok(LedgerTransferSuccess {
+                block_index: BlockIndex(12)
+            })
+        );
+        assert_eq!(
+            map_icp_transfer_result(Ok(13)),
+            Ok(LedgerTransferSuccess {
+                block_index: BlockIndex(13)
+            })
+        );
+        assert_eq!(
+            map_icrc_transfer_result(Err(IcrcTransferError::TooOld)),
+            Err(LedgerTransferError::TooOld)
+        );
+        assert_eq!(
+            map_icrc_transfer_result(Err(IcrcTransferError::CreatedInFuture { ledger_time: 9 })),
+            Err(LedgerTransferError::CreatedInFuture { ledger_time: 9 })
+        );
+        assert_eq!(
+            map_icp_transfer_result(Err(IcpTransferError::TxTooOld {
+                allowed_window_nanos: 1
+            })),
+            Err(LedgerTransferError::TooOld)
+        );
+        assert_eq!(
+            map_icp_transfer_result(Err(IcpTransferError::TxCreatedInFuture)),
+            Err(LedgerTransferError::CreatedInFuture { ledger_time: 0 })
+        );
+    }
+
+    #[test]
+    fn temporary_and_generic_errors_map_for_icrc_and_icp() {
+        assert_eq!(
+            map_icrc_transfer_result(Err(IcrcTransferError::TemporarilyUnavailable)),
+            Err(LedgerTransferError::TemporarilyUnavailable)
+        );
+        assert_eq!(
+            map_icp_transfer_result(Err(IcpTransferError::TemporarilyUnavailable)),
+            Err(LedgerTransferError::TemporarilyUnavailable)
+        );
+        assert_eq!(
+            map_icp_transfer_result(Err(IcpTransferError::GenericError {
+                error_code: 5,
+                message: "busy".to_string()
+            })),
+            Err(LedgerTransferError::GenericError {
+                error_code: 5,
+                message: "busy".to_string()
             })
         );
     }
@@ -780,6 +1409,28 @@ mod tests {
         req.amount_e8s = u128::from(u64::MAX) + 1;
         let err = icp_transfer_args(req, vec![0; 32], 10).unwrap_err();
         assert!(matches!(err, LedgerTransferError::DecodeError { .. }));
+    }
+
+    #[test]
+    fn nat_overflow_maps_to_decode_errors() {
+        let too_large = Nat::from(u128::MAX) + Nat::from(1_u8);
+        assert!(matches!(
+            map_icrc_transfer_result(Ok(too_large.clone())),
+            Err(LedgerTransferError::DecodeError { .. })
+        ));
+        assert!(matches!(
+            map_icrc_transfer_result(Err(IcrcTransferError::BadFee {
+                expected_fee: too_large.clone()
+            })),
+            Err(LedgerTransferError::DecodeError { .. })
+        ));
+        assert!(matches!(
+            map_icrc_transfer_result(Err(IcrcTransferError::GenericError {
+                error_code: too_large,
+                message: "overflow".to_string()
+            })),
+            Err(LedgerTransferError::DecodeError { .. })
+        ));
     }
 
     #[test]
@@ -824,6 +1475,40 @@ mod tests {
         let mut mismatched = block;
         mismatched.amount_e8s += 1;
         assert!(duplicate_matches_expected(&req, &mismatched).is_err());
+    }
+
+    #[test]
+    fn duplicate_transfer_proof_checks_operation_and_ledger_kind_when_available() {
+        let req = request();
+        let mut duplicate = LedgerBlock {
+            block_index: BlockIndex(9),
+            timestamp_nanos: 0,
+            from: None,
+            to: Some(req.to.clone()),
+            amount_e8s: req.amount_e8s,
+            fee_e8s: req.fee_e8s,
+            memo: req.memo.clone(),
+            operation_kind: LedgerOperationKind::Mint,
+        };
+        assert!(duplicate_matches_expected(&req, &duplicate).is_err());
+
+        duplicate.operation_kind = LedgerOperationKind::Transfer;
+        assert_eq!(
+            duplicate_matches_expected_for_ledger(
+                &req,
+                &duplicate,
+                Some(LedgerKind::IcpLedger),
+                Some(LedgerKind::IcpLedger),
+            ),
+            Ok(BlockIndex(9))
+        );
+        assert!(duplicate_matches_expected_for_ledger(
+            &req,
+            &duplicate,
+            Some(LedgerKind::IcpLedger),
+            Some(LedgerKind::IoLedger),
+        )
+        .is_err());
     }
 
     #[test]
@@ -962,6 +1647,487 @@ mod tests {
             })),
             Err(IndexError::ArchiveRequired { .. })
         ));
+    }
+
+    #[test]
+    fn icp_index_args_and_result_map_account_filtered_descending_pages() {
+        let account = account();
+        let account_identifier = account.icp_account_identifier_text();
+        let args = IcpIndexGetAccountIdentifierTransactionsArgs::try_from(IndexScanRequest {
+            start: None,
+            limit: 50,
+            account_filter: Some(account.clone()),
+        })
+        .unwrap();
+        assert_eq!(args.start, None);
+        assert_eq!(args.max_results, 50);
+        assert_eq!(args.account_identifier, account_identifier);
+
+        let result = map_icp_index_result(
+            Some(&account),
+            None,
+            IcpIndexGetAccountIdentifierTransactionsResult::Ok(
+                IcpIndexGetAccountIdentifierTransactionsResponse {
+                    balance: 0,
+                    oldest_tx_id: Some(20),
+                    transactions: vec![
+                        IcpIndexTransactionWithId {
+                            id: 21,
+                            transaction: IcpIndexTransaction {
+                                memo: 8,
+                                icrc1_memo: None,
+                                operation: IcpIndexOperation::Transfer {
+                                    to: account.icp_account_identifier_text(),
+                                    fee: IcpIndexTokens { e8s: 10_000 },
+                                    from: "other".to_string(),
+                                    amount: IcpIndexTokens { e8s: 124 },
+                                    spender: None,
+                                },
+                                created_at_time: None,
+                                timestamp: Some(IcpIndexTimeStamp {
+                                    timestamp_nanos: 100,
+                                }),
+                            },
+                        },
+                        IcpIndexTransactionWithId {
+                            id: 20,
+                            transaction: IcpIndexTransaction {
+                                memo: 7,
+                                icrc1_memo: None,
+                                operation: IcpIndexOperation::Transfer {
+                                    to: account.icp_account_identifier_text(),
+                                    fee: IcpIndexTokens { e8s: 10_000 },
+                                    from: "other".to_string(),
+                                    amount: IcpIndexTokens { e8s: 123 },
+                                    spender: None,
+                                },
+                                created_at_time: None,
+                                timestamp: Some(IcpIndexTimeStamp {
+                                    timestamp_nanos: 99,
+                                }),
+                            },
+                        },
+                    ],
+                },
+            ),
+        )
+        .unwrap();
+        assert_eq!(result.transactions[0].block_index, BlockIndex(20));
+        assert_eq!(result.transactions[1].block_index, BlockIndex(21));
+        assert_eq!(result.transactions[0].transaction.to, Some(account));
+        assert_eq!(result.transactions[0].transaction.amount_e8s, 123);
+        assert_eq!(result.last_seen_block, Some(BlockIndex(21)));
+        assert_eq!(result.index_tip, None);
+        assert_eq!(result.next_cursor(None), Ok(Some(BlockIndex(21))));
+    }
+
+    #[test]
+    fn icp_index_start_some_is_not_treated_as_forward_scan_start() {
+        let account = account();
+        let args = IcpIndexGetAccountIdentifierTransactionsArgs::try_from(IndexScanRequest {
+            start: Some(BlockIndex(10)),
+            limit: 50,
+            account_filter: Some(account),
+        })
+        .unwrap();
+        assert_eq!(args.start, Some(10));
+
+        let result = map_icp_index_result(
+            None,
+            Some(BlockIndex(10)),
+            IcpIndexGetAccountIdentifierTransactionsResult::Ok(
+                IcpIndexGetAccountIdentifierTransactionsResponse {
+                    balance: 0,
+                    oldest_tx_id: Some(8),
+                    transactions: vec![icp_index_mint_tx(9), icp_index_mint_tx(8)],
+                },
+            ),
+        );
+        assert_eq!(result, Err(IndexError::Unsupported));
+    }
+
+    #[test]
+    fn icp_index_rejects_duplicate_or_non_descending_wire_pages() {
+        let duplicate = map_icp_index_result(
+            None,
+            None,
+            IcpIndexGetAccountIdentifierTransactionsResult::Ok(
+                IcpIndexGetAccountIdentifierTransactionsResponse {
+                    balance: 0,
+                    oldest_tx_id: Some(2),
+                    transactions: vec![icp_index_mint_tx(2), icp_index_mint_tx(2)],
+                },
+            ),
+        );
+        assert!(matches!(
+            duplicate,
+            Err(IndexError::MissingBlock {
+                block_index: BlockIndex(2)
+            })
+        ));
+
+        let ascending = map_icp_index_result(
+            None,
+            None,
+            IcpIndexGetAccountIdentifierTransactionsResult::Ok(
+                IcpIndexGetAccountIdentifierTransactionsResponse {
+                    balance: 0,
+                    oldest_tx_id: Some(2),
+                    transactions: vec![icp_index_mint_tx(1), icp_index_mint_tx(2)],
+                },
+            ),
+        );
+        assert!(matches!(
+            ascending,
+            Err(IndexError::MissingBlock {
+                block_index: BlockIndex(2)
+            })
+        ));
+    }
+
+    #[test]
+    fn icp_index_archive_required_and_start_some_errors_do_not_advance() {
+        assert_eq!(
+            map_icp_index_result(
+                None,
+                Some(BlockIndex(10)),
+                IcpIndexGetAccountIdentifierTransactionsResult::Err(
+                    IcpIndexGetAccountIdentifierTransactionsError {
+                        message: "archive required".to_string(),
+                    },
+                ),
+            ),
+            Err(IndexError::ArchiveRequired {
+                from: BlockIndex(0)
+            })
+        );
+    }
+
+    #[test]
+    fn icp_and_icrc_index_pages_reject_duplicate_or_non_monotonic_entries() {
+        let icp = map_icp_index_result(
+            None,
+            None,
+            IcpIndexGetAccountIdentifierTransactionsResult::Ok(
+                IcpIndexGetAccountIdentifierTransactionsResponse {
+                    balance: 0,
+                    oldest_tx_id: None,
+                    transactions: vec![
+                        IcpIndexTransactionWithId {
+                            id: 2,
+                            transaction: IcpIndexTransaction {
+                                memo: 0,
+                                icrc1_memo: None,
+                                operation: IcpIndexOperation::Mint {
+                                    to: "a".to_string(),
+                                    amount: IcpIndexTokens { e8s: 1 },
+                                },
+                                created_at_time: None,
+                                timestamp: None,
+                            },
+                        },
+                        IcpIndexTransactionWithId {
+                            id: 2,
+                            transaction: IcpIndexTransaction {
+                                memo: 0,
+                                icrc1_memo: None,
+                                operation: IcpIndexOperation::Mint {
+                                    to: "a".to_string(),
+                                    amount: IcpIndexTokens { e8s: 1 },
+                                },
+                                created_at_time: None,
+                                timestamp: None,
+                            },
+                        },
+                    ],
+                },
+            ),
+        );
+        assert!(matches!(icp, Err(IndexError::MissingBlock { .. })));
+
+        let icrc = map_icrc_index_result(Ok(IcrcIndexGetAccountTransactionsResult {
+            transactions: vec![
+                IcrcIndexTransaction {
+                    id: Nat::from(1_u64),
+                    transaction: block(1),
+                },
+                IcrcIndexTransaction {
+                    id: Nat::from(1_u64),
+                    transaction: block(1),
+                },
+            ],
+            oldest_tx_id: Some(Nat::from(1_u64)),
+            tip: Some(Nat::from(1_u64)),
+            archive_required: false,
+        }));
+        assert!(matches!(icrc, Err(IndexError::MissingBlock { .. })));
+    }
+
+    #[test]
+    fn archive_traversal_requires_complete_contiguous_ranges() {
+        let request = IndexArchiveRequest {
+            range: IndexArchiveRange {
+                start: BlockIndex(10),
+                limit: 10,
+            },
+            callback: IndexArchiveCallback {
+                canister_id: principal(),
+                method: "get_blocks".to_string(),
+            },
+        };
+        assert_eq!(candid_round_trip(&request), request);
+
+        let complete = IndexArchiveTraversal {
+            requested: request.range,
+            completed: vec![
+                IndexArchiveRange {
+                    start: BlockIndex(10),
+                    limit: 4,
+                },
+                IndexArchiveRange {
+                    start: BlockIndex(14),
+                    limit: 6,
+                },
+            ],
+            incomplete: false,
+        };
+        assert_eq!(complete.validate_no_skipped_ranges(), Ok(()));
+
+        let skipped = IndexArchiveTraversal {
+            completed: vec![IndexArchiveRange {
+                start: BlockIndex(11),
+                limit: 9,
+            }],
+            ..complete.clone()
+        };
+        assert_eq!(
+            skipped.validate_no_skipped_ranges(),
+            Err(IndexError::MissingBlock {
+                block_index: BlockIndex(10)
+            })
+        );
+
+        let incomplete = IndexArchiveTraversal {
+            incomplete: true,
+            ..complete
+        };
+        assert_eq!(
+            incomplete.validate_no_skipped_ranges(),
+            Err(IndexError::ArchiveRequired {
+                from: BlockIndex(20)
+            })
+        );
+    }
+
+    #[test]
+    fn icp_transfer_fee_decodes_official_record_shape() {
+        #[derive(CandidType)]
+        struct OfficialTransferFee {
+            transfer_fee: IcpTokens,
+        }
+
+        let bytes = Encode!(&OfficialTransferFee {
+            transfer_fee: IcpTokens { e8s: 10_000 },
+        })
+        .unwrap();
+        let decoded = Decode!(&bytes, IcpTransferFee).unwrap();
+        assert_eq!(decoded.transfer_fee.e8s, 10_000);
+    }
+
+    #[test]
+    fn icp_index_decodes_official_operation_and_transaction_shapes() {
+        #[derive(CandidType)]
+        #[allow(dead_code)]
+        enum OfficialResult {
+            Ok(OfficialResponse),
+            Err(IcpIndexGetAccountIdentifierTransactionsError),
+        }
+
+        #[derive(CandidType)]
+        struct OfficialResponse {
+            balance: u64,
+            transactions: Vec<OfficialTransactionWithId>,
+            oldest_tx_id: Option<u64>,
+        }
+
+        #[derive(CandidType)]
+        struct OfficialTransactionWithId {
+            id: u64,
+            transaction: OfficialTransaction,
+        }
+
+        #[derive(CandidType)]
+        struct OfficialTransaction {
+            memo: u64,
+            icrc1_memo: Option<Vec<u8>>,
+            operation: OfficialOperation,
+            created_at_time: Option<IcpIndexTimeStamp>,
+            timestamp: Option<IcpIndexTimeStamp>,
+        }
+
+        #[derive(CandidType)]
+        enum OfficialOperation {
+            Approve {
+                fee: IcpIndexTokens,
+                from: String,
+                allowance: IcpIndexTokens,
+                expires_at: Option<IcpIndexTimeStamp>,
+                spender: String,
+                expected_allowance: Option<IcpIndexTokens>,
+            },
+            Burn {
+                from: String,
+                amount: IcpIndexTokens,
+                spender: Option<String>,
+            },
+            Mint {
+                to: String,
+                amount: IcpIndexTokens,
+            },
+            Transfer {
+                to: String,
+                fee: IcpIndexTokens,
+                from: String,
+                amount: IcpIndexTokens,
+                spender: Option<String>,
+            },
+        }
+
+        let bytes = Encode!(&OfficialResult::Ok(OfficialResponse {
+            balance: 0,
+            oldest_tx_id: Some(1),
+            transactions: vec![
+                OfficialTransactionWithId {
+                    id: 4,
+                    transaction: OfficialTransaction {
+                        memo: 4,
+                        icrc1_memo: None,
+                        operation: OfficialOperation::Transfer {
+                            to: "to".to_string(),
+                            fee: IcpIndexTokens { e8s: 10_000 },
+                            from: "from".to_string(),
+                            amount: IcpIndexTokens { e8s: 40 },
+                            spender: None,
+                        },
+                        created_at_time: None,
+                        timestamp: Some(IcpIndexTimeStamp { timestamp_nanos: 4 }),
+                    },
+                },
+                OfficialTransactionWithId {
+                    id: 3,
+                    transaction: OfficialTransaction {
+                        memo: 3,
+                        icrc1_memo: Some(vec![3]),
+                        operation: OfficialOperation::Approve {
+                            fee: IcpIndexTokens { e8s: 10_000 },
+                            from: "from".to_string(),
+                            allowance: IcpIndexTokens { e8s: 30 },
+                            expires_at: Some(IcpIndexTimeStamp {
+                                timestamp_nanos: 30
+                            }),
+                            spender: "spender".to_string(),
+                            expected_allowance: None,
+                        },
+                        created_at_time: None,
+                        timestamp: Some(IcpIndexTimeStamp { timestamp_nanos: 3 }),
+                    },
+                },
+                OfficialTransactionWithId {
+                    id: 2,
+                    transaction: OfficialTransaction {
+                        memo: 2,
+                        icrc1_memo: None,
+                        operation: OfficialOperation::Burn {
+                            from: "from".to_string(),
+                            amount: IcpIndexTokens { e8s: 20 },
+                            spender: Some("spender".to_string()),
+                        },
+                        created_at_time: None,
+                        timestamp: Some(IcpIndexTimeStamp { timestamp_nanos: 2 }),
+                    },
+                },
+                OfficialTransactionWithId {
+                    id: 1,
+                    transaction: OfficialTransaction {
+                        memo: 1,
+                        icrc1_memo: None,
+                        operation: OfficialOperation::Mint {
+                            to: "to".to_string(),
+                            amount: IcpIndexTokens { e8s: 10 },
+                        },
+                        created_at_time: None,
+                        timestamp: Some(IcpIndexTimeStamp { timestamp_nanos: 1 }),
+                    },
+                },
+            ],
+        }))
+        .unwrap();
+        let decoded = Decode!(&bytes, IcpIndexGetAccountIdentifierTransactionsResult).unwrap();
+        let page = map_icp_index_result(None, None, decoded).unwrap();
+        assert_eq!(
+            page.transactions
+                .iter()
+                .map(|tx| tx.transaction.operation_kind)
+                .collect::<Vec<_>>(),
+            vec![
+                LedgerOperationKind::Mint,
+                LedgerOperationKind::Burn,
+                LedgerOperationKind::Approve,
+                LedgerOperationKind::Transfer,
+            ]
+        );
+        assert_eq!(page.last_seen_block, Some(BlockIndex(4)));
+    }
+
+    #[test]
+    fn production_dtos_candid_round_trip() {
+        let icp_args = icp_transfer_args_for_request(icp_request(), 10_000).unwrap();
+        assert_eq!(candid_round_trip(&icp_args), icp_args);
+        assert_eq!(
+            candid_round_trip(&IcpTransferFeeArgs {}),
+            IcpTransferFeeArgs {}
+        );
+        assert_eq!(
+            candid_round_trip(&IcpTransferFee {
+                transfer_fee: IcpTokens { e8s: 10_000 },
+            }),
+            IcpTransferFee {
+                transfer_fee: IcpTokens { e8s: 10_000 },
+            }
+        );
+
+        let icp_index = IcpIndexGetAccountIdentifierTransactionsResult::Ok(
+            IcpIndexGetAccountIdentifierTransactionsResponse {
+                balance: 0,
+                transactions: vec![IcpIndexTransactionWithId {
+                    id: 1,
+                    transaction: IcpIndexTransaction {
+                        memo: 1,
+                        icrc1_memo: Some(vec![1, 2]),
+                        operation: IcpIndexOperation::Burn {
+                            from: "legacy".to_string(),
+                            amount: IcpIndexTokens { e8s: 1 },
+                            spender: None,
+                        },
+                        created_at_time: Some(IcpIndexTimeStamp { timestamp_nanos: 1 }),
+                        timestamp: None,
+                    },
+                }],
+                oldest_tx_id: Some(1),
+            },
+        );
+        assert_eq!(candid_round_trip(&icp_index), icp_index);
+
+        let icrc_index = IcrcIndexGetAccountTransactionsResult {
+            transactions: vec![IcrcIndexTransaction {
+                id: Nat::from(1_u64),
+                transaction: block(1),
+            }],
+            oldest_tx_id: Some(Nat::from(1_u64)),
+            tip: Some(Nat::from(2_u64)),
+            archive_required: false,
+        };
+        assert_eq!(candid_round_trip(&icrc_index), icrc_index);
     }
 
     #[test]

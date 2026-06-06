@@ -36,7 +36,13 @@ Upgrade persistence uses an explicit stable snapshot saved with `ic_cdk::storage
 
 ## Scheduler Skeleton
 
-`src/scheduler/` contains a no-op `scheduler_tick_once()` for future timer-driven work. It currently records planned responsibilities only: scanning ICP ledger/index data for Jupiter Faucet and NNS maturity deposits, scanning IO ledger/index data for redemption transfers, classifying observed flows, and processing authorized streams internally. It performs no external calls.
+`src/scheduler/` contains the internal scheduler boundary for ledger/index-observed work.
+On non-Wasm hosts, `scheduler_tick_plan_only()` remains a planning helper and `scheduler_tick_once()` does not perform external calls.
+In debug/test Wasm, `debug_tick` can scan configured local/mock ICP and IO ledger/index canisters, classify observed flows, execute downstream mock-ledger transfers through `LedgerTransferClient`, and update durable operation journals and scan cursors.
+
+Production-shaped ICP/ICRC ledger and index adapters live behind `io-ledger-types` traits, but they are not wired into default production execution in this milestone.
+The production DID remains constructor-only and does not expose scheduler control or query methods.
+Archive-required and index-lag states are modelled as retryable boundary errors; archive traversal is not fully wired into scheduler execution.
 
 ## Stream Semantics
 
