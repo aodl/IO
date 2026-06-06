@@ -10,6 +10,8 @@ NNS-only canister. It manages:
 
 It transfers ICP maturity/principal to `io_stream_manager` using source metadata that lets the stream manager classify the flow.
 
+Phase 1 mainnet public shell status: not deployed. The existing IO neuron-owner canister `oae4c-3iaaa-aaaar-qb5qq-cai`, which owns IO neuron `6345890886899317159`, remains not touched by Phase 1.
+
 ## io_stream_manager
 
 Main economic canister. It owns the protocol accounting model:
@@ -18,12 +20,18 @@ Main economic canister. It owns the protocol accounting model:
 - 2-year maturity ICP -> 40% restaked, 60% liquid, no IO issued.
 - 2-week maturity ICP -> 40% restaked to 2-week pool, 60% liquid, backed IO to eligible IO SNS neurons.
 
+Phase 1 mainnet public shell status: not deployed. No value-moving protocol canister is live, IO issuance is not live, IO redemption is not live, and the canonical SNS IO ledger is not launched.
+
 ## io_historian
 
 Public read model and observability surface. It owns dashboard/query APIs for protocol snapshots, bounded stream/redemption/reward history, NNS lifecycle summaries, index health, governance participation, release artifacts, canister status, and ingestion status.
 
 Historian is not a value-moving authority. It may be incomplete or wrong and should be rebuildable from canonical sources such as ledgers, indexes, governance data, release manifests, and management-canister observations. Local/test ingestion APIs are debug-only and are absent from the production DID.
 
+Phase 1 mainnet public shell status: live as `yo47z-piaaa-aaaac-qg3xa-cai`. This is a public read model, not protocol truth.
+
 ## frontend
 
 Certified Rust asset canister for the IO browser dashboard. It serves static assets with certified HTTP responses, strict cache/security headers, and a content-hashed browser bundle. Browser data comes from `io_historian` production read APIs such as `get_dashboard_state` and `get_public_status`, not from `io_stream_manager` or `io_nns_neuron_manager` internals. Frontend text is not protocol truth.
+
+Phase 1 mainnet public shell status: live as `6h2pa-qiaaa-aaaao-qp4fa-cai`. The public URLs are `https://6h2pa-qiaaa-aaaao-qp4fa-cai.icp0.io/` and `https://6h2pa-qiaaa-aaaao-qp4fa-cai.raw.icp0.io/`. The Phase 1 frontend consumes historian canister `yo47z-piaaa-aaaac-qg3xa-cai`.

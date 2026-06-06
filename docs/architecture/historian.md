@@ -2,6 +2,8 @@
 
 `io_historian` is IO's public observability read model. It is intentionally separate from the value-moving canisters.
 
+Phase 1 public shell is live on mainnet with historian canister `yo47z-piaaa-aaaac-qg3xa-cai` and frontend canister `6h2pa-qiaaa-aaaao-qp4fa-cai`. IO remains pre-launch: no value-moving protocol canister is live, no canonical IO SNS ledger exists yet, IO issuance is not live, and IO redemption is not live.
+
 ## Responsibilities
 
 - expose bounded public query APIs for dashboard/frontend consumption;
@@ -11,7 +13,7 @@
 - summarize release artifact hashes and canister/module status observations;
 - publish scan/index health and governance participation summaries.
 
-Historian does not issue IO, redeem IO, move ICP, manage neurons, classify value-moving source events for execution, or decide protocol economics.
+Historian does not issue IO, redeem IO, move ICP, manage neurons, classify value-moving source events for execution, or decide protocol economics. It is a public read model, not protocol truth.
 
 ## Public Surface
 
@@ -43,4 +45,4 @@ If total supply, excluded supply, liquid reserve, or redeemable supply is unavai
 
 Historian state is useful for continuity and frontend responsiveness, but it is a read model. Full canonical history remains in ledger/index/governance sources and release artifacts. If historian state diverges, recovery should rebuild or correct historian observations rather than adding broad production query/control APIs to value-moving canisters.
 
-Production source adapters remain future work. The frontend consumes the production historian read surface through browser Candid calls, but historian observations remain a rebuildable read model rather than protocol truth.
+Production source adapters remain future work. The frontend consumes the production historian read surface through browser Candid calls, but historian observations remain a rebuildable read model rather than protocol truth. In Phase 1, the frontend was built with `CANISTER_ID_IO_HISTORIAN=yo47z-piaaa-aaaac-qg3xa-cai`; this does not activate `io_stream_manager`, `io_nns_neuron_manager`, the existing IO neuron-owner canister `oae4c-3iaaa-aaaar-qb5qq-cai`, or IO neuron `6345890886899317159`.

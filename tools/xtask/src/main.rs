@@ -12,6 +12,12 @@ const WASM_TARGET: &str = "wasm32-unknown-unknown";
 const MANIFEST_PATH: &str = "release-artifacts/manifest.json";
 const KNOWN_TWO_YEAR_NNS_NEURON_ID: u64 = 6_345_890_886_899_317_159;
 const KNOWN_CONTROLLER_CANISTER_PRINCIPAL: &str = "oae4c-3iaaa-aaaar-qb5qq-cai";
+const PHASE1_FRONTEND_CANISTER_ID: &str = "6h2pa-qiaaa-aaaao-qp4fa-cai";
+const PHASE1_HISTORIAN_CANISTER_ID: &str = "yo47z-piaaa-aaaac-qg3xa-cai";
+const PHASE1_MODE: &str = "MainnetPreLaunchPublicShell";
+const PHASE1_CONFIG_PATH: &str = "deploy/phase1-mainnet/canister-ids.toml";
+const PHASE1_README_PATH: &str = "deploy/phase1-mainnet/README.md";
+const PHASE1_STATUS_PATH: &str = "deploy/phase1-mainnet/status.md";
 
 #[derive(Clone, Copy, Debug)]
 struct ReleaseCanister {
@@ -204,6 +210,96 @@ fn require_file(root: &Path, path: &str) -> Result<String, String> {
         return Err(format!("{path}: missing required file"));
     }
     read_file(root, path)
+}
+
+fn parse_toml_string(text: &str, section: &str, key: &str) -> Result<String, String> {
+    let mut current_section = "";
+    for raw_line in text.lines() {
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            current_section = line[1..line.len() - 1].trim();
+            continue;
+        }
+        if current_section != section {
+            continue;
+        }
+        let Some((left, right)) = line.split_once('=') else {
+            continue;
+        };
+        if left.trim() != key {
+            continue;
+        }
+        let value = right.trim();
+        if !(value.starts_with('"') && value.ends_with('"') && value.len() >= 2) {
+            return Err(format!("{section}.{key}: expected quoted string"));
+        }
+        return Ok(value[1..value.len() - 1].to_string());
+    }
+    Err(format!("missing required field {section}.{key}"))
+}
+
+fn parse_toml_bool(text: &str, section: &str, key: &str) -> Result<bool, String> {
+    let mut current_section = "";
+    for raw_line in text.lines() {
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            current_section = line[1..line.len() - 1].trim();
+            continue;
+        }
+        if current_section != section {
+            continue;
+        }
+        let Some((left, right)) = line.split_once('=') else {
+            continue;
+        };
+        if left.trim() != key {
+            continue;
+        }
+        return match right.trim() {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            other => Err(format!("{section}.{key}: expected boolean, got {other:?}")),
+        };
+    }
+    Err(format!("missing required field {section}.{key}"))
+}
+
+fn require_toml_string(
+    path: &str,
+    text: &str,
+    section: &str,
+    key: &str,
+    expected: &str,
+) -> Result<(), String> {
+    let actual = parse_toml_string(text, section, key)?;
+    if actual != expected {
+        return Err(format!(
+            "{path}: expected {section}.{key} = {expected:?}, got {actual:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn require_toml_bool(
+    path: &str,
+    text: &str,
+    section: &str,
+    key: &str,
+    expected: bool,
+) -> Result<(), String> {
+    let actual = parse_toml_bool(text, section, key)?;
+    if actual != expected {
+        return Err(format!(
+            "{path}: expected {section}.{key} = {expected}, got {actual}"
+        ));
+    }
+    Ok(())
 }
 
 fn forbidden_did_methods(text: &str, needles: &[&str]) -> Vec<String> {
@@ -1136,6 +1232,167 @@ fn check_sns_root_lifecycle_at(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn check_phase1_no_deployment_scripts(root: &Path) -> Result<(), String> {
+    let phase_dir = root.join("deploy/phase1-mainnet");
+    let entries =
+        fs::read_dir(&phase_dir).map_err(|err| format!("deploy/phase1-mainnet: {err}"))?;
+    for entry in entries {
+        let entry = entry.map_err(|err| format!("deploy/phase1-mainnet: {err}"))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|err| format!("{}: {err}", entry.path().display()))?;
+        if !file_type.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .to_string();
+        if path.extension().is_some_and(|extension| extension == "sh") {
+            return Err(format!(
+                "{rel}: deployment scripts are not allowed in Phase 1 record"
+            ));
+        }
+        let text = fs::read_to_string(&path).map_err(|err| format!("{rel}: {err}"))?;
+        require_absent(
+            &rel,
+            &text,
+            &["#!/", "dfx deploy", "dfx canister", "--network ic"],
+        )?;
+    }
+    Ok(())
+}
+
+fn check_prelaunch_public_shell_at(root: &Path) -> Result<(), String> {
+    let config = require_file(root, PHASE1_CONFIG_PATH)?;
+    require_toml_string(PHASE1_CONFIG_PATH, &config, "phase", "mode", PHASE1_MODE)?;
+    require_toml_string(
+        PHASE1_CONFIG_PATH,
+        &config,
+        "phase",
+        "release_artifact_manifest",
+        MANIFEST_PATH,
+    )?;
+    require_toml_string(
+        PHASE1_CONFIG_PATH,
+        &config,
+        "canisters",
+        "frontend",
+        PHASE1_FRONTEND_CANISTER_ID,
+    )?;
+    require_toml_string(
+        PHASE1_CONFIG_PATH,
+        &config,
+        "canisters",
+        "io_historian",
+        PHASE1_HISTORIAN_CANISTER_ID,
+    )?;
+    require_toml_string(
+        PHASE1_CONFIG_PATH,
+        &config,
+        "frontend",
+        "gateway_url",
+        "https://6h2pa-qiaaa-aaaao-qp4fa-cai.icp0.io/",
+    )?;
+    require_toml_string(
+        PHASE1_CONFIG_PATH,
+        &config,
+        "frontend",
+        "raw_url",
+        "https://6h2pa-qiaaa-aaaao-qp4fa-cai.raw.icp0.io/",
+    )?;
+    require_toml_string(
+        PHASE1_CONFIG_PATH,
+        &config,
+        "frontend",
+        "built_with_canister_id_io_historian",
+        PHASE1_HISTORIAN_CANISTER_ID,
+    )?;
+    require_toml_bool(
+        PHASE1_CONFIG_PATH,
+        &config,
+        "not_deployed",
+        "io_stream_manager",
+        true,
+    )?;
+    require_toml_bool(
+        PHASE1_CONFIG_PATH,
+        &config,
+        "not_deployed",
+        "io_nns_neuron_manager",
+        true,
+    )?;
+    require_toml_string(
+        PHASE1_CONFIG_PATH,
+        &config,
+        "not_touched",
+        "existing_io_neuron_owner_canister",
+        KNOWN_CONTROLLER_CANISTER_PRINCIPAL,
+    )?;
+    require_toml_string(
+        PHASE1_CONFIG_PATH,
+        &config,
+        "not_touched",
+        "io_neuron_id",
+        &KNOWN_TWO_YEAR_NNS_NEURON_ID.to_string(),
+    )?;
+    for key in [
+        "io_protocol_live",
+        "sns_io_ledger_launched",
+        "io_issuance_live",
+        "io_redemption_live",
+    ] {
+        require_toml_bool(PHASE1_CONFIG_PATH, &config, "status", key, false)?;
+    }
+
+    let phase_readme = require_file(root, PHASE1_README_PATH)?;
+    let phase_status = require_file(root, PHASE1_STATUS_PATH)?;
+    let docs = [
+        "docs/operations/mainnet-readiness.md",
+        "docs/operations/mainnet-prelaunch-dry-run.md",
+        "docs/architecture/canister-roles.md",
+        "docs/architecture/historian.md",
+        "canisters/frontend/README.md",
+        "canisters/io_historian/README.md",
+    ];
+    let mut combined = format!("{phase_readme}\n{phase_status}\n{config}\n");
+    for path in docs {
+        combined.push_str(&require_file(root, path)?);
+        combined.push('\n');
+    }
+    require_present(
+        "Phase 1 prelaunch docs",
+        &combined,
+        &[
+            PHASE1_MODE,
+            PHASE1_FRONTEND_CANISTER_ID,
+            PHASE1_HISTORIAN_CANISTER_ID,
+            "https://6h2pa-qiaaa-aaaao-qp4fa-cai.icp0.io/",
+            "https://6h2pa-qiaaa-aaaao-qp4fa-cai.raw.icp0.io/",
+            "CANISTER_ID_IO_HISTORIAN=yo47z-piaaa-aaaac-qg3xa-cai",
+            "No value-moving protocol canister",
+            "not deployed",
+            "not touched",
+            KNOWN_CONTROLLER_CANISTER_PRINCIPAL,
+            "6345890886899317159",
+            "IO protocol is not live",
+            "canonical SNS IO ledger is not launched",
+            "IO issuance is not live",
+            "IO redemption is not live",
+            "public read model",
+            "not protocol truth",
+            MANIFEST_PATH,
+        ],
+    )?;
+
+    check_phase1_no_deployment_scripts(root)?;
+    check_required_executable_scripts_at(root)?;
+    check_did_surface_at(root, false)?;
+    Ok(())
+}
+
 fn validate_no_install_args_did(root: &Path, path: &str) -> Result<(), String> {
     let text = read_file(root, path)?;
     if text.contains("service : (") {
@@ -1156,7 +1413,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -1233,6 +1490,13 @@ fn main() -> ExitCode {
                 }
             }
         }
+        "validate_prelaunch_public_shell" => match check_prelaunch_public_shell_at(&root) {
+            Ok(()) => eprintln!("✓ validate_prelaunch_public_shell"),
+            Err(err) => {
+                eprintln!("✗ validate_prelaunch_public_shell: {err}");
+                ok = false;
+            }
+        },
         "frontend_setup" => {
             ok &= run("frontend: npm ci", npm(&["run", "setup:frontend"]));
         }
@@ -1878,6 +2142,112 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         );
     }
 
+    fn write_did_surface_fixture(root: &Path) {
+        write(
+            root,
+            "canisters/io_stream_manager/io_stream_manager.did",
+            "type InitArgs = record {};\nservice : (InitArgs) -> {}\n",
+        );
+        write(
+            root,
+            "canisters/io_nns_neuron_manager/io_nns_neuron_manager.did",
+            "type InitArgs = record {};\nservice : (InitArgs) -> {}\n",
+        );
+        write(
+            root,
+            "canisters/io_historian/io_historian.did",
+            "service : {\n  get_dashboard_state : () -> (text) query;\n  get_protocol_snapshot : () -> (text) query;\n  get_redemption_rate : () -> (text) query;\n  list_streams : () -> (text) query;\n  list_redemptions : () -> (text) query;\n  list_rewards : () -> (text) query;\n  list_nns_lifecycle_events : () -> (text) query;\n  get_index_health : () -> (text) query;\n  get_governance_summary : () -> (text) query;\n  get_release_artifacts : () -> (text) query;\n  get_canister_status_summary : () -> (text) query;\n}\n",
+        );
+        write(
+            root,
+            "canisters/io_stream_manager/io_stream_manager_debug.did",
+            "service : {\n  debug_get_state : () -> (text) query;\n  debug_get_redemption_rate : () -> (text) query;\n  debug_process_stream_event : () -> (text);\n  debug_redeem : () -> (text);\n  debug_tick : () -> (text);\n}\n",
+        );
+        write(
+            root,
+            "canisters/io_nns_neuron_manager/io_nns_neuron_manager_debug.did",
+            "service : {\n  debug_get_config : () -> (text) query;\n  debug_get_state : () -> (text) query;\n  debug_plan_rebalance : () -> (text);\n  debug_advance_model_time : () -> (text);\n  debug_tick : () -> (text);\n}\n",
+        );
+        write(
+            root,
+            "canisters/io_historian/io_historian_debug.did",
+            "service : {\n  debug_clear : () -> ();\n  debug_ingest_ledger_flow : () -> ();\n  debug_ingest_stream_record : () -> ();\n  debug_ingest_redemption_record : () -> ();\n  debug_ingest_reward_record : () -> ();\n  debug_ingest_index_health : () -> ();\n  debug_ingest_governance_snapshot : () -> ();\n  debug_ingest_canister_artifact_status : () -> ();\n}\n",
+        );
+    }
+
+    fn phase1_config() -> String {
+        r#"[phase]
+mode = "MainnetPreLaunchPublicShell"
+record_date = "2026-06-06"
+release_artifact_manifest = "release-artifacts/manifest.json"
+
+[canisters]
+io_historian = "yo47z-piaaa-aaaac-qg3xa-cai"
+frontend = "6h2pa-qiaaa-aaaao-qp4fa-cai"
+
+[frontend]
+gateway_url = "https://6h2pa-qiaaa-aaaao-qp4fa-cai.icp0.io/"
+raw_url = "https://6h2pa-qiaaa-aaaao-qp4fa-cai.raw.icp0.io/"
+built_with_canister_id_io_historian = "yo47z-piaaa-aaaac-qg3xa-cai"
+
+[not_deployed]
+io_stream_manager = true
+io_nns_neuron_manager = true
+
+[not_touched]
+existing_io_neuron_owner_canister = "oae4c-3iaaa-aaaar-qb5qq-cai"
+io_neuron_id = "6345890886899317159"
+
+[status]
+io_protocol_live = false
+sns_io_ledger_launched = false
+io_issuance_live = false
+io_redemption_live = false
+"#
+        .to_string()
+    }
+
+    fn write_prelaunch_public_shell_fixture(root: &Path) {
+        write_did_surface_fixture(root);
+        write(root, PHASE1_CONFIG_PATH, &phase1_config());
+        let phase_doc = r#"# Phase 1
+MainnetPreLaunchPublicShell
+frontend 6h2pa-qiaaa-aaaao-qp4fa-cai
+io_historian yo47z-piaaa-aaaac-qg3xa-cai
+https://6h2pa-qiaaa-aaaao-qp4fa-cai.icp0.io/
+https://6h2pa-qiaaa-aaaao-qp4fa-cai.raw.icp0.io/
+CANISTER_ID_IO_HISTORIAN=yo47z-piaaa-aaaac-qg3xa-cai
+No value-moving protocol canister is live.
+io_stream_manager is not deployed.
+io_nns_neuron_manager is not deployed.
+The existing IO neuron-owner canister oae4c-3iaaa-aaaar-qb5qq-cai is not touched.
+IO neuron 6345890886899317159 is not touched.
+IO protocol is not live.
+The canonical SNS IO ledger is not launched.
+IO issuance is not live.
+IO redemption is not live.
+Historian is a public read model, not protocol truth.
+release-artifacts/manifest.json
+"#;
+        write(root, PHASE1_README_PATH, phase_doc);
+        write(root, PHASE1_STATUS_PATH, phase_doc);
+        for path in [
+            "docs/operations/mainnet-readiness.md",
+            "docs/operations/mainnet-prelaunch-dry-run.md",
+            "docs/architecture/canister-roles.md",
+            "docs/architecture/historian.md",
+            "canisters/frontend/README.md",
+            "canisters/io_historian/README.md",
+        ] {
+            write(root, path, phase_doc);
+        }
+        write(
+            root,
+            "tools/scripts/required-check",
+            "#!/usr/bin/env bash\ncargo test\n",
+        );
+    }
+
     #[test]
     fn artifact_manifest_validation_accepts_good_manifest() {
         let root = temp_root("manifest-good");
@@ -2178,6 +2548,140 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         assert!(check_sns_launch_readiness_at(&root, true)
             .unwrap_err()
             .contains("incomplete item"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prelaunch_canister_ids_parse_from_phase1_config() {
+        let config = phase1_config();
+        assert_eq!(
+            parse_toml_string(&config, "canisters", "frontend").unwrap(),
+            PHASE1_FRONTEND_CANISTER_ID
+        );
+        assert_eq!(
+            parse_toml_string(&config, "canisters", "io_historian").unwrap(),
+            PHASE1_HISTORIAN_CANISTER_ID
+        );
+    }
+
+    #[test]
+    fn prelaunch_status_booleans_are_false() {
+        let config = phase1_config();
+        for key in ["io_protocol_live", "io_issuance_live", "io_redemption_live"] {
+            assert!(!parse_toml_bool(&config, "status", key).unwrap());
+        }
+    }
+
+    #[test]
+    fn prelaunch_docs_contain_phase1_ids_and_not_touched_records() {
+        let root = temp_root("prelaunch-docs");
+        write_prelaunch_public_shell_fixture(&root);
+        let docs = [
+            PHASE1_README_PATH,
+            PHASE1_STATUS_PATH,
+            "docs/operations/mainnet-readiness.md",
+            "docs/operations/mainnet-prelaunch-dry-run.md",
+            "docs/architecture/canister-roles.md",
+            "docs/architecture/historian.md",
+            "canisters/frontend/README.md",
+            "canisters/io_historian/README.md",
+        ];
+        let mut combined = String::new();
+        for path in docs {
+            combined.push_str(&read_file(&root, path).unwrap());
+        }
+        require_present(
+            "fixture docs",
+            &combined,
+            &[
+                PHASE1_FRONTEND_CANISTER_ID,
+                PHASE1_HISTORIAN_CANISTER_ID,
+                "not touched",
+                KNOWN_CONTROLLER_CANISTER_PRINCIPAL,
+                "6345890886899317159",
+            ],
+        )
+        .unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prelaunch_public_shell_validation_accepts_fixture() {
+        let root = temp_root("prelaunch-good");
+        write_prelaunch_public_shell_fixture(&root);
+        check_prelaunch_public_shell_at(&root).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prelaunch_public_shell_rejects_value_moving_canister_marked_deployed() {
+        let root = temp_root("prelaunch-value-moving-deployed");
+        write_prelaunch_public_shell_fixture(&root);
+        write(
+            &root,
+            PHASE1_CONFIG_PATH,
+            &phase1_config().replace("io_stream_manager = true", "io_stream_manager = false"),
+        );
+        assert!(check_prelaunch_public_shell_at(&root)
+            .unwrap_err()
+            .contains("not_deployed.io_stream_manager"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prelaunch_public_shell_rejects_sns_io_ledger_launched() {
+        let root = temp_root("prelaunch-sns-ledger-launched");
+        write_prelaunch_public_shell_fixture(&root);
+        write(
+            &root,
+            PHASE1_CONFIG_PATH,
+            &phase1_config().replace(
+                "sns_io_ledger_launched = false",
+                "sns_io_ledger_launched = true",
+            ),
+        );
+        assert!(check_prelaunch_public_shell_at(&root)
+            .unwrap_err()
+            .contains("status.sns_io_ledger_launched"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prelaunch_public_shell_rejects_io_protocol_live() {
+        let root = temp_root("prelaunch-protocol-live");
+        write_prelaunch_public_shell_fixture(&root);
+        write(
+            &root,
+            PHASE1_CONFIG_PATH,
+            &phase1_config().replace("io_protocol_live = false", "io_protocol_live = true"),
+        );
+        assert!(check_prelaunch_public_shell_at(&root)
+            .unwrap_err()
+            .contains("status.io_protocol_live"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prelaunch_public_shell_rejects_io_issuance_or_redemption_live() {
+        let root = temp_root("prelaunch-issuance-live");
+        write_prelaunch_public_shell_fixture(&root);
+        write(
+            &root,
+            PHASE1_CONFIG_PATH,
+            &phase1_config().replace("io_issuance_live = false", "io_issuance_live = true"),
+        );
+        assert!(check_prelaunch_public_shell_at(&root)
+            .unwrap_err()
+            .contains("status.io_issuance_live"));
+
+        write(
+            &root,
+            PHASE1_CONFIG_PATH,
+            &phase1_config().replace("io_redemption_live = false", "io_redemption_live = true"),
+        );
+        assert!(check_prelaunch_public_shell_at(&root)
+            .unwrap_err()
+            .contains("status.io_redemption_live"));
         let _ = fs::remove_dir_all(root);
     }
 

@@ -1,0 +1,27 @@
+[phase]
+mode = "MainnetPreLaunchPublicShell"
+record_date = "2026-06-06"
+release_artifact_manifest = "release-artifacts/manifest.json"
+
+[canisters]
+io_historian = "yo47z-piaaa-aaaac-qg3xa-cai"
+frontend = "6h2pa-qiaaa-aaaao-qp4fa-cai"
+
+[frontend]
+gateway_url = "https://6h2pa-qiaaa-aaaao-qp4fa-cai.icp0.io/"
+raw_url = "https://6h2pa-qiaaa-aaaao-qp4fa-cai.raw.icp0.io/"
+built_with_canister_id_io_historian = "yo47z-piaaa-aaaac-qg3xa-cai"
+
+[not_deployed]
+io_stream_manager = true
+io_nns_neuron_manager = true
+
+[not_touched]
+existing_io_neuron_owner_canister = "oae4c-3iaaa-aaaar-qb5qq-cai"
+io_neuron_id = "6345890886899317159"
+
+[status]
+io_protocol_live = false
+sns_io_ledger_launched = false
+io_issuance_live = false
+io_redemption_live = false

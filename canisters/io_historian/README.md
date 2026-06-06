@@ -2,6 +2,10 @@
 
 Public read-model canister.
 
+Phase 1 public shell is live on mainnet as historian canister `yo47z-piaaa-aaaac-qg3xa-cai`. The paired frontend canister is `6h2pa-qiaaa-aaaao-qp4fa-cai`.
+
+IO remains pre-launch. The canonical SNS IO ledger is not launched, no value-moving protocol canister is live, IO issuance is not live, and IO redemption is not live.
+
 ## Role
 
 - Public read model.
@@ -11,6 +15,8 @@ Public read-model canister.
 - May be incomplete or wrong and must be rebuildable from canonical source observations.
 
 Historian must not depend on broad public query APIs from value-moving canisters. Historian may query observable/public sources and ledgers/indexes in future production wiring, but this milestone only wires local/test ingestion and pure reconstruction helpers.
+
+The Phase 1 frontend consumes this historian read model. Historian remains a public read model, not protocol truth.
 
 ## Public API
 
@@ -69,4 +75,4 @@ The historian read model can represent:
 - governance eligibility and participation summaries using `io-reward-policy`;
 - release artifact and canister status summaries from manifest-shaped data.
 
-Production data-source wiring remains future work. No mainnet calls, deployment workflows, `dfx` requirements, SNS launch flows, or value-moving economics changes are part of this milestone.
+Production data-source wiring remains future work. No deployment workflows, `dfx` requirements, SNS launch flows, or value-moving economics changes are part of this milestone. The existing IO neuron-owner canister `oae4c-3iaaa-aaaar-qb5qq-cai` and IO neuron `6345890886899317159` are not touched by the Phase 1 historian.

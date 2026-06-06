@@ -2,6 +2,14 @@
 
 Certified asset canister for the IO browser dashboard.
 
+Phase 1 public shell is live on mainnet as canister `6h2pa-qiaaa-aaaao-qp4fa-cai`.
+
+- Gateway URL: `https://6h2pa-qiaaa-aaaao-qp4fa-cai.icp0.io/`
+- Raw URL: `https://6h2pa-qiaaa-aaaao-qp4fa-cai.raw.icp0.io/`
+- Historian canister consumed by the Phase 1 build: `yo47z-piaaa-aaaac-qg3xa-cai`
+
+IO remains pre-launch. The canonical SNS IO ledger is not launched, no value-moving protocol canister is live, IO issuance is not live, and IO redemption is not live.
+
 ## Role
 
 - Serves the IO landing/dashboard shell as certified static assets.
@@ -54,6 +62,8 @@ cargo run -p xtask -- frontend_required
 
 `tools/scripts/build-canister io-frontend release` runs the browser build before compiling the frontend Wasm so release artifacts embed the stamped bundle.
 
+For the Phase 1 public shell, the browser bundle was built with `CANISTER_ID_IO_HISTORIAN=yo47z-piaaa-aaaac-qg3xa-cai` so it reads from the deployed historian public read model. The release artifact manifest reference is `release-artifacts/manifest.json`.
+
 ## Visual Provenance
 
 The visual direction comes from `io-frontend-mock.zip`: dark Io sphere hero, corner links, primary nav, IO/REAL LIQUID STAKING copy, coming-soon tagline, and glassy metric cards. The production implementation self-hosts the image assets and omits the mock's base64 `texture-data.js` payload.
@@ -64,3 +74,4 @@ The visual direction comes from `io-frontend-mock.zip`: dark Io sphere hero, cor
 - Production historian canister IDs are injected by build/runtime config and may be empty in local builds.
 - Historian production ingestion remains separate from this frontend.
 - The frontend is a dashboard over historian observations, not a protocol authority.
+- The existing IO neuron-owner canister `oae4c-3iaaa-aaaar-qb5qq-cai` and IO neuron `6345890886899317159` are not touched by the Phase 1 frontend.
