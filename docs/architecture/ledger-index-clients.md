@@ -41,18 +41,23 @@ The local SNS-shaped mock ledgers under `tests/mocks/` expose `icrc1_transfer`, 
 
 ## Index Boundary
 
-`IndexScanRequest` and `IndexScanResult` model account transaction scans with pagination, optional account filters, last-seen block, index tip, and archive-required status.
+`IndexScanRequest` and `IndexScanResult` model account transaction scans with pagination, optional account filters, last-seen block, index tip, page order, observed account balance, status tip, and archive-required status.
 The crate contains production-shaped ICP account-identifier index DTOs, ICRC account transaction DTOs, and Wasm-gated `IcpIndexCanisterClient` and `IcrcIndexCanisterClient` implementations behind `LedgerIndexClient`.
 Production-shaped index clients call account-filtered transaction methods only and do not call mock or debug methods.
 `get_tip` returns `Unsupported` where a production tip cannot be derived safely from the account transaction response.
-The ICP account-identifier index endpoint is descending history: `start` is the txid last seen by the client and the returned page contains the next older transactions.
-The ICP adapter normalizes a `start = None` newest page into ascending order for IO cursor validation, but preflight-rejects `start = Some(_)` with `Unsupported` before making the production-shaped index call because that wire cursor cannot model IO's forward account-history scan without risking stale duplicate processing or missed future transactions.
+IO uses index canisters as the normal account-history abstraction. Raw ledger/archive traversal is not implemented in this milestone; archive canisters remain part of the ledger/index ecosystem and are surfaced only as retryable archive-required observations.
 
-The local SNS-shaped mock indexes expose `get_account_transactions` for account-filtered transaction pages plus debug lag, archive-required, pagination, and clear controls. The stream-manager scheduler can scan ICP deposits and IO redemption transfers through `LedgerIndexClient` in local/PocketIC mode. Account-filtered history must be strictly increasing within each returned page, but global block gaps above the stored cursor are normal because unrelated ledger traffic can occupy those block indexes. Dense gap rejection applies only to full-ledger-contiguous scans. Boundary tests cover empty pages, duplicate blocks, account-history gaps, contiguous-scan gaps, archive-required pages, index lag, lag resolution without cursor advancement, ICP index page mapping, and ICRC/ICP duplicate or non-monotonic returned pages.
+The ICP account-identifier index endpoint is descending/newest-first history: `start` is the txid last seen by the client and the returned page contains that cursor row plus older transactions. IO models this explicitly with `AccountHistoryScanState`, `AccountHistoryCursor`, `AccountHistoryPageOrder`, `AccountHistoryPageOutcome`, and `AccountHistoryScanStatus`.
+Descending scans maintain a Jupiter-style `latest_cursor` for head catch-up and an `oldest_cursor` for historical backfill. Pages are validated in wire order, then transactions are handed to callers in chronological order. Cursor advancement is conservative: callers receive a next scan state and commit it only after journal/downstream durability has been reached.
+Ascending/mock scans keep the old forward semantics and skip exactly one repeated cursor row when a mock/index returns it.
+
+The local SNS-shaped mock indexes expose `get_account_transactions` for account-filtered transaction pages plus debug lag, archive-required, unreadable, ordering, pagination, and clear controls. The stream-manager scheduler can scan ICP deposits and IO redemption transfers through `LedgerIndexClient` in local/PocketIC mode. Account-filtered history may contain global block gaps above the stored cursor because unrelated ledger traffic can occupy those block indexes. Dense gap rejection applies only to full-ledger-contiguous scans. Boundary tests cover empty pages, duplicate blocks, account-history gaps, contiguous-scan gaps, archive-required pages, index lag, lag resolution without cursor advancement, ICP index page mapping, TransferFrom compatibility, and ICRC/ICP duplicate or non-monotonic returned pages.
 
 The current implementation does not fetch archives in scheduler execution.
 Archive callback metadata, requested ranges, completed ranges, skipped-range rejection, and incomplete traversal are modelled in fixture-tested DTOs.
 Archive-required and lag states remain explicit retryable scheduler boundary errors, and archive-required or lagged pages must not advance cursors.
+
+ICP index DTO compatibility supports the current official variants `Approve`, `Burn`, `Mint`, and `Transfer`. IO also tolerates Jupiter-compatible legacy `TransferFrom` for Candid decoding and maps it as a transfer-like `LedgerOperationKind::Transfer`; spender metadata is intentionally not retained because the current internal ledger block model has no spender field. Unknown variants are not silently accepted.
 
 ## Fee and Dust Policy
 

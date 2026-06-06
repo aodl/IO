@@ -33,6 +33,11 @@ struct DebugArchiveRequiredArgs {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize)]
+struct DebugOrderArgs {
+    descending: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize)]
 struct LedgerTransaction {
     from: String,
     to: String,
@@ -145,6 +150,14 @@ mod live {
         with_sns: bool,
         configure_icp_payout_ledger: bool,
     ) -> Option<StreamFixture> {
+        setup_stream_configured(with_sns, configure_icp_payout_ledger, |_| {})
+    }
+
+    fn setup_stream_configured(
+        with_sns: bool,
+        configure_icp_payout_ledger: bool,
+        configure: impl FnOnce(&mut io_stream_manager::InitArgs),
+    ) -> Option<StreamFixture> {
         if !pocketic_available() {
             eprintln!("skipping real PocketIC test because POCKET_IC_BIN is not set");
             return None;
@@ -191,7 +204,7 @@ mod live {
         );
         let jupiter_faucet = create_canister(&pic, faucet_wasm, vec![]);
         let sns_governance = sns_wasm.map(|wasm| create_canister(&pic, wasm, vec![]));
-        let stream_args = io_stream_manager::InitArgs {
+        let mut stream_args = io_stream_manager::InitArgs {
             icp_ledger_principal_text: configure_icp_payout_ledger.then(|| icp_ledger.to_text()),
             icp_index_principal_text: Some(icp_index.to_text()),
             io_ledger_principal_text: Some(io_ledger.to_text()),
@@ -199,6 +212,7 @@ mod live {
             sns_governance_principal_text: sns_governance.map(|p| p.to_text()),
             ..Default::default()
         };
+        configure(&mut stream_args);
         let stream = create_canister(&pic, stream_wasm.clone(), encode_one(stream_args).unwrap());
         mint(
             &pic,
@@ -351,6 +365,16 @@ mod live {
             encode_one(DebugArchiveRequiredArgs { archive_required }).unwrap(),
         )
         .expect("set archive required");
+    }
+
+    fn set_index_order(pic: &PocketIc, index: Principal, descending: bool) {
+        pic.update_call(
+            index,
+            Principal::anonymous(),
+            "debug_set_order",
+            encode_one(DebugOrderArgs { descending }).unwrap(),
+        )
+        .expect("set index order");
     }
 
     fn tick(fixture: &StreamFixture) -> DebugTickOutcome {
@@ -508,7 +532,7 @@ mod live {
             &fixture.pic,
             fixture.icp_ledger,
             JUPITER_FAUCET_SOURCE,
-            t(100),
+            t(150),
             "fund_faucet",
         );
         faucet_send(
@@ -541,10 +565,55 @@ mod live {
 
         let replay = tick(&fixture);
         assert_eq!(replay.processed_authorized_streams, 0);
+        assert_eq!(replay.scanned_icp_transactions, 0);
         assert_eq!(
             balance(&fixture.pic, fixture.io_ledger, JUPITER_FAUCET_SOURCE),
             t(60)
         );
+    }
+
+    #[test]
+    fn pocketic_live_jupiter_faucet_stream_accepts_descending_index_pages() {
+        let Some(fixture) = setup_stream(false) else {
+            return;
+        };
+
+        set_index_order(&fixture.pic, fixture.icp_index, true);
+        mint(
+            &fixture.pic,
+            fixture.icp_ledger,
+            JUPITER_FAUCET_SOURCE,
+            t(150),
+            "fund_faucet",
+        );
+        faucet_send(
+            &fixture,
+            JUPITER_FAUCET_SOURCE,
+            "stream_manager_deposit",
+            t(100),
+            "faucet",
+        );
+        faucet_send(
+            &fixture,
+            JUPITER_FAUCET_SOURCE,
+            "stream_manager_deposit",
+            t(50),
+            "faucet_second",
+        );
+
+        let outcome = tick(&fixture);
+        assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+        assert_eq!(outcome.processed_authorized_streams, 2);
+        assert_eq!(outcome.io_issued_e8s, t(90));
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, JUPITER_FAUCET_SOURCE),
+            t(90)
+        );
+
+        let replay = tick(&fixture);
+        assert!(replay.errors.is_empty(), "{:?}", replay.errors);
+        assert_eq!(replay.processed_authorized_streams, 0);
+        assert_eq!(replay.scanned_icp_transactions, 0);
     }
 
     #[test]
@@ -581,14 +650,26 @@ mod live {
             0
         );
 
+        faucet_send(
+            &fixture,
+            JUPITER_FAUCET_SOURCE,
+            "stream_manager_deposit",
+            t(50),
+            "faucet_second",
+        );
+        let blocked_by_retry = tick(&fixture);
+        assert!(!blocked_by_retry.errors.is_empty());
+        assert_eq!(blocked_by_retry.processed_authorized_streams, 0);
+        assert_eq!(blocked_by_retry.scanned_icp_transactions, 0);
+
         clear_rejections(&fixture.pic, fixture.io_ledger);
         upgrade_stream(&fixture);
         let retry = tick(&fixture);
         assert!(retry.errors.is_empty(), "{:?}", retry.errors);
-        assert_eq!(retry.processed_authorized_streams, 1);
+        assert_eq!(retry.processed_authorized_streams, 2);
         assert_eq!(
             balance(&fixture.pic, fixture.io_ledger, JUPITER_FAUCET_SOURCE),
-            t(60)
+            t(90)
         );
         assert_eq!(
             transactions(&fixture.pic, fixture.io_ledger)
@@ -597,6 +678,70 @@ mod live {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn pocketic_live_icp_preview_failure_does_not_commit_scan_state() {
+        let Some(fixture) = setup_stream_configured(false, true, |args| {
+            args.initial_total_io_supply_e8s = 1;
+            args.initial_protocol_reserve_io_e8s = 1;
+            args.non_redeemable_governance_io_e8s = 0;
+        }) else {
+            return;
+        };
+
+        mint(
+            &fixture.pic,
+            fixture.icp_ledger,
+            JUPITER_FAUCET_SOURCE,
+            t(100),
+            "fund_faucet",
+        );
+        faucet_send(
+            &fixture,
+            JUPITER_FAUCET_SOURCE,
+            "stream_manager_deposit",
+            t(100),
+            "faucet",
+        );
+
+        let failed = tick(&fixture);
+        assert!(!failed.errors.is_empty());
+        assert_eq!(failed.scanned_icp_transactions, 1);
+        assert_eq!(failed.processed_authorized_streams, 0);
+
+        let replay = tick(&fixture);
+        assert!(!replay.errors.is_empty());
+        assert_eq!(replay.scanned_icp_transactions, 1);
+        assert_eq!(replay.processed_authorized_streams, 0);
+    }
+
+    #[test]
+    fn pocketic_live_unknown_icp_deposit_is_terminally_journaled_and_advances_scan_state() {
+        let Some(fixture) = setup_stream(false) else {
+            return;
+        };
+
+        mint(&fixture.pic, fixture.icp_ledger, "attacker", t(100), "fund");
+        transfer(
+            &fixture.pic,
+            fixture.icp_ledger,
+            "attacker",
+            "stream_manager_deposit",
+            t(100),
+            "unknown",
+        );
+
+        let rejected = tick(&fixture);
+        assert!(rejected.errors.is_empty(), "{:?}", rejected.errors);
+        assert_eq!(rejected.scanned_icp_transactions, 1);
+        assert_eq!(rejected.processed_authorized_streams, 0);
+        assert_eq!(state(&fixture).processed_transaction_count, 0);
+
+        let replay = tick(&fixture);
+        assert!(replay.errors.is_empty(), "{:?}", replay.errors);
+        assert_eq!(replay.scanned_icp_transactions, 0);
+        assert_eq!(replay.processed_authorized_streams, 0);
     }
 
     #[test]
@@ -985,6 +1130,7 @@ mod live {
             .errors
             .iter()
             .any(|err| err.contains("missing ICP payout ledger principal")));
+        assert_eq!(failed.scanned_io_transactions, 1);
         assert_eq!(failed.processed_redemptions, 0);
         assert_eq!(balance(&fixture.pic, fixture.icp_ledger, "user"), 0);
         assert_eq!(state(&fixture).protocol, before);
@@ -999,6 +1145,7 @@ mod live {
         upgrade_stream(&fixture);
         let retry = tick(&fixture);
         assert!(!retry.errors.is_empty());
+        assert_eq!(retry.scanned_io_transactions, 0);
         assert_eq!(retry.processed_redemptions, 0);
         assert_eq!(balance(&fixture.pic, fixture.icp_ledger, "user"), 0);
         assert_eq!(state(&fixture).protocol, before);
@@ -1009,6 +1156,33 @@ mod live {
                 .count(),
             0
         );
+    }
+
+    #[test]
+    fn pocketic_live_redemption_preview_failure_does_not_commit_scan_state() {
+        let Some(fixture) = setup_stream(false) else {
+            return;
+        };
+
+        mint(&fixture.pic, fixture.io_ledger, "user", t(10), "user_io");
+        transfer(
+            &fixture.pic,
+            fixture.io_ledger,
+            "user",
+            "redemption",
+            t(10),
+            "redeem",
+        );
+
+        let failed = tick(&fixture);
+        assert!(!failed.errors.is_empty());
+        assert_eq!(failed.scanned_io_transactions, 1);
+        assert_eq!(failed.processed_redemptions, 0);
+
+        let replay = tick(&fixture);
+        assert!(!replay.errors.is_empty());
+        assert_eq!(replay.scanned_io_transactions, 1);
+        assert_eq!(replay.processed_redemptions, 0);
     }
 
     #[test]

@@ -47,8 +47,10 @@ cargo run -p xtask -- verify_release
 `sns_governance_read_required` builds debug Wasm and runs the read-only PocketIC SNS governance test. It requires `POCKET_IC_BIN`.
 
 `sns_ledger_index_tests` runs host/unit coverage for production-shaped ledger/index DTOs and adapters, local SNS-shaped ledger/index transfer and scan boundaries, cursor errors, duplicate proof handling, mock ledger/index crates, and scheduler boundary helpers. It does not require PocketIC.
+It also covers the reusable account-history scan model for ascending pages, descending/newest-first pages, ambiguous single-item pages, repeated cursor rows, account-history global gaps, duplicate/non-progressing pages, page caps, unreadable/lag status, ICP index `TransferFrom` compatibility, and status-tip mapping.
 
 `sns_ledger_index_required` builds debug Wasm and runs PocketIC stream-manager value-flow tests through the local SNS-shaped ledger/index boundary. It requires `POCKET_IC_BIN`.
+The stream-manager PocketIC coverage includes ICP deposit scans through descending mock index pages and IO redemption scans through ascending mock pages. These tests use local mock controls only; they do not call mainnet, require `dfx`, run SNS launch/swap/testflight flows, or implement raw ledger/archive traversal.
 
 `sns_root_lifecycle_tests` runs host/unit checks for the mock SNS root, mock governance upgrade proposal flow, release artifact manifest matching, lifecycle docs, and required-script guardrails. It does not require PocketIC and does not use `dfx`.
 
@@ -99,7 +101,7 @@ cargo run -p xtask -- verify_release
 - Durable stream operation journals preserve failed issuance, partial 2-week distribution, and redemption payout/return progress.
 - Ledger/index cursors avoid rescanning completed mock ledger blocks while keeping duplicate source-block protection.
 - Active SNS-neuron snapshots drive the target 2-week NNS staking pool.
-- `io-ledger-types` unit tests cover production-shaped account/subaccount Candid fixtures, ICP account identifier vectors, ICRC subaccount validation, ICP/ICRC transfer DTOs, transfer success/error mapping, Nat and u64 overflow handling, duplicate transfer proof helpers, explicit fee fields, ICP/ICRC index page mapping, archive traversal DTOs, and index cursor/archive/lag behavior.
+- `io-ledger-types` unit tests cover production-shaped account/subaccount Candid fixtures, ICP account identifier vectors, ICRC subaccount validation, ICP/ICRC transfer DTOs, transfer success/error mapping, Nat and u64 overflow handling, duplicate transfer proof helpers, explicit fee fields, ICP/ICRC index page mapping, archive traversal DTOs, index cursor/archive/lag behavior, and Jupiter-style account-history scan progress.
 - `io-governance-types` unit tests cover production-shaped NNS/SNS Candid fixtures, NNS lifecycle command request/result mapping, governance error classification, governance pagination guardrails, malformed ID handling, numeric overflow handling, SNS eligibility snapshots, and SNS proposal participation summaries.
 - Reward-policy and stream-manager snapshot tests cover SNS eligibility and participation feeding TwoWeekMaturity allocation, including proposal pagination, excluded governance/protocol neurons, invalid SNS neuron ID exclusion, and rounding dust.
 
@@ -133,6 +135,7 @@ The real PocketIC tests use debug Wasm from `target/wasm32-unknown-unknown/debug
 The live PocketIC tests include upgrade-before-retry cases for stream-manager IO issuance/redemption return failures and NNS-manager maturity transfer failures. Host-level stable export/import tests preserve the journal entries and cursors directly.
 
 The production-shaped ledger/index and governance adapter tests do not call live ICP, NNS, SNS, IO ledger, or index canisters. They are fixture and boundary tests only. The real adapter structs are not wired into default production execution, and archive traversal/governance lifecycle reconciliation are modelled but not scheduler-integrated.
+Production value-moving DIDs remain constructor-only. Public historian/frontend read surfaces for scanner status are future work unless a later milestone implements them explicitly.
 
 Local SNS harness tests are an additional compatibility layer. They do not replace model or mock/PocketIC tests, do not run official `dfx sns` flows, and do not wire IO value-moving flows to live SNS ledger/index canisters. Read-only local SNS governance reads, local SNS ledger/index value flows, and mock SNS root/controller lifecycle upgrades are covered through mock/PocketIC tests. Production SNS root/governance wiring remains future work.
 

@@ -26,6 +26,8 @@ thread_local! {
     static LAG: std::cell::RefCell<u64> = const { std::cell::RefCell::new(0) };
     static ARCHIVE_REQUIRED: std::cell::RefCell<bool> = const { std::cell::RefCell::new(false) };
     static PAGE_LIMIT: std::cell::RefCell<Option<u64>> = const { std::cell::RefCell::new(None) };
+    static DESCENDING: std::cell::RefCell<bool> = const { std::cell::RefCell::new(false) };
+    static UNREADABLE: std::cell::RefCell<bool> = const { std::cell::RefCell::new(false) };
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::init)]
@@ -68,6 +70,16 @@ pub struct DebugArchiveRequiredArgs {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct DebugPageArgs {
     pub max_results: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct DebugOrderArgs {
+    pub descending: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct DebugUnreadableArgs {
+    pub unreadable: bool,
 }
 
 fn mock_subaccount(label: &str) -> Subaccount {
@@ -139,6 +151,10 @@ fn nat_to_u64(value: &Nat) -> Result<u64, IcrcIndexError> {
 pub async fn get_account_transactions(
     args: IcrcIndexGetAccountTransactionsArgs,
 ) -> Result<IcrcIndexGetAccountTransactionsResult, IcrcIndexError> {
+    if UNREADABLE.with(|cell| *cell.borrow()) {
+        return Err(IcrcIndexError::TemporarilyUnavailable);
+    }
+
     if ARCHIVE_REQUIRED.with(|cell| *cell.borrow()) {
         return Ok(IcrcIndexGetAccountTransactionsResult {
             transactions: Vec::new(),
@@ -153,15 +169,11 @@ pub async fn get_account_transactions(
         message: "invalid account".to_string(),
     })?;
     let label = mock_label_from_account(&account);
-    let start = args
-        .start
-        .as_ref()
-        .map(nat_to_u64)
-        .transpose()?
-        .unwrap_or(0);
+    let start = args.start.as_ref().map(nat_to_u64).transpose()?;
     let requested_limit = nat_to_u64(&args.max_results)?;
     let page_limit = PAGE_LIMIT.with(|cell| (*cell.borrow()).unwrap_or(requested_limit));
     let limit = requested_limit.min(page_limit) as usize;
+    let descending = DESCENDING.with(|cell| *cell.borrow());
     let all_transactions = debug_get_transactions().await;
     let visible_tip = all_transactions
         .iter()
@@ -170,11 +182,23 @@ pub async fn get_account_transactions(
         .map(|tip| tip.saturating_sub(LAG.with(|cell| *cell.borrow())));
     let visible_tip_nat = visible_tip.map(Nat::from);
 
-    let transactions = all_transactions
+    let mut matching = all_transactions
         .into_iter()
-        .filter(|tx| tx.block_index >= start)
         .filter(|tx| visible_tip.map(|tip| tx.block_index <= tip).unwrap_or(true))
         .filter(|tx| tx.from == label || tx.to == label)
+        .collect::<Vec<_>>();
+    matching.sort_by_key(|tx| tx.block_index);
+    if descending {
+        matching.reverse();
+    }
+    let transactions = matching
+        .into_iter()
+        .filter(|tx| match (descending, start) {
+            (true, Some(start)) => tx.block_index <= start,
+            (true, None) => true,
+            (false, Some(start)) => tx.block_index >= start,
+            (false, None) => true,
+        })
         .take(limit)
         .map(|tx| IcrcIndexTransaction {
             id: Nat::from(tx.block_index),
@@ -211,8 +235,20 @@ pub fn debug_set_page(args: DebugPageArgs) {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_order(args: DebugOrderArgs) {
+    DESCENDING.with(|cell| *cell.borrow_mut() = args.descending);
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_unreadable(args: DebugUnreadableArgs) {
+    UNREADABLE.with(|cell| *cell.borrow_mut() = args.unreadable);
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn debug_clear() {
     LAG.with(|cell| *cell.borrow_mut() = 0);
     ARCHIVE_REQUIRED.with(|cell| *cell.borrow_mut() = false);
     PAGE_LIMIT.with(|cell| *cell.borrow_mut() = None);
+    DESCENDING.with(|cell| *cell.borrow_mut() = false);
+    UNREADABLE.with(|cell| *cell.borrow_mut() = false);
 }

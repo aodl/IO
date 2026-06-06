@@ -311,10 +311,12 @@ pub struct StreamOperation {
     pub user_account: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
 pub struct SchedulerCursors {
     pub last_scanned_icp_index_block: Option<u64>,
     pub last_scanned_io_index_block: Option<u64>,
+    pub icp_account_history_scan: io_ledger_types::AccountHistoryScanState,
+    pub io_account_history_scan: io_ledger_types::AccountHistoryScanState,
 }
 
 #[cfg(target_family = "wasm")]
@@ -637,7 +639,7 @@ fn export_stable_state() -> StableState {
             active_staked_io_e8s: state.manager.active_staked_io_e8s,
             two_week_pool_backing_bps: state.manager.two_week_pool_backing_bps,
             operation_journal: state.operation_journal.clone(),
-            scheduler_cursors: state.scheduler_cursors,
+            scheduler_cursors: state.scheduler_cursors.clone(),
         }
     })
 }

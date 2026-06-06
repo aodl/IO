@@ -12,6 +12,10 @@ use candid::CandidType;
 #[cfg(target_family = "wasm")]
 use candid::Principal;
 #[cfg(any(target_family = "wasm", test))]
+use io_ledger_types::AccountHistoryPageOrder;
+#[cfg(any(target_family = "wasm", test))]
+use io_ledger_types::AccountHistoryScanState;
+#[cfg(any(target_family = "wasm", test))]
 use io_ledger_types::{
     duplicate_matches_expected, LedgerBlock, LedgerTransferError, LedgerTransferRequest,
     LedgerTransferSuccess,
@@ -29,6 +33,37 @@ pub const PROTOCOL_RESERVE_ACCOUNT: &str = "protocol_reserve";
 pub const REDEMPTION_PAYOUT_MEMO: &str = "redemption_payout";
 pub const REDEEMED_IO_MEMO: &str = "redeemed_io_to_reserve";
 pub const TWO_WEEK_REWARD_ACCOUNT_PREFIX: &str = "sns_neuron_";
+
+#[cfg(any(target_family = "wasm", test))]
+fn legacy_icp_account_history_scan_state(cursor: u64) -> AccountHistoryScanState {
+    AccountHistoryScanState {
+        cursor: io_ledger_types::AccountHistoryCursor {
+            order: Some(AccountHistoryPageOrder::Descending),
+            latest_cursor: Some(BlockIndex(cursor)),
+            oldest_cursor: Some(BlockIndex(cursor)),
+            backfill_complete: true,
+        },
+        status: Default::default(),
+    }
+}
+
+#[cfg(target_family = "wasm")]
+fn legacy_io_account_history_scan_state(cursor: u64) -> AccountHistoryScanState {
+    AccountHistoryScanState {
+        cursor: io_ledger_types::AccountHistoryCursor {
+            order: Some(AccountHistoryPageOrder::Ascending),
+            latest_cursor: Some(BlockIndex(cursor)),
+            oldest_cursor: Some(BlockIndex(cursor)),
+            backfill_complete: true,
+        },
+        status: Default::default(),
+    }
+}
+
+#[cfg(target_family = "wasm")]
+fn no_new_page_errors(outcome: &DebugTickOutcome, page_error_count: usize) -> bool {
+    outcome.errors.len() == page_error_count
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct SchedulerTickOutcome {
@@ -285,27 +320,40 @@ fn boundary_transaction_to_mock_transaction(
 async fn scan_account_through_index(
     index_canister: Principal,
     account: Account,
-    current_cursor: Option<u64>,
-) -> Result<Vec<icp_ledger::LedgerTransaction>, String> {
+    scan_state: AccountHistoryScanState,
+) -> Result<
+    (
+        Vec<icp_ledger::LedgerTransaction>,
+        AccountHistoryScanState,
+        Option<u64>,
+    ),
+    String,
+> {
     let client = IcrcIndexCanisterClient {
         canister: index_canister,
     };
-    let current = current_cursor.map(BlockIndex);
+    let requested_start = scan_state.next_request_start();
     let page = client
         .get_account_transactions(IndexScanRequest {
-            start: current.map(|block| BlockIndex(block.0.saturating_add(1))),
+            start: requested_start,
             limit: 100,
             account_filter: Some(account),
         })
         .await
         .map_err(|err| format!("ledger index scan failed: {err:?}"))?;
-    boundary_cursor_after_account_page(current, &page)
+    let outcome = scan_state
+        .observe_page(&page, requested_start, 100, 1, 1, Some(ic_cdk::api::time()))
         .map_err(|err| format!("ledger index cursor validation failed: {err:?}"))?;
-    Ok(page
-        .transactions
-        .into_iter()
-        .map(boundary_transaction_to_mock_transaction)
-        .collect())
+    let latest = outcome.next_state.cursor.latest_cursor.map(|block| block.0);
+    Ok((
+        outcome
+            .transactions_chronological
+            .into_iter()
+            .map(boundary_transaction_to_mock_transaction)
+            .collect(),
+        outcome.next_state,
+        latest,
+    ))
 }
 
 #[cfg(target_family = "wasm")]
@@ -734,16 +782,31 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
         }
 
         if let Some(canister) = icp_ledger {
-            let start_after = CANISTER_STATE
-                .with(|cell| cell.borrow().scheduler_cursors.last_scanned_icp_index_block);
+            let scan_state = CANISTER_STATE.with(|cell| {
+                let cursors = &cell.borrow().scheduler_cursors;
+                if cursors
+                    .icp_account_history_scan
+                    .cursor
+                    .latest_cursor
+                    .is_none()
+                {
+                    match cursors.last_scanned_icp_index_block {
+                        Some(cursor) => legacy_icp_account_history_scan_state(cursor),
+                        None => AccountHistoryScanState::default(),
+                    }
+                } else {
+                    cursors.icp_account_history_scan.clone()
+                }
+            });
+            let start_after = scan_state.cursor.latest_cursor.map(|block| block.0);
             match scan_account_through_index(
                 canister,
                 icp_ledger::mock_account(STREAM_MANAGER_DEPOSIT_ACCOUNT),
-                start_after,
+                scan_state,
             )
             .await
             {
-                Ok(transactions) => {
+                Ok((transactions, next_scan_state, latest_seen)) => {
                     let relevant = transactions
                         .into_iter()
                         .filter(|tx| {
@@ -754,6 +817,7 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                         })
                         .collect::<Vec<_>>();
                     outcome.scanned_icp_transactions = relevant.len() as u64;
+                    let page_error_count = outcome.errors.len();
 
                     for tx in relevant {
                         let tx_id = format!("icp:{}", tx.block_index);
@@ -794,7 +858,6 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                                     format!("{err:?}"),
                                 );
                                 advance_icp_cursor(tx.block_index);
-                                outcome.errors.push(format!("stream {tx_id}: {err:?}"));
                                 continue;
                             }
                             Err(err) => {
@@ -815,11 +878,11 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                                         preview.outcome.io_issued_e8s,
                                         OperationPhase::AwaitingIoIssuance,
                                     );
-                                    advance_icp_cursor(tx.block_index);
                                     if !retry_pending_io_issuances(io_canister, &mut outcome).await
                                     {
                                         return outcome;
                                     }
+                                    advance_icp_cursor(tx.block_index);
                                     continue;
                                 }
                                 ApiIoRecipientPolicy::EligibleIoSnsNeurons => {
@@ -860,12 +923,12 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                                                 state.operation_journal.push(op);
                                             }
                                         });
-                                        advance_icp_cursor(tx.block_index);
                                         retry_pending_two_week_streams(io_canister, &mut outcome)
                                             .await;
-                                        if !outcome.errors.is_empty() {
+                                        if !no_new_page_errors(&outcome, page_error_count) {
                                             return outcome;
                                         }
+                                        advance_icp_cursor(tx.block_index);
                                         continue;
                                     }
                                 }
@@ -899,22 +962,40 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                             Err(err) => outcome.errors.push(format!("stream {tx_id}: {err:?}")),
                         }
                     }
+                    if no_new_page_errors(&outcome, page_error_count) {
+                        commit_icp_scan_state(next_scan_state, latest_seen);
+                    }
                 }
                 Err(err) => outcome.errors.push(err),
             }
         }
 
         if let Some(canister) = io_ledger {
-            let start_after = CANISTER_STATE
-                .with(|cell| cell.borrow().scheduler_cursors.last_scanned_io_index_block);
+            let scan_state = CANISTER_STATE.with(|cell| {
+                let cursors = &cell.borrow().scheduler_cursors;
+                if cursors
+                    .io_account_history_scan
+                    .cursor
+                    .latest_cursor
+                    .is_none()
+                {
+                    match cursors.last_scanned_io_index_block {
+                        Some(cursor) => legacy_io_account_history_scan_state(cursor),
+                        None => AccountHistoryScanState::default(),
+                    }
+                } else {
+                    cursors.io_account_history_scan.clone()
+                }
+            });
+            let start_after = scan_state.cursor.latest_cursor.map(|block| block.0);
             match scan_account_through_index(
                 canister,
                 io_ledger::mock_account(REDEMPTION_ACCOUNT),
-                start_after,
+                scan_state,
             )
             .await
             {
-                Ok(transactions) => {
+                Ok((transactions, next_scan_state, latest_seen)) => {
                     let relevant = transactions
                         .into_iter()
                         .filter(|tx| {
@@ -925,6 +1006,7 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                         })
                         .collect::<Vec<_>>();
                     outcome.scanned_io_transactions = relevant.len() as u64;
+                    let page_error_count = outcome.errors.len();
 
                     for tx in relevant {
                         let tx_id = format!("io:{}", tx.block_index);
@@ -966,7 +1048,6 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                                     preview.post_state,
                                 ));
                         });
-                        advance_io_cursor(tx.block_index);
 
                         if let Some(io_canister) = io_transfer_ledger {
                             if !retry_pending_redemptions(
@@ -979,6 +1060,10 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                                 return outcome;
                             }
                         }
+                        advance_io_cursor(tx.block_index);
+                    }
+                    if no_new_page_errors(&outcome, page_error_count) {
+                        commit_io_scan_state(next_scan_state, latest_seen);
                     }
                 }
                 Err(err) => outcome.errors.push(err),
@@ -1100,6 +1185,32 @@ fn advance_icp_cursor(block: u64) {
 }
 
 #[cfg(target_family = "wasm")]
+fn commit_icp_scan_state(scan_state: AccountHistoryScanState, latest_seen: Option<u64>) {
+    CANISTER_STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        state.scheduler_cursors.icp_account_history_scan = scan_state;
+        if let Some(latest_seen) = latest_seen {
+            let current = state.scheduler_cursors.last_scanned_icp_index_block;
+            state.scheduler_cursors.last_scanned_icp_index_block =
+                Some(current.unwrap_or(0).max(latest_seen));
+        }
+    });
+}
+
+#[cfg(target_family = "wasm")]
+fn commit_io_scan_state(scan_state: AccountHistoryScanState, latest_seen: Option<u64>) {
+    CANISTER_STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        state.scheduler_cursors.io_account_history_scan = scan_state;
+        if let Some(latest_seen) = latest_seen {
+            let current = state.scheduler_cursors.last_scanned_io_index_block;
+            state.scheduler_cursors.last_scanned_io_index_block =
+                Some(current.unwrap_or(0).max(latest_seen));
+        }
+    });
+}
+
+#[cfg(target_family = "wasm")]
 fn advance_io_cursor(block: u64) {
     CANISTER_STATE.with(|cell| {
         let mut state = cell.borrow_mut();
@@ -1181,6 +1292,9 @@ mod tests {
             last_seen_block: None,
             index_tip: Some(BlockIndex(10)),
             archive_required: false,
+            page_order: Some(AccountHistoryPageOrder::Ascending),
+            account_balance_e8s: None,
+            num_blocks_synced: None,
         };
         assert_eq!(
             boundary_cursor_after_contiguous_page(Some(BlockIndex(5)), &result),
@@ -1195,6 +1309,9 @@ mod tests {
             last_seen_block: Some(BlockIndex(6)),
             index_tip: Some(BlockIndex(6)),
             archive_required: false,
+            page_order: Some(AccountHistoryPageOrder::Ascending),
+            account_balance_e8s: None,
+            num_blocks_synced: None,
         };
         assert_eq!(
             boundary_cursor_after_contiguous_page(Some(BlockIndex(5)), &result),
@@ -1209,6 +1326,9 @@ mod tests {
             last_seen_block: Some(BlockIndex(6)),
             index_tip: Some(BlockIndex(6)),
             archive_required: false,
+            page_order: Some(AccountHistoryPageOrder::Ascending),
+            account_balance_e8s: None,
+            num_blocks_synced: None,
         };
         assert!(matches!(
             boundary_cursor_after_contiguous_page(Some(BlockIndex(5)), &result),
@@ -1225,6 +1345,9 @@ mod tests {
             last_seen_block: Some(BlockIndex(7)),
             index_tip: Some(BlockIndex(7)),
             archive_required: false,
+            page_order: Some(AccountHistoryPageOrder::Ascending),
+            account_balance_e8s: None,
+            num_blocks_synced: None,
         };
         assert_eq!(
             boundary_cursor_after_contiguous_page(Some(BlockIndex(5)), &result),
@@ -1241,6 +1364,9 @@ mod tests {
             last_seen_block: Some(BlockIndex(6)),
             index_tip: Some(BlockIndex(100)),
             archive_required: true,
+            page_order: Some(AccountHistoryPageOrder::Ascending),
+            account_balance_e8s: None,
+            num_blocks_synced: None,
         };
         assert_eq!(
             boundary_cursor_after_contiguous_page(Some(BlockIndex(5)), &result),
@@ -1257,6 +1383,9 @@ mod tests {
             last_seen_block: None,
             index_tip: Some(BlockIndex(4)),
             archive_required: false,
+            page_order: Some(AccountHistoryPageOrder::Ascending),
+            account_balance_e8s: None,
+            num_blocks_synced: None,
         };
         assert_eq!(
             boundary_cursor_after_contiguous_page(Some(BlockIndex(5)), &result),
@@ -1274,6 +1403,9 @@ mod tests {
             last_seen_block: Some(BlockIndex(25)),
             index_tip: Some(BlockIndex(30)),
             archive_required: false,
+            page_order: Some(AccountHistoryPageOrder::Ascending),
+            account_balance_e8s: None,
+            num_blocks_synced: None,
         };
         assert_eq!(
             boundary_cursor_after_account_page(Some(BlockIndex(10)), &result),
@@ -1288,6 +1420,9 @@ mod tests {
             last_seen_block: Some(BlockIndex(25)),
             index_tip: Some(BlockIndex(30)),
             archive_required: false,
+            page_order: Some(AccountHistoryPageOrder::Ascending),
+            account_balance_e8s: None,
+            num_blocks_synced: None,
         };
         assert_eq!(
             boundary_cursor_after_account_page(Some(BlockIndex(10)), &result),
@@ -1304,6 +1439,9 @@ mod tests {
             last_seen_block: Some(BlockIndex(25)),
             index_tip: Some(BlockIndex(30)),
             archive_required: false,
+            page_order: Some(AccountHistoryPageOrder::Ascending),
+            account_balance_e8s: None,
+            num_blocks_synced: None,
         };
         assert_eq!(
             boundary_cursor_after_account_page(Some(BlockIndex(10)), &result),
@@ -1320,6 +1458,9 @@ mod tests {
             last_seen_block: Some(BlockIndex(10)),
             index_tip: Some(BlockIndex(30)),
             archive_required: false,
+            page_order: Some(AccountHistoryPageOrder::Ascending),
+            account_balance_e8s: None,
+            num_blocks_synced: None,
         };
         assert_eq!(
             boundary_cursor_after_account_page(Some(BlockIndex(10)), &result),
@@ -1334,6 +1475,9 @@ mod tests {
             last_seen_block: None,
             index_tip: Some(BlockIndex(30)),
             archive_required: false,
+            page_order: Some(AccountHistoryPageOrder::Ascending),
+            account_balance_e8s: None,
+            num_blocks_synced: None,
         };
         assert_eq!(
             boundary_cursor_after_account_page(Some(BlockIndex(10)), &result),
@@ -1348,6 +1492,9 @@ mod tests {
             last_seen_block: Some(BlockIndex(25)),
             index_tip: Some(BlockIndex(30)),
             archive_required: true,
+            page_order: Some(AccountHistoryPageOrder::Ascending),
+            account_balance_e8s: None,
+            num_blocks_synced: None,
         };
         assert_eq!(
             boundary_cursor_after_account_page(Some(BlockIndex(10)), &result),
@@ -1364,6 +1511,9 @@ mod tests {
             last_seen_block: Some(BlockIndex(25)),
             index_tip: Some(BlockIndex(9)),
             archive_required: false,
+            page_order: Some(AccountHistoryPageOrder::Ascending),
+            account_balance_e8s: None,
+            num_blocks_synced: None,
         };
         assert_eq!(
             boundary_cursor_after_account_page(Some(BlockIndex(10)), &result),
@@ -1371,6 +1521,43 @@ mod tests {
                 requested: BlockIndex(10),
                 tip: Some(BlockIndex(9))
             })
+        );
+    }
+
+    #[test]
+    fn legacy_icp_cursor_seed_accepts_descending_head_page_without_replay() {
+        let state = legacy_icp_account_history_scan_state(10);
+        assert_eq!(
+            state.cursor.order,
+            Some(AccountHistoryPageOrder::Descending)
+        );
+        assert_eq!(state.next_request_start(), None);
+
+        let result = IndexScanResult {
+            transactions: vec![block(12), block(10), block(7)],
+            last_seen_block: Some(BlockIndex(12)),
+            index_tip: Some(BlockIndex(12)),
+            archive_required: false,
+            page_order: Some(AccountHistoryPageOrder::Descending),
+            account_balance_e8s: None,
+            num_blocks_synced: None,
+        };
+        let outcome = state.observe_page(&result, None, 100, 1, 1, None).unwrap();
+        assert_eq!(
+            outcome
+                .transactions_chronological
+                .iter()
+                .map(|tx| tx.block_index)
+                .collect::<Vec<_>>(),
+            vec![BlockIndex(12)]
+        );
+        assert_eq!(
+            outcome.next_state.cursor.latest_cursor,
+            Some(BlockIndex(12))
+        );
+        assert_eq!(
+            outcome.next_state.cursor.oldest_cursor,
+            Some(BlockIndex(10))
         );
     }
 
