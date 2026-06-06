@@ -1,52 +1,56 @@
 # Local SNS Testing
 
-IO uses local SNS testing as an additional compatibility layer. It does not replace the existing accounting, journal, retry, artifact, or DID guardrails.
+We currently run SNS-shaped mock/PocketIC tests. We do not currently run the official SNS launch locally in required CI.
 
-## Strategy
+IO uses local SNS compatibility testing as an additional safety layer. It does not replace accounting, journal, retry, artifact, DID, or release guardrails.
 
-1. Pure model tests remain the main accounting guardrail.
-2. Mock and PocketIC tests remain the main journal, retry, and upgrade guardrail.
-3. Local SNS harness tests provide SNS topology, config, and controller compatibility.
-4. Local SNS governance read tests exercise mock-backed SNS neuron and proposal pages through the `SnsGovernanceClient` boundary.
-5. Local SNS ledger/index value-flow tests exercise mock-backed ICRC ledger and index pages through `LedgerTransferClient` and `LedgerIndexClient`.
-6. SNS root/controller lifecycle tests exercise mock governance proposals, mock root controller intent, artifact hash checks, and PocketIC upgrades.
+Pure model tests remain the main accounting guardrail.
 
-The local SNS harness is not production launch configuration. It must not call mainnet, must not use `--network ic`, and must not deploy, install, upgrade, reinstall, or update settings on mainnet.
+Mock and PocketIC tests remain the main journal, retry, and upgrade guardrail.
 
-## Official SNS Testing Flow
+## Four-Layer Compatibility Model
 
-The Internet Computer ecosystem has official SNS local testing flows based on SNS launch configuration files, commonly represented as `sns_init.yaml`-style inputs. Those flows are useful reference material for future launch validation and local compatibility work.
+Layer 1: IO mock/PocketIC SNS-shaped harness.
 
-Some official SNS steps require the `dfx sns` extension. There is no `icp-cli` equivalent for every operation, including `add-nns-root` and some SNS init validation paths. IO therefore does not add `dfx` to required workflows.
+This is the fast internal safety layer. It uses mock governance/root/ledger/index canisters and PocketIC tests to exercise IO-specific lifecycle assumptions. These tests are not official SNS launch tests, not SNS-W, not decentralization swap, not mainnet testflight, and not proof of official launch readiness.
 
-Any `dfx`-based SNS testing for IO is optional, local-only, and not part of `test_ci` or `verify_release`. It must remain outside required CI and release commands unless the repository intentionally adopts a reviewed replacement workflow.
+Layer 2: PocketIC NNS/SNS/application subnet topology.
+
+This creates NNS, SNS, and application subnets where supported by the pinned PocketIC dependency. It is useful for canister ID ranges, constructor principal acceptance, controller topology, and value-moving DID guardrails. It still does not run official SNS launch unless real SNS canisters are installed.
+
+Layer 3: Official SNS Local Launch Rehearsal.
+
+Official `sns-testing` is optional and heavier. The official SNS launch path uses `dfx sns`; this is not part of required IO workflows. Optional local scripts live under `tools/sns-testing/` and must remain outside required CI.
+
+Any `dfx`-based SNS testing for IO is optional, local-only, and not part of `test_ci` or `verify_release`.
+
+Layer 4: SNS testflight.
+
+SNS testflight is a future manual/mainnet rehearsal. It is not a real launch, has no real swap, and must not be confused with the NNS proposal/SNS-W production launch path.
 
 ## IO-Owned PocketIC SNS Harness
 
 The IO-owned harness uses PocketIC where practical and stays inside the repository's normal Rust and xtask workflow. Required checks do not require `dfx` and do not call mainnet.
 
-The harness includes topology, config, and read-only governance smoke tests:
+The harness includes:
 
-- load and validate the local SNS fixture skeleton;
-- install IO canisters with SNS-shaped constructor principals in PocketIC;
-- preserve production value-moving DIDs as constructor-only;
-- keep debug APIs confined to debug DIDs and debug Wasm tests;
-- prove required scripts do not invoke `dfx` or `--network ic`.
-- seed mock SNS governance neurons/proposals in PocketIC;
-- read paginated governance records through a `SnsGovernanceClient` implementation;
-- keep production-shaped SNS governance canister adapters fixture-tested only and unwired from the local/default execution path;
-- convert governance snapshots into TwoWeekMaturity allocation inputs;
-- observe local IO redemption transfers through SNS-index-shaped account history;
-- send redemption IO returns and TwoWeekMaturity rewards through the local SNS-ledger-shaped transfer boundary;
-- test duplicate transfer, index lag, archive-required, pagination, retry, and idempotency behavior without live SNS calls.
-- test SNS root/controller lifecycle behavior through mock governance proposals and a mock root canister;
-- verify upgrade proposals against `release-artifacts/manifest.json`;
-- set the mock SNS root as a PocketIC controller for IO value-moving canisters;
-- preserve pending stream-manager and NNS-manager journal work across mock SNS-root-style upgrades.
+- pure model tests as the main accounting guardrail;
+- mock and PocketIC tests as the main journal, retry, and upgrade guardrail;
+- local SNS-like topology checks with NNS/SNS/application subnets where available;
+- mock SNS governance read tests through `SnsGovernanceClient`;
+- mock SNS ledger/index value-flow tests through `LedgerTransferClient` and `LedgerIndexClient`;
+- mock SNS root/controller lifecycle tests through proposal-shaped governance/root canisters;
+- production DID checks that keep `io_stream_manager` and `io_nns_neuron_manager` constructor-only.
 
-These SNS harness tests use mock/local/PocketIC canisters only. The SNS root/controller lifecycle is mock/PocketIC only: mock governance/root records an approved intent, the test harness executes the PocketIC upgrade as the mock root controller, and the root records the outcome. They are not live SNS adapters, do not run official SNS launch or swap flows, and do not call mainnet.
+The local SNS harness is not production launch configuration. It must not call mainnet, must not use `--network ic`, and must not deploy, install, upgrade, reinstall, or update settings on mainnet.
 
-Production-shaped SNS governance DTOs and the Wasm-gated `SnsGovernanceCanisterClient` are covered by host Candid fixtures in `io-governance-types`. The local SNS harness does not call live SNS governance and does not run official SNS launch, swap, or testflight flows.
+The SNS root/controller lifecycle path is mock/PocketIC only: mock governance/root records an approved intent, the test harness executes the PocketIC upgrade as the mock root controller, and the root records the outcome. It is not live SNS root/governance wiring.
+
+IO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical and only useful for local/mock compatibility.
+
+The existing canister that owns IO NNS neuron 6345890886899317159 is not touched by these tests.
+
+## Commands
 
 Run deterministic local lifecycle checks with:
 
@@ -58,4 +62,12 @@ Run strict live PocketIC lifecycle checks with:
 
 ```bash
 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server cargo run -p xtask -- sns_root_lifecycle_required
+```
+
+Run official-readiness package checks without `dfx`:
+
+```bash
+cargo run -p xtask -- sns_config_validate
+cargo run -p xtask -- sns_official_testing_check
+cargo run -p xtask -- sns_launch_readiness_check
 ```

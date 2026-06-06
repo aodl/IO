@@ -1,0 +1,62 @@
+# Machine-checkable IO SNS launch readiness checklist.
+# status values are "complete" or "incomplete".
+
+[source_open]
+status = "incomplete"
+evidence = "TODO: confirm final source-open package."
+
+[reproducible_builds]
+status = "incomplete"
+evidence = "release-artifacts/manifest.json exists; final reproducible-build package is not complete."
+
+[security_review]
+status = "incomplete"
+evidence = "TODO: external audit/security review."
+
+[sns_config_validated]
+status = "incomplete"
+evidence = "tools/sns/sns_init.io.template.yaml exists; official dfx sns validation is optional and not complete."
+
+[local_sns_testing_rehearsal]
+status = "incomplete"
+evidence = "TODO: complete optional dfinity/sns-testing rehearsal."
+
+[mainnet_testflight]
+status = "incomplete"
+evidence = "TODO: complete manual mainnet SNS testflight."
+
+[app_canisters_stable_on_mainnet]
+status = "incomplete"
+evidence = "TODO: production dapp canister IDs and stable operating period."
+
+[nns_root_co_controller_step_planned]
+status = "incomplete"
+evidence = "TODO: official add-NNS-root/controller handoff plan."
+
+[fallback_controllers_defined]
+status = "incomplete"
+evidence = "TODO: final fallback controller principals."
+
+[dapp_canisters_listed]
+status = "incomplete"
+evidence = "Template lists io_stream_manager, io_nns_neuron_manager, io_historian, and frontend; final IDs are placeholders."
+
+[all_upgrades_tested_via_sns_proposal]
+status = "incomplete"
+evidence = "Mock/PocketIC root lifecycle exists; official SNS proposal upgrades not complete."
+
+[frontend_sns_integration_tested]
+status = "incomplete"
+evidence = "Certified frontend exists; final SNS/testflight frontend integration not complete."
+
+[cycles_management_strategy]
+status = "incomplete"
+evidence = "TODO: define post-SNS cycles top-up and monitoring strategy."
+
+[custom_domain_frontend_plan]
+status = "incomplete"
+evidence = "TODO: final frontend custom domain and asset strategy."
+
+[audit_package]
+status = "incomplete"
+evidence = "TODO: collect final audit and launch proposal package."

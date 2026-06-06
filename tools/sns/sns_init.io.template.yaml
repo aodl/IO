@@ -1,0 +1,75 @@
+# IO official SNS init candidate template.
+# This is not production-ready. Every TODO placeholder is an unresolved product,
+# governance, controller, dapp-ID, or launch-process decision.
+# Do not use this file for mainnet deployment, install, upgrade, or settings changes.
+
+name: "IO"
+symbol: "IO"
+
+description: "TODO_FINAL_LOGO_URL_SUMMARY placeholder: final IO SNS description is not locked."
+url: "TODO_FINAL_LOGO_URL_SUMMARY_PLACEHOLDER"
+logo: "TODO_FINAL_LOGO_URL_SUMMARY_PLACEHOLDER"
+
+ledger:
+  transaction_fee_e8s: 10_000
+  token_logo: "TODO_FINAL_LOGO_URL_SUMMARY_PLACEHOLDER"
+
+governance:
+  proposal_rejection_fee_e8s: 10_000_000_000
+  initial_reward_rate_basis_points: 0
+  final_reward_rate_basis_points: 0
+  age_bonus_percentage: 0
+  voting_power_economics: "TODO_FINAL_TOKENOMICS placeholder"
+  proposal_forum_url: "TODO_FINAL_SNS_PROPOSAL_FORUM_URL placeholder"
+
+swap:
+  minimum_participants: "TODO_FINAL_SWAP_PARAMETERS placeholder"
+  minimum_icp_e8s: "TODO_FINAL_SWAP_PARAMETERS placeholder"
+  maximum_icp_e8s: "TODO_FINAL_SWAP_PARAMETERS placeholder"
+  minimum_direct_participation_icp_e8s: "TODO_FINAL_SWAP_PARAMETERS placeholder"
+  maximum_direct_participation_icp_e8s: "TODO_FINAL_SWAP_PARAMETERS placeholder"
+  neuron_basket_count: "TODO_FINAL_SWAP_PARAMETERS placeholder"
+  neuron_basket_dissolve_delay_interval_seconds: "TODO_FINAL_SWAP_PARAMETERS placeholder"
+  confirmation_text: "TODO_FINAL_SWAP_PARAMETERS placeholder"
+  restricted_countries: "TODO_FINAL_SWAP_PARAMETERS placeholder"
+
+neurons:
+  developer_distribution: "TODO_FINAL_DEVELOPER_NEURONS placeholder"
+  treasury_distribution: "TODO_FINAL_TREASURY_DISTRIBUTION placeholder"
+  jupiter_faucet_governance_neuron:
+    controller: "TODO_FINAL_DEVELOPER_NEURONS placeholder"
+    stake_e8s: "TODO_FINAL_TOKENOMICS placeholder"
+    dissolve_delay_seconds: "TODO_FINAL_TOKENOMICS placeholder"
+  jupiter_faucet_non_dissolvable_neuron:
+    controller: "TODO_FINAL_DEVELOPER_NEURONS placeholder"
+    stake_e8s: "TODO_FINAL_TOKENOMICS placeholder"
+    dissolve_delay_seconds: 0
+  ordinary_user_neurons:
+    can_vote: true
+    allocation: "TODO_FINAL_TOKENOMICS placeholder"
+
+fallback_controller_principals:
+  - "TODO_FINAL_FALLBACK_CONTROLLER_PRINCIPAL_PLACEHOLDER"
+
+dapp_canisters:
+  io_stream_manager: "TODO_FINAL_IO_STREAM_MANAGER_CANISTER_PLACEHOLDER"
+  io_nns_neuron_manager: "TODO_FINAL_IO_NNS_NEURON_MANAGER_CANISTER_PLACEHOLDER"
+  io_historian: "TODO_FINAL_IO_HISTORIAN_CANISTER_PLACEHOLDER"
+  frontend: "TODO_FINAL_FRONTEND_CANISTER_PLACEHOLDER"
+
+io_constructor_arg_mapping:
+  note: "Derived from current IO constructor-only value-moving DIDs; final principals remain placeholders."
+  io_stream_manager:
+    icp_ledger_principal_text: "TODO_FINAL_ICP_LEDGER_PLACEHOLDER"
+    icp_index_principal_text: "TODO_FINAL_ICP_INDEX_PLACEHOLDER"
+    io_ledger_principal_text: "TODO_FINAL_SNS_LEDGER_PLACEHOLDER"
+    io_index_principal_text: "TODO_FINAL_SNS_INDEX_PLACEHOLDER"
+    io_sns_ledger_principal_text: "TODO_FINAL_SNS_LEDGER_PLACEHOLDER"
+    io_sns_index_principal_text: "TODO_FINAL_SNS_INDEX_PLACEHOLDER"
+    sns_governance_principal_text: "TODO_FINAL_SNS_GOVERNANCE_PLACEHOLDER"
+  io_nns_neuron_manager:
+    nns_governance_principal_text: "TODO_FINAL_NNS_GOVERNANCE_PLACEHOLDER"
+    icp_ledger_principal_text: "TODO_FINAL_ICP_LEDGER_PLACEHOLDER"
+    icp_index_principal_text: "TODO_FINAL_ICP_INDEX_PLACEHOLDER"
+
+canonical_ledger_note: "IO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical."

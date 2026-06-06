@@ -1,42 +1,51 @@
-# IO local SNS init skeleton.
-# This file is for local/harness iteration only and is not production-ready.
-# Final SNS launch values are not locked.
-# Mainnet principals below are placeholders and must be replaced through future validation.
+# IO local official-SNS rehearsal candidate.
+# This file is local-only, placeholder-heavy, and not production-ready.
+# It is intended for optional dfinity/sns-testing rehearsal after local canister IDs are known.
 # Do not use this file for mainnet deployment, install, upgrade, or settings changes.
 
 name: "IO"
 symbol: "IO"
 
+description: "TODO_LOCAL_LOGO_URL_SUMMARY placeholder for local rehearsal only."
+url: "TODO_LOCAL_PROJECT_URL_PLACEHOLDER"
+logo: "TODO_LOCAL_LOGO_PLACEHOLDER"
+
 ledger:
   transaction_fee_e8s: 10_000
-  # TODO: confirm final IO transaction fee before production SNS launch.
+  token_logo: "TODO_LOCAL_LOGO_PLACEHOLDER"
 
 governance:
   proposal_rejection_fee_e8s: 10_000_000_000
-  # 100 IO if IO uses 100_000_000 e8s per token.
-  # Native SNS rewards are disabled/effectively zero for the local harness.
   initial_reward_rate_basis_points: 0
   final_reward_rate_basis_points: 0
   age_bonus_percentage: 0
-  voting_power_economics: "TODO: final SNS launch values not locked"
+  voting_power_economics: "TODO_LOCAL_FINAL_TOKENOMICS placeholder"
+  proposal_forum_url: "TODO_LOCAL_SNS_PROPOSAL_FORUM_URL placeholder"
+
+swap:
+  minimum_participants: "TODO_LOCAL_SWAP_PARAMETERS placeholder"
+  minimum_icp_e8s: "TODO_LOCAL_SWAP_PARAMETERS placeholder"
+  maximum_icp_e8s: "TODO_LOCAL_SWAP_PARAMETERS placeholder"
+  minimum_direct_participation_icp_e8s: "TODO_LOCAL_SWAP_PARAMETERS placeholder"
+  maximum_direct_participation_icp_e8s: "TODO_LOCAL_SWAP_PARAMETERS placeholder"
+  neuron_basket_count: "TODO_LOCAL_SWAP_PARAMETERS placeholder"
+  neuron_basket_dissolve_delay_interval_seconds: "TODO_LOCAL_SWAP_PARAMETERS placeholder"
 
 neurons:
   jupiter_faucet_governance_neuron:
-    controller: "TODO_JUPITER_FAUCET_GOVERNANCE_PRINCIPAL_PLACEHOLDER"
-    stake_e8s: "TODO"
-    dissolve_delay_seconds: "TODO"
-    intent: "Jupiter Faucet governance neuron"
+    controller: "TODO_LOCAL_JUPITER_FAUCET_GOVERNANCE_PRINCIPAL_PLACEHOLDER"
+    stake_e8s: "TODO_LOCAL_FINAL_TOKENOMICS placeholder"
+    dissolve_delay_seconds: "TODO_LOCAL_FINAL_TOKENOMICS placeholder"
   jupiter_faucet_non_dissolvable_neuron:
-    controller: "TODO_JUPITER_FAUCET_GOVERNANCE_PRINCIPAL_PLACEHOLDER"
-    stake_e8s: "TODO"
+    controller: "TODO_LOCAL_JUPITER_FAUCET_GOVERNANCE_PRINCIPAL_PLACEHOLDER"
+    stake_e8s: "TODO_LOCAL_FINAL_TOKENOMICS placeholder"
     dissolve_delay_seconds: 0
-    intent: "Jupiter Faucet non-dissolvable neuron intent"
   ordinary_user_neurons:
     can_vote: true
-    intent: "ordinary user neurons can vote"
+    allocation: "TODO_LOCAL_FINAL_TOKENOMICS placeholder"
 
-fallback_controllers:
-  - "TODO_FALLBACK_CONTROLLER_PRINCIPAL_PLACEHOLDER"
+fallback_controller_principals:
+  - "TODO_LOCAL_FALLBACK_CONTROLLER_PRINCIPAL_PLACEHOLDER"
 
 dapp_canisters:
   io_stream_manager: "TODO_LOCAL_IO_STREAM_MANAGER_CANISTER_PLACEHOLDER"
@@ -45,6 +54,7 @@ dapp_canisters:
   frontend: "TODO_LOCAL_FRONTEND_CANISTER_PLACEHOLDER"
 
 io_constructor_arg_mapping:
+  note: "Derived from current IO constructor-only value-moving DIDs; local principals are placeholders until the local dapp deployment step runs."
   io_stream_manager:
     icp_ledger_principal_text: "TODO_LOCAL_ICP_LEDGER_PLACEHOLDER"
     icp_index_principal_text: "TODO_LOCAL_ICP_INDEX_PLACEHOLDER"
@@ -57,3 +67,5 @@ io_constructor_arg_mapping:
     nns_governance_principal_text: "TODO_LOCAL_NNS_GOVERNANCE_PLACEHOLDER"
     icp_ledger_principal_text: "TODO_LOCAL_ICP_LEDGER_PLACEHOLDER"
     icp_index_principal_text: "TODO_LOCAL_ICP_INDEX_PLACEHOLDER"
+
+canonical_ledger_note: "IO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical."

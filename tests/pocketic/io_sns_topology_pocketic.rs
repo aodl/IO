@@ -1,5 +1,5 @@
 use candid::encode_one;
-use pocket_ic::PocketIc;
+use pocket_ic::PocketIcBuilder;
 
 const CYCLES: u128 = 2_000_000_000_000;
 
@@ -34,6 +34,21 @@ fn pocketic_live_sns_topology_installs_io_canisters_with_local_principals() {
             Some(wasm) => wasm,
             None => return,
         };
+    let sns_governance_wasm =
+        match required_wasm("target/wasm32-unknown-unknown/debug/mock_sns_governance.wasm") {
+            Some(wasm) => wasm,
+            None => return,
+        };
+    let sns_root_wasm =
+        match required_wasm("target/wasm32-unknown-unknown/debug/mock_sns_root.wasm") {
+            Some(wasm) => wasm,
+            None => return,
+        };
+    let nns_governance_wasm =
+        match required_wasm("target/wasm32-unknown-unknown/debug/mock_nns_governance.wasm") {
+            Some(wasm) => wasm,
+            None => return,
+        };
 
     let sns_init = std::fs::read_to_string("tools/sns/sns_init.io.local.yaml")
         .expect("local SNS init fixture should be readable");
@@ -60,19 +75,32 @@ fn pocketic_live_sns_topology_installs_io_canisters_with_local_principals() {
             .expect("stream debug DID should be readable");
     assert!(stream_debug_did.contains("debug_get_state"));
 
-    let pic = PocketIc::new();
-    let icp_ledger = pic.create_canister();
-    let icp_index = pic.create_canister();
-    let io_ledger = pic.create_canister();
-    let io_index = pic.create_canister();
-    let io_sns_ledger = pic.create_canister();
-    let io_sns_index = pic.create_canister();
-    let sns_governance = pic.create_canister();
-    let sns_root = pic.create_canister();
-    let nns_governance = pic.create_canister();
-    let nns_manager = pic.create_canister();
-    let historian = pic.create_canister();
-    let frontend = pic.create_canister();
+    let pic = PocketIcBuilder::new()
+        .with_nns_subnet()
+        .with_sns_subnet()
+        .with_application_subnet()
+        .build();
+    let topology = pic.topology();
+    let nns_subnet = topology.get_nns().expect("NNS subnet should exist");
+    let sns_subnet = topology.get_sns().expect("SNS subnet should exist");
+    let app_subnet = topology
+        .get_app_subnets()
+        .first()
+        .copied()
+        .expect("application subnet should exist");
+
+    let icp_ledger = pic.create_canister_on_subnet(None, None, app_subnet);
+    let icp_index = pic.create_canister_on_subnet(None, None, app_subnet);
+    let io_ledger = pic.create_canister_on_subnet(None, None, app_subnet);
+    let io_index = pic.create_canister_on_subnet(None, None, app_subnet);
+    let io_sns_ledger = pic.create_canister_on_subnet(None, None, sns_subnet);
+    let io_sns_index = pic.create_canister_on_subnet(None, None, sns_subnet);
+    let sns_governance = pic.create_canister_on_subnet(None, None, sns_subnet);
+    let sns_root = pic.create_canister_on_subnet(None, None, sns_subnet);
+    let nns_governance = pic.create_canister_on_subnet(None, None, nns_subnet);
+    let nns_manager = pic.create_canister_on_subnet(None, None, app_subnet);
+    let historian = pic.create_canister_on_subnet(None, None, app_subnet);
+    let frontend = pic.create_canister_on_subnet(None, None, app_subnet);
 
     for canister in [
         icp_ledger,
@@ -91,7 +119,11 @@ fn pocketic_live_sns_topology_installs_io_canisters_with_local_principals() {
         pic.add_cycles(canister, CYCLES);
     }
 
-    let stream = pic.create_canister();
+    pic.install_canister(sns_governance, sns_governance_wasm, Vec::new(), None);
+    pic.install_canister(sns_root, sns_root_wasm, Vec::new(), None);
+    pic.install_canister(nns_governance, nns_governance_wasm, Vec::new(), None);
+
+    let stream = pic.create_canister_on_subnet(None, None, app_subnet);
     pic.add_cycles(stream, CYCLES);
     pic.install_canister(
         stream,
@@ -130,4 +162,13 @@ fn pocketic_live_sns_topology_installs_io_canisters_with_local_principals() {
 
     assert_ne!(stream, nns_manager);
     assert_ne!(sns_governance, nns_governance);
+    assert_eq!(pic.get_subnet(stream), Some(app_subnet));
+    assert_eq!(pic.get_subnet(nns_manager), Some(app_subnet));
+    assert_eq!(pic.get_subnet(historian), Some(app_subnet));
+    assert_eq!(pic.get_subnet(frontend), Some(app_subnet));
+    assert_eq!(pic.get_subnet(sns_governance), Some(sns_subnet));
+    assert_eq!(pic.get_subnet(sns_root), Some(sns_subnet));
+    assert_eq!(pic.get_subnet(io_sns_ledger), Some(sns_subnet));
+    assert_eq!(pic.get_subnet(io_sns_index), Some(sns_subnet));
+    assert_eq!(pic.get_subnet(nns_governance), Some(nns_subnet));
 }

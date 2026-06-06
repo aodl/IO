@@ -37,7 +37,11 @@ The local tests cover:
 - rejected, open, wrong-hash, wrong-target, and unauthorized caller paths;
 - production DID guardrails remaining constructor-only after the local upgrade tests.
 
-## Limits
+## Relationship to Official SNS
+
+We currently run SNS-shaped mock/PocketIC tests. We do not currently run the official SNS launch locally in required CI.
+
+Official `sns-testing` is optional and heavier. The official SNS launch path uses `dfx sns`; this is not part of required IO workflows. SNS testflight is a future manual/mainnet rehearsal.
 
 Production SNS root/governance wiring remains future work. The harness does not submit live proposals, does not invoke SNS-W, does not run decentralization swap, does not call NNS/SNS mainnet canisters, and does not use `dfx` in required workflows.
 

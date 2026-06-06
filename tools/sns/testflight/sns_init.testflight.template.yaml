@@ -1,0 +1,48 @@
+# IO testflight SNS init template.
+# Manual/mainnet planning only. Not CI. Not a real launch. No real swap.
+
+name: "IO"
+symbol: "IO"
+
+description: "TODO_FINAL_LOGO_URL_SUMMARY placeholder for manual testflight."
+url: "TODO_FINAL_LOGO_URL_SUMMARY_PLACEHOLDER"
+logo: "TODO_FINAL_LOGO_URL_SUMMARY_PLACEHOLDER"
+
+ledger:
+  transaction_fee_e8s: 10_000
+  token_logo: "TODO_FINAL_LOGO_URL_SUMMARY_PLACEHOLDER"
+
+governance:
+  proposal_rejection_fee_e8s: 10_000_000_000
+  initial_reward_rate_basis_points: 0
+  final_reward_rate_basis_points: 0
+  age_bonus_percentage: 0
+  voting_power_economics: "TODO_FINAL_TOKENOMICS placeholder"
+  proposal_forum_url: "TODO_FINAL_SNS_PROPOSAL_FORUM_URL placeholder"
+
+swap:
+  minimum_participants: "TODO_FINAL_SWAP_PARAMETERS placeholder"
+  minimum_icp_e8s: "TODO_FINAL_SWAP_PARAMETERS placeholder"
+  maximum_icp_e8s: "TODO_FINAL_SWAP_PARAMETERS placeholder"
+
+neurons:
+  developer_distribution: "TODO_FINAL_DEVELOPER_NEURONS placeholder"
+  treasury_distribution: "TODO_FINAL_TREASURY_DISTRIBUTION placeholder"
+
+fallback_controller_principals:
+  - "TODO_TESTFLIGHT_FALLBACK_CONTROLLER_PRINCIPAL_PLACEHOLDER"
+
+dapp_canisters:
+  io_stream_manager: "TODO_TESTFLIGHT_IO_STREAM_MANAGER_CANISTER_PLACEHOLDER"
+  io_nns_neuron_manager: "TODO_TESTFLIGHT_IO_NNS_NEURON_MANAGER_CANISTER_PLACEHOLDER"
+  io_historian: "TODO_TESTFLIGHT_IO_HISTORIAN_CANISTER_PLACEHOLDER"
+  frontend: "TODO_TESTFLIGHT_FRONTEND_CANISTER_PLACEHOLDER"
+
+release_artifacts:
+  manifest: "release-artifacts/manifest.json"
+  io_stream_manager: "TODO_TESTFLIGHT_RELEASE_HASH_PLACEHOLDER"
+  io_nns_neuron_manager: "TODO_TESTFLIGHT_RELEASE_HASH_PLACEHOLDER"
+  io_historian: "TODO_TESTFLIGHT_RELEASE_HASH_PLACEHOLDER"
+  frontend: "TODO_TESTFLIGHT_RELEASE_HASH_PLACEHOLDER"
+
+canonical_ledger_note: "IO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical."

@@ -164,6 +164,12 @@ fn npm(args: &[&str]) -> Command {
     c
 }
 
+fn dfx(args: &[&str]) -> Command {
+    let mut c = Command::new("dfx");
+    c.args(args);
+    c
+}
+
 fn run_subcommand(sub: &str) -> bool {
     let exe = env::current_exe().expect("current exe");
     let mut c = Command::new(exe);
@@ -789,6 +795,195 @@ fn check_required_executable_scripts_at(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn check_sns_config_at(root: &Path) -> Result<(), String> {
+    let readme = require_file(root, "tools/sns/README.md")?;
+    require_present(
+        "tools/sns/README.md",
+        &readme,
+        &[
+            "official SNS compatibility package",
+            "Layer 1",
+            "Layer 2",
+            "Layer 3",
+            "Layer 4",
+            "must not depend on `dfx`",
+            "IO_TEST ledger is non-canonical",
+        ],
+    )?;
+
+    for path in [
+        "tools/sns/sns_init.io.template.yaml",
+        "tools/sns/sns_init.io.local.yaml",
+        "tools/sns/sns_init.io.testflight.template.yaml",
+        "tools/sns/testflight/sns_init.testflight.template.yaml",
+    ] {
+        let text = require_file(root, path)?;
+        require_present(
+            path,
+            &text,
+            &[
+                "name: \"IO\"",
+                "symbol: \"IO\"",
+                "transaction_fee_e8s",
+                "proposal_rejection_fee_e8s",
+                "fallback_controller_principals",
+                "dapp_canisters",
+                "io_stream_manager",
+                "io_nns_neuron_manager",
+                "io_historian",
+                "frontend",
+                "TODO",
+                "placeholder",
+            ],
+        )?;
+        require_absent(path, &text, &["--network ic"])?;
+    }
+
+    let local = require_file(root, "tools/sns/sns_init.io.local.yaml")?;
+    require_present(
+        "tools/sns/sns_init.io.local.yaml",
+        &local,
+        &[
+            "TODO_LOCAL_IO_STREAM_MANAGER_CANISTER_PLACEHOLDER",
+            "TODO_LOCAL_IO_NNS_NEURON_MANAGER_CANISTER_PLACEHOLDER",
+            "TODO_LOCAL_FALLBACK_CONTROLLER_PRINCIPAL_PLACEHOLDER",
+            "TODO_LOCAL_SNS_LEDGER_PLACEHOLDER",
+            "TODO_LOCAL_SNS_INDEX_PLACEHOLDER",
+            "TODO_LOCAL_SNS_GOVERNANCE_PLACEHOLDER",
+            "IO_TEST ledger is non-canonical",
+        ],
+    )?;
+    require_absent(
+        "tools/sns/sns_init.io.local.yaml",
+        &local,
+        &["ryjl3-tyaaa-aaaaa-aaaba-cai", "rrkah-fqaaa-aaaaa-aaaaq-cai"],
+    )?;
+
+    let testflight = require_file(root, "tools/sns/sns_init.io.testflight.template.yaml")?;
+    require_present(
+        "tools/sns/sns_init.io.testflight.template.yaml",
+        &testflight,
+        &[
+            "TODO_TESTFLIGHT_FALLBACK_CONTROLLER_PRINCIPAL_PLACEHOLDER",
+            "TODO_TESTFLIGHT_IO_STREAM_MANAGER_CANISTER_PLACEHOLDER",
+            "TODO_FINAL_TOKENOMICS",
+            "TODO_FINAL_SWAP_PARAMETERS",
+            "TODO_FINAL_DEVELOPER_NEURONS",
+            "TODO_FINAL_TREASURY_DISTRIBUTION",
+            "TODO_FINAL_LOGO_URL_SUMMARY",
+            "TODO_FINAL_SNS_PROPOSAL_FORUM_URL",
+        ],
+    )?;
+
+    check_required_executable_scripts_at(root)?;
+    Ok(())
+}
+
+fn check_sns_official_testing_at(root: &Path) -> Result<(), String> {
+    let doc = require_file(root, "docs/operations/official-sns-testing.md")?;
+    require_present(
+        "docs/operations/official-sns-testing.md",
+        &doc,
+        &[
+            "We currently run SNS-shaped mock/PocketIC tests.",
+            "We do not currently run the official SNS launch locally in required CI.",
+            "Official `sns-testing` is optional and heavier.",
+            "The official SNS launch path uses `dfx sns`; this is not part of required IO workflows.",
+            "SNS testflight is a future manual/mainnet rehearsal.",
+            "IO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical.",
+            "The existing canister that owns IO NNS neuron 6345890886899317159 is not touched by these tests.",
+            "Layer 1",
+            "Layer 2",
+            "Layer 3",
+            "Layer 4",
+        ],
+    )?;
+
+    let local_doc = require_file(root, "docs/operations/local-sns-testing.md")?;
+    require_present(
+        "docs/operations/local-sns-testing.md",
+        &local_doc,
+        &[
+            "We currently run SNS-shaped mock/PocketIC tests.",
+            "not official SNS launch tests",
+            "not SNS-W",
+            "not decentralization swap",
+            "not mainnet testflight",
+        ],
+    )?;
+
+    let scripts = [
+        "tools/sns-testing/check-prereqs.sh",
+        "tools/sns-testing/deploy-io-dapp-local.sh",
+        "tools/sns-testing/run-local-sns-testing.sh",
+        "tools/sns-testing/validate-local-sns-config.sh",
+    ];
+    for path in scripts {
+        let text = require_file(root, path)?;
+        require_present(path, &text, &["optional", "local"])?;
+        require_absent(path, &text, &["--network ic"])?;
+    }
+    let deploy_script = require_file(root, "tools/sns-testing/deploy-io-dapp-local.sh")?;
+    require_absent(
+        "tools/sns-testing/deploy-io-dapp-local.sh",
+        &deploy_script,
+        &["dfx start", "dfx replica"],
+    )?;
+
+    let testflight = require_file(root, "tools/sns/testflight/README.md")?;
+    require_present(
+        "tools/sns/testflight/README.md",
+        &testflight,
+        &[
+            "manual",
+            "mainnet",
+            "not CI",
+            "not a real launch",
+            "no real swap",
+        ],
+    )?;
+    Ok(())
+}
+
+fn check_sns_launch_readiness_at(root: &Path, strict: bool) -> Result<usize, String> {
+    let checklist = require_file(root, "tools/sns/launch-readiness.toml")?;
+    require_present(
+        "tools/sns/launch-readiness.toml",
+        &checklist,
+        &[
+            "[source_open]",
+            "[reproducible_builds]",
+            "[security_review]",
+            "[sns_config_validated]",
+            "[local_sns_testing_rehearsal]",
+            "[mainnet_testflight]",
+            "[app_canisters_stable_on_mainnet]",
+            "[nns_root_co_controller_step_planned]",
+            "[fallback_controllers_defined]",
+            "[dapp_canisters_listed]",
+            "[all_upgrades_tested_via_sns_proposal]",
+            "[frontend_sns_integration_tested]",
+            "[cycles_management_strategy]",
+            "[custom_domain_frontend_plan]",
+            "[audit_package]",
+        ],
+    )?;
+
+    let incomplete = checklist
+        .lines()
+        .filter(|line| line.trim() == "status = \"incomplete\"")
+        .count();
+    if incomplete == 0 {
+        return Err("tools/sns/launch-readiness.toml must mark incomplete items explicitly".into());
+    }
+    if strict && incomplete > 0 {
+        return Err(format!(
+            "SNS launch readiness has {incomplete} incomplete item(s)"
+        ));
+    }
+    Ok(incomplete)
+}
+
 fn check_sns_harness_at(root: &Path) -> Result<(), String> {
     let local_sns_doc = require_file(root, "docs/operations/local-sns-testing.md")?;
     require_present(
@@ -797,12 +992,15 @@ fn check_sns_harness_at(root: &Path) -> Result<(), String> {
         &[
             "Pure model tests remain the main accounting guardrail",
             "Mock and PocketIC tests remain the main journal, retry, and upgrade guardrail",
-            "Official SNS Testing Flow",
+            "We currently run SNS-shaped mock/PocketIC tests.",
+            "Four-Layer Compatibility Model",
+            "Official SNS Local Launch Rehearsal",
             "optional, local-only, and not part of `test_ci` or `verify_release`",
             "IO-Owned PocketIC SNS Harness",
             "must not call mainnet",
             "must not use `--network ic`",
             "not production launch configuration",
+            "not official SNS launch tests",
         ],
     )?;
 
@@ -811,10 +1009,12 @@ fn check_sns_harness_at(root: &Path) -> Result<(), String> {
         "tools/sns/README.md",
         &sns_readme,
         &[
+            "official SNS compatibility package",
             "not production launch configuration",
             "must not depend on `dfx`",
             "must not use `--network ic`",
             "placeholder principals",
+            "IO_TEST ledger is non-canonical",
         ],
     )?;
 
@@ -833,7 +1033,7 @@ fn check_sns_harness_at(root: &Path) -> Result<(), String> {
             "jupiter_faucet_governance_neuron",
             "jupiter_faucet_non_dissolvable_neuron",
             "ordinary_user_neurons",
-            "fallback_controllers",
+            "fallback_controller_principals",
             "io_stream_manager",
             "io_nns_neuron_manager",
             "io_historian",
@@ -870,6 +1070,9 @@ fn check_sns_harness_at(root: &Path) -> Result<(), String> {
             "Do not use --network ic",
         ],
     )?;
+
+    check_sns_config_at(root)?;
+    check_sns_official_testing_at(root)?;
 
     check_required_executable_scripts_at(root)?;
     Ok(())
@@ -953,7 +1156,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -1074,6 +1277,53 @@ fn main() -> ExitCode {
                 ok = false;
             }
         },
+        "sns_config_validate" => match check_sns_config_at(&root) {
+            Ok(()) => eprintln!("✓ sns_config_validate"),
+            Err(err) => {
+                eprintln!("✗ sns_config_validate: {err}");
+                ok = false;
+            }
+        },
+        "sns_config_validate_official" => {
+            if env::var_os("IO_RUN_DFX_SNS_VALIDATE").is_none() {
+                eprintln!(
+                    "skipping sns_config_validate_official: set IO_RUN_DFX_SNS_VALIDATE=1 to run optional dfx sns validation"
+                );
+            } else if Command::new("dfx").arg("--version").status().is_err() {
+                eprintln!("skipping sns_config_validate_official: dfx is unavailable");
+            } else {
+                ok &= run(
+                    "optional dfx sns init-config-file validate",
+                    dfx(&[
+                        "sns",
+                        "init-config-file",
+                        "validate",
+                        "tools/sns/sns_init.io.local.yaml",
+                    ]),
+                );
+            }
+        }
+        "sns_official_testing_check" => match check_sns_official_testing_at(&root) {
+            Ok(()) => eprintln!("✓ sns_official_testing_check"),
+            Err(err) => {
+                eprintln!("✗ sns_official_testing_check: {err}");
+                ok = false;
+            }
+        },
+        "sns_launch_readiness_check" => {
+            let strict = args.iter().any(|arg| arg == "--strict");
+            match check_sns_launch_readiness_at(&root, strict) {
+                Ok(incomplete) => {
+                    eprintln!(
+                        "✓ sns_launch_readiness_check: {incomplete} incomplete item(s) remain"
+                    );
+                }
+                Err(err) => {
+                    eprintln!("✗ sns_launch_readiness_check: {err}");
+                    ok = false;
+                }
+            }
+        }
         "historian_tests" => {
             ok &= run_subcommand("did_surface");
             ok &= run(
@@ -1217,6 +1467,9 @@ fn main() -> ExitCode {
                 "historian_tests",
                 "frontend_required",
                 "sns_harness_check",
+                "sns_config_validate",
+                "sns_official_testing_check",
+                "sns_launch_readiness_check",
                 "sns_governance_read_tests",
                 "sns_ledger_index_tests",
                 "sns_root_lifecycle_tests",
@@ -1512,9 +1765,12 @@ mod tests {
             root,
             "docs/operations/local-sns-testing.md",
             r#"# Local SNS Testing
+We currently run SNS-shaped mock/PocketIC tests.
 Pure model tests remain the main accounting guardrail.
 Mock and PocketIC tests remain the main journal, retry, and upgrade guardrail.
-## Official SNS Testing Flow
+## Four-Layer Compatibility Model
+not official SNS launch tests not SNS-W not decentralization swap not mainnet testflight
+## Official SNS Local Launch Rehearsal
 dfx-based SNS testing for IO is optional, local-only, and not part of `test_ci` or `verify_release`.
 ## IO-Owned PocketIC SNS Harness
 This must not call mainnet, must not use `--network ic`, and is not production launch configuration.
@@ -1523,12 +1779,9 @@ This must not call mainnet, must not use `--network ic`, and is not production l
         write(
             root,
             "tools/sns/README.md",
-            "not production launch configuration\nmust not depend on `dfx`\nmust not use `--network ic`\nplaceholder principals\n",
+            "official SNS compatibility package\nLayer 1\nLayer 2\nLayer 3\nLayer 4\nnot production launch configuration\nmust not depend on `dfx`\nmust not use `--network ic`\nplaceholder principals\nIO_TEST ledger is non-canonical\n",
         );
-        write(
-            root,
-            "tools/sns/sns_init.io.local.yaml",
-            r#"# not production-ready placeholder
+        let sns_template = r#"# not production-ready placeholder
 name: "IO"
 symbol: "IO"
 ledger:
@@ -1542,26 +1795,76 @@ neurons:
   jupiter_faucet_governance_neuron: {}
   jupiter_faucet_non_dissolvable_neuron: {}
   ordinary_user_neurons: {}
-fallback_controllers: []
+fallback_controller_principals:
+  - "TODO_LOCAL_FALLBACK_CONTROLLER_PRINCIPAL_PLACEHOLDER"
 dapp_canisters:
-  io_stream_manager: "TODO"
-  io_nns_neuron_manager: "TODO"
-  io_historian: "TODO"
-  frontend: "TODO"
+  io_stream_manager: "TODO_LOCAL_IO_STREAM_MANAGER_CANISTER_PLACEHOLDER"
+  io_nns_neuron_manager: "TODO_LOCAL_IO_NNS_NEURON_MANAGER_CANISTER_PLACEHOLDER"
+  io_historian: "TODO_LOCAL_IO_HISTORIAN_CANISTER_PLACEHOLDER"
+  frontend: "TODO_LOCAL_FRONTEND_CANISTER_PLACEHOLDER"
 io_constructor_arg_mapping:
   io_stream_manager:
     icp_ledger_principal_text: "TODO"
     icp_index_principal_text: "TODO"
     io_ledger_principal_text: "TODO"
     io_index_principal_text: "TODO"
-    io_sns_ledger_principal_text: "TODO"
-    io_sns_index_principal_text: "TODO"
-    sns_governance_principal_text: "TODO"
+    io_sns_ledger_principal_text: "TODO_LOCAL_SNS_LEDGER_PLACEHOLDER"
+    io_sns_index_principal_text: "TODO_LOCAL_SNS_INDEX_PLACEHOLDER"
+    sns_governance_principal_text: "TODO_LOCAL_SNS_GOVERNANCE_PLACEHOLDER"
   io_nns_neuron_manager:
     nns_governance_principal_text: "TODO"
     icp_ledger_principal_text: "TODO"
     icp_index_principal_text: "TODO"
-"#,
+canonical_ledger_note: "IO_TEST ledger is non-canonical"
+"#;
+        write(root, "tools/sns/sns_init.io.local.yaml", sns_template);
+        write(root, "tools/sns/sns_init.io.template.yaml", sns_template);
+        write(
+            root,
+            "tools/sns/sns_init.io.testflight.template.yaml",
+            &format!(
+                "{sns_template}\nTODO_TESTFLIGHT_FALLBACK_CONTROLLER_PRINCIPAL_PLACEHOLDER\nTODO_TESTFLIGHT_IO_STREAM_MANAGER_CANISTER_PLACEHOLDER\nTODO_FINAL_TOKENOMICS\nTODO_FINAL_SWAP_PARAMETERS\nTODO_FINAL_DEVELOPER_NEURONS\nTODO_FINAL_TREASURY_DISTRIBUTION\nTODO_FINAL_LOGO_URL_SUMMARY\nTODO_FINAL_SNS_PROPOSAL_FORUM_URL\n"
+            ),
+        );
+        write(
+            root,
+            "tools/sns/testflight/sns_init.testflight.template.yaml",
+            sns_template,
+        );
+        write(
+            root,
+            "docs/operations/official-sns-testing.md",
+            "We currently run SNS-shaped mock/PocketIC tests.\nWe do not currently run the official SNS launch locally in required CI.\nOfficial `sns-testing` is optional and heavier.\nThe official SNS launch path uses `dfx sns`; this is not part of required IO workflows.\nSNS testflight is a future manual/mainnet rehearsal.\nIO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical.\nThe existing canister that owns IO NNS neuron 6345890886899317159 is not touched by these tests.\nLayer 1\nLayer 2\nLayer 3\nLayer 4\n",
+        );
+        write(
+            root,
+            "tools/sns-testing/check-prereqs.sh",
+            "#!/usr/bin/env bash\n# optional local\n",
+        );
+        write(
+            root,
+            "tools/sns-testing/deploy-io-dapp-local.sh",
+            "#!/usr/bin/env bash\n# optional local\n",
+        );
+        write(
+            root,
+            "tools/sns-testing/run-local-sns-testing.sh",
+            "#!/usr/bin/env bash\n# optional local\n",
+        );
+        write(
+            root,
+            "tools/sns-testing/validate-local-sns-config.sh",
+            "#!/usr/bin/env bash\n# optional local\n",
+        );
+        write(
+            root,
+            "tools/sns/testflight/README.md",
+            "manual mainnet not CI not a real launch no real swap\n",
+        );
+        write(
+            root,
+            "tools/sns/launch-readiness.toml",
+            "[source_open]\nstatus = \"incomplete\"\n[reproducible_builds]\nstatus = \"incomplete\"\n[security_review]\nstatus = \"incomplete\"\n[sns_config_validated]\nstatus = \"incomplete\"\n[local_sns_testing_rehearsal]\nstatus = \"incomplete\"\n[mainnet_testflight]\nstatus = \"incomplete\"\n[app_canisters_stable_on_mainnet]\nstatus = \"incomplete\"\n[nns_root_co_controller_step_planned]\nstatus = \"incomplete\"\n[fallback_controllers_defined]\nstatus = \"incomplete\"\n[dapp_canisters_listed]\nstatus = \"incomplete\"\n[all_upgrades_tested_via_sns_proposal]\nstatus = \"incomplete\"\n[frontend_sns_integration_tested]\nstatus = \"incomplete\"\n[cycles_management_strategy]\nstatus = \"incomplete\"\n[custom_domain_frontend_plan]\nstatus = \"incomplete\"\n[audit_package]\nstatus = \"incomplete\"\n",
         );
         write(
             root,
@@ -1849,6 +2152,32 @@ io_constructor_arg_mapping:
             "#!/usr/bin/env bash\ndfx deploy\n",
         );
         assert!(check_sns_harness_at(&root).unwrap_err().contains("dfx"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sns_official_testing_check_rejects_dfx_start_in_optional_deploy_script() {
+        let root = temp_root("sns-official-testing-bad-deploy-script");
+        write_sns_harness_fixture(&root);
+        write(
+            &root,
+            "tools/sns-testing/deploy-io-dapp-local.sh",
+            "#!/usr/bin/env bash\n# optional local\ndfx start\n",
+        );
+        assert!(check_sns_official_testing_at(&root)
+            .unwrap_err()
+            .contains("dfx start"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sns_launch_readiness_reports_incomplete_and_strict_fails() {
+        let root = temp_root("sns-launch-readiness-strict");
+        write_sns_harness_fixture(&root);
+        assert_eq!(check_sns_launch_readiness_at(&root, false).unwrap(), 15);
+        assert!(check_sns_launch_readiness_at(&root, true)
+            .unwrap_err()
+            .contains("incomplete item"));
         let _ = fs::remove_dir_all(root);
     }
 
