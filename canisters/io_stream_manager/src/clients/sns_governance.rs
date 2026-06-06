@@ -1,3 +1,5 @@
+#[cfg(test)]
+use candid::Decode;
 use candid::{CandidType, Principal};
 use io_governance_types::{
     SnsDissolveState, SnsGovernanceClient, SnsGovernanceError, SnsNeuron, SnsNeuronId,
@@ -70,55 +72,30 @@ pub struct MockSnsGovernanceClient {
 impl SnsGovernanceClient for MockSnsGovernanceClient {
     fn list_neurons<'a>(
         &'a self,
-        _page: SnsNeuronPageRequest,
+        page: SnsNeuronPageRequest,
     ) -> Pin<Box<dyn Future<Output = Result<SnsNeuronPage, SnsGovernanceError>> + 'a>> {
-        Box::pin(async move {
-            let neurons = debug_list_mock_neurons(self.canister)
-                .await?
-                .into_iter()
-                .map(Into::into)
-                .collect();
-            Ok(SnsNeuronPage {
-                neurons,
-                next_page_at: None,
-            })
-        })
+        Box::pin(async move { debug_list_governance_neuron_page(self.canister, page).await })
     }
 
     fn get_neuron<'a>(
         &'a self,
         id: SnsNeuronId,
     ) -> Pin<Box<dyn Future<Output = Result<SnsNeuron, SnsGovernanceError>> + 'a>> {
-        Box::pin(async move {
-            self.list_neurons(SnsNeuronPageRequest {
-                limit: 1_000,
-                start_page_at: None,
-            })
-            .await?
-            .neurons
-            .into_iter()
-            .find(|neuron| neuron.id == id)
-            .ok_or(SnsGovernanceError::NotFound)
-        })
+        Box::pin(async move { debug_get_governance_neuron(self.canister, id).await })
     }
 
     fn list_proposals<'a>(
         &'a self,
-        _request: SnsProposalPageRequest,
+        request: SnsProposalPageRequest,
     ) -> Pin<Box<dyn Future<Output = Result<SnsProposalPage, SnsGovernanceError>> + 'a>> {
-        Box::pin(async move {
-            Ok(SnsProposalPage {
-                proposals: Vec::new(),
-                next_before_proposal: None,
-            })
-        })
+        Box::pin(async move { debug_list_governance_proposal_page(self.canister, request).await })
     }
 
     fn get_proposal<'a>(
         &'a self,
-        _id: SnsProposalId,
+        id: SnsProposalId,
     ) -> Pin<Box<dyn Future<Output = Result<SnsProposal, SnsGovernanceError>> + 'a>> {
-        Box::pin(async move { Err(SnsGovernanceError::Unsupported) })
+        Box::pin(async move { debug_get_governance_proposal(self.canister, id).await })
     }
 }
 
@@ -160,16 +137,102 @@ async fn debug_list_mock_neurons(
     Ok(response.0)
 }
 
-pub async fn debug_list_neurons(canister: Principal) -> Result<Vec<NeuronSnapshot>, String> {
-    let response = ic_cdk::call::Call::bounded_wait(canister, "debug_list_neurons")
+async fn debug_list_governance_neuron_page(
+    canister: Principal,
+    request: SnsNeuronPageRequest,
+) -> Result<SnsNeuronPage, SnsGovernanceError> {
+    let response = ic_cdk::call::Call::bounded_wait(canister, "debug_list_governance_neurons")
+        .with_arg(request)
         .await
-        .map_err(|err| format!("sns governance neuron scan failed: {err:?}"))
+        .map_err(|err| SnsGovernanceError::CanisterCallFailed {
+            method: "debug_list_governance_neurons".to_string(),
+            message: format!("{err:?}"),
+        })
+        .and_then(|response| {
+            response.candid_tuple::<(SnsNeuronPage,)>().map_err(|err| {
+                SnsGovernanceError::DecodeError {
+                    message: format!("{err:?}"),
+                }
+            })
+        })?;
+    Ok(response.0)
+}
+
+async fn debug_get_governance_neuron(
+    canister: Principal,
+    id: SnsNeuronId,
+) -> Result<SnsNeuron, SnsGovernanceError> {
+    let response = ic_cdk::call::Call::bounded_wait(canister, "debug_get_governance_neuron")
+        .with_arg(id)
+        .await
+        .map_err(|err| SnsGovernanceError::CanisterCallFailed {
+            method: "debug_get_governance_neuron".to_string(),
+            message: format!("{err:?}"),
+        })
         .and_then(|response| {
             response
-                .candid_tuple::<(Vec<MockSnsNeuron>,)>()
-                .map_err(|err| format!("sns governance neuron decode failed: {err:?}"))
+                .candid_tuple::<(Result<SnsNeuron, SnsGovernanceError>,)>()
+                .map_err(|err| SnsGovernanceError::DecodeError {
+                    message: format!("{err:?}"),
+                })
         })?;
-    Ok(response.0.into_iter().map(Into::into).collect())
+    response.0
+}
+
+async fn debug_list_governance_proposal_page(
+    canister: Principal,
+    request: SnsProposalPageRequest,
+) -> Result<SnsProposalPage, SnsGovernanceError> {
+    let response = ic_cdk::call::Call::bounded_wait(canister, "debug_list_proposals")
+        .with_arg(request)
+        .await
+        .map_err(|err| SnsGovernanceError::CanisterCallFailed {
+            method: "debug_list_proposals".to_string(),
+            message: format!("{err:?}"),
+        })
+        .and_then(|response| {
+            response
+                .candid_tuple::<(SnsProposalPage,)>()
+                .map_err(|err| SnsGovernanceError::DecodeError {
+                    message: format!("{err:?}"),
+                })
+        })?;
+    Ok(response.0)
+}
+
+async fn debug_get_governance_proposal(
+    canister: Principal,
+    id: SnsProposalId,
+) -> Result<SnsProposal, SnsGovernanceError> {
+    let response = ic_cdk::call::Call::bounded_wait(canister, "debug_get_proposal")
+        .with_arg(id)
+        .await
+        .map_err(|err| SnsGovernanceError::CanisterCallFailed {
+            method: "debug_get_proposal".to_string(),
+            message: format!("{err:?}"),
+        })
+        .and_then(|response| {
+            response
+                .candid_tuple::<(Result<SnsProposal, SnsGovernanceError>,)>()
+                .map_err(|err| SnsGovernanceError::DecodeError {
+                    message: format!("{err:?}"),
+                })
+        })?;
+    response.0
+}
+
+#[cfg(test)]
+fn decode_neuron_page_response(bytes: &[u8]) -> Result<SnsNeuronPage, SnsGovernanceError> {
+    Decode!(bytes, SnsNeuronPage).map_err(|err| SnsGovernanceError::DecodeError {
+        message: format!("{err:?}"),
+    })
+}
+
+pub async fn debug_list_neurons(canister: Principal) -> Result<Vec<NeuronSnapshot>, String> {
+    debug_list_mock_neurons(canister)
+        .await
+        .map(|neurons| neurons.into_iter().map(Into::into).collect())
+        .map_err(|err| format!("{err:?}"))
 }
 
 #[cfg(test)]
@@ -247,5 +310,13 @@ mod tests {
         assert_eq!(out.allocations.len(), 1);
         assert_eq!(out.allocations[0].neuron_id, 7);
         assert_eq!(out.allocations[0].io_e8s, 100);
+    }
+
+    #[test]
+    fn malformed_neuron_page_decode_maps_to_governance_error() {
+        assert!(matches!(
+            decode_neuron_page_response(&[1, 2, 3]),
+            Err(SnsGovernanceError::DecodeError { .. })
+        ));
     }
 }

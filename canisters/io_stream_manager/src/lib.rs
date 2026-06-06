@@ -1,4 +1,5 @@
 pub mod clients;
+pub mod governance_snapshot;
 pub mod logic;
 pub mod scheduler;
 pub mod state;

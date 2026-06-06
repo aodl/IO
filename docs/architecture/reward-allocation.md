@@ -26,3 +26,5 @@ redemption_rate =
 ```
 
 Only liquid ICP counts as redemption NAV.
+
+Read-only SNS governance snapshotting feeds this policy by converting eligible participation summaries into `NeuronSnapshot` values. The conversion is fallible: invalid SNS neuron IDs are excluded and reported, while valid eight-byte local/mock IDs continue through allocation. This milestone does not route IO reward transfers through a local SNS ledger or index canister.

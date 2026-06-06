@@ -16,3 +16,5 @@ Eligibility rules:
 Normal user-staked IO remains redeemable supply even while locked in SNS neurons. Eligibility affects reward allocation and 2-week pool targeting; it does not remove user IO from redeemable supply.
 
 The model is fixture-tested and does not call live SNS governance.
+
+Stream-manager governance snapshot tests fetch local/mock SNS governance-shaped neuron pages through `SnsGovernanceClient`, apply this policy, and report excluded neurons alongside valid reward snapshots. Invalid/non-eight-byte SNS neuron IDs are treated as exclusions with conversion errors; they are not mapped to a fallback numeric ID. Eight-byte SNS neuron IDs are a local/mock compatibility bridge for the existing `NeuronSnapshot` reward identity.

@@ -2,19 +2,19 @@
   "schema_version": 1,
   "build_profile": "release",
   "target": "wasm32-unknown-unknown",
-  "git_commit": "8fb6390c8290dad8ec5de61d6af13a91eedd0539",
+  "git_commit": "68aeecfee66ceea6c2fb6938192e86f1c7b945f5",
   "artifacts": [
     {
       "canister": "io_stream_manager",
       "raw_wasm_path": "release-artifacts/io_stream_manager.wasm",
-      "raw_wasm_sha256": "0c5af9d1b2338049748ea505a036f76f4ac4c38c2a5138976905ca23fbacdfbd",
-      "raw_wasm_bytes": 934956,
+      "raw_wasm_sha256": "c98c768b881976784481a17f2dfbb98fc9ef1c20dbb75bc95187df544b52cd0f",
+      "raw_wasm_bytes": 932962,
       "gz_wasm_path": "release-artifacts/io_stream_manager.wasm.gz",
-      "gz_wasm_sha256": "7040cbf0c4baae322fd2364f8bea3ff698249874c36a6a8b12b4c8a328c6aba7",
-      "gz_wasm_bytes": 271696,
+      "gz_wasm_sha256": "b5efc84e90c67586d65a4ec66e02e9404675352de0e8a041dc181f80fb9563c0",
+      "gz_wasm_bytes": 271798,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "8fb6390c8290dad8ec5de61d6af13a91eedd0539"
+      "git_commit": "68aeecfee66ceea6c2fb6938192e86f1c7b945f5"
     },
     {
       "canister": "io_nns_neuron_manager",
@@ -26,7 +26,7 @@
       "gz_wasm_bytes": 265331,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "8fb6390c8290dad8ec5de61d6af13a91eedd0539"
+      "git_commit": "68aeecfee66ceea6c2fb6938192e86f1c7b945f5"
     },
     {
       "canister": "io_historian",
@@ -38,7 +38,7 @@
       "gz_wasm_bytes": 84929,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "8fb6390c8290dad8ec5de61d6af13a91eedd0539"
+      "git_commit": "68aeecfee66ceea6c2fb6938192e86f1c7b945f5"
     },
     {
       "canister": "frontend",
@@ -50,7 +50,7 @@
       "gz_wasm_bytes": 305,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "8fb6390c8290dad8ec5de61d6af13a91eedd0539"
+      "git_commit": "68aeecfee66ceea6c2fb6938192e86f1c7b945f5"
     }
   ]
 }

@@ -26,10 +26,12 @@ The SNS boundary models neurons, permissions, dissolve states, proposals, ballot
 - paginated proposal listing;
 - single-proposal reads.
 
-`io_stream_manager::clients::sns_governance::MockSnsGovernanceClient` implements the boundary for mock neuron pages. Proposal reads remain unsupported in that adapter until the mock proposal canister exposes production-shaped proposal records.
+`io_stream_manager::clients::sns_governance::MockSnsGovernanceClient` implements the boundary for mock neuron and proposal pages. The mock SNS governance canister stores production-shaped `SnsNeuron` and `SnsProposal` records, exposes debug-only page/get methods, and supports deterministic proposal pagination with `before_proposal` cursors.
 
-The local SNS harness can install IO canisters with SNS-shaped local governance principals, but it does not read local SNS governance canisters yet. Official SNS testing tools are optional reference material and are not part of required IO workflows.
+`io_stream_manager::governance_snapshot` fetches all local/mock SNS governance pages through the trait, applies SNS eligibility and participation policies, and converts valid eight-byte local/mock SNS neuron IDs into `NeuronSnapshot` values. Invalid SNS neuron IDs are excluded and surfaced as conversion errors rather than coerced to `0`.
+
+The local SNS harness can install IO canisters with SNS-shaped local governance principals and includes a read-only PocketIC governance read test. Official SNS testing tools are optional reference material and are not part of required IO workflows.
 
 ## Limitations
 
-No code in this boundary calls live NNS or live SNS governance canisters. Real NNS/SNS adapters, audited Candid mappings, pagination, retry policy, local SNS governance reads, and final canister principal wiring remain future work. Production DIDs for value-moving canisters remain constructor-only.
+No code in this boundary calls live NNS or live SNS governance canisters. Real NNS/SNS adapters, audited Candid mappings, retry policy, local SNS ledger/index wiring, SNS root/controller lifecycle testing, and final canister principal wiring remain future work. Production DIDs for value-moving canisters remain constructor-only.

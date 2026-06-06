@@ -93,6 +93,8 @@ cargo run -p xtask -- test_unit
 cargo run -p xtask -- test_pocketic_integration
 cargo run -p xtask -- test_pocketic_required
 cargo run -p xtask -- sns_harness_check
+cargo run -p xtask -- sns_governance_read_tests
+cargo run -p xtask -- sns_governance_read_required
 cargo run -p xtask -- sns_pocketic_smoke
 cargo run -p xtask -- test_ci
 cargo run -p xtask -- test_local_integration
@@ -111,9 +113,11 @@ Command semantics:
 - `test_all`: local default; may skip live PocketIC tests when `POCKET_IC_BIN` is unset, but reports that clearly.
 - `test_ci`: strict test gate; requires PocketIC and runs core checks, security scan, artifacts, DID guardrails, and integration suites.
 - `sns_harness_check`: deterministic local SNS docs/fixture/script guardrail; no PocketIC, no `dfx`, and no mainnet calls.
+- `sns_governance_read_tests`: host/unit coverage for mock-backed SNS governance reads, snapshot conversion, exclusions, and reward allocation; no PocketIC.
+- `sns_governance_read_required`: strict PocketIC read-only SNS governance test; requires `POCKET_IC_BIN`.
 - `sns_pocketic_smoke`: permissive SNS topology smoke; skips clearly when `POCKET_IC_BIN` is unset.
-- `sns_pocketic_required`: strict SNS topology smoke; fails when `POCKET_IC_BIN` is unset.
-- `verify_release`: release-readiness gate; runs DID surface, canister builds, artifact verification, install-args validation, local SNS harness checks, and required security scan. It does not deploy.
+- `sns_pocketic_required`: strict SNS topology and read-only governance smoke; fails when `POCKET_IC_BIN` is unset.
+- `verify_release`: release-readiness gate; runs DID surface, canister builds, artifact verification, install-args validation, local SNS harness checks, host SNS governance read tests, and required security scan. It does not deploy.
 
 ## Build
 
