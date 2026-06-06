@@ -24,8 +24,8 @@ This runbook describes safe investigation and containment. It does not authorize
 
 - Detection: upgrade rejection, trap, or post-upgrade behavior mismatch.
 - Immediate containment: stop further proposals for the same canister.
-- Investigation commands: `cargo run -p xtask -- build_canisters`, `cargo run -p xtask -- verify_artifacts`, `cargo run -p xtask -- test_ci`.
-- Safe actions: forward-fix or rollback proposal using verified artifacts.
+- Investigation commands: `cargo run -p xtask -- build_canisters`, `cargo run -p xtask -- verify_artifacts`, `cargo run -p xtask -- sns_root_lifecycle_tests`, `cargo run -p xtask -- test_ci`.
+- Safe actions: forward-fix or rollback proposal using verified artifacts and manifest-matched raw/gz SHA-256 values.
 - Unsafe actions: use unverified Wasm or bypass stable-state compatibility review.
 - Escalation: controller/governance incident channel.
 

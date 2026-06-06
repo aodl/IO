@@ -972,6 +972,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "io-sns-lifecycle"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "io-stream-manager"
 version = "0.1.0"
 dependencies = [
@@ -983,8 +992,10 @@ dependencies = [
  "io-ledger-types",
  "io-nns-neuron-manager",
  "io-reward-policy",
+ "io-sns-lifecycle",
  "pocket-ic",
  "serde",
+ "sha2",
 ]
 
 [[package]]
@@ -1186,6 +1197,17 @@ dependencies = [
  "candid",
  "ic-cdk",
  "io-governance-types",
+ "io-sns-lifecycle",
+ "serde",
+]
+
+[[package]]
+name = "mock-sns-root"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "ic-cdk",
+ "io-sns-lifecycle",
  "serde",
 ]
 
@@ -2862,6 +2884,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "candid",
+ "io-sns-lifecycle",
  "serde",
  "serde_json",
  "sha2",

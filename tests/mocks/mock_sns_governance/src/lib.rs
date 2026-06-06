@@ -1,7 +1,12 @@
 use candid::CandidType;
+use candid::Principal;
 use io_governance_types::{
     SnsGovernanceError, SnsNeuron, SnsNeuronId, SnsNeuronPage, SnsNeuronPageRequest, SnsProposal,
     SnsProposalId, SnsProposalPage, SnsProposalPageRequest,
+};
+use io_sns_lifecycle::{
+    RootUpgradeIntent, RootUpgradeRequest, UpgradeProposal, UpgradeProposalRequest,
+    UpgradeProposalStatus, UpgradeVote,
 };
 use serde::Deserialize;
 use std::cell::RefCell;
@@ -31,6 +36,10 @@ struct SnsState {
     proposals: Vec<MockProposal>,
     governance_neurons: Vec<SnsNeuron>,
     governance_proposals: Vec<SnsProposal>,
+    root_principal: Option<Principal>,
+    upgrade_proposals: Vec<UpgradeProposal>,
+    next_upgrade_proposal_id: u64,
+    now: u64,
 }
 
 thread_local! {
@@ -74,6 +83,142 @@ pub fn debug_add_proposal(proposal_id: u64) {
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn debug_set_proposals(proposals: Vec<SnsProposal>) {
     STATE.with(|cell| cell.borrow_mut().governance_proposals = proposals);
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_root_principal(root: Principal) {
+    STATE.with(|cell| cell.borrow_mut().root_principal = Some(root));
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_submit_upgrade_proposal(request: UpgradeProposalRequest) -> UpgradeProposal {
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        state.next_upgrade_proposal_id = state.next_upgrade_proposal_id.saturating_add(1);
+        state.now = state.now.saturating_add(1);
+        let proposal = UpgradeProposal {
+            proposal_id: state.next_upgrade_proposal_id,
+            target_canister: request.target_canister,
+            wasm_sha256: request.wasm_sha256,
+            wasm_gz_sha256: request.wasm_gz_sha256,
+            artifact_name: request.artifact_name,
+            artifact_path: request.artifact_path,
+            expected_module_hash: request.expected_module_hash,
+            status: UpgradeProposalStatus::Open,
+            yes_votes: 0,
+            no_votes: 0,
+            created_at: state.now,
+            decided_at: None,
+            failure_reason: None,
+        };
+        state.upgrade_proposals.push(proposal.clone());
+        proposal
+    })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_vote_proposal(args: (u64, UpgradeVote)) -> Result<UpgradeProposal, String> {
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let proposal = state
+            .upgrade_proposals
+            .iter_mut()
+            .find(|proposal| proposal.proposal_id == args.0)
+            .ok_or_else(|| "unknown upgrade proposal".to_string())?;
+        if proposal.status != UpgradeProposalStatus::Open {
+            return Err("proposal is not open".to_string());
+        }
+        match args.1 {
+            UpgradeVote::Yes => proposal.yes_votes = proposal.yes_votes.saturating_add(1),
+            UpgradeVote::No => proposal.no_votes = proposal.no_votes.saturating_add(1),
+        }
+        Ok(proposal.clone())
+    })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_reject_upgrade_proposal(proposal_id: u64) -> Result<UpgradeProposal, String> {
+    decide_upgrade_proposal(proposal_id, UpgradeProposalStatus::Rejected)
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_adopt_upgrade_proposal(proposal_id: u64) -> Result<UpgradeProposal, String> {
+    decide_upgrade_proposal(proposal_id, UpgradeProposalStatus::Adopted)
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn debug_finalize_proposal(proposal_id: u64) -> Result<RootUpgradeIntent, String> {
+    let (root, request) = STATE.with(|cell| {
+        let state = cell.borrow();
+        let root = state
+            .root_principal
+            .ok_or_else(|| "root principal is not configured".to_string())?;
+        let proposal = state
+            .upgrade_proposals
+            .iter()
+            .find(|proposal| proposal.proposal_id == proposal_id)
+            .ok_or_else(|| "unknown upgrade proposal".to_string())?;
+        match proposal.status {
+            UpgradeProposalStatus::Adopted => Ok((
+                root,
+                RootUpgradeRequest {
+                    proposal_id: proposal.proposal_id,
+                    target_canister: proposal.target_canister,
+                    wasm_sha256: proposal.wasm_sha256.clone(),
+                    wasm_gz_sha256: proposal.wasm_gz_sha256.clone(),
+                    artifact_name: proposal.artifact_name.clone(),
+                    artifact_path: proposal.artifact_path.clone(),
+                    expected_module_hash: proposal.expected_module_hash.clone(),
+                },
+            )),
+            UpgradeProposalStatus::Open => Err("cannot execute open proposal".to_string()),
+            UpgradeProposalStatus::Rejected => Err("cannot execute rejected proposal".to_string()),
+            UpgradeProposalStatus::Executed => Err("proposal already executed".to_string()),
+            UpgradeProposalStatus::Failed => Err("proposal already failed".to_string()),
+        }
+    })?;
+
+    let result = call_root_upgrade(root, request).await;
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        state.now = state.now.saturating_add(1);
+        let decided_at = state.now;
+        let proposal = state
+            .upgrade_proposals
+            .iter_mut()
+            .find(|proposal| proposal.proposal_id == proposal_id)
+            .ok_or_else(|| "unknown upgrade proposal".to_string())?;
+        match result {
+            Ok(intent) => {
+                proposal.status = UpgradeProposalStatus::Executed;
+                proposal.decided_at = Some(decided_at);
+                proposal.failure_reason = None;
+                Ok(intent)
+            }
+            Err(err) => {
+                proposal.status = UpgradeProposalStatus::Failed;
+                proposal.decided_at = Some(decided_at);
+                proposal.failure_reason = Some(err.clone());
+                Err(err)
+            }
+        }
+    })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn debug_get_upgrade_proposal(proposal_id: u64) -> Option<UpgradeProposal> {
+    STATE.with(|cell| {
+        cell.borrow()
+            .upgrade_proposals
+            .iter()
+            .find(|proposal| proposal.proposal_id == proposal_id)
+            .cloned()
+    })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn debug_list_upgrade_proposals() -> Vec<UpgradeProposal> {
+    STATE.with(|cell| cell.borrow().upgrade_proposals.clone())
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -205,6 +350,51 @@ pub fn debug_clear() {
     STATE.with(|cell| *cell.borrow_mut() = SnsState::default());
 }
 
+fn decide_upgrade_proposal(
+    proposal_id: u64,
+    status: UpgradeProposalStatus,
+) -> Result<UpgradeProposal, String> {
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        state.now = state.now.saturating_add(1);
+        let decided_at = state.now;
+        let proposal = state
+            .upgrade_proposals
+            .iter_mut()
+            .find(|proposal| proposal.proposal_id == proposal_id)
+            .ok_or_else(|| "unknown upgrade proposal".to_string())?;
+        if proposal.status != UpgradeProposalStatus::Open {
+            return Err("proposal is not open".to_string());
+        }
+        if status == UpgradeProposalStatus::Adopted && proposal.yes_votes <= proposal.no_votes {
+            return Err("proposal does not have enough yes votes".to_string());
+        }
+        proposal.status = status;
+        proposal.decided_at = Some(decided_at);
+        Ok(proposal.clone())
+    })
+}
+
+async fn call_root_upgrade(
+    root: Principal,
+    request: RootUpgradeRequest,
+) -> Result<RootUpgradeIntent, String> {
+    #[cfg(target_family = "wasm")]
+    {
+        ic_cdk::call::Call::bounded_wait(root, "debug_upgrade_dapp_canister")
+            .with_arg(request)
+            .await
+            .map_err(|err| format!("root call failed: {err:?}"))?
+            .candid::<Result<RootUpgradeIntent, String>>()
+            .map_err(|err| format!("root response decode failed: {err:?}"))?
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let _ = (root, request);
+        Err("root calls require wasm/PocketIC execution".to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,6 +464,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn upgrade_proposal_adopt_reject_and_open_guardrails() {
+        debug_clear();
+        let request = upgrade_request(Principal::anonymous());
+        let proposal = debug_submit_upgrade_proposal(request);
+        assert_eq!(proposal.status, UpgradeProposalStatus::Open);
+        assert!(debug_adopt_upgrade_proposal(proposal.proposal_id)
+            .unwrap_err()
+            .contains("enough yes"));
+        debug_vote_proposal((proposal.proposal_id, UpgradeVote::Yes)).unwrap();
+        let adopted = debug_adopt_upgrade_proposal(proposal.proposal_id).unwrap();
+        assert_eq!(adopted.status, UpgradeProposalStatus::Adopted);
+        assert!(debug_reject_upgrade_proposal(proposal.proposal_id)
+            .unwrap_err()
+            .contains("not open"));
+
+        let rejected = debug_submit_upgrade_proposal(upgrade_request(Principal::from_slice(&[1])));
+        debug_vote_proposal((rejected.proposal_id, UpgradeVote::No)).unwrap();
+        assert_eq!(
+            debug_reject_upgrade_proposal(rejected.proposal_id)
+                .unwrap()
+                .status,
+            UpgradeProposalStatus::Rejected
+        );
+    }
+
     fn ids(neurons: &[SnsNeuron]) -> Vec<u64> {
         neurons
             .iter()
@@ -309,6 +525,17 @@ mod tests {
                 neuron_id: SnsNeuronId(1u64.to_be_bytes().to_vec()),
                 vote: SnsVote::Yes,
             }],
+        }
+    }
+
+    fn upgrade_request(target: Principal) -> UpgradeProposalRequest {
+        UpgradeProposalRequest {
+            target_canister: target,
+            wasm_sha256: "raw".to_string(),
+            wasm_gz_sha256: "gz".to_string(),
+            artifact_name: "io_stream_manager".to_string(),
+            artifact_path: "release-artifacts/io_stream_manager.wasm".to_string(),
+            expected_module_hash: None,
         }
     }
 }

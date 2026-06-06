@@ -21,6 +21,10 @@ name = "io_sns_governance_read_pocketic"
 path = "../../tests/pocketic/io_sns_governance_read_pocketic.rs"
 
 [[test]]
+name = "io_sns_root_lifecycle_pocketic"
+path = "../../tests/pocketic/io_sns_root_lifecycle_pocketic.rs"
+
+[[test]]
 name = "io_stream_manager_cli"
 path = "../../tests/cli/io_stream_manager_cli.rs"
 
@@ -41,5 +45,7 @@ name = "io_e2e"
 path = "../../tests/e2e/io_e2e.rs"
 
 [dev-dependencies]
+io-sns-lifecycle.workspace = true
 io-nns-neuron-manager.workspace = true
 pocket-ic.workspace = true
+sha2 = "0.10.9"

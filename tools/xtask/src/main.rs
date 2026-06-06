@@ -817,6 +817,64 @@ fn check_sns_harness_at(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn check_sns_root_lifecycle_at(root: &Path) -> Result<(), String> {
+    let root_doc = require_file(root, "docs/architecture/sns-root-lifecycle.md")?;
+    require_present(
+        "docs/architecture/sns-root-lifecycle.md",
+        &root_doc,
+        &[
+            "mock/PocketIC only",
+            "does not run the official SNS launch or decentralization swap flow",
+            "does not call mainnet",
+            "records an approved upgrade intent",
+            "test harness executes the PocketIC upgrade",
+            "release-artifacts/manifest.json",
+            "Production SNS root/governance wiring remains future work",
+        ],
+    )?;
+    require_absent(
+        "docs/architecture/sns-root-lifecycle.md",
+        &root_doc,
+        &["--network ic"],
+    )?;
+
+    let local_sns_doc = require_file(root, "docs/operations/local-sns-testing.md")?;
+    require_present(
+        "docs/operations/local-sns-testing.md",
+        &local_sns_doc,
+        &[
+            "SNS root/controller lifecycle",
+            "mock/PocketIC only",
+            "sns_root_lifecycle_tests",
+            "sns_root_lifecycle_required",
+        ],
+    )?;
+
+    let testing_doc = require_file(root, "docs/development/testing.md")?;
+    require_present(
+        "docs/development/testing.md",
+        &testing_doc,
+        &[
+            "sns_root_lifecycle_tests",
+            "sns_root_lifecycle_required",
+            "POCKET_IC_BIN",
+            "does not use `dfx`",
+        ],
+    )?;
+
+    for path in [
+        "tests/mocks/mock_sns_root/src/lib.rs",
+        "tests/mocks/mock_sns_governance/src/lib.rs",
+    ] {
+        let text = require_file(root, path)?;
+        require_present(path, &text, &["debug_"])?;
+    }
+
+    check_did_surface_at(root, false)?;
+    check_required_executable_scripts_at(root)?;
+    Ok(())
+}
+
 fn validate_no_install_args_did(root: &Path, path: &str) -> Result<(), String> {
     let text = read_file(root, path)?;
     if text.contains("service : (") {
@@ -837,7 +895,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, sns_harness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, sns_harness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -988,6 +1046,46 @@ fn main() -> ExitCode {
                 );
             }
         }
+        "sns_root_lifecycle_tests" => {
+            match check_sns_root_lifecycle_at(&root) {
+                Ok(()) => eprintln!("✓ sns_root_lifecycle guardrails"),
+                Err(err) => {
+                    eprintln!("✗ sns_root_lifecycle guardrails: {err}");
+                    ok = false;
+                }
+            }
+            ok &= run(
+                "unit: io-sns-lifecycle",
+                cargo_test(&["-p", "io-sns-lifecycle"]),
+            );
+            ok &= run("unit: mock-sns-root", cargo_test(&["-p", "mock-sns-root"]));
+            ok &= run(
+                "unit: mock-sns-governance upgrade proposals",
+                cargo_test(&["-p", "mock-sns-governance", "upgrade_proposal"]),
+            );
+            ok &= run(
+                "unit: xtask sns root lifecycle",
+                cargo_test(&["-p", "xtask", "sns_root_lifecycle"]),
+            );
+        }
+        "sns_root_lifecycle_required" => {
+            if env::var_os("POCKET_IC_BIN").is_none() {
+                eprintln!("✗ sns_root_lifecycle_required: POCKET_IC_BIN is not set");
+                ok = false;
+            } else {
+                ok &= run_subcommand("sns_root_lifecycle_tests");
+                ok &= run_subcommand("build_debug_canisters");
+                ok &= run(
+                    "pocketic: io-sns-root-lifecycle",
+                    cargo_test(&[
+                        "-p",
+                        "io-stream-manager",
+                        "--test",
+                        "io_sns_root_lifecycle_pocketic",
+                    ]),
+                );
+            }
+        }
         "security_scan" => {
             ok &= run_security_scan(false);
         }
@@ -1003,6 +1101,7 @@ fn main() -> ExitCode {
                 "sns_harness_check",
                 "sns_governance_read_tests",
                 "sns_ledger_index_tests",
+                "sns_root_lifecycle_tests",
                 "security_scan_required",
             ] {
                 ok &= run_subcommand(sub);
@@ -1020,6 +1119,7 @@ fn main() -> ExitCode {
                 "mock-io-index",
                 "mock-nns-governance",
                 "mock-sns-governance",
+                "mock-sns-root",
                 "mock-jupiter-faucet",
             ] {
                 ok &= run(
@@ -1114,6 +1214,15 @@ fn main() -> ExitCode {
                         "io_sns_governance_read_pocketic",
                     ]),
                 );
+                ok &= run(
+                    "pocketic: io-sns-root-lifecycle",
+                    cargo_test(&[
+                        "-p",
+                        "io-stream-manager",
+                        "--test",
+                        "io_sns_root_lifecycle_pocketic",
+                    ]),
+                );
             }
         }
         "test_local_integration" => {
@@ -1199,6 +1308,7 @@ fn main() -> ExitCode {
                 "security_scan_required",
                 "test_unit",
                 "test_pocketic_required",
+                "sns_root_lifecycle_required",
                 "test_local_integration",
                 "test_e2e",
             ] {
@@ -1225,6 +1335,10 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use io_sns_lifecycle::{
+        verify_manifest_entry_paths, verify_upgrade_proposal_against_manifest,
+        UpgradeProposalRequest,
+    };
 
     fn temp_root(name: &str) -> PathBuf {
         let root = env::temp_dir().join(format!(
@@ -1362,6 +1476,81 @@ io_constructor_arg_mapping:
         assert!(verify_artifacts_at(&root)
             .unwrap_err()
             .contains("missing artifact"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sns_root_lifecycle_manifest_resolves_known_upgrade_artifacts() {
+        let root = temp_root("sns-root-lifecycle-manifest-good");
+        write_artifact_set(&root);
+        let manifest = io_sns_lifecycle::read_manifest(root.join(MANIFEST_PATH)).unwrap();
+
+        for canister in ["io_stream_manager", "io_nns_neuron_manager"] {
+            let entry = io_sns_lifecycle::resolve_manifest_entry(&manifest, canister).unwrap();
+            verify_manifest_entry_paths(&root, entry).unwrap();
+            let request = UpgradeProposalRequest {
+                target_canister: Principal::anonymous(),
+                wasm_sha256: entry.raw_wasm_sha256.clone(),
+                wasm_gz_sha256: entry.gz_wasm_sha256.clone(),
+                artifact_name: canister.to_string(),
+                artifact_path: entry.raw_wasm_path.clone(),
+                expected_module_hash: Some(entry.raw_wasm_sha256.clone()),
+            };
+            assert_eq!(
+                verify_upgrade_proposal_against_manifest(&manifest, canister, &request)
+                    .unwrap()
+                    .canister,
+                canister
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sns_root_lifecycle_manifest_rejects_missing_and_mismatched_upgrade_artifacts() {
+        let root = temp_root("sns-root-lifecycle-manifest-bad");
+        write_artifact_set(&root);
+        let manifest = io_sns_lifecycle::read_manifest(root.join(MANIFEST_PATH)).unwrap();
+        assert!(
+            io_sns_lifecycle::resolve_manifest_entry(&manifest, "missing_canister")
+                .unwrap_err()
+                .contains("missing artifact")
+        );
+
+        let entry =
+            io_sns_lifecycle::resolve_manifest_entry(&manifest, "io_stream_manager").unwrap();
+        let mut request = UpgradeProposalRequest {
+            target_canister: Principal::anonymous(),
+            wasm_sha256: entry.raw_wasm_sha256.clone(),
+            wasm_gz_sha256: entry.gz_wasm_sha256.clone(),
+            artifact_name: "io_stream_manager".to_string(),
+            artifact_path: entry.raw_wasm_path.clone(),
+            expected_module_hash: None,
+        };
+        request.wasm_gz_sha256 = "wrong".to_string();
+        assert!(
+            verify_upgrade_proposal_against_manifest(&manifest, "io_stream_manager", &request)
+                .unwrap_err()
+                .contains("gz wasm hash mismatch")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sns_root_lifecycle_manifest_rejects_stale_entry_size() {
+        let root = temp_root("sns-root-lifecycle-manifest-stale");
+        write_artifact_set(&root);
+        let manifest = io_sns_lifecycle::read_manifest(root.join(MANIFEST_PATH)).unwrap();
+        write(
+            &root,
+            "release-artifacts/io_stream_manager.wasm",
+            "changed bytes",
+        );
+        let entry =
+            io_sns_lifecycle::resolve_manifest_entry(&manifest, "io_stream_manager").unwrap();
+        assert!(verify_manifest_entry_paths(&root, entry)
+            .unwrap_err()
+            .contains("stale size"));
         let _ = fs::remove_dir_all(root);
     }
 

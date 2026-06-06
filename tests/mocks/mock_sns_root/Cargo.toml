@@ -1,12 +1,15 @@
 [package]
-name = "xtask"
+name = "mock-sns-root"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
+
 [dependencies]
 candid.workspace = true
+ic-cdk.workspace = true
 io-sns-lifecycle.workspace = true
 serde.workspace = true
-serde_json = "1.0.145"
-sha2 = "0.10.9"

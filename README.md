@@ -76,7 +76,7 @@ Production callers should not be able to simply assert "this is a Jupiter Faucet
 - Production DIDs are intentionally minimal and expose no production query/control methods on value-moving canisters.
 - Security and operations baselines live under `docs/security/` and `docs/operations/`.
 - Release artifacts include a deterministic-gzip artifact set, SHA sidecars, and `release-artifacts/manifest.json`.
-- Local SNS harness documentation and fixture skeletons live under `docs/operations/local-sns-testing.md` and `tools/sns/`. They provide topology/config smoke coverage only; full SNS governance, ledger/index wiring, and SNS root/controller lifecycle tests remain future work.
+- Local SNS harness documentation and fixture skeletons live under `docs/operations/local-sns-testing.md` and `tools/sns/`. They provide topology/config smoke coverage, read-only mock governance reads, local SNS ledger/index value-flow tests, and mock/PocketIC SNS root/controller lifecycle upgrade tests.
 
 ## Tests
 
@@ -97,6 +97,8 @@ cargo run -p xtask -- sns_governance_read_tests
 cargo run -p xtask -- sns_governance_read_required
 cargo run -p xtask -- sns_ledger_index_tests
 cargo run -p xtask -- sns_ledger_index_required
+cargo run -p xtask -- sns_root_lifecycle_tests
+cargo run -p xtask -- sns_root_lifecycle_required
 cargo run -p xtask -- sns_pocketic_smoke
 cargo run -p xtask -- test_ci
 cargo run -p xtask -- test_local_integration
@@ -119,9 +121,11 @@ Command semantics:
 - `sns_governance_read_required`: strict PocketIC read-only SNS governance test; requires `POCKET_IC_BIN`.
 - `sns_ledger_index_tests`: host/unit coverage for local SNS-shaped ledger/index boundaries, transfer/index mapping, cursor errors, duplicate proof handling, and debug mock surfaces; no PocketIC.
 - `sns_ledger_index_required`: strict PocketIC value-flow coverage for local SNS-shaped ledger/index scans, redemption observation, reward transfers, retry, lag, and archive-required behavior; requires `POCKET_IC_BIN`.
+- `sns_root_lifecycle_tests`: host/unit coverage for mock SNS root/governance upgrade proposals, artifact manifest matching, lifecycle docs, and required-script guardrails; no PocketIC.
+- `sns_root_lifecycle_required`: strict PocketIC coverage for mock SNS root/controller lifecycle, proposal-shaped upgrades, controller authorization, stable-state preservation, and production DID guardrails; requires `POCKET_IC_BIN`.
 - `sns_pocketic_smoke`: permissive SNS topology smoke; skips clearly when `POCKET_IC_BIN` is unset.
-- `sns_pocketic_required`: strict SNS topology and read-only governance smoke; fails when `POCKET_IC_BIN` is unset.
-- `verify_release`: release-readiness gate; runs DID surface, canister builds, artifact verification, install-args validation, local SNS harness checks, host SNS governance and ledger/index tests, and required security scan. It does not deploy.
+- `sns_pocketic_required`: strict SNS topology, read-only governance, and mock root lifecycle smoke; fails when `POCKET_IC_BIN` is unset.
+- `verify_release`: release-readiness gate; runs DID surface, canister builds, artifact verification, install-args validation, local SNS harness checks, host SNS governance, ledger/index, root lifecycle tests, and required security scan. It does not deploy.
 
 ## Build
 
@@ -174,6 +178,7 @@ This now runs unit, PocketIC-shaped integration, local CLI-shaped integration, a
 - Duplicate transaction/idempotency checks.
 - Journal-driven retry after failed IO issuance, partial 2-week distribution, redemption payout/return, and NNS maturity transfer failures.
 - Local SNS-shaped ledger/index value-flow tests where redemption transfers are observed through index account history and TwoWeekMaturity rewards land in ledger-shaped SNS neuron accounts.
+- Local mock SNS root/controller lifecycle tests where proposal-shaped upgrades verify release artifact hashes, use mock root controller authority in PocketIC, and preserve pending journal state.
 - Stable-state and PocketIC upgrade/retry checks for pending journal work.
 - Unknown-source rejection.
 - Reward weighting by stake-time and closed-proposal participation.

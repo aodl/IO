@@ -19,6 +19,8 @@ cargo run -p xtask -- sns_governance_read_tests
 cargo run -p xtask -- sns_governance_read_required
 cargo run -p xtask -- sns_ledger_index_tests
 cargo run -p xtask -- sns_ledger_index_required
+cargo run -p xtask -- sns_root_lifecycle_tests
+cargo run -p xtask -- sns_root_lifecycle_required
 cargo run -p xtask -- sns_pocketic_smoke
 cargo run -p xtask -- sns_pocketic_required
 cargo run -p xtask -- test_local_integration
@@ -48,11 +50,15 @@ cargo run -p xtask -- verify_release
 
 `sns_ledger_index_required` builds debug Wasm and runs PocketIC stream-manager value-flow tests through the local SNS-shaped ledger/index boundary. It requires `POCKET_IC_BIN`.
 
-`sns_pocketic_smoke` runs the SNS harness check and skips the live topology/governance tests when `POCKET_IC_BIN` is unset. `sns_pocketic_required` is strict about PocketIC availability, installs IO canisters with SNS-shaped local principals, and runs the read-only SNS governance read test.
+`sns_root_lifecycle_tests` runs host/unit checks for the mock SNS root, mock governance upgrade proposal flow, release artifact manifest matching, lifecycle docs, and required-script guardrails. It does not require PocketIC and does not use `dfx`.
 
-`test_ci` is strict: it runs formatting, workspace check, DID surface validation, release artifact build and manifest/SHA verification, install-args validation, required security scan, unit tests, required PocketIC integration, local integration, e2e tests, and clippy with `-D warnings`.
+`sns_root_lifecycle_required` builds debug Wasm and runs the mock SNS root/controller lifecycle PocketIC tests. It requires `POCKET_IC_BIN`, verifies controller handoff to the mock root, executes proposal-shaped upgrades through the local root intent path, checks stable-state preservation, and keeps production DIDs constructor-only.
 
-`verify_release` is release-oriented and intentionally does not call `test_ci`, avoiding command recursion. It runs DID surface, release builds, artifact verification, install-args validation, `sns_harness_check`, host SNS governance read tests, host SNS ledger/index tests, and `security_scan_required`.
+`sns_pocketic_smoke` runs the SNS harness check and skips the live topology/governance/root lifecycle tests when `POCKET_IC_BIN` is unset. `sns_pocketic_required` is strict about PocketIC availability, installs IO canisters with SNS-shaped local principals, runs the read-only SNS governance read test, and runs the mock SNS root lifecycle test.
+
+`test_ci` is strict: it runs formatting, workspace check, DID surface validation, release artifact build and manifest/SHA verification, install-args validation, required security scan, unit tests, required PocketIC integration, required SNS root lifecycle PocketIC tests, local integration, e2e tests, and clippy with `-D warnings`.
+
+`verify_release` is release-oriented and intentionally does not call `test_ci`, avoiding command recursion. It runs DID surface, release builds, artifact verification, install-args validation, `sns_harness_check`, host SNS governance read tests, host SNS ledger/index tests, host SNS root lifecycle tests, and `security_scan_required`.
 
 ## Coverage added in this version
 
@@ -128,7 +134,7 @@ The live PocketIC tests include upgrade-before-retry cases for stream-manager IO
 
 The production-shaped ledger/index tests do not call live ICP, NNS, SNS, IO ledger, or index canisters. They are fixture and boundary tests only.
 
-Local SNS harness tests are an additional compatibility layer. They do not replace model or mock/PocketIC tests, do not run official `dfx sns` flows, and do not wire IO value-moving flows to SNS ledger/index canisters. Read-only local SNS governance reads are covered through mock-backed `SnsGovernanceClient` tests. Future work is local SNS ledger/index wiring, then SNS root/controller lifecycle coverage.
+Local SNS harness tests are an additional compatibility layer. They do not replace model or mock/PocketIC tests, do not run official `dfx sns` flows, and do not wire IO value-moving flows to live SNS ledger/index canisters. Read-only local SNS governance reads, local SNS ledger/index value flows, and mock SNS root/controller lifecycle upgrades are covered through mock/PocketIC tests. Production SNS root/governance wiring remains future work.
 
 `xtask test_local_integration` builds release Wasm artifacts, validates the DID guardrail, validates `icp.yaml` with `icp-cli`, runs `icp build`, and then runs the CLI-shaped Rust integration tests. It does not start a local replica or deploy canisters.
 

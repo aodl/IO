@@ -12,4 +12,5 @@ crate-type = ["rlib", "cdylib"]
 candid.workspace = true
 ic-cdk.workspace = true
 io-governance-types.workspace = true
+io-sns-lifecycle.workspace = true
 serde.workspace = true

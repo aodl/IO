@@ -9,7 +9,7 @@ IO uses local SNS testing as an additional compatibility layer. It does not repl
 3. Local SNS harness tests provide SNS topology, config, and controller compatibility.
 4. Local SNS governance read tests exercise mock-backed SNS neuron and proposal pages through the `SnsGovernanceClient` boundary.
 5. Local SNS ledger/index value-flow tests exercise mock-backed ICRC ledger and index pages through `LedgerTransferClient` and `LedgerIndexClient`.
-6. Later milestones will test SNS root and controller upgrade lifecycle.
+6. SNS root/controller lifecycle tests exercise mock governance proposals, mock root controller intent, artifact hash checks, and PocketIC upgrades.
 
 The local SNS harness is not production launch configuration. It must not call mainnet, must not use `--network ic`, and must not deploy, install, upgrade, reinstall, or update settings on mainnet.
 
@@ -38,5 +38,21 @@ The harness includes topology, config, and read-only governance smoke tests:
 - observe local IO redemption transfers through SNS-index-shaped account history;
 - send redemption IO returns and TwoWeekMaturity rewards through the local SNS-ledger-shaped transfer boundary;
 - test duplicate transfer, index lag, archive-required, pagination, retry, and idempotency behavior without live SNS calls.
+- test SNS root/controller lifecycle behavior through mock governance proposals and a mock root canister;
+- verify upgrade proposals against `release-artifacts/manifest.json`;
+- set the mock SNS root as a PocketIC controller for IO value-moving canisters;
+- preserve pending stream-manager and NNS-manager journal work across mock SNS-root-style upgrades.
 
-These ledger/index tests use mock/local/PocketIC canisters only. They are not live SNS adapters, do not run official SNS launch or swap flows, and do not test SNS root/controller lifecycle. Future milestones can extend this harness into root/controller lifecycle tests after the required artifacts and launch process are established.
+These SNS harness tests use mock/local/PocketIC canisters only. The SNS root/controller lifecycle is mock/PocketIC only: mock governance/root records an approved intent, the test harness executes the PocketIC upgrade as the mock root controller, and the root records the outcome. They are not live SNS adapters, do not run official SNS launch or swap flows, and do not call mainnet.
+
+Run deterministic local lifecycle checks with:
+
+```bash
+cargo run -p xtask -- sns_root_lifecycle_tests
+```
+
+Run strict live PocketIC lifecycle checks with:
+
+```bash
+POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server cargo run -p xtask -- sns_root_lifecycle_required
+```

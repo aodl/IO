@@ -19,6 +19,12 @@ Post-SNS launch:
 
 > TODO / open question: Finalize whether an emergency committee, SNS root only, or another time-locked mechanism controls emergency upgrades before and after IO SNS launch.
 
+## Local SNS Root Harness
+
+The repository includes a mock/PocketIC SNS root/controller lifecycle harness. It registers IO dapp canisters with a mock SNS root, routes mock governance upgrade proposals into root-approved upgrade intents, executes the actual PocketIC upgrade from the test harness with the mock root as controller, and records the outcome. This validates proposal status, controller authorization, artifact hashes, and stable-state preservation without using mainnet, `dfx`, SNS-W, or the official launch/swap flow.
+
+This local harness is not production SNS root/governance wiring. Production fallback controllers, emergency handoff, and official proposal payloads remain launch work.
+
 ## Permission Expectations
 
 Controllers may:
@@ -42,7 +48,7 @@ Controllers must not:
 3. Build artifacts with `cargo run -p xtask -- build_canisters`.
 4. Verify artifacts with `cargo run -p xtask -- verify_artifacts`.
 5. Verify release readiness with `cargo run -p xtask -- verify_release`.
-6. Compare raw and gzipped SHA-256 values against the proposal payload.
+6. Compare raw and gzipped SHA-256 values against `release-artifacts/manifest.json` and the proposal payload.
 7. Use the approved governance path to upgrade. This repo does not perform the deployment.
 
 > TODO / open question: Define a production pause mechanism. Current production DIDs are install-args-only, so there is no public pause/open method.
