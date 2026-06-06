@@ -17,6 +17,8 @@ cargo run -p xtask -- test_pocketic_required
 cargo run -p xtask -- sns_harness_check
 cargo run -p xtask -- sns_governance_read_tests
 cargo run -p xtask -- sns_governance_read_required
+cargo run -p xtask -- sns_ledger_index_tests
+cargo run -p xtask -- sns_ledger_index_required
 cargo run -p xtask -- sns_pocketic_smoke
 cargo run -p xtask -- sns_pocketic_required
 cargo run -p xtask -- test_local_integration
@@ -42,11 +44,15 @@ cargo run -p xtask -- verify_release
 
 `sns_governance_read_required` builds debug Wasm and runs the read-only PocketIC SNS governance test. It requires `POCKET_IC_BIN`.
 
+`sns_ledger_index_tests` runs host/unit coverage for local SNS-shaped ledger/index transfer and scan boundaries, cursor errors, duplicate proof handling, mock ledger/index crates, and scheduler boundary helpers. It does not require PocketIC.
+
+`sns_ledger_index_required` builds debug Wasm and runs PocketIC stream-manager value-flow tests through the local SNS-shaped ledger/index boundary. It requires `POCKET_IC_BIN`.
+
 `sns_pocketic_smoke` runs the SNS harness check and skips the live topology/governance tests when `POCKET_IC_BIN` is unset. `sns_pocketic_required` is strict about PocketIC availability, installs IO canisters with SNS-shaped local principals, and runs the read-only SNS governance read test.
 
 `test_ci` is strict: it runs formatting, workspace check, DID surface validation, release artifact build and manifest/SHA verification, install-args validation, required security scan, unit tests, required PocketIC integration, local integration, e2e tests, and clippy with `-D warnings`.
 
-`verify_release` is release-oriented and intentionally does not call `test_ci`, avoiding command recursion. It runs DID surface, release builds, artifact verification, install-args validation, `sns_harness_check`, host SNS governance read tests, and `security_scan_required`.
+`verify_release` is release-oriented and intentionally does not call `test_ci`, avoiding command recursion. It runs DID surface, release builds, artifact verification, install-args validation, `sns_harness_check`, host SNS governance read tests, host SNS ledger/index tests, and `security_scan_required`.
 
 ## Coverage added in this version
 

@@ -34,21 +34,21 @@ Mock canisters live under `tests/mocks/`:
 
 The mock ledgers keep balances and transaction history with source, destination, memo, block index, amount, and timestamp. The mock governance canisters expose debug APIs for maturity, unwind, SNS neurons, proposals, and votes. Production-shaped NNS/SNS governance domain types and client traits live in `io-governance-types`; debug calls remain isolated to mock adapters.
 
-The mock index canisters are thin wrappers around mock ledger history. Live scheduler tests configure the stream manager with the mock index canisters for scans. Downstream value-moving transfers route through `LedgerTransferClient` mock adapters, which still call the mock ledgers underneath.
+The mock index canisters expose SNS-index-shaped account transaction pages over mock ledger history. Live scheduler tests configure the stream manager with the mock index canisters for scans through `LedgerIndexClient`. Downstream value-moving transfers route through `LedgerTransferClient` mock adapters, which call local ICRC-shaped mock ledger methods.
 
 ## Local SNS Harness
 
-The local SNS harness adds documentation, fixture skeletons, deterministic xtask guardrails, a PocketIC topology smoke test, and a read-only SNS governance read test. The topology smoke test installs IO canisters with SNS-shaped local principals and checks that production value-moving DIDs remain constructor-only. The governance read test installs the mock SNS governance canister, seeds production-shaped neuron/proposal records, reads them through a `SnsGovernanceClient`, and drives TwoWeekMaturity allocation. It does not run official SNS launch tooling and does not wire value-moving flows to local SNS ledger/index canisters.
+The local SNS harness adds documentation, fixture skeletons, deterministic xtask guardrails, a PocketIC topology smoke test, read-only SNS governance tests, and local SNS ledger/index value-flow tests. The topology smoke test installs IO canisters with SNS-shaped local principals and checks that production value-moving DIDs remain constructor-only. The governance read test installs the mock SNS governance canister, seeds production-shaped neuron/proposal records, reads them through a `SnsGovernanceClient`, and drives TwoWeekMaturity allocation. The ledger/index tests observe redemptions through local SNS-index-shaped account history and deliver rewards/IO returns through local SNS-ledger-shaped accounts. They do not run official SNS launch tooling.
 
 ## Scheduler Flows
 
 `io_stream_manager::debug_tick`:
 
-- scans mock ICP history for deposits to `stream_manager_deposit`;
+- scans mock ICP index account history for deposits to `stream_manager_deposit` through `LedgerIndexClient`;
 - classifies Jupiter Faucet, 2-year maturity, and 2-week maturity by source/memo;
 - journals each relevant source block and processes completed operations once;
 - transfers issued IO from `protocol_reserve` to Jupiter Faucet or eligible SNS-neuron reward accounts through the transfer boundary;
-- scans IO transfers to `redemption`;
+- scans IO index account history for transfers to `redemption` through `LedgerIndexClient`;
 - pays ICP and returns redeemed IO to `protocol_reserve` through the transfer boundary.
 - resumes retryable operations from the durable journal before scanning new blocks.
 
@@ -68,4 +68,4 @@ The NNS manager persists operation journal entries and maturity/unwind scheduler
 
 ## Limits
 
-This is not production ledger or live governance wiring. Downstream transfer paths now use the `LedgerTransferClient` boundary, but the debug/PocketIC scan sources still use mock `debug_get_transactions` APIs. NNS/SNS governance clients are production-shaped boundaries with mock/local adapters, not live governance wiring. Local SNS governance reads are wired for read-only reward snapshotting; local SNS ledger/index value movement, SNS root/controller lifecycle, production scan/index adapters, live governance adapters, and archive traversal are future work. The debug scheduler tick is absent from production DIDs. The `io-ledger-types` crate provides production-shaped ledger/index types, transfer error mapping, fee representation, and index cursor/lag/archive modelling so future real adapters can be introduced without rewriting journal semantics. The operation journals are production-shaped but not audited. See `docs/architecture/ledger-index-clients.md`, `docs/architecture/governance-clients.md`, `docs/security/threat-model.md`, and `docs/operations/mainnet-readiness.md` before real-client work.
+This is not production ledger or live governance wiring. Downstream transfer paths use the `LedgerTransferClient` boundary, and debug/PocketIC scan sources can use the `LedgerIndexClient` boundary against mock/local index canisters. NNS/SNS governance clients are production-shaped boundaries with mock/local adapters, not live governance wiring. SNS root/controller lifecycle, production scan/index adapters, live governance adapters, and archive traversal are future work. The debug scheduler tick is absent from production DIDs. The `io-ledger-types` crate provides production-shaped ledger/index types, transfer error mapping, fee representation, and index cursor/lag/archive modelling so future real adapters can be introduced without rewriting journal semantics. The operation journals are production-shaped but not audited. See `docs/architecture/ledger-index-clients.md`, `docs/architecture/governance-clients.md`, `docs/security/threat-model.md`, and `docs/operations/mainnet-readiness.md` before real-client work.

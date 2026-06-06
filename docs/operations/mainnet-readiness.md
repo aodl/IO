@@ -8,7 +8,7 @@ Missing before production:
 - audited real IO/SNS ledger and index clients built on the `io-ledger-types` boundary;
 - audited real NNS governance client implementing the `io-governance-types` boundary;
 - audited real SNS governance client implementing the `io-governance-types` boundary;
-- completed local SNS ledger/index wiring tests and SNS root/controller lifecycle tests;
+- completed SNS root/controller lifecycle tests;
 - install args validated against final real principals;
 - controller handoff plan from Jupiter Faucet governance to IO SNS governance;
 - emergency governance process and proposal templates;
@@ -17,6 +17,6 @@ Missing before production:
 - external audit of accounting, retry, upgrade, and controller behavior;
 - production monitoring for ledger/index lag, archive gaps, and journal retries.
 
-The current mock-driven journals and scheduler flows are production-shaped but not audited. Downstream transfer paths use `LedgerTransferClient` mock adapters in debug/PocketIC runs; scan sources still use mock `debug_get_transactions`. No current script deploys to mainnet.
+The current mock-driven journals and scheduler flows are production-shaped but not audited. Downstream transfer paths use `LedgerTransferClient` mock adapters in debug/PocketIC runs; local scan sources can use `LedgerIndexClient` against mock index canisters. No current script deploys to mainnet.
 
-The repo contains production-shaped ledger/index and governance Candid models, boundary tests, local/mock SNS governance read snapshotting, and a local SNS harness skeleton. The harness validates topology/config readiness and read-only mock governance reads; it is not a production SNS launch config. Official `dfx sns` testing remains optional local-only reference material and is not part of required IO workflows. Production scan/index adapters, live governance adapters, archive traversal, fee policy, index lag alerting, SNS launch configuration, SNS root/controller lifecycle, local SNS ledger/index value movement, and duplicate-transfer proof checks against real blocks must be finalized before any mainnet deployment proposal.
+The repo contains production-shaped ledger/index and governance Candid models, boundary tests, local/mock SNS governance read snapshotting, and local SNS ledger/index value-flow tests. The harness validates topology/config readiness, read-only mock governance reads, local redemption observation through SNS-index-shaped history, and local reward/return transfers through SNS-ledger-shaped accounts; it is not a production SNS launch config. Official `dfx sns` testing remains optional local-only reference material and is not part of required IO workflows. Production scan/index adapters, live governance adapters, archive traversal, fee policy, index lag alerting, SNS launch configuration, SNS root/controller lifecycle, and duplicate-transfer proof checks against real blocks must be finalized before any mainnet deployment proposal.

@@ -23,16 +23,13 @@ struct DebugRejectAccountArgs {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize)]
-struct TransferArgs {
-    from: String,
-    to: String,
-    amount_e8s: u128,
-    memo: String,
+struct DebugLagArgs {
+    lag_blocks: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize)]
-struct AccountBalanceArgs {
-    account: String,
+struct DebugArchiveRequiredArgs {
+    archive_required: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize)]
@@ -102,7 +99,11 @@ fn wasm(path: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod live {
     use super::*;
-    use candid::{decode_one, encode_one, Principal};
+    use candid::{decode_one, encode_one, Nat, Principal};
+    use io_ledger_types::{
+        map_icrc_transfer_result, Account, IcrcAccount, IcrcTransferArg, IcrcTransferError,
+        Subaccount,
+    };
     use pocket_ic::PocketIc;
 
     const CYCLES: u128 = 2_000_000_000_000;
@@ -250,18 +251,21 @@ mod live {
                 ledger,
                 Principal::anonymous(),
                 "icrc1_transfer",
-                encode_one(TransferArgs {
-                    from: from.to_string(),
-                    to: to.to_string(),
-                    amount_e8s,
-                    memo: memo.to_string(),
+                encode_one(IcrcTransferArg {
+                    from_subaccount: Some(mock_subaccount(from).0.to_vec()),
+                    to: mock_account(to).into(),
+                    amount: Nat::from(amount_e8s),
+                    fee: None,
+                    memo: Some(memo.as_bytes().to_vec()),
+                    created_at_time: None,
                 })
                 .unwrap(),
             )
             .expect("transfer");
-        decode_one::<Result<u64, String>>(&bytes)
-            .unwrap()
+        map_icrc_transfer_result(decode_one::<Result<Nat, IcrcTransferError>>(&bytes).unwrap())
             .expect("ledger transfer result")
+            .block_index
+            .0
     }
 
     fn balance(pic: &PocketIc, ledger: Principal, account: &str) -> u128 {
@@ -270,13 +274,28 @@ mod live {
                 ledger,
                 Principal::anonymous(),
                 "icrc1_balance_of",
-                encode_one(AccountBalanceArgs {
-                    account: account.to_string(),
-                })
-                .unwrap(),
+                encode_one(IcrcAccount::from(mock_account(account))).unwrap(),
             )
             .expect("balance");
-        decode_one::<u128>(&bytes).unwrap()
+        decode_one::<Nat>(&bytes)
+            .unwrap()
+            .0
+            .to_str_radix(10)
+            .parse()
+            .unwrap()
+    }
+
+    fn mock_subaccount(label: &str) -> Subaccount {
+        let bytes = label.as_bytes();
+        let mut subaccount = [0; 32];
+        let len = bytes.len().min(31);
+        subaccount[0] = len as u8;
+        subaccount[1..=len].copy_from_slice(&bytes[..len]);
+        Subaccount(subaccount)
+    }
+
+    fn mock_account(label: &str) -> Account {
+        Account::new(Principal::anonymous(), Some(mock_subaccount(label)))
     }
 
     fn transactions(pic: &PocketIc, ledger: Principal) -> Vec<LedgerTransaction> {
@@ -312,6 +331,26 @@ mod live {
             encode_one(()).unwrap(),
         )
         .expect("clear rejections");
+    }
+
+    fn set_index_lag(pic: &PocketIc, index: Principal, lag_blocks: u64) {
+        pic.update_call(
+            index,
+            Principal::anonymous(),
+            "debug_set_lag",
+            encode_one(DebugLagArgs { lag_blocks }).unwrap(),
+        )
+        .expect("set index lag");
+    }
+
+    fn set_archive_required(pic: &PocketIc, index: Principal, archive_required: bool) {
+        pic.update_call(
+            index,
+            Principal::anonymous(),
+            "debug_set_archive_required",
+            encode_one(DebugArchiveRequiredArgs { archive_required }).unwrap(),
+        )
+        .expect("set archive required");
     }
 
     fn tick(fixture: &StreamFixture) -> DebugTickOutcome {
@@ -558,6 +597,105 @@ mod live {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn pocketic_live_index_lag_blocks_scan_then_resolves_once() {
+        let Some(fixture) = setup_stream(false) else {
+            return;
+        };
+
+        mint(
+            &fixture.pic,
+            fixture.icp_ledger,
+            JUPITER_FAUCET_SOURCE,
+            t(200),
+            "fund_faucet",
+        );
+        faucet_send(
+            &fixture,
+            JUPITER_FAUCET_SOURCE,
+            "stream_manager_deposit",
+            t(100),
+            "faucet",
+        );
+        assert!(tick(&fixture).errors.is_empty());
+
+        faucet_send(
+            &fixture,
+            JUPITER_FAUCET_SOURCE,
+            "stream_manager_deposit",
+            t(100),
+            "faucet",
+        );
+        set_index_lag(&fixture.pic, fixture.icp_index, 10);
+        let lagged = tick(&fixture);
+        assert!(lagged.errors.iter().any(|err| err.contains("IndexLag")));
+        assert_eq!(lagged.processed_authorized_streams, 0);
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, JUPITER_FAUCET_SOURCE),
+            t(60)
+        );
+
+        set_index_lag(&fixture.pic, fixture.icp_index, 0);
+        let resolved = tick(&fixture);
+        assert!(resolved.errors.is_empty(), "{:?}", resolved.errors);
+        assert_eq!(resolved.processed_authorized_streams, 1);
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, JUPITER_FAUCET_SOURCE),
+            t(120)
+        );
+        let replay = tick(&fixture);
+        assert_eq!(replay.processed_authorized_streams, 0);
+    }
+
+    #[test]
+    fn pocketic_live_archive_required_blocks_redemption_scan_without_mutation() {
+        let Some(fixture) = setup_stream(false) else {
+            return;
+        };
+
+        mint(
+            &fixture.pic,
+            fixture.icp_ledger,
+            JUPITER_FAUCET_SOURCE,
+            t(100),
+            "fund_faucet",
+        );
+        faucet_send(
+            &fixture,
+            JUPITER_FAUCET_SOURCE,
+            "stream_manager_deposit",
+            t(100),
+            "faucet",
+        );
+        assert!(tick(&fixture).errors.is_empty());
+        let before = state(&fixture).protocol;
+        mint(&fixture.pic, fixture.io_ledger, "user", t(10), "user_io");
+        transfer(
+            &fixture.pic,
+            fixture.io_ledger,
+            "user",
+            "redemption",
+            t(10),
+            "redeem",
+        );
+
+        set_archive_required(&fixture.pic, fixture.io_index, true);
+        let blocked = tick(&fixture);
+        assert!(blocked
+            .errors
+            .iter()
+            .any(|err| err.contains("ArchiveRequired")));
+        assert_eq!(blocked.processed_redemptions, 0);
+        assert_eq!(balance(&fixture.pic, fixture.icp_ledger, "user"), 0);
+        assert_eq!(state(&fixture).protocol, before);
+
+        set_archive_required(&fixture.pic, fixture.io_index, false);
+        let resolved = tick(&fixture);
+        assert!(resolved.errors.is_empty(), "{:?}", resolved.errors);
+        assert_eq!(resolved.processed_redemptions, 1);
+        assert_eq!(balance(&fixture.pic, fixture.icp_ledger, "user"), t(10));
     }
 
     #[test]

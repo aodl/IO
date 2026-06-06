@@ -837,7 +837,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, sns_harness_check, sns_governance_read_tests, sns_governance_read_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, sns_harness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -947,6 +947,47 @@ fn main() -> ExitCode {
                 );
             }
         }
+        "sns_ledger_index_tests" => {
+            ok &= run(
+                "unit: io-ledger-types",
+                cargo_test(&["-p", "io-ledger-types"]),
+            );
+            ok &= run(
+                "unit: stream-manager scheduler boundary",
+                cargo_test(&["-p", "io-stream-manager", "--lib", "scheduler"]),
+            );
+            ok &= run(
+                "unit: mock SNS-shaped ledger/index",
+                cargo_test(&[
+                    "-p",
+                    "mock-icp-ledger",
+                    "-p",
+                    "mock-io-ledger",
+                    "-p",
+                    "mock-icp-index",
+                    "-p",
+                    "mock-io-index",
+                ]),
+            );
+        }
+        "sns_ledger_index_required" => {
+            if env::var_os("POCKET_IC_BIN").is_none() {
+                eprintln!("✗ sns_ledger_index_required: POCKET_IC_BIN is not set");
+                ok = false;
+            } else {
+                ok &= run_subcommand("sns_ledger_index_tests");
+                ok &= run_subcommand("build_debug_canisters");
+                ok &= run(
+                    "pocketic: io-stream-manager ledger/index value flows",
+                    cargo_test(&[
+                        "-p",
+                        "io-stream-manager",
+                        "--test",
+                        "io_stream_manager_pocketic",
+                    ]),
+                );
+            }
+        }
         "security_scan" => {
             ok &= run_security_scan(false);
         }
@@ -961,6 +1002,7 @@ fn main() -> ExitCode {
                 "validate_install_args",
                 "sns_harness_check",
                 "sns_governance_read_tests",
+                "sns_ledger_index_tests",
                 "security_scan_required",
             ] {
                 ok &= run_subcommand(sub);

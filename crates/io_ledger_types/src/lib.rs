@@ -474,6 +474,72 @@ impl TryFrom<IndexScanRequest> for IcrcIndexGetAccountTransactionsArgs {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct IcrcIndexTransaction {
+    pub id: Nat,
+    pub transaction: LedgerBlock,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct IcrcIndexGetAccountTransactionsResult {
+    pub transactions: Vec<IcrcIndexTransaction>,
+    pub oldest_tx_id: Option<Nat>,
+    pub tip: Option<Nat>,
+    pub archive_required: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum IcrcIndexError {
+    GenericError { error_code: Nat, message: String },
+    TemporarilyUnavailable,
+}
+
+fn nat_to_u64_index(value: &Nat, field: &str) -> Result<u64, IndexError> {
+    value
+        .0
+        .to_str_radix(10)
+        .parse::<u64>()
+        .map_err(|err| IndexError::DecodeError {
+            message: format!("{field} does not fit in u64: {err}"),
+        })
+}
+
+pub fn map_icrc_index_result(
+    result: Result<IcrcIndexGetAccountTransactionsResult, IcrcIndexError>,
+) -> Result<IndexScanResult, IndexError> {
+    match result {
+        Ok(page) => {
+            let mut transactions = Vec::with_capacity(page.transactions.len());
+            for tx in page.transactions {
+                transactions.push(IndexTransaction {
+                    block_index: BlockIndex(nat_to_u64_index(&tx.id, "transaction id")?),
+                    transaction: tx.transaction,
+                });
+            }
+            let last_seen_block = transactions.iter().map(|tx| tx.block_index).max();
+            Ok(IndexScanResult {
+                transactions,
+                last_seen_block,
+                index_tip: page
+                    .tip
+                    .as_ref()
+                    .map(|tip| nat_to_u64_index(tip, "index tip").map(BlockIndex))
+                    .transpose()?,
+                archive_required: page.archive_required,
+            })
+        }
+        Err(IcrcIndexError::TemporarilyUnavailable) => Err(IndexError::TemporarilyUnavailable),
+        Err(IcrcIndexError::GenericError { message, .. }) if message.contains("archive") => {
+            Err(IndexError::ArchiveRequired {
+                from: BlockIndex(0),
+            })
+        }
+        Err(IcrcIndexError::GenericError { message, .. }) => {
+            Err(IndexError::DecodeError { message })
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct DuplicateProof {
     pub expected_amount_e8s: u128,
     pub actual_amount_e8s: u128,
@@ -566,6 +632,59 @@ impl LedgerTransferClient for IcrcLedgerCanisterClient {
                 .map_err(|err| LedgerQueryError::DecodeError {
                     message: format!("ledger fee does not fit in u128: {err}"),
                 })
+        })
+    }
+}
+
+#[cfg(target_family = "wasm")]
+#[derive(Clone, Copy, Debug)]
+pub struct IcrcIndexCanisterClient {
+    pub canister: Principal,
+}
+
+#[cfg(target_family = "wasm")]
+impl LedgerIndexClient for IcrcIndexCanisterClient {
+    fn get_account_transactions<'a>(
+        &'a self,
+        request: IndexScanRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<IndexScanResult, IndexError>> + 'a>> {
+        Box::pin(async move {
+            let arg = IcrcIndexGetAccountTransactionsArgs::try_from(request)?;
+            let response =
+                ic_cdk::call::Call::bounded_wait(self.canister, "get_account_transactions")
+                    .with_arg(arg)
+                    .await
+                    .map_err(|err| IndexError::CanisterCallFailed {
+                        method: "get_account_transactions".to_string(),
+                        message: format!("{err:?}"),
+                    })?;
+            let (result,) = response
+                .candid_tuple::<(Result<IcrcIndexGetAccountTransactionsResult, IcrcIndexError>,)>()
+                .map_err(|err| IndexError::DecodeError {
+                    message: format!("{err:?}"),
+                })?;
+            map_icrc_index_result(result)
+        })
+    }
+
+    fn get_tip<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<BlockIndex>, IndexError>> + 'a>> {
+        Box::pin(async move {
+            let response = ic_cdk::call::Call::bounded_wait(self.canister, "debug_get_tip")
+                .await
+                .map_err(|err| IndexError::CanisterCallFailed {
+                    method: "debug_get_tip".to_string(),
+                    message: format!("{err:?}"),
+                })?;
+            let (tip,) = response.candid_tuple::<(Option<Nat>,)>().map_err(|err| {
+                IndexError::DecodeError {
+                    message: format!("{err:?}"),
+                }
+            })?;
+            tip.as_ref()
+                .map(|tip| nat_to_u64_index(tip, "index tip").map(BlockIndex))
+                .transpose()
         })
     }
 }
@@ -800,6 +919,49 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(err, IndexError::Unsupported);
+    }
+
+    #[test]
+    fn icrc_index_result_maps_pages_tip_and_archive_flag() {
+        let block = LedgerBlock {
+            block_index: BlockIndex(3),
+            timestamp_nanos: 9,
+            from: Some(account()),
+            to: Some(account()),
+            amount_e8s: 7,
+            fee_e8s: Some(10),
+            memo: Some(Memo::from("idx")),
+            operation_kind: LedgerOperationKind::Transfer,
+        };
+        let result = map_icrc_index_result(Ok(IcrcIndexGetAccountTransactionsResult {
+            transactions: vec![IcrcIndexTransaction {
+                id: Nat::from(3_u64),
+                transaction: block,
+            }],
+            oldest_tx_id: Some(Nat::from(3_u64)),
+            tip: Some(Nat::from(8_u64)),
+            archive_required: true,
+        }))
+        .unwrap();
+        assert_eq!(result.transactions[0].block_index, BlockIndex(3));
+        assert_eq!(result.last_seen_block, Some(BlockIndex(3)));
+        assert_eq!(result.index_tip, Some(BlockIndex(8)));
+        assert!(result.archive_required);
+    }
+
+    #[test]
+    fn icrc_index_result_classifies_errors() {
+        assert_eq!(
+            map_icrc_index_result(Err(IcrcIndexError::TemporarilyUnavailable)),
+            Err(IndexError::TemporarilyUnavailable)
+        );
+        assert!(matches!(
+            map_icrc_index_result(Err(IcrcIndexError::GenericError {
+                error_code: Nat::from(1_u64),
+                message: "archive required".to_string()
+            })),
+            Err(IndexError::ArchiveRequired { .. })
+        ));
     }
 
     #[test]

@@ -8,7 +8,7 @@ IO uses local SNS testing as an additional compatibility layer. It does not repl
 2. Mock and PocketIC tests remain the main journal, retry, and upgrade guardrail.
 3. Local SNS harness tests provide SNS topology, config, and controller compatibility.
 4. Local SNS governance read tests exercise mock-backed SNS neuron and proposal pages through the `SnsGovernanceClient` boundary.
-5. Later milestones will wire local SNS ledger and index flows.
+5. Local SNS ledger/index value-flow tests exercise mock-backed ICRC ledger and index pages through `LedgerTransferClient` and `LedgerIndexClient`.
 6. Later milestones will test SNS root and controller upgrade lifecycle.
 
 The local SNS harness is not production launch configuration. It must not call mainnet, must not use `--network ic`, and must not deploy, install, upgrade, reinstall, or update settings on mainnet.
@@ -34,6 +34,9 @@ The harness includes topology, config, and read-only governance smoke tests:
 - prove required scripts do not invoke `dfx` or `--network ic`.
 - seed mock SNS governance neurons/proposals in PocketIC;
 - read paginated governance records through a `SnsGovernanceClient` implementation;
-- convert governance snapshots into TwoWeekMaturity allocation inputs without SNS ledger/index value movement.
+- convert governance snapshots into TwoWeekMaturity allocation inputs;
+- observe local IO redemption transfers through SNS-index-shaped account history;
+- send redemption IO returns and TwoWeekMaturity rewards through the local SNS-ledger-shaped transfer boundary;
+- test duplicate transfer, index lag, archive-required, pagination, retry, and idempotency behavior without live SNS calls.
 
-Future milestones can extend this harness into local SNS ledger/index integration and SNS root/controller lifecycle tests after the required artifacts and launch process are established.
+These ledger/index tests use mock/local/PocketIC canisters only. They are not live SNS adapters, do not run official SNS launch or swap flows, and do not test SNS root/controller lifecycle. Future milestones can extend this harness into root/controller lifecycle tests after the required artifacts and launch process are established.

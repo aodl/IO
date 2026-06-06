@@ -30,8 +30,8 @@ The SNS boundary models neurons, permissions, dissolve states, proposals, ballot
 
 `io_stream_manager::governance_snapshot` fetches all local/mock SNS governance pages through the trait, applies SNS eligibility and participation policies, and converts valid eight-byte local/mock SNS neuron IDs into `NeuronSnapshot` values. Invalid SNS neuron IDs are excluded and surfaced as conversion errors rather than coerced to `0`.
 
-The local SNS harness can install IO canisters with SNS-shaped local governance principals and includes a read-only PocketIC governance read test. Official SNS testing tools are optional reference material and are not part of required IO workflows.
+The local SNS harness can install IO canisters with SNS-shaped local governance principals, includes read-only PocketIC governance read tests, and combines those snapshots with local SNS-ledger-shaped reward transfers. Official SNS testing tools are optional reference material and are not part of required IO workflows.
 
 ## Limitations
 
-No code in this boundary calls live NNS or live SNS governance canisters. Real NNS/SNS adapters, audited Candid mappings, retry policy, local SNS ledger/index wiring, SNS root/controller lifecycle testing, and final canister principal wiring remain future work. Production DIDs for value-moving canisters remain constructor-only.
+No code in this boundary calls live NNS or live SNS governance canisters. Real NNS/SNS adapters, audited Candid mappings, retry policy, SNS root/controller lifecycle testing, and final canister principal wiring remain future work. Production DIDs for value-moving canisters remain constructor-only.

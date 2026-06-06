@@ -11,14 +11,16 @@ use crate::{
 use candid::CandidType;
 #[cfg(target_family = "wasm")]
 use candid::Principal;
-#[cfg(target_family = "wasm")]
-use io_ledger_types::LedgerTransferClient;
 #[cfg(any(target_family = "wasm", test))]
 use io_ledger_types::{
     duplicate_matches_expected, LedgerBlock, LedgerTransferError, LedgerTransferRequest,
     LedgerTransferSuccess,
 };
+#[cfg(target_family = "wasm")]
+use io_ledger_types::{Account, IndexScanRequest};
 use io_ledger_types::{BlockIndex, IndexError, IndexScanResult};
+#[cfg(target_family = "wasm")]
+use io_ledger_types::{IcrcIndexCanisterClient, LedgerIndexClient, LedgerTransferClient};
 use serde::Deserialize;
 
 pub const STREAM_MANAGER_DEPOSIT_ACCOUNT: &str = "stream_manager_deposit";
@@ -126,7 +128,7 @@ pub fn scheduler_tick_plan_only() -> SchedulerTickOutcome {
     SchedulerTickOutcome::no_work_configured()
 }
 
-pub fn boundary_cursor_after_page(
+pub fn boundary_cursor_after_contiguous_page(
     current: Option<BlockIndex>,
     result: &IndexScanResult,
 ) -> Result<Option<BlockIndex>, IndexError> {
@@ -163,6 +165,47 @@ pub fn boundary_cursor_after_page(
         }
         expected_next = Some(tx.block_index.0.saturating_add(1));
         highest = Some(tx.block_index);
+    }
+
+    Ok(highest)
+}
+
+pub fn boundary_cursor_after_account_page(
+    current: Option<BlockIndex>,
+    result: &IndexScanResult,
+) -> Result<Option<BlockIndex>, IndexError> {
+    if let (Some(requested), Some(tip)) = (current, result.index_tip) {
+        if tip < requested {
+            return Err(IndexError::IndexLag {
+                requested,
+                tip: Some(tip),
+            });
+        }
+    }
+
+    if result.archive_required {
+        return Err(IndexError::ArchiveRequired {
+            from: current.unwrap_or(BlockIndex(0)),
+        });
+    }
+
+    let mut last = None;
+    let mut highest = current;
+    for tx in &result.transactions {
+        if let Some(previous) = last {
+            if tx.block_index <= previous {
+                return Err(IndexError::MissingBlock {
+                    block_index: tx.block_index,
+                });
+            }
+        }
+        last = Some(tx.block_index);
+
+        if current.is_some_and(|cursor| tx.block_index <= cursor) {
+            continue;
+        }
+
+        highest = Some(highest.map_or(tx.block_index, |cursor| cursor.max(tx.block_index)));
     }
 
     Ok(highest)
@@ -208,6 +251,61 @@ async fn classify_mock_transfer(
         _ => None,
     };
     classify_boundary_transfer_result(request, result, duplicate.as_ref())
+}
+
+#[cfg(target_family = "wasm")]
+fn boundary_transaction_to_mock_transaction(
+    tx: io_ledger_types::IndexTransaction,
+) -> icp_ledger::LedgerTransaction {
+    icp_ledger::LedgerTransaction {
+        from: tx
+            .transaction
+            .from
+            .as_ref()
+            .map(icp_ledger::mock_label_from_account)
+            .unwrap_or_default(),
+        to: tx
+            .transaction
+            .to
+            .as_ref()
+            .map(icp_ledger::mock_label_from_account)
+            .unwrap_or_default(),
+        amount_e8s: tx.transaction.amount_e8s,
+        memo: tx
+            .transaction
+            .memo
+            .map(|memo| String::from_utf8_lossy(&memo.0).into_owned())
+            .unwrap_or_default(),
+        block_index: tx.block_index.0,
+        timestamp: tx.transaction.timestamp_nanos,
+    }
+}
+
+#[cfg(target_family = "wasm")]
+async fn scan_account_through_index(
+    index_canister: Principal,
+    account: Account,
+    current_cursor: Option<u64>,
+) -> Result<Vec<icp_ledger::LedgerTransaction>, String> {
+    let client = IcrcIndexCanisterClient {
+        canister: index_canister,
+    };
+    let current = current_cursor.map(BlockIndex);
+    let page = client
+        .get_account_transactions(IndexScanRequest {
+            start: current.map(|block| BlockIndex(block.0.saturating_add(1))),
+            limit: 100,
+            account_filter: Some(account),
+        })
+        .await
+        .map_err(|err| format!("ledger index scan failed: {err:?}"))?;
+    boundary_cursor_after_account_page(current, &page)
+        .map_err(|err| format!("ledger index cursor validation failed: {err:?}"))?;
+    Ok(page
+        .transactions
+        .into_iter()
+        .map(boundary_transaction_to_mock_transaction)
+        .collect())
 }
 
 #[cfg(target_family = "wasm")]
@@ -636,10 +734,16 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
         }
 
         if let Some(canister) = icp_ledger {
-            match icp_ledger::debug_get_transactions(canister).await {
+            let start_after = CANISTER_STATE
+                .with(|cell| cell.borrow().scheduler_cursors.last_scanned_icp_index_block);
+            match scan_account_through_index(
+                canister,
+                icp_ledger::mock_account(STREAM_MANAGER_DEPOSIT_ACCOUNT),
+                start_after,
+            )
+            .await
+            {
                 Ok(transactions) => {
-                    let start_after = CANISTER_STATE
-                        .with(|cell| cell.borrow().scheduler_cursors.last_scanned_icp_index_block);
                     let relevant = transactions
                         .into_iter()
                         .filter(|tx| {
@@ -801,10 +905,16 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
         }
 
         if let Some(canister) = io_ledger {
-            match io_ledger::debug_get_transactions(canister).await {
+            let start_after = CANISTER_STATE
+                .with(|cell| cell.borrow().scheduler_cursors.last_scanned_io_index_block);
+            match scan_account_through_index(
+                canister,
+                io_ledger::mock_account(REDEMPTION_ACCOUNT),
+                start_after,
+            )
+            .await
+            {
                 Ok(transactions) => {
-                    let start_after = CANISTER_STATE
-                        .with(|cell| cell.borrow().scheduler_cursors.last_scanned_io_index_block);
                     let relevant = transactions
                         .into_iter()
                         .filter(|tx| {
@@ -1065,7 +1175,7 @@ mod tests {
     }
 
     #[test]
-    fn boundary_cursor_empty_page_does_not_advance() {
+    fn contiguous_boundary_cursor_empty_page_does_not_advance() {
         let result = IndexScanResult {
             transactions: vec![],
             last_seen_block: None,
@@ -1073,13 +1183,13 @@ mod tests {
             archive_required: false,
         };
         assert_eq!(
-            boundary_cursor_after_page(Some(BlockIndex(5)), &result),
+            boundary_cursor_after_contiguous_page(Some(BlockIndex(5)), &result),
             Ok(Some(BlockIndex(5)))
         );
     }
 
     #[test]
-    fn boundary_cursor_skips_already_processed_blocks_and_advances_once() {
+    fn contiguous_boundary_cursor_skips_already_processed_blocks_and_advances_once() {
         let result = IndexScanResult {
             transactions: vec![block(4), block(5), block(6)],
             last_seen_block: Some(BlockIndex(6)),
@@ -1087,13 +1197,13 @@ mod tests {
             archive_required: false,
         };
         assert_eq!(
-            boundary_cursor_after_page(Some(BlockIndex(5)), &result),
+            boundary_cursor_after_contiguous_page(Some(BlockIndex(5)), &result),
             Ok(Some(BlockIndex(6)))
         );
     }
 
     #[test]
-    fn boundary_cursor_rejects_duplicate_new_blocks() {
+    fn contiguous_boundary_cursor_rejects_duplicate_new_blocks() {
         let result = IndexScanResult {
             transactions: vec![block(6), block(6)],
             last_seen_block: Some(BlockIndex(6)),
@@ -1101,7 +1211,7 @@ mod tests {
             archive_required: false,
         };
         assert!(matches!(
-            boundary_cursor_after_page(Some(BlockIndex(5)), &result),
+            boundary_cursor_after_contiguous_page(Some(BlockIndex(5)), &result),
             Err(IndexError::MissingBlock {
                 block_index: BlockIndex(7)
             })
@@ -1109,7 +1219,7 @@ mod tests {
     }
 
     #[test]
-    fn boundary_cursor_rejects_gap_and_does_not_skip_unknown_range() {
+    fn contiguous_boundary_cursor_rejects_gap_and_does_not_skip_unknown_range() {
         let result = IndexScanResult {
             transactions: vec![block(7)],
             last_seen_block: Some(BlockIndex(7)),
@@ -1117,7 +1227,7 @@ mod tests {
             archive_required: false,
         };
         assert_eq!(
-            boundary_cursor_after_page(Some(BlockIndex(5)), &result),
+            boundary_cursor_after_contiguous_page(Some(BlockIndex(5)), &result),
             Err(IndexError::MissingBlock {
                 block_index: BlockIndex(6)
             })
@@ -1125,7 +1235,7 @@ mod tests {
     }
 
     #[test]
-    fn boundary_cursor_reports_archive_required_before_advancing() {
+    fn contiguous_boundary_cursor_reports_archive_required_before_advancing() {
         let result = IndexScanResult {
             transactions: vec![block(6)],
             last_seen_block: Some(BlockIndex(6)),
@@ -1133,7 +1243,7 @@ mod tests {
             archive_required: true,
         };
         assert_eq!(
-            boundary_cursor_after_page(Some(BlockIndex(5)), &result),
+            boundary_cursor_after_contiguous_page(Some(BlockIndex(5)), &result),
             Err(IndexError::ArchiveRequired {
                 from: BlockIndex(5)
             })
@@ -1141,7 +1251,7 @@ mod tests {
     }
 
     #[test]
-    fn boundary_cursor_reports_index_lag() {
+    fn contiguous_boundary_cursor_reports_index_lag() {
         let result = IndexScanResult {
             transactions: vec![],
             last_seen_block: None,
@@ -1149,10 +1259,117 @@ mod tests {
             archive_required: false,
         };
         assert_eq!(
-            boundary_cursor_after_page(Some(BlockIndex(5)), &result),
+            boundary_cursor_after_contiguous_page(Some(BlockIndex(5)), &result),
             Err(IndexError::IndexLag {
                 requested: BlockIndex(5),
                 tip: Some(BlockIndex(4))
+            })
+        );
+    }
+
+    #[test]
+    fn account_boundary_cursor_allows_global_block_gaps() {
+        let result = IndexScanResult {
+            transactions: vec![block(25)],
+            last_seen_block: Some(BlockIndex(25)),
+            index_tip: Some(BlockIndex(30)),
+            archive_required: false,
+        };
+        assert_eq!(
+            boundary_cursor_after_account_page(Some(BlockIndex(10)), &result),
+            Ok(Some(BlockIndex(25)))
+        );
+    }
+
+    #[test]
+    fn account_boundary_cursor_rejects_duplicate_returned_blocks() {
+        let result = IndexScanResult {
+            transactions: vec![block(25), block(25)],
+            last_seen_block: Some(BlockIndex(25)),
+            index_tip: Some(BlockIndex(30)),
+            archive_required: false,
+        };
+        assert_eq!(
+            boundary_cursor_after_account_page(Some(BlockIndex(10)), &result),
+            Err(IndexError::MissingBlock {
+                block_index: BlockIndex(25)
+            })
+        );
+    }
+
+    #[test]
+    fn account_boundary_cursor_rejects_non_monotonic_pages() {
+        let result = IndexScanResult {
+            transactions: vec![block(25), block(24)],
+            last_seen_block: Some(BlockIndex(25)),
+            index_tip: Some(BlockIndex(30)),
+            archive_required: false,
+        };
+        assert_eq!(
+            boundary_cursor_after_account_page(Some(BlockIndex(10)), &result),
+            Err(IndexError::MissingBlock {
+                block_index: BlockIndex(24)
+            })
+        );
+    }
+
+    #[test]
+    fn account_boundary_cursor_ignores_stale_blocks_without_advancing() {
+        let result = IndexScanResult {
+            transactions: vec![block(8), block(10)],
+            last_seen_block: Some(BlockIndex(10)),
+            index_tip: Some(BlockIndex(30)),
+            archive_required: false,
+        };
+        assert_eq!(
+            boundary_cursor_after_account_page(Some(BlockIndex(10)), &result),
+            Ok(Some(BlockIndex(10)))
+        );
+    }
+
+    #[test]
+    fn account_boundary_cursor_empty_page_does_not_advance() {
+        let result = IndexScanResult {
+            transactions: vec![],
+            last_seen_block: None,
+            index_tip: Some(BlockIndex(30)),
+            archive_required: false,
+        };
+        assert_eq!(
+            boundary_cursor_after_account_page(Some(BlockIndex(10)), &result),
+            Ok(Some(BlockIndex(10)))
+        );
+    }
+
+    #[test]
+    fn account_boundary_cursor_archive_required_does_not_advance() {
+        let result = IndexScanResult {
+            transactions: vec![block(25)],
+            last_seen_block: Some(BlockIndex(25)),
+            index_tip: Some(BlockIndex(30)),
+            archive_required: true,
+        };
+        assert_eq!(
+            boundary_cursor_after_account_page(Some(BlockIndex(10)), &result),
+            Err(IndexError::ArchiveRequired {
+                from: BlockIndex(10)
+            })
+        );
+    }
+
+    #[test]
+    fn account_boundary_cursor_reports_lag_before_current_without_advancing() {
+        let result = IndexScanResult {
+            transactions: vec![block(25)],
+            last_seen_block: Some(BlockIndex(25)),
+            index_tip: Some(BlockIndex(9)),
+            archive_required: false,
+        };
+        assert_eq!(
+            boundary_cursor_after_account_page(Some(BlockIndex(10)), &result),
+            Err(IndexError::IndexLag {
+                requested: BlockIndex(10),
+                tip: Some(BlockIndex(9))
             })
         );
     }

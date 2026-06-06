@@ -28,12 +28,12 @@ The crate contains production-shaped ICP transfer argument and error models. The
 
 The crate contains ICRC account, transfer argument, Nat conversion, and transfer error mapping models for future IO/SNS ledger work. Fixture tests cover account/subaccount encoding, bad fee, insufficient funds, duplicate transfer, and generic error mapping.
 
-The local SNS harness includes SNS ledger/index placeholder principals in constructor args and fixture docs. It does not wire IO value-moving flows to local SNS ledger/index canisters yet.
+The local SNS-shaped mock ledgers under `tests/mocks/` expose `icrc1_transfer`, `icrc1_fee`, `icrc1_balance_of`, `debug_mint`, debug transaction history, transfer-failure controls, duplicate-response controls, and clear/reset controls. Stream-manager reward and redemption return transfers use `LedgerTransferClient` against these ledgers in PocketIC tests.
 
 ## Index Boundary
 
 `IndexScanRequest` and `IndexScanResult` model account transaction scans with pagination, optional account filters, last-seen block, index tip, and archive-required status.
-The stream-manager scheduler has boundary-level cursor tests for empty pages, duplicate blocks, gaps, archive-required pages, and index lag.
+The local SNS-shaped mock indexes expose `get_account_transactions` for account-filtered transaction pages plus debug lag, archive-required, pagination, and clear controls. The stream-manager scheduler can scan ICP deposits and IO redemption transfers through `LedgerIndexClient` in local/PocketIC mode. Account-filtered history must be strictly increasing within each returned page, but global block gaps above the stored cursor are normal because unrelated ledger traffic can occupy those block indexes. Dense gap rejection applies only to full-ledger-contiguous scans. Boundary tests cover empty pages, duplicate blocks, account-history gaps, contiguous-scan gaps, archive-required pages, index lag, and lag resolution without cursor advancement.
 
 The current implementation does not fetch archives. Archive-required and lag states are modelled as explicit retryable scheduler boundary errors so later production adapters cannot silently skip ranges.
 
@@ -41,13 +41,13 @@ The current implementation does not fetch archives. Archive-required and lag sta
 
 Fees are represented explicitly at the ledger boundary.
 Current mock-ledger mode still ignores fees for economic state transitions.
+Local SNS ledger/index tests make `icrc1_fee` visible and map bad transfer fees to `BadFee`, but reward amounts and redemption amounts are not silently reduced by hidden fee subtraction.
 Before mainnet, production fee policy must be finalized for ICP payouts, IO transfers, tiny redemptions below payout fee, and tiny deposits whose split or issuance rounds to zero.
 
 ## Remaining Production Gaps
 
 - Real ICP ledger/index canister adapters are production-shaped but not audited or wired to mainnet.
 - Real IO/SNS ledger/index canister adapters are production-shaped but not audited or wired to mainnet.
-- Local SNS ledger/index flow tests are not implemented.
 - Archive traversal is not implemented.
 - Fee policy is represented but not final.
 - Production value-moving DIDs remain install-args-only.

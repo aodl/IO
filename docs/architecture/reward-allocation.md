@@ -27,4 +27,6 @@ redemption_rate =
 
 Only liquid ICP counts as redemption NAV.
 
-Read-only SNS governance snapshotting feeds this policy by converting eligible participation summaries into `NeuronSnapshot` values. The conversion is fallible: invalid SNS neuron IDs are excluded and reported, while valid eight-byte local/mock IDs continue through allocation. This milestone does not route IO reward transfers through a local SNS ledger or index canister.
+Read-only SNS governance snapshotting feeds this policy by converting eligible participation summaries into `NeuronSnapshot` values. The conversion is fallible: invalid SNS neuron IDs are excluded and reported, while valid eight-byte local/mock IDs continue through allocation.
+
+Local SNS ledger/index tests route TwoWeekMaturity reward transfers through the local SNS-ledger-shaped `LedgerTransferClient` path and assert recipient account balances. Partial recipient transfer failures retry only incomplete recipients, and rounding dust remains unissued. The local mock ledger exposes fees for interface correctness, but reward allocations are not silently reduced by hidden fee subtraction.

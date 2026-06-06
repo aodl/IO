@@ -1,7 +1,8 @@
-use candid::{CandidType, Principal};
+use candid::{CandidType, Nat, Principal};
 use io_ledger_types::{
-    Account, BlockIndex, LedgerQueryError, LedgerTransferClient, LedgerTransferError,
-    LedgerTransferRequest, LedgerTransferSuccess, Subaccount,
+    map_icrc_transfer_result, Account, BlockIndex, IcrcTransferArg, IcrcTransferError,
+    LedgerQueryError, LedgerTransferClient, LedgerTransferError, LedgerTransferRequest,
+    LedgerTransferSuccess, Subaccount,
 };
 use serde::Deserialize;
 use std::future::Future;
@@ -106,23 +107,9 @@ pub async fn debug_get_transactions(canister: Principal) -> Result<Vec<LedgerTra
 }
 
 pub fn map_mock_transfer_result(
-    result: Result<u64, String>,
+    result: Result<Nat, IcrcTransferError>,
 ) -> Result<LedgerTransferSuccess, LedgerTransferError> {
-    match result {
-        Ok(block) => Ok(LedgerTransferSuccess {
-            block_index: BlockIndex(block),
-        }),
-        Err(err) if err.contains("insufficient funds") => {
-            Err(LedgerTransferError::InsufficientFunds { balance_e8s: 0 })
-        }
-        Err(err) if err.contains("duplicate") => Err(LedgerTransferError::Duplicate {
-            duplicate_of: BlockIndex(0),
-        }),
-        Err(err) => Err(LedgerTransferError::CanisterCallFailed {
-            method: "icrc1_transfer".to_string(),
-            message: err,
-        }),
-    }
+    map_icrc_transfer_result(result)
 }
 
 impl LedgerTransferClient for MockIcpLedgerClient {
@@ -131,27 +118,59 @@ impl LedgerTransferClient for MockIcpLedgerClient {
         request: LedgerTransferRequest,
     ) -> Pin<Box<dyn Future<Output = Result<LedgerTransferSuccess, LedgerTransferError>> + 'a>>
     {
-        Box::pin(async move {
-            map_mock_transfer_result(transfer(self.canister, mock_transfer_args(request)).await)
-        })
+        Box::pin(async move { transfer(self.canister, mock_transfer_args(request)).await })
     }
 
     fn fee<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<u128, LedgerQueryError>> + 'a>> {
-        Box::pin(async move { Ok(self.fee_e8s) })
+        Box::pin(async move {
+            let response = ic_cdk::call::Call::bounded_wait(self.canister, "icrc1_fee")
+                .await
+                .map_err(|err| LedgerQueryError::CanisterCallFailed {
+                    method: "icrc1_fee".to_string(),
+                    message: format!("{err:?}"),
+                })?;
+            let (fee,) =
+                response
+                    .candid_tuple::<(Nat,)>()
+                    .map_err(|err| LedgerQueryError::DecodeError {
+                        message: format!("{err:?}"),
+                    })?;
+            fee.0
+                .to_str_radix(10)
+                .parse::<u128>()
+                .map_err(|err| LedgerQueryError::DecodeError {
+                    message: format!("ledger fee does not fit in u128: {err}"),
+                })
+        })
     }
 }
 
-pub async fn transfer(canister: Principal, args: TransferArgs) -> Result<u64, String> {
+pub async fn transfer(
+    canister: Principal,
+    args: TransferArgs,
+) -> Result<LedgerTransferSuccess, LedgerTransferError> {
     let response = ic_cdk::call::Call::bounded_wait(canister, "icrc1_transfer")
-        .with_arg(args)
+        .with_arg(IcrcTransferArg {
+            from_subaccount: Some(mock_subaccount(&args.from).0.to_vec()),
+            to: mock_account(&args.to).into(),
+            amount: Nat::from(args.amount_e8s),
+            fee: None,
+            memo: Some(args.memo.into_bytes()),
+            created_at_time: None,
+        })
         .await
-        .map_err(|err| format!("ledger transfer call failed: {err:?}"))
+        .map_err(|err| LedgerTransferError::CanisterCallFailed {
+            method: "icrc1_transfer".to_string(),
+            message: format!("{err:?}"),
+        })
         .and_then(|response| {
             response
-                .candid_tuple::<(Result<u64, String>,)>()
-                .map_err(|err| format!("ledger transfer decode failed: {err:?}"))
+                .candid_tuple::<(Result<Nat, IcrcTransferError>,)>()
+                .map_err(|err| LedgerTransferError::DecodeError {
+                    message: format!("{err:?}"),
+                })
         })?;
-    response.0
+    map_mock_transfer_result(response.0)
 }
 
 #[cfg(test)]
@@ -161,9 +180,11 @@ mod tests {
     #[test]
     fn mock_transfer_duplicate_is_idempotency_signal() {
         assert_eq!(
-            map_mock_transfer_result(Err("duplicate".to_string()))
-                .unwrap_err()
-                .idempotent_success_block(),
+            map_mock_transfer_result(Err(IcrcTransferError::Duplicate {
+                duplicate_of: Nat::from(0_u64)
+            }))
+            .unwrap_err()
+            .idempotent_success_block(),
             Some(BlockIndex(0))
         );
     }

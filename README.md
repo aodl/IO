@@ -95,6 +95,8 @@ cargo run -p xtask -- test_pocketic_required
 cargo run -p xtask -- sns_harness_check
 cargo run -p xtask -- sns_governance_read_tests
 cargo run -p xtask -- sns_governance_read_required
+cargo run -p xtask -- sns_ledger_index_tests
+cargo run -p xtask -- sns_ledger_index_required
 cargo run -p xtask -- sns_pocketic_smoke
 cargo run -p xtask -- test_ci
 cargo run -p xtask -- test_local_integration
@@ -115,9 +117,11 @@ Command semantics:
 - `sns_harness_check`: deterministic local SNS docs/fixture/script guardrail; no PocketIC, no `dfx`, and no mainnet calls.
 - `sns_governance_read_tests`: host/unit coverage for mock-backed SNS governance reads, snapshot conversion, exclusions, and reward allocation; no PocketIC.
 - `sns_governance_read_required`: strict PocketIC read-only SNS governance test; requires `POCKET_IC_BIN`.
+- `sns_ledger_index_tests`: host/unit coverage for local SNS-shaped ledger/index boundaries, transfer/index mapping, cursor errors, duplicate proof handling, and debug mock surfaces; no PocketIC.
+- `sns_ledger_index_required`: strict PocketIC value-flow coverage for local SNS-shaped ledger/index scans, redemption observation, reward transfers, retry, lag, and archive-required behavior; requires `POCKET_IC_BIN`.
 - `sns_pocketic_smoke`: permissive SNS topology smoke; skips clearly when `POCKET_IC_BIN` is unset.
 - `sns_pocketic_required`: strict SNS topology and read-only governance smoke; fails when `POCKET_IC_BIN` is unset.
-- `verify_release`: release-readiness gate; runs DID surface, canister builds, artifact verification, install-args validation, local SNS harness checks, host SNS governance read tests, and required security scan. It does not deploy.
+- `verify_release`: release-readiness gate; runs DID surface, canister builds, artifact verification, install-args validation, local SNS harness checks, host SNS governance and ledger/index tests, and required security scan. It does not deploy.
 
 ## Build
 
@@ -169,6 +173,7 @@ This now runs unit, PocketIC-shaped integration, local CLI-shaped integration, a
 - Two-week unwind splits and cancel-dissolve merge-back behaviour.
 - Duplicate transaction/idempotency checks.
 - Journal-driven retry after failed IO issuance, partial 2-week distribution, redemption payout/return, and NNS maturity transfer failures.
+- Local SNS-shaped ledger/index value-flow tests where redemption transfers are observed through index account history and TwoWeekMaturity rewards land in ledger-shaped SNS neuron accounts.
 - Stable-state and PocketIC upgrade/retry checks for pending journal work.
 - Unknown-source rejection.
 - Reward weighting by stake-time and closed-proposal participation.
