@@ -86,6 +86,7 @@ fn command_result(
         command,
         neuron_id: NnsNeuronId(neuron_id),
         amount_e8s,
+        transfer_block_height: None,
         child_neuron_id: None,
     }
 }

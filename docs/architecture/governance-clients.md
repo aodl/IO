@@ -13,7 +13,9 @@ The NNS boundary models neuron identity, controller, stake, maturity, dissolve s
 - stop dissolving;
 - disburse principal from a dissolved neuron.
 
-The crate also contains Candid fixture records for the `manage_neuron` command shapes used by those operations. The fixtures are production-shaped and covered by encode/decode tests, but they are not audited real-client wiring.
+The crate also contains production-shaped Candid records for the NNS governance read and lifecycle-command shapes IO expects to need: `list_neurons`, proposal listing records, `manage_neuron` requests, and command responses for split, dissolve configuration, start/stop dissolving, merge, merge maturity, stake maturity, disburse maturity, disburse principal, and refresh voting power. Fixture tests encode/decode those official-shaped records and map successful/error command responses into IO command results. Pagination fields are modelled explicitly with NNS page number/page size fields; no scheduler checkpoint is advanced by this boundary.
+
+`NnsGovernanceCanisterClient` is a production-shaped adapter behind `NnsGovernanceClient`. Its host build returns explicit `Unsupported` errors; its Wasm path uses bounded governance canister calls and production-shaped DTO decoding. The adapter is not audited, not wired into default production execution, and is not exercised against live NNS governance in tests.
 
 `io_nns_neuron_manager::clients::nns_governance::MockNnsGovernanceClient` implements the boundary for PocketIC/debug tests by calling the mock governance canister `debug_*` methods. That debug dependency is intentionally isolated to the mock adapter.
 
@@ -26,6 +28,10 @@ The SNS boundary models neurons, permissions, dissolve states, proposals, ballot
 - paginated proposal listing;
 - single-proposal reads.
 
+The crate contains production-shaped SNS governance records for `list_neurons`, `get_neuron`, `list_proposals`, `get_proposal`, governance-level errors, neuron permissions, dissolve state, followees, ballots, topics, proposal timestamps, reward eligibility, and pagination. Mapping tests feed official-shaped SNS neuron/proposal records into the existing eligibility and participation models without changing exclusion or reward policy. Pagination helpers reject duplicate IDs and non-progressing cursors.
+
+`SnsGovernanceCanisterClient` is a production-shaped adapter behind `SnsGovernanceClient`. Its host build returns explicit `Unsupported` errors; its Wasm path uses bounded governance canister calls and production-shaped DTO decoding. The adapter is not audited, not wired into default production execution, and is not exercised against live SNS governance in tests.
+
 `io_stream_manager::clients::sns_governance::MockSnsGovernanceClient` implements the boundary for mock neuron and proposal pages. The mock SNS governance canister stores production-shaped `SnsNeuron` and `SnsProposal` records, exposes debug-only page/get methods, and supports deterministic proposal pagination with `before_proposal` cursors.
 
 `io_stream_manager::governance_snapshot` fetches all local/mock SNS governance pages through the trait, applies SNS eligibility and participation policies, and converts valid eight-byte local/mock SNS neuron IDs into `NeuronSnapshot` values. Invalid SNS neuron IDs are excluded and surfaced as conversion errors rather than coerced to `0`.
@@ -34,4 +40,4 @@ The local SNS harness can install IO canisters with SNS-shaped local governance 
 
 ## Limitations
 
-No code in this boundary calls live NNS or live SNS governance canisters. Real NNS/SNS adapters, audited Candid mappings, retry policy, SNS root/controller lifecycle testing, and final canister principal wiring remain future work. Production DIDs for value-moving canisters remain constructor-only.
+No tests call live NNS or live SNS governance canisters. The production-shaped adapters are fixture-tested only and remain unwired from default production execution. Audited retry policy, final canister principal wiring, production lifecycle reconciliation, and live-governance rollout remain future work. Production DIDs for value-moving canisters remain constructor-only.

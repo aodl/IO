@@ -34,6 +34,7 @@ The harness includes topology, config, and read-only governance smoke tests:
 - prove required scripts do not invoke `dfx` or `--network ic`.
 - seed mock SNS governance neurons/proposals in PocketIC;
 - read paginated governance records through a `SnsGovernanceClient` implementation;
+- keep production-shaped SNS governance canister adapters fixture-tested only and unwired from the local/default execution path;
 - convert governance snapshots into TwoWeekMaturity allocation inputs;
 - observe local IO redemption transfers through SNS-index-shaped account history;
 - send redemption IO returns and TwoWeekMaturity rewards through the local SNS-ledger-shaped transfer boundary;
@@ -44,6 +45,8 @@ The harness includes topology, config, and read-only governance smoke tests:
 - preserve pending stream-manager and NNS-manager journal work across mock SNS-root-style upgrades.
 
 These SNS harness tests use mock/local/PocketIC canisters only. The SNS root/controller lifecycle is mock/PocketIC only: mock governance/root records an approved intent, the test harness executes the PocketIC upgrade as the mock root controller, and the root records the outcome. They are not live SNS adapters, do not run official SNS launch or swap flows, and do not call mainnet.
+
+Production-shaped SNS governance DTOs and the Wasm-gated `SnsGovernanceCanisterClient` are covered by host Candid fixtures in `io-governance-types`. The local SNS harness does not call live SNS governance and does not run official SNS launch, swap, or testflight flows.
 
 Run deterministic local lifecycle checks with:
 

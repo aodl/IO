@@ -32,6 +32,8 @@ Upgrade persistence uses an explicit stable snapshot saved with `ic_cdk::storage
 
 `src/scheduler/` contains a no-op `scheduler_tick_once()` for future timer-driven work. It currently records planned responsibilities only: checking/disbursing 2-year maturity, checking/disbursing 2-week maturity, rebalancing the pooled 2-week neuron, and disbursing ready unwind child neurons. It performs no NNS calls.
 
+`io-governance-types` contains production-shaped NNS governance DTOs and a Wasm-gated `NnsGovernanceCanisterClient` for future lifecycle reconciliation. Those adapters are fixture-tested only, not audited, and not wired into this canister's default execution path.
+
 ## Known Constants
 
 ```text

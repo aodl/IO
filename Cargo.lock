@@ -928,6 +928,7 @@ name = "io-governance-types"
 version = "0.1.0"
 dependencies = [
  "candid",
+ "ic-cdk",
  "io-ledger-types",
  "serde",
 ]
