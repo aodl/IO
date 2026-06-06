@@ -158,6 +158,12 @@ fn script(path: &str, args: &[&str]) -> Command {
     c
 }
 
+fn npm(args: &[&str]) -> Command {
+    let mut c = Command::new("npm");
+    c.args(args);
+    c
+}
+
 fn run_subcommand(sub: &str) -> bool {
     let exe = env::current_exe().expect("current exe");
     let mut c = Command::new(exe);
@@ -947,7 +953,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, historian_tests, historian_required, sns_harness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -977,6 +983,7 @@ fn main() -> ExitCode {
             }
         },
         "build_canisters" => {
+            ok &= run_subcommand("frontend_setup");
             for canister in RELEASE_CANISTERS {
                 ok &= run(
                     &format!("build canister: {}", canister.package),
@@ -1022,6 +1029,43 @@ fn main() -> ExitCode {
                     ok = false;
                 }
             }
+        }
+        "frontend_setup" => {
+            ok &= run("frontend: npm ci", npm(&["run", "setup:frontend"]));
+        }
+        "frontend_build" => {
+            ok &= run(
+                "frontend: build browser bundle",
+                npm(&["run", "build:frontend"]),
+            );
+        }
+        "frontend_unit" => {
+            ok &= run("frontend: unit tests", npm(&["run", "test:frontend-unit"]));
+        }
+        "frontend_certified_asset_tests" => {
+            ok &= run_subcommand("frontend_build");
+            ok &= run(
+                "unit: io-frontend assets",
+                cargo_test(&["-p", "io-frontend"]),
+            );
+            if env::var_os("POCKET_IC_BIN").is_some() {
+                ok &= run_subcommand("build_debug_canisters");
+                ok &= run(
+                    "pocketic: io-frontend",
+                    cargo_test(&["-p", "io-frontend", "--test", "io_frontend_pocketic"]),
+                );
+            } else {
+                eprintln!("skipping frontend PocketIC smoke: POCKET_IC_BIN is not set");
+            }
+        }
+        "frontend_required" => {
+            ok &= run_subcommand("frontend_setup");
+            ok &= run_subcommand("frontend_build");
+            ok &= run_subcommand("frontend_unit");
+            ok &= run_subcommand("frontend_certified_asset_tests");
+        }
+        "frontend_all" => {
+            ok &= run_subcommand("frontend_required");
         }
         "sns_harness_check" => match check_sns_harness_at(&root) {
             Ok(()) => eprintln!("✓ sns_harness_check"),
@@ -1171,6 +1215,7 @@ fn main() -> ExitCode {
                 "verify_artifacts",
                 "validate_install_args",
                 "historian_tests",
+                "frontend_required",
                 "sns_harness_check",
                 "sns_governance_read_tests",
                 "sns_ledger_index_tests",
@@ -1181,6 +1226,7 @@ fn main() -> ExitCode {
             }
         }
         "build_debug_canisters" => {
+            ok &= run_subcommand("frontend_setup");
             for package in [
                 "io-stream-manager",
                 "io-nns-neuron-manager",
@@ -1222,7 +1268,7 @@ fn main() -> ExitCode {
                 cargo_test(&["-p", "io-nns-neuron-manager", "--lib"]),
             );
             ok &= run(
-                "unit: placeholders",
+                "unit: historian and frontend",
                 cargo_test(&["-p", "io-historian", "-p", "io-frontend"]),
             );
         }
@@ -1390,6 +1436,7 @@ fn main() -> ExitCode {
                 "validate_install_args",
                 "security_scan_required",
                 "test_unit",
+                "frontend_required",
                 "test_pocketic_required",
                 "sns_root_lifecycle_required",
                 "test_local_integration",

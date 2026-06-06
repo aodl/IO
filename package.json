@@ -1,0 +1,19 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup:frontend": "npm ci",
+    "build:frontend": "node canisters/frontend/web/build-frontend.mjs",
+    "test:frontend-unit": "node --test canisters/frontend/web/test/*.test.mjs",
+    "lint:frontend-exports": "node canisters/frontend/web/test/frontend-exports.test.mjs",
+    "test:frontend-dashboard": "node --test canisters/frontend/web/test/dashboard-*.test.mjs",
+    "test:frontend-all": "npm run build:frontend && npm run test:frontend-unit"
+  },
+  "dependencies": {
+    "@dfinity/agent": "2.4.1",
+    "@dfinity/candid": "2.4.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.11"
+  }
+}

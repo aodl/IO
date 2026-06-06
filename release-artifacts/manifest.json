@@ -2,7 +2,7 @@
   "schema_version": 1,
   "build_profile": "release",
   "target": "wasm32-unknown-unknown",
-  "git_commit": "c9c2a6343c329ae8c652f8b97df97b4f6f76184b",
+  "git_commit": "371ad8abc82d969b618219bcaa0856d23d861f48",
   "artifacts": [
     {
       "canister": "io_stream_manager",
@@ -14,7 +14,7 @@
       "gz_wasm_bytes": 284969,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "c9c2a6343c329ae8c652f8b97df97b4f6f76184b"
+      "git_commit": "371ad8abc82d969b618219bcaa0856d23d861f48"
     },
     {
       "canister": "io_nns_neuron_manager",
@@ -26,7 +26,7 @@
       "gz_wasm_bytes": 265166,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "c9c2a6343c329ae8c652f8b97df97b4f6f76184b"
+      "git_commit": "371ad8abc82d969b618219bcaa0856d23d861f48"
     },
     {
       "canister": "io_historian",
@@ -38,19 +38,19 @@
       "gz_wasm_bytes": 271301,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "c9c2a6343c329ae8c652f8b97df97b4f6f76184b"
+      "git_commit": "371ad8abc82d969b618219bcaa0856d23d861f48"
     },
     {
       "canister": "frontend",
       "raw_wasm_path": "release-artifacts/io_frontend.wasm",
-      "raw_wasm_sha256": "e772a9c841aa1225f1516832209ca774f58a9aeef0736f175c1ada1279df515e",
-      "raw_wasm_bytes": 362,
+      "raw_wasm_sha256": "c90c72cd0287ead4b2d7b4694a0bbc5ef347d8ebb3505823b973128d09e14c8c",
+      "raw_wasm_bytes": 14275886,
       "gz_wasm_path": "release-artifacts/io_frontend.wasm.gz",
-      "gz_wasm_sha256": "8dbdeca5d4ff0be34f4562027f2c602583702aa93d45462b94a72bba77017e30",
-      "gz_wasm_bytes": 305,
+      "gz_wasm_sha256": "db85f4edf85ea78acef69349a762ed36862d79e2f3a9ecbe5591253a311897ba",
+      "gz_wasm_bytes": 12740553,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "c9c2a6343c329ae8c652f8b97df97b4f6f76184b"
+      "git_commit": "371ad8abc82d969b618219bcaa0856d23d861f48"
     }
   ]
 }

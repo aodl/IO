@@ -4,6 +4,15 @@
 
 `Cargo.lock` is authoritative for this workspace. Dependency changes should be narrow, reviewed, and justified by the task. Tooling should run against the locked graph rather than floating versions.
 
+## Frontend Lockfile Policy
+
+The certified frontend uses a minimal npm graph for the browser bundle:
+
+- `esbuild` for bundling;
+- `@dfinity/agent` and `@dfinity/candid` for browser Candid calls to `io_historian`.
+
+`package-lock.json` is authoritative for this graph. Use `npm ci` through `npm run setup:frontend` or `cargo run -p xtask -- frontend_setup`; do not add frontend packages without reviewing the runtime bundle and CSP impact.
+
 ## Security Scanning
 
 The baseline command is:

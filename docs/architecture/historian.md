@@ -43,4 +43,4 @@ If total supply, excluded supply, liquid reserve, or redeemable supply is unavai
 
 Historian state is useful for continuity and frontend responsiveness, but it is a read model. Full canonical history remains in ledger/index/governance sources and release artifacts. If historian state diverges, recovery should rebuild or correct historian observations rather than adding broad production query/control APIs to value-moving canisters.
 
-Production source adapters and certified frontend data remain future milestones.
+Production source adapters remain future work. The frontend consumes the production historian read surface through browser Candid calls, but historian observations remain a rebuildable read model rather than protocol truth.

@@ -26,4 +26,4 @@ Historian is not a value-moving authority. It may be incomplete or wrong and sho
 
 ## frontend
 
-Placeholder UI canister. It should consume historian APIs such as `get_dashboard_state`, not `io_stream_manager` or `io_nns_neuron_manager` internals. Frontend text is not protocol truth.
+Certified Rust asset canister for the IO browser dashboard. It serves static assets with certified HTTP responses, strict cache/security headers, and a content-hashed browser bundle. Browser data comes from `io_historian` production read APIs such as `get_dashboard_state` and `get_public_status`, not from `io_stream_manager` or `io_nns_neuron_manager` internals. Frontend text is not protocol truth.

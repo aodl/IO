@@ -1,3 +1,15 @@
 service : {
+  http_request : (record {
+    body : blob;
+    certificate_version : opt nat16;
+    headers : vec record { text; text };
+    method : text;
+    url : text;
+  }) -> (record {
+    body : blob;
+    headers : vec record { text; text };
+    status_code : nat16;
+    upgrade : opt bool;
+  }) query;
   version : () -> (text) query;
 }

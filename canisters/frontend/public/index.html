@@ -1,1 +1,104 @@
-<html><body><h1>IO placeholder frontend</h1></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="asset-version" content="b1c2924b1e30">
+  <title>IO - Real Liquid Staking</title>
+  <link rel="stylesheet" href="/base.css">
+  <link rel="stylesheet" href="/hero.css">
+  <link rel="stylesheet" href="/metrics.css">
+  <link rel="preload" as="image" href="/assets/io-fallback-progressive.jpg">
+  <script type="module" src="/generated/app.b1c2924b1e30.js"></script>
+</head>
+<body>
+  <main class="page">
+    <section class="hero-shell" aria-label="IO protocol overview">
+      <section class="hero is-pre-focus" id="hero">
+        <div class="hero__sun-glow" aria-hidden="true"></div>
+        <img class="hero__fallback" id="fallbackImage" src="/assets/io-fallback-progressive.jpg" alt="" aria-hidden="true" loading="eager" decoding="async">
+        <canvas id="scene" aria-label="Rotating Io sphere background"></canvas>
+        <div class="hero__shade" aria-hidden="true"></div>
+        <div class="hero__grain" aria-hidden="true"></div>
+        <div class="hero__loading" id="loading">Loading visual</div>
+      </section>
+    </section>
+
+    <a class="corner-link corner-link--governance" href="https://dashboard.internetcomputer.org/" rel="noreferrer" aria-label="Governance">
+      <span class="corner-link__glyph" aria-hidden="true">IO</span>
+    </a>
+    <a class="corner-link corner-link--source" href="https://github.com/" rel="noreferrer" aria-label="View source">
+      <span class="corner-link__glyph" aria-hidden="true">GH</span>
+    </a>
+
+    <nav class="hero__nav" aria-label="Primary">
+      <div class="hero__nav-left"><a href="#top">IO PROTOCOL</a></div>
+      <div class="hero__nav-right">
+        <a href="#metrics">METRICS</a>
+        <a href="#activity">ACTIVITY</a>
+      </div>
+    </nav>
+
+    <div class="page__scroll" id="top">
+      <section class="hero-copy" aria-labelledby="heroTitle">
+        <div class="hero__content">
+          <h1 class="hero__title" id="heroTitle">IO</h1>
+          <p class="hero__subhead">REAL LIQUID STAKING</p>
+          <p class="hero__tagline">Instant unstake + High yield + Low transaction fee<br><span>COMING SOON</span></p>
+          <p class="hero__status" data-field="statusLine">Historian data loading</p>
+        </div>
+      </section>
+
+      <section class="metrics" id="metrics" aria-labelledby="metricsTitle">
+        <div class="metrics__inner">
+          <div class="metrics__intro">
+            <p class="metrics__eyebrow">Certified historian-backed dashboard</p>
+            <h2 class="metrics__title" id="metricsTitle">Protocol curves</h2>
+            <p class="metrics__copy" data-field="lastUpdated">Live read-model data appears when `io_historian` is configured.</p>
+          </div>
+
+          <div class="status-strip" data-field="warnings" aria-live="polite"></div>
+
+          <div class="metric-summary-grid">
+            <article class="stat-card"><p>Redemption rate</p><strong data-field="redemptionRate">-</strong><span data-field="redemptionRateHint">-</span></article>
+            <article class="stat-card"><p>Liquid ICP reserve</p><strong data-field="liquidReserve">-</strong><span>ICP</span></article>
+            <article class="stat-card"><p>Redeemable IO supply</p><strong data-field="redeemableSupply">-</strong><span>IO</span></article>
+            <article class="stat-card"><p>Index health</p><strong data-field="indexHealth">-</strong><span data-field="indexHealthHint">-</span></article>
+          </div>
+
+          <div class="metrics__grid">
+            <article class="metric-card" data-chart="rate">
+              <div class="metric-card__header">
+                <div><p class="metric-card__eyebrow">REDEMPTION RATE</p><h3 class="metric-card__title">Rate over time</h3></div>
+                <div class="metric-card__range" role="tablist" aria-label="Redemption rate range selector"></div>
+              </div>
+              <div class="metric-card__summary"><span class="metric-card__value" data-role="primary-value">-</span><span class="metric-card__delta" data-role="delta-value">-</span></div>
+              <div class="metric-card__plot" data-role="chart" aria-label="Redemption rate chart"></div>
+            </article>
+            <article class="metric-card" data-chart="supply">
+              <div class="metric-card__header">
+                <div><p class="metric-card__eyebrow">IO SUPPLY</p><h3 class="metric-card__title">Supply over time</h3></div>
+                <div class="metric-card__range" role="tablist" aria-label="IO supply range selector"></div>
+              </div>
+              <div class="metric-card__summary"><span class="metric-card__value" data-role="primary-value">-</span><span class="metric-card__delta" data-role="delta-value">-</span></div>
+              <div class="metric-card__plot" data-role="chart" aria-label="IO supply chart"></div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="activity" id="activity" aria-labelledby="activityTitle">
+        <div class="activity__inner">
+          <h2 id="activityTitle">Recent activity</h2>
+          <div class="activity__grid">
+            <section><h3>Streams</h3><ul data-list="streams"></ul></section>
+            <section><h3>Redemptions</h3><ul data-list="redemptions"></ul></section>
+            <section><h3>Rewards</h3><ul data-list="rewards"></ul></section>
+            <section><h3>Release artifacts</h3><ul data-list="artifacts"></ul></section>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

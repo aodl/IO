@@ -6,11 +6,17 @@ profile="${2:-release}"
 
 case "$profile" in
   release)
+    if [[ "$package" == "io-frontend" ]]; then
+      npm run build:frontend
+    fi
     cargo build -p "$package" --release --target wasm32-unknown-unknown
     profile_dir="release"
     artifact_dir="release-artifacts"
     ;;
   debug)
+    if [[ "$package" == "io-frontend" ]]; then
+      npm run build:frontend
+    fi
     cargo build -p "$package" --target wasm32-unknown-unknown
     profile_dir="debug"
     artifact_dir="debug-artifacts"

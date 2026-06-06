@@ -31,6 +31,11 @@ cargo run -p xtask -- build_canisters
 cargo run -p xtask -- verify_artifacts
 cargo run -p xtask -- build_debug_canisters
 cargo run -p xtask -- validate_install_args
+cargo run -p xtask -- frontend_setup
+cargo run -p xtask -- frontend_build
+cargo run -p xtask -- frontend_unit
+cargo run -p xtask -- frontend_certified_asset_tests
+cargo run -p xtask -- frontend_required
 cargo run -p xtask -- historian_tests
 cargo run -p xtask -- historian_required
 cargo run -p xtask -- security_scan
@@ -47,6 +52,8 @@ cargo run -p xtask -- verify_release
 `historian_tests` runs historian host/unit coverage and DID-surface guardrails. It validates public DTO Candid round trips, protocol snapshot completeness, redemption-rate calculation, bounded retention, pagination, deduplication, index health ingestion, governance summary ingestion, release artifact modelling, stable export/import, production/debug DID separation, value-moving DID invariants, and the absence of unbounded public history methods.
 
 `historian_required` builds debug Wasm and runs the historian PocketIC install/query/upgrade test. It requires `POCKET_IC_BIN` and uses only debug/test ingestion; it does not call mainnet, require `dfx`, or query value-moving canister internals.
+
+`frontend_required` runs npm setup, builds the content-hashed browser bundle, runs Node frontend unit tests, and runs Rust certified asset router tests. `frontend_certified_asset_tests` also runs the frontend PocketIC smoke when `POCKET_IC_BIN` is set; otherwise it reports the skip.
 
 `sns_governance_read_tests` runs host/unit coverage for local/mock SNS governance reads, proposal pagination, snapshot conversion, exclusions, and TwoWeekMaturity allocation. It does not require PocketIC and does not call live SNS governance.
 
@@ -141,7 +148,7 @@ The real PocketIC tests use debug Wasm from `target/wasm32-unknown-unknown/debug
 The live PocketIC tests include upgrade-before-retry cases for stream-manager IO issuance/redemption return failures and NNS-manager maturity transfer failures. Host-level stable export/import tests preserve the journal entries and cursors directly.
 
 The production-shaped ledger/index and governance adapter tests do not call live ICP, NNS, SNS, IO ledger, or index canisters. They are fixture and boundary tests only. The real adapter structs are not wired into default production execution, and archive traversal/governance lifecycle reconciliation are modelled but not scheduler-integrated.
-Production value-moving DIDs remain constructor-only. Public historian/frontend read surfaces are implemented through `io_historian`; production source wiring and certified frontend data remain future work.
+Production value-moving DIDs remain constructor-only. Public historian/frontend read surfaces are implemented through `io_historian`; the certified frontend consumes historian read-model data and does not call value-moving canisters. Production historian source wiring remains future work.
 
 Local SNS harness tests are an additional compatibility layer. They do not replace model or mock/PocketIC tests, do not run official `dfx sns` flows, and do not wire IO value-moving flows to live SNS ledger/index canisters. Read-only local SNS governance reads, local SNS ledger/index value flows, and mock SNS root/controller lifecycle upgrades are covered through mock/PocketIC tests. Production SNS root/governance wiring remains future work.
 

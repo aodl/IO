@@ -11,6 +11,7 @@ Use this before every release-oriented commit or artifact proposal.
 - [ ] `cargo run -p xtask -- build_canisters`
 - [ ] `cargo run -p xtask -- verify_artifacts`
 - [ ] `cargo run -p xtask -- validate_install_args`
+- [ ] `cargo run -p xtask -- frontend_required`
 - [ ] `cargo run -p xtask -- historian_tests`
 - [ ] `cargo run -p xtask -- security_scan_required`
 - [ ] `cargo run -p xtask -- sns_harness_check`
@@ -28,6 +29,7 @@ Use this before every release-oriented commit or artifact proposal.
 - [ ] Review artifact diffs and `release-artifacts/manifest.json`.
 - [ ] Confirm no production API expansion on value-moving canisters.
 - [ ] Confirm historian production DID contains public read queries only and no `debug_` ingestion methods.
+- [ ] Confirm frontend bundle is content-hashed, private `frontend-bundle.json` is not routable, and browser declarations do not import `io_historian_debug`.
 - [ ] Confirm local SNS fixture and mock root lifecycle remain local-only and not production launch config.
 - [ ] Confirm upgrade proposal hashes match `release-artifacts/manifest.json`.
 - [ ] Confirm no deployment/mainnet calls were made.

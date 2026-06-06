@@ -30,6 +30,9 @@ license = "Apache-2.0"
 [workspace.dependencies]
 candid = "0.10.29"
 ic-cdk = "0.20.1"
+ic-asset-certification = "3.2.0"
+ic-http-certification = "3.2.0"
+include_dir = "0.7.4"
 io-core-model = { path = "crates/io_core_model" }
 io-governance-types = { path = "crates/io_governance_types" }
 io-ledger-types = { path = "crates/io_ledger_types" }
@@ -39,3 +42,4 @@ io-sns-lifecycle = { path = "crates/io_sns_lifecycle" }
 io-nns-neuron-manager = { path = "canisters/io_nns_neuron_manager" }
 serde = { version = "1.0.228", features = ["derive"] }
 pocket-ic = "14.0.0"
+mime_guess = "2.0.5"

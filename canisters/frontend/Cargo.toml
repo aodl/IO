@@ -8,5 +8,20 @@ license.workspace = true
 path = "src/lib.rs"
 crate-type = ["rlib", "cdylib"]
 
+[[test]]
+name = "io_frontend_pocketic"
+path = "../../tests/pocketic/io_frontend_pocketic.rs"
+
 [build-dependencies]
 io-build-support.workspace = true
+
+[dependencies]
+candid.workspace = true
+ic-asset-certification.workspace = true
+ic-cdk.workspace = true
+ic-http-certification.workspace = true
+include_dir.workspace = true
+mime_guess.workspace = true
+
+[dev-dependencies]
+pocket-ic.workspace = true
