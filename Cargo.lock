@@ -940,6 +940,11 @@ dependencies = [
  "candid",
  "ic-cdk",
  "io-build-support",
+ "io-core-model",
+ "io-ledger-types",
+ "io-reward-policy",
+ "io-sns-lifecycle",
+ "pocket-ic",
  "serde",
 ]
 

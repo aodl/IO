@@ -72,6 +72,7 @@ If `io_historian` is wrong:
 - Treat it as a read-model divergence unless value-moving canister state or ledger source data is also wrong.
 - Rebuild historian state from source ledgers/governance data where possible.
 - Do not add query APIs to value-moving canisters to patch historian gaps.
+- Confirm public histories remain bounded/paginated and debug ingestion remains absent from the production DID.
 
 If `frontend` is compromised:
 
@@ -109,5 +110,6 @@ The handoff path from Jupiter Faucet governance to IO SNS governance should incl
 - install args and known live principal checks;
 - emergency rollback expectations;
 - confirmation that value-moving production DIDs remain `service : (InitArgs) -> {}`.
+- confirmation that frontend reads historian state and does not treat frontend text as protocol truth.
 
 > TODO / open question: Define the final governance proposal templates and who signs off on real ledger/NNS/SNS principal values.

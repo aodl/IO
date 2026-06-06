@@ -20,8 +20,10 @@ Main economic canister. It owns the protocol accounting model:
 
 ## io_historian
 
-Placeholder read model for stream and reward history.
+Public read model and observability surface. It owns dashboard/query APIs for protocol snapshots, bounded stream/redemption/reward history, NNS lifecycle summaries, index health, governance participation, release artifacts, canister status, and ingestion status.
+
+Historian is not a value-moving authority. It may be incomplete or wrong and should be rebuildable from canonical sources such as ledgers, indexes, governance data, release manifests, and management-canister observations. Local/test ingestion APIs are debug-only and are absent from the production DID.
 
 ## frontend
 
-Placeholder UI canister.
+Placeholder UI canister. It should consume historian APIs such as `get_dashboard_state`, not `io_stream_manager` or `io_nns_neuron_manager` internals. Frontend text is not protocol truth.

@@ -76,6 +76,14 @@ const NNS_PRODUCTION_FORBIDDEN_DID: &[&str] = &[
     " get_events :",
 ];
 
+const HISTORIAN_PRODUCTION_FORBIDDEN_DID: &[&str] = &[
+    "debug_",
+    " get_all",
+    " tick :",
+    " process_stream_event :",
+    " redeem :",
+];
+
 const PRODUCTION_WASM_FORBIDDEN_METHOD_STRINGS: &[&str] = &[
     "debug_get_state",
     "debug_get_config",
@@ -233,11 +241,15 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
     let stream_debug_path = "canisters/io_stream_manager/io_stream_manager_debug.did";
     let nns_production_path = "canisters/io_nns_neuron_manager/io_nns_neuron_manager.did";
     let nns_debug_path = "canisters/io_nns_neuron_manager/io_nns_neuron_manager_debug.did";
+    let historian_production_path = "canisters/io_historian/io_historian.did";
+    let historian_debug_path = "canisters/io_historian/io_historian_debug.did";
 
     let stream_production = read_file(root, stream_production_path)?;
     let stream_debug = read_file(root, stream_debug_path)?;
     let nns_production = read_file(root, nns_production_path)?;
     let nns_debug = read_file(root, nns_debug_path)?;
+    let historian_production = read_file(root, historian_production_path)?;
+    let historian_debug = read_file(root, historian_debug_path)?;
 
     check_minimal_value_moving_did(stream_production_path, &stream_production)?;
     check_minimal_value_moving_did(nns_production_path, &nns_production)?;
@@ -257,6 +269,32 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
             nns_forbidden.join(", ")
         ));
     }
+    let historian_forbidden =
+        forbidden_did_methods(&historian_production, HISTORIAN_PRODUCTION_FORBIDDEN_DID);
+    if !historian_forbidden.is_empty() {
+        return Err(format!(
+            "{historian_production_path} contains forbidden production methods: {}",
+            historian_forbidden.join(", ")
+        ));
+    }
+
+    require_present(
+        historian_production_path,
+        &historian_production,
+        &[
+            "get_dashboard_state",
+            "get_protocol_snapshot",
+            "get_redemption_rate",
+            "list_streams",
+            "list_redemptions",
+            "list_rewards",
+            "list_nns_lifecycle_events",
+            "get_index_health",
+            "get_governance_summary",
+            "get_release_artifacts",
+            "get_canister_status_summary",
+        ],
+    )?;
 
     require_present(
         stream_debug_path,
@@ -299,6 +337,20 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
             "  get_state :",
             "  plan_rebalance :",
             "  advance_model_time :",
+        ],
+    )?;
+    require_present(
+        historian_debug_path,
+        &historian_debug,
+        &[
+            "debug_clear",
+            "debug_ingest_ledger_flow",
+            "debug_ingest_stream_record",
+            "debug_ingest_redemption_record",
+            "debug_ingest_reward_record",
+            "debug_ingest_index_health",
+            "debug_ingest_governance_snapshot",
+            "debug_ingest_canister_artifact_status",
         ],
     )?;
 
@@ -895,7 +947,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, sns_harness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, historian_tests, historian_required, sns_harness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -978,6 +1030,26 @@ fn main() -> ExitCode {
                 ok = false;
             }
         },
+        "historian_tests" => {
+            ok &= run_subcommand("did_surface");
+            ok &= run(
+                "unit: io-historian",
+                cargo_test(&["-p", "io-historian", "--lib"]),
+            );
+        }
+        "historian_required" => {
+            if env::var_os("POCKET_IC_BIN").is_none() {
+                eprintln!("✗ historian_required: POCKET_IC_BIN is not set");
+                ok = false;
+            } else {
+                ok &= run_subcommand("historian_tests");
+                ok &= run_subcommand("build_debug_canisters");
+                ok &= run(
+                    "pocketic: io-historian",
+                    cargo_test(&["-p", "io-historian", "--test", "io_historian_pocketic"]),
+                );
+            }
+        }
         "sns_governance_read_tests" => {
             ok &= run(
                 "unit: mock-sns-governance",
@@ -1098,6 +1170,7 @@ fn main() -> ExitCode {
                 "build_canisters",
                 "verify_artifacts",
                 "validate_install_args",
+                "historian_tests",
                 "sns_harness_check",
                 "sns_governance_read_tests",
                 "sns_ledger_index_tests",
@@ -1172,6 +1245,10 @@ fn main() -> ExitCode {
                     "--test",
                     "io_nns_neuron_manager_pocketic",
                 ]),
+            );
+            ok &= run(
+                "pocketic: io-historian",
+                cargo_test(&["-p", "io-historian", "--test", "io_historian_pocketic"]),
             );
         }
         "test_pocketic_required" => {
@@ -1283,6 +1360,12 @@ fn main() -> ExitCode {
                     "--test",
                     "io_nns_neuron_manager_pocketic",
                 ]),
+            )
+        }
+        "historian_pocketic_integration" => {
+            ok &= run(
+                "pocketic: io-historian",
+                cargo_test(&["-p", "io-historian", "--test", "io_historian_pocketic"]),
             )
         }
         "test_all" => {

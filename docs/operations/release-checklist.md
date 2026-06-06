@@ -11,6 +11,7 @@ Use this before every release-oriented commit or artifact proposal.
 - [ ] `cargo run -p xtask -- build_canisters`
 - [ ] `cargo run -p xtask -- verify_artifacts`
 - [ ] `cargo run -p xtask -- validate_install_args`
+- [ ] `cargo run -p xtask -- historian_tests`
 - [ ] `cargo run -p xtask -- security_scan_required`
 - [ ] `cargo run -p xtask -- sns_harness_check`
 - [ ] `cargo run -p xtask -- sns_governance_read_tests`
@@ -18,6 +19,7 @@ Use this before every release-oriented commit or artifact proposal.
 - [ ] `cargo run -p xtask -- sns_root_lifecycle_tests`
 - [ ] `cargo run -p xtask -- sns_pocketic_smoke`
 - [ ] `POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server cargo run -p xtask -- test_pocketic_required`
+- [ ] `POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server cargo run -p xtask -- historian_required`
 - [ ] `POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server cargo run -p xtask -- sns_pocketic_required`
 - [ ] `POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server cargo run -p xtask -- sns_root_lifecycle_required`
 - [ ] `POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server cargo run -p xtask -- test_ci`
@@ -25,6 +27,7 @@ Use this before every release-oriented commit or artifact proposal.
 - [ ] `git diff --check`
 - [ ] Review artifact diffs and `release-artifacts/manifest.json`.
 - [ ] Confirm no production API expansion on value-moving canisters.
+- [ ] Confirm historian production DID contains public read queries only and no `debug_` ingestion methods.
 - [ ] Confirm local SNS fixture and mock root lifecycle remain local-only and not production launch config.
 - [ ] Confirm upgrade proposal hashes match `release-artifacts/manifest.json`.
 - [ ] Confirm no deployment/mainnet calls were made.

@@ -11,7 +11,18 @@ crate-type = ["rlib", "cdylib"]
 [dependencies]
 candid.workspace = true
 ic-cdk.workspace = true
+io-ledger-types.workspace = true
+io-reward-policy.workspace = true
 serde.workspace = true
 
 [build-dependencies]
 io-build-support.workspace = true
+
+[[test]]
+name = "io_historian_pocketic"
+path = "../../tests/pocketic/io_historian_pocketic.rs"
+
+[dev-dependencies]
+io-core-model.workspace = true
+io-sns-lifecycle.workspace = true
+pocket-ic.workspace = true

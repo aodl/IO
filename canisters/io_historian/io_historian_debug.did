@@ -1,0 +1,95 @@
+type AccountHistoryPageOrder = variant { Ascending; Descending };
+type ArtifactMatchStatus = variant { Matching; Mismatch; Unknown; Unobserved };
+type DataAvailability = variant { Missing; NotApplicable; Observed };
+type LedgerKind = variant { IcpLedger; IoLedger };
+type PublicOperationPhase = variant {
+  AwaitingIcpPayout; AwaitingIoIssuance; AwaitingIoReturn; Completed;
+  FailedRetryable; FailedTerminal; Observed; PartiallyDistributed; Previewed; Unknown;
+};
+type PublicRecipientPolicy = variant { EligibleIoSnsNeurons; JupiterFaucet; None; Unknown };
+type PublicStreamKind = variant { JupiterFaucet; TwoWeekMaturity; TwoYearMaturity; UnknownIcpDeposit };
+type CanisterArtifactStatus = record {
+  artifact_byte_size : opt nat64; build_profile : opt text; canister_name : text;
+  expected_canister_principal_text : opt text; git_commit : opt text;
+  gz_artifact_byte_size : opt nat64; gz_wasm_sha256 : opt text;
+  last_checked_timestamp_nanos : opt nat64; observed_module_hash : opt text;
+  raw_wasm_sha256 : opt text; status : ArtifactMatchStatus; target : opt text;
+};
+type DataCompleteness = record {
+  liquid_icp_reserve : DataAvailability; non_redeemable_governance_io : DataAvailability;
+  protocol_reserve_io : DataAvailability; redeemable_io_supply : DataAvailability;
+  redemption_rate : DataAvailability; total_io_supply : DataAvailability;
+  two_year_nns_principal : DataAvailability;
+};
+type GovernanceNeuronObservation = record {
+  eligible_closed_proposals : nat64; eligible_seconds : nat64; is_dissolving : bool;
+  is_genesis_governance_neuron : bool; is_protocol_owned : bool; neuron_id : nat64;
+  staked_io_e8s : nat; voted_closed_proposals : nat64;
+};
+type GovernanceObservation = record {
+  counted_proposals : nat64; neurons : vec GovernanceNeuronObservation;
+  nns_lifecycle_status_summary : opt text; observed_at_timestamp_nanos : opt nat64;
+  pending_nns_operation_count : opt nat64; proposal_epoch_end : opt nat64;
+  proposal_epoch_start : opt nat64;
+};
+type IndexHealthSummary = record {
+  account_label : text; backfill_complete : bool; invariant_broken_count : nat64;
+  lag_suspected : bool; last_error : opt text; last_observed_balance_e8s : opt nat;
+  last_observed_newest_tx_id : opt nat64; last_success_timestamp_nanos : opt nat64;
+  latest_cursor : opt nat64; ledger_kind : LedgerKind; num_blocks_synced : opt nat64;
+  oldest_cursor : opt nat64; page_cap_reached : bool; page_order : opt AccountHistoryPageOrder;
+  record_id : text; scan_incomplete : bool; unreadable_count : nat64;
+};
+type NnsLifecycleKind = variant {
+  TwoWeekPoolMergeBack; TwoWeekPoolRestake; TwoWeekPoolSplit; TwoWeekPoolStartDissolving;
+  TwoWeekPoolStopDissolving; TwoWeekMaturityDisbursement; TwoWeekUnwindPrincipalDisbursement;
+  TwoYearMaturityDisbursement; Unknown;
+};
+type NnsLifecycleSummary = record {
+  amount_e8s : opt nat; kind : NnsLifecycleKind; neuron_id : opt nat64;
+  phase : PublicOperationPhase; record_id : text; retry_count : nat32;
+  safe_error : opt text; timestamp_nanos : opt nat64;
+};
+type ObservedLedgerFlow = record {
+  amount_e8s : nat; block_index : nat64; from_account : opt text;
+  ledger_kind : LedgerKind; ledger_principal_text : opt text; memo : opt vec nat8;
+  timestamp_nanos : opt nat64; to_account : opt text;
+};
+type ProtocolObservation = record {
+  liquid_icp_reserve_e8s : opt nat; non_redeemable_governance_io_e8s : opt nat;
+  observed_at_timestamp_nanos : opt nat64; protocol_reserve_io_e8s : opt nat;
+  total_io_supply_e8s : opt nat; two_year_nns_principal_e8s : opt nat;
+};
+type RedemptionHistoryRecord = record {
+  icp_payout_amount_e8s : opt nat; icp_payout_block : opt nat64; io_amount_e8s : nat;
+  io_burn_or_transfer_block : opt nat64; io_return_block : opt nat64;
+  phase : PublicOperationPhase; record_id : text; retry_count : nat32;
+  retry_status : opt text; timestamp_nanos : opt nat64; user_account : opt text;
+};
+type RewardDistributionRecord = record {
+  dust_unissued_e8s : opt nat; eligible_stake_e8s : opt nat;
+  epoch_end_timestamp_nanos : opt nat64; epoch_start_timestamp_nanos : opt nat64;
+  participation_summary_id : opt text; payout_block : opt nat64; recipient_account : opt text;
+  recipient_neuron_id : opt nat64; record_id : text; reward_amount_e8s : nat;
+  status : PublicOperationPhase;
+};
+type StreamHistoryRecord = record {
+  amount_e8s : nat; io_issued_e8s : opt nat; memo_label : opt text;
+  phase : PublicOperationPhase; recipient_policy : PublicRecipientPolicy; record_id : text;
+  safe_subaccount_label : opt text; source_block_index : opt nat64; source_ledger : text;
+  stream_kind : PublicStreamKind; terminal_rejection_reason : opt text; timestamp_nanos : opt nat64;
+};
+
+service : {
+  debug_clear : () -> ();
+  debug_ingest_canister_artifact_status : (CanisterArtifactStatus) -> ();
+  debug_ingest_governance_snapshot : (GovernanceObservation) -> ();
+  debug_ingest_index_health : (IndexHealthSummary) -> ();
+  debug_ingest_ledger_flow : (ObservedLedgerFlow) -> ();
+  debug_ingest_nns_lifecycle : (NnsLifecycleSummary) -> ();
+  debug_ingest_protocol_snapshot : (ProtocolObservation) -> ();
+  debug_ingest_redemption_record : (RedemptionHistoryRecord) -> ();
+  debug_ingest_release_artifacts : (vec CanisterArtifactStatus) -> ();
+  debug_ingest_reward_record : (RewardDistributionRecord) -> ();
+  debug_ingest_stream_record : (StreamHistoryRecord) -> ();
+}

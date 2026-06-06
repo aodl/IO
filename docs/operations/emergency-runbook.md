@@ -82,3 +82,12 @@ This runbook describes safe investigation and containment. It does not authorize
 - Safe actions: isolate mock-only code behind debug/test paths and add guardrail tests.
 - Unsafe actions: deploy mock client assumptions to mainnet.
 - Escalation: security review before real-client work resumes.
+
+## Historian Read-Model Divergence
+
+- Detection: dashboard values disagree with ledger/index/governance/release artifact sources or historian ingestion status is stale.
+- Immediate containment: treat the frontend/historian value as suspect and do not alter value-moving canister state to make the dashboard match.
+- Investigation commands: `cargo run -p xtask -- historian_tests`, `cargo run -p xtask -- did_surface`, and targeted ledger/index/governance fixture tests for the source being reconstructed.
+- Safe actions: correct the observation-to-read-model conversion, ingest corrected local/test fixtures, or rebuild historian state from canonical sources through a reviewed upgrade or future production ingestion path.
+- Unsafe actions: add `get_state`, `get_events`, `tick`, `process_stream_event`, `redeem`, or `debug_*` production methods to value-moving canisters to patch a dashboard gap.
+- Escalation: architecture/security review if the divergence suggests a canonical ledger, governance, release artifact, or value-moving state issue.

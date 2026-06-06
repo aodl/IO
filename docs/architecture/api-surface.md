@@ -68,7 +68,7 @@ Production callers should not be able to assert arbitrary stream kinds such as "
 
 ## Historian as Public Read Model
 
-`io_historian` owns the future public read/query surface. The frontend should consume historian/read-model APIs rather than value-moving canister internals.
+`io_historian` owns the public read/query surface. The frontend should consume historian/read-model APIs rather than value-moving canister internals.
 
 The historian should reconstruct state from observable sources where possible:
 
@@ -79,7 +79,9 @@ The historian should reconstruct state from observable sources where possible:
 - Management canister status where possible.
 - Canister metadata, install args, and governance proposal records.
 
-The historian should not depend on broad public query APIs from `io_stream_manager` or `io_nns_neuron_manager`.
+The historian exposes bounded public queries such as `get_dashboard_state`, `get_protocol_snapshot`, `list_streams`, `list_redemptions`, `list_rewards`, `get_index_health`, and `get_governance_summary`. Debug/test ingestion APIs live only in `io_historian_debug.did` and are absent from the production DID.
+
+The historian should not depend on broad public query APIs from `io_stream_manager` or `io_nns_neuron_manager`. It is a rebuildable read model, not protocol truth or a value-moving authority.
 
 ## Why Core Canisters Avoid Broad Queries
 
