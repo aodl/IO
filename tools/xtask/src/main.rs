@@ -461,12 +461,104 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
             "debug_ingest_canister_artifact_status",
         ],
     )?;
+    check_historian_js_declaration_at(root)?;
 
     if check_wasm && root.join("release-artifacts").is_dir() {
         check_wasm_forbidden_methods(root)?;
     }
 
     Ok(())
+}
+
+fn parse_did_service_methods(text: &str) -> BTreeSet<String> {
+    let service = text.split("service").last().unwrap_or(text);
+    service
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            let (name, _) = trimmed.split_once(':')?;
+            let name = name.trim().trim_matches('"');
+            (!name.is_empty()
+                && name
+                    .chars()
+                    .all(|ch| ch == '_' || ch.is_ascii_alphanumeric()))
+            .then(|| name.to_string())
+        })
+        .collect()
+}
+
+fn parse_js_service_methods(text: &str) -> BTreeSet<String> {
+    let service = text.split("IDL.Service({").last().unwrap_or(text);
+    service
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if !trimmed.contains(": IDL.Func") {
+                return None;
+            }
+            let (name, _) = trimmed.split_once(": IDL.Func")?;
+            let name = name.trim().trim_matches('"').trim_matches('\'');
+            (!name.is_empty()).then(|| name.to_string())
+        })
+        .collect()
+}
+
+fn check_historian_js_declaration_text(
+    did_path: &str,
+    did_text: &str,
+    js_path: &str,
+    js_text: &str,
+    index_path: &str,
+    index_text: &str,
+) -> Result<(), String> {
+    for (path, text) in [(js_path, js_text), (index_path, index_text)] {
+        require_absent(
+            path,
+            text,
+            &["debug_", "io_historian_debug", ".dfx", "src/declarations"],
+        )?;
+    }
+
+    let did_methods = parse_did_service_methods(did_text);
+    let js_methods = parse_js_service_methods(js_text);
+    let missing = did_methods
+        .difference(&js_methods)
+        .cloned()
+        .collect::<Vec<_>>();
+    let extra = js_methods
+        .difference(&did_methods)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(format!(
+            "{js_path} is missing historian production methods from {did_path}: {}",
+            missing.join(", ")
+        ));
+    }
+    if !extra.is_empty() {
+        return Err(format!(
+            "{js_path} contains methods absent from {did_path}: {}",
+            extra.join(", ")
+        ));
+    }
+    Ok(())
+}
+
+fn check_historian_js_declaration_at(root: &Path) -> Result<(), String> {
+    let did_path = "canisters/io_historian/io_historian.did";
+    let js_path = "canisters/frontend/web/declarations/io_historian/io_historian.did.js";
+    let index_path = "canisters/frontend/web/declarations/io_historian/index.js";
+    let did_text = read_file(root, did_path)?;
+    let js_text = read_file(root, js_path)?;
+    let index_text = read_file(root, index_path)?;
+    check_historian_js_declaration_text(
+        did_path,
+        &did_text,
+        js_path,
+        &js_text,
+        index_path,
+        &index_text,
+    )
 }
 
 fn check_artifacts(root: &Path, paths: &[String]) -> Result<(), String> {
@@ -2156,7 +2248,7 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "canisters/io_historian/io_historian.did",
-            "service : {\n  get_dashboard_state : () -> (text) query;\n  get_protocol_snapshot : () -> (text) query;\n  get_redemption_rate : () -> (text) query;\n  list_streams : () -> (text) query;\n  list_redemptions : () -> (text) query;\n  list_rewards : () -> (text) query;\n  list_nns_lifecycle_events : () -> (text) query;\n  get_index_health : () -> (text) query;\n  get_governance_summary : () -> (text) query;\n  get_release_artifacts : () -> (text) query;\n  get_canister_status_summary : () -> (text) query;\n}\n",
+            "service : {\n  get_dashboard_state : () -> (text) query;\n  get_protocol_snapshot : () -> (text) query;\n  get_redemption_rate : () -> (text) query;\n  list_streams : () -> (text) query;\n  list_redemptions : () -> (text) query;\n  list_rewards : () -> (text) query;\n  list_nns_lifecycle_events : () -> (text) query;\n  get_index_health : () -> (text) query;\n  get_governance_summary : () -> (text) query;\n  get_release_artifacts : () -> (text) query;\n  get_canister_status_summary : () -> (text) query;\n  get_public_status : () -> (text) query;\n  get_reserve_snapshot : () -> (text) query;\n  list_governance_participation : () -> (text) query;\n  version : () -> (text) query;\n}\n",
         );
         write(
             root,
@@ -2172,6 +2264,16 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
             root,
             "canisters/io_historian/io_historian_debug.did",
             "service : {\n  debug_clear : () -> ();\n  debug_ingest_ledger_flow : () -> ();\n  debug_ingest_stream_record : () -> ();\n  debug_ingest_redemption_record : () -> ();\n  debug_ingest_reward_record : () -> ();\n  debug_ingest_index_health : () -> ();\n  debug_ingest_governance_snapshot : () -> ();\n  debug_ingest_canister_artifact_status : () -> ();\n}\n",
+        );
+        write(
+            root,
+            "canisters/frontend/web/declarations/io_historian/io_historian.did.js",
+            "export const idlFactory = ({ IDL }) => IDL.Service({\n  get_canister_status_summary: IDL.Func([], [], [\"query\"]),\n  get_dashboard_state: IDL.Func([], [], [\"query\"]),\n  get_governance_summary: IDL.Func([], [], [\"query\"]),\n  get_index_health: IDL.Func([], [], [\"query\"]),\n  get_protocol_snapshot: IDL.Func([], [], [\"query\"]),\n  get_public_status: IDL.Func([], [], [\"query\"]),\n  get_redemption_rate: IDL.Func([], [], [\"query\"]),\n  get_release_artifacts: IDL.Func([], [], [\"query\"]),\n  get_reserve_snapshot: IDL.Func([], [], [\"query\"]),\n  list_governance_participation: IDL.Func([], [], [\"query\"]),\n  list_nns_lifecycle_events: IDL.Func([], [], [\"query\"]),\n  list_redemptions: IDL.Func([], [], [\"query\"]),\n  list_rewards: IDL.Func([], [], [\"query\"]),\n  list_streams: IDL.Func([], [], [\"query\"]),\n  version: IDL.Func([], [], [\"query\"]),\n});\n",
+        );
+        write(
+            root,
+            "canisters/frontend/web/declarations/io_historian/index.js",
+            "import { idlFactory } from \"./io_historian.did.js\";\nexport { idlFactory };\n",
         );
     }
 
@@ -2708,5 +2810,87 @@ release-artifacts/manifest.json
         let bad = "service : (InitArgs) -> { debug_get_state : () -> (text) query; }";
         let forbidden = forbidden_did_methods(bad, STREAM_PRODUCTION_FORBIDDEN_DID);
         assert!(forbidden.iter().any(|item| item == "debug_"));
+    }
+
+    fn historian_did() -> &'static str {
+        "service : {\n  get_dashboard_state : () -> (text) query;\n  version : () -> (text) query;\n}\n"
+    }
+
+    fn historian_js() -> &'static str {
+        "export const idlFactory = ({ IDL }) => IDL.Service({\n  get_dashboard_state: IDL.Func([], [IDL.Text], [\"query\"]),\n  version: IDL.Func([], [IDL.Text], [\"query\"]),\n});\n"
+    }
+
+    #[test]
+    fn historian_js_declaration_matching_method_sets_pass() {
+        assert!(check_historian_js_declaration_text(
+            "io_historian.did",
+            historian_did(),
+            "io_historian.did.js",
+            historian_js(),
+            "index.js",
+            "",
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn historian_js_declaration_rejects_missing_method() {
+        let js = "export const idlFactory = ({ IDL }) => IDL.Service({\n  version: IDL.Func([], [IDL.Text], [\"query\"]),\n});\n";
+        let err = check_historian_js_declaration_text(
+            "io_historian.did",
+            historian_did(),
+            "io_historian.did.js",
+            js,
+            "index.js",
+            "",
+        )
+        .unwrap_err();
+        assert!(err.contains("missing"));
+        assert!(err.contains("get_dashboard_state"));
+    }
+
+    #[test]
+    fn historian_js_declaration_rejects_extra_method() {
+        let js = "export const idlFactory = ({ IDL }) => IDL.Service({\n  get_dashboard_state: IDL.Func([], [IDL.Text], [\"query\"]),\n  version: IDL.Func([], [IDL.Text], [\"query\"]),\n  extra: IDL.Func([], [IDL.Text], [\"query\"]),\n});\n";
+        let err = check_historian_js_declaration_text(
+            "io_historian.did",
+            historian_did(),
+            "io_historian.did.js",
+            js,
+            "index.js",
+            "",
+        )
+        .unwrap_err();
+        assert!(err.contains("absent"));
+        assert!(err.contains("extra"));
+    }
+
+    #[test]
+    fn historian_js_declaration_rejects_debug_method() {
+        let js = "export const idlFactory = ({ IDL }) => IDL.Service({\n  get_dashboard_state: IDL.Func([], [IDL.Text], [\"query\"]),\n  version: IDL.Func([], [IDL.Text], [\"query\"]),\n  debug_clear: IDL.Func([], [], []),\n});\n";
+        let err = check_historian_js_declaration_text(
+            "io_historian.did",
+            historian_did(),
+            "io_historian.did.js",
+            js,
+            "index.js",
+            "",
+        )
+        .unwrap_err();
+        assert!(err.contains("debug_"));
+    }
+
+    #[test]
+    fn historian_js_declaration_rejects_forbidden_generated_import_path() {
+        let err = check_historian_js_declaration_text(
+            "io_historian.did",
+            historian_did(),
+            "io_historian.did.js",
+            historian_js(),
+            "index.js",
+            "import { idlFactory } from '../../../.dfx/local/canisters/io_historian';",
+        )
+        .unwrap_err();
+        assert!(err.contains(".dfx"));
     }
 }

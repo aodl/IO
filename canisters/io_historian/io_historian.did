@@ -183,11 +183,15 @@ type PublicStreamKind = variant {
   UnknownIcpDeposit;
 };
 type RedemptionHistoryRecord = record {
+  gross_icp_payout_e8s : opt nat;
   icp_payout_amount_e8s : opt nat;
   icp_payout_block : opt nat64;
+  icp_payout_fee_e8s : opt nat;
   io_amount_e8s : nat;
   io_burn_or_transfer_block : opt nat64;
+  io_return_fee_e8s : opt nat;
   io_return_block : opt nat64;
+  net_user_icp_payout_e8s : opt nat;
   phase : PublicOperationPhase;
   record_id : text;
   retry_count : nat32;

@@ -745,6 +745,46 @@ mod live {
     }
 
     #[test]
+    fn pocketic_live_tiny_authorized_icp_deposit_does_not_block_later_valid_deposit() {
+        let Some(fixture) = setup_stream(false) else {
+            return;
+        };
+
+        mint(
+            &fixture.pic,
+            fixture.icp_ledger,
+            JUPITER_FAUCET_SOURCE,
+            t(150),
+            "fund_faucet",
+        );
+        faucet_send(
+            &fixture,
+            JUPITER_FAUCET_SOURCE,
+            "stream_manager_deposit",
+            1,
+            "tiny",
+        );
+        faucet_send(
+            &fixture,
+            JUPITER_FAUCET_SOURCE,
+            "stream_manager_deposit",
+            t(100),
+            "valid",
+        );
+
+        let outcome = tick(&fixture);
+        assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+        assert_eq!(outcome.processed_authorized_streams, 1);
+        assert_eq!(outcome.io_issued_e8s, t(60));
+        assert_eq!(state(&fixture).processed_transaction_count, 1);
+
+        let replay = tick(&fixture);
+        assert!(replay.errors.is_empty(), "{:?}", replay.errors);
+        assert_eq!(replay.scanned_icp_transactions, 0);
+        assert_eq!(replay.processed_authorized_streams, 0);
+    }
+
+    #[test]
     fn pocketic_live_index_lag_blocks_scan_then_resolves_once() {
         let Some(fixture) = setup_stream(false) else {
             return;
@@ -1478,7 +1518,19 @@ fn pocketic_two_week_maturity_fails_atomically_when_reward_reserve_is_exhausted(
 #[test]
 fn pocketic_small_amount_streams_preserve_e8s_totals_and_do_not_panic() {
     let mut manager = StreamManager::default_for_tests();
-    for amount in 1..100u128 {
+    for amount in 1..3u128 {
+        let tx = format!("tiny-rejected-{amount}");
+        let before = manager.state;
+        let err = manager
+            .process_scanned_icp(JUPITER_FAUCET_SOURCE, "", amount, tx)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            StreamManagerError::Model(ModelError::BelowMinimumStreamDeposit { .. })
+        ));
+        assert_eq!(manager.state, before);
+    }
+    for amount in 3..100u128 {
         let tx = format!("tiny-{amount}");
         let out = manager
             .process_scanned_icp(JUPITER_FAUCET_SOURCE, "", amount, tx)

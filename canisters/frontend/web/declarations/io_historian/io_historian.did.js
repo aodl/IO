@@ -154,11 +154,15 @@ export const idlFactory = ({ IDL }) => {
   const PublicRecipientPolicy = IDL.Variant({ EligibleIoSnsNeurons: IDL.Null, JupiterFaucet: IDL.Null, None: IDL.Null, Unknown: IDL.Null });
   const PublicStreamKind = IDL.Variant({ JupiterFaucet: IDL.Null, TwoWeekMaturity: IDL.Null, TwoYearMaturity: IDL.Null, UnknownIcpDeposit: IDL.Null });
   const RedemptionHistoryRecord = IDL.Record({
+    gross_icp_payout_e8s: IDL.Opt(IDL.Nat),
     icp_payout_amount_e8s: IDL.Opt(IDL.Nat),
     icp_payout_block: IDL.Opt(IDL.Nat64),
+    icp_payout_fee_e8s: IDL.Opt(IDL.Nat),
     io_amount_e8s: IDL.Nat,
     io_burn_or_transfer_block: IDL.Opt(IDL.Nat64),
+    io_return_fee_e8s: IDL.Opt(IDL.Nat),
     io_return_block: IDL.Opt(IDL.Nat64),
+    net_user_icp_payout_e8s: IDL.Opt(IDL.Nat),
     phase: PublicOperationPhase,
     record_id: IDL.Text,
     retry_count: IDL.Nat32,

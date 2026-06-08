@@ -95,16 +95,13 @@ fn cli_model_bad_nns_memo_is_rejected_before_state_mutation() {
 }
 
 #[test]
-fn cli_model_zero_amount_transaction_is_idempotent_noop() {
+fn cli_model_zero_amount_transaction_is_rejected_before_processing() {
     let mut manager = StreamManager::default_for_tests();
     let before = manager.state;
-    let out = manager
+    let err = manager
         .process_scanned_icp(JUPITER_FAUCET_SOURCE, "", 0, "zero")
-        .unwrap();
-    assert_eq!(out.io_issued_e8s, 0);
+        .unwrap_err();
+    assert!(matches!(err, StreamManagerError::Model(_)));
     assert_eq!(manager.state, before);
-    assert!(matches!(
-        manager.process_scanned_icp(JUPITER_FAUCET_SOURCE, "", 0, "zero"),
-        Err(StreamManagerError::DuplicateTransaction)
-    ));
+    assert!(manager.processed_transactions.is_empty());
 }

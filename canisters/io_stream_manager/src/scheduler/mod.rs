@@ -11,6 +11,8 @@ use crate::{
 use candid::CandidType;
 #[cfg(target_family = "wasm")]
 use candid::Principal;
+#[cfg(target_family = "wasm")]
+use io_core_model::ModelError;
 #[cfg(any(target_family = "wasm", test))]
 use io_ledger_types::AccountHistoryPageOrder;
 #[cfg(any(target_family = "wasm", test))]
@@ -604,7 +606,7 @@ async fn retry_pending_redemptions(
             let request = mock_transfer_request(
                 STREAM_MANAGER_DEPOSIT_ACCOUNT,
                 &user_account,
-                op.amount_e8s,
+                op.effective_net_user_icp_payout_e8s(),
                 REDEMPTION_PAYOUT_MEMO,
             );
             let client = icp_ledger::MockLedgerCanisterClient {
@@ -852,6 +854,19 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                                 continue;
                             }
                             Err(err @ StreamManagerError::UnknownOrUnauthorizedStream { .. }) => {
+                                journal_rejected_icp_deposit(
+                                    tx.block_index,
+                                    tx.amount_e8s,
+                                    format!("{err:?}"),
+                                );
+                                advance_icp_cursor(tx.block_index);
+                                continue;
+                            }
+                            Err(
+                                err @ StreamManagerError::Model(
+                                    ModelError::BelowMinimumStreamDeposit { .. },
+                                ),
+                            ) => {
                                 journal_rejected_icp_deposit(
                                     tx.block_index,
                                     tx.amount_e8s,

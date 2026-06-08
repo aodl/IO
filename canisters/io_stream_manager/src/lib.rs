@@ -304,6 +304,10 @@ pub struct StreamOperation {
     pub two_week_recipients: Vec<TwoWeekRecipientTransfer>,
     pub io_redemption_block: Option<u64>,
     pub io_amount: u128,
+    pub gross_icp_payout_e8s: u128,
+    pub icp_payout_fee_e8s: u128,
+    pub net_user_icp_payout_e8s: u128,
+    pub io_return_fee_e8s: u128,
     pub icp_payout_status: TransferStatus,
     pub io_return_status: TransferStatus,
     pub icp_payout_block: Option<u64>,
@@ -360,6 +364,10 @@ impl StreamOperation {
             two_week_recipients: Vec::new(),
             io_redemption_block: None,
             io_amount: 0,
+            gross_icp_payout_e8s: 0,
+            icp_payout_fee_e8s: 0,
+            net_user_icp_payout_e8s: 0,
+            io_return_fee_e8s: 0,
             icp_payout_status: TransferStatus::Pending,
             io_return_status: TransferStatus::Pending,
             icp_payout_block: None,
@@ -387,8 +395,18 @@ impl StreamOperation {
         op.io_redemption_block = Some(source_block_index);
         op.io_amount = io_amount;
         op.amount_e8s = icp_paid_e8s;
+        op.gross_icp_payout_e8s = icp_paid_e8s;
+        op.net_user_icp_payout_e8s = icp_paid_e8s;
         op.user_account = Some(user_account);
         op
+    }
+
+    pub fn effective_net_user_icp_payout_e8s(&self) -> u128 {
+        if self.kind == StreamOperationKind::Redemption && self.net_user_icp_payout_e8s == 0 {
+            self.amount_e8s
+        } else {
+            self.net_user_icp_payout_e8s
+        }
     }
 
     #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
@@ -538,6 +556,11 @@ impl From<StreamOutcome> for ApiStreamOutcome {
 pub struct ApiRedemptionOutcome {
     pub io_redeemed_e8s: u128,
     pub icp_paid_e8s: u128,
+    pub gross_icp_payout_e8s: u128,
+    pub icp_ledger_fee_e8s: u128,
+    pub net_user_icp_payout_e8s: u128,
+    pub io_returned_to_reserve_e8s: u128,
+    pub dust_retained_icp_e8s: u128,
     pub rate_before: ApiRedemptionRate,
     pub rate_after: ApiRedemptionRate,
 }
@@ -547,6 +570,11 @@ impl From<RedemptionOutcome> for ApiRedemptionOutcome {
         Self {
             io_redeemed_e8s: value.io_redeemed_e8s,
             icp_paid_e8s: value.icp_paid_e8s,
+            gross_icp_payout_e8s: value.gross_icp_payout_e8s,
+            icp_ledger_fee_e8s: value.icp_ledger_fee_e8s,
+            net_user_icp_payout_e8s: value.net_user_icp_payout_e8s,
+            io_returned_to_reserve_e8s: value.io_returned_to_reserve_e8s,
+            dust_retained_icp_e8s: value.dust_retained_icp_e8s,
             rate_before: value.rate_before.into(),
             rate_after: value.rate_after.into(),
         }
@@ -1056,6 +1084,20 @@ mod tests {
             export_stable_state_for_tests().scheduler_cursors,
             stable.scheduler_cursors
         );
+    }
+
+    #[test]
+    fn legacy_pending_redemption_defaults_retry_with_gross_amount() {
+        let mut redemption = StreamOperation::redemption(
+            9,
+            t(10),
+            t(10),
+            "user".to_string(),
+            ProtocolState::new(t(1_000_000), t(900_000), t(100_000)),
+        );
+        redemption.net_user_icp_payout_e8s = 0;
+
+        assert_eq!(redemption.effective_net_user_icp_payout_e8s(), t(10));
     }
 
     #[test]

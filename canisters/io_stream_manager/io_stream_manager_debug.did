@@ -19,8 +19,13 @@ type ApiProtocolState = record {
 };
 
 type ApiRedemptionOutcome = record {
+  dust_retained_icp_e8s : nat;
+  gross_icp_payout_e8s : nat;
   io_redeemed_e8s : nat;
   icp_paid_e8s : nat;
+  icp_ledger_fee_e8s : nat;
+  io_returned_to_reserve_e8s : nat;
+  net_user_icp_payout_e8s : nat;
   rate_before : ApiRedemptionRate;
   rate_after : ApiRedemptionRate;
 };

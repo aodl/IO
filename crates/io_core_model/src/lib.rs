@@ -7,6 +7,8 @@ pub const E8S_PER_TOKEN: u128 = 100_000_000;
 pub const FORTY_PERCENT_BPS: u128 = 4_000;
 pub const SIXTY_PERCENT_BPS: u128 = 6_000;
 pub const BPS_DENOMINATOR: u128 = 10_000;
+pub const DEFAULT_MIN_STREAM_DEPOSIT_E8S: u128 = 3;
+pub const DEFAULT_MIN_REDEMPTION_IO_E8S: u128 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StreamKind {
@@ -47,6 +49,36 @@ pub struct ProtocolState {
     pub total_io_supply_e8s: u128,
     pub protocol_reserve_io_e8s: u128,
     pub non_redeemable_governance_io_e8s: u128,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FeePolicy {
+    pub icp_ledger_transfer_fee_e8s: u128,
+    pub io_ledger_transfer_fee_e8s: u128,
+}
+
+impl FeePolicy {
+    pub const fn zero() -> Self {
+        Self {
+            icp_ledger_transfer_fee_e8s: 0,
+            io_ledger_transfer_fee_e8s: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DustPolicy {
+    pub min_stream_deposit_e8s: u128,
+    pub min_redemption_io_e8s: u128,
+}
+
+impl DustPolicy {
+    pub const fn default_protocol() -> Self {
+        Self {
+            min_stream_deposit_e8s: DEFAULT_MIN_STREAM_DEPOSIT_E8S,
+            min_redemption_io_e8s: DEFAULT_MIN_REDEMPTION_IO_E8S,
+        }
+    }
 }
 
 impl ProtocolState {
@@ -171,16 +203,33 @@ pub struct StreamOutcome {
     pub split: Split,
     pub recipient_policy: IoRecipientPolicy,
     pub io_issued_e8s: u128,
+    pub dust_unissued_io_e8s: u128,
+    pub dust_retained_icp_e8s: u128,
     pub rate_before: RedemptionRate,
     pub rate_after: RedemptionRate,
 }
+
+pub type StreamAccountingOutcome = StreamOutcome;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RedemptionOutcome {
     pub io_redeemed_e8s: u128,
     pub icp_paid_e8s: u128,
+    pub gross_icp_payout_e8s: u128,
+    pub icp_ledger_fee_e8s: u128,
+    pub net_user_icp_payout_e8s: u128,
+    pub io_returned_to_reserve_e8s: u128,
+    pub dust_retained_icp_e8s: u128,
     pub rate_before: RedemptionRate,
     pub rate_after: RedemptionRate,
+}
+
+pub type RedemptionAccountingOutcome = RedemptionOutcome;
+
+impl RedemptionOutcome {
+    pub fn icp_paid_e8s(&self) -> u128 {
+        self.icp_paid_e8s
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -211,6 +260,18 @@ pub enum ModelError {
     InvalidBasisPoints {
         bps: u128,
     },
+    BelowMinimumStreamDeposit {
+        amount_e8s: u128,
+        minimum_e8s: u128,
+    },
+    BelowMinimumRedemption {
+        io_e8s: u128,
+        minimum_e8s: u128,
+    },
+    RedemptionPayoutBelowFee {
+        gross_icp_payout_e8s: u128,
+        fee_e8s: u128,
+    },
 }
 
 pub fn stream_policy(kind: StreamKind) -> (IoRecipientPolicy, bool) {
@@ -236,16 +297,43 @@ pub fn preview_stream(
     kind: StreamKind,
     amount_e8s: u128,
 ) -> Result<PreviewedStream, ModelError> {
+    preview_stream_with_policy(state, kind, amount_e8s, DustPolicy::default_protocol())
+}
+
+pub fn preview_stream_with_policy(
+    state: &ProtocolState,
+    kind: StreamKind,
+    amount_e8s: u128,
+    dust_policy: DustPolicy,
+) -> Result<PreviewedStream, ModelError> {
+    if amount_e8s < dust_policy.min_stream_deposit_e8s {
+        return Err(ModelError::BelowMinimumStreamDeposit {
+            amount_e8s,
+            minimum_e8s: dust_policy.min_stream_deposit_e8s,
+        });
+    }
     let rate_before = state.redemption_rate()?;
     let split = split_40_60(amount_e8s);
     let (recipient_policy, stake_target_is_two_week) = stream_policy(kind);
 
-    let io_issued_e8s = match recipient_policy {
+    let ideal_io_e8s = match recipient_policy {
         IoRecipientPolicy::JupiterFaucet | IoRecipientPolicy::EligibleIoSnsNeurons => {
             rate_before.io_for_liquid_backing(split.liquid_e8s)?
         }
         IoRecipientPolicy::None => 0,
     };
+    let io_issued_e8s = ideal_io_e8s;
+    let dust_unissued_io_e8s = 0;
+    if matches!(
+        recipient_policy,
+        IoRecipientPolicy::JupiterFaucet | IoRecipientPolicy::EligibleIoSnsNeurons
+    ) && io_issued_e8s == 0
+    {
+        return Err(ModelError::BelowMinimumStreamDeposit {
+            amount_e8s,
+            minimum_e8s: dust_policy.min_stream_deposit_e8s,
+        });
+    }
 
     let mut post_state = *state;
     post_state.ensure_can_issue_from_reserve(io_issued_e8s)?;
@@ -274,6 +362,8 @@ pub fn preview_stream(
             split,
             recipient_policy,
             io_issued_e8s,
+            dust_unissued_io_e8s,
+            dust_retained_icp_e8s: 0,
             rate_before,
             rate_after,
         },
@@ -291,24 +381,55 @@ pub fn preview_redeem_io(
     state: &ProtocolState,
     io_e8s: u128,
 ) -> Result<PreviewedRedemption, ModelError> {
+    preview_redeem_io_with_policy(
+        state,
+        io_e8s,
+        FeePolicy::zero(),
+        DustPolicy::default_protocol(),
+    )
+}
+
+pub fn preview_redeem_io_with_policy(
+    state: &ProtocolState,
+    io_e8s: u128,
+    fee_policy: FeePolicy,
+    dust_policy: DustPolicy,
+) -> Result<PreviewedRedemption, ModelError> {
+    if io_e8s < dust_policy.min_redemption_io_e8s {
+        return Err(ModelError::BelowMinimumRedemption {
+            io_e8s,
+            minimum_e8s: dust_policy.min_redemption_io_e8s,
+        });
+    }
     let rate_before = state.redemption_rate()?;
-    let icp_paid_e8s = rate_before.icp_for_io(io_e8s)?;
-    if icp_paid_e8s > state.liquid_icp_e8s {
+    let gross_icp_payout_e8s = rate_before.icp_for_io(io_e8s)?;
+    if gross_icp_payout_e8s <= fee_policy.icp_ledger_transfer_fee_e8s {
+        return Err(ModelError::RedemptionPayoutBelowFee {
+            gross_icp_payout_e8s,
+            fee_e8s: fee_policy.icp_ledger_transfer_fee_e8s,
+        });
+    }
+    if gross_icp_payout_e8s > state.liquid_icp_e8s {
         return Err(ModelError::InsufficientLiquidReserve {
-            requested_e8s: icp_paid_e8s,
+            requested_e8s: gross_icp_payout_e8s,
             available_e8s: state.liquid_icp_e8s,
         });
     }
 
     let mut post_state = *state;
-    post_state.liquid_icp_e8s -= icp_paid_e8s;
+    post_state.liquid_icp_e8s -= gross_icp_payout_e8s;
     post_state.return_io_to_reserve(io_e8s)?;
 
     let rate_after = post_state.redemption_rate()?;
     Ok(PreviewedRedemption {
         outcome: RedemptionOutcome {
             io_redeemed_e8s: io_e8s,
-            icp_paid_e8s,
+            icp_paid_e8s: gross_icp_payout_e8s,
+            gross_icp_payout_e8s,
+            icp_ledger_fee_e8s: fee_policy.icp_ledger_transfer_fee_e8s,
+            net_user_icp_payout_e8s: gross_icp_payout_e8s - fee_policy.icp_ledger_transfer_fee_e8s,
+            io_returned_to_reserve_e8s: io_e8s,
+            dust_retained_icp_e8s: 0,
             rate_before,
             rate_after,
         },
@@ -521,18 +642,16 @@ mod additional_edge_case_tests {
     }
 
     #[test]
-    fn zero_value_stream_is_noop_but_still_well_defined() {
+    fn zero_value_stream_is_rejected_without_mutation() {
         let mut s = base_state();
         let before = s;
-        let out = process_stream(&mut s, StreamKind::JupiterFaucet, 0).unwrap();
         assert_eq!(
-            out.split,
-            Split {
-                stake_e8s: 0,
-                liquid_e8s: 0
-            }
+            process_stream(&mut s, StreamKind::JupiterFaucet, 0),
+            Err(ModelError::BelowMinimumStreamDeposit {
+                amount_e8s: 0,
+                minimum_e8s: DEFAULT_MIN_STREAM_DEPOSIT_E8S
+            })
         );
-        assert_eq!(out.io_issued_e8s, 0);
         assert_eq!(s, before);
     }
 
@@ -594,24 +713,93 @@ mod additional_edge_case_tests {
     }
 
     #[test]
-    fn redemption_of_zero_io_is_noop() {
+    fn redemption_of_zero_io_is_rejected_without_mutation() {
         let mut s = base_state();
         process_stream(&mut s, StreamKind::JupiterFaucet, t(100)).unwrap();
         let before = s;
-        let out = redeem_io(&mut s, 0).unwrap();
-        assert_eq!(out.io_redeemed_e8s, 0);
-        assert_eq!(out.icp_paid_e8s, 0);
+        assert_eq!(
+            redeem_io(&mut s, 0),
+            Err(ModelError::BelowMinimumRedemption {
+                io_e8s: 0,
+                minimum_e8s: DEFAULT_MIN_REDEMPTION_IO_E8S
+            })
+        );
         assert_eq!(s, before);
     }
 
     #[test]
-    fn redemption_rounding_never_pays_more_than_liquid_reserve() {
+    fn redemption_rounding_rejects_zero_payout_without_mutation() {
         let mut s = ProtocolState::new(1_000, 0, 0);
         s.liquid_icp_e8s = 1;
-        let out = redeem_io(&mut s, 999).unwrap();
-        assert_eq!(out.icp_paid_e8s, 0);
-        assert_eq!(s.liquid_icp_e8s, 1);
-        assert_eq!(s.protocol_reserve_io_e8s, 999);
+        let before = s;
+        assert_eq!(
+            redeem_io(&mut s, 999),
+            Err(ModelError::RedemptionPayoutBelowFee {
+                gross_icp_payout_e8s: 0,
+                fee_e8s: 0
+            })
+        );
+        assert_eq!(s, before);
+    }
+
+    #[test]
+    fn fee_aware_redemption_exposes_gross_fee_net_and_reserve_return() {
+        let mut s = base_state();
+        process_stream(&mut s, StreamKind::JupiterFaucet, t(100)).unwrap();
+        let preview = preview_redeem_io_with_policy(
+            &s,
+            t(10),
+            FeePolicy {
+                icp_ledger_transfer_fee_e8s: 10_000,
+                io_ledger_transfer_fee_e8s: 2_000,
+            },
+            DustPolicy::default_protocol(),
+        )
+        .unwrap();
+        assert_eq!(preview.outcome.gross_icp_payout_e8s, t(10));
+        assert_eq!(preview.outcome.icp_ledger_fee_e8s, 10_000);
+        assert_eq!(preview.outcome.net_user_icp_payout_e8s, t(10) - 10_000);
+        assert_eq!(preview.outcome.io_returned_to_reserve_e8s, t(10));
+        assert_eq!(preview.post_state.liquid_icp_e8s, t(50));
+        assert_eq!(
+            preview.post_state.protocol_reserve_io_e8s,
+            s.protocol_reserve_io_e8s + t(10)
+        );
+    }
+
+    #[test]
+    fn fee_aware_redemption_rejects_payout_not_above_fee() {
+        let mut s = base_state();
+        process_stream(&mut s, StreamKind::JupiterFaucet, 10).unwrap();
+        let before = s;
+        let err = preview_redeem_io_with_policy(
+            &s,
+            1,
+            FeePolicy {
+                icp_ledger_transfer_fee_e8s: 1,
+                io_ledger_transfer_fee_e8s: 0,
+            },
+            DustPolicy::default_protocol(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ModelError::RedemptionPayoutBelowFee {
+                gross_icp_payout_e8s: 1,
+                fee_e8s: 1
+            }
+        );
+        assert_eq!(s, before);
+    }
+
+    #[test]
+    fn partial_redemption_preserves_solvency_after_rounding() {
+        let mut s = ProtocolState::new(1_000, 0, 0);
+        s.liquid_icp_e8s = 1_000;
+        let out = redeem_io(&mut s, 333).unwrap();
+        assert_eq!(out.gross_icp_payout_e8s, 333);
+        assert_eq!(s.liquid_icp_e8s, 667);
+        assert_eq!(s.protocol_reserve_io_e8s, 333);
     }
 
     #[test]

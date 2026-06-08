@@ -165,6 +165,10 @@ pub struct RedemptionHistoryRecord {
     pub user_account: Option<String>,
     pub io_amount_e8s: u128,
     pub icp_payout_amount_e8s: Option<u128>,
+    pub gross_icp_payout_e8s: Option<u128>,
+    pub icp_payout_fee_e8s: Option<u128>,
+    pub net_user_icp_payout_e8s: Option<u128>,
+    pub io_return_fee_e8s: Option<u128>,
     pub icp_payout_block: Option<u64>,
     pub io_return_block: Option<u64>,
     pub phase: PublicOperationPhase,
@@ -702,6 +706,10 @@ pub fn redemption_record_from_ledger_flow(
         user_account: flow.from_account,
         io_amount_e8s: flow.amount_e8s,
         icp_payout_amount_e8s,
+        gross_icp_payout_e8s: None,
+        icp_payout_fee_e8s: None,
+        net_user_icp_payout_e8s: None,
+        io_return_fee_e8s: None,
         icp_payout_block: None,
         io_return_block: None,
         phase,
@@ -1370,6 +1378,10 @@ mod tests {
             user_account: Some("user".to_string()),
             io_amount_e8s: u128::from(id),
             icp_payout_amount_e8s: Some(u128::from(id)),
+            gross_icp_payout_e8s: Some(u128::from(id)),
+            icp_payout_fee_e8s: Some(0),
+            net_user_icp_payout_e8s: Some(u128::from(id)),
+            io_return_fee_e8s: Some(0),
             icp_payout_block: Some(id + 1),
             io_return_block: Some(id + 2),
             phase: PublicOperationPhase::Completed,
@@ -1388,6 +1400,30 @@ mod tests {
             Some(0),
             PublicOperationPhase::Completed,
         )
+    }
+
+    #[test]
+    fn redemption_flow_observed_payout_does_not_infer_gross_net_or_fee() {
+        let record = redemption_record_from_ledger_flow(
+            ObservedLedgerFlow {
+                ledger_kind: LedgerKind::IoLedger,
+                ledger_principal_text: Some("ryjl3-tyaaa-aaaaa-aaaba-cai".to_string()),
+                block_index: 42,
+                amount_e8s: 1_000,
+                from_account: Some("user".to_string()),
+                to_account: Some("redemption".to_string()),
+                memo: Some(b"redeem".to_vec()),
+                timestamp_nanos: Some(99),
+            },
+            Some(700),
+            PublicOperationPhase::Observed,
+        );
+
+        assert_eq!(record.icp_payout_amount_e8s, Some(700));
+        assert_eq!(record.gross_icp_payout_e8s, None);
+        assert_eq!(record.icp_payout_fee_e8s, None);
+        assert_eq!(record.net_user_icp_payout_e8s, None);
+        assert_eq!(record.io_return_fee_e8s, None);
     }
 
     fn lifecycle(id: u64) -> NnsLifecycleSummary {

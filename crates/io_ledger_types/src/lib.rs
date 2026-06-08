@@ -1602,6 +1602,14 @@ mod tests {
     }
 
     #[test]
+    fn icrc_transfer_arg_preserves_intentional_omitted_fee() {
+        let mut req = request();
+        req.fee_e8s = None;
+        let arg = IcrcTransferArg::from(req);
+        assert_eq!(arg.fee, None);
+    }
+
+    #[test]
     fn icrc_account_conversion_rejects_invalid_subaccount_length() {
         let err = Account::try_from(IcrcAccount {
             owner: principal(),
@@ -1654,6 +1662,14 @@ mod tests {
         assert_eq!(args.fee.e8s, 10);
         assert_eq!(args.memo, 42);
         assert_eq!(args.from_subaccount, Some(vec![1; 32]));
+    }
+
+    #[test]
+    fn icp_transfer_args_fill_configured_default_only_when_fee_is_omitted() {
+        let mut req = icp_request();
+        req.fee_e8s = None;
+        let args = icp_transfer_args_for_request(req, 10_000).unwrap();
+        assert_eq!(args.fee.e8s, 10_000);
     }
 
     #[test]
