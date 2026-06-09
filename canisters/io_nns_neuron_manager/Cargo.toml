@@ -13,6 +13,7 @@ candid.workspace = true
 ic-cdk.workspace = true
 io-governance-types.workspace = true
 io-ledger-types.workspace = true
+io-production-wiring.workspace = true
 serde.workspace = true
 
 [dev-dependencies]

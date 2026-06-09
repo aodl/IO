@@ -12,4 +12,38 @@
   nns_governance_principal_text = null : opt text;
   icp_ledger_principal_text = null : opt text;
   icp_index_principal_text = null : opt text;
+  production_wiring = null : opt record {
+    mode : variant { Mock; Local; DryRun; ProductionPlanned; ProductionActive };
+    io_ledger_role : variant { IoTestNonCanonical; FutureCanonicalSnsIo };
+    fixture_marked : bool;
+    principals : record {
+      icp_ledger_principal_text : opt text;
+      icp_index_principal_text : opt text;
+      nns_governance_principal_text : opt text;
+      nns_ledger_principal_text : opt text;
+      nns_index_principal_text : opt text;
+      sns_root_principal_text : opt text;
+      sns_governance_principal_text : opt text;
+      sns_ledger_principal_text : opt text;
+      sns_index_principal_text : opt text;
+      io_ledger_principal_text : opt text;
+      io_index_principal_text : opt text;
+    };
+    fee_policy : record {
+      icp_transfer_fee_e8s : opt nat;
+      io_ledger_transfer_fee_e8s : opt nat;
+      tiny_value_policy_max_fee_e8s : opt nat;
+      allow_zero_fees_for_mock_or_local : bool;
+    };
+    protected : record {
+      neuron_owner_canister_principal_text : opt text;
+      io_nns_neuron_id : opt nat64;
+    };
+    deployment_targets : record {
+      io_stream_manager_principal_text : opt text;
+      io_nns_neuron_manager_principal_text : opt text;
+      mutation_target_principal_texts : vec text;
+      mutation_target_nns_neuron_ids : vec nat64;
+    };
+  };
 })

@@ -34,6 +34,7 @@ ic-cdk.workspace = true
 io-core-model.workspace = true
 io-governance-types.workspace = true
 io-ledger-types.workspace = true
+io-production-wiring.workspace = true
 io-reward-policy.workspace = true
 serde.workspace = true
 

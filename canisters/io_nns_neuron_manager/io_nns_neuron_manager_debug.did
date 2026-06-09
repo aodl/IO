@@ -17,6 +17,53 @@ type InitArgs = record {
   nns_governance_principal_text : opt text;
   icp_ledger_principal_text : opt text;
   icp_index_principal_text : opt text;
+  production_wiring : opt ProductionWiringConfig;
+};
+
+type ProductionWiringConfig = record {
+  mode : WiringMode;
+  io_ledger_role : IoLedgerRole;
+  fixture_marked : bool;
+  principals : PrincipalWiring;
+  fee_policy : FeePolicyWiring;
+  protected : ProtectedReferences;
+  deployment_targets : DeploymentTargets;
+};
+
+type WiringMode = variant { Mock; Local; DryRun; ProductionPlanned; ProductionActive };
+type IoLedgerRole = variant { IoTestNonCanonical; FutureCanonicalSnsIo };
+
+type PrincipalWiring = record {
+  icp_ledger_principal_text : opt text;
+  icp_index_principal_text : opt text;
+  nns_governance_principal_text : opt text;
+  nns_ledger_principal_text : opt text;
+  nns_index_principal_text : opt text;
+  sns_root_principal_text : opt text;
+  sns_governance_principal_text : opt text;
+  sns_ledger_principal_text : opt text;
+  sns_index_principal_text : opt text;
+  io_ledger_principal_text : opt text;
+  io_index_principal_text : opt text;
+};
+
+type FeePolicyWiring = record {
+  icp_transfer_fee_e8s : opt nat;
+  io_ledger_transfer_fee_e8s : opt nat;
+  tiny_value_policy_max_fee_e8s : opt nat;
+  allow_zero_fees_for_mock_or_local : bool;
+};
+
+type ProtectedReferences = record {
+  neuron_owner_canister_principal_text : opt text;
+  io_nns_neuron_id : opt nat64;
+};
+
+type DeploymentTargets = record {
+  io_stream_manager_principal_text : opt text;
+  io_nns_neuron_manager_principal_text : opt text;
+  mutation_target_principal_texts : vec text;
+  mutation_target_nns_neuron_ids : vec nat64;
 };
 
 type ApiManagedNeuronKind = variant {

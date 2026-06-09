@@ -5,6 +5,7 @@ pub mod scheduler;
 pub mod state;
 
 use candid::{CandidType, Principal};
+use io_production_wiring::ProductionWiringConfig;
 use serde::Deserialize;
 use std::cell::RefCell;
 
@@ -30,6 +31,7 @@ pub struct InitArgs {
     pub io_sns_ledger_principal_text: Option<String>,
     pub io_sns_index_principal_text: Option<String>,
     pub sns_governance_principal_text: Option<String>,
+    pub production_wiring: Option<ProductionWiringConfig>,
 }
 
 impl Default for InitArgs {
@@ -48,6 +50,7 @@ impl Default for InitArgs {
             io_sns_ledger_principal_text: None,
             io_sns_index_principal_text: None,
             sns_governance_principal_text: None,
+            production_wiring: None,
         }
     }
 }
@@ -67,6 +70,7 @@ pub struct StreamManagerConfig {
     pub io_sns_ledger_principal_text: Option<String>,
     pub io_sns_index_principal_text: Option<String>,
     pub sns_governance_principal_text: Option<String>,
+    pub production_wiring: Option<ProductionWiringConfig>,
 }
 
 impl Default for StreamManagerConfig {
@@ -82,6 +86,7 @@ pub enum InitArgsError {
     ExcludedSupplyExceedsTotal,
     InvalidBasisPoints { bps: u128 },
     InvalidPrincipalText { field: &'static str, value: String },
+    InvalidProductionWiring { message: String },
 }
 
 impl TryFrom<InitArgs> for StreamManagerConfig {
@@ -125,6 +130,13 @@ impl TryFrom<InitArgs> for StreamManagerConfig {
             "sns_governance_principal_text",
             &args.sns_governance_principal_text,
         )?;
+        if let Some(production_wiring) = &args.production_wiring {
+            production_wiring
+                .validate()
+                .map_err(|err| InitArgsError::InvalidProductionWiring {
+                    message: format!("{err:?}"),
+                })?;
+        }
 
         Ok(Self {
             initial_total_io_supply_e8s: args.initial_total_io_supply_e8s,
@@ -140,6 +152,7 @@ impl TryFrom<InitArgs> for StreamManagerConfig {
             io_sns_ledger_principal_text: args.io_sns_ledger_principal_text,
             io_sns_index_principal_text: args.io_sns_index_principal_text,
             sns_governance_principal_text: args.sns_governance_principal_text,
+            production_wiring: args.production_wiring,
         })
     }
 }
@@ -998,6 +1011,86 @@ mod tests {
                 value: "not-sns-index".to_string()
             }
         );
+    }
+
+    fn dry_run_wiring() -> ProductionWiringConfig {
+        use io_production_wiring::{
+            DeploymentTargets, FeePolicyWiring, IoLedgerRole, PrincipalWiring, ProtectedReferences,
+            WiringMode, ICP_INDEX_PRINCIPAL, ICP_LEDGER_PRINCIPAL, ICP_TRANSFER_FEE_E8S,
+            NNS_GOVERNANCE_PRINCIPAL, PROTECTED_IO_NEURON_OWNER_CANISTER,
+            PROTECTED_IO_NNS_NEURON_ID,
+        };
+
+        ProductionWiringConfig {
+            mode: WiringMode::DryRun,
+            io_ledger_role: IoLedgerRole::FutureCanonicalSnsIo,
+            fixture_marked: false,
+            principals: PrincipalWiring {
+                icp_ledger_principal_text: Some(ICP_LEDGER_PRINCIPAL.to_string()),
+                icp_index_principal_text: Some(ICP_INDEX_PRINCIPAL.to_string()),
+                nns_governance_principal_text: Some(NNS_GOVERNANCE_PRINCIPAL.to_string()),
+                nns_ledger_principal_text: Some(ICP_LEDGER_PRINCIPAL.to_string()),
+                nns_index_principal_text: Some(ICP_INDEX_PRINCIPAL.to_string()),
+                sns_root_principal_text: Some("qaa6y-5yaaa-aaaaa-aaafa-cai".to_string()),
+                sns_governance_principal_text: Some("r7inp-6aaaa-aaaaa-aaabq-cai".to_string()),
+                sns_ledger_principal_text: Some("qjdve-lqaaa-aaaaa-aaaeq-cai".to_string()),
+                sns_index_principal_text: Some("renrk-eyaaa-aaaaa-aaada-cai".to_string()),
+                io_ledger_principal_text: Some("qjdve-lqaaa-aaaaa-aaaeq-cai".to_string()),
+                io_index_principal_text: Some("renrk-eyaaa-aaaaa-aaada-cai".to_string()),
+            },
+            fee_policy: FeePolicyWiring {
+                icp_transfer_fee_e8s: Some(ICP_TRANSFER_FEE_E8S),
+                io_ledger_transfer_fee_e8s: Some(10_000),
+                tiny_value_policy_max_fee_e8s: Some(1_000_000),
+                allow_zero_fees_for_mock_or_local: false,
+            },
+            protected: ProtectedReferences {
+                neuron_owner_canister_principal_text: Some(
+                    PROTECTED_IO_NEURON_OWNER_CANISTER.to_string(),
+                ),
+                io_nns_neuron_id: Some(PROTECTED_IO_NNS_NEURON_ID),
+            },
+            deployment_targets: DeploymentTargets {
+                io_stream_manager_principal_text: None,
+                io_nns_neuron_manager_principal_text: None,
+                mutation_target_principal_texts: Vec::new(),
+                mutation_target_nns_neuron_ids: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn install_args_accept_valid_dry_run_wiring() {
+        let config = StreamManagerConfig::try_from(InitArgs {
+            production_wiring: Some(dry_run_wiring()),
+            ..InitArgs::default()
+        })
+        .unwrap();
+
+        assert!(config.production_wiring.is_some());
+    }
+
+    #[test]
+    fn install_args_reject_invalid_production_planned_wiring() {
+        let mut wiring = dry_run_wiring();
+        wiring.mode = io_production_wiring::WiringMode::ProductionPlanned;
+        wiring.principals.icp_ledger_principal_text = None;
+
+        assert!(matches!(
+            StreamManagerConfig::try_from(InitArgs {
+                production_wiring: Some(wiring),
+                ..InitArgs::default()
+            })
+            .unwrap_err(),
+            InitArgsError::InvalidProductionWiring { .. }
+        ));
+    }
+
+    #[test]
+    fn default_install_args_do_not_enable_production_wiring() {
+        let config = StreamManagerConfig::try_from(InitArgs::default()).unwrap();
+
+        assert!(config.production_wiring.is_none());
     }
 
     #[test]

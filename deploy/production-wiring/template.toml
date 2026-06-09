@@ -1,0 +1,37 @@
+# IO production-planned wiring template.
+# This file is validated offline only. Principal values are planned wiring inputs,
+# not proof that SNS canisters exist or that value-moving protocol canisters are live.
+
+[environment]
+mode = "ProductionPlanned"
+io_ledger_role = "FutureCanonicalSnsIo"
+fixture_marked = false
+
+[principals]
+icp_ledger = "ryjl3-tyaaa-aaaaa-aaaba-cai"
+icp_index = "qhbym-qaaaa-aaaaa-aaafq-cai"
+nns_governance = "rrkah-fqaaa-aaaaa-aaaaq-cai"
+nns_ledger = "ryjl3-tyaaa-aaaaa-aaaba-cai"
+nns_index = "qhbym-qaaaa-aaaaa-aaafq-cai"
+sns_root = "qaa6y-5yaaa-aaaaa-aaafa-cai"
+sns_governance = "r7inp-6aaaa-aaaaa-aaabq-cai"
+sns_ledger = "qjdve-lqaaa-aaaaa-aaaeq-cai"
+sns_index = "renrk-eyaaa-aaaaa-aaada-cai"
+io_ledger = "qjdve-lqaaa-aaaaa-aaaeq-cai"
+io_index = "renrk-eyaaa-aaaaa-aaada-cai"
+
+[fees]
+icp_transfer_fee_e8s = 10_000
+io_ledger_transfer_fee_e8s = 10_000
+tiny_value_policy_max_fee_e8s = 1_000_000
+allow_zero_fees_for_mock_or_local = false
+
+[protected]
+neuron_owner_canister = "oae4c-3iaaa-aaaar-qb5qq-cai"
+io_nns_neuron_id = 6_345_890_886_899_317_159
+
+[deployment_targets]
+io_stream_manager = null
+io_nns_neuron_manager = null
+mutation_target_principals = []
+mutation_target_nns_neuron_ids = []

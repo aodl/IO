@@ -1,4 +1,8 @@
 use candid::Principal;
+use io_production_wiring::{
+    template_paths, validate_template_text, PHASE1_FRONTEND_CANISTER_ID,
+    PHASE1_HISTORIAN_CANISTER_ID, PROTECTED_IO_NEURON_OWNER_CANISTER, PROTECTED_IO_NNS_NEURON_ID,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -10,10 +14,8 @@ use std::process::{Command, ExitCode};
 const RELEASE_PROFILE: &str = "release";
 const WASM_TARGET: &str = "wasm32-unknown-unknown";
 const MANIFEST_PATH: &str = "release-artifacts/manifest.json";
-const KNOWN_TWO_YEAR_NNS_NEURON_ID: u64 = 6_345_890_886_899_317_159;
-const KNOWN_CONTROLLER_CANISTER_PRINCIPAL: &str = "oae4c-3iaaa-aaaar-qb5qq-cai";
-const PHASE1_FRONTEND_CANISTER_ID: &str = "6h2pa-qiaaa-aaaao-qp4fa-cai";
-const PHASE1_HISTORIAN_CANISTER_ID: &str = "yo47z-piaaa-aaaac-qg3xa-cai";
+const KNOWN_TWO_YEAR_NNS_NEURON_ID: u64 = PROTECTED_IO_NNS_NEURON_ID;
+const KNOWN_CONTROLLER_CANISTER_PRINCIPAL: &str = PROTECTED_IO_NEURON_OWNER_CANISTER;
 const PHASE1_MODE: &str = "MainnetPreLaunchPublicShell";
 const PHASE1_CONFIG_PATH: &str = "deploy/phase1-mainnet/canister-ids.toml";
 const PHASE1_README_PATH: &str = "deploy/phase1-mainnet/README.md";
@@ -1485,6 +1487,89 @@ fn check_prelaunch_public_shell_at(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn check_production_wiring_at(root: &Path) -> Result<(), String> {
+    for path in template_paths() {
+        let text = require_file(root, path)?;
+        validate_template_text(&text).map_err(|err| format!("{path}: {err}"))?;
+        require_absent(
+            path,
+            &text,
+            &[
+                "dfx",
+                "--network ic",
+                "icp canister install",
+                "icp canister upgrade",
+                "icp canister update-settings",
+                "icp canister call",
+            ],
+        )?;
+    }
+
+    let readme = require_file(root, "deploy/production-wiring/README.md")?;
+    let operations = require_file(root, "docs/operations/production-wiring.md")?;
+    let prelaunch = require_file(root, "docs/operations/prelaunch-config-validation.md")?;
+    let combined = format!("{readme}\n{operations}\n{prelaunch}\n");
+    require_present(
+        "production wiring docs",
+        &combined,
+        &[
+            "dry-run/config validation only",
+            "No production execution is active",
+            "IO protocol remains not live",
+            "SNS IO ledger is not launched",
+            "production activation is a later audited milestone",
+            PROTECTED_IO_NEURON_OWNER_CANISTER,
+            "6345890886899317159",
+            "use `icp-cli` convention",
+            "required workflows do not use `dfx`",
+            "IO_TEST ledger is non-canonical",
+            "intentionally `null`",
+            "planned wiring placeholders only",
+            "No value-moving IO canister is deployed to production",
+            "Production Wiring Checklist",
+        ],
+    )?;
+    require_absent(
+        "production wiring docs",
+        &combined,
+        &["--network ic", "dfx canister", "dfx deploy"],
+    )?;
+
+    let phase1 = require_file(root, PHASE1_CONFIG_PATH)?;
+    require_toml_bool(
+        PHASE1_CONFIG_PATH,
+        &phase1,
+        "not_deployed",
+        "io_stream_manager",
+        true,
+    )?;
+    require_toml_bool(
+        PHASE1_CONFIG_PATH,
+        &phase1,
+        "not_deployed",
+        "io_nns_neuron_manager",
+        true,
+    )?;
+    require_toml_string(
+        PHASE1_CONFIG_PATH,
+        &phase1,
+        "not_touched",
+        "existing_io_neuron_owner_canister",
+        PROTECTED_IO_NEURON_OWNER_CANISTER,
+    )?;
+    require_toml_string(
+        PHASE1_CONFIG_PATH,
+        &phase1,
+        "not_touched",
+        "io_neuron_id",
+        &PROTECTED_IO_NNS_NEURON_ID.to_string(),
+    )?;
+
+    check_did_surface_at(root, false)?;
+    check_required_executable_scripts_at(root)?;
+    Ok(())
+}
+
 fn validate_no_install_args_did(root: &Path, path: &str) -> Result<(), String> {
     let text = read_file(root, path)?;
     if text.contains("service : (") {
@@ -1505,7 +1590,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -1586,6 +1671,13 @@ fn main() -> ExitCode {
             Ok(()) => eprintln!("✓ validate_prelaunch_public_shell"),
             Err(err) => {
                 eprintln!("✗ validate_prelaunch_public_shell: {err}");
+                ok = false;
+            }
+        },
+        "validate_production_wiring" => match check_production_wiring_at(&root) {
+            Ok(()) => eprintln!("✓ validate_production_wiring"),
+            Err(err) => {
+                eprintln!("✗ validate_production_wiring: {err}");
                 ok = false;
             }
         },
@@ -1820,6 +1912,7 @@ fn main() -> ExitCode {
                 "build_canisters",
                 "verify_artifacts",
                 "validate_install_args",
+                "validate_production_wiring",
                 "historian_tests",
                 "frontend_required",
                 "sns_harness_check",
@@ -2043,6 +2136,7 @@ fn main() -> ExitCode {
                 "build_canisters",
                 "verify_artifacts",
                 "validate_install_args",
+                "validate_production_wiring",
                 "security_scan_required",
                 "test_unit",
                 "frontend_required",
@@ -2348,6 +2442,78 @@ release-artifacts/manifest.json
             "tools/scripts/required-check",
             "#!/usr/bin/env bash\ncargo test\n",
         );
+    }
+
+    fn production_wiring_template(mode: &str) -> String {
+        format!(
+            r#"[environment]
+mode = "{mode}"
+io_ledger_role = "FutureCanonicalSnsIo"
+fixture_marked = false
+
+[principals]
+icp_ledger = "ryjl3-tyaaa-aaaaa-aaaba-cai"
+icp_index = "qhbym-qaaaa-aaaaa-aaafq-cai"
+nns_governance = "rrkah-fqaaa-aaaaa-aaaaq-cai"
+nns_ledger = "ryjl3-tyaaa-aaaaa-aaaba-cai"
+nns_index = "qhbym-qaaaa-aaaaa-aaafq-cai"
+sns_root = "qaa6y-5yaaa-aaaaa-aaafa-cai"
+sns_governance = "r7inp-6aaaa-aaaaa-aaabq-cai"
+sns_ledger = "qjdve-lqaaa-aaaaa-aaaeq-cai"
+sns_index = "renrk-eyaaa-aaaaa-aaada-cai"
+io_ledger = "qjdve-lqaaa-aaaaa-aaaeq-cai"
+io_index = "renrk-eyaaa-aaaaa-aaada-cai"
+
+[fees]
+icp_transfer_fee_e8s = 10_000
+io_ledger_transfer_fee_e8s = 10_000
+tiny_value_policy_max_fee_e8s = 1_000_000
+allow_zero_fees_for_mock_or_local = false
+
+[protected]
+neuron_owner_canister = "oae4c-3iaaa-aaaar-qb5qq-cai"
+io_nns_neuron_id = 6_345_890_886_899_317_159
+
+[deployment_targets]
+io_stream_manager = null
+io_nns_neuron_manager = null
+mutation_target_principals = []
+mutation_target_nns_neuron_ids = []
+"#
+        )
+    }
+
+    fn write_production_wiring_fixture(root: &Path) {
+        write_prelaunch_public_shell_fixture(root);
+        write(
+            root,
+            "deploy/production-wiring/template.toml",
+            &production_wiring_template("ProductionPlanned"),
+        );
+        write(
+            root,
+            "deploy/production-wiring/dry-run.example.toml",
+            &production_wiring_template("DryRun"),
+        );
+        let doc = r#"
+dry-run/config validation only
+No production execution is active
+IO protocol remains not live
+SNS IO ledger is not launched
+production activation is a later audited milestone
+oae4c-3iaaa-aaaar-qb5qq-cai
+6345890886899317159
+use `icp-cli` convention
+required workflows do not use `dfx`
+IO_TEST ledger is non-canonical
+Production Wiring Checklist
+Value-moving deployment target fields are intentionally `null`.
+Template SNS principal values are planned wiring placeholders only.
+No value-moving IO canister is deployed to production.
+"#;
+        write(root, "deploy/production-wiring/README.md", doc);
+        write(root, "docs/operations/production-wiring.md", doc);
+        write(root, "docs/operations/prelaunch-config-validation.md", doc);
     }
 
     #[test]
@@ -2713,6 +2879,63 @@ release-artifacts/manifest.json
         write_prelaunch_public_shell_fixture(&root);
         check_prelaunch_public_shell_at(&root).unwrap();
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn production_wiring_validation_accepts_fixture() {
+        let root = temp_root("production-wiring-good");
+        write_production_wiring_fixture(&root);
+        check_production_wiring_at(&root).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn production_wiring_validation_rejects_protected_target() {
+        let root = temp_root("production-wiring-protected-target");
+        write_production_wiring_fixture(&root);
+        let bad = production_wiring_template("ProductionPlanned").replace(
+            "io_stream_manager = null",
+            &format!("io_stream_manager = \"{PROTECTED_IO_NEURON_OWNER_CANISTER}\""),
+        );
+        write(
+            root.as_path(),
+            "deploy/production-wiring/template.toml",
+            &bad,
+        );
+
+        assert!(check_production_wiring_at(&root).is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn production_wiring_validation_rejects_system_canister_deployment_targets() {
+        for (name, field, canister_id) in [
+            (
+                "internet-identity",
+                "io_stream_manager",
+                "rdmx6-jaaaa-aaaaa-aaadq-cai",
+            ),
+            (
+                "nns-dapp",
+                "io_nns_neuron_manager",
+                "qoctq-giaaa-aaaaa-aaaea-cai",
+            ),
+        ] {
+            let root = temp_root(&format!("production-wiring-system-target-{name}"));
+            write_production_wiring_fixture(&root);
+            let bad = production_wiring_template("ProductionPlanned").replace(
+                &format!("{field} = null"),
+                &format!("{field} = \"{canister_id}\""),
+            );
+            write(
+                root.as_path(),
+                "deploy/production-wiring/template.toml",
+                &bad,
+            );
+
+            assert!(check_production_wiring_at(&root).is_err());
+            let _ = fs::remove_dir_all(root);
+        }
     }
 
     #[test]

@@ -1058,7 +1058,16 @@ dependencies = [
  "io-build-support",
  "io-governance-types",
  "io-ledger-types",
+ "io-production-wiring",
  "pocket-ic",
+ "serde",
+]
+
+[[package]]
+name = "io-production-wiring"
+version = "0.1.0"
+dependencies = [
+ "candid",
  "serde",
 ]
 
@@ -1089,6 +1098,7 @@ dependencies = [
  "io-governance-types",
  "io-ledger-types",
  "io-nns-neuron-manager",
+ "io-production-wiring",
  "io-reward-policy",
  "io-sns-lifecycle",
  "pocket-ic",
@@ -2988,6 +2998,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "candid",
+ "io-production-wiring",
  "io-sns-lifecycle",
  "serde",
  "serde_json",

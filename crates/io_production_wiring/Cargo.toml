@@ -1,0 +1,9 @@
+[package]
+name = "io-production-wiring"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+candid.workspace = true
+serde.workspace = true
