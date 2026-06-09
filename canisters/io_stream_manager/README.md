@@ -32,7 +32,11 @@ Validation rejects:
 
 ## Stable State
 
-Upgrade persistence uses an explicit stable snapshot saved with `ic_cdk::storage::stable_save` and restored with `stable_restore`. The snapshot preserves config, protocol accounting, processed transaction IDs, active staked IO, and two-week pool backing bps. Host tests exercise export/import round trips without exposing stable-state methods in the production DID.
+Upgrade persistence uses an explicit versioned stable snapshot saved with `ic_cdk::storage::stable_save` and restored with `stable_restore`. The snapshot preserves config, protocol accounting, processed transaction IDs, active staked IO, two-week pool backing bps, operation journals, pending redemption gross/net/fee intent, retry status, and account-history cursors. Host tests exercise export/import and migration round trips without exposing stable-state methods in the production DID.
+
+Stable storage hardening does not make IO live. This value-moving canister is not deployed to production, production adapters are not active, and the SNS IO ledger does not exist yet. Corrupt value-moving state must fail closed on upgrade. Missing first-install state is handled by init/default state and is not the same as a corrupt upgrade snapshot. Local stable-state fixtures are test fixtures, not live snapshots.
+
+Retry-critical journals, processed transaction IDs, duplicate proofs, and cursor state are not silently evicted. Journal compaction is documented separately and requires an audited policy before activation.
 
 ## Scheduler Skeleton
 

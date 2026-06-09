@@ -4,6 +4,8 @@ This milestone defines planned adapter wiring and dry-run/config validation only
 
 IO protocol remains not live, SNS IO ledger is not launched, no value-moving IO canister is deployed to production, and IO issuance/redemption remain inactive. production activation is a later audited milestone with separate review.
 
+Stable storage hardening does not activate production adapters. Stable-state fixtures are local/test fixtures, not live snapshots. The historian is a rebuildable read model; corrupt value-moving upgrade state must fail closed rather than defaulting to empty production state.
+
 The wiring templates cover ICP ledger/index, NNS governance, NNS ledger/index aliases, future SNS root/governance/ledger/index, IO ledger/index role naming, and explicit transfer fees. IO_TEST ledger is non-canonical and must not be labelled as canonical SNS IO.
 
 `deployment_targets.io_stream_manager` and `deployment_targets.io_nns_neuron_manager` are intentionally `null` until IO canister IDs are deliberately allocated in a later audited deployment dry-run/proposal package milestone. Template SNS principal values are planned wiring placeholders only and do not prove SNS launch or readiness.

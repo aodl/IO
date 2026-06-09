@@ -3,6 +3,7 @@ pub mod scheduler;
 
 use candid::{CandidType, Principal};
 use io_production_wiring::ProductionWiringConfig;
+use io_stable_schema::IO_NNS_NEURON_MANAGER_SCHEMA_VERSION;
 use serde::Deserialize;
 use std::cell::RefCell;
 
@@ -795,6 +796,85 @@ pub struct StableState {
     pub scheduler_cursors: NnsSchedulerCursors,
 }
 
+pub const NNS_NEURON_MANAGER_STABLE_SCHEMA_VERSION: u32 = IO_NNS_NEURON_MANAGER_SCHEMA_VERSION;
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct VersionedStableState {
+    pub schema_version: u32,
+    pub state: StableState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StableMigrationError {
+    UnsupportedFutureVersion {
+        canister: &'static str,
+        version: u32,
+    },
+    UnsupportedOldVersion {
+        canister: &'static str,
+        version: u32,
+    },
+    CorruptSnapshot {
+        canister: &'static str,
+        message: String,
+    },
+}
+
+pub fn migrate_stable_state(
+    snapshot: VersionedStableState,
+) -> Result<StableState, StableMigrationError> {
+    match snapshot.schema_version {
+        0 => Ok(snapshot.state),
+        NNS_NEURON_MANAGER_STABLE_SCHEMA_VERSION => Ok(snapshot.state),
+        version if version > NNS_NEURON_MANAGER_STABLE_SCHEMA_VERSION => {
+            Err(StableMigrationError::UnsupportedFutureVersion {
+                canister: "io_nns_neuron_manager",
+                version,
+            })
+        }
+        version => Err(StableMigrationError::UnsupportedOldVersion {
+            canister: "io_nns_neuron_manager",
+            version,
+        }),
+    }
+}
+
+fn decode_stable_state_bytes(bytes: &[u8]) -> Result<StableState, StableMigrationError> {
+    let versioned_err = match candid::decode_args::<(VersionedStableState,)>(bytes) {
+        Ok((snapshot,)) => return migrate_stable_state(snapshot),
+        Err(err) => err,
+    };
+
+    match candid::decode_args::<(StableState,)>(bytes) {
+        Ok((state,)) => migrate_stable_state(VersionedStableState {
+            schema_version: 0,
+            state,
+        }),
+        Err(unversioned_err) => Err(StableMigrationError::CorruptSnapshot {
+            canister: "io_nns_neuron_manager",
+            message: format!(
+                "failed to decode versioned stable state: {versioned_err}; failed to decode legacy unversioned stable state: {unversioned_err}"
+            ),
+        }),
+    }
+}
+
+pub fn default_first_install_stable_state() -> StableState {
+    CanisterState::default().into()
+}
+
+impl From<CanisterState> for StableState {
+    fn from(state: CanisterState) -> Self {
+        Self {
+            config: state.config,
+            model: state.model,
+            two_week_pool_state: state.two_week_pool_state,
+            operation_journal: state.operation_journal,
+            scheduler_cursors: state.scheduler_cursors,
+        }
+    }
+}
+
 fn export_stable_state() -> StableState {
     CANISTER_STATE.with(|cell| {
         let state = cell.borrow();
@@ -806,6 +886,13 @@ fn export_stable_state() -> StableState {
             scheduler_cursors: state.scheduler_cursors,
         }
     })
+}
+
+fn export_versioned_stable_state() -> VersionedStableState {
+    VersionedStableState {
+        schema_version: NNS_NEURON_MANAGER_STABLE_SCHEMA_VERSION,
+        state: export_stable_state(),
+    }
 }
 
 fn import_stable_state(state: StableState) {
@@ -822,15 +909,17 @@ fn import_stable_state(state: StableState) {
 
 #[cfg_attr(target_family = "wasm", ic_cdk::pre_upgrade)]
 pub fn pre_upgrade() {
-    ic_cdk::storage::stable_save((export_stable_state(),))
+    ic_cdk::storage::stable_save((export_versioned_stable_state(),))
         .expect("failed to save io_nns_neuron_manager stable state");
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::post_upgrade)]
 pub fn post_upgrade() {
-    if let Ok((state,)) = ic_cdk::storage::stable_restore::<(StableState,)>() {
-        import_stable_state(state);
-    }
+    let bytes = ic_cdk::stable::stable_bytes();
+    let state = decode_stable_state_bytes(&bytes).expect(
+        "io_nns_neuron_manager stable state is missing, corrupt, or unsupported during upgrade",
+    );
+    import_stable_state(state);
 }
 
 #[cfg(any(test, debug_assertions))]
@@ -839,8 +928,27 @@ pub fn export_stable_state_for_tests() -> StableState {
 }
 
 #[cfg(any(test, debug_assertions))]
+pub fn export_versioned_stable_state_for_tests() -> VersionedStableState {
+    export_versioned_stable_state()
+}
+
+#[cfg(any(test, debug_assertions))]
 pub fn import_stable_state_for_tests(state: StableState) {
     import_stable_state(state);
+}
+
+#[cfg(any(test, debug_assertions))]
+pub fn migrate_stable_state_for_tests(
+    snapshot: VersionedStableState,
+) -> Result<StableState, StableMigrationError> {
+    migrate_stable_state(snapshot)
+}
+
+#[cfg(any(test, debug_assertions))]
+pub fn decode_stable_state_bytes_for_tests(
+    bytes: &[u8],
+) -> Result<StableState, StableMigrationError> {
+    decode_stable_state_bytes(bytes)
 }
 
 #[cfg(any(test, debug_assertions))]
@@ -1274,6 +1382,165 @@ mod tests {
             export_stable_state_for_tests().scheduler_cursors,
             stable.scheduler_cursors
         );
+    }
+
+    fn pending_lifecycle_fixture() -> StableState {
+        init(InitArgs::default());
+        debug_advance_model_time(AdvanceModelTimeRequest {
+            elapsed_seconds: SECONDS_PER_DAY,
+            annual_bps: Some(1_000),
+        });
+        let post_model = CANISTER_STATE.with(|cell| cell.borrow().model.clone());
+        CANISTER_STATE.with(|cell| {
+            let mut state = cell.borrow_mut();
+            let mut op = NnsOperation::new(
+                "two-week-unwind:42".to_string(),
+                NnsOperationKind::TwoWeekUnwindPrincipalDisbursement,
+                42_000,
+                "principal_unwind".to_string(),
+                Some(post_model),
+            );
+            op.phase = NnsOperationPhase::FailedRetryable;
+            op.retry_count = 3;
+            op.last_error = Some("transient governance error".to_string());
+            op.icp_transfer_status = NnsTransferStatus::FailedRetryable;
+            state.operation_journal.push(op);
+            state.scheduler_cursors.last_two_year_maturity_check_time = Some(11);
+            state.scheduler_cursors.last_two_week_maturity_check_time = Some(12);
+            state.scheduler_cursors.last_unwind_check_time = Some(13);
+        });
+        export_stable_state_for_tests()
+    }
+
+    #[test]
+    fn nns_neuron_manager_migrates_previous_stable_fixture() {
+        let fixture = pending_lifecycle_fixture();
+        let migrated = migrate_stable_state_for_tests(VersionedStableState {
+            schema_version: 0,
+            state: fixture.clone(),
+        })
+        .unwrap();
+
+        assert_eq!(migrated, fixture);
+        assert!(migrated.config.production_wiring.is_none());
+    }
+
+    #[test]
+    fn nns_neuron_manager_decodes_legacy_unversioned_stable_root() {
+        let fixture = pending_lifecycle_fixture();
+        let bytes = candid::encode_args((fixture.clone(),)).unwrap();
+        let migrated = decode_stable_state_bytes_for_tests(&bytes).unwrap();
+
+        assert_eq!(migrated, fixture);
+        assert!(migrated.config.production_wiring.is_none());
+    }
+
+    #[test]
+    fn nns_neuron_manager_current_fixture_round_trips_unchanged() {
+        let fixture = pending_lifecycle_fixture();
+
+        assert_eq!(
+            migrate_stable_state_for_tests(VersionedStableState {
+                schema_version: NNS_NEURON_MANAGER_STABLE_SCHEMA_VERSION,
+                state: fixture.clone(),
+            })
+            .unwrap(),
+            fixture
+        );
+    }
+
+    #[test]
+    fn nns_neuron_manager_rejects_future_schema_version() {
+        let err = migrate_stable_state_for_tests(VersionedStableState {
+            schema_version: NNS_NEURON_MANAGER_STABLE_SCHEMA_VERSION + 1,
+            state: default_first_install_stable_state(),
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StableMigrationError::UnsupportedFutureVersion {
+                canister: "io_nns_neuron_manager",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn nns_neuron_manager_rejects_corrupt_stable_fixture() {
+        let decoded = decode_stable_state_bytes_for_tests(b"not candid stable state");
+
+        assert!(decoded.is_err());
+    }
+
+    #[test]
+    fn nns_neuron_manager_empty_first_install_state_defaults_safely() {
+        let stable = default_first_install_stable_state();
+
+        assert!(stable.config.production_wiring.is_none());
+        assert_eq!(
+            stable.config.controller_canister_principal_text,
+            CONTROLLER_CANISTER_PRINCIPAL_TEXT
+        );
+        assert_eq!(stable.config.two_year_nns_neuron_id, TWO_YEAR_NNS_NEURON_ID);
+        assert!(stable.operation_journal.is_empty());
+    }
+
+    #[test]
+    fn nns_neuron_manager_preserves_pending_lifecycle_journal() {
+        let migrated = migrate_stable_state_for_tests(VersionedStableState {
+            schema_version: 0,
+            state: pending_lifecycle_fixture(),
+        })
+        .unwrap();
+        let op = migrated.operation_journal.first().unwrap();
+
+        assert_eq!(
+            op.kind,
+            NnsOperationKind::TwoWeekUnwindPrincipalDisbursement
+        );
+        assert_eq!(op.phase, NnsOperationPhase::FailedRetryable);
+        assert_eq!(op.retry_count, 3);
+        assert_eq!(op.icp_transfer_status, NnsTransferStatus::FailedRetryable);
+        assert_eq!(
+            migrated.scheduler_cursors.last_two_year_maturity_check_time,
+            Some(11)
+        );
+        assert_eq!(
+            migrated.scheduler_cursors.last_two_week_maturity_check_time,
+            Some(12)
+        );
+        assert_eq!(migrated.scheduler_cursors.last_unwind_check_time, Some(13));
+    }
+
+    #[test]
+    fn nns_neuron_manager_protected_references_remain_protected_only() {
+        let migrated = migrate_stable_state_for_tests(VersionedStableState {
+            schema_version: 0,
+            state: pending_lifecycle_fixture(),
+        })
+        .unwrap();
+
+        assert_eq!(
+            migrated.config.controller_canister_principal_text,
+            CONTROLLER_CANISTER_PRINCIPAL_TEXT
+        );
+        assert_eq!(
+            migrated.config.two_year_nns_neuron_id,
+            TWO_YEAR_NNS_NEURON_ID
+        );
+        assert!(migrated
+            .config
+            .production_wiring
+            .as_ref()
+            .is_none_or(|wiring| wiring
+                .deployment_targets
+                .mutation_target_principal_texts
+                .is_empty()
+                && wiring
+                    .deployment_targets
+                    .mutation_target_nns_neuron_ids
+                    .is_empty()));
     }
 
     #[test]

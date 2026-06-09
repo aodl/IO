@@ -20,6 +20,8 @@ Historian freshness monitoring is also a public read model. It is rebuildable, n
 
 IO protocol is not live. SNS IO ledger remains not launched. Index canisters remain the normal account-history abstraction; raw ledger/archive traversal is not the default path.
 
+Stable storage hardening is local/test hardening only. No value-moving IO canister is deployed to production, and production adapters are not active. Stable-state fixtures are local/test fixtures, not live snapshots. Missing first-install state is different from corrupt upgrade state: first install may default to prelaunch state, while corrupt value-moving state must fail closed. Historian is a rebuildable read model, not protocol truth. Value-moving retry/accounting state is not casually discardable. The protected canister/neuron remain untouched.
+
 Missing before production:
 
 - audited real ICP ledger and index clients built on the `io-ledger-types` boundary;

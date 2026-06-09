@@ -1,0 +1,5 @@
+canister=io_historian
+schema_version=2
+scenario=unsupported-future-version
+source=local-test-builder
+live_snapshot=false

@@ -1,0 +1,6 @@
+canister=io_nns_neuron_manager
+schema_version=0
+scenario=missing-production-wiring-defaulted-by-typed-builder
+source=local-test-builder
+production_wiring=absent
+live_snapshot=false

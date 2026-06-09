@@ -13,6 +13,7 @@ candid.workspace = true
 ic-cdk.workspace = true
 io-ledger-types.workspace = true
 io-reward-policy.workspace = true
+io-stable-schema.workspace = true
 serde.workspace = true
 
 [build-dependencies]

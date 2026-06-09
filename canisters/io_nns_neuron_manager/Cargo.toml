@@ -14,6 +14,7 @@ ic-cdk.workspace = true
 io-governance-types.workspace = true
 io-ledger-types.workspace = true
 io-production-wiring.workspace = true
+io-stable-schema.workspace = true
 serde.workspace = true
 
 [dev-dependencies]

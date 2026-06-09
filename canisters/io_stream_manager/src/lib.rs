@@ -6,6 +6,7 @@ pub mod state;
 
 use candid::{CandidType, Principal};
 use io_production_wiring::ProductionWiringConfig;
+use io_stable_schema::IO_STREAM_MANAGER_SCHEMA_VERSION;
 use serde::Deserialize;
 use std::cell::RefCell;
 
@@ -257,6 +258,87 @@ pub struct StableState {
     pub two_week_pool_backing_bps: u128,
     pub operation_journal: Vec<StreamOperation>,
     pub scheduler_cursors: SchedulerCursors,
+}
+
+pub const STREAM_MANAGER_STABLE_SCHEMA_VERSION: u32 = IO_STREAM_MANAGER_SCHEMA_VERSION;
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct VersionedStableState {
+    pub schema_version: u32,
+    pub state: StableState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StableMigrationError {
+    UnsupportedFutureVersion {
+        canister: &'static str,
+        version: u32,
+    },
+    UnsupportedOldVersion {
+        canister: &'static str,
+        version: u32,
+    },
+    CorruptSnapshot {
+        canister: &'static str,
+        message: String,
+    },
+}
+
+pub fn migrate_stable_state(
+    snapshot: VersionedStableState,
+) -> Result<StableState, StableMigrationError> {
+    match snapshot.schema_version {
+        0 => Ok(snapshot.state),
+        STREAM_MANAGER_STABLE_SCHEMA_VERSION => Ok(snapshot.state),
+        version if version > STREAM_MANAGER_STABLE_SCHEMA_VERSION => {
+            Err(StableMigrationError::UnsupportedFutureVersion {
+                canister: "io_stream_manager",
+                version,
+            })
+        }
+        version => Err(StableMigrationError::UnsupportedOldVersion {
+            canister: "io_stream_manager",
+            version,
+        }),
+    }
+}
+
+fn decode_stable_state_bytes(bytes: &[u8]) -> Result<StableState, StableMigrationError> {
+    let versioned_err = match candid::decode_args::<(VersionedStableState,)>(bytes) {
+        Ok((snapshot,)) => return migrate_stable_state(snapshot),
+        Err(err) => err,
+    };
+
+    match candid::decode_args::<(StableState,)>(bytes) {
+        Ok((state,)) => migrate_stable_state(VersionedStableState {
+            schema_version: 0,
+            state,
+        }),
+        Err(unversioned_err) => Err(StableMigrationError::CorruptSnapshot {
+            canister: "io_stream_manager",
+            message: format!(
+                "failed to decode versioned stable state: {versioned_err}; failed to decode legacy unversioned stable state: {unversioned_err}"
+            ),
+        }),
+    }
+}
+
+pub fn default_first_install_stable_state() -> StableState {
+    CanisterState::default().into()
+}
+
+impl From<CanisterState> for StableState {
+    fn from(state: CanisterState) -> Self {
+        Self {
+            config: state.config,
+            protocol: state.manager.state.into(),
+            processed_transactions: state.manager.processed_transactions.into_iter().collect(),
+            active_staked_io_e8s: state.manager.active_staked_io_e8s,
+            two_week_pool_backing_bps: state.manager.two_week_pool_backing_bps,
+            operation_journal: state.operation_journal,
+            scheduler_cursors: state.scheduler_cursors,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -685,6 +767,13 @@ fn export_stable_state() -> StableState {
     })
 }
 
+fn export_versioned_stable_state() -> VersionedStableState {
+    VersionedStableState {
+        schema_version: STREAM_MANAGER_STABLE_SCHEMA_VERSION,
+        state: export_stable_state(),
+    }
+}
+
 fn import_stable_state(state: StableState) {
     CANISTER_STATE.with(|cell| {
         *cell.borrow_mut() = CanisterState {
@@ -703,15 +792,17 @@ fn import_stable_state(state: StableState) {
 
 #[cfg_attr(target_family = "wasm", ic_cdk::pre_upgrade)]
 pub fn pre_upgrade() {
-    ic_cdk::storage::stable_save((export_stable_state(),))
+    ic_cdk::storage::stable_save((export_versioned_stable_state(),))
         .expect("failed to save io_stream_manager stable state");
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::post_upgrade)]
 pub fn post_upgrade() {
-    if let Ok((state,)) = ic_cdk::storage::stable_restore::<(StableState,)>() {
-        import_stable_state(state);
-    }
+    let bytes = ic_cdk::stable::stable_bytes();
+    let state = decode_stable_state_bytes(&bytes).expect(
+        "io_stream_manager stable state is missing, corrupt, or unsupported during upgrade",
+    );
+    import_stable_state(state);
 }
 
 #[cfg(any(test, debug_assertions))]
@@ -720,8 +811,27 @@ pub fn export_stable_state_for_tests() -> StableState {
 }
 
 #[cfg(any(test, debug_assertions))]
+pub fn export_versioned_stable_state_for_tests() -> VersionedStableState {
+    export_versioned_stable_state()
+}
+
+#[cfg(any(test, debug_assertions))]
 pub fn import_stable_state_for_tests(state: StableState) {
     import_stable_state(state);
+}
+
+#[cfg(any(test, debug_assertions))]
+pub fn migrate_stable_state_for_tests(
+    snapshot: VersionedStableState,
+) -> Result<StableState, StableMigrationError> {
+    migrate_stable_state(snapshot)
+}
+
+#[cfg(any(test, debug_assertions))]
+pub fn decode_stable_state_bytes_for_tests(
+    bytes: &[u8],
+) -> Result<StableState, StableMigrationError> {
+    decode_stable_state_bytes(bytes)
 }
 
 #[cfg(any(test, debug_assertions))]
@@ -1176,6 +1286,158 @@ mod tests {
         assert_eq!(
             export_stable_state_for_tests().scheduler_cursors,
             stable.scheduler_cursors
+        );
+    }
+
+    fn pending_redemption_fixture() -> StableState {
+        init(InitArgs::default());
+        CANISTER_STATE.with(|cell| {
+            let mut state = cell.borrow_mut();
+            let mut redemption = StreamOperation::redemption(
+                99,
+                t(10),
+                t(9),
+                "user-account".to_string(),
+                ProtocolState::new(t(1_000_000), t(900_000), t(100_000)),
+            );
+            redemption.phase = OperationPhase::FailedRetryable;
+            redemption.retry_count = 2;
+            redemption.last_error = Some("transient icp ledger failure".to_string());
+            redemption.gross_icp_payout_e8s = t(9);
+            redemption.icp_payout_fee_e8s = 10_000;
+            redemption.net_user_icp_payout_e8s = t(9) - 10_000;
+            redemption.io_return_fee_e8s = 10_000;
+            redemption.icp_payout_status = TransferStatus::FailedRetryable;
+            redemption.io_return_status = TransferStatus::FailedRetryable;
+            state.operation_journal.push(redemption);
+            state
+                .manager
+                .processed_transactions
+                .insert("duplicate-proof:99".to_string());
+            state.scheduler_cursors.last_scanned_icp_index_block = Some(99);
+            state.scheduler_cursors.last_scanned_io_index_block = Some(100);
+            state
+                .scheduler_cursors
+                .icp_account_history_scan
+                .cursor
+                .latest_cursor = Some(io_ledger_types::BlockIndex(99));
+        });
+        export_stable_state_for_tests()
+    }
+
+    #[test]
+    fn stream_manager_migrates_previous_stable_fixture() {
+        let fixture = pending_redemption_fixture();
+        let migrated = migrate_stable_state_for_tests(VersionedStableState {
+            schema_version: 0,
+            state: fixture.clone(),
+        })
+        .unwrap();
+
+        assert_eq!(migrated, fixture);
+        assert!(migrated.config.production_wiring.is_none());
+    }
+
+    #[test]
+    fn stream_manager_decodes_legacy_unversioned_stable_root() {
+        let fixture = pending_redemption_fixture();
+        let bytes = candid::encode_args((fixture.clone(),)).unwrap();
+        let migrated = decode_stable_state_bytes_for_tests(&bytes).unwrap();
+
+        assert_eq!(migrated, fixture);
+        assert!(migrated.config.production_wiring.is_none());
+    }
+
+    #[test]
+    fn stream_manager_current_fixture_round_trips_unchanged() {
+        let fixture = pending_redemption_fixture();
+        let snapshot = VersionedStableState {
+            schema_version: STREAM_MANAGER_STABLE_SCHEMA_VERSION,
+            state: fixture.clone(),
+        };
+
+        assert_eq!(migrate_stable_state_for_tests(snapshot).unwrap(), fixture);
+    }
+
+    #[test]
+    fn stream_manager_rejects_future_schema_version() {
+        let err = migrate_stable_state_for_tests(VersionedStableState {
+            schema_version: STREAM_MANAGER_STABLE_SCHEMA_VERSION + 1,
+            state: default_first_install_stable_state(),
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StableMigrationError::UnsupportedFutureVersion {
+                canister: "io_stream_manager",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn stream_manager_rejects_corrupt_stable_fixture() {
+        let decoded = decode_stable_state_bytes_for_tests(b"not candid stable state");
+
+        assert!(decoded.is_err());
+    }
+
+    #[test]
+    fn stream_manager_empty_first_install_state_defaults_safely() {
+        let stable = default_first_install_stable_state();
+
+        assert!(stable.config.production_wiring.is_none());
+        assert!(stable.operation_journal.is_empty());
+        assert!(stable.processed_transactions.is_empty());
+    }
+
+    #[test]
+    fn stream_manager_preserves_pending_redemption_retry_intent() {
+        let migrated = migrate_stable_state_for_tests(VersionedStableState {
+            schema_version: 0,
+            state: pending_redemption_fixture(),
+        })
+        .unwrap();
+        let op = migrated.operation_journal.first().unwrap();
+
+        assert_eq!(op.kind, StreamOperationKind::Redemption);
+        assert_eq!(op.phase, OperationPhase::FailedRetryable);
+        assert_eq!(op.retry_count, 2);
+        assert_eq!(op.gross_icp_payout_e8s, t(9));
+        assert_eq!(op.icp_payout_fee_e8s, 10_000);
+        assert_eq!(op.net_user_icp_payout_e8s, t(9) - 10_000);
+        assert_eq!(op.io_return_fee_e8s, 10_000);
+        assert_eq!(op.icp_payout_status, TransferStatus::FailedRetryable);
+        assert_eq!(op.io_return_status, TransferStatus::FailedRetryable);
+    }
+
+    #[test]
+    fn stream_manager_preserves_processed_transaction_cursors() {
+        let migrated = migrate_stable_state_for_tests(VersionedStableState {
+            schema_version: 0,
+            state: pending_redemption_fixture(),
+        })
+        .unwrap();
+
+        assert!(migrated
+            .processed_transactions
+            .contains(&"duplicate-proof:99".to_string()));
+        assert_eq!(
+            migrated.scheduler_cursors.last_scanned_icp_index_block,
+            Some(99)
+        );
+        assert_eq!(
+            migrated.scheduler_cursors.last_scanned_io_index_block,
+            Some(100)
+        );
+        assert_eq!(
+            migrated
+                .scheduler_cursors
+                .icp_account_history_scan
+                .cursor
+                .latest_cursor,
+            Some(io_ledger_types::BlockIndex(99))
         );
     }
 

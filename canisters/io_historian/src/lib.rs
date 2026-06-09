@@ -3,11 +3,12 @@ use io_ledger_types::{
     AccountHistoryPageOrder, AccountHistoryScanState, IndexTransaction, LedgerKind,
 };
 use io_reward_policy::{eligible, participation_ratio, NeuronSnapshot};
+use io_stable_schema::IO_HISTORIAN_SCHEMA_VERSION;
 use serde::Deserialize;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const HISTORIAN_SCHEMA_VERSION: u32 = 1;
+pub const HISTORIAN_SCHEMA_VERSION: u32 = IO_HISTORIAN_SCHEMA_VERSION;
 pub const MAX_STREAM_HISTORY: usize = 256;
 pub const MAX_REDEMPTION_HISTORY: usize = 256;
 pub const MAX_REWARD_HISTORY: usize = 256;
@@ -650,6 +651,22 @@ pub struct StableState {
     pub release_artifacts: Vec<CanisterArtifactStatus>,
     pub canister_status: Vec<CanisterArtifactStatus>,
     pub last_ingested_timestamp_nanos: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StableMigrationError {
+    UnsupportedFutureVersion {
+        canister: &'static str,
+        version: u32,
+    },
+    UnsupportedOldVersion {
+        canister: &'static str,
+        version: u32,
+    },
+    CorruptSnapshot {
+        canister: &'static str,
+        message: String,
+    },
 }
 
 impl Default for StableState {
@@ -1689,10 +1706,32 @@ fn export_stable_state() -> StableState {
     STATE.with(|cell| cell.borrow().clone())
 }
 
-fn import_stable_state(mut state: StableState) {
-    if state.schema_version == 0 {
-        state.schema_version = HISTORIAN_SCHEMA_VERSION;
+pub fn migrate_stable_state(mut state: StableState) -> Result<StableState, StableMigrationError> {
+    match state.schema_version {
+        0 => {
+            state.schema_version = HISTORIAN_SCHEMA_VERSION;
+            Ok(state)
+        }
+        HISTORIAN_SCHEMA_VERSION => Ok(state),
+        version if version > HISTORIAN_SCHEMA_VERSION => {
+            Err(StableMigrationError::UnsupportedFutureVersion {
+                canister: "io_historian",
+                version,
+            })
+        }
+        version => Err(StableMigrationError::UnsupportedOldVersion {
+            canister: "io_historian",
+            version,
+        }),
     }
+}
+
+pub fn default_first_install_stable_state() -> StableState {
+    StableState::default()
+}
+
+fn import_stable_state(state: StableState) {
+    let state = migrate_stable_state(state).expect("io_historian stable schema migration failed");
     STATE.with(|cell| *cell.borrow_mut() = state);
 }
 
@@ -1704,9 +1743,9 @@ pub fn pre_upgrade() {
 
 #[cfg_attr(target_family = "wasm", ic_cdk::post_upgrade)]
 pub fn post_upgrade() {
-    if let Ok((state,)) = ic_cdk::storage::stable_restore::<(StableState,)>() {
-        import_stable_state(state);
-    }
+    let (state,) = ic_cdk::storage::stable_restore::<(StableState,)>()
+        .expect("io_historian stable state is missing or corrupt during upgrade");
+    import_stable_state(state);
 }
 
 #[cfg(any(test, debug_assertions))]
@@ -1717,6 +1756,13 @@ pub fn export_stable_state_for_tests() -> StableState {
 #[cfg(any(test, debug_assertions))]
 pub fn import_stable_state_for_tests(state: StableState) {
     import_stable_state(state);
+}
+
+#[cfg(any(test, debug_assertions))]
+pub fn migrate_stable_state_for_tests(
+    state: StableState,
+) -> Result<StableState, StableMigrationError> {
+    migrate_stable_state(state)
 }
 
 #[cfg(any(test, debug_assertions))]
@@ -2677,6 +2723,119 @@ mod tests {
                 .record_id,
             "stream:0044"
         );
+    }
+
+    fn historian_fixture() -> StableState {
+        debug_clear();
+        debug_ingest_protocol_snapshot(protocol_observation());
+        debug_ingest_stream_record(stream(1));
+        debug_ingest_redemption_record(redemption(1));
+        debug_ingest_reward_record(reward(1));
+        debug_ingest_nns_lifecycle(lifecycle(1));
+        debug_ingest_index_health(IndexHealthSummary {
+            record_id: "icp:deposit".to_string(),
+            ledger_kind: LedgerKind::IcpLedger,
+            account_label: "deposit".to_string(),
+            latest_cursor: Some(20),
+            oldest_cursor: Some(5),
+            backfill_complete: false,
+            page_order: Some(AccountHistoryPageOrder::Descending),
+            last_success_timestamp_nanos: Some(100),
+            unreadable_count: 0,
+            invariant_broken_count: 0,
+            lag_suspected: false,
+            page_cap_reached: false,
+            scan_incomplete: false,
+            last_observed_newest_tx_id: Some(21),
+            last_observed_balance_e8s: Some(1),
+            num_blocks_synced: Some(10),
+            last_error: None,
+        });
+        export_stable_state_for_tests()
+    }
+
+    #[test]
+    fn historian_migrates_previous_stable_fixture() {
+        let mut fixture = historian_fixture();
+        fixture.schema_version = 0;
+
+        let migrated = migrate_stable_state_for_tests(fixture).unwrap();
+
+        assert_eq!(migrated.schema_version, HISTORIAN_SCHEMA_VERSION);
+        assert_eq!(migrated.streams.len(), 1);
+        assert_eq!(migrated.redemptions.len(), 1);
+        assert_eq!(migrated.rewards.len(), 1);
+        assert_eq!(migrated.nns_lifecycle.len(), 1);
+        assert_eq!(migrated.index_health.len(), 1);
+    }
+
+    #[test]
+    fn historian_current_fixture_round_trips_unchanged() {
+        let fixture = historian_fixture();
+
+        assert_eq!(
+            migrate_stable_state_for_tests(fixture.clone()).unwrap(),
+            fixture
+        );
+    }
+
+    #[test]
+    fn historian_rejects_future_schema_version() {
+        let err = migrate_stable_state_for_tests(StableState {
+            schema_version: HISTORIAN_SCHEMA_VERSION + 1,
+            ..StableState::default()
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StableMigrationError::UnsupportedFutureVersion {
+                canister: "io_historian",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn historian_rejects_corrupt_stable_fixture() {
+        let decoded = candid::decode_one::<StableState>(b"not candid stable state");
+
+        assert!(decoded.is_err());
+    }
+
+    #[test]
+    fn historian_missing_source_health_defaults_to_prelaunch_honest_state() {
+        let migrated = migrate_stable_state_for_tests(StableState {
+            schema_version: 0,
+            ..StableState::default()
+        })
+        .unwrap();
+        let health = source_health_from_state_at(&migrated, u64::MAX);
+
+        assert!(health.iter().any(|source| {
+            source.kind == IngestionSourceKind::SnsGovernanceFreshness
+                && source.freshness == ObservationFreshness::PrelaunchNotApplicable
+        }));
+        assert!(health.iter().any(|source| {
+            source.kind == IngestionSourceKind::ProtocolSnapshot
+                && source.freshness == ObservationFreshness::Missing
+        }));
+    }
+
+    #[test]
+    fn historian_preserves_source_health_and_bounded_histories() {
+        let fixture = historian_fixture();
+        let migrated = migrate_stable_state_for_tests(fixture).unwrap();
+        let health = source_health_from_state_at(&migrated, 100);
+
+        assert!(migrated.streams.len() <= MAX_STREAM_HISTORY);
+        assert!(migrated.redemptions.len() <= MAX_REDEMPTION_HISTORY);
+        assert!(migrated.rewards.len() <= MAX_REWARD_HISTORY);
+        assert!(migrated.nns_lifecycle.len() <= MAX_NNS_LIFECYCLE_HISTORY);
+        assert!(migrated.index_health.len() <= MAX_INDEX_HEALTH);
+        assert!(health
+            .iter()
+            .any(|source| source.kind == IngestionSourceKind::IcpIndexHealth));
     }
 
     #[test]

@@ -1,0 +1,6 @@
+canister=io_stream_manager
+schema_version=1
+scenario=first-install-default-only
+source=local-test-builder
+production_wiring=absent
+live_snapshot=false

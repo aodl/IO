@@ -44,6 +44,8 @@ History queries are paginated with explicit request/response DTOs. There is no u
 
 Historian stable state includes schema version, protocol/accounting snapshots, bounded stream/redemption/reward/NNS lifecycle history, index health, governance participation, release artifact status, canister status, and ingestion status.
 
+Stable storage hardening does not make IO live. Historian fixtures are local/test fixtures, not live snapshots. Missing first-install state defaults to honest prelaunch read-model state, while corrupt upgrade state fails closed. Historian is rebuildable and is not a value-moving authority or protocol truth.
+
 Retention is explicit:
 
 - stream history: 256 records

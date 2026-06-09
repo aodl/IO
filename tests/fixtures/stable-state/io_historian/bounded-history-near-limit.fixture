@@ -1,0 +1,5 @@
+canister=io_historian
+schema_version=1
+scenario=bounded-read-model-histories-near-retention-limits
+source=local-test-builder
+live_snapshot=false

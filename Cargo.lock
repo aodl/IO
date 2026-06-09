@@ -1033,6 +1033,7 @@ dependencies = [
  "io-ledger-types",
  "io-reward-policy",
  "io-sns-lifecycle",
+ "io-stable-schema",
  "pocket-ic",
  "serde",
 ]
@@ -1059,6 +1060,7 @@ dependencies = [
  "io-governance-types",
  "io-ledger-types",
  "io-production-wiring",
+ "io-stable-schema",
  "pocket-ic",
  "serde",
 ]
@@ -1088,6 +1090,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "io-stable-schema"
+version = "0.1.0"
+
+[[package]]
 name = "io-stream-manager"
 version = "0.1.0"
 dependencies = [
@@ -1101,6 +1107,7 @@ dependencies = [
  "io-production-wiring",
  "io-reward-policy",
  "io-sns-lifecycle",
+ "io-stable-schema",
  "pocket-ic",
  "serde",
  "sha2",
@@ -3000,6 +3007,7 @@ dependencies = [
  "candid",
  "io-production-wiring",
  "io-sns-lifecycle",
+ "io-stable-schema",
  "serde",
  "serde_json",
  "sha2",

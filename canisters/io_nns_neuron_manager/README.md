@@ -26,7 +26,11 @@ Defaults preserve the known live constants below. Validation rejects empty or ma
 
 ## Stable State
 
-Upgrade persistence uses an explicit stable snapshot saved with `ic_cdk::storage::stable_save` and restored with `stable_restore`. The snapshot preserves config, simulated NNS model state, unwind children, and two-week pool state. Host tests exercise export/import round trips without exposing stable-state methods in the production DID.
+Upgrade persistence uses an explicit versioned stable snapshot saved with `ic_cdk::storage::stable_save` and restored with `stable_restore`. The snapshot preserves config, simulated NNS model state, unwind children, two-week pool state, lifecycle operation journal, retry status, and scheduler cursors. Host tests exercise export/import and migration round trips without exposing stable-state methods in the production DID.
+
+Stable storage hardening does not make IO live. This value-moving canister is not deployed to production, production adapters are not active, and the SNS IO ledger does not exist yet. Corrupt value-moving state must fail closed on upgrade. Missing first-install state is handled by init/default state and is not the same as a corrupt upgrade snapshot. Local stable-state fixtures are test fixtures, not live snapshots.
+
+The existing neuron-owner canister `oae4c-3iaaa-aaaar-qb5qq-cai` and IO neuron `6345890886899317159` remain protected references only. Retry-critical lifecycle journal entries are not silently compacted or evicted.
 
 ## Scheduler Skeleton
 

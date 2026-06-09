@@ -3,6 +3,7 @@ use io_production_wiring::{
     template_paths, validate_template_text, PHASE1_FRONTEND_CANISTER_ID,
     PHASE1_HISTORIAN_CANISTER_ID, PROTECTED_IO_NEURON_OWNER_CANISTER, PROTECTED_IO_NNS_NEURON_ID,
 };
+use io_stable_schema::{accepts_schema_version, STABLE_SCHEMA_REGISTRY};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -1786,6 +1787,132 @@ fn check_historian_freshness_at(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn check_stable_storage_at(root: &Path) -> Result<(), String> {
+    check_did_surface_at(root, false)?;
+    check_prelaunch_public_shell_at(root)?;
+    check_production_wiring_at(root)?;
+    check_historian_freshness_at(root)?;
+
+    if STABLE_SCHEMA_REGISTRY.len() != 3 {
+        return Err(
+            "stable schema registry must contain exactly the three IO canisters".to_string(),
+        );
+    }
+    for required in ["io_stream_manager", "io_nns_neuron_manager", "io_historian"] {
+        let entry = STABLE_SCHEMA_REGISTRY
+            .iter()
+            .find(|entry| entry.canister_name == required)
+            .ok_or_else(|| format!("stable schema registry missing {required}"))?;
+        if entry.current_version == 0 {
+            return Err(format!(
+                "{required}: current stable schema version must be nonzero"
+            ));
+        }
+        if !accepts_schema_version(entry, entry.current_version) {
+            return Err(format!(
+                "{required}: current stable schema version must be accepted"
+            ));
+        }
+        if accepts_schema_version(entry, entry.current_version + 1) {
+            return Err(format!(
+                "{required}: future stable schema version must reject"
+            ));
+        }
+        if entry.fixture_files.is_empty() {
+            return Err(format!("{required}: fixture list must be nonempty"));
+        }
+        for fixture in entry.fixture_files {
+            let text = require_file(root, fixture)?;
+            if !fixture.ends_with("corrupt.fixture") {
+                require_present(
+                    fixture,
+                    &text,
+                    &["canister=", "schema_version=", "live_snapshot=false"],
+                )?;
+            }
+        }
+    }
+
+    let stable_storage_doc = require_file(root, "docs/architecture/stable-storage.md")?;
+    require_present(
+        "docs/architecture/stable-storage.md",
+        &stable_storage_doc,
+        &[
+            "io_stream_manager",
+            "io_nns_neuron_manager",
+            "io_historian",
+            "corrupt value-moving state must fail closed",
+            "missing first-install state",
+            "stable-state fixtures are local/test fixtures, not live snapshots",
+            "IO protocol remains not live",
+            "SNS IO ledger remains not launched",
+        ],
+    )?;
+
+    let compaction_doc = require_file(root, "docs/architecture/journal-compaction.md")?;
+    require_present(
+        "docs/architecture/journal-compaction.md",
+        &compaction_doc,
+        &[
+            "pending operation journals",
+            "processed transaction IDs",
+            "must never be compacted before audit/activation",
+            "duplicate retry/idempotency",
+            "historian read model",
+        ],
+    )?;
+
+    let stable_structures_doc =
+        require_file(root, "docs/architecture/stable-structures-evaluation.md")?;
+    require_present(
+        "docs/architecture/stable-structures-evaluation.md",
+        &stable_structures_doc,
+        &[
+            "serialized whole-state snapshots",
+            "ic-stable-structures",
+            "defer",
+            "schema evolution",
+            "test requirements",
+        ],
+    )?;
+
+    let readiness = require_file(root, "docs/operations/mainnet-readiness.md")?;
+    let production_wiring = require_file(root, "docs/operations/production-wiring.md")?;
+    let combined_ops = format!("{readiness}\n{production_wiring}");
+    require_present(
+        "stable storage operations docs",
+        &combined_ops,
+        &[
+            "No value-moving IO canister is deployed to production",
+            "production adapters are not active",
+            "historian is a rebuildable read model",
+            "protected canister/neuron remain untouched",
+            PROTECTED_IO_NEURON_OWNER_CANISTER,
+            "6345890886899317159",
+        ],
+    )?;
+    require_absent(
+        "stable storage operations docs",
+        &combined_ops,
+        &["--network ic", "dfx canister", "dfx deploy"],
+    )?;
+
+    let stream_source = require_file(root, "canisters/io_stream_manager/src/lib.rs")?;
+    let nns_source = require_file(root, "canisters/io_nns_neuron_manager/src/lib.rs")?;
+    let historian_source = require_file(root, "canisters/io_historian/src/lib.rs")?;
+    require_present(
+        "stable migration source",
+        &format!("{stream_source}\n{nns_source}\n{historian_source}"),
+        &[
+            "migrate_stable_state",
+            "UnsupportedFutureVersion",
+            "default_first_install_stable_state",
+            "stable state is missing or corrupt during upgrade",
+        ],
+    )?;
+    Ok(())
+}
+
 fn check_historian_current_time_path(path: &str, text: &str) -> Result<(), String> {
     require_present(
         path,
@@ -1825,7 +1952,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -1920,6 +2047,13 @@ fn main() -> ExitCode {
             Ok(()) => eprintln!("✓ validate_historian_freshness"),
             Err(err) => {
                 eprintln!("✗ validate_historian_freshness: {err}");
+                ok = false;
+            }
+        },
+        "validate_stable_storage" => match check_stable_storage_at(&root) {
+            Ok(()) => eprintln!("✓ validate_stable_storage"),
+            Err(err) => {
+                eprintln!("✗ validate_stable_storage: {err}");
                 ok = false;
             }
         },
@@ -2156,6 +2290,7 @@ fn main() -> ExitCode {
                 "validate_install_args",
                 "validate_production_wiring",
                 "validate_historian_freshness",
+                "validate_stable_storage",
                 "historian_tests",
                 "frontend_required",
                 "sns_harness_check",
@@ -2381,6 +2516,7 @@ fn main() -> ExitCode {
                 "validate_install_args",
                 "validate_production_wiring",
                 "validate_historian_freshness",
+                "validate_stable_storage",
                 "security_scan_required",
                 "test_unit",
                 "frontend_required",

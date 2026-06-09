@@ -12,6 +12,7 @@ members = [
   "crates/io_reward_policy",
   "crates/io_build_support",
   "crates/io_sns_lifecycle",
+  "crates/io_stable_schema",
   "tests/mocks/mock_icp_ledger",
   "tests/mocks/mock_io_ledger",
   "tests/mocks/mock_icp_index",
@@ -41,6 +42,7 @@ io-production-wiring = { path = "crates/io_production_wiring" }
 io-reward-policy = { path = "crates/io_reward_policy" }
 io-build-support = { path = "crates/io_build_support" }
 io-sns-lifecycle = { path = "crates/io_sns_lifecycle" }
+io-stable-schema = { path = "crates/io_stable_schema" }
 io-nns-neuron-manager = { path = "canisters/io_nns_neuron_manager" }
 serde = { version = "1.0.228", features = ["derive"] }
 pocket-ic = "14.0.0"

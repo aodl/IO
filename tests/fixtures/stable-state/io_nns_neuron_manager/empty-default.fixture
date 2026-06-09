@@ -1,0 +1,8 @@
+canister=io_nns_neuron_manager
+schema_version=1
+scenario=first-install-default-only
+source=local-test-builder
+production_wiring=absent
+protected_neuron_owner=oae4c-3iaaa-aaaar-qb5qq-cai
+protected_io_nns_neuron=6345890886899317159
+live_snapshot=false

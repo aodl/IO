@@ -1,0 +1,5 @@
+canister=io_historian
+schema_version=0
+scenario=source-health-absent-defaults-to-honest-prelaunch-state
+source=local-test-builder
+live_snapshot=false
