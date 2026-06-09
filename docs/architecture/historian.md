@@ -46,3 +46,9 @@ If total supply, excluded supply, liquid reserve, or redeemable supply is unavai
 Historian state is useful for continuity and frontend responsiveness, but it is a read model. Full canonical history remains in ledger/index/governance sources and release artifacts. If historian state diverges, recovery should rebuild or correct historian observations rather than adding broad production query/control APIs to value-moving canisters.
 
 Production source adapters remain future work. The frontend consumes the production historian read surface through browser Candid calls, but historian observations remain a rebuildable read model rather than protocol truth. In Phase 1, the frontend was built with `CANISTER_ID_IO_HISTORIAN=yo47z-piaaa-aaaac-qg3xa-cai`; this does not activate `io_stream_manager`, `io_nns_neuron_manager`, the existing IO neuron-owner canister `oae4c-3iaaa-aaaar-qb5qq-cai`, or IO neuron `6345890886899317159`.
+
+## Freshness Sources
+
+Historian source health is observation/freshness only. It is a public read model, rebuildable, not canonical protocol truth, and not a value-moving authority. Source health distinguishes fresh, stale, missing, incomplete, observed-only, prelaunch/not-applicable, error/retryable, and unknown observations. The missing/stale/incomplete states are visible.
+
+IO protocol is not live. SNS IO ledger remains not launched. Missing/stale/incomplete historian fields must not be interpreted as zero protocol value. Index canisters remain the normal account-history abstraction; index canisters are the default source for account-history observations. Raw ledger/archive traversal is not the default path.

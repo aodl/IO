@@ -16,6 +16,10 @@ This public shell does not mean the IO protocol is live. No value-moving protoco
 
 The frontend consumes the Phase 1 historian canister. The historian is a public read model and observability surface, not protocol truth.
 
+Historian freshness monitoring is also a public read model. It is rebuildable, not canonical protocol truth, and not a value-moving authority. Production-shaped ingestion is observation/freshness only and does not activate production adapters. The missing/stale/incomplete states are visible, and missing/stale/incomplete fields must not be interpreted as zero protocol value.
+
+IO protocol is not live. SNS IO ledger remains not launched. Index canisters remain the normal account-history abstraction; raw ledger/archive traversal is not the default path.
+
 Missing before production:
 
 - audited real ICP ledger and index clients built on the `io-ledger-types` boundary;

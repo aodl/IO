@@ -90,6 +90,26 @@ export const idlFactory = ({ IDL }) => {
     scan_incomplete: IDL.Bool,
     unreadable_count: IDL.Nat64,
   });
+  const IngestionSourceKind = IDL.Variant({
+    CanisterStatusModuleHash: IDL.Null,
+    FrontendDashboardFreshness: IDL.Null,
+    FutureIoSnsIndexHealth: IDL.Null,
+    IcpIndexHealth: IDL.Null,
+    NnsGovernanceFreshness: IDL.Null,
+    ProtocolSnapshot: IDL.Null,
+    ReleaseArtifacts: IDL.Null,
+    ReserveSnapshot: IDL.Null,
+    SnsGovernanceFreshness: IDL.Null,
+  });
+  const IngestionWatermark = IDL.Record({
+    governance_neuron_snapshot_timestamp_nanos: IDL.Opt(IDL.Nat64),
+    governance_proposal_timestamp_nanos: IDL.Opt(IDL.Nat64),
+    observed_module_hash: IDL.Opt(IDL.Text),
+    oldest_source_cursor: IDL.Opt(IDL.Nat64),
+    release_manifest_hash: IDL.Opt(IDL.Text),
+    source_block_height: IDL.Opt(IDL.Nat64),
+    source_index_height: IDL.Opt(IDL.Nat64),
+  });
   const ListGovernanceParticipationRequest = IDL.Record({
     limit: IDL.Opt(IDL.Nat64),
     start_after_neuron_id: IDL.Opt(IDL.Nat64),
@@ -237,6 +257,33 @@ export const idlFactory = ({ IDL }) => {
     status: ArtifactMatchStatus,
     target: IDL.Opt(IDL.Text),
   });
+  const ObservationFreshness = IDL.Variant({
+    ErrorRetryable: IDL.Null,
+    Fresh: IDL.Null,
+    Incomplete: IDL.Null,
+    Missing: IDL.Null,
+    ObservedOnly: IDL.Null,
+    PrelaunchNotApplicable: IDL.Null,
+    Stale: IDL.Null,
+    Unknown: IDL.Null,
+  });
+  const StalenessPolicy = IDL.Record({
+    max_age_nanos: IDL.Opt(IDL.Nat64),
+    prelaunch_expected_absent: IDL.Bool,
+    required: IDL.Bool,
+  });
+  const SourceHealth = IDL.Record({
+    error_summary: IDL.Opt(IDL.Text),
+    freshness: ObservationFreshness,
+    kind: IngestionSourceKind,
+    last_attempt_timestamp_nanos: IDL.Opt(IDL.Nat64),
+    last_success_timestamp_nanos: IDL.Opt(IDL.Nat64),
+    policy: StalenessPolicy,
+    retryable: IDL.Bool,
+    source_id: IDL.Text,
+    summary: IDL.Text,
+    watermark: IngestionWatermark,
+  });
   const PublicDashboardState = IDL.Record({
     canister_status: IDL.Vec(CanisterArtifactStatus),
     governance: GovernanceParticipationSnapshot,
@@ -245,6 +292,7 @@ export const idlFactory = ({ IDL }) => {
     redemption_rate: IDL.Opt(RedemptionRateSnapshot),
     release_artifacts: IDL.Vec(CanisterArtifactStatus),
     reserve: ReserveSnapshot,
+    source_health: IDL.Vec(SourceHealth),
     status: PublicStatus,
     supply: SupplySnapshot,
   });

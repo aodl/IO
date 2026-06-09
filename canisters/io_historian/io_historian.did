@@ -77,6 +77,26 @@ type IndexHealthSummary = record {
   scan_incomplete : bool;
   unreadable_count : nat64;
 };
+type IngestionSourceKind = variant {
+  CanisterStatusModuleHash;
+  FrontendDashboardFreshness;
+  FutureIoSnsIndexHealth;
+  IcpIndexHealth;
+  NnsGovernanceFreshness;
+  ProtocolSnapshot;
+  ReleaseArtifacts;
+  ReserveSnapshot;
+  SnsGovernanceFreshness;
+};
+type IngestionWatermark = record {
+  governance_neuron_snapshot_timestamp_nanos : opt nat64;
+  governance_proposal_timestamp_nanos : opt nat64;
+  observed_module_hash : opt text;
+  oldest_source_cursor : opt nat64;
+  release_manifest_hash : opt text;
+  source_block_height : opt nat64;
+  source_index_height : opt nat64;
+};
 type LedgerKind = variant { IcpLedger; IoLedger };
 type ListGovernanceParticipationRequest = record {
   limit : opt nat64;
@@ -149,8 +169,19 @@ type PublicDashboardState = record {
   redemption_rate : opt RedemptionRateSnapshot;
   release_artifacts : vec CanisterArtifactStatus;
   reserve : ReserveSnapshot;
+  source_health : vec SourceHealth;
   status : PublicStatus;
   supply : SupplySnapshot;
+};
+type ObservationFreshness = variant {
+  ErrorRetryable;
+  Fresh;
+  Incomplete;
+  Missing;
+  ObservedOnly;
+  PrelaunchNotApplicable;
+  Stale;
+  Unknown;
 };
 type PublicOperationPhase = variant {
   AwaitingIcpPayout;
@@ -222,6 +253,23 @@ type RetentionLimits = record {
   redemption_history : nat64;
   reward_history : nat64;
   stream_history : nat64;
+};
+type SourceHealth = record {
+  error_summary : opt text;
+  freshness : ObservationFreshness;
+  kind : IngestionSourceKind;
+  last_attempt_timestamp_nanos : opt nat64;
+  last_success_timestamp_nanos : opt nat64;
+  policy : StalenessPolicy;
+  retryable : bool;
+  source_id : text;
+  summary : text;
+  watermark : IngestionWatermark;
+};
+type StalenessPolicy = record {
+  max_age_nanos : opt nat64;
+  prelaunch_expected_absent : bool;
+  required : bool;
 };
 type RewardDistributionRecord = record {
   dust_unissued_e8s : opt nat;

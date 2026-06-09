@@ -76,3 +76,11 @@ The historian read model can represent:
 - release artifact and canister status summaries from manifest-shaped data.
 
 Production data-source wiring remains future work. No deployment workflows, `dfx` requirements, SNS launch flows, or value-moving economics changes are part of this milestone. The existing IO neuron-owner canister `oae4c-3iaaa-aaaar-qb5qq-cai` and IO neuron `6345890886899317159` are not touched by the Phase 1 historian.
+
+## Freshness Model
+
+Historian source health is part of the public read model. The state is rebuildable, not canonical protocol truth, and not a value-moving authority. Production-shaped ingestion is observation/freshness only and does not activate production adapters.
+
+Source health exposes fresh, stale, missing, incomplete, observed-only, prelaunch/not-applicable, error/retryable, and unknown observations. The missing/stale/incomplete states are visible, and missing/stale/incomplete fields must not be interpreted as zero protocol value.
+
+IO protocol is not live. SNS IO ledger remains not launched. Phase 1 frontend/historian shell is live, while value-moving canisters remain not deployed. Index canisters are the normal account-history abstraction; index canisters are the default source for account-history observations. Raw ledger/archive traversal is not the default path.

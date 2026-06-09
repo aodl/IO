@@ -13,6 +13,19 @@ function completenessWarnings(protocol) {
   return missing.length ? [`Incomplete data: ${missing.join(", ")}`] : [];
 }
 
+function hasVariant(value, key) {
+  return value && typeof value === "object" && Object.hasOwn(value, key);
+}
+
+function sourceHealthWarnings(sourceHealth) {
+  return (sourceHealth ?? [])
+    .filter((source) => !hasVariant(source.freshness, "Fresh") && !hasVariant(source.freshness, "ObservedOnly"))
+    .map((source) => {
+      const status = variantLabel(source.freshness).toLowerCase();
+      return `${source.source_id ?? "source"} ${status}: ${source.summary ?? "observation unavailable"}`;
+    });
+}
+
 function singlePointSeries(label, value) {
   const unwrapped = opt(value);
   return unwrapped === null || unwrapped === undefined ? [] : [{ label, value: Number(unwrapped) }];
@@ -34,6 +47,7 @@ export function transformDashboard(loadResult) {
   const protocol = dashboard?.protocol ?? {};
   const redemptionRate = opt(dashboard?.redemption_rate) ?? opt(protocol.redemption_rate);
   warnings.push(...completenessWarnings(protocol));
+  warnings.push(...sourceHealthWarnings(dashboard?.source_health));
 
   const indexHealth = dashboard?.index_health ?? [];
   const broken = indexHealth.filter((entry) => entry.invariant_broken_count > 0n || entry.lag_suspected || entry.scan_incomplete);
@@ -60,6 +74,7 @@ export function transformDashboard(loadResult) {
       redemptions: loadResult.optional?.redemptions?.records ?? [],
       rewards: loadResult.optional?.rewards?.records ?? [],
       artifacts: dashboard?.release_artifacts ?? [],
+      sourceHealth: dashboard?.source_health ?? [],
     },
     warnings,
   };
@@ -79,4 +94,8 @@ export function rewardSummary(record) {
 
 export function artifactSummary(record) {
   return `${record.canister_name ?? "-"}: ${variantLabel(record.status)}`;
+}
+
+export function sourceHealthSummary(record) {
+  return `${record.source_id ?? "-"}: ${variantLabel(record.freshness)} - ${record.summary ?? ""}`;
 }

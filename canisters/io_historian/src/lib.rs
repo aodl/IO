@@ -5,7 +5,7 @@ use io_ledger_types::{
 use io_reward_policy::{eligible, participation_ratio, NeuronSnapshot};
 use serde::Deserialize;
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const HISTORIAN_SCHEMA_VERSION: u32 = 1;
 pub const MAX_STREAM_HISTORY: usize = 256;
@@ -17,6 +17,151 @@ pub const MAX_CANISTER_STATUS: usize = 32;
 pub const MAX_ARTIFACT_STATUS: usize = 32;
 pub const MAX_GOVERNANCE_NEURON_SUMMARIES: usize = 512;
 pub const MAX_PAGE_LIMIT: usize = 100;
+pub const ONE_HOUR_NANOS: u64 = 60 * 60 * 1_000_000_000;
+pub const ONE_DAY_NANOS: u64 = 24 * ONE_HOUR_NANOS;
+pub const RELEASE_ARTIFACT_STALENESS_NANOS: u64 = 7 * ONE_DAY_NANOS;
+pub const CANISTER_STATUS_STALENESS_NANOS: u64 = ONE_DAY_NANOS;
+pub const INDEX_HEALTH_STALENESS_NANOS: u64 = 6 * ONE_HOUR_NANOS;
+pub const GOVERNANCE_FRESHNESS_STALENESS_NANOS: u64 = ONE_DAY_NANOS;
+pub const PROTOCOL_SNAPSHOT_STALENESS_NANOS: u64 = ONE_HOUR_NANOS;
+pub const DASHBOARD_FRESHNESS_STALENESS_NANOS: u64 = ONE_HOUR_NANOS;
+
+const EXPECTED_RELEASE_ARTIFACT_CANISTERS: &[&str] = &[
+    "io_stream_manager",
+    "io_nns_neuron_manager",
+    "io_historian",
+    "frontend",
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum IngestionSourceKind {
+    ReleaseArtifacts,
+    CanisterStatusModuleHash,
+    IcpIndexHealth,
+    FutureIoSnsIndexHealth,
+    NnsGovernanceFreshness,
+    SnsGovernanceFreshness,
+    ProtocolSnapshot,
+    ReserveSnapshot,
+    FrontendDashboardFreshness,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum ObservationFreshness {
+    Fresh,
+    Stale,
+    Missing,
+    Incomplete,
+    ObservedOnly,
+    PrelaunchNotApplicable,
+    ErrorRetryable,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct StalenessPolicy {
+    pub max_age_nanos: Option<u64>,
+    pub required: bool,
+    pub prelaunch_expected_absent: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct IngestionWatermark {
+    pub source_block_height: Option<u64>,
+    pub source_index_height: Option<u64>,
+    pub oldest_source_cursor: Option<u64>,
+    pub governance_proposal_timestamp_nanos: Option<u64>,
+    pub governance_neuron_snapshot_timestamp_nanos: Option<u64>,
+    pub release_manifest_hash: Option<String>,
+    pub observed_module_hash: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct IngestionCursor {
+    pub source_id: String,
+    pub cursor_text: Option<String>,
+    pub latest_observed_height: Option<u64>,
+    pub oldest_observed_height: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct HistorianIngestionSource {
+    pub source_id: String,
+    pub kind: IngestionSourceKind,
+    pub policy: StalenessPolicy,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct HistorianObservation {
+    pub source_id: String,
+    pub kind: IngestionSourceKind,
+    pub observed_at_timestamp_nanos: Option<u64>,
+    pub freshness: ObservationFreshness,
+    pub watermark: IngestionWatermark,
+    pub summary: Option<String>,
+    pub error_summary: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct IngestionBatch {
+    pub source: HistorianIngestionSource,
+    pub observations: Vec<HistorianObservation>,
+    pub cursor: Option<IngestionCursor>,
+}
+
+pub trait HistorianObservationSource {
+    fn source(&self) -> HistorianIngestionSource;
+    fn observe(&self) -> IngestionBatch;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SourceHealth {
+    pub source_id: String,
+    pub kind: IngestionSourceKind,
+    pub freshness: ObservationFreshness,
+    pub last_success_timestamp_nanos: Option<u64>,
+    pub last_attempt_timestamp_nanos: Option<u64>,
+    pub watermark: IngestionWatermark,
+    pub policy: StalenessPolicy,
+    pub retryable: bool,
+    pub summary: String,
+    pub error_summary: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum CanisterRole {
+    Phase1Frontend,
+    Phase1Historian,
+    FutureStreamManager,
+    FutureNnsNeuronManager,
+    FutureSnsRoot,
+    FutureSnsGovernance,
+    FutureSnsLedger,
+    FutureSnsIndex,
+    IcpIndexObservation,
+    ProtectedReference,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum CanisterDeploymentState {
+    DeployedPublicShell,
+    NotAllocated,
+    NotDeployed,
+    ProtectedUntouchedReference,
+    FutureUnobserved,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct CanisterModuleObservation {
+    pub role: CanisterRole,
+    pub deployment_state: CanisterDeploymentState,
+    pub canister_principal_text: Option<String>,
+    pub expected_module_hash: Option<String>,
+    pub observed_module_hash: Option<String>,
+    pub status: ArtifactMatchStatus,
+    pub observed_at_timestamp_nanos: Option<u64>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum DataAvailability {
@@ -425,6 +570,7 @@ pub struct PublicDashboardState {
     pub reserve: ReserveSnapshot,
     pub supply: SupplySnapshot,
     pub redemption_rate: Option<RedemptionRateSnapshot>,
+    pub source_health: Vec<SourceHealth>,
     pub index_health: Vec<IndexHealthSummary>,
     pub governance: GovernanceParticipationSnapshot,
     pub release_artifacts: Vec<CanisterArtifactStatus>,
@@ -647,6 +793,405 @@ fn availability<T>(value: Option<T>) -> DataAvailability {
     } else {
         DataAvailability::Missing
     }
+}
+
+fn empty_watermark() -> IngestionWatermark {
+    IngestionWatermark {
+        source_block_height: None,
+        source_index_height: None,
+        oldest_source_cursor: None,
+        governance_proposal_timestamp_nanos: None,
+        governance_neuron_snapshot_timestamp_nanos: None,
+        release_manifest_hash: None,
+        observed_module_hash: None,
+    }
+}
+
+fn staleness_policy(max_age_nanos: Option<u64>, required: bool) -> StalenessPolicy {
+    StalenessPolicy {
+        max_age_nanos,
+        required,
+        prelaunch_expected_absent: false,
+    }
+}
+
+fn prelaunch_policy() -> StalenessPolicy {
+    StalenessPolicy {
+        max_age_nanos: None,
+        required: false,
+        prelaunch_expected_absent: true,
+    }
+}
+
+struct SourceHealthInput {
+    source_id: String,
+    kind: IngestionSourceKind,
+    policy: StalenessPolicy,
+    now_timestamp_nanos: u64,
+    last_success_timestamp_nanos: Option<u64>,
+    last_attempt_timestamp_nanos: Option<u64>,
+    complete: bool,
+    retryable_error: bool,
+    watermark: IngestionWatermark,
+    summary: String,
+    error_summary: Option<String>,
+}
+
+pub fn classify_observation_freshness(
+    policy: &StalenessPolicy,
+    now_timestamp_nanos: u64,
+    last_success_timestamp_nanos: Option<u64>,
+    complete: bool,
+    retryable_error: bool,
+) -> ObservationFreshness {
+    if policy.prelaunch_expected_absent {
+        return ObservationFreshness::PrelaunchNotApplicable;
+    }
+    if retryable_error {
+        return ObservationFreshness::ErrorRetryable;
+    }
+    let Some(last_success) = last_success_timestamp_nanos else {
+        return ObservationFreshness::Missing;
+    };
+    if !complete {
+        return ObservationFreshness::Incomplete;
+    }
+    let Some(max_age) = policy.max_age_nanos else {
+        return ObservationFreshness::ObservedOnly;
+    };
+    if now_timestamp_nanos.saturating_sub(last_success) > max_age {
+        ObservationFreshness::Stale
+    } else {
+        ObservationFreshness::Fresh
+    }
+}
+
+fn source_health(input: SourceHealthInput) -> SourceHealth {
+    SourceHealth {
+        source_id: input.source_id,
+        kind: input.kind,
+        freshness: classify_observation_freshness(
+            &input.policy,
+            input.now_timestamp_nanos,
+            input.last_success_timestamp_nanos,
+            input.complete,
+            input.retryable_error,
+        ),
+        last_success_timestamp_nanos: input.last_success_timestamp_nanos,
+        last_attempt_timestamp_nanos: input.last_attempt_timestamp_nanos,
+        watermark: input.watermark,
+        policy: input.policy,
+        retryable: input.retryable_error,
+        summary: input.summary,
+        error_summary: input.error_summary,
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn latest_observation_timestamp(state: &StableState) -> u64 {
+    let mut timestamps = Vec::new();
+    timestamps.push(state.last_ingested_timestamp_nanos);
+    timestamps.push(state.protocol.last_updated_timestamp_nanos);
+    timestamps.push(state.governance.last_governance_snapshot_timestamp_nanos);
+    timestamps.extend(
+        state
+            .index_health
+            .iter()
+            .map(|record| record.last_success_timestamp_nanos),
+    );
+    timestamps.extend(
+        state
+            .release_artifacts
+            .iter()
+            .map(|record| record.last_checked_timestamp_nanos),
+    );
+    timestamps.extend(
+        state
+            .canister_status
+            .iter()
+            .map(|record| record.last_checked_timestamp_nanos),
+    );
+    timestamps.into_iter().flatten().max().unwrap_or(0)
+}
+
+#[cfg(target_family = "wasm")]
+fn historian_now_timestamp_nanos() -> u64 {
+    ic_cdk::api::time()
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn historian_now_timestamp_nanos() -> u64 {
+    STATE.with(|cell| latest_observation_timestamp(&cell.borrow()))
+}
+
+fn release_artifact_health(state: &StableState, now_timestamp_nanos: u64) -> SourceHealth {
+    let observed_names = state
+        .release_artifacts
+        .iter()
+        .map(|record| record.canister_name.as_str())
+        .collect::<BTreeSet<_>>();
+    let missing = EXPECTED_RELEASE_ARTIFACT_CANISTERS
+        .iter()
+        .filter(|expected| !observed_names.contains(**expected))
+        .count();
+    let last_success = state
+        .release_artifacts
+        .iter()
+        .filter_map(|record| record.last_checked_timestamp_nanos)
+        .max();
+    let retryable = state
+        .release_artifacts
+        .iter()
+        .any(|record| record.status == ArtifactMatchStatus::Mismatch);
+    let mut watermark = empty_watermark();
+    watermark.release_manifest_hash = state
+        .release_artifacts
+        .iter()
+        .find_map(|record| record.gz_wasm_sha256.clone());
+    source_health(SourceHealthInput {
+        source_id: "release-artifacts".to_string(),
+        kind: IngestionSourceKind::ReleaseArtifacts,
+        policy: staleness_policy(Some(RELEASE_ARTIFACT_STALENESS_NANOS), true),
+        now_timestamp_nanos,
+        last_success_timestamp_nanos: last_success,
+        last_attempt_timestamp_nanos: last_success,
+        complete: missing == 0 && !state.release_artifacts.is_empty(),
+        retryable_error: retryable,
+        watermark,
+        summary: if missing == 0 && !state.release_artifacts.is_empty() {
+            "observed artifact manifest; reproducible-build audit not implied".to_string()
+        } else {
+            format!("missing {missing} expected artifact observation(s)")
+        },
+        error_summary: retryable.then(|| "artifact/module hash mismatch observed".to_string()),
+    })
+}
+
+fn protocol_health(state: &StableState, now_timestamp_nanos: u64) -> SourceHealth {
+    let complete = [
+        state.protocol.completeness.total_io_supply,
+        state.protocol.completeness.protocol_reserve_io,
+        state.protocol.completeness.non_redeemable_governance_io,
+        state.protocol.completeness.redeemable_io_supply,
+        state.protocol.completeness.liquid_icp_reserve,
+        state.protocol.completeness.redemption_rate,
+    ]
+    .iter()
+    .all(|availability| *availability == DataAvailability::Observed);
+    source_health(SourceHealthInput {
+        source_id: "protocol-snapshot".to_string(),
+        kind: IngestionSourceKind::ProtocolSnapshot,
+        policy: staleness_policy(Some(PROTOCOL_SNAPSHOT_STALENESS_NANOS), false),
+        now_timestamp_nanos,
+        last_success_timestamp_nanos: state.protocol.last_updated_timestamp_nanos,
+        last_attempt_timestamp_nanos: state.protocol.last_updated_timestamp_nanos,
+        complete,
+        retryable_error: false,
+        watermark: empty_watermark(),
+        summary: if complete {
+            "observed protocol snapshot read model".to_string()
+        } else {
+            "protocol snapshot incomplete; missing values are not zero protocol value".to_string()
+        },
+        error_summary: None,
+    })
+}
+
+fn reserve_health(state: &StableState, now_timestamp_nanos: u64) -> SourceHealth {
+    let complete = state.protocol.completeness.liquid_icp_reserve == DataAvailability::Observed
+        && state.protocol.completeness.two_year_nns_principal == DataAvailability::Observed;
+    source_health(SourceHealthInput {
+        source_id: "reserve-snapshot".to_string(),
+        kind: IngestionSourceKind::ReserveSnapshot,
+        policy: staleness_policy(Some(PROTOCOL_SNAPSHOT_STALENESS_NANOS), false),
+        now_timestamp_nanos,
+        last_success_timestamp_nanos: state.protocol.last_updated_timestamp_nanos,
+        last_attempt_timestamp_nanos: state.protocol.last_updated_timestamp_nanos,
+        complete,
+        retryable_error: false,
+        watermark: empty_watermark(),
+        summary: if complete {
+            "observed reserve snapshot read model".to_string()
+        } else {
+            "reserve snapshot incomplete; missing values are not zero reserve".to_string()
+        },
+        error_summary: None,
+    })
+}
+
+fn index_health_source(state: &StableState, now_timestamp_nanos: u64) -> SourceHealth {
+    let last_success = state
+        .index_health
+        .iter()
+        .filter_map(|record| record.last_success_timestamp_nanos)
+        .max();
+    let latest_height = state
+        .index_health
+        .iter()
+        .filter_map(|record| record.last_observed_newest_tx_id.or(record.latest_cursor))
+        .max();
+    let oldest_height = state
+        .index_health
+        .iter()
+        .filter_map(|record| record.oldest_cursor)
+        .min();
+    let retryable = state.index_health.iter().any(|record| {
+        record.lag_suspected
+            || record.scan_incomplete
+            || record.page_cap_reached
+            || record.last_error.is_some()
+    });
+    source_health(SourceHealthInput {
+        source_id: "icp-index-health".to_string(),
+        kind: IngestionSourceKind::IcpIndexHealth,
+        policy: staleness_policy(Some(INDEX_HEALTH_STALENESS_NANOS), false),
+        now_timestamp_nanos,
+        last_success_timestamp_nanos: last_success,
+        last_attempt_timestamp_nanos: last_success,
+        complete: !state.index_health.is_empty() && !retryable,
+        retryable_error: retryable,
+        watermark: IngestionWatermark {
+            source_block_height: latest_height,
+            source_index_height: latest_height,
+            oldest_source_cursor: oldest_height,
+            ..empty_watermark()
+        },
+        summary: if state.index_health.is_empty() {
+            "ICP index health missing; index canisters remain the normal account-history abstraction"
+                .to_string()
+        } else {
+            "ICP index health observed through index-shaped account history".to_string()
+        },
+        error_summary: retryable
+            .then(|| "index lag, incomplete scan, cap, or safe error observed".to_string()),
+    })
+}
+
+fn governance_health(state: &StableState, now_timestamp_nanos: u64) -> SourceHealth {
+    let complete = state.governance.counted_proposals > 0
+        && state
+            .governance
+            .last_governance_snapshot_timestamp_nanos
+            .is_some();
+    source_health(SourceHealthInput {
+        source_id: "nns-governance-freshness".to_string(),
+        kind: IngestionSourceKind::NnsGovernanceFreshness,
+        policy: staleness_policy(Some(GOVERNANCE_FRESHNESS_STALENESS_NANOS), false),
+        now_timestamp_nanos,
+        last_success_timestamp_nanos: state.governance.last_governance_snapshot_timestamp_nanos,
+        last_attempt_timestamp_nanos: state.governance.last_governance_snapshot_timestamp_nanos,
+        complete,
+        retryable_error: false,
+        watermark: IngestionWatermark {
+            governance_proposal_timestamp_nanos: state.governance.proposal_epoch_end,
+            governance_neuron_snapshot_timestamp_nanos: state
+                .governance
+                .last_governance_snapshot_timestamp_nanos,
+            ..empty_watermark()
+        },
+        summary: if complete {
+            "NNS governance summary observed".to_string()
+        } else {
+            "NNS governance summary missing or incomplete".to_string()
+        },
+        error_summary: None,
+    })
+}
+
+fn prelaunch_source(source_id: &str, kind: IngestionSourceKind, summary: &str) -> SourceHealth {
+    source_health(SourceHealthInput {
+        source_id: source_id.to_string(),
+        kind,
+        policy: prelaunch_policy(),
+        now_timestamp_nanos: 0,
+        last_success_timestamp_nanos: None,
+        last_attempt_timestamp_nanos: None,
+        complete: true,
+        retryable_error: false,
+        watermark: empty_watermark(),
+        summary: summary.to_string(),
+        error_summary: None,
+    })
+}
+
+pub fn source_health_from_state_at(
+    state: &StableState,
+    now_timestamp_nanos: u64,
+) -> Vec<SourceHealth> {
+    let mut health = vec![
+        release_artifact_health(state, now_timestamp_nanos),
+        source_health(SourceHealthInput {
+            source_id: "phase1-public-shell-canisters".to_string(),
+            kind: IngestionSourceKind::CanisterStatusModuleHash,
+            policy: staleness_policy(Some(CANISTER_STATUS_STALENESS_NANOS), false),
+            now_timestamp_nanos,
+            last_success_timestamp_nanos: state
+                .canister_status
+                .iter()
+                .filter_map(|record| record.last_checked_timestamp_nanos)
+                .max(),
+            last_attempt_timestamp_nanos: state
+                .canister_status
+                .iter()
+                .filter_map(|record| record.last_checked_timestamp_nanos)
+                .max(),
+            complete: !state.canister_status.is_empty(),
+            retryable_error: state
+                .canister_status
+                .iter()
+                .any(|record| record.status == ArtifactMatchStatus::Mismatch),
+            watermark: IngestionWatermark {
+                observed_module_hash: state
+                    .canister_status
+                    .iter()
+                    .find_map(|record| record.observed_module_hash.clone()),
+                ..empty_watermark()
+            },
+            summary: if state.canister_status.is_empty() {
+                "Phase 1 frontend/historian canisters are configured public shell references; module hashes not observed in this state".to_string()
+            } else {
+                "Phase 1 public shell module hash observation present".to_string()
+            },
+            error_summary: state
+                .canister_status
+                .iter()
+                .any(|record| record.status == ArtifactMatchStatus::Mismatch)
+                .then(|| "module hash mismatch observed".to_string()),
+        }),
+        index_health_source(state, now_timestamp_nanos),
+        prelaunch_source(
+            "future-io-sns-index-health",
+            IngestionSourceKind::FutureIoSnsIndexHealth,
+            "future IO/SNS index health is prelaunch; canonical SNS IO ledger is not launched",
+        ),
+        governance_health(state, now_timestamp_nanos),
+        prelaunch_source(
+            "sns-governance-freshness",
+            IngestionSourceKind::SnsGovernanceFreshness,
+            "SNS governance is not launched; missing SNS observations are not an error",
+        ),
+        protocol_health(state, now_timestamp_nanos),
+        reserve_health(state, now_timestamp_nanos),
+        source_health(SourceHealthInput {
+            source_id: "frontend-dashboard-freshness".to_string(),
+            kind: IngestionSourceKind::FrontendDashboardFreshness,
+            policy: staleness_policy(Some(DASHBOARD_FRESHNESS_STALENESS_NANOS), false),
+            now_timestamp_nanos,
+            last_success_timestamp_nanos: state.last_ingested_timestamp_nanos,
+            last_attempt_timestamp_nanos: state.last_ingested_timestamp_nanos,
+            complete: state.last_ingested_timestamp_nanos.is_some(),
+            retryable_error: false,
+            watermark: empty_watermark(),
+            summary: "frontend consumes production historian read declarations only".to_string(),
+            error_summary: None,
+        }),
+    ];
+    health.sort_by(|left, right| left.source_id.cmp(&right.source_id));
+    health
+}
+
+pub fn source_health_from_state(state: &StableState) -> Vec<SourceHealth> {
+    source_health_from_state_at(state, historian_now_timestamp_nanos())
 }
 
 pub fn reserve_snapshot_from_protocol(protocol: &ProtocolSnapshot) -> ReserveSnapshot {
@@ -1122,6 +1667,7 @@ pub fn get_canister_status_summary() -> Vec<CanisterArtifactStatus> {
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn get_dashboard_state() -> PublicDashboardState {
+    let now_timestamp_nanos = historian_now_timestamp_nanos();
     STATE.with(|cell| {
         let state = cell.borrow();
         PublicDashboardState {
@@ -1130,6 +1676,7 @@ pub fn get_dashboard_state() -> PublicDashboardState {
             reserve: reserve_snapshot_from_protocol(&state.protocol),
             supply: supply_snapshot_from_protocol(&state.protocol),
             redemption_rate: state.protocol.redemption_rate.clone(),
+            source_health: source_health_from_state_at(&state, now_timestamp_nanos),
             index_health: state.index_health.clone(),
             governance: state.governance.clone(),
             release_artifacts: state.release_artifacts.clone(),
@@ -1452,6 +1999,7 @@ mod tests {
             )),
             redemption_rate: protocol_snapshot_from_observation(protocol_observation())
                 .redemption_rate,
+            source_health: source_health_from_state(&StableState::default()),
             index_health: vec![],
             governance: GovernanceParticipationSnapshot::default(),
             release_artifacts: vec![],
@@ -1766,6 +2314,339 @@ mod tests {
         let observed = model_artifact_status_mismatch(status, Some("actual".to_string()), Some(9));
         assert_eq!(observed.status, ArtifactMatchStatus::Mismatch);
         assert_eq!(observed.last_checked_timestamp_nanos, Some(9));
+    }
+
+    #[test]
+    fn freshness_policy_reports_fresh_stale_missing_and_incomplete() {
+        let policy = staleness_policy(Some(100), true);
+        assert_eq!(
+            classify_observation_freshness(&policy, 150, Some(100), true, false),
+            ObservationFreshness::Fresh
+        );
+        assert_eq!(
+            classify_observation_freshness(&policy, 250, Some(100), true, false),
+            ObservationFreshness::Stale
+        );
+        assert_eq!(
+            classify_observation_freshness(&policy, 250, None, true, false),
+            ObservationFreshness::Missing
+        );
+        assert_eq!(
+            classify_observation_freshness(&policy, 250, Some(240), false, false),
+            ObservationFreshness::Incomplete
+        );
+    }
+
+    #[test]
+    fn freshness_policy_reports_prelaunch_retryable_and_observed_only() {
+        assert_eq!(
+            classify_observation_freshness(&prelaunch_policy(), 250, None, true, false),
+            ObservationFreshness::PrelaunchNotApplicable
+        );
+        assert_eq!(
+            classify_observation_freshness(
+                &staleness_policy(Some(100), true),
+                250,
+                Some(240),
+                true,
+                true
+            ),
+            ObservationFreshness::ErrorRetryable
+        );
+        assert_eq!(
+            classify_observation_freshness(
+                &staleness_policy(None, false),
+                250,
+                Some(240),
+                true,
+                false
+            ),
+            ObservationFreshness::ObservedOnly
+        );
+    }
+
+    #[test]
+    fn default_dashboard_source_health_is_honest_prelaunch_state() {
+        debug_clear();
+        let dashboard = get_dashboard_state();
+        assert!(dashboard.source_health.iter().any(|source| {
+            source.kind == IngestionSourceKind::SnsGovernanceFreshness
+                && source.freshness == ObservationFreshness::PrelaunchNotApplicable
+                && source.summary.contains("not launched")
+        }));
+        assert!(dashboard.source_health.iter().any(|source| {
+            source.kind == IngestionSourceKind::FutureIoSnsIndexHealth
+                && source.freshness == ObservationFreshness::PrelaunchNotApplicable
+        }));
+        assert!(dashboard.source_health.iter().any(|source| {
+            source.kind == IngestionSourceKind::ProtocolSnapshot
+                && source.freshness == ObservationFreshness::Missing
+        }));
+    }
+
+    #[test]
+    fn release_artifact_source_health_preserves_expected_hash_fields() {
+        let state = StableState {
+            release_artifacts: release_artifacts_from_manifest(
+                &ReleaseManifestObservation {
+                    schema_version: 1,
+                    build_profile: "release".to_string(),
+                    target: "wasm32-unknown-unknown".to_string(),
+                    git_commit: Some("abc".to_string()),
+                    artifacts: EXPECTED_RELEASE_ARTIFACT_CANISTERS
+                        .iter()
+                        .map(|name| ReleaseManifestArtifact {
+                            canister: (*name).to_string(),
+                            raw_wasm_path: format!("release-artifacts/{name}.wasm"),
+                            raw_wasm_sha256: format!("raw-{name}"),
+                            raw_wasm_bytes: 10,
+                            gz_wasm_path: format!("release-artifacts/{name}.wasm.gz"),
+                            gz_wasm_sha256: format!("gz-{name}"),
+                            gz_wasm_bytes: 5,
+                            build_profile: "release".to_string(),
+                            target: "wasm32-unknown-unknown".to_string(),
+                            git_commit: Some("abc".to_string()),
+                        })
+                        .collect(),
+                },
+                Some(100),
+            ),
+            last_ingested_timestamp_nanos: Some(100),
+            ..StableState::default()
+        };
+        let health = source_health_from_state_at(&state, 100);
+        let artifacts = health
+            .iter()
+            .find(|source| source.kind == IngestionSourceKind::ReleaseArtifacts)
+            .unwrap();
+        assert_eq!(artifacts.freshness, ObservationFreshness::Fresh);
+        assert!(artifacts
+            .watermark
+            .release_manifest_hash
+            .as_ref()
+            .unwrap()
+            .starts_with("gz-"));
+        assert!(artifacts.summary.contains("observed artifact manifest"));
+    }
+
+    #[test]
+    fn source_health_staleness_ages_against_explicit_current_time() {
+        let state = StableState {
+            release_artifacts: release_artifacts_from_manifest(
+                &ReleaseManifestObservation {
+                    schema_version: 1,
+                    build_profile: "release".to_string(),
+                    target: "wasm32-unknown-unknown".to_string(),
+                    git_commit: Some("abc".to_string()),
+                    artifacts: EXPECTED_RELEASE_ARTIFACT_CANISTERS
+                        .iter()
+                        .map(|name| ReleaseManifestArtifact {
+                            canister: (*name).to_string(),
+                            raw_wasm_path: format!("release-artifacts/{name}.wasm"),
+                            raw_wasm_sha256: format!("raw-{name}"),
+                            raw_wasm_bytes: 10,
+                            gz_wasm_path: format!("release-artifacts/{name}.wasm.gz"),
+                            gz_wasm_sha256: format!("gz-{name}"),
+                            gz_wasm_bytes: 5,
+                            build_profile: "release".to_string(),
+                            target: "wasm32-unknown-unknown".to_string(),
+                            git_commit: Some("abc".to_string()),
+                        })
+                        .collect(),
+                },
+                Some(100),
+            ),
+            last_ingested_timestamp_nanos: Some(100),
+            ..StableState::default()
+        };
+        let fresh_now = 100 + RELEASE_ARTIFACT_STALENESS_NANOS - 1;
+        let stale_now = 100 + RELEASE_ARTIFACT_STALENESS_NANOS + 1;
+
+        let fresh_health = source_health_from_state_at(&state, fresh_now);
+        let fresh_artifacts = fresh_health
+            .iter()
+            .find(|source| source.kind == IngestionSourceKind::ReleaseArtifacts)
+            .unwrap();
+        assert_eq!(fresh_artifacts.freshness, ObservationFreshness::Fresh);
+
+        let stale_health = source_health_from_state_at(&state, stale_now);
+        let stale_artifacts = stale_health
+            .iter()
+            .find(|source| source.kind == IngestionSourceKind::ReleaseArtifacts)
+            .unwrap();
+        assert_eq!(stale_artifacts.freshness, ObservationFreshness::Stale);
+    }
+
+    #[test]
+    fn source_health_non_ageable_states_are_not_reclassified_as_stale() {
+        let missing_health = source_health_from_state_at(&StableState::default(), u64::MAX);
+        assert_eq!(
+            missing_health
+                .iter()
+                .find(|source| source.kind == IngestionSourceKind::ProtocolSnapshot)
+                .unwrap()
+                .freshness,
+            ObservationFreshness::Missing
+        );
+        assert_eq!(
+            missing_health
+                .iter()
+                .find(|source| source.kind == IngestionSourceKind::SnsGovernanceFreshness)
+                .unwrap()
+                .freshness,
+            ObservationFreshness::PrelaunchNotApplicable
+        );
+
+        let retryable_state = StableState {
+            index_health: vec![IndexHealthSummary {
+                record_id: "icp:deposit".to_string(),
+                ledger_kind: LedgerKind::IcpLedger,
+                account_label: "deposit".to_string(),
+                latest_cursor: Some(20),
+                oldest_cursor: Some(5),
+                backfill_complete: false,
+                page_order: Some(AccountHistoryPageOrder::Descending),
+                last_success_timestamp_nanos: Some(100),
+                unreadable_count: 0,
+                invariant_broken_count: 0,
+                lag_suspected: false,
+                page_cap_reached: false,
+                scan_incomplete: false,
+                last_observed_newest_tx_id: Some(21),
+                last_observed_balance_e8s: Some(1),
+                num_blocks_synced: Some(10),
+                last_error: Some("archive required".to_string()),
+            }],
+            ..StableState::default()
+        };
+        let retryable_health = source_health_from_state_at(&retryable_state, u64::MAX);
+        assert_eq!(
+            retryable_health
+                .iter()
+                .find(|source| source.kind == IngestionSourceKind::IcpIndexHealth)
+                .unwrap()
+                .freshness,
+            ObservationFreshness::ErrorRetryable
+        );
+    }
+
+    #[test]
+    fn module_hash_observation_represents_match_mismatch_missing_and_unknown() {
+        let base = CanisterArtifactStatus {
+            canister_name: "frontend".to_string(),
+            expected_canister_principal_text: Some("6h2pa-qiaaa-aaaao-qp4fa-cai".to_string()),
+            raw_wasm_sha256: Some("expected".to_string()),
+            gz_wasm_sha256: None,
+            artifact_byte_size: None,
+            gz_artifact_byte_size: None,
+            build_profile: None,
+            target: None,
+            git_commit: None,
+            observed_module_hash: None,
+            status: ArtifactMatchStatus::Unobserved,
+            last_checked_timestamp_nanos: None,
+        };
+        assert_eq!(
+            model_artifact_status_mismatch(base.clone(), Some("expected".to_string()), Some(1))
+                .status,
+            ArtifactMatchStatus::Matching
+        );
+        assert_eq!(
+            model_artifact_status_mismatch(base.clone(), Some("actual".to_string()), Some(1))
+                .status,
+            ArtifactMatchStatus::Mismatch
+        );
+        assert_eq!(base.status, ArtifactMatchStatus::Unobserved);
+        assert_eq!(
+            model_artifact_status_mismatch(
+                CanisterArtifactStatus {
+                    raw_wasm_sha256: None,
+                    ..base
+                },
+                Some("actual".to_string()),
+                Some(1),
+            )
+            .status,
+            ArtifactMatchStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn index_health_source_represents_lag_missing_and_archive_required() {
+        debug_clear();
+        let missing = get_dashboard_state()
+            .source_health
+            .into_iter()
+            .find(|source| source.kind == IngestionSourceKind::IcpIndexHealth)
+            .unwrap();
+        assert_eq!(missing.freshness, ObservationFreshness::Missing);
+        debug_ingest_index_health(IndexHealthSummary {
+            record_id: "icp:deposit".to_string(),
+            ledger_kind: LedgerKind::IcpLedger,
+            account_label: "deposit".to_string(),
+            latest_cursor: Some(20),
+            oldest_cursor: Some(5),
+            backfill_complete: false,
+            page_order: Some(AccountHistoryPageOrder::Descending),
+            last_success_timestamp_nanos: Some(100),
+            unreadable_count: 0,
+            invariant_broken_count: 0,
+            lag_suspected: true,
+            page_cap_reached: true,
+            scan_incomplete: true,
+            last_observed_newest_tx_id: Some(21),
+            last_observed_balance_e8s: Some(1),
+            num_blocks_synced: Some(10),
+            last_error: Some("archive required".to_string()),
+        });
+        let source = get_dashboard_state()
+            .source_health
+            .into_iter()
+            .find(|source| source.kind == IngestionSourceKind::IcpIndexHealth)
+            .unwrap();
+        assert_eq!(source.freshness, ObservationFreshness::ErrorRetryable);
+        assert_eq!(source.watermark.source_index_height, Some(21));
+        assert!(source.error_summary.unwrap().contains("index lag"));
+    }
+
+    #[test]
+    fn governance_freshness_represents_nns_observed_and_sns_not_launched() {
+        debug_clear();
+        debug_ingest_governance_snapshot(GovernanceObservation {
+            neurons: vec![GovernanceNeuronObservation {
+                neuron_id: 10,
+                staked_io_e8s: 100,
+                eligible_seconds: 10,
+                eligible_closed_proposals: 2,
+                voted_closed_proposals: 1,
+                is_genesis_governance_neuron: false,
+                is_protocol_owned: false,
+                is_dissolving: false,
+            }],
+            proposal_epoch_start: Some(10),
+            proposal_epoch_end: Some(20),
+            counted_proposals: 2,
+            pending_nns_operation_count: Some(0),
+            nns_lifecycle_status_summary: Some("observed".to_string()),
+            observed_at_timestamp_nanos: Some(100),
+        });
+        let health = get_dashboard_state().source_health;
+        assert_eq!(
+            health
+                .iter()
+                .find(|source| source.kind == IngestionSourceKind::NnsGovernanceFreshness)
+                .unwrap()
+                .freshness,
+            ObservationFreshness::Fresh
+        );
+        assert_eq!(
+            health
+                .iter()
+                .find(|source| source.kind == IngestionSourceKind::SnsGovernanceFreshness)
+                .unwrap()
+                .freshness,
+            ObservationFreshness::PrelaunchNotApplicable
+        );
     }
 
     #[test]

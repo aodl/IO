@@ -1570,6 +1570,241 @@ fn check_production_wiring_at(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn check_historian_freshness_at(root: &Path) -> Result<(), String> {
+    check_did_surface_at(root, false)?;
+    check_prelaunch_public_shell_at(root)?;
+
+    let historian_source = require_file(root, "canisters/io_historian/src/lib.rs")?;
+    require_present(
+        "canisters/io_historian/src/lib.rs",
+        &historian_source,
+        &[
+            "HistorianIngestionSource",
+            "HistorianObservation",
+            "IngestionBatch",
+            "IngestionSourceKind",
+            "ObservationFreshness",
+            "SourceHealth",
+            "IngestionCursor",
+            "IngestionWatermark",
+            "StalenessPolicy",
+            "ReleaseArtifacts",
+            "CanisterStatusModuleHash",
+            "IcpIndexHealth",
+            "FutureIoSnsIndexHealth",
+            "NnsGovernanceFreshness",
+            "SnsGovernanceFreshness",
+            "ProtocolSnapshot",
+            "ReserveSnapshot",
+            "FrontendDashboardFreshness",
+            "Fresh",
+            "Stale",
+            "Missing",
+            "Incomplete",
+            "ObservedOnly",
+            "PrelaunchNotApplicable",
+            "ErrorRetryable",
+            "Unknown",
+            "EXPECTED_RELEASE_ARTIFACT_CANISTERS",
+            "source_health_from_state",
+            "canonical SNS IO ledger is not launched",
+            "index canisters remain the normal account-history abstraction",
+        ],
+    )?;
+    require_absent(
+        "canisters/io_historian/src/lib.rs",
+        &historian_source,
+        &[
+            "bounded_wait(canister, \"debug_",
+            "bounded_wait(canister, \"get_state\"",
+            "bounded_wait(canister, \"redeem\"",
+        ],
+    )?;
+    check_historian_current_time_path("canisters/io_historian/src/lib.rs", &historian_source)?;
+
+    let historian_did = require_file(root, "canisters/io_historian/io_historian.did")?;
+    require_present(
+        "canisters/io_historian/io_historian.did",
+        &historian_did,
+        &["SourceHealth", "source_health", "ObservationFreshness"],
+    )?;
+    require_absent(
+        "canisters/io_historian/io_historian.did",
+        &historian_did,
+        &["debug_", " ingest_", " update"],
+    )?;
+
+    let debug_did = require_file(root, "canisters/io_historian/io_historian_debug.did")?;
+    require_present(
+        "canisters/io_historian/io_historian_debug.did",
+        &debug_did,
+        &[
+            "debug_ingest_protocol_snapshot",
+            "debug_ingest_index_health",
+        ],
+    )?;
+
+    let frontend_transform = require_file(
+        root,
+        "canisters/frontend/web/src/data/dashboard-transforms.js",
+    )?;
+    require_present(
+        "canisters/frontend/web/src/data/dashboard-transforms.js",
+        &frontend_transform,
+        &[
+            "sourceHealthWarnings",
+            "source_health",
+            "sourceHealthSummary",
+        ],
+    )?;
+    let frontend_transform_test = require_file(
+        root,
+        "canisters/frontend/web/test/dashboard-transforms.test.mjs",
+    )?;
+    require_present(
+        "canisters/frontend/web/test/dashboard-transforms.test.mjs",
+        &frontend_transform_test,
+        &[
+            "PrelaunchNotApplicable",
+            "Stale",
+            "Incomplete",
+            "Missing",
+            "not deployed/not allocated",
+        ],
+    )?;
+    let frontend_renderer =
+        require_file(root, "canisters/frontend/web/src/ui/dashboard-renderer.js")?;
+    require_present(
+        "canisters/frontend/web/src/ui/dashboard-renderer.js",
+        &frontend_renderer,
+        &["data-list='sourceHealth'", "sourceHealthSummary"],
+    )?;
+    let frontend_template = require_file(root, "canisters/frontend/web/index.template.html")?;
+    require_present(
+        "canisters/frontend/web/index.template.html",
+        &frontend_template,
+        &["Source health", "data-list=\"sourceHealth\""],
+    )?;
+
+    for path in [
+        "canisters/frontend/web/src/app/agent.js",
+        "canisters/frontend/web/src/data/historian-loaders.js",
+        "canisters/frontend/web/src/data/dashboard-transforms.js",
+        "canisters/frontend/web/src/ui/dashboard-renderer.js",
+        "canisters/frontend/web/declarations/io_historian/io_historian.did.js",
+        "canisters/frontend/web/declarations/io_historian/index.js",
+    ] {
+        let text = require_file(root, path)?;
+        require_absent(
+            path,
+            &text,
+            &[
+                ".dfx",
+                "src/declarations",
+                "io_historian_debug",
+                "io_stream_manager",
+                "io_nns_neuron_manager",
+                "debug_",
+            ],
+        )?;
+    }
+    check_historian_js_declaration_at(root)?;
+
+    let phase1 = require_file(root, PHASE1_CONFIG_PATH)?;
+    for key in [
+        "io_protocol_live",
+        "sns_io_ledger_launched",
+        "io_issuance_live",
+        "io_redemption_live",
+    ] {
+        require_toml_bool(PHASE1_CONFIG_PATH, &phase1, "status", key, false)?;
+    }
+    require_toml_bool(
+        PHASE1_CONFIG_PATH,
+        &phase1,
+        "not_deployed",
+        "io_stream_manager",
+        true,
+    )?;
+    require_toml_bool(
+        PHASE1_CONFIG_PATH,
+        &phase1,
+        "not_deployed",
+        "io_nns_neuron_manager",
+        true,
+    )?;
+    require_toml_string(
+        PHASE1_CONFIG_PATH,
+        &phase1,
+        "not_touched",
+        "existing_io_neuron_owner_canister",
+        PROTECTED_IO_NEURON_OWNER_CANISTER,
+    )?;
+    require_toml_string(
+        PHASE1_CONFIG_PATH,
+        &phase1,
+        "not_touched",
+        "io_neuron_id",
+        &PROTECTED_IO_NNS_NEURON_ID.to_string(),
+    )?;
+
+    for path in [
+        "docs/architecture/historian-ingestion.md",
+        "docs/operations/historian-freshness.md",
+        "docs/architecture/historian.md",
+        "docs/operations/mainnet-readiness.md",
+        "canisters/io_historian/README.md",
+        "canisters/frontend/README.md",
+    ] {
+        let text = require_file(root, path)?;
+        require_present(
+            path,
+            &text,
+            &[
+                "public read model",
+                "rebuildable",
+                "not canonical protocol truth",
+                "not a value-moving authority",
+                "IO protocol is not live",
+                "SNS IO ledger remains not launched",
+                "missing/stale/incomplete",
+                "index canisters",
+            ],
+        )?;
+    }
+    let freshness_doc = require_file(root, "docs/operations/historian-freshness.md")?;
+    require_present(
+        "docs/operations/historian-freshness.md",
+        &freshness_doc,
+        &[
+            "current historian/canister time",
+            "source timestamps or source watermarks",
+            "no newer observations arrive",
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn check_historian_current_time_path(path: &str, text: &str) -> Result<(), String> {
+    require_present(
+        path,
+        text,
+        &[
+            "pub fn source_health_from_state_at",
+            "fn historian_now_timestamp_nanos() -> u64",
+            "ic_cdk::api::time()",
+            "source_health_from_state_at(state, historian_now_timestamp_nanos())",
+            "source_health_from_state_at(&state,",
+        ],
+    )?;
+    require_absent(
+        path,
+        text,
+        &["pub fn source_health_from_state(state: &StableState) -> Vec<SourceHealth> {\n    let now = latest_observation_timestamp(state);"],
+    )
+}
+
 fn validate_no_install_args_did(root: &Path, path: &str) -> Result<(), String> {
     let text = read_file(root, path)?;
     if text.contains("service : (") {
@@ -1590,7 +1825,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -1678,6 +1913,13 @@ fn main() -> ExitCode {
             Ok(()) => eprintln!("✓ validate_production_wiring"),
             Err(err) => {
                 eprintln!("✗ validate_production_wiring: {err}");
+                ok = false;
+            }
+        },
+        "validate_historian_freshness" => match check_historian_freshness_at(&root) {
+            Ok(()) => eprintln!("✓ validate_historian_freshness"),
+            Err(err) => {
+                eprintln!("✗ validate_historian_freshness: {err}");
                 ok = false;
             }
         },
@@ -1913,6 +2155,7 @@ fn main() -> ExitCode {
                 "verify_artifacts",
                 "validate_install_args",
                 "validate_production_wiring",
+                "validate_historian_freshness",
                 "historian_tests",
                 "frontend_required",
                 "sns_harness_check",
@@ -2137,6 +2380,7 @@ fn main() -> ExitCode {
                 "verify_artifacts",
                 "validate_install_args",
                 "validate_production_wiring",
+                "validate_historian_freshness",
                 "security_scan_required",
                 "test_unit",
                 "frontend_required",
@@ -3033,6 +3277,45 @@ No value-moving IO canister is deployed to production.
         let bad = "service : (InitArgs) -> { debug_get_state : () -> (text) query; }";
         let forbidden = forbidden_did_methods(bad, STREAM_PRODUCTION_FORBIDDEN_DID);
         assert!(forbidden.iter().any(|item| item == "debug_"));
+    }
+
+    #[test]
+    fn historian_freshness_gate_requires_dashboard_current_time_path() {
+        let good = r#"
+pub fn source_health_from_state_at(
+    state: &StableState,
+    now_timestamp_nanos: u64,
+) -> Vec<SourceHealth> {
+    vec![]
+}
+
+#[cfg(target_family = "wasm")]
+fn historian_now_timestamp_nanos() -> u64 {
+    ic_cdk::api::time()
+}
+
+pub fn source_health_from_state(state: &StableState) -> Vec<SourceHealth> {
+    source_health_from_state_at(state, historian_now_timestamp_nanos())
+}
+
+pub fn get_dashboard_state() -> PublicDashboardState {
+    STATE.with(|cell| {
+        let state = cell.borrow();
+        PublicDashboardState {
+            source_health: source_health_from_state_at(&state, historian_now_timestamp_nanos()),
+        }
+    })
+}
+"#;
+        check_historian_current_time_path("lib.rs", good).unwrap();
+
+        let bad = r#"
+pub fn source_health_from_state(state: &StableState) -> Vec<SourceHealth> {
+    let now = latest_observation_timestamp(state);
+    source_health_from_state_at(state, now)
+}
+"#;
+        assert!(check_historian_current_time_path("lib.rs", bad).is_err());
     }
 
     fn historian_did() -> &'static str {
