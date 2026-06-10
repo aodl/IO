@@ -1,15 +1,16 @@
 # Mainnet Prelaunch Public Shell
 
-This document records the Phase 1 mainnet public shell. It is not a deployment runbook and does not authorize mainnet operations.
+This document records the previous Phase 1 mainnet public shell as a dev/test record. It is not a deployment runbook and does not authorize mainnet operations.
 
 ## Phase 1 Record
 
-- Phase: `MainnetPreLaunchPublicShell`
-- Record path: `deploy/phase1-mainnet/`
-- Canister ID file: `deploy/phase1-mainnet/canister-ids.toml`
+- Environment: `DevMainnet`
+- Phase: `LegacyPhase1DevPublicShell`
+- Record path: `deploy/mainnet-dev/legacy-phase1/`
+- Canister ID file: `deploy/mainnet-dev/legacy-phase1/canister-ids.toml`
 - Release artifact manifest reference: `release-artifacts/manifest.json`
 
-Live public-shell canisters:
+Dev/test public-shell canisters, superseded as production targets:
 
 - `frontend`: `6h2pa-qiaaa-aaaao-qp4fa-cai`
 - `io_historian`: `yo47z-piaaa-aaaac-qg3xa-cai`
@@ -19,11 +20,11 @@ Frontend URLs:
 - `https://6h2pa-qiaaa-aaaao-qp4fa-cai.icp0.io/`
 - `https://6h2pa-qiaaa-aaaao-qp4fa-cai.raw.icp0.io/`
 
-The frontend consumes historian reads from `yo47z-piaaa-aaaac-qg3xa-cai`. The frontend build was configured with `CANISTER_ID_IO_HISTORIAN=yo47z-piaaa-aaaac-qg3xa-cai`.
+The frontend consumes historian reads from `yo47z-piaaa-aaaac-qg3xa-cai`. The frontend build was configured with `CANISTER_ID_IO_HISTORIAN=yo47z-piaaa-aaaac-qg3xa-cai`. These canisters are retained only as dev/test canisters, not on the fiduciary subnet, and not production IO protocol canisters.
 
 ## Explicit Non-Launch Status
 
-IO remains pre-launch. The Phase 1 public shell does not activate protocol economics.
+IO remains pre-launch. The legacy dev/test public shell does not activate protocol economics.
 
 - `io_stream_manager` is not deployed.
 - `io_nns_neuron_manager` is not deployed.

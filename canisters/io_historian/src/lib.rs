@@ -1138,7 +1138,7 @@ pub fn source_health_from_state_at(
     let mut health = vec![
         release_artifact_health(state, now_timestamp_nanos),
         source_health(SourceHealthInput {
-            source_id: "phase1-public-shell-canisters".to_string(),
+            source_id: "production-fiduciary-reserved-canisters".to_string(),
             kind: IngestionSourceKind::CanisterStatusModuleHash,
             policy: staleness_policy(Some(CANISTER_STATUS_STALENESS_NANOS), false),
             now_timestamp_nanos,
@@ -1165,9 +1165,9 @@ pub fn source_health_from_state_at(
                 ..empty_watermark()
             },
             summary: if state.canister_status.is_empty() {
-                "Phase 1 frontend/historian canisters are configured public shell references; module hashes not observed in this state".to_string()
+                "Production fiduciary canisters are reserved placeholders; module hashes not observed in this state".to_string()
             } else {
-                "Phase 1 public shell module hash observation present".to_string()
+                "Production fiduciary canister module hash observation present".to_string()
             },
             error_summary: state
                 .canister_status
@@ -2580,7 +2580,7 @@ mod tests {
     fn module_hash_observation_represents_match_mismatch_missing_and_unknown() {
         let base = CanisterArtifactStatus {
             canister_name: "frontend".to_string(),
-            expected_canister_principal_text: Some("6h2pa-qiaaa-aaaao-qp4fa-cai".to_string()),
+            expected_canister_principal_text: Some("torpp-zyaaa-aaaar-qb7xq-cai".to_string()),
             raw_wasm_sha256: Some("expected".to_string()),
             gz_wasm_sha256: None,
             artifact_byte_size: None,

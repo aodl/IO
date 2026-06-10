@@ -8,7 +8,7 @@ Source health is evaluated against current historian/canister time. Observation 
 
 Dashboard source health must make missing/stale/incomplete observations visible. Missing/stale/incomplete fields must not be interpreted as zero protocol value. Observed-only release artifact data means observed artifact manifest state, not audited reproducible release status.
 
-Phase 1 frontend/historian shell is live. IO protocol is not live. SNS IO ledger remains not launched. IO issuance is not live and IO redemption is not live. Value-moving canisters are not deployed/not allocated when deployment targets are `null`.
+The previous frontend/historian shell is `DevMainnet` only. Those IDs are superseded as production targets, retained only as dev/test canisters, not on the fiduciary subnet, and not production IO protocol canisters. IO protocol is not live. SNS IO ledger remains not launched. IO issuance is not live and IO redemption is not live. Production fiduciary canisters are reserved empty/inert placeholders with no value-moving Wasm installed.
 
 The protected neuron-owner canister and IO NNS neuron are protected/untouched references. Do not use historian freshness work to mutate or deploy to `oae4c-3iaaa-aaaar-qb5qq-cai` or neuron `6345890886899317159`.
 

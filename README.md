@@ -66,6 +66,14 @@ Production callers should not be able to simply assert "this is a Jupiter Faucet
 
 ## Current Status
 
+- Production IO-owned canister IDs are reserved fiduciary-subnet placeholders only:
+  `io_stream_manager` `thset-pqaaa-aaaar-qb7wa-cai`,
+  `io_nns_neuron_manager` `tatch-ciaaa-aaaar-qb7wq-cai`,
+  `io_historian` `tjqj3-uaaaa-aaaar-qb7xa-cai`,
+  and `frontend` `torpp-zyaaa-aaaar-qb7xq-cai`.
+- The production fiduciary canisters are `ReservedNotLive`, empty/inert, and have no value-moving Wasm installed. IO protocol, issuance, and redemption are not live.
+- Previous frontend/historian IDs are recorded under `deploy/mainnet-dev/legacy-phase1/` as `DevMainnet` only. They are superseded as production targets, retained only as dev/test canisters, not on the fiduciary subnet, and not production IO protocol canisters.
+- Codex may consider DevMainnet IDs deployable only when explicitly instructed. Codex must not deploy to production fiduciary IDs without explicit future production activation instructions.
 - Model-level tests are green through the repository `xtask` suite.
 - `io_stream_manager` and `io_nns_neuron_manager` have explicit install args with validation.
 - Both value-moving canisters persist explicit stable snapshots with `ic_cdk::storage::stable_save` / `stable_restore`.

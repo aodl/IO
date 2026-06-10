@@ -2,7 +2,7 @@
 
 Prelaunch validation is dry-run/config validation only. No production execution is active.
 
-IO protocol remains not live. SNS IO ledger is not launched. IO issuance is not live. IO redemption is not live. No value-moving IO canister is deployed to production, and production activation is a later audited milestone.
+IO protocol remains not live. SNS IO ledger is not launched. IO issuance is not live. IO redemption is not live. Production fiduciary canisters are reserved empty/inert placeholders with no value-moving Wasm installed, and production activation is a later audited milestone.
 
 Run:
 
@@ -10,9 +10,9 @@ Run:
 cargo run -p xtask -- validate_production_wiring
 ```
 
-The command parses checked-in production wiring templates, validates principal roles and fee policy, confirms IO_TEST ledger is non-canonical, checks protected references, and confirms value-moving production DIDs remain constructor-only. It does not make network calls.
+The command parses checked-in production wiring templates, validates principal roles and fee policy, confirms IO_TEST ledger is non-canonical, checks protected references, confirms the four IO-owned production canister IDs match the reserved fiduciary IDs, and confirms value-moving production DIDs remain constructor-only. It does not make network calls.
 
-Value-moving deployment target fields are intentionally `null` until IO canister IDs are deliberately allocated in a later audited deployment dry-run/proposal package milestone. Template SNS principal values are planned wiring placeholders only and do not prove SNS launch or readiness.
+Production `io_stream_manager`, `io_nns_neuron_manager`, `io_historian`, and `frontend` IDs are concrete reserved fiduciary IDs with status `ReservedNotLive`; they are not live protocol deployments. Template SNS principal values are planned wiring placeholders only and do not prove SNS launch or readiness.
 
 Protected references:
 
@@ -25,8 +25,8 @@ use `icp-cli` convention for future manual mainnet operations. required workflow
 
 - Review `deploy/production-wiring/template.toml`.
 - Review `deploy/production-wiring/dry-run.example.toml`.
+- Review `deploy/production-wiring/canister-ids.toml`.
 - Confirm any future SNS values are planned inputs only until SNS launch.
-- Confirm `io_stream_manager` is not deployed in Phase 1.
-- Confirm `io_nns_neuron_manager` is not deployed in Phase 1.
+- Confirm production fiduciary canisters are reserved, empty/inert, not live, and have no production activation.
 - Confirm no value-moving canister IDs are marked live.
-- Confirm no NNS, SNS, Phase 1 frontend/historian, or other unrelated mainnet/system canister ID is used as a value-moving deployment target placeholder.
+- Confirm no NNS, SNS, DevMainnet frontend/historian, or other unrelated mainnet/system canister ID is used as a production target.

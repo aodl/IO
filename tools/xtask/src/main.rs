@@ -1,7 +1,10 @@
 use candid::Principal;
 use io_production_wiring::{
-    template_paths, validate_template_text, PHASE1_FRONTEND_CANISTER_ID,
-    PHASE1_HISTORIAN_CANISTER_ID, PROTECTED_IO_NEURON_OWNER_CANISTER, PROTECTED_IO_NNS_NEURON_ID,
+    template_paths, validate_template_text, DEV_MAINNET_FRONTEND_CANISTER_ID,
+    DEV_MAINNET_HISTORIAN_CANISTER_ID, PRODUCTION_FRONTEND_CANISTER_ID,
+    PRODUCTION_IO_HISTORIAN_CANISTER_ID, PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID,
+    PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID, PROTECTED_IO_NEURON_OWNER_CANISTER,
+    PROTECTED_IO_NNS_NEURON_ID,
 };
 use io_stable_schema::{accepts_schema_version, STABLE_SCHEMA_REGISTRY};
 use serde::{Deserialize, Serialize};
@@ -17,10 +20,19 @@ const WASM_TARGET: &str = "wasm32-unknown-unknown";
 const MANIFEST_PATH: &str = "release-artifacts/manifest.json";
 const KNOWN_TWO_YEAR_NNS_NEURON_ID: u64 = PROTECTED_IO_NNS_NEURON_ID;
 const KNOWN_CONTROLLER_CANISTER_PRINCIPAL: &str = PROTECTED_IO_NEURON_OWNER_CANISTER;
-const PHASE1_MODE: &str = "MainnetPreLaunchPublicShell";
-const PHASE1_CONFIG_PATH: &str = "deploy/phase1-mainnet/canister-ids.toml";
-const PHASE1_README_PATH: &str = "deploy/phase1-mainnet/README.md";
-const PHASE1_STATUS_PATH: &str = "deploy/phase1-mainnet/status.md";
+const DEV_MAINNET_MODE: &str = "LegacyPhase1DevPublicShell";
+const DEV_MAINNET_CONFIG_PATH: &str = "deploy/mainnet-dev/legacy-phase1/canister-ids.toml";
+const DEV_MAINNET_README_PATH: &str = "deploy/mainnet-dev/legacy-phase1/README.md";
+const DEV_MAINNET_STATUS_PATH: &str = "deploy/mainnet-dev/legacy-phase1/status.md";
+const PRODUCTION_CANISTER_IDS_PATH: &str = "deploy/production-wiring/canister-ids.toml";
+const PRODUCTION_MAPPING_PATHS: &[&str] = &[
+    PRODUCTION_CANISTER_IDS_PATH,
+    "deploy/production-wiring/README.md",
+    "docs/operations/production-wiring.md",
+    "docs/operations/mainnet-readiness.md",
+    "docs/architecture/canister-roles.md",
+    "README.md",
+];
 
 #[derive(Clone, Copy, Debug)]
 struct ReleaseCanister {
@@ -1392,8 +1404,8 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
         &sns_init,
         &[
             "--network ic",
-            PHASE1_FRONTEND_CANISTER_ID,
-            PHASE1_HISTORIAN_CANISTER_ID,
+            DEV_MAINNET_FRONTEND_CANISTER_ID,
+            DEV_MAINNET_HISTORIAN_CANISTER_ID,
             PROTECTED_IO_NEURON_OWNER_CANISTER,
         ],
     )?;
@@ -1483,7 +1495,10 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
     require_absent(
         "deploy/local-sns-rehearsal/commands.local.example.md",
         &commands,
-        &[PHASE1_FRONTEND_CANISTER_ID, PHASE1_HISTORIAN_CANISTER_ID],
+        &[
+            DEV_MAINNET_FRONTEND_CANISTER_ID,
+            DEV_MAINNET_HISTORIAN_CANISTER_ID,
+        ],
     )?;
 
     for path in [
@@ -1722,8 +1737,8 @@ fn validate_local_sns_scripts_at(root: &Path) -> Result<(), String> {
             "--network ic",
             PROTECTED_IO_NEURON_OWNER_CANISTER,
             &PROTECTED_IO_NNS_NEURON_ID.to_string(),
-            PHASE1_FRONTEND_CANISTER_ID,
-            PHASE1_HISTORIAN_CANISTER_ID,
+            DEV_MAINNET_FRONTEND_CANISTER_ID,
+            DEV_MAINNET_HISTORIAN_CANISTER_ID,
             "ryjl3-tyaaa-aaaaa-aaaba-cai",
             "qhbym-qaaaa-aaaaa-aaafq-cai",
             "rrkah-fqaaa-aaaaa-aaaaq-cai",
@@ -1765,8 +1780,8 @@ fn validate_local_sns_scripts_at(root: &Path) -> Result<(), String> {
             "IO_TEST",
             PROTECTED_IO_NEURON_OWNER_CANISTER,
             &PROTECTED_IO_NNS_NEURON_ID.to_string(),
-            PHASE1_FRONTEND_CANISTER_ID,
-            PHASE1_HISTORIAN_CANISTER_ID,
+            DEV_MAINNET_FRONTEND_CANISTER_ID,
+            DEV_MAINNET_HISTORIAN_CANISTER_ID,
             "ryjl3-tyaaa-aaaaa-aaaba-cai",
             "qhbym-qaaaa-aaaaa-aaafq-cai",
             "rrkah-fqaaa-aaaaa-aaaaq-cai",
@@ -1925,8 +1940,8 @@ struct LocalSnsIssuanceModel {
 }
 
 const LOCAL_SNS_MAINNET_CANISTER_IDS: &[&str] = &[
-    PHASE1_FRONTEND_CANISTER_ID,
-    PHASE1_HISTORIAN_CANISTER_ID,
+    DEV_MAINNET_FRONTEND_CANISTER_ID,
+    DEV_MAINNET_HISTORIAN_CANISTER_ID,
     "ryjl3-tyaaa-aaaaa-aaaba-cai",
     "qhbym-qaaaa-aaaaa-aaafq-cai",
     "rrkah-fqaaa-aaaaa-aaaaq-cai",
@@ -2870,12 +2885,12 @@ fn check_sns_root_lifecycle_at(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn check_phase1_no_deployment_scripts(root: &Path) -> Result<(), String> {
-    let phase_dir = root.join("deploy/phase1-mainnet");
-    let entries =
-        fs::read_dir(&phase_dir).map_err(|err| format!("deploy/phase1-mainnet: {err}"))?;
+fn check_dev_mainnet_no_deployment_scripts(root: &Path) -> Result<(), String> {
+    let phase_dir = root.join("deploy/mainnet-dev/legacy-phase1");
+    let entries = fs::read_dir(&phase_dir)
+        .map_err(|err| format!("deploy/mainnet-dev/legacy-phase1: {err}"))?;
     for entry in entries {
-        let entry = entry.map_err(|err| format!("deploy/phase1-mainnet: {err}"))?;
+        let entry = entry.map_err(|err| format!("deploy/mainnet-dev/legacy-phase1: {err}"))?;
         let file_type = entry
             .file_type()
             .map_err(|err| format!("{}: {err}", entry.path().display()))?;
@@ -2890,7 +2905,7 @@ fn check_phase1_no_deployment_scripts(root: &Path) -> Result<(), String> {
             .to_string();
         if path.extension().is_some_and(|extension| extension == "sh") {
             return Err(format!(
-                "{rel}: deployment scripts are not allowed in Phase 1 record"
+                "{rel}: deployment scripts are not allowed in DevMainnet record"
             ));
         }
         let text = fs::read_to_string(&path).map_err(|err| format!("{rel}: {err}"))?;
@@ -2904,73 +2919,110 @@ fn check_phase1_no_deployment_scripts(root: &Path) -> Result<(), String> {
 }
 
 fn check_prelaunch_public_shell_at(root: &Path) -> Result<(), String> {
-    let config = require_file(root, PHASE1_CONFIG_PATH)?;
-    require_toml_string(PHASE1_CONFIG_PATH, &config, "phase", "mode", PHASE1_MODE)?;
+    let config = require_file(root, DEV_MAINNET_CONFIG_PATH)?;
+    let dev_gateway_url = format!("https://{DEV_MAINNET_FRONTEND_CANISTER_ID}.icp0.io/");
+    let dev_raw_url = format!("https://{DEV_MAINNET_FRONTEND_CANISTER_ID}.raw.icp0.io/");
+    let dev_historian_env = format!("CANISTER_ID_IO_HISTORIAN={DEV_MAINNET_HISTORIAN_CANISTER_ID}");
     require_toml_string(
-        PHASE1_CONFIG_PATH,
+        DEV_MAINNET_CONFIG_PATH,
+        &config,
+        "environment",
+        "name",
+        "DevMainnet",
+    )?;
+    require_toml_string(
+        DEV_MAINNET_CONFIG_PATH,
+        &config,
+        "environment",
+        "network",
+        "ic",
+    )?;
+    require_toml_string(
+        DEV_MAINNET_CONFIG_PATH,
+        &config,
+        "environment",
+        "status",
+        "DevOnly",
+    )?;
+    require_toml_bool(
+        DEV_MAINNET_CONFIG_PATH,
+        &config,
+        "environment",
+        "production",
+        false,
+    )?;
+    require_toml_string(
+        DEV_MAINNET_CONFIG_PATH,
+        &config,
+        "phase",
+        "mode",
+        DEV_MAINNET_MODE,
+    )?;
+    require_toml_string(
+        DEV_MAINNET_CONFIG_PATH,
         &config,
         "phase",
         "release_artifact_manifest",
         MANIFEST_PATH,
     )?;
     require_toml_string(
-        PHASE1_CONFIG_PATH,
+        DEV_MAINNET_CONFIG_PATH,
         &config,
         "canisters",
         "frontend",
-        PHASE1_FRONTEND_CANISTER_ID,
+        DEV_MAINNET_FRONTEND_CANISTER_ID,
     )?;
     require_toml_string(
-        PHASE1_CONFIG_PATH,
+        DEV_MAINNET_CONFIG_PATH,
         &config,
         "canisters",
         "io_historian",
-        PHASE1_HISTORIAN_CANISTER_ID,
+        DEV_MAINNET_HISTORIAN_CANISTER_ID,
     )?;
     require_toml_string(
-        PHASE1_CONFIG_PATH,
+        DEV_MAINNET_CONFIG_PATH,
         &config,
         "frontend",
         "gateway_url",
-        "https://6h2pa-qiaaa-aaaao-qp4fa-cai.icp0.io/",
+        &dev_gateway_url,
     )?;
     require_toml_string(
-        PHASE1_CONFIG_PATH,
+        DEV_MAINNET_CONFIG_PATH,
         &config,
         "frontend",
         "raw_url",
-        "https://6h2pa-qiaaa-aaaao-qp4fa-cai.raw.icp0.io/",
+        &dev_raw_url,
     )?;
     require_toml_string(
-        PHASE1_CONFIG_PATH,
+        DEV_MAINNET_CONFIG_PATH,
         &config,
         "frontend",
         "built_with_canister_id_io_historian",
-        PHASE1_HISTORIAN_CANISTER_ID,
+        DEV_MAINNET_HISTORIAN_CANISTER_ID,
     )?;
     require_toml_bool(
-        PHASE1_CONFIG_PATH,
+        DEV_MAINNET_CONFIG_PATH,
         &config,
         "not_deployed",
         "io_stream_manager",
         true,
     )?;
     require_toml_bool(
-        PHASE1_CONFIG_PATH,
+        DEV_MAINNET_CONFIG_PATH,
         &config,
         "not_deployed",
         "io_nns_neuron_manager",
         true,
     )?;
     require_toml_string(
-        PHASE1_CONFIG_PATH,
+        DEV_MAINNET_CONFIG_PATH,
         &config,
         "not_touched",
         "existing_io_neuron_owner_canister",
         KNOWN_CONTROLLER_CANISTER_PRINCIPAL,
     )?;
     require_toml_string(
-        PHASE1_CONFIG_PATH,
+        DEV_MAINNET_CONFIG_PATH,
         &config,
         "not_touched",
         "io_neuron_id",
@@ -2982,11 +3034,11 @@ fn check_prelaunch_public_shell_at(root: &Path) -> Result<(), String> {
         "io_issuance_live",
         "io_redemption_live",
     ] {
-        require_toml_bool(PHASE1_CONFIG_PATH, &config, "status", key, false)?;
+        require_toml_bool(DEV_MAINNET_CONFIG_PATH, &config, "status", key, false)?;
     }
 
-    let phase_readme = require_file(root, PHASE1_README_PATH)?;
-    let phase_status = require_file(root, PHASE1_STATUS_PATH)?;
+    let phase_readme = require_file(root, DEV_MAINNET_README_PATH)?;
+    let phase_status = require_file(root, DEV_MAINNET_STATUS_PATH)?;
     let docs = [
         "docs/operations/mainnet-readiness.md",
         "docs/operations/mainnet-prelaunch-dry-run.md",
@@ -3004,12 +3056,17 @@ fn check_prelaunch_public_shell_at(root: &Path) -> Result<(), String> {
         "Phase 1 prelaunch docs",
         &combined,
         &[
-            PHASE1_MODE,
-            PHASE1_FRONTEND_CANISTER_ID,
-            PHASE1_HISTORIAN_CANISTER_ID,
-            "https://6h2pa-qiaaa-aaaao-qp4fa-cai.icp0.io/",
-            "https://6h2pa-qiaaa-aaaao-qp4fa-cai.raw.icp0.io/",
-            "CANISTER_ID_IO_HISTORIAN=yo47z-piaaa-aaaac-qg3xa-cai",
+            DEV_MAINNET_MODE,
+            "DevMainnet",
+            "dev/test",
+            "superseded as production targets",
+            "not on the fiduciary subnet",
+            "not production IO protocol canisters",
+            DEV_MAINNET_FRONTEND_CANISTER_ID,
+            DEV_MAINNET_HISTORIAN_CANISTER_ID,
+            &dev_gateway_url,
+            &dev_raw_url,
+            &dev_historian_env,
             "No value-moving protocol canister",
             "not deployed",
             "not touched",
@@ -3025,9 +3082,181 @@ fn check_prelaunch_public_shell_at(root: &Path) -> Result<(), String> {
         ],
     )?;
 
-    check_phase1_no_deployment_scripts(root)?;
+    check_dev_mainnet_no_deployment_scripts(root)?;
     check_required_executable_scripts_at(root)?;
     check_did_surface_at(root, false)?;
+    Ok(())
+}
+
+fn check_production_canister_ids_at(root: &Path) -> Result<(), String> {
+    let text = require_file(root, PRODUCTION_CANISTER_IDS_PATH)?;
+    require_toml_string(
+        PRODUCTION_CANISTER_IDS_PATH,
+        &text,
+        "environment",
+        "name",
+        "Production",
+    )?;
+    require_toml_string(
+        PRODUCTION_CANISTER_IDS_PATH,
+        &text,
+        "environment",
+        "network",
+        "ic",
+    )?;
+    require_toml_string(
+        PRODUCTION_CANISTER_IDS_PATH,
+        &text,
+        "environment",
+        "subnet_type",
+        "fiduciary",
+    )?;
+    require_toml_string(
+        PRODUCTION_CANISTER_IDS_PATH,
+        &text,
+        "environment",
+        "status",
+        "ReservedNotLive",
+    )?;
+    for key in [
+        "io_protocol_live",
+        "value_moving_logic_installed",
+        "io_issuance_live",
+        "io_redemption_live",
+    ] {
+        require_toml_bool(
+            PRODUCTION_CANISTER_IDS_PATH,
+            &text,
+            "environment",
+            key,
+            false,
+        )?;
+    }
+    for (key, expected) in [
+        (
+            "io_stream_manager",
+            PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID,
+        ),
+        (
+            "io_nns_neuron_manager",
+            PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID,
+        ),
+        ("io_historian", PRODUCTION_IO_HISTORIAN_CANISTER_ID),
+        ("frontend", PRODUCTION_FRONTEND_CANISTER_ID),
+    ] {
+        require_toml_string(
+            PRODUCTION_CANISTER_IDS_PATH,
+            &text,
+            "canisters",
+            key,
+            expected,
+        )?;
+    }
+    require_present(
+        PRODUCTION_CANISTER_IDS_PATH,
+        &text,
+        &[
+            "reserved placeholders only",
+            "not live protocol deployments",
+        ],
+    )?;
+    require_absent(
+        PRODUCTION_CANISTER_IDS_PATH,
+        &text,
+        &[
+            DEV_MAINNET_FRONTEND_CANISTER_ID,
+            DEV_MAINNET_HISTORIAN_CANISTER_ID,
+        ],
+    )
+}
+
+fn canonical_production_mapping() -> [(&'static str, &'static str); 4] {
+    [
+        (
+            "io_stream_manager",
+            PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID,
+        ),
+        (
+            "io_nns_neuron_manager",
+            PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID,
+        ),
+        ("io_historian", PRODUCTION_IO_HISTORIAN_CANISTER_ID),
+        ("frontend", PRODUCTION_FRONTEND_CANISTER_ID),
+    ]
+}
+
+fn line_markdown_heading_canister(line: &str) -> Option<&'static str> {
+    let heading = line.trim_start();
+    if !heading.starts_with('#') {
+        return None;
+    }
+    let title = heading.trim_start_matches('#').trim();
+    canonical_production_mapping()
+        .iter()
+        .find_map(|(name, _)| (title == *name).then_some(*name))
+}
+
+fn check_production_mapping_text(path: &str, text: &str) -> Result<(), String> {
+    let mapping = canonical_production_mapping();
+    let mut required = Vec::with_capacity(mapping.len() * 2);
+    for (name, id) in mapping {
+        required.push(name);
+        required.push(id);
+    }
+    require_present(path, text, &required)?;
+
+    let mut markdown_section: Option<&'static str> = None;
+    for (line_index, line) in text.lines().enumerate() {
+        let line_no = line_index + 1;
+        if let Some(name) = line_markdown_heading_canister(line) {
+            markdown_section = Some(name);
+        } else if line.trim_start().starts_with('#') {
+            markdown_section = None;
+        }
+
+        if let Some(name) = markdown_section {
+            let expected_id = mapping
+                .iter()
+                .find_map(|(candidate, id)| (*candidate == name).then_some(*id))
+                .expect("known canister section");
+            for (_, id) in mapping {
+                if id != expected_id && line.contains(id) {
+                    return Err(format!(
+                        "{path}:{line_no}: section {name} must map to {expected_id}, not {id}"
+                    ));
+                }
+            }
+        }
+
+        for (name, expected_id) in mapping {
+            for (_, id) in mapping {
+                if id == expected_id {
+                    continue;
+                }
+                for pattern in [
+                    format!("`{name}` `{id}`"),
+                    format!("`{id}` (`{name}`)"),
+                    format!("| `{name}` | `{id}` |"),
+                    format!("{name} = \"{id}\""),
+                    format!("{name} {id}"),
+                ] {
+                    if line.contains(&pattern) {
+                        return Err(format!(
+                            "{path}:{line_no}: {name} must map to {expected_id}, not {id}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check_production_mapping_docs_at(root: &Path) -> Result<(), String> {
+    for path in PRODUCTION_MAPPING_PATHS {
+        let text = require_file(root, path)?;
+        check_production_mapping_text(path, &text)?;
+    }
     Ok(())
 }
 
@@ -3035,6 +3264,29 @@ fn check_production_wiring_at(root: &Path) -> Result<(), String> {
     for path in template_paths() {
         let text = require_file(root, path)?;
         validate_template_text(&text).map_err(|err| format!("{path}: {err}"))?;
+        require_toml_string(path, &text, "environment", "status", "ReservedNotLive")?;
+        for key in [
+            "io_protocol_live",
+            "value_moving_logic_installed",
+            "io_issuance_live",
+            "io_redemption_live",
+        ] {
+            require_toml_bool(path, &text, "environment", key, false)?;
+        }
+        require_toml_string(
+            path,
+            &text,
+            "deployment_targets",
+            "io_stream_manager",
+            PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID,
+        )?;
+        require_toml_string(
+            path,
+            &text,
+            "deployment_targets",
+            "io_nns_neuron_manager",
+            PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID,
+        )?;
         require_absent(
             path,
             &text,
@@ -3045,9 +3297,13 @@ fn check_production_wiring_at(root: &Path) -> Result<(), String> {
                 "icp canister upgrade",
                 "icp canister update-settings",
                 "icp canister call",
+                DEV_MAINNET_FRONTEND_CANISTER_ID,
+                DEV_MAINNET_HISTORIAN_CANISTER_ID,
             ],
         )?;
     }
+    check_production_canister_ids_at(root)?;
+    check_production_mapping_docs_at(root)?;
 
     let readme = require_file(root, "deploy/production-wiring/README.md")?;
     let operations = require_file(root, "docs/operations/production-wiring.md")?;
@@ -3067,10 +3323,19 @@ fn check_production_wiring_at(root: &Path) -> Result<(), String> {
             "use `icp-cli` convention",
             "required workflows do not use `dfx`",
             "IO_TEST ledger is non-canonical",
-            "intentionally `null`",
             "planned wiring placeholders only",
-            "No value-moving IO canister is deployed to production",
+            "ReservedNotLive",
+            "reserved",
+            "empty/inert",
+            "not live",
+            "no value-moving Wasm installed",
+            "no production activation has happened",
+            "no IO issuance/redemption is enabled",
             "Production Wiring Checklist",
+            PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID,
+            PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID,
+            PRODUCTION_IO_HISTORIAN_CANISTER_ID,
+            PRODUCTION_FRONTEND_CANISTER_ID,
         ],
     )?;
     require_absent(
@@ -3079,30 +3344,44 @@ fn check_production_wiring_at(root: &Path) -> Result<(), String> {
         &["--network ic", "dfx canister", "dfx deploy"],
     )?;
 
-    let phase1 = require_file(root, PHASE1_CONFIG_PATH)?;
+    let phase1 = require_file(root, DEV_MAINNET_CONFIG_PATH)?;
+    require_toml_string(
+        DEV_MAINNET_CONFIG_PATH,
+        &phase1,
+        "environment",
+        "name",
+        "DevMainnet",
+    )?;
     require_toml_bool(
-        PHASE1_CONFIG_PATH,
+        DEV_MAINNET_CONFIG_PATH,
+        &phase1,
+        "environment",
+        "production",
+        false,
+    )?;
+    require_toml_bool(
+        DEV_MAINNET_CONFIG_PATH,
         &phase1,
         "not_deployed",
         "io_stream_manager",
         true,
     )?;
     require_toml_bool(
-        PHASE1_CONFIG_PATH,
+        DEV_MAINNET_CONFIG_PATH,
         &phase1,
         "not_deployed",
         "io_nns_neuron_manager",
         true,
     )?;
     require_toml_string(
-        PHASE1_CONFIG_PATH,
+        DEV_MAINNET_CONFIG_PATH,
         &phase1,
         "not_touched",
         "existing_io_neuron_owner_canister",
         PROTECTED_IO_NEURON_OWNER_CANISTER,
     )?;
     require_toml_string(
-        PHASE1_CONFIG_PATH,
+        DEV_MAINNET_CONFIG_PATH,
         &phase1,
         "not_touched",
         "io_neuron_id",
@@ -3254,38 +3533,38 @@ fn check_historian_freshness_at(root: &Path) -> Result<(), String> {
     }
     check_historian_js_declaration_at(root)?;
 
-    let phase1 = require_file(root, PHASE1_CONFIG_PATH)?;
+    let phase1 = require_file(root, DEV_MAINNET_CONFIG_PATH)?;
     for key in [
         "io_protocol_live",
         "sns_io_ledger_launched",
         "io_issuance_live",
         "io_redemption_live",
     ] {
-        require_toml_bool(PHASE1_CONFIG_PATH, &phase1, "status", key, false)?;
+        require_toml_bool(DEV_MAINNET_CONFIG_PATH, &phase1, "status", key, false)?;
     }
     require_toml_bool(
-        PHASE1_CONFIG_PATH,
+        DEV_MAINNET_CONFIG_PATH,
         &phase1,
         "not_deployed",
         "io_stream_manager",
         true,
     )?;
     require_toml_bool(
-        PHASE1_CONFIG_PATH,
+        DEV_MAINNET_CONFIG_PATH,
         &phase1,
         "not_deployed",
         "io_nns_neuron_manager",
         true,
     )?;
     require_toml_string(
-        PHASE1_CONFIG_PATH,
+        DEV_MAINNET_CONFIG_PATH,
         &phase1,
         "not_touched",
         "existing_io_neuron_owner_canister",
         PROTECTED_IO_NEURON_OWNER_CANISTER,
     )?;
     require_toml_string(
-        PHASE1_CONFIG_PATH,
+        DEV_MAINNET_CONFIG_PATH,
         &phase1,
         "not_touched",
         "io_neuron_id",
@@ -4645,20 +4924,28 @@ must_not_touch_io_nns_neuron_id = "6345890886899317159"
         );
     }
 
-    fn phase1_config() -> String {
-        r#"[phase]
-mode = "MainnetPreLaunchPublicShell"
+    fn dev_mainnet_config() -> String {
+        format!(
+            r#"[environment]
+name = "DevMainnet"
+network = "ic"
+subnet_type = "non_fiduciary_or_unknown"
+status = "DevOnly"
+production = false
+
+[phase]
+mode = "LegacyPhase1DevPublicShell"
 record_date = "2026-06-06"
 release_artifact_manifest = "release-artifacts/manifest.json"
 
 [canisters]
-io_historian = "yo47z-piaaa-aaaac-qg3xa-cai"
-frontend = "6h2pa-qiaaa-aaaao-qp4fa-cai"
+io_historian = "{DEV_MAINNET_HISTORIAN_CANISTER_ID}"
+frontend = "{DEV_MAINNET_FRONTEND_CANISTER_ID}"
 
 [frontend]
-gateway_url = "https://6h2pa-qiaaa-aaaao-qp4fa-cai.icp0.io/"
-raw_url = "https://6h2pa-qiaaa-aaaao-qp4fa-cai.raw.icp0.io/"
-built_with_canister_id_io_historian = "yo47z-piaaa-aaaac-qg3xa-cai"
+gateway_url = "https://{DEV_MAINNET_FRONTEND_CANISTER_ID}.icp0.io/"
+raw_url = "https://{DEV_MAINNET_FRONTEND_CANISTER_ID}.raw.icp0.io/"
+built_with_canister_id_io_historian = "{DEV_MAINNET_HISTORIAN_CANISTER_ID}"
 
 [not_deployed]
 io_stream_manager = true
@@ -4674,19 +4961,25 @@ sns_io_ledger_launched = false
 io_issuance_live = false
 io_redemption_live = false
 "#
-        .to_string()
+        )
     }
 
-    fn write_prelaunch_public_shell_fixture(root: &Path) {
+    fn write_dev_mainnet_public_shell_fixture(root: &Path) {
         write_did_surface_fixture(root);
-        write(root, PHASE1_CONFIG_PATH, &phase1_config());
-        let phase_doc = r#"# Phase 1
-MainnetPreLaunchPublicShell
-frontend 6h2pa-qiaaa-aaaao-qp4fa-cai
-io_historian yo47z-piaaa-aaaac-qg3xa-cai
-https://6h2pa-qiaaa-aaaao-qp4fa-cai.icp0.io/
-https://6h2pa-qiaaa-aaaao-qp4fa-cai.raw.icp0.io/
-CANISTER_ID_IO_HISTORIAN=yo47z-piaaa-aaaac-qg3xa-cai
+        write(root, DEV_MAINNET_CONFIG_PATH, &dev_mainnet_config());
+        let phase_doc = format!(
+            r#"# Legacy Phase 1 Dev
+DevMainnet
+LegacyPhase1DevPublicShell
+superseded as production targets
+dev/test
+not on the fiduciary subnet
+not production IO protocol canisters
+frontend {DEV_MAINNET_FRONTEND_CANISTER_ID}
+io_historian {DEV_MAINNET_HISTORIAN_CANISTER_ID}
+https://{DEV_MAINNET_FRONTEND_CANISTER_ID}.icp0.io/
+https://{DEV_MAINNET_FRONTEND_CANISTER_ID}.raw.icp0.io/
+CANISTER_ID_IO_HISTORIAN={DEV_MAINNET_HISTORIAN_CANISTER_ID}
 No value-moving protocol canister is live.
 io_stream_manager is not deployed.
 io_nns_neuron_manager is not deployed.
@@ -4698,9 +4991,10 @@ IO issuance is not live.
 IO redemption is not live.
 Historian is a public read model, not protocol truth.
 release-artifacts/manifest.json
-"#;
-        write(root, PHASE1_README_PATH, phase_doc);
-        write(root, PHASE1_STATUS_PATH, phase_doc);
+"#
+        );
+        write(root, DEV_MAINNET_README_PATH, &phase_doc);
+        write(root, DEV_MAINNET_STATUS_PATH, &phase_doc);
         for path in [
             "docs/operations/mainnet-readiness.md",
             "docs/operations/mainnet-prelaunch-dry-run.md",
@@ -4709,7 +5003,7 @@ release-artifacts/manifest.json
             "canisters/frontend/README.md",
             "canisters/io_historian/README.md",
         ] {
-            write(root, path, phase_doc);
+            write(root, path, &phase_doc);
         }
         write(
             root,
@@ -4724,6 +5018,11 @@ release-artifacts/manifest.json
 mode = "{mode}"
 io_ledger_role = "FutureCanonicalSnsIo"
 fixture_marked = false
+status = "ReservedNotLive"
+io_protocol_live = false
+value_moving_logic_installed = false
+io_issuance_live = false
+io_redemption_live = false
 
 [principals]
 icp_ledger = "ryjl3-tyaaa-aaaaa-aaaba-cai"
@@ -4749,16 +5048,63 @@ neuron_owner_canister = "oae4c-3iaaa-aaaar-qb5qq-cai"
 io_nns_neuron_id = 6_345_890_886_899_317_159
 
 [deployment_targets]
-io_stream_manager = null
-io_nns_neuron_manager = null
+io_stream_manager = "thset-pqaaa-aaaar-qb7wa-cai"
+io_nns_neuron_manager = "tatch-ciaaa-aaaar-qb7wq-cai"
 mutation_target_principals = []
 mutation_target_nns_neuron_ids = []
 "#
         )
     }
 
+    fn production_canister_ids() -> &'static str {
+        r#"[environment]
+name = "Production"
+network = "ic"
+subnet_type = "fiduciary"
+status = "ReservedNotLive"
+io_protocol_live = false
+value_moving_logic_installed = false
+io_issuance_live = false
+io_redemption_live = false
+
+[canisters]
+io_stream_manager = "thset-pqaaa-aaaar-qb7wa-cai"
+io_nns_neuron_manager = "tatch-ciaaa-aaaar-qb7wq-cai"
+io_historian = "tjqj3-uaaaa-aaaar-qb7xa-cai"
+frontend = "torpp-zyaaa-aaaar-qb7xq-cai"
+
+[notes]
+description = "Production fiduciary-subnet canisters are reserved placeholders only. They are not live protocol deployments."
+"#
+    }
+
+    fn production_mapping_doc() -> &'static str {
+        r#"
+io_stream_manager thset-pqaaa-aaaar-qb7wa-cai
+io_nns_neuron_manager tatch-ciaaa-aaaar-qb7wq-cai
+io_historian tjqj3-uaaaa-aaaar-qb7xa-cai
+frontend torpp-zyaaa-aaaar-qb7xq-cai
+"#
+    }
+
+    fn production_canister_roles_doc() -> &'static str {
+        r#"
+## io_nns_neuron_manager
+Production fiduciary status: reserved as `tatch-ciaaa-aaaar-qb7wq-cai`, `ReservedNotLive`.
+
+## io_stream_manager
+Production fiduciary status: reserved as `thset-pqaaa-aaaar-qb7wa-cai`, `ReservedNotLive`.
+
+## io_historian
+Production fiduciary status: reserved as `tjqj3-uaaaa-aaaar-qb7xa-cai`, `ReservedNotLive`.
+
+## frontend
+Production fiduciary status: reserved as `torpp-zyaaa-aaaar-qb7xq-cai`, `ReservedNotLive`.
+"#
+    }
+
     fn write_production_wiring_fixture(root: &Path) {
-        write_prelaunch_public_shell_fixture(root);
+        write_dev_mainnet_public_shell_fixture(root);
         write(
             root,
             "deploy/production-wiring/template.toml",
@@ -4768,6 +5114,11 @@ mutation_target_nns_neuron_ids = []
             root,
             "deploy/production-wiring/dry-run.example.toml",
             &production_wiring_template("DryRun"),
+        );
+        write(
+            root,
+            PRODUCTION_CANISTER_IDS_PATH,
+            production_canister_ids(),
         );
         let doc = r#"
 dry-run/config validation only
@@ -4781,13 +5132,37 @@ use `icp-cli` convention
 required workflows do not use `dfx`
 IO_TEST ledger is non-canonical
 Production Wiring Checklist
-Value-moving deployment target fields are intentionally `null`.
+ReservedNotLive
+reserved
+empty/inert
+not live
+no value-moving Wasm installed
+no production activation has happened
+no IO issuance/redemption is enabled
+io_stream_manager thset-pqaaa-aaaar-qb7wa-cai
+io_nns_neuron_manager tatch-ciaaa-aaaar-qb7wq-cai
+io_historian tjqj3-uaaaa-aaaar-qb7xa-cai
+frontend torpp-zyaaa-aaaar-qb7xq-cai
+thset-pqaaa-aaaar-qb7wa-cai
+tatch-ciaaa-aaaar-qb7wq-cai
+tjqj3-uaaaa-aaaar-qb7xa-cai
+torpp-zyaaa-aaaar-qb7xq-cai
 Template SNS principal values are planned wiring placeholders only.
-No value-moving IO canister is deployed to production.
 "#;
         write(root, "deploy/production-wiring/README.md", doc);
         write(root, "docs/operations/production-wiring.md", doc);
         write(root, "docs/operations/prelaunch-config-validation.md", doc);
+        write(
+            root,
+            "docs/operations/mainnet-readiness.md",
+            production_mapping_doc(),
+        );
+        write(
+            root,
+            "docs/architecture/canister-roles.md",
+            production_canister_roles_doc(),
+        );
+        write(root, "README.md", production_mapping_doc());
     }
 
     #[test]
@@ -5271,21 +5646,21 @@ No value-moving IO canister is deployed to production.
     }
 
     #[test]
-    fn prelaunch_canister_ids_parse_from_phase1_config() {
-        let config = phase1_config();
+    fn prelaunch_canister_ids_parse_from_dev_mainnet_config() {
+        let config = dev_mainnet_config();
         assert_eq!(
             parse_toml_string(&config, "canisters", "frontend").unwrap(),
-            PHASE1_FRONTEND_CANISTER_ID
+            DEV_MAINNET_FRONTEND_CANISTER_ID
         );
         assert_eq!(
             parse_toml_string(&config, "canisters", "io_historian").unwrap(),
-            PHASE1_HISTORIAN_CANISTER_ID
+            DEV_MAINNET_HISTORIAN_CANISTER_ID
         );
     }
 
     #[test]
     fn prelaunch_status_booleans_are_false() {
-        let config = phase1_config();
+        let config = dev_mainnet_config();
         for key in ["io_protocol_live", "io_issuance_live", "io_redemption_live"] {
             assert!(!parse_toml_bool(&config, "status", key).unwrap());
         }
@@ -5294,10 +5669,10 @@ No value-moving IO canister is deployed to production.
     #[test]
     fn prelaunch_docs_contain_phase1_ids_and_not_touched_records() {
         let root = temp_root("prelaunch-docs");
-        write_prelaunch_public_shell_fixture(&root);
+        write_dev_mainnet_public_shell_fixture(&root);
         let docs = [
-            PHASE1_README_PATH,
-            PHASE1_STATUS_PATH,
+            DEV_MAINNET_README_PATH,
+            DEV_MAINNET_STATUS_PATH,
             "docs/operations/mainnet-readiness.md",
             "docs/operations/mainnet-prelaunch-dry-run.md",
             "docs/architecture/canister-roles.md",
@@ -5313,8 +5688,8 @@ No value-moving IO canister is deployed to production.
             "fixture docs",
             &combined,
             &[
-                PHASE1_FRONTEND_CANISTER_ID,
-                PHASE1_HISTORIAN_CANISTER_ID,
+                DEV_MAINNET_FRONTEND_CANISTER_ID,
+                DEV_MAINNET_HISTORIAN_CANISTER_ID,
                 "not touched",
                 KNOWN_CONTROLLER_CANISTER_PRINCIPAL,
                 "6345890886899317159",
@@ -5327,7 +5702,7 @@ No value-moving IO canister is deployed to production.
     #[test]
     fn prelaunch_public_shell_validation_accepts_fixture() {
         let root = temp_root("prelaunch-good");
-        write_prelaunch_public_shell_fixture(&root);
+        write_dev_mainnet_public_shell_fixture(&root);
         check_prelaunch_public_shell_at(&root).unwrap();
         let _ = fs::remove_dir_all(root);
     }
@@ -5341,11 +5716,37 @@ No value-moving IO canister is deployed to production.
     }
 
     #[test]
+    fn production_wiring_validation_rejects_swapped_doc_mapping() {
+        let root = temp_root("production-wiring-swapped-doc-mapping");
+        write_production_wiring_fixture(&root);
+        write(
+            &root,
+            "docs/architecture/canister-roles.md",
+            &production_canister_roles_doc()
+                .replace(
+                    "io_nns_neuron_manager\nProduction fiduciary status: reserved as `tatch-ciaaa-aaaar-qb7wq-cai`",
+                    "io_nns_neuron_manager\nProduction fiduciary status: reserved as `thset-pqaaa-aaaar-qb7wa-cai`",
+                )
+                .replace(
+                    "io_stream_manager\nProduction fiduciary status: reserved as `thset-pqaaa-aaaar-qb7wa-cai`",
+                    "io_stream_manager\nProduction fiduciary status: reserved as `tatch-ciaaa-aaaar-qb7wq-cai`",
+                ),
+        );
+
+        let err = check_production_wiring_at(&root).unwrap_err();
+        assert!(
+            err.contains("io_nns_neuron_manager") || err.contains("io_stream_manager"),
+            "expected swapped mapping error, got {err:?}"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn production_wiring_validation_rejects_protected_target() {
         let root = temp_root("production-wiring-protected-target");
         write_production_wiring_fixture(&root);
         let bad = production_wiring_template("ProductionPlanned").replace(
-            "io_stream_manager = null",
+            "io_stream_manager = \"thset-pqaaa-aaaar-qb7wa-cai\"",
             &format!("io_stream_manager = \"{PROTECTED_IO_NEURON_OWNER_CANISTER}\""),
         );
         write(
@@ -5375,7 +5776,14 @@ No value-moving IO canister is deployed to production.
             let root = temp_root(&format!("production-wiring-system-target-{name}"));
             write_production_wiring_fixture(&root);
             let bad = production_wiring_template("ProductionPlanned").replace(
-                &format!("{field} = null"),
+                &format!(
+                    "{field} = \"{}\"",
+                    if field == "io_stream_manager" {
+                        PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID
+                    } else {
+                        PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID
+                    }
+                ),
                 &format!("{field} = \"{canister_id}\""),
             );
             write(
@@ -5392,11 +5800,11 @@ No value-moving IO canister is deployed to production.
     #[test]
     fn prelaunch_public_shell_rejects_value_moving_canister_marked_deployed() {
         let root = temp_root("prelaunch-value-moving-deployed");
-        write_prelaunch_public_shell_fixture(&root);
+        write_dev_mainnet_public_shell_fixture(&root);
         write(
             &root,
-            PHASE1_CONFIG_PATH,
-            &phase1_config().replace("io_stream_manager = true", "io_stream_manager = false"),
+            DEV_MAINNET_CONFIG_PATH,
+            &dev_mainnet_config().replace("io_stream_manager = true", "io_stream_manager = false"),
         );
         assert!(check_prelaunch_public_shell_at(&root)
             .unwrap_err()
@@ -5407,11 +5815,11 @@ No value-moving IO canister is deployed to production.
     #[test]
     fn prelaunch_public_shell_rejects_sns_io_ledger_launched() {
         let root = temp_root("prelaunch-sns-ledger-launched");
-        write_prelaunch_public_shell_fixture(&root);
+        write_dev_mainnet_public_shell_fixture(&root);
         write(
             &root,
-            PHASE1_CONFIG_PATH,
-            &phase1_config().replace(
+            DEV_MAINNET_CONFIG_PATH,
+            &dev_mainnet_config().replace(
                 "sns_io_ledger_launched = false",
                 "sns_io_ledger_launched = true",
             ),
@@ -5425,11 +5833,11 @@ No value-moving IO canister is deployed to production.
     #[test]
     fn prelaunch_public_shell_rejects_io_protocol_live() {
         let root = temp_root("prelaunch-protocol-live");
-        write_prelaunch_public_shell_fixture(&root);
+        write_dev_mainnet_public_shell_fixture(&root);
         write(
             &root,
-            PHASE1_CONFIG_PATH,
-            &phase1_config().replace("io_protocol_live = false", "io_protocol_live = true"),
+            DEV_MAINNET_CONFIG_PATH,
+            &dev_mainnet_config().replace("io_protocol_live = false", "io_protocol_live = true"),
         );
         assert!(check_prelaunch_public_shell_at(&root)
             .unwrap_err()
@@ -5440,11 +5848,11 @@ No value-moving IO canister is deployed to production.
     #[test]
     fn prelaunch_public_shell_rejects_io_issuance_or_redemption_live() {
         let root = temp_root("prelaunch-issuance-live");
-        write_prelaunch_public_shell_fixture(&root);
+        write_dev_mainnet_public_shell_fixture(&root);
         write(
             &root,
-            PHASE1_CONFIG_PATH,
-            &phase1_config().replace("io_issuance_live = false", "io_issuance_live = true"),
+            DEV_MAINNET_CONFIG_PATH,
+            &dev_mainnet_config().replace("io_issuance_live = false", "io_issuance_live = true"),
         );
         assert!(check_prelaunch_public_shell_at(&root)
             .unwrap_err()
@@ -5452,8 +5860,9 @@ No value-moving IO canister is deployed to production.
 
         write(
             &root,
-            PHASE1_CONFIG_PATH,
-            &phase1_config().replace("io_redemption_live = false", "io_redemption_live = true"),
+            DEV_MAINNET_CONFIG_PATH,
+            &dev_mainnet_config()
+                .replace("io_redemption_live = false", "io_redemption_live = true"),
         );
         assert!(check_prelaunch_public_shell_at(&root)
             .unwrap_err()

@@ -40,7 +40,7 @@ for key in "${required_keys[@]}"; do
   case "$value" in
     TODO*|*"{{"*|*"}"*) printf 'placeholder local variable: %s\n' "$key" >&2; exit 2 ;;
     "${PROTECTED_CANISTER}"|"${PROTECTED_NEURON}") printf 'protected value in %s\n' "$key" >&2; exit 2 ;;
-    ryjl3-tyaaa-aaaaa-aaaba-cai|qhbym-qaaaa-aaaaa-aaafq-cai|rrkah-fqaaa-aaaaa-aaaaq-cai|yo47z-piaaa-aaaac-qg3xa-cai|6h2pa-qiaaa-aaaao-qp4fa-cai)
+    ryjl3-tyaaa-aaaaa-aaaba-cai|qhbym-qaaaa-aaaaa-aaafq-cai|rrkah-fqaaa-aaaaa-aaaaq-cai)
       printf 'mainnet/prior canister is not allowed in local variable %s\n' "$key" >&2
       exit 2
       ;;

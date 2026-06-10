@@ -1,5 +1,12 @@
+[environment]
+name = "DevMainnet"
+network = "ic"
+subnet_type = "non_fiduciary_or_unknown"
+status = "DevOnly"
+production = false
+
 [phase]
-mode = "MainnetPreLaunchPublicShell"
+mode = "LegacyPhase1DevPublicShell"
 record_date = "2026-06-06"
 release_artifact_manifest = "release-artifacts/manifest.json"
 

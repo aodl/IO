@@ -2,7 +2,7 @@
 
 `io_historian` is IO's public observability read model. It is intentionally separate from the value-moving canisters.
 
-Phase 1 public shell is live on mainnet with historian canister `yo47z-piaaa-aaaac-qg3xa-cai` and frontend canister `6h2pa-qiaaa-aaaao-qp4fa-cai`. IO remains pre-launch: no value-moving protocol canister is live, no canonical IO SNS ledger exists yet, IO issuance is not live, and IO redemption is not live.
+Production fiduciary canisters are reserved placeholders only. The production historian is reserved as `tjqj3-uaaaa-aaaar-qb7xa-cai` and the production frontend is reserved as `torpp-zyaaa-aaaar-qb7xq-cai`; both are `ReservedNotLive`, empty/inert, and not live. The previous historian `yo47z-piaaa-aaaac-qg3xa-cai` and frontend `6h2pa-qiaaa-aaaao-qp4fa-cai` are `DevMainnet` only: superseded as production targets, retained only as dev/test canisters, not on the fiduciary subnet, and not production IO protocol canisters. IO remains pre-launch: no value-moving protocol canister is live, no canonical IO SNS ledger exists yet, IO issuance is not live, and IO redemption is not live.
 
 ## Responsibilities
 
@@ -45,7 +45,7 @@ If total supply, excluded supply, liquid reserve, or redeemable supply is unavai
 
 Historian state is useful for continuity and frontend responsiveness, but it is a read model. Full canonical history remains in ledger/index/governance sources and release artifacts. If historian state diverges, recovery should rebuild or correct historian observations rather than adding broad production query/control APIs to value-moving canisters.
 
-Production source adapters remain future work. The frontend consumes the production historian read surface through browser Candid calls, but historian observations remain a rebuildable read model rather than protocol truth. In Phase 1, the frontend was built with `CANISTER_ID_IO_HISTORIAN=yo47z-piaaa-aaaac-qg3xa-cai`; this does not activate `io_stream_manager`, `io_nns_neuron_manager`, the existing IO neuron-owner canister `oae4c-3iaaa-aaaar-qb5qq-cai`, or IO neuron `6345890886899317159`.
+Production source adapters remain future work. The frontend consumes the historian read surface through browser Candid calls, but historian observations remain a rebuildable read model rather than protocol truth. The DevMainnet frontend was built with `CANISTER_ID_IO_HISTORIAN=yo47z-piaaa-aaaac-qg3xa-cai`; this does not activate `io_stream_manager`, `io_nns_neuron_manager`, the existing IO neuron-owner canister `oae4c-3iaaa-aaaar-qb5qq-cai`, or IO neuron `6345890886899317159`.
 
 ## Freshness Sources
 

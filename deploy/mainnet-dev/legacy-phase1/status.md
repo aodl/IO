@@ -1,8 +1,8 @@
-# Phase 1 Mainnet Status
+# Legacy Phase 1 DevMainnet Status
 
-Phase 1 is `MainnetPreLaunchPublicShell`.
+Phase 1 is recorded as `LegacyPhase1DevPublicShell` in the `DevMainnet` environment. These IDs are superseded as production targets, retained only as dev/test canisters, not on the fiduciary subnet, and not production IO protocol canisters.
 
-Live public-shell canisters:
+Dev/test public-shell canisters:
 
 - `frontend`: `6h2pa-qiaaa-aaaao-qp4fa-cai`
 - `io_historian`: `yo47z-piaaa-aaaac-qg3xa-cai`
@@ -12,12 +12,12 @@ Public URLs:
 - `https://6h2pa-qiaaa-aaaao-qp4fa-cai.icp0.io/`
 - `https://6h2pa-qiaaa-aaaao-qp4fa-cai.raw.icp0.io/`
 
-Not deployed in Phase 1:
+Not deployed in this dev/test shell:
 
 - `io_stream_manager`
 - `io_nns_neuron_manager`
 
-Not touched in Phase 1:
+Not touched in this dev/test shell:
 
 - Existing IO neuron-owner canister: `oae4c-3iaaa-aaaar-qb5qq-cai`
 - IO neuron: `6345890886899317159`

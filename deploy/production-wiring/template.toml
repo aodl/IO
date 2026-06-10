@@ -6,6 +6,11 @@
 mode = "ProductionPlanned"
 io_ledger_role = "FutureCanonicalSnsIo"
 fixture_marked = false
+status = "ReservedNotLive"
+io_protocol_live = false
+value_moving_logic_installed = false
+io_issuance_live = false
+io_redemption_live = false
 
 [principals]
 icp_ledger = "ryjl3-tyaaa-aaaaa-aaaba-cai"
@@ -31,7 +36,7 @@ neuron_owner_canister = "oae4c-3iaaa-aaaar-qb5qq-cai"
 io_nns_neuron_id = 6_345_890_886_899_317_159
 
 [deployment_targets]
-io_stream_manager = null
-io_nns_neuron_manager = null
+io_stream_manager = "thset-pqaaa-aaaar-qb7wa-cai"
+io_nns_neuron_manager = "tatch-ciaaa-aaaar-qb7wq-cai"
 mutation_target_principals = []
 mutation_target_nns_neuron_ids = []

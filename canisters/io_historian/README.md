@@ -2,7 +2,9 @@
 
 Public read-model canister.
 
-Phase 1 public shell is live on mainnet as historian canister `yo47z-piaaa-aaaac-qg3xa-cai`. The paired frontend canister is `6h2pa-qiaaa-aaaao-qp4fa-cai`.
+Production historian canister `tjqj3-uaaaa-aaaar-qb7xa-cai` is a fiduciary-subnet reservation with status `ReservedNotLive`. It is empty/inert and not live. The paired production frontend reservation is `torpp-zyaaa-aaaar-qb7xq-cai`.
+
+The previous historian `yo47z-piaaa-aaaac-qg3xa-cai` and frontend `6h2pa-qiaaa-aaaao-qp4fa-cai` are `DevMainnet` only: superseded as production targets, retained only as dev/test canisters, not on the fiduciary subnet, and not production IO protocol canisters.
 
 IO remains pre-launch. The canonical SNS IO ledger is not launched, no value-moving protocol canister is live, IO issuance is not live, and IO redemption is not live.
 
@@ -16,7 +18,7 @@ IO remains pre-launch. The canonical SNS IO ledger is not launched, no value-mov
 
 Historian must not depend on broad public query APIs from value-moving canisters. Historian may query observable/public sources and ledgers/indexes in future production wiring, but this milestone only wires local/test ingestion and pure reconstruction helpers.
 
-The Phase 1 frontend consumes this historian read model. Historian remains a public read model, not protocol truth.
+The DevMainnet frontend consumes this historian read model. Historian remains a public read model, not protocol truth.
 
 ## Public API
 
@@ -77,7 +79,7 @@ The historian read model can represent:
 - governance eligibility and participation summaries using `io-reward-policy`;
 - release artifact and canister status summaries from manifest-shaped data.
 
-Production data-source wiring remains future work. No deployment workflows, `dfx` requirements, SNS launch flows, or value-moving economics changes are part of this milestone. The existing IO neuron-owner canister `oae4c-3iaaa-aaaar-qb5qq-cai` and IO neuron `6345890886899317159` are not touched by the Phase 1 historian.
+Production data-source wiring remains future work. No deployment workflows, `dfx` requirements, SNS launch flows, or value-moving economics changes are part of this milestone. The existing IO neuron-owner canister `oae4c-3iaaa-aaaar-qb5qq-cai` and IO neuron `6345890886899317159` are not touched by the DevMainnet historian.
 
 ## Freshness Model
 
@@ -85,4 +87,4 @@ Historian source health is part of the public read model. The state is rebuildab
 
 Source health exposes fresh, stale, missing, incomplete, observed-only, prelaunch/not-applicable, error/retryable, and unknown observations. The missing/stale/incomplete states are visible, and missing/stale/incomplete fields must not be interpreted as zero protocol value.
 
-IO protocol is not live. SNS IO ledger remains not launched. Phase 1 frontend/historian shell is live, while value-moving canisters remain not deployed. Index canisters are the normal account-history abstraction; index canisters are the default source for account-history observations. Raw ledger/archive traversal is not the default path.
+IO protocol is not live. SNS IO ledger remains not launched. Production fiduciary canisters are reserved empty/inert placeholders, while the previous frontend/historian shell is DevMainnet only. Index canisters are the normal account-history abstraction; index canisters are the default source for account-history observations. Raw ledger/archive traversal is not the default path.

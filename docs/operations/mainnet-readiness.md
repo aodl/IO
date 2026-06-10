@@ -2,7 +2,7 @@
 
 IO is not ready for production protocol mainnet deployment.
 
-Phase 1 public shell is live on mainnet as `MainnetPreLaunchPublicShell`. Only these public-shell canisters are live:
+The previous Phase 1 public shell is now recorded as `DevMainnet` / `LegacyPhase1DevPublicShell`. These canisters are superseded as production targets, retained only as dev/test canisters, not on the fiduciary subnet, and not production IO protocol canisters:
 
 - `frontend`: `6h2pa-qiaaa-aaaao-qp4fa-cai`
 - `io_historian`: `yo47z-piaaa-aaaac-qg3xa-cai`
@@ -12,9 +12,11 @@ Frontend URLs:
 - `https://6h2pa-qiaaa-aaaao-qp4fa-cai.icp0.io/`
 - `https://6h2pa-qiaaa-aaaao-qp4fa-cai.raw.icp0.io/`
 
-This public shell does not mean the IO protocol is live. No value-moving protocol canister is live, no canonical IO SNS ledger exists yet, no IO issuance is live, and no IO redemption is live. `io_stream_manager` and `io_nns_neuron_manager` are not deployed in this phase. The existing IO neuron-owner canister `oae4c-3iaaa-aaaar-qb5qq-cai` and IO neuron `6345890886899317159` remain not touched.
+This public shell does not mean the IO protocol is live. No value-moving protocol canister is live, no canonical IO SNS ledger exists yet, no IO issuance is live, and no IO redemption is live. `io_stream_manager` and `io_nns_neuron_manager` were not deployed in this dev/test phase. The existing IO neuron-owner canister `oae4c-3iaaa-aaaar-qb5qq-cai` and IO neuron `6345890886899317159` remain not touched.
 
-The frontend consumes the Phase 1 historian canister. The historian is a public read model and observability surface, not protocol truth.
+The frontend consumes the DevMainnet historian canister. The historian is a public read model and observability surface, not protocol truth.
+
+Production fiduciary canister IDs are reserved placeholders only: `thset-pqaaa-aaaar-qb7wa-cai` (`io_stream_manager`), `tatch-ciaaa-aaaar-qb7wq-cai` (`io_nns_neuron_manager`), `tjqj3-uaaaa-aaaar-qb7xa-cai` (`io_historian`), and `torpp-zyaaa-aaaar-qb7xq-cai` (`frontend`). They are `ReservedNotLive`, empty/inert, not live, have no value-moving Wasm installed, and do not enable IO issuance or redemption.
 
 Historian freshness monitoring is also a public read model. It is rebuildable, not canonical protocol truth, and not a value-moving authority. Production-shaped ingestion is observation/freshness only and does not activate production adapters. The missing/stale/incomplete states are visible, and missing/stale/incomplete fields must not be interpreted as zero protocol value.
 
@@ -43,7 +45,7 @@ Missing before production:
 
 The official local SNS rehearsal is complete only after official local SNS tooling and SNS-W have run locally, local SNS root/governance/ledger/index/swap IDs are recorded, real local SNS ledger fee/total-supply/protocol reserve balance observations are captured, reserve-to-user and user-to-reserve transfers are observed, bad-fee/insufficient-funds/duplicate behavior and duplicate block proof are recorded, index account history is observed, SNS governance/root/swap availability and dapp controller state are checked, and `cargo run -p xtask -- validate_local_sns_ledger` passes against the filled local evidence file. Even then, the result does not prove mainnet SNS launch readiness, final tokenomics, final SNS config, mainnet testflight, audit readiness, or production adapter activation.
 
-The current mock-driven journals and scheduler flows are production-shaped but not audited. Downstream transfer paths use `LedgerTransferClient` mock adapters in debug/PocketIC runs; local scan sources can use `LedgerIndexClient` against mock index canisters. No current script deploys to mainnet. The Phase 1 public shell record is stored in `deploy/phase1-mainnet/` and references `release-artifacts/manifest.json`.
+The current mock-driven journals and scheduler flows are production-shaped but not audited. Downstream transfer paths use `LedgerTransferClient` mock adapters in debug/PocketIC runs; local scan sources can use `LedgerIndexClient` against mock index canisters. No current script deploys to mainnet. The legacy dev/test public shell record is stored in `deploy/mainnet-dev/legacy-phase1/` and references `release-artifacts/manifest.json`.
 
 The repo contains production-shaped ledger/index and governance Candid models, boundary tests, local/mock SNS governance read snapshotting, local SNS ledger/index value-flow tests, a bounded `io_historian` public read model, a certified frontend asset canister, and mock/PocketIC SNS root/controller lifecycle upgrade tests. We currently run SNS-shaped mock/PocketIC tests. They validate topology/config readiness, read-only mock governance reads, local redemption observation through SNS-index-shaped history, local reward/return transfers through SNS-ledger-shaped accounts, historian debug-ingested observations, certified frontend HTTP routing, and local proposal-shaped root upgrade intent; they are not official SNS launch tests.
 
