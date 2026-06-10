@@ -2613,7 +2613,21 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
     require_present(
         "tests/e2e_real_canisters/src/pocketic_env.rs",
         &pocketic_env,
-        &["POCKET_IC_BIN"],
+        &[
+            "POCKET_IC_BIN",
+            "with_nns_subnet()",
+            "with_sns_subnet()",
+            "with_application_subnet()",
+            "create_sns_canister",
+            "create_application_canister",
+            "create_canister_on_subnet",
+        ],
+    )?;
+    let ledger_index = require_file(root, "tests/e2e_real_canisters/src/sns_ledger_index.rs")?;
+    require_present(
+        "tests/e2e_real_canisters/src/sns_ledger_index.rs",
+        &ledger_index,
+        &["create_sns_canister"],
     )?;
     require_absent(harness_path, &harness, &["--network ic", "dfx "])?;
     for path in [

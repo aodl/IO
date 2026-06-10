@@ -57,7 +57,7 @@ fn setup(required: bool) -> Option<LedgerIndexFixture> {
     let governance = icrc::account(governance_owner, Some(icrc::subaccount("governance")));
     let minting = icrc::account(minting_owner, None);
 
-    let ledger = pocketic_env::create_canister(
+    let ledger = pocketic_env::create_sns_canister(
         &pic,
         ledger_wasm.clone(),
         icrc::ledger_init_arg(
@@ -70,7 +70,7 @@ fn setup(required: bool) -> Option<LedgerIndexFixture> {
         ),
     );
     let index =
-        pocketic_env::create_canister(&pic, index_wasm.clone(), icrc::index_init_arg(ledger));
+        pocketic_env::create_sns_canister(&pic, index_wasm.clone(), icrc::index_init_arg(ledger));
     for _ in 0..10 {
         pic.tick();
     }
