@@ -6,7 +6,7 @@ use io_production_wiring::{
 use io_stable_schema::{accepts_schema_version, STABLE_SCHEMA_REGISTRY};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -271,6 +271,165 @@ fn parse_toml_bool(text: &str, section: &str, key: &str) -> Result<bool, String>
         };
     }
     Err(format!("missing required field {section}.{key}"))
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum SimpleTomlValue {
+    String(String),
+    Bool(bool),
+    Integer(u128),
+}
+
+type SimpleTomlDocument = BTreeMap<String, BTreeMap<String, SimpleTomlValue>>;
+
+fn parse_simple_toml_document(path: &str, text: &str) -> Result<SimpleTomlDocument, String> {
+    let mut doc = SimpleTomlDocument::new();
+    let mut current_section: Option<String> = None;
+    for (line_no, raw_line) in text.lines().enumerate() {
+        let line_no = line_no + 1;
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            let section = line[1..line.len() - 1].trim();
+            if section.is_empty() || section.contains('.') {
+                return Err(format!(
+                    "{path}:{line_no}: unsupported section name {section:?}"
+                ));
+            }
+            current_section = Some(section.to_string());
+            doc.entry(section.to_string()).or_default();
+            continue;
+        }
+        let section = current_section
+            .as_ref()
+            .ok_or_else(|| format!("{path}:{line_no}: key outside a section"))?;
+        let (key, value) = line
+            .split_once('=')
+            .ok_or_else(|| format!("{path}:{line_no}: expected key = value"))?;
+        let key = key.trim();
+        if key.is_empty() || key.contains('.') {
+            return Err(format!("{path}:{line_no}: unsupported key name {key:?}"));
+        }
+        let value = parse_simple_toml_value(path, line_no, value.trim())?;
+        let values = doc.entry(section.clone()).or_default();
+        if values.insert(key.to_string(), value).is_some() {
+            return Err(format!("{path}:{line_no}: duplicate key {section}.{key}"));
+        }
+    }
+    Ok(doc)
+}
+
+fn parse_simple_toml_value(
+    path: &str,
+    line_no: usize,
+    value: &str,
+) -> Result<SimpleTomlValue, String> {
+    if value.starts_with('"') {
+        if !(value.ends_with('"') && value.len() >= 2) {
+            return Err(format!("{path}:{line_no}: unterminated string"));
+        }
+        return Ok(SimpleTomlValue::String(
+            value[1..value.len() - 1].to_string(),
+        ));
+    }
+    match value {
+        "true" => return Ok(SimpleTomlValue::Bool(true)),
+        "false" => return Ok(SimpleTomlValue::Bool(false)),
+        _ => {}
+    }
+    let digits = value.replace('_', "");
+    if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Ok(SimpleTomlValue::Integer(digits.parse::<u128>().map_err(
+            |err| format!("{path}:{line_no}: integer does not fit u128: {err}"),
+        )?));
+    }
+    Err(format!(
+        "{path}:{line_no}: unsupported TOML value {value:?}"
+    ))
+}
+
+fn require_simple_section<'a>(
+    path: &str,
+    doc: &'a SimpleTomlDocument,
+    section: &str,
+) -> Result<&'a BTreeMap<String, SimpleTomlValue>, String> {
+    doc.get(section)
+        .ok_or_else(|| format!("{path}: missing section [{section}]"))
+}
+
+fn require_simple_value<'a>(
+    path: &str,
+    doc: &'a SimpleTomlDocument,
+    section: &str,
+    key: &str,
+) -> Result<&'a SimpleTomlValue, String> {
+    require_simple_section(path, doc, section)?
+        .get(key)
+        .ok_or_else(|| format!("{path}: missing required field {section}.{key}"))
+}
+
+fn require_simple_string(
+    path: &str,
+    doc: &SimpleTomlDocument,
+    section: &str,
+    key: &str,
+) -> Result<String, String> {
+    match require_simple_value(path, doc, section, key)? {
+        SimpleTomlValue::String(value) => Ok(value.clone()),
+        other => Err(format!(
+            "{path}: expected {section}.{key} to be string, got {other:?}"
+        )),
+    }
+}
+
+fn require_simple_bool(
+    path: &str,
+    doc: &SimpleTomlDocument,
+    section: &str,
+    key: &str,
+) -> Result<bool, String> {
+    match require_simple_value(path, doc, section, key)? {
+        SimpleTomlValue::Bool(value) => Ok(*value),
+        other => Err(format!(
+            "{path}: expected {section}.{key} to be bool, got {other:?}"
+        )),
+    }
+}
+
+fn require_simple_u128(
+    path: &str,
+    doc: &SimpleTomlDocument,
+    section: &str,
+    key: &str,
+) -> Result<u128, String> {
+    match require_simple_value(path, doc, section, key)? {
+        SimpleTomlValue::Integer(value) => Ok(*value),
+        other => Err(format!(
+            "{path}: expected {section}.{key} to be integer, got {other:?}"
+        )),
+    }
+}
+
+fn require_simple_u64(
+    path: &str,
+    doc: &SimpleTomlDocument,
+    section: &str,
+    key: &str,
+) -> Result<u64, String> {
+    match require_simple_value(path, doc, section, key)? {
+        SimpleTomlValue::Integer(value) => (*value)
+            .try_into()
+            .map_err(|_| format!("{path}: {section}.{key} does not fit u64")),
+        SimpleTomlValue::String(value) => value
+            .replace('_', "")
+            .parse::<u64>()
+            .map_err(|err| format!("{path}: {section}.{key} is not a u64: {err}")),
+        other => Err(format!(
+            "{path}: expected {section}.{key} to be integer or numeric string, got {other:?}"
+        )),
+    }
 }
 
 fn require_toml_string(
@@ -1195,12 +1354,19 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "user-to-reserve transfer",
             "validate_local_sns_rehearsal",
             "validate_local_sns_ledger",
+            "validate_local_sns_scripts",
+            "Human-readable local evidence-derived wiring",
+            "Not accepted by production wiring validators",
+            "Do not use as install args",
         ],
     )?;
 
-    let sns_init = require_file(root, "deploy/local-sns-rehearsal/sns_init.local.yaml")?;
+    let sns_init = require_file(
+        root,
+        "deploy/local-sns-rehearsal/sns_init.local.template.yaml",
+    )?;
     require_present(
-        "deploy/local-sns-rehearsal/sns_init.local.yaml",
+        "deploy/local-sns-rehearsal/sns_init.local.template.yaml",
         &sns_init,
         &[
             "Local-only",
@@ -1218,11 +1384,11 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "issuance_model: \"protocol reserve transfer\"",
             "redemption_model: \"user transfer back to protocol reserve\"",
             "io_test_ledger_role: \"non-canonical staging only\"",
-            "TODO_LOCAL",
+            "{{",
         ],
     )?;
     require_absent(
-        "deploy/local-sns-rehearsal/sns_init.local.yaml",
+        "deploy/local-sns-rehearsal/sns_init.local.template.yaml",
         &sns_init,
         &[
             "--network ic",
@@ -1249,10 +1415,15 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "index",
             "swap",
             "archive",
+            "[expected_local_sns_config]",
+            "transaction_fee_e8s",
+            "total_supply_e8s",
             "[ledger_evidence]",
             "transaction_fee_e8s",
             "total_supply_e8s",
             "protocol_reserve_balance_e8s",
+            "reserve_transfer_amount_e8s",
+            "redemption_return_amount_e8s",
             "bad_fee_error_observed = true",
             "insufficient_funds_error_observed = true",
             "duplicate_transfer_observed = true",
@@ -1271,17 +1442,54 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
     )?;
 
     for path in [
-        "deploy/local-sns-rehearsal/scripts/check-prereqs.sh",
-        "deploy/local-sns-rehearsal/scripts/render-local-wiring.sh",
+        "deploy/local-sns-rehearsal/runbook.sh",
+        "deploy/local-sns-rehearsal/scripts/00-check-prereqs.sh",
+        "deploy/local-sns-rehearsal/scripts/01-render-sns-init.sh",
+        "deploy/local-sns-rehearsal/scripts/02-record-canister-ids.sh",
+        "deploy/local-sns-rehearsal/scripts/03-capture-ledger-evidence.sh",
+        "deploy/local-sns-rehearsal/scripts/04-render-local-wiring.sh",
+        "deploy/local-sns-rehearsal/scripts/05-validate-evidence.sh",
     ] {
         let text = require_file(root, path)?;
-        require_present(path, &text, &["optional", "local"])?;
-        require_absent(path, &text, &["--network ic", "dfx start"])?;
+        require_present(
+            path,
+            &text,
+            &[
+                "IO_LOCAL_SNS_REHEARSAL_ACK",
+                "local-only",
+                "require_local_script_guard",
+            ],
+        )?;
+        require_absent(path, &text, &["dfx start"])?;
     }
+
+    let commands = require_file(root, "deploy/local-sns-rehearsal/commands.local.example.md")?;
+    require_present(
+        "deploy/local-sns-rehearsal/commands.local.example.md",
+        &commands,
+        &[
+            "Local-only",
+            "icrc1_symbol",
+            "icrc1_fee",
+            "icrc1_total_supply",
+            "icrc1_balance_of",
+            "icrc1_transfer",
+            "get_account_transactions",
+            "governance",
+            "root",
+            "IO_LOCAL_SNS_REHEARSAL_ACK=local-only",
+        ],
+    )?;
+    require_absent(
+        "deploy/local-sns-rehearsal/commands.local.example.md",
+        &commands,
+        &[PHASE1_FRONTEND_CANISTER_ID, PHASE1_HISTORIAN_CANISTER_ID],
+    )?;
 
     for path in [
         "docs/operations/sns-testing-layers.md",
         "docs/operations/official-local-sns-rehearsal.md",
+        "docs/operations/mainnet-readiness.md",
     ] {
         let text = require_file(root, path)?;
         require_present(
@@ -1301,6 +1509,963 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+    fs::create_dir_all(dst).map_err(|err| format!("{}: {err}", dst.display()))?;
+    for entry in fs::read_dir(src).map_err(|err| format!("{}: {err}", src.display()))? {
+        let entry = entry.map_err(|err| format!("{}: {err}", src.display()))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|err| format!("{}: {err}", entry.path().display()))?;
+        let target = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&entry.path(), &target)?;
+        } else if file_type.is_file() {
+            fs::copy(entry.path(), &target)
+                .map_err(|err| format!("{}: {err}", target.display()))?;
+            let permissions = entry
+                .metadata()
+                .map_err(|err| format!("{}: {err}", entry.path().display()))?
+                .permissions();
+            fs::set_permissions(&target, permissions)
+                .map_err(|err| format!("{}: {err}", target.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn temp_root_for_command(name: &str) -> Result<PathBuf, String> {
+    let root = env::temp_dir().join(format!("io-xtask-{name}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).map_err(|err| format!("{}: {err}", root.display()))?;
+    Ok(root)
+}
+
+fn write_text(path: &Path, text: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| format!("{}: {err}", parent.display()))?;
+    }
+    fs::write(path, text).map_err(|err| format!("{}: {err}", path.display()))
+}
+
+fn run_rehearsal_script(
+    runbook: &Path,
+    args: &[&str],
+    xtask: &Path,
+    expect_success: bool,
+) -> Result<String, String> {
+    let output = Command::new(runbook)
+        .args(args)
+        .env("IO_LOCAL_SNS_REHEARSAL_ACK", "local-only")
+        .env("IO_LOCAL_SNS_REHEARSAL_XTASK", xtask)
+        .output()
+        .map_err(|err| format!("{} {:?}: {err}", runbook.display(), args))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}{stderr}");
+    if output.status.success() != expect_success {
+        return Err(format!(
+            "{} {:?}: expected success={expect_success}, got status {:?}\n{}",
+            runbook.display(),
+            args,
+            output.status.code(),
+            combined
+        ));
+    }
+    Ok(combined)
+}
+
+fn run_rehearsal_script_without_ack(runbook: &Path, args: &[&str]) -> Result<String, String> {
+    let output = Command::new(runbook)
+        .args(args)
+        .env_remove("IO_LOCAL_SNS_REHEARSAL_ACK")
+        .output()
+        .map_err(|err| format!("{} {:?}: {err}", runbook.display(), args))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}{stderr}");
+    if output.status.success() {
+        return Err(format!(
+            "{} {:?}: missing ACK unexpectedly succeeded\n{}",
+            runbook.display(),
+            args,
+            combined
+        ));
+    }
+    Ok(combined)
+}
+
+fn fixture_local_vars(
+    io_stream_manager: &str,
+    io_nns_neuron_manager: &str,
+    io_historian: &str,
+    frontend: &str,
+) -> String {
+    format!(
+        r#"[local]
+fallback_controller_principal = "a3shf-5eaaa-aaaaa-qaafa-cai"
+io_stream_manager_canister = "{io_stream_manager}"
+io_nns_neuron_manager_canister = "{io_nns_neuron_manager}"
+io_historian_canister = "{io_historian}"
+frontend_canister = "{frontend}"
+developer_neuron_principal = "bkyz2-fmaaa-aaaaa-qaaaq-cai"
+protocol_reserve_principal = "bd3sg-teaaa-aaaaa-qaaba-cai"
+archive_controller_principal = "br5f7-7uaaa-aaaaa-qaaca-cai"
+logo_url = "http://127.0.0.1:4943/local-io-logo.png"
+token_logo_url = "http://127.0.0.1:4943/local-io-token-logo.png"
+
+[expected_local_sns_config]
+token_symbol = "IO"
+transaction_fee_e8s = 10_000
+total_supply_e8s = 100_000_000_000_000
+protocol_reserve_initial_balance_e8s = 60_000_000_000_000
+"#
+    )
+}
+
+fn completed_local_sns_evidence() -> String {
+    r#"[mode]
+network = "local"
+source = "official-local-sns-rehearsal"
+dfx_sns = "manual-local-only"
+io_protocol_live = false
+sns_io_ledger_mainnet_launched = false
+
+[expected_local_sns_config]
+token_symbol = "IO"
+transaction_fee_e8s = 10000
+total_supply_e8s = 100000000000000
+
+[sns_canisters]
+root = "bkyz2-fmaaa-aaaaa-qaaaq-cai"
+governance = "bd3sg-teaaa-aaaaa-qaaba-cai"
+ledger = "br5f7-7uaaa-aaaaa-qaaca-cai"
+index = "be2us-64aaa-aaaaa-qaabq-cai"
+swap = "bw4dl-smaaa-aaaaa-qaacq-cai"
+archive = "by6od-j4aaa-aaaaa-qaadq-cai"
+
+[io_dapp_canisters]
+io_stream_manager = "avqkn-guaaa-aaaaa-qaaea-cai"
+io_nns_neuron_manager = "aax3a-h4aaa-aaaaa-qaahq-cai"
+io_historian = "ajuq4-ruaaa-aaaaa-qaaga-cai"
+frontend = "b77ix-eeaaa-aaaaa-qaada-cai"
+
+[ledger_evidence]
+token_symbol = "IO"
+transaction_fee_e8s = 10000
+total_supply_e8s = 100000000000000
+protocol_reserve_account_owner = "a3shf-5eaaa-aaaaa-qaafa-cai"
+protocol_reserve_subaccount_hex = "none"
+protocol_reserve_balance_e8s = 60000000000000
+reserve_transfer_block_index = 1
+redemption_return_block_index = 2
+reserve_transfer_amount_e8s = 100000000
+redemption_return_amount_e8s = 100000000
+bad_fee_error_observed = true
+insufficient_funds_error_observed = true
+duplicate_transfer_observed = true
+duplicate_block_verified = true
+duplicate_of_block_index = 1
+index_account_history_observed = true
+index_history_order = "descending"
+index_lag_or_archive_required_observed = "not-observed"
+
+[governance_evidence]
+governance_available = true
+root_available = true
+swap_available = true
+dapp_controller_state_checked = true
+governance_upgrade_proposal_tested = false
+governance_upgrade_gap = "local tooling did not support upgrade proposal in this run"
+
+[issuance_model]
+resolved_as = "protocol_reserve_transfer"
+minting_assumed = false
+treasury_transfer_assumed = false
+total_supply_constant_across_issuance_redemption = true
+
+[protected]
+must_not_touch_neuron_owner_canister = "oae4c-3iaaa-aaaar-qb5qq-cai"
+must_not_touch_io_nns_neuron_id = "6345890886899317159"
+"#
+    .to_string()
+}
+
+fn validate_local_sns_scripts_at(root: &Path) -> Result<(), String> {
+    let temp = temp_root_for_command("local-sns-scripts")?;
+    let temp_rehearsal = temp.join("deploy/local-sns-rehearsal");
+    copy_dir_recursive(&root.join("deploy/local-sns-rehearsal"), &temp_rehearsal)?;
+
+    let runbook = temp_rehearsal.join("runbook.sh");
+    let xtask = env::current_exe().map_err(|err| format!("current exe: {err}"))?;
+    let local_vars = temp_rehearsal.join("local-vars.toml");
+    write_text(
+        &local_vars,
+        &fixture_local_vars(
+            "avqkn-guaaa-aaaaa-qaaea-cai",
+            "aax3a-h4aaa-aaaaa-qaahq-cai",
+            "ajuq4-ruaaa-aaaaa-qaaga-cai",
+            "b77ix-eeaaa-aaaaa-qaada-cai",
+        ),
+    )?;
+
+    run_rehearsal_script(&runbook, &["render-sns-init"], &xtask, true)?;
+    let rendered_sns_path = temp_rehearsal.join("generated/sns_init.local.yaml");
+    let rendered_sns = fs::read_to_string(&rendered_sns_path)
+        .map_err(|err| format!("{}: {err}", rendered_sns_path.display()))?;
+    require_absent(
+        &rendered_sns_path.display().to_string(),
+        &rendered_sns,
+        &[
+            "TODO_LOCAL",
+            "{{",
+            "}}",
+            "--network ic",
+            PROTECTED_IO_NEURON_OWNER_CANISTER,
+            &PROTECTED_IO_NNS_NEURON_ID.to_string(),
+            PHASE1_FRONTEND_CANISTER_ID,
+            PHASE1_HISTORIAN_CANISTER_ID,
+            "ryjl3-tyaaa-aaaaa-aaaba-cai",
+            "qhbym-qaaaa-aaaaa-aaafq-cai",
+            "rrkah-fqaaa-aaaaa-aaaaq-cai",
+        ],
+    )?;
+
+    run_rehearsal_script(&runbook, &["record-ids"], &xtask, true)?;
+    let evidence_path = temp_rehearsal.join("canister-ids.local.toml");
+    write_text(&evidence_path, &completed_local_sns_evidence())?;
+
+    let capture_output = run_rehearsal_script(&runbook, &["capture-evidence"], &xtask, true)?;
+    require_present(
+        "capture-evidence output",
+        &capture_output,
+        &["--network local"],
+    )?;
+    run_rehearsal_script(&runbook, &["render-wiring"], &xtask, true)?;
+    run_rehearsal_script(&runbook, &["validate"], &xtask, true)?;
+
+    let wiring_path = temp_rehearsal.join("generated/local-production-wiring.toml");
+    let wiring = fs::read_to_string(&wiring_path)
+        .map_err(|err| format!("{}: {err}", wiring_path.display()))?;
+    require_present(
+        &wiring_path.display().to_string(),
+        &wiring,
+        &[
+            "Human-readable local evidence-derived wiring",
+            "Not accepted by production_wiring validators",
+            "Do not use as install args",
+            "io_ledger = \"br5f7-7uaaa-aaaaa-qaaca-cai\"",
+            "io_index = \"be2us-64aaa-aaaaa-qaabq-cai\"",
+            "production_active = false",
+        ],
+    )?;
+    require_absent(
+        &wiring_path.display().to_string(),
+        &wiring,
+        &[
+            "IO_TEST",
+            PROTECTED_IO_NEURON_OWNER_CANISTER,
+            &PROTECTED_IO_NNS_NEURON_ID.to_string(),
+            PHASE1_FRONTEND_CANISTER_ID,
+            PHASE1_HISTORIAN_CANISTER_ID,
+            "ryjl3-tyaaa-aaaaa-aaaba-cai",
+            "qhbym-qaaaa-aaaaa-aaafq-cai",
+            "rrkah-fqaaa-aaaaa-aaaaq-cai",
+            "production_active = true",
+        ],
+    )?;
+
+    let err = run_rehearsal_script_without_ack(&runbook, &["render-sns-init"])?;
+    require_present("missing ACK error", &err, &["IO_LOCAL_SNS_REHEARSAL_ACK"])?;
+    let err = run_rehearsal_script(
+        &runbook,
+        &["render-sns-init", "--network", "ic"],
+        &xtask,
+        false,
+    )?;
+    require_present(
+        "mainnet argument error",
+        &err,
+        &["refusing mainnet-like argument"],
+    )?;
+
+    for (name, text, needle) in [
+        (
+            "protected-canister",
+            fixture_local_vars(
+                PROTECTED_IO_NEURON_OWNER_CANISTER,
+                "aax3a-h4aaa-aaaaa-qaahq-cai",
+                "ajuq4-ruaaa-aaaaa-qaaga-cai",
+                "b77ix-eeaaa-aaaaa-qaada-cai",
+            ),
+            "protected value",
+        ),
+        (
+            "protected-neuron",
+            fixture_local_vars(
+                &PROTECTED_IO_NNS_NEURON_ID.to_string(),
+                "aax3a-h4aaa-aaaaa-qaahq-cai",
+                "ajuq4-ruaaa-aaaaa-qaaga-cai",
+                "b77ix-eeaaa-aaaaa-qaada-cai",
+            ),
+            "protected value",
+        ),
+        (
+            "mainnet-icp-ledger",
+            fixture_local_vars(
+                "ryjl3-tyaaa-aaaaa-aaaba-cai",
+                "aax3a-h4aaa-aaaaa-qaahq-cai",
+                "ajuq4-ruaaa-aaaaa-qaaga-cai",
+                "b77ix-eeaaa-aaaaa-qaada-cai",
+            ),
+            "mainnet/prior canister",
+        ),
+        (
+            "placeholder",
+            fixture_local_vars(
+                "TODO_LOCAL_IO_STREAM_MANAGER_CANISTER",
+                "aax3a-h4aaa-aaaaa-qaahq-cai",
+                "ajuq4-ruaaa-aaaaa-qaaga-cai",
+                "b77ix-eeaaa-aaaaa-qaada-cai",
+            ),
+            "placeholder local variable",
+        ),
+    ] {
+        write_text(&local_vars, &text)?;
+        let err = run_rehearsal_script(&runbook, &["render-sns-init"], &xtask, false)?;
+        require_present(&format!("{name} error"), &err, &[needle])?;
+    }
+
+    let _ = fs::remove_dir_all(&temp);
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct LocalSnsEvidence {
+    mode: LocalSnsModeEvidence,
+    expected: LocalSnsExpectedConfig,
+    sns_canisters: LocalSnsCanisters,
+    io_dapp_canisters: LocalSnsIoDappCanisters,
+    ledger: LocalSnsLedgerEvidence,
+    governance: LocalSnsGovernanceEvidence,
+    issuance: LocalSnsIssuanceModel,
+}
+
+#[derive(Clone, Debug)]
+struct LocalSnsModeEvidence {
+    network: String,
+    source: String,
+    dfx_sns: String,
+    io_protocol_live: bool,
+    sns_io_ledger_mainnet_launched: bool,
+}
+
+#[derive(Clone, Debug)]
+struct LocalSnsExpectedConfig {
+    token_symbol: String,
+    transaction_fee_e8s: u128,
+    total_supply_e8s: u128,
+}
+
+#[derive(Clone, Debug)]
+struct LocalSnsCanisters {
+    root: Principal,
+    governance: Principal,
+    ledger: Principal,
+    index: Principal,
+    swap: Principal,
+    archive: Option<Principal>,
+}
+
+#[derive(Clone, Debug)]
+struct LocalSnsIoDappCanisters {
+    io_stream_manager: Principal,
+    io_nns_neuron_manager: Principal,
+    io_historian: Principal,
+    frontend: Principal,
+}
+
+#[derive(Clone, Debug)]
+struct LocalSnsLedgerEvidence {
+    token_symbol: String,
+    transaction_fee_e8s: u128,
+    total_supply_e8s: u128,
+    protocol_reserve_account_owner: Principal,
+    protocol_reserve_subaccount_hex: Option<String>,
+    protocol_reserve_balance_e8s: u128,
+    reserve_transfer_block_index: u64,
+    redemption_return_block_index: u64,
+    reserve_transfer_amount_e8s: u128,
+    redemption_return_amount_e8s: u128,
+    bad_fee_error_observed: bool,
+    insufficient_funds_error_observed: bool,
+    duplicate_transfer_observed: bool,
+    duplicate_block_verified: bool,
+    duplicate_of_block_index: Option<u64>,
+    index_account_history_observed: bool,
+    index_history_order: String,
+    index_lag_or_archive_required_observed: String,
+}
+
+#[derive(Clone, Debug)]
+struct LocalSnsGovernanceEvidence {
+    governance_available: bool,
+    root_available: bool,
+    swap_available: bool,
+    dapp_controller_state_checked: bool,
+    governance_upgrade_proposal_tested: bool,
+    governance_upgrade_gap: String,
+}
+
+#[derive(Clone, Debug)]
+struct LocalSnsIssuanceModel {
+    resolved_as: String,
+    minting_assumed: bool,
+    treasury_transfer_assumed: bool,
+    total_supply_constant_across_issuance_redemption: bool,
+}
+
+const LOCAL_SNS_MAINNET_CANISTER_IDS: &[&str] = &[
+    PHASE1_FRONTEND_CANISTER_ID,
+    PHASE1_HISTORIAN_CANISTER_ID,
+    "ryjl3-tyaaa-aaaaa-aaaba-cai",
+    "qhbym-qaaaa-aaaaa-aaafq-cai",
+    "rrkah-fqaaa-aaaaa-aaaaq-cai",
+    "r7inp-6aaaa-aaaaa-aaabq-cai",
+    "qaa6y-5yaaa-aaaaa-aaafa-cai",
+    "qjdve-lqaaa-aaaaa-aaaeq-cai",
+    "renrk-eyaaa-aaaaa-aaada-cai",
+];
+
+fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, String> {
+    require_absent(
+        path,
+        text,
+        &["TODO_", "{{", "}}", "--network ic", "-n ic", "IO_TEST"],
+    )?;
+    let doc = parse_simple_toml_document(path, text)?;
+    for section in doc.keys() {
+        match section.as_str() {
+            "mode"
+            | "expected_local_sns_config"
+            | "sns_canisters"
+            | "io_dapp_canisters"
+            | "ledger_evidence"
+            | "governance_evidence"
+            | "issuance_model"
+            | "protected" => {}
+            _ => return Err(format!("{path}: unexpected section [{section}]")),
+        }
+    }
+    let evidence = LocalSnsEvidence {
+        mode: LocalSnsModeEvidence {
+            network: require_simple_string(path, &doc, "mode", "network")?,
+            source: require_simple_string(path, &doc, "mode", "source")?,
+            dfx_sns: require_simple_string(path, &doc, "mode", "dfx_sns")?,
+            io_protocol_live: require_simple_bool(path, &doc, "mode", "io_protocol_live")?,
+            sns_io_ledger_mainnet_launched: require_simple_bool(
+                path,
+                &doc,
+                "mode",
+                "sns_io_ledger_mainnet_launched",
+            )?,
+        },
+        expected: LocalSnsExpectedConfig {
+            token_symbol: require_simple_string(
+                path,
+                &doc,
+                "expected_local_sns_config",
+                "token_symbol",
+            )?,
+            transaction_fee_e8s: require_simple_u128(
+                path,
+                &doc,
+                "expected_local_sns_config",
+                "transaction_fee_e8s",
+            )?,
+            total_supply_e8s: require_simple_u128(
+                path,
+                &doc,
+                "expected_local_sns_config",
+                "total_supply_e8s",
+            )?,
+        },
+        sns_canisters: LocalSnsCanisters {
+            root: parse_required_principal(path, &doc, "sns_canisters", "root")?,
+            governance: parse_required_principal(path, &doc, "sns_canisters", "governance")?,
+            ledger: parse_required_principal(path, &doc, "sns_canisters", "ledger")?,
+            index: parse_required_principal(path, &doc, "sns_canisters", "index")?,
+            swap: parse_required_principal(path, &doc, "sns_canisters", "swap")?,
+            archive: parse_optional_principal_string(path, &doc, "sns_canisters", "archive")?,
+        },
+        io_dapp_canisters: LocalSnsIoDappCanisters {
+            io_stream_manager: parse_required_principal(
+                path,
+                &doc,
+                "io_dapp_canisters",
+                "io_stream_manager",
+            )?,
+            io_nns_neuron_manager: parse_required_principal(
+                path,
+                &doc,
+                "io_dapp_canisters",
+                "io_nns_neuron_manager",
+            )?,
+            io_historian: parse_required_principal(
+                path,
+                &doc,
+                "io_dapp_canisters",
+                "io_historian",
+            )?,
+            frontend: parse_required_principal(path, &doc, "io_dapp_canisters", "frontend")?,
+        },
+        ledger: LocalSnsLedgerEvidence {
+            token_symbol: require_simple_string(path, &doc, "ledger_evidence", "token_symbol")?,
+            transaction_fee_e8s: require_simple_u128(
+                path,
+                &doc,
+                "ledger_evidence",
+                "transaction_fee_e8s",
+            )?,
+            total_supply_e8s: require_simple_u128(
+                path,
+                &doc,
+                "ledger_evidence",
+                "total_supply_e8s",
+            )?,
+            protocol_reserve_account_owner: parse_required_principal(
+                path,
+                &doc,
+                "ledger_evidence",
+                "protocol_reserve_account_owner",
+            )?,
+            protocol_reserve_subaccount_hex: parse_subaccount_hex(
+                path,
+                &doc,
+                "ledger_evidence",
+                "protocol_reserve_subaccount_hex",
+            )?,
+            protocol_reserve_balance_e8s: require_simple_u128(
+                path,
+                &doc,
+                "ledger_evidence",
+                "protocol_reserve_balance_e8s",
+            )?,
+            reserve_transfer_block_index: require_simple_u64(
+                path,
+                &doc,
+                "ledger_evidence",
+                "reserve_transfer_block_index",
+            )?,
+            redemption_return_block_index: require_simple_u64(
+                path,
+                &doc,
+                "ledger_evidence",
+                "redemption_return_block_index",
+            )?,
+            reserve_transfer_amount_e8s: require_simple_u128(
+                path,
+                &doc,
+                "ledger_evidence",
+                "reserve_transfer_amount_e8s",
+            )?,
+            redemption_return_amount_e8s: require_simple_u128(
+                path,
+                &doc,
+                "ledger_evidence",
+                "redemption_return_amount_e8s",
+            )?,
+            bad_fee_error_observed: require_simple_bool(
+                path,
+                &doc,
+                "ledger_evidence",
+                "bad_fee_error_observed",
+            )?,
+            insufficient_funds_error_observed: require_simple_bool(
+                path,
+                &doc,
+                "ledger_evidence",
+                "insufficient_funds_error_observed",
+            )?,
+            duplicate_transfer_observed: require_simple_bool(
+                path,
+                &doc,
+                "ledger_evidence",
+                "duplicate_transfer_observed",
+            )?,
+            duplicate_block_verified: require_simple_bool(
+                path,
+                &doc,
+                "ledger_evidence",
+                "duplicate_block_verified",
+            )?,
+            duplicate_of_block_index: parse_optional_u64(
+                path,
+                &doc,
+                "ledger_evidence",
+                "duplicate_of_block_index",
+            )?,
+            index_account_history_observed: require_simple_bool(
+                path,
+                &doc,
+                "ledger_evidence",
+                "index_account_history_observed",
+            )?,
+            index_history_order: require_simple_string(
+                path,
+                &doc,
+                "ledger_evidence",
+                "index_history_order",
+            )?,
+            index_lag_or_archive_required_observed: require_simple_string(
+                path,
+                &doc,
+                "ledger_evidence",
+                "index_lag_or_archive_required_observed",
+            )?,
+        },
+        governance: LocalSnsGovernanceEvidence {
+            governance_available: require_simple_bool(
+                path,
+                &doc,
+                "governance_evidence",
+                "governance_available",
+            )?,
+            root_available: require_simple_bool(
+                path,
+                &doc,
+                "governance_evidence",
+                "root_available",
+            )?,
+            swap_available: require_simple_bool(
+                path,
+                &doc,
+                "governance_evidence",
+                "swap_available",
+            )?,
+            dapp_controller_state_checked: require_simple_bool(
+                path,
+                &doc,
+                "governance_evidence",
+                "dapp_controller_state_checked",
+            )?,
+            governance_upgrade_proposal_tested: require_simple_bool(
+                path,
+                &doc,
+                "governance_evidence",
+                "governance_upgrade_proposal_tested",
+            )?,
+            governance_upgrade_gap: require_simple_string(
+                path,
+                &doc,
+                "governance_evidence",
+                "governance_upgrade_gap",
+            )?,
+        },
+        issuance: LocalSnsIssuanceModel {
+            resolved_as: require_simple_string(path, &doc, "issuance_model", "resolved_as")?,
+            minting_assumed: require_simple_bool(path, &doc, "issuance_model", "minting_assumed")?,
+            treasury_transfer_assumed: require_simple_bool(
+                path,
+                &doc,
+                "issuance_model",
+                "treasury_transfer_assumed",
+            )?,
+            total_supply_constant_across_issuance_redemption: require_simple_bool(
+                path,
+                &doc,
+                "issuance_model",
+                "total_supply_constant_across_issuance_redemption",
+            )?,
+        },
+    };
+    validate_local_sns_evidence(path, text, &doc, &evidence)?;
+    Ok(evidence)
+}
+
+fn parse_required_principal(
+    path: &str,
+    doc: &SimpleTomlDocument,
+    section: &str,
+    key: &str,
+) -> Result<Principal, String> {
+    let value = require_simple_string(path, doc, section, key)?;
+    Principal::from_text(&value)
+        .map_err(|err| format!("{path}: {section}.{key} is not a principal: {err}"))
+}
+
+fn parse_optional_principal_string(
+    path: &str,
+    doc: &SimpleTomlDocument,
+    section: &str,
+    key: &str,
+) -> Result<Option<Principal>, String> {
+    let value = require_simple_string(path, doc, section, key)?;
+    if value == "none" || value == "not-created" {
+        return Ok(None);
+    }
+    Principal::from_text(&value)
+        .map(Some)
+        .map_err(|err| format!("{path}: {section}.{key} is not a principal or none: {err}"))
+}
+
+fn parse_optional_u64(
+    path: &str,
+    doc: &SimpleTomlDocument,
+    section: &str,
+    key: &str,
+) -> Result<Option<u64>, String> {
+    match require_simple_value(path, doc, section, key)? {
+        SimpleTomlValue::String(value) if value == "none" => Ok(None),
+        SimpleTomlValue::String(value) => value
+            .replace('_', "")
+            .parse::<u64>()
+            .map(Some)
+            .map_err(|err| format!("{path}: {section}.{key} is not a u64 or none: {err}")),
+        SimpleTomlValue::Integer(value) => (*value)
+            .try_into()
+            .map(Some)
+            .map_err(|_| format!("{path}: {section}.{key} does not fit u64")),
+        other => Err(format!(
+            "{path}: expected {section}.{key} to be integer, numeric string, or none, got {other:?}"
+        )),
+    }
+}
+
+fn parse_subaccount_hex(
+    path: &str,
+    doc: &SimpleTomlDocument,
+    section: &str,
+    key: &str,
+) -> Result<Option<String>, String> {
+    let value = require_simple_string(path, doc, section, key)?;
+    if value == "none" {
+        return Ok(None);
+    }
+    if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Ok(Some(value.to_ascii_lowercase()));
+    }
+    Err(format!(
+        "{path}: {section}.{key} must be \"none\" or 32-byte lowercase hex"
+    ))
+}
+
+fn validate_local_sns_evidence(
+    path: &str,
+    text: &str,
+    doc: &SimpleTomlDocument,
+    evidence: &LocalSnsEvidence,
+) -> Result<(), String> {
+    if evidence.mode.network != "local"
+        || evidence.mode.source != "official-local-sns-rehearsal"
+        || evidence.mode.dfx_sns != "manual-local-only"
+    {
+        return Err(format!(
+            "{path}: mode must describe official manual local-only SNS evidence"
+        ));
+    }
+    if evidence.mode.io_protocol_live {
+        return Err(format!("{path}: mode.io_protocol_live must remain false"));
+    }
+    if evidence.mode.sns_io_ledger_mainnet_launched {
+        return Err(format!(
+            "{path}: mode.sns_io_ledger_mainnet_launched must remain false"
+        ));
+    }
+    validate_protected_reminders(path, doc)?;
+    validate_no_forbidden_local_ids(path, text, doc)?;
+    let principals = [
+        evidence.sns_canisters.root,
+        evidence.sns_canisters.governance,
+        evidence.sns_canisters.ledger,
+        evidence.sns_canisters.index,
+        evidence.sns_canisters.swap,
+        evidence.io_dapp_canisters.io_stream_manager,
+        evidence.io_dapp_canisters.io_nns_neuron_manager,
+        evidence.io_dapp_canisters.io_historian,
+        evidence.io_dapp_canisters.frontend,
+        evidence.ledger.protocol_reserve_account_owner,
+    ];
+    let mut unique = BTreeSet::new();
+    for principal in principals {
+        if !unique.insert(principal.to_text()) {
+            return Err(format!(
+                "{path}: local SNS/dapp principal {principal} is reused"
+            ));
+        }
+    }
+    if let Some(archive) = evidence.sns_canisters.archive {
+        validate_local_principal_value(path, "sns_canisters.archive", &archive.to_text())?;
+    }
+    if evidence.expected.token_symbol != "IO" || evidence.ledger.token_symbol != "IO" {
+        return Err(format!(
+            "{path}: local SNS rehearsal token symbol must be IO"
+        ));
+    }
+    if evidence.ledger.transaction_fee_e8s != evidence.expected.transaction_fee_e8s {
+        return Err(format!(
+            "{path}: observed transaction_fee_e8s {} does not match expected {}",
+            evidence.ledger.transaction_fee_e8s, evidence.expected.transaction_fee_e8s
+        ));
+    }
+    if evidence.ledger.total_supply_e8s != evidence.expected.total_supply_e8s {
+        return Err(format!(
+            "{path}: observed total_supply_e8s {} does not match expected {}",
+            evidence.ledger.total_supply_e8s, evidence.expected.total_supply_e8s
+        ));
+    }
+    if evidence.ledger.protocol_reserve_balance_e8s == 0 {
+        return Err(format!("{path}: protocol reserve balance must be nonzero"));
+    }
+    if evidence.ledger.reserve_transfer_amount_e8s == 0
+        || evidence.ledger.redemption_return_amount_e8s == 0
+    {
+        return Err(format!(
+            "{path}: issuance and redemption rehearsal transfer amounts must be nonzero"
+        ));
+    }
+    if !evidence.ledger.bad_fee_error_observed {
+        return Err(format!("{path}: bad fee error must be observed"));
+    }
+    if !evidence.ledger.insufficient_funds_error_observed {
+        return Err(format!("{path}: insufficient funds error must be observed"));
+    }
+    if evidence.ledger.duplicate_transfer_observed {
+        if !evidence.ledger.duplicate_block_verified {
+            return Err(format!(
+                "{path}: duplicate transfer observation requires duplicate_block_verified = true"
+            ));
+        }
+        if evidence.ledger.duplicate_of_block_index.is_none() {
+            return Err(format!(
+                "{path}: duplicate transfer observation requires duplicate_of_block_index"
+            ));
+        }
+    }
+    if !evidence.ledger.index_account_history_observed {
+        return Err(format!("{path}: index account history must be observed"));
+    }
+    if evidence.ledger.index_history_order.trim().is_empty()
+        || evidence
+            .ledger
+            .index_lag_or_archive_required_observed
+            .trim()
+            .is_empty()
+    {
+        return Err(format!(
+            "{path}: index history order and lag/archive status must be recorded"
+        ));
+    }
+    if !evidence.governance.governance_available
+        || !evidence.governance.root_available
+        || !evidence.governance.swap_available
+        || !evidence.governance.dapp_controller_state_checked
+    {
+        return Err(format!(
+            "{path}: governance/root/swap availability and dapp controller state must be checked"
+        ));
+    }
+    if !evidence.governance.governance_upgrade_proposal_tested
+        && evidence.governance.governance_upgrade_gap.trim().is_empty()
+    {
+        return Err(format!(
+            "{path}: governance upgrade gap is required when upgrade proposal was not tested"
+        ));
+    }
+    if evidence.issuance.resolved_as != "protocol_reserve_transfer" {
+        return Err(format!(
+            "{path}: issuance_model.resolved_as must be protocol_reserve_transfer"
+        ));
+    }
+    if evidence.issuance.minting_assumed {
+        return Err(format!("{path}: minting_assumed must be false"));
+    }
+    if evidence.issuance.treasury_transfer_assumed {
+        return Err(format!("{path}: treasury_transfer_assumed must be false"));
+    }
+    if !evidence
+        .issuance
+        .total_supply_constant_across_issuance_redemption
+    {
+        return Err(format!(
+            "{path}: total supply must be constant across issuance/redemption"
+        ));
+    }
+    let _ = evidence.ledger.protocol_reserve_subaccount_hex.as_deref();
+    let _ = evidence.ledger.reserve_transfer_block_index;
+    let _ = evidence.ledger.redemption_return_block_index;
+    Ok(())
+}
+
+fn validate_protected_reminders(path: &str, doc: &SimpleTomlDocument) -> Result<(), String> {
+    let canister = require_simple_string(
+        path,
+        doc,
+        "protected",
+        "must_not_touch_neuron_owner_canister",
+    )?;
+    if canister != PROTECTED_IO_NEURON_OWNER_CANISTER {
+        return Err(format!(
+            "{path}: protected.must_not_touch_neuron_owner_canister must remain {PROTECTED_IO_NEURON_OWNER_CANISTER}"
+        ));
+    }
+    let neuron = require_simple_string(path, doc, "protected", "must_not_touch_io_nns_neuron_id")?;
+    if neuron != PROTECTED_IO_NNS_NEURON_ID.to_string() {
+        return Err(format!(
+            "{path}: protected.must_not_touch_io_nns_neuron_id must remain {}",
+            PROTECTED_IO_NNS_NEURON_ID
+        ));
+    }
+    Ok(())
+}
+
+fn validate_no_forbidden_local_ids(
+    path: &str,
+    text: &str,
+    doc: &SimpleTomlDocument,
+) -> Result<(), String> {
+    for (section, values) in doc {
+        for (key, value) in values {
+            let SimpleTomlValue::String(value) = value else {
+                continue;
+            };
+            if section == "protected" {
+                continue;
+            }
+            validate_local_principal_value(path, &format!("{section}.{key}"), value)?;
+            if value == &PROTECTED_IO_NNS_NEURON_ID.to_string() {
+                return Err(format!(
+                    "{path}: {section}.{key} must not reference protected IO neuron {}",
+                    PROTECTED_IO_NNS_NEURON_ID
+                ));
+            }
+        }
+    }
+    for mainnet_id in LOCAL_SNS_MAINNET_CANISTER_IDS {
+        if text.contains(mainnet_id) {
+            return Err(format!(
+                "{path}: local evidence must not contain known mainnet/prior canister {mainnet_id}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_local_principal_value(path: &str, field: &str, value: &str) -> Result<(), String> {
+    if value == PROTECTED_IO_NEURON_OWNER_CANISTER {
+        return Err(format!(
+            "{path}: {field} must not reference protected canister {PROTECTED_IO_NEURON_OWNER_CANISTER}"
+        ));
+    }
+    for mainnet_id in LOCAL_SNS_MAINNET_CANISTER_IDS {
+        if value == *mainnet_id {
+            return Err(format!(
+                "{path}: {field} must not reference known mainnet/prior canister {mainnet_id}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn check_local_sns_ledger_at(root: &Path) -> Result<bool, String> {
     let path = "deploy/local-sns-rehearsal/canister-ids.local.toml";
     let full_path = root.join(path);
@@ -1308,74 +2473,8 @@ fn check_local_sns_ledger_at(root: &Path) -> Result<bool, String> {
         return Ok(false);
     }
     let text = require_file(root, path)?;
-    require_present(
-        path,
-        &text,
-        &[
-            "network = \"local\"",
-            "source = \"official-local-sns-rehearsal\"",
-            "dfx_sns = \"manual-local-only\"",
-            "io_protocol_live = false",
-            "sns_io_ledger_mainnet_launched = false",
-            "[sns_canisters]",
-            "[ledger_evidence]",
-            "token_symbol = \"IO\"",
-            "bad_fee_error_observed = true",
-            "insufficient_funds_error_observed = true",
-            "duplicate_transfer_observed = true",
-            "duplicate_block_verified = true",
-            "index_account_history_observed = true",
-            "[governance_evidence]",
-            "governance_available = true",
-            "root_available = true",
-            "swap_available = true",
-            "dapp_controller_state_checked = true",
-            "[issuance_model]",
-            "resolved_as = \"protocol_reserve_transfer\"",
-            "minting_assumed = false",
-            "treasury_transfer_assumed = false",
-            "total_supply_constant_across_issuance_redemption = true",
-        ],
-    )?;
-    require_absent(
-        path,
-        &text,
-        &[
-            "TODO_",
-            "--network ic",
-            PHASE1_FRONTEND_CANISTER_ID,
-            PHASE1_HISTORIAN_CANISTER_ID,
-            "ryjl3-tyaaa-aaaaa-aaaba-cai",
-            "rrkah-fqaaa-aaaaa-aaaaq-cai",
-            "qaa6y-5yaaa-aaaaa-aaafa-cai",
-            "r7inp-6aaaa-aaaaa-aaabq-cai",
-        ],
-    )?;
-
-    for (section, key) in [
-        ("sns_canisters", "root"),
-        ("sns_canisters", "governance"),
-        ("sns_canisters", "ledger"),
-        ("sns_canisters", "index"),
-        ("sns_canisters", "swap"),
-        ("io_dapp_canisters", "io_stream_manager"),
-        ("io_dapp_canisters", "io_nns_neuron_manager"),
-        ("ledger_evidence", "protocol_reserve_account_owner"),
-    ] {
-        let value = parse_toml_string(&text, section, key)?;
-        Principal::from_text(&value)
-            .map_err(|err| format!("{path}: {section}.{key} is not a principal: {err}"))?;
-    }
-
-    if !parse_toml_bool(&text, "mode", "io_protocol_live")?
-        && !parse_toml_bool(&text, "mode", "sns_io_ledger_mainnet_launched")?
-    {
-        Ok(true)
-    } else {
-        Err(format!(
-            "{path}: local evidence must not claim live IO protocol or mainnet SNS ledger"
-        ))
-    }
+    parse_local_sns_evidence(path, &text)?;
+    Ok(true)
 }
 
 fn check_sns_harness_at(root: &Path) -> Result<(), String> {
@@ -2155,7 +3254,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_scripts, local_sns_evidence_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -2370,6 +3469,34 @@ fn main() -> ExitCode {
                 ok = false;
             }
         },
+        "validate_local_sns_scripts" => match validate_local_sns_scripts_at(&root) {
+            Ok(()) => eprintln!("✓ validate_local_sns_scripts"),
+            Err(err) => {
+                eprintln!("✗ validate_local_sns_scripts: {err}");
+                ok = false;
+            }
+        },
+        "local_sns_evidence_tests" => {
+            if env::var("IO_LOCAL_SNS_REHEARSAL_ACK").as_deref() != Ok("local-only") {
+                eprintln!(
+                    "skipping local_sns_evidence_tests: set IO_LOCAL_SNS_REHEARSAL_ACK=local-only"
+                );
+            } else {
+                let path = env::var("IO_LOCAL_SNS_EVIDENCE").unwrap_or_else(|_| {
+                    "deploy/local-sns-rehearsal/canister-ids.local.toml".into()
+                });
+                match fs::read_to_string(&path)
+                    .map_err(|err| format!("{path}: {err}"))
+                    .and_then(|text| parse_local_sns_evidence(&path, &text).map(|_| ()))
+                {
+                    Ok(()) => eprintln!("✓ local_sns_evidence_tests"),
+                    Err(err) => {
+                        eprintln!("✗ local_sns_evidence_tests: {err}");
+                        ok = false;
+                    }
+                }
+            }
+        }
         "historian_tests" => {
             ok &= run_subcommand("did_surface");
             ok &= run(
@@ -2514,6 +3641,7 @@ fn main() -> ExitCode {
                 "validate_historian_freshness",
                 "validate_stable_storage",
                 "validate_local_sns_rehearsal",
+                "validate_local_sns_scripts",
                 "historian_tests",
                 "frontend_required",
                 "sns_harness_check",
@@ -2741,6 +3869,7 @@ fn main() -> ExitCode {
                 "validate_historian_freshness",
                 "validate_stable_storage",
                 "validate_local_sns_rehearsal",
+                "validate_local_sns_scripts",
                 "security_scan_required",
                 "test_unit",
                 "frontend_required",
@@ -2936,27 +4065,37 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "deploy/local-sns-rehearsal/README.md",
-            "local-only real SNS-created IO ledger/index/governance/root stack not final tokenomics not a mainnet SNS proposal not required CI Do not use `--network ic` protocol reserve reserve-to-user transfer user-to-reserve transfer validate_local_sns_rehearsal validate_local_sns_ledger\n",
+            "local-only real SNS-created IO ledger/index/governance/root stack not final tokenomics not a mainnet SNS proposal not required CI Do not use `--network ic` protocol reserve reserve-to-user transfer user-to-reserve transfer validate_local_sns_rehearsal validate_local_sns_ledger validate_local_sns_scripts Human-readable local evidence-derived wiring Not accepted by production wiring validators Do not use as install args\n",
         );
         write(
             root,
-            "deploy/local-sns-rehearsal/sns_init.local.yaml",
-            "Local-only\nNot final tokenomics\nNot a mainnet SNS proposal\nfallback_controller_principals\ndapp_canisters\nToken:\nsymbol: \"IO\"\ntransaction_fee\nDistribution:\nprotocol_reserve\nSwap:\narchive_options\nissuance_model: \"protocol reserve transfer\"\nredemption_model: \"user transfer back to protocol reserve\"\nio_test_ledger_role: \"non-canonical staging only\"\nTODO_LOCAL\n",
+            "deploy/local-sns-rehearsal/sns_init.local.template.yaml",
+            "Local-only\nNot final tokenomics\nNot a mainnet SNS proposal\nfallback_controller_principals\n{{fallback_controller_principal}}\ndapp_canisters\nToken:\nsymbol: \"IO\"\ntransaction_fee\nDistribution:\nprotocol_reserve\nSwap:\narchive_options\nissuance_model: \"protocol reserve transfer\"\nredemption_model: \"user transfer back to protocol reserve\"\nio_test_ledger_role: \"non-canonical staging only\"\nTODO_LOCAL\n",
         );
         write(
             root,
             "deploy/local-sns-rehearsal/canister-ids.local.example.toml",
-            "network = \"local\"\nsource = \"official-local-sns-rehearsal\"\n[sns_canisters]\nroot = \"TODO\"\ngovernance = \"TODO\"\nledger = \"TODO\"\nindex = \"TODO\"\nswap = \"TODO\"\narchive = \"TODO\"\n[ledger_evidence]\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\nprotocol_reserve_balance_e8s = 1\nbad_fee_error_observed = true\ninsufficient_funds_error_observed = true\nduplicate_transfer_observed = true\nduplicate_block_verified = true\nindex_account_history_observed = true\n[issuance_model]\nresolved_as = \"protocol_reserve_transfer\"\nminting_assumed = false\ntotal_supply_constant_across_issuance_redemption = true\n",
+            "network = \"local\"\nsource = \"official-local-sns-rehearsal\"\n[sns_canisters]\nroot = \"TODO\"\ngovernance = \"TODO\"\nledger = \"TODO\"\nindex = \"TODO\"\nswap = \"TODO\"\narchive = \"TODO\"\n[expected_local_sns_config]\ntoken_symbol = \"IO\"\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\n[ledger_evidence]\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\nprotocol_reserve_balance_e8s = 1\nreserve_transfer_amount_e8s = 1\nredemption_return_amount_e8s = 1\nbad_fee_error_observed = true\ninsufficient_funds_error_observed = true\nduplicate_transfer_observed = true\nduplicate_block_verified = true\nindex_account_history_observed = true\n[issuance_model]\nresolved_as = \"protocol_reserve_transfer\"\nminting_assumed = false\ntotal_supply_constant_across_issuance_redemption = true\n",
         );
+        for path in [
+            "deploy/local-sns-rehearsal/runbook.sh",
+            "deploy/local-sns-rehearsal/scripts/00-check-prereqs.sh",
+            "deploy/local-sns-rehearsal/scripts/01-render-sns-init.sh",
+            "deploy/local-sns-rehearsal/scripts/02-record-canister-ids.sh",
+            "deploy/local-sns-rehearsal/scripts/03-capture-ledger-evidence.sh",
+            "deploy/local-sns-rehearsal/scripts/04-render-local-wiring.sh",
+            "deploy/local-sns-rehearsal/scripts/05-validate-evidence.sh",
+        ] {
+            write(
+                root,
+                path,
+                "#!/usr/bin/env bash\n# local-only optional\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n",
+            );
+        }
         write(
             root,
-            "deploy/local-sns-rehearsal/scripts/check-prereqs.sh",
-            "#!/usr/bin/env bash\n# optional local\ndfx --version\n",
-        );
-        write(
-            root,
-            "deploy/local-sns-rehearsal/scripts/render-local-wiring.sh",
-            "#!/usr/bin/env bash\n# optional local\ncargo run -p xtask -- validate_local_sns_ledger\n",
+            "deploy/local-sns-rehearsal/commands.local.example.md",
+            "Local-only IO_LOCAL_SNS_REHEARSAL_ACK=local-only icrc1_symbol icrc1_fee icrc1_total_supply icrc1_balance_of icrc1_transfer get_account_transactions governance root\n",
         );
         write(
             root,
@@ -2968,18 +4107,25 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
             "docs/operations/official-local-sns-rehearsal.md",
             "real SNS-created SNS-W IO_TEST non-canonical protocol reserve not launched on mainnet\n",
         );
-    }
-
-    fn write_completed_local_sns_evidence(root: &Path) {
         write(
             root,
-            "deploy/local-sns-rehearsal/canister-ids.local.toml",
-            r#"[mode]
+            "docs/operations/mainnet-readiness.md",
+            "real SNS-created SNS-W IO_TEST non-canonical protocol reserve not launched on mainnet\n",
+        );
+    }
+
+    fn completed_local_sns_evidence() -> String {
+        r#"[mode]
 network = "local"
 source = "official-local-sns-rehearsal"
 dfx_sns = "manual-local-only"
 io_protocol_live = false
 sns_io_ledger_mainnet_launched = false
+
+[expected_local_sns_config]
+token_symbol = "IO"
+transaction_fee_e8s = 10000
+total_supply_e8s = 100000000000000
 
 [sns_canisters]
 root = "bkyz2-fmaaa-aaaaa-qaaaq-cai"
@@ -2993,7 +4139,7 @@ archive = "by6od-j4aaa-aaaaa-qaadq-cai"
 io_stream_manager = "avqkn-guaaa-aaaaa-qaaea-cai"
 io_nns_neuron_manager = "aax3a-h4aaa-aaaaa-qaahq-cai"
 io_historian = "ajuq4-ruaaa-aaaaa-qaaga-cai"
-frontend = "aanaa-xaaaa-aaaaa-qaahq-cai"
+frontend = "b77ix-eeaaa-aaaaa-qaada-cai"
 
 [ledger_evidence]
 token_symbol = "IO"
@@ -3002,12 +4148,15 @@ total_supply_e8s = 100000000000000
 protocol_reserve_account_owner = "a3shf-5eaaa-aaaaa-qaafa-cai"
 protocol_reserve_subaccount_hex = "none"
 protocol_reserve_balance_e8s = 60000000000000
-reserve_transfer_block_index = "1"
-redemption_return_block_index = "2"
+reserve_transfer_block_index = 1
+redemption_return_block_index = 2
+reserve_transfer_amount_e8s = 100000000
+redemption_return_amount_e8s = 100000000
 bad_fee_error_observed = true
 insufficient_funds_error_observed = true
 duplicate_transfer_observed = true
 duplicate_block_verified = true
+duplicate_of_block_index = 1
 index_account_history_observed = true
 index_history_order = "descending"
 index_lag_or_archive_required_observed = "not-observed"
@@ -3025,7 +4174,30 @@ resolved_as = "protocol_reserve_transfer"
 minting_assumed = false
 treasury_transfer_assumed = false
 total_supply_constant_across_issuance_redemption = true
-"#,
+
+[protected]
+must_not_touch_neuron_owner_canister = "oae4c-3iaaa-aaaar-qb5qq-cai"
+must_not_touch_io_nns_neuron_id = "6345890886899317159"
+"#
+        .to_string()
+    }
+
+    fn write_completed_local_sns_evidence(root: &Path) {
+        write(
+            root,
+            "deploy/local-sns-rehearsal/canister-ids.local.toml",
+            &completed_local_sns_evidence(),
+        );
+    }
+
+    fn assert_local_sns_evidence_rejects(mutator: impl FnOnce(String) -> String, needle: &str) {
+        let text = mutator(completed_local_sns_evidence());
+        let err =
+            parse_local_sns_evidence("deploy/local-sns-rehearsal/canister-ids.local.toml", &text)
+                .unwrap_err();
+        assert!(
+            err.contains(needle),
+            "expected {err:?} to contain {needle:?}"
         );
     }
 
@@ -3559,6 +4731,142 @@ No value-moving IO canister is deployed to production.
             .unwrap_err()
             .contains("TODO_"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_mainnet_icp_ledger_principal() {
+        assert_local_sns_evidence_rejects(
+            |text| text.replace("br5f7-7uaaa-aaaaa-qaaca-cai", "ryjl3-tyaaa-aaaaa-aaaba-cai"),
+            "known mainnet",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_protected_canister_in_local_field() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replace(
+                    "br5f7-7uaaa-aaaaa-qaaca-cai",
+                    PROTECTED_IO_NEURON_OWNER_CANISTER,
+                )
+            },
+            "protected canister",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_protected_neuron_outside_reminder() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replace(
+                    "index_history_order = \"descending\"",
+                    "index_history_order = \"6345890886899317159\"",
+                )
+            },
+            "protected IO neuron",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_live_protocol_claim() {
+        assert_local_sns_evidence_rejects(
+            |text| text.replace("io_protocol_live = false", "io_protocol_live = true"),
+            "io_protocol_live",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_mainnet_sns_ledger_claim() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replace(
+                    "sns_io_ledger_mainnet_launched = false",
+                    "sns_io_ledger_mainnet_launched = true",
+                )
+            },
+            "sns_io_ledger_mainnet_launched",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_minting_assumption() {
+        assert_local_sns_evidence_rejects(
+            |text| text.replace("minting_assumed = false", "minting_assumed = true"),
+            "minting_assumed",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_treasury_transfer_assumption() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replace(
+                    "treasury_transfer_assumed = false",
+                    "treasury_transfer_assumed = true",
+                )
+            },
+            "treasury_transfer_assumed",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_missing_duplicate_proof() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replace(
+                    "duplicate_of_block_index = 1",
+                    "duplicate_of_block_index = \"none\"",
+                )
+            },
+            "duplicate_of_block_index",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_zero_reserve_balance() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replace(
+                    "protocol_reserve_balance_e8s = 60000000000000",
+                    "protocol_reserve_balance_e8s = 0",
+                )
+            },
+            "reserve balance",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_fee_mismatch() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replace(
+                    "transaction_fee_e8s = 10000\ntotal_supply_e8s = 100000000000000\nprotocol_reserve_account_owner",
+                    "transaction_fee_e8s = 10001\ntotal_supply_e8s = 100000000000000\nprotocol_reserve_account_owner",
+                )
+            },
+            "transaction_fee_e8s",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_invalid_principal() {
+        assert_local_sns_evidence_rejects(
+            |text| text.replace("br5f7-7uaaa-aaaaa-qaaca-cai", "not-a-principal"),
+            "not a principal",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_missing_governance_upgrade_gap() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replace(
+                    "governance_upgrade_gap = \"local tooling did not support upgrade proposal in this run\"",
+                    "governance_upgrade_gap = \"\"",
+                )
+            },
+            "governance upgrade gap",
+        );
     }
 
     #[test]

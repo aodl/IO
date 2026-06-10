@@ -8,6 +8,11 @@ dfx_sns = "manual-local-only"
 io_protocol_live = false
 sns_io_ledger_mainnet_launched = false
 
+[expected_local_sns_config]
+token_symbol = "IO"
+transaction_fee_e8s = 10_000
+total_supply_e8s = 100_000_000_000_000
+
 [sns_canisters]
 root = "TODO_LOCAL_SNS_ROOT_CANISTER"
 governance = "TODO_LOCAL_SNS_GOVERNANCE_CANISTER"
@@ -31,10 +36,13 @@ protocol_reserve_subaccount_hex = "TODO_LOCAL_PROTOCOL_RESERVE_SUBACCOUNT_HEX_OR
 protocol_reserve_balance_e8s = 60_000_000_000_000
 reserve_transfer_block_index = "TODO_LOCAL_RESERVE_TO_USER_BLOCK_INDEX"
 redemption_return_block_index = "TODO_LOCAL_USER_TO_RESERVE_BLOCK_INDEX"
+reserve_transfer_amount_e8s = 100_000_000
+redemption_return_amount_e8s = 100_000_000
 bad_fee_error_observed = true
 insufficient_funds_error_observed = true
 duplicate_transfer_observed = true
 duplicate_block_verified = true
+duplicate_of_block_index = "TODO_LOCAL_DUPLICATE_OF_BLOCK_INDEX"
 index_account_history_observed = true
 index_history_order = "observed-local-order"
 index_lag_or_archive_required_observed = "not-observed"

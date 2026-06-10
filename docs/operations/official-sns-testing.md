@@ -30,7 +30,7 @@ This optional layer follows the current official ICP/DFINITY SNS testing documen
 
 This layer is not required CI, not part of `verify_release`, not run by `test_ci`, and not a substitute for security review or tokenomics decisions.
 
-The local package lives in `deploy/local-sns-rehearsal/`. It documents deploying IO dapp canisters locally, adding local NNS root as co-controller where the launch tooling requires it, validating `sns_init.local.yaml`, submitting the local SNS proposal, allowing SNS-W to deploy SNS root/governance/ledger/index/swap/archive canisters, and recording local canister IDs plus ledger evidence.
+The local package lives in `deploy/local-sns-rehearsal/`. It documents rendering a local SNS init file from ignored local variables, deploying IO dapp canisters locally, adding local NNS root as co-controller where the launch tooling requires it, validating the rendered `generated/sns_init.local.yaml`, submitting the local SNS proposal, allowing SNS-W to deploy SNS root/governance/ledger/index/swap/archive canisters, and recording local canister IDs plus ledger evidence.
 
 The repository validator `cargo run -p xtask -- validate_local_sns_rehearsal` is no-network and may run in normal checks. The completed-ledger evidence validator `cargo run -p xtask -- validate_local_sns_ledger` is optional and skips until `deploy/local-sns-rehearsal/canister-ids.local.toml` exists. Until that evidence file exists, no local SNS canister IDs are recorded and no real SNS ledger/index/governance/root behavior has been observed.
 
@@ -49,7 +49,9 @@ It does not perform the real SNS launch, does not run a real swap, and must not 
 - `tools/sns/sns_init.io.local.yaml`
 - `tools/sns-testing/README.md`
 - `deploy/local-sns-rehearsal/README.md`
-- `deploy/local-sns-rehearsal/sns_init.local.yaml`
+- `deploy/local-sns-rehearsal/sns_init.local.template.yaml`
+- `deploy/local-sns-rehearsal/runbook.sh`
+- `deploy/local-sns-rehearsal/commands.local.example.md`
 - `tools/sns/testflight/README.md`
 - `tools/sns/launch-readiness.toml`
 

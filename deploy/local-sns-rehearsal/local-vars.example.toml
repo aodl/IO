@@ -1,0 +1,20 @@
+# Copy to local-vars.toml and fill only local rehearsal values.
+# Local-only. Do not use mainnet canister IDs or protected IO assets.
+
+[local]
+fallback_controller_principal = "TODO_LOCAL_FALLBACK_CONTROLLER_PRINCIPAL"
+io_stream_manager_canister = "TODO_LOCAL_IO_STREAM_MANAGER_CANISTER"
+io_nns_neuron_manager_canister = "TODO_LOCAL_IO_NNS_NEURON_MANAGER_CANISTER"
+io_historian_canister = "TODO_LOCAL_IO_HISTORIAN_CANISTER"
+frontend_canister = "TODO_LOCAL_FRONTEND_CANISTER"
+developer_neuron_principal = "TODO_LOCAL_DEVELOPER_NEURON_PRINCIPAL"
+protocol_reserve_principal = "TODO_LOCAL_PROTOCOL_RESERVE_PRINCIPAL"
+archive_controller_principal = "TODO_LOCAL_ARCHIVE_CONTROLLER_PRINCIPAL"
+logo_url = "http://127.0.0.1:4943/local-io-logo.png"
+token_logo_url = "http://127.0.0.1:4943/local-io-token-logo.png"
+
+[expected_local_sns_config]
+token_symbol = "IO"
+transaction_fee_e8s = 10_000
+total_supply_e8s = 100_000_000_000_000
+protocol_reserve_initial_balance_e8s = 60_000_000_000_000

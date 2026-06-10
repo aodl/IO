@@ -5,22 +5,22 @@
 name: "IO Local Rehearsal"
 description: "Local-only IO SNS rehearsal for proving real SNS ledger/index behavior."
 url: "http://127.0.0.1:4943"
-logo: "TODO_LOCAL_REHEARSAL_LOGO"
+logo: "{{logo_url}}"
 
 fallback_controller_principals:
-  - "TODO_LOCAL_FALLBACK_CONTROLLER_PRINCIPAL"
+  - "{{fallback_controller_principal}}"
 
 dapp_canisters:
-  - "TODO_LOCAL_IO_STREAM_MANAGER_CANISTER"
-  - "TODO_LOCAL_IO_NNS_NEURON_MANAGER_CANISTER"
-  - "TODO_LOCAL_IO_HISTORIAN_CANISTER"
-  - "TODO_LOCAL_FRONTEND_CANISTER"
+  - "{{io_stream_manager_canister}}"
+  - "{{io_nns_neuron_manager_canister}}"
+  - "{{io_historian_canister}}"
+  - "{{frontend_canister}}"
 
 Token:
   name: "IO Local Rehearsal"
   symbol: "IO"
   transaction_fee: "0.0001 tokens"
-  logo: "TODO_LOCAL_REHEARSAL_TOKEN_LOGO"
+  logo: "{{token_logo_url}}"
 
 Proposals:
   rejection_fee: "100 tokens"
@@ -46,12 +46,12 @@ Voting:
 
 Distribution:
   Neurons:
-    - principal: "TODO_LOCAL_DEVELOPER_NEURON_PRINCIPAL"
+    - principal: "{{developer_neuron_principal}}"
       stake: "100_000 tokens"
       memo: 0
       dissolve_delay: "6 months"
       vesting_period: "0 seconds"
-    - principal: "TODO_LOCAL_PROTOCOL_RESERVE_PRINCIPAL"
+    - principal: "{{protocol_reserve_principal}}"
       stake: "100_000 tokens"
       memo: 1
       dissolve_delay: "0 seconds"
@@ -81,7 +81,7 @@ archive_options:
   num_blocks_to_archive: 1_000
   node_max_memory_size_bytes: null
   max_message_size_bytes: null
-  controller_id: "TODO_LOCAL_ARCHIVE_CONTROLLER_PRINCIPAL"
+  controller_id: "{{archive_controller_principal}}"
 
 io_rehearsal_notes:
   not_final_tokenomics: true

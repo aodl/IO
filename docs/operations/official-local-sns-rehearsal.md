@@ -7,12 +7,19 @@ It must not use `--network ic`, must not call mainnet, must not touch `oae4c-3ia
 ## Package
 
 - `deploy/local-sns-rehearsal/README.md`
-- `deploy/local-sns-rehearsal/sns_init.local.yaml`
+- `deploy/local-sns-rehearsal/sns_init.local.template.yaml`
+- `deploy/local-sns-rehearsal/local-vars.example.toml`
 - `deploy/local-sns-rehearsal/canister-ids.local.example.toml`
-- `deploy/local-sns-rehearsal/scripts/check-prereqs.sh`
-- `deploy/local-sns-rehearsal/scripts/render-local-wiring.sh`
+- `deploy/local-sns-rehearsal/commands.local.example.md`
+- `deploy/local-sns-rehearsal/runbook.sh`
+- `deploy/local-sns-rehearsal/scripts/00-check-prereqs.sh`
+- `deploy/local-sns-rehearsal/scripts/01-render-sns-init.sh`
+- `deploy/local-sns-rehearsal/scripts/02-record-canister-ids.sh`
+- `deploy/local-sns-rehearsal/scripts/03-capture-ledger-evidence.sh`
+- `deploy/local-sns-rehearsal/scripts/04-render-local-wiring.sh`
+- `deploy/local-sns-rehearsal/scripts/05-validate-evidence.sh`
 
-The local `sns_init.local.yaml` is not final tokenomics and is not a mainnet SNS proposal. It exists only to create a real local SNS ledger/index/governance/root stack for integration testing.
+The rendered local `generated/sns_init.local.yaml` is not final tokenomics and is not a mainnet SNS proposal. It exists only to create a real local SNS ledger/index/governance/root stack for integration testing.
 
 IO_TEST remains a non-canonical staging ledger label and must not be confused with the real SNS-created local IO ledger created by this rehearsal.
 
@@ -22,18 +29,22 @@ Follow the current official ICP/DFINITY SNS testing documentation as the source 
 
 Local SNS rehearsal may require `dfx sns`. That remains optional/manual, local-only, and outside required CI. Required repository workflows must not depend on `dfx`.
 
-The committed package is scaffolding and evidence validation: it includes a local `sns_init` candidate, a local evidence template, no-network validators, and this manual runbook. It does not prove IO against a real SNS ledger until an operator completes the local rehearsal, records `deploy/local-sns-rehearsal/canister-ids.local.toml`, and validates that evidence.
+The committed package is executable scaffolding and evidence validation: it includes a renderable local `sns_init` candidate, a local variables template, evidence capture helpers, no-network validators, and this manual runbook. It does not prove IO against a real SNS ledger until an operator completes the local rehearsal, records `deploy/local-sns-rehearsal/canister-ids.local.toml`, and validates that evidence.
 
 ## Manual Flow
 
 1. Prepare a clean local SNS testing environment using the current official ICP/DFINITY SNS testing documentation.
-2. Deploy IO app canisters locally.
-3. Add local NNS root as co-controller where the official SNS launch tooling requires it.
-4. Validate `deploy/local-sns-rehearsal/sns_init.local.yaml` with local SNS tooling.
-5. Submit the local SNS proposal through the local SNS testing flow.
-6. Let SNS-W deploy local SNS canisters.
-7. Record root, governance, ledger, index, swap, and archive IDs in `deploy/local-sns-rehearsal/canister-ids.local.toml`.
-8. Run no-network repository validation:
+2. Run `IO_LOCAL_SNS_REHEARSAL_ACK=local-only deploy/local-sns-rehearsal/runbook.sh check`.
+3. Copy `deploy/local-sns-rehearsal/local-vars.example.toml` to ignored `local-vars.toml` and fill only local principals.
+4. Run `runbook.sh render-sns-init` to write ignored `generated/sns_init.local.yaml`.
+5. Deploy IO app canisters locally.
+6. Add local NNS root as co-controller where the official SNS launch tooling requires it.
+7. Validate `deploy/local-sns-rehearsal/generated/sns_init.local.yaml` with local SNS tooling.
+8. Submit the local SNS proposal through the local SNS testing flow.
+9. Let SNS-W deploy local SNS canisters.
+10. Run `runbook.sh record-ids` and record root, governance, ledger, index, swap, and archive IDs in ignored `deploy/local-sns-rehearsal/canister-ids.local.toml`.
+11. Run `runbook.sh capture-evidence` and the command templates to observe ledger/index/governance/root behavior.
+12. Run no-network repository validation:
 
 ```bash
 cargo run -p xtask -- validate_local_sns_rehearsal
@@ -82,3 +93,9 @@ Until a local evidence file is produced from a completed local rehearsal, this p
 This rehearsal does not prove final SNS launch readiness, mainnet NNS proposal acceptance, final tokenomics, final fallback controllers, production adapter activation, archive traversal completeness, or external audit readiness.
 
 IO protocol remains not live. The canonical SNS IO ledger remains not launched on mainnet.
+
+## Completion Checklist
+
+The rehearsal is complete only when official local SNS tooling was run locally; local SNS root/governance/ledger/index/swap IDs were recorded; local SNS ledger fee, total supply, and reserve balance were observed; reserve-to-user and user-to-reserve transfers were observed; bad fee, insufficient funds, duplicate behavior, duplicate block proof, and index account history were observed; SNS governance/root/swap availability and dapp controller state were checked; and `cargo run -p xtask -- validate_local_sns_ledger` passes against the filled evidence file.
+
+Passing this local evidence gate still does not prove mainnet SNS launch readiness, final tokenomics, final SNS config, mainnet testflight, audit readiness, or production adapter activation.

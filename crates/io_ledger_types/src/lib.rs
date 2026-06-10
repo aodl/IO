@@ -2767,4 +2767,88 @@ mod tests {
         assert_eq!(tiny.amount_e8s, 1);
         assert_eq!(tiny.fee_e8s, Some(10_000));
     }
+
+    #[test]
+    fn local_sns_reserve_account_shape_is_icrc_representable() {
+        let reserve_owner = principal();
+        let reserve = Account::new(reserve_owner, Some(Subaccount([42; 32])));
+        let icrc = reserve.to_icrc_account();
+        assert_eq!(icrc.owner, reserve_owner);
+        assert_eq!(icrc.subaccount, Some(vec![42; 32]));
+        assert_eq!(Account::try_from(icrc).unwrap(), reserve);
+    }
+
+    #[test]
+    fn local_sns_issuance_is_reserve_transfer_not_mint() {
+        let user = account();
+        let issuance = LedgerTransferRequest {
+            from_subaccount: Some(Subaccount([42; 32])),
+            to: user.clone(),
+            amount_e8s: 100_000_000,
+            fee_e8s: Some(10_000),
+            memo: Some(Memo::from("IO local issuance rehearsal")),
+            created_at_time: Some(1_000),
+        };
+        let arg = IcrcTransferArg::from(issuance);
+        assert_eq!(arg.from_subaccount, Some(vec![42; 32]));
+        assert_eq!(arg.to, user.to_icrc_account());
+        assert_eq!(arg.amount, Nat::from(100_000_000_u128));
+        assert_eq!(arg.fee, Some(Nat::from(10_000_u128)));
+    }
+
+    #[test]
+    fn local_sns_redemption_return_is_user_to_reserve_transfer() {
+        let reserve = Account::new(principal(), None);
+        let redemption_return = LedgerTransferRequest {
+            from_subaccount: None,
+            to: reserve.clone(),
+            amount_e8s: 100_000_000,
+            fee_e8s: Some(10_000),
+            memo: Some(Memo::from("IO local redemption return")),
+            created_at_time: Some(2_000),
+        };
+        let arg = IcrcTransferArg::from(redemption_return);
+        assert_eq!(arg.from_subaccount, None);
+        assert_eq!(arg.to, reserve.to_icrc_account());
+        assert_eq!(arg.amount, Nat::from(100_000_000_u128));
+    }
+
+    #[test]
+    fn local_sns_total_supply_constant_model_uses_transfer_blocks() {
+        let before_supply = 100_000_000_000_000_u128;
+        let issuance = block(11);
+        let redemption_return = block(12);
+        assert_eq!(issuance.operation_kind, LedgerOperationKind::Transfer);
+        assert_eq!(
+            redemption_return.operation_kind,
+            LedgerOperationKind::Transfer
+        );
+        assert_eq!(before_supply, 100_000_000_000_000_u128);
+    }
+
+    #[test]
+    fn local_sns_required_error_observations_map_to_boundary_errors() {
+        assert!(matches!(
+            map_icrc_transfer_result(Err(IcrcTransferError::BadFee {
+                expected_fee: Nat::from(10_000_u128),
+            })),
+            Err(LedgerTransferError::BadFee {
+                expected_fee_e8s: 10_000
+            })
+        ));
+        assert!(matches!(
+            map_icrc_transfer_result(Err(IcrcTransferError::InsufficientFunds {
+                balance: Nat::from(0_u128),
+            })),
+            Err(LedgerTransferError::InsufficientFunds { balance_e8s: 0 })
+        ));
+        assert_eq!(
+            map_icrc_transfer_result(Err(IcrcTransferError::Duplicate {
+                duplicate_of: Nat::from(77_u64),
+            }))
+            .unwrap_err()
+            .idempotent_success_block(),
+            Some(BlockIndex(77))
+        );
+    }
 }

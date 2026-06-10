@@ -31,6 +31,12 @@ dist/
 
 # frontend build artifacts
 canisters/frontend/public/generated/
+
+# local-only SNS rehearsal operator files
+deploy/local-sns-rehearsal/canister-ids.local.toml
+deploy/local-sns-rehearsal/local-vars.toml
+deploy/local-sns-rehearsal/generated/
+deploy/local-sns-rehearsal/*.log
 # python cache
 __pycache__/
 *.pyc
