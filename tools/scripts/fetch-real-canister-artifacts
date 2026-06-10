@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+MANIFEST="${IO_REAL_SNS_WASM_MANIFEST:-${ROOT}/tests/e2e_real_canisters/wasms.local.toml}"
+WASM_DIR="${IO_REAL_SNS_WASM_DIR:-${ROOT}/.real-canister-wasms}"
+
+if [[ ! -f "${MANIFEST}" ]]; then
+  printf 'manifest not found: %s\n' "${MANIFEST}" >&2
+  printf 'copy tests/e2e_real_canisters/wasms.example.toml to wasms.local.toml and pin source_url + source_sha256 first\n' >&2
+  exit 2
+fi
+
+mkdir -p "${WASM_DIR}"
+
+value_for() {
+  local artifact="$1" field="$2" legacy_key="${1}_${2}"
+  [[ "${field}" == "filename" ]] && legacy_key="${artifact}_wasm"
+  awk -v artifact="$artifact" -v field="$field" -v legacy_key="$legacy_key" '
+    BEGIN { FS = "=" }
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*$/ { next }
+    /^[[:space:]]*\[/ {
+      section=$0
+      gsub(/^[[:space:]]*\[|\][[:space:]]*$/, "", section)
+      next
+    }
+    {
+      left=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", left)
+      nested = section == "artifacts." artifact && left == field
+      legacy = (section == "" || section == "artifacts") && left == legacy_key
+      if (nested || legacy) {
+        right=$0; sub(/^[^=]*=/, "", right); gsub(/^[[:space:]]+|[[:space:]]+$/, "", right)
+        if (right ~ /^".*"$/) {
+          gsub(/^"|"$/, "", right)
+          if (right !~ /^</ && right !~ /TODO/) { print right; exit }
+          if (fallback == "") { fallback = right }
+        }
+      }
+    }
+    END { if (fallback != "") { print fallback } }
+  ' "${MANIFEST}"
+}
+
+set_value() {
+  local artifact="$1" field="$2" value="$3" tmp="${MANIFEST}.tmp"
+  local legacy_key="${artifact}_${field}"
+  [[ "${field}" == "filename" ]] && legacy_key="${artifact}_wasm"
+  awk -v artifact="$artifact" -v field="$field" -v value="$value" -v legacy_key="$legacy_key" '
+    BEGIN { section = ""; in_target = 0; changed = 0; saw_target = 0 }
+    /^[[:space:]]*\[/ {
+      if (in_target && !changed) {
+        print field " = \"" value "\""
+        changed = 1
+      }
+      section=$0
+      gsub(/^[[:space:]]*\[|\][[:space:]]*$/, "", section)
+      in_target = section == "artifacts." artifact
+      if (in_target) { saw_target = 1 }
+      print
+      next
+    }
+    {
+      left=$0
+      sub(/=.*/, "", left)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", left)
+      if (in_target) {
+        if (left == field) {
+          prefix=$0
+          sub(/[^[:space:]].*/, "", prefix)
+          print prefix field " = \"" value "\""
+          changed = 1
+          next
+        }
+      }
+      if (!saw_target && (section == "" || section == "artifacts") && left == legacy_key) {
+        prefix=$0
+        sub(/[^[:space:]].*/, "", prefix)
+        print prefix legacy_key " = \"" value "\""
+        changed = 1
+        next
+      }
+      print
+    }
+    END {
+      if (!changed) {
+        if (!in_target && !saw_target) {
+          print ""
+          print "[artifacts." artifact "]"
+        }
+        print field " = \"" value "\""
+      }
+    }
+  ' "${MANIFEST}" > "${tmp}"
+  mv "${tmp}" "${MANIFEST}"
+}
+
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+is_placeholder() {
+  [[ -z "$1" || "$1" == "<"* || "$1" == *"TODO"* ]]
+}
+
+fetch_one() {
+  local key="$1"
+  local file expected source_expected url dest actual source_actual tmp_download tmp_wasm lower_expected lower_source_expected
+  file="$(value_for "${key}" filename)"
+  expected="$(value_for "${key}" sha256)"
+  source_expected="$(value_for "${key}" source_sha256)"
+  url="$(value_for "${key}" source_url)"
+
+  if [[ -z "${file}" ]]; then
+    printf 'skipping %s: missing %s_wasm\n' "${key}" "${key}"
+    return 0
+  fi
+  if is_placeholder "${url}" || [[ "${url}" == *'<rev>'* || "${url}" == *'<tag>'* ]]; then
+    printf 'skipping %s: missing pinned source_url\n' "${key}"
+    return 0
+  fi
+  case "${url}" in
+    https://download.dfinity.systems/*|https://github.com/*/releases/download/*) ;;
+    *) printf 'refusing unapproved source_url for %s: %s\n' "${key}" "${url}" >&2; exit 2 ;;
+  esac
+  if is_placeholder "${source_expected}" && is_placeholder "${expected}"; then
+    printf 'refusing %s: provide %s_source_sha256 or %s_sha256 before fetching\n' "${key}" "${key}" "${key}" >&2
+    exit 2
+  fi
+
+  dest="${WASM_DIR}/${file}"
+  tmp_download="${dest}.download"
+  tmp_wasm="${dest}.tmp"
+  rm -f "${tmp_download}" "${tmp_wasm}"
+  printf 'fetching %s -> %s\n' "${url}" "${tmp_download}"
+  curl --fail --location --proto '=https' --tlsv1.2 --output "${tmp_download}" "${url}"
+
+  source_actual="$(sha256_file "${tmp_download}")"
+  if ! is_placeholder "${source_expected}"; then
+    lower_source_expected="$(printf '%s' "${source_expected}" | tr '[:upper:]' '[:lower:]')"
+    if [[ "${source_actual}" != "${lower_source_expected}" ]]; then
+      rm -f "${tmp_download}" "${tmp_wasm}"
+      printf 'source sha256 mismatch for %s: expected %s got %s\n' "${key}" "${source_expected}" "${source_actual}" >&2
+      exit 1
+    fi
+  fi
+
+  case "${url}" in
+    *.gz|*.wasm.gz)
+      gunzip -c "${tmp_download}" > "${tmp_wasm}"
+      ;;
+    *)
+      cp "${tmp_download}" "${tmp_wasm}"
+      ;;
+  esac
+
+  actual="$(sha256_file "${tmp_wasm}")"
+  if ! is_placeholder "${expected}"; then
+    lower_expected="$(printf '%s' "${expected}" | tr '[:upper:]' '[:lower:]')"
+    if [[ "${actual}" != "${lower_expected}" ]]; then
+      rm -f "${tmp_download}" "${tmp_wasm}"
+      printf 'uncompressed wasm sha256 mismatch for %s: expected %s got %s\n' "${key}" "${expected}" "${actual}" >&2
+      exit 1
+    fi
+  else
+    printf 'pinning artifacts.%s.sha256 = %s in %s\n' "${key}" "${actual}" "${MANIFEST}"
+    set_value "${key}" sha256 "${actual}"
+  fi
+
+  mv "${tmp_wasm}" "${dest}"
+  rm -f "${tmp_download}"
+  printf 'verified %s source_sha256=%s wasm_sha256=%s\n' "${key}" "${source_actual}" "${actual}"
+}
+
+fetch_one sns_ledger
+fetch_one sns_index
+
+# These are fetched only after the manifest has real pinned URL/hash values.
+for optional in sns_governance sns_root sns_swap sns_archive sns_wasm nns_governance nns_ledger nns_root nns_lifeline nns_registry cmc icp_ledger icp_index; do
+  fetch_one "${optional}"
+done
+
+printf '\nArtifacts directory: %s\nManifest: %s\n' "${WASM_DIR}" "${MANIFEST}"
+printf 'Run with IO_REAL_SNS_WASM_DIR=%q IO_REAL_SNS_WASM_MANIFEST=%q\n' "${WASM_DIR}" "${MANIFEST}"

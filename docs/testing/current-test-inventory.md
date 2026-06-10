@@ -24,7 +24,7 @@ This inventory records proof strength for tests relevant to real SNS and full pr
 | `real_sns_ledger_index_smoke` | `tests/e2e_real_canisters/src/lib.rs` | Real-framework PocketIC, ignored/opt-in | With pinned local SNS ledger/index Wasms: installs real ledger/index, queries ICRC metadata/balances/fee/total supply, transfers reserve-to-user, checks BadFee/InsufficientFunds/Duplicate, verifies index account history and constant supply | Not run in default CI; no governance/root/staking |
 | `real_sns_ledger_index_same_wasm_upgrade_preserves_balances_history_and_duplicates` | `tests/e2e_real_canisters/src/lib.rs` | Real-framework PocketIC, ignored/opt-in | With pinned local SNS ledger/index Wasms: same-Wasm ledger/index upgrades preserve balances, history, and duplicate proof behavior | Not run in default CI; archive behavior not induced |
 | `real_sns_governance_staking_smoke` | `tests/e2e_real_canisters/src/lib.rs` | Real-framework PocketIC blocker | Registers the required normal SNS staking proof target and skips with an explicit blocker | No real governance behavior yet |
-| `real_canister_e2e_icp_to_io_stake_reward_redemption` | `tests/e2e_real_canisters/src/lib.rs` | Real-framework PocketIC blocker | Registers the full ICP/SNS/NNS E2E proof target and skips with an explicit blocker | No all-real E2E behavior yet |
+| `real_canister_e2e_icp_to_io_stake_reward_redemption` | `tests/e2e_real_canisters/src/lib.rs`, `tests/e2e_real_canisters/src/exact_economics.rs` | Real-framework PocketIC opt-in real-ledger exact-economics | With pinned SNS ledger/index Wasms: proves Jupiter Faucet deposit, 40/60 backed issuance, holder rate compounding, staker reward allocation, real ledger reward transfers, redemption, ICP payout, and index history against real ICRC ledger/index canisters | Not normal SNS neuron staking, not real SNS governance/root, not real NNS maturity mechanics |
 
 Explicit current gaps:
 
@@ -33,3 +33,8 @@ Explicit current gaps:
 - real SNS index account history is proved only by opt-in `e2e-real-canisters` ignored tests when pinned SNS ledger/index Wasms are supplied; it is not proved in default CI.
 - IO APY increase from real SNS staked IO is not proved.
 - full ICP -> IO -> stake -> APY -> redemption E2E with real SNS ledger/index/governance/root is not proved.
+
+
+## Current Real-Framework Stride
+
+`tools/scripts/run-real-framework-e2e` is the opt-in local operator path for pinned real framework artifacts. It fetches/verifies/decompresses configured artifacts, runs the real ledger/index tests, and runs the real-ledger exact-economics E2E. Governance/root/SNS-W normal staking remains blocked until the SNS-W deployment/finalization/list-neurons driver is implemented.

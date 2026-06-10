@@ -101,3 +101,47 @@ This is valuable for manual or script-level local rehearsals because it can inst
 8. Add one governance/root smoke test: deploy SNS through NNS proposal, finalize swap, list SNS neurons.
 9. Add app-control proof: create an IO app canister on the application subnet with NNS root as co-controller, finalize SNS, assert SNS root control.
 10. Add normal staking/top-up proof after the governance/root smoke is stable.
+
+## Implemented Real-Ledger Exact-Economics Layer
+
+`tests/e2e_real_canisters::real_canister_e2e_icp_to_io_stake_reward_redemption` is now an opt-in ignored PocketIC test backed by real pinned SNS ICRC ledger/index Wasms. It is not a full SNS governance or real NNS proof yet, but it takes the first complete executable step beyond ledger smoke tests:
+
+- installs two real ICRC ledger/index pairs on the SNS subnet using the pinned `sns_ledger` and `sns_index` artifacts;
+- treats one pair as the local ICP-flow ledger and one pair as the local IO/SNS ledger for canister-level value-flow proof;
+- drives a Jupiter Faucet 100 ICP deposit through a real ledger transfer;
+- applies IO model accounting and verifies the exact 40/60 split and 60 IO backed issuance;
+- transfers backed IO from protocol reserve to Jupiter Faucet on the real IO ledger;
+- fast-forwards PocketIC time before processing 2-year maturity;
+- proves holding IO compounds through redemption-rate increase without issuing IO;
+- processes 2-week maturity and allocates backed IO rewards with exact expected amounts for full-participation and half-participation stakers;
+- transfers staker rewards on the real IO ledger and checks real index account history;
+- redeems held IO at the current exact redemption rate and pays ICP on the real local ICP-flow ledger;
+- checks real ledger/index history for deposit, issuance, rewards, redemption, and payout blocks.
+
+This layer still does **not** prove normal SNS neuron staking, SNS root/governance behavior, SNS-W deployment, real NNS maturity mechanics, or official SNS launch/swap lifecycle. It is deliberately named and gated as a real-ledger exact-economics E2E, not an all-real SNS/NNS E2E.
+
+## Artifact Fetch Workflow
+
+`tools/scripts/fetch-real-canister-artifacts` provides an opt-in local fetch helper for the first real-ledger layer. It reads `IO_REAL_SNS_WASM_MANIFEST` or `tests/e2e_real_canisters/wasms.local.toml`, downloads only pinned `source_url` entries for `sns_ledger` and `sns_index`, and verifies SHA-256 before moving files into `IO_REAL_SNS_WASM_DIR` or `.real-canister-wasms`.
+
+The script refuses non-HTTPS/non-approved URL shapes and does not run in default CI. The no-network verification path remains `cargo run -p xtask -- verify_real_canister_artifacts` / `real_canister_artifact_manifest_check`, which checks local files and hashes only.
+
+## Implemented IO Harness Additions
+
+The IO harness now has three opt-in layers:
+
+1. `real_sns_ledger_index_smoke` installs pinned real SNS ledger/index Wasms on the SNS subnet and verifies ICRC metadata, transfers, errors, duplicate handling, index history, and same-Wasm upgrade behaviour.
+2. `real_canister_e2e_icp_to_io_stake_reward_redemption` uses pinned real ICRC ledger/index canisters for the ledger movement slice and the pure IO accounting/reward policy crates for exact expected economics: Jupiter Faucet ICP input, 40/60 split, backed IO issuance, holder compounding via rate increase, two-week staker rewards, participation-weighted higher staking returns, and redemption at the current rate.
+3. `real_sns_governance_staking_smoke` now performs a strict full-framework artifact/app-subnet preflight. It intentionally still fails the required governance gate after preflight until the SNS-W deploy/finalize/list-neurons driver is implemented.
+
+Use `tools/scripts/run-real-framework-e2e` for the local all-in-one operator path after copying this file to `tests/e2e_real_canisters/wasms.local.toml` and setting `POCKET_IC_BIN`. The script fetches pinned artifacts, verifies compressed source hashes, decompresses to installable Wasms, fills local uncompressed hashes, and runs the ignored real-framework tests. It does not use `--network ic` and must not be run against production fiduciary canisters.
+
+### Remaining Real SNS-W Driver Work
+
+The exact-economics E2E is a real-ledger test, not yet a complete SNS-W-launched governance test. The remaining implementation step is to port DFINITY's NNS installer and SNS-W deployment payload DTOs so the harness can:
+
+- install NNS ledger/root/governance/lifeline/SNS-W/registry/CMC with valid init payloads;
+- publish the pinned SNS root/governance/ledger/index/swap/archive Wasms to SNS-W through NNS proposals;
+- deploy SNS through SNS-W rather than direct-installing ledgers;
+- finalize the swap;
+- prove normal SNS `list_neurons`, top-up, dissolve-delay, voting/following, and root app-control behaviour.

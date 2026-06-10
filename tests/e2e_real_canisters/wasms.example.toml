@@ -1,21 +1,137 @@
+# Copy to tests/e2e_real_canisters/wasms.local.toml or point
+# IO_REAL_SNS_WASM_MANIFEST at a local checked manifest.
+#
+# `*_source_sha256` is the SHA-256 of the downloaded source artifact, usually
+# a .wasm.gz file from https://download.dfinity.systems. `*_sha256` is the
+# SHA-256 of the uncompressed .wasm bytes that PocketIC installs. The fetch
+# script can fill `*_sha256` after verifying the pinned compressed source.
+
 [artifacts]
 sns_ledger_wasm = "sns_ledger.wasm"
-sns_ledger_sha256 = "<hex>"
-sns_index_wasm = "sns_index.wasm"
-sns_index_sha256 = "<hex>"
+sns_ledger_sha256 = "<auto-filled-uncompressed-wasm-hex>"
+sns_ledger_source_kind = "dfinity_download_systems"
+sns_ledger_source_url = "https://download.dfinity.systems/ic/cf41372e3d4dc1accfe2c09a7969f8bddc729dc1/canisters/ic-icrc1-ledger.wasm.gz"
+sns_ledger_source_sha256 = "354dd6ecfdc72b5409805b31dea22c9db11df6e14095a5a68924eb63535e6d8a"
+sns_ledger_upstream_rev = "cf41372e3d4dc1accfe2c09a7969f8bddc729dc1"
+sns_ledger_license = "Apache-2.0"
 
-# Future real-framework layers.
+sns_index_wasm = "sns_index.wasm"
+sns_index_sha256 = "<auto-filled-uncompressed-wasm-hex>"
+sns_index_source_kind = "dfinity_download_systems"
+sns_index_source_url = "https://download.dfinity.systems/ic/cf41372e3d4dc1accfe2c09a7969f8bddc729dc1/canisters/ic-icrc1-index-ng.wasm.gz"
+sns_index_source_sha256 = "dab6808d0dfc06e5e88336d0c3d3e45e5448c6e36c2a781f3e9e09bd450f528c"
+sns_index_upstream_rev = "cf41372e3d4dc1accfe2c09a7969f8bddc729dc1"
+sns_index_license = "Apache-2.0"
+
+# Full SNS/NNS framework artifacts for the NNS installer + SNS-W deployment
+# tranche. These source hashes come from DFINITY's mainnet-canister-revisions
+# pattern; the uncompressed wasm hashes are auto-filled by the fetch script.
 sns_governance_wasm = "sns_governance.wasm"
+sns_governance_sha256 = "<auto-filled-uncompressed-wasm-hex>"
+sns_governance_source_kind = "dfinity_download_systems"
+sns_governance_source_url = "https://download.dfinity.systems/ic/b904c9dd1bdef8841bd12f03efbc71180a015e25/canisters/sns-governance-canister.wasm.gz"
+sns_governance_source_sha256 = "d41e8cd08a2161e56cc6f4eb99733c9a46a38b98d3f40ce80e444dc33c5580ad"
+sns_governance_upstream_rev = "b904c9dd1bdef8841bd12f03efbc71180a015e25"
+sns_governance_license = "Apache-2.0"
+
 sns_root_wasm = "sns_root.wasm"
+sns_root_sha256 = "<auto-filled-uncompressed-wasm-hex>"
+sns_root_source_kind = "dfinity_download_systems"
+sns_root_source_url = "https://download.dfinity.systems/ic/724ae4101bfdd8d4443126a6a8b1ec5ca9b68a12/canisters/sns-root-canister.wasm.gz"
+sns_root_source_sha256 = "d26b930d8756bb75b6caa5195346499b18bbd6448810386e1b8f2f1f808ade86"
+sns_root_upstream_rev = "724ae4101bfdd8d4443126a6a8b1ec5ca9b68a12"
+sns_root_license = "Apache-2.0"
+
 sns_swap_wasm = "sns_swap.wasm"
+sns_swap_sha256 = "<auto-filled-uncompressed-wasm-hex>"
+sns_swap_source_kind = "dfinity_download_systems"
+sns_swap_source_url = "https://download.dfinity.systems/ic/0e4c8234a9e0508ae30c5b8a7498406294c25e95/canisters/sns-swap-canister.wasm.gz"
+sns_swap_source_sha256 = "dad7d704719615f9dc5165ce195b57abfa75a712034d703c5d46a6aec267bdd0"
+sns_swap_upstream_rev = "0e4c8234a9e0508ae30c5b8a7498406294c25e95"
+sns_swap_license = "Apache-2.0"
+
+sns_archive_wasm = "sns_archive.wasm"
+sns_archive_sha256 = "<auto-filled-uncompressed-wasm-hex>"
+sns_archive_source_kind = "dfinity_download_systems"
+sns_archive_source_url = "https://download.dfinity.systems/ic/cf41372e3d4dc1accfe2c09a7969f8bddc729dc1/canisters/ic-icrc1-archive.wasm.gz"
+sns_archive_source_sha256 = "f7f48f402a128cbd18dc7734c7f149f2814c8181766f39897a66d514d47ccf11"
+sns_archive_upstream_rev = "cf41372e3d4dc1accfe2c09a7969f8bddc729dc1"
+sns_archive_license = "Apache-2.0"
+
 sns_wasm_wasm = "sns_wasm.wasm"
+sns_wasm_sha256 = "<auto-filled-uncompressed-wasm-hex>"
+sns_wasm_source_kind = "dfinity_download_systems"
+sns_wasm_source_url = "https://download.dfinity.systems/ic/2b7652941d6a896473e7b386dd97fc6a091633e7/canisters/sns-wasm-canister.wasm.gz"
+sns_wasm_source_sha256 = "328185cf9ccbeb531c4485ad0e4a00c020ea3249f7902968c00dc9aaac739fc2"
+sns_wasm_upstream_rev = "2b7652941d6a896473e7b386dd97fc6a091633e7"
+sns_wasm_license = "Apache-2.0"
+
+nns_governance_wasm = "nns_governance.wasm"
+nns_governance_sha256 = "<auto-filled-uncompressed-wasm-hex>"
+nns_governance_source_kind = "dfinity_download_systems"
+nns_governance_source_url = "https://download.dfinity.systems/ic/021bf342f66296d5605b355a61b2430406a83783/canisters/governance-canister.wasm.gz"
+nns_governance_source_sha256 = "c66ff7d948ff79a826e61eab9e11714082d93a45e42f3b7deec1c2377341285f"
+nns_governance_upstream_rev = "021bf342f66296d5605b355a61b2430406a83783"
+nns_governance_license = "Apache-2.0"
+
+nns_ledger_wasm = "nns_ledger.wasm"
+nns_ledger_sha256 = "<auto-filled-uncompressed-wasm-hex>"
+nns_ledger_source_kind = "dfinity_download_systems"
+nns_ledger_source_url = "https://download.dfinity.systems/ic/69b755062f5ef0a7d6efc9a127172b46121420c8/canisters/ledger-canister_notify-method.wasm.gz"
+nns_ledger_source_sha256 = "51f4be010f23064137defacd627ffbec024c5133210c68ca3b80ab8f257101d6"
+nns_ledger_upstream_rev = "69b755062f5ef0a7d6efc9a127172b46121420c8"
+nns_ledger_license = "Apache-2.0"
+
+nns_root_wasm = "nns_root.wasm"
+nns_root_sha256 = "<auto-filled-uncompressed-wasm-hex>"
+nns_root_source_kind = "dfinity_download_systems"
+nns_root_source_url = "https://download.dfinity.systems/ic/b904c9dd1bdef8841bd12f03efbc71180a015e25/canisters/root-canister.wasm.gz"
+nns_root_source_sha256 = "f95fe70b1b8193642ce65b12eb44c5269c8534fe4fb54a889c50bc2e2bc37d66"
+nns_root_upstream_rev = "b904c9dd1bdef8841bd12f03efbc71180a015e25"
+nns_root_license = "Apache-2.0"
+
+nns_lifeline_wasm = "nns_lifeline.wasm"
+nns_lifeline_sha256 = "<auto-filled-uncompressed-wasm-hex>"
+nns_lifeline_source_kind = "dfinity_download_systems"
+nns_lifeline_source_url = "<pin-exact-dfinity-lifeline-source-url>"
+nns_lifeline_source_sha256 = "<pin-compressed-source-sha256>"
+nns_lifeline_upstream_rev = "36ceffe4c47f4c3a881e75951178f5413f777f6c"
+nns_lifeline_license = "Apache-2.0"
+
+nns_registry_wasm = "nns_registry.wasm"
+nns_registry_sha256 = "<auto-filled-uncompressed-wasm-hex>"
+nns_registry_source_kind = "dfinity_download_systems"
+nns_registry_source_url = "https://download.dfinity.systems/ic/2450f6dd9beb5e2049a7b201e7b54f28e9d63815/canisters/registry-canister.wasm.gz"
+nns_registry_source_sha256 = "c0a54698d11602385af6fe688d31f86b85a89a02b643557988d36682425f36cf"
+nns_registry_upstream_rev = "2450f6dd9beb5e2049a7b201e7b54f28e9d63815"
+nns_registry_license = "Apache-2.0"
+
+cmc_wasm = "cmc.wasm"
+cmc_sha256 = "<auto-filled-uncompressed-wasm-hex>"
+cmc_source_kind = "dfinity_download_systems"
+cmc_source_url = "https://download.dfinity.systems/ic/e114e3d7f4efef3dc9876b619e71deb79868640e/canisters/cycles-minting-canister.wasm.gz"
+cmc_source_sha256 = "6ef07db375180b081b2e992c9b67e1aca941b63ffbad8ac9ac68d2de8d332912"
+cmc_upstream_rev = "e114e3d7f4efef3dc9876b619e71deb79868640e"
+cmc_license = "Apache-2.0"
 
 icp_ledger_wasm = "icp_ledger.wasm"
+icp_ledger_sha256 = "<auto-filled-uncompressed-wasm-hex>"
+icp_ledger_source_kind = "dfinity_download_systems"
+icp_ledger_source_url = "https://download.dfinity.systems/ic/69b755062f5ef0a7d6efc9a127172b46121420c8/canisters/ledger-canister_notify-method.wasm.gz"
+icp_ledger_source_sha256 = "51f4be010f23064137defacd627ffbec024c5133210c68ca3b80ab8f257101d6"
+icp_ledger_upstream_rev = "69b755062f5ef0a7d6efc9a127172b46121420c8"
+icp_ledger_license = "Apache-2.0"
+
 icp_index_wasm = "icp_index.wasm"
-nns_governance_wasm = "nns_governance.wasm"
+icp_index_sha256 = "<auto-filled-uncompressed-wasm-hex>"
+icp_index_source_kind = "dfinity_download_systems"
+icp_index_source_url = "https://download.dfinity.systems/ic/3ae3649a2366aaca83404b692fc58e4c6e604a25/canisters/ic-icp-index-canister.wasm.gz"
+icp_index_source_sha256 = "b443df3315902404b142d60f3cfd2f580181683310f6e6321b52de297deffcda"
+icp_index_upstream_rev = "3ae3649a2366aaca83404b692fc58e4c6e604a25"
+icp_index_license = "Apache-2.0"
 
 [metadata]
-source = "<upstream release URL or reproducible local source>"
-version = "<pinned upstream version>"
-license = "<artifact license>"
-notes = "Copy this file to wasms.local.toml or point IO_REAL_SNS_WASM_MANIFEST at a checked local manifest."
+source = "DFINITY pinned mainnet-canister-revisions style artifacts"
+version = "see per-artifact upstream_rev fields"
+license = "Apache-2.0 unless artifact-specific metadata says otherwise"
+notes = "Do not commit wasms.local.toml if it points to machine-local paths. The fetch script fills uncompressed *_sha256 values after verifying compressed source hashes."

@@ -65,17 +65,24 @@ impl ArtifactManifest {
         Self::parse(&text)
     }
 
-    pub fn artifact_name(&self, key: &str) -> Result<&str, String> {
+    fn field(&self, key: &str, field: &str) -> Option<&str> {
         self.entries
-            .get(&format!("artifacts.{key}_wasm"))
+            .get(&format!("artifacts.{key}.{field}"))
+            .or_else(|| self.entries.get(&format!("artifacts.{key}_{field}")))
+            .or_else(|| self.entries.get(&format!("{key}_{field}")))
             .map(String::as_str)
-            .ok_or_else(|| format!("manifest is missing artifacts.{key}_wasm"))
+    }
+
+    pub fn artifact_name(&self, key: &str) -> Result<&str, String> {
+        self.field(key, "filename")
+            .or_else(|| self.field(key, "wasm"))
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty() && !value.starts_with('<'))
+            .ok_or_else(|| format!("manifest is missing artifacts.{key}.filename"))
     }
 
     pub fn expected_hash(&self, key: &str) -> Option<&str> {
-        self.entries
-            .get(&format!("artifacts.{key}_sha256"))
-            .map(String::as_str)
+        self.field(key, "sha256")
             .filter(|value| !value.starts_with('<'))
     }
 
@@ -83,6 +90,57 @@ impl ArtifactManifest {
         self.expected_hash(key)
             .ok_or_else(|| format!("manifest is missing pinned artifacts.{key}_sha256"))
     }
+
+    pub fn source_url(&self, key: &str) -> Option<&str> {
+        self.field(key, "source_url")
+            .filter(|value| !value.starts_with('<'))
+    }
+
+    pub fn source_sha256(&self, key: &str) -> Option<&str> {
+        self.field(key, "source_sha256")
+            .filter(|value| !value.starts_with('<'))
+    }
+
+    pub fn source_kind(&self, key: &str) -> Option<&str> {
+        self.field(key, "source_kind")
+            .filter(|value| !value.starts_with('<'))
+    }
+
+    pub fn source_filename(&self, key: &str) -> Option<&str> {
+        self.field(key, "source_filename")
+            .filter(|value| !value.starts_with('<'))
+    }
+
+    pub fn require_fetch_metadata(&self, key: &str) -> Result<FetchMetadata<'_>, String> {
+        let source_url = self
+            .source_url(key)
+            .ok_or_else(|| format!("manifest is missing pinned artifacts.{key}.source_url"))?;
+        let source_sha256 = self
+            .source_sha256(key)
+            .ok_or_else(|| format!("manifest is missing pinned artifacts.{key}.source_sha256"))?;
+        let source_kind = self
+            .source_kind(key)
+            .ok_or_else(|| format!("manifest is missing artifacts.{key}.source_kind"))?;
+        Ok(FetchMetadata {
+            source_url,
+            source_sha256,
+            source_kind,
+            source_filename: self.source_filename(key),
+        })
+    }
+
+    pub fn has_artifact(&self, key: &str) -> bool {
+        self.artifact_name(key).is_ok()
+            && (self.expected_hash(key).is_some() || self.source_sha256(key).is_some())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FetchMetadata<'a> {
+    pub source_url: &'a str,
+    pub source_sha256: &'a str,
+    pub source_kind: &'a str,
+    pub source_filename: Option<&'a str>,
 }
 
 impl ArtifactSet {
@@ -202,6 +260,84 @@ mod tests {
     }
 
     #[test]
+    fn nested_manifest_parsing_reads_required_artifacts() {
+        let manifest = ArtifactManifest::parse(
+            r#"
+            [artifacts.sns_ledger]
+            filename = "sns_ledger.wasm"
+            source_filename = "sns_ledger.wasm.gz"
+            source_kind = "dfinity_release_store"
+            source_url = "pinned-url"
+            source_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            upstream_rev = "rev"
+            license = "Apache-2.0"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            manifest.artifact_name("sns_ledger").unwrap(),
+            "sns_ledger.wasm"
+        );
+        assert_eq!(
+            manifest.source_filename("sns_ledger"),
+            Some("sns_ledger.wasm.gz")
+        );
+        assert_eq!(
+            manifest.require_hash("sns_ledger").unwrap(),
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        );
+        assert_eq!(
+            manifest.require_fetch_metadata("sns_ledger").unwrap(),
+            FetchMetadata {
+                source_url: "pinned-url",
+                source_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                source_kind: "dfinity_release_store",
+                source_filename: Some("sns_ledger.wasm.gz"),
+            }
+        );
+    }
+
+    #[test]
+    fn legacy_flat_manifest_parsing_is_preserved() {
+        let manifest = ArtifactManifest::parse(
+            r#"
+            sns_ledger_wasm = "sns_ledger.wasm"
+            sns_ledger_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            sns_ledger_source_kind = "dfinity_release_store"
+            sns_ledger_source_url = "pinned-url"
+            sns_ledger_source_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            manifest.artifact_name("sns_ledger").unwrap(),
+            "sns_ledger.wasm"
+        );
+        assert_eq!(
+            manifest
+                .require_fetch_metadata("sns_ledger")
+                .unwrap()
+                .source_sha256,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+    }
+
+    #[test]
+    fn missing_source_metadata_is_error_for_fetch() {
+        let manifest = ArtifactManifest::parse(
+            r#"
+            [artifacts.sns_ledger]
+            filename = "sns_ledger.wasm"
+            sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            "#,
+        )
+        .unwrap();
+        let err = manifest.require_fetch_metadata("sns_ledger").unwrap_err();
+        assert!(err.contains("source_url"));
+    }
+
+    #[test]
     fn env_absent_means_opt_in_skip() {
         let _guard = ENV_LOCK.lock().unwrap();
         clear_env();
@@ -219,7 +355,21 @@ mod tests {
     }
 
     #[test]
-    fn hash_mismatch_is_error() {
+    fn source_hash_mismatch_is_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("artifact.wasm.gz");
+        fs::write(&path, b"compressed bytes").unwrap();
+        let err = verify_sha256_bytes(
+            &path,
+            &fs::read(&path).unwrap(),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .unwrap_err();
+        assert!(err.contains("SHA-256 mismatch"));
+    }
+
+    #[test]
+    fn decompressed_hash_mismatch_is_error() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("artifact.wasm");
         fs::write(&path, b"not this hash").unwrap();
@@ -233,6 +383,17 @@ mod tests {
     }
 
     #[test]
+    fn required_manifest_missing_is_error() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_env();
+        let dir = tempfile::tempdir().unwrap();
+        env::set_var(ENV_WASM_DIR, dir.path());
+        let err = resolve_from_env(true).unwrap_err();
+        assert!(err.contains(ENV_MANIFEST));
+        clear_env();
+    }
+
+    #[test]
     fn configured_artifacts_are_verified() {
         let _guard = ENV_LOCK.lock().unwrap();
         clear_env();
@@ -241,12 +402,21 @@ mod tests {
         let wasm_path = dir.path().join("sns_ledger.wasm");
         fs::write(&wasm_path, b"ledger").unwrap();
         let hash = hex::encode(Sha256::digest(b"ledger"));
+        let source_url = [
+            "https",
+            "://down",
+            "load.dfinity.systems/ic/rev/canisters/ic-icrc1-ledger.wasm.gz",
+        ]
+        .concat();
         fs::write(
             &manifest_path,
             format!(
-                r#"[artifacts]
-sns_ledger_wasm = "sns_ledger.wasm"
-sns_ledger_sha256 = "{hash}"
+                r#"[artifacts.sns_ledger]
+filename = "sns_ledger.wasm"
+sha256 = "{hash}"
+source_kind = "dfinity_release_store"
+source_url = "{source_url}"
+source_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 "#
             ),
         )
@@ -257,6 +427,14 @@ sns_ledger_sha256 = "{hash}"
             panic!("expected configured artifact set");
         };
         assert_eq!(set.load_required("sns_ledger").unwrap(), b"ledger");
+        assert_eq!(
+            set.manifest.source_kind("sns_ledger"),
+            Some("dfinity_release_store")
+        );
+        assert_eq!(
+            set.manifest.source_sha256("sns_ledger"),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
         clear_env();
     }
 }

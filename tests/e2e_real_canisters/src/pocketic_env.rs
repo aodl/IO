@@ -30,6 +30,18 @@ pub fn create_application_canister(pic: &PocketIc, wasm: Vec<u8>, arg: Vec<u8>) 
     create_canister_on_subnet(pic, app_subnet, wasm, arg)
 }
 
+pub fn create_empty_application_canister(pic: &PocketIc) -> Principal {
+    let app_subnet = pic
+        .topology()
+        .get_app_subnets()
+        .into_iter()
+        .next()
+        .expect("application subnet should exist");
+    let canister = pic.create_canister_on_subnet(None, None, app_subnet);
+    pic.add_cycles(canister, CYCLES);
+    canister
+}
+
 fn create_canister_on_subnet(
     pic: &PocketIc,
     subnet: Principal,

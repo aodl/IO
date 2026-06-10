@@ -1127,7 +1127,8 @@ mod tests {
         use io_production_wiring::{
             DeploymentTargets, FeePolicyWiring, IoLedgerRole, PrincipalWiring, ProtectedReferences,
             WiringMode, ICP_INDEX_PRINCIPAL, ICP_LEDGER_PRINCIPAL, ICP_TRANSFER_FEE_E8S,
-            NNS_GOVERNANCE_PRINCIPAL, PROTECTED_IO_NEURON_OWNER_CANISTER,
+            NNS_GOVERNANCE_PRINCIPAL, PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID,
+            PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID, PROTECTED_IO_NEURON_OWNER_CANISTER,
             PROTECTED_IO_NNS_NEURON_ID,
         };
 
@@ -1161,8 +1162,12 @@ mod tests {
                 io_nns_neuron_id: Some(PROTECTED_IO_NNS_NEURON_ID),
             },
             deployment_targets: DeploymentTargets {
-                io_stream_manager_principal_text: None,
-                io_nns_neuron_manager_principal_text: None,
+                io_stream_manager_principal_text: Some(
+                    PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID.to_string(),
+                ),
+                io_nns_neuron_manager_principal_text: Some(
+                    PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID.to_string(),
+                ),
                 mutation_target_principal_texts: Vec::new(),
                 mutation_target_nns_neuron_ids: Vec::new(),
             },

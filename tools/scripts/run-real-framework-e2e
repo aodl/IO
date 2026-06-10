@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+: "${POCKET_IC_BIN:?set POCKET_IC_BIN to the pocket-ic-server binary}"
+export IO_REAL_SNS_WASM_DIR="${IO_REAL_SNS_WASM_DIR:-${ROOT}/.real-canister-wasms}"
+export IO_REAL_SNS_WASM_MANIFEST="${IO_REAL_SNS_WASM_MANIFEST:-${ROOT}/tests/e2e_real_canisters/wasms.local.toml}"
+
+"${ROOT}/tools/scripts/fetch-real-canister-artifacts"
+
+cd "${ROOT}"
+cargo test -p e2e-real-canisters real_sns_ledger_index_smoke -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_ledger_index_same_wasm_upgrade_preserves_balances_history_and_duplicates -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_canister_e2e_icp_to_io_stake_reward_redemption -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_governance_staking_smoke -- --ignored --nocapture || {
+  printf '\nFull governance/root/SNS-W staking is expected to remain blocked until the SNS-W deploy/finalize driver is implemented.\n' >&2
+  exit 3
+}

@@ -51,10 +51,10 @@ The executable ledger/index layer covers:
 - `real_sns_ledger_index_smoke`
 - `real_sns_ledger_index_same_wasm_upgrade_preserves_balances_history_and_duplicates`
 
-The governance and full IO E2E test names are registered as ignored blockers, but they do not claim real-framework coverage:
+The governance test name is still an ignored blocker. The full IO E2E test name now runs the real-ledger exact-economics layer when pinned ledger/index artifacts are supplied; it does not claim full SNS/NNS coverage:
 
 - `real_sns_governance_staking_smoke`
-- `real_canister_e2e_icp_to_io_stake_reward_redemption`
+- `real_canister_e2e_icp_to_io_stake_reward_redemption` — real-ledger exact-economics E2E using pinned SNS ledger/index artifacts; no real SNS governance/root or NNS maturity yet
 
 ## First Runnable Layer To Build Next
 
@@ -80,3 +80,8 @@ IO_LOCAL_SNS_CANISTER_CALLS=local-only
 ```
 
 and must reject any `--network ic` path.
+
+
+## Current Real-Framework Stride
+
+`tools/scripts/run-real-framework-e2e` is the opt-in local operator path for pinned real framework artifacts. It fetches/verifies/decompresses configured artifacts, runs the real ledger/index tests, and runs the real-ledger exact-economics E2E. Governance/root/SNS-W normal staking remains blocked until the SNS-W deployment/finalization/list-neurons driver is implemented.

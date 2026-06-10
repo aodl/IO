@@ -101,4 +101,9 @@ This domain is the historian/frontend honesty layer.
 
 ## Summary
 
-Current coverage is strong for IO-owned model logic, production-shaped DTO mapping, mock/SNS-shaped PocketIC retry behavior, stable-state guardrails, and local evidence validation. The opt-in real-framework PocketIC layer now proves real SNS ledger/index behavior when pinned local artifacts are supplied. It does not yet prove real SNS governance/root behavior in PocketIC, normal SNS neuron staking, real governance rewards/maturity, or a full ICP -> IO -> stake -> APY increase -> redemption E2E flow against all-real canisters.
+Current coverage is strong for IO-owned model logic, production-shaped DTO mapping, mock/SNS-shaped PocketIC retry behavior, stable-state guardrails, and local evidence validation. The opt-in real-framework PocketIC layer now proves real SNS ledger/index behavior and a real-ledger exact-economics value-flow when pinned local artifacts are supplied. It does not yet prove real SNS governance/root behavior in PocketIC, normal SNS neuron staking, real governance rewards/maturity, or a full ICP -> IO -> stake -> APY increase -> redemption E2E flow against all-real canisters.
+
+
+## Current Real-Framework Stride
+
+`tools/scripts/run-real-framework-e2e` is the opt-in local operator path for pinned real framework artifacts. It fetches/verifies/decompresses configured artifacts, runs the real ledger/index tests, and runs the real-ledger exact-economics E2E. Governance/root/SNS-W normal staking remains blocked until the SNS-W deployment/finalization/list-neurons driver is implemented.

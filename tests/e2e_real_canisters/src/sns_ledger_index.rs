@@ -3,11 +3,12 @@ use crate::icrc;
 use crate::pocketic_env;
 use candid::{Nat, Principal};
 use io_ledger_types::{IcrcAccount, IcrcTransferError};
+use std::time::Duration;
 
 const RESERVE_E8S: u64 = 1_000_000_000_000;
 const GOVERNANCE_E8S: u64 = 250_000_000_000;
 const USER_TRANSFER_E8S: u64 = 100_000_000;
-const CREATED_AT_TIME: u64 = 1_700_000_000_000_000_000;
+const CREATED_AT_OFFSET: u64 = 1_000;
 
 struct LedgerIndexFixture {
     pic: pocket_ic::PocketIc,
@@ -112,7 +113,8 @@ fn assert_metadata_and_initial_balances(f: &LedgerIndexFixture) {
     );
 }
 
-fn transfer_reserve_to_user(f: &LedgerIndexFixture) -> u64 {
+fn transfer_reserve_to_user(f: &LedgerIndexFixture) -> (u64, u64) {
+    let created_at_time = created_at_time(f, 0);
     let result = icrc::icrc1_transfer(
         &f.pic,
         f.ledger,
@@ -123,7 +125,7 @@ fn transfer_reserve_to_user(f: &LedgerIndexFixture) -> u64 {
             USER_TRANSFER_E8S,
             Some(icrc::FEE_E8S),
             Some(b"reserve-to-user"),
-            Some(CREATED_AT_TIME),
+            Some(created_at_time),
         ),
     )
     .expect("reserve-to-user transfer should succeed");
@@ -138,13 +140,22 @@ fn transfer_reserve_to_user(f: &LedgerIndexFixture) -> u64 {
     );
     assert_eq!(
         icrc::icrc1_total_supply(&f.pic, f.ledger),
-        Nat::from(RESERVE_E8S + GOVERNANCE_E8S)
+        Nat::from(RESERVE_E8S + GOVERNANCE_E8S - icrc::FEE_E8S)
     );
-    block
+    (block, created_at_time)
 }
 
-fn assert_index_has_transfer(f: &LedgerIndexFixture, block: u64) {
-    for _ in 0..20 {
+fn created_at_time(f: &LedgerIndexFixture, offset: u64) -> u64 {
+    f.pic
+        .get_time()
+        .as_nanos_since_unix_epoch()
+        .saturating_sub(CREATED_AT_OFFSET)
+        .saturating_add(offset)
+}
+
+fn assert_index_has_transfer(f: &LedgerIndexFixture, block: u64, created_at_time: u64) {
+    for _ in 0..200 {
+        f.pic.advance_time(Duration::from_secs(1));
         f.pic.tick();
     }
     let reserve_history =
@@ -158,17 +169,26 @@ fn assert_index_has_transfer(f: &LedgerIndexFixture, block: u64) {
             .iter()
             .find(|tx| tx.id == block)
             .and_then(|tx| tx.transaction.transfer.as_ref())
-            .expect("account history should include transfer block");
+            .unwrap_or_else(|| {
+                panic!(
+                    "account history should include transfer block {block}; observed ids {:?}",
+                    history
+                        .transactions
+                        .iter()
+                        .map(|tx| tx.id.clone())
+                        .collect::<Vec<_>>()
+                )
+            });
         assert_eq!(observed.from, f.reserve);
         assert_eq!(observed.to, f.user);
         assert_eq!(observed.amount, Nat::from(USER_TRANSFER_E8S));
         assert_eq!(observed.fee, Some(Nat::from(icrc::FEE_E8S)));
         assert_eq!(observed.memo.as_deref(), Some(&b"reserve-to-user"[..]));
-        assert_eq!(observed.created_at_time, Some(CREATED_AT_TIME));
+        assert_eq!(observed.created_at_time, Some(created_at_time));
     }
 }
 
-fn assert_error_paths(f: &LedgerIndexFixture, duplicate_block: u64) {
+fn assert_error_paths(f: &LedgerIndexFixture, duplicate_block: u64, created_at_time: u64) {
     let bad_fee = icrc::icrc1_transfer(
         &f.pic,
         f.ledger,
@@ -179,7 +199,7 @@ fn assert_error_paths(f: &LedgerIndexFixture, duplicate_block: u64) {
             1,
             Some(1),
             Some(b"bad-fee"),
-            Some(CREATED_AT_TIME + 1),
+            Some(created_at_time + 1),
         ),
     )
     .unwrap_err();
@@ -195,7 +215,7 @@ fn assert_error_paths(f: &LedgerIndexFixture, duplicate_block: u64) {
             USER_TRANSFER_E8S * 10,
             Some(icrc::FEE_E8S),
             Some(b"insufficient"),
-            Some(CREATED_AT_TIME + 2),
+            Some(created_at_time + 2),
         ),
     )
     .unwrap_err();
@@ -214,7 +234,7 @@ fn assert_error_paths(f: &LedgerIndexFixture, duplicate_block: u64) {
             USER_TRANSFER_E8S,
             Some(icrc::FEE_E8S),
             Some(b"reserve-to-user"),
-            Some(CREATED_AT_TIME),
+            Some(created_at_time),
         ),
     )
     .unwrap_err();
@@ -231,21 +251,21 @@ pub fn run_ledger_index_smoke(required: bool) {
         return;
     };
     assert_metadata_and_initial_balances(&fixture);
-    let block = transfer_reserve_to_user(&fixture);
-    assert_index_has_transfer(&fixture, block);
-    assert_error_paths(&fixture, block);
+    let (block, created_at_time) = transfer_reserve_to_user(&fixture);
+    assert_index_has_transfer(&fixture, block, created_at_time);
+    assert_error_paths(&fixture, block, created_at_time);
     for _ in 0..10 {
         fixture.pic.tick();
     }
-    assert_index_has_transfer(&fixture, block);
+    assert_index_has_transfer(&fixture, block, created_at_time);
 }
 
 pub fn run_ledger_index_same_wasm_upgrade(required: bool) {
     let Some(fixture) = setup(required) else {
         return;
     };
-    let block = transfer_reserve_to_user(&fixture);
-    assert_index_has_transfer(&fixture, block);
+    let (block, created_at_time) = transfer_reserve_to_user(&fixture);
+    assert_index_has_transfer(&fixture, block, created_at_time);
     pocketic_env::upgrade_canister(
         &fixture.pic,
         fixture.ledger,
@@ -265,6 +285,6 @@ pub fn run_ledger_index_same_wasm_upgrade(required: bool) {
         icrc::icrc1_balance_of(&fixture.pic, fixture.ledger, fixture.user.clone()),
         Nat::from(USER_TRANSFER_E8S)
     );
-    assert_index_has_transfer(&fixture, block);
-    assert_error_paths(&fixture, block);
+    assert_index_has_transfer(&fixture, block, created_at_time);
+    assert_error_paths(&fixture, block, created_at_time);
 }

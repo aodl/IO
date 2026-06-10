@@ -5,6 +5,8 @@
 //! artifacts are configured; required xtask gates fail in that case.
 
 pub mod artifacts;
+pub mod exact_economics;
+pub mod framework;
 pub mod icrc;
 pub mod pocketic_env;
 pub mod sns_ledger_index;
@@ -26,16 +28,12 @@ mod tests {
     #[test]
     #[ignore = "requires pinned real SNS governance/root Wasms and init driver"]
     fn real_sns_governance_staking_smoke() {
-        eprintln!(
-            "skipping real SNS governance staking smoke: governance/root install and normal staking driver are not implemented yet"
-        );
+        crate::framework::run_full_framework_preflight(false);
     }
 
     #[test]
-    #[ignore = "requires pinned real ICP/SNS/NNS framework Wasms"]
+    #[ignore = "requires pinned real SNS ledger/index Wasms and POCKET_IC_BIN"]
     fn real_canister_e2e_icp_to_io_stake_reward_redemption() {
-        eprintln!(
-            "skipping all-real IO E2E: ledger/index smoke is the current executable real-framework layer"
-        );
+        crate::exact_economics::run_exact_economics(false);
     }
 }
