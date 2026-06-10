@@ -2477,6 +2477,247 @@ fn check_local_sns_ledger_at(root: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
+fn check_e2e_coverage_matrix_at(root: &Path) -> Result<(), String> {
+    let matrix_path = "docs/testing/e2e-coverage-matrix.md";
+    let inventory_path = "docs/testing/current-test-inventory.md";
+    let scenarios_path = "docs/testing/e2e-scenario-specs.md";
+    let matrix = require_file(root, matrix_path)?;
+    require_present(
+        matrix_path,
+        &matrix,
+        &[
+            "real SNS ledger",
+            "real SNS index",
+            "real SNS governance",
+            "SNS neuron staking",
+            "APY increase",
+            "reserve transfer",
+            "duplicate proof",
+            "index lag",
+            "archive-required",
+            "mid-flight upgrade",
+            "historian/frontend honesty",
+            "No current all-real-canister PocketIC E2E test exists",
+        ],
+    )?;
+    let inventory = require_file(root, inventory_path)?;
+    require_present(
+        inventory_path,
+        &inventory,
+        &[
+            "real SNS neuron staking",
+            "real SNS governance maturity/rewards",
+            "real SNS index account history",
+            "IO APY increase from real SNS staked IO",
+            "full ICP -> IO -> stake -> APY -> redemption E2E",
+            "not proved",
+        ],
+    )?;
+    let scenarios = require_file(root, scenarios_path)?;
+    require_present(
+        scenarios_path,
+        &scenarios,
+        &[
+            "ICP deposit -> IO reserve issuance",
+            "User stakes IO into SNS neuron",
+            "User increases IO neuron stake",
+            "SNS governance unavailable",
+            "SNS index lag",
+            "Archive-required account history",
+            "Mid-flight upgrade",
+            "Frontend never calls value-moving canisters",
+        ],
+    )?;
+    Ok(())
+}
+
+fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
+    let plan_path = "docs/testing/real-canister-pocketic-plan.md";
+    let cargo_path = "tests/e2e_real_canisters/Cargo.toml";
+    let harness_path = "tests/e2e_real_canisters/src/lib.rs";
+    let manifest_path = "tests/e2e_real_canisters/wasms.example.toml";
+    let plan = require_file(root, plan_path)?;
+    require_present(
+        plan_path,
+        &plan,
+        &[
+            "Real-framework PocketIC",
+            "IO_REAL_SNS_WASM_DIR",
+            "IO_REAL_SNS_WASM_MANIFEST",
+            "Do not download unpinned Wasms in CI",
+            "real SNS ledger",
+            "real SNS index",
+            "real SNS governance",
+            "real SNS root",
+            "real SNS swap",
+            "SNS-W",
+            "blocked",
+        ],
+    )?;
+    let cargo = require_file(root, cargo_path)?;
+    require_present(
+        cargo_path,
+        &cargo,
+        &[
+            "name = \"e2e-real-canisters\"",
+            "pocket-ic.workspace = true",
+            "io-ledger-types.workspace = true",
+        ],
+    )?;
+    let manifest = require_file(root, manifest_path)?;
+    require_present(
+        manifest_path,
+        &manifest,
+        &[
+            "sns_ledger_wasm",
+            "sns_ledger_sha256",
+            "sns_index_wasm",
+            "sns_index_sha256",
+            "sns_governance_wasm",
+            "nns_governance_wasm",
+        ],
+    )?;
+    let harness = require_file(root, harness_path)?;
+    require_present(
+        harness_path,
+        &harness,
+        &[
+            "real_sns_ledger_index_smoke",
+            "real_sns_ledger_index_same_wasm_upgrade_preserves_balances_history_and_duplicates",
+            "real_sns_governance_staking_smoke",
+            "real_canister_e2e_icp_to_io_stake_reward_redemption",
+        ],
+    )?;
+    let artifacts = require_file(root, "tests/e2e_real_canisters/src/artifacts.rs")?;
+    require_present(
+        "tests/e2e_real_canisters/src/artifacts.rs",
+        &artifacts,
+        &["IO_REAL_SNS_WASM_DIR", "IO_REAL_SNS_WASM_MANIFEST"],
+    )?;
+    let pocketic_env = require_file(root, "tests/e2e_real_canisters/src/pocketic_env.rs")?;
+    require_present(
+        "tests/e2e_real_canisters/src/pocketic_env.rs",
+        &pocketic_env,
+        &["POCKET_IC_BIN"],
+    )?;
+    require_absent(harness_path, &harness, &["--network ic", "dfx "])?;
+    for path in [
+        cargo_path,
+        manifest_path,
+        "tests/e2e_real_canisters/src/artifacts.rs",
+        "tests/e2e_real_canisters/src/icrc.rs",
+        "tests/e2e_real_canisters/src/pocketic_env.rs",
+        "tests/e2e_real_canisters/src/sns_ledger_index.rs",
+    ] {
+        let text = require_file(root, path)?;
+        require_absent(
+            path,
+            &text,
+            &[
+                "--network ic",
+                "https://",
+                "http://",
+                "download",
+                "dfx ",
+                "oae4c-3iaaa-aaaar-qb5qq-cai",
+                "6345890886899317159",
+            ],
+        )?;
+    }
+    let root_cargo = require_file(root, "Cargo.toml")?;
+    require_absent(
+        "Cargo.toml",
+        &root_cargo,
+        &["pocket-ic.workspace = true\nio-stream-manager"],
+    )?;
+    Ok(())
+}
+
+fn check_real_canister_artifact_manifest_at(root: &Path, required: bool) -> Result<bool, String> {
+    let wasm_dir = match env::var_os("IO_REAL_SNS_WASM_DIR") {
+        Some(value) => PathBuf::from(value),
+        None if required => {
+            return Err("IO_REAL_SNS_WASM_DIR is required".to_string());
+        }
+        None => return Ok(false),
+    };
+    if !wasm_dir.is_dir() {
+        return Err(format!(
+            "IO_REAL_SNS_WASM_DIR must point to an existing directory: {}",
+            wasm_dir.display()
+        ));
+    }
+    let manifest_path = env::var_os("IO_REAL_SNS_WASM_MANIFEST")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("tests/e2e_real_canisters/wasms.local.toml"));
+    if !manifest_path.is_file() {
+        if required {
+            return Err(format!(
+                "IO_REAL_SNS_WASM_MANIFEST or {} is required",
+                root.join("tests/e2e_real_canisters/wasms.local.toml")
+                    .display()
+            ));
+        }
+        return Ok(false);
+    }
+    let manifest = fs::read_to_string(&manifest_path)
+        .map_err(|err| format!("{}: {err}", manifest_path.display()))?;
+    for key in [
+        "sns_ledger_wasm",
+        "sns_ledger_sha256",
+        "sns_index_wasm",
+        "sns_index_sha256",
+    ] {
+        if !manifest.contains(key) {
+            return Err(format!("{}: missing {key}", manifest_path.display()));
+        }
+    }
+    for artifact in ["sns_ledger", "sns_index"] {
+        let wasm_key = format!("{artifact}_wasm");
+        let hash_key = format!("{artifact}_sha256");
+        let file_name = simple_manifest_value(&manifest, &wasm_key)
+            .ok_or_else(|| format!("{}: missing artifacts.{wasm_key}", manifest_path.display()))?;
+        let expected = simple_manifest_value(&manifest, &hash_key)
+            .ok_or_else(|| format!("{}: missing artifacts.{hash_key}", manifest_path.display()))?;
+        if expected.starts_with('<') {
+            return Err(format!(
+                "{}: artifacts.{hash_key} must be a pinned SHA-256, not a placeholder",
+                manifest_path.display()
+            ));
+        }
+        let wasm_path = wasm_dir.join(file_name);
+        let bytes =
+            fs::read(&wasm_path).map_err(|err| format!("{}: {err}", wasm_path.display()))?;
+        let actual = hex_sha256(&bytes);
+        if actual != expected.to_ascii_lowercase() {
+            return Err(format!(
+                "{}: SHA-256 mismatch; expected {}, got {actual}",
+                wasm_path.display(),
+                expected
+            ));
+        }
+    }
+    Ok(true)
+}
+
+fn simple_manifest_value(text: &str, key: &str) -> Option<String> {
+    text.lines().find_map(|raw| {
+        let line = raw.split_once('#').map_or(raw, |(prefix, _)| prefix).trim();
+        let (left, right) = line.split_once('=')?;
+        if left.trim() != key {
+            return None;
+        }
+        let value = right.trim();
+        (value.starts_with('"') && value.ends_with('"') && value.len() >= 2)
+            .then(|| value[1..value.len() - 1].to_string())
+    })
+}
+
+fn hex_sha256(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(bytes))
+}
+
 fn check_sns_harness_at(root: &Path) -> Result<(), String> {
     let local_sns_doc = require_file(root, "docs/operations/local-sns-testing.md")?;
     require_present(
@@ -3254,7 +3495,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_scripts, local_sns_evidence_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_scripts, e2e_coverage_matrix_check, real_canister_harness_check, real_canister_artifact_manifest_check, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -3476,6 +3717,148 @@ fn main() -> ExitCode {
                 ok = false;
             }
         },
+        "e2e_coverage_matrix_check" => match check_e2e_coverage_matrix_at(&root) {
+            Ok(()) => eprintln!("✓ e2e_coverage_matrix_check"),
+            Err(err) => {
+                eprintln!("✗ e2e_coverage_matrix_check: {err}");
+                ok = false;
+            }
+        },
+        "real_canister_harness_check" => match check_real_canister_harness_at(&root) {
+            Ok(()) => eprintln!("✓ real_canister_harness_check"),
+            Err(err) => {
+                eprintln!("✗ real_canister_harness_check: {err}");
+                ok = false;
+            }
+        },
+        "real_canister_artifact_manifest_check" => {
+            let required = args.iter().any(|arg| arg == "--required");
+            match check_real_canister_artifact_manifest_at(&root, required) {
+                Ok(true) => eprintln!("✓ real_canister_artifact_manifest_check"),
+                Ok(false) => {
+                    eprintln!("skipping real_canister_artifact_manifest_check: real Wasm artifacts are not configured")
+                }
+                Err(err) => {
+                    eprintln!("✗ real_canister_artifact_manifest_check: {err}");
+                    ok = false;
+                }
+            }
+        }
+        "real_sns_ledger_index_tests" => {
+            ok &= run_subcommand("real_canister_harness_check");
+            ok &= run(
+                "unit: e2e-real-canisters artifact harness",
+                cargo_test(&["-p", "e2e-real-canisters"]),
+            );
+            match check_real_canister_artifact_manifest_at(&root, false) {
+                Ok(true) => {
+                    if env::var_os("POCKET_IC_BIN").is_none() {
+                        eprintln!(
+                            "✗ real_sns_ledger_index_tests: artifacts are configured but POCKET_IC_BIN is not set"
+                        );
+                        ok = false;
+                    } else {
+                        ok &= run(
+                            "real-framework: SNS ledger/index smoke",
+                            cargo_test(&[
+                                "-p",
+                                "e2e-real-canisters",
+                                "real_sns_ledger_index_smoke",
+                                "--",
+                                "--ignored",
+                                "--nocapture",
+                            ]),
+                        );
+                        ok &= run(
+                            "real-framework: SNS ledger/index same-Wasm upgrade",
+                            cargo_test(&[
+                                "-p",
+                                "e2e-real-canisters",
+                                "real_sns_ledger_index_same_wasm_upgrade_preserves_balances_history_and_duplicates",
+                                "--",
+                                "--ignored",
+                                "--nocapture",
+                            ]),
+                        );
+                    }
+                }
+                Ok(false) => eprintln!(
+                    "skipping real_sns_ledger_index_tests ignored layer: real Wasm artifacts are not configured"
+                ),
+                Err(err) => {
+                    eprintln!("✗ real_sns_ledger_index_tests: {err}");
+                    ok = false;
+                }
+            }
+        }
+        "real_sns_ledger_index_required" => {
+            match check_real_canister_artifact_manifest_at(&root, true) {
+                Ok(true) => {}
+                Ok(false) => {
+                    eprintln!(
+                        "✗ real_sns_ledger_index_required: real Wasm artifacts are not configured"
+                    );
+                    ok = false;
+                }
+                Err(err) => {
+                    eprintln!("✗ real_sns_ledger_index_required: {err}");
+                    ok = false;
+                }
+            }
+            if env::var_os("POCKET_IC_BIN").is_none() {
+                eprintln!("✗ real_sns_ledger_index_required: POCKET_IC_BIN is not set");
+                ok = false;
+            }
+            if ok {
+                ok &= run_subcommand("real_sns_ledger_index_tests");
+            }
+        }
+        "real_sns_governance_tests" => {
+            ok &= run_subcommand("real_canister_harness_check");
+            ok &= run(
+                "unit: e2e-real-canisters governance placeholder registration",
+                cargo_test(&[
+                    "-p",
+                    "e2e-real-canisters",
+                    "real_sns_governance_staking_smoke",
+                ]),
+            );
+            eprintln!(
+                "skipping real_sns_governance_tests ignored layer: normal SNS staking driver is blocked until pinned governance/root artifacts and init shape are supplied"
+            );
+        }
+        "real_sns_governance_required" => {
+            eprintln!(
+                "✗ real_sns_governance_required: pinned real SNS governance/root artifacts and normal staking init driver are not implemented"
+            );
+            ok = false;
+        }
+        "real_io_e2e_tests" => {
+            ok &= run_subcommand("real_canister_harness_check");
+            ok &= run(
+                "unit: e2e-real-canisters full E2E placeholder registration",
+                cargo_test(&[
+                    "-p",
+                    "e2e-real-canisters",
+                    "real_canister_e2e_icp_to_io_stake_reward_redemption",
+                ]),
+            );
+            eprintln!(
+                "skipping real_io_e2e_tests ignored layer: all-real ICP/SNS/NNS framework artifacts and IO integration driver are not complete"
+            );
+        }
+        "real_io_e2e_required" => {
+            eprintln!(
+                "✗ real_io_e2e_required: all-real ICP/SNS/NNS framework artifacts and IO integration driver are not complete"
+            );
+            ok = false;
+        }
+        "e2e_real_coverage_check" => {
+            ok &= run_subcommand("e2e_coverage_matrix_check");
+            ok &= run_subcommand("real_canister_harness_check");
+            ok &= run_subcommand("real_canister_artifact_manifest_check");
+            ok &= run_subcommand("real_sns_ledger_index_tests");
+        }
         "local_sns_evidence_tests" => {
             if env::var("IO_LOCAL_SNS_REHEARSAL_ACK").as_deref() != Ok("local-only") {
                 eprintln!(
@@ -3485,17 +3868,27 @@ fn main() -> ExitCode {
                 let path = env::var("IO_LOCAL_SNS_EVIDENCE").unwrap_or_else(|_| {
                     "deploy/local-sns-rehearsal/canister-ids.local.toml".into()
                 });
-                match fs::read_to_string(&path)
-                    .map_err(|err| format!("{path}: {err}"))
-                    .and_then(|text| parse_local_sns_evidence(&path, &text).map(|_| ()))
-                {
-                    Ok(()) => eprintln!("✓ local_sns_evidence_tests"),
-                    Err(err) => {
-                        eprintln!("✗ local_sns_evidence_tests: {err}");
-                        ok = false;
+                if !Path::new(&path).exists() {
+                    eprintln!("skipping local_sns_evidence_tests: {path} is absent");
+                } else {
+                    match fs::read_to_string(&path)
+                        .map_err(|err| format!("{path}: {err}"))
+                        .and_then(|text| parse_local_sns_evidence(&path, &text).map(|_| ()))
+                    {
+                        Ok(()) => eprintln!("✓ local_sns_evidence_tests"),
+                        Err(err) => {
+                            eprintln!("✗ local_sns_evidence_tests: {err}");
+                            ok = false;
+                        }
                     }
                 }
             }
+        }
+        "sns_apy_policy_tests" => {
+            ok &= run(
+                "unit: io-reward-policy SNS/APY policy",
+                cargo_test(&["-p", "io-reward-policy"]),
+            );
         }
         "historian_tests" => {
             ok &= run_subcommand("did_surface");
@@ -3642,6 +4035,11 @@ fn main() -> ExitCode {
                 "validate_stable_storage",
                 "validate_local_sns_rehearsal",
                 "validate_local_sns_scripts",
+                "e2e_coverage_matrix_check",
+                "real_canister_harness_check",
+                "real_canister_artifact_manifest_check",
+                "e2e_real_coverage_check",
+                "sns_apy_policy_tests",
                 "historian_tests",
                 "frontend_required",
                 "sns_harness_check",
@@ -3685,6 +4083,9 @@ fn main() -> ExitCode {
         }
         "test_unit" => {
             ok &= run("unit: xtask guardrails", cargo_test(&["-p", "xtask"]));
+            ok &= run_subcommand("e2e_coverage_matrix_check");
+            ok &= run_subcommand("real_canister_harness_check");
+            ok &= run_subcommand("real_canister_artifact_manifest_check");
             ok &= run("unit: io-core-model", cargo_test(&["-p", "io-core-model"]));
             ok &= run(
                 "unit: io-reward-policy",

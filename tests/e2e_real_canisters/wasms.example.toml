@@ -1,0 +1,21 @@
+[artifacts]
+sns_ledger_wasm = "sns_ledger.wasm"
+sns_ledger_sha256 = "<hex>"
+sns_index_wasm = "sns_index.wasm"
+sns_index_sha256 = "<hex>"
+
+# Future real-framework layers.
+sns_governance_wasm = "sns_governance.wasm"
+sns_root_wasm = "sns_root.wasm"
+sns_swap_wasm = "sns_swap.wasm"
+sns_wasm_wasm = "sns_wasm.wasm"
+
+icp_ledger_wasm = "icp_ledger.wasm"
+icp_index_wasm = "icp_index.wasm"
+nns_governance_wasm = "nns_governance.wasm"
+
+[metadata]
+source = "<upstream release URL or reproducible local source>"
+version = "<pinned upstream version>"
+license = "<artifact license>"
+notes = "Copy this file to wasms.local.toml or point IO_REAL_SNS_WASM_MANIFEST at a checked local manifest."

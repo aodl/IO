@@ -21,6 +21,7 @@ members = [
   "tests/mocks/mock_sns_governance",
   "tests/mocks/mock_sns_root",
   "tests/mocks/mock_jupiter_faucet",
+  "tests/e2e_real_canisters",
   "tools/xtask",
 ]
 

@@ -2,6 +2,8 @@
 
 This runbook describes how to prove IO assumptions against a real SNS-created ledger stack in a local environment. It is optional/manual, local-only, and outside required CI because the official SNS path may require `dfx sns`.
 
+For a lighter local real-framework path that does not use official SNS launch tooling, use `tests/e2e_real_canisters` with pinned local SNS ledger/index Wasms. That path installs the real framework Wasms directly in PocketIC and records evidence with `deploy/local-sns-rehearsal/real-canister-e2e-evidence.example.toml`; it is not a substitute for an official SNS launch rehearsal because it does not prove SNS-W, swap, root/governance launch wiring, or final SNS tokenomics.
+
 It must not use `--network ic`, must not call mainnet, must not touch `oae4c-3iaaa-aaaar-qb5qq-cai`, and must not touch IO neuron `6345890886899317159`.
 
 ## Package

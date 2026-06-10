@@ -42,4 +42,17 @@ Time fast-forward tests use two layers:
 
 These tests use mock ledgers, mock indexes, and mock governance canisters. Downstream transfers go through `LedgerTransferClient` mock adapters, while scan sources still use mock `debug_get_transactions`. They do not use real NNS, SNS, ICP ledger, IO ledger, or mainnet canisters.
 
+## Real-Framework PocketIC
+
+The separate `tests/e2e_real_canisters` crate is the opt-in real-framework harness. It never downloads Wasms and never calls mainnet. Provide local pinned artifacts:
+
+```bash
+export IO_REAL_SNS_WASM_DIR=/path/to/pinned/wasms
+export IO_REAL_SNS_WASM_MANIFEST=tests/e2e_real_canisters/wasms.local.toml
+export POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server
+cargo test -p e2e-real-canisters real_sns_ledger_index_smoke -- --ignored --nocapture
+```
+
+The manifest format is documented in `tests/e2e_real_canisters/wasms.example.toml`. The ledger/index layer installs real SNS ledger and index Wasms in PocketIC, verifies SHA-256 before install, and covers metadata, balances, reserve transfer, BadFee, InsufficientFunds, Duplicate, account history, constant total supply, and same-Wasm upgrade persistence. Governance/root and full IO E2E tests are registered as explicit blockers until pinned artifacts and normal SNS staking init are available.
+
 `cargo run -p xtask -- test_ci` requires `POCKET_IC_BIN` and includes the live PocketIC integration suite. GitHub Actions should either provide a compatible PocketIC binary or run the non-PocketIC workflow steps plus document the missing strict gate.

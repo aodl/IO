@@ -445,6 +445,72 @@ mod sns_governance_allocation_tests {
     }
 
     #[test]
+    fn eligible_sns_staking_increases_io_reward_entitlement() {
+        let no_staking = allocate_rewards(500, &snapshots_from_governance(&[], &[]));
+        assert!(no_staking.allocations.is_empty());
+        assert_eq!(no_staking.dust_e8s, 500);
+
+        let eligible = snapshots_from_governance(
+            &[sns_neuron(1, 1_000, false, false)],
+            &[proposal(1, 10, &[(1, SnsVote::Yes)])],
+        );
+        let staking = allocate_rewards(500, &eligible);
+        assert_eq!(
+            staking.allocations,
+            vec![RewardAllocation {
+                neuron_id: 1,
+                io_e8s: 500
+            }]
+        );
+    }
+
+    #[test]
+    fn increasing_staked_io_increases_reward_weight_without_double_counting() {
+        let before = snapshots_from_governance(
+            &[sns_neuron(1, 1_000, false, false)],
+            &[proposal(1, 10, &[(1, SnsVote::Yes)])],
+        );
+        let after = snapshots_from_governance(
+            &[sns_neuron(1, 3_000, false, false)],
+            &[proposal(1, 10, &[(1, SnsVote::Yes)])],
+        );
+
+        assert_eq!(before.len(), 1);
+        assert_eq!(after.len(), 1);
+        assert_eq!(before[0].staked_io_e8s, 1_000);
+        assert_eq!(after[0].staked_io_e8s, 3_000);
+        assert_eq!(reward_weight(&after[0]), reward_weight(&before[0]) * 3);
+    }
+
+    #[test]
+    fn ineligible_sns_staking_does_not_increase_reward_entitlement() {
+        let mut short_delay = sns_neuron(1, 1_000, false, false);
+        short_delay.dissolve_delay_seconds = 60;
+        short_delay.dissolve_state = SnsDissolveState::NotDissolving {
+            dissolve_delay_seconds: 60,
+        };
+        let mut dissolving = sns_neuron(2, 1_000, false, false);
+        dissolving.dissolve_state = SnsDissolveState::Dissolving {
+            when_dissolved_timestamp_seconds: 200,
+        };
+        let mut liquid_only = sns_neuron(3, 0, false, false);
+        liquid_only.cached_neuron_stake_e8s = 0;
+
+        let snapshots = snapshots_from_governance(
+            &[short_delay, dissolving, liquid_only],
+            &[proposal(
+                1,
+                10,
+                &[(1, SnsVote::Yes), (2, SnsVote::Yes), (3, SnsVote::Yes)],
+            )],
+        );
+        let out = allocate_rewards(500, &snapshots);
+        assert!(out.allocations.is_empty());
+        assert_eq!(out.dust_e8s, 500);
+        assert_eq!(active_staked_io_e8s(&snapshots), 0);
+    }
+
+    #[test]
     fn half_participation_gets_half_weight() {
         let neurons = vec![
             sns_neuron(1, 1_000, false, false),

@@ -1,0 +1,74 @@
+# Local-only evidence template for tests/e2e_real_canisters.
+# Copy to an ignored local evidence file after running pinned real-framework tests.
+
+network = "local-pocketic"
+source = "tests/e2e_real_canisters"
+classification = "real-framework-pocketic"
+test_command = "IO_REAL_SNS_WASM_DIR=/path/to/pinned/wasms IO_REAL_SNS_WASM_MANIFEST=tests/e2e_real_canisters/wasms.local.toml POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server cargo test -p e2e-real-canisters real_sns_ledger_index_smoke -- --ignored --nocapture"
+pocket_ic_version = "14.0.0"
+all_tests_real_framework = false
+mock_canisters_used = false
+
+[[artifacts]]
+name = "sns_ledger.wasm"
+upstream_source = "TODO"
+upstream_version = "TODO"
+license = "TODO"
+sha256 = "TODO"
+
+[[artifacts]]
+name = "sns_index.wasm"
+upstream_source = "TODO"
+upstream_version = "TODO"
+license = "TODO"
+sha256 = "TODO"
+
+[canisters]
+sns_ledger = "TODO"
+sns_index = "TODO"
+sns_governance = "blocked"
+sns_root = "blocked"
+icp_ledger = "blocked"
+icp_index = "blocked"
+nns_governance = "blocked"
+
+[module_hashes]
+sns_ledger = "TODO"
+sns_index = "TODO"
+sns_governance = "blocked"
+sns_root = "blocked"
+
+[ledger_observations]
+token_symbol = "IO"
+token_decimals = 8
+observed_fee_e8s = 10000
+observed_total_supply_e8s = 0
+protocol_reserve_balance_e8s = 0
+governance_non_redeemable_balance_e8s = 0
+user_initial_balance_e8s = 0
+reserve_transfer_amount_e8s = 0
+reserve_transfer_block = "TODO"
+bad_fee_error_observed = false
+insufficient_funds_error_observed = false
+duplicate_transfer_observed = false
+duplicate_block_verified = false
+constant_total_supply_observed = false
+
+[index_observations]
+reserve_account_history_observed = false
+user_account_history_observed = false
+transfer_amount_fee_memo_created_at_time_observed = false
+index_catchup_after_ticks_observed = false
+archive_required_observed = false
+
+[governance_observations]
+normal_staking_observed = false
+neuron_ids = []
+stakes_e8s = []
+dissolve_states = []
+blocked_reason = "Pinned governance/root artifacts and init driver not yet supplied."
+
+[redemption_observations]
+io_return_block = "blocked"
+icp_payout_block = "blocked"
+blocked_reason = "Full IO E2E requires real ICP/SNS/NNS framework stack and stream-manager real-client integration."
