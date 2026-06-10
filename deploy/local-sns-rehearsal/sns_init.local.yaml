@@ -1,0 +1,92 @@
+# IO local official-SNS rehearsal config.
+# Local-only. Not final tokenomics. Not a mainnet SNS proposal.
+# Used only to create a real local SNS ledger stack for integration testing.
+
+name: "IO Local Rehearsal"
+description: "Local-only IO SNS rehearsal for proving real SNS ledger/index behavior."
+url: "http://127.0.0.1:4943"
+logo: "TODO_LOCAL_REHEARSAL_LOGO"
+
+fallback_controller_principals:
+  - "TODO_LOCAL_FALLBACK_CONTROLLER_PRINCIPAL"
+
+dapp_canisters:
+  - "TODO_LOCAL_IO_STREAM_MANAGER_CANISTER"
+  - "TODO_LOCAL_IO_NNS_NEURON_MANAGER_CANISTER"
+  - "TODO_LOCAL_IO_HISTORIAN_CANISTER"
+  - "TODO_LOCAL_FRONTEND_CANISTER"
+
+Token:
+  name: "IO Local Rehearsal"
+  symbol: "IO"
+  transaction_fee: "0.0001 tokens"
+  logo: "TODO_LOCAL_REHEARSAL_TOKEN_LOGO"
+
+Proposals:
+  rejection_fee: "100 tokens"
+  initial_voting_period: "1 days"
+  maximum_wait_for_quiet_deadline_extension: "1 days"
+
+Neurons:
+  minimum_creation_stake: "1 tokens"
+
+Voting:
+  minimum_dissolve_delay: "1 months"
+  MaximumVotingPowerBonuses:
+    DissolveDelay:
+      duration: "8 years"
+      bonus: "100%"
+    Age:
+      duration: "0 seconds"
+      bonus: "0%"
+  RewardRate:
+    initial: "0%"
+    final: "0%"
+    transition_duration: "0 seconds"
+
+Distribution:
+  Neurons:
+    - principal: "TODO_LOCAL_DEVELOPER_NEURON_PRINCIPAL"
+      stake: "100_000 tokens"
+      memo: 0
+      dissolve_delay: "6 months"
+      vesting_period: "0 seconds"
+    - principal: "TODO_LOCAL_PROTOCOL_RESERVE_PRINCIPAL"
+      stake: "100_000 tokens"
+      memo: 1
+      dissolve_delay: "0 seconds"
+      vesting_period: "0 seconds"
+  InitialBalances:
+    treasury: "100_000 tokens"
+    swap: "100_000 tokens"
+    protocol_reserve: "600_000 tokens"
+  total: "1_000_000 tokens"
+
+Swap:
+  minimum_participants: 1
+  minimum_direct_participation_icp: "1 tokens"
+  maximum_direct_participation_icp: "10 tokens"
+  minimum_participant_icp: "1 tokens"
+  maximum_participant_icp: "10 tokens"
+  duration: "1 days"
+  neurons_fund_participation: false
+  VestingSchedule:
+    events: 1
+    interval: "1 months"
+  confirmation_text: "Local-only IO SNS rehearsal."
+  restricted_countries: []
+
+archive_options:
+  trigger_threshold: 2_000
+  num_blocks_to_archive: 1_000
+  node_max_memory_size_bytes: null
+  max_message_size_bytes: null
+  controller_id: "TODO_LOCAL_ARCHIVE_CONTROLLER_PRINCIPAL"
+
+io_rehearsal_notes:
+  not_final_tokenomics: true
+  not_mainnet_sns_proposal: true
+  canonical_ledger_model: "SNS-created ledger"
+  issuance_model: "protocol reserve transfer"
+  redemption_model: "user transfer back to protocol reserve"
+  io_test_ledger_role: "non-canonical staging only"

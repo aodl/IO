@@ -41,7 +41,7 @@ The local tests cover:
 
 We currently run SNS-shaped mock/PocketIC tests. We do not currently run the official SNS launch locally in required CI.
 
-Official `sns-testing` is optional and heavier. The official SNS launch path uses `dfx sns`; this is not part of required IO workflows. SNS testflight is a future manual/mainnet rehearsal.
+Official SNS testing is optional and heavier. The current official ICP/DFINITY SNS testing documentation is the source of truth; the historical standalone `dfinity/sns-testing` repository is deprecated. The official SNS launch path may require `dfx sns`; this is optional/manual and local-only for the local rehearsal layer, not part of required IO workflows. SNS testflight is a future manual/mainnet rehearsal.
 
 Production SNS root/governance wiring remains future work. The harness does not submit live proposals, does not invoke SNS-W, does not run decentralization swap, does not call NNS/SNS mainnet canisters, and does not use `dfx` in required workflows.
 

@@ -1078,8 +1078,11 @@ fn check_sns_official_testing_at(root: &Path) -> Result<(), String> {
         &[
             "We currently run SNS-shaped mock/PocketIC tests.",
             "We do not currently run the official SNS launch locally in required CI.",
-            "Official `sns-testing` is optional and heavier.",
-            "The official SNS launch path uses `dfx sns`; this is not part of required IO workflows.",
+            "Official SNS testing is optional and heavier.",
+            "current official ICP/DFINITY SNS testing documentation is the source of truth",
+            "historical standalone `dfinity/sns-testing` repository is deprecated",
+            "The official SNS launch path may require `dfx sns`",
+            "not part of required IO workflows",
             "SNS testflight is a future manual/mainnet rehearsal.",
             "IO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical.",
             "The existing canister that owns IO NNS neuron 6345890886899317159 is not touched by these tests.",
@@ -1173,6 +1176,206 @@ fn check_sns_launch_readiness_at(root: &Path, strict: bool) -> Result<usize, Str
         ));
     }
     Ok(incomplete)
+}
+
+fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
+    let readme = require_file(root, "deploy/local-sns-rehearsal/README.md")?;
+    require_present(
+        "deploy/local-sns-rehearsal/README.md",
+        &readme,
+        &[
+            "local-only",
+            "real SNS-created IO ledger/index/governance/root stack",
+            "not final tokenomics",
+            "not a mainnet SNS proposal",
+            "not required CI",
+            "Do not use `--network ic`",
+            "protocol reserve",
+            "reserve-to-user transfer",
+            "user-to-reserve transfer",
+            "validate_local_sns_rehearsal",
+            "validate_local_sns_ledger",
+        ],
+    )?;
+
+    let sns_init = require_file(root, "deploy/local-sns-rehearsal/sns_init.local.yaml")?;
+    require_present(
+        "deploy/local-sns-rehearsal/sns_init.local.yaml",
+        &sns_init,
+        &[
+            "Local-only",
+            "Not final tokenomics",
+            "Not a mainnet SNS proposal",
+            "fallback_controller_principals",
+            "dapp_canisters",
+            "Token:",
+            "symbol: \"IO\"",
+            "transaction_fee",
+            "Distribution:",
+            "protocol_reserve",
+            "Swap:",
+            "archive_options",
+            "issuance_model: \"protocol reserve transfer\"",
+            "redemption_model: \"user transfer back to protocol reserve\"",
+            "io_test_ledger_role: \"non-canonical staging only\"",
+            "TODO_LOCAL",
+        ],
+    )?;
+    require_absent(
+        "deploy/local-sns-rehearsal/sns_init.local.yaml",
+        &sns_init,
+        &[
+            "--network ic",
+            PHASE1_FRONTEND_CANISTER_ID,
+            PHASE1_HISTORIAN_CANISTER_ID,
+            PROTECTED_IO_NEURON_OWNER_CANISTER,
+        ],
+    )?;
+
+    let evidence_template = require_file(
+        root,
+        "deploy/local-sns-rehearsal/canister-ids.local.example.toml",
+    )?;
+    require_present(
+        "deploy/local-sns-rehearsal/canister-ids.local.example.toml",
+        &evidence_template,
+        &[
+            "network = \"local\"",
+            "source = \"official-local-sns-rehearsal\"",
+            "[sns_canisters]",
+            "root",
+            "governance",
+            "ledger",
+            "index",
+            "swap",
+            "archive",
+            "[ledger_evidence]",
+            "transaction_fee_e8s",
+            "total_supply_e8s",
+            "protocol_reserve_balance_e8s",
+            "bad_fee_error_observed = true",
+            "insufficient_funds_error_observed = true",
+            "duplicate_transfer_observed = true",
+            "duplicate_block_verified = true",
+            "index_account_history_observed = true",
+            "[issuance_model]",
+            "resolved_as = \"protocol_reserve_transfer\"",
+            "minting_assumed = false",
+            "total_supply_constant_across_issuance_redemption = true",
+        ],
+    )?;
+    require_absent(
+        "deploy/local-sns-rehearsal/canister-ids.local.example.toml",
+        &evidence_template,
+        &["--network ic"],
+    )?;
+
+    for path in [
+        "deploy/local-sns-rehearsal/scripts/check-prereqs.sh",
+        "deploy/local-sns-rehearsal/scripts/render-local-wiring.sh",
+    ] {
+        let text = require_file(root, path)?;
+        require_present(path, &text, &["optional", "local"])?;
+        require_absent(path, &text, &["--network ic", "dfx start"])?;
+    }
+
+    for path in [
+        "docs/operations/sns-testing-layers.md",
+        "docs/operations/official-local-sns-rehearsal.md",
+    ] {
+        let text = require_file(root, path)?;
+        require_present(
+            path,
+            &text,
+            &[
+                "real SNS-created",
+                "SNS-W",
+                "IO_TEST",
+                "non-canonical",
+                "protocol reserve",
+                "not launched on mainnet",
+            ],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn check_local_sns_ledger_at(root: &Path) -> Result<bool, String> {
+    let path = "deploy/local-sns-rehearsal/canister-ids.local.toml";
+    let full_path = root.join(path);
+    if !full_path.exists() {
+        return Ok(false);
+    }
+    let text = require_file(root, path)?;
+    require_present(
+        path,
+        &text,
+        &[
+            "network = \"local\"",
+            "source = \"official-local-sns-rehearsal\"",
+            "dfx_sns = \"manual-local-only\"",
+            "io_protocol_live = false",
+            "sns_io_ledger_mainnet_launched = false",
+            "[sns_canisters]",
+            "[ledger_evidence]",
+            "token_symbol = \"IO\"",
+            "bad_fee_error_observed = true",
+            "insufficient_funds_error_observed = true",
+            "duplicate_transfer_observed = true",
+            "duplicate_block_verified = true",
+            "index_account_history_observed = true",
+            "[governance_evidence]",
+            "governance_available = true",
+            "root_available = true",
+            "swap_available = true",
+            "dapp_controller_state_checked = true",
+            "[issuance_model]",
+            "resolved_as = \"protocol_reserve_transfer\"",
+            "minting_assumed = false",
+            "treasury_transfer_assumed = false",
+            "total_supply_constant_across_issuance_redemption = true",
+        ],
+    )?;
+    require_absent(
+        path,
+        &text,
+        &[
+            "TODO_",
+            "--network ic",
+            PHASE1_FRONTEND_CANISTER_ID,
+            PHASE1_HISTORIAN_CANISTER_ID,
+            "ryjl3-tyaaa-aaaaa-aaaba-cai",
+            "rrkah-fqaaa-aaaaa-aaaaq-cai",
+            "qaa6y-5yaaa-aaaaa-aaafa-cai",
+            "r7inp-6aaaa-aaaaa-aaabq-cai",
+        ],
+    )?;
+
+    for (section, key) in [
+        ("sns_canisters", "root"),
+        ("sns_canisters", "governance"),
+        ("sns_canisters", "ledger"),
+        ("sns_canisters", "index"),
+        ("sns_canisters", "swap"),
+        ("io_dapp_canisters", "io_stream_manager"),
+        ("io_dapp_canisters", "io_nns_neuron_manager"),
+        ("ledger_evidence", "protocol_reserve_account_owner"),
+    ] {
+        let value = parse_toml_string(&text, section, key)?;
+        Principal::from_text(&value)
+            .map_err(|err| format!("{path}: {section}.{key} is not a principal: {err}"))?;
+    }
+
+    if !parse_toml_bool(&text, "mode", "io_protocol_live")?
+        && !parse_toml_bool(&text, "mode", "sns_io_ledger_mainnet_launched")?
+    {
+        Ok(true)
+    } else {
+        Err(format!(
+            "{path}: local evidence must not claim live IO protocol or mainnet SNS ledger"
+        ))
+    }
 }
 
 fn check_sns_harness_at(root: &Path) -> Result<(), String> {
@@ -1952,7 +2155,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -2148,6 +2351,25 @@ fn main() -> ExitCode {
                 }
             }
         }
+        "validate_local_sns_rehearsal" => match check_local_sns_rehearsal_at(&root) {
+            Ok(()) => eprintln!("✓ validate_local_sns_rehearsal"),
+            Err(err) => {
+                eprintln!("✗ validate_local_sns_rehearsal: {err}");
+                ok = false;
+            }
+        },
+        "validate_local_sns_ledger" => match check_local_sns_ledger_at(&root) {
+            Ok(true) => eprintln!("✓ validate_local_sns_ledger"),
+            Ok(false) => {
+                eprintln!(
+                    "skipping validate_local_sns_ledger: deploy/local-sns-rehearsal/canister-ids.local.toml is absent"
+                );
+            }
+            Err(err) => {
+                eprintln!("✗ validate_local_sns_ledger: {err}");
+                ok = false;
+            }
+        },
         "historian_tests" => {
             ok &= run_subcommand("did_surface");
             ok &= run(
@@ -2291,6 +2513,7 @@ fn main() -> ExitCode {
                 "validate_production_wiring",
                 "validate_historian_freshness",
                 "validate_stable_storage",
+                "validate_local_sns_rehearsal",
                 "historian_tests",
                 "frontend_required",
                 "sns_harness_check",
@@ -2517,6 +2740,7 @@ fn main() -> ExitCode {
                 "validate_production_wiring",
                 "validate_historian_freshness",
                 "validate_stable_storage",
+                "validate_local_sns_rehearsal",
                 "security_scan_required",
                 "test_unit",
                 "frontend_required",
@@ -2664,7 +2888,7 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "docs/operations/official-sns-testing.md",
-            "We currently run SNS-shaped mock/PocketIC tests.\nWe do not currently run the official SNS launch locally in required CI.\nOfficial `sns-testing` is optional and heavier.\nThe official SNS launch path uses `dfx sns`; this is not part of required IO workflows.\nSNS testflight is a future manual/mainnet rehearsal.\nIO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical.\nThe existing canister that owns IO NNS neuron 6345890886899317159 is not touched by these tests.\nLayer 1\nLayer 2\nLayer 3\nLayer 4\n",
+            "We currently run SNS-shaped mock/PocketIC tests.\nWe do not currently run the official SNS launch locally in required CI.\nOfficial SNS testing is optional and heavier.\nThe current official ICP/DFINITY SNS testing documentation is the source of truth.\nThe historical standalone `dfinity/sns-testing` repository is deprecated.\nThe official SNS launch path may require `dfx sns`; this is not part of required IO workflows.\nSNS testflight is a future manual/mainnet rehearsal.\nIO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical.\nThe existing canister that owns IO NNS neuron 6345890886899317159 is not touched by these tests.\nLayer 1\nLayer 2\nLayer 3\nLayer 4\n",
         );
         write(
             root,
@@ -2705,6 +2929,103 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
             root,
             "tools/scripts/required-check",
             "#!/usr/bin/env bash\ncargo test\n",
+        );
+    }
+
+    fn write_local_sns_rehearsal_fixture(root: &Path) {
+        write(
+            root,
+            "deploy/local-sns-rehearsal/README.md",
+            "local-only real SNS-created IO ledger/index/governance/root stack not final tokenomics not a mainnet SNS proposal not required CI Do not use `--network ic` protocol reserve reserve-to-user transfer user-to-reserve transfer validate_local_sns_rehearsal validate_local_sns_ledger\n",
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/sns_init.local.yaml",
+            "Local-only\nNot final tokenomics\nNot a mainnet SNS proposal\nfallback_controller_principals\ndapp_canisters\nToken:\nsymbol: \"IO\"\ntransaction_fee\nDistribution:\nprotocol_reserve\nSwap:\narchive_options\nissuance_model: \"protocol reserve transfer\"\nredemption_model: \"user transfer back to protocol reserve\"\nio_test_ledger_role: \"non-canonical staging only\"\nTODO_LOCAL\n",
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/canister-ids.local.example.toml",
+            "network = \"local\"\nsource = \"official-local-sns-rehearsal\"\n[sns_canisters]\nroot = \"TODO\"\ngovernance = \"TODO\"\nledger = \"TODO\"\nindex = \"TODO\"\nswap = \"TODO\"\narchive = \"TODO\"\n[ledger_evidence]\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\nprotocol_reserve_balance_e8s = 1\nbad_fee_error_observed = true\ninsufficient_funds_error_observed = true\nduplicate_transfer_observed = true\nduplicate_block_verified = true\nindex_account_history_observed = true\n[issuance_model]\nresolved_as = \"protocol_reserve_transfer\"\nminting_assumed = false\ntotal_supply_constant_across_issuance_redemption = true\n",
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/scripts/check-prereqs.sh",
+            "#!/usr/bin/env bash\n# optional local\ndfx --version\n",
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/scripts/render-local-wiring.sh",
+            "#!/usr/bin/env bash\n# optional local\ncargo run -p xtask -- validate_local_sns_ledger\n",
+        );
+        write(
+            root,
+            "docs/operations/sns-testing-layers.md",
+            "real SNS-created SNS-W IO_TEST non-canonical protocol reserve not launched on mainnet\n",
+        );
+        write(
+            root,
+            "docs/operations/official-local-sns-rehearsal.md",
+            "real SNS-created SNS-W IO_TEST non-canonical protocol reserve not launched on mainnet\n",
+        );
+    }
+
+    fn write_completed_local_sns_evidence(root: &Path) {
+        write(
+            root,
+            "deploy/local-sns-rehearsal/canister-ids.local.toml",
+            r#"[mode]
+network = "local"
+source = "official-local-sns-rehearsal"
+dfx_sns = "manual-local-only"
+io_protocol_live = false
+sns_io_ledger_mainnet_launched = false
+
+[sns_canisters]
+root = "bkyz2-fmaaa-aaaaa-qaaaq-cai"
+governance = "bd3sg-teaaa-aaaaa-qaaba-cai"
+ledger = "br5f7-7uaaa-aaaaa-qaaca-cai"
+index = "be2us-64aaa-aaaaa-qaabq-cai"
+swap = "bw4dl-smaaa-aaaaa-qaacq-cai"
+archive = "by6od-j4aaa-aaaaa-qaadq-cai"
+
+[io_dapp_canisters]
+io_stream_manager = "avqkn-guaaa-aaaaa-qaaea-cai"
+io_nns_neuron_manager = "aax3a-h4aaa-aaaaa-qaahq-cai"
+io_historian = "ajuq4-ruaaa-aaaaa-qaaga-cai"
+frontend = "aanaa-xaaaa-aaaaa-qaahq-cai"
+
+[ledger_evidence]
+token_symbol = "IO"
+transaction_fee_e8s = 10000
+total_supply_e8s = 100000000000000
+protocol_reserve_account_owner = "a3shf-5eaaa-aaaaa-qaafa-cai"
+protocol_reserve_subaccount_hex = "none"
+protocol_reserve_balance_e8s = 60000000000000
+reserve_transfer_block_index = "1"
+redemption_return_block_index = "2"
+bad_fee_error_observed = true
+insufficient_funds_error_observed = true
+duplicate_transfer_observed = true
+duplicate_block_verified = true
+index_account_history_observed = true
+index_history_order = "descending"
+index_lag_or_archive_required_observed = "not-observed"
+
+[governance_evidence]
+governance_available = true
+root_available = true
+swap_available = true
+dapp_controller_state_checked = true
+governance_upgrade_proposal_tested = false
+governance_upgrade_gap = "local tooling did not support upgrade proposal in this run"
+
+[issuance_model]
+resolved_as = "protocol_reserve_transfer"
+minting_assumed = false
+treasury_transfer_assumed = false
+total_supply_constant_across_issuance_redemption = true
+"#,
         );
     }
 
@@ -3196,6 +3517,47 @@ No value-moving IO canister is deployed to production.
         assert!(check_sns_launch_readiness_at(&root, true)
             .unwrap_err()
             .contains("incomplete item"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_sns_rehearsal_check_accepts_fixture() {
+        let root = temp_root("local-sns-rehearsal-good");
+        write_local_sns_rehearsal_fixture(&root);
+        check_local_sns_rehearsal_at(&root).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_sns_ledger_check_skips_without_completed_evidence() {
+        let root = temp_root("local-sns-ledger-skip");
+        write_local_sns_rehearsal_fixture(&root);
+        assert!(!check_local_sns_ledger_at(&root).unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_sns_ledger_check_accepts_completed_evidence() {
+        let root = temp_root("local-sns-ledger-good");
+        write_local_sns_rehearsal_fixture(&root);
+        write_completed_local_sns_evidence(&root);
+        assert!(check_local_sns_ledger_at(&root).unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_placeholders() {
+        let root = temp_root("local-sns-ledger-placeholder");
+        write_local_sns_rehearsal_fixture(&root);
+        write_completed_local_sns_evidence(&root);
+        let path = root.join("deploy/local-sns-rehearsal/canister-ids.local.toml");
+        let text = fs::read_to_string(&path)
+            .unwrap()
+            .replace("br5f7-7uaaa-aaaaa-qaaca-cai", "TODO_LOCAL_SNS_LEDGER");
+        fs::write(&path, text).unwrap();
+        assert!(check_local_sns_ledger_at(&root)
+            .unwrap_err()
+            .contains("TODO_"));
         let _ = fs::remove_dir_all(root);
     }
 

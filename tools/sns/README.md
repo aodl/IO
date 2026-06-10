@@ -14,7 +14,9 @@ This checks canister placement and constructor wiring against NNS, SNS, and appl
 
 Layer 3: Official local SNS launch rehearsal.
 
-This is optional and heavier. It uses `dfinity/sns-testing` and `dfx sns` to rehearse the official launch mechanics locally. It is outside required CI and requires developer-local tooling.
+This is optional and heavier. It follows the current official ICP/DFINITY SNS testing documentation as the source of truth and may use `dfx sns` to rehearse the official launch mechanics locally. The historical standalone `dfinity/sns-testing` repository is deprecated; if the official docs reference successor tooling or a new repository/location, use that current official location. This layer is outside required CI and requires developer-local tooling.
+
+The concrete IO package for this layer lives under `deploy/local-sns-rehearsal/`. It is local-only and provides scaffolding and evidence validation for creating a real SNS-created IO ledger/index/governance/root stack without claiming mainnet readiness. Until `deploy/local-sns-rehearsal/canister-ids.local.toml` is produced from a completed local rehearsal, no local SNS canister IDs are recorded and no real SNS ledger/index/governance/root behavior has been observed.
 
 Layer 4: Mainnet SNS testflight.
 
@@ -23,7 +25,7 @@ This is a future manual/mainnet rehearsal using a mock SNS. It tests governance 
 ## Files
 
 - `sns_init.io.template.yaml`: official-shape IO SNS candidate template with unresolved production decisions marked as placeholders.
-- `sns_init.io.local.yaml`: local-only candidate for `sns-testing` rehearsal; all local canister IDs and controllers are placeholders.
+- `sns_init.io.local.yaml`: local-only candidate for official local SNS rehearsal; all local canister IDs and controllers are placeholders.
 - `sns_init.io.testflight.template.yaml`: mainnet testflight planning template; it is not executable by CI.
 - `launch-readiness.toml`: machine-checkable readiness checklist.
 - `testflight/`: proposal and handoff planning package for the future manual testflight.
@@ -40,10 +42,12 @@ Validate the package without `dfx`:
 cargo run -p xtask -- sns_config_validate
 cargo run -p xtask -- sns_official_testing_check
 cargo run -p xtask -- sns_launch_readiness_check
+cargo run -p xtask -- validate_local_sns_rehearsal
 ```
 
 Optional official validation is opt-in and skips by default:
 
 ```bash
 IO_RUN_DFX_SNS_VALIDATE=1 cargo run -p xtask -- sns_config_validate_official
+cargo run -p xtask -- validate_local_sns_ledger
 ```

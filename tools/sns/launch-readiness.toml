@@ -5,10 +5,6 @@
 status = "incomplete"
 evidence = "TODO: confirm final source-open package."
 
-[reproducible_builds]
-status = "incomplete"
-evidence = "release-artifacts/manifest.json exists; final reproducible-build package is not complete."
-
 [security_review]
 status = "incomplete"
 evidence = "TODO: external audit/security review."
@@ -19,11 +15,15 @@ evidence = "tools/sns/sns_init.io.template.yaml exists; official dfx sns validat
 
 [local_sns_testing_rehearsal]
 status = "incomplete"
-evidence = "TODO: complete optional dfinity/sns-testing rehearsal."
+evidence = "deploy/local-sns-rehearsal/ provides official local SNS rehearsal scaffolding and no-network evidence validation. Follow current official ICP/DFINITY SNS testing docs; the historical standalone dfinity/sns-testing repo is deprecated. TODO: complete optional local rehearsal and record canister-ids.local.toml evidence."
 
 [mainnet_testflight]
 status = "incomplete"
 evidence = "TODO: complete manual mainnet SNS testflight."
+
+[reproducible_builds]
+status = "incomplete"
+evidence = "release-artifacts/manifest.json exists; final reproducible-build package is not complete. This remains important after official local SNS ledger rehearsal."
 
 [app_canisters_stable_on_mainnet]
 status = "incomplete"

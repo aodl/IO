@@ -1,0 +1,58 @@
+# Copy to canister-ids.local.toml after a completed local SNS rehearsal.
+# Local-only evidence. Do not use as production config.
+
+[mode]
+network = "local"
+source = "official-local-sns-rehearsal"
+dfx_sns = "manual-local-only"
+io_protocol_live = false
+sns_io_ledger_mainnet_launched = false
+
+[sns_canisters]
+root = "TODO_LOCAL_SNS_ROOT_CANISTER"
+governance = "TODO_LOCAL_SNS_GOVERNANCE_CANISTER"
+ledger = "TODO_LOCAL_SNS_LEDGER_CANISTER"
+index = "TODO_LOCAL_SNS_INDEX_CANISTER"
+swap = "TODO_LOCAL_SNS_SWAP_CANISTER"
+archive = "TODO_LOCAL_SNS_ARCHIVE_CANISTER"
+
+[io_dapp_canisters]
+io_stream_manager = "TODO_LOCAL_IO_STREAM_MANAGER_CANISTER"
+io_nns_neuron_manager = "TODO_LOCAL_IO_NNS_NEURON_MANAGER_CANISTER"
+io_historian = "TODO_LOCAL_IO_HISTORIAN_CANISTER"
+frontend = "TODO_LOCAL_FRONTEND_CANISTER"
+
+[ledger_evidence]
+token_symbol = "IO"
+transaction_fee_e8s = 10_000
+total_supply_e8s = 100_000_000_000_000
+protocol_reserve_account_owner = "TODO_LOCAL_PROTOCOL_RESERVE_OWNER_PRINCIPAL"
+protocol_reserve_subaccount_hex = "TODO_LOCAL_PROTOCOL_RESERVE_SUBACCOUNT_HEX_OR_NONE"
+protocol_reserve_balance_e8s = 60_000_000_000_000
+reserve_transfer_block_index = "TODO_LOCAL_RESERVE_TO_USER_BLOCK_INDEX"
+redemption_return_block_index = "TODO_LOCAL_USER_TO_RESERVE_BLOCK_INDEX"
+bad_fee_error_observed = true
+insufficient_funds_error_observed = true
+duplicate_transfer_observed = true
+duplicate_block_verified = true
+index_account_history_observed = true
+index_history_order = "observed-local-order"
+index_lag_or_archive_required_observed = "not-observed"
+
+[governance_evidence]
+governance_available = true
+root_available = true
+swap_available = true
+dapp_controller_state_checked = true
+governance_upgrade_proposal_tested = false
+governance_upgrade_gap = "TODO_LOCAL_REASON_IF_NOT_TESTED"
+
+[issuance_model]
+resolved_as = "protocol_reserve_transfer"
+minting_assumed = false
+treasury_transfer_assumed = false
+total_supply_constant_across_issuance_redemption = true
+
+[protected]
+must_not_touch_neuron_owner_canister = "oae4c-3iaaa-aaaar-qb5qq-cai"
+must_not_touch_io_nns_neuron_id = "6345890886899317159"

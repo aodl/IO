@@ -20,9 +20,25 @@ This creates NNS, SNS, and application subnets where supported by the pinned Poc
 
 Layer 3: Official SNS Local Launch Rehearsal.
 
-Official `sns-testing` is optional and heavier. The official SNS launch path uses `dfx sns`; this is not part of required IO workflows. Optional local scripts live under `tools/sns-testing/` and must remain outside required CI.
+Official SNS testing is optional and heavier. Follow the current official ICP/DFINITY SNS testing documentation as the source of truth. The historical standalone `dfinity/sns-testing` repository is deprecated; if the official docs reference successor tooling or a new repository/location, use that current official location.
 
-Any `dfx`-based SNS testing for IO is optional, local-only, and not part of `test_ci` or `verify_release`.
+The official SNS launch path may require `dfx sns`; any `dfx`-based SNS testing for IO is optional, local-only for this layer, and not part of `test_ci` or `verify_release`. Required repository workflows must not depend on `dfx`.
+
+The official local SNS rehearsal package lives under `deploy/local-sns-rehearsal/`. It provides a local `sns_init` candidate, local evidence template, no-network validators, and manual runbook for creating a real SNS-created local ledger/index/governance/root stack and recording local evidence in `canister-ids.local.toml`. The no-network package validator is:
+
+```bash
+cargo run -p xtask -- validate_local_sns_rehearsal
+```
+
+The optional completed-ledger evidence validator is:
+
+```bash
+cargo run -p xtask -- validate_local_sns_ledger
+```
+
+It skips clearly until a local rehearsal operator creates `deploy/local-sns-rehearsal/canister-ids.local.toml`.
+
+Until that evidence file is produced from a completed local rehearsal, no local SNS canister IDs are recorded and no real SNS ledger/index/governance/root behavior has been observed.
 
 Layer 4: SNS testflight.
 
@@ -70,4 +86,5 @@ Run official-readiness package checks without `dfx`:
 cargo run -p xtask -- sns_config_validate
 cargo run -p xtask -- sns_official_testing_check
 cargo run -p xtask -- sns_launch_readiness_check
+cargo run -p xtask -- validate_local_sns_rehearsal
 ```
