@@ -9,6 +9,7 @@ pub mod brief_blockers;
 pub mod exact_economics;
 pub mod framework;
 pub mod icrc;
+pub mod io_protocol_real_stack;
 pub mod nns_setup;
 pub mod pocketic_env;
 pub mod sns_governance_setup;

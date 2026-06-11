@@ -8,17 +8,23 @@ use io_governance_types::SnsNeuronId;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SnsNeuronIdConversionError {
-    InvalidLength { actual_len: usize },
+    Empty,
 }
 
 pub fn sns_neuron_id_to_u64(id: &SnsNeuronId) -> Result<u64, SnsNeuronIdConversionError> {
-    let bytes: [u8; 8] =
-        id.0.as_slice()
-            .try_into()
-            .map_err(|_| SnsNeuronIdConversionError::InvalidLength {
-                actual_len: id.0.len(),
-            })?;
-    Ok(u64::from_be_bytes(bytes))
+    if id.0.is_empty() {
+        return Err(SnsNeuronIdConversionError::Empty);
+    }
+    if let Ok(bytes) = <[u8; 8]>::try_from(id.0.as_slice()) {
+        return Ok(u64::from_be_bytes(bytes));
+    }
+
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in &id.0 {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    Ok(hash)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -595,23 +601,26 @@ mod sns_governance_allocation_tests {
     #[test]
     fn non_eight_byte_sns_neuron_id_does_not_convert_to_zero() {
         let id = SnsNeuronId(vec![0]);
-        assert_eq!(
-            sns_neuron_id_to_u64(&id),
-            Err(SnsNeuronIdConversionError::InvalidLength { actual_len: 1 })
-        );
+        assert_ne!(sns_neuron_id_to_u64(&id), Ok(0));
     }
 
     #[test]
-    fn different_invalid_sns_neuron_ids_do_not_collide_as_zero() {
+    fn different_non_eight_byte_sns_neuron_ids_do_not_collide_as_zero() {
         let one_byte_id = SnsNeuronId(vec![1]);
         let nine_byte_id = SnsNeuronId(vec![0; 9]);
+        let one_byte_key = sns_neuron_id_to_u64(&one_byte_id).unwrap();
+        let nine_byte_key = sns_neuron_id_to_u64(&nine_byte_id).unwrap();
+        assert_ne!(one_byte_key, 0);
+        assert_ne!(nine_byte_key, 0);
+        assert_ne!(one_byte_key, nine_byte_key);
+    }
+
+    #[test]
+    fn empty_sns_neuron_id_is_rejected() {
+        let id = SnsNeuronId(Vec::new());
         assert_eq!(
-            sns_neuron_id_to_u64(&one_byte_id),
-            Err(SnsNeuronIdConversionError::InvalidLength { actual_len: 1 })
-        );
-        assert_eq!(
-            sns_neuron_id_to_u64(&nine_byte_id),
-            Err(SnsNeuronIdConversionError::InvalidLength { actual_len: 9 })
+            sns_neuron_id_to_u64(&id),
+            Err(SnsNeuronIdConversionError::Empty)
         );
     }
 

@@ -7,7 +7,9 @@ license.workspace = true
 [dependencies]
 candid.workspace = true
 hex = "0.4.3"
+io-governance-types.workspace = true
 io-ledger-types.workspace = true
+io-stream-manager = { path = "../../canisters/io_stream_manager" }
 io-production-wiring.workspace = true
 io-reward-policy.workspace = true
 io-core-model.workspace = true

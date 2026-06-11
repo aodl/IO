@@ -4,7 +4,7 @@
 network = "local-pocketic"
 source = "tests/e2e_real_canisters"
 classification = "real-framework-pocketic"
-test_command = "IO_REAL_SNS_WASM_DIR=/path/to/pinned/wasms IO_REAL_SNS_WASM_MANIFEST=tests/e2e_real_canisters/wasms.local.toml POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server cargo test -p e2e-real-canisters real_sns_ledger_index_smoke -- --ignored --nocapture"
+test_command = "IO_REAL_SNS_WASM_DIR=/path/to/pinned/wasms IO_REAL_SNS_WASM_MANIFEST=tests/e2e_real_canisters/wasms.local.toml POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server tools/scripts/run-real-framework-e2e"
 pocket_ic_version = "14.0.0"
 all_tests_real_framework = false
 mock_canisters_used = false
@@ -23,20 +23,57 @@ upstream_version = "TODO"
 license = "TODO"
 sha256 = "TODO"
 
+[[artifacts]]
+name = "sns_governance.wasm.gz"
+upstream_source = "TODO"
+upstream_version = "TODO"
+license = "TODO"
+compressed_sha256 = "TODO"
+decompressed_sha256 = "TODO"
+
+[[artifacts]]
+name = "sns_root.wasm.gz"
+upstream_source = "TODO"
+upstream_version = "TODO"
+license = "TODO"
+compressed_sha256 = "TODO"
+decompressed_sha256 = "TODO"
+
+[[artifacts]]
+name = "sns_swap.wasm.gz"
+upstream_source = "TODO"
+upstream_version = "TODO"
+license = "TODO"
+compressed_sha256 = "TODO"
+decompressed_sha256 = "TODO"
+
+[[artifacts]]
+name = "sns_wasm.wasm.gz"
+upstream_source = "TODO"
+upstream_version = "TODO"
+license = "TODO"
+compressed_sha256 = "TODO"
+decompressed_sha256 = "TODO"
+
 [canisters]
 sns_ledger = "TODO"
 sns_index = "TODO"
-sns_governance = "blocked"
-sns_root = "blocked"
-icp_ledger = "blocked"
-icp_index = "blocked"
-nns_governance = "blocked"
+sns_governance = "TODO"
+sns_root = "TODO"
+sns_swap = "TODO"
+sns_wasm = "TODO"
+icp_ledger = "TODO"
+icp_index = "TODO"
+nns_governance = "TODO"
+application_dapp = "TODO"
 
 [module_hashes]
 sns_ledger = "TODO"
 sns_index = "TODO"
-sns_governance = "blocked"
-sns_root = "blocked"
+sns_governance = "TODO"
+sns_root = "TODO"
+sns_swap = "TODO"
+sns_wasm = "TODO"
 
 [ledger_observations]
 token_symbol = "IO"
@@ -62,13 +99,88 @@ index_catchup_after_ticks_observed = false
 archive_required_observed = false
 
 [governance_observations]
+finalized_list_neurons_observed = false
+direct_participation_neuron_observed = false
+participant_controller_permissions_observed = false
+multiple_participants_distinct_neurons_observed = false
+duplicate_neuron_ids_observed = false
+limit_constrained_listing_subset_observed = false
 normal_staking_observed = false
+normal_staking_topup_observed = false
+multiple_normal_staking_neurons_observed = false
+minimum_stake_rejection_observed = false
+below_two_week_dissolve_delay_ineligible_observed = false
+two_week_dissolve_delay_observed = false
+no_closed_proposals_full_participation_observed = false
+yes_vote_ballot_observed = false
+yes_vote_duplicate_rejected = false
+no_vote_ballot_observed = false
+non_voter_lower_participation_factor_observed = false
+proposal_rejection_fee_e8s = 0
 neuron_ids = []
 stakes_e8s = []
 dissolve_states = []
-blocked_reason = "Pinned governance/root artifacts and init driver not yet supplied."
+direct_participation_basket_dissolve_delay_seconds = []
+proposal_ids = []
+ballot_observations = []
+post_finalization_staking_funding_source = "zero-delay direct-participation neuron disburse, local-only"
+blocked_reason = "Stream-manager exact backed two-week reward-pool transfer and dissolving-neuron exclusion are covered; broader participation-weighted reward variants remain pending."
+
+[sns_wasm_observations]
+nns_proposal_publication_observed = false
+published_wasm_types = []
+get_wasm_readback_observed = false
+deploy_new_sns_observed = false
+
+[swap_observations]
+opened = false
+committed = false
+finalized = false
+participant_principals = []
+participant_amounts_e8s = []
+ticket_ids = []
+buyer_state_amounts_e8s = []
+direct_participants_observed = false
+
+[root_observations]
+finalized_root_lists_dapp = false
+finalized_root_excludes_non_dapp = false
+application_subnet_dapp = "TODO"
+dapp_controller_after_finalization = "TODO"
+root_mediated_upgrade_observed = false
 
 [redemption_observations]
-io_return_block = "blocked"
-icp_payout_block = "blocked"
-blocked_reason = "Full IO E2E requires real ICP/SNS/NNS framework stack and stream-manager real-client integration."
+io_return_block = "local-finalized-sns-ledger-block-id"
+icp_payout_block = "local-nns-ledger-block-id"
+io_return_fee_e8s = 10_000
+blocked_reason = "Broader current-rate, reward-after-yield, retry, upgrade, and historian redemption paths remain separate proof targets."
+
+[io_real_stack_observations]
+stream_manager_canister = "local-application-subnet-canister-id"
+nns_neuron_manager_canister = "local-application-subnet-canister-id"
+historian_canister = "local-application-subnet-canister-id"
+installed_against_finalized_sns_ids = false
+local_only_install_args_checked = false
+production_fiduciary_install_args_rejected = false
+devmainnet_install_args_rejected = false
+protected_target_install_args_rejected = false
+finalized_governance_active_stake_refresh_observed = false
+finalized_governance_topup_refresh_delta_e8s = 50_000_000
+deposit_issuance_journal_ids = []
+reward_journal_ids = []
+redemption_journal_ids = []
+
+[frontend_observations]
+status_not_live = false
+local_only_evidence_displayed = false
+value_moving_actions_hidden = false
+static_honesty_checks_passed = false
+browser_e2e_passed = false
+
+[safety_observations]
+no_network_ic = true
+no_mainnet_operations = true
+production_fiduciary_ids_touched = false
+protected_canister_touched = false
+protected_neuron_touched = false
+io_live = false

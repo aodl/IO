@@ -271,18 +271,18 @@ mod tests {
     }
 
     #[test]
-    fn participation_summary_snapshot_rejects_non_eight_byte_sns_neuron_id() {
+    fn participation_summary_snapshot_accepts_real_sns_neuron_id() {
         let id = SnsNeuronId(vec![0]);
-        assert_eq!(
-            participation_summary_to_snapshot(&eligibility(id.clone()), &summary(id)),
-            Err(SnsNeuronIdConversionError::InvalidLength { actual_len: 1 })
-        );
+        let snapshot = participation_summary_to_snapshot(&eligibility(id.clone()), &summary(id))
+            .unwrap()
+            .unwrap();
+        assert_ne!(snapshot.neuron_id, 0);
     }
 
     #[test]
-    fn invalid_id_neuron_is_excluded_before_reward_allocation() {
+    fn empty_id_neuron_is_excluded_before_reward_allocation() {
         let valid_id = SnsNeuronId(7u64.to_be_bytes().to_vec());
-        let invalid_id = SnsNeuronId(vec![1, 2, 3]);
+        let invalid_id = SnsNeuronId(Vec::new());
         let inputs = [
             (eligibility(valid_id.clone()), summary(valid_id)),
             (eligibility(invalid_id.clone()), summary(invalid_id)),
@@ -302,10 +302,7 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(
-            conversion_errors,
-            vec![SnsNeuronIdConversionError::InvalidLength { actual_len: 3 }]
-        );
+        assert_eq!(conversion_errors, vec![SnsNeuronIdConversionError::Empty]);
         let out = io_reward_policy::allocate_rewards(100, &snapshots);
         assert_eq!(out.allocations.len(), 1);
         assert_eq!(out.allocations[0].neuron_id, 7);

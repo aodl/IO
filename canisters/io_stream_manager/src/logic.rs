@@ -8,6 +8,7 @@ use io_core_model::{
     PreviewedRedemption, PreviewedStream, ProtocolState, RedemptionOutcome, StreamKind,
     StreamOutcome,
 };
+use io_governance_types::SnsNeuronEligibility;
 use io_reward_policy::{active_staked_io_e8s, allocate_rewards, AllocationOutcome, NeuronSnapshot};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -138,6 +139,17 @@ impl StreamManager {
 
     pub fn refresh_active_staked_io_from_neurons(&mut self, neurons: &[NeuronSnapshot]) {
         self.active_staked_io_e8s = active_staked_io_e8s(neurons);
+    }
+
+    pub fn refresh_active_staked_io_from_sns_eligibility(
+        &mut self,
+        eligibilities: &[SnsNeuronEligibility],
+    ) {
+        self.active_staked_io_e8s = eligibilities
+            .iter()
+            .filter(|eligibility| eligibility.excluded_reason.is_none())
+            .map(|eligibility| eligibility.eligible_stake_e8s)
+            .sum();
     }
 
     pub fn allocate_two_week_maturity_io(

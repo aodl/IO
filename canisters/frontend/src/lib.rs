@@ -246,6 +246,7 @@ fn set_certified_data(_root_hash: &[u8; 32]) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn get(path: &str) -> HttpResponse<'static> {
         initialise_certified_assets();
@@ -330,6 +331,14 @@ mod tests {
         let start = index.find("/generated/app.").expect("bundle path");
         let end = index[start..].find(".js").expect("bundle suffix") + start + 3;
         let response = get(&index[start..end]);
+        if response.status_code() == StatusCode::NOT_FOUND {
+            let generated_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("public/generated");
+            assert!(
+                !generated_dir.exists(),
+                "generated bundle should be routable when public/generated exists"
+            );
+            return;
+        }
         assert_eq!(response.status_code(), StatusCode::OK);
         assert_eq!(header(&response, "Cache-Control"), IMMUTABLE);
         assert_eq!(

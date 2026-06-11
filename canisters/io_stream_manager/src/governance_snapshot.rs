@@ -1,7 +1,7 @@
 use io_governance_types::{
     snapshot_sns_eligibility, summarize_sns_participation, SnsEligibilityPolicy,
-    SnsGovernanceClient, SnsGovernanceError, SnsNeuron, SnsNeuronId, SnsNeuronPageRequest,
-    SnsParticipationPolicy, SnsProposal, SnsProposalPageRequest,
+    SnsGovernanceClient, SnsGovernanceError, SnsNeuron, SnsNeuronEligibility, SnsNeuronId,
+    SnsNeuronPageRequest, SnsParticipationPolicy, SnsProposal, SnsProposalPageRequest,
 };
 use io_reward_policy::{sns_neuron_id_to_u64, NeuronSnapshot, SnsNeuronIdConversionError};
 #[cfg(test)]
@@ -28,6 +28,21 @@ pub struct GovernanceRewardSnapshot {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GovernanceActiveStakeSnapshotRequest {
+    pub eligibility_policy: SnsEligibilityPolicy,
+    pub max_neuron_pages: u64,
+    pub page_limit: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GovernanceActiveStakeSnapshot {
+    pub eligibilities: Vec<SnsNeuronEligibility>,
+    pub active_staked_io_e8s: u128,
+    pub excluded_neurons: Vec<ExcludedGovernanceNeuron>,
+    pub fetched_neuron_count: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExcludedGovernanceNeuron {
     pub neuron_id: SnsNeuronId,
     pub reason: String,
@@ -39,6 +54,7 @@ pub enum GovernanceSnapshotError {
     PaginationLimitExceeded,
     EmptyPageWithNextCursor,
     DuplicateNeuronId,
+    DuplicateRewardNeuronId,
     DuplicateProposalId,
     InvalidPageLimit,
 }
@@ -125,6 +141,7 @@ pub async fn build_governance_reward_snapshot<C: SnsGovernanceClient>(
             is_dissolving: !eligibility.is_non_dissolving,
         });
     }
+    reject_duplicate_reward_neuron_ids(&snapshots)?;
 
     Ok(GovernanceRewardSnapshot {
         snapshots,
@@ -132,6 +149,45 @@ pub async fn build_governance_reward_snapshot<C: SnsGovernanceClient>(
         conversion_errors,
         fetched_neuron_count,
         fetched_proposal_count,
+    })
+}
+
+pub async fn build_governance_active_stake_snapshot<C: SnsGovernanceClient>(
+    client: &C,
+    request: GovernanceActiveStakeSnapshotRequest,
+) -> Result<GovernanceActiveStakeSnapshot, GovernanceSnapshotError> {
+    if request.page_limit == 0 {
+        return Err(GovernanceSnapshotError::InvalidPageLimit);
+    }
+
+    let neurons = fetch_all_neurons(client, request.page_limit, request.max_neuron_pages).await?;
+    reject_duplicate_neurons(&neurons)?;
+
+    let fetched_neuron_count = neurons.len() as u64;
+    let eligibilities = snapshot_sns_eligibility(&neurons, &request.eligibility_policy);
+    let active_staked_io_e8s = eligibilities
+        .iter()
+        .filter(|eligibility| eligibility.excluded_reason.is_none())
+        .map(|eligibility| eligibility.eligible_stake_e8s)
+        .sum();
+    let excluded_neurons = eligibilities
+        .iter()
+        .filter_map(|eligibility| {
+            eligibility
+                .excluded_reason
+                .as_ref()
+                .map(|reason| ExcludedGovernanceNeuron {
+                    neuron_id: eligibility.neuron_id.clone(),
+                    reason: reason.clone(),
+                })
+        })
+        .collect();
+
+    Ok(GovernanceActiveStakeSnapshot {
+        eligibilities,
+        active_staked_io_e8s,
+        excluded_neurons,
+        fetched_neuron_count,
     })
 }
 
@@ -210,6 +266,18 @@ fn reject_duplicate_proposals(proposals: &[SnsProposal]) -> Result<(), Governanc
     for proposal in proposals {
         if !seen.insert(proposal.id) {
             return Err(GovernanceSnapshotError::DuplicateProposalId);
+        }
+    }
+    Ok(())
+}
+
+fn reject_duplicate_reward_neuron_ids(
+    snapshots: &[NeuronSnapshot],
+) -> Result<(), GovernanceSnapshotError> {
+    let mut seen = BTreeSet::new();
+    for snapshot in snapshots {
+        if !seen.insert(snapshot.neuron_id) {
+            return Err(GovernanceSnapshotError::DuplicateRewardNeuronId);
         }
     }
     Ok(())
@@ -388,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn governance_exclusions_and_invalid_ids_are_reported() {
+    fn governance_exclusions_and_empty_ids_are_reported() {
         let mut jupiter = neuron(1, 10_000);
         jupiter.is_jupiter_governance_neuron = true;
         let mut protocol = neuron(2, 10_000);
@@ -400,10 +468,10 @@ mod tests {
         let mut short_delay = neuron(4, 10_000);
         short_delay.dissolve_delay_seconds = 1;
         let zero = neuron(5, 0);
-        let mut invalid_a = neuron(0, 1_000);
-        invalid_a.id = SnsNeuronId(vec![1]);
-        let mut invalid_b = neuron(0, 1_000);
-        invalid_b.id = SnsNeuronId(vec![2, 3]);
+        let mut invalid = neuron(0, 1_000);
+        invalid.id = SnsNeuronId(Vec::new());
+        let mut real_shaped = neuron(0, 1_000);
+        real_shaped.id = SnsNeuronId(vec![1, 2, 3]);
         let result = block_on(build_governance_reward_snapshot(
             &InMemoryClient {
                 neurons: vec![
@@ -412,8 +480,8 @@ mod tests {
                     dissolving,
                     short_delay,
                     zero,
-                    invalid_a,
-                    invalid_b,
+                    invalid,
+                    real_shaped,
                     neuron(7, 1_000),
                 ],
                 proposals: Vec::new(),
@@ -422,16 +490,22 @@ mod tests {
             request(10),
         ))
         .unwrap();
-        assert_eq!(result.snapshots.len(), 1);
-        assert_eq!(result.snapshots[0].neuron_id, 7);
-        assert_eq!(result.conversion_errors.len(), 2);
+        assert_eq!(result.snapshots.len(), 2);
+        assert!(result
+            .snapshots
+            .iter()
+            .any(|snapshot| snapshot.neuron_id == 7));
+        assert_eq!(
+            result.conversion_errors,
+            vec![SnsNeuronIdConversionError::Empty]
+        );
         assert_eq!(
             result
                 .excluded_neurons
                 .iter()
                 .filter(|n| n.reason == "invalid SNS neuron id")
                 .count(),
-            2
+            1
         );
     }
 
@@ -518,6 +592,31 @@ mod tests {
                 request(10),
             )),
             Err(GovernanceSnapshotError::DuplicateProposalId)
+        );
+        assert_eq!(
+            reject_duplicate_reward_neuron_ids(&[
+                NeuronSnapshot {
+                    neuron_id: 1,
+                    staked_io_e8s: 1,
+                    eligible_seconds: 1,
+                    eligible_closed_proposals: 0,
+                    voted_closed_proposals: 0,
+                    is_genesis_governance_neuron: false,
+                    is_protocol_owned: false,
+                    is_dissolving: false,
+                },
+                NeuronSnapshot {
+                    neuron_id: 1,
+                    staked_io_e8s: 2,
+                    eligible_seconds: 1,
+                    eligible_closed_proposals: 0,
+                    voted_closed_proposals: 0,
+                    is_genesis_governance_neuron: false,
+                    is_protocol_owned: false,
+                    is_dissolving: false,
+                },
+            ]),
+            Err(GovernanceSnapshotError::DuplicateRewardNeuronId)
         );
     }
 

@@ -897,6 +897,12 @@ pub fn debug_get_state() -> ApiState {
 
 #[cfg(any(test, debug_assertions))]
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn debug_get_stable_state() -> StableState {
+    export_stable_state()
+}
+
+#[cfg(any(test, debug_assertions))]
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn debug_get_redemption_rate() -> Result<ApiRedemptionRate, ApiError> {
     redemption_rate()
 }

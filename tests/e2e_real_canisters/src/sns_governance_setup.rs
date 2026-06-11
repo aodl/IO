@@ -44,6 +44,19 @@ pub struct NervousSystemFunction {
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct ListNervousSystemFunctionsResponse {
+    pub reserved_ids: Vec<u64>,
+    pub functions: Vec<ListedNervousSystemFunction>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct ListedNervousSystemFunction {
+    pub id: u64,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
 pub struct NervousSystemParameters {
     pub default_followees: Option<DefaultFollowees>,
     pub max_dissolve_delay_seconds: Option<u64>,
@@ -185,7 +198,32 @@ pub struct ProposalId {
 pub struct ListProposalsResponse {
     pub include_ballots_by_caller: Option<bool>,
     pub include_topic_filtering: Option<bool>,
-    pub proposals: Vec<EmptyRecord>,
+    pub proposals: Vec<SnsProposalRecord>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct SnsProposalRecord {
+    pub id: Option<ProposalId>,
+    pub ballots: Vec<(String, SnsBallotRecord)>,
+    pub decided_timestamp_seconds: u64,
+    pub executed_timestamp_seconds: u64,
+    pub failed_timestamp_seconds: u64,
+    pub reject_cost_e8s: u64,
+    pub proposal: Option<SnsProposalPayload>,
+    pub proposer: Option<NeuronId>,
+    pub is_eligible_for_rewards: bool,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct SnsBallotRecord {
+    pub vote: i32,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct SnsProposalPayload {
+    pub url: String,
+    pub title: String,
+    pub summary: String,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
@@ -198,6 +236,93 @@ pub struct ManageNeuron {
 pub enum Command {
     ClaimOrRefresh(ClaimOrRefresh),
     Configure(Configure),
+    Disburse(Disburse),
+    Follow(Follow),
+    MakeProposal(Proposal),
+    RegisterVote(RegisterVote),
+    SetFollowing(SetFollowing),
+    AddNeuronPermissions(AddNeuronPermissions),
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct Follow {
+    pub function_id: u64,
+    pub followees: Vec<NeuronId>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct SetFollowing {
+    pub topic_following: Vec<FolloweesForTopic>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct AddNeuronPermissions {
+    pub principal_id: Option<Principal>,
+    pub permissions_to_add: Option<NeuronPermissionList>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct FolloweesForTopic {
+    pub topic: Option<Topic>,
+    pub followees: Vec<Followee>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct Followee {
+    pub neuron_id: Option<NeuronId>,
+    pub alias: Option<String>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub enum Topic {
+    DaoCommunitySettings,
+    SnsFrameworkManagement,
+    DappCanisterManagement,
+    ApplicationBusinessLogic,
+    Governance,
+    TreasuryAssetManagement,
+    CriticalDappOperations,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct Proposal {
+    pub url: String,
+    pub title: String,
+    pub summary: String,
+    pub action: Option<Action>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub enum Action {
+    Motion(Motion),
+    UpgradeSnsControlledCanister(UpgradeSnsControlledCanister),
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct Motion {
+    pub motion_text: String,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct UpgradeSnsControlledCanister {
+    pub new_canister_wasm: Vec<u8>,
+    pub chunked_canister_wasm: Option<ChunkedCanisterWasm>,
+    pub mode: Option<i32>,
+    pub canister_id: Option<Principal>,
+    pub canister_upgrade_arg: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct ChunkedCanisterWasm {
+    pub wasm_module_hash: Vec<u8>,
+    pub store_canister_id: Option<Principal>,
+    pub chunk_hashes_list: Vec<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct RegisterVote {
+    pub vote: i32,
+    pub proposal: Option<ProposalId>,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
@@ -223,8 +348,32 @@ pub struct Configure {
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct Disburse {
+    pub amount: Option<Tokens>,
+    pub to_account: Option<Account>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct Tokens {
+    pub e8s: u64,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct Account {
+    pub owner: Option<Principal>,
+    pub subaccount: Option<Subaccount>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct Subaccount {
+    pub subaccount: Vec<u8>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
 pub enum Operation {
     IncreaseDissolveDelay(IncreaseDissolveDelay),
+    StartDissolving(EmptyRecord),
+    StopDissolving(EmptyRecord),
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
@@ -242,6 +391,12 @@ pub enum CommandResponse {
     Error(GovernanceError),
     ClaimOrRefresh(ClaimOrRefreshResponse),
     Configure(EmptyRecord),
+    Disburse(DisburseResponse),
+    Follow(EmptyRecord),
+    MakeProposal(MakeProposalResponse),
+    RegisterVote(EmptyRecord),
+    SetFollowing(EmptyRecord),
+    AddNeuronPermission(EmptyRecord),
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
@@ -253,6 +408,16 @@ pub struct GovernanceError {
 #[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
 pub struct ClaimOrRefreshResponse {
     pub refreshed_neuron_id: Option<NeuronId>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct DisburseResponse {
+    pub transfer_block_height: u64,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct MakeProposalResponse {
+    pub proposal_id: Option<ProposalId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

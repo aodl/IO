@@ -1,7 +1,11 @@
 #[cfg(target_family = "wasm")]
 use crate::clients::{icp_ledger, io_ledger, sns_governance};
 #[cfg(target_family = "wasm")]
-use crate::state::JUPITER_FAUCET_SOURCE;
+use crate::governance_snapshot::{
+    build_governance_reward_snapshot, GovernanceRewardSnapshotRequest,
+};
+#[cfg(target_family = "wasm")]
+use crate::state::{IO_NNS_NEURON_MANAGER_SOURCE, JUPITER_FAUCET_SOURCE};
 use crate::DebugTickOutcome;
 #[cfg(target_family = "wasm")]
 use crate::{
@@ -13,6 +17,10 @@ use candid::CandidType;
 use candid::Principal;
 #[cfg(target_family = "wasm")]
 use io_core_model::ModelError;
+#[cfg(target_family = "wasm")]
+use io_governance_types::{
+    SnsEligibilityPolicy, SnsGovernanceCanisterClient, SnsParticipationPolicy,
+};
 #[cfg(any(target_family = "wasm", test))]
 use io_ledger_types::AccountHistoryPageOrder;
 #[cfg(any(target_family = "wasm", test))]
@@ -23,11 +31,16 @@ use io_ledger_types::{
     LedgerTransferSuccess,
 };
 #[cfg(target_family = "wasm")]
-use io_ledger_types::{Account, IndexScanRequest};
+use io_ledger_types::{Account, AccountAlias, IndexScanRequest, IndexTransaction};
 use io_ledger_types::{BlockIndex, IndexError, IndexScanResult};
 #[cfg(target_family = "wasm")]
-use io_ledger_types::{IcrcIndexCanisterClient, LedgerIndexClient, LedgerTransferClient};
+use io_ledger_types::{
+    IcpIndexCanisterClient, IcpLedgerCanisterClient, IcrcIndexCanisterClient,
+    IcrcLedgerCanisterClient, LedgerIndexClient, LedgerTransferClient,
+};
 use serde::Deserialize;
+#[cfg(target_family = "wasm")]
+use std::collections::BTreeSet;
 
 pub const STREAM_MANAGER_DEPOSIT_ACCOUNT: &str = "stream_manager_deposit";
 pub const REDEMPTION_ACCOUNT: &str = "redemption";
@@ -35,6 +48,12 @@ pub const PROTOCOL_RESERVE_ACCOUNT: &str = "protocol_reserve";
 pub const REDEMPTION_PAYOUT_MEMO: &str = "redemption_payout";
 pub const REDEEMED_IO_MEMO: &str = "redeemed_io_to_reserve";
 pub const TWO_WEEK_REWARD_ACCOUNT_PREFIX: &str = "sns_neuron_";
+#[cfg(target_family = "wasm")]
+const TWO_WEEK_DISSOLVE_DELAY_SECONDS: u64 = 14 * 24 * 60 * 60;
+#[cfg(target_family = "wasm")]
+const GOVERNANCE_SNAPSHOT_PAGE_LIMIT: u64 = 100;
+#[cfg(target_family = "wasm")]
+const GOVERNANCE_SNAPSHOT_MAX_PAGES: u64 = 100;
 
 #[cfg(any(target_family = "wasm", test))]
 fn legacy_icp_account_history_scan_state(cursor: u64) -> AccountHistoryScanState {
@@ -161,6 +180,48 @@ fn kind_from_api(kind: ApiStreamKind) -> StreamOperationKind {
     }
 }
 
+#[cfg(target_family = "wasm")]
+async fn refresh_finalized_sns_reward_snapshot(
+    canister: Principal,
+) -> Result<Vec<io_reward_policy::NeuronSnapshot>, String> {
+    let client = SnsGovernanceCanisterClient { canister };
+    let now_seconds = ic_cdk::api::time() / 1_000_000_000;
+    let request = GovernanceRewardSnapshotRequest {
+        eligibility_policy: SnsEligibilityPolicy {
+            protocol_neuron_ids: BTreeSet::new(),
+            jupiter_governance_neuron_ids: BTreeSet::new(),
+            minimum_dissolve_delay_seconds: TWO_WEEK_DISSOLVE_DELAY_SECONDS,
+            require_non_dissolving: true,
+            current_timestamp_seconds: 0,
+        },
+        participation_policy: SnsParticipationPolicy {
+            count_direct_votes: true,
+            count_followed_votes: true,
+            excluded_topics: BTreeSet::new(),
+            epoch_start_seconds: 0,
+            epoch_end_seconds: now_seconds,
+        },
+        max_neuron_pages: GOVERNANCE_SNAPSHOT_MAX_PAGES,
+        max_proposal_pages: GOVERNANCE_SNAPSHOT_MAX_PAGES,
+        page_limit: GOVERNANCE_SNAPSHOT_PAGE_LIMIT,
+        eligible_since_overrides: Default::default(),
+    };
+
+    match build_governance_reward_snapshot(&client, request).await {
+        Ok(snapshot) => {
+            CANISTER_STATE.with(|cell| {
+                cell.borrow_mut()
+                    .manager
+                    .refresh_active_staked_io_from_neurons(&snapshot.snapshots);
+            });
+            Ok(snapshot.snapshots)
+        }
+        Err(err) => Err(format!(
+            "finalized SNS governance reward snapshot refresh failed: {err:?}"
+        )),
+    }
+}
+
 pub fn scheduler_tick_plan_only() -> SchedulerTickOutcome {
     SchedulerTickOutcome::no_work_configured()
 }
@@ -266,6 +327,19 @@ fn mock_transfer_request(
 }
 
 #[cfg(target_family = "wasm")]
+fn canister_owned_account(label: &str) -> Account {
+    Account::new(
+        ic_cdk::api::canister_self(),
+        Some(icp_ledger::mock_subaccount(label)),
+    )
+}
+
+#[cfg(target_family = "wasm")]
+fn reward_account_for_neuron(neuron_id: u64) -> Account {
+    canister_owned_account(&format!("{TWO_WEEK_REWARD_ACCOUNT_PREFIX}{neuron_id}"))
+}
+
+#[cfg(target_family = "wasm")]
 async fn duplicate_block(canister: Principal, block_index: BlockIndex) -> Option<LedgerBlock> {
     icp_ledger::debug_get_transactions(canister)
         .await
@@ -273,6 +347,48 @@ async fn duplicate_block(canister: Principal, block_index: BlockIndex) -> Option
         .into_iter()
         .find(|tx| tx.block_index == block_index.0)
         .map(|tx| tx.into_boundary_block())
+}
+
+#[cfg(target_family = "wasm")]
+async fn classify_icp_payout_transfer(
+    canister: Principal,
+    real_request: &LedgerTransferRequest,
+    mock_request: &LedgerTransferRequest,
+) -> BoundaryTransferDecision {
+    let real_client = IcpLedgerCanisterClient {
+        canister,
+        default_fee_e8s: 10_000,
+    };
+    match real_client.transfer(real_request.clone()).await {
+        Ok(success) => BoundaryTransferDecision::Succeeded(success.block_index.0),
+        Err(LedgerTransferError::CanisterCallFailed { .. }) => {
+            let mock_client = icp_ledger::MockLedgerCanisterClient {
+                canister,
+                fee_e8s: 0,
+            };
+            classify_mock_transfer(
+                canister,
+                mock_request,
+                mock_client.transfer(mock_request.clone()).await,
+            )
+            .await
+        }
+        Err(LedgerTransferError::Duplicate { duplicate_of }) => {
+            match duplicate_block(canister, duplicate_of).await {
+                Some(block) => match duplicate_matches_expected(real_request, &block) {
+                    Ok(block) => BoundaryTransferDecision::Succeeded(block.0),
+                    Err(proof) => BoundaryTransferDecision::Retryable(format!(
+                        "duplicate ICP payout did not match expected amount/account/memo: {proof:?}"
+                    )),
+                },
+                None => BoundaryTransferDecision::Retryable(
+                    "duplicate ICP payout could not be proven against expected amount/account/memo"
+                        .to_string(),
+                ),
+            }
+        }
+        Err(err) => BoundaryTransferDecision::Retryable(boundary_error_message(&err)),
+    }
 }
 
 #[cfg(target_family = "wasm")]
@@ -319,7 +435,61 @@ fn boundary_transaction_to_mock_transaction(
 }
 
 #[cfg(target_family = "wasm")]
-async fn scan_account_through_index(
+async fn scan_account_with_index_client_raw<C: LedgerIndexClient>(
+    client: C,
+    account: Account,
+    account_aliases: Vec<AccountAlias>,
+    scan_state: AccountHistoryScanState,
+) -> Result<(Vec<IndexTransaction>, AccountHistoryScanState, Option<u64>), String> {
+    let requested_start = scan_state.next_request_start();
+    let page = client
+        .get_account_transactions(IndexScanRequest {
+            start: requested_start,
+            limit: 100,
+            account_filter: Some(account),
+            account_aliases,
+        })
+        .await
+        .map_err(|err| format!("ledger index scan failed: {err:?}"))?;
+    let outcome = scan_state
+        .observe_page(&page, requested_start, 100, 1, 1, Some(ic_cdk::api::time()))
+        .map_err(|err| format!("ledger index cursor validation failed: {err:?}"))?;
+    let latest = outcome.next_state.cursor.latest_cursor.map(|block| block.0);
+    Ok((
+        outcome.transactions_chronological,
+        outcome.next_state,
+        latest,
+    ))
+}
+
+#[cfg(target_family = "wasm")]
+async fn scan_account_with_index_client<C: LedgerIndexClient>(
+    client: C,
+    account: Account,
+    account_aliases: Vec<AccountAlias>,
+    scan_state: AccountHistoryScanState,
+) -> Result<
+    (
+        Vec<icp_ledger::LedgerTransaction>,
+        AccountHistoryScanState,
+        Option<u64>,
+    ),
+    String,
+> {
+    let (transactions, next_state, latest) =
+        scan_account_with_index_client_raw(client, account, account_aliases, scan_state).await?;
+    Ok((
+        transactions
+            .into_iter()
+            .map(boundary_transaction_to_mock_transaction)
+            .collect(),
+        next_state,
+        latest,
+    ))
+}
+
+#[cfg(target_family = "wasm")]
+async fn scan_icp_account_through_index(
     index_canister: Principal,
     account: Account,
     scan_state: AccountHistoryScanState,
@@ -331,31 +501,41 @@ async fn scan_account_through_index(
     ),
     String,
 > {
-    let client = IcrcIndexCanisterClient {
-        canister: index_canister,
-    };
-    let requested_start = scan_state.next_request_start();
-    let page = client
-        .get_account_transactions(IndexScanRequest {
-            start: requested_start,
-            limit: 100,
-            account_filter: Some(account),
-        })
-        .await
-        .map_err(|err| format!("ledger index scan failed: {err:?}"))?;
-    let outcome = scan_state
-        .observe_page(&page, requested_start, 100, 1, 1, Some(ic_cdk::api::time()))
-        .map_err(|err| format!("ledger index cursor validation failed: {err:?}"))?;
-    let latest = outcome.next_state.cursor.latest_cursor.map(|block| block.0);
-    Ok((
-        outcome
-            .transactions_chronological
-            .into_iter()
-            .map(boundary_transaction_to_mock_transaction)
-            .collect(),
-        outcome.next_state,
-        latest,
-    ))
+    scan_account_with_index_client(
+        IcpIndexCanisterClient {
+            canister: index_canister,
+        },
+        account,
+        vec![
+            AccountAlias {
+                account: icp_ledger::mock_account(JUPITER_FAUCET_SOURCE),
+                label: JUPITER_FAUCET_SOURCE.to_string(),
+            },
+            AccountAlias {
+                account: icp_ledger::mock_account(IO_NNS_NEURON_MANAGER_SOURCE),
+                label: IO_NNS_NEURON_MANAGER_SOURCE.to_string(),
+            },
+        ],
+        scan_state,
+    )
+    .await
+}
+
+#[cfg(target_family = "wasm")]
+async fn scan_icrc_account_through_index(
+    index_canister: Principal,
+    account: Account,
+    scan_state: AccountHistoryScanState,
+) -> Result<(Vec<IndexTransaction>, AccountHistoryScanState, Option<u64>), String> {
+    scan_account_with_index_client_raw(
+        IcrcIndexCanisterClient {
+            canister: index_canister,
+        },
+        account,
+        vec![],
+        scan_state,
+    )
+    .await
 }
 
 #[cfg(target_family = "wasm")]
@@ -388,24 +568,20 @@ async fn retry_pending_two_week_streams(
             break;
         };
 
-        let to = format!("{TWO_WEEK_REWARD_ACCOUNT_PREFIX}{}", recipient.neuron_id);
-        let request = mock_transfer_request(
-            PROTOCOL_RESERVE_ACCOUNT,
-            &to,
-            recipient.amount_e8s,
-            &operation_id,
-        );
-        let client = io_ledger::MockLedgerCanisterClient {
-            canister: io_canister,
-            fee_e8s: 0,
+        let request = LedgerTransferRequest {
+            from_subaccount: Some(icp_ledger::mock_subaccount(PROTOCOL_RESERVE_ACCOUNT)),
+            to: reward_account_for_neuron(recipient.neuron_id),
+            amount_e8s: recipient.amount_e8s,
+            fee_e8s: None,
+            memo: Some(io_ledger_types::Memo::from(operation_id.as_str())),
+            created_at_time: None,
         };
-        match classify_mock_transfer(
-            io_canister,
-            &request,
-            client.transfer(request.clone()).await,
-        )
-        .await
-        {
+        let transfer_result = IcrcLedgerCanisterClient {
+            canister: io_canister,
+        }
+        .transfer(request.clone())
+        .await;
+        match classify_boundary_transfer_result(&request, transfer_result, None) {
             BoundaryTransferDecision::Succeeded(block) => CANISTER_STATE.with(|cell| {
                 if let Some(op) = cell
                     .borrow_mut()
@@ -603,23 +779,21 @@ async fn retry_pending_redemptions(
             };
 
             let user_account = op.user_account.clone().unwrap_or_default();
-            let request = mock_transfer_request(
+            let mock_request = mock_transfer_request(
                 STREAM_MANAGER_DEPOSIT_ACCOUNT,
                 &user_account,
                 op.effective_net_user_icp_payout_e8s(),
                 REDEMPTION_PAYOUT_MEMO,
             );
-            let client = icp_ledger::MockLedgerCanisterClient {
-                canister: icp_canister,
-                fee_e8s: 0,
+            let real_request = LedgerTransferRequest {
+                from_subaccount: Some(icp_ledger::mock_subaccount(STREAM_MANAGER_DEPOSIT_ACCOUNT)),
+                to: icp_ledger::mock_account(&user_account),
+                amount_e8s: op.effective_net_user_icp_payout_e8s(),
+                fee_e8s: None,
+                memo: None,
+                created_at_time: None,
             };
-            match classify_mock_transfer(
-                icp_canister,
-                &request,
-                client.transfer(request.clone()).await,
-            )
-            .await
-            {
+            match classify_icp_payout_transfer(icp_canister, &real_request, &mock_request).await {
                 BoundaryTransferDecision::Succeeded(block) => {
                     CANISTER_STATE.with(|cell| {
                         if let Some(op) = cell
@@ -654,23 +828,76 @@ async fn retry_pending_redemptions(
         }
 
         if op.io_return_status != TransferStatus::Succeeded {
-            let request = mock_transfer_request(
-                REDEMPTION_ACCOUNT,
-                PROTOCOL_RESERVE_ACCOUNT,
-                op.io_amount,
-                REDEEMED_IO_MEMO,
-            );
             let client = io_ledger::MockLedgerCanisterClient {
                 canister: io_canister,
                 fee_e8s: 0,
             };
-            match classify_mock_transfer(
-                io_canister,
-                &request,
-                client.transfer(request.clone()).await,
-            )
-            .await
-            {
+            let io_return_fee_e8s = match client.fee().await {
+                Ok(fee) => fee,
+                Err(err) => {
+                    let message = format!("IO return fee query failed: {err:?}");
+                    CANISTER_STATE.with(|cell| {
+                        if let Some(op) = cell
+                            .borrow_mut()
+                            .operation_journal
+                            .iter_mut()
+                            .find(|pending| pending.operation_id == op.operation_id)
+                        {
+                            op.io_return_status = TransferStatus::FailedRetryable;
+                            op.mark_retryable_error(
+                                message.clone(),
+                                OperationPhase::AwaitingIoReturn,
+                            );
+                        }
+                    });
+                    outcome.errors.push(message);
+                    return false;
+                }
+            };
+            let Some(io_return_amount_e8s) = op.io_amount.checked_sub(io_return_fee_e8s) else {
+                let message = format!(
+                    "redeemed IO {} is below IO return fee {}",
+                    op.io_amount, io_return_fee_e8s
+                );
+                CANISTER_STATE.with(|cell| {
+                    if let Some(op) = cell
+                        .borrow_mut()
+                        .operation_journal
+                        .iter_mut()
+                        .find(|pending| pending.operation_id == op.operation_id)
+                    {
+                        op.io_return_fee_e8s = io_return_fee_e8s;
+                        op.io_return_status = TransferStatus::FailedRetryable;
+                        op.mark_retryable_error(message.clone(), OperationPhase::AwaitingIoReturn);
+                    }
+                });
+                outcome.errors.push(message);
+                return false;
+            };
+            CANISTER_STATE.with(|cell| {
+                if let Some(op) = cell
+                    .borrow_mut()
+                    .operation_journal
+                    .iter_mut()
+                    .find(|pending| pending.operation_id == op.operation_id)
+                {
+                    op.io_return_fee_e8s = io_return_fee_e8s;
+                }
+            });
+            let request = LedgerTransferRequest {
+                from_subaccount: Some(icp_ledger::mock_subaccount(REDEMPTION_ACCOUNT)),
+                to: canister_owned_account(PROTOCOL_RESERVE_ACCOUNT),
+                amount_e8s: io_return_amount_e8s,
+                fee_e8s: None,
+                memo: Some(io_ledger_types::Memo::from(REDEEMED_IO_MEMO)),
+                created_at_time: None,
+            };
+            let transfer_result = IcrcLedgerCanisterClient {
+                canister: io_canister,
+            }
+            .transfer(request.clone())
+            .await;
+            match classify_boundary_transfer_result(&request, transfer_result, None) {
                 BoundaryTransferDecision::Succeeded(block) => {
                     CANISTER_STATE.with(|cell| {
                         if let Some(op) = cell
@@ -742,10 +969,8 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
     #[cfg(target_family = "wasm")]
     {
         let config = CANISTER_STATE.with(|cell| cell.borrow().config.clone());
-        let icp_ledger = principal(&config.icp_index_principal_text)
-            .or_else(|| principal(&config.icp_ledger_principal_text));
-        let io_ledger = principal(&config.io_index_principal_text)
-            .or_else(|| principal(&config.io_ledger_principal_text));
+        let icp_ledger = principal(&config.icp_index_principal_text);
+        let io_ledger = principal(&config.io_index_principal_text);
         let io_transfer_ledger = principal(&config.io_ledger_principal_text);
         let icp_transfer_ledger = principal(&config.icp_ledger_principal_text);
         let sns_governance = principal(&config.sns_governance_principal_text);
@@ -761,12 +986,22 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
         };
 
         let neurons = match sns_governance {
-            Some(canister) => match sns_governance::debug_list_neurons(canister).await {
+            Some(canister) => match refresh_finalized_sns_reward_snapshot(canister).await {
                 Ok(neurons) => neurons,
-                Err(err) => {
-                    outcome.errors.push(err);
-                    Vec::new()
-                }
+                Err(real_err) => match sns_governance::debug_list_neurons(canister).await {
+                    Ok(neurons) => {
+                        CANISTER_STATE.with(|cell| {
+                            cell.borrow_mut()
+                                .manager
+                                .refresh_active_staked_io_from_neurons(&neurons);
+                        });
+                        neurons
+                    }
+                    Err(debug_err) => {
+                        outcome.errors.push(format!("{real_err}; {debug_err}"));
+                        Vec::new()
+                    }
+                },
             },
             None => Vec::new(),
         };
@@ -801,9 +1036,9 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                 }
             });
             let start_after = scan_state.cursor.latest_cursor.map(|block| block.0);
-            match scan_account_through_index(
+            match scan_icp_account_through_index(
                 canister,
-                icp_ledger::mock_account(STREAM_MANAGER_DEPOSIT_ACCOUNT),
+                canister_owned_account(STREAM_MANAGER_DEPOSIT_ACCOUNT),
                 scan_state,
             )
             .await
@@ -1003,20 +1238,17 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                 }
             });
             let start_after = scan_state.cursor.latest_cursor.map(|block| block.0);
-            match scan_account_through_index(
-                canister,
-                io_ledger::mock_account(REDEMPTION_ACCOUNT),
-                scan_state,
-            )
-            .await
+            let redemption_account = canister_owned_account(REDEMPTION_ACCOUNT);
+            match scan_icrc_account_through_index(canister, redemption_account.clone(), scan_state)
+                .await
             {
                 Ok((transactions, next_scan_state, latest_seen)) => {
                     let relevant = transactions
                         .into_iter()
                         .filter(|tx| {
-                            tx.to == REDEMPTION_ACCOUNT
+                            tx.transaction.to.as_ref() == Some(&redemption_account)
                                 && start_after
-                                    .map(|cursor| tx.block_index > cursor)
+                                    .map(|cursor| tx.block_index.0 > cursor)
                                     .unwrap_or(true)
                         })
                         .collect::<Vec<_>>();
@@ -1024,26 +1256,26 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                     let page_error_count = outcome.errors.len();
 
                     for tx in relevant {
-                        let tx_id = format!("io:{}", tx.block_index);
+                        let tx_id = format!("io:{}", tx.block_index.0);
                         if CANISTER_STATE.with(|cell| {
                             cell.borrow()
                                 .operation_journal
                                 .iter()
                                 .any(|op| op.operation_id == tx_id)
                         }) {
-                            advance_io_cursor(tx.block_index);
+                            advance_io_cursor(tx.block_index.0);
                             continue;
                         }
 
                         let preview = CANISTER_STATE.with(|cell| {
                             cell.borrow()
                                 .manager
-                                .preview_redemption(tx.amount_e8s, tx_id.clone())
+                                .preview_redemption(tx.transaction.amount_e8s, tx_id.clone())
                         });
                         let preview = match preview {
                             Ok(preview) => preview,
                             Err(StreamManagerError::DuplicateTransaction) => {
-                                advance_io_cursor(tx.block_index);
+                                advance_io_cursor(tx.block_index.0);
                                 continue;
                             }
                             Err(err) => {
@@ -1056,10 +1288,14 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                             cell.borrow_mut()
                                 .operation_journal
                                 .push(StreamOperation::redemption(
-                                    tx.block_index,
-                                    tx.amount_e8s,
+                                    tx.block_index.0,
+                                    tx.transaction.amount_e8s,
                                     preview.outcome.icp_paid_e8s,
-                                    tx.from.clone(),
+                                    tx.transaction
+                                        .from
+                                        .as_ref()
+                                        .map(icp_ledger::mock_label_from_account)
+                                        .unwrap_or_default(),
                                     preview.post_state,
                                 ));
                         });
@@ -1075,7 +1311,7 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                                 return outcome;
                             }
                         }
-                        advance_io_cursor(tx.block_index);
+                        advance_io_cursor(tx.block_index.0);
                     }
                     if no_new_page_errors(&outcome, page_error_count) {
                         commit_io_scan_state(next_scan_state, latest_seen);

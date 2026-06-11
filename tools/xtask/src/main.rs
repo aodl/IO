@@ -2701,11 +2701,27 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
         &brief_blockers,
         &[
             "RealFrameworkBlocker",
-            "io_stream_manager_real_jupiter_deposit_100_icp_issues_exact_60_io",
             "real_stack_same_wasm_upgrade_preserves_scheduler_cursors",
             "historian_real_freshness_reports_stale_missing_incomplete_not_zero",
             "frontend_real_status_displays_not_live",
             "local_network_launches_with_nns_sns_features",
+        ],
+    )?;
+    let io_protocol_real_stack = require_file(
+        root,
+        "tests/e2e_real_canisters/src/io_protocol_real_stack.rs",
+    )?;
+    require_present(
+        "tests/e2e_real_canisters/src/io_protocol_real_stack.rs",
+        &io_protocol_real_stack,
+        &[
+            "io_stream_manager_real_jupiter_deposit_scanned_from_real_icp_index",
+            "io_stream_manager_real_two_week_maturity_5_icp_issues_exact_backed_reward_pool",
+            "io_stream_manager_real_two_week_maturity_rewards_only_eligible_stakers",
+            "io_stream_manager_real_sns_topup_increases_active_staked_io",
+            "io_stream_manager_real_redemption_pays_icp_on_real_local_ledger",
+            "JUPITER_EXPECTED_IO_E8S",
+            "fund_real_jupiter_deposit",
         ],
     )?;
     let exact_economics = require_file(root, "tests/e2e_real_canisters/src/exact_economics.rs")?;

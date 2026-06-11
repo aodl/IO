@@ -215,6 +215,13 @@ pub struct IndexScanRequest {
     pub start: Option<BlockIndex>,
     pub limit: u64,
     pub account_filter: Option<Account>,
+    pub account_aliases: Vec<AccountAlias>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct AccountAlias {
+    pub account: Account,
+    pub label: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -903,6 +910,50 @@ pub struct IcrcIndexGetAccountTransactionsResult {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct IcrcIndexNgGetTransactionsResult {
+    pub balance: Nat,
+    pub transactions: Vec<IcrcIndexNgTransactionWithId>,
+    pub oldest_tx_id: Option<Nat>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct IcrcIndexNgTransactionWithId {
+    pub id: Nat,
+    pub transaction: IcrcIndexNgTransaction,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct IcrcIndexNgTransaction {
+    pub burn: Option<IcrcIndexNgTransfer>,
+    pub mint: Option<IcrcIndexNgTransfer>,
+    pub approve: Option<IcrcIndexNgApprove>,
+    pub transfer: Option<IcrcIndexNgTransfer>,
+    pub timestamp: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct IcrcIndexNgTransfer {
+    pub from: IcrcAccount,
+    pub to: IcrcAccount,
+    pub amount: Nat,
+    pub fee: Option<Nat>,
+    pub memo: Option<Vec<u8>>,
+    pub created_at_time: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct IcrcIndexNgApprove {
+    pub from: IcrcAccount,
+    pub spender: IcrcAccount,
+    pub amount: Nat,
+    pub expected_allowance: Option<Nat>,
+    pub expires_at: Option<u64>,
+    pub fee: Option<Nat>,
+    pub memo: Option<Vec<u8>>,
+    pub created_at_time: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum IcrcIndexError {
     GenericError { error_code: Nat, message: String },
     TemporarilyUnavailable,
@@ -916,6 +967,27 @@ fn nat_to_u64_index(value: &Nat, field: &str) -> Result<u64, IndexError> {
         .map_err(|err| IndexError::DecodeError {
             message: format!("{field} does not fit in u64: {err}"),
         })
+}
+
+fn nat_to_u128_index(value: &Nat, field: &str) -> Result<u128, IndexError> {
+    value
+        .0
+        .to_str_radix(10)
+        .parse::<u128>()
+        .map_err(|err| IndexError::DecodeError {
+            message: format!("{field} does not fit in u128: {err}"),
+        })
+}
+
+fn account_from_icrc_for_index(value: IcrcAccount) -> Result<Account, IndexError> {
+    let subaccount = value
+        .subaccount
+        .map(|bytes| Subaccount::from_vec_for_index(bytes, "subaccount"))
+        .transpose()?;
+    Ok(Account {
+        owner: value.owner,
+        subaccount,
+    })
 }
 
 pub fn map_icrc_index_result(
@@ -961,6 +1033,133 @@ pub fn map_icrc_index_result(
             Err(IndexError::DecodeError { message })
         }
     }
+}
+
+fn icrc_index_ng_transfer_block(
+    block_index: BlockIndex,
+    timestamp_nanos: u64,
+    transfer: IcrcIndexNgTransfer,
+    operation_kind: LedgerOperationKind,
+) -> Result<LedgerBlock, IndexError> {
+    Ok(LedgerBlock {
+        block_index,
+        timestamp_nanos,
+        from: Some(account_from_icrc_for_index(transfer.from)?),
+        to: Some(account_from_icrc_for_index(transfer.to)?),
+        amount_e8s: nat_to_u128_index(&transfer.amount, "transaction amount")?,
+        fee_e8s: transfer
+            .fee
+            .as_ref()
+            .map(|fee| nat_to_u128_index(fee, "transaction fee"))
+            .transpose()?,
+        memo: transfer.memo.map(Memo),
+        operation_kind,
+    })
+}
+
+fn icrc_index_ng_transaction_block(
+    tx: IcrcIndexNgTransactionWithId,
+) -> Result<IndexTransaction, IndexError> {
+    let block_index = BlockIndex(nat_to_u64_index(&tx.id, "transaction id")?);
+    let timestamp_nanos = tx.transaction.timestamp;
+    let block = if let Some(transfer) = tx.transaction.transfer {
+        icrc_index_ng_transfer_block(
+            block_index,
+            timestamp_nanos,
+            transfer,
+            LedgerOperationKind::Transfer,
+        )?
+    } else if let Some(mint) = tx.transaction.mint {
+        let mut block = icrc_index_ng_transfer_block(
+            block_index,
+            timestamp_nanos,
+            mint,
+            LedgerOperationKind::Mint,
+        )?;
+        block.from = None;
+        block
+    } else if let Some(burn) = tx.transaction.burn {
+        let mut block = icrc_index_ng_transfer_block(
+            block_index,
+            timestamp_nanos,
+            burn,
+            LedgerOperationKind::Burn,
+        )?;
+        block.to = None;
+        block
+    } else if let Some(approve) = tx.transaction.approve {
+        LedgerBlock {
+            block_index,
+            timestamp_nanos,
+            from: Some(account_from_icrc_for_index(approve.from)?),
+            to: Some(account_from_icrc_for_index(approve.spender)?),
+            amount_e8s: nat_to_u128_index(&approve.amount, "approval amount")?,
+            fee_e8s: approve
+                .fee
+                .as_ref()
+                .map(|fee| nat_to_u128_index(fee, "approval fee"))
+                .transpose()?,
+            memo: approve.memo.map(Memo),
+            operation_kind: LedgerOperationKind::Approve,
+        }
+    } else {
+        return Err(IndexError::DecodeError {
+            message: format!(
+                "ICRC index-ng transaction {} has no operation",
+                block_index.0
+            ),
+        });
+    };
+
+    Ok(IndexTransaction {
+        block_index,
+        transaction: block,
+    })
+}
+
+pub fn map_icrc_index_ng_result(
+    result: Result<IcrcIndexNgGetTransactionsResult, String>,
+) -> Result<IndexScanResult, IndexError> {
+    match result {
+        Ok(page) => {
+            let mut transactions = Vec::with_capacity(page.transactions.len());
+            for tx in page.transactions {
+                transactions.push(icrc_index_ng_transaction_block(tx)?);
+            }
+            let last_seen_block = transactions.iter().map(|tx| tx.block_index).max();
+            let result = IndexScanResult {
+                transactions,
+                last_seen_block,
+                index_tip: None,
+                archive_required: false,
+                page_order: Some(AccountHistoryPageOrder::Ascending),
+                account_balance_e8s: Some(nat_to_u128_index(&page.balance, "account balance")?),
+                num_blocks_synced: None,
+            };
+            result.validate_monotonic()?;
+            Ok(result)
+        }
+        Err(message) if message.contains("archive") => Err(IndexError::ArchiveRequired {
+            from: BlockIndex(0),
+        }),
+        Err(message) => Err(IndexError::DecodeError { message }),
+    }
+}
+
+pub fn decode_icrc_index_response_bytes(
+    bytes: &[u8],
+) -> Result<Result<IcrcIndexGetAccountTransactionsResult, IcrcIndexError>, IndexError> {
+    if let Ok(page) = Decode!(bytes, IcrcIndexGetAccountTransactionsResult) {
+        return Ok(Ok(page));
+    }
+
+    Decode!(
+        bytes,
+        Result<IcrcIndexGetAccountTransactionsResult, IcrcIndexError>
+    )
+    .map_err(|err| IndexError::DecodeError {
+        message: format!("{err:?}"),
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -1128,23 +1327,34 @@ impl TryFrom<IndexScanRequest> for IcpIndexGetAccountIdentifierTransactionsArgs 
 fn matching_icp_account(
     legacy_account_identifier: &str,
     account_filter: Option<&Account>,
+    account_aliases: &[AccountAlias],
 ) -> Option<Account> {
-    account_filter.and_then(|account| {
-        (account.icp_account_identifier_text() == legacy_account_identifier)
-            .then(|| account.clone())
-    })
+    account_filter
+        .filter(|account| account.icp_account_identifier_text() == legacy_account_identifier)
+        .cloned()
+        .or_else(|| {
+            account_aliases
+                .iter()
+                .find(|alias| {
+                    alias.account.icp_account_identifier_text() == legacy_account_identifier
+                })
+                .map(|alias| alias.account.clone())
+        })
 }
 
 fn icp_index_memo(transaction: &IcpIndexTransaction) -> Memo {
-    transaction
-        .icrc1_memo
-        .clone()
-        .map(Memo)
-        .unwrap_or_else(|| Memo(transaction.memo.to_le_bytes().to_vec()))
+    transaction.icrc1_memo.clone().map(Memo).unwrap_or_else(|| {
+        if transaction.memo == 0 {
+            Memo(Vec::new())
+        } else {
+            Memo(transaction.memo.to_le_bytes().to_vec())
+        }
+    })
 }
 
 fn map_icp_index_transaction(
     account_filter: Option<&Account>,
+    account_aliases: &[AccountAlias],
     tx: IcpIndexTransactionWithId,
 ) -> IndexTransaction {
     let timestamp_nanos = tx
@@ -1173,8 +1383,8 @@ fn map_icp_index_transaction(
         } => LedgerBlock {
             block_index,
             timestamp_nanos,
-            from: matching_icp_account(&from, account_filter),
-            to: matching_icp_account(&to, account_filter),
+            from: matching_icp_account(&from, account_filter, account_aliases),
+            to: matching_icp_account(&to, account_filter, account_aliases),
             amount_e8s: amount.e8s.into(),
             fee_e8s: Some(fee.e8s.into()),
             memo,
@@ -1184,7 +1394,7 @@ fn map_icp_index_transaction(
             block_index,
             timestamp_nanos,
             from: None,
-            to: matching_icp_account(&to, account_filter),
+            to: matching_icp_account(&to, account_filter, account_aliases),
             amount_e8s: amount.e8s.into(),
             fee_e8s: None,
             memo,
@@ -1193,7 +1403,7 @@ fn map_icp_index_transaction(
         IcpIndexOperation::Burn { from, amount, .. } => LedgerBlock {
             block_index,
             timestamp_nanos,
-            from: matching_icp_account(&from, account_filter),
+            from: matching_icp_account(&from, account_filter, account_aliases),
             to: None,
             amount_e8s: amount.e8s.into(),
             fee_e8s: None,
@@ -1203,7 +1413,7 @@ fn map_icp_index_transaction(
         IcpIndexOperation::Approve { fee, from, .. } => LedgerBlock {
             block_index,
             timestamp_nanos,
-            from: matching_icp_account(&from, account_filter),
+            from: matching_icp_account(&from, account_filter, account_aliases),
             to: None,
             amount_e8s: 0,
             fee_e8s: Some(fee.e8s.into()),
@@ -1220,6 +1430,7 @@ fn map_icp_index_transaction(
 
 pub fn map_icp_index_result(
     account_filter: Option<&Account>,
+    account_aliases: &[AccountAlias],
     _request_start: Option<BlockIndex>,
     result: IcpIndexGetAccountIdentifierTransactionsResult,
 ) -> Result<IndexScanResult, IndexError> {
@@ -1228,7 +1439,7 @@ pub fn map_icp_index_result(
             let mut transactions = response
                 .transactions
                 .into_iter()
-                .map(|tx| map_icp_index_transaction(account_filter, tx))
+                .map(|tx| map_icp_index_transaction(account_filter, account_aliases, tx))
                 .collect::<Vec<_>>();
             let mut previous = None;
             for tx in &transactions {
@@ -1456,12 +1667,28 @@ impl LedgerIndexClient for IcrcIndexCanisterClient {
                         method: "get_account_transactions".to_string(),
                         message: format!("{err:?}"),
                     })?;
-            let (result,) = response
-                .candid_tuple::<(Result<IcrcIndexGetAccountTransactionsResult, IcrcIndexError>,)>()
-                .map_err(|err| IndexError::DecodeError {
-                    message: format!("{err:?}"),
-                })?;
-            map_icrc_index_result(result)
+            match response.candid_tuple::<(IcrcIndexGetAccountTransactionsResult,)>() {
+                Ok((page,)) => return map_icrc_index_result(Ok(page)),
+                Err(direct_err) => {
+                    match response.candid_tuple::<(
+                        Result<IcrcIndexGetAccountTransactionsResult, IcrcIndexError>,
+                    )>() {
+                        Ok((result,)) => return map_icrc_index_result(result),
+                        Err(result_err) => {
+                            match response
+                                .candid_tuple::<(Result<IcrcIndexNgGetTransactionsResult, String>,)>()
+                            {
+                                Ok((result,)) => map_icrc_index_ng_result(result),
+                                Err(ng_err) => Err(IndexError::DecodeError {
+                                    message: format!(
+                                        "direct ICRC index response decode failed: {direct_err:?}; result response decode failed: {result_err:?}; index-ng response decode failed: {ng_err:?}"
+                                    ),
+                                }),
+                            }
+                        }
+                    }
+                }
+            }
         })
     }
 
@@ -1484,12 +1711,9 @@ impl LedgerIndexClient for IcpIndexCanisterClient {
         &'a self,
         request: IndexScanRequest,
     ) -> Pin<Box<dyn Future<Output = Result<IndexScanResult, IndexError>> + 'a>> {
-        if request.start.is_some() {
-            return Box::pin(async move { Err(IndexError::Unsupported) });
-        }
-
         Box::pin(async move {
             let account_filter = request.account_filter.clone();
+            let account_aliases = request.account_aliases.clone();
             let arg = IcpIndexGetAccountIdentifierTransactionsArgs::try_from(request)?;
             let request_start = arg.start.map(BlockIndex);
             let response = ic_cdk::call::Call::bounded_wait(
@@ -1507,7 +1731,12 @@ impl LedgerIndexClient for IcpIndexCanisterClient {
                 .map_err(|err| IndexError::DecodeError {
                     message: format!("{err:?}"),
                 })?;
-            map_icp_index_result(account_filter.as_ref(), request_start, result)
+            map_icp_index_result(
+                account_filter.as_ref(),
+                &account_aliases,
+                request_start,
+                result,
+            )
         })
     }
 
@@ -2181,6 +2410,7 @@ mod tests {
             start: Some(BlockIndex(1)),
             limit: 10,
             account_filter: None,
+            account_aliases: vec![],
         })
         .unwrap_err();
         assert_eq!(err, IndexError::Unsupported);
@@ -2230,6 +2460,73 @@ mod tests {
     }
 
     #[test]
+    fn icrc_index_response_decodes_direct_real_index_shape() {
+        let page = IcrcIndexGetAccountTransactionsResult {
+            transactions: vec![],
+            oldest_tx_id: None,
+            tip: Some(Nat::from(4_u64)),
+            archive_required: false,
+        };
+        let bytes = Encode!(&page).expect("direct page should encode");
+
+        assert_eq!(decode_icrc_index_response_bytes(&bytes).unwrap(), Ok(page));
+    }
+
+    #[test]
+    fn icrc_index_response_decodes_result_mock_shape() {
+        let page = IcrcIndexGetAccountTransactionsResult {
+            transactions: vec![],
+            oldest_tx_id: None,
+            tip: Some(Nat::from(5_u64)),
+            archive_required: false,
+        };
+        let result: Result<IcrcIndexGetAccountTransactionsResult, IcrcIndexError> =
+            Ok(page.clone());
+        let bytes = Encode!(&result).expect("result page should encode");
+
+        assert_eq!(decode_icrc_index_response_bytes(&bytes).unwrap(), Ok(page));
+    }
+
+    #[test]
+    fn icrc_index_ng_result_maps_official_account_history_shape() {
+        let from = account();
+        let to = Account::new(principal(), Some(Subaccount([9; 32])));
+        let result = map_icrc_index_ng_result(Ok(IcrcIndexNgGetTransactionsResult {
+            balance: Nat::from(123_u64),
+            transactions: vec![IcrcIndexNgTransactionWithId {
+                id: Nat::from(7_u64),
+                transaction: IcrcIndexNgTransaction {
+                    burn: None,
+                    mint: None,
+                    approve: None,
+                    transfer: Some(IcrcIndexNgTransfer {
+                        from: from.to_icrc_account(),
+                        to: to.to_icrc_account(),
+                        amount: Nat::from(42_u64),
+                        fee: Some(Nat::from(10_u64)),
+                        memo: Some(b"memo".to_vec()),
+                        created_at_time: Some(11),
+                    }),
+                    timestamp: 12,
+                },
+            }],
+            oldest_tx_id: Some(Nat::from(7_u64)),
+        }))
+        .unwrap();
+
+        assert_eq!(result.account_balance_e8s, Some(123));
+        assert_eq!(result.transactions[0].block_index, BlockIndex(7));
+        assert_eq!(result.transactions[0].transaction.from, Some(from));
+        assert_eq!(result.transactions[0].transaction.to, Some(to));
+        assert_eq!(result.transactions[0].transaction.amount_e8s, 42);
+        assert_eq!(result.transactions[0].transaction.fee_e8s, Some(10));
+        assert_eq!(
+            result.transactions[0].transaction.operation_kind,
+            LedgerOperationKind::Transfer
+        );
+    }
+
+    #[test]
     fn icp_index_args_and_result_map_account_filtered_descending_pages() {
         let account = account();
         let account_identifier = account.icp_account_identifier_text();
@@ -2237,6 +2534,7 @@ mod tests {
             start: None,
             limit: 50,
             account_filter: Some(account.clone()),
+            account_aliases: vec![],
         })
         .unwrap();
         assert_eq!(args.start, None);
@@ -2245,6 +2543,7 @@ mod tests {
 
         let result = map_icp_index_result(
             Some(&account),
+            &[],
             None,
             IcpIndexGetAccountIdentifierTransactionsResult::Ok(
                 IcpIndexGetAccountIdentifierTransactionsResponse {
@@ -2302,18 +2601,66 @@ mod tests {
     }
 
     #[test]
+    fn icp_index_result_maps_known_legacy_counterparty_alias() {
+        let deposit_account = account();
+        let jupiter_account = Account::new(principal(), Some(Subaccount([11; 32])));
+        let result = map_icp_index_result(
+            Some(&deposit_account),
+            &[AccountAlias {
+                account: jupiter_account.clone(),
+                label: "jupiter_faucet".to_string(),
+            }],
+            None,
+            IcpIndexGetAccountIdentifierTransactionsResult::Ok(
+                IcpIndexGetAccountIdentifierTransactionsResponse {
+                    balance: 100_000_000,
+                    oldest_tx_id: Some(44),
+                    transactions: vec![IcpIndexTransactionWithId {
+                        id: 44,
+                        transaction: IcpIndexTransaction {
+                            memo: 0,
+                            icrc1_memo: None,
+                            operation: IcpIndexOperation::Transfer {
+                                to: deposit_account.icp_account_identifier_text(),
+                                fee: IcpIndexTokens { e8s: 10_000 },
+                                from: jupiter_account.icp_account_identifier_text(),
+                                amount: IcpIndexTokens { e8s: 100_000_000 },
+                                spender: None,
+                            },
+                            created_at_time: None,
+                            timestamp: Some(IcpIndexTimeStamp {
+                                timestamp_nanos: 100,
+                            }),
+                        },
+                    }],
+                },
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.transactions[0].transaction.from,
+            Some(jupiter_account)
+        );
+        assert_eq!(result.transactions[0].transaction.to, Some(deposit_account));
+        assert_eq!(result.transactions[0].transaction.amount_e8s, 100_000_000);
+    }
+
+    #[test]
     fn icp_index_start_some_maps_as_descending_cursor_page() {
         let account = account();
         let args = IcpIndexGetAccountIdentifierTransactionsArgs::try_from(IndexScanRequest {
             start: Some(BlockIndex(10)),
             limit: 50,
             account_filter: Some(account),
+            account_aliases: vec![],
         })
         .unwrap();
         assert_eq!(args.start, Some(10));
 
         let result = map_icp_index_result(
             None,
+            &[],
             Some(BlockIndex(10)),
             IcpIndexGetAccountIdentifierTransactionsResult::Ok(
                 IcpIndexGetAccountIdentifierTransactionsResponse {
@@ -2339,6 +2686,7 @@ mod tests {
     fn icp_index_rejects_duplicate_or_non_descending_wire_pages() {
         let duplicate = map_icp_index_result(
             None,
+            &[],
             None,
             IcpIndexGetAccountIdentifierTransactionsResult::Ok(
                 IcpIndexGetAccountIdentifierTransactionsResponse {
@@ -2357,6 +2705,7 @@ mod tests {
 
         let ascending = map_icp_index_result(
             None,
+            &[],
             None,
             IcpIndexGetAccountIdentifierTransactionsResult::Ok(
                 IcpIndexGetAccountIdentifierTransactionsResponse {
@@ -2379,6 +2728,7 @@ mod tests {
         assert_eq!(
             map_icp_index_result(
                 None,
+                &[],
                 Some(BlockIndex(10)),
                 IcpIndexGetAccountIdentifierTransactionsResult::Err(
                     IcpIndexGetAccountIdentifierTransactionsError {
@@ -2396,6 +2746,7 @@ mod tests {
     fn icp_and_icrc_index_pages_reject_duplicate_or_non_monotonic_entries() {
         let icp = map_icp_index_result(
             None,
+            &[],
             None,
             IcpIndexGetAccountIdentifierTransactionsResult::Ok(
                 IcpIndexGetAccountIdentifierTransactionsResponse {
@@ -2652,7 +3003,7 @@ mod tests {
         }))
         .unwrap();
         let decoded = Decode!(&bytes, IcpIndexGetAccountIdentifierTransactionsResult).unwrap();
-        let page = map_icp_index_result(None, None, decoded).unwrap();
+        let page = map_icp_index_result(None, &[], None, decoded).unwrap();
         assert_eq!(
             page.transactions
                 .iter()
@@ -2697,7 +3048,7 @@ mod tests {
         ))
         .unwrap();
         let decoded = Decode!(&encoded, IcpIndexGetAccountIdentifierTransactionsResult).unwrap();
-        let page = map_icp_index_result(Some(&account), None, decoded).unwrap();
+        let page = map_icp_index_result(Some(&account), &[], None, decoded).unwrap();
         assert_eq!(
             page.transactions[0].transaction.operation_kind,
             LedgerOperationKind::Transfer

@@ -18,6 +18,43 @@ cargo test -p e2e-real-canisters real_sns_w_publishes_large_governance_wasm_via_
 cargo test -p e2e-real-canisters real_sns_w_publishes_root_governance_ledger_index_swap_archive_via_nns -- --ignored --nocapture
 cargo test -p e2e-real-canisters real_sns_lifecycle_deploys_sns_via_sns_w -- --ignored --nocapture
 cargo test -p e2e-real-canisters real_sns_swap_opens_with_expected_parameters -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_participant_can_fund_swap_account_and_refresh_buyer_tokens -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_swap_observes_direct_participation -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_swap_commits_after_minimum_participation -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_swap_finalizes_successfully_and_preserves_canister_ids -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_finalized_governance_list_neurons_returns_participant_neuron -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_finalized_governance_neuron_controller_matches_participant -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_finalized_governance_neuron_dissolve_delay_matches_basket -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_finalized_governance_multiple_participants_create_distinct_neurons -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_finalized_governance_no_duplicate_neuron_ids -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_finalized_governance_pagination_does_not_drop_neurons -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_user_stakes_io_normal_path_after_sns_w_finalization -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_user_topup_increases_existing_neuron_after_sns_w_finalization -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_user_can_stake_multiple_neurons_after_finalization -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_minimum_stake_is_enforced_after_finalization -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_dissolve_delay_below_two_weeks_is_ineligible_after_finalization -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_dissolve_delay_at_two_weeks_is_eligible_after_finalization -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_dissolving_neuron_is_excluded_if_policy_requires_after_finalization -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_stop_dissolving_restores_eligibility_if_policy_allows_after_finalization -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_no_closed_proposals_participation_factor_defaults_to_one_after_finalization -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_user_votes_yes_and_ballot_is_observed_after_finalization -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_user_votes_no_and_ballot_is_observed_after_finalization -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_non_voter_gets_lower_participation_factor_after_finalization -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_following_vote_counts_for_participation_if_policy_allows_after_finalization -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_proposal_rejection_fee_is_100_io_if_configured_after_finalization -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_root_lists_application_subnet_dapp_after_finalization -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_root_can_upgrade_test_app_canister_after_finalization -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_root_rejects_non_dapp_canister_after_finalization -- --ignored --nocapture
+cargo build -p io-stream-manager -p io-nns-neuron-manager -p io-historian --target wasm32-unknown-unknown
+cargo test -p e2e-real-canisters io_real_stack_installs_stream_manager_on_application_subnet -- --ignored --nocapture
+cargo test -p e2e-real-canisters io_real_stack_installs_nns_neuron_manager_on_application_subnet -- --ignored --nocapture
+cargo test -p e2e-real-canisters io_real_stack_installs_historian_on_application_subnet -- --ignored --nocapture
+cargo test -p e2e-real-canisters io_stream_manager_real_finalized_sns_list_neurons_updates_active_staked_io -- --ignored --nocapture
+cargo test -p e2e-real-canisters io_stream_manager_real_jupiter_deposit_scanned_from_real_icp_index -- --ignored --nocapture
+cargo test -p e2e-real-canisters io_stream_manager_real_two_week_maturity_5_icp_issues_exact_backed_reward_pool -- --ignored --nocapture
+cargo test -p e2e-real-canisters io_stream_manager_real_two_week_maturity_rewards_only_eligible_stakers -- --ignored --nocapture
+cargo test -p e2e-real-canisters io_stream_manager_real_sns_topup_increases_active_staked_io -- --ignored --nocapture
+cargo test -p e2e-real-canisters io_stream_manager_real_redemption_pays_icp_on_real_local_ledger -- --ignored --nocapture
 cargo test -p e2e-real-canisters real_sns_w_accepts_root_ledger_index_swap_archive_wasms_direct_test_path -- --ignored --nocapture
 cargo test -p e2e-real-canisters real_sns_w_lists_published_wasms_direct_test_path -- --ignored --nocapture
 cargo test -p e2e-real-canisters real_sns_w_rejects_wrong_hash_or_wrong_type_direct_test_path -- --ignored --nocapture
@@ -30,7 +67,4 @@ cargo test -p e2e-real-canisters real_sns_user_topup_increases_existing_neuron_s
 cargo test -p e2e-real-canisters real_sns_minimum_stake_is_enforced_direct_governance_path -- --ignored --nocapture
 cargo test -p e2e-real-canisters real_sns_dissolve_delay_boundaries_are_visible_direct_governance_path -- --ignored --nocapture
 cargo test -p e2e-real-canisters real_canister_e2e_icp_to_io_stake_reward_redemption -- --ignored --nocapture
-cargo test -p e2e-real-canisters real_sns_governance_staking_smoke -- --ignored --nocapture || {
-  printf '\nFinalized governance/root/SNS-W staking is expected to remain blocked until swap participation/finalization and list-neurons drivers are implemented.\n' >&2
-  exit 3
-}
+cargo test -p e2e-real-canisters real_sns_governance_staking_smoke -- --ignored --nocapture
