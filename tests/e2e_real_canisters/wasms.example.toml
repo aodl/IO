@@ -91,10 +91,10 @@ nns_root_upstream_rev = "b904c9dd1bdef8841bd12f03efbc71180a015e25"
 nns_root_license = "Apache-2.0"
 
 nns_lifeline_wasm = "nns_lifeline.wasm"
-nns_lifeline_sha256 = "<auto-filled-uncompressed-wasm-hex>"
+nns_lifeline_sha256 = "f43f8c231644359423bfb755e9c1b477e3d0cd6cb3beb3d45905fdec6b3ba188"
 nns_lifeline_source_kind = "dfinity_download_systems"
-nns_lifeline_source_url = "<pin-exact-dfinity-lifeline-source-url>"
-nns_lifeline_source_sha256 = "<pin-compressed-source-sha256>"
+nns_lifeline_source_url = "https://download.dfinity.systems/ic/36ceffe4c47f4c3a881e75951178f5413f777f6c/canisters/lifeline_canister.wasm.gz"
+nns_lifeline_source_sha256 = "0d9221e28781e8b627c0e0696b16c0301424d4387514ed5fdae4fa74ad4b696b"
 nns_lifeline_upstream_rev = "36ceffe4c47f4c3a881e75951178f5413f777f6c"
 nns_lifeline_license = "Apache-2.0"
 

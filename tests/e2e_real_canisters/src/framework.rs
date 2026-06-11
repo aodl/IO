@@ -31,6 +31,11 @@ pub const FULL_FRAMEWORK_ARTIFACTS: &[&str] = &[
     "icp_index",
 ];
 
+pub const FULL_FRAMEWORK_OPTIONAL_ARTIFACTS: &[&str] = &[];
+
+pub const NNS_LIFELINE_POLICY: &str =
+    "required: DFINITY NnsInstaller installs NNS Root with Lifeline as controller, then installs Lifeline before SNS-W";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FrameworkArtifactInventory {
     pub loaded_artifacts: Vec<String>,
@@ -118,4 +123,72 @@ pub fn run_full_framework_preflight(required: bool) {
         "loaded {} pinned artifacts and created app canister {app_canister} on app subnet {app_subnet}; SNS-W deployment driver is the next step",
         inv.loaded_artifacts.len()
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    use std::env;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    fn clear_env() {
+        env::remove_var(crate::artifacts::ENV_WASM_DIR);
+        env::remove_var(crate::artifacts::ENV_MANIFEST);
+    }
+
+    fn write_manifest(dir: &Path, omit: Option<&str>) -> PathBuf {
+        let manifest_path = dir.join("wasms.local.toml");
+        let mut text = String::from("[artifacts]\n");
+        for key in FULL_FRAMEWORK_ARTIFACTS {
+            if Some(*key) == omit {
+                continue;
+            }
+            let file = format!("{key}.wasm");
+            let bytes = format!("wasm bytes for {key}");
+            fs::write(dir.join(&file), bytes.as_bytes()).unwrap();
+            let hash = hex::encode(Sha256::digest(bytes.as_bytes()));
+            text.push_str(&format!("{key}_wasm = \"{file}\"\n"));
+            text.push_str(&format!("{key}_sha256 = \"{hash}\"\n"));
+        }
+        fs::write(&manifest_path, text).unwrap();
+        manifest_path
+    }
+
+    #[test]
+    fn lifeline_is_required_for_full_framework_preflight() {
+        assert!(FULL_FRAMEWORK_ARTIFACTS.contains(&"nns_lifeline"));
+        assert!(FULL_FRAMEWORK_OPTIONAL_ARTIFACTS.is_empty());
+        assert!(NNS_LIFELINE_POLICY.contains("required"));
+        assert!(NNS_LIFELINE_POLICY.contains("SNS-W"));
+    }
+
+    #[test]
+    fn full_framework_inventory_reports_missing_lifeline() {
+        let _guard = crate::lock_test_env();
+        clear_env();
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = write_manifest(dir.path(), Some("nns_lifeline"));
+        env::set_var(crate::artifacts::ENV_WASM_DIR, dir.path());
+        env::set_var(crate::artifacts::ENV_MANIFEST, manifest);
+
+        let inv = inventory(false).expect("configured manifest should produce inventory");
+        assert!(inv.missing_artifacts.contains(&"nns_lifeline".to_string()));
+        assert!(!inv.loaded_artifacts.contains(&"nns_lifeline".to_string()));
+        clear_env();
+    }
+
+    #[test]
+    #[should_panic(expected = "nns_lifeline")]
+    fn required_full_framework_inventory_rejects_missing_lifeline() {
+        let _guard = crate::lock_test_env();
+        clear_env();
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = write_manifest(dir.path(), Some("nns_lifeline"));
+        env::set_var(crate::artifacts::ENV_WASM_DIR, dir.path());
+        env::set_var(crate::artifacts::ENV_MANIFEST, manifest);
+
+        let _ = inventory(true);
+        clear_env();
+    }
 }

@@ -228,10 +228,6 @@ fn parse_quoted(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
     fn clear_env() {
         env::remove_var(ENV_WASM_DIR);
         env::remove_var(ENV_MANIFEST);
@@ -339,7 +335,7 @@ mod tests {
 
     #[test]
     fn env_absent_means_opt_in_skip() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::lock_test_env();
         clear_env();
         match resolve_from_env(false).unwrap() {
             ArtifactStatus::Skipped(message) => assert!(message.contains(ENV_WASM_DIR)),
@@ -349,7 +345,7 @@ mod tests {
 
     #[test]
     fn required_env_absent_is_error() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::lock_test_env();
         clear_env();
         assert!(resolve_from_env(true).unwrap_err().contains(ENV_WASM_DIR));
     }
@@ -384,7 +380,7 @@ mod tests {
 
     #[test]
     fn required_manifest_missing_is_error() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::lock_test_env();
         clear_env();
         let dir = tempfile::tempdir().unwrap();
         env::set_var(ENV_WASM_DIR, dir.path());
@@ -395,7 +391,7 @@ mod tests {
 
     #[test]
     fn configured_artifacts_are_verified() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::lock_test_env();
         clear_env();
         let dir = tempfile::tempdir().unwrap();
         let manifest_path = dir.path().join("wasms.local.toml");

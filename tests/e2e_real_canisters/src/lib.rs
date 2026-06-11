@@ -5,11 +5,28 @@
 //! artifacts are configured; required xtask gates fail in that case.
 
 pub mod artifacts;
+pub mod brief_blockers;
 pub mod exact_economics;
 pub mod framework;
 pub mod icrc;
+pub mod nns_setup;
 pub mod pocketic_env;
+pub mod sns_governance_setup;
 pub mod sns_ledger_index;
+pub mod sns_lifecycle;
+pub mod sns_root_setup;
+pub mod sns_wasm_setup;
+
+#[cfg(test)]
+pub static TEST_ENV_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+
+#[cfg(test)]
+pub fn lock_test_env() -> std::sync::MutexGuard<'static, ()> {
+    TEST_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 #[cfg(test)]
 mod tests {
@@ -26,9 +43,15 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires pinned real SNS governance/root Wasms and init driver"]
+    #[ignore = "requires pinned real SNS governance/ledger Wasms and POCKET_IC_BIN"]
     fn real_sns_governance_staking_smoke() {
-        crate::framework::run_full_framework_preflight(false);
+        crate::sns_governance_setup::install_real_sns_governance_and_stake_neuron(true).unwrap();
+        crate::sns_governance_setup::install_real_sns_governance_and_topup_neuron(true).unwrap();
+        crate::sns_governance_setup::install_real_sns_governance_and_reject_below_minimum_stake(
+            true,
+        )
+        .unwrap();
+        crate::sns_governance_setup::install_real_sns_governance_and_observe_dissolve_delay_boundaries(true).unwrap();
     }
 
     #[test]

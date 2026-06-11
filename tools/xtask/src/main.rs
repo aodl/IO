@@ -2577,6 +2577,7 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
             "name = \"e2e-real-canisters\"",
             "pocket-ic.workspace = true",
             "io-ledger-types.workspace = true",
+            "io-production-wiring.workspace = true",
             "io-core-model.workspace = true",
             "io-reward-policy.workspace = true",
         ],
@@ -2605,6 +2606,12 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
             "real_canister_e2e_icp_to_io_stake_reward_redemption",
             "exact_economics",
             "framework",
+            "nns_setup",
+            "sns_governance_setup",
+            "sns_wasm_setup",
+            "sns_root_setup",
+            "sns_lifecycle",
+            "brief_blockers",
         ],
     )?;
     let artifacts = require_file(root, "tests/e2e_real_canisters/src/artifacts.rs")?;
@@ -2626,6 +2633,79 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
             "create_application_canister",
             "create_empty_application_canister",
             "create_canister_on_subnet",
+        ],
+    )?;
+    let nns_setup = require_file(root, "tests/e2e_real_canisters/src/nns_setup.rs")?;
+    require_present(
+        "tests/e2e_real_canisters/src/nns_setup.rs",
+        &nns_setup,
+        &[
+            "install_minimal_nns_for_sns_w",
+            "NNS_INSTALL_PLAN",
+            "nns_lifeline",
+            "InitPayloadDriverMissing",
+            "real_nns_minimal_installer_rejects_missing_artifacts",
+        ],
+    )?;
+    let sns_wasm_setup = require_file(root, "tests/e2e_real_canisters/src/sns_wasm_setup.rs")?;
+    require_present(
+        "tests/e2e_real_canisters/src/sns_wasm_setup.rs",
+        &sns_wasm_setup,
+        &[
+            "SNS_WASM_PUBLICATION_PLAN",
+            "add_all_sns_wasms_to_sns_w",
+            "SnsWProposalDriverMissing",
+            "real_sns_w_required_gate_fails_when_wasm_missing",
+        ],
+    )?;
+    let sns_governance_setup =
+        require_file(root, "tests/e2e_real_canisters/src/sns_governance_setup.rs")?;
+    require_present(
+        "tests/e2e_real_canisters/src/sns_governance_setup.rs",
+        &sns_governance_setup,
+        &[
+            "Governance",
+            "list_neurons",
+            "list_proposals",
+            "real_sns_governance_direct_empty_state_lists_no_neurons_or_proposals",
+            "real_sns_user_stakes_io_normal_path_and_list_neurons_observes_it_direct_governance_path",
+            "real_sns_user_topup_increases_existing_neuron_stake_direct_governance_path",
+            "real_sns_minimum_stake_is_enforced_direct_governance_path",
+            "real_sns_dissolve_delay_boundaries_are_visible_direct_governance_path",
+        ],
+    )?;
+    let sns_root_setup = require_file(root, "tests/e2e_real_canisters/src/sns_root_setup.rs")?;
+    require_present(
+        "tests/e2e_real_canisters/src/sns_root_setup.rs",
+        &sns_root_setup,
+        &[
+            "SnsRootCanister",
+            "list_sns_canisters",
+            "real_sns_root_control_uses_application_subnet_canister_direct_root_path",
+        ],
+    )?;
+    let sns_lifecycle = require_file(root, "tests/e2e_real_canisters/src/sns_lifecycle.rs")?;
+    require_present(
+        "tests/e2e_real_canisters/src/sns_lifecycle.rs",
+        &sns_lifecycle,
+        &[
+            "build_io_test_sns_init_payload",
+            "deploy_io_test_sns_through_sns_w",
+            "CreateServiceNervousSystemDtoMissing",
+            "real_sns_lifecycle_deploys_sns_via_sns_w_is_blocked_on_sns_init_dto",
+        ],
+    )?;
+    let brief_blockers = require_file(root, "tests/e2e_real_canisters/src/brief_blockers.rs")?;
+    require_present(
+        "tests/e2e_real_canisters/src/brief_blockers.rs",
+        &brief_blockers,
+        &[
+            "RealFrameworkBlocker",
+            "io_stream_manager_real_jupiter_deposit_100_icp_issues_exact_60_io",
+            "real_stack_same_wasm_upgrade_preserves_scheduler_cursors",
+            "historian_real_freshness_reports_stale_missing_incomplete_not_zero",
+            "frontend_real_status_displays_not_live",
+            "local_network_launches_with_nns_sns_features",
         ],
     )?;
     let exact_economics = require_file(root, "tests/e2e_real_canisters/src/exact_economics.rs")?;
@@ -2664,11 +2744,17 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
     for path in [
         cargo_path,
         "tests/e2e_real_canisters/src/artifacts.rs",
+        "tests/e2e_real_canisters/src/brief_blockers.rs",
         "tests/e2e_real_canisters/src/exact_economics.rs",
         "tests/e2e_real_canisters/src/icrc.rs",
         "tests/e2e_real_canisters/src/pocketic_env.rs",
         "tests/e2e_real_canisters/src/framework.rs",
+        "tests/e2e_real_canisters/src/nns_setup.rs",
+        "tests/e2e_real_canisters/src/sns_governance_setup.rs",
         "tests/e2e_real_canisters/src/sns_ledger_index.rs",
+        "tests/e2e_real_canisters/src/sns_lifecycle.rs",
+        "tests/e2e_real_canisters/src/sns_root_setup.rs",
+        "tests/e2e_real_canisters/src/sns_wasm_setup.rs",
     ] {
         let text = require_file(root, path)?;
         require_absent(
@@ -4197,7 +4283,7 @@ fn main() -> ExitCode {
         "real_sns_governance_tests" => {
             ok &= run_subcommand("real_canister_harness_check");
             ok &= run(
-                "unit: e2e-real-canisters governance placeholder registration",
+                "unit: e2e-real-canisters governance real-test registration",
                 cargo_test(&[
                     "-p",
                     "e2e-real-canisters",
@@ -4205,7 +4291,7 @@ fn main() -> ExitCode {
                 ]),
             );
             eprintln!(
-                "skipping real_sns_governance_tests ignored layer: normal SNS staking driver is blocked until pinned governance/root artifacts and init shape are supplied"
+                "skipping real_sns_governance_tests ignored layer unless real artifacts and POCKET_IC_BIN are supplied"
             );
         }
         "real_sns_governance_required" => {
@@ -4227,8 +4313,8 @@ fn main() -> ExitCode {
                 ok = false;
             }
             if ok {
-                let _preflight_ok = run(
-                    "real-framework: full SNS/NNS artifact and app-subnet preflight",
+                ok &= run(
+                    "real-framework: direct real SNS governance staking/top-up/minimum-stake",
                     cargo_test(&[
                         "-p",
                         "e2e-real-canisters",
@@ -4238,10 +4324,6 @@ fn main() -> ExitCode {
                         "--nocapture",
                     ]),
                 );
-                eprintln!(
-                    "✗ real_sns_governance_required: SNS-W deploy/finalize/list-neurons driver is still blocked after artifact preflight"
-                );
-                ok = false;
             }
         }
         "real_io_e2e_tests" => {

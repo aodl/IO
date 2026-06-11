@@ -8,6 +8,7 @@ license.workspace = true
 candid.workspace = true
 hex = "0.4.3"
 io-ledger-types.workspace = true
+io-production-wiring.workspace = true
 io-reward-policy.workspace = true
 io-core-model.workspace = true
 pocket-ic.workspace = true

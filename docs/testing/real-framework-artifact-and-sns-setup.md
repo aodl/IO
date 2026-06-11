@@ -67,6 +67,20 @@ https://github.com/<repository>/releases/download/<tag>/<filename>
 
 Every artifact entry carries SHA-256. IO should mirror this in `tests/e2e_real_canisters/wasms.local.toml` or an explicitly supplied `IO_REAL_SNS_WASM_MANIFEST`, including source kind, upstream revision or tag, filename, and SHA-256. Fetching can be an opt-in xtask command only after the manifest has pinned URL inputs and hashes. Verification can stay in default local checks because it performs no network calls and skips when no artifact directory is configured.
 
+### NNS Lifeline Resolution
+
+`nns_lifeline` is required for the minimal NNS/SNS-W path. DFINITY's current `NnsInstaller` installs NNS Root with Lifeline as controller, installs NNS Governance under Root, then installs Lifeline before SNS-W. The matching NNS constants list the artifact filename pattern as `lifeline_canister`, not `lifeline-canister`.
+
+Pinned IO artifact entry:
+
+- source URL: `https://download.dfinity.systems/ic/36ceffe4c47f4c3a881e75951178f5413f777f6c/canisters/lifeline_canister.wasm.gz`
+- upstream revision: `36ceffe4c47f4c3a881e75951178f5413f777f6c`
+- compressed SHA-256: `0d9221e28781e8b627c0e0696b16c0301424d4387514ed5fdae4fa74ad4b696b`
+- uncompressed SHA-256: `f43f8c231644359423bfb755e9c1b477e3d0cd6cb3beb3d45905fdec6b3ba188`
+- license: `Apache-2.0`
+
+The full-framework preflight treats Lifeline as required, not optional. A missing Lifeline artifact should fail required gates before the SNS-W deployment driver runs.
+
 ## Version Compatibility
 
 Pin these as a tested set:
@@ -128,20 +142,26 @@ The script refuses non-HTTPS/non-approved URL shapes and does not run in default
 
 ## Implemented IO Harness Additions
 
-The IO harness now has three opt-in layers:
+The IO harness now has direct opt-in layers:
 
 1. `real_sns_ledger_index_smoke` installs pinned real SNS ledger/index Wasms on the SNS subnet and verifies ICRC metadata, transfers, errors, duplicate handling, index history, and same-Wasm upgrade behaviour.
 2. `real_canister_e2e_icp_to_io_stake_reward_redemption` uses pinned real ICRC ledger/index canisters for the ledger movement slice and the pure IO accounting/reward policy crates for exact expected economics: Jupiter Faucet ICP input, 40/60 split, backed IO issuance, holder compounding via rate increase, two-week staker rewards, participation-weighted higher staking returns, and redemption at the current rate.
-3. `real_sns_governance_staking_smoke` now performs a strict full-framework artifact/app-subnet preflight. It intentionally still fails the required governance gate after preflight until the SNS-W deploy/finalize/list-neurons driver is implemented.
+3. `real_sns_governance_staking_smoke` direct-installs real SNS governance and a real SNS ledger, transfers liquid IO into the governance staking subaccount, claims/refreshed a neuron through `manage_neuron`, verifies `list_neurons`, verifies top-up increases the same neuron's cached stake, verifies the real below-minimum stake rejection, and observes dissolve-delay state below and at the two-week eligibility boundary.
+4. `real_nns_sns_wasm_canister_responds_to_basic_queries` installs real SNS-W on the PocketIC NNS subnet and queries configured SNS subnet IDs.
+5. `real_sns_governance_direct_empty_state_lists_no_neurons_or_proposals` direct-installs real SNS governance with empty local state and verifies `list_neurons`, `list_proposals`, and nervous-system parameters.
+6. The direct SNS-W publication tests call real `add_wasm`/`get_wasm` for root, ledger, index, swap, and archive Wasms under the PocketIC update ingress limit, and verify wrong-hash rejection plus duplicate publication safety.
+7. `real_sns_root_control_uses_application_subnet_canister_direct_root_path` direct-installs real SNS root with a local application-subnet dapp and verifies `list_sns_canisters`.
 
 Use `tools/scripts/run-real-framework-e2e` for the local all-in-one operator path after copying this file to `tests/e2e_real_canisters/wasms.local.toml` and setting `POCKET_IC_BIN`. The script fetches pinned artifacts, verifies compressed source hashes, decompresses to installable Wasms, fills local uncompressed hashes, and runs the ignored real-framework tests. It does not use `--network ic` and must not be run against production fiduciary canisters.
 
 ### Remaining Real SNS-W Driver Work
 
-The exact-economics E2E is a real-ledger test, not yet a complete SNS-W-launched governance test. The remaining implementation step is to port DFINITY's NNS installer and SNS-W deployment payload DTOs so the harness can:
+The exact-economics E2E is a real-ledger test, and the direct governance staking smoke is a real-governance/direct-install test. Neither is a complete SNS-W-launched governance test. The remaining implementation step is to port DFINITY's NNS installer and SNS-W deployment payload DTOs so the harness can:
 
 - install NNS ledger/root/governance/lifeline/SNS-W/registry/CMC with valid init payloads;
 - publish the pinned SNS root/governance/ledger/index/swap/archive Wasms to SNS-W through NNS proposals;
 - deploy SNS through SNS-W rather than direct-installing ledgers;
 - finalize the swap;
-- prove normal SNS `list_neurons`, top-up, dissolve-delay, voting/following, and root app-control behaviour.
+- prove SNS-W-finalized `list_neurons`, top-up, dissolve-delay, voting/following, and root app-control behaviour.
+
+The direct SNS-W/governance/root smokes are intentionally not treated as SNS-W lifecycle proof. `sns_governance.wasm` is larger than the direct PocketIC update ingress limit, so full root/governance/ledger/index/swap/archive publication must use the NNS proposal or chunked driver path before `deploy_new_sns` can be exercised. The direct governance staking smoke proves normal ledger-funded claim/refresh staking, top-up, minimum-stake enforcement, and dissolve-delay visibility through real governance, but it does not prove voting, SNS-W finalization, swap-created neurons, or root-controlled IO app upgrades.
