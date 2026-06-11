@@ -109,6 +109,14 @@ pub struct SnsWasmBasicQueryFixture {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BootstrappedSnsWasmFixture {
+    pub sns_wasm: Principal,
+    pub nns_subnet: Principal,
+    pub sns_subnet: Principal,
+    pub latest_version_hash_keys: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NnsSetupError {
     Skipped(String),
     Artifact(String),
@@ -222,6 +230,57 @@ pub fn install_sns_wasm_for_basic_queries(
         nns_subnet,
         sns_subnet,
         allowed_principal,
+    })
+}
+
+pub fn bootstrap_sns_wasm_with_pocketic_icp_features(
+) -> Result<BootstrappedSnsWasmFixture, NnsSetupError> {
+    assert_nns_plan_avoids_protected_ids()?;
+    if !pocketic_env::pocketic_available() {
+        return Err(NnsSetupError::PocketIcMissing);
+    }
+
+    let pic = pocketic_env::new_pic_with_icp_sns_features();
+    let nns_subnet = pic.topology().get_nns().expect("NNS subnet should exist");
+    let sns_subnet = pic.topology().get_sns().expect("SNS subnet should exist");
+    let sns_wasm = principal(install_sns_wasm().canister_id);
+
+    assert_eq!(pic.get_subnet(sns_wasm), Some(nns_subnet));
+    let subnet_response: GetSnsSubnetIdsResponse =
+        icrc::query_one(&pic, sns_wasm, "get_sns_subnet_ids", EmptyRecord {});
+    assert_eq!(subnet_response.sns_subnet_ids, vec![sns_subnet]);
+
+    let latest_version: Vec<(String, String)> =
+        icrc::query_one(&pic, sns_wasm, "get_latest_sns_version_pretty", ());
+    let mut latest_version_hash_keys = latest_version
+        .into_iter()
+        .map(|(key, value)| {
+            assert_eq!(
+                value.len(),
+                64,
+                "SNS-W latest version hash {key} should be hex SHA-256"
+            );
+            key
+        })
+        .collect::<Vec<_>>();
+    latest_version_hash_keys.sort();
+    assert_eq!(
+        latest_version_hash_keys,
+        vec![
+            "Governance".to_string(),
+            "Ledger".to_string(),
+            "Ledger Archive".to_string(),
+            "Ledger Index".to_string(),
+            "Root".to_string(),
+            "Swap".to_string(),
+        ]
+    );
+
+    Ok(BootstrappedSnsWasmFixture {
+        sns_wasm,
+        nns_subnet,
+        sns_subnet,
+        latest_version_hash_keys,
     })
 }
 
@@ -390,6 +449,17 @@ mod tests {
             await_nns_ready(),
             Err(NnsSetupError::InitPayloadDriverMissing)
         );
+    }
+
+    #[test]
+    #[ignore = "requires POCKET_IC_BIN; uses PocketIC ICP feature bootstrap, not NNS proposal publication"]
+    fn real_nns_sns_wasm_bootstrapped_by_pocketic_icp_features_contains_all_sns_wasm_slots() {
+        let fixture = bootstrap_sns_wasm_with_pocketic_icp_features().unwrap();
+        assert_eq!(fixture.sns_wasm, principal(install_sns_wasm().canister_id));
+        assert_ne!(fixture.nns_subnet, fixture.sns_subnet);
+        assert!(fixture
+            .latest_version_hash_keys
+            .contains(&"Governance".to_string()));
     }
 
     #[test]

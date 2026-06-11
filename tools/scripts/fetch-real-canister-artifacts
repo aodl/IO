@@ -109,10 +109,11 @@ is_placeholder() {
 
 fetch_one() {
   local key="$1"
-  local file expected source_expected url dest actual source_actual tmp_download tmp_wasm lower_expected lower_source_expected
+  local file expected source_expected source_file url dest source_dest actual source_actual tmp_download tmp_wasm tmp_source lower_expected lower_source_expected
   file="$(value_for "${key}" filename)"
   expected="$(value_for "${key}" sha256)"
   source_expected="$(value_for "${key}" source_sha256)"
+  source_file="$(value_for "${key}" source_filename)"
   url="$(value_for "${key}" source_url)"
 
   if [[ -z "${file}" ]]; then
@@ -133,9 +134,18 @@ fetch_one() {
   fi
 
   dest="${WASM_DIR}/${file}"
+  if is_placeholder "${source_file}"; then
+    source_file="${url##*/}"
+  fi
+  if is_placeholder "${source_file}"; then
+    printf 'refusing %s: source_url does not include a downloadable source filename\n' "${key}" >&2
+    exit 2
+  fi
+  source_dest="${WASM_DIR}/${source_file}"
   tmp_download="${dest}.download"
   tmp_wasm="${dest}.tmp"
-  rm -f "${tmp_download}" "${tmp_wasm}"
+  tmp_source="${source_dest}.tmp"
+  rm -f "${tmp_download}" "${tmp_wasm}" "${tmp_source}"
   printf 'fetching %s -> %s\n' "${url}" "${tmp_download}"
   curl --fail --location --proto '=https' --tlsv1.2 --output "${tmp_download}" "${url}"
 
@@ -143,11 +153,12 @@ fetch_one() {
   if ! is_placeholder "${source_expected}"; then
     lower_source_expected="$(printf '%s' "${source_expected}" | tr '[:upper:]' '[:lower:]')"
     if [[ "${source_actual}" != "${lower_source_expected}" ]]; then
-      rm -f "${tmp_download}" "${tmp_wasm}"
+      rm -f "${tmp_download}" "${tmp_wasm}" "${tmp_source}"
       printf 'source sha256 mismatch for %s: expected %s got %s\n' "${key}" "${source_expected}" "${source_actual}" >&2
       exit 1
     fi
   fi
+  cp "${tmp_download}" "${tmp_source}"
 
   case "${url}" in
     *.gz|*.wasm.gz)
@@ -162,7 +173,7 @@ fetch_one() {
   if ! is_placeholder "${expected}"; then
     lower_expected="$(printf '%s' "${expected}" | tr '[:upper:]' '[:lower:]')"
     if [[ "${actual}" != "${lower_expected}" ]]; then
-      rm -f "${tmp_download}" "${tmp_wasm}"
+      rm -f "${tmp_download}" "${tmp_wasm}" "${tmp_source}"
       printf 'uncompressed wasm sha256 mismatch for %s: expected %s got %s\n' "${key}" "${expected}" "${actual}" >&2
       exit 1
     fi
@@ -172,8 +183,9 @@ fetch_one() {
   fi
 
   mv "${tmp_wasm}" "${dest}"
+  mv "${tmp_source}" "${source_dest}"
   rm -f "${tmp_download}"
-  printf 'verified %s source_sha256=%s wasm_sha256=%s\n' "${key}" "${source_actual}" "${actual}"
+  printf 'verified %s source_sha256=%s source_file=%s wasm_sha256=%s\n' "${key}" "${source_actual}" "${source_file}" "${actual}"
 }
 
 fetch_one sns_ledger

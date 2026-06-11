@@ -1,5 +1,8 @@
 use candid::Principal;
-use pocket_ic::{PocketIc, PocketIcBuilder};
+use pocket_ic::{
+    common::rest::{IcpFeatures, IcpFeaturesConfig},
+    PocketIc, PocketIcBuilder,
+};
 
 const CYCLES: u128 = 2_000_000_000_000;
 
@@ -12,6 +15,32 @@ pub fn new_sns_pic() -> PocketIc {
         .with_nns_subnet()
         .with_sns_subnet()
         .with_application_subnet()
+        .build()
+}
+
+pub fn new_pic_with_icp_sns_features() -> PocketIc {
+    PocketIcBuilder::new()
+        .with_application_subnet()
+        .with_icp_features(IcpFeatures {
+            registry: Some(IcpFeaturesConfig::DefaultConfig),
+            icp_token: Some(IcpFeaturesConfig::DefaultConfig),
+            nns_governance: Some(IcpFeaturesConfig::DefaultConfig),
+            sns: Some(IcpFeaturesConfig::DefaultConfig),
+            ..Default::default()
+        })
+        .build()
+}
+
+pub fn new_pic_with_nns_governance_features() -> PocketIc {
+    PocketIcBuilder::new()
+        .with_sns_subnet()
+        .with_application_subnet()
+        .with_icp_features(IcpFeatures {
+            registry: Some(IcpFeaturesConfig::DefaultConfig),
+            icp_token: Some(IcpFeaturesConfig::DefaultConfig),
+            nns_governance: Some(IcpFeaturesConfig::DefaultConfig),
+            ..Default::default()
+        })
         .build()
 }
 

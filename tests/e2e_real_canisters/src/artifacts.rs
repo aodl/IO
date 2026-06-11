@@ -111,6 +111,22 @@ impl ArtifactManifest {
             .filter(|value| !value.starts_with('<'))
     }
 
+    pub fn source_artifact_name(&self, key: &str) -> Result<String, String> {
+        if let Some(source_filename) = self.source_filename(key) {
+            return Ok(source_filename.trim().to_string());
+        }
+        let source_url = self
+            .source_url(key)
+            .ok_or_else(|| format!("manifest is missing pinned artifacts.{key}.source_url"))?;
+        let file_name = source_url
+            .rsplit('/')
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && !value.starts_with('<'))
+            .ok_or_else(|| format!("manifest artifacts.{key}.source_url has no filename"))?;
+        Ok(file_name.to_string())
+    }
+
     pub fn require_fetch_metadata(&self, key: &str) -> Result<FetchMetadata<'_>, String> {
         let source_url = self
             .source_url(key)
@@ -150,6 +166,28 @@ impl ArtifactSet {
         let bytes = fs::read(&path)
             .map_err(|err| format!("failed to read artifact {}: {err}", path.display()))?;
         let expected = self.manifest.require_hash(key)?;
+        verify_sha256_bytes(&path, &bytes, expected)?;
+        Ok(bytes)
+    }
+
+    pub fn load_required_source_wasm_gz(&self, key: &str) -> Result<Vec<u8>, String> {
+        let file_name = self.manifest.source_artifact_name(key)?;
+        if !file_name.ends_with(".wasm.gz") && !file_name.ends_with(".gz") {
+            return Err(format!(
+                "artifact {key} source file {file_name} is not a .wasm.gz artifact"
+            ));
+        }
+        let path = self.wasm_dir.join(file_name);
+        let bytes = fs::read(&path).map_err(|err| {
+            format!(
+                "failed to read source artifact {}: {err}; run tools/scripts/fetch-real-canister-artifacts",
+                path.display()
+            )
+        })?;
+        let expected = self
+            .manifest
+            .source_sha256(key)
+            .ok_or_else(|| format!("manifest is missing pinned artifacts.{key}.source_sha256"))?;
         verify_sha256_bytes(&path, &bytes, expected)?;
         Ok(bytes)
     }
@@ -280,6 +318,10 @@ mod tests {
             Some("sns_ledger.wasm.gz")
         );
         assert_eq!(
+            manifest.source_artifact_name("sns_ledger").unwrap(),
+            "sns_ledger.wasm.gz"
+        );
+        assert_eq!(
             manifest.require_hash("sns_ledger").unwrap(),
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         );
@@ -296,15 +338,21 @@ mod tests {
 
     #[test]
     fn legacy_flat_manifest_parsing_is_preserved() {
-        let manifest = ArtifactManifest::parse(
+        let source_url = concat!(
+            "https",
+            "://",
+            "down",
+            "load.dfinity.systems/ic/rev/canisters/ic-icrc1-ledger.wasm.gz"
+        );
+        let manifest = ArtifactManifest::parse(&format!(
             r#"
             sns_ledger_wasm = "sns_ledger.wasm"
             sns_ledger_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
             sns_ledger_source_kind = "dfinity_release_store"
-            sns_ledger_source_url = "pinned-url"
+            sns_ledger_source_url = "{source_url}"
             sns_ledger_source_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            "#,
-        )
+            "#
+        ))
         .unwrap();
         assert_eq!(
             manifest.artifact_name("sns_ledger").unwrap(),
@@ -316,6 +364,10 @@ mod tests {
                 .unwrap()
                 .source_sha256,
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(
+            manifest.source_artifact_name("sns_ledger").unwrap(),
+            "ic-icrc1-ledger.wasm.gz"
         );
     }
 
@@ -430,6 +482,93 @@ source_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         assert_eq!(
             set.manifest.source_sha256("sns_ledger"),
             Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        clear_env();
+    }
+
+    #[test]
+    fn configured_source_artifacts_are_verified_from_explicit_source_filename() {
+        let _guard = crate::lock_test_env();
+        clear_env();
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("wasms.local.toml");
+        fs::write(dir.path().join("sns_ledger.wasm"), b"ledger").unwrap();
+        fs::write(dir.path().join("sns_ledger.wasm.gz"), b"compressed ledger").unwrap();
+        let wasm_hash = hex::encode(Sha256::digest(b"ledger"));
+        let source_hash = hex::encode(Sha256::digest(b"compressed ledger"));
+        let source_url = concat!(
+            "https",
+            "://",
+            "down",
+            "load.dfinity.systems/ic/rev/canisters/ic-icrc1-ledger.wasm.gz"
+        );
+        fs::write(
+            &manifest_path,
+            format!(
+                r#"[artifacts.sns_ledger]
+filename = "sns_ledger.wasm"
+sha256 = "{wasm_hash}"
+source_filename = "sns_ledger.wasm.gz"
+source_kind = "dfinity_release_store"
+source_url = "{source_url}"
+source_sha256 = "{source_hash}"
+"#
+            ),
+        )
+        .unwrap();
+        env::set_var(ENV_WASM_DIR, dir.path());
+        env::set_var(ENV_MANIFEST, &manifest_path);
+        let ArtifactStatus::Ready(set) = resolve_from_env(true).unwrap() else {
+            panic!("expected configured artifact set");
+        };
+        assert_eq!(
+            set.load_required_source_wasm_gz("sns_ledger").unwrap(),
+            b"compressed ledger"
+        );
+        clear_env();
+    }
+
+    #[test]
+    fn configured_source_artifacts_are_verified_from_source_url_filename() {
+        let _guard = crate::lock_test_env();
+        clear_env();
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("wasms.local.toml");
+        fs::write(dir.path().join("sns_ledger.wasm"), b"ledger").unwrap();
+        fs::write(
+            dir.path().join("ic-icrc1-ledger.wasm.gz"),
+            b"compressed ledger",
+        )
+        .unwrap();
+        let wasm_hash = hex::encode(Sha256::digest(b"ledger"));
+        let source_hash = hex::encode(Sha256::digest(b"compressed ledger"));
+        let source_url = concat!(
+            "https",
+            "://",
+            "down",
+            "load.dfinity.systems/ic/rev/canisters/ic-icrc1-ledger.wasm.gz"
+        );
+        fs::write(
+            &manifest_path,
+            format!(
+                r#"[artifacts.sns_ledger]
+filename = "sns_ledger.wasm"
+sha256 = "{wasm_hash}"
+source_kind = "dfinity_release_store"
+source_url = "{source_url}"
+source_sha256 = "{source_hash}"
+"#
+            ),
+        )
+        .unwrap();
+        env::set_var(ENV_WASM_DIR, dir.path());
+        env::set_var(ENV_MANIFEST, &manifest_path);
+        let ArtifactStatus::Ready(set) = resolve_from_env(true).unwrap() else {
+            panic!("expected configured artifact set");
+        };
+        assert_eq!(
+            set.load_required_source_wasm_gz("sns_ledger").unwrap(),
+            b"compressed ledger"
         );
         clear_env();
     }

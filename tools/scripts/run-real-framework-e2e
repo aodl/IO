@@ -12,11 +12,17 @@ cd "${ROOT}"
 cargo test -p e2e-real-canisters real_sns_ledger_index_smoke -- --ignored --nocapture
 cargo test -p e2e-real-canisters real_sns_ledger_index_same_wasm_upgrade_preserves_balances_history_and_duplicates -- --ignored --nocapture
 cargo test -p e2e-real-canisters real_nns_sns_wasm_canister_responds_to_basic_queries -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_nns_sns_wasm_bootstrapped_by_pocketic_icp_features_contains_all_sns_wasm_slots -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_w_governance_wasm_publication_payload_sizes_are_understood -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_w_publishes_large_governance_wasm_via_gzipped_nns_proposal -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_w_publishes_root_governance_ledger_index_swap_archive_via_nns -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_lifecycle_deploys_sns_via_sns_w -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_swap_opens_with_expected_parameters -- --ignored --nocapture
 cargo test -p e2e-real-canisters real_sns_w_accepts_root_ledger_index_swap_archive_wasms_direct_test_path -- --ignored --nocapture
 cargo test -p e2e-real-canisters real_sns_w_lists_published_wasms_direct_test_path -- --ignored --nocapture
 cargo test -p e2e-real-canisters real_sns_w_rejects_wrong_hash_or_wrong_type_direct_test_path -- --ignored --nocapture
 cargo test -p e2e-real-canisters real_sns_w_publication_is_idempotent_or_fails_safely_direct_test_path -- --ignored --nocapture
-cargo test -p e2e-real-canisters real_sns_w_full_publication_requires_proposal_or_chunked_driver -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_sns_w_accepts_root_governance_ledger_index_swap_archive_wasms_direct_test_path -- --ignored --nocapture
 cargo test -p e2e-real-canisters real_sns_root_control_uses_application_subnet_canister_direct_root_path -- --ignored --nocapture
 cargo test -p e2e-real-canisters real_sns_governance_direct_empty_state_lists_no_neurons_or_proposals -- --ignored --nocapture
 cargo test -p e2e-real-canisters real_sns_user_stakes_io_normal_path_and_list_neurons_observes_it_direct_governance_path -- --ignored --nocapture
@@ -25,6 +31,6 @@ cargo test -p e2e-real-canisters real_sns_minimum_stake_is_enforced_direct_gover
 cargo test -p e2e-real-canisters real_sns_dissolve_delay_boundaries_are_visible_direct_governance_path -- --ignored --nocapture
 cargo test -p e2e-real-canisters real_canister_e2e_icp_to_io_stake_reward_redemption -- --ignored --nocapture
 cargo test -p e2e-real-canisters real_sns_governance_staking_smoke -- --ignored --nocapture || {
-  printf '\nFull governance/root/SNS-W staking is expected to remain blocked until the NNS proposal publication and SNS-W deploy/finalize drivers are implemented.\n' >&2
+  printf '\nFinalized governance/root/SNS-W staking is expected to remain blocked until swap participation/finalization and list-neurons drivers are implemented.\n' >&2
   exit 3
 }

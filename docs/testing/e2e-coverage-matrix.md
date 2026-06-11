@@ -2,7 +2,7 @@
 
 This matrix separates proof strength. A mock test uses IO-owned mock canisters or host fixtures. An SNS-shaped PocketIC test runs IO canisters plus mock SNS-shaped ledger/index/governance/root canisters. A real-framework PocketIC test runs real SNS framework Wasms in PocketIC. An official local SNS rehearsal uses local DFINITY SNS tooling and is complete only when `deploy/local-sns-rehearsal/canister-ids.local.toml` exists and `cargo run -p xtask -- validate_local_sns_ledger` passes.
 
-No current all-real-canister PocketIC E2E test exists. The real-framework PocketIC ledger/index layer is executable only when pinned SNS ledger/index Wasms are supplied locally. No current test proves the canonical mainnet SNS IO ledger exists. IO protocol remains not live.
+No current all-real-canister PocketIC E2E test exists for the full IO protocol. The real-framework PocketIC ledger/index, direct-governance, SNS-W publication, SNS-W deployment, and swap-open layers are executable only when pinned Wasms are supplied locally. No current test proves the canonical mainnet SNS IO ledger exists. IO protocol remains not live.
 
 Legend: Unit, Mock/PocketIC, SNS-shaped PocketIC, Real-framework PocketIC, Official local SNS rehearsal, Not covered, Blocked by tooling.
 
@@ -28,13 +28,13 @@ Legend: Unit, Mock/PocketIC, SNS-shaped PocketIC, Real-framework PocketIC, Offic
 
 | Invariant | Current strongest coverage | Gap |
 | --- | --- | --- |
-| user can stake IO the normal SNS way into an SNS neuron | Not covered | Blocked by no automated real SNS governance/ledger staking flow |
-| staked IO neuron appears in SNS governance | Production-shaped DTO unit tests only | Not proved with real governance canister |
-| minimum neuron stake is enforced | Not covered against SNS | Need real SNS governance or official local evidence extension |
-| dissolve delay set/increased and below-threshold excluded | Unit: SNS eligibility/reward-policy tests | Real governance manage-neuron flow not covered |
+| user can stake IO the normal SNS way into an SNS neuron | Real-framework PocketIC direct-governance opt-in tests | Direct governance install only; not yet behind SNS-W-finalized SNS |
+| staked IO neuron appears in SNS governance | Real-framework PocketIC direct-governance opt-in tests plus production-shaped DTO unit tests | Not yet through SNS-W-finalized governance |
+| minimum neuron stake is enforced | Real-framework PocketIC direct-governance opt-in tests | Not yet through SNS-W-finalized governance |
+| dissolve delay set/increased and below-threshold excluded | Unit eligibility/reward-policy tests; real-framework direct-governance dissolve-delay boundary observation | Not yet through SNS-W-finalized governance |
 | following/voting/maturity/staked maturity represented | Unit production-shaped governance DTO and participation tests | Real proposal/voting/reward behavior not covered |
-| stake increase observed correctly | Unit: `increasing_staked_io_increases_reward_weight_without_double_counting` | Not through normal SNS top-up |
-| dissolve/dissolving/disbursed states handled | Unit eligibility/reward tests | Real lifecycle not covered |
+| stake increase observed correctly | Unit: `increasing_staked_io_increases_reward_weight_without_double_counting`; real-framework direct-governance top-up test | Not yet through SNS-W-finalized governance |
+| dissolve/dissolving/disbursed states handled | Unit eligibility/reward tests; direct-governance dissolve-delay visibility | Real finalized lifecycle not covered |
 | participation affects APY/reward only if policy says | Unit reward allocation and governance snapshot tests | Not real SNS |
 | multiple neurons aggregation and duplicate prevention | Unit governance snapshot duplicate/page tests | Real pagination not covered |
 | hotkey/controller authorization respected | DTO permission mapping tests | Real auth calls not covered |
@@ -106,4 +106,4 @@ Current coverage is strong for IO-owned model logic, production-shaped DTO mappi
 
 ## Current Real-Framework Stride
 
-`tools/scripts/run-real-framework-e2e` is the opt-in local operator path for pinned real framework artifacts. It fetches/verifies/decompresses configured artifacts, runs the real ledger/index tests, and runs the real-ledger exact-economics E2E. Governance/root/SNS-W normal staking remains blocked until the SNS-W deployment/finalization/list-neurons driver is implemented.
+`tools/scripts/run-real-framework-e2e` is the opt-in local operator path for pinned real framework artifacts. It fetches/verifies/decompresses configured artifacts, runs the real ledger/index tests, the PocketIC ICP-feature SNS-W bootstrap proof, gzipped NNS proposal publication for all six SNS Wasm slots, SNS-W deploy/swap-open tests, and the real-ledger exact-economics E2E. Governance/root/SNS-W normal staking remains blocked until swap participation/finalization and list-neurons drivers are implemented.
