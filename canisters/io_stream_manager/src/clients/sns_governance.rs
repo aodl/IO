@@ -23,6 +23,12 @@ pub struct MockSnsNeuron {
     pub is_dissolving: bool,
 }
 
+fn canonical_mock_sns_neuron_id(id: u64) -> SnsNeuronId {
+    let mut bytes = [0_u8; 32];
+    bytes[24..].copy_from_slice(&id.to_be_bytes());
+    SnsNeuronId(bytes.to_vec())
+}
+
 impl From<MockSnsNeuron> for SnsNeuron {
     fn from(value: MockSnsNeuron) -> Self {
         let dissolve_state = if value.is_dissolving {
@@ -35,7 +41,7 @@ impl From<MockSnsNeuron> for SnsNeuron {
             }
         };
         Self {
-            id: SnsNeuronId(value.neuron_id.to_be_bytes().to_vec()),
+            id: canonical_mock_sns_neuron_id(value.neuron_id),
             controller: None,
             stake_e8s: value.staked_io_e8s,
             dissolve_delay_seconds: value.eligible_seconds,
@@ -52,6 +58,7 @@ impl From<MockSnsNeuron> for SnsNeuron {
 impl From<MockSnsNeuron> for NeuronSnapshot {
     fn from(value: MockSnsNeuron) -> Self {
         Self {
+            sns_neuron_id: canonical_mock_sns_neuron_id(value.neuron_id),
             neuron_id: value.neuron_id,
             staked_io_e8s: value.staked_io_e8s,
             eligible_seconds: value.eligible_seconds,
@@ -107,6 +114,7 @@ pub fn participation_summary_to_snapshot(
         return Ok(None);
     }
     Ok(Some(NeuronSnapshot {
+        sns_neuron_id: eligibility.neuron_id.clone(),
         neuron_id: sns_neuron_id_to_u64(&eligibility.neuron_id)?,
         staked_io_e8s: eligibility.eligible_stake_e8s,
         eligible_seconds: 1,

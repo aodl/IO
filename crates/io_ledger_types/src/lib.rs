@@ -196,6 +196,7 @@ pub enum LedgerOperationKind {
 pub struct LedgerBlock {
     pub block_index: BlockIndex,
     pub timestamp_nanos: u64,
+    pub created_at_time: Option<u64>,
     pub from: Option<Account>,
     pub to: Option<Account>,
     pub amount_e8s: u128,
@@ -227,6 +228,8 @@ pub struct AccountAlias {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct IndexScanResult {
     pub transactions: Vec<IndexTransaction>,
+    pub raw_transaction_ids: Vec<BlockIndex>,
+    pub has_unsupported_transactions: bool,
     pub last_seen_block: Option<BlockIndex>,
     pub index_tip: Option<BlockIndex>,
     pub archive_required: bool,
@@ -236,17 +239,23 @@ pub struct IndexScanResult {
 }
 
 impl IndexScanResult {
+    pub fn account_history_ids(&self) -> Vec<BlockIndex> {
+        if self.raw_transaction_ids.is_empty() {
+            self.transactions.iter().map(|tx| tx.block_index).collect()
+        } else {
+            self.raw_transaction_ids.clone()
+        }
+    }
+
     pub fn validate_monotonic(&self) -> Result<(), IndexError> {
         let mut last = None;
-        for tx in &self.transactions {
+        for block_index in self.account_history_ids() {
             if let Some(previous) = last {
-                if tx.block_index <= previous {
-                    return Err(IndexError::MissingBlock {
-                        block_index: tx.block_index,
-                    });
+                if block_index <= previous {
+                    return Err(IndexError::MissingBlock { block_index });
                 }
             }
-            last = Some(tx.block_index);
+            last = Some(block_index);
         }
         Ok(())
     }
@@ -260,13 +269,33 @@ impl IndexScanResult {
                 from: current.unwrap_or(BlockIndex(0)),
             });
         }
-        self.validate_monotonic()?;
-        Ok(self
-            .transactions
-            .iter()
-            .map(|tx| tx.block_index)
-            .max()
-            .or(current))
+        let account_history_ids = self.account_history_ids();
+        if let Some(order) = self
+            .page_order
+            .or_else(|| detect_account_history_page_order_from_ids(&account_history_ids))
+        {
+            validate_account_history_ids(&account_history_ids, order).map_err(
+                |fault| match fault {
+                    AccountHistoryFault::DuplicateReturnedId(block_index)
+                    | AccountHistoryFault::NonMonotonicPage(block_index)
+                    | AccountHistoryFault::NonProgressingPage(block_index) => {
+                        IndexError::MissingBlock { block_index }
+                    }
+                    AccountHistoryFault::ArchiveRequired(from) => {
+                        IndexError::ArchiveRequired { from }
+                    }
+                    AccountHistoryFault::IndexLag { requested, tip } => {
+                        IndexError::IndexLag { requested, tip }
+                    }
+                    AccountHistoryFault::IndexUnreadable(message) => {
+                        IndexError::DecodeError { message }
+                    }
+                },
+            )?;
+        } else {
+            self.validate_monotonic()?;
+        }
+        Ok(self.account_history_ids().into_iter().max().or(current))
     }
 }
 
@@ -406,23 +435,30 @@ impl AccountHistoryScanState {
             return Err(AccountHistoryFault::ArchiveRequired(from));
         }
 
+        let page_ids = page.account_history_ids();
         let observed_order = page
             .page_order
-            .or_else(|| detect_account_history_page_order(&page.transactions));
+            .or_else(|| detect_account_history_page_order_from_ids(&page_ids));
         let order = match (self.cursor.order, observed_order) {
-            (Some(existing), Some(observed))
-                if existing != observed && page.transactions.len() > 1 =>
+            (
+                Some(AccountHistoryPageOrder::Ascending),
+                Some(AccountHistoryPageOrder::Descending),
+            ) if page_ids.len() > 1
+                && self.cursor.latest_cursor.is_some()
+                && self.cursor.latest_cursor == self.cursor.oldest_cursor
+                && self.cursor.backfill_complete =>
             {
+                AccountHistoryPageOrder::Descending
+            }
+            (Some(existing), Some(observed)) if existing != observed && page_ids.len() > 1 => {
                 next.status.invariant_broken_count =
                     next.status.invariant_broken_count.saturating_add(1);
-                return Err(AccountHistoryFault::NonMonotonicPage(
-                    page.transactions[1].block_index,
-                ));
+                return Err(AccountHistoryFault::NonMonotonicPage(page_ids[1]));
             }
             (Some(existing), _) => existing,
             (None, Some(observed)) => observed,
             (None, None) => {
-                let single = page.transactions.first().map(|tx| tx.block_index);
+                let single = page_ids.first().copied();
                 if single
                     .zip(self.cursor.oldest_cursor.or(self.cursor.latest_cursor))
                     .map(|(tx_id, cursor)| tx_id < cursor)
@@ -454,87 +490,111 @@ impl AccountHistoryScanState {
             }
         }
 
-        validate_account_history_ids(&page.transactions, order)?;
+        validate_account_history_ids(&page_ids, order)?;
 
-        let newest = page.transactions.iter().map(|tx| tx.block_index).max();
+        let newest = page_ids.iter().copied().max();
         next.status.last_observed_newest_tx_id = newest.or(next.status.last_observed_newest_tx_id);
 
-        let short_page = page.transactions.len() < requested_limit as usize;
-        let (phase, mut process) = match order {
+        if page.has_unsupported_transactions {
+            next.status.scan_incomplete = true;
+            next.status.last_error =
+                Some("account history page contained unsupported transaction entries".to_string());
+        }
+
+        let short_page = page_ids.len() < requested_limit as usize;
+        let (phase, mut process): (AccountHistoryScanPhase, Vec<IndexTransaction>) = match order {
             AccountHistoryPageOrder::Ascending => {
                 let mut skipped_cursor = false;
-                let mut process = Vec::new();
-                for tx in &page.transactions {
+                let mut progressed_ids = Vec::new();
+                for block_index in &page_ids {
                     if let Some(cursor) = self.cursor.latest_cursor {
-                        if tx.block_index == cursor && !skipped_cursor {
+                        if *block_index == cursor && !skipped_cursor {
                             skipped_cursor = true;
                             continue;
                         }
-                        if tx.block_index <= cursor {
-                            return Err(AccountHistoryFault::NonProgressingPage(tx.block_index));
+                        if *block_index <= cursor {
+                            return Err(AccountHistoryFault::NonProgressingPage(*block_index));
                         }
                     }
-                    process.push(tx.clone());
+                    progressed_ids.push(*block_index);
                 }
-                if let Some(max_seen) = process.iter().map(|tx| tx.block_index).max() {
+                if let Some(max_seen) = progressed_ids.iter().copied().max() {
                     next.cursor.latest_cursor = Some(max_seen);
                     next.cursor.oldest_cursor = next.cursor.oldest_cursor.or(Some(max_seen));
                 }
-                next.cursor.backfill_complete = short_page;
+                next.cursor.backfill_complete = short_page && !page.has_unsupported_transactions;
+                let process = page
+                    .transactions
+                    .iter()
+                    .filter(|tx| progressed_ids.contains(&tx.block_index))
+                    .cloned()
+                    .collect();
                 (AccountHistoryScanPhase::AscendingForward, process)
             }
             AccountHistoryPageOrder::Descending => {
                 if let (Some(latest), true) =
                     (self.cursor.latest_cursor, self.cursor.backfill_complete)
                 {
-                    let mut process = Vec::new();
-                    for tx in &page.transactions {
-                        if tx.block_index > latest {
-                            process.push(tx.clone());
+                    let mut progressed_ids = Vec::new();
+                    for block_index in &page_ids {
+                        if *block_index > latest {
+                            progressed_ids.push(*block_index);
                         } else {
                             break;
                         }
                     }
-                    if process.is_empty() {
+                    if progressed_ids.is_empty() && !page.has_unsupported_transactions {
                         next.status.scan_incomplete = false;
                     }
-                    if let Some(max_seen) = process.iter().map(|tx| tx.block_index).max() {
+                    if let Some(max_seen) = progressed_ids.iter().copied().max() {
                         next.cursor.latest_cursor = Some(latest.max(max_seen));
                     }
+                    let process = page
+                        .transactions
+                        .iter()
+                        .filter(|tx| progressed_ids.contains(&tx.block_index))
+                        .cloned()
+                        .collect();
                     (AccountHistoryScanPhase::DescendingHead, process)
                 } else {
-                    let mut process = Vec::new();
-                    for tx in &page.transactions {
+                    let mut progressed_ids = Vec::new();
+                    for block_index in &page_ids {
                         match self.cursor.oldest_cursor {
-                            Some(oldest) if tx.block_index >= oldest => continue,
-                            _ => process.push(tx.clone()),
+                            Some(oldest) if *block_index >= oldest => continue,
+                            _ => progressed_ids.push(*block_index),
                         }
                     }
-                    if process.is_empty() && !page.transactions.is_empty() && !short_page {
+                    if progressed_ids.is_empty() && !page_ids.is_empty() && !short_page {
                         return Err(AccountHistoryFault::NonProgressingPage(
-                            page.transactions.last().expect("non-empty").block_index,
+                            *page_ids.last().expect("non-empty"),
                         ));
                     }
-                    if let Some(max_seen) = process.iter().map(|tx| tx.block_index).max() {
+                    if let Some(max_seen) = progressed_ids.iter().copied().max() {
                         next.cursor.latest_cursor = Some(
                             next.cursor
                                 .latest_cursor
                                 .map_or(max_seen, |old| old.max(max_seen)),
                         );
                     }
-                    if let Some(min_seen) = process.iter().map(|tx| tx.block_index).min() {
+                    if let Some(min_seen) = progressed_ids.iter().copied().min() {
                         next.cursor.oldest_cursor = Some(
                             next.cursor
                                 .oldest_cursor
                                 .map_or(min_seen, |old| old.min(min_seen)),
                         );
                     }
-                    if short_page || page.transactions.is_empty() {
+                    if (short_page || page_ids.is_empty()) && !page.has_unsupported_transactions {
                         next.cursor.backfill_complete = true;
                         next.status.scan_incomplete = false;
                     } else {
                         next.status.scan_incomplete = true;
                     }
+                    let process = page
+                        .transactions
+                        .iter()
+                        .filter(|tx| progressed_ids.contains(&tx.block_index))
+                        .cloned()
+                        .collect();
                     (AccountHistoryScanPhase::DescendingBackfill, process)
                 }
             }
@@ -554,11 +614,18 @@ impl AccountHistoryScanState {
 pub fn detect_account_history_page_order(
     transactions: &[IndexTransaction],
 ) -> Option<AccountHistoryPageOrder> {
-    if transactions.len() < 2 {
+    let block_ids: Vec<BlockIndex> = transactions.iter().map(|tx| tx.block_index).collect();
+    detect_account_history_page_order_from_ids(&block_ids)
+}
+
+pub fn detect_account_history_page_order_from_ids(
+    block_ids: &[BlockIndex],
+) -> Option<AccountHistoryPageOrder> {
+    if block_ids.len() < 2 {
         return None;
     }
-    let first = transactions.first()?.block_index;
-    let last = transactions.last()?.block_index;
+    let first = *block_ids.first()?;
+    let last = *block_ids.last()?;
     if first < last {
         Some(AccountHistoryPageOrder::Ascending)
     } else if first > last {
@@ -569,31 +636,57 @@ pub fn detect_account_history_page_order(
 }
 
 fn validate_account_history_ids(
-    transactions: &[IndexTransaction],
+    block_ids: &[BlockIndex],
     order: AccountHistoryPageOrder,
 ) -> Result<(), AccountHistoryFault> {
     let mut previous = None;
-    for tx in transactions {
+    for block_index in block_ids.iter().copied() {
         if let Some(previous) = previous {
             match order {
-                AccountHistoryPageOrder::Ascending if tx.block_index == previous => {
-                    return Err(AccountHistoryFault::DuplicateReturnedId(tx.block_index));
+                AccountHistoryPageOrder::Ascending if block_index == previous => {
+                    return Err(AccountHistoryFault::DuplicateReturnedId(block_index));
                 }
-                AccountHistoryPageOrder::Ascending if tx.block_index < previous => {
-                    return Err(AccountHistoryFault::NonMonotonicPage(tx.block_index));
+                AccountHistoryPageOrder::Ascending if block_index < previous => {
+                    return Err(AccountHistoryFault::NonMonotonicPage(block_index));
                 }
-                AccountHistoryPageOrder::Descending if tx.block_index == previous => {
-                    return Err(AccountHistoryFault::DuplicateReturnedId(tx.block_index));
+                AccountHistoryPageOrder::Descending if block_index == previous => {
+                    return Err(AccountHistoryFault::DuplicateReturnedId(block_index));
                 }
-                AccountHistoryPageOrder::Descending if tx.block_index > previous => {
-                    return Err(AccountHistoryFault::NonMonotonicPage(tx.block_index));
+                AccountHistoryPageOrder::Descending if block_index > previous => {
+                    return Err(AccountHistoryFault::NonMonotonicPage(block_index));
                 }
                 _ => {}
             }
         }
-        previous = Some(tx.block_index);
+        previous = Some(block_index);
     }
     Ok(())
+}
+
+fn detected_page_order_or_error(
+    block_ids: &[BlockIndex],
+) -> Result<Option<AccountHistoryPageOrder>, IndexError> {
+    let page_order = detect_account_history_page_order_from_ids(block_ids);
+    if block_ids.len() > 1 && page_order.is_none() {
+        return Err(IndexError::MissingBlock {
+            block_index: block_ids[1],
+        });
+    }
+    if let Some(order) = page_order {
+        validate_account_history_ids(block_ids, order).map_err(|fault| match fault {
+            AccountHistoryFault::DuplicateReturnedId(block_index)
+            | AccountHistoryFault::NonMonotonicPage(block_index)
+            | AccountHistoryFault::NonProgressingPage(block_index) => {
+                IndexError::MissingBlock { block_index }
+            }
+            AccountHistoryFault::ArchiveRequired(from) => IndexError::ArchiveRequired { from },
+            AccountHistoryFault::IndexLag { requested, tip } => {
+                IndexError::IndexLag { requested, tip }
+            }
+            AccountHistoryFault::IndexUnreadable(message) => IndexError::DecodeError { message },
+        })?;
+    }
+    Ok(page_order)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -611,6 +704,9 @@ pub enum IndexError {
     },
     DecodeError {
         message: String,
+    },
+    OperationlessTransaction {
+        block_index: BlockIndex,
     },
     CanisterCallFailed {
         method: String,
@@ -997,14 +1093,22 @@ pub fn map_icrc_index_result(
         Ok(page) => {
             let mut transactions = Vec::with_capacity(page.transactions.len());
             for tx in page.transactions {
+                let block_index = BlockIndex(nat_to_u64_index(&tx.id, "transaction id")?);
                 transactions.push(IndexTransaction {
-                    block_index: BlockIndex(nat_to_u64_index(&tx.id, "transaction id")?),
+                    block_index,
                     transaction: tx.transaction,
                 });
             }
+            let raw_transaction_ids = transactions
+                .iter()
+                .map(|tx| tx.block_index)
+                .collect::<Vec<_>>();
             let last_seen_block = transactions.iter().map(|tx| tx.block_index).max();
+            let page_order = detected_page_order_or_error(&raw_transaction_ids)?;
             let result = IndexScanResult {
                 transactions,
+                raw_transaction_ids,
+                has_unsupported_transactions: false,
                 last_seen_block,
                 index_tip: page
                     .tip
@@ -1012,7 +1116,7 @@ pub fn map_icrc_index_result(
                     .map(|tip| nat_to_u64_index(tip, "index tip").map(BlockIndex))
                     .transpose()?,
                 archive_required: page.archive_required,
-                page_order: Some(AccountHistoryPageOrder::Ascending),
+                page_order,
                 account_balance_e8s: None,
                 num_blocks_synced: page
                     .tip
@@ -1020,7 +1124,6 @@ pub fn map_icrc_index_result(
                     .map(|tip| nat_to_u64_index(tip, "num blocks synced").map(BlockIndex))
                     .transpose()?,
             };
-            result.validate_monotonic()?;
             Ok(result)
         }
         Err(IcrcIndexError::TemporarilyUnavailable) => Err(IndexError::TemporarilyUnavailable),
@@ -1044,6 +1147,7 @@ fn icrc_index_ng_transfer_block(
     Ok(LedgerBlock {
         block_index,
         timestamp_nanos,
+        created_at_time: transfer.created_at_time,
         from: Some(account_from_icrc_for_index(transfer.from)?),
         to: Some(account_from_icrc_for_index(transfer.to)?),
         amount_e8s: nat_to_u128_index(&transfer.amount, "transaction amount")?,
@@ -1091,6 +1195,7 @@ fn icrc_index_ng_transaction_block(
         LedgerBlock {
             block_index,
             timestamp_nanos,
+            created_at_time: approve.created_at_time,
             from: Some(account_from_icrc_for_index(approve.from)?),
             to: Some(account_from_icrc_for_index(approve.spender)?),
             amount_e8s: nat_to_u128_index(&approve.amount, "approval amount")?,
@@ -1103,12 +1208,7 @@ fn icrc_index_ng_transaction_block(
             operation_kind: LedgerOperationKind::Approve,
         }
     } else {
-        return Err(IndexError::DecodeError {
-            message: format!(
-                "ICRC index-ng transaction {} has no operation",
-                block_index.0
-            ),
-        });
+        return Err(IndexError::OperationlessTransaction { block_index });
     };
 
     Ok(IndexTransaction {
@@ -1123,20 +1223,32 @@ pub fn map_icrc_index_ng_result(
     match result {
         Ok(page) => {
             let mut transactions = Vec::with_capacity(page.transactions.len());
+            let mut raw_transaction_ids = Vec::with_capacity(page.transactions.len());
+            let mut has_unsupported_transactions = false;
             for tx in page.transactions {
-                transactions.push(icrc_index_ng_transaction_block(tx)?);
+                let block_index = BlockIndex(nat_to_u64_index(&tx.id, "transaction id")?);
+                raw_transaction_ids.push(block_index);
+                match icrc_index_ng_transaction_block(tx) {
+                    Ok(tx) => transactions.push(tx),
+                    Err(IndexError::OperationlessTransaction { .. }) => {
+                        has_unsupported_transactions = true;
+                    }
+                    Err(err) => return Err(err),
+                }
             }
-            let last_seen_block = transactions.iter().map(|tx| tx.block_index).max();
+            let last_seen_block = raw_transaction_ids.iter().copied().max();
+            let page_order = detected_page_order_or_error(&raw_transaction_ids)?;
             let result = IndexScanResult {
                 transactions,
+                raw_transaction_ids,
+                has_unsupported_transactions,
                 last_seen_block,
                 index_tip: None,
                 archive_required: false,
-                page_order: Some(AccountHistoryPageOrder::Ascending),
+                page_order,
                 account_balance_e8s: Some(nat_to_u128_index(&page.balance, "account balance")?),
                 num_blocks_synced: None,
             };
-            result.validate_monotonic()?;
             Ok(result)
         }
         Err(message) if message.contains("archive") => Err(IndexError::ArchiveRequired {
@@ -1364,6 +1476,11 @@ fn map_icp_index_transaction(
         .or(tx.transaction.created_at_time.as_ref())
         .map(|timestamp| timestamp.timestamp_nanos)
         .unwrap_or(0);
+    let created_at_time = tx
+        .transaction
+        .created_at_time
+        .as_ref()
+        .map(|timestamp| timestamp.timestamp_nanos);
     let memo = Some(icp_index_memo(&tx.transaction));
     let block_index = BlockIndex(tx.id);
     let transaction = match tx.transaction.operation {
@@ -1383,6 +1500,7 @@ fn map_icp_index_transaction(
         } => LedgerBlock {
             block_index,
             timestamp_nanos,
+            created_at_time,
             from: matching_icp_account(&from, account_filter, account_aliases),
             to: matching_icp_account(&to, account_filter, account_aliases),
             amount_e8s: amount.e8s.into(),
@@ -1393,6 +1511,7 @@ fn map_icp_index_transaction(
         IcpIndexOperation::Mint { to, amount } => LedgerBlock {
             block_index,
             timestamp_nanos,
+            created_at_time,
             from: None,
             to: matching_icp_account(&to, account_filter, account_aliases),
             amount_e8s: amount.e8s.into(),
@@ -1403,6 +1522,7 @@ fn map_icp_index_transaction(
         IcpIndexOperation::Burn { from, amount, .. } => LedgerBlock {
             block_index,
             timestamp_nanos,
+            created_at_time,
             from: matching_icp_account(&from, account_filter, account_aliases),
             to: None,
             amount_e8s: amount.e8s.into(),
@@ -1413,6 +1533,7 @@ fn map_icp_index_transaction(
         IcpIndexOperation::Approve { fee, from, .. } => LedgerBlock {
             block_index,
             timestamp_nanos,
+            created_at_time,
             from: matching_icp_account(&from, account_filter, account_aliases),
             to: None,
             amount_e8s: 0,
@@ -1436,7 +1557,7 @@ pub fn map_icp_index_result(
 ) -> Result<IndexScanResult, IndexError> {
     match result {
         IcpIndexGetAccountIdentifierTransactionsResult::Ok(response) => {
-            let mut transactions = response
+            let transactions = response
                 .transactions
                 .into_iter()
                 .map(|tx| map_icp_index_transaction(account_filter, account_aliases, tx))
@@ -1452,9 +1573,10 @@ pub fn map_icp_index_result(
                 }
                 previous = Some(tx.block_index);
             }
-            transactions.reverse();
             let result = IndexScanResult {
                 last_seen_block: transactions.iter().map(|tx| tx.block_index).max(),
+                raw_transaction_ids: transactions.iter().map(|tx| tx.block_index).collect(),
+                has_unsupported_transactions: false,
                 index_tip: None,
                 archive_required: false,
                 page_order: Some(AccountHistoryPageOrder::Descending),
@@ -1462,7 +1584,6 @@ pub fn map_icp_index_result(
                 num_blocks_synced: None,
                 transactions,
             };
-            result.validate_monotonic()?;
             Ok(result)
         }
         IcpIndexGetAccountIdentifierTransactionsResult::Err(err)
@@ -1799,6 +1920,7 @@ mod tests {
         LedgerBlock {
             block_index: BlockIndex(block_index),
             timestamp_nanos: block_index,
+            created_at_time: None,
             from: Some(account()),
             to: Some(account()),
             amount_e8s: 7,
@@ -2057,6 +2179,7 @@ mod tests {
         let block = LedgerBlock {
             block_index: BlockIndex(9),
             timestamp_nanos: 0,
+            created_at_time: None,
             from: None,
             to: Some(req.to.clone()),
             amount_e8s: req.amount_e8s,
@@ -2077,6 +2200,7 @@ mod tests {
         let mut duplicate = LedgerBlock {
             block_index: BlockIndex(9),
             timestamp_nanos: 0,
+            created_at_time: None,
             from: None,
             to: Some(req.to.clone()),
             amount_e8s: req.amount_e8s,
@@ -2109,6 +2233,8 @@ mod tests {
     fn index_cursor_keeps_empty_page_cursor_unchanged() {
         let result = IndexScanResult {
             transactions: vec![],
+            raw_transaction_ids: vec![],
+            has_unsupported_transactions: false,
             last_seen_block: None,
             index_tip: Some(BlockIndex(10)),
             archive_required: false,
@@ -2129,6 +2255,7 @@ mod tests {
             transaction: LedgerBlock {
                 block_index: BlockIndex(block),
                 timestamp_nanos: block,
+                created_at_time: None,
                 from: None,
                 to: Some(account()),
                 amount_e8s: 1,
@@ -2139,6 +2266,8 @@ mod tests {
         };
         let result = IndexScanResult {
             transactions: vec![tx(5), tx(6)],
+            raw_transaction_ids: vec![],
+            has_unsupported_transactions: false,
             last_seen_block: Some(BlockIndex(6)),
             index_tip: Some(BlockIndex(6)),
             archive_required: false,
@@ -2159,6 +2288,7 @@ mod tests {
             transaction: LedgerBlock {
                 block_index: BlockIndex(block),
                 timestamp_nanos: 0,
+                created_at_time: None,
                 from: None,
                 to: None,
                 amount_e8s: 0,
@@ -2169,6 +2299,8 @@ mod tests {
         };
         let duplicate = IndexScanResult {
             transactions: vec![tx(5), tx(5)],
+            raw_transaction_ids: vec![],
+            has_unsupported_transactions: false,
             last_seen_block: Some(BlockIndex(5)),
             index_tip: Some(BlockIndex(5)),
             archive_required: false,
@@ -2186,6 +2318,8 @@ mod tests {
     fn index_cursor_reports_archive_required_without_advancing() {
         let result = IndexScanResult {
             transactions: vec![],
+            raw_transaction_ids: vec![],
+            has_unsupported_transactions: false,
             last_seen_block: None,
             index_tip: Some(BlockIndex(100)),
             archive_required: true,
@@ -2211,6 +2345,8 @@ mod tests {
     fn scan_page(ids: &[u64], order: Option<AccountHistoryPageOrder>) -> IndexScanResult {
         IndexScanResult {
             transactions: ids.iter().copied().map(index_tx).collect(),
+            raw_transaction_ids: vec![],
+            has_unsupported_transactions: false,
             last_seen_block: ids.iter().copied().max().map(BlockIndex),
             index_tip: ids.iter().copied().max().map(BlockIndex),
             archive_required: false,
@@ -2296,6 +2432,44 @@ mod tests {
         assert_eq!(
             caught_up.next_state.cursor.latest_cursor,
             Some(BlockIndex(40))
+        );
+    }
+
+    #[test]
+    fn account_history_single_item_bootstrap_can_switch_to_descending_order() {
+        let first = AccountHistoryScanState::default()
+            .observe_page(&scan_page(&[8], None), None, 10, 1, 10, Some(1))
+            .unwrap()
+            .next_state;
+        assert_eq!(first.cursor.order, Some(AccountHistoryPageOrder::Ascending));
+
+        let switched = first
+            .observe_page(
+                &scan_page(&[10, 9], Some(AccountHistoryPageOrder::Descending)),
+                Some(BlockIndex(9)),
+                10,
+                1,
+                10,
+                Some(2),
+            )
+            .unwrap();
+
+        assert_eq!(
+            switched.next_state.cursor.order,
+            Some(AccountHistoryPageOrder::Descending)
+        );
+        assert_eq!(switched.phase, AccountHistoryScanPhase::DescendingHead);
+        assert_eq!(
+            switched
+                .transactions_chronological
+                .iter()
+                .map(|tx| tx.block_index)
+                .collect::<Vec<_>>(),
+            vec![BlockIndex(9), BlockIndex(10)]
+        );
+        assert_eq!(
+            switched.next_state.cursor.latest_cursor,
+            Some(BlockIndex(10))
         );
     }
 
@@ -2421,6 +2595,7 @@ mod tests {
         let block = LedgerBlock {
             block_index: BlockIndex(3),
             timestamp_nanos: 9,
+            created_at_time: None,
             from: Some(account()),
             to: Some(account()),
             amount_e8s: 7,
@@ -2520,9 +2695,199 @@ mod tests {
         assert_eq!(result.transactions[0].transaction.to, Some(to));
         assert_eq!(result.transactions[0].transaction.amount_e8s, 42);
         assert_eq!(result.transactions[0].transaction.fee_e8s, Some(10));
+        assert_eq!(result.transactions[0].transaction.timestamp_nanos, 12);
+        assert_eq!(result.transactions[0].transaction.created_at_time, Some(11));
         assert_eq!(
             result.transactions[0].transaction.operation_kind,
             LedgerOperationKind::Transfer
+        );
+    }
+
+    #[test]
+    fn index_ng_mapping_preserves_transfer_created_at_time() {
+        let from = account();
+        let to = Account::new(principal(), Some(Subaccount([9; 32])));
+        let result = map_icrc_index_ng_result(Ok(IcrcIndexNgGetTransactionsResult {
+            balance: Nat::from(123_u64),
+            transactions: vec![IcrcIndexNgTransactionWithId {
+                id: Nat::from(7_u64),
+                transaction: IcrcIndexNgTransaction {
+                    burn: None,
+                    mint: None,
+                    approve: None,
+                    transfer: Some(IcrcIndexNgTransfer {
+                        from: from.to_icrc_account(),
+                        to: to.to_icrc_account(),
+                        amount: Nat::from(42_u64),
+                        fee: Some(Nat::from(10_u64)),
+                        memo: Some(b"memo".to_vec()),
+                        created_at_time: Some(11),
+                    }),
+                    timestamp: 12,
+                },
+            }],
+            oldest_tx_id: Some(Nat::from(7_u64)),
+        }))
+        .unwrap();
+
+        let block = &result.transactions[0].transaction;
+        assert_eq!(block.timestamp_nanos, 12);
+        assert_eq!(block.created_at_time, Some(11));
+    }
+
+    #[test]
+    fn operationless_index_entry_advances_raw_cursor() {
+        let from = account();
+        let to = Account::new(principal(), Some(Subaccount([9; 32])));
+        let result = map_icrc_index_ng_result(Ok(IcrcIndexNgGetTransactionsResult {
+            balance: Nat::from(123_u64),
+            transactions: vec![
+                IcrcIndexNgTransactionWithId {
+                    id: Nat::from(8_u64),
+                    transaction: IcrcIndexNgTransaction {
+                        burn: None,
+                        mint: None,
+                        approve: None,
+                        transfer: Some(IcrcIndexNgTransfer {
+                            from: from.to_icrc_account(),
+                            to: to.to_icrc_account(),
+                            amount: Nat::from(42_u64),
+                            fee: Some(Nat::from(10_u64)),
+                            memo: Some(b"memo".to_vec()),
+                            created_at_time: Some(11),
+                        }),
+                        timestamp: 12,
+                    },
+                },
+                IcrcIndexNgTransactionWithId {
+                    id: Nat::from(7_u64),
+                    transaction: IcrcIndexNgTransaction {
+                        burn: None,
+                        mint: None,
+                        approve: None,
+                        transfer: None,
+                        timestamp: 12,
+                    },
+                },
+            ],
+            oldest_tx_id: Some(Nat::from(7_u64)),
+        }))
+        .unwrap();
+
+        assert_eq!(
+            result.raw_transaction_ids,
+            vec![BlockIndex(8), BlockIndex(7)]
+        );
+        assert!(result.has_unsupported_transactions);
+        assert_eq!(result.next_cursor(None), Ok(Some(BlockIndex(8))));
+        assert_eq!(result.transactions.len(), 1);
+        assert_eq!(result.transactions[0].block_index, BlockIndex(8));
+        assert_eq!(result.transactions[0].transaction.from, Some(from));
+        assert_eq!(result.transactions[0].transaction.to, Some(to));
+    }
+
+    #[test]
+    fn page_of_only_operationless_entries_does_not_loop_forever() {
+        let result = map_icrc_index_ng_result(Ok(IcrcIndexNgGetTransactionsResult {
+            balance: Nat::from(123_u64),
+            transactions: vec![IcrcIndexNgTransactionWithId {
+                id: Nat::from(7_u64),
+                transaction: IcrcIndexNgTransaction {
+                    burn: None,
+                    mint: None,
+                    approve: None,
+                    transfer: None,
+                    timestamp: 12,
+                },
+            }],
+            oldest_tx_id: Some(Nat::from(7_u64)),
+        }))
+        .unwrap();
+        let state = AccountHistoryScanState::default();
+        let outcome = state
+            .observe_page(&result, None, 10, 1, 5, Some(99))
+            .unwrap();
+
+        assert!(outcome.transactions_chronological.is_empty());
+        assert_eq!(outcome.next_state.cursor.latest_cursor, Some(BlockIndex(7)));
+        assert!(outcome.next_state.status.scan_incomplete);
+    }
+
+    #[test]
+    fn operationless_entry_prevents_false_complete_no_match() {
+        let result = map_icrc_index_ng_result(Ok(IcrcIndexNgGetTransactionsResult {
+            balance: Nat::from(123_u64),
+            transactions: vec![IcrcIndexNgTransactionWithId {
+                id: Nat::from(7_u64),
+                transaction: IcrcIndexNgTransaction {
+                    burn: None,
+                    mint: None,
+                    approve: None,
+                    transfer: None,
+                    timestamp: 12,
+                },
+            }],
+            oldest_tx_id: Some(Nat::from(7_u64)),
+        }))
+        .unwrap();
+        let outcome = AccountHistoryScanState::default()
+            .observe_page(&result, None, 10, 1, 5, Some(99))
+            .unwrap();
+
+        assert!(!outcome.next_state.cursor.backfill_complete);
+        assert!(outcome.next_state.status.scan_incomplete);
+    }
+
+    #[test]
+    fn mixed_supported_and_operationless_page_preserves_order() {
+        let from = account();
+        let to = Account::new(principal(), Some(Subaccount([9; 32])));
+        let result = map_icrc_index_ng_result(Ok(IcrcIndexNgGetTransactionsResult {
+            balance: Nat::from(123_u64),
+            transactions: vec![
+                IcrcIndexNgTransactionWithId {
+                    id: Nat::from(8_u64),
+                    transaction: IcrcIndexNgTransaction {
+                        burn: None,
+                        mint: None,
+                        approve: None,
+                        transfer: Some(IcrcIndexNgTransfer {
+                            from: from.to_icrc_account(),
+                            to: to.to_icrc_account(),
+                            amount: Nat::from(42_u64),
+                            fee: Some(Nat::from(10_u64)),
+                            memo: Some(b"memo".to_vec()),
+                            created_at_time: Some(11),
+                        }),
+                        timestamp: 12,
+                    },
+                },
+                IcrcIndexNgTransactionWithId {
+                    id: Nat::from(7_u64),
+                    transaction: IcrcIndexNgTransaction {
+                        burn: None,
+                        mint: None,
+                        approve: None,
+                        transfer: None,
+                        timestamp: 12,
+                    },
+                },
+            ],
+            oldest_tx_id: Some(Nat::from(7_u64)),
+        }))
+        .unwrap();
+
+        assert_eq!(
+            result.raw_transaction_ids,
+            vec![BlockIndex(8), BlockIndex(7)]
+        );
+        assert_eq!(
+            result
+                .transactions
+                .iter()
+                .map(|tx| tx.block_index)
+                .collect::<Vec<_>>(),
+            vec![BlockIndex(8)]
         );
     }
 
@@ -2591,10 +2956,10 @@ mod tests {
             ),
         )
         .unwrap();
-        assert_eq!(result.transactions[0].block_index, BlockIndex(20));
-        assert_eq!(result.transactions[1].block_index, BlockIndex(21));
-        assert_eq!(result.transactions[0].transaction.to, Some(account));
-        assert_eq!(result.transactions[0].transaction.amount_e8s, 123);
+        assert_eq!(result.transactions[0].block_index, BlockIndex(21));
+        assert_eq!(result.transactions[1].block_index, BlockIndex(20));
+        assert_eq!(result.transactions[1].transaction.to, Some(account));
+        assert_eq!(result.transactions[1].transaction.amount_e8s, 123);
         assert_eq!(result.last_seen_block, Some(BlockIndex(21)));
         assert_eq!(result.index_tip, None);
         assert_eq!(result.next_cursor(None), Ok(Some(BlockIndex(21))));
@@ -2677,7 +3042,7 @@ mod tests {
                 .iter()
                 .map(|tx| tx.block_index)
                 .collect::<Vec<_>>(),
-            vec![BlockIndex(8), BlockIndex(9)]
+            vec![BlockIndex(9), BlockIndex(8)]
         );
         assert_eq!(result.page_order, Some(AccountHistoryPageOrder::Descending));
     }
@@ -3010,10 +3375,10 @@ mod tests {
                 .map(|tx| tx.transaction.operation_kind)
                 .collect::<Vec<_>>(),
             vec![
-                LedgerOperationKind::Mint,
-                LedgerOperationKind::Burn,
-                LedgerOperationKind::Approve,
                 LedgerOperationKind::Transfer,
+                LedgerOperationKind::Approve,
+                LedgerOperationKind::Burn,
+                LedgerOperationKind::Mint,
             ]
         );
         assert_eq!(page.last_seen_block, Some(BlockIndex(4)));
@@ -3040,7 +3405,7 @@ mod tests {
                         },
                         created_at_time: None,
                         timestamp: Some(IcpIndexTimeStamp {
-                            timestamp_nanos: 456,
+                            timestamp_nanos: 456
                         }),
                     },
                 }],

@@ -158,7 +158,15 @@ type DebugTickOutcome = record {
   errors : vec text;
 };
 
+type DebugFailpoint = variant {
+  AfterRejectedRefundTransferBeforeJournalUpdate;
+  AfterTwoWeekRewardTransferBeforeJournalUpdate;
+  AfterTwoWeekRewardTransferBeforeGovernanceRefresh;
+  AfterTwoWeekGovernanceRefreshBeforeJournalCompletion;
+};
+
 service : (InitArgs) -> {
+  debug_set_failpoint : (opt DebugFailpoint) -> ();
   debug_tick : () -> (DebugTickOutcome);
   debug_get_redemption_rate : () -> (variant { Ok : ApiRedemptionRate; Err : ApiError }) query;
   debug_get_state : () -> (ApiState) query;

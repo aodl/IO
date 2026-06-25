@@ -236,10 +236,12 @@ fn pocketic_live_sns_governance_reads_drive_two_week_allocation() {
         out.allocations,
         vec![
             RewardAllocation {
+                sns_neuron_id: io_reward_policy::compatibility_sns_neuron_id_from_u64(1),
                 neuron_id: 1,
                 io_e8s: 200
             },
             RewardAllocation {
+                sns_neuron_id: io_reward_policy::compatibility_sns_neuron_id_from_u64(2),
                 neuron_id: 2,
                 io_e8s: 100
             }

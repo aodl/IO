@@ -37,6 +37,7 @@ impl LedgerTransaction {
         io_ledger_types::LedgerBlock {
             block_index: BlockIndex(self.block_index),
             timestamp_nanos: self.timestamp,
+            created_at_time: None,
             from: Some(mock_account(&self.from)),
             to: Some(mock_account(&self.to)),
             amount_e8s: self.amount_e8s,

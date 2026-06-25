@@ -506,6 +506,7 @@ mod tests {
         LedgerBlock {
             block_index: BlockIndex(17),
             timestamp_nanos: 0,
+            created_at_time: None,
             from: Some(icp_ledger::mock_account(IO_NNS_NEURON_MANAGER_ACCOUNT)),
             to: Some(icp_ledger::mock_account(STREAM_MANAGER_DEPOSIT_ACCOUNT)),
             amount_e8s,

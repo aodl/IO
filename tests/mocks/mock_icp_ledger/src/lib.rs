@@ -310,6 +310,7 @@ pub fn debug_get_boundary_transactions() -> Vec<LedgerBlock> {
             .map(|tx| LedgerBlock {
                 block_index: io_ledger_types::BlockIndex(tx.block_index),
                 timestamp_nanos: tx.timestamp,
+                created_at_time: None,
                 from: Some(Account::new(
                     candid::Principal::anonymous(),
                     Some(mock_subaccount(&tx.from)),

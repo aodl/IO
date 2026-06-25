@@ -38,6 +38,7 @@ io-production-wiring.workspace = true
 io-reward-policy.workspace = true
 io-stable-schema.workspace = true
 serde.workspace = true
+sha2 = "0.10.9"
 
 [build-dependencies]
 io-build-support.workspace = true

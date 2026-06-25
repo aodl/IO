@@ -1341,6 +1341,7 @@ mod live {
 
 fn neuron(id: u64, stake: u128, voted: u64, total: u64) -> NeuronSnapshot {
     NeuronSnapshot {
+        sns_neuron_id: io_reward_policy::compatibility_sns_neuron_id_from_u64(id),
         neuron_id: id,
         staked_io_e8s: stake,
         eligible_seconds: 100,

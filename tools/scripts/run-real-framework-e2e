@@ -55,6 +55,16 @@ cargo test -p e2e-real-canisters io_stream_manager_real_two_week_maturity_5_icp_
 cargo test -p e2e-real-canisters io_stream_manager_real_two_week_maturity_rewards_only_eligible_stakers -- --ignored --nocapture
 cargo test -p e2e-real-canisters io_stream_manager_real_sns_topup_increases_active_staked_io -- --ignored --nocapture
 cargo test -p e2e-real-canisters io_stream_manager_real_redemption_pays_icp_on_real_local_ledger -- --ignored --nocapture
+cargo test -p e2e-real-canisters io_stream_manager_real_redemption_rounding_fee_dust_accounted -- --ignored --nocapture
+cargo test -p e2e-real-canisters io_stream_manager_real_redemption_below_io_return_fee_fails_closed -- --ignored --nocapture
+cargo test -p e2e-real-canisters io_stream_manager_real_redemption_rejects_insufficient_redeemable_supply -- --ignored --nocapture
+cargo test -p e2e-real-canisters io_stream_manager_real_redemption_after_index_lag_waits_or_fails_closed -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_stack_rejected_refund_too_old_waits_for_index_proof_no_double_refund -- --ignored --nocapture
+cargo test -p e2e-real-canisters io_stream_manager_real_redemption_after_holder_yield_is_higher_than_genesis -- --ignored --nocapture
+cargo test -p e2e-real-canisters io_stream_manager_real_redemption_after_staker_rewards_preserves_rate -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_stack_same_wasm_upgrade_preserves_operation_journal -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_stack_same_wasm_upgrade_preserves_scheduler_cursors -- --ignored --nocapture
+cargo test -p e2e-real-canisters real_stack_same_wasm_upgrade_preserves_processed_tx_set -- --ignored --nocapture
 cargo test -p e2e-real-canisters real_sns_w_accepts_root_ledger_index_swap_archive_wasms_direct_test_path -- --ignored --nocapture
 cargo test -p e2e-real-canisters real_sns_w_lists_published_wasms_direct_test_path -- --ignored --nocapture
 cargo test -p e2e-real-canisters real_sns_w_rejects_wrong_hash_or_wrong_type_direct_test_path -- --ignored --nocapture

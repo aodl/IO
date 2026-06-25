@@ -9,7 +9,10 @@ use io_core_model::{
     StreamOutcome,
 };
 use io_governance_types::SnsNeuronEligibility;
-use io_reward_policy::{active_staked_io_e8s, allocate_rewards, AllocationOutcome, NeuronSnapshot};
+use io_reward_policy::{
+    active_staked_io_e8s, allocate_rewards, sns_neuron_id_is_canonical_staking_subaccount,
+    sns_neuron_id_is_valid, AllocationOutcome, NeuronSnapshot,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StreamManagerError {
@@ -147,7 +150,11 @@ impl StreamManager {
     ) {
         self.active_staked_io_e8s = eligibilities
             .iter()
-            .filter(|eligibility| eligibility.excluded_reason.is_none())
+            .filter(|eligibility| {
+                eligibility.excluded_reason.is_none()
+                    && sns_neuron_id_is_valid(&eligibility.neuron_id)
+                    && sns_neuron_id_is_canonical_staking_subaccount(&eligibility.neuron_id)
+            })
             .map(|eligibility| eligibility.eligible_stake_e8s)
             .sum();
     }

@@ -1339,6 +1339,7 @@ pub fn governance_snapshot_from_observation(
     let mut total_stake = 0_u128;
     for neuron in observation.neurons {
         let policy_neuron = NeuronSnapshot {
+            sns_neuron_id: io_reward_policy::compatibility_sns_neuron_id_from_u64(neuron.neuron_id),
             neuron_id: neuron.neuron_id,
             staked_io_e8s: neuron.staked_io_e8s,
             eligible_seconds: neuron.eligible_seconds,

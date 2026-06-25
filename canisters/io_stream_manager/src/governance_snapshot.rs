@@ -3,7 +3,10 @@ use io_governance_types::{
     SnsGovernanceClient, SnsGovernanceError, SnsNeuron, SnsNeuronEligibility, SnsNeuronId,
     SnsNeuronPageRequest, SnsParticipationPolicy, SnsProposal, SnsProposalPageRequest,
 };
-use io_reward_policy::{sns_neuron_id_to_u64, NeuronSnapshot, SnsNeuronIdConversionError};
+use io_reward_policy::{
+    sns_neuron_id_is_canonical_staking_subaccount, sns_neuron_id_is_valid, sns_neuron_id_to_u64,
+    NeuronSnapshot, SnsNeuronIdConversionError,
+};
 #[cfg(test)]
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
@@ -123,7 +126,15 @@ pub async fn build_governance_reward_snapshot<C: SnsGovernanceClient>(
                 continue;
             }
         };
+        if !sns_neuron_id_is_canonical_staking_subaccount(&eligibility.neuron_id) {
+            excluded_neurons.push(ExcludedGovernanceNeuron {
+                neuron_id: eligibility.neuron_id.clone(),
+                reason: "non-canonical SNS neuron id".to_string(),
+            });
+            continue;
+        }
         snapshots.push(NeuronSnapshot {
+            sns_neuron_id: eligibility.neuron_id.clone(),
             neuron_id,
             staked_io_e8s: eligibility.eligible_stake_e8s,
             eligible_seconds: request
@@ -167,19 +178,29 @@ pub async fn build_governance_active_stake_snapshot<C: SnsGovernanceClient>(
     let eligibilities = snapshot_sns_eligibility(&neurons, &request.eligibility_policy);
     let active_staked_io_e8s = eligibilities
         .iter()
-        .filter(|eligibility| eligibility.excluded_reason.is_none())
+        .filter(|eligibility| {
+            eligibility.excluded_reason.is_none()
+                && sns_neuron_id_is_valid(&eligibility.neuron_id)
+                && sns_neuron_id_is_canonical_staking_subaccount(&eligibility.neuron_id)
+        })
         .map(|eligibility| eligibility.eligible_stake_e8s)
         .sum();
     let excluded_neurons = eligibilities
         .iter()
         .filter_map(|eligibility| {
-            eligibility
-                .excluded_reason
-                .as_ref()
-                .map(|reason| ExcludedGovernanceNeuron {
-                    neuron_id: eligibility.neuron_id.clone(),
-                    reason: reason.clone(),
-                })
+            let reason = eligibility.excluded_reason.clone().or_else(|| {
+                if !sns_neuron_id_is_valid(&eligibility.neuron_id) {
+                    Some("invalid SNS neuron id".to_string())
+                } else if !sns_neuron_id_is_canonical_staking_subaccount(&eligibility.neuron_id) {
+                    Some("non-canonical SNS neuron id".to_string())
+                } else {
+                    None
+                }
+            })?;
+            Some(ExcludedGovernanceNeuron {
+                neuron_id: eligibility.neuron_id.clone(),
+                reason,
+            })
         })
         .collect();
 
@@ -420,11 +441,13 @@ mod tests {
             out.allocations,
             vec![
                 RewardAllocation {
-                    neuron_id: 1,
+                    sns_neuron_id: id(1),
+                    neuron_id: sns_neuron_id_to_u64(&id(1)).unwrap(),
                     io_e8s: 100
                 },
                 RewardAllocation {
-                    neuron_id: 2,
+                    sns_neuron_id: id(2),
+                    neuron_id: sns_neuron_id_to_u64(&id(2)).unwrap(),
                     io_e8s: 100
                 }
             ]
@@ -490,11 +513,11 @@ mod tests {
             request(10),
         ))
         .unwrap();
-        assert_eq!(result.snapshots.len(), 2);
+        assert_eq!(result.snapshots.len(), 1);
         assert!(result
             .snapshots
             .iter()
-            .any(|snapshot| snapshot.neuron_id == 7));
+            .any(|snapshot| snapshot.sns_neuron_id == id(7)));
         assert_eq!(
             result.conversion_errors,
             vec![SnsNeuronIdConversionError::Empty]
@@ -507,6 +530,70 @@ mod tests {
                 .count(),
             1
         );
+        assert_eq!(
+            result
+                .excluded_neurons
+                .iter()
+                .filter(|n| n.reason == "non-canonical SNS neuron id")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn governance_active_stake_snapshot_excludes_invalid_ids_from_active_stake() {
+        let mut empty_id = neuron(0, 1_000);
+        empty_id.id = SnsNeuronId(Vec::new());
+        let real_shaped = neuron(1, 2_000);
+        let result = block_on(build_governance_active_stake_snapshot(
+            &InMemoryClient {
+                neurons: vec![empty_id, real_shaped],
+                ..Default::default()
+            },
+            GovernanceActiveStakeSnapshotRequest {
+                eligibility_policy: request(10).eligibility_policy,
+                max_neuron_pages: 10,
+                page_limit: 10,
+            },
+        ))
+        .unwrap();
+
+        assert_eq!(result.active_staked_io_e8s, 2_000);
+        assert_eq!(result.fetched_neuron_count, 2);
+        assert_eq!(
+            result
+                .excluded_neurons
+                .iter()
+                .filter(|n| n.reason == "invalid SNS neuron id")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn governance_reward_snapshot_reports_empty_id_as_excluded() {
+        let mut invalid = neuron(0, 1_000);
+        invalid.id = SnsNeuronId(Vec::new());
+        let result = block_on(build_governance_reward_snapshot(
+            &InMemoryClient {
+                neurons: vec![invalid],
+                ..Default::default()
+            },
+            request(10),
+        ))
+        .unwrap();
+
+        assert!(result.snapshots.is_empty());
+        assert_eq!(
+            result.conversion_errors,
+            vec![SnsNeuronIdConversionError::Empty]
+        );
+        assert_eq!(result.excluded_neurons.len(), 1);
+        assert_eq!(
+            result.excluded_neurons[0].neuron_id,
+            SnsNeuronId(Vec::new())
+        );
+        assert_eq!(result.excluded_neurons[0].reason, "invalid SNS neuron id");
     }
 
     #[test]
@@ -571,6 +658,68 @@ mod tests {
     }
 
     #[test]
+    fn governance_reward_snapshot_rejects_duplicate_reward_neuron_ids_after_conversion() {
+        assert_eq!(
+            reject_duplicate_reward_neuron_ids(&[
+                NeuronSnapshot {
+                    sns_neuron_id: id(1),
+                    neuron_id: 1,
+                    staked_io_e8s: 1,
+                    eligible_seconds: 1,
+                    eligible_closed_proposals: 0,
+                    voted_closed_proposals: 0,
+                    is_genesis_governance_neuron: false,
+                    is_protocol_owned: false,
+                    is_dissolving: false,
+                },
+                NeuronSnapshot {
+                    sns_neuron_id: id(2),
+                    neuron_id: 1,
+                    staked_io_e8s: 2,
+                    eligible_seconds: 1,
+                    eligible_closed_proposals: 0,
+                    voted_closed_proposals: 0,
+                    is_genesis_governance_neuron: false,
+                    is_protocol_owned: false,
+                    is_dissolving: false,
+                },
+            ]),
+            Err(GovernanceSnapshotError::DuplicateRewardNeuronId)
+        );
+    }
+
+    #[test]
+    fn governance_reward_snapshot_reports_duplicate_converted_id_as_terminal_error() {
+        assert_eq!(
+            reject_duplicate_reward_neuron_ids(&[
+                NeuronSnapshot {
+                    sns_neuron_id: SnsNeuronId(vec![7]),
+                    neuron_id: 7,
+                    staked_io_e8s: 1,
+                    eligible_seconds: 1,
+                    eligible_closed_proposals: 0,
+                    voted_closed_proposals: 0,
+                    is_genesis_governance_neuron: false,
+                    is_protocol_owned: false,
+                    is_dissolving: false,
+                },
+                NeuronSnapshot {
+                    sns_neuron_id: SnsNeuronId(vec![8]),
+                    neuron_id: 7,
+                    staked_io_e8s: 2,
+                    eligible_seconds: 1,
+                    eligible_closed_proposals: 0,
+                    voted_closed_proposals: 0,
+                    is_genesis_governance_neuron: false,
+                    is_protocol_owned: false,
+                    is_dissolving: false,
+                },
+            ]),
+            Err(GovernanceSnapshotError::DuplicateRewardNeuronId)
+        );
+    }
+
+    #[test]
     fn duplicate_ids_are_rejected() {
         assert_eq!(
             block_on(build_governance_reward_snapshot(
@@ -596,6 +745,7 @@ mod tests {
         assert_eq!(
             reject_duplicate_reward_neuron_ids(&[
                 NeuronSnapshot {
+                    sns_neuron_id: id(1),
                     neuron_id: 1,
                     staked_io_e8s: 1,
                     eligible_seconds: 1,
@@ -606,6 +756,7 @@ mod tests {
                     is_dissolving: false,
                 },
                 NeuronSnapshot {
+                    sns_neuron_id: id(2),
                     neuron_id: 1,
                     staked_io_e8s: 2,
                     eligible_seconds: 1,
@@ -644,7 +795,9 @@ mod tests {
     }
 
     fn id(value: u64) -> SnsNeuronId {
-        SnsNeuronId(value.to_be_bytes().to_vec())
+        let mut bytes = [0_u8; 32];
+        bytes[24..].copy_from_slice(&value.to_be_bytes());
+        SnsNeuronId(bytes.to_vec())
     }
 
     fn neuron(id_value: u64, stake: u128) -> SnsNeuron {

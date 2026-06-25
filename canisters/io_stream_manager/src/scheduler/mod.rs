@@ -9,37 +9,61 @@ use crate::state::{IO_NNS_NEURON_MANAGER_SOURCE, JUPITER_FAUCET_SOURCE};
 use crate::DebugTickOutcome;
 #[cfg(target_family = "wasm")]
 use crate::{
-    ApiIoRecipientPolicy, ApiStreamKind, OperationPhase, StreamManagerError, StreamOperation,
-    StreamOperationKind, TransferStatus, TwoWeekRecipientTransfer, CANISTER_STATE,
+    ApiIoRecipientPolicy, ApiStreamKind, OperationPhase, RejectedFundDisposition,
+    RejectedRefundAttemptRecord, RewardDistributionPreflight, RewardPreflightStatus,
+    RewardTransferAttemptRecord, StreamManagerError, StreamOperation, StreamOperationKind,
+    TransferStatus, TwoWeekRecipientTransfer, CANISTER_STATE,
+};
+#[cfg(test)]
+use crate::{
+    OperationPhase, RejectedFundDisposition, RejectedRefundAttemptRecord,
+    RewardDistributionPreflight, RewardPreflightStatus, RewardTransferAttemptRecord,
+    StreamOperation, StreamOperationKind, TransferStatus, TwoWeekRecipientTransfer,
 };
 use candid::CandidType;
 #[cfg(target_family = "wasm")]
+use candid::Nat;
+#[cfg(any(target_family = "wasm", test))]
 use candid::Principal;
 #[cfg(target_family = "wasm")]
 use io_core_model::ModelError;
 #[cfg(target_family = "wasm")]
 use io_governance_types::{
-    SnsEligibilityPolicy, SnsGovernanceCanisterClient, SnsParticipationPolicy,
+    SnsEligibilityPolicy, SnsGovernanceCanisterClient, SnsGovernanceClient, SnsNeuronId,
+    SnsParticipationPolicy,
 };
+#[cfg(any(target_family = "wasm", test))]
+use io_ledger_types::Account;
 #[cfg(any(target_family = "wasm", test))]
 use io_ledger_types::AccountHistoryPageOrder;
 #[cfg(any(target_family = "wasm", test))]
 use io_ledger_types::AccountHistoryScanState;
+#[cfg(any(target_family = "wasm", test))]
+use io_ledger_types::LedgerOperationKind;
+#[cfg(any(target_family = "wasm", test))]
+use io_ledger_types::Subaccount;
 #[cfg(any(target_family = "wasm", test))]
 use io_ledger_types::{
     duplicate_matches_expected, LedgerBlock, LedgerTransferError, LedgerTransferRequest,
     LedgerTransferSuccess,
 };
 #[cfg(target_family = "wasm")]
-use io_ledger_types::{Account, AccountAlias, IndexScanRequest, IndexTransaction};
+use io_ledger_types::{AccountAlias, IndexScanRequest, IndexTransaction};
 use io_ledger_types::{BlockIndex, IndexError, IndexScanResult};
 #[cfg(target_family = "wasm")]
 use io_ledger_types::{
-    IcpIndexCanisterClient, IcpLedgerCanisterClient, IcrcIndexCanisterClient,
+    IcpIndexCanisterClient, IcpLedgerCanisterClient, IcrcAccount, IcrcIndexCanisterClient,
     IcrcLedgerCanisterClient, LedgerIndexClient, LedgerTransferClient,
 };
+#[cfg(any(target_family = "wasm", test))]
+use io_production_wiring::{
+    PRODUCTION_FRONTEND_CANISTER_ID, PRODUCTION_IO_HISTORIAN_CANISTER_ID,
+    PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID, PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID,
+};
 use serde::Deserialize;
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", test))]
+use sha2::{Digest, Sha256};
+#[cfg(any(target_family = "wasm", test))]
 use std::collections::BTreeSet;
 
 pub const STREAM_MANAGER_DEPOSIT_ACCOUNT: &str = "stream_manager_deposit";
@@ -54,6 +78,30 @@ const TWO_WEEK_DISSOLVE_DELAY_SECONDS: u64 = 14 * 24 * 60 * 60;
 const GOVERNANCE_SNAPSHOT_PAGE_LIMIT: u64 = 100;
 #[cfg(target_family = "wasm")]
 const GOVERNANCE_SNAPSHOT_MAX_PAGES: u64 = 100;
+#[cfg(any(target_family = "wasm", test))]
+const REJECTED_REFUND_RETRY_BUDGET_PER_TICK: usize = 8;
+#[cfg(any(target_family = "wasm", test))]
+#[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+const REJECTED_REFUND_PROOF_RECONCILIATION_BUDGET_PER_TICK: usize = 4;
+#[cfg(any(target_family = "wasm", test))]
+const REJECTED_REFUND_PROOF_SCAN_MAX_PAGES: usize = 20;
+#[cfg(any(target_family = "wasm", test))]
+const TWO_WEEK_REWARD_LEDGER_TRANSFER_BUDGET_PER_TICK: usize = 8;
+#[cfg(any(target_family = "wasm", test))]
+const TWO_WEEK_REWARD_REFRESH_BUDGET_PER_TICK: usize = 8;
+#[cfg(any(target_family = "wasm", test))]
+const TWO_WEEK_REWARD_PROOF_SCAN_MAX_PAGES: usize = 20;
+
+#[cfg(target_family = "wasm")]
+fn encode_hex(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(TABLE[(byte >> 4) as usize] as char);
+        out.push(TABLE[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
 
 #[cfg(any(target_family = "wasm", test))]
 fn legacy_icp_account_history_scan_state(cursor: u64) -> AccountHistoryScanState {
@@ -142,6 +190,213 @@ fn boundary_error_message(err: &LedgerTransferError) -> String {
 }
 
 #[cfg(any(target_family = "wasm", test))]
+fn is_retryable_redemption_operation(op: &StreamOperation) -> bool {
+    op.kind == StreamOperationKind::Redemption
+        && !matches!(
+            op.phase,
+            OperationPhase::Completed | OperationPhase::FailedTerminal
+        )
+        && !matches!(op.icp_payout_status, TransferStatus::FailedTerminal)
+        && !matches!(op.io_return_status, TransferStatus::FailedTerminal)
+}
+
+#[cfg(any(all(target_family = "wasm", debug_assertions), test))]
+fn mock_fee_fallback_allowed_for_build(
+    debug_probe_succeeded: bool,
+    debug_assertions_enabled: bool,
+) -> bool {
+    debug_assertions_enabled && debug_probe_succeeded
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn rejected_refund_attempt_created_at(op: &StreamOperation) -> u64 {
+    match &op.rejected_fund_disposition {
+        Some(RejectedFundDisposition::ReturnToSenderProofPending {
+            original_created_at_time: Some(created_at_time),
+            ..
+        })
+        | Some(RejectedFundDisposition::ReturnToSenderManualReconciliationRequired {
+            original_created_at_time: Some(created_at_time),
+            ..
+        }) => *created_at_time,
+        Some(RejectedFundDisposition::ReturnToSenderRetryable {
+            next_attempt_created_at_time: Some(created_at_time),
+            ..
+        }) => *created_at_time,
+        _ => op.created_at,
+    }
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn is_retryable_rejected_refund_operation(op: &StreamOperation) -> bool {
+    op.kind == StreamOperationKind::RejectedRedemption
+        && !matches!(
+            op.phase,
+            OperationPhase::Completed | OperationPhase::FailedTerminal
+        )
+        && matches!(
+            op.rejected_fund_disposition,
+            Some(RejectedFundDisposition::ReturnToSenderPending)
+                | Some(RejectedFundDisposition::ReturnToSenderRetryable { .. })
+        )
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(any(target_family = "wasm", test))]
+enum TooOldRefundProofDisposition {
+    ProofFound(BlockIndex),
+    IndexNotCaughtUp(String),
+    HistoryIncomplete(String),
+    CompleteNoMatch(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(target_family = "wasm")]
+struct TooOldRefundProofScanOutcome {
+    disposition: TooOldRefundProofDisposition,
+    scan_state: AccountHistoryScanState,
+}
+
+#[cfg(any(target_family = "wasm", test))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RewardTransferProofDisposition {
+    ProofFound(BlockIndex),
+    IndexNotCaughtUp(String),
+    HistoryIncomplete(String),
+    CompleteNoMatch(String),
+}
+
+#[cfg(target_family = "wasm")]
+struct RewardTransferProofScanOutcome {
+    disposition: RewardTransferProofDisposition,
+    scan_state: AccountHistoryScanState,
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn proof_absence_completion_gap(scan_state: &AccountHistoryScanState) -> Option<String> {
+    if !scan_state.cursor.backfill_complete {
+        return Some("full refund-source account history has not been backfilled".to_string());
+    }
+    let Some(index_synced) = scan_state.status.num_blocks_synced else {
+        return Some(
+            "IO index did not report ledger catch-up evidence for refund proof absence".to_string(),
+        );
+    };
+    if let Some(latest) = scan_state.cursor.latest_cursor {
+        if index_synced < latest {
+            return Some(format!(
+                "IO index is only synced through block {}, below observed refund-source block {}",
+                index_synced.0, latest.0
+            ));
+        }
+    }
+    None
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn classify_reward_transfer_proof_state(
+    scan_state: &AccountHistoryScanState,
+    pages_scanned: usize,
+    max_pages: usize,
+) -> RewardTransferProofDisposition {
+    if scan_state.status.lag_suspected {
+        return RewardTransferProofDisposition::IndexNotCaughtUp(
+            scan_state.status.last_error.clone().unwrap_or_else(|| {
+                "SNS index lag suspected while proving reward transfer".to_string()
+            }),
+        );
+    }
+    if scan_state.status.scan_incomplete || pages_scanned >= max_pages {
+        return RewardTransferProofDisposition::HistoryIncomplete(
+            proof_absence_completion_gap(scan_state).unwrap_or_else(|| {
+                format!("matching reward transfer proof not found within {max_pages} index pages")
+            }),
+        );
+    }
+    if scan_state.cursor.backfill_complete {
+        return match proof_absence_completion_gap(scan_state) {
+            Some(reason) => RewardTransferProofDisposition::HistoryIncomplete(reason),
+            None => RewardTransferProofDisposition::CompleteNoMatch(
+                "complete SNS reward account history contains no matching transfer".to_string(),
+            ),
+        };
+    }
+    RewardTransferProofDisposition::IndexNotCaughtUp(
+        "SNS reward account history is not complete enough to prove transfer outcome".to_string(),
+    )
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn classify_too_old_refund_proof_state(
+    scan_state: &AccountHistoryScanState,
+    pages_scanned: usize,
+    max_pages: usize,
+) -> TooOldRefundProofDisposition {
+    if scan_state.status.lag_suspected {
+        return TooOldRefundProofDisposition::IndexNotCaughtUp(
+            scan_state
+                .status
+                .last_error
+                .clone()
+                .unwrap_or_else(|| "IO index has not caught up to the ledger tip".to_string()),
+        );
+    }
+    if scan_state.status.scan_incomplete || pages_scanned >= max_pages {
+        return TooOldRefundProofDisposition::HistoryIncomplete(
+            "bounded IO index proof scan did not cover complete account history".to_string(),
+        );
+    }
+    if scan_state.cursor.backfill_complete {
+        return match proof_absence_completion_gap(scan_state) {
+            Some(reason) => TooOldRefundProofDisposition::HistoryIncomplete(reason),
+            None => TooOldRefundProofDisposition::CompleteNoMatch(
+                "complete canonical IO index history contains no matching refund proof".to_string(),
+            ),
+        };
+    }
+    TooOldRefundProofDisposition::IndexNotCaughtUp(
+        "IO index proof scan has no complete backfill evidence".to_string(),
+    )
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn next_retryable_rejected_refund_operation(
+    journal: &[StreamOperation],
+    attempted: &BTreeSet<String>,
+) -> Option<StreamOperation> {
+    journal.iter().find_map(|op| {
+        (is_retryable_rejected_refund_operation(op) && !attempted.contains(&op.operation_id))
+            .then(|| op.clone())
+    })
+}
+
+#[cfg(any(target_family = "wasm", test))]
+#[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+fn next_proof_pending_rejected_refund_operation(
+    journal: &[StreamOperation],
+    attempted: &BTreeSet<String>,
+) -> Option<StreamOperation> {
+    journal.iter().find_map(|op| {
+        (op.kind == StreamOperationKind::RejectedRedemption
+            && matches!(
+                op.rejected_fund_disposition,
+                Some(RejectedFundDisposition::ReturnToSenderProofPending { .. })
+            )
+            && !attempted.contains(&op.operation_id))
+        .then(|| op.clone())
+    })
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn amount_after_fee(amount_e8s: u128, fee_e8s: u128) -> Option<u128> {
+    if amount_e8s > fee_e8s {
+        Some(amount_e8s - fee_e8s)
+    } else {
+        None
+    }
+}
+
+#[cfg(any(target_family = "wasm", test))]
 fn classify_boundary_transfer_result(
     expected: &LedgerTransferRequest,
     result: Result<LedgerTransferSuccess, LedgerTransferError>,
@@ -152,6 +407,36 @@ fn classify_boundary_transfer_result(
         Err(LedgerTransferError::Duplicate { .. }) => match duplicate_block {
             Some(block) => match duplicate_matches_expected(expected, block) {
                 Ok(block) => BoundaryTransferDecision::Succeeded(block.0),
+                Err(proof) => BoundaryTransferDecision::Retryable(format!(
+                    "duplicate transfer did not match expected amount/account/memo: {proof:?}"
+                )),
+            },
+            None => BoundaryTransferDecision::Retryable(
+                "duplicate transfer could not be proven against expected amount/account/memo"
+                    .to_string(),
+            ),
+        },
+        Err(err) => BoundaryTransferDecision::Retryable(boundary_error_message(&err)),
+    }
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn classify_boundary_transfer_result_with_source(
+    expected: &LedgerTransferRequest,
+    expected_from: &io_ledger_types::Account,
+    result: Result<LedgerTransferSuccess, LedgerTransferError>,
+    duplicate_block: Option<&LedgerBlock>,
+) -> BoundaryTransferDecision {
+    match result {
+        Ok(success) => BoundaryTransferDecision::Succeeded(success.block_index.0),
+        Err(LedgerTransferError::Duplicate { .. }) => match duplicate_block {
+            Some(block) => match duplicate_matches_expected(expected, block) {
+                Ok(block_index) if block.from.as_ref() == Some(expected_from) => {
+                    BoundaryTransferDecision::Succeeded(block_index.0)
+                }
+                Ok(_) => BoundaryTransferDecision::Retryable(
+                    "duplicate transfer did not match expected source account".to_string(),
+                ),
                 Err(proof) => BoundaryTransferDecision::Retryable(format!(
                     "duplicate transfer did not match expected amount/account/memo: {proof:?}"
                 )),
@@ -334,9 +619,450 @@ fn canister_owned_account(label: &str) -> Account {
     )
 }
 
+#[cfg(any(target_family = "wasm", test))]
+fn rejected_refund_memo(operation_id: &str) -> io_ledger_types::Memo {
+    io_ledger_types::Memo::from(format!("rejected_io_refund:{operation_id}"))
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn rejected_refund_request_from_attempt(
+    attempt: &RejectedRefundAttemptRecord,
+) -> LedgerTransferRequest {
+    LedgerTransferRequest {
+        from_subaccount: attempt.refund_source_account.subaccount,
+        to: attempt.destination_account.clone(),
+        amount_e8s: attempt.attempted_refund_amount_e8s,
+        fee_e8s: None,
+        memo: attempt.memo.clone(),
+        created_at_time: Some(attempt.attempted_created_at_time),
+    }
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn rejected_refund_attempt_from_parts(
+    refund_source: Account,
+    destination: Account,
+    refund_amount_e8s: u128,
+    fee_e8s: u128,
+    memo: Option<io_ledger_types::Memo>,
+    created_at_time: u64,
+) -> RejectedRefundAttemptRecord {
+    RejectedRefundAttemptRecord {
+        attempted_refund_amount_e8s: refund_amount_e8s,
+        attempted_fee_e8s: fee_e8s,
+        attempted_created_at_time: created_at_time,
+        memo,
+        refund_source_account: refund_source,
+        destination_account: destination,
+    }
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn reward_transfer_memo(
+    operation_id: &str,
+    canonical_sns_neuron_id: &[u8],
+) -> io_ledger_types::Memo {
+    let canonical_id: [u8; 32] = canonical_sns_neuron_id
+        .try_into()
+        .expect("reward transfer memo requires canonical 32-byte SNS neuron ID");
+    let mut hasher = Sha256::new();
+    hasher.update(b"io:two_week_reward:v1");
+    hasher.update(operation_id.as_bytes());
+    hasher.update(canonical_id);
+    io_ledger_types::Memo(hasher.finalize().to_vec())
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn reward_transfer_request_from_attempt(
+    attempt: &RewardTransferAttemptRecord,
+) -> LedgerTransferRequest {
+    LedgerTransferRequest {
+        from_subaccount: attempt.source_account.subaccount,
+        to: attempt.destination_account.clone(),
+        amount_e8s: attempt.amount_e8s,
+        fee_e8s: Some(attempt.fee_e8s),
+        memo: attempt.memo.clone(),
+        created_at_time: Some(attempt.created_at_time),
+    }
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn reward_transfer_attempt_from_parts(
+    source_account: Account,
+    destination_account: Account,
+    amount_e8s: u128,
+    fee_e8s: u128,
+    created_at_time: u64,
+    operation_id: &str,
+    canonical_sns_neuron_id: Vec<u8>,
+) -> RewardTransferAttemptRecord {
+    RewardTransferAttemptRecord {
+        amount_e8s,
+        fee_e8s,
+        created_at_time,
+        memo: Some(reward_transfer_memo(operation_id, &canonical_sns_neuron_id)),
+        source_account,
+        destination_account,
+        canonical_sns_neuron_id,
+    }
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn reward_account_for_sns_neuron(
+    governance_canister: Principal,
+    sns_neuron_id: &[u8],
+) -> Result<Account, String> {
+    let bytes = <[u8; 32]>::try_from(sns_neuron_id).map_err(|_| {
+        format!(
+            "SNS reward destination neuron id must be exactly 32 bytes, got {}",
+            sns_neuron_id.len()
+        )
+    })?;
+    Ok(Account::new(governance_canister, Some(Subaccount(bytes))))
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn reward_recipient_reserve_debit(
+    recipient: &TwoWeekRecipientTransfer,
+    ledger_fee_e8s: u128,
+) -> u128 {
+    recipient
+        .reserve_debit_e8s
+        .unwrap_or_else(|| recipient.amount_e8s.saturating_add(ledger_fee_e8s))
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn pending_reward_reservation_for_operation(op: &StreamOperation) -> u128 {
+    let Some(preflight) = &op.reward_preflight else {
+        return op.reserved_reward_debit_e8s.unwrap_or(0);
+    };
+    if preflight.status != RewardPreflightStatus::Validated
+        || op.phase == OperationPhase::Completed
+        || op.phase == OperationPhase::FailedTerminal
+    {
+        return 0;
+    }
+    op.two_week_recipients
+        .iter()
+        .filter(|recipient| recipient_ledger_status(recipient) != TransferStatus::Succeeded)
+        .map(|recipient| reward_recipient_reserve_debit(recipient, preflight.ledger_fee_e8s))
+        .sum()
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn pending_reward_reservations<'a>(
+    ops: impl Iterator<Item = &'a StreamOperation>,
+    excluding_operation_id: Option<&str>,
+) -> u128 {
+    ops.filter(|op| excluding_operation_id != Some(op.operation_id.as_str()))
+        .map(pending_reward_reservation_for_operation)
+        .sum()
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn reward_reserve_available(
+    protocol_reserve_io_e8s: u128,
+    pending_reservations_e8s: u128,
+) -> Result<u128, String> {
+    protocol_reserve_io_e8s
+        .checked_sub(pending_reservations_e8s)
+        .ok_or_else(|| "pending reward reservations exceed protocol model reserve".to_string())
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn build_reward_distribution_preflight(
+    op: &StreamOperation,
+    expected_governance_canister: Principal,
+    ledger_fee_e8s: u128,
+    protocol_reserve_available_e8s: u128,
+    real_ledger_reserve_balance_e8s: u128,
+    validated_at_timestamp_nanos: u64,
+) -> Result<RewardDistributionPreflight, String> {
+    let recipient_count = u64::try_from(op.two_week_recipients.len())
+        .map_err(|_| "recipient count does not fit in u64".to_string())?;
+    let total_reward_e8s = op
+        .two_week_recipients
+        .iter()
+        .try_fold(0_u128, |sum, recipient| {
+            sum.checked_add(recipient.amount_e8s)
+                .ok_or_else(|| "total reward amount overflowed".to_string())
+        })?;
+    let total_fee_e8s = ledger_fee_e8s
+        .checked_mul(u128::from(recipient_count))
+        .ok_or_else(|| "total reward ledger fee overflowed".to_string())?;
+    let total_reserve_debit_e8s = total_reward_e8s
+        .checked_add(total_fee_e8s)
+        .ok_or_else(|| "total reward reserve debit overflowed".to_string())?;
+    let dust_e8s = op
+        .io_issued_e8s
+        .checked_sub(total_reward_e8s)
+        .ok_or_else(|| "reward allocations exceed reward pool".to_string())?;
+
+    let mut canonical_recipient_ids = Vec::with_capacity(op.two_week_recipients.len());
+    let mut compatibility_keys = Vec::with_capacity(op.two_week_recipients.len());
+    let mut canonical_seen = BTreeSet::new();
+    let mut compatibility_seen = BTreeSet::new();
+    for recipient in &op.two_week_recipients {
+        let canonical = recipient.sns_neuron_id.clone().ok_or_else(|| {
+            format!(
+                "two-week reward recipient {} is missing a canonical SNS neuron id",
+                recipient.neuron_id
+            )
+        })?;
+        if canonical.len() != 32 {
+            return Err(format!(
+                "two-week reward recipient {} canonical SNS neuron id must be exactly 32 bytes, got {}",
+                recipient.neuron_id,
+                canonical.len()
+            ));
+        }
+        if !canonical_seen.insert(canonical.clone()) {
+            return Err(format!(
+                "duplicate canonical SNS neuron id for reward recipient {}",
+                recipient.neuron_id
+            ));
+        }
+        if !compatibility_seen.insert(recipient.neuron_id) {
+            return Err(format!(
+                "duplicate compatibility reward recipient key {}",
+                recipient.neuron_id
+            ));
+        }
+        let destination = reward_account_for_sns_neuron(expected_governance_canister, &canonical)?;
+        if destination.owner != expected_governance_canister {
+            return Err(
+                "reward destination owner did not match finalized local SNS governance canister"
+                    .to_string(),
+            );
+        }
+        let owner_text = destination.owner.to_text();
+        if matches!(
+            owner_text.as_str(),
+            PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID
+                | PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID
+                | PRODUCTION_IO_HISTORIAN_CANISTER_ID
+                | PRODUCTION_FRONTEND_CANISTER_ID
+        ) {
+            return Err("reward destination uses a production fiduciary canister id".to_string());
+        }
+        canonical_recipient_ids.push(canonical);
+        compatibility_keys.push(recipient.neuron_id);
+    }
+
+    if total_reserve_debit_e8s > protocol_reserve_available_e8s {
+        return Err(format!(
+            "protocol model reserve cannot cover reward reserve debit {total_reserve_debit_e8s}; available {protocol_reserve_available_e8s}"
+        ));
+    }
+    if total_reserve_debit_e8s > real_ledger_reserve_balance_e8s {
+        return Err(format!(
+            "finalized SNS ledger reserve cannot cover reward reserve debit {total_reserve_debit_e8s}; available {real_ledger_reserve_balance_e8s}"
+        ));
+    }
+
+    Ok(RewardDistributionPreflight {
+        status: RewardPreflightStatus::Validated,
+        ledger_fee_e8s,
+        recipient_count,
+        total_reward_e8s,
+        total_fee_e8s,
+        total_reserve_debit_e8s,
+        protocol_reserve_available_e8s,
+        real_ledger_reserve_balance_e8s,
+        validated_at_timestamp_nanos,
+        canonical_recipient_ids,
+        compatibility_keys,
+        dust_e8s,
+        failure_reason: None,
+    })
+}
+
 #[cfg(target_family = "wasm")]
-fn reward_account_for_neuron(neuron_id: u64) -> Account {
-    canister_owned_account(&format!("{TWO_WEEK_REWARD_ACCOUNT_PREFIX}{neuron_id}"))
+async fn icrc1_balance_of(canister: Principal, account: Account) -> Result<u128, String> {
+    let response = ic_cdk::call::Call::bounded_wait(canister, "icrc1_balance_of")
+        .with_arg(IcrcAccount::from(account))
+        .await
+        .map_err(|err| format!("finalized SNS ledger reserve balance query failed: {err:?}"))?;
+    let (balance,) = response
+        .candid_tuple::<(Nat,)>()
+        .map_err(|err| format!("finalized SNS ledger reserve balance decode failed: {err:?}"))?;
+    balance
+        .0
+        .to_str_radix(10)
+        .parse::<u128>()
+        .map_err(|err| format!("finalized SNS ledger reserve balance does not fit in u128: {err}"))
+}
+
+#[cfg(target_family = "wasm")]
+async fn ensure_reward_preflight(
+    operation_id: &str,
+    io_canister: Principal,
+    sns_governance_canister: Principal,
+    outcome: &mut DebugTickOutcome,
+) -> bool {
+    let existing = CANISTER_STATE.with(|cell| {
+        cell.borrow()
+            .operation_journal
+            .iter()
+            .find(|op| op.operation_id == operation_id)
+            .and_then(|op| op.reward_preflight.clone())
+    });
+    if matches!(
+        existing.as_ref().map(|preflight| preflight.status),
+        Some(RewardPreflightStatus::Validated)
+    ) {
+        return true;
+    }
+
+    let (op, protocol_reserve, pending_reservations) = CANISTER_STATE.with(|cell| {
+        let state = cell.borrow();
+        let op = state
+            .operation_journal
+            .iter()
+            .find(|op| op.operation_id == operation_id)
+            .cloned();
+        (
+            op,
+            state.manager.state.protocol_reserve_io_e8s,
+            pending_reward_reservations(state.operation_journal.iter(), Some(operation_id)),
+        )
+    });
+    let Some(op) = op else {
+        return false;
+    };
+    let protocol_available = match reward_reserve_available(protocol_reserve, pending_reservations)
+    {
+        Ok(available) => available,
+        Err(err) => {
+            record_reward_preflight_failure(
+                operation_id,
+                RewardPreflightStatus::FailedTerminal,
+                err.clone(),
+                None,
+            );
+            outcome.errors.push(err);
+            return false;
+        }
+    };
+
+    let fee = match (IcrcLedgerCanisterClient {
+        canister: io_canister,
+    })
+    .fee()
+    .await
+    {
+        Ok(fee) => fee,
+        Err(err) => {
+            let message = format!("finalized SNS ledger fee query failed: {err:?}");
+            record_reward_preflight_failure(
+                operation_id,
+                RewardPreflightStatus::Pending,
+                message.clone(),
+                None,
+            );
+            outcome.errors.push(message);
+            return false;
+        }
+    };
+    let reserve_account = Account::new(
+        ic_cdk::api::canister_self(),
+        Some(icp_ledger::mock_subaccount(PROTOCOL_RESERVE_ACCOUNT)),
+    );
+    let real_reserve_balance = match icrc1_balance_of(io_canister, reserve_account).await {
+        Ok(balance) => balance,
+        Err(message) => {
+            record_reward_preflight_failure(
+                operation_id,
+                RewardPreflightStatus::Pending,
+                message.clone(),
+                Some(fee),
+            );
+            outcome.errors.push(message);
+            return false;
+        }
+    };
+    match build_reward_distribution_preflight(
+        &op,
+        sns_governance_canister,
+        fee,
+        protocol_available,
+        real_reserve_balance,
+        crate::canister_time(),
+    ) {
+        Ok(preflight) => {
+            let reserved = preflight.total_reserve_debit_e8s;
+            CANISTER_STATE.with(|cell| {
+                if let Some(op) = cell
+                    .borrow_mut()
+                    .operation_journal
+                    .iter_mut()
+                    .find(|op| op.operation_id == operation_id)
+                {
+                    op.reward_preflight = Some(preflight);
+                    op.reserved_reward_debit_e8s = Some(reserved);
+                    op.mark_updated(OperationPhase::PartiallyDistributed);
+                }
+            });
+            true
+        }
+        Err(err) => {
+            record_reward_preflight_failure(
+                operation_id,
+                RewardPreflightStatus::FailedTerminal,
+                err.clone(),
+                Some(fee),
+            );
+            outcome.errors.push(err);
+            false
+        }
+    }
+}
+
+#[cfg(target_family = "wasm")]
+fn record_reward_preflight_failure(
+    operation_id: &str,
+    status: RewardPreflightStatus,
+    reason: String,
+    ledger_fee_e8s: Option<u128>,
+) {
+    CANISTER_STATE.with(|cell| {
+        if let Some(op) = cell
+            .borrow_mut()
+            .operation_journal
+            .iter_mut()
+            .find(|op| op.operation_id == operation_id)
+        {
+            op.reward_preflight = Some(RewardDistributionPreflight {
+                status,
+                ledger_fee_e8s: ledger_fee_e8s.unwrap_or(0),
+                recipient_count: u64::try_from(op.two_week_recipients.len()).unwrap_or(u64::MAX),
+                total_reward_e8s: op
+                    .two_week_recipients
+                    .iter()
+                    .map(|recipient| recipient.amount_e8s)
+                    .sum(),
+                total_fee_e8s: 0,
+                total_reserve_debit_e8s: 0,
+                protocol_reserve_available_e8s: 0,
+                real_ledger_reserve_balance_e8s: 0,
+                validated_at_timestamp_nanos: crate::canister_time(),
+                canonical_recipient_ids: Vec::new(),
+                compatibility_keys: Vec::new(),
+                dust_e8s: 0,
+                failure_reason: Some(reason.clone()),
+            });
+            op.reserved_reward_debit_e8s = Some(0);
+            match status {
+                RewardPreflightStatus::FailedTerminal
+                | RewardPreflightStatus::ManualReconciliationRequired => {
+                    op.mark_terminal_error(reason, OperationPhase::PartiallyDistributed);
+                }
+                RewardPreflightStatus::Pending | RewardPreflightStatus::Validated => {
+                    op.mark_retryable_error(reason, OperationPhase::PartiallyDistributed);
+                }
+            }
+        }
+    });
 }
 
 #[cfg(target_family = "wasm")]
@@ -347,6 +1073,30 @@ async fn duplicate_block(canister: Principal, block_index: BlockIndex) -> Option
         .into_iter()
         .find(|tx| tx.block_index == block_index.0)
         .map(|tx| tx.into_boundary_block())
+}
+
+#[cfg(target_family = "wasm")]
+async fn duplicate_block_from_account_history(
+    index_canister: Principal,
+    account: Account,
+    block_index: BlockIndex,
+) -> Option<LedgerBlock> {
+    let client = IcrcIndexCanisterClient {
+        canister: index_canister,
+    };
+    client
+        .get_account_transactions(IndexScanRequest {
+            start: None,
+            limit: 100,
+            account_filter: Some(account),
+            account_aliases: Vec::new(),
+        })
+        .await
+        .ok()?
+        .transactions
+        .into_iter()
+        .find(|tx| tx.block_index == block_index)
+        .map(|tx| tx.transaction)
 }
 
 #[cfg(target_family = "wasm")]
@@ -389,6 +1139,54 @@ async fn classify_icp_payout_transfer(
         }
         Err(err) => BoundaryTransferDecision::Retryable(boundary_error_message(&err)),
     }
+}
+
+#[cfg(all(target_family = "wasm", not(debug_assertions)))]
+async fn query_io_return_fee(io_canister: Principal) -> Result<u128, String> {
+    (IcrcLedgerCanisterClient {
+        canister: io_canister,
+    })
+    .fee()
+    .await
+    .map_err(|real_err| {
+        format!("IO return fee query failed through production ICRC client: {real_err:?}")
+    })
+}
+
+#[cfg(all(target_family = "wasm", debug_assertions))]
+async fn query_io_return_fee(io_canister: Principal) -> Result<u128, String> {
+    match (IcrcLedgerCanisterClient {
+        canister: io_canister,
+    })
+    .fee()
+    .await
+    {
+        Ok(fee) => Ok(fee),
+        Err(real_err) => query_io_return_fee_debug_fallback(io_canister, real_err).await,
+    }
+}
+
+#[cfg(all(target_family = "wasm", debug_assertions))]
+async fn query_io_return_fee_debug_fallback(
+    io_canister: Principal,
+    real_err: io_ledger_types::LedgerQueryError,
+) -> Result<u128, String> {
+    let debug_probe = io_ledger::debug_get_transactions(io_canister).await;
+    if !mock_fee_fallback_allowed_for_build(debug_probe.is_ok(), true) {
+        let debug_err = debug_probe
+            .err()
+            .unwrap_or_else(|| "debug ledger probe denied".to_string());
+        return Err(format!(
+            "IO return fee query failed through production ICRC client: {real_err:?}; mock/debug fallback denied because debug ledger probe failed: {debug_err}"
+        ));
+    }
+    let mock_client = io_ledger::MockLedgerCanisterClient {
+        canister: io_canister,
+        fee_e8s: 0,
+    };
+    mock_client.fee().await.map_err(|mock_err| {
+        format!("IO return fee query failed through debug mock fallback: {mock_err:?}")
+    })
 }
 
 #[cfg(target_family = "wasm")]
@@ -538,50 +1336,786 @@ async fn scan_icrc_account_through_index(
     .await
 }
 
+#[cfg(any(target_family = "wasm", test))]
+fn reward_transfer_block_matches_attempt(
+    attempt: &RewardTransferAttemptRecord,
+    block: &LedgerBlock,
+) -> bool {
+    if let Some(created_at_time) = block.created_at_time {
+        if created_at_time != attempt.created_at_time {
+            return false;
+        }
+    }
+    block.operation_kind == LedgerOperationKind::Transfer
+        && block.from.as_ref() == Some(&attempt.source_account)
+        && block.to.as_ref() == Some(&attempt.destination_account)
+        && block.amount_e8s == attempt.amount_e8s
+        && block.memo == attempt.memo
+        && block
+            .fee_e8s
+            .map(|fee| fee == attempt.fee_e8s)
+            .unwrap_or(true)
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn classify_reward_transfer_result(
+    attempt: &RewardTransferAttemptRecord,
+    result: Result<LedgerTransferSuccess, LedgerTransferError>,
+    duplicate_block: Option<&LedgerBlock>,
+) -> BoundaryTransferDecision {
+    match result {
+        Ok(success) => BoundaryTransferDecision::Succeeded(success.block_index.0),
+        Err(LedgerTransferError::Duplicate { .. }) => match duplicate_block {
+            Some(block) if reward_transfer_block_matches_attempt(attempt, block) => {
+                BoundaryTransferDecision::Succeeded(block.block_index.0)
+            }
+            Some(_) => BoundaryTransferDecision::Retryable(
+                "duplicate reward transfer did not match persisted attempt proof".to_string(),
+            ),
+            None => BoundaryTransferDecision::Retryable(
+                "duplicate reward transfer could not be proven against persisted attempt"
+                    .to_string(),
+            ),
+        },
+        Err(err) => BoundaryTransferDecision::Retryable(boundary_error_message(&err)),
+    }
+}
+
+#[cfg(target_family = "wasm")]
+async fn scan_reward_transfer_proof_from_state(
+    io_index_canister: Option<Principal>,
+    attempt: &RewardTransferAttemptRecord,
+    mut scan_state: AccountHistoryScanState,
+) -> RewardTransferProofScanOutcome {
+    let Some(index_canister) = io_index_canister else {
+        return RewardTransferProofScanOutcome {
+            disposition: RewardTransferProofDisposition::IndexNotCaughtUp(
+                "missing IO index canister for reward transfer proof lookup".to_string(),
+            ),
+            scan_state,
+        };
+    };
+
+    for page_index in 0..TWO_WEEK_REWARD_PROOF_SCAN_MAX_PAGES {
+        let scan = scan_icrc_account_through_index(
+            index_canister,
+            attempt.destination_account.clone(),
+            scan_state.clone(),
+        )
+        .await;
+
+        let (transactions, next_state, _) = match scan {
+            Ok(scan) => scan,
+            Err(err) if err.contains("ArchiveRequired") => {
+                return RewardTransferProofScanOutcome {
+                    disposition: RewardTransferProofDisposition::HistoryIncomplete(format!(
+                        "IO index reward proof requires archive traversal before retry: {err}"
+                    )),
+                    scan_state: scan_state.record_unreadable(err),
+                };
+            }
+            Err(err) if err.contains("IndexLag") => {
+                return RewardTransferProofScanOutcome {
+                    disposition: RewardTransferProofDisposition::IndexNotCaughtUp(format!(
+                        "IO index is not caught up enough to prove reward transfer outcome: {err}"
+                    )),
+                    scan_state: scan_state.record_unreadable(err),
+                };
+            }
+            Err(err) => {
+                return RewardTransferProofScanOutcome {
+                    disposition: RewardTransferProofDisposition::HistoryIncomplete(format!(
+                        "IO index reward proof lookup was incomplete: {err}"
+                    )),
+                    scan_state: scan_state.record_unreadable(err),
+                };
+            }
+        };
+
+        for tx in transactions {
+            let block = tx.transaction;
+            if reward_transfer_block_matches_attempt(attempt, &block) {
+                return RewardTransferProofScanOutcome {
+                    disposition: RewardTransferProofDisposition::ProofFound(block.block_index),
+                    scan_state: next_state,
+                };
+            }
+        }
+
+        let backfill_complete = next_state.cursor.backfill_complete;
+        scan_state = next_state;
+        if backfill_complete || page_index + 1 >= TWO_WEEK_REWARD_PROOF_SCAN_MAX_PAGES {
+            return RewardTransferProofScanOutcome {
+                disposition: classify_reward_transfer_proof_state(
+                    &scan_state,
+                    page_index + 1,
+                    TWO_WEEK_REWARD_PROOF_SCAN_MAX_PAGES,
+                ),
+                scan_state,
+            };
+        }
+    }
+
+    RewardTransferProofScanOutcome {
+        disposition: RewardTransferProofDisposition::HistoryIncomplete(format!(
+            "matching reward transfer proof not found within {TWO_WEEK_REWARD_PROOF_SCAN_MAX_PAGES} index pages"
+        )),
+        scan_state,
+    }
+}
+
+#[cfg(target_family = "wasm")]
+async fn resolve_too_old_rejected_refund(
+    io_index_canister: Option<Principal>,
+    refund_source: &Account,
+    request: &LedgerTransferRequest,
+) -> TooOldRefundProofDisposition {
+    resolve_too_old_rejected_refund_from_state(
+        io_index_canister,
+        refund_source,
+        request,
+        AccountHistoryScanState {
+            cursor: io_ledger_types::AccountHistoryCursor {
+                order: None,
+                latest_cursor: None,
+                oldest_cursor: None,
+                backfill_complete: false,
+            },
+            status: Default::default(),
+        },
+    )
+    .await
+    .disposition
+}
+
+#[cfg(target_family = "wasm")]
+async fn resolve_too_old_rejected_refund_from_state(
+    io_index_canister: Option<Principal>,
+    refund_source: &Account,
+    request: &LedgerTransferRequest,
+    mut scan_state: AccountHistoryScanState,
+) -> TooOldRefundProofScanOutcome {
+    let Some(index_canister) = io_index_canister else {
+        return TooOldRefundProofScanOutcome {
+            disposition: TooOldRefundProofDisposition::IndexNotCaughtUp(
+                "missing IO index canister for TooOld refund proof lookup".to_string(),
+            ),
+            scan_state,
+        };
+    };
+
+    for page_index in 0..REJECTED_REFUND_PROOF_SCAN_MAX_PAGES {
+        let scan = scan_account_with_index_client_raw(
+            IcrcIndexCanisterClient {
+                canister: index_canister,
+            },
+            refund_source.clone(),
+            vec![],
+            scan_state.clone(),
+        )
+        .await;
+
+        let (transactions, next_state, _) = match scan {
+            Ok(scan) => scan,
+            Err(err) if err.contains("ArchiveRequired") => {
+                return TooOldRefundProofScanOutcome {
+                    disposition: TooOldRefundProofDisposition::HistoryIncomplete(format!(
+                        "IO index refund proof requires archive traversal before retry: {err}"
+                    )),
+                    scan_state: scan_state.record_unreadable(err),
+                };
+            }
+            Err(err) if err.contains("IndexLag") => {
+                return TooOldRefundProofScanOutcome {
+                    disposition: TooOldRefundProofDisposition::IndexNotCaughtUp(format!(
+                        "IO index is not caught up enough to prove refund absence: {err}"
+                    )),
+                    scan_state: scan_state.record_unreadable(err),
+                };
+            }
+            Err(err) => {
+                return TooOldRefundProofScanOutcome {
+                    disposition: TooOldRefundProofDisposition::HistoryIncomplete(format!(
+                        "IO index refund proof lookup was incomplete: {err}"
+                    )),
+                    scan_state: scan_state.record_unreadable(err),
+                };
+            }
+        };
+
+        for tx in transactions {
+            let block = tx.transaction;
+            if block.from.as_ref() == Some(refund_source)
+                && duplicate_matches_expected(request, &block).is_ok()
+            {
+                return TooOldRefundProofScanOutcome {
+                    disposition: TooOldRefundProofDisposition::ProofFound(block.block_index),
+                    scan_state: next_state,
+                };
+            }
+        }
+
+        let backfill_complete = next_state.cursor.backfill_complete;
+        scan_state = next_state;
+        if backfill_complete {
+            return TooOldRefundProofScanOutcome {
+                disposition: classify_too_old_refund_proof_state(
+                    &scan_state,
+                    page_index + 1,
+                    REJECTED_REFUND_PROOF_SCAN_MAX_PAGES,
+                ),
+                scan_state,
+            };
+        }
+        if page_index + 1 >= REJECTED_REFUND_PROOF_SCAN_MAX_PAGES {
+            return TooOldRefundProofScanOutcome {
+                disposition: classify_too_old_refund_proof_state(
+                    &scan_state,
+                    page_index + 1,
+                    REJECTED_REFUND_PROOF_SCAN_MAX_PAGES,
+                ),
+                scan_state,
+            };
+        }
+    }
+
+    TooOldRefundProofScanOutcome {
+        disposition: TooOldRefundProofDisposition::HistoryIncomplete(format!(
+            "matching refund proof not found within {REJECTED_REFUND_PROOF_SCAN_MAX_PAGES} index pages"
+        )),
+        scan_state,
+    }
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn recipient_ledger_status(recipient: &TwoWeekRecipientTransfer) -> TransferStatus {
+    recipient
+        .ledger_transfer_status
+        .unwrap_or(recipient.transfer_status)
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn recipient_refresh_status(recipient: &TwoWeekRecipientTransfer) -> TransferStatus {
+    recipient
+        .governance_refresh_status
+        .unwrap_or(TransferStatus::Pending)
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn recipient_is_completed(recipient: &TwoWeekRecipientTransfer) -> bool {
+    recipient_ledger_status(recipient) == TransferStatus::Succeeded
+        && recipient_refresh_status(recipient) == TransferStatus::Succeeded
+}
+
+#[cfg(target_family = "wasm")]
+fn reward_operation_can_progress(op: &StreamOperation) -> bool {
+    op.kind == StreamOperationKind::TwoWeekMaturityStream
+        && !matches!(
+            op.phase,
+            OperationPhase::Completed | OperationPhase::FailedTerminal
+        )
+}
+
+#[cfg(target_family = "wasm")]
+fn reward_recipient_attempt_key(
+    operation_id: &str,
+    recipient_index: usize,
+    recipient: &TwoWeekRecipientTransfer,
+) -> String {
+    recipient
+        .sns_neuron_id
+        .as_ref()
+        .map(|id| format!("{operation_id}:{}", encode_hex(id)))
+        .unwrap_or_else(|| format!("{operation_id}:legacy-index:{recipient_index}"))
+}
+
+#[cfg(target_family = "wasm")]
+fn next_reward_ledger_recipient(
+    attempted: &BTreeSet<String>,
+) -> Option<(String, usize, TwoWeekRecipientTransfer, String)> {
+    CANISTER_STATE.with(|cell| {
+        let state = cell.borrow();
+        state.operation_journal.iter().find_map(|op| {
+            if !reward_operation_can_progress(op) {
+                return None;
+            }
+            if !matches!(
+                op.reward_preflight
+                    .as_ref()
+                    .map(|preflight| preflight.status),
+                Some(RewardPreflightStatus::Validated)
+            ) {
+                return None;
+            }
+            op.two_week_recipients
+                .iter()
+                .enumerate()
+                .find_map(|(index, recipient)| {
+                    let key = reward_recipient_attempt_key(&op.operation_id, index, recipient);
+                    (recipient_ledger_status(recipient) != TransferStatus::Succeeded
+                        && recipient.ledger_transfer_proof_scan_state.is_none()
+                        && !attempted.contains(&key))
+                    .then(|| (op.operation_id.clone(), index, recipient.clone(), key))
+                })
+        })
+    })
+}
+
+#[cfg(target_family = "wasm")]
+fn next_reward_refresh_recipient(
+    attempted: &BTreeSet<String>,
+) -> Option<(String, usize, TwoWeekRecipientTransfer, String)> {
+    CANISTER_STATE.with(|cell| {
+        let state = cell.borrow();
+        state.operation_journal.iter().find_map(|op| {
+            if !reward_operation_can_progress(op) {
+                return None;
+            }
+            op.two_week_recipients
+                .iter()
+                .enumerate()
+                .find_map(|(index, recipient)| {
+                    let key = reward_recipient_attempt_key(&op.operation_id, index, recipient);
+                    (recipient_ledger_status(recipient) == TransferStatus::Succeeded
+                        && recipient_refresh_status(recipient) != TransferStatus::Succeeded
+                        && !attempted.contains(&key))
+                    .then(|| (op.operation_id.clone(), index, recipient.clone(), key))
+                })
+        })
+    })
+}
+
+#[cfg(target_family = "wasm")]
+fn next_reward_proof_pending_recipient(
+    attempted: &BTreeSet<String>,
+) -> Option<(String, usize, TwoWeekRecipientTransfer, String)> {
+    CANISTER_STATE.with(|cell| {
+        let state = cell.borrow();
+        state.operation_journal.iter().find_map(|op| {
+            if !reward_operation_can_progress(op) {
+                return None;
+            }
+            op.two_week_recipients
+                .iter()
+                .enumerate()
+                .find_map(|(index, recipient)| {
+                    let key = reward_recipient_attempt_key(&op.operation_id, index, recipient);
+                    (recipient_ledger_status(recipient) != TransferStatus::Succeeded
+                        && recipient.ledger_transfer_proof_scan_state.is_some()
+                        && !attempted.contains(&key))
+                    .then(|| (op.operation_id.clone(), index, recipient.clone(), key))
+                })
+        })
+    })
+}
+
+#[cfg(target_family = "wasm")]
+fn mark_reward_transfer_proven(
+    operation_id: &str,
+    recipient_index: usize,
+    attempt: &RewardTransferAttemptRecord,
+    block: BlockIndex,
+) {
+    CANISTER_STATE.with(|cell| {
+        if let Some(op) = cell
+            .borrow_mut()
+            .operation_journal
+            .iter_mut()
+            .find(|op| op.operation_id == operation_id)
+        {
+            if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index) {
+                recipient.transfer_status = TransferStatus::Succeeded;
+                recipient.transfer_block_index = Some(block.0);
+                recipient.ledger_transfer_status = Some(TransferStatus::Succeeded);
+                recipient.ledger_transfer_block = Some(block.0);
+                recipient.governance_refresh_status = Some(recipient_refresh_status(recipient));
+                recipient.ledger_transfer_fee_e8s = Some(attempt.fee_e8s);
+                recipient.reward_amount_received_e8s = Some(attempt.amount_e8s);
+                recipient.reserve_debit_e8s =
+                    Some(attempt.amount_e8s.saturating_add(attempt.fee_e8s));
+                recipient.ledger_transfer_proof_scan_state = None;
+                recipient.last_error = None;
+            }
+            op.reserved_reward_debit_e8s = Some(pending_reward_reservation_for_operation(op));
+            op.mark_updated(OperationPhase::PartiallyDistributed);
+        }
+    });
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn reward_fee_adjusted_post_state(
+    op: &StreamOperation,
+) -> Result<crate::StableProtocolState, String> {
+    let total_fee = op
+        .two_week_recipients
+        .iter()
+        .try_fold(0_u128, |sum, recipient| {
+            let fee = recipient.ledger_transfer_fee_e8s.ok_or_else(|| {
+                "completed reward recipient is missing ledger transfer fee".to_string()
+            })?;
+            sum.checked_add(fee)
+                .ok_or_else(|| "reward transfer fee sum overflowed".to_string())
+        })?;
+    let mut post_state = op.post_state;
+    post_state.protocol_reserve_io_e8s = post_state
+        .protocol_reserve_io_e8s
+        .checked_sub(total_fee)
+        .ok_or_else(|| {
+            "protocol reserve cannot cover completed reward transfer fees".to_string()
+        })?;
+    post_state.total_io_supply_e8s = post_state
+        .total_io_supply_e8s
+        .checked_sub(total_fee)
+        .ok_or_else(|| "total IO supply cannot burn completed reward transfer fees".to_string())?;
+    Ok(post_state)
+}
+
+#[cfg(target_family = "wasm")]
+async fn reconcile_reward_transfer_proofs(
+    io_index_canister: Principal,
+    outcome: &mut DebugTickOutcome,
+) {
+    let mut attempted = BTreeSet::new();
+    for _ in 0..TWO_WEEK_REWARD_PROOF_SCAN_MAX_PAGES {
+        let Some((operation_id, recipient_index, recipient, attempt_key)) =
+            next_reward_proof_pending_recipient(&attempted)
+        else {
+            return;
+        };
+        attempted.insert(attempt_key);
+
+        let Some(attempt) = recipient.reward_transfer_attempt.clone() else {
+            let message = "reward proof-pending recipient is missing the persisted transfer attempt; manual reconciliation required".to_string();
+            CANISTER_STATE.with(|cell| {
+                if let Some(op) = cell
+                    .borrow_mut()
+                    .operation_journal
+                    .iter_mut()
+                    .find(|op| op.operation_id == operation_id)
+                {
+                    if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index) {
+                        recipient.transfer_status = TransferStatus::FailedTerminal;
+                        recipient.ledger_transfer_status = Some(TransferStatus::FailedTerminal);
+                        recipient.last_error = Some(message.clone());
+                    }
+                    op.mark_retryable_error(message.clone(), OperationPhase::PartiallyDistributed);
+                }
+            });
+            outcome.errors.push(message);
+            continue;
+        };
+        let scan_state = recipient
+            .ledger_transfer_proof_scan_state
+            .clone()
+            .unwrap_or_default();
+        let proof =
+            scan_reward_transfer_proof_from_state(Some(io_index_canister), &attempt, scan_state)
+                .await;
+
+        match proof.disposition {
+            RewardTransferProofDisposition::ProofFound(block) => {
+                mark_reward_transfer_proven(&operation_id, recipient_index, &attempt, block);
+            }
+            RewardTransferProofDisposition::IndexNotCaughtUp(reason)
+            | RewardTransferProofDisposition::HistoryIncomplete(reason) => {
+                let message = format!(
+                    "reward transfer proof pending; automatic retry remains paused: {reason}"
+                );
+                CANISTER_STATE.with(|cell| {
+                    if let Some(op) = cell
+                        .borrow_mut()
+                        .operation_journal
+                        .iter_mut()
+                        .find(|op| op.operation_id == operation_id)
+                    {
+                        if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index) {
+                            recipient.transfer_status = TransferStatus::FailedRetryable;
+                            recipient.ledger_transfer_status =
+                                Some(TransferStatus::FailedRetryable);
+                            recipient.ledger_transfer_proof_scan_state =
+                                Some(proof.scan_state.clone());
+                            recipient.last_error = Some(message.clone());
+                        }
+                        op.mark_retryable_error(
+                            message.clone(),
+                            OperationPhase::PartiallyDistributed,
+                        );
+                    }
+                });
+                outcome.errors.push(message);
+            }
+            RewardTransferProofDisposition::CompleteNoMatch(reason) => {
+                let message = format!(
+                    "{reason}; manual reconciliation required before any new reward transfer attempt"
+                );
+                CANISTER_STATE.with(|cell| {
+                    if let Some(op) = cell
+                        .borrow_mut()
+                        .operation_journal
+                        .iter_mut()
+                        .find(|op| op.operation_id == operation_id)
+                    {
+                        if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index) {
+                            recipient.transfer_status = TransferStatus::FailedTerminal;
+                            recipient.ledger_transfer_status = Some(TransferStatus::FailedTerminal);
+                            recipient.ledger_transfer_proof_scan_state =
+                                Some(proof.scan_state.clone());
+                            recipient.last_error = Some(message.clone());
+                        }
+                        op.mark_retryable_error(
+                            message.clone(),
+                            OperationPhase::PartiallyDistributed,
+                        );
+                    }
+                });
+                outcome.errors.push(message);
+            }
+        }
+    }
+}
+
 #[cfg(target_family = "wasm")]
 async fn retry_pending_two_week_streams(
     io_canister: Principal,
+    io_index_canister: Principal,
+    sns_governance_canister: Principal,
     outcome: &mut DebugTickOutcome,
 ) -> bool {
+    let governance_client = SnsGovernanceCanisterClient {
+        canister: sns_governance_canister,
+    };
+    reconcile_reward_transfer_proofs(io_index_canister, outcome).await;
     loop {
-        let next = CANISTER_STATE.with(|cell| {
-            let state = cell.borrow();
-            state.operation_journal.iter().find_map(|op| {
-                if op.kind != StreamOperationKind::TwoWeekMaturityStream
-                    || op.phase == OperationPhase::Completed
-                {
-                    return None;
-                }
-                op.two_week_recipients
-                    .iter()
-                    .position(|recipient| recipient.transfer_status != TransferStatus::Succeeded)
-                    .map(|index| {
-                        (
-                            op.operation_id.clone(),
-                            index,
-                            op.two_week_recipients[index].clone(),
-                        )
-                    })
+        let operation_id = CANISTER_STATE.with(|cell| {
+            cell.borrow().operation_journal.iter().find_map(|op| {
+                (reward_operation_can_progress(op)
+                    && !matches!(
+                        op.reward_preflight
+                            .as_ref()
+                            .map(|preflight| preflight.status),
+                        Some(RewardPreflightStatus::Validated)
+                    ))
+                .then(|| op.operation_id.clone())
             })
         });
-        let Some((operation_id, recipient_index, recipient)) = next else {
+        let Some(operation_id) = operation_id else {
             break;
         };
-
-        let request = LedgerTransferRequest {
-            from_subaccount: Some(icp_ledger::mock_subaccount(PROTOCOL_RESERVE_ACCOUNT)),
-            to: reward_account_for_neuron(recipient.neuron_id),
-            amount_e8s: recipient.amount_e8s,
-            fee_e8s: None,
-            memo: Some(io_ledger_types::Memo::from(operation_id.as_str())),
-            created_at_time: None,
+        if !ensure_reward_preflight(&operation_id, io_canister, sns_governance_canister, outcome)
+            .await
+        {
+            return false;
+        }
+    }
+    let mut attempted_ledger_recipients = BTreeSet::new();
+    for _ in 0..TWO_WEEK_REWARD_LEDGER_TRANSFER_BUDGET_PER_TICK {
+        let Some((operation_id, recipient_index, recipient, attempt_key)) =
+            next_reward_ledger_recipient(&attempted_ledger_recipients)
+        else {
+            break;
         };
+        attempted_ledger_recipients.insert(attempt_key);
+
+        let sns_neuron_id = match recipient
+            .sns_neuron_id
+            .as_deref()
+            .filter(|id| id.len() == 32)
+            .map(|id| SnsNeuronId(id.to_vec()))
+        {
+            Some(id) => id,
+            None => {
+                let err = format!(
+                    "two-week reward recipient {} is missing a canonical 32-byte SNS neuron id",
+                    recipient.neuron_id
+                );
+                CANISTER_STATE.with(|cell| {
+                    if let Some(op) = cell
+                        .borrow_mut()
+                        .operation_journal
+                        .iter_mut()
+                        .find(|op| op.operation_id == operation_id)
+                    {
+                        if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index) {
+                            recipient.transfer_status = TransferStatus::FailedTerminal;
+                            recipient.last_error = Some(err.clone());
+                        }
+                        op.mark_terminal_error(err.clone(), OperationPhase::PartiallyDistributed);
+                    }
+                });
+                outcome.errors.push(err);
+                continue;
+            }
+        };
+        let to = match reward_account_for_sns_neuron(sns_governance_canister, &sns_neuron_id.0) {
+            Ok(account) => account,
+            Err(err) => {
+                CANISTER_STATE.with(|cell| {
+                    if let Some(op) = cell
+                        .borrow_mut()
+                        .operation_journal
+                        .iter_mut()
+                        .find(|op| op.operation_id == operation_id)
+                    {
+                        if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index) {
+                            recipient.ledger_transfer_status = Some(TransferStatus::FailedTerminal);
+                            recipient.transfer_status = TransferStatus::FailedTerminal;
+                            recipient.last_error = Some(err.clone());
+                        }
+                        op.mark_terminal_error(err.clone(), OperationPhase::PartiallyDistributed);
+                    }
+                });
+                outcome.errors.push(err);
+                continue;
+            }
+        };
+
+        if recipient.stake_before_e8s.is_none() {
+            match governance_client.get_neuron(sns_neuron_id.clone()).await {
+                Ok(neuron) => {
+                    let stake_before = neuron.cached_neuron_stake_e8s;
+                    let minimum_expected = stake_before.saturating_add(recipient.amount_e8s);
+                    CANISTER_STATE.with(|cell| {
+                        if let Some(op) = cell
+                            .borrow_mut()
+                            .operation_journal
+                            .iter_mut()
+                            .find(|op| op.operation_id == operation_id)
+                        {
+                            if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index)
+                            {
+                                recipient.stake_before_e8s = Some(stake_before);
+                                recipient.expected_stake_after_e8s = Some(minimum_expected);
+                                recipient.minimum_expected_stake_after_e8s = Some(minimum_expected);
+                                recipient.last_error = None;
+                            }
+                            op.mark_updated(OperationPhase::PartiallyDistributed);
+                        }
+                    });
+                }
+                Err(err) => {
+                    let message =
+                        format!("SNS governance get_neuron before reward transfer failed: {err:?}");
+                    CANISTER_STATE.with(|cell| {
+                        if let Some(op) = cell
+                            .borrow_mut()
+                            .operation_journal
+                            .iter_mut()
+                            .find(|op| op.operation_id == operation_id)
+                        {
+                            if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index)
+                            {
+                                recipient.ledger_transfer_status =
+                                    Some(TransferStatus::FailedRetryable);
+                                recipient.last_error = Some(message.clone());
+                            }
+                            op.mark_retryable_error(
+                                message.clone(),
+                                OperationPhase::PartiallyDistributed,
+                            );
+                        }
+                    });
+                    outcome.errors.push(message);
+                    continue;
+                }
+            }
+        }
+
+        let attempt = match recipient.reward_transfer_attempt.clone() {
+            Some(attempt) => attempt,
+            None => {
+                let fee = CANISTER_STATE.with(|cell| {
+                    cell.borrow()
+                        .operation_journal
+                        .iter()
+                        .find(|op| op.operation_id == operation_id)
+                        .and_then(|op| op.reward_preflight.as_ref())
+                        .filter(|preflight| preflight.status == RewardPreflightStatus::Validated)
+                        .map(|preflight| preflight.ledger_fee_e8s)
+                });
+                let Some(fee) = fee else {
+                    let message =
+                        "validated reward preflight is missing before first transfer".to_string();
+                    CANISTER_STATE.with(|cell| {
+                        if let Some(op) = cell
+                            .borrow_mut()
+                            .operation_journal
+                            .iter_mut()
+                            .find(|op| op.operation_id == operation_id)
+                        {
+                            op.mark_retryable_error(
+                                message.clone(),
+                                OperationPhase::PartiallyDistributed,
+                            );
+                        }
+                    });
+                    outcome.errors.push(message);
+                    continue;
+                };
+                let source = Account::new(
+                    ic_cdk::api::canister_self(),
+                    Some(icp_ledger::mock_subaccount(PROTOCOL_RESERVE_ACCOUNT)),
+                );
+                let attempt = reward_transfer_attempt_from_parts(
+                    source,
+                    to,
+                    recipient.amount_e8s,
+                    fee,
+                    crate::canister_time(),
+                    &operation_id,
+                    sns_neuron_id.0.clone(),
+                );
+                CANISTER_STATE.with(|cell| {
+                    if let Some(op) = cell
+                        .borrow_mut()
+                        .operation_journal
+                        .iter_mut()
+                        .find(|op| op.operation_id == operation_id)
+                    {
+                        if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index) {
+                            recipient.reward_transfer_attempt = Some(attempt.clone());
+                            recipient.ledger_transfer_fee_e8s = Some(attempt.fee_e8s);
+                            recipient.reward_amount_received_e8s = Some(attempt.amount_e8s);
+                            recipient.reserve_debit_e8s =
+                                Some(attempt.amount_e8s.saturating_add(attempt.fee_e8s));
+                            recipient.last_error = None;
+                        }
+                        op.mark_updated(OperationPhase::PartiallyDistributed);
+                    }
+                });
+                attempt
+            }
+        };
+        let request = reward_transfer_request_from_attempt(&attempt);
         let transfer_result = IcrcLedgerCanisterClient {
             canister: io_canister,
         }
         .transfer(request.clone())
         .await;
-        match classify_boundary_transfer_result(&request, transfer_result, None) {
+        #[cfg(debug_assertions)]
+        {
+            if matches!(transfer_result, Ok(_))
+                && crate::consume_debug_failpoint(
+                    crate::DebugFailpoint::AfterTwoWeekRewardTransferBeforeJournalUpdate,
+                )
+            {
+                panic!(
+                    "debug failpoint AfterTwoWeekRewardTransferBeforeJournalUpdate triggered after two-week reward transfer"
+                );
+            }
+        }
+        let duplicate = match &transfer_result {
+            Err(LedgerTransferError::Duplicate { duplicate_of }) => {
+                duplicate_block_from_account_history(
+                    io_index_canister,
+                    attempt.destination_account.clone(),
+                    *duplicate_of,
+                )
+                .await
+            }
+            _ => None,
+        };
+        match classify_reward_transfer_result(&attempt, transfer_result.clone(), duplicate.as_ref())
+        {
             BoundaryTransferDecision::Succeeded(block) => CANISTER_STATE.with(|cell| {
                 if let Some(op) = cell
                     .borrow_mut()
@@ -592,12 +2126,116 @@ async fn retry_pending_two_week_streams(
                     if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index) {
                         recipient.transfer_status = TransferStatus::Succeeded;
                         recipient.transfer_block_index = Some(block);
+                        recipient.ledger_transfer_status = Some(TransferStatus::Succeeded);
+                        recipient.ledger_transfer_block = Some(block);
+                        recipient.governance_refresh_status =
+                            Some(recipient_refresh_status(recipient));
+                        recipient.ledger_transfer_fee_e8s = Some(attempt.fee_e8s);
+                        recipient.reward_amount_received_e8s = Some(attempt.amount_e8s);
+                        recipient.reserve_debit_e8s =
+                            Some(attempt.amount_e8s.saturating_add(attempt.fee_e8s));
                         recipient.last_error = None;
                     }
+                    op.reserved_reward_debit_e8s =
+                        Some(pending_reward_reservation_for_operation(op));
                     op.mark_updated(OperationPhase::PartiallyDistributed);
                 }
             }),
             BoundaryTransferDecision::Retryable(err) => {
+                let proof_pending = matches!(
+                    transfer_result,
+                    Err(LedgerTransferError::TooOld | LedgerTransferError::Duplicate { .. })
+                );
+                let proof = if proof_pending {
+                    Some(
+                        scan_reward_transfer_proof_from_state(
+                            Some(io_index_canister),
+                            &attempt,
+                            recipient
+                                .ledger_transfer_proof_scan_state
+                                .clone()
+                                .unwrap_or_default(),
+                        )
+                        .await,
+                    )
+                } else {
+                    None
+                };
+                if let Some(proof) = proof {
+                    match proof.disposition {
+                        RewardTransferProofDisposition::ProofFound(block) => {
+                            mark_reward_transfer_proven(
+                                &operation_id,
+                                recipient_index,
+                                &attempt,
+                                block,
+                            );
+                            continue;
+                        }
+                        RewardTransferProofDisposition::IndexNotCaughtUp(reason)
+                        | RewardTransferProofDisposition::HistoryIncomplete(reason) => {
+                            let error = format!(
+                                "{err}; reward transfer proof pending; automatic retry paused: {reason}"
+                            );
+                            CANISTER_STATE.with(|cell| {
+                                if let Some(op) = cell
+                                    .borrow_mut()
+                                    .operation_journal
+                                    .iter_mut()
+                                    .find(|op| op.operation_id == operation_id)
+                                {
+                                    if let Some(recipient) =
+                                        op.two_week_recipients.get_mut(recipient_index)
+                                    {
+                                        recipient.transfer_status = TransferStatus::FailedRetryable;
+                                        recipient.ledger_transfer_status =
+                                            Some(TransferStatus::FailedRetryable);
+                                        recipient.ledger_transfer_proof_scan_state =
+                                            Some(proof.scan_state.clone());
+                                        recipient.last_error = Some(error.clone());
+                                    }
+                                    op.mark_retryable_error(
+                                        error.clone(),
+                                        OperationPhase::PartiallyDistributed,
+                                    );
+                                }
+                            });
+                            outcome.errors.push(error);
+                            continue;
+                        }
+                        RewardTransferProofDisposition::CompleteNoMatch(reason) => {
+                            let error = format!(
+                                "{err}; {reason}; manual reconciliation required before retry"
+                            );
+                            CANISTER_STATE.with(|cell| {
+                                if let Some(op) = cell
+                                    .borrow_mut()
+                                    .operation_journal
+                                    .iter_mut()
+                                    .find(|op| op.operation_id == operation_id)
+                                {
+                                    if let Some(recipient) =
+                                        op.two_week_recipients.get_mut(recipient_index)
+                                    {
+                                        recipient.transfer_status = TransferStatus::FailedTerminal;
+                                        recipient.ledger_transfer_status =
+                                            Some(TransferStatus::FailedTerminal);
+                                        recipient.ledger_transfer_proof_scan_state =
+                                            Some(proof.scan_state.clone());
+                                        recipient.last_error = Some(error.clone());
+                                    }
+                                    op.mark_retryable_error(
+                                        error.clone(),
+                                        OperationPhase::PartiallyDistributed,
+                                    );
+                                }
+                            });
+                            outcome.errors.push(error);
+                            continue;
+                        }
+                    }
+                }
+                let error = err;
                 CANISTER_STATE.with(|cell| {
                     if let Some(op) = cell
                         .borrow_mut()
@@ -607,13 +2245,214 @@ async fn retry_pending_two_week_streams(
                     {
                         if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index) {
                             recipient.transfer_status = TransferStatus::FailedRetryable;
-                            recipient.last_error = Some(err.clone());
+                            recipient.ledger_transfer_status =
+                                Some(TransferStatus::FailedRetryable);
+                            recipient.last_error = Some(error.clone());
                         }
-                        op.mark_retryable_error(err.clone(), OperationPhase::PartiallyDistributed);
+                        op.mark_retryable_error(
+                            error.clone(),
+                            OperationPhase::PartiallyDistributed,
+                        );
+                    }
+                });
+                outcome.errors.push(error);
+                continue;
+            }
+        }
+        #[cfg(debug_assertions)]
+        {
+            if crate::consume_debug_failpoint(
+                crate::DebugFailpoint::AfterTwoWeekRewardTransferBeforeGovernanceRefresh,
+            ) {
+                panic!(
+                    "debug failpoint AfterTwoWeekRewardTransferBeforeGovernanceRefresh triggered after two-week reward transfer"
+                );
+            }
+        }
+    }
+
+    let mut attempted_refresh_recipients = BTreeSet::new();
+    for _ in 0..TWO_WEEK_REWARD_REFRESH_BUDGET_PER_TICK {
+        let Some((operation_id, recipient_index, recipient, attempt_key)) =
+            next_reward_refresh_recipient(&attempted_refresh_recipients)
+        else {
+            break;
+        };
+        attempted_refresh_recipients.insert(attempt_key);
+        let Some(sns_neuron_id) = recipient
+            .sns_neuron_id
+            .as_deref()
+            .filter(|id| id.len() == 32)
+            .map(|id| SnsNeuronId(id.to_vec()))
+        else {
+            let err = format!(
+                "two-week reward recipient {} is missing a canonical 32-byte SNS neuron id",
+                recipient.neuron_id
+            );
+            CANISTER_STATE.with(|cell| {
+                if let Some(op) = cell
+                    .borrow_mut()
+                    .operation_journal
+                    .iter_mut()
+                    .find(|op| op.operation_id == operation_id)
+                {
+                    if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index) {
+                        recipient.governance_refresh_status = Some(TransferStatus::FailedTerminal);
+                        recipient.refresh_last_error = Some(err.clone());
+                    }
+                    op.mark_terminal_error(err.clone(), OperationPhase::PartiallyDistributed);
+                }
+            });
+            outcome.errors.push(err);
+            continue;
+        };
+        let minimum_expected = match recipient
+            .minimum_expected_stake_after_e8s
+            .or(recipient.expected_stake_after_e8s)
+        {
+            Some(expected) => expected,
+            None => {
+                let err = format!(
+                    "two-week reward recipient {} is missing persisted minimum post-refresh stake",
+                    recipient.neuron_id
+                );
+                CANISTER_STATE.with(|cell| {
+                    if let Some(op) = cell
+                        .borrow_mut()
+                        .operation_journal
+                        .iter_mut()
+                        .find(|op| op.operation_id == operation_id)
+                    {
+                        if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index) {
+                            recipient.governance_refresh_status =
+                                Some(TransferStatus::FailedTerminal);
+                            recipient.refresh_last_error = Some(err.clone());
+                        }
+                        op.mark_terminal_error(err.clone(), OperationPhase::PartiallyDistributed);
                     }
                 });
                 outcome.errors.push(err);
-                return false;
+                continue;
+            }
+        };
+
+        if let Err(err) = governance_client
+            .claim_or_refresh_neuron(sns_neuron_id.clone())
+            .await
+        {
+            let message = format!("SNS governance ClaimOrRefresh(By::NeuronId) failed: {err:?}");
+            CANISTER_STATE.with(|cell| {
+                if let Some(op) = cell
+                    .borrow_mut()
+                    .operation_journal
+                    .iter_mut()
+                    .find(|op| op.operation_id == operation_id)
+                {
+                    if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index) {
+                        recipient.governance_refresh_status = Some(TransferStatus::FailedRetryable);
+                        recipient.refresh_retry_count =
+                            Some(recipient.refresh_retry_count.unwrap_or(0).saturating_add(1));
+                        recipient.refresh_last_error = Some(message.clone());
+                    }
+                    op.mark_retryable_error(message.clone(), OperationPhase::PartiallyDistributed);
+                }
+            });
+            outcome.errors.push(message);
+            continue;
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            if crate::consume_debug_failpoint(
+                crate::DebugFailpoint::AfterTwoWeekGovernanceRefreshBeforeJournalCompletion,
+            ) {
+                panic!(
+                    "debug failpoint AfterTwoWeekGovernanceRefreshBeforeJournalCompletion triggered after two-week governance refresh"
+                );
+            }
+        }
+
+        match governance_client.get_neuron(sns_neuron_id).await {
+            Ok(neuron) if neuron.cached_neuron_stake_e8s >= minimum_expected => {
+                let concurrent_delta = neuron
+                    .cached_neuron_stake_e8s
+                    .saturating_sub(minimum_expected);
+                CANISTER_STATE.with(|cell| {
+                    if let Some(op) = cell
+                        .borrow_mut()
+                        .operation_journal
+                        .iter_mut()
+                        .find(|op| op.operation_id == operation_id)
+                    {
+                        if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index) {
+                            recipient.governance_refresh_status = Some(TransferStatus::Succeeded);
+                            recipient.observed_stake_after_e8s =
+                                Some(neuron.cached_neuron_stake_e8s);
+                            recipient.minimum_expected_stake_after_e8s = Some(minimum_expected);
+                            recipient.concurrent_stake_delta_e8s =
+                                (concurrent_delta > 0).then_some(concurrent_delta);
+                            recipient.refresh_last_error = None;
+                            recipient.last_error = None;
+                        }
+                        op.mark_updated(OperationPhase::PartiallyDistributed);
+                    }
+                });
+            }
+            Ok(neuron) => {
+                let message = format!(
+                    "SNS governance refresh did not reflect reward for recipient {}: minimum expected {}, observed {}",
+                    recipient.neuron_id, minimum_expected, neuron.cached_neuron_stake_e8s
+                );
+                CANISTER_STATE.with(|cell| {
+                    if let Some(op) = cell
+                        .borrow_mut()
+                        .operation_journal
+                        .iter_mut()
+                        .find(|op| op.operation_id == operation_id)
+                    {
+                        if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index) {
+                            recipient.governance_refresh_status =
+                                Some(TransferStatus::FailedRetryable);
+                            recipient.observed_stake_after_e8s =
+                                Some(neuron.cached_neuron_stake_e8s);
+                            recipient.refresh_retry_count =
+                                Some(recipient.refresh_retry_count.unwrap_or(0).saturating_add(1));
+                            recipient.refresh_last_error = Some(message.clone());
+                        }
+                        op.mark_retryable_error(
+                            message.clone(),
+                            OperationPhase::PartiallyDistributed,
+                        );
+                    }
+                });
+                outcome.errors.push(message);
+                continue;
+            }
+            Err(err) => {
+                let message =
+                    format!("SNS governance get_neuron after reward refresh failed: {err:?}");
+                CANISTER_STATE.with(|cell| {
+                    if let Some(op) = cell
+                        .borrow_mut()
+                        .operation_journal
+                        .iter_mut()
+                        .find(|op| op.operation_id == operation_id)
+                    {
+                        if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index) {
+                            recipient.governance_refresh_status =
+                                Some(TransferStatus::FailedRetryable);
+                            recipient.refresh_retry_count =
+                                Some(recipient.refresh_retry_count.unwrap_or(0).saturating_add(1));
+                            recipient.refresh_last_error = Some(message.clone());
+                        }
+                        op.mark_retryable_error(
+                            message.clone(),
+                            OperationPhase::PartiallyDistributed,
+                        );
+                    }
+                });
+                outcome.errors.push(message);
+                continue;
             }
         }
     }
@@ -627,23 +2466,41 @@ async fn retry_pending_two_week_streams(
                 .position(|op| {
                     op.kind == StreamOperationKind::TwoWeekMaturityStream
                         && op.phase != OperationPhase::Completed
-                        && op
-                            .two_week_recipients
-                            .iter()
-                            .all(|recipient| recipient.transfer_status == TransferStatus::Succeeded)
+                        && op.two_week_recipients.iter().all(recipient_is_completed)
                 })
                 .map(|index| state.operation_journal[index].clone())
         });
         let Some(op) = completed else {
             break;
         };
+        let post_state = match reward_fee_adjusted_post_state(&op) {
+            Ok(post_state) => post_state,
+            Err(err) => {
+                outcome.errors.push(format!(
+                    "stream {} reward fee accounting failed: {err}",
+                    op.operation_id
+                ));
+                return false;
+            }
+        };
         let committed = CANISTER_STATE.with(|cell| {
             cell.borrow_mut()
                 .manager
-                .commit_previewed_stream(op.operation_id.clone(), op.post_state.into())
+                .commit_previewed_stream(op.operation_id.clone(), post_state.into())
         });
         match committed {
             Ok(()) => {
+                let operation_id = op.operation_id.clone();
+                CANISTER_STATE.with(|cell| {
+                    if let Some(op) = cell
+                        .borrow_mut()
+                        .operation_journal
+                        .iter_mut()
+                        .find(|op| op.operation_id == operation_id)
+                    {
+                        op.reserved_reward_debit_e8s = Some(0);
+                    }
+                });
                 mark_completed(&op.operation_id);
                 outcome.processed_authorized_streams += 1;
                 outcome.io_issued_e8s = outcome.io_issued_e8s.saturating_add(op.io_issued_e8s);
@@ -739,21 +2596,342 @@ async fn retry_pending_io_issuances(
 }
 
 #[cfg(target_family = "wasm")]
-async fn retry_pending_redemptions(
-    icp_canister: Option<Principal>,
+async fn process_rejected_redemption_dispositions(
     io_canister: Principal,
+    io_index_canister: Option<Principal>,
     outcome: &mut DebugTickOutcome,
 ) -> bool {
-    loop {
+    let mut attempted = BTreeSet::new();
+    for _ in 0..REJECTED_REFUND_RETRY_BUDGET_PER_TICK {
         let pending = CANISTER_STATE.with(|cell| {
-            cell.borrow().operation_journal.iter().find_map(|op| {
-                (op.kind == StreamOperationKind::Redemption
-                    && op.phase != OperationPhase::Completed)
-                    .then(|| op.clone())
-            })
+            next_retryable_rejected_refund_operation(&cell.borrow().operation_journal, &attempted)
         });
         let Some(op) = pending else {
             return true;
+        };
+        attempted.insert(op.operation_id.clone());
+
+        let attempt = if let Some(attempt) = op.rejected_refund_attempt.clone() {
+            attempt
+        } else {
+            let Some(to) = op.source_account.clone() else {
+                let reason = "rejected IO transfer has no resolvable sender account".to_string();
+                mark_rejected_redemption_quarantined(&op.operation_id, reason);
+                continue;
+            };
+
+            let fee = match query_io_return_fee(io_canister).await {
+                Ok(fee) => fee,
+                Err(err) => {
+                    let message = format!("rejected IO refund fee query failed: {err}");
+                    mark_rejected_redemption_retryable(&op.operation_id, message.clone(), None);
+                    outcome.errors.push(message);
+                    continue;
+                }
+            };
+
+            let Some(refund_amount_e8s) = amount_after_fee(op.io_amount, fee) else {
+                let reason = format!(
+                    "rejected IO amount {} is not above refund fee {}",
+                    op.io_amount, fee
+                );
+                mark_rejected_redemption_quarantined(&op.operation_id, reason);
+                continue;
+            };
+
+            rejected_refund_attempt_from_parts(
+                canister_owned_account(REDEMPTION_ACCOUNT),
+                to,
+                refund_amount_e8s,
+                fee,
+                Some(rejected_refund_memo(&op.operation_id)),
+                rejected_refund_attempt_created_at(&op),
+            )
+        };
+        persist_rejected_refund_attempt(&op.operation_id, attempt.clone());
+        let refund_source = attempt.refund_source_account.clone();
+        let refund_amount_e8s = attempt.attempted_refund_amount_e8s;
+        let fee = attempt.attempted_fee_e8s;
+        let created_at_time = attempt.attempted_created_at_time;
+        let request = rejected_refund_request_from_attempt(&attempt);
+        let transfer_result = IcrcLedgerCanisterClient {
+            canister: io_canister,
+        }
+        .transfer(request.clone())
+        .await;
+        #[cfg(debug_assertions)]
+        {
+            if matches!(transfer_result, Ok(_))
+                && crate::consume_debug_failpoint(
+                    crate::DebugFailpoint::AfterRejectedRefundTransferBeforeJournalUpdate,
+                )
+            {
+                panic!(
+                    "debug failpoint AfterRejectedRefundTransferBeforeJournalUpdate triggered after rejected refund transfer"
+                );
+            }
+        }
+        let duplicate = match &transfer_result {
+            Err(LedgerTransferError::Duplicate { duplicate_of }) => {
+                duplicate_block(io_canister, *duplicate_of).await
+            }
+            _ => None,
+        };
+        match classify_boundary_transfer_result_with_source(
+            &request,
+            &refund_source,
+            transfer_result.clone(),
+            duplicate.as_ref(),
+        ) {
+            BoundaryTransferDecision::Succeeded(block) => {
+                mark_rejected_redemption_refunded(&op.operation_id, block, refund_amount_e8s, fee)
+            }
+            BoundaryTransferDecision::Retryable(err) => {
+                if matches!(transfer_result, Err(LedgerTransferError::TooOld)) {
+                    match resolve_too_old_rejected_refund(
+                        io_index_canister,
+                        &refund_source,
+                        &request,
+                    )
+                    .await
+                    {
+                        TooOldRefundProofDisposition::ProofFound(block) => {
+                            mark_rejected_redemption_refunded(
+                                &op.operation_id,
+                                block.0,
+                                refund_amount_e8s,
+                                fee,
+                            );
+                            continue;
+                        }
+                        TooOldRefundProofDisposition::IndexNotCaughtUp(reason)
+                        | TooOldRefundProofDisposition::HistoryIncomplete(reason) => {
+                            let message = format!(
+                                "{err}; refund proof pending and automatic retry paused: {reason}"
+                            );
+                            mark_rejected_redemption_proof_pending(
+                                &op.operation_id,
+                                message.clone(),
+                                Some(created_at_time),
+                                None,
+                            );
+                            outcome.errors.push(message);
+                            continue;
+                        }
+                        TooOldRefundProofDisposition::CompleteNoMatch(reason) => {
+                            let message = format!(
+                                "{err}; {reason}; manual reconciliation required before any new refund attempt"
+                            );
+                            mark_rejected_redemption_manual_reconciliation_required(
+                                &op.operation_id,
+                                message.clone(),
+                                Some(created_at_time),
+                            );
+                            outcome.errors.push(message);
+                            continue;
+                        }
+                    }
+                }
+                mark_rejected_redemption_retryable(&op.operation_id, err.clone(), None);
+                outcome.errors.push(err);
+                continue;
+            }
+        }
+    }
+    true
+}
+
+#[cfg(target_family = "wasm")]
+async fn reconcile_rejected_refund_proof_pending(
+    _io_canister: Principal,
+    io_index_canister: Option<Principal>,
+    outcome: &mut DebugTickOutcome,
+) -> bool {
+    let mut attempted = BTreeSet::new();
+    for _ in 0..REJECTED_REFUND_PROOF_RECONCILIATION_BUDGET_PER_TICK {
+        let pending = CANISTER_STATE.with(|cell| {
+            next_proof_pending_rejected_refund_operation(
+                &cell.borrow().operation_journal,
+                &attempted,
+            )
+        });
+        let Some(op) = pending else {
+            return true;
+        };
+        attempted.insert(op.operation_id.clone());
+
+        let (original_created_at_time, proof_scan_state, existing_reason) =
+            match &op.rejected_fund_disposition {
+                Some(RejectedFundDisposition::ReturnToSenderProofPending {
+                    reason,
+                    original_created_at_time,
+                    proof_scan_state,
+                }) => (
+                    original_created_at_time.unwrap_or(op.created_at),
+                    proof_scan_state
+                        .clone()
+                        .unwrap_or_else(|| AccountHistoryScanState {
+                            cursor: io_ledger_types::AccountHistoryCursor {
+                                order: None,
+                                latest_cursor: None,
+                                oldest_cursor: None,
+                                backfill_complete: false,
+                            },
+                            status: Default::default(),
+                        }),
+                    reason.clone(),
+                ),
+                _ => continue,
+            };
+
+        let Some(attempt) = op.rejected_refund_attempt.clone() else {
+            let message = "proof-pending rejected IO refund is missing the persisted original refund attempt; manual reconciliation required before any new refund attempt".to_string();
+            mark_rejected_redemption_manual_reconciliation_required(
+                &op.operation_id,
+                message.clone(),
+                Some(original_created_at_time),
+            );
+            outcome.errors.push(message);
+            continue;
+        };
+
+        let refund_source = attempt.refund_source_account.clone();
+        let refund_amount_e8s = attempt.attempted_refund_amount_e8s;
+        let fee = attempt.attempted_fee_e8s;
+        let request = rejected_refund_request_from_attempt(&attempt);
+
+        let proof = resolve_too_old_rejected_refund_from_state(
+            io_index_canister,
+            &refund_source,
+            &request,
+            proof_scan_state,
+        )
+        .await;
+
+        match proof.disposition {
+            TooOldRefundProofDisposition::ProofFound(block) => {
+                mark_rejected_redemption_refunded(
+                    &op.operation_id,
+                    block.0,
+                    refund_amount_e8s,
+                    fee,
+                );
+            }
+            TooOldRefundProofDisposition::IndexNotCaughtUp(reason)
+            | TooOldRefundProofDisposition::HistoryIncomplete(reason) => {
+                let message =
+                    format!("refund proof pending; automatic retry remains paused: {reason}");
+                let message = if existing_reason == message {
+                    existing_reason
+                } else {
+                    message
+                };
+                refresh_rejected_redemption_proof_pending(
+                    &op.operation_id,
+                    message.clone(),
+                    Some(proof.scan_state),
+                );
+                outcome.errors.push(message);
+            }
+            TooOldRefundProofDisposition::CompleteNoMatch(reason) => {
+                let message = format!(
+                    "{reason}; manual reconciliation required before any new refund attempt"
+                );
+                mark_rejected_redemption_manual_reconciliation_required(
+                    &op.operation_id,
+                    message.clone(),
+                    Some(original_created_at_time),
+                );
+                outcome.errors.push(message);
+            }
+        }
+    }
+    true
+}
+
+#[cfg(target_family = "wasm")]
+async fn retry_pending_redemptions(
+    icp_canister: Option<Principal>,
+    io_canister: Principal,
+    io_index_canister: Option<Principal>,
+    outcome: &mut DebugTickOutcome,
+) -> bool {
+    if !process_rejected_redemption_dispositions(io_canister, io_index_canister, outcome).await {
+        return false;
+    }
+    if !reconcile_rejected_refund_proof_pending(io_canister, io_index_canister, outcome).await {
+        return false;
+    }
+
+    loop {
+        let pending = CANISTER_STATE.with(|cell| {
+            cell.borrow()
+                .operation_journal
+                .iter()
+                .find_map(|op| is_retryable_redemption_operation(op).then(|| op.clone()))
+        });
+        let Some(op) = pending else {
+            return true;
+        };
+
+        let io_return_fee_e8s = if op.io_return_status != TransferStatus::Succeeded {
+            let io_return_fee_e8s = match query_io_return_fee(io_canister).await {
+                Ok(fee) => fee,
+                Err(err) => {
+                    let message = format!("IO return fee query failed: {err}");
+                    CANISTER_STATE.with(|cell| {
+                        if let Some(op) = cell
+                            .borrow_mut()
+                            .operation_journal
+                            .iter_mut()
+                            .find(|pending| pending.operation_id == op.operation_id)
+                        {
+                            op.io_return_status = TransferStatus::FailedRetryable;
+                            op.mark_retryable_error(
+                                message.clone(),
+                                OperationPhase::AwaitingIoReturn,
+                            );
+                        }
+                    });
+                    outcome.errors.push(message);
+                    return false;
+                }
+            };
+            let Some(io_return_amount_e8s) = amount_after_fee(op.io_amount, io_return_fee_e8s)
+            else {
+                let message = format!(
+                    "redeemed IO {} is not above IO return fee {}",
+                    op.io_amount, io_return_fee_e8s
+                );
+                CANISTER_STATE.with(|cell| {
+                    if let Some(op) = cell
+                        .borrow_mut()
+                        .operation_journal
+                        .iter_mut()
+                        .find(|pending| pending.operation_id == op.operation_id)
+                    {
+                        op.io_return_fee_e8s = io_return_fee_e8s;
+                        op.io_return_status = TransferStatus::FailedTerminal;
+                        op.icp_payout_status = TransferStatus::FailedTerminal;
+                        op.mark_terminal_error(message.clone(), OperationPhase::AwaitingIoReturn);
+                    }
+                });
+                outcome.errors.push(message);
+                return false;
+            };
+            CANISTER_STATE.with(|cell| {
+                if let Some(op) = cell
+                    .borrow_mut()
+                    .operation_journal
+                    .iter_mut()
+                    .find(|pending| pending.operation_id == op.operation_id)
+                {
+                    op.io_return_fee_e8s = io_return_fee_e8s;
+                }
+            });
+            Some((io_return_fee_e8s, io_return_amount_e8s))
+        } else {
+            None
         };
 
         if op.icp_payout_status != TransferStatus::Succeeded {
@@ -828,62 +3006,8 @@ async fn retry_pending_redemptions(
         }
 
         if op.io_return_status != TransferStatus::Succeeded {
-            let client = io_ledger::MockLedgerCanisterClient {
-                canister: io_canister,
-                fee_e8s: 0,
-            };
-            let io_return_fee_e8s = match client.fee().await {
-                Ok(fee) => fee,
-                Err(err) => {
-                    let message = format!("IO return fee query failed: {err:?}");
-                    CANISTER_STATE.with(|cell| {
-                        if let Some(op) = cell
-                            .borrow_mut()
-                            .operation_journal
-                            .iter_mut()
-                            .find(|pending| pending.operation_id == op.operation_id)
-                        {
-                            op.io_return_status = TransferStatus::FailedRetryable;
-                            op.mark_retryable_error(
-                                message.clone(),
-                                OperationPhase::AwaitingIoReturn,
-                            );
-                        }
-                    });
-                    outcome.errors.push(message);
-                    return false;
-                }
-            };
-            let Some(io_return_amount_e8s) = op.io_amount.checked_sub(io_return_fee_e8s) else {
-                let message = format!(
-                    "redeemed IO {} is below IO return fee {}",
-                    op.io_amount, io_return_fee_e8s
-                );
-                CANISTER_STATE.with(|cell| {
-                    if let Some(op) = cell
-                        .borrow_mut()
-                        .operation_journal
-                        .iter_mut()
-                        .find(|pending| pending.operation_id == op.operation_id)
-                    {
-                        op.io_return_fee_e8s = io_return_fee_e8s;
-                        op.io_return_status = TransferStatus::FailedRetryable;
-                        op.mark_retryable_error(message.clone(), OperationPhase::AwaitingIoReturn);
-                    }
-                });
-                outcome.errors.push(message);
-                return false;
-            };
-            CANISTER_STATE.with(|cell| {
-                if let Some(op) = cell
-                    .borrow_mut()
-                    .operation_journal
-                    .iter_mut()
-                    .find(|pending| pending.operation_id == op.operation_id)
-                {
-                    op.io_return_fee_e8s = io_return_fee_e8s;
-                }
-            });
+            let (_, io_return_amount_e8s) =
+                io_return_fee_e8s.expect("IO return preflight should run before IO return");
             let request = LedgerTransferRequest {
                 from_subaccount: Some(icp_ledger::mock_subaccount(REDEMPTION_ACCOUNT)),
                 to: canister_owned_account(PROTOCOL_RESERVE_ACCOUNT),
@@ -1010,10 +3134,55 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
             if !retry_pending_io_issuances(io_canister, &mut outcome).await {
                 return outcome;
             }
-            if !retry_pending_two_week_streams(io_canister, &mut outcome).await {
-                return outcome;
+            match sns_governance {
+                Some(sns_governance_canister) => match io_ledger {
+                    Some(io_index_canister) => {
+                        if !retry_pending_two_week_streams(
+                            io_canister,
+                            io_index_canister,
+                            sns_governance_canister,
+                            &mut outcome,
+                        )
+                        .await
+                        {
+                            return outcome;
+                        }
+                    }
+                    None => {
+                        let has_pending_two_week = CANISTER_STATE.with(|cell| {
+                            cell.borrow().operation_journal.iter().any(|op| {
+                                op.kind == StreamOperationKind::TwoWeekMaturityStream
+                                    && op.phase != OperationPhase::Completed
+                            })
+                        });
+                        if has_pending_two_week {
+                            outcome.errors.push(
+                                    "IO index canister is required for safe two-week reward retry proof"
+                                        .to_string(),
+                                );
+                            return outcome;
+                        }
+                    }
+                },
+                None => {
+                    let has_pending_two_week = CANISTER_STATE.with(|cell| {
+                        cell.borrow().operation_journal.iter().any(|op| {
+                            op.kind == StreamOperationKind::TwoWeekMaturityStream
+                                && op.phase != OperationPhase::Completed
+                        })
+                    });
+                    if has_pending_two_week {
+                        outcome.errors.push(
+                            "cannot retry SNS neuron rewards without configured SNS governance"
+                                .to_string(),
+                        );
+                        return outcome;
+                    }
+                }
             }
-            if !retry_pending_redemptions(icp_transfer_ledger, io_canister, &mut outcome).await {
+            if !retry_pending_redemptions(icp_transfer_ledger, io_canister, io_ledger, &mut outcome)
+                .await
+            {
                 return outcome;
             }
         }
@@ -1115,6 +3284,27 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                                 continue;
                             }
                         };
+                        let reward_reserve_available = CANISTER_STATE.with(|cell| {
+                            let state = cell.borrow();
+                            reward_reserve_available(
+                                state.manager.state.protocol_reserve_io_e8s,
+                                pending_reward_reservations(state.operation_journal.iter(), None),
+                            )
+                        });
+                        match reward_reserve_available {
+                            Ok(available) if preview.outcome.io_issued_e8s <= available => {}
+                            Ok(available) => {
+                                outcome.errors.push(format!(
+                                    "stream {tx_id}: protocol reserve {available} is reserved for pending reward operations; cannot issue {} IO e8s",
+                                    preview.outcome.io_issued_e8s
+                                ));
+                                continue;
+                            }
+                            Err(err) => {
+                                outcome.errors.push(format!("stream {tx_id}: {err}"));
+                                continue;
+                            }
+                        }
 
                         if let Some(io_canister) = io_transfer_ledger {
                             match ApiIoRecipientPolicy::from(preview.outcome.recipient_policy) {
@@ -1163,18 +3353,47 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                                                     .allocations
                                                     .into_iter()
                                                     .map(|allocation| TwoWeekRecipientTransfer {
+                                                        sns_neuron_id: Some(
+                                                            allocation.sns_neuron_id.0,
+                                                        ),
                                                         neuron_id: allocation.neuron_id,
                                                         amount_e8s: allocation.io_e8s,
                                                         transfer_status: TransferStatus::Pending,
                                                         transfer_block_index: None,
+                                                        ledger_transfer_status: Some(
+                                                            TransferStatus::Pending,
+                                                        ),
+                                                        ledger_transfer_block: None,
+                                                        governance_refresh_status: Some(
+                                                            TransferStatus::Pending,
+                                                        ),
+                                                        stake_before_e8s: None,
+                                                        expected_stake_after_e8s: None,
+                                                        minimum_expected_stake_after_e8s: None,
+                                                        observed_stake_after_e8s: None,
+                                                        concurrent_stake_delta_e8s: None,
+                                                        refresh_retry_count: Some(0),
+                                                        refresh_last_error: None,
+                                                        reward_transfer_attempt: None,
+                                                        ledger_transfer_fee_e8s: None,
+                                                        reward_amount_received_e8s: None,
+                                                        reserve_debit_e8s: None,
+                                                        ledger_transfer_proof_scan_state: None,
                                                         last_error: None,
                                                     })
                                                     .collect();
                                                 state.operation_journal.push(op);
                                             }
                                         });
-                                        retry_pending_two_week_streams(io_canister, &mut outcome)
-                                            .await;
+                                        retry_pending_two_week_streams(
+                                            io_canister,
+                                            io_ledger
+                                                .expect("IO index canister should be present for finalized reward proof"),
+                                            sns_governance
+                                                .expect("SNS governance canister should be present for finalized reward allocation"),
+                                            &mut outcome,
+                                        )
+                                        .await;
                                         if !no_new_page_errors(&outcome, page_error_count) {
                                             return outcome;
                                         }
@@ -1279,15 +3498,32 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                                 continue;
                             }
                             Err(err) => {
+                                journal_rejected_redemption(
+                                    &tx,
+                                    format!("{err:?}"),
+                                    tx.transaction.from.clone(),
+                                );
                                 outcome.errors.push(format!("redemption {tx_id}: {err:?}"));
+                                advance_io_cursor(tx.block_index.0);
+                                if let Some(io_canister) = io_transfer_ledger {
+                                    if !process_rejected_redemption_dispositions(
+                                        io_canister,
+                                        io_ledger,
+                                        &mut outcome,
+                                    )
+                                    .await
+                                    {
+                                        return outcome;
+                                    }
+                                }
                                 continue;
                             }
                         };
 
                         CANISTER_STATE.with(|cell| {
-                            cell.borrow_mut()
-                                .operation_journal
-                                .push(StreamOperation::redemption(
+                            let source_account = tx.transaction.from.clone();
+                            cell.borrow_mut().operation_journal.push({
+                                let mut op = StreamOperation::redemption(
                                     tx.block_index.0,
                                     tx.transaction.amount_e8s,
                                     preview.outcome.icp_paid_e8s,
@@ -1297,13 +3533,17 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                                         .map(icp_ledger::mock_label_from_account)
                                         .unwrap_or_default(),
                                     preview.post_state,
-                                ));
+                                );
+                                op.source_account = source_account;
+                                op
+                            });
                         });
 
                         if let Some(io_canister) = io_transfer_ledger {
                             if !retry_pending_redemptions(
                                 icp_transfer_ledger,
                                 io_canister,
+                                io_ledger,
                                 &mut outcome,
                             )
                             .await
@@ -1400,6 +3640,238 @@ fn mark_operation_error(operation_id: &str, err: String, phase: OperationPhase) 
 }
 
 #[cfg(target_family = "wasm")]
+fn persist_rejected_refund_attempt(operation_id: &str, attempt: RejectedRefundAttemptRecord) {
+    CANISTER_STATE.with(|cell| {
+        if let Some(op) = cell
+            .borrow_mut()
+            .operation_journal
+            .iter_mut()
+            .find(|op| op.operation_id == operation_id)
+        {
+            op.rejected_refund_attempt = Some(attempt);
+            op.last_updated = crate::canister_time();
+        }
+    });
+}
+
+#[cfg(target_family = "wasm")]
+fn mark_rejected_redemption_refunded(
+    operation_id: &str,
+    block: u64,
+    amount_e8s: u128,
+    fee_e8s: u128,
+) {
+    CANISTER_STATE.with(|cell| {
+        if let Some(op) = cell
+            .borrow_mut()
+            .operation_journal
+            .iter_mut()
+            .find(|op| op.operation_id == operation_id)
+        {
+            op.io_return_fee_e8s = fee_e8s;
+            op.io_return_status = TransferStatus::Succeeded;
+            op.io_return_block = Some(block);
+            op.icp_payout_status = TransferStatus::NotApplicable;
+            op.rejected_fund_disposition = Some(RejectedFundDisposition::ReturnToSenderSucceeded {
+                block_index: block,
+                amount_e8s,
+            });
+            op.mark_updated(OperationPhase::Completed);
+        }
+    });
+}
+
+#[cfg(target_family = "wasm")]
+fn mark_rejected_redemption_proof_pending(
+    operation_id: &str,
+    reason: String,
+    original_created_at_time: Option<u64>,
+    proof_scan_state: Option<AccountHistoryScanState>,
+) {
+    CANISTER_STATE.with(|cell| {
+        if let Some(op) = cell
+            .borrow_mut()
+            .operation_journal
+            .iter_mut()
+            .find(|op| op.operation_id == operation_id)
+        {
+            op.io_return_status = TransferStatus::FailedRetryable;
+            op.icp_payout_status = TransferStatus::NotApplicable;
+            op.rejected_fund_disposition =
+                Some(RejectedFundDisposition::ReturnToSenderProofPending {
+                    reason: reason.clone(),
+                    original_created_at_time,
+                    proof_scan_state,
+                });
+            op.mark_updated(OperationPhase::AwaitingIoReturn);
+            op.last_error = Some(reason);
+            op.retry_count = op.retry_count.saturating_add(1);
+        }
+    });
+}
+
+#[cfg(target_family = "wasm")]
+fn refresh_rejected_redemption_proof_pending(
+    operation_id: &str,
+    reason: String,
+    proof_scan_state: Option<AccountHistoryScanState>,
+) {
+    CANISTER_STATE.with(|cell| {
+        if let Some(op) = cell
+            .borrow_mut()
+            .operation_journal
+            .iter_mut()
+            .find(|op| op.operation_id == operation_id)
+        {
+            let original_created_at_time = match &op.rejected_fund_disposition {
+                Some(RejectedFundDisposition::ReturnToSenderProofPending {
+                    original_created_at_time,
+                    ..
+                }) => *original_created_at_time,
+                _ => None,
+            };
+            let next_scan_state =
+                proof_scan_state.or_else(|| match &op.rejected_fund_disposition {
+                    Some(RejectedFundDisposition::ReturnToSenderProofPending {
+                        proof_scan_state,
+                        ..
+                    }) => proof_scan_state.clone(),
+                    _ => None,
+                });
+            op.io_return_status = TransferStatus::FailedRetryable;
+            op.icp_payout_status = TransferStatus::NotApplicable;
+            op.rejected_fund_disposition =
+                Some(RejectedFundDisposition::ReturnToSenderProofPending {
+                    reason: reason.clone(),
+                    original_created_at_time,
+                    proof_scan_state: next_scan_state,
+                });
+            op.phase = OperationPhase::AwaitingIoReturn;
+            op.last_error = Some(reason);
+            op.last_updated = crate::canister_time();
+        }
+    });
+}
+
+#[cfg(target_family = "wasm")]
+fn mark_rejected_redemption_manual_reconciliation_required(
+    operation_id: &str,
+    reason: String,
+    original_created_at_time: Option<u64>,
+) {
+    CANISTER_STATE.with(|cell| {
+        if let Some(op) = cell
+            .borrow_mut()
+            .operation_journal
+            .iter_mut()
+            .find(|op| op.operation_id == operation_id)
+        {
+            op.io_return_status = TransferStatus::FailedTerminal;
+            op.icp_payout_status = TransferStatus::NotApplicable;
+            op.rejected_fund_disposition = Some(
+                RejectedFundDisposition::ReturnToSenderManualReconciliationRequired {
+                    reason: reason.clone(),
+                    original_created_at_time,
+                },
+            );
+            op.mark_updated(OperationPhase::FailedTerminal);
+            op.last_error = Some(reason);
+        }
+    });
+}
+
+#[cfg(target_family = "wasm")]
+fn mark_rejected_redemption_retryable(
+    operation_id: &str,
+    err: String,
+    next_attempt_created_at_time: Option<u64>,
+) {
+    CANISTER_STATE.with(|cell| {
+        if let Some(op) = cell
+            .borrow_mut()
+            .operation_journal
+            .iter_mut()
+            .find(|op| op.operation_id == operation_id)
+        {
+            op.io_return_status = TransferStatus::FailedRetryable;
+            op.icp_payout_status = TransferStatus::NotApplicable;
+            op.rejected_fund_disposition = Some(RejectedFundDisposition::ReturnToSenderRetryable {
+                error: err.clone(),
+                next_attempt_created_at_time,
+            });
+            op.rejected_refund_attempt = None;
+            op.mark_retryable_error(err, OperationPhase::AwaitingIoReturn);
+        }
+    });
+}
+
+#[cfg(target_family = "wasm")]
+fn mark_rejected_redemption_quarantined(operation_id: &str, reason: String) {
+    CANISTER_STATE.with(|cell| {
+        if let Some(op) = cell
+            .borrow_mut()
+            .operation_journal
+            .iter_mut()
+            .find(|op| op.operation_id == operation_id)
+        {
+            op.io_return_status = TransferStatus::FailedTerminal;
+            op.icp_payout_status = TransferStatus::NotApplicable;
+            op.rejected_fund_disposition = Some(RejectedFundDisposition::QuarantinedTerminal {
+                reason: reason.clone(),
+            });
+            op.rejected_refund_attempt = None;
+            op.mark_terminal_error(reason, OperationPhase::AwaitingIoReturn);
+        }
+    });
+}
+
+#[cfg(target_family = "wasm")]
+fn journal_rejected_redemption(
+    tx: &IndexTransaction,
+    err: String,
+    source_account: Option<Account>,
+) {
+    CANISTER_STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let operation_id = format!("io:{}", tx.block_index.0);
+        if state
+            .operation_journal
+            .iter()
+            .any(|op| op.operation_id == operation_id)
+        {
+            return;
+        }
+        let mut op = StreamOperation::stream(
+            "io",
+            tx.block_index.0,
+            StreamOperationKind::RejectedRedemption,
+            tx.transaction.amount_e8s,
+            state.manager.state,
+            0,
+            OperationPhase::AwaitingIoReturn,
+        );
+        op.io_redemption_block = Some(tx.block_index.0);
+        op.io_amount = tx.transaction.amount_e8s;
+        op.icp_payout_status = TransferStatus::FailedTerminal;
+        op.io_return_status = TransferStatus::Pending;
+        op.user_account = source_account
+            .as_ref()
+            .map(icp_ledger::mock_label_from_account);
+        op.source_account = source_account;
+        op.last_error = Some(err);
+        op.rejected_fund_disposition = Some(RejectedFundDisposition::ReturnToSenderPending);
+        if op.source_account.is_none() {
+            op.io_return_status = TransferStatus::FailedTerminal;
+            op.rejected_fund_disposition = Some(RejectedFundDisposition::QuarantinedTerminal {
+                reason: "rejected IO transfer has no resolvable sender account".to_string(),
+            });
+            op.phase = OperationPhase::FailedTerminal;
+        }
+        state.operation_journal.push(op);
+    });
+}
+
+#[cfg(target_family = "wasm")]
 fn journal_rejected_icp_deposit(source_block_index: u64, amount_e8s: u128, err: String) {
     CANISTER_STATE.with(|cell| {
         let mut state = cell.borrow_mut();
@@ -1474,6 +3946,7 @@ fn advance_io_cursor(block: u64) {
 mod tests {
     use super::*;
     use crate::state::JUPITER_FAUCET_SOURCE;
+    use candid::{Decode, Encode};
     use io_ledger_types::{
         Account, IndexTransaction, LedgerBlock, LedgerOperationKind, LedgerTransferRequest, Memo,
         Subaccount,
@@ -1486,6 +3959,7 @@ mod tests {
             transaction: LedgerBlock {
                 block_index: BlockIndex(index),
                 timestamp_nanos: index,
+                created_at_time: None,
                 from: Some(Account::new(principal, Some(Subaccount([1; 32])))),
                 to: Some(Account::new(principal, None)),
                 amount_e8s: 1,
@@ -1510,16 +3984,25 @@ mod tests {
     }
 
     fn duplicate_proof_block(amount_e8s: u128, to: &str, memo: &str) -> LedgerBlock {
+        duplicate_proof_block_with_memo(amount_e8s, to, Some(memo))
+    }
+
+    fn duplicate_proof_block_with_memo(
+        amount_e8s: u128,
+        to: &str,
+        memo: Option<&str>,
+    ) -> LedgerBlock {
         LedgerBlock {
             block_index: BlockIndex(9),
             timestamp_nanos: 0,
+            created_at_time: None,
             from: Some(crate::clients::icp_ledger::mock_account(
                 PROTOCOL_RESERVE_ACCOUNT,
             )),
             to: Some(crate::clients::icp_ledger::mock_account(to)),
             amount_e8s,
             fee_e8s: None,
-            memo: Some(Memo::from(memo)),
+            memo: memo.map(Memo::from),
             operation_kind: LedgerOperationKind::Transfer,
         }
     }
@@ -1540,6 +4023,8 @@ mod tests {
     fn contiguous_boundary_cursor_empty_page_does_not_advance() {
         let result = IndexScanResult {
             transactions: vec![],
+            raw_transaction_ids: vec![],
+            has_unsupported_transactions: false,
             last_seen_block: None,
             index_tip: Some(BlockIndex(10)),
             archive_required: false,
@@ -1557,6 +4042,8 @@ mod tests {
     fn contiguous_boundary_cursor_skips_already_processed_blocks_and_advances_once() {
         let result = IndexScanResult {
             transactions: vec![block(4), block(5), block(6)],
+            raw_transaction_ids: vec![],
+            has_unsupported_transactions: false,
             last_seen_block: Some(BlockIndex(6)),
             index_tip: Some(BlockIndex(6)),
             archive_required: false,
@@ -1574,6 +4061,8 @@ mod tests {
     fn contiguous_boundary_cursor_rejects_duplicate_new_blocks() {
         let result = IndexScanResult {
             transactions: vec![block(6), block(6)],
+            raw_transaction_ids: vec![],
+            has_unsupported_transactions: false,
             last_seen_block: Some(BlockIndex(6)),
             index_tip: Some(BlockIndex(6)),
             archive_required: false,
@@ -1593,6 +4082,8 @@ mod tests {
     fn contiguous_boundary_cursor_rejects_gap_and_does_not_skip_unknown_range() {
         let result = IndexScanResult {
             transactions: vec![block(7)],
+            raw_transaction_ids: vec![],
+            has_unsupported_transactions: false,
             last_seen_block: Some(BlockIndex(7)),
             index_tip: Some(BlockIndex(7)),
             archive_required: false,
@@ -1612,6 +4103,8 @@ mod tests {
     fn contiguous_boundary_cursor_reports_archive_required_before_advancing() {
         let result = IndexScanResult {
             transactions: vec![block(6)],
+            raw_transaction_ids: vec![],
+            has_unsupported_transactions: false,
             last_seen_block: Some(BlockIndex(6)),
             index_tip: Some(BlockIndex(100)),
             archive_required: true,
@@ -1631,6 +4124,8 @@ mod tests {
     fn contiguous_boundary_cursor_reports_index_lag() {
         let result = IndexScanResult {
             transactions: vec![],
+            raw_transaction_ids: vec![],
+            has_unsupported_transactions: false,
             last_seen_block: None,
             index_tip: Some(BlockIndex(4)),
             archive_required: false,
@@ -1651,6 +4146,8 @@ mod tests {
     fn account_boundary_cursor_allows_global_block_gaps() {
         let result = IndexScanResult {
             transactions: vec![block(25)],
+            raw_transaction_ids: vec![],
+            has_unsupported_transactions: false,
             last_seen_block: Some(BlockIndex(25)),
             index_tip: Some(BlockIndex(30)),
             archive_required: false,
@@ -1668,6 +4165,8 @@ mod tests {
     fn account_boundary_cursor_rejects_duplicate_returned_blocks() {
         let result = IndexScanResult {
             transactions: vec![block(25), block(25)],
+            raw_transaction_ids: vec![],
+            has_unsupported_transactions: false,
             last_seen_block: Some(BlockIndex(25)),
             index_tip: Some(BlockIndex(30)),
             archive_required: false,
@@ -1687,6 +4186,8 @@ mod tests {
     fn account_boundary_cursor_rejects_non_monotonic_pages() {
         let result = IndexScanResult {
             transactions: vec![block(25), block(24)],
+            raw_transaction_ids: vec![],
+            has_unsupported_transactions: false,
             last_seen_block: Some(BlockIndex(25)),
             index_tip: Some(BlockIndex(30)),
             archive_required: false,
@@ -1706,6 +4207,8 @@ mod tests {
     fn account_boundary_cursor_ignores_stale_blocks_without_advancing() {
         let result = IndexScanResult {
             transactions: vec![block(8), block(10)],
+            raw_transaction_ids: vec![],
+            has_unsupported_transactions: false,
             last_seen_block: Some(BlockIndex(10)),
             index_tip: Some(BlockIndex(30)),
             archive_required: false,
@@ -1723,6 +4226,8 @@ mod tests {
     fn account_boundary_cursor_empty_page_does_not_advance() {
         let result = IndexScanResult {
             transactions: vec![],
+            raw_transaction_ids: vec![],
+            has_unsupported_transactions: false,
             last_seen_block: None,
             index_tip: Some(BlockIndex(30)),
             archive_required: false,
@@ -1740,6 +4245,8 @@ mod tests {
     fn account_boundary_cursor_archive_required_does_not_advance() {
         let result = IndexScanResult {
             transactions: vec![block(25)],
+            raw_transaction_ids: vec![],
+            has_unsupported_transactions: false,
             last_seen_block: Some(BlockIndex(25)),
             index_tip: Some(BlockIndex(30)),
             archive_required: true,
@@ -1759,6 +4266,8 @@ mod tests {
     fn account_boundary_cursor_reports_lag_before_current_without_advancing() {
         let result = IndexScanResult {
             transactions: vec![block(25)],
+            raw_transaction_ids: vec![],
+            has_unsupported_transactions: false,
             last_seen_block: Some(BlockIndex(25)),
             index_tip: Some(BlockIndex(9)),
             archive_required: false,
@@ -1786,6 +4295,8 @@ mod tests {
 
         let result = IndexScanResult {
             transactions: vec![block(12), block(10), block(7)],
+            raw_transaction_ids: vec![],
+            has_unsupported_transactions: false,
             last_seen_block: Some(BlockIndex(12)),
             index_tip: Some(BlockIndex(12)),
             archive_required: false,
@@ -1862,6 +4373,2507 @@ mod tests {
                 BoundaryTransferDecision::Retryable(_)
             ));
         }
+    }
+
+    #[test]
+    fn io_stream_manager_real_redemption_memo_mismatch_does_not_prove_duplicate() {
+        let request = transfer_request(100, JUPITER_FAUCET_SOURCE, REDEMPTION_PAYOUT_MEMO);
+        let duplicate = duplicate_proof_block(100, JUPITER_FAUCET_SOURCE, "wrong_memo");
+
+        assert!(matches!(
+            classify_boundary_transfer_result(
+                &request,
+                Err(LedgerTransferError::Duplicate {
+                    duplicate_of: BlockIndex(9)
+                }),
+                Some(&duplicate),
+            ),
+            BoundaryTransferDecision::Retryable(_)
+        ));
+    }
+
+    #[test]
+    fn io_stream_manager_real_redemption_wrong_destination_does_not_prove_duplicate() {
+        let request = transfer_request(100, JUPITER_FAUCET_SOURCE, REDEMPTION_PAYOUT_MEMO);
+        let duplicate = duplicate_proof_block(100, "wrong_destination", REDEMPTION_PAYOUT_MEMO);
+
+        assert!(matches!(
+            classify_boundary_transfer_result(
+                &request,
+                Err(LedgerTransferError::Duplicate {
+                    duplicate_of: BlockIndex(9)
+                }),
+                Some(&duplicate),
+            ),
+            BoundaryTransferDecision::Retryable(_)
+        ));
+    }
+
+    #[test]
+    fn io_stream_manager_real_redemption_wrong_amount_does_not_prove_duplicate() {
+        let request = transfer_request(100, JUPITER_FAUCET_SOURCE, REDEMPTION_PAYOUT_MEMO);
+        let duplicate = duplicate_proof_block(99, JUPITER_FAUCET_SOURCE, REDEMPTION_PAYOUT_MEMO);
+
+        assert!(matches!(
+            classify_boundary_transfer_result(
+                &request,
+                Err(LedgerTransferError::Duplicate {
+                    duplicate_of: BlockIndex(9)
+                }),
+                Some(&duplicate),
+            ),
+            BoundaryTransferDecision::Retryable(_)
+        ));
+    }
+
+    #[test]
+    fn io_stream_manager_real_redemption_duplicate_io_return_block_must_match_expected() {
+        let request = transfer_request(90, PROTOCOL_RESERVE_ACCOUNT, REDEEMED_IO_MEMO);
+        let matching = duplicate_proof_block(90, PROTOCOL_RESERVE_ACCOUNT, REDEEMED_IO_MEMO);
+        assert_eq!(
+            classify_boundary_transfer_result(
+                &request,
+                Err(LedgerTransferError::Duplicate {
+                    duplicate_of: BlockIndex(9)
+                }),
+                Some(&matching),
+            ),
+            BoundaryTransferDecision::Succeeded(9)
+        );
+
+        let wrong_memo = duplicate_proof_block(90, PROTOCOL_RESERVE_ACCOUNT, "wrong_memo");
+        assert!(matches!(
+            classify_boundary_transfer_result(
+                &request,
+                Err(LedgerTransferError::Duplicate {
+                    duplicate_of: BlockIndex(9)
+                }),
+                Some(&wrong_memo),
+            ),
+            BoundaryTransferDecision::Retryable(_)
+        ));
+    }
+
+    fn redemption_op_with_phase(phase: OperationPhase) -> StreamOperation {
+        let mut op = StreamOperation::redemption(
+            42,
+            1_000_000,
+            1_000_000,
+            "user".to_string(),
+            io_core_model::ProtocolState::new(1_000_000_000, 500_000_000, 0),
+        );
+        op.phase = phase;
+        op
+    }
+
+    #[test]
+    fn redemption_below_return_fee_has_consistent_terminal_status() {
+        let mut op = redemption_op_with_phase(OperationPhase::AwaitingIoReturn);
+        op.io_amount = 9_999;
+        op.io_return_fee_e8s = 10_000;
+        op.io_return_status = TransferStatus::FailedTerminal;
+        op.icp_payout_status = TransferStatus::FailedTerminal;
+        op.mark_terminal_error(
+            "redeemed IO 9999 is below IO return fee 10000".to_string(),
+            OperationPhase::AwaitingIoReturn,
+        );
+
+        assert_eq!(op.phase, OperationPhase::FailedTerminal);
+        assert_eq!(op.io_return_status, TransferStatus::FailedTerminal);
+        assert_eq!(op.icp_payout_status, TransferStatus::FailedTerminal);
+        assert!(!is_retryable_redemption_operation(&op));
+    }
+
+    #[test]
+    fn redemption_equal_to_return_fee_fails_closed() {
+        let mut op = redemption_op_with_phase(OperationPhase::AwaitingIoReturn);
+        op.io_amount = 10_000;
+        op.io_return_fee_e8s = 10_000;
+        op.io_return_status = TransferStatus::FailedTerminal;
+        op.icp_payout_status = TransferStatus::FailedTerminal;
+        op.mark_terminal_error(
+            "redeemed IO 10000 is not above IO return fee 10000".to_string(),
+            OperationPhase::AwaitingIoReturn,
+        );
+
+        assert_eq!(amount_after_fee(op.io_amount, op.io_return_fee_e8s), None);
+        assert_eq!(op.phase, OperationPhase::FailedTerminal);
+        assert_eq!(op.io_return_status, TransferStatus::FailedTerminal);
+        assert_eq!(op.icp_payout_status, TransferStatus::FailedTerminal);
+        assert!(!is_retryable_redemption_operation(&op));
+    }
+
+    #[test]
+    fn zero_value_io_return_is_never_attempted() {
+        assert_eq!(amount_after_fee(10_000, 10_000), None);
+        assert_eq!(amount_after_fee(9_999, 10_000), None);
+        assert_eq!(amount_after_fee(10_001, 10_000), Some(1));
+    }
+
+    #[test]
+    fn terminal_redemption_is_never_selected_by_retry_pending_redemptions() {
+        let mut completed = redemption_op_with_phase(OperationPhase::Completed);
+        completed.icp_payout_status = TransferStatus::Succeeded;
+        completed.io_return_status = TransferStatus::Succeeded;
+        let terminal = redemption_op_with_phase(OperationPhase::FailedTerminal);
+        let mut retryable = redemption_op_with_phase(OperationPhase::AwaitingIcpPayout);
+        retryable.icp_payout_status = TransferStatus::FailedRetryable;
+
+        assert!(!is_retryable_redemption_operation(&completed));
+        assert!(!is_retryable_redemption_operation(&terminal));
+        assert!(is_retryable_redemption_operation(&retryable));
+    }
+
+    #[test]
+    fn terminal_redemption_does_not_block_unrelated_valid_redemption() {
+        let terminal = redemption_op_with_phase(OperationPhase::FailedTerminal);
+        let valid = redemption_op_with_phase(OperationPhase::AwaitingIcpPayout);
+        let journal = [terminal, valid.clone()];
+
+        let selected = journal
+            .iter()
+            .find(|op| is_retryable_redemption_operation(op))
+            .expect("valid redemption should still be selected");
+
+        assert_eq!(selected.operation_id, valid.operation_id);
+    }
+
+    #[test]
+    fn rejected_redemption_quarantine_is_auditable_if_return_is_impossible() {
+        let mut op = StreamOperation::stream(
+            "io",
+            77,
+            StreamOperationKind::RejectedRedemption,
+            9_999,
+            io_core_model::ProtocolState::new(1_000_000_000, 500_000_000, 0),
+            0,
+            OperationPhase::FailedTerminal,
+        );
+        op.io_redemption_block = Some(77);
+        op.io_amount = 9_999;
+        op.icp_payout_status = TransferStatus::FailedTerminal;
+        op.io_return_status = TransferStatus::FailedTerminal;
+        op.rejected_fund_disposition = Some(RejectedFundDisposition::QuarantinedTerminal {
+            reason: "sender account missing".to_string(),
+        });
+        op.last_error = Some("Malformed sender".to_string());
+
+        assert_eq!(op.source_ledger, "io");
+        assert_eq!(op.source_block_index, Some(77));
+        assert_eq!(op.io_redemption_block, Some(77));
+        assert!(op.source_account.is_none());
+        assert!(matches!(
+            op.rejected_fund_disposition,
+            Some(RejectedFundDisposition::QuarantinedTerminal { .. })
+        ));
+        assert!(!is_retryable_redemption_operation(&op));
+    }
+
+    fn rejected_redemption_op(disposition: RejectedFundDisposition) -> StreamOperation {
+        let principal = candid::Principal::from_text("aaaaa-aa").unwrap();
+        let source = Account::new(principal, Some(Subaccount([7; 32])));
+        let phase = match disposition {
+            RejectedFundDisposition::ReturnToSenderPending
+            | RejectedFundDisposition::ReturnToSenderProofPending { .. }
+            | RejectedFundDisposition::ReturnToSenderRetryable { .. } => {
+                OperationPhase::AwaitingIoReturn
+            }
+            RejectedFundDisposition::ReturnToSenderSucceeded { .. } => OperationPhase::Completed,
+            RejectedFundDisposition::ReturnToSenderManualReconciliationRequired { .. }
+            | RejectedFundDisposition::QuarantinedTerminal { .. } => OperationPhase::FailedTerminal,
+        };
+        let mut op = StreamOperation::stream(
+            "io",
+            88,
+            StreamOperationKind::RejectedRedemption,
+            1_000_000,
+            io_core_model::ProtocolState::new(1_000_000_000, 500_000_000, 0),
+            0,
+            phase,
+        );
+        op.io_redemption_block = Some(88);
+        op.io_amount = 1_000_000;
+        op.source_account = Some(source);
+        op.user_account = Some("source-account".to_string());
+        op.icp_payout_status = TransferStatus::NotApplicable;
+        op.io_return_status = match disposition {
+            RejectedFundDisposition::ReturnToSenderSucceeded { .. } => TransferStatus::Succeeded,
+            RejectedFundDisposition::ReturnToSenderProofPending { .. } => {
+                TransferStatus::FailedRetryable
+            }
+            RejectedFundDisposition::ReturnToSenderRetryable { .. } => {
+                TransferStatus::FailedRetryable
+            }
+            RejectedFundDisposition::ReturnToSenderPending => TransferStatus::Pending,
+            RejectedFundDisposition::ReturnToSenderManualReconciliationRequired { .. }
+            | RejectedFundDisposition::QuarantinedTerminal { .. } => TransferStatus::FailedTerminal,
+        };
+        op.rejected_fund_disposition = Some(disposition);
+        op
+    }
+
+    fn proof_pending_op_with_scan_state(
+        operation_id: &str,
+        proof_scan_state: Option<AccountHistoryScanState>,
+    ) -> StreamOperation {
+        let mut op = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderProofPending {
+            reason: "TooOld; refund proof pending".to_string(),
+            original_created_at_time: Some(500),
+            proof_scan_state,
+        });
+        op.operation_id = operation_id.to_string();
+        op
+    }
+
+    fn rejected_refund_attempt(
+        refund_source: Account,
+        destination: Account,
+        amount_e8s: u128,
+        fee_e8s: u128,
+        created_at_time: u64,
+        operation_id: &str,
+    ) -> RejectedRefundAttemptRecord {
+        rejected_refund_attempt_from_parts(
+            refund_source,
+            destination,
+            amount_e8s,
+            fee_e8s,
+            Some(rejected_refund_memo(operation_id)),
+            created_at_time,
+        )
+    }
+
+    #[test]
+    fn rejected_refund_attempt_records_exact_fee_amount_time_and_accounts() {
+        let principal = candid::Principal::from_text("aaaaa-aa").unwrap();
+        let refund_source = Account::new(principal, Some(Subaccount([9; 32])));
+        let destination = Account::new(principal, Some(Subaccount([7; 32])));
+
+        let attempt = rejected_refund_attempt(
+            refund_source.clone(),
+            destination.clone(),
+            990_000,
+            10_000,
+            88,
+            "io:88",
+        );
+        let request = rejected_refund_request_from_attempt(&attempt);
+
+        assert_eq!(attempt.attempted_refund_amount_e8s, 990_000);
+        assert_eq!(attempt.attempted_fee_e8s, 10_000);
+        assert_eq!(attempt.attempted_created_at_time, 88);
+        assert_eq!(attempt.memo, Some(rejected_refund_memo("io:88")));
+        assert_eq!(attempt.refund_source_account, refund_source);
+        assert_eq!(attempt.destination_account, destination.clone());
+        assert_eq!(request.from_subaccount, refund_source.subaccount);
+        assert_eq!(request.to, destination);
+        assert_eq!(request.amount_e8s, 990_000);
+        assert_eq!(request.created_at_time, Some(88));
+        assert_eq!(request.memo, Some(rejected_refund_memo("io:88")));
+    }
+
+    #[test]
+    fn proof_pending_reconciliation_uses_original_fee_not_current_fee() {
+        let principal = candid::Principal::from_text("aaaaa-aa").unwrap();
+        let refund_source = Account::new(principal, Some(Subaccount([9; 32])));
+        let destination = Account::new(principal, Some(Subaccount([7; 32])));
+        let original_attempt =
+            rejected_refund_attempt(refund_source, destination, 990_000, 10_000, 88, "io:88");
+        let changed_current_fee = 25_000;
+
+        let request = rejected_refund_request_from_attempt(&original_attempt);
+
+        assert_eq!(request.amount_e8s, 990_000);
+        assert_eq!(original_attempt.attempted_fee_e8s, 10_000);
+        assert_ne!(original_attempt.attempted_fee_e8s, changed_current_fee);
+        assert_ne!(
+            request.amount_e8s,
+            amount_after_fee(1_000_000, changed_current_fee).unwrap()
+        );
+    }
+
+    #[test]
+    fn proof_pending_reconciliation_uses_original_refund_amount() {
+        let principal = candid::Principal::from_text("aaaaa-aa").unwrap();
+        let refund_source = Account::new(principal, Some(Subaccount([9; 32])));
+        let destination = Account::new(principal, Some(Subaccount([7; 32])));
+        let original_attempt =
+            rejected_refund_attempt(refund_source, destination, 990_000, 10_000, 88, "io:88");
+
+        let request = rejected_refund_request_from_attempt(&original_attempt);
+
+        assert_eq!(
+            request.amount_e8s,
+            original_attempt.attempted_refund_amount_e8s
+        );
+        assert_ne!(request.amount_e8s, 1_000_000);
+    }
+
+    #[test]
+    fn fee_change_after_refund_attempt_does_not_break_index_proof() {
+        let principal = candid::Principal::from_text("aaaaa-aa").unwrap();
+        let refund_source = Account::new(principal, Some(Subaccount([9; 32])));
+        let destination = Account::new(principal, Some(Subaccount([7; 32])));
+        let attempt = rejected_refund_attempt(
+            refund_source.clone(),
+            destination.clone(),
+            990_000,
+            10_000,
+            88,
+            "io:88",
+        );
+        let changed_current_fee = 25_000;
+        let indexed_refund = LedgerBlock {
+            block_index: BlockIndex(91),
+            timestamp_nanos: 88,
+            created_at_time: None,
+            from: Some(refund_source),
+            to: Some(destination),
+            amount_e8s: 990_000,
+            fee_e8s: Some(10_000),
+            memo: Some(rejected_refund_memo("io:88")),
+            operation_kind: LedgerOperationKind::Transfer,
+        };
+
+        let proof = duplicate_matches_expected(
+            &rejected_refund_request_from_attempt(&attempt),
+            &indexed_refund,
+        );
+
+        assert_eq!(proof, Ok(BlockIndex(91)));
+        assert_ne!(attempt.attempted_fee_e8s, changed_current_fee);
+    }
+
+    #[test]
+    fn current_fee_change_never_causes_second_refund() {
+        let principal = candid::Principal::from_text("aaaaa-aa").unwrap();
+        let refund_source = Account::new(principal, Some(Subaccount([9; 32])));
+        let destination = Account::new(principal, Some(Subaccount([7; 32])));
+        let mut op = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderProofPending {
+            reason: "TooOld; index lag".to_string(),
+            original_created_at_time: Some(88),
+            proof_scan_state: None,
+        });
+        op.rejected_refund_attempt = Some(rejected_refund_attempt(
+            refund_source,
+            destination,
+            990_000,
+            10_000,
+            88,
+            "io:88",
+        ));
+        let changed_current_fee = 25_000;
+        let request =
+            rejected_refund_request_from_attempt(op.rejected_refund_attempt.as_ref().unwrap());
+
+        assert!(!is_retryable_rejected_refund_operation(&op));
+        assert_eq!(request.amount_e8s, 990_000);
+        assert_ne!(
+            request.amount_e8s,
+            amount_after_fee(op.io_amount, changed_current_fee).unwrap()
+        );
+        assert_eq!(request.created_at_time, Some(88));
+    }
+
+    #[test]
+    fn proof_pending_refund_is_rechecked_without_resending() {
+        let op = proof_pending_op_with_scan_state("io:88", None);
+        let journal = vec![op.clone()];
+
+        assert_eq!(
+            next_proof_pending_rejected_refund_operation(&journal, &BTreeSet::new())
+                .map(|selected| selected.operation_id),
+            Some(op.operation_id.clone())
+        );
+        assert!(!is_retryable_rejected_refund_operation(&op));
+    }
+
+    #[test]
+    fn proof_pending_index_lag_remains_pending() {
+        let mut scan = AccountHistoryScanState::default();
+        scan.status.lag_suspected = true;
+        scan.status.last_error = Some("index tip is behind ledger tip".to_string());
+
+        assert!(matches!(
+            classify_too_old_refund_proof_state(&scan, 1, REJECTED_REFUND_PROOF_SCAN_MAX_PAGES),
+            TooOldRefundProofDisposition::IndexNotCaughtUp(_)
+        ));
+    }
+
+    #[test]
+    fn proof_pending_index_catchup_marks_original_refund_succeeded() {
+        let principal = candid::Principal::from_text("aaaaa-aa").unwrap();
+        let refund_source = Account::new(principal, Some(Subaccount([9; 32])));
+        let sender = Account::new(principal, Some(Subaccount([7; 32])));
+        let request = LedgerTransferRequest {
+            from_subaccount: refund_source.subaccount,
+            to: sender.clone(),
+            amount_e8s: 990_000,
+            fee_e8s: None,
+            memo: Some(rejected_refund_memo("io:88")),
+            created_at_time: Some(500),
+        };
+        let proof = LedgerBlock {
+            block_index: BlockIndex(91),
+            timestamp_nanos: 500,
+            created_at_time: None,
+            from: Some(refund_source),
+            to: Some(sender),
+            amount_e8s: 990_000,
+            fee_e8s: Some(10_000),
+            memo: Some(rejected_refund_memo("io:88")),
+            operation_kind: LedgerOperationKind::Transfer,
+        };
+        let op = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderSucceeded {
+            block_index: duplicate_matches_expected(&request, &proof).unwrap().0,
+            amount_e8s: 990_000,
+        });
+
+        assert_eq!(op.phase, OperationPhase::Completed);
+        assert_eq!(op.io_return_status, TransferStatus::Succeeded);
+        assert!(matches!(
+            op.rejected_fund_disposition,
+            Some(RejectedFundDisposition::ReturnToSenderSucceeded {
+                block_index: 91,
+                amount_e8s: 990_000,
+            })
+        ));
+    }
+
+    #[test]
+    fn proof_pending_complete_no_match_requires_manual_reconciliation() {
+        let mut scan = AccountHistoryScanState::default();
+        scan.cursor.backfill_complete = true;
+        scan.cursor.latest_cursor = Some(BlockIndex(91));
+        scan.status.num_blocks_synced = Some(BlockIndex(91));
+
+        assert!(matches!(
+            classify_too_old_refund_proof_state(&scan, 1, REJECTED_REFUND_PROOF_SCAN_MAX_PAGES),
+            TooOldRefundProofDisposition::CompleteNoMatch(_)
+        ));
+        let op = rejected_redemption_op(
+            RejectedFundDisposition::ReturnToSenderManualReconciliationRequired {
+                reason: "complete canonical history contains no matching refund".to_string(),
+                original_created_at_time: Some(500),
+            },
+        );
+        assert_eq!(op.phase, OperationPhase::FailedTerminal);
+        assert!(!is_retryable_rejected_refund_operation(&op));
+    }
+
+    #[test]
+    fn proof_pending_reconciliation_budget_is_bounded() {
+        assert_eq!(REJECTED_REFUND_PROOF_RECONCILIATION_BUDGET_PER_TICK, 4);
+
+        let journal = (0..(REJECTED_REFUND_PROOF_RECONCILIATION_BUDGET_PER_TICK + 2))
+            .map(|i| proof_pending_op_with_scan_state(&format!("io:{i}"), None))
+            .collect::<Vec<_>>();
+        let mut attempted = BTreeSet::new();
+        for _ in 0..REJECTED_REFUND_PROOF_RECONCILIATION_BUDGET_PER_TICK {
+            let selected = next_proof_pending_rejected_refund_operation(&journal, &attempted)
+                .expect("budgeted proof-pending operation should be selected");
+            attempted.insert(selected.operation_id);
+        }
+
+        assert_eq!(
+            attempted.len(),
+            REJECTED_REFUND_PROOF_RECONCILIATION_BUDGET_PER_TICK
+        );
+        assert!(next_proof_pending_rejected_refund_operation(&journal, &attempted).is_some());
+    }
+
+    #[test]
+    fn proof_pending_operation_does_not_block_valid_redemption() {
+        let proof_pending = proof_pending_op_with_scan_state("io:88", None);
+        let valid = redemption_op_with_phase(OperationPhase::AwaitingIcpPayout);
+
+        assert!(
+            next_proof_pending_rejected_refund_operation(&[proof_pending], &BTreeSet::new())
+                .is_some()
+        );
+        assert!(is_retryable_redemption_operation(&valid));
+    }
+
+    #[test]
+    fn proof_pending_state_and_scan_progress_survive_same_wasm_upgrade() {
+        let mut scan = AccountHistoryScanState::default();
+        scan.cursor.order = Some(AccountHistoryPageOrder::Descending);
+        scan.cursor.latest_cursor = Some(BlockIndex(91));
+        scan.cursor.oldest_cursor = Some(BlockIndex(77));
+        scan.status.num_blocks_synced = Some(BlockIndex(91));
+        let op = proof_pending_op_with_scan_state("io:88", Some(scan.clone()));
+        let restored = op.clone();
+
+        match restored.rejected_fund_disposition {
+            Some(RejectedFundDisposition::ReturnToSenderProofPending {
+                proof_scan_state: Some(restored_scan),
+                ..
+            }) => assert_eq!(restored_scan, scan),
+            other => panic!("expected proof-pending scan state, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn proof_pending_repeated_ticks_never_call_ledger_transfer() {
+        let proof_pending = proof_pending_op_with_scan_state("io:88", None);
+        let journal = vec![proof_pending];
+
+        for _ in 0..3 {
+            assert!(
+                next_proof_pending_rejected_refund_operation(&journal, &BTreeSet::new()).is_some()
+            );
+            assert_eq!(
+                next_retryable_rejected_refund_operation(&journal, &BTreeSet::new()),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn rejected_redemption_records_source_ledger_block() {
+        let op = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderPending);
+
+        assert_eq!(op.source_ledger, "io");
+        assert_eq!(op.source_block_index, Some(88));
+        assert_eq!(op.io_redemption_block, Some(88));
+        assert_eq!(op.io_amount, 1_000_000);
+        assert!(op.source_account.is_some());
+    }
+
+    #[test]
+    fn rejected_redemption_does_not_silently_increase_protocol_reserve() {
+        let protocol = io_core_model::ProtocolState::new(1_000_000_000, 500_000_000, 0);
+        let op = rejected_redemption_op(RejectedFundDisposition::QuarantinedTerminal {
+            reason: "dust".to_string(),
+        });
+
+        assert_eq!(io_core_model::ProtocolState::from(op.post_state), protocol);
+        assert_eq!(op.io_issued_e8s, 0);
+        assert_eq!(op.gross_icp_payout_e8s, 0);
+    }
+
+    #[test]
+    fn rejected_redemption_return_to_sender_is_exactly_once_if_supported() {
+        let op = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderSucceeded {
+            block_index: 91,
+            amount_e8s: 990_000,
+        });
+
+        assert_eq!(op.io_return_status, TransferStatus::Succeeded);
+        assert!(matches!(
+            op.rejected_fund_disposition,
+            Some(RejectedFundDisposition::ReturnToSenderSucceeded {
+                block_index: 91,
+                amount_e8s: 990_000
+            })
+        ));
+        assert!(!is_retryable_redemption_operation(&op));
+    }
+
+    #[test]
+    fn rejected_refund_equal_to_fee_is_quarantined() {
+        let mut op = rejected_redemption_op(RejectedFundDisposition::QuarantinedTerminal {
+            reason: "rejected IO amount 10000 is not above refund fee 10000".to_string(),
+        });
+        op.io_amount = 10_000;
+        op.io_return_fee_e8s = 10_000;
+        op.io_return_status = TransferStatus::FailedTerminal;
+        op.icp_payout_status = TransferStatus::FailedTerminal;
+        op.phase = OperationPhase::FailedTerminal;
+
+        assert_eq!(amount_after_fee(op.io_amount, op.io_return_fee_e8s), None);
+        assert!(matches!(
+            op.rejected_fund_disposition,
+            Some(RejectedFundDisposition::QuarantinedTerminal { .. })
+        ));
+        assert!(!is_retryable_redemption_operation(&op));
+    }
+
+    #[test]
+    fn rejected_redemption_replay_does_not_repeat_refund_or_payout() {
+        let op = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderSucceeded {
+            block_index: 91,
+            amount_e8s: 990_000,
+        });
+
+        assert_eq!(op.icp_payout_status, TransferStatus::NotApplicable);
+        assert_eq!(op.icp_payout_block, None);
+        assert_eq!(op.io_return_status, TransferStatus::Succeeded);
+        assert!(!is_retryable_redemption_operation(&op));
+    }
+
+    #[test]
+    fn rejected_refund_replay_no_second_transfer() {
+        let op = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderSucceeded {
+            block_index: 91,
+            amount_e8s: 990_000,
+        });
+
+        assert_eq!(op.kind, StreamOperationKind::RejectedRedemption);
+        assert_eq!(op.io_return_status, TransferStatus::Succeeded);
+        assert_eq!(op.icp_payout_status, TransferStatus::NotApplicable);
+        assert!(matches!(
+            op.rejected_fund_disposition,
+            Some(RejectedFundDisposition::ReturnToSenderSucceeded { .. })
+        ));
+        assert!(!is_retryable_redemption_operation(&op));
+    }
+
+    #[test]
+    fn rejected_refund_same_wasm_upgrade_preserves_intent() {
+        let mut op = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderPending);
+        op.operation_id = "io:88".to_string();
+        op.created_at = 88;
+        let restored = op.clone();
+
+        assert_eq!(restored.operation_id, "io:88");
+        assert_eq!(
+            rejected_refund_memo(&restored.operation_id),
+            Memo::from("rejected_io_refund:io:88")
+        );
+        assert_eq!(restored.created_at, 88);
+        assert!(matches!(
+            restored.rejected_fund_disposition,
+            Some(RejectedFundDisposition::ReturnToSenderPending)
+        ));
+    }
+
+    #[test]
+    fn over_redeemable_redemption_has_explicit_fund_disposition() {
+        let mut op = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderPending);
+        op.last_error = Some("InsufficientRedeemableSupply".to_string());
+
+        assert!(op.last_error.as_deref().unwrap().contains("Insufficient"));
+        assert!(matches!(
+            op.rejected_fund_disposition,
+            Some(RejectedFundDisposition::ReturnToSenderPending)
+        ));
+        assert_eq!(op.icp_payout_status, TransferStatus::NotApplicable);
+    }
+
+    #[test]
+    fn malformed_sender_redemption_has_explicit_fund_disposition() {
+        let mut op = rejected_redemption_op(RejectedFundDisposition::QuarantinedTerminal {
+            reason: "unresolvable sender".to_string(),
+        });
+        op.source_account = None;
+        op.user_account = None;
+        op.last_error = Some("Malformed sender".to_string());
+
+        assert!(op.source_account.is_none());
+        assert!(matches!(
+            op.rejected_fund_disposition,
+            Some(RejectedFundDisposition::QuarantinedTerminal { .. })
+        ));
+        assert_eq!(op.icp_payout_status, TransferStatus::NotApplicable);
+        assert_eq!(op.io_return_status, TransferStatus::FailedTerminal);
+    }
+
+    #[test]
+    fn production_release_path_has_no_mock_fee_fallback() {
+        assert!(!mock_fee_fallback_allowed_for_build(true, false));
+        assert!(!mock_fee_fallback_allowed_for_build(false, false));
+    }
+
+    #[test]
+    fn debug_local_path_allows_mock_fee_fallback() {
+        assert!(mock_fee_fallback_allowed_for_build(true, true));
+        assert!(!mock_fee_fallback_allowed_for_build(false, true));
+    }
+
+    #[test]
+    fn production_release_fee_failure_does_not_probe_debug_api() {
+        assert!(!mock_fee_fallback_allowed_for_build(true, false));
+        assert!(!mock_fee_fallback_allowed_for_build(false, false));
+    }
+
+    #[test]
+    fn debug_build_fee_failure_may_use_explicit_mock_fallback() {
+        assert!(mock_fee_fallback_allowed_for_build(true, true));
+        assert!(!mock_fee_fallback_allowed_for_build(false, true));
+    }
+
+    #[test]
+    fn real_redemption_reads_icrc1_fee() {
+        let mut op = redemption_op_with_phase(OperationPhase::AwaitingIoReturn);
+        op.io_amount = 123_456;
+        let observed_icrc1_fee = 10_000;
+        op.io_return_fee_e8s = observed_icrc1_fee;
+
+        assert_eq!(
+            amount_after_fee(op.io_amount, observed_icrc1_fee),
+            Some(113_456)
+        );
+        assert_eq!(op.io_return_fee_e8s, observed_icrc1_fee);
+    }
+
+    fn reward_attempt(
+        amount_e8s: u128,
+        fee_e8s: u128,
+        created_at_time: u64,
+        operation_id: &str,
+        neuron_id: [u8; 32],
+    ) -> RewardTransferAttemptRecord {
+        let principal = candid::Principal::from_text("aaaaa-aa").unwrap();
+        reward_transfer_attempt_from_parts(
+            Account::new(principal, Some(Subaccount([3; 32]))),
+            Account::new(principal, Some(Subaccount(neuron_id))),
+            amount_e8s,
+            fee_e8s,
+            created_at_time,
+            operation_id,
+            neuron_id.to_vec(),
+        )
+    }
+
+    fn reward_duplicate_block(
+        attempt: &RewardTransferAttemptRecord,
+        block_index: u64,
+    ) -> LedgerBlock {
+        LedgerBlock {
+            block_index: BlockIndex(block_index),
+            timestamp_nanos: attempt.created_at_time,
+            created_at_time: Some(attempt.created_at_time),
+            from: Some(attempt.source_account.clone()),
+            to: Some(attempt.destination_account.clone()),
+            amount_e8s: attempt.amount_e8s,
+            fee_e8s: Some(attempt.fee_e8s),
+            memo: attempt.memo.clone(),
+            operation_kind: LedgerOperationKind::Transfer,
+        }
+    }
+
+    #[test]
+    fn reward_transfer_attempt_is_persisted_before_external_call() {
+        let attempt = reward_attempt(1_000_000, 10_000, 55, "icp:7", [7; 32]);
+        let request = reward_transfer_request_from_attempt(&attempt);
+
+        assert_eq!(request.created_at_time, Some(55));
+        assert_eq!(request.memo, attempt.memo);
+        assert_eq!(request.to, attempt.destination_account);
+        assert_eq!(request.amount_e8s, 1_000_000);
+        assert_eq!(request.fee_e8s, Some(10_000));
+    }
+
+    #[test]
+    fn reward_transfer_retry_reuses_original_created_at_time() {
+        let attempt = reward_attempt(1_000_000, 10_000, 55, "icp:7", [7; 32]);
+        let changed_now = 99;
+        let retry = reward_transfer_request_from_attempt(&attempt);
+
+        assert_eq!(retry.created_at_time, Some(55));
+        assert_ne!(retry.created_at_time, Some(changed_now));
+    }
+
+    #[test]
+    fn reward_transfer_retry_reuses_original_memo_and_destination() {
+        let attempt = reward_attempt(1_000_000, 10_000, 55, "icp:7", [7; 32]);
+        let retry = reward_transfer_request_from_attempt(&attempt);
+
+        assert_eq!(retry.memo, Some(reward_transfer_memo("icp:7", &[7; 32])));
+        assert_eq!(retry.to, attempt.destination_account);
+    }
+
+    #[test]
+    fn reward_transfer_memo_fits_real_sns_ledger_limit() {
+        let old_text_memo = format!("two_week_reward:{}:{}", "icp:7", "07".repeat(32)).into_bytes();
+        let memo = reward_transfer_memo("icp:7", &[7; 32]);
+
+        assert_eq!(memo.0.len(), 32);
+        assert!(
+            memo.0.len() <= 32,
+            "pinned real SNS ledger accepts a 32-byte reward memo"
+        );
+        assert!(
+            old_text_memo.len() > memo.0.len(),
+            "text memo length should be measured against the compact replacement"
+        );
+    }
+
+    #[test]
+    fn reward_transfer_memo_is_stable_across_retries() {
+        let first = reward_attempt(1_000_000, 10_000, 55, "icp:7", [7; 32]);
+        let retry = reward_attempt(1_000_000, 10_000, 99, "icp:7", [7; 32]);
+
+        assert_eq!(first.memo, retry.memo);
+        assert_eq!(
+            reward_transfer_request_from_attempt(&first).memo,
+            reward_transfer_request_from_attempt(&retry).memo
+        );
+    }
+
+    #[test]
+    fn reward_transfer_memo_differs_across_neurons() {
+        let first = reward_transfer_memo("icp:7", &[7; 32]);
+        let second = reward_transfer_memo("icp:7", &[8; 32]);
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn reward_transfer_memo_differs_across_operations() {
+        let first = reward_transfer_memo("icp:7", &[7; 32]);
+        let second = reward_transfer_memo("icp:8", &[7; 32]);
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn reward_transfer_memo_round_trips_stable_state() {
+        let attempt = reward_attempt(1_000_000, 10_000, 55, "icp:7", [7; 32]);
+        let mut recipient = two_week_recipient_with_attempt(TransferStatus::FailedRetryable);
+        recipient.reward_transfer_attempt = Some(attempt.clone());
+
+        let restored = recipient.clone();
+
+        assert_eq!(
+            restored.reward_transfer_attempt.as_ref().unwrap().memo,
+            attempt.memo
+        );
+        assert_eq!(
+            restored.reward_transfer_attempt.as_ref().unwrap().memo,
+            Some(reward_transfer_memo("icp:7", &[7; 32]))
+        );
+    }
+
+    #[test]
+    fn reward_duplicate_proof_rejects_wrong_memo() {
+        let attempt = reward_attempt(1_000_000, 10_000, 55, "icp:7", [7; 32]);
+        let wrong_memo = LedgerBlock {
+            memo: Some(reward_transfer_memo("icp:7", &[8; 32])),
+            ..reward_duplicate_block(&attempt, 77)
+        };
+
+        assert!(matches!(
+            classify_reward_transfer_result(
+                &attempt,
+                Err(LedgerTransferError::Duplicate {
+                    duplicate_of: BlockIndex(77),
+                }),
+                Some(&wrong_memo),
+            ),
+            BoundaryTransferDecision::Retryable(_)
+        ));
+    }
+
+    #[test]
+    fn reward_transfer_duplicate_proof_requires_exact_source_destination_amount_memo() {
+        let attempt = reward_attempt(1_000_000, 10_000, 55, "icp:7", [7; 32]);
+        let matching = reward_duplicate_block(&attempt, 77);
+
+        assert_eq!(
+            classify_reward_transfer_result(
+                &attempt,
+                Err(LedgerTransferError::Duplicate {
+                    duplicate_of: BlockIndex(77),
+                }),
+                Some(&matching),
+            ),
+            BoundaryTransferDecision::Succeeded(77)
+        );
+
+        let wrong_source = LedgerBlock {
+            from: Some(Account::new(
+                attempt.source_account.owner,
+                Some(Subaccount([4; 32])),
+            )),
+            ..matching.clone()
+        };
+        let wrong_destination = LedgerBlock {
+            to: Some(Account::new(
+                attempt.destination_account.owner,
+                Some(Subaccount([8; 32])),
+            )),
+            ..matching.clone()
+        };
+        let wrong_amount = LedgerBlock {
+            amount_e8s: attempt.amount_e8s - 1,
+            ..matching.clone()
+        };
+        let wrong_memo = LedgerBlock {
+            memo: Some(Memo::from("other")),
+            ..matching
+        };
+
+        for proof in [wrong_source, wrong_destination, wrong_amount, wrong_memo] {
+            assert!(matches!(
+                classify_reward_transfer_result(
+                    &attempt,
+                    Err(LedgerTransferError::Duplicate {
+                        duplicate_of: BlockIndex(77),
+                    }),
+                    Some(&proof),
+                ),
+                BoundaryTransferDecision::Retryable(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn reward_proof_matches_created_at_time_not_block_timestamp() {
+        let attempt = reward_attempt(1_000_000, 10_000, 55, "icp:7", [7; 32]);
+        let proof = LedgerBlock {
+            timestamp_nanos: attempt.created_at_time,
+            created_at_time: Some(attempt.created_at_time + 1),
+            ..reward_duplicate_block(&attempt, 77)
+        };
+
+        assert!(!reward_transfer_block_matches_attempt(&attempt, &proof));
+    }
+
+    #[test]
+    fn reward_proof_rejects_wrong_created_at_time() {
+        let attempt = reward_attempt(1_000_000, 10_000, 55, "icp:7", [7; 32]);
+        let proof = LedgerBlock {
+            created_at_time: Some(54),
+            ..reward_duplicate_block(&attempt, 77)
+        };
+
+        assert!(matches!(
+            classify_reward_transfer_result(
+                &attempt,
+                Err(LedgerTransferError::Duplicate {
+                    duplicate_of: BlockIndex(77),
+                }),
+                Some(&proof),
+            ),
+            BoundaryTransferDecision::Retryable(_)
+        ));
+    }
+
+    #[test]
+    fn reward_proof_accepts_different_block_timestamp() {
+        let attempt = reward_attempt(1_000_000, 10_000, 55, "icp:7", [7; 32]);
+        let proof = LedgerBlock {
+            timestamp_nanos: attempt.created_at_time + 99,
+            created_at_time: Some(attempt.created_at_time),
+            ..reward_duplicate_block(&attempt, 77)
+        };
+
+        assert!(reward_transfer_block_matches_attempt(&attempt, &proof));
+    }
+
+    #[test]
+    fn duplicate_reward_proof_uses_persisted_created_at_time() {
+        let attempt = reward_attempt(1_000_000, 10_000, 55, "icp:7", [7; 32]);
+        let proof = LedgerBlock {
+            timestamp_nanos: 55,
+            created_at_time: Some(56),
+            ..reward_duplicate_block(&attempt, 77)
+        };
+
+        assert!(matches!(
+            classify_reward_transfer_result(
+                &attempt,
+                Err(LedgerTransferError::Duplicate {
+                    duplicate_of: BlockIndex(77),
+                }),
+                Some(&proof),
+            ),
+            BoundaryTransferDecision::Retryable(_)
+        ));
+    }
+
+    #[test]
+    fn too_old_reward_proof_uses_persisted_created_at_time() {
+        let attempt = reward_attempt(1_000_000, 10_000, 55, "icp:7", [7; 32]);
+        let proof = LedgerBlock {
+            timestamp_nanos: attempt.created_at_time,
+            created_at_time: Some(attempt.created_at_time + 1),
+            ..reward_duplicate_block(&attempt, 77)
+        };
+
+        assert!(!reward_transfer_block_matches_attempt(&attempt, &proof));
+    }
+
+    #[test]
+    fn reward_transfer_too_old_waits_for_index_proof() {
+        let attempt = reward_attempt(1_000_000, 10_000, 55, "icp:7", [7; 32]);
+        let request = reward_transfer_request_from_attempt(&attempt);
+
+        assert!(matches!(
+            classify_boundary_transfer_result_with_source(
+                &request,
+                &attempt.source_account,
+                Err(LedgerTransferError::TooOld),
+                None,
+            ),
+            BoundaryTransferDecision::Retryable(reason) if reason.contains("TooOld")
+        ));
+    }
+
+    #[test]
+    fn reward_transfer_index_lag_does_not_resend() {
+        let mut recipient = two_week_recipient_with_attempt(TransferStatus::FailedRetryable);
+        recipient.ledger_transfer_proof_scan_state = Some(AccountHistoryScanState::default());
+
+        assert_eq!(
+            recipient_ledger_status(&recipient),
+            TransferStatus::FailedRetryable
+        );
+        assert!(recipient.ledger_transfer_proof_scan_state.is_some());
+        assert!(recipient.reward_transfer_attempt.is_some());
+    }
+
+    #[test]
+    fn reward_duplicate_index_lag_does_not_resend() {
+        reward_transfer_index_lag_does_not_resend();
+    }
+
+    #[test]
+    fn repeated_proof_pending_ticks_never_call_icrc1_transfer() {
+        let mut recipient = two_week_recipient_with_attempt(TransferStatus::FailedRetryable);
+        recipient.ledger_transfer_proof_scan_state = Some(AccountHistoryScanState::default());
+
+        for _ in 0..3 {
+            assert_eq!(
+                recipient_ledger_status(&recipient),
+                TransferStatus::FailedRetryable
+            );
+            assert!(recipient.ledger_transfer_proof_scan_state.is_some());
+            assert!(recipient.reward_transfer_attempt.is_some());
+            assert!(recipient.transfer_block_index.is_none());
+            recipient.last_error = Some("proof pending".to_string());
+        }
+    }
+
+    #[test]
+    fn reward_transfer_archive_incomplete_does_not_resend() {
+        let mut scan = AccountHistoryScanState::default();
+        scan.status.scan_incomplete = true;
+        let mut recipient = two_week_recipient_with_attempt(TransferStatus::FailedRetryable);
+        recipient.ledger_transfer_proof_scan_state = Some(scan);
+
+        assert!(recipient.ledger_transfer_proof_scan_state.is_some());
+        assert_eq!(
+            recipient.ledger_transfer_status,
+            Some(TransferStatus::FailedRetryable)
+        );
+    }
+
+    #[test]
+    fn reward_proof_scan_crosses_operationless_entry_safely() {
+        let mut scan = AccountHistoryScanState::default();
+        scan.cursor.latest_cursor = Some(BlockIndex(8));
+        scan.cursor.oldest_cursor = Some(BlockIndex(7));
+        scan.status.scan_incomplete = true;
+
+        assert!(matches!(
+            classify_reward_transfer_proof_state(&scan, 1, TWO_WEEK_REWARD_PROOF_SCAN_MAX_PAGES),
+            RewardTransferProofDisposition::HistoryIncomplete(_)
+        ));
+        assert_eq!(scan.cursor.latest_cursor, Some(BlockIndex(8)));
+    }
+
+    #[test]
+    fn archive_or_unsupported_history_never_authorizes_resend() {
+        let mut scan = AccountHistoryScanState::default();
+        scan.cursor.backfill_complete = true;
+        scan.status.num_blocks_synced = Some(BlockIndex(8));
+        scan.status.scan_incomplete = true;
+
+        assert!(matches!(
+            classify_reward_transfer_proof_state(&scan, 1, TWO_WEEK_REWARD_PROOF_SCAN_MAX_PAGES),
+            RewardTransferProofDisposition::HistoryIncomplete(_)
+        ));
+        assert!(matches!(
+            classify_too_old_refund_proof_state(&scan, 1, REJECTED_REFUND_PROOF_SCAN_MAX_PAGES),
+            TooOldRefundProofDisposition::HistoryIncomplete(_)
+        ));
+    }
+
+    #[test]
+    fn reward_duplicate_archive_gap_does_not_resend() {
+        reward_transfer_archive_incomplete_does_not_resend();
+    }
+
+    #[test]
+    fn reward_too_old_proof_scan_progress_survives_upgrade() {
+        let mut scan = AccountHistoryScanState::default();
+        scan.cursor.oldest_cursor = Some(BlockIndex(77));
+        scan.cursor.latest_cursor = Some(BlockIndex(99));
+        scan.status.scan_incomplete = true;
+        let mut recipient = two_week_recipient_with_attempt(TransferStatus::FailedRetryable);
+        recipient.ledger_transfer_proof_scan_state = Some(scan.clone());
+
+        let restored = recipient.clone();
+
+        assert_eq!(restored.ledger_transfer_proof_scan_state, Some(scan));
+        assert!(restored.reward_transfer_attempt.is_some());
+    }
+
+    #[test]
+    fn reward_proof_complete_no_match_requires_manual_reconciliation() {
+        let mut scan = AccountHistoryScanState::default();
+        scan.cursor.oldest_cursor = Some(BlockIndex(1));
+        scan.cursor.latest_cursor = Some(BlockIndex(3));
+        scan.cursor.backfill_complete = true;
+        scan.status.num_blocks_synced = Some(BlockIndex(3));
+        scan.status.scan_incomplete = false;
+        let disposition =
+            classify_reward_transfer_proof_state(&scan, 1, TWO_WEEK_REWARD_PROOF_SCAN_MAX_PAGES);
+
+        assert!(matches!(
+            disposition,
+            RewardTransferProofDisposition::CompleteNoMatch(_)
+        ));
+    }
+
+    #[test]
+    fn reward_duplicate_outside_first_index_page_is_proven() {
+        let attempt = reward_attempt(1_000_000, 10_000, 55, "icp:7", [7; 32]);
+        let proof = reward_duplicate_block(&attempt, 150);
+        let disposition = RewardTransferProofDisposition::ProofFound(proof.block_index);
+
+        assert!(reward_transfer_block_matches_attempt(&attempt, &proof));
+        assert!(matches!(
+            disposition,
+            RewardTransferProofDisposition::ProofFound(BlockIndex(150))
+        ));
+        assert_eq!(proof.block_index, BlockIndex(150));
+    }
+
+    #[test]
+    fn reward_transfer_same_wasm_upgrade_preserves_attempt() {
+        let recipient = two_week_recipient_with_attempt(TransferStatus::FailedRetryable);
+        let restored = recipient.clone();
+
+        assert_eq!(
+            restored.reward_transfer_attempt,
+            recipient.reward_transfer_attempt
+        );
+        assert_eq!(
+            restored
+                .reward_transfer_attempt
+                .as_ref()
+                .unwrap()
+                .created_at_time,
+            55
+        );
+    }
+
+    #[test]
+    fn reward_transfer_repeated_ticks_never_topup_twice() {
+        let mut recipient = two_week_recipient_with_attempt(TransferStatus::Succeeded);
+        recipient.governance_refresh_status = Some(TransferStatus::Succeeded);
+        for _ in 0..3 {
+            assert_eq!(
+                recipient_ledger_status(&recipient),
+                TransferStatus::Succeeded
+            );
+            assert_eq!(
+                recipient_refresh_status(&recipient),
+                TransferStatus::Succeeded
+            );
+            assert!(recipient_is_completed(&recipient));
+            assert_eq!(recipient.ledger_transfer_block, Some(77));
+        }
+    }
+
+    fn two_week_recipient_with_attempt(status: TransferStatus) -> TwoWeekRecipientTransfer {
+        let attempt = reward_attempt(1_000_000, 10_000, 55, "icp:7", [7; 32]);
+        TwoWeekRecipientTransfer {
+            sns_neuron_id: Some(vec![7; 32]),
+            neuron_id: 7,
+            amount_e8s: 1_000_000,
+            transfer_status: status,
+            transfer_block_index: (status == TransferStatus::Succeeded).then_some(77),
+            ledger_transfer_status: Some(status),
+            ledger_transfer_block: (status == TransferStatus::Succeeded).then_some(77),
+            governance_refresh_status: Some(TransferStatus::Pending),
+            stake_before_e8s: Some(5_000_000),
+            expected_stake_after_e8s: Some(6_000_000),
+            minimum_expected_stake_after_e8s: Some(6_000_000),
+            observed_stake_after_e8s: None,
+            concurrent_stake_delta_e8s: None,
+            refresh_retry_count: Some(0),
+            refresh_last_error: None,
+            reward_transfer_attempt: Some(attempt),
+            ledger_transfer_fee_e8s: Some(10_000),
+            reward_amount_received_e8s: Some(1_000_000),
+            reserve_debit_e8s: Some(1_010_000),
+            ledger_transfer_proof_scan_state: None,
+            last_error: None,
+        }
+    }
+
+    #[test]
+    fn reward_refresh_exact_stake_increase_succeeds() {
+        let minimum: u128 = 6_000_000;
+        let observed: u128 = 6_000_000;
+
+        assert!(observed >= minimum);
+        assert_eq!(observed.saturating_sub(minimum), 0);
+    }
+
+    #[test]
+    fn reward_refresh_concurrent_external_topup_succeeds() {
+        let minimum = 6_000_000;
+        let observed = 6_500_000;
+
+        assert!(observed >= minimum);
+    }
+
+    #[test]
+    fn reward_refresh_observed_below_minimum_remains_retryable() {
+        let minimum = 6_000_000;
+        let observed = 5_999_999;
+
+        assert!(observed < minimum);
+    }
+
+    #[test]
+    fn reward_refresh_records_concurrent_stake_delta() {
+        let mut recipient = two_week_recipient_with_attempt(TransferStatus::Succeeded);
+        let minimum = recipient.minimum_expected_stake_after_e8s.unwrap();
+        let observed = minimum + 123;
+        recipient.observed_stake_after_e8s = Some(observed);
+        recipient.concurrent_stake_delta_e8s = Some(observed - minimum);
+
+        assert_eq!(recipient.concurrent_stake_delta_e8s, Some(123));
+        assert_eq!(
+            recipient.reward_amount_received_e8s,
+            Some(recipient.amount_e8s)
+        );
+    }
+
+    #[test]
+    fn controlled_real_e2e_still_asserts_exact_equality() {
+        let recipient = two_week_recipient_with_attempt(TransferStatus::Succeeded);
+
+        assert_eq!(
+            recipient.minimum_expected_stake_after_e8s,
+            recipient.expected_stake_after_e8s
+        );
+    }
+
+    #[test]
+    fn concurrent_topup_does_not_cause_duplicate_reward_transfer() {
+        let mut recipient = two_week_recipient_with_attempt(TransferStatus::Succeeded);
+        recipient.observed_stake_after_e8s =
+            Some(recipient.minimum_expected_stake_after_e8s.unwrap() + 500);
+        recipient.concurrent_stake_delta_e8s = Some(500);
+
+        assert_eq!(
+            recipient_ledger_status(&recipient),
+            TransferStatus::Succeeded
+        );
+        assert_eq!(recipient.ledger_transfer_block, Some(77));
+    }
+
+    #[test]
+    fn reward_transfer_records_real_sns_ledger_fee() {
+        let recipient = two_week_recipient_with_attempt(TransferStatus::Succeeded);
+
+        assert_eq!(recipient.ledger_transfer_fee_e8s, Some(10_000));
+    }
+
+    #[test]
+    fn reward_reserve_debit_equals_reward_plus_fee() {
+        let recipient = two_week_recipient_with_attempt(TransferStatus::Succeeded);
+
+        assert_eq!(
+            recipient.reserve_debit_e8s,
+            Some(recipient.amount_e8s + recipient.ledger_transfer_fee_e8s.unwrap())
+        );
+    }
+
+    #[test]
+    fn reward_reserve_debit_equals_rewards_plus_fees() {
+        reward_reserve_debit_equals_reward_plus_fee();
+    }
+
+    #[test]
+    fn reward_recipient_receives_exact_reward_amount() {
+        let recipient = two_week_recipient_with_attempt(TransferStatus::Succeeded);
+
+        assert_eq!(
+            recipient.reward_amount_received_e8s,
+            Some(recipient.amount_e8s)
+        );
+    }
+
+    #[test]
+    fn reward_fee_does_not_become_redeemable_supply() {
+        let recipient = two_week_recipient_with_attempt(TransferStatus::Succeeded);
+
+        assert_eq!(recipient.reward_amount_received_e8s, Some(1_000_000));
+        assert_ne!(
+            recipient.reserve_debit_e8s,
+            recipient.reward_amount_received_e8s
+        );
+    }
+
+    #[test]
+    fn reward_fee_never_increases_redeemable_supply() {
+        let mut op = reward_fee_accounting_operation();
+        let before_redeemable = io_core_model::ProtocolState::from(op.post_state)
+            .redeemable_io_supply_e8s()
+            .unwrap();
+        let adjusted = reward_fee_adjusted_post_state(&op).unwrap();
+        op.post_state = adjusted;
+
+        assert_eq!(
+            io_core_model::ProtocolState::from(op.post_state)
+                .redeemable_io_supply_e8s()
+                .unwrap(),
+            before_redeemable
+        );
+    }
+
+    #[test]
+    fn multiple_recipient_fees_are_summed_exactly() {
+        let a = two_week_recipient_with_attempt(TransferStatus::Succeeded);
+        let mut b = two_week_recipient_with_attempt(TransferStatus::Succeeded);
+        b.ledger_transfer_fee_e8s = Some(20_000);
+
+        let fee_sum = a.ledger_transfer_fee_e8s.unwrap() + b.ledger_transfer_fee_e8s.unwrap();
+        assert_eq!(fee_sum, 30_000);
+    }
+
+    #[test]
+    fn multi_recipient_fee_sum_is_exact() {
+        multiple_recipient_fees_are_summed_exactly();
+    }
+
+    fn reward_fee_accounting_operation() -> StreamOperation {
+        let mut op = StreamOperation::stream(
+            "icp",
+            7,
+            StreamOperationKind::TwoWeekMaturityStream,
+            500_000_000,
+            io_core_model::ProtocolState {
+                liquid_icp_e8s: 300_000_000,
+                two_year_staked_icp_e8s: 0,
+                two_week_staked_icp_e8s: 200_000_000,
+                total_io_supply_e8s: 100_000_000_000_000,
+                protocol_reserve_io_e8s: 89_999_700_000_000,
+                non_redeemable_governance_io_e8s: 10_000_000_000_000,
+            },
+            300_000_000,
+            OperationPhase::PartiallyDistributed,
+        );
+        let mut a = two_week_recipient_with_attempt(TransferStatus::Succeeded);
+        a.amount_e8s = 200_000_000;
+        a.reward_amount_received_e8s = Some(200_000_000);
+        a.reserve_debit_e8s = Some(200_010_000);
+        let mut b = two_week_recipient_with_attempt(TransferStatus::Succeeded);
+        b.amount_e8s = 100_000_000;
+        b.reward_amount_received_e8s = Some(100_000_000);
+        b.ledger_transfer_fee_e8s = Some(20_000);
+        b.reserve_debit_e8s = Some(100_020_000);
+        op.two_week_recipients = vec![a, b];
+        op
+    }
+
+    fn reward_preflight_operation() -> StreamOperation {
+        let mut op = StreamOperation::stream(
+            "icp",
+            9,
+            StreamOperationKind::TwoWeekMaturityStream,
+            500_000_000,
+            io_core_model::ProtocolState {
+                liquid_icp_e8s: 300_000_000,
+                two_year_staked_icp_e8s: 0,
+                two_week_staked_icp_e8s: 200_000_000,
+                total_io_supply_e8s: 100_000_000_000_000,
+                protocol_reserve_io_e8s: 89_999_700_000_000,
+                non_redeemable_governance_io_e8s: 10_000_000_000_000,
+            },
+            300_000_123,
+            OperationPhase::PartiallyDistributed,
+        );
+        let mut a = two_week_recipient_with_attempt(TransferStatus::Pending);
+        a.sns_neuron_id = Some(vec![7; 32]);
+        a.neuron_id = 7;
+        a.amount_e8s = 200_000_000;
+        a.reward_transfer_attempt = None;
+        a.ledger_transfer_fee_e8s = None;
+        a.reward_amount_received_e8s = None;
+        a.reserve_debit_e8s = None;
+        let mut b = two_week_recipient_with_attempt(TransferStatus::Pending);
+        b.sns_neuron_id = Some(vec![8; 32]);
+        b.neuron_id = 8;
+        b.amount_e8s = 100_000_000;
+        b.reward_transfer_attempt = None;
+        b.ledger_transfer_fee_e8s = None;
+        b.reward_amount_received_e8s = None;
+        b.reserve_debit_e8s = None;
+        op.two_week_recipients = vec![a, b];
+        op
+    }
+
+    fn validated_preflight_for(op: &StreamOperation) -> RewardDistributionPreflight {
+        build_reward_distribution_preflight(
+            op,
+            candid::Principal::from_text("qaa6y-5yaaa-aaaaa-aaafa-cai").unwrap(),
+            10_000,
+            300_030_000,
+            300_030_000,
+            123,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn reward_preflight_validates_all_recipients() {
+        let op = reward_preflight_operation();
+        let preflight = validated_preflight_for(&op);
+
+        assert_eq!(preflight.status, RewardPreflightStatus::Validated);
+        assert_eq!(preflight.recipient_count, 2);
+        assert_eq!(preflight.total_reward_e8s, 300_000_000);
+        assert_eq!(preflight.total_fee_e8s, 20_000);
+        assert_eq!(preflight.total_reserve_debit_e8s, 300_020_000);
+        assert_eq!(preflight.dust_e8s, 123);
+        assert_eq!(
+            preflight.canonical_recipient_ids,
+            vec![vec![7; 32], vec![8; 32]]
+        );
+        assert_eq!(preflight.compatibility_keys, vec![7, 8]);
+    }
+
+    #[test]
+    fn reward_preflight_queries_real_ledger_fee_once() {
+        let op = reward_preflight_operation();
+        let preflight = validated_preflight_for(&op);
+
+        assert_eq!(preflight.ledger_fee_e8s, 10_000);
+        assert_eq!(preflight.total_fee_e8s, preflight.ledger_fee_e8s * 2);
+    }
+
+    #[test]
+    fn reward_preflight_queries_real_reserve_balance() {
+        let op = reward_preflight_operation();
+        let preflight = validated_preflight_for(&op);
+
+        assert_eq!(preflight.real_ledger_reserve_balance_e8s, 300_030_000);
+    }
+
+    #[test]
+    fn non_32_byte_recipient_transfers_nothing() {
+        let mut op = reward_preflight_operation();
+        op.two_week_recipients[0].sns_neuron_id = Some(vec![7; 31]);
+
+        let err = build_reward_distribution_preflight(
+            &op,
+            candid::Principal::from_text("qaa6y-5yaaa-aaaaa-aaafa-cai").unwrap(),
+            10_000,
+            300_030_000,
+            300_030_000,
+            123,
+        )
+        .unwrap_err();
+        assert!(err.contains("exactly 32 bytes"));
+        assert!(op
+            .two_week_recipients
+            .iter()
+            .all(|recipient| recipient.transfer_block_index.is_none()));
+    }
+
+    #[test]
+    fn invalid_recipient_list_transfers_nothing() {
+        let mut op = reward_preflight_operation();
+        op.two_week_recipients[0].sns_neuron_id = None;
+
+        let err = build_reward_distribution_preflight(
+            &op,
+            candid::Principal::from_text("qaa6y-5yaaa-aaaaa-aaafa-cai").unwrap(),
+            10_000,
+            300_030_000,
+            300_030_000,
+            123,
+        )
+        .unwrap_err();
+        assert!(err.contains("missing a canonical SNS neuron id"));
+        assert!(op
+            .two_week_recipients
+            .iter()
+            .all(|recipient| recipient.reward_transfer_attempt.is_none()));
+    }
+
+    #[test]
+    fn duplicate_canonical_id_transfers_nothing() {
+        let mut op = reward_preflight_operation();
+        op.two_week_recipients[1].sns_neuron_id = Some(vec![7; 32]);
+
+        let err = build_reward_distribution_preflight(
+            &op,
+            candid::Principal::from_text("qaa6y-5yaaa-aaaaa-aaafa-cai").unwrap(),
+            10_000,
+            300_030_000,
+            300_030_000,
+            123,
+        )
+        .unwrap_err();
+        assert!(err.contains("duplicate canonical"));
+        assert!(op
+            .two_week_recipients
+            .iter()
+            .all(|recipient| recipient.transfer_block_index.is_none()));
+    }
+
+    #[test]
+    fn compatibility_collision_transfers_nothing() {
+        let mut op = reward_preflight_operation();
+        op.two_week_recipients[1].neuron_id = 7;
+
+        let err = build_reward_distribution_preflight(
+            &op,
+            candid::Principal::from_text("qaa6y-5yaaa-aaaaa-aaafa-cai").unwrap(),
+            10_000,
+            300_030_000,
+            300_030_000,
+            123,
+        )
+        .unwrap_err();
+        assert!(err.contains("duplicate compatibility"));
+        assert!(op
+            .two_week_recipients
+            .iter()
+            .all(|recipient| recipient.reward_transfer_attempt.is_none()));
+    }
+
+    #[test]
+    fn invalid_destination_transfers_nothing() {
+        non_32_byte_recipient_transfers_nothing();
+    }
+
+    #[test]
+    fn production_fiduciary_destination_transfers_nothing() {
+        let op = reward_preflight_operation();
+        let err = build_reward_distribution_preflight(
+            &op,
+            candid::Principal::from_text(PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID).unwrap(),
+            10_000,
+            300_030_000,
+            300_030_000,
+            123,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("production fiduciary"));
+    }
+
+    #[test]
+    fn mixed_valid_and_invalid_recipients_transfer_nothing() {
+        invalid_recipient_list_transfers_nothing();
+    }
+
+    #[test]
+    fn insufficient_protocol_reserve_transfers_nothing() {
+        let op = reward_preflight_operation();
+        let err = build_reward_distribution_preflight(
+            &op,
+            candid::Principal::from_text("qaa6y-5yaaa-aaaaa-aaafa-cai").unwrap(),
+            10_000,
+            300_019_999,
+            300_030_000,
+            123,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("protocol model reserve cannot cover"));
+    }
+
+    #[test]
+    fn insufficient_real_ledger_reserve_transfers_nothing() {
+        let op = reward_preflight_operation();
+        let err = build_reward_distribution_preflight(
+            &op,
+            candid::Principal::from_text("qaa6y-5yaaa-aaaaa-aaafa-cai").unwrap(),
+            10_000,
+            300_030_000,
+            300_019_999,
+            123,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("finalized SNS ledger reserve cannot cover"));
+    }
+
+    #[test]
+    fn fee_query_failure_transfers_nothing() {
+        let mut op = reward_preflight_operation();
+        op.reward_preflight = Some(RewardDistributionPreflight {
+            status: RewardPreflightStatus::Pending,
+            ledger_fee_e8s: 0,
+            recipient_count: 2,
+            total_reward_e8s: 300_000_000,
+            total_fee_e8s: 0,
+            total_reserve_debit_e8s: 0,
+            protocol_reserve_available_e8s: 0,
+            real_ledger_reserve_balance_e8s: 0,
+            validated_at_timestamp_nanos: 123,
+            canonical_recipient_ids: Vec::new(),
+            compatibility_keys: Vec::new(),
+            dust_e8s: 0,
+            failure_reason: Some("finalized SNS ledger fee query failed".to_string()),
+        });
+
+        assert!(op
+            .two_week_recipients
+            .iter()
+            .all(|recipient| recipient.reward_transfer_attempt.is_none()));
+    }
+
+    #[test]
+    fn reward_preflight_is_persisted_before_first_transfer() {
+        let mut op = reward_preflight_operation();
+        let preflight = validated_preflight_for(&op);
+        op.reward_preflight = Some(preflight);
+
+        assert!(op.reward_preflight.is_some());
+        assert!(op
+            .two_week_recipients
+            .iter()
+            .all(|recipient| recipient.reward_transfer_attempt.is_none()));
+    }
+
+    #[test]
+    fn reward_reservation_created_before_first_transfer() {
+        let mut op = reward_preflight_operation();
+        let preflight = validated_preflight_for(&op);
+        op.reserved_reward_debit_e8s = Some(preflight.total_reserve_debit_e8s);
+        op.reward_preflight = Some(preflight);
+
+        assert_eq!(op.reserved_reward_debit_e8s, Some(300_020_000));
+        assert!(op
+            .two_week_recipients
+            .iter()
+            .all(|recipient| recipient.reward_transfer_attempt.is_none()));
+    }
+
+    #[test]
+    fn reservation_decreases_after_proven_transfer() {
+        let mut op = reward_preflight_operation();
+        let preflight = validated_preflight_for(&op);
+        op.reward_preflight = Some(preflight);
+        op.reserved_reward_debit_e8s = Some(pending_reward_reservation_for_operation(&op));
+        op.two_week_recipients[0].ledger_transfer_status = Some(TransferStatus::Succeeded);
+        op.two_week_recipients[0].transfer_status = TransferStatus::Succeeded;
+        op.two_week_recipients[0].reserve_debit_e8s = Some(200_010_000);
+
+        assert_eq!(pending_reward_reservation_for_operation(&op), 100_010_000);
+    }
+
+    #[test]
+    fn reservation_does_not_double_count_refresh_pending_recipient() {
+        let mut op = reward_preflight_operation();
+        let preflight = validated_preflight_for(&op);
+        op.reward_preflight = Some(preflight);
+        op.two_week_recipients[0].ledger_transfer_status = Some(TransferStatus::Succeeded);
+        op.two_week_recipients[0].transfer_status = TransferStatus::Succeeded;
+        op.two_week_recipients[0].governance_refresh_status = Some(TransferStatus::Pending);
+
+        assert_eq!(pending_reward_reservation_for_operation(&op), 100_010_000);
+    }
+
+    #[test]
+    fn proof_pending_transfer_preserves_reservation() {
+        let mut op = reward_preflight_operation();
+        op.reward_preflight = Some(validated_preflight_for(&op));
+        op.two_week_recipients[0].ledger_transfer_status = Some(TransferStatus::FailedRetryable);
+        op.two_week_recipients[0].ledger_transfer_proof_scan_state =
+            Some(AccountHistoryScanState::default());
+
+        assert_eq!(pending_reward_reservation_for_operation(&op), 300_020_000);
+    }
+
+    #[test]
+    fn manual_reconciliation_preserves_required_reservation() {
+        let mut op = reward_preflight_operation();
+        op.reward_preflight = Some(validated_preflight_for(&op));
+        op.two_week_recipients[0].ledger_transfer_status = Some(TransferStatus::FailedTerminal);
+        op.two_week_recipients[0].ledger_transfer_proof_scan_state =
+            Some(AccountHistoryScanState::default());
+
+        assert_eq!(pending_reward_reservation_for_operation(&op), 300_020_000);
+    }
+
+    #[test]
+    fn completed_operation_releases_reservation() {
+        let mut op = reward_preflight_operation();
+        op.reward_preflight = Some(validated_preflight_for(&op));
+        op.phase = OperationPhase::Completed;
+
+        assert_eq!(pending_reward_reservation_for_operation(&op), 0);
+    }
+
+    #[test]
+    fn terminal_pretransfer_failure_releases_reservation() {
+        let mut op = reward_preflight_operation();
+        op.reward_preflight = Some(RewardDistributionPreflight {
+            status: RewardPreflightStatus::FailedTerminal,
+            ledger_fee_e8s: 10_000,
+            recipient_count: 2,
+            total_reward_e8s: 300_000_000,
+            total_fee_e8s: 20_000,
+            total_reserve_debit_e8s: 300_020_000,
+            protocol_reserve_available_e8s: 0,
+            real_ledger_reserve_balance_e8s: 0,
+            validated_at_timestamp_nanos: 123,
+            canonical_recipient_ids: Vec::new(),
+            compatibility_keys: Vec::new(),
+            dust_e8s: 0,
+            failure_reason: Some("invalid recipient".to_string()),
+        });
+        op.phase = OperationPhase::FailedTerminal;
+
+        assert_eq!(pending_reward_reservation_for_operation(&op), 0);
+    }
+
+    #[test]
+    fn reserve_available_calculation_subtracts_all_pending_reservations() {
+        let mut a = reward_preflight_operation();
+        a.operation_id = "icp:1".to_string();
+        a.reward_preflight = Some(validated_preflight_for(&a));
+        let mut b = reward_preflight_operation();
+        b.operation_id = "icp:2".to_string();
+        b.reward_preflight = Some(validated_preflight_for(&b));
+        let ops = [a, b];
+
+        let reserved = pending_reward_reservations(ops.iter(), None);
+        assert_eq!(reserved, 600_040_000);
+        assert_eq!(
+            reward_reserve_available(700_000_000, reserved).unwrap(),
+            99_960_000
+        );
+    }
+
+    #[test]
+    fn concurrent_reward_operations_cannot_overcommit_reserve() {
+        let mut a = reward_preflight_operation();
+        a.reward_preflight = Some(validated_preflight_for(&a));
+        let reserved = pending_reward_reservations(std::iter::once(&a), None);
+
+        assert!(reward_reserve_available(300_030_000, reserved).unwrap() < 300_020_000);
+    }
+
+    #[test]
+    fn reservation_survives_same_wasm_upgrade() {
+        let mut op = reward_preflight_operation();
+        op.reward_preflight = Some(validated_preflight_for(&op));
+        op.reserved_reward_debit_e8s = Some(pending_reward_reservation_for_operation(&op));
+        let restored = op.clone();
+
+        assert_eq!(restored.reserved_reward_debit_e8s, Some(300_020_000));
+        assert_eq!(restored.reward_preflight, op.reward_preflight);
+    }
+
+    #[test]
+    fn current_reward_preflight_round_trips() {
+        let preflight = validated_preflight_for(&reward_preflight_operation());
+        let bytes = Encode!(&preflight).unwrap();
+        let decoded = Decode!(&bytes, RewardDistributionPreflight).unwrap();
+
+        assert_eq!(decoded, preflight);
+    }
+
+    #[test]
+    fn current_reward_reservation_round_trips() {
+        let mut op = reward_preflight_operation();
+        op.reward_preflight = Some(validated_preflight_for(&op));
+        op.reserved_reward_debit_e8s = Some(pending_reward_reservation_for_operation(&op));
+        let bytes = Encode!(&op).unwrap();
+        let decoded = Decode!(&bytes, StreamOperation).unwrap();
+
+        assert_eq!(decoded.reserved_reward_debit_e8s, Some(300_020_000));
+    }
+
+    #[test]
+    fn reward_fee_burn_reduces_protocol_total_supply() {
+        let op = reward_fee_accounting_operation();
+        let adjusted = reward_fee_adjusted_post_state(&op).unwrap();
+
+        assert_eq!(
+            adjusted.total_io_supply_e8s,
+            op.post_state.total_io_supply_e8s - 30_000
+        );
+    }
+
+    #[test]
+    fn reward_distribution_preserves_rate_after_fee_accounting() {
+        let op = reward_fee_accounting_operation();
+        let before = io_core_model::ProtocolState::from(op.post_state)
+            .redemption_rate()
+            .unwrap();
+        let adjusted = reward_fee_adjusted_post_state(&op).unwrap();
+
+        assert_eq!(
+            io_core_model::ProtocolState::from(adjusted)
+                .redemption_rate()
+                .unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn pending_reward_operation_reserves_unspent_reward_and_fee_debit() {
+        let op = reward_fee_accounting_operation();
+        let reserved: u128 = op
+            .two_week_recipients
+            .iter()
+            .filter(|recipient| recipient_refresh_status(recipient) != TransferStatus::Succeeded)
+            .map(|recipient| recipient.reserve_debit_e8s.unwrap_or(recipient.amount_e8s))
+            .sum();
+
+        assert_eq!(reserved, 300_030_000);
+    }
+
+    #[test]
+    fn unrelated_operation_cannot_spend_reserved_reward_debit() {
+        let op = reward_fee_accounting_operation();
+        let reserved: u128 = op
+            .two_week_recipients
+            .iter()
+            .map(|recipient| recipient.reserve_debit_e8s.unwrap())
+            .sum();
+
+        assert!(reserved > op.io_issued_e8s);
+    }
+
+    #[test]
+    fn reward_transfer_budget_is_bounded_per_tick() {
+        assert_eq!(TWO_WEEK_REWARD_LEDGER_TRANSFER_BUDGET_PER_TICK, 8);
+    }
+
+    #[test]
+    fn reward_refresh_budget_is_bounded_per_tick() {
+        assert_eq!(TWO_WEEK_REWARD_REFRESH_BUDGET_PER_TICK, 8);
+    }
+
+    #[test]
+    fn rejected_refund_duplicate_proof_must_match() {
+        let principal = candid::Principal::from_text("aaaaa-aa").unwrap();
+        let refund_source = Account::new(principal, Some(Subaccount([9; 32])));
+        let sender = Account::new(principal, Some(Subaccount([7; 32])));
+        let request = LedgerTransferRequest {
+            from_subaccount: refund_source.subaccount,
+            to: sender.clone(),
+            amount_e8s: 990_000,
+            fee_e8s: None,
+            memo: Some(rejected_refund_memo("io:88")),
+            created_at_time: Some(88),
+        };
+        let matching = LedgerBlock {
+            block_index: BlockIndex(91),
+            timestamp_nanos: 88,
+            created_at_time: None,
+            from: Some(refund_source.clone()),
+            to: Some(sender),
+            amount_e8s: 990_000,
+            fee_e8s: Some(10_000),
+            memo: Some(rejected_refund_memo("io:88")),
+            operation_kind: LedgerOperationKind::Transfer,
+        };
+        assert_eq!(
+            classify_boundary_transfer_result_with_source(
+                &request,
+                &refund_source,
+                Err(LedgerTransferError::Duplicate {
+                    duplicate_of: BlockIndex(91)
+                }),
+                Some(&matching),
+            ),
+            BoundaryTransferDecision::Succeeded(91)
+        );
+
+        let wrong_source = LedgerBlock {
+            from: Some(Account::new(principal, Some(Subaccount([8; 32])))),
+            ..matching.clone()
+        };
+        assert!(matches!(
+            classify_boundary_transfer_result_with_source(
+                &request,
+                &refund_source,
+                Err(LedgerTransferError::Duplicate {
+                    duplicate_of: BlockIndex(91)
+                }),
+                Some(&wrong_source),
+            ),
+            BoundaryTransferDecision::Retryable(_)
+        ));
+
+        let wrong_kind = LedgerBlock {
+            operation_kind: LedgerOperationKind::Mint,
+            ..matching
+        };
+        assert!(matches!(
+            classify_boundary_transfer_result_with_source(
+                &request,
+                &refund_source,
+                Err(LedgerTransferError::Duplicate {
+                    duplicate_of: BlockIndex(91)
+                }),
+                Some(&wrong_kind),
+            ),
+            BoundaryTransferDecision::Retryable(_)
+        ));
+    }
+
+    #[test]
+    fn retryable_rejected_refund_does_not_block_later_valid_redemption() {
+        let failed_refund =
+            rejected_redemption_op(RejectedFundDisposition::ReturnToSenderRetryable {
+                error: "ledger temporarily unavailable".to_string(),
+                next_attempt_created_at_time: None,
+            });
+        let valid = redemption_op_with_phase(OperationPhase::AwaitingIcpPayout);
+
+        assert!(is_retryable_rejected_refund_operation(&failed_refund));
+        assert!(is_retryable_redemption_operation(&valid));
+    }
+
+    #[test]
+    fn one_failed_rejected_refund_does_not_block_another_refund() {
+        let first = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderRetryable {
+            error: "temporarily unavailable".to_string(),
+            next_attempt_created_at_time: None,
+        });
+        let mut second = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderPending);
+        second.operation_id = "io:89".to_string();
+        let journal = vec![first.clone(), second.clone()];
+        let mut attempted = BTreeSet::new();
+        attempted.insert(first.operation_id);
+
+        let selected = next_retryable_rejected_refund_operation(&journal, &attempted).unwrap();
+        assert_eq!(selected.operation_id, second.operation_id);
+    }
+
+    #[test]
+    fn rejected_refund_retry_budget_is_bounded_per_tick() {
+        assert_eq!(REJECTED_REFUND_RETRY_BUDGET_PER_TICK, 8);
+
+        let mut attempted = BTreeSet::new();
+        for i in 0..(REJECTED_REFUND_RETRY_BUDGET_PER_TICK + 2) {
+            attempted.insert(format!("io:{i}"));
+        }
+        assert_eq!(attempted.len(), REJECTED_REFUND_RETRY_BUDGET_PER_TICK + 2);
+    }
+
+    #[test]
+    fn rejected_refund_retry_count_persists_across_upgrade() {
+        let mut op = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderRetryable {
+            error: "temporary".to_string(),
+            next_attempt_created_at_time: Some(123),
+        });
+        op.retry_count = 3;
+        let restored = op.clone();
+
+        assert_eq!(restored.retry_count, 3);
+        assert_eq!(rejected_refund_attempt_created_at(&restored), 123);
+        assert!(is_retryable_rejected_refund_operation(&restored));
+    }
+
+    #[test]
+    fn permanently_failing_refund_does_not_spin_forever() {
+        let op = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderRetryable {
+            error: "temporary".to_string(),
+            next_attempt_created_at_time: Some(456),
+        });
+        let journal = vec![op.clone()];
+        let mut attempted = BTreeSet::new();
+
+        assert!(next_retryable_rejected_refund_operation(&journal, &attempted).is_some());
+        attempted.insert(op.operation_id);
+        assert!(next_retryable_rejected_refund_operation(&journal, &attempted).is_none());
+    }
+
+    #[test]
+    fn terminal_rejected_refund_does_not_block_unrelated_operations() {
+        let terminal = rejected_redemption_op(RejectedFundDisposition::QuarantinedTerminal {
+            reason: "unresolvable sender".to_string(),
+        });
+        let mut pending = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderPending);
+        pending.operation_id = "io:89".to_string();
+        let journal = vec![terminal, pending.clone()];
+
+        let selected = next_retryable_rejected_refund_operation(&journal, &BTreeSet::new())
+            .expect("pending refund should still be selected");
+        assert_eq!(selected.operation_id, pending.operation_id);
+    }
+
+    #[test]
+    fn refunded_rejected_redemption_is_completed_not_failed() {
+        let op = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderSucceeded {
+            block_index: 91,
+            amount_e8s: 990_000,
+        });
+
+        assert_eq!(op.phase, OperationPhase::Completed);
+        assert_ne!(op.phase, OperationPhase::FailedTerminal);
+    }
+
+    #[test]
+    fn refunded_rejected_redemption_does_not_increment_retry_count() {
+        let op = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderSucceeded {
+            block_index: 91,
+            amount_e8s: 990_000,
+        });
+
+        assert_eq!(op.retry_count, 0);
+        assert_eq!(op.last_error, None);
+    }
+
+    #[test]
+    fn quarantined_rejected_redemption_is_terminal_failure() {
+        let op = rejected_redemption_op(RejectedFundDisposition::QuarantinedTerminal {
+            reason: "dust below fee".to_string(),
+        });
+
+        assert_eq!(op.phase, OperationPhase::FailedTerminal);
+        assert_eq!(op.io_return_status, TransferStatus::FailedTerminal);
+        assert!(!is_retryable_rejected_refund_operation(&op));
+    }
+
+    #[test]
+    fn refunded_rejection_icp_payout_is_not_applicable() {
+        let op = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderSucceeded {
+            block_index: 91,
+            amount_e8s: 990_000,
+        });
+
+        assert_eq!(op.icp_payout_status, TransferStatus::NotApplicable);
+        assert_eq!(op.io_return_status, TransferStatus::Succeeded);
+    }
+
+    #[test]
+    fn quarantined_rejection_has_no_icp_payout() {
+        let op = rejected_redemption_op(RejectedFundDisposition::QuarantinedTerminal {
+            reason: "unresolvable sender".to_string(),
+        });
+
+        assert_eq!(op.icp_payout_status, TransferStatus::NotApplicable);
+        assert_eq!(op.io_return_status, TransferStatus::FailedTerminal);
+    }
+
+    #[test]
+    fn normal_redemption_never_uses_not_applicable_for_required_phases() {
+        for phase in [
+            OperationPhase::AwaitingIcpPayout,
+            OperationPhase::AwaitingIoReturn,
+            OperationPhase::Completed,
+            OperationPhase::FailedRetryable,
+            OperationPhase::FailedTerminal,
+        ] {
+            let op = redemption_op_with_phase(phase);
+            assert_ne!(op.icp_payout_status, TransferStatus::NotApplicable);
+            assert_ne!(op.io_return_status, TransferStatus::NotApplicable);
+        }
+    }
+
+    #[test]
+    fn refunded_and_quarantined_dispositions_are_distinguishable() {
+        let refunded = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderSucceeded {
+            block_index: 91,
+            amount_e8s: 990_000,
+        });
+        let quarantined = rejected_redemption_op(RejectedFundDisposition::QuarantinedTerminal {
+            reason: "unresolvable sender".to_string(),
+        });
+
+        assert!(matches!(
+            refunded.rejected_fund_disposition,
+            Some(RejectedFundDisposition::ReturnToSenderSucceeded { .. })
+        ));
+        assert!(matches!(
+            quarantined.rejected_fund_disposition,
+            Some(RejectedFundDisposition::QuarantinedTerminal { .. })
+        ));
+        assert_eq!(refunded.phase, OperationPhase::Completed);
+        assert_eq!(quarantined.phase, OperationPhase::FailedTerminal);
+    }
+
+    #[test]
+    fn refunded_rejected_redemption_survives_upgrade_as_completed() {
+        let op = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderSucceeded {
+            block_index: 91,
+            amount_e8s: 990_000,
+        });
+        let restored = op.clone();
+
+        assert_eq!(restored.phase, OperationPhase::Completed);
+        assert_eq!(restored.io_return_status, TransferStatus::Succeeded);
+        assert_eq!(restored.icp_payout_status, TransferStatus::NotApplicable);
+    }
+
+    #[test]
+    fn rejected_refund_retry_within_transaction_window_is_idempotent() {
+        let principal = candid::Principal::from_text("aaaaa-aa").unwrap();
+        let refund_source = Account::new(principal, Some(Subaccount([9; 32])));
+        let sender = Account::new(principal, Some(Subaccount([7; 32])));
+        let request = LedgerTransferRequest {
+            from_subaccount: refund_source.subaccount,
+            to: sender.clone(),
+            amount_e8s: 990_000,
+            fee_e8s: None,
+            memo: Some(rejected_refund_memo("io:88")),
+            created_at_time: Some(88),
+        };
+        let matching = LedgerBlock {
+            block_index: BlockIndex(91),
+            timestamp_nanos: 88,
+            created_at_time: None,
+            from: Some(refund_source.clone()),
+            to: Some(sender),
+            amount_e8s: 990_000,
+            fee_e8s: Some(10_000),
+            memo: Some(rejected_refund_memo("io:88")),
+            operation_kind: LedgerOperationKind::Transfer,
+        };
+
+        assert_eq!(
+            classify_boundary_transfer_result_with_source(
+                &request,
+                &refund_source,
+                Err(LedgerTransferError::Duplicate {
+                    duplicate_of: BlockIndex(91)
+                }),
+                Some(&matching),
+            ),
+            BoundaryTransferDecision::Succeeded(91)
+        );
+    }
+
+    #[test]
+    fn too_old_refund_with_index_lag_does_not_resend() {
+        let mut scan = AccountHistoryScanState::default();
+        scan.status.lag_suspected = true;
+        scan.status.last_error = Some("index tip is behind ledger tip".to_string());
+
+        assert!(matches!(
+            classify_too_old_refund_proof_state(&scan, 1, REJECTED_REFUND_PROOF_SCAN_MAX_PAGES),
+            TooOldRefundProofDisposition::IndexNotCaughtUp(_)
+        ));
+
+        let op = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderProofPending {
+            reason: "TooOld; index lag".to_string(),
+            original_created_at_time: Some(500),
+            proof_scan_state: None,
+        });
+
+        assert_eq!(rejected_refund_attempt_created_at(&op), 500);
+        assert!(!is_retryable_rejected_refund_operation(&op));
+        assert!(op
+            .rejected_fund_disposition
+            .as_ref()
+            .is_some_and(|disposition| matches!(
+                disposition,
+                RejectedFundDisposition::ReturnToSenderProofPending {
+                    original_created_at_time: Some(500),
+                    ..
+                }
+            )));
+    }
+
+    #[test]
+    fn too_old_refund_with_archive_required_does_not_resend() {
+        let disposition = TooOldRefundProofDisposition::HistoryIncomplete(
+            "IO index refund proof requires archive traversal before retry".to_string(),
+        );
+        assert!(matches!(
+            disposition,
+            TooOldRefundProofDisposition::HistoryIncomplete(_)
+        ));
+
+        let op = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderProofPending {
+            reason: "TooOld; archive required".to_string(),
+            original_created_at_time: Some(600),
+            proof_scan_state: None,
+        });
+
+        assert_eq!(rejected_refund_attempt_created_at(&op), 600);
+        assert!(!is_retryable_rejected_refund_operation(&op));
+    }
+
+    #[test]
+    fn too_old_refund_with_incomplete_backfill_does_not_resend() {
+        let mut scan = AccountHistoryScanState::default();
+        scan.status.scan_incomplete = true;
+
+        assert!(matches!(
+            classify_too_old_refund_proof_state(
+                &scan,
+                REJECTED_REFUND_PROOF_SCAN_MAX_PAGES,
+                REJECTED_REFUND_PROOF_SCAN_MAX_PAGES,
+            ),
+            TooOldRefundProofDisposition::HistoryIncomplete(_)
+        ));
+
+        let op = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderProofPending {
+            reason: "TooOld; bounded backfill incomplete".to_string(),
+            original_created_at_time: Some(700),
+            proof_scan_state: None,
+        });
+
+        assert!(!is_retryable_rejected_refund_operation(&op));
+    }
+
+    #[test]
+    fn too_old_refund_matching_index_proof_marks_success() {
+        let principal = candid::Principal::from_text("aaaaa-aa").unwrap();
+        let refund_source = Account::new(principal, Some(Subaccount([9; 32])));
+        let sender = Account::new(principal, Some(Subaccount([7; 32])));
+        let request = LedgerTransferRequest {
+            from_subaccount: refund_source.subaccount,
+            to: sender.clone(),
+            amount_e8s: 990_000,
+            fee_e8s: None,
+            memo: Some(rejected_refund_memo("io:88")),
+            created_at_time: Some(88),
+        };
+        let proof = LedgerBlock {
+            block_index: BlockIndex(91),
+            timestamp_nanos: 88,
+            created_at_time: None,
+            from: Some(refund_source.clone()),
+            to: Some(sender),
+            amount_e8s: 990_000,
+            fee_e8s: Some(10_000),
+            memo: Some(rejected_refund_memo("io:88")),
+            operation_kind: LedgerOperationKind::Transfer,
+        };
+        let disposition = TooOldRefundProofDisposition::ProofFound(
+            duplicate_matches_expected(&request, &proof).unwrap(),
+        );
+        let op = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderSucceeded {
+            block_index: 91,
+            amount_e8s: 990_000,
+        });
+
+        assert_eq!(
+            disposition,
+            TooOldRefundProofDisposition::ProofFound(BlockIndex(91))
+        );
+        assert_eq!(op.phase, OperationPhase::Completed);
+        assert_eq!(op.io_return_status, TransferStatus::Succeeded);
+        assert!(!is_retryable_rejected_refund_operation(&op));
+    }
+
+    #[test]
+    fn too_old_refund_missing_proof_enters_manual_reconciliation() {
+        let mut scan = AccountHistoryScanState::default();
+        scan.cursor.backfill_complete = true;
+        scan.cursor.latest_cursor = Some(BlockIndex(90));
+        scan.status.num_blocks_synced = Some(BlockIndex(90));
+
+        assert!(matches!(
+            classify_too_old_refund_proof_state(&scan, 1, REJECTED_REFUND_PROOF_SCAN_MAX_PAGES),
+            TooOldRefundProofDisposition::CompleteNoMatch(_)
+        ));
+
+        let op = rejected_redemption_op(
+            RejectedFundDisposition::ReturnToSenderManualReconciliationRequired {
+                reason: "complete canonical history has no refund proof".to_string(),
+                original_created_at_time: Some(800),
+            },
+        );
+
+        assert_eq!(op.phase, OperationPhase::FailedTerminal);
+        assert!(!is_retryable_rejected_refund_operation(&op));
+    }
+
+    #[test]
+    fn manual_reconciliation_refund_is_not_selected_for_automatic_retry() {
+        let op = rejected_redemption_op(
+            RejectedFundDisposition::ReturnToSenderManualReconciliationRequired {
+                reason: "proof permanently unavailable".to_string(),
+                original_created_at_time: Some(900),
+            },
+        );
+
+        assert_eq!(
+            next_retryable_rejected_refund_operation(&[op], &BTreeSet::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn same_wasm_upgrade_preserves_refund_proof_pending_state() {
+        let op = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderProofPending {
+            reason: "TooOld; index not caught up".to_string(),
+            original_created_at_time: Some(1_000),
+            proof_scan_state: None,
+        });
+        let restored = op.clone();
+
+        assert_eq!(restored, op);
+        assert!(matches!(
+            restored.rejected_fund_disposition,
+            Some(RejectedFundDisposition::ReturnToSenderProofPending {
+                original_created_at_time: Some(1_000),
+                ..
+            })
+        ));
+        assert!(!is_retryable_rejected_refund_operation(&restored));
+    }
+
+    #[test]
+    fn repeated_ticks_never_double_refund_when_proof_is_uncertain() {
+        let proof_pending =
+            rejected_redemption_op(RejectedFundDisposition::ReturnToSenderProofPending {
+                reason: "TooOld; index lag".to_string(),
+                original_created_at_time: Some(1_100),
+                proof_scan_state: None,
+            });
+        let manual = rejected_redemption_op(
+            RejectedFundDisposition::ReturnToSenderManualReconciliationRequired {
+                reason: "proof unavailable".to_string(),
+                original_created_at_time: Some(1_200),
+            },
+        );
+        let journal = vec![proof_pending, manual];
+
+        for _ in 0..3 {
+            assert_eq!(
+                next_retryable_rejected_refund_operation(&journal, &BTreeSet::new()),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn rejected_refund_too_old_result_is_auditable() {
+        let op = rejected_redemption_op(RejectedFundDisposition::ReturnToSenderProofPending {
+            reason: "ledger transfer failed: TooOld; refund proof pending".to_string(),
+            original_created_at_time: Some(600),
+            proof_scan_state: None,
+        });
+
+        match op.rejected_fund_disposition.unwrap() {
+            RejectedFundDisposition::ReturnToSenderProofPending {
+                reason,
+                original_created_at_time,
+                ..
+            } => {
+                assert!(reason.contains("TooOld"));
+                assert_eq!(original_created_at_time, Some(600));
+            }
+            other => panic!("unexpected disposition: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn proof_absence_requires_index_catchup_evidence() {
+        let mut scan = AccountHistoryScanState::default();
+        scan.cursor.backfill_complete = true;
+        scan.cursor.latest_cursor = Some(BlockIndex(90));
+
+        assert!(matches!(
+            classify_too_old_refund_proof_state(&scan, 1, REJECTED_REFUND_PROOF_SCAN_MAX_PAGES),
+            TooOldRefundProofDisposition::HistoryIncomplete(reason)
+                if reason.contains("did not report ledger catch-up")
+        ));
+    }
+
+    #[test]
+    fn proof_absence_requires_full_account_history_backfill() {
+        let mut scan = AccountHistoryScanState::default();
+        scan.cursor.latest_cursor = Some(BlockIndex(90));
+        scan.status.num_blocks_synced = Some(BlockIndex(90));
+
+        assert!(matches!(
+            classify_too_old_refund_proof_state(&scan, 1, REJECTED_REFUND_PROOF_SCAN_MAX_PAGES),
+            TooOldRefundProofDisposition::IndexNotCaughtUp(reason)
+                if reason.contains("no complete backfill")
+        ));
+    }
+
+    #[test]
+    fn proof_absence_requires_synced_index_at_or_above_observed_history() {
+        let mut scan = AccountHistoryScanState::default();
+        scan.cursor.backfill_complete = true;
+        scan.cursor.latest_cursor = Some(BlockIndex(90));
+        scan.status.num_blocks_synced = Some(BlockIndex(89));
+
+        assert!(matches!(
+            classify_too_old_refund_proof_state(&scan, 1, REJECTED_REFUND_PROOF_SCAN_MAX_PAGES),
+            TooOldRefundProofDisposition::HistoryIncomplete(reason)
+                if reason.contains("only synced through block 89")
+        ));
+    }
+
+    #[test]
+    fn proof_absence_complete_no_match_requires_all_completeness_signals() {
+        let mut scan = AccountHistoryScanState::default();
+        scan.cursor.backfill_complete = true;
+        scan.cursor.latest_cursor = Some(BlockIndex(90));
+        scan.status.num_blocks_synced = Some(BlockIndex(90));
+
+        assert!(matches!(
+            classify_too_old_refund_proof_state(&scan, 1, REJECTED_REFUND_PROOF_SCAN_MAX_PAGES),
+            TooOldRefundProofDisposition::CompleteNoMatch(_)
+        ));
+    }
+
+    #[test]
+    fn upgrade_after_refund_before_journal_update_recovers_by_index_proof() {
+        let principal = candid::Principal::from_text("aaaaa-aa").unwrap();
+        let refund_source = Account::new(principal, Some(Subaccount([9; 32])));
+        let sender = Account::new(principal, Some(Subaccount([7; 32])));
+        let request = LedgerTransferRequest {
+            from_subaccount: refund_source.subaccount,
+            to: sender.clone(),
+            amount_e8s: 990_000,
+            fee_e8s: None,
+            memo: Some(rejected_refund_memo("io:88")),
+            created_at_time: Some(88),
+        };
+        let finalized = LedgerBlock {
+            block_index: BlockIndex(91),
+            timestamp_nanos: 88,
+            created_at_time: None,
+            from: Some(refund_source.clone()),
+            to: Some(sender),
+            amount_e8s: 990_000,
+            fee_e8s: Some(10_000),
+            memo: Some(rejected_refund_memo("io:88")),
+            operation_kind: LedgerOperationKind::Transfer,
+        };
+
+        assert_eq!(
+            duplicate_matches_expected(&request, &finalized),
+            Ok(BlockIndex(91))
+        );
+        assert_eq!(finalized.from.as_ref(), Some(&refund_source));
+    }
+
+    #[test]
+    fn io_stream_manager_real_redemption_duplicate_icp_payout_block_must_match_expected() {
+        let request = LedgerTransferRequest {
+            from_subaccount: Some(crate::clients::icp_ledger::mock_subaccount(
+                STREAM_MANAGER_DEPOSIT_ACCOUNT,
+            )),
+            to: crate::clients::icp_ledger::mock_account(JUPITER_FAUCET_SOURCE),
+            amount_e8s: 100,
+            fee_e8s: None,
+            memo: None,
+            created_at_time: None,
+        };
+        let matching = duplicate_proof_block_with_memo(100, JUPITER_FAUCET_SOURCE, None);
+        assert_eq!(
+            classify_boundary_transfer_result(
+                &request,
+                Err(LedgerTransferError::Duplicate {
+                    duplicate_of: BlockIndex(9)
+                }),
+                Some(&matching),
+            ),
+            BoundaryTransferDecision::Succeeded(9)
+        );
+
+        let wrong_destination = duplicate_proof_block_with_memo(100, "wrong_destination", None);
+        assert!(matches!(
+            classify_boundary_transfer_result(
+                &request,
+                Err(LedgerTransferError::Duplicate {
+                    duplicate_of: BlockIndex(9)
+                }),
+                Some(&wrong_destination),
+            ),
+            BoundaryTransferDecision::Retryable(_)
+        ));
     }
 
     #[test]

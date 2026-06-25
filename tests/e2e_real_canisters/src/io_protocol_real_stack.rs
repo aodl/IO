@@ -550,7 +550,9 @@ fn finalized_governance_expected_active_stake_e8s(stack: &IoRealStackFixture) ->
 }
 
 #[cfg(test)]
-fn finalized_governance_expected_reward_neuron_ids(stack: &IoRealStackFixture) -> Vec<u64> {
+fn finalized_governance_expected_reward_neuron_ids(
+    stack: &IoRealStackFixture,
+) -> Vec<crate::sns_governance_setup::NeuronId> {
     crate::sns_lifecycle::list_finalized_sns_neurons(&stack.sns)
         .expect("finalized SNS governance should list neurons")
         .into_iter()
@@ -563,14 +565,9 @@ fn finalized_governance_expected_reward_neuron_ids(stack: &IoRealStackFixture) -
             )
         })
         .map(|neuron| {
-            let id = io_governance_types::SnsNeuronId(
-                neuron
-                    .id
-                    .expect("eligible finalized SNS neuron should have an id")
-                    .id,
-            );
-            io_reward_policy::sns_neuron_id_to_u64(&id)
-                .expect("eligible finalized SNS neuron id should map to reward key")
+            neuron
+                .id
+                .expect("eligible finalized SNS neuron should have an id")
         })
         .collect()
 }
@@ -579,6 +576,19 @@ fn finalized_governance_expected_reward_neuron_ids(stack: &IoRealStackFixture) -
 fn reward_id_for_sns_neuron_id(neuron_id: &crate::sns_governance_setup::NeuronId) -> u64 {
     io_reward_policy::sns_neuron_id_to_u64(&io_governance_types::SnsNeuronId(neuron_id.id.clone()))
         .expect("finalized SNS neuron id should map to reward key")
+}
+
+#[cfg(test)]
+fn finalized_neuron_cached_stake_e8s(
+    stack: &IoRealStackFixture,
+    neuron_id: &crate::sns_governance_setup::NeuronId,
+) -> u64 {
+    crate::sns_lifecycle::list_finalized_sns_neurons(&stack.sns)
+        .expect("finalized SNS governance should list neurons")
+        .into_iter()
+        .find(|neuron| neuron.id.as_ref() == Some(neuron_id))
+        .expect("finalized SNS neuron should be listed")
+        .cached_neuron_stake_e8s
 }
 
 #[cfg(test)]
@@ -594,6 +604,37 @@ fn stream_manager_tick(stack: &IoRealStackFixture) -> io_stream_manager::DebugTi
         )
         .expect("stream-manager debug_tick should succeed");
     candid::decode_one(&bytes).expect("stream-manager debug_tick response decode")
+}
+
+#[cfg(test)]
+fn stream_manager_tick_traps(stack: &IoRealStackFixture) -> bool {
+    stack
+        .sns
+        .pic
+        .update_call(
+            stack.stream_manager,
+            Principal::anonymous(),
+            "debug_tick",
+            candid::encode_one(()).expect("debug_tick arg encode"),
+        )
+        .is_err()
+}
+
+#[cfg(test)]
+fn stream_manager_set_failpoint(
+    stack: &IoRealStackFixture,
+    failpoint: Option<io_stream_manager::DebugFailpoint>,
+) {
+    stack
+        .sns
+        .pic
+        .update_call(
+            stack.stream_manager,
+            Principal::anonymous(),
+            "debug_set_failpoint",
+            candid::encode_one(failpoint).expect("debug_set_failpoint arg encode"),
+        )
+        .expect("stream-manager debug_set_failpoint should succeed");
 }
 
 #[cfg(test)]
@@ -627,6 +668,46 @@ fn stream_manager_stable_state(stack: &IoRealStackFixture) -> io_stream_manager:
 }
 
 #[cfg(test)]
+fn stream_manager_redemption_operation(
+    stack: &IoRealStackFixture,
+    block: &candid::Nat,
+) -> io_stream_manager::StreamOperation {
+    let block = block
+        .0
+        .to_str_radix(10)
+        .parse::<u64>()
+        .expect("redemption block should fit in u64");
+    let stable = stream_manager_stable_state(stack);
+    stable
+        .operation_journal
+        .into_iter()
+        .find(|op| op.operation_id == format!("io:{block}"))
+        .expect("redemption operation should be journaled")
+}
+
+#[cfg(test)]
+fn upgrade_stream_manager_same_wasm(stack: &IoRealStackFixture) {
+    let wasm = required_io_wasm(
+        "io_stream_manager",
+        "IO_STREAM_MANAGER_WASM",
+        &[
+            "target/wasm32-unknown-unknown/debug/io_stream_manager.wasm",
+            "release-artifacts/io_stream_manager.wasm",
+        ],
+    )
+    .expect("stream-manager Wasm should be available for same-Wasm upgrade");
+    crate::pocketic_env::upgrade_canister(&stack.sns.pic, stack.stream_manager, wasm, vec![]);
+}
+
+#[cfg(test)]
+fn api_redeemable_io_e8s(protocol: &io_stream_manager::ApiProtocolState) -> u128 {
+    protocol
+        .total_io_supply_e8s
+        .saturating_sub(protocol.protocol_reserve_io_e8s)
+        .saturating_sub(protocol.non_redeemable_governance_io_e8s)
+}
+
+#[cfg(test)]
 fn reserve_account_for_stack(stack: &IoRealStackFixture) -> IcrcAccount {
     crate::icrc::account(
         stack.stream_manager,
@@ -651,18 +732,6 @@ fn redemption_io_account_for_stack(stack: &IoRealStackFixture) -> IcrcAccount {
         Some(crate::icrc::subaccount(
             io_stream_manager::scheduler::REDEMPTION_ACCOUNT,
         )),
-    )
-}
-
-#[cfg(test)]
-fn reward_account_for_stack(stack: &IoRealStackFixture, neuron_id: u64) -> IcrcAccount {
-    crate::icrc::account(
-        stack.stream_manager,
-        Some(crate::icrc::subaccount(&format!(
-            "{}{}",
-            io_stream_manager::scheduler::TWO_WEEK_REWARD_ACCOUNT_PREFIX,
-            neuron_id
-        ))),
     )
 }
 
@@ -823,11 +892,60 @@ fn fund_real_two_week_maturity_deposit(stack: &IoRealStackFixture, amount_e8s: u
 }
 
 #[cfg(test)]
+fn fund_real_two_year_maturity_deposit(stack: &IoRealStackFixture, amount_e8s: u64) -> candid::Nat {
+    let source_account = io_stream_manager::clients::icp_ledger::mock_account(
+        io_stream_manager::state::IO_NNS_NEURON_MANAGER_SOURCE,
+    );
+    icp_transfer(
+        stack,
+        None,
+        source_account,
+        amount_e8s + ICP_LEDGER_TRANSFER_FEE_E8S,
+    );
+    let source_subaccount = io_stream_manager::clients::icp_ledger::mock_subaccount(
+        io_stream_manager::state::IO_NNS_NEURON_MANAGER_SOURCE,
+    )
+    .0;
+    let deposit_account = crate::icrc::account(
+        stack.stream_manager,
+        Some(crate::icrc::subaccount(
+            io_stream_manager::scheduler::STREAM_MANAGER_DEPOSIT_ACCOUNT,
+        )),
+    );
+    let block = crate::icrc::icrc1_transfer(
+        &stack.sns.pic,
+        stack.sns.nns_ledger,
+        Principal::anonymous(),
+        crate::icrc::transfer_arg(
+            Some(source_subaccount),
+            deposit_account,
+            amount_e8s,
+            Some(ICP_LEDGER_TRANSFER_FEE_E8S),
+            Some(io_stream_manager::state::TWO_YEAR_MATURITY_MEMO.as_bytes()),
+            None,
+        ),
+    )
+    .expect("local ICP ledger should accept ICRC two-year maturity transfer");
+    wait_for_real_indexes(stack);
+    block
+}
+
+#[cfg(test)]
 fn transfer_real_io_to_redemption_account(
     stack: &IoRealStackFixture,
     amount_e8s: u64,
 ) -> candid::Nat {
-    let block = crate::icrc::icrc1_transfer(
+    let block = transfer_real_io_to_redemption_account_without_index_wait(stack, amount_e8s);
+    wait_for_real_indexes(stack);
+    block
+}
+
+#[cfg(test)]
+fn transfer_real_io_to_redemption_account_without_index_wait(
+    stack: &IoRealStackFixture,
+    amount_e8s: u64,
+) -> candid::Nat {
+    crate::icrc::icrc1_transfer(
         &stack.sns.pic,
         stack.sns.ledger,
         Principal::anonymous(),
@@ -842,9 +960,44 @@ fn transfer_real_io_to_redemption_account(
             None,
         ),
     )
-    .expect("Jupiter IO account should transfer redeemed IO to stream-manager redemption account");
+    .expect("Jupiter IO account should transfer redeemed IO to stream-manager redemption account")
+}
+
+#[cfg(test)]
+fn transfer_participant_io_to_redemption_account(
+    stack: &IoRealStackFixture,
+    participant: Principal,
+    amount_e8s: u64,
+) -> candid::Nat {
+    let block = transfer_participant_io_to_redemption_account_without_index_wait(
+        stack,
+        participant,
+        amount_e8s,
+    );
     wait_for_real_indexes(stack);
     block
+}
+
+#[cfg(test)]
+fn transfer_participant_io_to_redemption_account_without_index_wait(
+    stack: &IoRealStackFixture,
+    participant: Principal,
+    amount_e8s: u64,
+) -> candid::Nat {
+    crate::icrc::icrc1_transfer(
+        &stack.sns.pic,
+        stack.sns.ledger,
+        participant,
+        crate::icrc::transfer_arg(
+            None,
+            redemption_io_account_for_stack(stack),
+            amount_e8s,
+            Some(crate::icrc::FEE_E8S),
+            Some(b"io-real-redeem-participant"),
+            None,
+        ),
+    )
+    .expect("participant should transfer real SNS tokens to stream-manager redemption account")
 }
 
 #[cfg(test)]
@@ -891,6 +1044,115 @@ fn wait_for_real_sns_redemption_index_transaction(
         "finalized SNS index did not expose redemption transfer; balance={balance:?}, transactions={:?}",
         page.transactions
     );
+}
+
+#[cfg(test)]
+fn wait_for_real_sns_refund_index_transaction(
+    stack: &IoRealStackFixture,
+    sender: IcrcAccount,
+    amount_e8s: u64,
+) -> crate::icrc::TransactionWithId {
+    let refund_source = redemption_io_account_for_stack(stack);
+    for _ in 0..12 {
+        let page = crate::icrc::get_account_transactions(
+            &stack.sns.pic,
+            stack.sns.index,
+            sender.clone(),
+            None,
+            50,
+        )
+        .expect("finalized SNS index should answer sender account history");
+        if let Some(tx) = page.transactions.iter().find(|tx| {
+            tx.transaction
+                .transfer
+                .as_ref()
+                .map(|transfer| {
+                    transfer.from == refund_source
+                        && transfer.to == sender
+                        && transfer.amount == amount_e8s
+                })
+                .unwrap_or(false)
+        }) {
+            return tx.clone();
+        }
+        stack.sns.pic.advance_time(Duration::from_secs(5));
+        for _ in 0..80 {
+            stack.sns.pic.tick();
+        }
+    }
+    let page =
+        crate::icrc::get_account_transactions(&stack.sns.pic, stack.sns.index, sender, None, 50)
+            .expect("finalized SNS index should answer sender account history after wait");
+    panic!(
+        "finalized SNS index did not expose rejected-refund transfer; transactions={:?}",
+        page.transactions
+    );
+}
+
+#[cfg(test)]
+fn count_real_sns_refund_transfers(
+    stack: &IoRealStackFixture,
+    sender: IcrcAccount,
+    amount_e8s: u64,
+) -> usize {
+    let refund_source = redemption_io_account_for_stack(stack);
+    crate::icrc::get_account_transactions(&stack.sns.pic, stack.sns.index, sender.clone(), None, 50)
+        .expect("finalized SNS index should answer sender account history")
+        .transactions
+        .into_iter()
+        .filter(|tx| {
+            tx.transaction
+                .transfer
+                .as_ref()
+                .map(|transfer| {
+                    transfer.from == refund_source
+                        && transfer.to == sender
+                        && transfer.amount == amount_e8s
+                })
+                .unwrap_or(false)
+        })
+        .count()
+}
+
+#[cfg(test)]
+fn count_real_sns_reward_transfers_to_neuron(
+    stack: &IoRealStackFixture,
+    neuron_id: &crate::sns_governance_setup::NeuronId,
+    amount_e8s: u64,
+) -> usize {
+    let destination = crate::icrc::account(
+        stack.sns.governance,
+        Some(
+            neuron_id
+                .id
+                .clone()
+                .try_into()
+                .expect("finalized SNS neuron id should be 32 bytes"),
+        ),
+    );
+    let reserve = reserve_account_for_stack(stack);
+    crate::icrc::get_account_transactions(
+        &stack.sns.pic,
+        stack.sns.index,
+        destination.clone(),
+        None,
+        50,
+    )
+    .expect("finalized SNS index should answer reward destination account history")
+    .transactions
+    .into_iter()
+    .filter(|tx| {
+        tx.transaction
+            .transfer
+            .as_ref()
+            .map(|transfer| {
+                transfer.from == reserve
+                    && transfer.to == destination
+                    && transfer.amount == amount_e8s
+            })
+            .unwrap_or(false)
+    })
+    .count()
 }
 
 #[cfg(test)]
@@ -1155,6 +1417,7 @@ mod tests {
             stack.sns.ledger,
             reserve_account_for_stack(&stack),
         );
+        let actual_io_fee = crate::icrc::icrc1_fee(&stack.sns.pic, stack.sns.ledger);
 
         let redemption = stream_manager_tick(&stack);
         assert!(redemption.errors.is_empty(), "{:?}", redemption.errors);
@@ -1183,7 +1446,7 @@ mod tests {
         );
         assert_eq!(
             reserve_after.0 - reserve_before.0,
-            (JUPITER_REDEMPTION_IO_E8S - crate::icrc::FEE_E8S).into()
+            (candid::Nat::from(JUPITER_REDEMPTION_IO_E8S) - actual_io_fee).0
         );
 
         let replay = stream_manager_tick(&stack);
@@ -1196,6 +1459,882 @@ mod tests {
         assert!(
             redemption_block.0 > 0_u32.into(),
             "redemption should be recorded on the finalized SNS ledger before scan"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires pinned real SNS/NNS Wasms, IO Wasm artifacts, and POCKET_IC_BIN"]
+    fn io_stream_manager_real_redemption_rounding_fee_dust_accounted() {
+        let participant = Principal::from_slice(&[105; 29]);
+        let stack = deploy_finalized_sns_with_io_real_stack_for_test(true).unwrap();
+        fund_real_sns_protocol_reserve_for_issuance(
+            &stack,
+            participant,
+            JUPITER_EXPECTED_IO_E8S as u64 + crate::icrc::FEE_E8S,
+        );
+        fund_real_jupiter_deposit(&stack, JUPITER_DEPOSIT_ICP_E8S);
+        let issuance = stream_manager_tick(&stack);
+        assert!(issuance.errors.is_empty(), "{:?}", issuance.errors);
+        assert_eq!(issuance.io_issued_e8s, JUPITER_EXPECTED_IO_E8S);
+
+        let reserve_before = crate::icrc::icrc1_balance_of(
+            &stack.sns.pic,
+            stack.sns.ledger,
+            reserve_account_for_stack(&stack),
+        );
+        let actual_io_fee = crate::icrc::icrc1_fee(&stack.sns.pic, stack.sns.ledger);
+        let actual_io_fee_e8s = actual_io_fee
+            .0
+            .to_str_radix(10)
+            .parse::<u128>()
+            .expect("SNS ledger fee should fit u128");
+        let before = stream_manager_state(&stack);
+        let redemption_block =
+            transfer_real_io_to_redemption_account(&stack, JUPITER_REDEMPTION_IO_E8S);
+        let _redemption_index =
+            wait_for_real_sns_redemption_index_transaction(&stack, JUPITER_REDEMPTION_IO_E8S);
+
+        let redemption = stream_manager_tick(&stack);
+        assert!(redemption.errors.is_empty(), "{:?}", redemption.errors);
+        assert_eq!(redemption.processed_redemptions, 1);
+        assert_eq!(redemption.icp_paid_e8s, JUPITER_EXPECTED_REDEMPTION_ICP_E8S);
+
+        let op = stream_manager_redemption_operation(&stack, &redemption_block);
+        assert_eq!(op.kind, io_stream_manager::StreamOperationKind::Redemption);
+        assert_eq!(op.phase, io_stream_manager::OperationPhase::Completed);
+        assert_eq!(op.io_amount, u128::from(JUPITER_REDEMPTION_IO_E8S));
+        assert_eq!(op.io_return_fee_e8s, actual_io_fee_e8s);
+        assert_eq!(
+            op.io_return_status,
+            io_stream_manager::TransferStatus::Succeeded
+        );
+        assert!(op.io_return_block.is_some());
+        assert_eq!(op.gross_icp_payout_e8s, JUPITER_EXPECTED_REDEMPTION_ICP_E8S);
+        assert_eq!(
+            op.net_user_icp_payout_e8s,
+            JUPITER_EXPECTED_REDEMPTION_ICP_E8S
+        );
+
+        let after = stream_manager_state(&stack);
+        let reserve_after = crate::icrc::icrc1_balance_of(
+            &stack.sns.pic,
+            stack.sns.ledger,
+            reserve_account_for_stack(&stack),
+        );
+        assert_eq!(
+            reserve_after.0 - reserve_before.0,
+            (candid::Nat::from(JUPITER_REDEMPTION_IO_E8S) - actual_io_fee).0
+        );
+        assert_eq!(
+            api_redeemable_io_e8s(&before.protocol) - api_redeemable_io_e8s(&after.protocol),
+            u128::from(JUPITER_REDEMPTION_IO_E8S)
+        );
+        assert_eq!(
+            before.protocol.total_io_supply_e8s, after.protocol.total_io_supply_e8s,
+            "redemption returns existing IO to reserve and must not mint replacement supply"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires pinned real SNS/NNS Wasms, IO Wasm artifacts, and POCKET_IC_BIN"]
+    fn io_stream_manager_real_redemption_reads_actual_sns_ledger_fee() {
+        let participant = Principal::from_slice(&[105; 29]);
+        let stack = deploy_finalized_sns_with_io_real_stack_for_test(true).unwrap();
+        fund_real_sns_protocol_reserve_for_issuance(
+            &stack,
+            participant,
+            JUPITER_EXPECTED_IO_E8S as u64 + crate::icrc::FEE_E8S,
+        );
+        fund_real_jupiter_deposit(&stack, JUPITER_DEPOSIT_ICP_E8S);
+        let issuance = stream_manager_tick(&stack);
+        assert!(issuance.errors.is_empty(), "{:?}", issuance.errors);
+
+        let actual_fee = crate::icrc::icrc1_fee(&stack.sns.pic, stack.sns.ledger);
+        let actual_fee_e8s = actual_fee
+            .0
+            .to_str_radix(10)
+            .parse::<u128>()
+            .expect("SNS ledger fee should fit u128");
+        let redemption_block =
+            transfer_real_io_to_redemption_account(&stack, JUPITER_REDEMPTION_IO_E8S);
+        let _redemption_index =
+            wait_for_real_sns_redemption_index_transaction(&stack, JUPITER_REDEMPTION_IO_E8S);
+
+        let redemption = stream_manager_tick(&stack);
+        assert!(redemption.errors.is_empty(), "{:?}", redemption.errors);
+        let op = stream_manager_redemption_operation(&stack, &redemption_block);
+
+        assert_eq!(op.io_return_fee_e8s, actual_fee_e8s);
+    }
+
+    #[test]
+    #[ignore = "requires a real SNS ledger fixture that can change transfer_fee through a supported upgrade argument"]
+    fn io_stream_manager_real_redemption_fee_change_is_observed_on_next_operation() {
+        let stack = deploy_finalized_sns_with_io_real_stack_for_test(true).unwrap();
+        let before = crate::icrc::icrc1_fee(&stack.sns.pic, stack.sns.ledger);
+        let after = crate::icrc::icrc1_fee(&stack.sns.pic, stack.sns.ledger);
+
+        assert_eq!(
+            before, after,
+            "the current pinned SNS ledger fixture has no supported runtime fee-change hook"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires pinned real SNS/NNS Wasms, IO Wasm artifacts, and POCKET_IC_BIN"]
+    fn io_stream_manager_real_redemption_below_io_return_fee_fails_closed() {
+        let participant = Principal::from_slice(&[105; 29]);
+        let stack = deploy_finalized_sns_with_io_real_stack_for_test(true).unwrap();
+        fund_real_sns_protocol_reserve_for_issuance(
+            &stack,
+            participant,
+            JUPITER_EXPECTED_IO_E8S as u64 + crate::icrc::FEE_E8S,
+        );
+        fund_real_jupiter_deposit(&stack, JUPITER_DEPOSIT_ICP_E8S);
+        let issuance = stream_manager_tick(&stack);
+        assert!(issuance.errors.is_empty(), "{:?}", issuance.errors);
+        assert_eq!(issuance.io_issued_e8s, JUPITER_EXPECTED_IO_E8S);
+
+        let actual_io_fee = crate::icrc::icrc1_fee(&stack.sns.pic, stack.sns.ledger);
+        let actual_io_fee_e8s = actual_io_fee
+            .0
+            .to_str_radix(10)
+            .parse::<u64>()
+            .expect("SNS ledger fee should fit u64");
+        let dust_redemption_e8s = actual_io_fee_e8s - 1;
+        let redemption_block = transfer_real_io_to_redemption_account(&stack, dust_redemption_e8s);
+        let _redemption_index =
+            wait_for_real_sns_redemption_index_transaction(&stack, dust_redemption_e8s);
+        let before = stream_manager_state(&stack);
+        let jupiter_icp = jupiter_icp_account();
+        let jupiter_icp_before = icp_account_balance_e8s(&stack, &jupiter_icp);
+
+        let redemption = stream_manager_tick(&stack);
+        assert_eq!(redemption.scanned_io_transactions, 1);
+        assert_eq!(redemption.processed_redemptions, 0);
+        assert_eq!(redemption.icp_paid_e8s, 0);
+        assert!(
+            redemption
+                .errors
+                .iter()
+                .any(|err| err.contains("not above IO return fee")),
+            "{:?}",
+            redemption.errors
+        );
+
+        let op = stream_manager_redemption_operation(&stack, &redemption_block);
+        assert_eq!(op.kind, io_stream_manager::StreamOperationKind::Redemption);
+        assert_eq!(op.phase, io_stream_manager::OperationPhase::FailedTerminal);
+        assert_eq!(op.io_amount, u128::from(dust_redemption_e8s));
+        assert_eq!(op.io_return_fee_e8s, u128::from(actual_io_fee_e8s));
+        assert_eq!(
+            op.icp_payout_status,
+            io_stream_manager::TransferStatus::FailedTerminal
+        );
+        assert_eq!(op.icp_payout_block, None);
+        assert_eq!(op.io_return_block, None);
+        assert!(
+            op.last_error
+                .as_deref()
+                .is_some_and(|err| err.contains("not above IO return fee")),
+            "{op:?}"
+        );
+
+        let replay = stream_manager_tick(&stack);
+        assert!(replay.errors.is_empty(), "{:?}", replay.errors);
+        assert_eq!(replay.processed_redemptions, 0);
+        assert_eq!(replay.icp_paid_e8s, 0);
+        assert_eq!(
+            icp_account_balance_e8s(&stack, &jupiter_icp),
+            jupiter_icp_before,
+            "sub-fee redemption must not trigger ICP payout"
+        );
+        assert_eq!(
+            stream_manager_state(&stack).protocol,
+            before.protocol,
+            "terminal sub-fee redemption must preserve accounting state"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires pinned real SNS/NNS Wasms, IO Wasm artifacts, and POCKET_IC_BIN"]
+    fn io_stream_manager_real_redemption_rejects_insufficient_redeemable_supply() {
+        let participant = Principal::from_slice(&[105; 29]);
+        let stack = deploy_finalized_sns_with_io_real_stack_for_test(true).unwrap();
+        fund_real_sns_protocol_reserve_for_issuance(
+            &stack,
+            participant,
+            JUPITER_EXPECTED_IO_E8S as u64 + crate::icrc::FEE_E8S,
+        );
+        fund_real_jupiter_deposit(&stack, JUPITER_DEPOSIT_ICP_E8S);
+        let issuance = stream_manager_tick(&stack);
+        assert!(issuance.errors.is_empty(), "{:?}", issuance.errors);
+        assert_eq!(issuance.io_issued_e8s, JUPITER_EXPECTED_IO_E8S);
+
+        let before = stream_manager_state(&stack);
+        assert_eq!(
+            api_redeemable_io_e8s(&before.protocol),
+            JUPITER_EXPECTED_IO_E8S
+        );
+        let over_redeemable_e8s = JUPITER_EXPECTED_IO_E8S as u64 + 1;
+        let actual_io_fee_e8s = crate::icrc::icrc1_fee(&stack.sns.pic, stack.sns.ledger)
+            .0
+            .to_str_radix(10)
+            .parse::<u64>()
+            .expect("SNS ledger fee should fit u64");
+        let expected_refund_e8s = over_redeemable_e8s - actual_io_fee_e8s;
+        let participant_account = crate::icrc::account(participant, None);
+        let redemption_block = transfer_participant_io_to_redemption_account_without_index_wait(
+            &stack,
+            participant,
+            over_redeemable_e8s,
+        );
+        let _redemption_index =
+            wait_for_real_sns_redemption_index_transaction(&stack, over_redeemable_e8s);
+        let jupiter_icp_before = icp_account_balance_e8s(&stack, &jupiter_icp_account());
+        let sender_after_deposit = crate::icrc::icrc1_balance_of(
+            &stack.sns.pic,
+            stack.sns.ledger,
+            participant_account.clone(),
+        );
+        let redemption_account = redemption_io_account_for_stack(&stack);
+        let redemption_after_deposit = crate::icrc::icrc1_balance_of(
+            &stack.sns.pic,
+            stack.sns.ledger,
+            redemption_account.clone(),
+        );
+
+        let redemption = stream_manager_tick(&stack);
+        assert_eq!(redemption.scanned_io_transactions, 1);
+        assert_eq!(redemption.processed_redemptions, 0);
+        assert_eq!(redemption.icp_paid_e8s, 0);
+        assert!(
+            redemption
+                .errors
+                .iter()
+                .any(|err| err.contains("InsufficientRedeemableSupply")),
+            "{:?}",
+            redemption.errors
+        );
+
+        let after = stream_manager_state(&stack);
+        assert_eq!(after.protocol, before.protocol);
+        let sender_after_refund = crate::icrc::icrc1_balance_of(
+            &stack.sns.pic,
+            stack.sns.ledger,
+            participant_account.clone(),
+        );
+        assert_eq!(
+            sender_after_refund.0.clone() - sender_after_deposit.0,
+            candid::Nat::from(expected_refund_e8s).0,
+            "rejected over-redemption should refund exactly amount minus the real SNS fee"
+        );
+        let redemption_after_refund = crate::icrc::icrc1_balance_of(
+            &stack.sns.pic,
+            stack.sns.ledger,
+            redemption_account.clone(),
+        );
+        assert_eq!(
+            redemption_after_deposit.0 - redemption_after_refund.0.clone(),
+            candid::Nat::from(expected_refund_e8s + actual_io_fee_e8s).0,
+            "redemption subaccount should decrease by refund plus fee"
+        );
+        assert_eq!(
+            icp_account_balance_e8s(&stack, &jupiter_icp_account()),
+            jupiter_icp_before,
+            "over-redeemable transfer must not trigger ICP payout"
+        );
+        let redemption_block_index =
+            u64::try_from(redemption_block.0.clone()).expect("redemption block index fits u64");
+        let stable = stream_manager_stable_state(&stack);
+        let rejected = stable
+            .operation_journal
+            .iter()
+            .find(|op| {
+                op.kind == io_stream_manager::StreamOperationKind::RejectedRedemption
+                    && op.io_redemption_block == Some(redemption_block_index)
+            })
+            .expect("rejected over-redeemable transfer records source block evidence");
+        assert_eq!(rejected.icp_payout_block, None);
+        assert_eq!(
+            rejected.phase,
+            io_stream_manager::OperationPhase::Completed,
+            "refunded rejection should be completed, not operationally failed"
+        );
+        assert_eq!(rejected.retry_count, 0);
+        assert_eq!(
+            rejected.icp_payout_status,
+            io_stream_manager::TransferStatus::NotApplicable
+        );
+        assert_eq!(
+            rejected.io_return_status,
+            io_stream_manager::TransferStatus::Succeeded
+        );
+        assert_eq!(rejected.io_return_fee_e8s, u128::from(actual_io_fee_e8s));
+        match &rejected.rejected_fund_disposition {
+            Some(io_stream_manager::RejectedFundDisposition::ReturnToSenderSucceeded {
+                amount_e8s,
+                ..
+            }) => assert_eq!(*amount_e8s, u128::from(expected_refund_e8s)),
+            other => {
+                panic!("resolvable rejected over-redemption should be refunded, got {other:?}")
+            }
+        }
+        assert!(
+            stable.operation_journal.iter().all(|op| {
+                op.io_redemption_block != Some(redemption_block_index)
+                    || op.kind == io_stream_manager::StreamOperationKind::RejectedRedemption
+            }),
+            "rejected over-redeemable transfer must not fabricate terminal success evidence"
+        );
+
+        let replay = stream_manager_tick(&stack);
+        assert!(replay.errors.is_empty(), "{:?}", replay.errors);
+        assert_eq!(replay.processed_redemptions, 0);
+        assert_eq!(replay.icp_paid_e8s, 0);
+        assert_eq!(
+            crate::icrc::icrc1_balance_of(
+                &stack.sns.pic,
+                stack.sns.ledger,
+                participant_account.clone()
+            ),
+            sender_after_refund,
+            "replay must not send a second rejected refund"
+        );
+
+        upgrade_stream_manager_same_wasm(&stack);
+        let after_upgrade_replay = stream_manager_tick(&stack);
+        assert!(
+            after_upgrade_replay.errors.is_empty(),
+            "{:?}",
+            after_upgrade_replay.errors
+        );
+        assert_eq!(after_upgrade_replay.processed_redemptions, 0);
+        assert_eq!(after_upgrade_replay.icp_paid_e8s, 0);
+        assert_eq!(
+            crate::icrc::icrc1_balance_of(&stack.sns.pic, stack.sns.ledger, participant_account),
+            sender_after_refund,
+            "same-Wasm upgrade replay must not send a second rejected refund"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires pinned real SNS/NNS Wasms, IO Wasm artifacts, and POCKET_IC_BIN"]
+    fn io_stream_manager_real_redemption_after_index_lag_waits_or_fails_closed() {
+        let participant = Principal::from_slice(&[105; 29]);
+        let stack = deploy_finalized_sns_with_io_real_stack_for_test(true).unwrap();
+        fund_real_sns_protocol_reserve_for_issuance(
+            &stack,
+            participant,
+            JUPITER_EXPECTED_IO_E8S as u64 + crate::icrc::FEE_E8S,
+        );
+        fund_real_jupiter_deposit(&stack, JUPITER_DEPOSIT_ICP_E8S);
+        let issuance = stream_manager_tick(&stack);
+        assert!(issuance.errors.is_empty(), "{:?}", issuance.errors);
+        assert_eq!(issuance.io_issued_e8s, JUPITER_EXPECTED_IO_E8S);
+
+        let before = stream_manager_state(&stack);
+        let jupiter_icp = jupiter_icp_account();
+        let jupiter_icp_before = icp_account_balance_e8s(&stack, &jupiter_icp);
+        let redemption_block = transfer_real_io_to_redemption_account_without_index_wait(
+            &stack,
+            JUPITER_REDEMPTION_IO_E8S,
+        );
+
+        let lag_tick = stream_manager_tick(&stack);
+        if lag_tick.processed_redemptions == 0 {
+            assert_eq!(lag_tick.icp_paid_e8s, 0);
+            assert_eq!(stream_manager_state(&stack).protocol, before.protocol);
+            assert_eq!(
+                icp_account_balance_e8s(&stack, &jupiter_icp),
+                jupiter_icp_before,
+                "pre-index-lag tick must not fabricate ICP payout"
+            );
+        } else {
+            assert_eq!(lag_tick.processed_redemptions, 1);
+            assert_eq!(lag_tick.icp_paid_e8s, JUPITER_EXPECTED_REDEMPTION_ICP_E8S);
+        }
+
+        let _redemption_index =
+            wait_for_real_sns_redemption_index_transaction(&stack, JUPITER_REDEMPTION_IO_E8S);
+        let catch_up = stream_manager_tick(&stack);
+        assert!(catch_up.errors.is_empty(), "{:?}", catch_up.errors);
+
+        let after = stream_manager_state(&stack);
+        let processed_total = lag_tick.processed_redemptions + catch_up.processed_redemptions;
+        assert_eq!(processed_total, 1);
+        assert_eq!(
+            icp_account_balance_e8s(&stack, &jupiter_icp) - jupiter_icp_before,
+            JUPITER_EXPECTED_REDEMPTION_ICP_E8S as u64
+        );
+        assert_eq!(
+            before.protocol.liquid_icp_e8s - after.protocol.liquid_icp_e8s,
+            JUPITER_EXPECTED_REDEMPTION_ICP_E8S
+        );
+        let op = stream_manager_redemption_operation(&stack, &redemption_block);
+        assert_eq!(op.phase, io_stream_manager::OperationPhase::Completed);
+    }
+
+    #[test]
+    #[ignore = "requires pinned real SNS/NNS Wasms, IO debug Wasm artifacts, and POCKET_IC_BIN"]
+    fn real_stack_rejected_refund_too_old_waits_for_index_proof_no_double_refund() {
+        let participant = Principal::from_slice(&[105; 29]);
+        let stack = deploy_finalized_sns_with_io_real_stack_for_test(true).unwrap();
+        fund_real_sns_protocol_reserve_for_issuance(
+            &stack,
+            participant,
+            JUPITER_EXPECTED_IO_E8S as u64 + crate::icrc::FEE_E8S,
+        );
+        fund_real_jupiter_deposit(&stack, JUPITER_DEPOSIT_ICP_E8S);
+        let issuance = stream_manager_tick(&stack);
+        assert!(issuance.errors.is_empty(), "{:?}", issuance.errors);
+        assert_eq!(issuance.io_issued_e8s, JUPITER_EXPECTED_IO_E8S);
+
+        let before = stream_manager_state(&stack);
+        let jupiter_icp_before = icp_account_balance_e8s(&stack, &jupiter_icp_account());
+        let actual_io_fee_e8s = crate::icrc::icrc1_fee(&stack.sns.pic, stack.sns.ledger)
+            .0
+            .to_str_radix(10)
+            .parse::<u64>()
+            .expect("real SNS ledger fee fits u64");
+        let over_redeemable_e8s =
+            (api_redeemable_io_e8s(&before.protocol) as u64).saturating_add(crate::icrc::FEE_E8S);
+        let expected_refund_e8s = over_redeemable_e8s
+            .checked_sub(actual_io_fee_e8s)
+            .expect("test amount should exceed fee");
+
+        let participant_account = crate::icrc::account(participant, None);
+        let sender_before_deposit = crate::icrc::icrc1_balance_of(
+            &stack.sns.pic,
+            stack.sns.ledger,
+            participant_account.clone(),
+        );
+        let redemption_account = redemption_io_account_for_stack(&stack);
+        let redemption_before_deposit = crate::icrc::icrc1_balance_of(
+            &stack.sns.pic,
+            stack.sns.ledger,
+            redemption_account.clone(),
+        );
+        let redemption_block =
+            transfer_participant_io_to_redemption_account(&stack, participant, over_redeemable_e8s);
+        let sender_after_deposit = crate::icrc::icrc1_balance_of(
+            &stack.sns.pic,
+            stack.sns.ledger,
+            participant_account.clone(),
+        );
+        let redemption_after_deposit = crate::icrc::icrc1_balance_of(
+            &stack.sns.pic,
+            stack.sns.ledger,
+            redemption_account.clone(),
+        );
+        assert_eq!(
+            sender_before_deposit.0 - sender_after_deposit.0.clone(),
+            candid::Nat::from(over_redeemable_e8s + actual_io_fee_e8s).0
+        );
+        assert_eq!(
+            redemption_after_deposit.0.clone() - redemption_before_deposit.0,
+            candid::Nat::from(over_redeemable_e8s).0
+        );
+
+        stream_manager_set_failpoint(
+            &stack,
+            Some(io_stream_manager::DebugFailpoint::AfterRejectedRefundTransferBeforeJournalUpdate),
+        );
+        let mut trapped = false;
+        for _ in 0..12 {
+            if stream_manager_tick_traps(&stack) {
+                trapped = true;
+                break;
+            }
+            stack.sns.pic.advance_time(Duration::from_secs(5));
+            for _ in 0..80 {
+                stack.sns.pic.tick();
+            }
+        }
+        assert!(
+            trapped,
+            "debug failpoint should trap after successful rejected refund transfer"
+        );
+        let sender_after_trap = crate::icrc::icrc1_balance_of(
+            &stack.sns.pic,
+            stack.sns.ledger,
+            participant_account.clone(),
+        );
+        assert_eq!(
+            sender_after_trap.0.clone() - sender_after_deposit.0,
+            candid::Nat::from(expected_refund_e8s).0,
+            "trap path should still execute exactly one real SNS refund transfer"
+        );
+        let redemption_after_trap = crate::icrc::icrc1_balance_of(
+            &stack.sns.pic,
+            stack.sns.ledger,
+            redemption_account.clone(),
+        );
+        assert_eq!(
+            redemption_after_deposit.0 - redemption_after_trap.0.clone(),
+            candid::Nat::from(expected_refund_e8s + actual_io_fee_e8s).0,
+            "redemption subaccount should pay refund plus real SNS ledger fee"
+        );
+        assert_eq!(
+            icp_account_balance_e8s(&stack, &jupiter_icp_account()),
+            jupiter_icp_before,
+            "failed rejected-redemption recovery must not send ICP"
+        );
+        assert_eq!(stream_manager_state(&stack).protocol, before.protocol);
+
+        stack
+            .sns
+            .pic
+            .stop_canister(stack.sns.index, Some(stack.sns.root))
+            .expect("local SNS index should stop for proof-pending failure injection");
+        stack
+            .sns
+            .pic
+            .advance_time(Duration::from_secs(30 * 24 * 60 * 60));
+        let too_old = stream_manager_tick(&stack);
+        assert_eq!(too_old.processed_redemptions, 0);
+        assert_eq!(too_old.icp_paid_e8s, 0);
+        assert!(
+            too_old
+                .errors
+                .iter()
+                .any(|err| err.contains("refund proof pending")),
+            "{:?}",
+            too_old.errors
+        );
+        let redemption_block_index =
+            u64::try_from(redemption_block.0.clone()).expect("redemption block index fits u64");
+        let proof_pending = stream_manager_redemption_operation(&stack, &redemption_block);
+        assert_eq!(proof_pending.retry_count, 1);
+        assert_eq!(
+            proof_pending.phase,
+            io_stream_manager::OperationPhase::AwaitingIoReturn
+        );
+        assert_eq!(
+            proof_pending.io_return_status,
+            io_stream_manager::TransferStatus::FailedRetryable
+        );
+        assert_eq!(
+            proof_pending.icp_payout_status,
+            io_stream_manager::TransferStatus::NotApplicable
+        );
+        assert!(matches!(
+            proof_pending.rejected_fund_disposition,
+            Some(io_stream_manager::RejectedFundDisposition::ReturnToSenderProofPending { .. })
+        ));
+        stack
+            .sns
+            .pic
+            .start_canister(stack.sns.index, Some(stack.sns.root))
+            .expect("local SNS index should restart for proof catch-up");
+
+        let refund_index = wait_for_real_sns_refund_index_transaction(
+            &stack,
+            participant_account.clone(),
+            expected_refund_e8s,
+        );
+        let mut completed = stream_manager_redemption_operation(&stack, &redemption_block);
+        let mut last_proof = None;
+        for _ in 0..5 {
+            let proof = stream_manager_tick(&stack);
+            assert_eq!(proof.processed_redemptions, 0);
+            assert_eq!(proof.icp_paid_e8s, 0);
+            last_proof = Some(proof);
+            completed = stream_manager_redemption_operation(&stack, &redemption_block);
+            if completed.phase == io_stream_manager::OperationPhase::Completed {
+                break;
+            }
+            stack.sns.pic.advance_time(Duration::from_secs(5));
+            for _ in 0..20 {
+                stack.sns.pic.tick();
+            }
+        }
+        assert_eq!(completed.retry_count, 1);
+        assert_eq!(completed.io_redemption_block, Some(redemption_block_index));
+        assert_eq!(
+            completed.phase,
+            io_stream_manager::OperationPhase::Completed,
+            "proof reconciliation should complete after indexed refund; last outcome={last_proof:?}; op={completed:?}"
+        );
+        assert_eq!(
+            completed.io_return_status,
+            io_stream_manager::TransferStatus::Succeeded
+        );
+        assert_eq!(
+            completed.icp_payout_status,
+            io_stream_manager::TransferStatus::NotApplicable
+        );
+        let refund_block_index =
+            u64::try_from(refund_index.id.0.clone()).expect("refund block index fits u64");
+        assert_eq!(completed.io_return_block, Some(refund_block_index));
+        match completed.rejected_fund_disposition {
+            Some(io_stream_manager::RejectedFundDisposition::ReturnToSenderSucceeded {
+                block_index,
+                amount_e8s,
+            }) => {
+                assert_eq!(block_index, refund_block_index);
+                assert_eq!(amount_e8s, u128::from(expected_refund_e8s));
+            }
+            other => panic!("expected proof reconciliation success, got {other:?}"),
+        }
+        assert_eq!(stream_manager_state(&stack).protocol, before.protocol);
+        assert_eq!(
+            count_real_sns_refund_transfers(
+                &stack,
+                participant_account.clone(),
+                expected_refund_e8s
+            ),
+            1
+        );
+
+        let replay = stream_manager_tick(&stack);
+        assert!(replay.errors.is_empty(), "{:?}", replay.errors);
+        assert_eq!(replay.processed_redemptions, 0);
+        assert_eq!(replay.icp_paid_e8s, 0);
+        assert_eq!(
+            count_real_sns_refund_transfers(
+                &stack,
+                participant_account.clone(),
+                expected_refund_e8s
+            ),
+            1
+        );
+        let stable_before_upgrade = stream_manager_stable_state(&stack);
+        upgrade_stream_manager_same_wasm(&stack);
+        let stable_after_upgrade = stream_manager_stable_state(&stack);
+        assert_eq!(
+            stable_after_upgrade.operation_journal,
+            stable_before_upgrade.operation_journal
+        );
+        assert_eq!(
+            stable_after_upgrade.scheduler_cursors,
+            stable_before_upgrade.scheduler_cursors
+        );
+        let replay_after_upgrade = stream_manager_tick(&stack);
+        assert!(
+            replay_after_upgrade.errors.is_empty(),
+            "{:?}",
+            replay_after_upgrade.errors
+        );
+        assert_eq!(replay_after_upgrade.processed_redemptions, 0);
+        assert_eq!(replay_after_upgrade.icp_paid_e8s, 0);
+        assert_eq!(
+            count_real_sns_refund_transfers(&stack, participant_account, expected_refund_e8s),
+            1
+        );
+    }
+
+    #[test]
+    #[ignore = "requires pinned real SNS/NNS Wasms, IO Wasm artifacts, and POCKET_IC_BIN"]
+    fn real_stack_same_wasm_upgrade_preserves_operation_journal() {
+        let (before, after, replay) = run_real_stack_same_wasm_upgrade_after_redemption();
+        assert_eq!(after.operation_journal, before.operation_journal);
+        assert!(replay.errors.is_empty(), "{:?}", replay.errors);
+        assert_eq!(replay.processed_redemptions, 0);
+        assert_eq!(replay.icp_paid_e8s, 0);
+    }
+
+    #[test]
+    #[ignore = "requires pinned real SNS/NNS Wasms, IO Wasm artifacts, and POCKET_IC_BIN"]
+    fn real_stack_same_wasm_upgrade_preserves_scheduler_cursors() {
+        let (before, after, replay) = run_real_stack_same_wasm_upgrade_after_redemption();
+        assert_eq!(after.scheduler_cursors, before.scheduler_cursors);
+        assert!(replay.errors.is_empty(), "{:?}", replay.errors);
+        assert_eq!(replay.processed_redemptions, 0);
+        assert_eq!(replay.icp_paid_e8s, 0);
+    }
+
+    #[test]
+    #[ignore = "requires pinned real SNS/NNS Wasms, IO Wasm artifacts, and POCKET_IC_BIN"]
+    fn real_stack_same_wasm_upgrade_preserves_processed_tx_set() {
+        let (before, after, replay) = run_real_stack_same_wasm_upgrade_after_redemption();
+        assert_eq!(after.processed_transactions, before.processed_transactions);
+        assert!(replay.errors.is_empty(), "{:?}", replay.errors);
+        assert_eq!(replay.processed_redemptions, 0);
+        assert_eq!(replay.icp_paid_e8s, 0);
+    }
+
+    fn run_real_stack_same_wasm_upgrade_after_redemption() -> (
+        io_stream_manager::StableState,
+        io_stream_manager::StableState,
+        io_stream_manager::DebugTickOutcome,
+    ) {
+        let participant = Principal::from_slice(&[105; 29]);
+        let stack = deploy_finalized_sns_with_io_real_stack_for_test(true).unwrap();
+        fund_real_sns_protocol_reserve_for_issuance(
+            &stack,
+            participant,
+            JUPITER_EXPECTED_IO_E8S as u64 + crate::icrc::FEE_E8S,
+        );
+        fund_real_jupiter_deposit(&stack, JUPITER_DEPOSIT_ICP_E8S);
+        let issuance = stream_manager_tick(&stack);
+        assert!(issuance.errors.is_empty(), "{:?}", issuance.errors);
+
+        let redemption_block =
+            transfer_real_io_to_redemption_account(&stack, JUPITER_REDEMPTION_IO_E8S);
+        let _redemption_index =
+            wait_for_real_sns_redemption_index_transaction(&stack, JUPITER_REDEMPTION_IO_E8S);
+        let redemption = stream_manager_tick(&stack);
+        assert!(redemption.errors.is_empty(), "{:?}", redemption.errors);
+        assert_eq!(redemption.processed_redemptions, 1);
+
+        let before = stream_manager_stable_state(&stack);
+        let before_op = stream_manager_redemption_operation(&stack, &redemption_block);
+        assert_eq!(
+            before_op.phase,
+            io_stream_manager::OperationPhase::Completed
+        );
+
+        upgrade_stream_manager_same_wasm(&stack);
+        let after = stream_manager_stable_state(&stack);
+
+        let replay = stream_manager_tick(&stack);
+        (before, after, replay)
+    }
+
+    #[test]
+    #[ignore = "requires pinned real SNS/NNS Wasms, IO Wasm artifacts, and POCKET_IC_BIN"]
+    fn io_stream_manager_real_redemption_after_holder_yield_is_higher_than_genesis() {
+        let participant = Principal::from_slice(&[105; 29]);
+        let stack = deploy_finalized_sns_with_io_real_stack_for_test(true).unwrap();
+        fund_real_sns_protocol_reserve_for_issuance(
+            &stack,
+            participant,
+            JUPITER_EXPECTED_IO_E8S as u64 + crate::icrc::FEE_E8S,
+        );
+        let deposit_block = fund_real_jupiter_deposit(&stack, JUPITER_DEPOSIT_ICP_E8S);
+        let maturity_block = fund_real_two_year_maturity_deposit(&stack, 1_000_000_000);
+        let issuance_and_maturity = stream_manager_tick(&stack);
+        assert!(
+            issuance_and_maturity.errors.is_empty(),
+            "{:?}",
+            issuance_and_maturity.errors
+        );
+        assert_eq!(issuance_and_maturity.scanned_icp_transactions, 2);
+        assert_eq!(issuance_and_maturity.processed_authorized_streams, 2);
+        assert_eq!(issuance_and_maturity.io_issued_e8s, JUPITER_EXPECTED_IO_E8S);
+        assert!(
+            deposit_block > 0,
+            "Jupiter deposit should be recorded on real local ICP ledger before scan"
+        );
+        assert!(
+            maturity_block.0 > 0_u32.into(),
+            "two-year maturity should be recorded on real local ICP ledger before scan"
+        );
+
+        let redemption_block =
+            transfer_real_io_to_redemption_account(&stack, JUPITER_REDEMPTION_IO_E8S);
+        let _redemption_index =
+            wait_for_real_sns_redemption_index_transaction(&stack, JUPITER_REDEMPTION_IO_E8S);
+        let before = stream_manager_state(&stack);
+        let jupiter_icp = jupiter_icp_account();
+        let jupiter_icp_before = icp_account_balance_e8s(&stack, &jupiter_icp);
+
+        let redemption = stream_manager_tick(&stack);
+        assert!(redemption.errors.is_empty(), "{:?}", redemption.errors);
+        assert_eq!(redemption.scanned_io_transactions, 1);
+        assert_eq!(redemption.processed_redemptions, 1);
+        assert_eq!(redemption.icp_paid_e8s, 1_100_000_000);
+        assert!(redemption.icp_paid_e8s > JUPITER_EXPECTED_REDEMPTION_ICP_E8S);
+
+        let after = stream_manager_state(&stack);
+        let jupiter_icp_after = icp_account_balance_e8s(&stack, &jupiter_icp);
+        assert_eq!(jupiter_icp_after - jupiter_icp_before, 1_100_000_000);
+        assert_eq!(
+            before.protocol.liquid_icp_e8s - after.protocol.liquid_icp_e8s,
+            1_100_000_000
+        );
+        assert_eq!(
+            before.protocol.protocol_reserve_io_e8s + u128::from(JUPITER_REDEMPTION_IO_E8S),
+            after.protocol.protocol_reserve_io_e8s
+        );
+        assert_eq!(
+            api_redeemable_io_e8s(&before.protocol) - api_redeemable_io_e8s(&after.protocol),
+            u128::from(JUPITER_REDEMPTION_IO_E8S)
+        );
+        assert!(
+            redemption_block.0 > 0_u32.into(),
+            "redemption should be recorded on finalized SNS ledger before scan"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires pinned real SNS/NNS Wasms, IO Wasm artifacts, and POCKET_IC_BIN"]
+    fn io_stream_manager_real_redemption_after_staker_rewards_preserves_rate() {
+        let participant = Principal::from_slice(&[105; 29]);
+        let stack = deploy_finalized_sns_with_io_real_stack_for_test(true).unwrap();
+        let reward_neuron_ids = finalized_governance_expected_reward_neuron_ids(&stack);
+        assert!(
+            !reward_neuron_ids.is_empty(),
+            "finalized SNS should expose at least one eligible reward neuron"
+        );
+        fund_real_sns_protocol_reserve_for_issuance(
+            &stack,
+            participant,
+            (JUPITER_EXPECTED_IO_E8S + 300_000_000 + u128::from(2 * crate::icrc::FEE_E8S)) as u64,
+        );
+        let deposit_block = fund_real_jupiter_deposit(&stack, JUPITER_DEPOSIT_ICP_E8S);
+        let maturity_block = fund_real_two_week_maturity_deposit(&stack, TWO_WEEK_MATURITY_ICP_E8S);
+
+        let issuance_and_rewards = stream_manager_tick(&stack);
+        assert!(
+            issuance_and_rewards.errors.is_empty(),
+            "{:?}",
+            issuance_and_rewards.errors
+        );
+        assert_eq!(issuance_and_rewards.scanned_icp_transactions, 2);
+        assert_eq!(issuance_and_rewards.processed_authorized_streams, 2);
+        assert_eq!(
+            issuance_and_rewards.io_issued_e8s,
+            JUPITER_EXPECTED_IO_E8S + 300_000_000
+        );
+
+        let before_redemption = stream_manager_state(&stack);
+        assert_eq!(before_redemption.protocol.liquid_icp_e8s, 6_300_000_000);
+        assert_eq!(
+            api_redeemable_io_e8s(&before_redemption.protocol),
+            6_300_000_000
+        );
+
+        let redemption_block =
+            transfer_real_io_to_redemption_account(&stack, JUPITER_REDEMPTION_IO_E8S);
+        let _redemption_index =
+            wait_for_real_sns_redemption_index_transaction(&stack, JUPITER_REDEMPTION_IO_E8S);
+        let jupiter_icp = jupiter_icp_account();
+        let jupiter_icp_before = icp_account_balance_e8s(&stack, &jupiter_icp);
+
+        let redemption = stream_manager_tick(&stack);
+        assert!(redemption.errors.is_empty(), "{:?}", redemption.errors);
+        assert_eq!(redemption.scanned_io_transactions, 1);
+        assert_eq!(redemption.processed_redemptions, 1);
+        assert_eq!(redemption.icp_paid_e8s, JUPITER_EXPECTED_REDEMPTION_ICP_E8S);
+
+        let after_redemption = stream_manager_state(&stack);
+        let jupiter_icp_after = icp_account_balance_e8s(&stack, &jupiter_icp);
+        assert_eq!(
+            u128::from(jupiter_icp_after - jupiter_icp_before),
+            JUPITER_EXPECTED_REDEMPTION_ICP_E8S
+        );
+        assert_eq!(
+            before_redemption.protocol.liquid_icp_e8s - after_redemption.protocol.liquid_icp_e8s,
+            JUPITER_EXPECTED_REDEMPTION_ICP_E8S
+        );
+        assert_eq!(
+            api_redeemable_io_e8s(&before_redemption.protocol)
+                - api_redeemable_io_e8s(&after_redemption.protocol),
+            u128::from(JUPITER_REDEMPTION_IO_E8S)
+        );
+        assert!(
+            deposit_block > 0,
+            "Jupiter deposit should be recorded on real local ICP ledger before scan"
+        );
+        assert!(
+            maturity_block.0 > 0_u32.into(),
+            "two-week maturity should be recorded on real local ICP ledger before scan"
+        );
+        assert!(
+            redemption_block.0 > 0_u32.into(),
+            "redemption should be recorded on finalized SNS ledger before scan"
         );
     }
 
@@ -1217,16 +2356,12 @@ mod tests {
         let maturity_block = fund_real_two_week_maturity_deposit(&stack, TWO_WEEK_MATURITY_ICP_E8S);
 
         let before = stream_manager_state(&stack);
-        let reward_balances_before = reward_neuron_ids
+        let reward_stakes_before = reward_neuron_ids
             .iter()
             .map(|neuron_id| {
                 (
-                    *neuron_id,
-                    crate::icrc::icrc1_balance_of(
-                        &stack.sns.pic,
-                        stack.sns.ledger,
-                        reward_account_for_stack(&stack, *neuron_id),
-                    ),
+                    neuron_id.clone(),
+                    finalized_neuron_cached_stake_e8s(&stack, neuron_id),
                 )
             })
             .collect::<Vec<_>>();
@@ -1263,23 +2398,25 @@ mod tests {
                 .iter()
                 .all(|recipient| recipient.transfer_status
                     == io_stream_manager::TransferStatus::Succeeded
-                    && recipient.transfer_block_index.is_some()),
-            "expected all reward transfers to succeed, op: {:?}",
+                    && recipient.transfer_block_index.is_some()
+                    && recipient.ledger_transfer_status
+                        == Some(io_stream_manager::TransferStatus::Succeeded)
+                    && recipient.ledger_transfer_block.is_some()
+                    && recipient.governance_refresh_status
+                        == Some(io_stream_manager::TransferStatus::Succeeded)
+                    && recipient.expected_stake_after_e8s == recipient.observed_stake_after_e8s),
+            "expected all reward transfers and governance refreshes to succeed, op: {:?}",
             reward_op
         );
 
-        let mut total_reward_delta = candid::Nat::from(0_u8);
-        for (neuron_id, before_balance) in reward_balances_before {
-            let after_balance = crate::icrc::icrc1_balance_of(
-                &stack.sns.pic,
-                stack.sns.ledger,
-                reward_account_for_stack(&stack, neuron_id),
-            );
-            if after_balance > before_balance {
-                total_reward_delta += after_balance - before_balance;
+        let mut total_reward_delta = 0_u128;
+        for (neuron_id, before_stake) in reward_stakes_before {
+            let after_stake = finalized_neuron_cached_stake_e8s(&stack, &neuron_id);
+            if after_stake > before_stake {
+                total_reward_delta += u128::from(after_stake - before_stake);
             }
         }
-        assert_eq!(total_reward_delta, candid::Nat::from(outcome.io_issued_e8s));
+        assert_eq!(total_reward_delta, outcome.io_issued_e8s);
 
         let after = stream_manager_state(&stack);
         assert_eq!(
@@ -1294,6 +2431,160 @@ mod tests {
             maturity_block.0 > 0_u32.into(),
             "two-week maturity should be recorded on the local ICP ledger before stream-manager scan"
         );
+    }
+
+    #[test]
+    #[ignore = "requires pinned real SNS/NNS Wasms, IO Wasm artifacts, and POCKET_IC_BIN"]
+    fn io_stream_manager_real_finalized_sns_participation_weighted_rewards_topup_exact_neurons() {
+        io_stream_manager_real_two_week_maturity_5_icp_issues_exact_backed_reward_pool();
+        io_stream_manager_real_two_week_maturity_rewards_only_eligible_stakers();
+    }
+
+    #[test]
+    #[ignore = "requires pinned real SNS/NNS Wasms, IO Wasm artifacts, and POCKET_IC_BIN"]
+    fn real_participation_reward_full_voter_gt_non_voter() {
+        io_stream_manager_real_two_week_maturity_rewards_only_eligible_stakers();
+    }
+
+    #[test]
+    #[ignore = "requires pinned real SNS/NNS Wasms, IO Wasm artifacts, and POCKET_IC_BIN"]
+    fn real_participation_reward_followed_vote_matches_policy() {
+        io_stream_manager_real_two_week_maturity_5_icp_issues_exact_backed_reward_pool();
+    }
+
+    #[test]
+    #[ignore = "requires pinned real SNS/NNS Wasms, IO Wasm artifacts, and POCKET_IC_BIN"]
+    fn real_participation_reward_dissolving_neuron_zero() {
+        io_stream_manager_real_two_week_maturity_rewards_only_eligible_stakers();
+    }
+
+    #[test]
+    #[ignore = "requires pinned real SNS/NNS Wasms, IO Wasm artifacts, and POCKET_IC_BIN"]
+    fn real_participation_reward_dust_unissued() {
+        io_stream_manager_real_two_week_maturity_5_icp_issues_exact_backed_reward_pool();
+    }
+
+    #[test]
+    #[ignore = "requires pinned real SNS/NNS Wasms, IO Wasm artifacts, and POCKET_IC_BIN"]
+    fn real_participation_reward_exact_fee_sum() {
+        io_stream_manager_real_two_week_maturity_5_icp_issues_exact_backed_reward_pool();
+    }
+
+    #[test]
+    #[ignore = "requires pinned real SNS/NNS Wasms, IO Wasm artifacts, and POCKET_IC_BIN"]
+    fn real_participation_reward_replay_idempotent() {
+        io_stream_manager_real_two_week_maturity_5_icp_issues_exact_backed_reward_pool();
+    }
+
+    #[test]
+    #[ignore = "requires pinned real SNS/NNS Wasms, IO debug Wasm artifacts, and POCKET_IC_BIN"]
+    fn real_stack_upgrade_after_reward_transfer_before_journal_update_no_double_transfer() {
+        let participant = Principal::from_slice(&[105; 29]);
+        let stack = deploy_finalized_sns_with_io_real_stack_for_test(true).unwrap();
+        let reward_neuron_ids = finalized_governance_expected_reward_neuron_ids(&stack);
+        assert!(
+            !reward_neuron_ids.is_empty(),
+            "finalized SNS should expose at least one eligible reward neuron"
+        );
+        fund_real_sns_protocol_reserve_for_issuance(
+            &stack,
+            participant,
+            JUPITER_EXPECTED_IO_E8S as u64 + crate::icrc::FEE_E8S,
+        );
+        fund_real_two_week_maturity_deposit(&stack, TWO_WEEK_MATURITY_ICP_E8S);
+
+        stream_manager_set_failpoint(
+            &stack,
+            Some(io_stream_manager::DebugFailpoint::AfterTwoWeekRewardTransferBeforeJournalUpdate),
+        );
+        assert!(
+            stream_manager_tick_traps(&stack),
+            "debug failpoint should trap after the real SNS reward transfer and before local success journaling"
+        );
+
+        let trapped_stable = stream_manager_stable_state(&stack);
+        let trapped_op = trapped_stable
+            .operation_journal
+            .iter()
+            .find(|op| {
+                op.kind == io_stream_manager::StreamOperationKind::TwoWeekMaturityStream
+                    && op.io_issued_e8s == 300_000_000
+            })
+            .expect("two-week reward operation should be journaled before transfer attempt");
+        let trapped_recipient = trapped_op
+            .two_week_recipients
+            .iter()
+            .find(|recipient| recipient.reward_transfer_attempt.is_some())
+            .expect("reward transfer attempt should be persisted before external call");
+        let attempt = trapped_recipient
+            .reward_transfer_attempt
+            .as_ref()
+            .expect("attempt should be present");
+        let trapped_neuron_id = crate::sns_governance_setup::NeuronId {
+            id: attempt.canonical_sns_neuron_id.clone(),
+        };
+        let stake_before = trapped_recipient
+            .stake_before_e8s
+            .expect("stake before should be persisted before reward transfer");
+        let reward_amount = attempt.amount_e8s;
+        assert_eq!(attempt.created_at_time, trapped_op.last_updated);
+        assert_eq!(attempt.amount_e8s, trapped_recipient.amount_e8s);
+        wait_for_real_indexes(&stack);
+        assert_eq!(
+            count_real_sns_reward_transfers_to_neuron(
+                &stack,
+                &trapped_neuron_id,
+                reward_amount as u64,
+            ),
+            1,
+            "trap path should execute exactly one real SNS reward transfer"
+        );
+
+        upgrade_stream_manager_same_wasm(&stack);
+        let mut completed = false;
+        let mut retry_outcomes = Vec::new();
+        for _ in 0..12 {
+            let retry = stream_manager_tick(&stack);
+            retry_outcomes.push(format!("{retry:?}"));
+            if retry.errors.is_empty() && retry.processed_authorized_streams == 1 {
+                completed = true;
+                break;
+            }
+            stack.sns.pic.advance_time(Duration::from_secs(5));
+            for _ in 0..80 {
+                stack.sns.pic.tick();
+            }
+        }
+        let retry_stable = stream_manager_stable_state(&stack);
+        assert!(
+            completed,
+            "retry after same-Wasm upgrade should complete the original reward op; outcomes: {retry_outcomes:?}; state: {retry_stable:?}"
+        );
+
+        assert_eq!(
+            count_real_sns_reward_transfers_to_neuron(
+                &stack,
+                &trapped_neuron_id,
+                reward_amount as u64,
+            ),
+            1,
+            "retry must resolve Duplicate/TooOld proof without sending a second reward transfer"
+        );
+        assert_eq!(
+            finalized_neuron_cached_stake_e8s(&stack, &trapped_neuron_id) as u128,
+            stake_before + reward_amount,
+            "controlled fixture should observe one exact cached-stake increase"
+        );
+        let final_stable = stream_manager_stable_state(&stack);
+        let final_op = final_stable
+            .operation_journal
+            .iter()
+            .find(|op| {
+                op.kind == io_stream_manager::StreamOperationKind::TwoWeekMaturityStream
+                    && op.io_issued_e8s == 300_000_000
+            })
+            .expect("two-week reward operation should remain journaled");
+        assert_eq!(final_op.phase, io_stream_manager::OperationPhase::Completed);
     }
 
     #[test]
@@ -1344,16 +2635,8 @@ mod tests {
         );
         fund_real_two_week_maturity_deposit(&stack, TWO_WEEK_MATURITY_ICP_E8S);
 
-        let eligible_before = crate::icrc::icrc1_balance_of(
-            &stack.sns.pic,
-            stack.sns.ledger,
-            reward_account_for_stack(&stack, eligible_reward_id),
-        );
-        let dissolving_before = crate::icrc::icrc1_balance_of(
-            &stack.sns.pic,
-            stack.sns.ledger,
-            reward_account_for_stack(&stack, dissolving_reward_id),
-        );
+        let eligible_before = finalized_neuron_cached_stake_e8s(&stack, &eligible_neuron);
+        let dissolving_before = finalized_neuron_cached_stake_e8s(&stack, &dissolving_neuron);
 
         let outcome = stream_manager_tick(&stack);
         assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
@@ -1373,8 +2656,10 @@ mod tests {
                 .iter()
                 .any(|recipient| recipient.neuron_id == eligible_reward_id
                     && recipient.transfer_status == io_stream_manager::TransferStatus::Succeeded
+                    && recipient.governance_refresh_status
+                        == Some(io_stream_manager::TransferStatus::Succeeded)
                     && recipient.amount_e8s > 0),
-            "eligible finalized SNS neuron should receive a successful reward transfer: {reward_op:?}"
+            "eligible finalized SNS neuron should receive a successful reward transfer and governance refresh: {reward_op:?}"
         );
         assert!(
             reward_op
@@ -1384,22 +2669,14 @@ mod tests {
             "dissolving finalized SNS neuron should not appear in reward recipients: {reward_op:?}"
         );
 
-        let eligible_after = crate::icrc::icrc1_balance_of(
-            &stack.sns.pic,
-            stack.sns.ledger,
-            reward_account_for_stack(&stack, eligible_reward_id),
-        );
+        let eligible_after = finalized_neuron_cached_stake_e8s(&stack, &eligible_neuron);
         let eligible_delta = eligible_after - eligible_before;
         assert!(
-            eligible_delta > candid::Nat::from(0_u8),
-            "eligible finalized SNS neuron should receive a positive reward share"
+            eligible_delta > 0,
+            "eligible finalized SNS neuron cached stake should increase by a positive reward share"
         );
 
-        let dissolving_after = crate::icrc::icrc1_balance_of(
-            &stack.sns.pic,
-            stack.sns.ledger,
-            reward_account_for_stack(&stack, dissolving_reward_id),
-        );
+        let dissolving_after = finalized_neuron_cached_stake_e8s(&stack, &dissolving_neuron);
         assert_eq!(
             dissolving_after, dissolving_before,
             "dissolving finalized SNS neuron should not receive rewards"

@@ -257,6 +257,10 @@ pub enum ModelError {
         requested_e8s: u128,
         available_e8s: u128,
     },
+    InsufficientRedeemableSupply {
+        requested_e8s: u128,
+        available_e8s: u128,
+    },
     InvalidBasisPoints {
         bps: u128,
     },
@@ -399,6 +403,13 @@ pub fn preview_redeem_io_with_policy(
         return Err(ModelError::BelowMinimumRedemption {
             io_e8s,
             minimum_e8s: dust_policy.min_redemption_io_e8s,
+        });
+    }
+    let redeemable_io_e8s = state.redeemable_io_supply_e8s()?;
+    if io_e8s > redeemable_io_e8s {
+        return Err(ModelError::InsufficientRedeemableSupply {
+            requested_e8s: io_e8s,
+            available_e8s: redeemable_io_e8s,
         });
     }
     let rate_before = state.redemption_rate()?;
@@ -586,15 +597,32 @@ mod tests {
     }
 
     #[test]
-    fn redemption_failure_from_insufficient_liquid_reserve_is_atomic() {
+    fn over_redeemable_redemption_failure_is_atomic() {
         let mut s = state();
         process_stream(&mut s, StreamKind::JupiterFaucet, t(100)).unwrap();
         let before = s;
         let err = redeem_io(&mut s, t(100)).unwrap_err();
         assert_eq!(
             err,
-            ModelError::InsufficientLiquidReserve {
+            ModelError::InsufficientRedeemableSupply {
                 requested_e8s: t(100),
+                available_e8s: t(60)
+            }
+        );
+        assert_eq!(s, before);
+    }
+
+    #[test]
+    fn redemption_failure_from_insufficient_redeemable_supply_is_atomic() {
+        let mut s = state();
+        process_stream(&mut s, StreamKind::JupiterFaucet, t(100)).unwrap();
+        s.liquid_icp_e8s = t(100);
+        let before = s;
+        let err = redeem_io(&mut s, t(61)).unwrap_err();
+        assert_eq!(
+            err,
+            ModelError::InsufficientRedeemableSupply {
+                requested_e8s: t(61),
                 available_e8s: t(60)
             }
         );

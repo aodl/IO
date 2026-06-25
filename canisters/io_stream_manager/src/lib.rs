@@ -180,6 +180,8 @@ struct CanisterState {
     manager: StreamManager,
     operation_journal: Vec<StreamOperation>,
     scheduler_cursors: SchedulerCursors,
+    #[cfg(any(test, debug_assertions))]
+    debug_failpoint: Option<DebugFailpoint>,
 }
 
 impl CanisterState {
@@ -199,6 +201,8 @@ impl CanisterState {
             manager,
             operation_journal: Vec::new(),
             scheduler_cursors: SchedulerCursors::default(),
+            #[cfg(any(test, debug_assertions))]
+            debug_failpoint: None,
         }
     }
 }
@@ -303,6 +307,7 @@ pub fn migrate_stable_state(
     }
 }
 
+#[cfg_attr(not(any(test, debug_assertions)), allow(dead_code))]
 fn decode_stable_state_bytes(bytes: &[u8]) -> Result<StableState, StableMigrationError> {
     let versioned_err = match candid::decode_args::<(VersionedStableState,)>(bytes) {
         Ok((snapshot,)) => return migrate_stable_state(snapshot),
@@ -347,6 +352,7 @@ pub enum StreamOperationKind {
     TwoYearMaturityStream,
     TwoWeekMaturityStream,
     Redemption,
+    RejectedRedemption,
     PrincipalUnwind,
     UnknownIcpDeposit,
 }
@@ -369,14 +375,103 @@ pub enum TransferStatus {
     Pending,
     Succeeded,
     FailedRetryable,
+    FailedTerminal,
+    NotApplicable,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct RejectedRefundAttemptRecord {
+    pub attempted_refund_amount_e8s: u128,
+    pub attempted_fee_e8s: u128,
+    pub attempted_created_at_time: u64,
+    pub memo: Option<io_ledger_types::Memo>,
+    pub refund_source_account: io_ledger_types::Account,
+    pub destination_account: io_ledger_types::Account,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum RejectedFundDisposition {
+    ReturnToSenderPending,
+    ReturnToSenderSucceeded {
+        block_index: u64,
+        amount_e8s: u128,
+    },
+    ReturnToSenderProofPending {
+        reason: String,
+        original_created_at_time: Option<u64>,
+        proof_scan_state: Option<io_ledger_types::AccountHistoryScanState>,
+    },
+    ReturnToSenderRetryable {
+        error: String,
+        next_attempt_created_at_time: Option<u64>,
+    },
+    ReturnToSenderManualReconciliationRequired {
+        reason: String,
+        original_created_at_time: Option<u64>,
+    },
+    QuarantinedTerminal {
+        reason: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct RewardTransferAttemptRecord {
+    pub amount_e8s: u128,
+    pub fee_e8s: u128,
+    pub created_at_time: u64,
+    pub memo: Option<io_ledger_types::Memo>,
+    pub source_account: io_ledger_types::Account,
+    pub destination_account: io_ledger_types::Account,
+    pub canonical_sns_neuron_id: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum RewardPreflightStatus {
+    Pending,
+    Validated,
+    FailedTerminal,
+    ManualReconciliationRequired,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct RewardDistributionPreflight {
+    pub status: RewardPreflightStatus,
+    pub ledger_fee_e8s: u128,
+    pub recipient_count: u64,
+    pub total_reward_e8s: u128,
+    pub total_fee_e8s: u128,
+    pub total_reserve_debit_e8s: u128,
+    pub protocol_reserve_available_e8s: u128,
+    pub real_ledger_reserve_balance_e8s: u128,
+    pub validated_at_timestamp_nanos: u64,
+    pub canonical_recipient_ids: Vec<Vec<u8>>,
+    pub compatibility_keys: Vec<u64>,
+    pub dust_e8s: u128,
+    pub failure_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct TwoWeekRecipientTransfer {
+    pub sns_neuron_id: Option<Vec<u8>>,
     pub neuron_id: u64,
     pub amount_e8s: u128,
     pub transfer_status: TransferStatus,
     pub transfer_block_index: Option<u64>,
+    pub ledger_transfer_status: Option<TransferStatus>,
+    pub ledger_transfer_block: Option<u64>,
+    pub governance_refresh_status: Option<TransferStatus>,
+    pub stake_before_e8s: Option<u128>,
+    pub expected_stake_after_e8s: Option<u128>,
+    pub minimum_expected_stake_after_e8s: Option<u128>,
+    pub observed_stake_after_e8s: Option<u128>,
+    pub concurrent_stake_delta_e8s: Option<u128>,
+    pub refresh_retry_count: Option<u32>,
+    pub refresh_last_error: Option<String>,
+    pub reward_transfer_attempt: Option<RewardTransferAttemptRecord>,
+    pub ledger_transfer_fee_e8s: Option<u128>,
+    pub reward_amount_received_e8s: Option<u128>,
+    pub reserve_debit_e8s: Option<u128>,
+    pub ledger_transfer_proof_scan_state: Option<io_ledger_types::AccountHistoryScanState>,
     pub last_error: Option<String>,
 }
 
@@ -408,6 +503,20 @@ pub struct StreamOperation {
     pub icp_payout_block: Option<u64>,
     pub io_return_block: Option<u64>,
     pub user_account: Option<String>,
+    pub source_account: Option<io_ledger_types::Account>,
+    pub rejected_fund_disposition: Option<RejectedFundDisposition>,
+    pub rejected_refund_attempt: Option<RejectedRefundAttemptRecord>,
+    pub reward_preflight: Option<RewardDistributionPreflight>,
+    pub reserved_reward_debit_e8s: Option<u128>,
+}
+
+#[cfg(any(test, debug_assertions))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum DebugFailpoint {
+    AfterRejectedRefundTransferBeforeJournalUpdate,
+    AfterTwoWeekRewardTransferBeforeJournalUpdate,
+    AfterTwoWeekRewardTransferBeforeGovernanceRefresh,
+    AfterTwoWeekGovernanceRefreshBeforeJournalCompletion,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
@@ -468,6 +577,11 @@ impl StreamOperation {
             icp_payout_block: None,
             io_return_block: None,
             user_account: None,
+            source_account: None,
+            rejected_fund_disposition: None,
+            rejected_refund_attempt: None,
+            reward_preflight: None,
+            reserved_reward_debit_e8s: None,
         }
     }
 
@@ -517,6 +631,14 @@ impl StreamOperation {
         self.phase = phase;
         self.last_error = None;
         self.last_updated = canister_time();
+    }
+
+    #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+    fn mark_terminal_error(&mut self, err: String, phase: OperationPhase) {
+        self.retry_count = self.retry_count.saturating_add(1);
+        self.last_updated = canister_time();
+        self.phase = OperationPhase::FailedTerminal;
+        self.last_error = Some(format!("{phase:?}: {err}"));
     }
 }
 
@@ -786,8 +908,31 @@ fn import_stable_state(state: StableState) {
             },
             operation_journal: state.operation_journal,
             scheduler_cursors: state.scheduler_cursors,
+            #[cfg(any(test, debug_assertions))]
+            debug_failpoint: None,
         };
     });
+}
+
+#[cfg(any(test, debug_assertions))]
+fn set_debug_failpoint_impl(failpoint: Option<DebugFailpoint>) {
+    CANISTER_STATE.with(|cell| {
+        cell.borrow_mut().debug_failpoint = failpoint;
+    });
+}
+
+#[cfg(any(test, debug_assertions))]
+#[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+pub(crate) fn consume_debug_failpoint(failpoint: DebugFailpoint) -> bool {
+    CANISTER_STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        if state.debug_failpoint == Some(failpoint) {
+            state.debug_failpoint = None;
+            true
+        } else {
+            false
+        }
+    })
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::pre_upgrade)]
@@ -798,10 +943,22 @@ pub fn pre_upgrade() {
 
 #[cfg_attr(target_family = "wasm", ic_cdk::post_upgrade)]
 pub fn post_upgrade() {
-    let bytes = ic_cdk::stable::stable_bytes();
-    let state = decode_stable_state_bytes(&bytes).expect(
-        "io_stream_manager stable state is missing, corrupt, or unsupported during upgrade",
-    );
+    let state = match ic_cdk::storage::stable_restore::<(VersionedStableState,)>() {
+        Ok((snapshot,)) => migrate_stable_state(snapshot),
+        Err(versioned_err) => match ic_cdk::storage::stable_restore::<(StableState,)>() {
+            Ok((state,)) => migrate_stable_state(VersionedStableState {
+                schema_version: 0,
+                state,
+            }),
+            Err(unversioned_err) => Err(StableMigrationError::CorruptSnapshot {
+                canister: "io_stream_manager",
+                message: format!(
+                    "failed to restore versioned stable state: {versioned_err}; failed to restore legacy unversioned stable state: {unversioned_err}"
+                ),
+            }),
+        },
+    }
+    .expect("io_stream_manager stable state is missing, corrupt, or unsupported during upgrade");
     import_stable_state(state);
 }
 
@@ -925,6 +1082,12 @@ pub fn debug_redeem(io_e8s: u128) -> Result<ApiRedemptionOutcome, ApiError> {
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub async fn debug_tick() -> DebugTickOutcome {
     scheduler::scheduler_tick_once().await
+}
+
+#[cfg(any(test, debug_assertions))]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_failpoint(failpoint: Option<DebugFailpoint>) {
+    set_debug_failpoint_impl(failpoint);
 }
 
 #[cfg(test)]
@@ -1258,17 +1421,63 @@ mod tests {
         );
         op.two_week_recipients = vec![
             TwoWeekRecipientTransfer {
+                sns_neuron_id: Some(10_u64.to_be_bytes().to_vec()),
                 neuron_id: 10,
                 amount_e8s: t(40),
                 transfer_status: TransferStatus::Succeeded,
                 transfer_block_index: Some(1),
+                ledger_transfer_status: Some(TransferStatus::Succeeded),
+                ledger_transfer_block: Some(1),
+                governance_refresh_status: Some(TransferStatus::Succeeded),
+                stake_before_e8s: Some(t(100)),
+                expected_stake_after_e8s: Some(t(140)),
+                minimum_expected_stake_after_e8s: Some(t(140)),
+                observed_stake_after_e8s: Some(t(140)),
+                concurrent_stake_delta_e8s: None,
+                refresh_retry_count: Some(0),
+                refresh_last_error: None,
+                reward_transfer_attempt: Some(RewardTransferAttemptRecord {
+                    amount_e8s: t(40),
+                    fee_e8s: 10_000,
+                    created_at_time: 88,
+                    memo: Some(io_ledger_types::Memo::from("two_week_reward:icp:7")),
+                    source_account: io_ledger_types::Account::new(
+                        candid::Principal::anonymous(),
+                        Some(io_ledger_types::Subaccount([1; 32])),
+                    ),
+                    destination_account: io_ledger_types::Account::new(
+                        candid::Principal::anonymous(),
+                        Some(io_ledger_types::Subaccount([10; 32])),
+                    ),
+                    canonical_sns_neuron_id: vec![10; 32],
+                }),
+                ledger_transfer_fee_e8s: Some(10_000),
+                reward_amount_received_e8s: Some(t(40)),
+                reserve_debit_e8s: Some(t(40) + 10_000),
+                ledger_transfer_proof_scan_state: None,
                 last_error: None,
             },
             TwoWeekRecipientTransfer {
+                sns_neuron_id: Some(11_u64.to_be_bytes().to_vec()),
                 neuron_id: 11,
                 amount_e8s: t(20),
                 transfer_status: TransferStatus::FailedRetryable,
                 transfer_block_index: None,
+                ledger_transfer_status: Some(TransferStatus::FailedRetryable),
+                ledger_transfer_block: None,
+                governance_refresh_status: Some(TransferStatus::Pending),
+                stake_before_e8s: None,
+                expected_stake_after_e8s: None,
+                minimum_expected_stake_after_e8s: None,
+                observed_stake_after_e8s: None,
+                concurrent_stake_delta_e8s: None,
+                refresh_retry_count: Some(0),
+                refresh_last_error: None,
+                reward_transfer_attempt: None,
+                ledger_transfer_fee_e8s: None,
+                reward_amount_received_e8s: None,
+                reserve_debit_e8s: None,
+                ledger_transfer_proof_scan_state: None,
                 last_error: Some("reject".to_string()),
             },
         ];
@@ -1360,6 +1569,174 @@ mod tests {
     }
 
     #[test]
+    fn current_versioned_snapshot_restores() {
+        let fixture = pending_redemption_fixture();
+        let bytes = candid::encode_args((VersionedStableState {
+            schema_version: STREAM_MANAGER_STABLE_SCHEMA_VERSION,
+            state: fixture.clone(),
+        },))
+        .unwrap();
+        let migrated = decode_stable_state_bytes_for_tests(&bytes).unwrap();
+
+        assert_eq!(migrated, fixture);
+    }
+
+    #[test]
+    fn old_stable_snapshots_decode_without_not_applicable() {
+        let fixture = pending_redemption_fixture();
+        assert!(fixture.operation_journal.iter().all(|op| {
+            op.icp_payout_status != TransferStatus::NotApplicable
+                && op.io_return_status != TransferStatus::NotApplicable
+        }));
+
+        let bytes = candid::encode_args((fixture.clone(),)).unwrap();
+        let migrated = decode_stable_state_bytes_for_tests(&bytes).unwrap();
+
+        assert_eq!(migrated, fixture);
+    }
+
+    #[test]
+    fn new_stable_snapshots_with_not_applicable_round_trip() {
+        let mut fixture = pending_redemption_fixture();
+        let mut rejected = StreamOperation::stream(
+            "io",
+            101,
+            StreamOperationKind::RejectedRedemption,
+            E8S_PER_TOKEN,
+            ProtocolState::new(1_000_000 * E8S_PER_TOKEN, 900_000 * E8S_PER_TOKEN, 0),
+            0,
+            OperationPhase::Completed,
+        );
+        rejected.icp_payout_status = TransferStatus::NotApplicable;
+        rejected.io_return_status = TransferStatus::Succeeded;
+        rejected.rejected_fund_disposition =
+            Some(RejectedFundDisposition::ReturnToSenderSucceeded {
+                block_index: 102,
+                amount_e8s: E8S_PER_TOKEN - 10_000,
+            });
+        fixture.operation_journal.push(rejected);
+
+        let bytes = candid::encode_args((VersionedStableState {
+            schema_version: STREAM_MANAGER_STABLE_SCHEMA_VERSION,
+            state: fixture.clone(),
+        },))
+        .unwrap();
+        let migrated = decode_stable_state_bytes_for_tests(&bytes).unwrap();
+
+        assert_eq!(migrated, fixture);
+    }
+
+    #[test]
+    fn proof_pending_scan_progress_round_trips_in_stable_snapshot() {
+        let mut fixture = pending_redemption_fixture();
+        let mut scan = io_ledger_types::AccountHistoryScanState::default();
+        scan.cursor.order = Some(io_ledger_types::AccountHistoryPageOrder::Descending);
+        scan.cursor.latest_cursor = Some(io_ledger_types::BlockIndex(91));
+        scan.cursor.oldest_cursor = Some(io_ledger_types::BlockIndex(77));
+        scan.status.num_blocks_synced = Some(io_ledger_types::BlockIndex(91));
+        let mut rejected = StreamOperation::stream(
+            "io",
+            101,
+            StreamOperationKind::RejectedRedemption,
+            E8S_PER_TOKEN,
+            ProtocolState::new(1_000_000 * E8S_PER_TOKEN, 900_000 * E8S_PER_TOKEN, 0),
+            0,
+            OperationPhase::AwaitingIoReturn,
+        );
+        rejected.icp_payout_status = TransferStatus::NotApplicable;
+        rejected.io_return_status = TransferStatus::FailedRetryable;
+        rejected.rejected_fund_disposition =
+            Some(RejectedFundDisposition::ReturnToSenderProofPending {
+                reason: "TooOld; refund proof pending".to_string(),
+                original_created_at_time: Some(500),
+                proof_scan_state: Some(scan.clone()),
+            });
+        fixture.operation_journal.push(rejected);
+
+        let bytes = candid::encode_args((VersionedStableState {
+            schema_version: STREAM_MANAGER_STABLE_SCHEMA_VERSION,
+            state: fixture.clone(),
+        },))
+        .unwrap();
+        let migrated = decode_stable_state_bytes_for_tests(&bytes).unwrap();
+        let restored = migrated
+            .operation_journal
+            .iter()
+            .find(|op| op.source_block_index == Some(101))
+            .expect("proof-pending operation should restore");
+
+        assert!(matches!(
+            &restored.rejected_fund_disposition,
+            Some(RejectedFundDisposition::ReturnToSenderProofPending {
+                proof_scan_state: Some(restored_scan),
+                ..
+            }) if restored_scan == &scan
+        ));
+    }
+
+    #[test]
+    fn original_refund_request_survives_same_wasm_upgrade() {
+        let mut fixture = pending_redemption_fixture();
+        let principal = candid::Principal::from_text("aaaaa-aa").unwrap();
+        let refund_source =
+            io_ledger_types::Account::new(principal, Some(io_ledger_types::Subaccount([9; 32])));
+        let destination =
+            io_ledger_types::Account::new(principal, Some(io_ledger_types::Subaccount([7; 32])));
+        let attempt = RejectedRefundAttemptRecord {
+            attempted_refund_amount_e8s: E8S_PER_TOKEN - 10_000,
+            attempted_fee_e8s: 10_000,
+            attempted_created_at_time: 88,
+            memo: Some(io_ledger_types::Memo::from("rejected_io_refund:io:101")),
+            refund_source_account: refund_source,
+            destination_account: destination,
+        };
+        let mut rejected = StreamOperation::stream(
+            "io",
+            101,
+            StreamOperationKind::RejectedRedemption,
+            E8S_PER_TOKEN,
+            ProtocolState::new(1_000_000 * E8S_PER_TOKEN, 900_000 * E8S_PER_TOKEN, 0),
+            0,
+            OperationPhase::AwaitingIoReturn,
+        );
+        rejected.icp_payout_status = TransferStatus::NotApplicable;
+        rejected.io_return_status = TransferStatus::FailedRetryable;
+        rejected.rejected_fund_disposition =
+            Some(RejectedFundDisposition::ReturnToSenderProofPending {
+                reason: "TooOld; refund proof pending".to_string(),
+                original_created_at_time: Some(88),
+                proof_scan_state: None,
+            });
+        rejected.rejected_refund_attempt = Some(attempt.clone());
+        fixture.operation_journal.push(rejected);
+
+        let bytes = candid::encode_args((VersionedStableState {
+            schema_version: STREAM_MANAGER_STABLE_SCHEMA_VERSION,
+            state: fixture,
+        },))
+        .unwrap();
+        let migrated = decode_stable_state_bytes_for_tests(&bytes).unwrap();
+        let restored = migrated
+            .operation_journal
+            .iter()
+            .find(|op| op.source_block_index == Some(101))
+            .expect("proof-pending operation should restore");
+
+        assert_eq!(restored.rejected_refund_attempt, Some(attempt));
+    }
+
+    #[test]
+    fn legacy_unversioned_snapshot_migrates() {
+        let fixture = pending_redemption_fixture();
+        let bytes = candid::encode_args((fixture.clone(),)).unwrap();
+
+        assert_eq!(
+            decode_stable_state_bytes_for_tests(&bytes).unwrap(),
+            fixture
+        );
+    }
+
+    #[test]
     fn stream_manager_current_fixture_round_trips_unchanged() {
         let fixture = pending_redemption_fixture();
         let snapshot = VersionedStableState {
@@ -1388,10 +1765,33 @@ mod tests {
     }
 
     #[test]
+    fn future_schema_fails_closed() {
+        stream_manager_rejects_future_schema_version();
+    }
+
+    #[test]
     fn stream_manager_rejects_corrupt_stable_fixture() {
         let decoded = decode_stable_state_bytes_for_tests(b"not candid stable state");
 
         assert!(decoded.is_err());
+    }
+
+    #[test]
+    fn corrupt_snapshot_fails_closed() {
+        stream_manager_rejects_corrupt_stable_fixture();
+    }
+
+    #[test]
+    fn trailing_invalid_bytes_do_not_silently_initialize_empty_state() {
+        let fixture = pending_redemption_fixture();
+        let mut bytes = candid::encode_args((VersionedStableState {
+            schema_version: STREAM_MANAGER_STABLE_SCHEMA_VERSION,
+            state: fixture,
+        },))
+        .unwrap();
+        bytes.extend_from_slice(b"trailing garbage");
+
+        assert!(decode_stable_state_bytes_for_tests(&bytes).is_err());
     }
 
     #[test]
@@ -1421,6 +1821,35 @@ mod tests {
         assert_eq!(op.io_return_fee_e8s, 10_000);
         assert_eq!(op.icp_payout_status, TransferStatus::FailedRetryable);
         assert_eq!(op.io_return_status, TransferStatus::FailedRetryable);
+    }
+
+    #[test]
+    fn terminal_redemption_survives_same_wasm_upgrade_without_retry() {
+        init(InitArgs::default());
+        CANISTER_STATE.with(|cell| {
+            let mut state = cell.borrow_mut();
+            let mut redemption = StreamOperation::redemption(
+                111,
+                t(1),
+                0,
+                "user-account".to_string(),
+                state.manager.state,
+            );
+            redemption.phase = OperationPhase::FailedTerminal;
+            redemption.icp_payout_status = TransferStatus::FailedTerminal;
+            redemption.io_return_status = TransferStatus::FailedTerminal;
+            redemption.last_error = Some("below IO return fee".to_string());
+            state.operation_journal.push(redemption);
+        });
+
+        let stable = export_stable_state_for_tests();
+        import_stable_state_for_tests(stable);
+        let restored = export_stable_state_for_tests();
+        let op = restored.operation_journal.first().unwrap();
+
+        assert_eq!(op.phase, OperationPhase::FailedTerminal);
+        assert_eq!(op.icp_payout_status, TransferStatus::FailedTerminal);
+        assert_eq!(op.io_return_status, TransferStatus::FailedTerminal);
     }
 
     #[test]
@@ -1483,6 +1912,7 @@ mod additional_stream_manager_tests {
         IO_NNS_NEURON_MANAGER_SOURCE, JUPITER_FAUCET_SOURCE, TWO_WEEK_MATURITY_MEMO,
         TWO_YEAR_MATURITY_MEMO,
     };
+    use io_governance_types::{SnsNeuronEligibility, SnsNeuronId};
     use io_reward_policy::NeuronSnapshot;
 
     fn t(n: u128) -> u128 {
@@ -1491,6 +1921,7 @@ mod additional_stream_manager_tests {
 
     fn neuron(id: u64, stake: u128, voted: u64, total: u64) -> NeuronSnapshot {
         NeuronSnapshot {
+            sns_neuron_id: SnsNeuronId(id.to_be_bytes().to_vec()),
             neuron_id: id,
             staked_io_e8s: stake,
             eligible_seconds: 100,
@@ -1592,6 +2023,37 @@ mod additional_stream_manager_tests {
     }
 
     #[test]
+    fn active_stake_reward_consistency_excludes_invalid_sns_neuron_ids() {
+        let mut m = StreamManager::default_for_tests();
+        let valid = SnsNeuronEligibility {
+            neuron_id: SnsNeuronId({
+                let mut bytes = [0_u8; 32];
+                bytes[24..].copy_from_slice(&42_u64.to_be_bytes());
+                bytes.to_vec()
+            }),
+            owner: None,
+            eligible_stake_e8s: t(20),
+            eligible_since_seconds: 0,
+            dissolve_delay_seconds: 14 * 24 * 60 * 60,
+            is_non_dissolving: true,
+            excluded_reason: None,
+        };
+        let invalid = SnsNeuronEligibility {
+            neuron_id: SnsNeuronId(vec![7]),
+            owner: None,
+            eligible_stake_e8s: t(30),
+            eligible_since_seconds: 0,
+            dissolve_delay_seconds: 14 * 24 * 60 * 60,
+            is_non_dissolving: true,
+            excluded_reason: None,
+        };
+
+        m.refresh_active_staked_io_from_sns_eligibility(&[valid, invalid]);
+
+        assert_eq!(m.active_staked_io_e8s, t(20));
+    }
+
+    #[test]
     fn reward_allocation_with_no_eligible_neurons_keeps_pool_as_dust() {
         let m = StreamManager::default_for_tests();
         let mut genesis = neuron(1, t(10), 1, 1);
@@ -1610,7 +2072,7 @@ mod additional_stream_manager_tests {
         let err = m.redeem(t(100)).unwrap_err();
         assert!(matches!(
             err,
-            StreamManagerError::Model(ModelError::InsufficientLiquidReserve { .. })
+            StreamManagerError::Model(ModelError::InsufficientRedeemableSupply { .. })
         ));
         assert_eq!(m.state, before);
         let ok = m.redeem(t(10)).unwrap();

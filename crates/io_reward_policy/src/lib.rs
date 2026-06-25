@@ -24,11 +24,24 @@ pub fn sns_neuron_id_to_u64(id: &SnsNeuronId) -> Result<u64, SnsNeuronIdConversi
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    Ok(hash)
+    Ok(hash.max(1))
+}
+
+pub fn sns_neuron_id_is_valid(id: &SnsNeuronId) -> bool {
+    sns_neuron_id_to_u64(id).is_ok()
+}
+
+pub fn sns_neuron_id_is_canonical_staking_subaccount(id: &SnsNeuronId) -> bool {
+    id.0.len() == 32
+}
+
+pub fn compatibility_sns_neuron_id_from_u64(id: u64) -> SnsNeuronId {
+    SnsNeuronId(id.to_be_bytes().to_vec())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NeuronSnapshot {
+    pub sns_neuron_id: SnsNeuronId,
     pub neuron_id: u64,
     pub staked_io_e8s: u128,
     pub eligible_seconds: u64,
@@ -41,6 +54,7 @@ pub struct NeuronSnapshot {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RewardAllocation {
+    pub sns_neuron_id: SnsNeuronId,
     pub neuron_id: u64,
     pub io_e8s: u128,
 }
@@ -95,13 +109,13 @@ pub fn reward_weight(n: &NeuronSnapshot) -> u128 {
 }
 
 pub fn allocate_rewards(reward_pool_io_e8s: u128, neurons: &[NeuronSnapshot]) -> AllocationOutcome {
-    let weights: Vec<(u64, u128)> = neurons
+    let weights: Vec<(SnsNeuronId, u64, u128)> = neurons
         .iter()
-        .map(|n| (n.neuron_id, reward_weight(n)))
+        .map(|n| (n.sns_neuron_id.clone(), n.neuron_id, reward_weight(n)))
         .collect();
     let total_weight: u128 = weights
         .iter()
-        .map(|(_, w)| *w)
+        .map(|(_, _, w)| *w)
         .fold(0u128, |acc, w| acc.saturating_add(w));
     if reward_pool_io_e8s == 0 || total_weight == 0 {
         return AllocationOutcome {
@@ -112,7 +126,7 @@ pub fn allocate_rewards(reward_pool_io_e8s: u128, neurons: &[NeuronSnapshot]) ->
     }
     let mut issued = 0u128;
     let mut allocations = Vec::new();
-    for (neuron_id, weight) in weights {
+    for (sns_neuron_id, neuron_id, weight) in weights {
         if weight == 0 {
             continue;
         }
@@ -120,6 +134,7 @@ pub fn allocate_rewards(reward_pool_io_e8s: u128, neurons: &[NeuronSnapshot]) ->
         issued = issued.saturating_add(amount);
         if amount > 0 {
             allocations.push(RewardAllocation {
+                sns_neuron_id,
                 neuron_id,
                 io_e8s: amount,
             });
@@ -145,6 +160,7 @@ mod tests {
     use super::*;
     fn n(id: u64, stake: u128, voted: u64, total: u64) -> NeuronSnapshot {
         NeuronSnapshot {
+            sns_neuron_id: SnsNeuronId(id.to_be_bytes().to_vec()),
             neuron_id: id,
             staked_io_e8s: stake,
             eligible_seconds: 100,
@@ -202,10 +218,12 @@ mod tests {
             out.allocations,
             vec![
                 RewardAllocation {
+                    sns_neuron_id: SnsNeuronId(1_u64.to_be_bytes().to_vec()),
                     neuron_id: 1,
                     io_e8s: 100
                 },
                 RewardAllocation {
+                    sns_neuron_id: SnsNeuronId(2_u64.to_be_bytes().to_vec()),
                     neuron_id: 2,
                     io_e8s: 50
                 }
@@ -225,10 +243,12 @@ mod tests {
             out.allocations,
             vec![
                 RewardAllocation {
+                    sns_neuron_id: SnsNeuronId(1_u64.to_be_bytes().to_vec()),
                     neuron_id: 1,
                     io_e8s: 200
                 },
                 RewardAllocation {
+                    sns_neuron_id: SnsNeuronId(2_u64.to_be_bytes().to_vec()),
                     neuron_id: 2,
                     io_e8s: 100
                 }
@@ -271,6 +291,7 @@ mod additional_reward_tests {
 
     fn n(id: u64, stake: u128, seconds: u64, voted: u64, total: u64) -> NeuronSnapshot {
         NeuronSnapshot {
+            sns_neuron_id: SnsNeuronId(id.to_be_bytes().to_vec()),
             neuron_id: id,
             staked_io_e8s: stake,
             eligible_seconds: seconds,
@@ -320,10 +341,12 @@ mod additional_reward_tests {
             out.allocations,
             vec![
                 RewardAllocation {
+                    sns_neuron_id: SnsNeuronId(1_u64.to_be_bytes().to_vec()),
                     neuron_id: 1,
                     io_e8s: 200
                 },
                 RewardAllocation {
+                    sns_neuron_id: SnsNeuronId(2_u64.to_be_bytes().to_vec()),
                     neuron_id: 2,
                     io_e8s: 100
                 },
@@ -363,6 +386,7 @@ mod additional_policy_safety_tests {
 
     fn neuron(id: u64, stake: u128, seconds: u64, voted: u64, total: u64) -> NeuronSnapshot {
         NeuronSnapshot {
+            sns_neuron_id: SnsNeuronId(id.to_be_bytes().to_vec()),
             neuron_id: id,
             staked_io_e8s: stake,
             eligible_seconds: seconds,
@@ -451,6 +475,22 @@ mod sns_governance_allocation_tests {
     }
 
     #[test]
+    fn canonical_finalized_sns_neuron_id_is_32_bytes() {
+        assert!(sns_neuron_id_is_canonical_staking_subaccount(&SnsNeuronId(
+            vec![7; 32]
+        )));
+        assert!(!sns_neuron_id_is_canonical_staking_subaccount(
+            &SnsNeuronId(vec![7; 31])
+        ));
+        assert!(!sns_neuron_id_is_canonical_staking_subaccount(
+            &SnsNeuronId(vec![7; 33])
+        ));
+        assert!(!sns_neuron_id_is_canonical_staking_subaccount(
+            &compatibility_sns_neuron_id_from_u64(7)
+        ));
+    }
+
+    #[test]
     fn eligible_sns_staking_increases_io_reward_entitlement() {
         let no_staking = allocate_rewards(500, &snapshots_from_governance(&[], &[]));
         assert!(no_staking.allocations.is_empty());
@@ -464,6 +504,7 @@ mod sns_governance_allocation_tests {
         assert_eq!(
             staking.allocations,
             vec![RewardAllocation {
+                sns_neuron_id: SnsNeuronId(1_u64.to_be_bytes().to_vec()),
                 neuron_id: 1,
                 io_e8s: 500
             }]
@@ -573,6 +614,7 @@ mod sns_governance_allocation_tests {
         assert_eq!(
             out.allocations,
             vec![RewardAllocation {
+                sns_neuron_id: SnsNeuronId(3_u64.to_be_bytes().to_vec()),
                 neuron_id: 3,
                 io_e8s: 100
             }]
@@ -593,35 +635,55 @@ mod sns_governance_allocation_tests {
     }
 
     #[test]
-    fn eight_byte_sns_neuron_id_converts_correctly() {
-        let id = SnsNeuronId(42u64.to_be_bytes().to_vec());
-        assert_eq!(sns_neuron_id_to_u64(&id), Ok(42));
-    }
-
-    #[test]
-    fn non_eight_byte_sns_neuron_id_does_not_convert_to_zero() {
-        let id = SnsNeuronId(vec![0]);
-        assert_ne!(sns_neuron_id_to_u64(&id), Ok(0));
-    }
-
-    #[test]
-    fn different_non_eight_byte_sns_neuron_ids_do_not_collide_as_zero() {
-        let one_byte_id = SnsNeuronId(vec![1]);
-        let nine_byte_id = SnsNeuronId(vec![0; 9]);
-        let one_byte_key = sns_neuron_id_to_u64(&one_byte_id).unwrap();
-        let nine_byte_key = sns_neuron_id_to_u64(&nine_byte_id).unwrap();
-        assert_ne!(one_byte_key, 0);
-        assert_ne!(nine_byte_key, 0);
-        assert_ne!(one_byte_key, nine_byte_key);
-    }
-
-    #[test]
-    fn empty_sns_neuron_id_is_rejected() {
+    fn sns_neuron_id_to_u64_empty_id_is_rejected() {
         let id = SnsNeuronId(Vec::new());
         assert_eq!(
             sns_neuron_id_to_u64(&id),
             Err(SnsNeuronIdConversionError::Empty)
         );
+    }
+
+    #[test]
+    fn sns_neuron_id_to_u64_eight_byte_id_preserves_big_endian_u64() {
+        let id = SnsNeuronId(42u64.to_be_bytes().to_vec());
+        assert_eq!(sns_neuron_id_to_u64(&id), Ok(42));
+        let high_bit = SnsNeuronId(0x8000_0000_0000_0001_u64.to_be_bytes().to_vec());
+        assert_eq!(sns_neuron_id_to_u64(&high_bit), Ok(0x8000_0000_0000_0001));
+    }
+
+    #[test]
+    fn sns_neuron_id_to_u64_non_eight_byte_id_is_stable() {
+        let id = SnsNeuronId(vec![1, 2, 3, 5, 8, 13, 21, 34, 55]);
+        assert_eq!(sns_neuron_id_to_u64(&id), sns_neuron_id_to_u64(&id));
+    }
+
+    #[test]
+    fn sns_neuron_id_to_u64_non_eight_byte_id_never_maps_to_zero() {
+        let ids = [
+            SnsNeuronId(vec![0]),
+            SnsNeuronId(vec![1]),
+            SnsNeuronId(vec![0; 9]),
+            SnsNeuronId(vec![255; 32]),
+        ];
+        for id in ids {
+            assert_ne!(sns_neuron_id_to_u64(&id), Ok(0));
+        }
+    }
+
+    #[test]
+    fn sns_neuron_id_to_u64_distinct_real_sns_ids_do_not_collide_in_fixture() {
+        let fixture_ids = [
+            SnsNeuronId(vec![0, 0, 0, 0, 0, 0, 0, 1, 136, 236, 211, 45]),
+            SnsNeuronId(vec![0, 0, 0, 0, 0, 0, 0, 2, 35, 159, 70, 117]),
+            SnsNeuronId(vec![0, 0, 0, 0, 0, 0, 0, 3, 209, 17, 188, 9]),
+            SnsNeuronId(vec![4, 214, 87, 18, 174, 66, 1, 9, 170, 0, 6, 91]),
+        ];
+        let mut seen = BTreeSet::new();
+        for id in fixture_ids {
+            let converted = sns_neuron_id_to_u64(&id).unwrap();
+            assert_ne!(converted, 0);
+            assert!(seen.insert(converted));
+        }
     }
 
     fn sns_neuron(
@@ -682,6 +744,7 @@ mod sns_governance_allocation_tests {
                     .iter()
                     .find(|summary| summary.neuron_id == eligibility.neuron_id)?;
                 Some(NeuronSnapshot {
+                    sns_neuron_id: eligibility.neuron_id.clone(),
                     neuron_id: eight_byte_fixture_sns_neuron_id_to_u64(&eligibility.neuron_id),
                     staked_io_e8s: eligibility.eligible_stake_e8s,
                     eligible_seconds: epoch_seconds

@@ -112,6 +112,7 @@ const PRODUCTION_WASM_FORBIDDEN_METHOD_STRINGS: &[&str] = &[
     "debug_process_stream_event",
     "debug_redeem",
     "debug_tick",
+    "debug_get_transactions",
     "debug_plan_rebalance",
     "debug_advance_model_time",
     "get_redemption_rate",
@@ -2701,7 +2702,6 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
         &brief_blockers,
         &[
             "RealFrameworkBlocker",
-            "real_stack_same_wasm_upgrade_preserves_scheduler_cursors",
             "historian_real_freshness_reports_stale_missing_incomplete_not_zero",
             "frontend_real_status_displays_not_live",
             "local_network_launches_with_nns_sns_features",
@@ -2720,6 +2720,18 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
             "io_stream_manager_real_two_week_maturity_rewards_only_eligible_stakers",
             "io_stream_manager_real_sns_topup_increases_active_staked_io",
             "io_stream_manager_real_redemption_pays_icp_on_real_local_ledger",
+            "io_stream_manager_real_redemption_rounding_fee_dust_accounted",
+            "io_stream_manager_real_redemption_reads_actual_sns_ledger_fee",
+            "io_stream_manager_real_redemption_fee_change_is_observed_on_next_operation",
+            "io_stream_manager_real_redemption_below_io_return_fee_fails_closed",
+            "io_stream_manager_real_redemption_rejects_insufficient_redeemable_supply",
+            "io_stream_manager_real_redemption_after_index_lag_waits_or_fails_closed",
+            "real_stack_rejected_refund_too_old_waits_for_index_proof_no_double_refund",
+            "io_stream_manager_real_redemption_after_holder_yield_is_higher_than_genesis",
+            "io_stream_manager_real_redemption_after_staker_rewards_preserves_rate",
+            "real_stack_same_wasm_upgrade_preserves_operation_journal",
+            "real_stack_same_wasm_upgrade_preserves_scheduler_cursors",
+            "real_stack_same_wasm_upgrade_preserves_processed_tx_set",
             "JUPITER_EXPECTED_IO_E8S",
             "fund_real_jupiter_deposit",
         ],
@@ -4366,6 +4378,17 @@ fn main() -> ExitCode {
                                 "-p",
                                 "e2e-real-canisters",
                                 "real_canister_e2e_icp_to_io_stake_reward_redemption",
+                                "--",
+                                "--ignored",
+                                "--nocapture",
+                            ]),
+                        );
+                        ok &= run(
+                            "real-stack: rejected refund TooOld waits for index proof without double refund",
+                            cargo_test(&[
+                                "-p",
+                                "e2e-real-canisters",
+                                "real_stack_rejected_refund_too_old_waits_for_index_proof_no_double_refund",
                                 "--",
                                 "--ignored",
                                 "--nocapture",
@@ -6163,6 +6186,12 @@ Template SNS principal values are planned wiring placeholders only.
         let bad = "service : (InitArgs) -> { debug_get_state : () -> (text) query; }";
         let forbidden = forbidden_did_methods(bad, STREAM_PRODUCTION_FORBIDDEN_DID);
         assert!(forbidden.iter().any(|item| item == "debug_"));
+    }
+
+    #[test]
+    fn production_did_and_release_surface_have_no_debug_fee_dependency() {
+        assert!(STREAM_PRODUCTION_FORBIDDEN_DID.contains(&"debug_"));
+        assert!(PRODUCTION_WASM_FORBIDDEN_METHOD_STRINGS.contains(&"debug_get_transactions"));
     }
 
     #[test]

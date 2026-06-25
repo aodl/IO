@@ -153,7 +153,7 @@ root_mediated_upgrade_observed = false
 io_return_block = "local-finalized-sns-ledger-block-id"
 icp_payout_block = "local-nns-ledger-block-id"
 io_return_fee_e8s = 10_000
-blocked_reason = "Broader current-rate, reward-after-yield, retry, upgrade, and historian redemption paths remain separate proof targets."
+blocked_reason = "Fee/dust, below-return-fee closed failure, over-redeemable-supply rejection, index-lag no-fabrication/catch-up, holder-yield current-rate redemption, staker-reward rate preservation, and completed-redemption same-Wasm upgrade preservation are covered by opt-in real-framework tests. Remaining malformed/duplicate, partial retry, and historian redemption paths remain separate proof targets."
 
 [io_real_stack_observations]
 stream_manager_canister = "local-application-subnet-canister-id"

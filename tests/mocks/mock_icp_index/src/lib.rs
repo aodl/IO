@@ -121,6 +121,7 @@ fn tx_to_block(tx: LedgerTransaction) -> LedgerBlock {
     LedgerBlock {
         block_index: io_ledger_types::BlockIndex(tx.block_index),
         timestamp_nanos: tx.timestamp,
+        created_at_time: None,
         from: Some(Account::new(
             Principal::anonymous(),
             Some(mock_subaccount(&tx.from)),

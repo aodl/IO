@@ -1302,6 +1302,14 @@ pub trait SnsGovernanceClient {
         &'a self,
         id: SnsProposalId,
     ) -> Pin<Box<dyn Future<Output = Result<SnsProposal, SnsGovernanceError>> + 'a>>;
+
+    fn claim_or_refresh_neuron<'a>(
+        &'a self,
+        id: SnsNeuronId,
+    ) -> Pin<Box<dyn Future<Output = Result<SnsNeuronId, SnsGovernanceError>> + 'a>> {
+        let _ = id;
+        Box::pin(async { Err(SnsGovernanceError::Unsupported) })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -1477,6 +1485,43 @@ pub struct SnsProductionGetNeuronResponse {
 pub enum SnsGetNeuronResult {
     Error(SnsGovernanceErrorRecord),
     Neuron(Box<SnsNeuronRecord>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SnsProductionManageNeuronRequest {
+    pub subaccount: Vec<u8>,
+    pub command: Option<SnsManageNeuronCommand>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum SnsManageNeuronCommand {
+    ClaimOrRefresh(SnsClaimOrRefresh),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SnsClaimOrRefresh {
+    pub by: Option<SnsClaimOrRefreshBy>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum SnsClaimOrRefreshBy {
+    NeuronId(EmptyRecord),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SnsProductionManageNeuronResponse {
+    pub command: Option<SnsManageNeuronCommandResponse>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum SnsManageNeuronCommandResponse {
+    Error(SnsGovernanceErrorRecord),
+    ClaimOrRefresh(SnsClaimOrRefreshResponse),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SnsClaimOrRefreshResponse {
+    pub refreshed_neuron_id: Option<SnsNeuronIdRecord>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -1983,6 +2028,13 @@ impl SnsGovernanceClient for SnsGovernanceCanisterClient {
     ) -> Pin<Box<dyn Future<Output = Result<SnsProposal, SnsGovernanceError>> + 'a>> {
         Box::pin(async move { sns_canister_get_proposal(self.canister, id).await })
     }
+
+    fn claim_or_refresh_neuron<'a>(
+        &'a self,
+        id: SnsNeuronId,
+    ) -> Pin<Box<dyn Future<Output = Result<SnsNeuronId, SnsGovernanceError>> + 'a>> {
+        Box::pin(async move { sns_canister_claim_or_refresh_neuron(self.canister, id).await })
+    }
 }
 
 async fn sns_canister_list_neurons(
@@ -2047,6 +2099,49 @@ async fn sns_canister_get_neuron(
             Some(SnsGetNeuronResult::Error(err)) => Err(err.into()),
             None => Err(SnsGovernanceError::DecodeError {
                 message: "get_neuron response missing result".to_string(),
+            }),
+        }
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let _ = (canister, id);
+        Err(SnsGovernanceError::Unsupported)
+    }
+}
+
+async fn sns_canister_claim_or_refresh_neuron(
+    canister: Principal,
+    id: SnsNeuronId,
+) -> Result<SnsNeuronId, SnsGovernanceError> {
+    #[cfg(target_family = "wasm")]
+    {
+        let request = SnsProductionManageNeuronRequest {
+            subaccount: id.0.clone(),
+            command: Some(SnsManageNeuronCommand::ClaimOrRefresh(SnsClaimOrRefresh {
+                by: Some(SnsClaimOrRefreshBy::NeuronId(EmptyRecord {})),
+            })),
+        };
+        let response = ic_cdk::call::Call::bounded_wait(canister, "manage_neuron")
+            .with_arg(request)
+            .await
+            .map_err(|err| SnsGovernanceError::CanisterCallFailed {
+                method: "manage_neuron".to_string(),
+                message: format!("{err:?}"),
+            })?
+            .candid::<SnsProductionManageNeuronResponse>()
+            .map_err(|err| SnsGovernanceError::DecodeError {
+                message: format!("{err:?}"),
+            })?;
+        match response.command {
+            Some(SnsManageNeuronCommandResponse::ClaimOrRefresh(refresh)) => refresh
+                .refreshed_neuron_id
+                .map(|id| SnsNeuronId(id.id))
+                .ok_or_else(|| SnsGovernanceError::MalformedNeuronId {
+                    message: "ClaimOrRefresh response missing refreshed neuron id".to_string(),
+                }),
+            Some(SnsManageNeuronCommandResponse::Error(err)) => Err(err.into()),
+            None => Err(SnsGovernanceError::DecodeError {
+                message: "manage_neuron response missing command".to_string(),
             }),
         }
     }

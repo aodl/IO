@@ -231,6 +231,7 @@ fn assert_history_has_amount(
 
 fn neuron(id: u64, stake: u128, seconds: u64, voted: u64, total: u64) -> NeuronSnapshot {
     NeuronSnapshot {
+        sns_neuron_id: io_governance_types::SnsNeuronId(id.to_be_bytes().to_vec()),
         neuron_id: id,
         staked_io_e8s: stake,
         eligible_seconds: seconds,

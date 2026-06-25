@@ -155,19 +155,7 @@ mod stream_manager_real_stack {
         RealFrameworkBlocker::StreamManagerRealStackDriver
     );
     blocked_test!(
-        io_stream_manager_real_redemption_after_holder_yield_is_higher_than_genesis,
-        RealFrameworkBlocker::StreamManagerRealStackDriver
-    );
-    blocked_test!(
-        io_stream_manager_real_redemption_after_staker_rewards_preserves_rate,
-        RealFrameworkBlocker::StreamManagerRealStackDriver
-    );
-    blocked_test!(
         io_stream_manager_real_duplicate_redemption_no_double_payout,
-        RealFrameworkBlocker::StreamManagerRealStackDriver
-    );
-    blocked_test!(
-        io_stream_manager_real_redemption_rounding_fee_dust_accounted,
         RealFrameworkBlocker::StreamManagerRealStackDriver
     );
     blocked_test!(
@@ -253,18 +241,6 @@ mod real_stack_upgrade {
     );
     blocked_test!(
         real_stack_upgrade_after_io_return_before_terminal_then_no_double_payout,
-        RealFrameworkBlocker::RealStackFailureInjectionDriver
-    );
-    blocked_test!(
-        real_stack_same_wasm_upgrade_preserves_scheduler_cursors,
-        RealFrameworkBlocker::RealStackFailureInjectionDriver
-    );
-    blocked_test!(
-        real_stack_same_wasm_upgrade_preserves_processed_tx_set,
-        RealFrameworkBlocker::RealStackFailureInjectionDriver
-    );
-    blocked_test!(
-        real_stack_same_wasm_upgrade_preserves_operation_journal,
         RealFrameworkBlocker::RealStackFailureInjectionDriver
     );
     blocked_test!(

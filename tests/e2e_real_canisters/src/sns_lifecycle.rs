@@ -2193,6 +2193,7 @@ mod tests {
         let neuron = finalized_neuron_for_participant(&fixture, participant, &neuron_id).unwrap();
         assert_eq!(finalized_neuron_dissolve_delay_seconds(&neuron), 604_800);
         let snapshot = io_reward_policy::NeuronSnapshot {
+            sns_neuron_id: io_governance_types::SnsNeuronId(neuron_id.id.clone()),
             neuron_id: 2,
             staked_io_e8s: u128::from(neuron.cached_neuron_stake_e8s),
             eligible_seconds: if finalized_neuron_dissolve_delay_seconds(&neuron) >= 1_209_600 {
@@ -2269,6 +2270,7 @@ mod tests {
             "finalized neuron should be dissolving after StartDissolving: {neuron:?}"
         );
         let snapshot = io_reward_policy::NeuronSnapshot {
+            sns_neuron_id: io_governance_types::SnsNeuronId(neuron_id.id.clone()),
             neuron_id: 4,
             staked_io_e8s: u128::from(neuron.cached_neuron_stake_e8s),
             eligible_seconds: 1_209_600,
@@ -2319,6 +2321,7 @@ mod tests {
             "stop dissolving should restore a non-dissolving delay at or above two weeks: {neuron:?}"
         );
         let snapshot = io_reward_policy::NeuronSnapshot {
+            sns_neuron_id: io_governance_types::SnsNeuronId(neuron_id.id.clone()),
             neuron_id: 5,
             staked_io_e8s: u128::from(neuron.cached_neuron_stake_e8s),
             eligible_seconds: finalized_neuron_dissolve_delay_seconds(&neuron),
@@ -2361,6 +2364,7 @@ mod tests {
 
         let neuron = finalized_neuron_for_participant(&fixture, participant, &neuron_id).unwrap();
         let snapshot = io_reward_policy::NeuronSnapshot {
+            sns_neuron_id: io_governance_types::SnsNeuronId(neuron_id.id.clone()),
             neuron_id: 1,
             staked_io_e8s: u128::from(neuron.cached_neuron_stake_e8s),
             eligible_seconds: finalized_neuron_dissolve_delay_seconds(&neuron),
@@ -2603,6 +2607,7 @@ mod tests {
         );
 
         let proposer_snapshot = io_reward_policy::NeuronSnapshot {
+            sns_neuron_id: io_governance_types::SnsNeuronId(proposer_neuron_id.id.clone()),
             neuron_id: 3,
             staked_io_e8s: u128::from(proposer_neuron.cached_neuron_stake_e8s),
             eligible_seconds: 1_209_600,
@@ -2613,6 +2618,7 @@ mod tests {
             is_dissolving: false,
         };
         let non_voter_snapshot = io_reward_policy::NeuronSnapshot {
+            sns_neuron_id: io_governance_types::SnsNeuronId(non_voter_neuron_id.id.clone()),
             neuron_id: 4,
             staked_io_e8s: u128::from(non_voter_neuron.cached_neuron_stake_e8s),
             eligible_seconds: 1_209_600,
@@ -2730,6 +2736,7 @@ mod tests {
             proposal.ballots
         );
         let follower_snapshot = io_reward_policy::NeuronSnapshot {
+            sns_neuron_id: io_governance_types::SnsNeuronId(follower_neuron.id.clone()),
             neuron_id: 5,
             staked_io_e8s: u128::from(follower_neuron_record.cached_neuron_stake_e8s),
             eligible_seconds: 1_209_600,
