@@ -11,7 +11,7 @@ pub fn pocketic_available() -> bool {
 }
 
 pub fn new_sns_pic() -> PocketIc {
-    PocketIcBuilder::new()
+    with_optional_server_url(PocketIcBuilder::new())
         .with_nns_subnet()
         .with_sns_subnet()
         .with_application_subnet()
@@ -19,7 +19,7 @@ pub fn new_sns_pic() -> PocketIc {
 }
 
 pub fn new_pic_with_icp_sns_features() -> PocketIc {
-    PocketIcBuilder::new()
+    with_optional_server_url(PocketIcBuilder::new())
         .with_application_subnet()
         .with_icp_features(IcpFeatures {
             registry: Some(IcpFeaturesConfig::DefaultConfig),
@@ -32,7 +32,7 @@ pub fn new_pic_with_icp_sns_features() -> PocketIc {
 }
 
 pub fn new_pic_with_nns_governance_features() -> PocketIc {
-    PocketIcBuilder::new()
+    with_optional_server_url(PocketIcBuilder::new())
         .with_sns_subnet()
         .with_application_subnet()
         .with_icp_features(IcpFeatures {
@@ -42,6 +42,18 @@ pub fn new_pic_with_nns_governance_features() -> PocketIc {
             ..Default::default()
         })
         .build()
+}
+
+fn with_optional_server_url(builder: PocketIcBuilder) -> PocketIcBuilder {
+    let builder = builder.with_max_request_time_ms(Some(900_000));
+    match std::env::var("POCKET_IC_SERVER_URL") {
+        Ok(server_url) => builder.with_server_url(
+            server_url
+                .parse()
+                .expect("POCKET_IC_SERVER_URL should be a valid URL"),
+        ),
+        Err(_) => builder,
+    }
 }
 
 pub fn create_sns_canister(pic: &PocketIc, wasm: Vec<u8>, arg: Vec<u8>) -> Principal {
