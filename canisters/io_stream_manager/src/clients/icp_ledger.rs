@@ -24,6 +24,7 @@ pub struct TransferArgs {
     pub to: String,
     pub amount_e8s: u128,
     pub memo: String,
+    pub memo_bytes: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -84,6 +85,16 @@ fn mock_label_from_subaccount(subaccount: &Subaccount) -> Option<String> {
 }
 
 pub(crate) fn mock_label_from_account(account: &Account) -> String {
+    if let Some(subaccount) = account.subaccount.as_ref() {
+        if subaccount.0[..24].iter().all(|byte| *byte == 0) {
+            let mut id = [0_u8; 8];
+            id.copy_from_slice(&subaccount.0[24..]);
+            let id = u64::from_be_bytes(id);
+            if id != 0 {
+                return format!("sns_neuron_{id}");
+            }
+        }
+    }
     account
         .subaccount
         .as_ref()
@@ -102,8 +113,10 @@ fn mock_transfer_args(request: LedgerTransferRequest) -> TransferArgs {
         amount_e8s: request.amount_e8s,
         memo: request
             .memo
+            .as_ref()
             .map(|memo| String::from_utf8_lossy(&memo.0).into_owned())
             .unwrap_or_default(),
+        memo_bytes: request.memo.map(|memo| memo.0),
     }
 }
 
@@ -158,7 +171,7 @@ pub async fn transfer(
             to: mock_account(&args.to).into(),
             amount: candid::Nat::from(args.amount_e8s),
             fee: None,
-            memo: Some(args.memo.into_bytes()),
+            memo: args.memo_bytes.or_else(|| Some(args.memo.into_bytes())),
             created_at_time: None,
         })
         .await

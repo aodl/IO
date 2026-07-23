@@ -275,6 +275,17 @@ mod tests {
     }
 
     #[test]
+    fn two_week_reward_no_eligible_neurons_keeps_entire_pool_in_protocol_reserve() {
+        let mut g = n(1, 1_000, 1, 1);
+        g.is_genesis_governance_neuron = true;
+
+        let out = allocate_rewards(123, &[g]);
+
+        assert!(out.allocations.is_empty());
+        assert_eq!(out.dust_e8s, 123);
+    }
+
+    #[test]
     fn active_staked_supply_excludes_ineligible_neurons() {
         let mut g = n(1, 10, 1, 1);
         g.is_genesis_governance_neuron = true;
@@ -320,6 +331,16 @@ mod additional_reward_tests {
     fn tiny_reward_pool_reports_dust_when_each_share_rounds_to_zero() {
         let neurons = vec![n(1, 1, 1, 1, 1), n(2, 1, 1, 1, 1), n(3, 1, 1, 1, 1)];
         let out = allocate_rewards(2, &neurons);
+        assert!(out.allocations.is_empty());
+        assert_eq!(out.dust_e8s, 2);
+    }
+
+    #[test]
+    fn two_week_reward_all_allocations_round_to_zero_keeps_entire_pool_in_protocol_reserve() {
+        let neurons = vec![n(1, 1, 1, 1, 1), n(2, 1, 1, 1, 1), n(3, 1, 1, 1, 1)];
+
+        let out = allocate_rewards(2, &neurons);
+
         assert!(out.allocations.is_empty());
         assert_eq!(out.dust_e8s, 2);
     }

@@ -1852,7 +1852,7 @@ fn sns_ballots_from_records(ballots: Vec<(String, SnsBallotRecord)>) -> Vec<SnsB
     ballots
         .into_iter()
         .map(|(id, ballot)| SnsBallot {
-            neuron_id: SnsNeuronId(id.into_bytes()),
+            neuron_id: sns_ballot_neuron_id_from_text(&id),
             vote: match ballot.vote {
                 1 => SnsVote::Yes,
                 2 => SnsVote::No,
@@ -1862,6 +1862,30 @@ fn sns_ballots_from_records(ballots: Vec<(String, SnsBallotRecord)>) -> Vec<SnsB
             },
         })
         .collect()
+}
+
+fn sns_ballot_neuron_id_from_text(id: &str) -> SnsNeuronId {
+    if id.len() == 64 && id.as_bytes().iter().all(u8::is_ascii_hexdigit) {
+        let mut bytes = Vec::with_capacity(32);
+        for pair in id.as_bytes().chunks_exact(2) {
+            if let (Some(high), Some(low)) = (hex_value(pair[0]), hex_value(pair[1])) {
+                bytes.push((high << 4) | low);
+            } else {
+                return SnsNeuronId(id.as_bytes().to_vec());
+            }
+        }
+        return SnsNeuronId(bytes);
+    }
+    SnsNeuronId(id.as_bytes().to_vec())
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn sns_proposal_status_from_record(value: &SnsProposalRecord) -> SnsProposalStatus {
@@ -2385,6 +2409,86 @@ mod tests {
             executed_timestamp_seconds: fixture.executed,
             topic: fixture.topic,
         }
+    }
+
+    #[test]
+    fn sns_ballot_64_hex_key_decodes_to_32_bytes() {
+        let proposal = SnsProposal::try_from(sns_proposal_record(SnsProposalFixture {
+            id: 1,
+            topic: None,
+            decided: 10,
+            executed: 10,
+            failed: 0,
+            eligible: true,
+            ballot_id: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+            vote: 1,
+        }))
+        .unwrap();
+
+        assert_eq!(
+            proposal.ballots[0].neuron_id,
+            SnsNeuronId((0_u8..32).collect())
+        );
+        assert_eq!(proposal.ballots[0].vote, SnsVote::Yes);
+    }
+
+    #[test]
+    fn sns_ballot_short_even_hex_key_preserves_legacy_text_bytes() {
+        let proposal = SnsProposal::try_from(sns_proposal_record(SnsProposalFixture {
+            id: 1,
+            topic: None,
+            decided: 10,
+            executed: 10,
+            failed: 0,
+            eligible: true,
+            ballot_id: "10",
+            vote: 2,
+        }))
+        .unwrap();
+
+        assert_eq!(proposal.ballots[0].neuron_id, SnsNeuronId(b"10".to_vec()));
+        assert_eq!(proposal.ballots[0].vote, SnsVote::No);
+    }
+
+    #[test]
+    fn sns_ballot_non_hex_key_preserves_legacy_text_bytes() {
+        let proposal = SnsProposal::try_from(sns_proposal_record(SnsProposalFixture {
+            id: 1,
+            topic: None,
+            decided: 10,
+            executed: 10,
+            failed: 0,
+            eligible: true,
+            ballot_id: "n1",
+            vote: 2,
+        }))
+        .unwrap();
+
+        assert_eq!(proposal.ballots[0].neuron_id, SnsNeuronId(b"n1".to_vec()));
+        assert_eq!(proposal.ballots[0].vote, SnsVote::No);
+    }
+
+    #[test]
+    fn sns_ballot_uppercase_64_hex_key_decodes() {
+        let proposal = SnsProposal::try_from(sns_proposal_record(SnsProposalFixture {
+            id: 1,
+            topic: None,
+            decided: 10,
+            executed: 10,
+            failed: 0,
+            eligible: true,
+            ballot_id: "AABBCCDDEEFF00112233445566778899AABBCCDDEEFF00112233445566778899",
+            vote: 1,
+        }))
+        .unwrap();
+
+        assert_eq!(
+            proposal.ballots[0].neuron_id,
+            SnsNeuronId(vec![
+                170, 187, 204, 221, 238, 255, 0, 17, 34, 51, 68, 85, 102, 119, 136, 153, 170, 187,
+                204, 221, 238, 255, 0, 17, 34, 51, 68, 85, 102, 119, 136, 153,
+            ])
+        );
     }
 
     #[test]

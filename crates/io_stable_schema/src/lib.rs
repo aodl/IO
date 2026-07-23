@@ -11,13 +11,14 @@ pub struct StableSchemaEntry {
     pub compaction_policy_summary: &'static str,
 }
 
-pub const IO_STREAM_MANAGER_SCHEMA_VERSION: u32 = 1;
+pub const IO_STREAM_MANAGER_SCHEMA_VERSION: u32 = 2;
 pub const IO_NNS_NEURON_MANAGER_SCHEMA_VERSION: u32 = 1;
 pub const IO_HISTORIAN_SCHEMA_VERSION: u32 = 1;
 
 pub const IO_STREAM_MANAGER_FIXTURES: &[&str] = &[
     "tests/fixtures/stable-state/io_stream_manager/current.fixture",
     "tests/fixtures/stable-state/io_stream_manager/previous-minimal.fixture",
+    "tests/fixtures/stable-state/io_stream_manager/v1-scalar-reward-reservation.fixture",
     "tests/fixtures/stable-state/io_stream_manager/missing-optional-fields.fixture",
     "tests/fixtures/stable-state/io_stream_manager/empty-default.fixture",
     "tests/fixtures/stable-state/io_stream_manager/pending-redemption-journal.fixture",
@@ -49,9 +50,12 @@ pub const STABLE_SCHEMA_REGISTRY: &[StableSchemaEntry] = &[
     StableSchemaEntry {
         canister_name: "io_stream_manager",
         current_version: IO_STREAM_MANAGER_SCHEMA_VERSION,
-        previous_supported_versions: &[0],
-        migration_paths: &["v0_unversioned_snapshot_to_v1_envelope"],
-        lossless: true,
+        previous_supported_versions: &[0, 1],
+        migration_paths: &[
+            "v0_unversioned_snapshot_to_v1_envelope",
+            "v1_scalar_reward_reservation_to_v2_split_reward_reservation",
+        ],
+        lossless: false,
         pre_production_only: true,
         fixture_files: IO_STREAM_MANAGER_FIXTURES,
         size_bounds_summary: "retry-critical operation journal and processed transaction set are not silently evicted; account-history cursors are scalar bounded state",

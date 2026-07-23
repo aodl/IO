@@ -1330,6 +1330,7 @@ dependencies = [
  "candid",
  "ic-cdk",
  "io-governance-types",
+ "io-ledger-types",
  "io-sns-lifecycle",
  "serde",
 ]

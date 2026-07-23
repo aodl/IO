@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -z "${POCKET_IC_BIN:-}" ]]; then
+  echo "POCKET_IC_BIN is required for live io_stream_manager PocketIC tests" >&2
+  exit 1
+fi
+
+echo "POCKET_IC_BIN=${POCKET_IC_BIN}"
+"${POCKET_IC_BIN}" --version
+
+export RUST_TEST_THREADS=1
+
+cleanup_pocketic() {
+  local current_user
+  current_user="$(id -un)"
+  ps -u "${current_user}" -o pid=,ppid=,stat=,cmd= \
+    | awk '/pocket-ic/ && /--port-file \/tmp\/pocket_ic_/ { print $1 }' \
+    | while read -r pid; do
+        [[ -z "${pid}" ]] && continue
+        parent="$(ps -o ppid= -p "${pid}" 2>/dev/null | tr -d ' ' || true)"
+        [[ -z "${parent}" ]] && continue
+        parent_cwd="$(readlink "/proc/${parent}/cwd" 2>/dev/null || true)"
+        [[ "${parent_cwd}" == "${PWD}"* ]] || continue
+        kill "${pid}" 2>/dev/null || true
+      done
+}
+
+trap cleanup_pocketic EXIT
+
+cargo build \
+  -p io-stream-manager \
+  -p mock-icp-ledger \
+  -p mock-io-ledger \
+  -p mock-icp-index \
+  -p mock-io-index \
+  -p mock-jupiter-faucet \
+  -p mock-sns-governance \
+  --target wasm32-unknown-unknown
+
+tests=(
+  "live::proof_found_after_submitted_upgrade_completes_once"
+  "live::pending_fee_repreflight_survives_actual_same_wasm_upgrade"
+  "live::submitted_attempt_without_callback_recovers_after_actual_same_wasm_upgrade"
+  "live::proof_required_without_cursor_recovers_after_actual_same_wasm_upgrade"
+  "live::spent_uncommitted_reservation_survives_actual_same_wasm_upgrade"
+  "live::partial_distribution_fee_change_never_retransfers_prior_recipient"
+  "live::zero_recipient_reward_creates_no_io_ledger_transfer"
+  "live::governance_snapshot_unavailable_does_not_convert_reward_to_dust"
+  "live::governance_outage_cannot_skip_blocked_reward_via_newer_transaction"
+  "live::pocketic_live_two_week_partial_allocation_failure_does_not_double_pay_retry"
+  "live::pocketic_live_index_lag_blocks_scan_then_resolves_once"
+  "live::pocketic_live_second_two_week_reward_after_completed_reward_succeeds"
+)
+
+ran=()
+for test_name in "${tests[@]}"; do
+  cleanup_pocketic
+  list_output="$(cargo test -p io-stream-manager --test io_stream_manager_pocketic "${test_name}" -- --exact --list 2>&1)"
+  discovered="$(grep -c "^${test_name}: test$" <<<"${list_output}" || true)"
+  if [[ "${discovered}" != "1" ]]; then
+    printf '%s\n' "${list_output}"
+    echo "required test was not discovered exactly once: ${test_name}" >&2
+    exit 1
+  fi
+  echo "running ${test_name}"
+  output_file="$(mktemp)"
+  set +e
+  cargo test -p io-stream-manager --test io_stream_manager_pocketic "${test_name}" -- --exact --nocapture >"${output_file}" 2>&1
+  status=$?
+  set -e
+  cleanup_pocketic
+  output="$(<"${output_file}")"
+  rm -f "${output_file}"
+  printf '%s\n' "${output}"
+  if [[ ${status} -ne 0 ]]; then
+    echo "required test failed: ${test_name}" >&2
+    exit "${status}"
+  fi
+  if ! grep -q "running 1 test" <<<"${output}"; then
+    echo "required test did not run exactly once: ${test_name}" >&2
+    exit 1
+  fi
+  if ! grep -q "test ${test_name} ..." <<<"${output}" \
+    || ! grep -q "test result: ok. 1 passed" <<<"${output}"; then
+    echo "required test did not report an explicit pass: ${test_name}" >&2
+    exit 1
+  fi
+  if grep -Eiq "skipping real PocketIC test|POCKET_IC_BIN is not set|required Wasm is missing" <<<"${output}"; then
+    echo "required test output looks like a skip instead of proof: ${test_name}" >&2
+    exit 1
+  fi
+  ran+=("${test_name}")
+  cleanup_pocketic
+done
+
+echo "live PocketIC tests genuinely ran:"
+printf ' - %s\n' "${ran[@]}"

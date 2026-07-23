@@ -8,7 +8,7 @@ use candid::{CandidType, Principal};
 use io_production_wiring::ProductionWiringConfig;
 use io_stable_schema::IO_STREAM_MANAGER_SCHEMA_VERSION;
 use serde::Deserialize;
-use std::cell::RefCell;
+use std::{cell::RefCell, collections::BTreeSet};
 
 pub use io_core_model::{
     IoRecipientPolicy, ModelError, ProtocolState, RedemptionOutcome, RedemptionRate, Split,
@@ -292,8 +292,16 @@ pub fn migrate_stable_state(
     snapshot: VersionedStableState,
 ) -> Result<StableState, StableMigrationError> {
     match snapshot.schema_version {
-        0 => Ok(snapshot.state),
-        STREAM_MANAGER_STABLE_SCHEMA_VERSION => Ok(snapshot.state),
+        0 | 1 => {
+            let normalized = validate_reward_reservation_consistency(
+                normalize_legacy_reward_reservations(snapshot.state)?,
+                RewardValidationMode::LegacyNormalization,
+            )?;
+            validate_reward_reservation_consistency(normalized, RewardValidationMode::Current)
+        }
+        STREAM_MANAGER_STABLE_SCHEMA_VERSION => {
+            validate_reward_reservation_consistency(snapshot.state, RewardValidationMode::Current)
+        }
         version if version > STREAM_MANAGER_STABLE_SCHEMA_VERSION => {
             Err(StableMigrationError::UnsupportedFutureVersion {
                 canister: "io_stream_manager",
@@ -305,6 +313,891 @@ pub fn migrate_stable_state(
             version,
         }),
     }
+}
+
+pub(crate) fn reward_recipient_has_any_attempt_or_external_evidence(
+    recipient: &TwoWeekRecipientTransfer,
+) -> bool {
+    recipient.reward_transfer_attempt.is_some()
+        || recipient.transfer_block_index.is_some()
+        || recipient.ledger_transfer_block.is_some()
+        || recipient.ledger_transfer_proof_scan_state.is_some()
+        || recipient
+            .ledger_transfer_status
+            .unwrap_or(recipient.transfer_status)
+            == TransferStatus::Succeeded
+        || matches!(
+            recipient.governance_refresh_status,
+            Some(TransferStatus::Succeeded)
+        )
+        || recipient.ledger_transfer_fee_e8s.is_some()
+        || recipient.reward_amount_received_e8s.is_some()
+        || recipient.reserve_debit_e8s.is_some()
+        || recipient.observed_stake_after_e8s.is_some()
+        || recipient.concurrent_stake_delta_e8s.is_some()
+}
+
+fn stable_reward_operation_has_external_effect_or_uncertainty(op: &StreamOperation) -> bool {
+    op.two_week_recipients
+        .iter()
+        .any(reward_recipient_has_any_attempt_or_external_evidence)
+}
+
+fn corrupt_reward_snapshot(op: &StreamOperation, message: String) -> StableMigrationError {
+    StableMigrationError::CorruptSnapshot {
+        canister: "io_stream_manager",
+        message: format!("reward operation {} {message}", op.operation_id),
+    }
+}
+
+pub(crate) fn reward_operation_accounting_error(
+    op: &StreamOperation,
+    message: impl Into<String>,
+) -> String {
+    format!("reward operation {} {}", op.operation_id, message.into())
+}
+
+#[cfg_attr(not(any(test, target_family = "wasm")), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RewardValidationMode {
+    Current,
+    LegacyNormalization,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RewardAccountingError {
+    Invalid {
+        operation_id: String,
+        message: String,
+    },
+}
+
+impl RewardAccountingError {
+    fn new(op: &StreamOperation, message: impl Into<String>) -> Self {
+        Self::Invalid {
+            operation_id: op.operation_id.clone(),
+            message: message.into(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains(&self, needle: &str) -> bool {
+        self.to_string().contains(needle)
+    }
+}
+
+impl std::fmt::Display for RewardAccountingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid {
+                operation_id,
+                message,
+            } => write!(f, "reward operation {operation_id} {message}"),
+        }
+    }
+}
+
+impl From<RewardAccountingError> for String {
+    fn from(value: RewardAccountingError) -> Self {
+        value.to_string()
+    }
+}
+
+fn reward_accounting_error(
+    op: &StreamOperation,
+    message: impl Into<String>,
+) -> RewardAccountingError {
+    RewardAccountingError::new(op, message)
+}
+
+#[cfg_attr(not(any(test, target_family = "wasm")), allow(dead_code))]
+pub(crate) fn reward_attempt_submitted_or_proof_required(
+    attempt: &RewardTransferAttemptRecord,
+) -> bool {
+    matches!(
+        attempt.lifecycle,
+        Some(
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { .. }
+                | RewardTransferAttemptLifecycle::ProofRequired { .. }
+        )
+    )
+}
+
+#[cfg_attr(not(any(test, target_family = "wasm")), allow(dead_code))]
+pub(crate) fn reward_recipient_has_submitted_or_proof_required_attempt(
+    recipient: &TwoWeekRecipientTransfer,
+) -> bool {
+    recipient
+        .reward_transfer_attempt
+        .as_ref()
+        .map(reward_attempt_submitted_or_proof_required)
+        .unwrap_or(false)
+}
+
+#[cfg_attr(not(any(test, target_family = "wasm")), allow(dead_code))]
+pub(crate) fn reward_recipient_attempt_is_proven(recipient: &TwoWeekRecipientTransfer) -> bool {
+    recipient
+        .reward_transfer_attempt
+        .as_ref()
+        .and_then(|attempt| attempt.lifecycle.as_ref())
+        .map(|lifecycle| matches!(lifecycle, RewardTransferAttemptLifecycle::Proven { .. }))
+        .unwrap_or(false)
+}
+
+#[cfg_attr(not(any(test, target_family = "wasm")), allow(dead_code))]
+pub(crate) fn reward_recipient_has_spent_debit(recipient: &TwoWeekRecipientTransfer) -> bool {
+    recipient
+        .ledger_transfer_status
+        .unwrap_or(recipient.transfer_status)
+        == TransferStatus::Succeeded
+        || reward_recipient_attempt_is_proven(recipient)
+}
+
+#[cfg_attr(not(any(test, target_family = "wasm")), allow(dead_code))]
+pub(crate) fn reward_operation_submitted_or_proof_required_attempts(op: &StreamOperation) -> usize {
+    op.two_week_recipients
+        .iter()
+        .filter(|recipient| reward_recipient_has_submitted_or_proof_required_attempt(recipient))
+        .count()
+}
+
+#[cfg_attr(not(any(test, target_family = "wasm")), allow(dead_code))]
+pub(crate) fn validate_reward_operation_accounting(
+    op: &StreamOperation,
+    processed_transactions: Option<&BTreeSet<String>>,
+    mode: RewardValidationMode,
+) -> Result<(), RewardAccountingError> {
+    if let Some(processed_transactions) = processed_transactions {
+        let is_processed = processed_transactions.contains(&op.source_transaction_id);
+        if op.phase == OperationPhase::Completed {
+            if !is_processed {
+                return Err(reward_accounting_error(
+                    op,
+                    "is completed but missing processed transaction evidence",
+                ));
+            }
+        } else if is_processed {
+            return Err(reward_accounting_error(
+                op,
+                "is not completed but has processed transaction evidence",
+            ));
+        }
+    }
+
+    if reward_operation_submitted_or_proof_required_attempts(op) > 1 {
+        return Err(reward_accounting_error(
+            op,
+            "has more than one submitted/proof-required reward attempt",
+        ));
+    }
+
+    let stored_total = op
+        .reward_reservation
+        .and_then(|reservation| reservation.total_unavailable_reward_debit_e8s())
+        .unwrap_or(op.reserved_reward_debit_e8s.unwrap_or(0));
+    if op.phase == OperationPhase::Completed
+        && (stored_total != 0 || op.reserved_reward_debit_e8s.unwrap_or(0) != 0)
+    {
+        return Err(reward_accounting_error(
+            op,
+            "is completed but has nonzero reward reservation",
+        ));
+    }
+    if op.phase == OperationPhase::Completed {
+        return Ok(());
+    }
+
+    let has_external_effect_or_uncertainty =
+        stable_reward_operation_has_external_effect_or_uncertainty(op);
+    let Some(preflight) = op.reward_preflight.as_ref() else {
+        if has_external_effect_or_uncertainty || stored_total != 0 {
+            return Err(reward_accounting_error(
+                op,
+                "has external transfer evidence or reservation without preflight fee evidence",
+            ));
+        }
+        return Ok(());
+    };
+
+    match preflight.status {
+        RewardPreflightStatus::Validated => {
+            validate_reward_operation_preflight(op, preflight)
+                .map_err(|message| reward_accounting_error(op, message))?;
+            for recipient in &op.two_week_recipients {
+                validate_reward_recipient_accounting(op, recipient, preflight, mode)
+                    .map_err(|message| reward_accounting_error(op, message))?;
+            }
+        }
+        RewardPreflightStatus::Pending => {
+            if let Some(evidence) = op.reward_fee_repreflight {
+                if op.reward_reservation.is_none() && op.reserved_reward_debit_e8s.is_none() {
+                    return Err(reward_accounting_error(
+                        op,
+                        "pending re-preflight is missing prior reservation",
+                    ));
+                }
+                validate_reward_operation_preflight(op, preflight)
+                    .map_err(|message| reward_accounting_error(op, message))?;
+                for recipient in &op.two_week_recipients {
+                    validate_reward_recipient_accounting(op, recipient, preflight, mode)
+                        .map_err(|message| reward_accounting_error(op, message))?;
+                }
+                if stored_total != evidence.prior_reserved_debit_e8s
+                    || op.reserved_reward_debit_e8s.unwrap_or(stored_total)
+                        != evidence.prior_reserved_debit_e8s
+                {
+                    return Err(reward_accounting_error(
+                        op,
+                        "pending re-preflight reservation disagrees with prior debit evidence",
+                    ));
+                }
+                if evidence.prior_validated_fee_e8s != preflight.ledger_fee_e8s {
+                    return Err(reward_accounting_error(
+                        op,
+                        "pending re-preflight prior fee disagrees with retained preflight fee",
+                    ));
+                }
+                if evidence.prior_validated_fee_e8s == evidence.observed_current_fee_e8s {
+                    return Err(reward_accounting_error(
+                        op,
+                        "pending re-preflight has no fee change evidence",
+                    ));
+                }
+            } else {
+                if has_external_effect_or_uncertainty || stored_total != 0 {
+                    return Err(reward_accounting_error(
+                        op,
+                        "has pending preflight with external evidence or reservation but no re-preflight evidence",
+                    ));
+                }
+                if mode != RewardValidationMode::LegacyNormalization {
+                    for recipient in &op.two_week_recipients {
+                        if recipient.reward_transfer_attempt.is_some()
+                            || recipient.ledger_transfer_fee_e8s.is_some()
+                            || recipient.reserve_debit_e8s.is_some()
+                        {
+                            return Err(reward_accounting_error(
+                                op,
+                                "has pending initial preflight with transfer accounting evidence",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        RewardPreflightStatus::FailedTerminal => {
+            if has_external_effect_or_uncertainty {
+                validate_reward_operation_preflight(op, preflight)
+                    .map_err(|message| reward_accounting_error(op, message))?;
+                for recipient in &op.two_week_recipients {
+                    validate_reward_recipient_accounting(op, recipient, preflight, mode)
+                        .map_err(|message| reward_accounting_error(op, message))?;
+                }
+            } else if stored_total != 0 {
+                return Err(reward_accounting_error(
+                    op,
+                    "terminal preflight failure has nonzero reward reservation",
+                ));
+            }
+        }
+        RewardPreflightStatus::ManualReconciliationRequired => {
+            if !has_external_effect_or_uncertainty {
+                return Err(reward_accounting_error(
+                    op,
+                    "manual reconciliation requires external transfer evidence or uncertainty",
+                ));
+            }
+            validate_reward_operation_preflight(op, preflight)
+                .map_err(|message| reward_accounting_error(op, message))?;
+            for recipient in &op.two_week_recipients {
+                validate_reward_recipient_accounting(op, recipient, preflight, mode)
+                    .map_err(|message| reward_accounting_error(op, message))?;
+            }
+            if stored_total == 0 {
+                return Err(reward_accounting_error(
+                    op,
+                    "manual reconciliation is missing unavailable reward reservation",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg_attr(not(any(test, target_family = "wasm")), allow(dead_code))]
+pub(crate) fn validate_reward_operation_preflight(
+    op: &StreamOperation,
+    preflight: &RewardDistributionPreflight,
+) -> Result<(), String> {
+    let recipient_count = u64::try_from(op.two_week_recipients.len()).map_err(|_| {
+        reward_operation_accounting_error(op, "recipient count does not fit in u64")
+    })?;
+    if preflight.recipient_count != recipient_count {
+        return Err(reward_operation_accounting_error(
+            op,
+            "preflight recipient count mismatch",
+        ));
+    }
+
+    let mut total_reward = 0_u128;
+    let mut canonical_ids = Vec::with_capacity(op.two_week_recipients.len());
+    let mut compatibility_keys = Vec::with_capacity(op.two_week_recipients.len());
+    let mut canonical_seen = BTreeSet::new();
+    let mut compatibility_seen = BTreeSet::new();
+    for recipient in &op.two_week_recipients {
+        total_reward = total_reward
+            .checked_add(recipient.amount_e8s)
+            .ok_or_else(|| reward_operation_accounting_error(op, "total reward overflowed"))?;
+        let canonical = recipient.sns_neuron_id.clone().ok_or_else(|| {
+            reward_operation_accounting_error(op, "recipient missing canonical SNS neuron id")
+        })?;
+        if canonical.len() != 32 {
+            return Err(reward_operation_accounting_error(
+                op,
+                format!(
+                    "canonical SNS neuron id must be exactly 32 bytes, got {}",
+                    canonical.len()
+                ),
+            ));
+        }
+        if !canonical_seen.insert(canonical.clone()) {
+            return Err(reward_operation_accounting_error(
+                op,
+                "duplicate canonical SNS neuron id",
+            ));
+        }
+        if !compatibility_seen.insert(recipient.neuron_id) {
+            return Err(reward_operation_accounting_error(
+                op,
+                "duplicate compatibility reward recipient key",
+            ));
+        }
+        canonical_ids.push(canonical);
+        compatibility_keys.push(recipient.neuron_id);
+    }
+    let total_fee = preflight
+        .ledger_fee_e8s
+        .checked_mul(u128::from(recipient_count))
+        .ok_or_else(|| reward_operation_accounting_error(op, "total fee overflowed"))?;
+    let total_debit = total_reward
+        .checked_add(total_fee)
+        .ok_or_else(|| reward_operation_accounting_error(op, "total debit overflowed"))?;
+    let dust = op
+        .io_issued_e8s
+        .checked_sub(total_reward)
+        .ok_or_else(|| reward_operation_accounting_error(op, "reward dust underflowed"))?;
+
+    if preflight.total_reward_e8s != total_reward
+        || preflight.total_fee_e8s != total_fee
+        || preflight.total_reserve_debit_e8s != total_debit
+        || preflight.dust_e8s != dust
+        || preflight.canonical_recipient_ids != canonical_ids
+        || preflight.compatibility_keys != compatibility_keys
+    {
+        return Err(reward_operation_accounting_error(
+            op,
+            "preflight totals or recipient identity/order mismatch",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn reward_recipient_authoritative_debit(
+    op: &StreamOperation,
+    recipient: &TwoWeekRecipientTransfer,
+    preflight: &RewardDistributionPreflight,
+) -> Result<u128, String> {
+    let fee = recipient
+        .reward_transfer_attempt
+        .as_ref()
+        .map(|attempt| attempt.fee_e8s)
+        .or(recipient.ledger_transfer_fee_e8s)
+        .unwrap_or(preflight.ledger_fee_e8s);
+    recipient
+        .amount_e8s
+        .checked_add(fee)
+        .ok_or_else(|| reward_operation_accounting_error(op, "recipient reserve debit overflowed"))
+}
+
+#[cfg_attr(not(any(test, target_family = "wasm")), allow(dead_code))]
+pub(crate) fn validate_reward_recipient_accounting(
+    op: &StreamOperation,
+    recipient: &TwoWeekRecipientTransfer,
+    preflight: &RewardDistributionPreflight,
+    mode: RewardValidationMode,
+) -> Result<(), String> {
+    let expected_debit = reward_recipient_authoritative_debit(op, recipient, preflight)?;
+    if let Some(debit) = recipient.reserve_debit_e8s {
+        if debit != expected_debit {
+            return Err(reward_operation_accounting_error(
+                op,
+                format!("recipient reserve debit {debit} does not equal amount plus fee {expected_debit}"),
+            ));
+        }
+    }
+    if let Some(fee) = recipient.ledger_transfer_fee_e8s {
+        if fee != preflight.ledger_fee_e8s {
+            return Err(reward_operation_accounting_error(
+                op,
+                "recipient ledger fee evidence does not match preflight fee",
+            ));
+        }
+    }
+
+    let ledger_status = recipient
+        .ledger_transfer_status
+        .unwrap_or(recipient.transfer_status);
+    let Some(attempt) = recipient.reward_transfer_attempt.as_ref() else {
+        if mode != RewardValidationMode::LegacyNormalization
+            && (ledger_status == TransferStatus::Succeeded
+                || recipient.transfer_block_index.is_some()
+                || recipient.ledger_transfer_block.is_some()
+                || recipient.ledger_transfer_proof_scan_state.is_some()
+                || recipient.ledger_transfer_fee_e8s.is_some()
+                || recipient.reward_amount_received_e8s.is_some()
+                || recipient.reserve_debit_e8s.is_some()
+                || matches!(
+                    recipient.governance_refresh_status,
+                    Some(TransferStatus::Succeeded)
+                )
+                || recipient.observed_stake_after_e8s.is_some()
+                || recipient.concurrent_stake_delta_e8s.is_some())
+        {
+            return Err(reward_operation_accounting_error(
+                op,
+                "recipient has transfer/proof/refresh/stake accounting evidence without durable attempt",
+            ));
+        }
+        return Ok(());
+    };
+    if attempt.amount_e8s != recipient.amount_e8s {
+        return Err(reward_operation_accounting_error(
+            op,
+            "attempt amount does not match recipient planned amount",
+        ));
+    }
+    if attempt.fee_e8s
+        != recipient
+            .ledger_transfer_fee_e8s
+            .unwrap_or(preflight.ledger_fee_e8s)
+    {
+        return Err(reward_operation_accounting_error(
+            op,
+            "attempt fee does not match recipient/preflight fee evidence",
+        ));
+    }
+    if attempt
+        .amount_e8s
+        .checked_add(attempt.fee_e8s)
+        .ok_or_else(|| reward_operation_accounting_error(op, "attempt debit overflowed"))?
+        != expected_debit
+    {
+        return Err(reward_operation_accounting_error(
+            op,
+            "attempt debit does not match recipient reserve debit",
+        ));
+    }
+    match &attempt.lifecycle {
+        None => Err(reward_operation_accounting_error(
+            op,
+            "current reward attempt is missing lifecycle",
+        )),
+        Some(RewardTransferAttemptLifecycle::Prepared) => {
+            if ledger_status == TransferStatus::Succeeded
+                || recipient.transfer_block_index.is_some()
+                || recipient.ledger_transfer_block.is_some()
+                || recipient.ledger_transfer_proof_scan_state.is_some()
+            {
+                return Err(reward_operation_accounting_error(
+                    op,
+                    "prepared attempt has submitted/proof/success evidence",
+                ));
+            }
+            Ok(())
+        }
+        Some(RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation })
+        | Some(RewardTransferAttemptLifecycle::ProofRequired { generation, .. }) => {
+            if *generation != attempt.created_at_time {
+                return Err(reward_operation_accounting_error(
+                    op,
+                    "attempt lifecycle generation mismatch",
+                ));
+            }
+            if ledger_status == TransferStatus::Succeeded
+                || recipient.transfer_block_index.is_some()
+                || recipient.ledger_transfer_block.is_some()
+            {
+                return Err(reward_operation_accounting_error(
+                    op,
+                    "submitted/proof-required attempt has proven block evidence",
+                ));
+            }
+            Ok(())
+        }
+        Some(RewardTransferAttemptLifecycle::Proven { generation, block }) => {
+            if *generation != attempt.created_at_time {
+                return Err(reward_operation_accounting_error(
+                    op,
+                    "attempt lifecycle generation mismatch",
+                ));
+            }
+            if ledger_status != TransferStatus::Succeeded
+                || recipient.transfer_block_index != Some(*block)
+                || recipient.ledger_transfer_block != Some(*block)
+            {
+                return Err(reward_operation_accounting_error(
+                    op,
+                    "proven block evidence mismatch",
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn stable_reward_recipient_debit(
+    op: &StreamOperation,
+    recipient: &TwoWeekRecipientTransfer,
+    preflight: &RewardDistributionPreflight,
+) -> Result<u128, StableMigrationError> {
+    reward_recipient_authoritative_debit(op, recipient, preflight)
+        .map_err(|message| corrupt_reward_snapshot(op, message))
+        .and_then(|expected| match recipient.reserve_debit_e8s {
+            Some(debit) if debit == expected => Ok(debit),
+            Some(debit) => Err(corrupt_reward_snapshot(
+                op,
+                format!(
+                    "recipient reserve debit {debit} does not equal amount plus fee {expected}"
+                ),
+            )),
+            None => Ok(expected),
+        })
+}
+
+fn derive_stable_reward_reservation_with_mode(
+    op: &StreamOperation,
+    mode: RewardValidationMode,
+) -> Result<RewardReservation, StableMigrationError> {
+    validate_reward_operation_accounting(op, None, mode)
+        .map_err(|err| corrupt_reward_snapshot(op, err.to_string()))?;
+
+    let Some(preflight) = &op.reward_preflight else {
+        return Ok(RewardReservation {
+            unspent_reserved_reward_debit_e8s: op.reserved_reward_debit_e8s.unwrap_or(0),
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+    };
+
+    if preflight.status == RewardPreflightStatus::Pending {
+        if let Some(evidence) = op.reward_fee_repreflight {
+            let stored =
+                op.reward_reservation
+                    .ok_or_else(|| StableMigrationError::CorruptSnapshot {
+                        canister: "io_stream_manager",
+                        message: format!(
+                            "reward operation {} pending re-preflight is missing prior reservation",
+                            op.operation_id
+                        ),
+                    })?;
+            let stored_total = checked_reservation_total_for_stable(op, stored).map_err(|_| {
+                StableMigrationError::CorruptSnapshot {
+                    canister: "io_stream_manager",
+                    message: format!(
+                        "reward operation {} pending re-preflight reservation overflowed",
+                        op.operation_id
+                    ),
+                }
+            })?;
+            if stored_total != evidence.prior_reserved_debit_e8s
+                || op.reserved_reward_debit_e8s.unwrap_or(stored_total)
+                    != evidence.prior_reserved_debit_e8s
+            {
+                return Err(StableMigrationError::CorruptSnapshot {
+                    canister: "io_stream_manager",
+                    message: format!(
+                        "reward operation {} pending re-preflight reservation disagrees with prior debit evidence",
+                        op.operation_id
+                    ),
+                });
+            }
+            if evidence.prior_validated_fee_e8s == evidence.observed_current_fee_e8s {
+                return Err(StableMigrationError::CorruptSnapshot {
+                    canister: "io_stream_manager",
+                    message: format!(
+                        "reward operation {} pending re-preflight has no fee change evidence",
+                        op.operation_id
+                    ),
+                });
+            }
+            return Ok(stored);
+        }
+        if op
+            .reward_reservation
+            .and_then(|reservation| reservation.total_unavailable_reward_debit_e8s())
+            .unwrap_or(0)
+            != 0
+            || op.reserved_reward_debit_e8s.unwrap_or(0) != 0
+        {
+            return Err(StableMigrationError::CorruptSnapshot {
+                canister: "io_stream_manager",
+                message: format!(
+                    "reward operation {} has pending preflight with reservation but no re-preflight evidence",
+                    op.operation_id
+                ),
+            });
+        }
+    }
+
+    if preflight.status != RewardPreflightStatus::Validated
+        && !stable_reward_operation_has_external_effect_or_uncertainty(op)
+    {
+        return Ok(RewardReservation::default());
+    }
+
+    op.two_week_recipients.iter().try_fold(
+        RewardReservation::default(),
+        |mut reservation, recipient| {
+            let debit = stable_reward_recipient_debit(op, recipient, preflight)?;
+            if reward_recipient_has_spent_debit(recipient) {
+                reservation.externally_spent_but_uncommitted_reward_debit_e8s = reservation
+                    .externally_spent_but_uncommitted_reward_debit_e8s
+                    .checked_add(debit)
+                    .ok_or_else(|| StableMigrationError::CorruptSnapshot {
+                        canister: "io_stream_manager",
+                        message: format!(
+                            "spent reward reservation overflowed in operation {}",
+                            op.operation_id
+                        ),
+                    })?;
+            } else {
+                reservation.unspent_reserved_reward_debit_e8s = reservation
+                    .unspent_reserved_reward_debit_e8s
+                    .checked_add(debit)
+                    .ok_or_else(|| StableMigrationError::CorruptSnapshot {
+                        canister: "io_stream_manager",
+                        message: format!(
+                            "unspent reward reservation overflowed in operation {}",
+                            op.operation_id
+                        ),
+                    })?;
+            }
+            Ok(reservation)
+        },
+    )
+}
+
+fn checked_reservation_total_for_stable(
+    op: &StreamOperation,
+    reservation: RewardReservation,
+) -> Result<u128, StableMigrationError> {
+    reservation
+        .checked_total_unavailable_reward_debit_e8s()
+        .map_err(|message| StableMigrationError::CorruptSnapshot {
+            canister: "io_stream_manager",
+            message: format!("operation {} {message}", op.operation_id),
+        })
+}
+
+fn validate_reward_reservation_consistency(
+    state: StableState,
+    mode: RewardValidationMode,
+) -> Result<StableState, StableMigrationError> {
+    for op in &state.operation_journal {
+        if op.kind != StreamOperationKind::TwoWeekMaturityStream
+            && op.reward_reservation.is_none()
+            && op.reserved_reward_debit_e8s.is_none()
+        {
+            continue;
+        }
+        let stored = op.reward_reservation.unwrap_or(RewardReservation {
+            unspent_reserved_reward_debit_e8s: op.reserved_reward_debit_e8s.unwrap_or(0),
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+        let stored_total = checked_reservation_total_for_stable(op, stored)?;
+        let is_processed = state
+            .processed_transactions
+            .contains(&op.source_transaction_id);
+
+        if op.phase == OperationPhase::Completed {
+            if !is_processed {
+                return Err(StableMigrationError::CorruptSnapshot {
+                    canister: "io_stream_manager",
+                    message: format!(
+                        "completed reward operation {} is missing processed transaction evidence",
+                        op.operation_id
+                    ),
+                });
+            }
+            if stored_total != 0 || op.reserved_reward_debit_e8s.unwrap_or(0) != 0 {
+                return Err(StableMigrationError::CorruptSnapshot {
+                    canister: "io_stream_manager",
+                    message: format!(
+                        "completed reward operation {} has nonzero reward reservation",
+                        op.operation_id
+                    ),
+                });
+            }
+            continue;
+        }
+        if is_processed {
+            return Err(StableMigrationError::CorruptSnapshot {
+                canister: "io_stream_manager",
+                message: format!(
+                    "non-completed reward operation {} has processed transaction evidence",
+                    op.operation_id
+                ),
+            });
+        }
+
+        let derived = derive_stable_reward_reservation_with_mode(op, mode)?;
+        let derived_total = checked_reservation_total_for_stable(op, derived)?;
+        if stored != derived {
+            return Err(StableMigrationError::CorruptSnapshot {
+                canister: "io_stream_manager",
+                message: format!(
+                    "reward operation {} reservation split disagrees with external evidence: stored {:?}, derived {:?}",
+                    op.operation_id, stored, derived
+                ),
+            });
+        }
+        if let Some(legacy) = op.reserved_reward_debit_e8s {
+            if legacy != derived_total {
+                return Err(StableMigrationError::CorruptSnapshot {
+                    canister: "io_stream_manager",
+                    message: format!(
+                        "reward operation {} legacy reservation {legacy} disagrees with split total {derived_total}",
+                        op.operation_id
+                    ),
+                });
+            }
+        }
+    }
+    Ok(state)
+}
+
+fn normalize_legacy_reward_reservations(
+    mut state: StableState,
+) -> Result<StableState, StableMigrationError> {
+    for op in &mut state.operation_journal {
+        normalize_legacy_reward_attempt_lifecycles(op)?;
+        if op.reward_reservation.is_some() {
+            continue;
+        }
+        if op.kind != StreamOperationKind::TwoWeekMaturityStream
+            && op.reserved_reward_debit_e8s.is_none()
+        {
+            continue;
+        }
+        if op.phase == OperationPhase::Completed
+            && state
+                .processed_transactions
+                .contains(&op.source_transaction_id)
+        {
+            op.reward_reservation = Some(RewardReservation::default());
+            op.reserved_reward_debit_e8s = Some(0);
+            continue;
+        }
+
+        let mut reservation = derive_stable_reward_reservation_with_mode(
+            op,
+            RewardValidationMode::LegacyNormalization,
+        )?;
+        let derived_total = checked_reservation_total_for_stable(op, reservation)?;
+        if let Some(legacy) = op.reserved_reward_debit_e8s {
+            if legacy < derived_total {
+                return Err(StableMigrationError::CorruptSnapshot {
+                    canister: "io_stream_manager",
+                    message: format!(
+                        "legacy reward reservation {legacy} is smaller than proven debit {derived_total} in operation {}",
+                        op.operation_id
+                    ),
+                });
+            }
+            if legacy > derived_total {
+                let excess = legacy.checked_sub(derived_total).ok_or_else(|| {
+                    StableMigrationError::CorruptSnapshot {
+                        canister: "io_stream_manager",
+                        message: format!(
+                            "legacy reward reservation underflow in operation {}",
+                            op.operation_id
+                        ),
+                    }
+                })?;
+                reservation.unspent_reserved_reward_debit_e8s = reservation
+                    .unspent_reserved_reward_debit_e8s
+                    .checked_add(excess)
+                    .ok_or_else(|| StableMigrationError::CorruptSnapshot {
+                        canister: "io_stream_manager",
+                        message: format!(
+                            "legacy reward reservation excess overflowed in operation {}",
+                            op.operation_id
+                        ),
+                    })?;
+            }
+        }
+        op.reserved_reward_debit_e8s = Some(checked_reservation_total_for_stable(op, reservation)?);
+        op.reward_reservation = Some(reservation);
+    }
+    Ok(state)
+}
+
+fn normalize_legacy_reward_attempt_lifecycles(
+    op: &mut StreamOperation,
+) -> Result<(), StableMigrationError> {
+    for recipient_index in 0..op.two_week_recipients.len() {
+        let recipient = &mut op.two_week_recipients[recipient_index];
+        let Some(attempt) = recipient.reward_transfer_attempt.as_mut() else {
+            continue;
+        };
+        if attempt.lifecycle.is_some() {
+            continue;
+        }
+        let ledger_status = recipient
+            .ledger_transfer_status
+            .unwrap_or(recipient.transfer_status);
+        let block = match (
+            recipient.transfer_block_index,
+            recipient.ledger_transfer_block,
+        ) {
+            (Some(a), Some(b)) if a == b => Some(a),
+            (Some(a), None) | (None, Some(a)) => {
+                recipient.transfer_block_index = Some(a);
+                recipient.ledger_transfer_block = Some(a);
+                Some(a)
+            }
+            (None, None) => None,
+            (Some(a), Some(b)) => {
+                return Err(corrupt_reward_snapshot(
+                    op,
+                    format!(
+                        "legacy recipient {recipient_index} has conflicting transfer blocks {a} and {b}"
+                    ),
+                ));
+            }
+        };
+        attempt.lifecycle = match (ledger_status, block) {
+            (TransferStatus::Succeeded, Some(block)) => {
+                Some(RewardTransferAttemptLifecycle::Proven {
+                    generation: attempt.created_at_time,
+                    block,
+                })
+            }
+            _ => Some(RewardTransferAttemptLifecycle::ProofRequired {
+                generation: attempt.created_at_time,
+                reason: "legacy reward attempt lacked lifecycle; proof reconciliation required"
+                    .to_string(),
+            }),
+        };
+        if matches!(
+            attempt.lifecycle,
+            Some(RewardTransferAttemptLifecycle::ProofRequired { .. })
+        ) && recipient.ledger_transfer_proof_scan_state.is_none()
+        {
+            recipient.ledger_transfer_proof_scan_state =
+                Some(io_ledger_types::AccountHistoryScanState::default());
+        }
+    }
+    Ok(())
 }
 
 #[cfg_attr(not(any(test, debug_assertions)), allow(dead_code))]
@@ -423,6 +1316,15 @@ pub struct RewardTransferAttemptRecord {
     pub source_account: io_ledger_types::Account,
     pub destination_account: io_ledger_types::Account,
     pub canonical_sns_neuron_id: Vec<u8>,
+    pub lifecycle: Option<RewardTransferAttemptLifecycle>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum RewardTransferAttemptLifecycle {
+    Prepared,
+    SubmittedAwaitingResult { generation: u64 },
+    ProofRequired { generation: u64, reason: String },
+    Proven { generation: u64, block: u64 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -448,6 +1350,33 @@ pub struct RewardDistributionPreflight {
     pub compatibility_keys: Vec<u64>,
     pub dust_e8s: u128,
     pub failure_reason: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
+pub struct RewardReservation {
+    pub unspent_reserved_reward_debit_e8s: u128,
+    pub externally_spent_but_uncommitted_reward_debit_e8s: u128,
+}
+
+impl RewardReservation {
+    pub fn checked_total_unavailable_reward_debit_e8s(&self) -> Result<u128, String> {
+        self.unspent_reserved_reward_debit_e8s
+            .checked_add(self.externally_spent_but_uncommitted_reward_debit_e8s)
+            .ok_or_else(|| "reward reservation total overflowed".to_string())
+    }
+
+    pub fn total_unavailable_reward_debit_e8s(&self) -> Option<u128> {
+        self.checked_total_unavailable_reward_debit_e8s().ok()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct RewardFeeRepreflightEvidence {
+    pub prior_validated_fee_e8s: u128,
+    pub observed_current_fee_e8s: u128,
+    pub prior_reserved_debit_e8s: u128,
+    pub invalidated_at_timestamp_nanos: u64,
+    pub attempt_generation: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -507,6 +1436,10 @@ pub struct StreamOperation {
     pub rejected_fund_disposition: Option<RejectedFundDisposition>,
     pub rejected_refund_attempt: Option<RejectedRefundAttemptRecord>,
     pub reward_preflight: Option<RewardDistributionPreflight>,
+    pub reward_reservation: Option<RewardReservation>,
+    pub reward_fee_repreflight: Option<RewardFeeRepreflightEvidence>,
+    /// Legacy v1 scalar reservation. Current code derives live reservation
+    /// state from `reward_reservation` and recipient transfer evidence.
     pub reserved_reward_debit_e8s: Option<u128>,
 }
 
@@ -514,6 +1447,7 @@ pub struct StreamOperation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum DebugFailpoint {
     AfterRejectedRefundTransferBeforeJournalUpdate,
+    AfterTwoWeekRewardPreflightBeforeTransfer,
     AfterTwoWeekRewardTransferBeforeJournalUpdate,
     AfterTwoWeekRewardTransferBeforeGovernanceRefresh,
     AfterTwoWeekGovernanceRefreshBeforeJournalCompletion,
@@ -581,6 +1515,8 @@ impl StreamOperation {
             rejected_fund_disposition: None,
             rejected_refund_attempt: None,
             reward_preflight: None,
+            reward_reservation: None,
+            reward_fee_repreflight: None,
             reserved_reward_debit_e8s: None,
         }
     }
@@ -1450,6 +2386,10 @@ mod tests {
                         Some(io_ledger_types::Subaccount([10; 32])),
                     ),
                     canonical_sns_neuron_id: vec![10; 32],
+                    lifecycle: Some(RewardTransferAttemptLifecycle::Proven {
+                        generation: 88,
+                        block: 1,
+                    }),
                 }),
                 ledger_transfer_fee_e8s: Some(10_000),
                 reward_amount_received_e8s: Some(t(40)),
@@ -1579,6 +2519,1536 @@ mod tests {
         let migrated = decode_stable_state_bytes_for_tests(&bytes).unwrap();
 
         assert_eq!(migrated, fixture);
+    }
+
+    #[test]
+    fn v1_reward_reservation_migrates_to_split_buckets() {
+        let mut state = default_first_install_stable_state();
+        let post_state = ProtocolState {
+            liquid_icp_e8s: 300_000_000,
+            two_year_staked_icp_e8s: 0,
+            two_week_staked_icp_e8s: 200_000_000,
+            total_io_supply_e8s: 100_000_000_000,
+            protocol_reserve_io_e8s: 99_700_000_000,
+            non_redeemable_governance_io_e8s: 0,
+        };
+        let mut op = StreamOperation::stream(
+            "icp",
+            77,
+            StreamOperationKind::TwoWeekMaturityStream,
+            500_000_000,
+            post_state,
+            300_000_000,
+            OperationPhase::PartiallyDistributed,
+        );
+        op.reward_preflight = Some(RewardDistributionPreflight {
+            status: RewardPreflightStatus::Validated,
+            ledger_fee_e8s: 10_000,
+            recipient_count: 2,
+            total_reward_e8s: 300_000_000,
+            total_fee_e8s: 20_000,
+            total_reserve_debit_e8s: 300_020_000,
+            protocol_reserve_available_e8s: 300_020_000,
+            real_ledger_reserve_balance_e8s: 300_020_000,
+            validated_at_timestamp_nanos: 123,
+            canonical_recipient_ids: vec![vec![1; 32], vec![2; 32]],
+            compatibility_keys: vec![1, 2],
+            dust_e8s: 0,
+            failure_reason: None,
+        });
+        op.two_week_recipients = vec![
+            TwoWeekRecipientTransfer {
+                sns_neuron_id: Some(vec![1; 32]),
+                neuron_id: 1,
+                amount_e8s: 100_000_000,
+                transfer_status: TransferStatus::Succeeded,
+                transfer_block_index: Some(42),
+                ledger_transfer_status: Some(TransferStatus::Succeeded),
+                ledger_transfer_block: Some(42),
+                governance_refresh_status: Some(TransferStatus::Pending),
+                stake_before_e8s: None,
+                expected_stake_after_e8s: None,
+                minimum_expected_stake_after_e8s: None,
+                observed_stake_after_e8s: None,
+                concurrent_stake_delta_e8s: None,
+                refresh_retry_count: None,
+                refresh_last_error: None,
+                reward_transfer_attempt: None,
+                ledger_transfer_fee_e8s: Some(10_000),
+                reward_amount_received_e8s: Some(100_000_000),
+                reserve_debit_e8s: Some(100_010_000),
+                ledger_transfer_proof_scan_state: None,
+                last_error: None,
+            },
+            TwoWeekRecipientTransfer {
+                sns_neuron_id: Some(vec![2; 32]),
+                neuron_id: 2,
+                amount_e8s: 200_000_000,
+                transfer_status: TransferStatus::Pending,
+                transfer_block_index: None,
+                ledger_transfer_status: Some(TransferStatus::Pending),
+                ledger_transfer_block: None,
+                governance_refresh_status: Some(TransferStatus::Pending),
+                stake_before_e8s: None,
+                expected_stake_after_e8s: None,
+                minimum_expected_stake_after_e8s: None,
+                observed_stake_after_e8s: None,
+                concurrent_stake_delta_e8s: None,
+                refresh_retry_count: None,
+                refresh_last_error: None,
+                reward_transfer_attempt: None,
+                ledger_transfer_fee_e8s: None,
+                reward_amount_received_e8s: None,
+                reserve_debit_e8s: None,
+                ledger_transfer_proof_scan_state: None,
+                last_error: None,
+            },
+        ];
+        add_current_attempt(
+            &mut op,
+            RewardTransferAttemptLifecycle::Proven {
+                generation: 1234,
+                block: 42,
+            },
+        );
+        op.two_week_recipients[0].transfer_block_index = Some(42);
+        op.two_week_recipients[0].ledger_transfer_block = Some(42);
+        op.reserved_reward_debit_e8s = Some(300_020_000);
+        op.reward_reservation = None;
+        state.operation_journal = vec![op];
+
+        let migrated = migrate_stable_state_for_tests(VersionedStableState {
+            schema_version: 1,
+            state,
+        })
+        .unwrap();
+
+        assert_eq!(
+            migrated.operation_journal[0].reward_reservation,
+            Some(RewardReservation {
+                unspent_reserved_reward_debit_e8s: 200_010_000,
+                externally_spent_but_uncommitted_reward_debit_e8s: 100_010_000,
+            })
+        );
+        assert_eq!(
+            migrated.operation_journal[0].reserved_reward_debit_e8s,
+            Some(300_020_000)
+        );
+    }
+
+    fn stable_reward_operation_with_one_recipient(
+        phase: OperationPhase,
+        recipient_status: TransferStatus,
+    ) -> StreamOperation {
+        let post_state = ProtocolState {
+            liquid_icp_e8s: 300_000_000,
+            two_year_staked_icp_e8s: 0,
+            two_week_staked_icp_e8s: 200_000_000,
+            total_io_supply_e8s: 100_000_000_000,
+            protocol_reserve_io_e8s: 99_700_000_000,
+            non_redeemable_governance_io_e8s: 0,
+        };
+        let mut op = StreamOperation::stream(
+            "icp",
+            177,
+            StreamOperationKind::TwoWeekMaturityStream,
+            500_000_000,
+            post_state,
+            100_000_000,
+            phase,
+        );
+        op.reward_preflight = Some(RewardDistributionPreflight {
+            status: RewardPreflightStatus::Validated,
+            ledger_fee_e8s: 10_000,
+            recipient_count: 1,
+            total_reward_e8s: 100_000_000,
+            total_fee_e8s: 10_000,
+            total_reserve_debit_e8s: 100_010_000,
+            protocol_reserve_available_e8s: 100_010_000,
+            real_ledger_reserve_balance_e8s: 100_010_000,
+            validated_at_timestamp_nanos: 123,
+            canonical_recipient_ids: vec![vec![1; 32]],
+            compatibility_keys: vec![1],
+            dust_e8s: 0,
+            failure_reason: None,
+        });
+        op.two_week_recipients = vec![TwoWeekRecipientTransfer {
+            sns_neuron_id: Some(vec![1; 32]),
+            neuron_id: 1,
+            amount_e8s: 100_000_000,
+            transfer_status: recipient_status,
+            transfer_block_index: (recipient_status == TransferStatus::Succeeded).then_some(42),
+            ledger_transfer_status: Some(recipient_status),
+            ledger_transfer_block: (recipient_status == TransferStatus::Succeeded).then_some(42),
+            governance_refresh_status: Some(TransferStatus::Pending),
+            stake_before_e8s: None,
+            expected_stake_after_e8s: None,
+            minimum_expected_stake_after_e8s: None,
+            observed_stake_after_e8s: None,
+            concurrent_stake_delta_e8s: None,
+            refresh_retry_count: None,
+            refresh_last_error: None,
+            reward_transfer_attempt: None,
+            ledger_transfer_fee_e8s: (recipient_status == TransferStatus::Succeeded)
+                .then_some(10_000),
+            reward_amount_received_e8s: (recipient_status == TransferStatus::Succeeded)
+                .then_some(100_000_000),
+            reserve_debit_e8s: (recipient_status == TransferStatus::Succeeded)
+                .then_some(100_010_000),
+            ledger_transfer_proof_scan_state: None,
+            last_error: None,
+        }];
+        op
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+    struct LegacyV1VersionedStableState {
+        schema_version: u32,
+        state: LegacyV1StableState,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+    struct LegacyV1StableState {
+        config: StreamManagerConfig,
+        protocol: StableProtocolState,
+        processed_transactions: Vec<String>,
+        active_staked_io_e8s: u128,
+        two_week_pool_backing_bps: u128,
+        operation_journal: Vec<LegacyV1StreamOperation>,
+        scheduler_cursors: SchedulerCursors,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+    struct LegacyV1StreamOperation {
+        operation_id: String,
+        source_ledger: String,
+        source_block_index: Option<u64>,
+        source_transaction_id: String,
+        kind: StreamOperationKind,
+        phase: OperationPhase,
+        amount_e8s: u128,
+        created_at: u64,
+        last_updated: u64,
+        retry_count: u32,
+        last_error: Option<String>,
+        post_state: StableProtocolState,
+        io_issued_e8s: u128,
+        downstream_io_issuance_block: Option<u64>,
+        two_week_recipients: Vec<LegacyV1TwoWeekRecipientTransfer>,
+        io_redemption_block: Option<u64>,
+        io_amount: u128,
+        gross_icp_payout_e8s: u128,
+        icp_payout_fee_e8s: u128,
+        net_user_icp_payout_e8s: u128,
+        io_return_fee_e8s: u128,
+        icp_payout_status: TransferStatus,
+        io_return_status: TransferStatus,
+        icp_payout_block: Option<u64>,
+        io_return_block: Option<u64>,
+        user_account: Option<String>,
+        source_account: Option<io_ledger_types::Account>,
+        rejected_fund_disposition: Option<RejectedFundDisposition>,
+        rejected_refund_attempt: Option<RejectedRefundAttemptRecord>,
+        reward_preflight: Option<RewardDistributionPreflight>,
+        reserved_reward_debit_e8s: Option<u128>,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+    struct LegacyV1RewardTransferAttemptRecord {
+        amount_e8s: u128,
+        fee_e8s: u128,
+        created_at_time: u64,
+        memo: Option<io_ledger_types::Memo>,
+        source_account: io_ledger_types::Account,
+        destination_account: io_ledger_types::Account,
+        canonical_sns_neuron_id: Vec<u8>,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+    struct LegacyV1TwoWeekRecipientTransfer {
+        sns_neuron_id: Option<Vec<u8>>,
+        neuron_id: u64,
+        amount_e8s: u128,
+        transfer_status: TransferStatus,
+        transfer_block_index: Option<u64>,
+        ledger_transfer_status: Option<TransferStatus>,
+        ledger_transfer_block: Option<u64>,
+        governance_refresh_status: Option<TransferStatus>,
+        stake_before_e8s: Option<u128>,
+        expected_stake_after_e8s: Option<u128>,
+        minimum_expected_stake_after_e8s: Option<u128>,
+        observed_stake_after_e8s: Option<u128>,
+        concurrent_stake_delta_e8s: Option<u128>,
+        refresh_retry_count: Option<u32>,
+        refresh_last_error: Option<String>,
+        reward_transfer_attempt: Option<LegacyV1RewardTransferAttemptRecord>,
+        ledger_transfer_fee_e8s: Option<u128>,
+        reward_amount_received_e8s: Option<u128>,
+        reserve_debit_e8s: Option<u128>,
+        ledger_transfer_proof_scan_state: Option<io_ledger_types::AccountHistoryScanState>,
+        last_error: Option<String>,
+    }
+
+    impl From<StableState> for LegacyV1StableState {
+        fn from(state: StableState) -> Self {
+            Self {
+                config: state.config,
+                protocol: state.protocol,
+                processed_transactions: state.processed_transactions,
+                active_staked_io_e8s: state.active_staked_io_e8s,
+                two_week_pool_backing_bps: state.two_week_pool_backing_bps,
+                operation_journal: state
+                    .operation_journal
+                    .into_iter()
+                    .map(LegacyV1StreamOperation::from)
+                    .collect(),
+                scheduler_cursors: state.scheduler_cursors,
+            }
+        }
+    }
+
+    impl From<StreamOperation> for LegacyV1StreamOperation {
+        fn from(op: StreamOperation) -> Self {
+            Self {
+                operation_id: op.operation_id,
+                source_ledger: op.source_ledger,
+                source_block_index: op.source_block_index,
+                source_transaction_id: op.source_transaction_id,
+                kind: op.kind,
+                phase: op.phase,
+                amount_e8s: op.amount_e8s,
+                created_at: op.created_at,
+                last_updated: op.last_updated,
+                retry_count: op.retry_count,
+                last_error: op.last_error,
+                post_state: op.post_state,
+                io_issued_e8s: op.io_issued_e8s,
+                downstream_io_issuance_block: op.downstream_io_issuance_block,
+                two_week_recipients: op
+                    .two_week_recipients
+                    .into_iter()
+                    .map(LegacyV1TwoWeekRecipientTransfer::from)
+                    .collect(),
+                io_redemption_block: op.io_redemption_block,
+                io_amount: op.io_amount,
+                gross_icp_payout_e8s: op.gross_icp_payout_e8s,
+                icp_payout_fee_e8s: op.icp_payout_fee_e8s,
+                net_user_icp_payout_e8s: op.net_user_icp_payout_e8s,
+                io_return_fee_e8s: op.io_return_fee_e8s,
+                icp_payout_status: op.icp_payout_status,
+                io_return_status: op.io_return_status,
+                icp_payout_block: op.icp_payout_block,
+                io_return_block: op.io_return_block,
+                user_account: op.user_account,
+                source_account: op.source_account,
+                rejected_fund_disposition: op.rejected_fund_disposition,
+                rejected_refund_attempt: op.rejected_refund_attempt,
+                reward_preflight: op.reward_preflight,
+                reserved_reward_debit_e8s: op.reserved_reward_debit_e8s,
+            }
+        }
+    }
+
+    impl From<RewardTransferAttemptRecord> for LegacyV1RewardTransferAttemptRecord {
+        fn from(attempt: RewardTransferAttemptRecord) -> Self {
+            Self {
+                amount_e8s: attempt.amount_e8s,
+                fee_e8s: attempt.fee_e8s,
+                created_at_time: attempt.created_at_time,
+                memo: attempt.memo,
+                source_account: attempt.source_account,
+                destination_account: attempt.destination_account,
+                canonical_sns_neuron_id: attempt.canonical_sns_neuron_id,
+            }
+        }
+    }
+
+    impl From<TwoWeekRecipientTransfer> for LegacyV1TwoWeekRecipientTransfer {
+        fn from(recipient: TwoWeekRecipientTransfer) -> Self {
+            Self {
+                sns_neuron_id: recipient.sns_neuron_id,
+                neuron_id: recipient.neuron_id,
+                amount_e8s: recipient.amount_e8s,
+                transfer_status: recipient.transfer_status,
+                transfer_block_index: recipient.transfer_block_index,
+                ledger_transfer_status: recipient.ledger_transfer_status,
+                ledger_transfer_block: recipient.ledger_transfer_block,
+                governance_refresh_status: recipient.governance_refresh_status,
+                stake_before_e8s: recipient.stake_before_e8s,
+                expected_stake_after_e8s: recipient.expected_stake_after_e8s,
+                minimum_expected_stake_after_e8s: recipient.minimum_expected_stake_after_e8s,
+                observed_stake_after_e8s: recipient.observed_stake_after_e8s,
+                concurrent_stake_delta_e8s: recipient.concurrent_stake_delta_e8s,
+                refresh_retry_count: recipient.refresh_retry_count,
+                refresh_last_error: recipient.refresh_last_error,
+                reward_transfer_attempt: recipient
+                    .reward_transfer_attempt
+                    .map(LegacyV1RewardTransferAttemptRecord::from),
+                ledger_transfer_fee_e8s: recipient.ledger_transfer_fee_e8s,
+                reward_amount_received_e8s: recipient.reward_amount_received_e8s,
+                reserve_debit_e8s: recipient.reserve_debit_e8s,
+                ledger_transfer_proof_scan_state: recipient.ledger_transfer_proof_scan_state,
+                last_error: recipient.last_error,
+            }
+        }
+    }
+
+    fn decode_legacy_v1_bytes(state: StableState) -> Result<StableState, StableMigrationError> {
+        let bytes = candid::encode_args((LegacyV1VersionedStableState {
+            schema_version: 1,
+            state: LegacyV1StableState::from(state),
+        },))
+        .unwrap();
+        decode_stable_state_bytes_for_tests(&bytes)
+    }
+
+    fn legacy_state_with_reward_op(op: StreamOperation) -> StableState {
+        let mut state = default_first_install_stable_state();
+        state.operation_journal = vec![op];
+        state
+    }
+
+    fn current_reward_state_with_op(op: StreamOperation) -> StableState {
+        legacy_state_with_reward_op(op)
+    }
+
+    fn migrate_current_reward_state(
+        state: StableState,
+    ) -> Result<StableState, StableMigrationError> {
+        migrate_stable_state_for_tests(VersionedStableState {
+            schema_version: STREAM_MANAGER_STABLE_SCHEMA_VERSION,
+            state,
+        })
+    }
+
+    fn assert_state_passes_current_live_validation(state: &StableState) {
+        let processed = state
+            .processed_transactions
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        for op in &state.operation_journal {
+            validate_reward_operation_accounting(
+                op,
+                Some(&processed),
+                RewardValidationMode::Current,
+            )
+            .unwrap();
+        }
+    }
+
+    fn expect_current_reward_restore_rejects(op: StreamOperation) {
+        assert!(matches!(
+            migrate_current_reward_state(current_reward_state_with_op(op)),
+            Err(StableMigrationError::CorruptSnapshot { .. })
+        ));
+    }
+
+    fn add_current_attempt(op: &mut StreamOperation, lifecycle: RewardTransferAttemptLifecycle) {
+        op.two_week_recipients[0].reward_transfer_attempt = Some(RewardTransferAttemptRecord {
+            amount_e8s: 100_000_000,
+            fee_e8s: 10_000,
+            created_at_time: 1234,
+            memo: None,
+            source_account: io_ledger_types::Account::new(
+                candid::Principal::anonymous(),
+                Some(io_ledger_types::Subaccount([1; 32])),
+            ),
+            destination_account: io_ledger_types::Account::new(
+                candid::Principal::anonymous(),
+                Some(io_ledger_types::Subaccount([2; 32])),
+            ),
+            canonical_sns_neuron_id: vec![1; 32],
+            lifecycle: Some(lifecycle),
+        });
+        op.two_week_recipients[0].ledger_transfer_fee_e8s = Some(10_000);
+        op.two_week_recipients[0].reward_amount_received_e8s = Some(100_000_000);
+        op.two_week_recipients[0].reserve_debit_e8s = Some(100_010_000);
+    }
+
+    #[test]
+    fn legacy_terminal_transfer_without_attempt_fails_closed() {
+        let mut state = default_first_install_stable_state();
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::FailedTerminal,
+            TransferStatus::Succeeded,
+        );
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+        state.operation_journal = vec![op];
+
+        let err = migrate_stable_state_for_tests(VersionedStableState {
+            schema_version: 1,
+            state,
+        })
+        .unwrap_err();
+
+        assert!(matches!(err, StableMigrationError::CorruptSnapshot { .. }));
+    }
+
+    #[test]
+    fn completed_reward_without_processed_transaction_rejects_restore() {
+        let mut state = default_first_install_stable_state();
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::Completed,
+            TransferStatus::Succeeded,
+        );
+        op.reward_reservation = Some(RewardReservation::default());
+        op.reserved_reward_debit_e8s = Some(0);
+        state.operation_journal = vec![op];
+
+        let err = migrate_stable_state_for_tests(VersionedStableState {
+            schema_version: STREAM_MANAGER_STABLE_SCHEMA_VERSION,
+            state,
+        })
+        .unwrap_err();
+        assert!(matches!(err, StableMigrationError::CorruptSnapshot { .. }));
+    }
+
+    #[test]
+    fn current_v2_inconsistent_reward_reservation_rejects_restore() {
+        let mut state = default_first_install_stable_state();
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Succeeded,
+        );
+        op.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 100_010_000,
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+        state.operation_journal = vec![op];
+
+        let err = migrate_stable_state_for_tests(VersionedStableState {
+            schema_version: STREAM_MANAGER_STABLE_SCHEMA_VERSION,
+            state,
+        })
+        .unwrap_err();
+        assert!(matches!(err, StableMigrationError::CorruptSnapshot { .. }));
+    }
+
+    #[test]
+    fn v2_inconsistent_split_fails_closed() {
+        current_v2_inconsistent_reward_reservation_rejects_restore();
+    }
+
+    #[test]
+    fn legacy_scalar_less_than_proven_spent_debit_rejects_restore() {
+        let mut state = default_first_install_stable_state();
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Succeeded,
+        );
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = Some(1);
+        state.operation_journal = vec![op];
+
+        let err = migrate_stable_state_for_tests(VersionedStableState {
+            schema_version: 1,
+            state,
+        })
+        .unwrap_err();
+        assert!(matches!(err, StableMigrationError::CorruptSnapshot { .. }));
+    }
+
+    #[test]
+    fn v1_validated_scalar_no_transfers_decodes_and_migrates() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+
+        let migrated = decode_legacy_v1_bytes(legacy_state_with_reward_op(op)).unwrap();
+
+        assert_eq!(
+            migrated.operation_journal[0].reward_reservation,
+            Some(RewardReservation {
+                unspent_reserved_reward_debit_e8s: 100_010_000,
+                externally_spent_but_uncommitted_reward_debit_e8s: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn legacy_noncompleted_success_without_attempt_fails_closed() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Succeeded,
+        );
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+
+        let err = decode_legacy_v1_bytes(legacy_state_with_reward_op(op)).unwrap_err();
+
+        assert!(matches!(err, StableMigrationError::CorruptSnapshot { .. }));
+    }
+
+    #[test]
+    fn v1_proof_pending_decodes_and_retains_full_debit() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::FailedRetryable,
+        );
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+        op.two_week_recipients[0].reward_transfer_attempt = Some(RewardTransferAttemptRecord {
+            amount_e8s: 100_000_000,
+            fee_e8s: 10_000,
+            created_at_time: 1234,
+            memo: None,
+            source_account: io_ledger_types::Account::new(
+                candid::Principal::anonymous(),
+                Some(io_ledger_types::Subaccount([1; 32])),
+            ),
+            destination_account: io_ledger_types::Account::new(
+                candid::Principal::anonymous(),
+                Some(io_ledger_types::Subaccount([2; 32])),
+            ),
+            canonical_sns_neuron_id: vec![1; 32],
+            lifecycle: None,
+        });
+        op.two_week_recipients[0].ledger_transfer_proof_scan_state =
+            Some(io_ledger_types::AccountHistoryScanState::default());
+
+        let migrated = decode_legacy_v1_bytes(legacy_state_with_reward_op(op)).unwrap();
+
+        assert_eq!(
+            migrated.operation_journal[0].reward_reservation,
+            Some(RewardReservation {
+                unspent_reserved_reward_debit_e8s: 100_010_000,
+                externally_spent_but_uncommitted_reward_debit_e8s: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn v1_attempt_without_lifecycle_migrates_to_proof_required() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::FailedRetryable,
+        );
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+        add_current_attempt(
+            &mut op,
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 1234 },
+        );
+        op.two_week_recipients[0].ledger_transfer_status = Some(TransferStatus::FailedRetryable);
+        op.two_week_recipients[0].transfer_status = TransferStatus::FailedRetryable;
+        op.two_week_recipients[0].transfer_block_index = None;
+        op.two_week_recipients[0].ledger_transfer_block = None;
+
+        let migrated = decode_legacy_v1_bytes(legacy_state_with_reward_op(op)).unwrap();
+        let lifecycle = migrated.operation_journal[0].two_week_recipients[0]
+            .reward_transfer_attempt
+            .as_ref()
+            .unwrap()
+            .lifecycle
+            .as_ref()
+            .unwrap();
+
+        assert!(matches!(
+            lifecycle,
+            RewardTransferAttemptLifecycle::ProofRequired {
+                generation: 1234,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn v1_success_with_two_matching_blocks_migrates_to_proven() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Succeeded,
+        );
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+        add_current_attempt(
+            &mut op,
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 1234 },
+        );
+        op.two_week_recipients[0].transfer_block_index = Some(42);
+        op.two_week_recipients[0].ledger_transfer_block = Some(42);
+
+        let migrated = decode_legacy_v1_bytes(legacy_state_with_reward_op(op)).unwrap();
+
+        assert_eq!(
+            migrated.operation_journal[0].two_week_recipients[0]
+                .reward_transfer_attempt
+                .as_ref()
+                .unwrap()
+                .lifecycle,
+            Some(RewardTransferAttemptLifecycle::Proven {
+                generation: 1234,
+                block: 42,
+            })
+        );
+    }
+
+    #[test]
+    fn v1_success_with_only_transfer_block_migrates_to_proven() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Succeeded,
+        );
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+        add_current_attempt(
+            &mut op,
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 1234 },
+        );
+        op.two_week_recipients[0].transfer_block_index = Some(42);
+        op.two_week_recipients[0].ledger_transfer_block = None;
+
+        let migrated = decode_legacy_v1_bytes(legacy_state_with_reward_op(op)).unwrap();
+        let recipient = &migrated.operation_journal[0].two_week_recipients[0];
+
+        assert_eq!(recipient.transfer_block_index, Some(42));
+        assert_eq!(recipient.ledger_transfer_block, Some(42));
+        assert_eq!(
+            recipient
+                .reward_transfer_attempt
+                .as_ref()
+                .unwrap()
+                .lifecycle,
+            Some(RewardTransferAttemptLifecycle::Proven {
+                generation: 1234,
+                block: 42,
+            })
+        );
+    }
+
+    #[test]
+    fn v1_success_with_only_ledger_block_migrates_to_proven() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Succeeded,
+        );
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+        add_current_attempt(
+            &mut op,
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 1234 },
+        );
+        op.two_week_recipients[0].transfer_block_index = None;
+        op.two_week_recipients[0].ledger_transfer_block = Some(42);
+
+        let migrated = decode_legacy_v1_bytes(legacy_state_with_reward_op(op)).unwrap();
+        let recipient = &migrated.operation_journal[0].two_week_recipients[0];
+
+        assert_eq!(recipient.transfer_block_index, Some(42));
+        assert_eq!(recipient.ledger_transfer_block, Some(42));
+        assert_eq!(
+            recipient
+                .reward_transfer_attempt
+                .as_ref()
+                .unwrap()
+                .lifecycle,
+            Some(RewardTransferAttemptLifecycle::Proven {
+                generation: 1234,
+                block: 42,
+            })
+        );
+    }
+
+    #[test]
+    fn legacy_attempt_with_complete_evidence_migrates_and_passes_current_validation() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Succeeded,
+        );
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+        add_current_attempt(
+            &mut op,
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 1234 },
+        );
+        op.two_week_recipients[0].transfer_block_index = Some(42);
+        op.two_week_recipients[0].ledger_transfer_block = Some(42);
+
+        let migrated = decode_legacy_v1_bytes(legacy_state_with_reward_op(op)).unwrap();
+
+        assert_state_passes_current_live_validation(&migrated);
+        assert!(migrate_current_reward_state(migrated).is_ok());
+    }
+
+    #[test]
+    fn v1_attempt_with_proof_cursor_migrates_to_proof_required() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::FailedRetryable,
+        );
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+        add_current_attempt(
+            &mut op,
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 1234 },
+        );
+        op.two_week_recipients[0].ledger_transfer_status = Some(TransferStatus::FailedRetryable);
+        op.two_week_recipients[0].transfer_status = TransferStatus::FailedRetryable;
+        op.two_week_recipients[0].ledger_transfer_proof_scan_state =
+            Some(io_ledger_types::AccountHistoryScanState::default());
+
+        let migrated = decode_legacy_v1_bytes(legacy_state_with_reward_op(op)).unwrap();
+
+        assert!(matches!(
+            migrated.operation_journal[0].two_week_recipients[0]
+                .reward_transfer_attempt
+                .as_ref()
+                .unwrap()
+                .lifecycle,
+            Some(RewardTransferAttemptLifecycle::ProofRequired { .. })
+        ));
+    }
+
+    #[test]
+    fn v1_success_without_block_never_becomes_prepared() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Succeeded,
+        );
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+        add_current_attempt(
+            &mut op,
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 1234 },
+        );
+        op.two_week_recipients[0].ledger_transfer_fee_e8s = Some(10_000);
+        op.two_week_recipients[0].transfer_block_index = None;
+        op.two_week_recipients[0].ledger_transfer_block = None;
+
+        let err = decode_legacy_v1_bytes(legacy_state_with_reward_op(op)).unwrap_err();
+
+        assert!(matches!(err, StableMigrationError::CorruptSnapshot { .. }));
+    }
+
+    #[test]
+    fn v1_success_with_conflicting_blocks_fails_closed() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Succeeded,
+        );
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+        add_current_attempt(
+            &mut op,
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 1234 },
+        );
+        op.two_week_recipients[0].transfer_block_index = Some(42);
+        op.two_week_recipients[0].ledger_transfer_block = Some(43);
+
+        let err = decode_legacy_v1_bytes(legacy_state_with_reward_op(op)).unwrap_err();
+
+        assert!(matches!(err, StableMigrationError::CorruptSnapshot { .. }));
+    }
+
+    #[test]
+    fn v1_terminal_after_proven_transfer_decodes_and_retains_spent_debit() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::FailedTerminal,
+            TransferStatus::Succeeded,
+        );
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+        add_current_attempt(
+            &mut op,
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 1234 },
+        );
+        op.two_week_recipients[0].transfer_block_index = Some(42);
+        op.two_week_recipients[0].ledger_transfer_block = Some(42);
+
+        let migrated = decode_legacy_v1_bytes(legacy_state_with_reward_op(op)).unwrap();
+
+        assert_eq!(
+            migrated.operation_journal[0].reward_reservation,
+            Some(RewardReservation {
+                unspent_reserved_reward_debit_e8s: 0,
+                externally_spent_but_uncommitted_reward_debit_e8s: 100_010_000,
+            })
+        );
+    }
+
+    #[test]
+    fn legacy_completed_processed_operation_remains_valid() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::Completed,
+            TransferStatus::Succeeded,
+        );
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+        let source_transaction_id = op.source_transaction_id.clone();
+        let mut state = legacy_state_with_reward_op(op);
+        state.processed_transactions = vec![source_transaction_id];
+
+        let migrated = decode_legacy_v1_bytes(state).unwrap();
+
+        assert_eq!(
+            migrated.operation_journal[0].reward_reservation,
+            Some(RewardReservation::default())
+        );
+        assert_eq!(
+            migrated.operation_journal[0].reserved_reward_debit_e8s,
+            Some(0)
+        );
+        assert_state_passes_current_live_validation(&migrated);
+        assert!(migrate_current_reward_state(migrated).is_ok());
+    }
+
+    #[test]
+    fn every_successful_v0_migration_output_passes_current_stable_validation() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+
+        let migrated = migrate_stable_state_for_tests(VersionedStableState {
+            schema_version: 0,
+            state: legacy_state_with_reward_op(op),
+        })
+        .unwrap();
+
+        assert!(migrate_current_reward_state(migrated).is_ok());
+    }
+
+    #[test]
+    fn every_successful_v1_migration_output_passes_current_stable_validation() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+
+        let migrated = decode_legacy_v1_bytes(legacy_state_with_reward_op(op)).unwrap();
+
+        assert!(migrate_current_reward_state(migrated).is_ok());
+    }
+
+    #[test]
+    fn every_successful_legacy_migration_output_passes_current_live_validation() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+
+        let migrated = decode_legacy_v1_bytes(legacy_state_with_reward_op(op)).unwrap();
+
+        assert_state_passes_current_live_validation(&migrated);
+    }
+
+    #[test]
+    fn v1_prepreflight_nonzero_reservation_without_preflight_fails_closed() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.reward_preflight = None;
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+
+        let err = decode_legacy_v1_bytes(legacy_state_with_reward_op(op)).unwrap_err();
+
+        assert!(matches!(err, StableMigrationError::CorruptSnapshot { .. }));
+    }
+
+    #[test]
+    fn v1_external_effect_without_exact_fee_evidence_fails_closed() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Succeeded,
+        );
+        op.reward_preflight = None;
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+
+        let err = decode_legacy_v1_bytes(legacy_state_with_reward_op(op)).unwrap_err();
+
+        assert!(matches!(err, StableMigrationError::CorruptSnapshot { .. }));
+    }
+
+    #[test]
+    fn v1_scalar_less_than_proven_debit_fails_closed() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Succeeded,
+        );
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = Some(100_009_999);
+
+        let err = decode_legacy_v1_bytes(legacy_state_with_reward_op(op)).unwrap_err();
+
+        assert!(matches!(err, StableMigrationError::CorruptSnapshot { .. }));
+    }
+
+    #[test]
+    fn v1_overflow_fails_closed() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = Some(u128::MAX);
+        op.reward_preflight.as_mut().unwrap().ledger_fee_e8s = 1;
+        op.two_week_recipients[0].amount_e8s = u128::MAX;
+        op.two_week_recipients[0].reserve_debit_e8s = None;
+
+        let err = decode_legacy_v1_bytes(legacy_state_with_reward_op(op)).unwrap_err();
+
+        assert!(matches!(err, StableMigrationError::CorruptSnapshot { .. }));
+    }
+
+    #[test]
+    fn v2_processed_noncompleted_operation_fails_closed() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.two_week_recipients[0].stake_before_e8s = Some(1_000_000_000);
+        op.two_week_recipients[0].expected_stake_after_e8s = Some(1_100_000_000);
+        op.two_week_recipients[0].minimum_expected_stake_after_e8s = Some(1_100_000_000);
+        op.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 100_010_000,
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+        let source_transaction_id = op.source_transaction_id.clone();
+        let mut state = legacy_state_with_reward_op(op);
+        state.processed_transactions = vec![source_transaction_id];
+
+        let err = migrate_stable_state_for_tests(VersionedStableState {
+            schema_version: STREAM_MANAGER_STABLE_SCHEMA_VERSION,
+            state,
+        })
+        .unwrap_err();
+
+        assert!(matches!(err, StableMigrationError::CorruptSnapshot { .. }));
+    }
+
+    #[test]
+    fn restore_rejects_recipient_debit_smaller_than_amount_plus_fee() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.two_week_recipients[0].reserve_debit_e8s = Some(100_009_999);
+        expect_current_reward_restore_rejects(op);
+    }
+
+    #[test]
+    fn restore_rejects_recipient_debit_larger_than_amount_plus_fee() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.two_week_recipients[0].reserve_debit_e8s = Some(100_010_001);
+        expect_current_reward_restore_rejects(op);
+    }
+
+    #[test]
+    fn restore_rejects_attempt_amount_mismatch() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        add_current_attempt(&mut op, RewardTransferAttemptLifecycle::Prepared);
+        op.two_week_recipients[0]
+            .reward_transfer_attempt
+            .as_mut()
+            .unwrap()
+            .amount_e8s = 99_000_000;
+        expect_current_reward_restore_rejects(op);
+    }
+
+    #[test]
+    fn restore_rejects_attempt_fee_mismatch() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        add_current_attempt(&mut op, RewardTransferAttemptLifecycle::Prepared);
+        op.two_week_recipients[0].ledger_transfer_fee_e8s = Some(20_000);
+        expect_current_reward_restore_rejects(op);
+    }
+
+    #[test]
+    fn restore_rejects_lifecycle_generation_mismatch() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        add_current_attempt(
+            &mut op,
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 999 },
+        );
+        expect_current_reward_restore_rejects(op);
+    }
+
+    #[test]
+    fn restore_rejects_proven_block_mismatch() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Succeeded,
+        );
+        add_current_attempt(
+            &mut op,
+            RewardTransferAttemptLifecycle::Proven {
+                generation: 1234,
+                block: 43,
+            },
+        );
+        expect_current_reward_restore_rejects(op);
+    }
+
+    #[test]
+    fn restore_rejects_prepared_attempt_with_success_evidence() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Succeeded,
+        );
+        add_current_attempt(&mut op, RewardTransferAttemptLifecycle::Prepared);
+        expect_current_reward_restore_rejects(op);
+    }
+
+    #[test]
+    fn restore_rejects_submitted_attempt_with_proven_block() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Succeeded,
+        );
+        add_current_attempt(
+            &mut op,
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 1234 },
+        );
+        expect_current_reward_restore_rejects(op);
+    }
+
+    #[test]
+    fn restore_rejects_preflight_recipient_count_mismatch() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.reward_preflight.as_mut().unwrap().recipient_count = 2;
+        expect_current_reward_restore_rejects(op);
+    }
+
+    #[test]
+    fn restore_rejects_preflight_total_reward_mismatch() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.reward_preflight.as_mut().unwrap().total_reward_e8s -= 1;
+        expect_current_reward_restore_rejects(op);
+    }
+
+    #[test]
+    fn restore_rejects_preflight_total_fee_mismatch() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.reward_preflight.as_mut().unwrap().total_fee_e8s += 1;
+        expect_current_reward_restore_rejects(op);
+    }
+
+    #[test]
+    fn restore_rejects_preflight_total_debit_mismatch() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.reward_preflight
+            .as_mut()
+            .unwrap()
+            .total_reserve_debit_e8s += 1;
+        expect_current_reward_restore_rejects(op);
+    }
+
+    #[test]
+    fn restore_rejects_preflight_dust_mismatch() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.reward_preflight.as_mut().unwrap().dust_e8s += 1;
+        expect_current_reward_restore_rejects(op);
+    }
+
+    #[test]
+    fn restore_rejects_preflight_recipient_identity_mismatch() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.reward_preflight
+            .as_mut()
+            .unwrap()
+            .canonical_recipient_ids[0] = vec![9; 32];
+        expect_current_reward_restore_rejects(op);
+    }
+
+    #[test]
+    fn valid_current_reward_state_passes_shared_validator() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        add_current_attempt(&mut op, RewardTransferAttemptLifecycle::Prepared);
+        op.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 100_010_000,
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+
+        assert!(migrate_current_reward_state(current_reward_state_with_op(op)).is_ok());
+    }
+
+    #[test]
+    fn stable_and_live_validators_accept_and_reject_same_fixtures() {
+        let mut valid = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        add_current_attempt(&mut valid, RewardTransferAttemptLifecycle::Prepared);
+        valid.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 100_010_000,
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+        valid.reserved_reward_debit_e8s = Some(100_010_000);
+
+        assert!(
+            validate_reward_operation_accounting(&valid, None, RewardValidationMode::Current)
+                .is_ok()
+        );
+        assert!(migrate_current_reward_state(current_reward_state_with_op(valid.clone())).is_ok());
+
+        let mut invalid = valid;
+        invalid.reward_preflight.as_mut().unwrap().total_reward_e8s += 1;
+
+        assert!(validate_reward_operation_accounting(
+            &invalid,
+            None,
+            RewardValidationMode::Current
+        )
+        .is_err());
+        expect_current_reward_restore_rejects(invalid);
+    }
+
+    #[test]
+    fn stable_rejects_attempt_fee_different_from_preflight_fee() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        add_current_attempt(&mut op, RewardTransferAttemptLifecycle::Prepared);
+        op.two_week_recipients[0].ledger_transfer_fee_e8s = Some(20_000);
+        op.two_week_recipients[0]
+            .reward_transfer_attempt
+            .as_mut()
+            .unwrap()
+            .fee_e8s = 20_000;
+        op.two_week_recipients[0].reserve_debit_e8s = Some(100_020_000);
+
+        expect_current_reward_restore_rejects(op);
+    }
+
+    #[test]
+    fn stable_and_live_reject_same_attempt_fee_drift() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        add_current_attempt(&mut op, RewardTransferAttemptLifecycle::Prepared);
+        op.two_week_recipients[0].ledger_transfer_fee_e8s = Some(20_000);
+        op.two_week_recipients[0]
+            .reward_transfer_attempt
+            .as_mut()
+            .unwrap()
+            .fee_e8s = 20_000;
+        op.two_week_recipients[0].reserve_debit_e8s = Some(100_020_000);
+
+        assert!(
+            validate_reward_operation_accounting(&op, None, RewardValidationMode::Current).is_err()
+        );
+        expect_current_reward_restore_rejects(op);
+    }
+
+    #[test]
+    fn live_rejects_external_attempt_without_preflight() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.reward_preflight = None;
+        add_current_attempt(&mut op, RewardTransferAttemptLifecycle::Prepared);
+
+        let err = validate_reward_operation_accounting(&op, None, RewardValidationMode::Current)
+            .unwrap_err();
+
+        assert!(err.contains("without preflight"));
+    }
+
+    #[test]
+    fn stable_rejects_external_attempt_without_preflight() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.reward_preflight = None;
+        add_current_attempt(&mut op, RewardTransferAttemptLifecycle::Prepared);
+
+        expect_current_reward_restore_rejects(op);
+    }
+
+    #[test]
+    fn live_rejects_success_without_durable_attempt() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Succeeded,
+        );
+        op.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 0,
+            externally_spent_but_uncommitted_reward_debit_e8s: 100_010_000,
+        });
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+
+        let err = validate_reward_operation_accounting(&op, None, RewardValidationMode::Current)
+            .unwrap_err();
+
+        assert!(err.contains("without durable attempt"));
+    }
+
+    #[test]
+    fn stable_rejects_success_without_durable_attempt() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Succeeded,
+        );
+        op.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 0,
+            externally_spent_but_uncommitted_reward_debit_e8s: 100_010_000,
+        });
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+
+        expect_current_reward_restore_rejects(op);
+    }
+
+    #[test]
+    fn live_rejects_block_without_durable_attempt() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.two_week_recipients[0].transfer_block_index = Some(42);
+        op.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 100_010_000,
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+
+        let err = validate_reward_operation_accounting(&op, None, RewardValidationMode::Current)
+            .unwrap_err();
+
+        assert!(err.contains("without durable attempt"));
+    }
+
+    #[test]
+    fn stable_rejects_block_without_durable_attempt() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.two_week_recipients[0].ledger_transfer_block = Some(42);
+        op.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 100_010_000,
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+
+        expect_current_reward_restore_rejects(op);
+    }
+
+    #[test]
+    fn live_rejects_proof_cursor_without_durable_attempt() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.two_week_recipients[0].ledger_transfer_proof_scan_state =
+            Some(io_ledger_types::AccountHistoryScanState::default());
+        op.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 100_010_000,
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+
+        let err = validate_reward_operation_accounting(&op, None, RewardValidationMode::Current)
+            .unwrap_err();
+
+        assert!(err.contains("without durable attempt"));
+    }
+
+    #[test]
+    fn live_rejects_refresh_or_stake_evidence_without_durable_attempt() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.two_week_recipients[0].governance_refresh_status = Some(TransferStatus::Succeeded);
+        op.two_week_recipients[0].expected_stake_after_e8s = Some(200_000_000);
+        op.two_week_recipients[0].observed_stake_after_e8s = Some(200_000_000);
+        op.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 100_010_000,
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+
+        let err = validate_reward_operation_accounting(&op, None, RewardValidationMode::Current)
+            .unwrap_err();
+
+        assert!(err.contains("without durable attempt"));
+    }
+
+    #[test]
+    fn valid_preflight_recipient_before_attempt_remains_valid() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 100_010_000,
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+
+        assert!(
+            validate_reward_operation_accounting(&op, None, RewardValidationMode::Current).is_ok()
+        );
+        assert!(migrate_current_reward_state(current_reward_state_with_op(op)).is_ok());
+    }
+
+    #[test]
+    fn preflight_not_started_zero_effect_state_is_valid() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.reward_preflight = None;
+        op.reward_reservation = Some(RewardReservation::default());
+        op.reserved_reward_debit_e8s = Some(0);
+
+        assert!(
+            validate_reward_operation_accounting(&op, None, RewardValidationMode::Current).is_ok()
+        );
+        assert!(migrate_current_reward_state(current_reward_state_with_op(op)).is_ok());
+    }
+
+    #[test]
+    fn failed_terminal_invalid_plan_is_status_aware_and_restorable() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::FailedTerminal,
+            TransferStatus::Pending,
+        );
+        op.reward_preflight = Some(RewardDistributionPreflight {
+            status: RewardPreflightStatus::FailedTerminal,
+            ledger_fee_e8s: 0,
+            recipient_count: 0,
+            total_reward_e8s: 0,
+            total_fee_e8s: 0,
+            total_reserve_debit_e8s: 0,
+            protocol_reserve_available_e8s: 0,
+            real_ledger_reserve_balance_e8s: 0,
+            validated_at_timestamp_nanos: 123,
+            canonical_recipient_ids: Vec::new(),
+            compatibility_keys: Vec::new(),
+            dust_e8s: 0,
+            failure_reason: Some("recipient canonical id missing".to_string()),
+        });
+        op.reward_reservation = Some(RewardReservation::default());
+        op.reserved_reward_debit_e8s = Some(0);
+
+        assert!(migrate_current_reward_state(current_reward_state_with_op(op)).is_ok());
+    }
+
+    #[test]
+    fn bad_fee_pending_repreflight_stable_roundtrip_preserves_reservation() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.reward_preflight.as_mut().unwrap().status = RewardPreflightStatus::Pending;
+        op.reward_preflight.as_mut().unwrap().failure_reason =
+            Some("reward transfer BadFee before definitive success".to_string());
+        op.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 100_010_000,
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+        op.reserved_reward_debit_e8s = Some(100_010_000);
+        op.reward_fee_repreflight = Some(RewardFeeRepreflightEvidence {
+            prior_validated_fee_e8s: 10_000,
+            observed_current_fee_e8s: 20_000,
+            prior_reserved_debit_e8s: 100_010_000,
+            invalidated_at_timestamp_nanos: 999,
+            attempt_generation: 55,
+        });
+
+        let migrated = migrate_stable_state_for_tests(VersionedStableState {
+            schema_version: STREAM_MANAGER_STABLE_SCHEMA_VERSION,
+            state: legacy_state_with_reward_op(op),
+        })
+        .unwrap();
+
+        assert_eq!(
+            migrated.operation_journal[0].reward_reservation,
+            Some(RewardReservation {
+                unspent_reserved_reward_debit_e8s: 100_010_000,
+                externally_spent_but_uncommitted_reward_debit_e8s: 0,
+            })
+        );
+        assert_eq!(
+            migrated.operation_journal[0].reward_fee_repreflight,
+            Some(RewardFeeRepreflightEvidence {
+                prior_validated_fee_e8s: 10_000,
+                observed_current_fee_e8s: 20_000,
+                prior_reserved_debit_e8s: 100_010_000,
+                invalidated_at_timestamp_nanos: 999,
+                attempt_generation: 55,
+            })
+        );
+    }
+
+    #[test]
+    fn pending_repreflight_missing_prior_reservation_fails_closed() {
+        let mut op = stable_reward_operation_with_one_recipient(
+            OperationPhase::PartiallyDistributed,
+            TransferStatus::Pending,
+        );
+        op.reward_preflight.as_mut().unwrap().status = RewardPreflightStatus::Pending;
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = None;
+        op.reward_fee_repreflight = Some(RewardFeeRepreflightEvidence {
+            prior_validated_fee_e8s: 10_000,
+            observed_current_fee_e8s: 20_000,
+            prior_reserved_debit_e8s: 100_010_000,
+            invalidated_at_timestamp_nanos: 999,
+            attempt_generation: 55,
+        });
+
+        let err = migrate_stable_state_for_tests(VersionedStableState {
+            schema_version: STREAM_MANAGER_STABLE_SCHEMA_VERSION,
+            state: legacy_state_with_reward_op(op),
+        })
+        .unwrap_err();
+
+        assert!(matches!(err, StableMigrationError::CorruptSnapshot { .. }));
     }
 
     #[test]
