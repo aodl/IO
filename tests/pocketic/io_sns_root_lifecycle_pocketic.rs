@@ -499,7 +499,7 @@ fn clear_rejections(pic: &PocketIc, ledger: Principal) {
 
 fn transactions(pic: &PocketIc, ledger: Principal) -> Vec<LedgerTransaction> {
     let bytes = pic
-        .query_call(
+        .update_call(
             ledger,
             Principal::anonymous(),
             "debug_get_transactions",

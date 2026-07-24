@@ -38,11 +38,29 @@ struct DebugOrderArgs {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize)]
+struct DebugFeeArgs {
+    fee_e8s: u128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize)]
+#[allow(clippy::enum_variant_names)]
+enum DebugFailpoint {
+    AfterRejectedRefundTransferBeforeJournalUpdate,
+    AfterTwoWeekRewardPreflightBeforeTransfer,
+    AfterTwoWeekRewardTransferBeforeJournalUpdate,
+    AfterTwoWeekRewardTransferBeforeGovernanceRefresh,
+    AfterTwoWeekGovernanceRefreshBeforeJournalCompletion,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize)]
 struct LedgerTransaction {
     from: String,
     to: String,
+    from_account: Option<io_ledger_types::Account>,
+    to_account: Option<io_ledger_types::Account>,
     amount_e8s: u128,
     memo: String,
+    memo_bytes: Option<Vec<u8>>,
     block_index: u64,
     timestamp: u64,
 }
@@ -98,13 +116,25 @@ fn pocketic_available() -> bool {
 }
 
 fn wasm(path: &str) -> Option<Vec<u8>> {
-    std::fs::read(path).ok()
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace = manifest_dir.parent().and_then(|path| path.parent());
+    let debug_artifact = std::path::Path::new(path)
+        .file_name()
+        .and_then(|name| workspace.map(|root| root.join("debug-artifacts").join(name)));
+    std::fs::read(path)
+        .ok()
+        .or_else(|| workspace.and_then(|root| std::fs::read(root.join(path)).ok()))
+        .or_else(|| debug_artifact.and_then(|path| std::fs::read(path).ok()))
 }
 
 #[cfg(test)]
 mod live {
     use super::*;
     use candid::{decode_one, encode_one, Nat, Principal};
+    use io_governance_types::{
+        EmptyRecord, SnsClaimOrRefresh, SnsClaimOrRefreshBy, SnsManageNeuronCommand,
+        SnsProductionManageNeuronRequest, SnsProductionManageNeuronResponse,
+    };
     use io_ledger_types::{
         map_icrc_transfer_result, Account, IcrcAccount, IcrcTransferArg, IcrcTransferError,
         Subaccount,
@@ -204,6 +234,15 @@ mod live {
         );
         let jupiter_faucet = create_canister(&pic, faucet_wasm, vec![]);
         let sns_governance = sns_wasm.map(|wasm| create_canister(&pic, wasm, vec![]));
+        if let Some(sns) = sns_governance {
+            pic.update_call(
+                sns,
+                Principal::anonymous(),
+                "debug_set_io_ledger_principal",
+                encode_one(io_ledger).unwrap(),
+            )
+            .expect("configure mock SNS governance IO ledger");
+        }
         let mut stream_args = io_stream_manager::InitArgs {
             icp_ledger_principal_text: configure_icp_payout_ledger.then(|| icp_ledger.to_text()),
             icp_index_principal_text: Some(icp_index.to_text()),
@@ -282,13 +321,66 @@ mod live {
             .0
     }
 
-    fn balance(pic: &PocketIc, ledger: Principal, account: &str) -> u128 {
+    fn transfer_to_account(
+        pic: &PocketIc,
+        ledger: Principal,
+        from: &str,
+        to: Account,
+        amount_e8s: u128,
+        memo: &str,
+    ) -> u64 {
         let bytes = pic
-            .query_call(
+            .update_call(
+                ledger,
+                Principal::anonymous(),
+                "icrc1_transfer",
+                encode_one(IcrcTransferArg {
+                    from_subaccount: Some(mock_subaccount(from).0.to_vec()),
+                    to: to.into(),
+                    amount: Nat::from(amount_e8s),
+                    fee: None,
+                    memo: Some(memo.as_bytes().to_vec()),
+                    created_at_time: None,
+                })
+                .unwrap(),
+            )
+            .expect("transfer to account");
+        map_icrc_transfer_result(decode_one::<Result<Nat, IcrcTransferError>>(&bytes).unwrap())
+            .expect("ledger transfer result")
+            .block_index
+            .0
+    }
+
+    fn transfer_to_stream_deposit(
+        fixture: &StreamFixture,
+        from: &str,
+        amount_e8s: u128,
+        memo: &str,
+    ) -> u64 {
+        transfer_to_account(
+            &fixture.pic,
+            fixture.icp_ledger,
+            from,
+            Account::new(
+                fixture.stream,
+                Some(mock_subaccount("stream_manager_deposit")),
+            ),
+            amount_e8s,
+            memo,
+        )
+    }
+
+    fn balance(pic: &PocketIc, ledger: Principal, account: &str) -> u128 {
+        balance_of_account(pic, ledger, mock_account(account))
+    }
+
+    fn balance_of_account(pic: &PocketIc, ledger: Principal, account: Account) -> u128 {
+        let bytes = pic
+            .update_call(
                 ledger,
                 Principal::anonymous(),
                 "icrc1_balance_of",
-                encode_one(IcrcAccount::from(mock_account(account))).unwrap(),
+                encode_one(IcrcAccount::from(account)).unwrap(),
             )
             .expect("balance");
         decode_one::<Nat>(&bytes)
@@ -308,13 +400,23 @@ mod live {
         Subaccount(subaccount)
     }
 
+    fn sns_neuron_subaccount(id: u64) -> Subaccount {
+        let mut subaccount = [0; 32];
+        subaccount[24..].copy_from_slice(&id.to_be_bytes());
+        Subaccount(subaccount)
+    }
+
+    fn sns_neuron_staking_account(sns_governance: Principal, id: u64) -> Account {
+        Account::new(sns_governance, Some(sns_neuron_subaccount(id)))
+    }
+
     fn mock_account(label: &str) -> Account {
         Account::new(Principal::anonymous(), Some(mock_subaccount(label)))
     }
 
     fn transactions(pic: &PocketIc, ledger: Principal) -> Vec<LedgerTransaction> {
         let bytes = pic
-            .query_call(
+            .update_call(
                 ledger,
                 Principal::anonymous(),
                 "debug_get_transactions",
@@ -377,6 +479,16 @@ mod live {
         .expect("set index order");
     }
 
+    fn set_ledger_fee(pic: &PocketIc, ledger: Principal, fee_e8s: u128) {
+        pic.update_call(
+            ledger,
+            Principal::anonymous(),
+            "debug_set_fee",
+            encode_one(DebugFeeArgs { fee_e8s }).unwrap(),
+        )
+        .expect("set ledger fee");
+    }
+
     fn tick(fixture: &StreamFixture) -> DebugTickOutcome {
         let bytes = fixture
             .pic
@@ -397,6 +509,31 @@ mod live {
             .expect("upgrade stream manager");
     }
 
+    fn set_stream_failpoint(fixture: &StreamFixture, failpoint: Option<DebugFailpoint>) {
+        fixture
+            .pic
+            .update_call(
+                fixture.stream,
+                Principal::anonymous(),
+                "debug_set_failpoint",
+                encode_one(failpoint).unwrap(),
+            )
+            .expect("set stream failpoint");
+    }
+
+    fn stable_state(fixture: &StreamFixture) -> io_stream_manager::StableState {
+        let bytes = fixture
+            .pic
+            .query_call(
+                fixture.stream,
+                Principal::anonymous(),
+                "debug_get_stable_state",
+                encode_one(()).unwrap(),
+            )
+            .expect("stable state");
+        decode_one::<io_stream_manager::StableState>(&bytes).unwrap()
+    }
+
     fn faucet_send(
         fixture: &StreamFixture,
         from: &str,
@@ -404,6 +541,9 @@ mod live {
         amount_e8s: u128,
         memo: &str,
     ) -> u64 {
+        if to == "stream_manager_deposit" {
+            return transfer_to_stream_deposit(fixture, from, amount_e8s, memo);
+        }
         let bytes = fixture
             .pic
             .update_call(
@@ -460,14 +600,65 @@ mod live {
             .expect("process stream event");
     }
 
-    fn add_sns_neuron(pic: &PocketIc, sns: Principal, neuron: MockSnsNeuron) {
-        pic.update_call(
-            sns,
-            Principal::anonymous(),
-            "debug_add_neuron",
-            encode_one(neuron).unwrap(),
-        )
-        .expect("add sns neuron");
+    fn add_sns_neuron(fixture: &StreamFixture, sns: Principal, neuron: MockSnsNeuron) {
+        let initial_stake = neuron.staked_io_e8s;
+        let neuron_id = neuron.neuron_id;
+        fixture
+            .pic
+            .update_call(
+                sns,
+                Principal::anonymous(),
+                "debug_add_neuron",
+                encode_one(neuron).unwrap(),
+            )
+            .expect("add sns neuron");
+        if initial_stake > 0 {
+            transfer_to_account(
+                &fixture.pic,
+                fixture.io_ledger,
+                "protocol_reserve",
+                sns_neuron_staking_account(sns, neuron_id),
+                initial_stake,
+                "existing-stake",
+            );
+        }
+    }
+
+    fn sns_neurons(pic: &PocketIc, sns: Principal) -> Vec<MockSnsNeuron> {
+        let bytes = pic
+            .query_call(
+                sns,
+                Principal::anonymous(),
+                "debug_list_neurons",
+                encode_one(()).unwrap(),
+            )
+            .expect("list sns neurons");
+        decode_one::<Vec<MockSnsNeuron>>(&bytes).unwrap()
+    }
+
+    fn claim_or_refresh_sns_neuron(pic: &PocketIc, sns: Principal, neuron_id: u64) {
+        let bytes = pic
+            .update_call(
+                sns,
+                Principal::anonymous(),
+                "manage_neuron",
+                encode_one(SnsProductionManageNeuronRequest {
+                    subaccount: sns_neuron_subaccount(neuron_id).0.to_vec(),
+                    command: Some(SnsManageNeuronCommand::ClaimOrRefresh(SnsClaimOrRefresh {
+                        by: Some(SnsClaimOrRefreshBy::NeuronId(EmptyRecord {})),
+                    })),
+                })
+                .unwrap(),
+            )
+            .expect("claim or refresh SNS neuron");
+        let response = decode_one::<SnsProductionManageNeuronResponse>(&bytes).unwrap();
+        assert!(
+            matches!(
+                response.command,
+                Some(io_governance_types::SnsManageNeuronCommandResponse::ClaimOrRefresh(_))
+            ),
+            "{response:?}"
+        );
     }
 
     fn install_nns_manager(
@@ -546,7 +737,7 @@ mod live {
         let outcome = tick(&fixture);
         assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
         assert_eq!(outcome.processed_authorized_streams, 1);
-        assert_eq!(outcome.scanned_icp_transactions, 2);
+        assert_eq!(outcome.scanned_icp_transactions, 1);
         assert_eq!(outcome.io_issued_e8s, t(60));
         assert_eq!(
             balance(&fixture.pic, fixture.io_ledger, JUPITER_FAUCET_SOURCE),
@@ -723,14 +914,7 @@ mod live {
         };
 
         mint(&fixture.pic, fixture.icp_ledger, "attacker", t(100), "fund");
-        transfer(
-            &fixture.pic,
-            fixture.icp_ledger,
-            "attacker",
-            "stream_manager_deposit",
-            t(100),
-            "unknown",
-        );
+        transfer_to_stream_deposit(&fixture, "attacker", t(100), "unknown");
 
         let rejected = tick(&fixture);
         assert!(rejected.errors.is_empty(), "{:?}", rejected.errors);
@@ -815,7 +999,8 @@ mod live {
         );
         set_index_lag(&fixture.pic, fixture.icp_index, 10);
         let lagged = tick(&fixture);
-        assert!(lagged.errors.iter().any(|err| err.contains("IndexLag")));
+        assert!(lagged.errors.is_empty(), "{:?}", lagged.errors);
+        assert_eq!(lagged.scanned_icp_transactions, 0);
         assert_eq!(lagged.processed_authorized_streams, 0);
         assert_eq!(
             balance(&fixture.pic, fixture.io_ledger, JUPITER_FAUCET_SOURCE),
@@ -896,11 +1081,9 @@ mod live {
             t(100),
             "fund_nns_manager",
         );
-        transfer(
-            &fixture.pic,
-            fixture.icp_ledger,
+        transfer_to_stream_deposit(
+            &fixture,
             IO_NNS_NEURON_MANAGER_SOURCE,
-            "stream_manager_deposit",
             t(100),
             TWO_YEAR_MATURITY_MEMO,
         );
@@ -918,20 +1101,185 @@ mod live {
         assert_eq!(protocol.liquid_icp_e8s, t(60));
     }
 
+    struct ZeroRecipientRewardObservation {
+        reward_pool_e8s: u128,
+        reserve_before: u128,
+        reserve_after: u128,
+        model_supply_before: u128,
+        model_supply_after: u128,
+        io_transaction_count_before: usize,
+        io_transaction_count_after: usize,
+        stable_after_completion: io_stream_manager::StableState,
+    }
+
+    fn drive_zero_recipient_reward(fixture: &StreamFixture) -> ZeroRecipientRewardObservation {
+        mint(
+            &fixture.pic,
+            fixture.icp_ledger,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            "fund_nns_manager",
+        );
+        let deposit_block = transfer_to_stream_deposit(
+            fixture,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            TWO_WEEK_MATURITY_MEMO,
+        );
+        let before = state(fixture).protocol;
+        let reserve_before = balance(&fixture.pic, fixture.io_ledger, "protocol_reserve");
+        let io_transaction_count_before = transactions(&fixture.pic, fixture.io_ledger).len();
+
+        let outcome = tick(fixture);
+        assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+        assert_eq!(outcome.processed_authorized_streams, 1);
+        assert!(outcome.io_issued_e8s > 0);
+        let after = state(fixture).protocol;
+        let stable_after_completion = stable_state(fixture);
+        let op = stable_after_completion
+            .operation_journal
+            .iter()
+            .find(|op| op.source_transaction_id == format!("icp:{deposit_block}"))
+            .expect("zero-recipient reward operation should be journaled");
+        let preflight = op
+            .reward_preflight
+            .as_ref()
+            .expect("zero-recipient reward should have preflight");
+        assert_eq!(op.phase, io_stream_manager::OperationPhase::Completed);
+        assert!(op.two_week_recipients.is_empty());
+        assert_eq!(preflight.recipient_count, 0);
+        assert_eq!(preflight.total_reward_e8s, 0);
+        assert_eq!(preflight.total_fee_e8s, 0);
+        assert_eq!(preflight.total_reserve_debit_e8s, 0);
+        assert_eq!(preflight.dust_e8s, outcome.io_issued_e8s);
+        assert!(preflight.canonical_recipient_ids.is_empty());
+        assert!(preflight.compatibility_keys.is_empty());
+        assert_eq!(
+            op.reward_reservation,
+            Some(io_stream_manager::RewardReservation::default())
+        );
+        assert_eq!(op.reserved_reward_debit_e8s, Some(0));
+        assert_eq!(
+            after.two_week_staked_icp_e8s,
+            before.two_week_staked_icp_e8s + t(40)
+        );
+        assert_eq!(after.liquid_icp_e8s, before.liquid_icp_e8s + t(60));
+        assert_eq!(
+            after.protocol_reserve_io_e8s,
+            before.protocol_reserve_io_e8s
+        );
+        assert_eq!(after.total_io_supply_e8s, before.total_io_supply_e8s);
+
+        ZeroRecipientRewardObservation {
+            reward_pool_e8s: outcome.io_issued_e8s,
+            reserve_before,
+            reserve_after: balance(&fixture.pic, fixture.io_ledger, "protocol_reserve"),
+            model_supply_before: before.total_io_supply_e8s,
+            model_supply_after: after.total_io_supply_e8s,
+            io_transaction_count_before,
+            io_transaction_count_after: transactions(&fixture.pic, fixture.io_ledger).len(),
+            stable_after_completion,
+        }
+    }
+
+    #[test]
+    fn zero_recipient_reward_creates_no_io_ledger_transfer() {
+        let Some(fixture) = setup_stream(true) else {
+            return;
+        };
+
+        let observed = drive_zero_recipient_reward(&fixture);
+        let model_reserve = state(&fixture).protocol.protocol_reserve_io_e8s;
+
+        assert!(observed.reward_pool_e8s > 0);
+        assert_eq!(
+            observed.io_transaction_count_after,
+            observed.io_transaction_count_before
+        );
+        assert_eq!(observed.model_supply_after, observed.model_supply_before);
+        assert_eq!(observed.reserve_after, observed.reserve_before);
+        assert_eq!(model_reserve, observed.reserve_after);
+        assert_eq!(observed.stable_after_completion.operation_journal.len(), 1);
+    }
+
+    #[test]
+    fn mock_claim_or_refresh_sets_exact_staking_balance() {
+        let Some(fixture) = setup_stream(true) else {
+            return;
+        };
+        let sns = fixture.sns_governance.expect("sns governance installed");
+        add_sns_neuron(&fixture, sns, sns_neuron(10, 0, 1, 1));
+        transfer_to_account(
+            &fixture.pic,
+            fixture.io_ledger,
+            "protocol_reserve",
+            sns_neuron_staking_account(sns, 10),
+            t(42),
+            "stake",
+        );
+
+        claim_or_refresh_sns_neuron(&fixture.pic, sns, 10);
+
+        assert_eq!(sns_neurons(&fixture.pic, sns)[0].staked_io_e8s, t(42));
+    }
+
+    #[test]
+    fn mock_claim_or_refresh_is_idempotent() {
+        let Some(fixture) = setup_stream(true) else {
+            return;
+        };
+        let sns = fixture.sns_governance.expect("sns governance installed");
+        add_sns_neuron(&fixture, sns, sns_neuron(10, 0, 1, 1));
+        transfer_to_account(
+            &fixture.pic,
+            fixture.io_ledger,
+            "protocol_reserve",
+            sns_neuron_staking_account(sns, 10),
+            t(42),
+            "stake",
+        );
+
+        claim_or_refresh_sns_neuron(&fixture.pic, sns, 10);
+        claim_or_refresh_sns_neuron(&fixture.pic, sns, 10);
+
+        assert_eq!(sns_neurons(&fixture.pic, sns)[0].staked_io_e8s, t(42));
+    }
+
+    #[test]
+    fn mock_claim_or_refresh_wrong_destination_does_not_increase_stake() {
+        let Some(fixture) = setup_stream(true) else {
+            return;
+        };
+        let sns = fixture.sns_governance.expect("sns governance installed");
+        add_sns_neuron(&fixture, sns, sns_neuron(10, 0, 1, 1));
+        transfer_to_account(
+            &fixture.pic,
+            fixture.io_ledger,
+            "protocol_reserve",
+            sns_neuron_staking_account(sns, 11),
+            t(42),
+            "wrong-destination",
+        );
+
+        claim_or_refresh_sns_neuron(&fixture.pic, sns, 10);
+
+        assert_eq!(sns_neurons(&fixture.pic, sns)[0].staked_io_e8s, 0);
+    }
+
     #[test]
     fn pocketic_live_two_week_maturity_allocates_io_from_mock_sns_snapshot() {
         let Some(fixture) = setup_stream(true) else {
             return;
         };
         let sns = fixture.sns_governance.expect("sns governance installed");
-        add_sns_neuron(&fixture.pic, sns, sns_neuron(10, t(10), 2, 2));
-        add_sns_neuron(&fixture.pic, sns, sns_neuron(11, t(10), 1, 2));
+        add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 2, 2));
+        add_sns_neuron(&fixture, sns, sns_neuron(11, t(10), 1, 2));
         let mut non_voter = sns_neuron(12, t(10), 0, 2);
         non_voter.is_genesis_governance_neuron = false;
-        add_sns_neuron(&fixture.pic, sns, non_voter);
+        add_sns_neuron(&fixture, sns, non_voter);
         let mut genesis = sns_neuron(13, t(10), 2, 2);
         genesis.is_genesis_governance_neuron = true;
-        add_sns_neuron(&fixture.pic, sns, genesis);
+        add_sns_neuron(&fixture, sns, genesis);
 
         mint(
             &fixture.pic,
@@ -940,11 +1288,9 @@ mod live {
             t(100),
             "fund_nns_manager",
         );
-        transfer(
-            &fixture.pic,
-            fixture.icp_ledger,
+        transfer_to_stream_deposit(
+            &fixture,
             IO_NNS_NEURON_MANAGER_SOURCE,
-            "stream_manager_deposit",
             t(100),
             TWO_WEEK_MATURITY_MEMO,
         );
@@ -955,17 +1301,286 @@ mod live {
         assert_eq!(outcome.io_issued_e8s, t(60));
         assert_eq!(
             balance(&fixture.pic, fixture.io_ledger, "sns_neuron_10"),
-            t(40)
+            t(50)
         );
         assert_eq!(
             balance(&fixture.pic, fixture.io_ledger, "sns_neuron_11"),
-            t(20)
+            t(30)
         );
-        assert_eq!(balance(&fixture.pic, fixture.io_ledger, "sns_neuron_12"), 0);
-        assert_eq!(balance(&fixture.pic, fixture.io_ledger, "sns_neuron_13"), 0);
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_12"),
+            t(10)
+        );
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_13"),
+            t(10)
+        );
         let protocol = state(&fixture).protocol;
         assert_eq!(protocol.two_week_staked_icp_e8s, t(40));
         assert_eq!(protocol.liquid_icp_e8s, t(60));
+    }
+
+    #[test]
+    fn governance_snapshot_unavailable_does_not_convert_reward_to_dust() {
+        let Some(fixture) = setup_stream(true) else {
+            return;
+        };
+        let sns = fixture.sns_governance.expect("sns governance installed");
+        add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+
+        mint(
+            &fixture.pic,
+            fixture.icp_ledger,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            "fund_nns_manager",
+        );
+        transfer_to_stream_deposit(
+            &fixture,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            TWO_WEEK_MATURITY_MEMO,
+        );
+
+        let before_state = state(&fixture);
+        let before_stable = stable_state(&fixture);
+        let before_io_reserve = balance(&fixture.pic, fixture.io_ledger, "protocol_reserve");
+        let before_io_transactions = transactions(&fixture.pic, fixture.io_ledger).len();
+        fixture
+            .pic
+            .stop_canister(sns, None)
+            .expect("stop mock SNS governance");
+
+        let failed = tick(&fixture);
+        assert_eq!(failed.processed_authorized_streams, 0);
+        assert_eq!(failed.io_issued_e8s, 0);
+        assert!(
+            failed
+                .errors
+                .iter()
+                .any(|err| err.contains("reward snapshot unavailable")),
+            "{:?}",
+            failed.errors
+        );
+        assert_eq!(state(&fixture), before_state);
+        assert_eq!(
+            stable_state(&fixture).operation_journal,
+            before_stable.operation_journal
+        );
+        assert_eq!(
+            stable_state(&fixture)
+                .scheduler_cursors
+                .last_scanned_icp_index_block,
+            before_stable.scheduler_cursors.last_scanned_icp_index_block
+        );
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "protocol_reserve"),
+            before_io_reserve
+        );
+        assert_eq!(
+            transactions(&fixture.pic, fixture.io_ledger).len(),
+            before_io_transactions
+        );
+
+        fixture
+            .pic
+            .start_canister(sns, None)
+            .expect("start mock SNS governance");
+
+        let recovered = tick(&fixture);
+        assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
+        assert_eq!(recovered.processed_authorized_streams, 1);
+        assert_eq!(recovered.io_issued_e8s, t(60));
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_10"),
+            t(70)
+        );
+        assert_eq!(state(&fixture).processed_transaction_count, 1);
+        assert_eq!(
+            transactions(&fixture.pic, fixture.io_ledger)
+                .iter()
+                .filter(|tx| tx.to == "sns_neuron_10" && tx.amount_e8s == t(60))
+                .count(),
+            1
+        );
+
+        let replay = tick(&fixture);
+        assert_eq!(replay.processed_authorized_streams, 0);
+        assert_eq!(
+            transactions(&fixture.pic, fixture.io_ledger)
+                .iter()
+                .filter(|tx| tx.to == "sns_neuron_10" && tx.amount_e8s == t(60))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn governance_outage_cannot_skip_blocked_reward_via_newer_transaction() {
+        let Some(fixture) = setup_stream(true) else {
+            return;
+        };
+        let sns = fixture.sns_governance.expect("sns governance installed");
+        add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+
+        mint(
+            &fixture.pic,
+            fixture.icp_ledger,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            "fund_nns_manager",
+        );
+        mint(
+            &fixture.pic,
+            fixture.icp_ledger,
+            JUPITER_FAUCET_SOURCE,
+            t(100),
+            "fund_faucet",
+        );
+        let reward_block = transfer_to_stream_deposit(
+            &fixture,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            TWO_WEEK_MATURITY_MEMO,
+        );
+        let faucet_block = faucet_send(
+            &fixture,
+            JUPITER_FAUCET_SOURCE,
+            "stream_manager_deposit",
+            t(100),
+            "faucet",
+        );
+        assert_eq!(faucet_block, reward_block + 1);
+        let reward_tx = format!("icp:{reward_block}");
+        let faucet_tx = format!("icp:{faucet_block}");
+
+        let before_state = state(&fixture);
+        let before_stable = stable_state(&fixture);
+        let before_io_reserve = balance(&fixture.pic, fixture.io_ledger, "protocol_reserve");
+        let before_total_supply = before_state.protocol.total_io_supply_e8s;
+        let before_io_transactions = transactions(&fixture.pic, fixture.io_ledger).len();
+        fixture
+            .pic
+            .stop_canister(sns, None)
+            .expect("stop mock SNS governance");
+
+        let failed = tick(&fixture);
+        assert_eq!(failed.processed_authorized_streams, 0);
+        assert_eq!(failed.io_issued_e8s, 0);
+        assert!(
+            failed
+                .errors
+                .iter()
+                .any(|err| err.contains("reward snapshot unavailable")),
+            "{:?}",
+            failed.errors
+        );
+        let outage_state = state(&fixture);
+        let outage_stable = stable_state(&fixture);
+        assert_eq!(outage_state, before_state);
+        assert_eq!(
+            outage_stable.operation_journal,
+            before_stable.operation_journal
+        );
+        assert_eq!(
+            outage_stable.processed_transactions,
+            before_stable.processed_transactions
+        );
+        assert!(!outage_stable.processed_transactions.contains(&reward_tx));
+        assert!(!outage_stable.processed_transactions.contains(&faucet_tx));
+        assert_eq!(
+            outage_stable.scheduler_cursors.icp_account_history_scan,
+            before_stable.scheduler_cursors.icp_account_history_scan
+        );
+        assert_eq!(
+            outage_stable.scheduler_cursors.last_scanned_icp_index_block,
+            before_stable.scheduler_cursors.last_scanned_icp_index_block
+        );
+        assert!(
+            outage_stable
+                .scheduler_cursors
+                .last_scanned_icp_index_block
+                .is_none_or(|block| block < reward_block),
+            "{:?}",
+            outage_stable.scheduler_cursors.last_scanned_icp_index_block
+        );
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "protocol_reserve"),
+            before_io_reserve
+        );
+        assert_eq!(
+            state(&fixture).protocol.total_io_supply_e8s,
+            before_total_supply
+        );
+        assert_eq!(
+            transactions(&fixture.pic, fixture.io_ledger).len(),
+            before_io_transactions
+        );
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_10"),
+            t(10)
+        );
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, JUPITER_FAUCET_SOURCE),
+            0
+        );
+
+        fixture
+            .pic
+            .start_canister(sns, None)
+            .expect("start mock SNS governance");
+
+        let recovered = tick(&fixture);
+        assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
+        assert_eq!(recovered.processed_authorized_streams, 2);
+        assert_eq!(recovered.io_issued_e8s, t(120));
+
+        let recovered_stable = stable_state(&fixture);
+        assert!(recovered_stable.processed_transactions.contains(&reward_tx));
+        assert!(recovered_stable.processed_transactions.contains(&faucet_tx));
+        assert_eq!(
+            recovered_stable
+                .operation_journal
+                .iter()
+                .filter(|op| op.source_transaction_id == reward_tx)
+                .count(),
+            1
+        );
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_10"),
+            t(70)
+        );
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, JUPITER_FAUCET_SOURCE),
+            t(60)
+        );
+        let protocol = state(&fixture).protocol;
+        assert_eq!(protocol.two_week_staked_icp_e8s, t(40));
+        assert_eq!(protocol.two_year_staked_icp_e8s, t(40));
+        assert_eq!(protocol.liquid_icp_e8s, t(120));
+        assert_eq!(
+            transactions(&fixture.pic, fixture.io_ledger)
+                .iter()
+                .filter(|tx| tx.to == "sns_neuron_10" && tx.amount_e8s == t(60))
+                .count(),
+            1
+        );
+        assert_eq!(
+            transactions(&fixture.pic, fixture.io_ledger)
+                .iter()
+                .filter(|tx| tx.to == JUPITER_FAUCET_SOURCE && tx.amount_e8s == t(60))
+                .count(),
+            1
+        );
+
+        let replay_transactions = transactions(&fixture.pic, fixture.io_ledger).len();
+        let replay = tick(&fixture);
+        assert!(replay.errors.is_empty(), "{:?}", replay.errors);
+        assert_eq!(replay.processed_authorized_streams, 0);
+        assert_eq!(
+            transactions(&fixture.pic, fixture.io_ledger).len(),
+            replay_transactions
+        );
     }
 
     #[test]
@@ -974,8 +1589,8 @@ mod live {
             return;
         };
         let sns = fixture.sns_governance.expect("sns governance installed");
-        add_sns_neuron(&fixture.pic, sns, sns_neuron(10, t(10), 2, 2));
-        add_sns_neuron(&fixture.pic, sns, sns_neuron(11, t(10), 1, 2));
+        add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 2, 2));
+        add_sns_neuron(&fixture, sns, sns_neuron(11, t(10), 1, 2));
         reject_to(&fixture.pic, fixture.io_ledger, "sns_neuron_11");
 
         mint(
@@ -985,11 +1600,9 @@ mod live {
             t(100),
             "fund_nns_manager",
         );
-        transfer(
-            &fixture.pic,
-            fixture.icp_ledger,
+        transfer_to_stream_deposit(
+            &fixture,
             IO_NNS_NEURON_MANAGER_SOURCE,
-            "stream_manager_deposit",
             t(100),
             TWO_WEEK_MATURITY_MEMO,
         );
@@ -1000,9 +1613,12 @@ mod live {
         assert_eq!(state(&fixture).processed_transaction_count, 0);
         assert_eq!(
             balance(&fixture.pic, fixture.io_ledger, "sns_neuron_10"),
-            t(40)
+            t(50)
         );
-        assert_eq!(balance(&fixture.pic, fixture.io_ledger, "sns_neuron_11"), 0);
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_11"),
+            t(10)
+        );
         let protocol = state(&fixture).protocol;
         assert_eq!(protocol.two_week_staked_icp_e8s, 0);
         assert_eq!(protocol.liquid_icp_e8s, 0);
@@ -1014,18 +1630,679 @@ mod live {
         assert_eq!(retry.processed_authorized_streams, 1);
         assert_eq!(
             balance(&fixture.pic, fixture.io_ledger, "sns_neuron_10"),
-            t(40)
+            t(50)
         );
         assert_eq!(
             balance(&fixture.pic, fixture.io_ledger, "sns_neuron_11"),
-            t(20)
+            t(30)
         );
         assert_eq!(
             transactions(&fixture.pic, fixture.io_ledger)
                 .iter()
-                .filter(|tx| tx.to == "sns_neuron_10")
+                .filter(|tx| tx.to == "sns_neuron_10" && tx.amount_e8s == t(40))
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn proof_found_after_submitted_upgrade_completes_once() {
+        let Some(fixture) = setup_stream(true) else {
+            return;
+        };
+        let sns = fixture.sns_governance.expect("sns governance installed");
+        add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+
+        mint(
+            &fixture.pic,
+            fixture.icp_ledger,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            "fund_nns_manager",
+        );
+        transfer_to_stream_deposit(
+            &fixture,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            TWO_WEEK_MATURITY_MEMO,
+        );
+        set_stream_failpoint(
+            &fixture,
+            Some(DebugFailpoint::AfterTwoWeekRewardTransferBeforeJournalUpdate),
+        );
+
+        let trapped = fixture.pic.update_call(
+            fixture.stream,
+            Principal::anonymous(),
+            "debug_tick",
+            encode_one(()).unwrap(),
+        );
+        if let Ok(bytes) = &trapped {
+            let outcome = decode_one::<DebugTickOutcome>(bytes).unwrap();
+            panic!("reward failpoint should trap the tick; outcome was {outcome:?}");
+        }
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_10"),
+            t(70)
+        );
+        assert_eq!(state(&fixture).processed_transaction_count, 0);
+        let before_upgrade = stable_state(&fixture);
+        let recipient = &before_upgrade.operation_journal[0].two_week_recipients[0];
+        assert!(matches!(
+            recipient
+                .reward_transfer_attempt
+                .as_ref()
+                .and_then(|attempt| attempt.lifecycle.as_ref()),
+            Some(io_stream_manager::RewardTransferAttemptLifecycle::SubmittedAwaitingResult { .. })
+        ));
+        assert!(recipient.ledger_transfer_proof_scan_state.is_none());
+
+        upgrade_stream(&fixture);
+        let recovered = tick(&fixture);
+        assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
+        assert_eq!(recovered.processed_authorized_streams, 1);
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_10"),
+            t(70)
+        );
+        assert_eq!(
+            transactions(&fixture.pic, fixture.io_ledger)
+                .iter()
+                .filter(|tx| tx.to == "sns_neuron_10" && tx.amount_e8s == t(60))
+                .count(),
+            1
+        );
+        assert_eq!(state(&fixture).processed_transaction_count, 1);
+        let after_upgrade = stable_state(&fixture);
+        let recipient = &after_upgrade.operation_journal[0].two_week_recipients[0];
+        assert!(matches!(
+            recipient
+                .reward_transfer_attempt
+                .as_ref()
+                .and_then(|attempt| attempt.lifecycle.as_ref()),
+            Some(io_stream_manager::RewardTransferAttemptLifecycle::Proven { .. })
+        ));
+    }
+
+    #[test]
+    fn submitted_upgrade_recovery_asserts_exact_stake_delta() {
+        let Some(fixture) = setup_stream(true) else {
+            return;
+        };
+        let sns = fixture.sns_governance.expect("sns governance installed");
+        add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+        let staking_account = sns_neuron_staking_account(sns, 10);
+
+        mint(
+            &fixture.pic,
+            fixture.icp_ledger,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            "fund_nns_manager",
+        );
+        transfer_to_stream_deposit(
+            &fixture,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            TWO_WEEK_MATURITY_MEMO,
+        );
+        set_stream_failpoint(
+            &fixture,
+            Some(DebugFailpoint::AfterTwoWeekRewardTransferBeforeJournalUpdate),
+        );
+
+        assert!(fixture
+            .pic
+            .update_call(
+                fixture.stream,
+                Principal::anonymous(),
+                "debug_tick",
+                encode_one(()).unwrap(),
+            )
+            .is_err());
+        let before_upgrade_neurons = sns_neurons(&fixture.pic, sns);
+        assert_eq!(before_upgrade_neurons[0].staked_io_e8s, t(10));
+        assert_eq!(
+            balance_of_account(&fixture.pic, fixture.io_ledger, staking_account.clone()),
+            t(70)
+        );
+
+        upgrade_stream(&fixture);
+        let recovered = tick(&fixture);
+        assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
+
+        let after_upgrade_neurons = sns_neurons(&fixture.pic, sns);
+        assert_eq!(after_upgrade_neurons[0].staked_io_e8s, t(70));
+        assert_eq!(
+            after_upgrade_neurons[0].staked_io_e8s - before_upgrade_neurons[0].staked_io_e8s,
+            t(60)
+        );
+        assert_eq!(
+            transactions(&fixture.pic, fixture.io_ledger)
+                .iter()
+                .filter(|tx| tx.to == "sns_neuron_10" && tx.amount_e8s == t(60))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn pending_fee_repreflight_survives_actual_same_wasm_upgrade() {
+        let Some(fixture) = setup_stream(true) else {
+            return;
+        };
+        let sns = fixture.sns_governance.expect("sns governance installed");
+        add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+
+        mint(
+            &fixture.pic,
+            fixture.icp_ledger,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            "fund_nns_manager",
+        );
+        transfer_to_stream_deposit(
+            &fixture,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            TWO_WEEK_MATURITY_MEMO,
+        );
+        set_stream_failpoint(
+            &fixture,
+            Some(DebugFailpoint::AfterTwoWeekRewardPreflightBeforeTransfer),
+        );
+        let preflight_tick = tick(&fixture);
+        assert!(preflight_tick.errors.iter().any(|err| err.contains(
+            "AfterTwoWeekRewardPreflightBeforeTransfer triggered after two-week reward preflight"
+        )));
+
+        let preflighted = stable_state(&fixture);
+        let op = &preflighted.operation_journal[0];
+        assert_eq!(
+            op.reward_preflight
+                .as_ref()
+                .map(|preflight| preflight.ledger_fee_e8s),
+            Some(10_000)
+        );
+        assert_eq!(op.reserved_reward_debit_e8s, Some(t(60) + 10_000));
+
+        set_ledger_fee(&fixture.pic, fixture.io_ledger, 20_000);
+        let bad_fee = tick(&fixture);
+        assert!(!bad_fee.errors.is_empty());
+        let pending = stable_state(&fixture);
+        let op = &pending.operation_journal[0];
+        assert_eq!(
+            op.reward_preflight
+                .as_ref()
+                .map(|preflight| preflight.status),
+            Some(io_stream_manager::RewardPreflightStatus::Pending)
+        );
+        assert_eq!(
+            op.reward_fee_repreflight
+                .as_ref()
+                .map(|evidence| evidence.observed_current_fee_e8s),
+            Some(20_000)
+        );
+        assert_eq!(op.reserved_reward_debit_e8s, Some(t(60) + 10_000));
+
+        upgrade_stream(&fixture);
+        let recovered = tick(&fixture);
+        assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
+        assert_eq!(recovered.processed_authorized_streams, 1);
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_10"),
+            t(70)
+        );
+        assert_eq!(
+            transactions(&fixture.pic, fixture.io_ledger)
+                .iter()
+                .filter(|tx| tx.to == "sns_neuron_10" && tx.amount_e8s == t(60))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn submitted_attempt_without_callback_recovers_after_actual_same_wasm_upgrade() {
+        let Some(fixture) = setup_stream(true) else {
+            return;
+        };
+        let sns = fixture.sns_governance.expect("sns governance installed");
+        add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+
+        mint(
+            &fixture.pic,
+            fixture.icp_ledger,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            "fund_nns_manager",
+        );
+        transfer_to_stream_deposit(
+            &fixture,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            TWO_WEEK_MATURITY_MEMO,
+        );
+        set_stream_failpoint(
+            &fixture,
+            Some(DebugFailpoint::AfterTwoWeekRewardTransferBeforeJournalUpdate),
+        );
+
+        assert!(fixture
+            .pic
+            .update_call(
+                fixture.stream,
+                Principal::anonymous(),
+                "debug_tick",
+                encode_one(()).unwrap(),
+            )
+            .is_err());
+        let before_upgrade = stable_state(&fixture);
+        let recipient = &before_upgrade.operation_journal[0].two_week_recipients[0];
+        assert!(matches!(
+            recipient
+                .reward_transfer_attempt
+                .as_ref()
+                .and_then(|attempt| attempt.lifecycle.as_ref()),
+            Some(io_stream_manager::RewardTransferAttemptLifecycle::SubmittedAwaitingResult { .. })
+        ));
+        assert!(recipient.ledger_transfer_proof_scan_state.is_none());
+
+        upgrade_stream(&fixture);
+        let recovered = tick(&fixture);
+        assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
+        assert_eq!(recovered.processed_authorized_streams, 1);
+        assert_eq!(
+            transactions(&fixture.pic, fixture.io_ledger)
+                .iter()
+                .filter(|tx| tx.to == "sns_neuron_10" && tx.amount_e8s == t(60))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn proof_required_without_cursor_recovers_after_actual_same_wasm_upgrade() {
+        let Some(fixture) = setup_stream(true) else {
+            return;
+        };
+        let sns = fixture.sns_governance.expect("sns governance installed");
+        add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+
+        mint(
+            &fixture.pic,
+            fixture.icp_ledger,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            "fund_nns_manager",
+        );
+        transfer_to_stream_deposit(
+            &fixture,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            TWO_WEEK_MATURITY_MEMO,
+        );
+        set_stream_failpoint(
+            &fixture,
+            Some(DebugFailpoint::AfterTwoWeekRewardTransferBeforeJournalUpdate),
+        );
+
+        assert!(fixture
+            .pic
+            .update_call(
+                fixture.stream,
+                Principal::anonymous(),
+                "debug_tick",
+                encode_one(()).unwrap(),
+            )
+            .is_err());
+        set_stream_failpoint(&fixture, None);
+        set_index_lag(&fixture.pic, fixture.io_index, 10);
+
+        let proof_tick = tick(&fixture);
+        assert!(
+            !proof_tick.errors.is_empty(),
+            "index lag should force proof-required uncertainty"
+        );
+        let proof_required = stable_state(&fixture);
+        let recipient = &proof_required.operation_journal[0].two_week_recipients[0];
+        assert!(matches!(
+            recipient
+                .reward_transfer_attempt
+                .as_ref()
+                .and_then(|attempt| attempt.lifecycle.as_ref()),
+            Some(io_stream_manager::RewardTransferAttemptLifecycle::ProofRequired { .. })
+        ));
+        assert!(recipient
+            .ledger_transfer_proof_scan_state
+            .as_ref()
+            .is_none_or(|state| state.cursor.latest_cursor.is_none()));
+        assert_eq!(
+            transactions(&fixture.pic, fixture.io_ledger)
+                .iter()
+                .filter(|tx| tx.to == "sns_neuron_10" && tx.amount_e8s == t(60))
+                .count(),
+            1
+        );
+        assert_eq!(sns_neurons(&fixture.pic, sns)[0].staked_io_e8s, t(10));
+
+        set_index_lag(&fixture.pic, fixture.io_index, 0);
+        upgrade_stream(&fixture);
+        let recovered = tick(&fixture);
+        assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
+        assert_eq!(recovered.processed_authorized_streams, 1);
+        assert_eq!(
+            transactions(&fixture.pic, fixture.io_ledger)
+                .iter()
+                .filter(|tx| tx.to == "sns_neuron_10" && tx.amount_e8s == t(60))
+                .count(),
+            1
+        );
+        assert_eq!(sns_neurons(&fixture.pic, sns)[0].staked_io_e8s, t(70));
+        let completed = stable_state(&fixture);
+        assert_eq!(completed.processed_transactions.len(), 1);
+        assert_eq!(
+            completed.operation_journal[0].reserved_reward_debit_e8s,
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn spent_uncommitted_reservation_survives_actual_same_wasm_upgrade() {
+        let Some(fixture) = setup_stream(true) else {
+            return;
+        };
+        let sns = fixture.sns_governance.expect("sns governance installed");
+        add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+
+        mint(
+            &fixture.pic,
+            fixture.icp_ledger,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            "fund_nns_manager",
+        );
+        transfer_to_stream_deposit(
+            &fixture,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            TWO_WEEK_MATURITY_MEMO,
+        );
+        set_stream_failpoint(
+            &fixture,
+            Some(DebugFailpoint::AfterTwoWeekRewardTransferBeforeGovernanceRefresh),
+        );
+
+        let interrupted = tick(&fixture);
+        assert!(interrupted.errors.iter().any(|err| err.contains(
+            "AfterTwoWeekRewardTransferBeforeGovernanceRefresh triggered after two-week reward transfer"
+        )));
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_10"),
+            t(70)
+        );
+        let pending = stable_state(&fixture);
+        let reservation = pending.operation_journal[0].reward_reservation.unwrap();
+        assert_eq!(reservation.unspent_reserved_reward_debit_e8s, 0);
+        assert_eq!(
+            reservation.externally_spent_but_uncommitted_reward_debit_e8s,
+            t(60) + 10_000
+        );
+        assert_eq!(pending.processed_transactions.len(), 0);
+
+        upgrade_stream(&fixture);
+        let recovered = tick(&fixture);
+        assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
+        assert_eq!(recovered.processed_authorized_streams, 1);
+        assert_eq!(
+            transactions(&fixture.pic, fixture.io_ledger)
+                .iter()
+                .filter(|tx| tx.to == "sns_neuron_10" && tx.amount_e8s == t(60))
+                .count(),
+            1
+        );
+        let neurons = sns_neurons(&fixture.pic, sns);
+        assert_eq!(neurons[0].staked_io_e8s, t(70));
+        let completed = stable_state(&fixture);
+        assert_eq!(
+            completed.operation_journal[0].reserved_reward_debit_e8s,
+            Some(0)
+        );
+        assert_eq!(completed.processed_transactions.len(), 1);
+    }
+
+    #[test]
+    fn partial_distribution_fee_change_never_retransfers_prior_recipient() {
+        let Some(fixture) = setup_stream(true) else {
+            return;
+        };
+        let sns = fixture.sns_governance.expect("sns governance installed");
+        add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+        add_sns_neuron(&fixture, sns, sns_neuron(11, t(10), 1, 1));
+
+        mint(
+            &fixture.pic,
+            fixture.icp_ledger,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            "fund_nns_manager",
+        );
+        transfer_to_stream_deposit(
+            &fixture,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            TWO_WEEK_MATURITY_MEMO,
+        );
+        set_stream_failpoint(
+            &fixture,
+            Some(DebugFailpoint::AfterTwoWeekRewardTransferBeforeGovernanceRefresh),
+        );
+
+        let interrupted = tick(&fixture);
+        assert!(interrupted.errors.iter().any(|err| err.contains(
+            "AfterTwoWeekRewardTransferBeforeGovernanceRefresh triggered after two-week reward transfer"
+        )));
+        set_stream_failpoint(&fixture, None);
+
+        let after_first = stable_state(&fixture);
+        let op = &after_first.operation_journal[0];
+        let first_before = op.two_week_recipients[0].clone();
+        assert!(matches!(
+            first_before
+                .reward_transfer_attempt
+                .as_ref()
+                .and_then(|attempt| attempt.lifecycle.as_ref()),
+            Some(io_stream_manager::RewardTransferAttemptLifecycle::Proven {
+                block,
+                ..
+            }) if Some(*block) == first_before.transfer_block_index
+        ));
+        assert_eq!(
+            first_before.ledger_transfer_status,
+            Some(io_stream_manager::TransferStatus::Succeeded)
+        );
+        assert_eq!(
+            first_before.ledger_transfer_block,
+            first_before.transfer_block_index
+        );
+        assert_eq!(first_before.ledger_transfer_fee_e8s, Some(10_000));
+        assert_eq!(first_before.reward_amount_received_e8s, Some(t(30)));
+        assert_eq!(first_before.reserve_debit_e8s, Some(t(30) + 10_000));
+        let initial_reservation = op.reward_reservation.unwrap();
+        assert_eq!(
+            initial_reservation.externally_spent_but_uncommitted_reward_debit_e8s,
+            t(30) + 10_000
+        );
+        assert_eq!(
+            transactions(&fixture.pic, fixture.io_ledger)
+                .iter()
+                .filter(|tx| tx.to == "sns_neuron_10" && tx.amount_e8s == t(30))
+                .count(),
+            1
+        );
+
+        set_ledger_fee(&fixture.pic, fixture.io_ledger, 20_000);
+        let bad_fee = tick(&fixture);
+        assert!(!bad_fee.errors.is_empty());
+        let manual = stable_state(&fixture);
+        let op = &manual.operation_journal[0];
+        let manual_preflight = op.reward_preflight.clone();
+        let manual_reservation = op.reward_reservation;
+        let first_manual = op.two_week_recipients[0].clone();
+        let second_manual = op.two_week_recipients[1].clone();
+        assert_eq!(
+            op.reward_preflight
+                .as_ref()
+                .map(|preflight| preflight.status),
+            Some(io_stream_manager::RewardPreflightStatus::ManualReconciliationRequired)
+        );
+        assert!(op.reward_fee_repreflight.is_none());
+        assert_eq!(op.two_week_recipients[0], first_before);
+        assert!(matches!(
+            op.two_week_recipients[1]
+                .reward_transfer_attempt
+                .as_ref()
+                .and_then(|attempt| attempt.lifecycle.as_ref()),
+            Some(io_stream_manager::RewardTransferAttemptLifecycle::SubmittedAwaitingResult { .. })
+        ));
+        assert_eq!(
+            op.two_week_recipients[1].ledger_transfer_status,
+            Some(io_stream_manager::TransferStatus::FailedTerminal)
+        );
+        assert_eq!(
+            op.reward_reservation,
+            Some(io_stream_manager::RewardReservation {
+                unspent_reserved_reward_debit_e8s: t(30) + 10_000,
+                externally_spent_but_uncommitted_reward_debit_e8s: t(30) + 10_000,
+            })
+        );
+        assert_eq!(op.reserved_reward_debit_e8s, Some(t(60) + 20_000));
+        assert_eq!(manual.processed_transactions.len(), 0);
+        assert_eq!(
+            transactions(&fixture.pic, fixture.io_ledger)
+                .iter()
+                .filter(|tx| tx.to == "sns_neuron_10" && tx.amount_e8s == t(30))
+                .count(),
+            1
+        );
+        assert_eq!(
+            transactions(&fixture.pic, fixture.io_ledger)
+                .iter()
+                .filter(|tx| tx.to == "sns_neuron_11" && tx.amount_e8s == t(30))
+                .count(),
+            0
+        );
+        let model_before_upgrade = state(&fixture).protocol;
+
+        upgrade_stream(&fixture);
+        let replay = tick(&fixture);
+        assert_eq!(replay.processed_authorized_streams, 0);
+        assert_eq!(
+            transactions(&fixture.pic, fixture.io_ledger)
+                .iter()
+                .filter(|tx| tx.to == "sns_neuron_10" && tx.amount_e8s == t(30))
+                .count(),
+            1
+        );
+        assert_eq!(
+            transactions(&fixture.pic, fixture.io_ledger)
+                .iter()
+                .filter(|tx| tx.to == "sns_neuron_11" && tx.amount_e8s == t(30))
+                .count(),
+            0
+        );
+        assert_eq!(state(&fixture).protocol, model_before_upgrade);
+        let after_upgrade = stable_state(&fixture);
+        let op = &after_upgrade.operation_journal[0];
+        assert_eq!(op.reward_preflight, manual_preflight);
+        assert_eq!(
+            op.reward_preflight
+                .as_ref()
+                .map(|preflight| preflight.status),
+            Some(io_stream_manager::RewardPreflightStatus::ManualReconciliationRequired)
+        );
+        assert_eq!(op.reward_reservation, manual_reservation);
+        assert_eq!(op.two_week_recipients[0], first_manual);
+        assert_eq!(op.two_week_recipients[1], second_manual);
+        assert_eq!(
+            op.two_week_recipients[0].ledger_transfer_block,
+            first_before.transfer_block_index
+        );
+        assert_eq!(
+            op.two_week_recipients[0].ledger_transfer_fee_e8s,
+            Some(10_000)
+        );
+        assert_eq!(
+            op.two_week_recipients[0].reward_amount_received_e8s,
+            Some(t(30))
+        );
+        assert_eq!(
+            op.two_week_recipients[0].reserve_debit_e8s,
+            Some(t(30) + 10_000)
+        );
+        assert_eq!(after_upgrade.processed_transactions.len(), 0);
+    }
+
+    #[test]
+    fn pocketic_live_second_two_week_reward_after_completed_reward_succeeds() {
+        let Some(fixture) = setup_stream(true) else {
+            return;
+        };
+        let sns = fixture.sns_governance.expect("sns governance installed");
+        add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+        add_sns_neuron(&fixture, sns, sns_neuron(11, t(10), 1, 1));
+
+        mint(
+            &fixture.pic,
+            fixture.icp_ledger,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(250),
+            "fund_nns_manager",
+        );
+        transfer_to_stream_deposit(
+            &fixture,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            TWO_WEEK_MATURITY_MEMO,
+        );
+
+        let first = tick(&fixture);
+        assert!(first.errors.is_empty(), "{:?}", first.errors);
+        assert_eq!(first.processed_authorized_streams, 1);
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_10"),
+            t(40)
+        );
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_11"),
+            t(40)
+        );
+
+        transfer_to_stream_deposit(
+            &fixture,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(50),
+            TWO_WEEK_MATURITY_MEMO,
+        );
+
+        let second = tick(&fixture);
+        assert!(second.errors.is_empty(), "{:?}", second.errors);
+        assert_eq!(second.processed_authorized_streams, 1);
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_10"),
+            t(55)
+        );
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_11"),
+            t(55)
+        );
+        assert_eq!(state(&fixture).processed_transaction_count, 2);
+        assert_eq!(
+            transactions(&fixture.pic, fixture.io_ledger)
+                .iter()
+                .filter(|tx| tx.to == "sns_neuron_10" && tx.amount_e8s != t(10))
+                .count(),
+            2
         );
     }
 
@@ -1290,8 +2567,8 @@ mod live {
             return;
         };
         let sns = fixture.sns_governance.expect("sns governance installed");
-        add_sns_neuron(&fixture.pic, sns, sns_neuron(10, t(10), 1, 1));
-        add_sns_neuron(&fixture.pic, sns, sns_neuron(11, t(10), 1, 1));
+        add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+        add_sns_neuron(&fixture, sns, sns_neuron(11, t(10), 1, 1));
         mint(
             &fixture.pic,
             fixture.icp_ledger,

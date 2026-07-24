@@ -1,8 +1,11 @@
 use candid::{CandidType, Nat, Principal};
 use io_ledger_types::{
-    Account, IcrcIndexError, IcrcIndexGetAccountTransactionsArgs,
-    IcrcIndexGetAccountTransactionsResult, IcrcIndexTransaction, LedgerBlock, LedgerOperationKind,
-    Memo, Subaccount,
+    Account, IcpIndexGetAccountIdentifierTransactionsArgs,
+    IcpIndexGetAccountIdentifierTransactionsResponse,
+    IcpIndexGetAccountIdentifierTransactionsResult, IcpIndexOperation, IcpIndexTimeStamp,
+    IcpIndexTokens, IcpIndexTransaction, IcpIndexTransactionWithId, IcrcIndexError,
+    IcrcIndexGetAccountTransactionsArgs, IcrcIndexGetAccountTransactionsResult,
+    IcrcIndexTransaction, LedgerBlock, LedgerOperationKind, Memo, Subaccount,
 };
 use serde::Deserialize;
 
@@ -15,8 +18,11 @@ pub struct InitArgs {
 pub struct LedgerTransaction {
     pub from: String,
     pub to: String,
+    pub from_account: Option<Account>,
+    pub to_account: Option<Account>,
     pub amount_e8s: u128,
     pub memo: String,
+    pub memo_bytes: Option<Vec<u8>>,
     pub block_index: u64,
     pub timestamp: u64,
 }
@@ -39,7 +45,7 @@ pub fn init(args: InitArgs) {
     LEDGER.with(|cell| *cell.borrow_mut() = ledger);
 }
 
-#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub async fn debug_get_transactions() -> Vec<LedgerTransaction> {
     let ledger = LEDGER.with(|cell| *cell.borrow());
     match ledger {
@@ -110,6 +116,16 @@ fn account_from_icrc(account: io_ledger_types::IcrcAccount) -> Option<Account> {
 }
 
 fn mock_label_from_account(account: &Account) -> String {
+    if let Some(subaccount) = account.subaccount.as_ref() {
+        if subaccount.0[..24].iter().all(|byte| *byte == 0) {
+            let mut id = [0_u8; 8];
+            id.copy_from_slice(&subaccount.0[24..]);
+            let id = u64::from_be_bytes(id);
+            if id != 0 {
+                return format!("sns_neuron_{id}");
+            }
+        }
+    }
     account
         .subaccount
         .as_ref()
@@ -122,17 +138,21 @@ fn tx_to_block(tx: LedgerTransaction) -> LedgerBlock {
         block_index: io_ledger_types::BlockIndex(tx.block_index),
         timestamp_nanos: tx.timestamp,
         created_at_time: None,
-        from: Some(Account::new(
-            Principal::anonymous(),
-            Some(mock_subaccount(&tx.from)),
-        )),
-        to: Some(Account::new(
-            Principal::anonymous(),
-            Some(mock_subaccount(&tx.to)),
-        )),
+        from: tx.from_account.or_else(|| {
+            Some(Account::new(
+                Principal::anonymous(),
+                Some(mock_subaccount(&tx.from)),
+            ))
+        }),
+        to: tx.to_account.or_else(|| {
+            Some(Account::new(
+                Principal::anonymous(),
+                Some(mock_subaccount(&tx.to)),
+            ))
+        }),
         amount_e8s: tx.amount_e8s,
         fee_e8s: Some(10_000),
-        memo: Some(Memo::from(tx.memo)),
+        memo: Some(Memo(tx.memo_bytes.unwrap_or_else(|| tx.memo.into_bytes()))),
         operation_kind: LedgerOperationKind::Transfer,
     }
 }
@@ -148,7 +168,7 @@ fn nat_to_u64(value: &Nat) -> Result<u64, IcrcIndexError> {
         })
 }
 
-#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub async fn get_account_transactions(
     args: IcrcIndexGetAccountTransactionsArgs,
 ) -> Result<IcrcIndexGetAccountTransactionsResult, IcrcIndexError> {
@@ -201,9 +221,18 @@ pub async fn get_account_transactions(
             (false, None) => true,
         })
         .take(limit)
-        .map(|tx| IcrcIndexTransaction {
-            id: Nat::from(tx.block_index),
-            transaction: tx_to_block(tx),
+        .map(|tx| {
+            let mut block = tx_to_block(tx.clone());
+            if tx.from == label {
+                block.from = Some(account.clone());
+            }
+            if tx.to == label {
+                block.to = Some(account.clone());
+            }
+            IcrcIndexTransaction {
+                id: Nat::from(tx.block_index),
+                transaction: block,
+            }
         })
         .collect::<Vec<_>>();
 
@@ -213,6 +242,96 @@ pub async fn get_account_transactions(
         tip: visible_tip_nat,
         archive_required: false,
     })
+}
+
+fn mock_account_identifier(label: &str) -> String {
+    Account::new(Principal::anonymous(), Some(mock_subaccount(label))).icp_account_identifier_text()
+}
+
+fn tx_from_account_identifier(tx: &LedgerTransaction) -> String {
+    tx.from_account
+        .as_ref()
+        .map(Account::icp_account_identifier_text)
+        .unwrap_or_else(|| mock_account_identifier(&tx.from))
+}
+
+fn tx_to_account_identifier(tx: &LedgerTransaction) -> String {
+    tx.to_account
+        .as_ref()
+        .map(Account::icp_account_identifier_text)
+        .unwrap_or_else(|| mock_account_identifier(&tx.to))
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn get_account_identifier_transactions(
+    args: IcpIndexGetAccountIdentifierTransactionsArgs,
+) -> IcpIndexGetAccountIdentifierTransactionsResult {
+    get_account_identifier_transactions_from_transactions(
+        args,
+        debug_get_transactions().await,
+        LAG.with(|cell| *cell.borrow()),
+    )
+}
+
+fn get_account_identifier_transactions_from_transactions(
+    args: IcpIndexGetAccountIdentifierTransactionsArgs,
+    all_transactions: Vec<LedgerTransaction>,
+    lag_blocks: u64,
+) -> IcpIndexGetAccountIdentifierTransactionsResult {
+    let visible_tip = all_transactions
+        .iter()
+        .map(|tx| tx.block_index)
+        .max()
+        .map(|tip| tip.saturating_sub(lag_blocks));
+    let mut matching = all_transactions
+        .into_iter()
+        .filter(|tx| visible_tip.map(|tip| tx.block_index <= tip).unwrap_or(true))
+        .filter(|tx| {
+            tx_from_account_identifier(tx) == args.account_identifier
+                || tx_to_account_identifier(tx) == args.account_identifier
+        })
+        .collect::<Vec<_>>();
+    matching.sort_by_key(|tx| std::cmp::Reverse(tx.block_index));
+    let transactions = matching
+        .into_iter()
+        .filter(|tx| {
+            args.start
+                .map(|start| tx.block_index <= start)
+                .unwrap_or(true)
+        })
+        .take(args.max_results as usize)
+        .map(|tx| {
+            let from = tx_from_account_identifier(&tx);
+            let to = tx_to_account_identifier(&tx);
+            IcpIndexTransactionWithId {
+                id: tx.block_index,
+                transaction: IcpIndexTransaction {
+                    memo: 0,
+                    icrc1_memo: Some(tx.memo_bytes.unwrap_or_else(|| Memo::from(tx.memo).0)),
+                    operation: IcpIndexOperation::Transfer {
+                        from,
+                        to,
+                        spender: None,
+                        fee: IcpIndexTokens { e8s: 10_000 },
+                        amount: IcpIndexTokens {
+                            e8s: u64::try_from(tx.amount_e8s).unwrap_or(u64::MAX),
+                        },
+                    },
+                    created_at_time: None,
+                    timestamp: Some(IcpIndexTimeStamp {
+                        timestamp_nanos: tx.timestamp,
+                    }),
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    IcpIndexGetAccountIdentifierTransactionsResult::Ok(
+        IcpIndexGetAccountIdentifierTransactionsResponse {
+            balance: 0,
+            oldest_tx_id: transactions.first().map(|tx| tx.id),
+            transactions,
+        },
+    )
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
@@ -252,4 +371,134 @@ pub fn debug_clear() {
     PAGE_LIMIT.with(|cell| *cell.borrow_mut() = None);
     DESCENDING.with(|cell| *cell.borrow_mut() = false);
     UNREADABLE.with(|cell| *cell.borrow_mut() = false);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn account(label: &str) -> Account {
+        Account::new(Principal::anonymous(), Some(mock_subaccount(label)))
+    }
+
+    fn tx(
+        from: &str,
+        to: &str,
+        from_account: Option<Account>,
+        to_account: Option<Account>,
+        memo_bytes: Vec<u8>,
+        block_index: u64,
+    ) -> LedgerTransaction {
+        LedgerTransaction {
+            from: from.to_string(),
+            to: to.to_string(),
+            from_account,
+            to_account,
+            amount_e8s: 123,
+            memo: "label-memo".to_string(),
+            memo_bytes: Some(memo_bytes),
+            block_index,
+            timestamp: 456,
+        }
+    }
+
+    fn response_transactions(
+        result: IcpIndexGetAccountIdentifierTransactionsResult,
+    ) -> Vec<IcpIndexTransactionWithId> {
+        match result {
+            IcpIndexGetAccountIdentifierTransactionsResult::Ok(response) => response.transactions,
+            IcpIndexGetAccountIdentifierTransactionsResult::Err(err) => {
+                panic!("unexpected error: {}", err.message)
+            }
+        }
+    }
+
+    #[test]
+    fn mock_icp_index_filters_exact_account_identifier() {
+        let requested = account("requested");
+        let other_owner = Principal::from_slice(&[1; 29]);
+        let same_label_other_owner = Account::new(other_owner, Some(mock_subaccount("requested")));
+        let result = get_account_identifier_transactions_from_transactions(
+            IcpIndexGetAccountIdentifierTransactionsArgs {
+                max_results: 10,
+                start: None,
+                account_identifier: requested.icp_account_identifier_text(),
+            },
+            vec![
+                tx(
+                    "alice",
+                    "requested",
+                    Some(account("alice")),
+                    Some(requested.clone()),
+                    b"match".to_vec(),
+                    1,
+                ),
+                tx(
+                    "alice",
+                    "requested",
+                    Some(account("alice")),
+                    Some(same_label_other_owner),
+                    b"wrong-owner".to_vec(),
+                    2,
+                ),
+            ],
+            0,
+        );
+
+        let transactions = response_transactions(result);
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].id, 1);
+    }
+
+    #[test]
+    fn mock_icp_index_does_not_relabel_unrelated_deposit() {
+        let stream_deposit = account("stream_manager_deposit");
+        let unrelated_deposit = Account::new(
+            Principal::from_slice(&[2; 29]),
+            Some(mock_subaccount("stream_manager_deposit")),
+        );
+        let result = get_account_identifier_transactions_from_transactions(
+            IcpIndexGetAccountIdentifierTransactionsArgs {
+                max_results: 10,
+                start: None,
+                account_identifier: stream_deposit.icp_account_identifier_text(),
+            },
+            vec![tx(
+                "nns",
+                "stream_manager_deposit",
+                Some(account("nns")),
+                Some(unrelated_deposit),
+                b"unrelated".to_vec(),
+                7,
+            )],
+            0,
+        );
+
+        assert!(response_transactions(result).is_empty());
+    }
+
+    #[test]
+    fn mock_icp_index_preserves_exact_memo_bytes() {
+        let requested = account("requested");
+        let memo = vec![0, 159, 146, 150, 255];
+        let result = get_account_identifier_transactions_from_transactions(
+            IcpIndexGetAccountIdentifierTransactionsArgs {
+                max_results: 10,
+                start: None,
+                account_identifier: requested.icp_account_identifier_text(),
+            },
+            vec![tx(
+                "alice",
+                "requested",
+                Some(account("alice")),
+                Some(requested),
+                memo.clone(),
+                9,
+            )],
+            0,
+        );
+
+        let transactions = response_transactions(result);
+        assert_eq!(transactions[0].transaction.icrc1_memo, Some(memo));
+    }
 }

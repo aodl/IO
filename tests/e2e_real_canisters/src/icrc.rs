@@ -99,6 +99,19 @@ pub struct GetTransactionsResult {
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct LedgerGetTransactionsArgs {
+    pub start: Nat,
+    pub length: Nat,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct LedgerGetTransactionsResult {
+    pub log_length: Nat,
+    pub first_index: Nat,
+    pub transactions: Vec<IndexTransaction>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
 pub struct TransactionWithId {
     pub id: Nat,
     pub transaction: IndexTransaction,
@@ -298,6 +311,23 @@ pub fn get_account_transactions(
             account,
             start,
             max_results: Nat::from(max_results),
+        },
+    )
+}
+
+pub fn ledger_get_transactions(
+    pic: &PocketIc,
+    ledger: Principal,
+    start: u64,
+    length: u64,
+) -> LedgerGetTransactionsResult {
+    query_one(
+        pic,
+        ledger,
+        "get_transactions",
+        LedgerGetTransactionsArgs {
+            start: Nat::from(start),
+            length: Nat::from(length),
         },
     )
 }

@@ -2547,6 +2547,59 @@ fn check_e2e_coverage_matrix_at(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn check_live_stream_manager_pocketic_gate_at(root: &Path) -> Result<(), String> {
+    let script_path = "tools/scripts/run-io-stream-manager-live-pocketic";
+    let docs_path = "docs/testing/current-test-inventory.md";
+    let script = require_file(root, script_path)?;
+    let required_tests = [
+        "live::proof_found_after_submitted_upgrade_completes_once",
+        "live::pending_fee_repreflight_survives_actual_same_wasm_upgrade",
+        "live::submitted_attempt_without_callback_recovers_after_actual_same_wasm_upgrade",
+        "live::proof_required_without_cursor_recovers_after_actual_same_wasm_upgrade",
+        "live::spent_uncommitted_reservation_survives_actual_same_wasm_upgrade",
+        "live::partial_distribution_fee_change_never_retransfers_prior_recipient",
+        "live::zero_recipient_reward_creates_no_io_ledger_transfer",
+        "live::pocketic_live_two_week_partial_allocation_failure_does_not_double_pay_retry",
+        "live::governance_outage_cannot_skip_blocked_reward_via_newer_transaction",
+        "live::governance_snapshot_unavailable_does_not_convert_reward_to_dust",
+        "live::pocketic_live_index_lag_blocks_scan_then_resolves_once",
+        "live::pocketic_live_second_two_week_reward_after_completed_reward_succeeds",
+    ];
+    require_present(
+        script_path,
+        &script,
+        &[
+            "POCKET_IC_BIN=${POCKET_IC_BIN}",
+            "\"${POCKET_IC_BIN}\" --version",
+            "-- --exact --list",
+            "-- --exact --nocapture",
+            "required test was not discovered exactly once",
+            "required test did not report an explicit pass",
+            "required test output looks like a skip instead of proof",
+            "cargo test -p io-stream-manager --test io_stream_manager_pocketic",
+            "live PocketIC tests genuinely ran:",
+        ],
+    )?;
+    for test in required_tests {
+        let count = script.matches(test).count();
+        if count != 1 {
+            return Err(format!(
+                "{script_path}: required live test {test} appears {count} times, expected once"
+            ));
+        }
+    }
+    let docs = require_file(root, docs_path)?;
+    require_present(
+        docs_path,
+        &docs,
+        &[
+            "tools/scripts/run-io-stream-manager-live-pocketic",
+            "cargo run -p xtask -- live_stream_manager_pocketic_gate_check",
+        ],
+    )?;
+    Ok(())
+}
+
 fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
     let plan_path = "docs/testing/real-canister-pocketic-plan.md";
     let cargo_path = "tests/e2e_real_canisters/Cargo.toml";
@@ -2727,6 +2780,8 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
             "io_stream_manager_real_redemption_rejects_insufficient_redeemable_supply",
             "io_stream_manager_real_redemption_after_index_lag_waits_or_fails_closed",
             "real_stack_rejected_refund_too_old_waits_for_index_proof_no_double_refund",
+            "real_finalized_sns_four_role_reward_reconciles_exactly_once",
+            "real_finalized_sns_zero_recipient_reward_retains_full_pool_as_dust",
             "io_stream_manager_real_redemption_after_holder_yield_is_higher_than_genesis",
             "io_stream_manager_real_redemption_after_staker_rewards_preserves_rate",
             "real_stack_same_wasm_upgrade_preserves_operation_journal",
@@ -2767,6 +2822,12 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
         "tests/e2e_real_canisters/src/sns_ledger_index.rs",
         &ledger_index,
         &["create_sns_canister"],
+    )?;
+    let live_stream_manager = require_file(root, "tests/pocketic/io_stream_manager_pocketic.rs")?;
+    require_present(
+        "tests/pocketic/io_stream_manager_pocketic.rs",
+        &live_stream_manager,
+        &["partial_distribution_fee_change_never_retransfers_prior_recipient"],
     )?;
     require_absent(harness_path, &harness, &["--network ic", "dfx "])?;
     for path in [
@@ -3851,7 +3912,41 @@ fn check_stable_storage_at(root: &Path) -> Result<(), String> {
                     &text,
                     &["canister=", "schema_version=", "live_snapshot=false"],
                 )?;
+                let schema_version = fixture_schema_version(fixture, &text)?;
+                if fixture.ends_with("current.fixture")
+                    || fixture.ends_with("empty-default.fixture")
+                {
+                    if schema_version != entry.current_version {
+                        return Err(format!(
+                            "{fixture}: schema_version {schema_version} must match registry current {}",
+                            entry.current_version
+                        ));
+                    }
+                } else if fixture.ends_with("future-version.fixture") {
+                    if schema_version <= entry.current_version {
+                        return Err(format!(
+                            "{fixture}: future fixture schema_version {schema_version} must be greater than registry current {}",
+                            entry.current_version
+                        ));
+                    }
+                } else if !accepts_schema_version(entry, schema_version) {
+                    return Err(format!(
+                        "{fixture}: schema_version {schema_version} is not declared as current or previous supported for {}",
+                        entry.canister_name
+                    ));
+                }
             }
+        }
+        if entry.canister_name == "io_stream_manager"
+            && !entry
+                .fixture_files
+                .iter()
+                .any(|fixture| fixture.ends_with("v1-scalar-reward-reservation.fixture"))
+        {
+            return Err(
+                "io_stream_manager: v1 scalar reward reservation fixture must be registered"
+                    .to_string(),
+            );
         }
     }
 
@@ -3935,6 +4030,15 @@ fn check_stable_storage_at(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn fixture_schema_version(fixture: &str, text: &str) -> Result<u32, String> {
+    let raw = text
+        .lines()
+        .find_map(|line| line.strip_prefix("schema_version="))
+        .ok_or_else(|| format!("{fixture}: missing schema_version line"))?;
+    raw.parse::<u32>()
+        .map_err(|err| format!("{fixture}: invalid schema_version {raw}: {err}"))
+}
+
 fn check_historian_current_time_path(path: &str, text: &str) -> Result<(), String> {
     require_present(
         path,
@@ -3974,7 +4078,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_scripts, e2e_coverage_matrix_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -4203,6 +4307,15 @@ fn main() -> ExitCode {
                 ok = false;
             }
         },
+        "live_stream_manager_pocketic_gate_check" => {
+            match check_live_stream_manager_pocketic_gate_at(&root) {
+                Ok(()) => eprintln!("✓ live_stream_manager_pocketic_gate_check"),
+                Err(err) => {
+                    eprintln!("✗ live_stream_manager_pocketic_gate_check: {err}");
+                    ok = false;
+                }
+            }
+        }
         "real_canister_harness_check" => match check_real_canister_harness_at(&root) {
             Ok(()) => eprintln!("✓ real_canister_harness_check"),
             Err(err) => {
@@ -4378,6 +4491,28 @@ fn main() -> ExitCode {
                                 "-p",
                                 "e2e-real-canisters",
                                 "real_canister_e2e_icp_to_io_stake_reward_redemption",
+                                "--",
+                                "--ignored",
+                                "--nocapture",
+                            ]),
+                        );
+                        ok &= run(
+                            "real-stack: strict finalized-SNS four-role reward reconciliation",
+                            cargo_test(&[
+                                "-p",
+                                "e2e-real-canisters",
+                                "real_finalized_sns_four_role_reward_reconciles_exactly_once",
+                                "--",
+                                "--ignored",
+                                "--nocapture",
+                            ]),
+                        );
+                        ok &= run(
+                            "real-stack: finalized-SNS zero-recipient reward dust retention",
+                            cargo_test(&[
+                                "-p",
+                                "e2e-real-canisters",
+                                "real_finalized_sns_zero_recipient_reward_retains_full_pool_as_dust",
                                 "--",
                                 "--ignored",
                                 "--nocapture",
@@ -4608,6 +4743,7 @@ fn main() -> ExitCode {
                 "validate_local_sns_rehearsal",
                 "validate_local_sns_scripts",
                 "e2e_coverage_matrix_check",
+                "live_stream_manager_pocketic_gate_check",
                 "real_canister_harness_check",
                 "real_canister_artifact_manifest_check",
                 "e2e_real_coverage_check",
@@ -4656,6 +4792,7 @@ fn main() -> ExitCode {
         "test_unit" => {
             ok &= run("unit: xtask guardrails", cargo_test(&["-p", "xtask"]));
             ok &= run_subcommand("e2e_coverage_matrix_check");
+            ok &= run_subcommand("live_stream_manager_pocketic_gate_check");
             ok &= run_subcommand("real_canister_harness_check");
             ok &= run_subcommand("real_canister_artifact_manifest_check");
             ok &= run("unit: io-core-model", cargo_test(&["-p", "io-core-model"]));

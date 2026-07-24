@@ -14,7 +14,8 @@ inventory without network calls.
 
 Registered canisters:
 
-- `io_stream_manager`: current schema version 1, supports legacy unversioned v0 stable roots.
+- `io_stream_manager`: current schema version 2, supports legacy unversioned v0 stable roots and
+  v1 stream-manager states with scalar reward reservations.
 - `io_nns_neuron_manager`: current schema version 1, supports legacy unversioned v0 stable roots.
 - `io_historian`: current schema version 1, supports v0 read-model fixtures with source health
   recomputed from state.
@@ -28,6 +29,13 @@ two-week pool backing bps, operation journal, and scheduler/index cursors. Produ
 optional config field and defaults absent in local fixtures. Pending redemption records preserve
 gross ICP payout, fee, net user payout, IO return fee, retry status, transfer blocks, user account,
 and last error.
+
+Schema v2 stores reward reservation accounting as explicit unspent and
+externally-spent-but-model-uncommitted buckets. Restore validates the split against recipient
+transfer/proof evidence, validated preflight totals, and processed transaction evidence. Completed
+reward operations must have zero reservation and processed-transaction evidence. Terminal, manual,
+or uncertain value-moving reward states retain unavailable debit or fail closed; corrupt
+value-moving state must fail closed instead of silently initializing or releasing reserve.
 
 Pre-upgrade saves the versioned root. Post-upgrade first decodes the versioned root, then falls
 back to the prior unversioned `StableState` root as schema version 0. Stable state that is missing,

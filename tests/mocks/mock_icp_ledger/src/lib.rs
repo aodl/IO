@@ -6,7 +6,7 @@ use io_ledger_types::{
 use serde::Deserialize;
 use std::cell::RefCell;
 
-const FEE_E8S: u128 = 10_000;
+const DEFAULT_FEE_E8S: u128 = 10_000;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct AccountBalanceArgs {
@@ -25,8 +25,11 @@ pub struct TransferArgs {
 pub struct LedgerTransaction {
     pub from: String,
     pub to: String,
+    pub from_account: Option<Account>,
+    pub to_account: Option<Account>,
     pub amount_e8s: u128,
     pub memo: String,
+    pub memo_bytes: Option<Vec<u8>>,
     pub block_index: u64,
     pub timestamp: u64,
 }
@@ -53,12 +56,18 @@ pub struct DebugDuplicateResponseArgs {
     pub duplicate_of: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct DebugFeeArgs {
+    pub fee_e8s: u128,
+}
+
 #[derive(Default)]
 struct LedgerState {
     balances: Vec<(String, u128)>,
     transactions: Vec<LedgerTransaction>,
     rejected_to_accounts: Vec<String>,
     duplicate_response: Option<u64>,
+    fee_e8s: Option<u128>,
 }
 
 thread_local! {
@@ -85,6 +94,10 @@ fn balance_of(state: &LedgerState, account: &str) -> u128 {
         .unwrap_or(0)
 }
 
+fn fee_e8s(state: &LedgerState) -> u128 {
+    state.fee_e8s.unwrap_or(DEFAULT_FEE_E8S)
+}
+
 fn set_balance(state: &mut LedgerState, account: &str, balance: u128) {
     match state.balances.iter_mut().find(|(name, _)| name == account) {
         Some((_, current)) => *current = balance,
@@ -92,23 +105,41 @@ fn set_balance(state: &mut LedgerState, account: &str, balance: u128) {
     }
 }
 
-fn record(
-    state: &mut LedgerState,
+struct RecordTransfer {
     from: String,
     to: String,
+    from_account: Option<Account>,
+    to_account: Option<Account>,
     amount_e8s: u128,
     memo: String,
-) -> u64 {
+    memo_bytes: Option<Vec<u8>>,
+}
+
+fn record(state: &mut LedgerState, transfer: RecordTransfer) -> u64 {
     let block_index = state.transactions.len() as u64;
     state.transactions.push(LedgerTransaction {
-        from,
-        to,
-        amount_e8s,
-        memo,
+        from: transfer.from,
+        to: transfer.to,
+        from_account: transfer.from_account,
+        to_account: transfer.to_account,
+        amount_e8s: transfer.amount_e8s,
+        memo: transfer.memo,
+        memo_bytes: transfer.memo_bytes,
         block_index,
         timestamp: now(),
     });
     block_index
+}
+
+fn caller() -> candid::Principal {
+    #[cfg(target_family = "wasm")]
+    {
+        ic_cdk::api::msg_caller()
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        candid::Principal::anonymous()
+    }
 }
 
 fn mock_subaccount(label: &str) -> Subaccount {
@@ -131,6 +162,16 @@ fn mock_label_from_subaccount(subaccount: &Subaccount) -> Option<String> {
 }
 
 fn mock_label_from_account(account: &Account) -> String {
+    if let Some(subaccount) = account.subaccount.as_ref() {
+        if subaccount.0[..24].iter().all(|byte| *byte == 0) {
+            let mut id = [0_u8; 8];
+            id.copy_from_slice(&subaccount.0[24..]);
+            let id = u64::from_be_bytes(id);
+            if id != 0 {
+                return format!("sns_neuron_{id}");
+            }
+        }
+    }
     account
         .subaccount
         .as_ref()
@@ -189,7 +230,7 @@ fn memo_to_string(memo: Option<Vec<u8>>) -> String {
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn icrc1_fee() -> Nat {
-    Nat::from(FEE_E8S)
+    STATE.with(|cell| Nat::from(fee_e8s(&cell.borrow())))
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -210,16 +251,24 @@ pub fn icrc1_transfer(args: IcrcTransferArg) -> Result<Nat, IcrcTransferError> {
         }
         if let Some(fee) = args.fee.as_ref() {
             let fee = nat_to_u128(fee, "fee")?;
-            if fee != FEE_E8S {
+            let current_fee = fee_e8s(&state);
+            if fee != current_fee {
                 return Err(IcrcTransferError::BadFee {
-                    expected_fee: Nat::from(FEE_E8S),
+                    expected_fee: Nat::from(current_fee),
                 });
             }
         }
+        let from_subaccount = args
+            .from_subaccount
+            .clone()
+            .map(|bytes| Subaccount(bytes.try_into().unwrap_or([0; 32])));
+        let from_account = Account::new(caller(), from_subaccount);
+        let to_account = account_from_icrc(args.to.clone())?;
         let from = label_from_from_subaccount(args.from_subaccount)?;
-        let to = label_from_icrc(args.to)?;
+        let to = mock_label_from_account(&to_account);
         let amount_e8s = nat_to_u128(&args.amount, "amount")?;
-        let memo = memo_to_string(args.memo);
+        let memo_bytes = args.memo;
+        let memo = memo_to_string(memo_bytes.clone());
         if state
             .rejected_to_accounts
             .iter()
@@ -236,7 +285,18 @@ pub fn icrc1_transfer(args: IcrcTransferArg) -> Result<Nat, IcrcTransferError> {
         let to_balance = balance_of(&state, &to);
         set_balance(&mut state, &from, from_balance - amount_e8s);
         set_balance(&mut state, &to, to_balance.saturating_add(amount_e8s));
-        Ok(Nat::from(record(&mut state, from, to, amount_e8s, memo)))
+        Ok(Nat::from(record(
+            &mut state,
+            RecordTransfer {
+                from,
+                to,
+                from_account: Some(from_account),
+                to_account: Some(to_account),
+                amount_e8s,
+                memo,
+                memo_bytes,
+            },
+        )))
     })
 }
 
@@ -267,6 +327,11 @@ pub fn debug_set_duplicate_response(args: DebugDuplicateResponseArgs) {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_fee(args: DebugFeeArgs) {
+    STATE.with(|cell| cell.borrow_mut().fee_e8s = Some(args.fee_e8s));
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn debug_clear_rejections() {
     STATE.with(|cell| cell.borrow_mut().rejected_to_accounts.clear());
 }
@@ -288,15 +353,20 @@ pub fn debug_mint(args: DebugMintArgs) -> u64 {
         );
         record(
             &mut state,
-            "mint".to_string(),
-            args.to,
-            args.amount_e8s,
-            args.memo,
+            RecordTransfer {
+                from: "mint".to_string(),
+                to: args.to,
+                from_account: None,
+                to_account: None,
+                amount_e8s: args.amount_e8s,
+                memo: args.memo,
+                memo_bytes: None,
+            },
         )
     })
 }
 
-#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn debug_get_transactions() -> Vec<LedgerTransaction> {
     STATE.with(|cell| cell.borrow().transactions.clone())
 }
@@ -304,7 +374,9 @@ pub fn debug_get_transactions() -> Vec<LedgerTransaction> {
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn debug_get_boundary_transactions() -> Vec<LedgerBlock> {
     STATE.with(|cell| {
-        cell.borrow()
+        let state = cell.borrow();
+        let fee = fee_e8s(&state);
+        state
             .transactions
             .iter()
             .map(|tx| LedgerBlock {
@@ -320,7 +392,7 @@ pub fn debug_get_boundary_transactions() -> Vec<LedgerBlock> {
                     Some(mock_subaccount(&tx.to)),
                 )),
                 amount_e8s: tx.amount_e8s,
-                fee_e8s: Some(FEE_E8S),
+                fee_e8s: Some(fee),
                 memo: Some(Memo::from(tx.memo.clone())),
                 operation_kind: LedgerOperationKind::Transfer,
             })

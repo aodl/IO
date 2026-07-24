@@ -1,30 +1,38 @@
+#[cfg(all(target_family = "wasm", debug_assertions))]
+use crate::clients::sns_governance;
 #[cfg(target_family = "wasm")]
-use crate::clients::{icp_ledger, io_ledger, sns_governance};
+use crate::clients::{icp_ledger, io_ledger};
 #[cfg(target_family = "wasm")]
 use crate::governance_snapshot::{
-    build_governance_reward_snapshot, GovernanceRewardSnapshotRequest,
+    build_governance_reward_snapshot, GovernanceRewardSnapshotRequest, GovernanceSnapshotError,
 };
 #[cfg(target_family = "wasm")]
 use crate::state::{IO_NNS_NEURON_MANAGER_SOURCE, JUPITER_FAUCET_SOURCE};
 use crate::DebugTickOutcome;
+#[cfg(any(target_family = "wasm", test))]
+use crate::StreamManager;
 #[cfg(target_family = "wasm")]
 use crate::{
     ApiIoRecipientPolicy, ApiStreamKind, OperationPhase, RejectedFundDisposition,
-    RejectedRefundAttemptRecord, RewardDistributionPreflight, RewardPreflightStatus,
+    RejectedRefundAttemptRecord, RewardDistributionPreflight, RewardFeeRepreflightEvidence,
+    RewardPreflightStatus, RewardReservation, RewardTransferAttemptLifecycle,
     RewardTransferAttemptRecord, StreamManagerError, StreamOperation, StreamOperationKind,
     TransferStatus, TwoWeekRecipientTransfer, CANISTER_STATE,
 };
 #[cfg(test)]
 use crate::{
     OperationPhase, RejectedFundDisposition, RejectedRefundAttemptRecord,
-    RewardDistributionPreflight, RewardPreflightStatus, RewardTransferAttemptRecord,
-    StreamOperation, StreamOperationKind, TransferStatus, TwoWeekRecipientTransfer,
+    RewardDistributionPreflight, RewardFeeRepreflightEvidence, RewardPreflightStatus,
+    RewardReservation, RewardTransferAttemptLifecycle, RewardTransferAttemptRecord,
+    StreamOperation, StreamOperationKind, TransferStatus, TwoWeekRecipientTransfer, CANISTER_STATE,
 };
 use candid::CandidType;
 #[cfg(target_family = "wasm")]
 use candid::Nat;
 #[cfg(any(target_family = "wasm", test))]
 use candid::Principal;
+#[cfg(any(target_family = "wasm", test))]
+use io_core_model::split_40_60;
 #[cfg(target_family = "wasm")]
 use io_core_model::ModelError;
 #[cfg(target_family = "wasm")]
@@ -38,6 +46,8 @@ use io_ledger_types::Account;
 use io_ledger_types::AccountHistoryPageOrder;
 #[cfg(any(target_family = "wasm", test))]
 use io_ledger_types::AccountHistoryScanState;
+#[cfg(target_family = "wasm")]
+use io_ledger_types::IcpIndexCanisterClient;
 #[cfg(any(target_family = "wasm", test))]
 use io_ledger_types::LedgerOperationKind;
 #[cfg(any(target_family = "wasm", test))]
@@ -52,8 +62,8 @@ use io_ledger_types::{AccountAlias, IndexScanRequest, IndexTransaction};
 use io_ledger_types::{BlockIndex, IndexError, IndexScanResult};
 #[cfg(target_family = "wasm")]
 use io_ledger_types::{
-    IcpIndexCanisterClient, IcpLedgerCanisterClient, IcrcAccount, IcrcIndexCanisterClient,
-    IcrcLedgerCanisterClient, LedgerIndexClient, LedgerTransferClient,
+    IcpLedgerCanisterClient, IcrcAccount, IcrcIndexCanisterClient, IcrcLedgerCanisterClient,
+    LedgerIndexClient, LedgerTransferClient,
 };
 #[cfg(any(target_family = "wasm", test))]
 use io_production_wiring::{
@@ -92,7 +102,7 @@ const TWO_WEEK_REWARD_REFRESH_BUDGET_PER_TICK: usize = 8;
 #[cfg(any(target_family = "wasm", test))]
 const TWO_WEEK_REWARD_PROOF_SCAN_MAX_PAGES: usize = 20;
 
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", test))]
 fn encode_hex(bytes: &[u8]) -> String {
     const TABLE: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -165,6 +175,45 @@ impl SchedulerTickOutcome {
 enum BoundaryTransferDecision {
     Succeeded(u64),
     Retryable(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(any(target_family = "wasm", test))]
+enum RewardSnapshotAvailability {
+    Available(Vec<io_reward_policy::NeuronSnapshot>),
+    Unavailable(String),
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn require_new_two_week_reward_inputs(
+    io_transfer_ledger: Option<Principal>,
+    io_index_canister: Option<Principal>,
+    sns_governance_canister: Option<Principal>,
+    reward_snapshot: &RewardSnapshotAvailability,
+) -> Result<
+    (
+        Principal,
+        Principal,
+        Principal,
+        &[io_reward_policy::NeuronSnapshot],
+    ),
+    String,
+> {
+    let io_canister = io_transfer_ledger
+        .ok_or_else(|| "IO transfer ledger is required for new two-week rewards".to_string())?;
+    let io_index = io_index_canister
+        .ok_or_else(|| "IO index canister is required for new two-week rewards".to_string())?;
+    let sns_governance = sns_governance_canister.ok_or_else(|| {
+        "SNS governance canister is required for new two-week rewards".to_string()
+    })?;
+    match reward_snapshot {
+        RewardSnapshotAvailability::Available(neurons) => {
+            Ok((io_canister, io_index, sns_governance, neurons))
+        }
+        RewardSnapshotAvailability::Unavailable(reason) => Err(format!(
+            "SNS governance reward snapshot unavailable for new two-week reward: {reason}"
+        )),
+    }
 }
 
 #[cfg(any(target_family = "wasm", test))]
@@ -468,7 +517,7 @@ fn kind_from_api(kind: ApiStreamKind) -> StreamOperationKind {
 #[cfg(target_family = "wasm")]
 async fn refresh_finalized_sns_reward_snapshot(
     canister: Principal,
-) -> Result<Vec<io_reward_policy::NeuronSnapshot>, String> {
+) -> Result<Vec<io_reward_policy::NeuronSnapshot>, GovernanceSnapshotError> {
     let client = SnsGovernanceCanisterClient { canister };
     let now_seconds = ic_cdk::api::time() / 1_000_000_000;
     let request = GovernanceRewardSnapshotRequest {
@@ -501,9 +550,63 @@ async fn refresh_finalized_sns_reward_snapshot(
             });
             Ok(snapshot.snapshots)
         }
-        Err(err) => Err(format!(
-            "finalized SNS governance reward snapshot refresh failed: {err:?}"
-        )),
+        Err(err) => Err(err),
+    }
+}
+
+#[cfg(target_family = "wasm")]
+fn governance_snapshot_error_message(err: &GovernanceSnapshotError) -> String {
+    format!("finalized SNS governance reward snapshot refresh failed: {err:?}")
+}
+
+#[cfg(all(target_family = "wasm", debug_assertions))]
+fn reward_snapshot_debug_fallback_allowed(err: &GovernanceSnapshotError) -> bool {
+    matches!(
+        err,
+        GovernanceSnapshotError::SnsGovernance(
+            io_governance_types::SnsGovernanceError::CanisterCallFailed { .. }
+                | io_governance_types::SnsGovernanceError::Unsupported
+        )
+    )
+}
+
+#[cfg(target_family = "wasm")]
+async fn load_reward_snapshot(sns_governance: Option<Principal>) -> RewardSnapshotAvailability {
+    let Some(canister) = sns_governance else {
+        return RewardSnapshotAvailability::Unavailable(
+            "SNS governance canister is not configured".to_string(),
+        );
+    };
+
+    match refresh_finalized_sns_reward_snapshot(canister).await {
+        Ok(neurons) => RewardSnapshotAvailability::Available(neurons),
+        Err(real_err) => {
+            let real_err_message = governance_snapshot_error_message(&real_err);
+            #[cfg(debug_assertions)]
+            {
+                if reward_snapshot_debug_fallback_allowed(&real_err) {
+                    match sns_governance::debug_list_neurons(canister).await {
+                        Ok(neurons) => {
+                            CANISTER_STATE.with(|cell| {
+                                cell.borrow_mut()
+                                    .manager
+                                    .refresh_active_staked_io_from_neurons(&neurons);
+                            });
+                            RewardSnapshotAvailability::Available(neurons)
+                        }
+                        Err(debug_err) => RewardSnapshotAvailability::Unavailable(format!(
+                            "{real_err_message}; {debug_err}"
+                        )),
+                    }
+                } else {
+                    RewardSnapshotAvailability::Unavailable(real_err_message)
+                }
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                RewardSnapshotAvailability::Unavailable(real_err_message)
+            }
+        }
     }
 }
 
@@ -704,7 +807,232 @@ fn reward_transfer_attempt_from_parts(
         source_account,
         destination_account,
         canonical_sns_neuron_id,
+        lifecycle: Some(RewardTransferAttemptLifecycle::Prepared),
     }
+}
+
+#[cfg(any(target_family = "wasm", test))]
+struct RewardAttemptPlan {
+    source_account: Account,
+    destination_account: Account,
+    amount_e8s: u128,
+    fee_e8s: u128,
+    created_at_time: u64,
+    canonical_sns_neuron_id: Vec<u8>,
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn get_or_create_reward_transfer_attempt(
+    operation_journal: &mut [StreamOperation],
+    processed_transactions: &BTreeSet<String>,
+    operation_id: &str,
+    recipient_index: usize,
+    plan: RewardAttemptPlan,
+) -> Result<RewardTransferAttemptRecord, String> {
+    let op = operation_journal
+        .iter_mut()
+        .find(|op| op.operation_id == operation_id)
+        .ok_or_else(|| {
+            format!("reward operation {operation_id} disappeared before transfer attempt")
+        })?;
+    if !reward_operation_can_progress_for_host(op) {
+        return Err(format!(
+            "reward operation {operation_id} is not in a transferable phase"
+        ));
+    }
+    let Some(preflight) = op.reward_preflight.as_ref() else {
+        return Err(format!(
+            "reward operation {operation_id} is missing validated preflight"
+        ));
+    };
+    if preflight.status != RewardPreflightStatus::Validated {
+        return Err(format!(
+            "reward operation {operation_id} preflight is not validated"
+        ));
+    }
+    if preflight.ledger_fee_e8s != plan.fee_e8s {
+        return Err(format!(
+            "reward operation {operation_id} preflight fee {} disagrees with attempt fee {}",
+            preflight.ledger_fee_e8s, plan.fee_e8s
+        ));
+    }
+    let reservation = reward_reservation_for_operation(op, processed_transactions)?;
+    if reservation.unspent_reserved_reward_debit_e8s == 0 {
+        return Err(format!(
+            "reward operation {operation_id} has no unspent reward reservation for transfer attempt"
+        ));
+    }
+    let recipient = op.two_week_recipients.get(recipient_index).ok_or_else(|| {
+        format!("reward operation {operation_id} recipient {recipient_index} disappeared")
+    })?;
+    if recipient_ledger_status(recipient) == TransferStatus::Succeeded {
+        return Err(format!(
+            "reward operation {operation_id} recipient {recipient_index} already has a succeeded transfer"
+        ));
+    }
+    if recipient.sns_neuron_id.as_deref() != Some(plan.canonical_sns_neuron_id.as_slice()) {
+        return Err(format!(
+            "reward operation {operation_id} recipient {recipient_index} canonical SNS neuron id changed"
+        ));
+    }
+    if recipient.amount_e8s != plan.amount_e8s {
+        return Err(format!(
+            "reward operation {operation_id} recipient {recipient_index} amount changed"
+        ));
+    }
+
+    let expected = reward_transfer_attempt_from_parts(
+        plan.source_account,
+        plan.destination_account,
+        plan.amount_e8s,
+        plan.fee_e8s,
+        plan.created_at_time,
+        operation_id,
+        plan.canonical_sns_neuron_id,
+    );
+    if let Some(existing) = recipient.reward_transfer_attempt.clone() {
+        if existing.amount_e8s != expected.amount_e8s
+            || existing.fee_e8s != expected.fee_e8s
+            || existing.source_account != expected.source_account
+            || existing.destination_account != expected.destination_account
+            || existing.memo != expected.memo
+            || existing.canonical_sns_neuron_id != expected.canonical_sns_neuron_id
+        {
+            return Err(format!(
+                "reward operation {operation_id} recipient {recipient_index} existing transfer attempt disagrees with current plan"
+            ));
+        }
+        return Ok(existing);
+    }
+
+    let reserve_debit = expected
+        .amount_e8s
+        .checked_add(expected.fee_e8s)
+        .ok_or_else(|| "reward transfer attempt reserve debit overflowed".to_string())?;
+    let mut validated_op = op.clone();
+    let validated_recipient = validated_op
+        .two_week_recipients
+        .get_mut(recipient_index)
+        .ok_or_else(|| {
+            format!("reward operation {operation_id} recipient {recipient_index} disappeared")
+        })?;
+    validated_recipient.reward_transfer_attempt = Some(expected.clone());
+    validated_recipient.ledger_transfer_fee_e8s = Some(expected.fee_e8s);
+    validated_recipient.reward_amount_received_e8s = Some(expected.amount_e8s);
+    validated_recipient.reserve_debit_e8s = Some(reserve_debit);
+    crate::validate_reward_operation_accounting(
+        &validated_op,
+        Some(processed_transactions),
+        crate::RewardValidationMode::Current,
+    )?;
+
+    let recipient = op
+        .two_week_recipients
+        .get_mut(recipient_index)
+        .ok_or_else(|| {
+            format!("reward operation {operation_id} recipient {recipient_index} disappeared")
+        })?;
+    recipient.reward_transfer_attempt = Some(expected.clone());
+    recipient.ledger_transfer_fee_e8s = Some(expected.fee_e8s);
+    recipient.reward_amount_received_e8s = Some(expected.amount_e8s);
+    recipient.reserve_debit_e8s = Some(reserve_debit);
+    recipient.last_error = None;
+    op.mark_updated(OperationPhase::PartiallyDistributed);
+    Ok(expected)
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn reward_operation_can_progress_for_host(op: &StreamOperation) -> bool {
+    op.kind == StreamOperationKind::TwoWeekMaturityStream
+        && !matches!(
+            op.phase,
+            OperationPhase::Completed | OperationPhase::FailedTerminal
+        )
+}
+
+#[cfg(target_family = "wasm")]
+fn stored_reward_attempt_still_matches(
+    operation_id: &str,
+    recipient_index: usize,
+    attempt: &RewardTransferAttemptRecord,
+) -> bool {
+    CANISTER_STATE.with(|cell| {
+        reward_attempt_matches_in_journal(
+            &cell.borrow().operation_journal,
+            operation_id,
+            recipient_index,
+            attempt,
+        )
+    })
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn reward_attempt_matches_in_journal(
+    operation_journal: &[StreamOperation],
+    operation_id: &str,
+    recipient_index: usize,
+    attempt: &RewardTransferAttemptRecord,
+) -> bool {
+    operation_journal
+        .iter()
+        .find(|op| op.operation_id == operation_id)
+        .and_then(|op| op.two_week_recipients.get(recipient_index))
+        .and_then(|recipient| recipient.reward_transfer_attempt.as_ref())
+        == Some(attempt)
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn mark_reward_attempt_submitted_if_prepared(
+    operation_journal: &mut [StreamOperation],
+    operation_id: &str,
+    recipient_index: usize,
+    attempt: &RewardTransferAttemptRecord,
+) -> Result<RewardTransferAttemptRecord, String> {
+    let op = operation_journal
+        .iter_mut()
+        .find(|op| op.operation_id == operation_id)
+        .ok_or_else(|| format!("reward operation {operation_id} disappeared before submit"))?;
+    if op
+        .two_week_recipients
+        .iter()
+        .enumerate()
+        .any(|(index, recipient)| {
+            index != recipient_index
+                && crate::reward_recipient_has_submitted_or_proof_required_attempt(recipient)
+        })
+    {
+        return Err(format!(
+            "reward operation {operation_id} already has another submitted or proof-required reward attempt"
+        ));
+    }
+    let recipient = op
+        .two_week_recipients
+        .get_mut(recipient_index)
+        .ok_or_else(|| {
+            format!("reward operation {operation_id} recipient {recipient_index} disappeared")
+        })?;
+    let Some(stored) = recipient.reward_transfer_attempt.as_mut() else {
+        return Err(format!(
+            "reward operation {operation_id} recipient {recipient_index} missing transfer attempt before submit"
+        ));
+    };
+    if stored != attempt {
+        return Err(format!(
+            "reward operation {operation_id} recipient {recipient_index} persisted attempt changed before submit"
+        ));
+    }
+    if !reward_attempt_is_prepared(stored) {
+        return Err(format!(
+            "reward operation {operation_id} recipient {recipient_index} transfer attempt is already submitted or awaiting proof"
+        ));
+    }
+    stored.lifecycle = Some(RewardTransferAttemptLifecycle::SubmittedAwaitingResult {
+        generation: stored.created_at_time,
+    });
+    let submitted = stored.clone();
+    crate::validate_reward_operation_accounting(op, None, crate::RewardValidationMode::Current)?;
+    op.mark_updated(OperationPhase::PartiallyDistributed);
+    Ok(submitted)
 }
 
 #[cfg(any(target_family = "wasm", test))]
@@ -723,40 +1051,369 @@ fn reward_account_for_sns_neuron(
 
 #[cfg(any(target_family = "wasm", test))]
 fn reward_recipient_reserve_debit(
+    op: &StreamOperation,
     recipient: &TwoWeekRecipientTransfer,
-    ledger_fee_e8s: u128,
-) -> u128 {
-    recipient
-        .reserve_debit_e8s
-        .unwrap_or_else(|| recipient.amount_e8s.saturating_add(ledger_fee_e8s))
+    preflight: &RewardDistributionPreflight,
+) -> Result<u128, String> {
+    crate::reward_recipient_authoritative_debit(op, recipient, preflight)
 }
 
 #[cfg(any(target_family = "wasm", test))]
-fn pending_reward_reservation_for_operation(op: &StreamOperation) -> u128 {
-    let Some(preflight) = &op.reward_preflight else {
-        return op.reserved_reward_debit_e8s.unwrap_or(0);
-    };
-    if preflight.status != RewardPreflightStatus::Validated
-        || op.phase == OperationPhase::Completed
-        || op.phase == OperationPhase::FailedTerminal
+#[cfg(any(target_family = "wasm", test))]
+fn reward_current_bad_fee_recipient_has_value_or_uncertainty(
+    recipient: &TwoWeekRecipientTransfer,
+) -> bool {
+    recipient.transfer_block_index.is_some()
+        || recipient.ledger_transfer_block.is_some()
+        || recipient.ledger_transfer_proof_scan_state.is_some()
+        || recipient_ledger_status(recipient) == TransferStatus::Succeeded
+        || matches!(
+            recipient.governance_refresh_status,
+            Some(TransferStatus::Succeeded)
+        )
+        || recipient.observed_stake_after_e8s.is_some()
+        || recipient.concurrent_stake_delta_e8s.is_some()
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn pending_repreflight_reward_reservation(
+    op: &StreamOperation,
+    evidence: RewardFeeRepreflightEvidence,
+) -> Result<RewardReservation, String> {
+    let stored = op.reward_reservation.ok_or_else(|| {
+        format!(
+            "operation {} pending reward re-preflight is missing prior reservation",
+            op.operation_id
+        )
+    })?;
+    let total = stored.checked_total_unavailable_reward_debit_e8s()?;
+    if total != evidence.prior_reserved_debit_e8s
+        || op.reserved_reward_debit_e8s.unwrap_or(total) != evidence.prior_reserved_debit_e8s
     {
-        return 0;
+        return Err(format!(
+            "operation {} pending reward re-preflight reservation disagrees with prior debit evidence",
+            op.operation_id
+        ));
     }
+    if evidence.prior_validated_fee_e8s == evidence.observed_current_fee_e8s {
+        return Err(format!(
+            "operation {} pending reward re-preflight has no fee change evidence",
+            op.operation_id
+        ));
+    }
+    Ok(stored)
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn operation_has_external_reward_effect_or_uncertainty(op: &StreamOperation) -> bool {
     op.two_week_recipients
         .iter()
-        .filter(|recipient| recipient_ledger_status(recipient) != TransferStatus::Succeeded)
-        .map(|recipient| reward_recipient_reserve_debit(recipient, preflight.ledger_fee_e8s))
-        .sum()
+        .any(crate::reward_recipient_has_any_attempt_or_external_evidence)
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn derived_reward_reservation_for_operation(
+    op: &StreamOperation,
+) -> Result<RewardReservation, String> {
+    let Some(preflight) = &op.reward_preflight else {
+        return Ok(op.reward_reservation.unwrap_or_else(|| RewardReservation {
+            unspent_reserved_reward_debit_e8s: op.reserved_reward_debit_e8s.unwrap_or(0),
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        }));
+    };
+    if preflight.status == RewardPreflightStatus::Pending {
+        if let Some(evidence) = op.reward_fee_repreflight {
+            return pending_repreflight_reward_reservation(op, evidence);
+        }
+        if op
+            .reward_reservation
+            .map(|reservation| {
+                reservation
+                    .checked_total_unavailable_reward_debit_e8s()
+                    .unwrap_or(u128::MAX)
+                    != 0
+            })
+            .unwrap_or(false)
+            || op.reserved_reward_debit_e8s.unwrap_or(0) != 0
+        {
+            return Err(format!(
+                "operation {} has pending reward preflight with reservation but no re-preflight evidence",
+                op.operation_id
+            ));
+        }
+    }
+    if preflight.status != RewardPreflightStatus::Validated
+        && !operation_has_external_reward_effect_or_uncertainty(op)
+    {
+        return Ok(RewardReservation::default());
+    }
+
+    op.two_week_recipients.iter().try_fold(
+        RewardReservation::default(),
+        |mut reservation, recipient| {
+            let debit = reward_recipient_reserve_debit(op, recipient, preflight)?;
+            if crate::reward_recipient_has_spent_debit(recipient) {
+                reservation.externally_spent_but_uncommitted_reward_debit_e8s = reservation
+                    .externally_spent_but_uncommitted_reward_debit_e8s
+                    .checked_add(debit)
+                    .ok_or_else(|| {
+                        "spent-but-uncommitted reward reservation overflowed".to_string()
+                    })?;
+            } else {
+                reservation.unspent_reserved_reward_debit_e8s = reservation
+                    .unspent_reserved_reward_debit_e8s
+                    .checked_add(debit)
+                    .ok_or_else(|| "unspent reward reservation overflowed".to_string())?;
+            }
+            Ok(reservation)
+        },
+    )
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn reward_reservation_for_operation(
+    op: &StreamOperation,
+    processed_transactions: &BTreeSet<String>,
+) -> Result<RewardReservation, String> {
+    let is_processed = processed_transactions.contains(&op.source_transaction_id);
+    if op.phase == OperationPhase::Completed {
+        if !is_processed {
+            return Err(format!(
+                "completed reward operation {} is missing processed transaction evidence",
+                op.operation_id
+            ));
+        }
+        let stored = op.reward_reservation.unwrap_or_default();
+        let stored_total = stored.checked_total_unavailable_reward_debit_e8s()?;
+        if stored_total != 0 || op.reserved_reward_debit_e8s.unwrap_or(0) != 0 {
+            return Err(format!(
+                "completed reward operation {} has nonzero reward reservation",
+                op.operation_id
+            ));
+        }
+        return Ok(RewardReservation::default());
+    }
+    if is_processed {
+        return Err(format!(
+            "non-completed reward operation {} has processed transaction evidence",
+            op.operation_id
+        ));
+    }
+
+    crate::validate_reward_operation_accounting(
+        op,
+        Some(processed_transactions),
+        crate::RewardValidationMode::Current,
+    )?;
+    let derived = derived_reward_reservation_for_operation(op)?;
+    if let Some(stored) = op.reward_reservation {
+        if stored != derived {
+            return Err(format!(
+                "operation {} reward reservation split disagrees with recipient evidence: stored {:?}, derived {:?}",
+                op.operation_id, stored, derived
+            ));
+        }
+    }
+    if let Some(legacy) = op.reserved_reward_debit_e8s {
+        let total = derived.checked_total_unavailable_reward_debit_e8s()?;
+        if legacy != total {
+            return Err(format!(
+                "operation {} legacy reward reservation {legacy} disagrees with split total {total}",
+                op.operation_id
+            ));
+        }
+    }
+    Ok(derived)
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn pending_reward_reservation_for_operation(
+    op: &StreamOperation,
+    processed_transactions: &BTreeSet<String>,
+) -> Result<u128, String> {
+    reward_reservation_for_operation(op, processed_transactions)?
+        .checked_total_unavailable_reward_debit_e8s()
+}
+
+#[cfg(test)]
+fn pending_reward_unspent_reservation_for_operation(
+    op: &StreamOperation,
+    processed_transactions: &BTreeSet<String>,
+) -> Result<u128, String> {
+    reward_reservation_for_operation(op, processed_transactions)
+        .map(|reservation| reservation.unspent_reserved_reward_debit_e8s)
+}
+
+#[cfg(test)]
+fn pending_reward_spent_uncommitted_reservation_for_operation(
+    op: &StreamOperation,
+    processed_transactions: &BTreeSet<String>,
+) -> Result<u128, String> {
+    reward_reservation_for_operation(op, processed_transactions)
+        .map(|reservation| reservation.externally_spent_but_uncommitted_reward_debit_e8s)
 }
 
 #[cfg(any(target_family = "wasm", test))]
 fn pending_reward_reservations<'a>(
     ops: impl Iterator<Item = &'a StreamOperation>,
+    processed_transactions: &BTreeSet<String>,
     excluding_operation_id: Option<&str>,
-) -> u128 {
+) -> Result<u128, String> {
     ops.filter(|op| excluding_operation_id != Some(op.operation_id.as_str()))
-        .map(pending_reward_reservation_for_operation)
-        .sum()
+        .try_fold(0_u128, |sum, op| {
+            let reservation = pending_reward_reservation_for_operation(op, processed_transactions)?;
+            sum.checked_add(reservation)
+                .ok_or_else(|| "pending reward reservations overflowed".to_string())
+        })
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg(any(target_family = "wasm", test))]
+struct RewardReservationComponents {
+    total_unavailable_e8s: u128,
+    unspent_reserved_e8s: u128,
+    spent_uncommitted_e8s: u128,
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn pending_reward_reservation_components<'a>(
+    ops: impl Iterator<Item = &'a StreamOperation>,
+    processed_transactions: &BTreeSet<String>,
+    excluding_operation_id: Option<&str>,
+) -> Result<RewardReservationComponents, String> {
+    ops.filter(|op| excluding_operation_id != Some(op.operation_id.as_str()))
+        .try_fold(
+            RewardReservationComponents::default(),
+            |mut components, op| {
+                let reservation = reward_reservation_for_operation(op, processed_transactions)?;
+                components.unspent_reserved_e8s = components
+                    .unspent_reserved_e8s
+                    .checked_add(reservation.unspent_reserved_reward_debit_e8s)
+                    .ok_or_else(|| "pending unspent reward reservations overflowed".to_string())?;
+                components.spent_uncommitted_e8s = components
+                    .spent_uncommitted_e8s
+                    .checked_add(reservation.externally_spent_but_uncommitted_reward_debit_e8s)
+                    .ok_or_else(|| {
+                        "pending spent-uncommitted reward reservations overflowed".to_string()
+                    })?;
+                components.total_unavailable_e8s = components
+                    .unspent_reserved_e8s
+                    .checked_add(components.spent_uncommitted_e8s)
+                    .ok_or_else(|| "pending reward reservations overflowed".to_string())?;
+                Ok(components)
+            },
+        )
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(any(target_family = "wasm", test))]
+struct RewardPreflightSnapshot {
+    operation_id: String,
+    operation: StreamOperation,
+    protocol_reserve_io_e8s: u128,
+    pending_reservations: RewardReservationComponents,
+    processed_transactions: BTreeSet<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(any(target_family = "wasm", test))]
+enum RewardPreflightCasError {
+    RetryableConflict(String),
+    Terminal(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(any(target_family = "wasm", test))]
+struct RewardPreflightObservedInputs {
+    sns_governance_canister: Principal,
+    ledger_fee_e8s: u128,
+    real_reserve_balance_e8s: u128,
+    validated_at_timestamp_nanos: u64,
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn capture_reward_preflight_snapshot(
+    operation_journal: &[StreamOperation],
+    processed_transactions: &BTreeSet<String>,
+    protocol_reserve_io_e8s: u128,
+    operation_id: &str,
+) -> Result<RewardPreflightSnapshot, String> {
+    let operation = operation_journal
+        .iter()
+        .find(|op| op.operation_id == operation_id)
+        .cloned()
+        .ok_or_else(|| format!("reward operation {operation_id} disappeared before preflight"))?;
+    let pending_reservations = pending_reward_reservation_components(
+        operation_journal.iter(),
+        processed_transactions,
+        Some(operation_id),
+    )?;
+    Ok(RewardPreflightSnapshot {
+        operation_id: operation_id.to_string(),
+        operation,
+        protocol_reserve_io_e8s,
+        pending_reservations,
+        processed_transactions: processed_transactions.clone(),
+    })
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn finalize_reward_preflight_snapshot(
+    snapshot: &RewardPreflightSnapshot,
+    operation_journal: &[StreamOperation],
+    processed_transactions: &BTreeSet<String>,
+    current_protocol_reserve_io_e8s: u128,
+    observed: RewardPreflightObservedInputs,
+) -> Result<RewardDistributionPreflight, RewardPreflightCasError> {
+    let current_op = operation_journal
+        .iter()
+        .find(|op| op.operation_id == snapshot.operation_id)
+        .ok_or_else(|| {
+            RewardPreflightCasError::RetryableConflict(
+                "reward operation disappeared before preflight finalization".to_string(),
+            )
+        })?;
+    if current_op != &snapshot.operation {
+        return Err(RewardPreflightCasError::RetryableConflict(
+            "reward preflight operation snapshot changed during external ledger reads".to_string(),
+        ));
+    }
+    if processed_transactions != &snapshot.processed_transactions {
+        return Err(RewardPreflightCasError::RetryableConflict(
+            "reward preflight processed transaction set changed during external ledger reads"
+                .to_string(),
+        ));
+    }
+    if current_protocol_reserve_io_e8s != snapshot.protocol_reserve_io_e8s {
+        return Err(RewardPreflightCasError::RetryableConflict(
+            "reward preflight protocol reserve changed during external ledger reads".to_string(),
+        ));
+    }
+    let current_pending = pending_reward_reservation_components(
+        operation_journal.iter(),
+        processed_transactions,
+        Some(&snapshot.operation_id),
+    )
+    .map_err(RewardPreflightCasError::RetryableConflict)?;
+    if current_pending != snapshot.pending_reservations {
+        return Err(RewardPreflightCasError::RetryableConflict(
+            "reward preflight reservation set changed during external ledger reads".to_string(),
+        ));
+    }
+    let current_protocol_available = reward_reserve_available(
+        current_protocol_reserve_io_e8s,
+        current_pending.total_unavailable_e8s,
+    )
+    .map_err(RewardPreflightCasError::Terminal)?;
+    build_reward_distribution_preflight(
+        current_op,
+        observed.sns_governance_canister,
+        observed.ledger_fee_e8s,
+        current_protocol_available,
+        observed.real_reserve_balance_e8s,
+        observed.validated_at_timestamp_nanos,
+    )
+    .map_err(RewardPreflightCasError::Terminal)
 }
 
 #[cfg(any(target_family = "wasm", test))]
@@ -767,6 +1424,174 @@ fn reward_reserve_available(
     protocol_reserve_io_e8s
         .checked_sub(pending_reservations_e8s)
         .ok_or_else(|| "pending reward reservations exceed protocol model reserve".to_string())
+}
+
+#[cfg(test)]
+fn explicit_pretransfer_cancel_reward_reservation(op: &mut StreamOperation) -> Result<(), String> {
+    if operation_has_external_reward_effect_or_uncertainty(op) {
+        return Err(format!(
+            "operation {} cannot release reward reservation after transfer attempt or uncertainty",
+            op.operation_id
+        ));
+    }
+    if let Some(preflight) = op.reward_preflight.as_mut() {
+        preflight.status = RewardPreflightStatus::FailedTerminal;
+        preflight.failure_reason =
+            Some("reward reservation cancelled before external effect".to_string());
+    }
+    op.phase = OperationPhase::FailedTerminal;
+    op.reward_reservation = Some(RewardReservation::default());
+    op.reserved_reward_debit_e8s = Some(0);
+    Ok(())
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn apply_reward_bad_fee_policy(
+    op: &mut StreamOperation,
+    processed_transactions: &BTreeSet<String>,
+    recipient_index: usize,
+    observed_fee_e8s: u128,
+) -> Result<(), String> {
+    let old_fee = op
+        .two_week_recipients
+        .get(recipient_index)
+        .and_then(|recipient| recipient.reward_transfer_attempt.as_ref())
+        .map(|attempt| attempt.fee_e8s)
+        .or_else(|| {
+            op.reward_preflight
+                .as_ref()
+                .map(|preflight| preflight.ledger_fee_e8s)
+        })
+        .ok_or_else(|| "BadFee reward transfer had no persisted fee evidence".to_string())?;
+    let attempt_generation = op
+        .two_week_recipients
+        .get(recipient_index)
+        .and_then(|recipient| recipient.reward_transfer_attempt.as_ref())
+        .map(|attempt| attempt.created_at_time)
+        .unwrap_or(0);
+    let prior_reservation = reward_reservation_for_operation(op, processed_transactions)?;
+    let prior_reserved_debit_e8s =
+        prior_reservation.checked_total_unavailable_reward_debit_e8s()?;
+    if prior_reserved_debit_e8s == 0 {
+        return Err(format!(
+            "operation {} BadFee re-preflight is missing prior reservation",
+            op.operation_id
+        ));
+    }
+    let reason = format!(
+        "reward transfer BadFee before definitive success: expected old fee {old_fee}, observed current fee {observed_fee_e8s}"
+    );
+    let current_attempt_is_exact_submitted = op
+        .two_week_recipients
+        .get(recipient_index)
+        .and_then(|recipient| recipient.reward_transfer_attempt.as_ref())
+        .map(|attempt| {
+            matches!(
+                attempt.lifecycle,
+                Some(RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation })
+                    if generation == attempt.created_at_time
+            )
+        })
+        .unwrap_or(false);
+    let other_recipient_has_repreflight_blocking_evidence = op
+        .two_week_recipients
+        .iter()
+        .enumerate()
+        .any(|(index, recipient)| {
+            index != recipient_index
+                && crate::reward_recipient_has_any_attempt_or_external_evidence(recipient)
+        });
+    let current_value_or_proof_uncertain = op
+        .two_week_recipients
+        .get(recipient_index)
+        .map(|recipient| {
+            reward_current_bad_fee_recipient_has_value_or_uncertainty(recipient)
+                || !current_attempt_is_exact_submitted
+        })
+        .unwrap_or(true);
+
+    if other_recipient_has_repreflight_blocking_evidence
+        || current_value_or_proof_uncertain
+        || prior_reservation.externally_spent_but_uncommitted_reward_debit_e8s != 0
+    {
+        if let Some(preflight) = op.reward_preflight.as_mut() {
+            preflight.status = RewardPreflightStatus::ManualReconciliationRequired;
+            preflight.failure_reason = Some(reason.clone());
+        }
+        if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index) {
+            recipient.ledger_transfer_status = Some(TransferStatus::FailedTerminal);
+            recipient.transfer_status = TransferStatus::FailedTerminal;
+            recipient.last_error = Some(reason.clone());
+        }
+        let reservation = derived_reward_reservation_for_operation(op)?;
+        let reserved_total = reservation.checked_total_unavailable_reward_debit_e8s()?;
+        op.reward_reservation = Some(reservation);
+        op.reserved_reward_debit_e8s = Some(reserved_total);
+        op.mark_terminal_error(reason, OperationPhase::PartiallyDistributed);
+        return Ok(());
+    }
+
+    let mut candidate = op.clone();
+    if let Some(preflight) = candidate.reward_preflight.as_mut() {
+        preflight.status = RewardPreflightStatus::Pending;
+        preflight.failure_reason = Some(reason.clone());
+    }
+    candidate.reward_fee_repreflight = Some(RewardFeeRepreflightEvidence {
+        prior_validated_fee_e8s: old_fee,
+        observed_current_fee_e8s: observed_fee_e8s,
+        prior_reserved_debit_e8s,
+        invalidated_at_timestamp_nanos: crate::canister_time(),
+        attempt_generation,
+    });
+    candidate.reward_reservation = Some(prior_reservation);
+    candidate.reserved_reward_debit_e8s = Some(prior_reserved_debit_e8s);
+    if let Some(recipient) = candidate.two_week_recipients.get_mut(recipient_index) {
+        recipient.reward_transfer_attempt = None;
+        recipient.ledger_transfer_fee_e8s = None;
+        recipient.reward_amount_received_e8s = None;
+        recipient.reserve_debit_e8s = None;
+        recipient.ledger_transfer_status = Some(TransferStatus::Pending);
+        recipient.transfer_status = TransferStatus::Pending;
+        recipient.last_error = Some(reason.clone());
+    }
+    crate::validate_reward_operation_accounting(
+        &candidate,
+        Some(processed_transactions),
+        crate::RewardValidationMode::Current,
+    )?;
+    let candidate_reservation = derived_reward_reservation_for_operation(&candidate)?;
+    if candidate_reservation != prior_reservation {
+        return Err(format!(
+            "operation {} BadFee re-preflight candidate reservation changed: prior {:?}, candidate {:?}",
+            op.operation_id, prior_reservation, candidate_reservation
+        ));
+    }
+    candidate.mark_retryable_error(reason, OperationPhase::PartiallyDistributed);
+    *op = candidate;
+    Ok(())
+}
+
+#[cfg(target_family = "wasm")]
+fn record_reward_bad_fee_policy(
+    operation_id: &str,
+    recipient_index: usize,
+    observed_fee_e8s: u128,
+) -> Result<(), String> {
+    CANISTER_STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let processed_transactions = state.manager.processed_transactions.clone();
+        let op = state
+            .operation_journal
+            .iter_mut()
+            .find(|op| op.operation_id == operation_id)
+            .ok_or_else(|| format!("reward operation {operation_id} disappeared after BadFee"))?;
+        apply_reward_bad_fee_policy(
+            op,
+            &processed_transactions,
+            recipient_index,
+            observed_fee_e8s,
+        )
+    })
 }
 
 #[cfg(any(target_family = "wasm", test))]
@@ -911,35 +1736,45 @@ async fn ensure_reward_preflight(
         existing.as_ref().map(|preflight| preflight.status),
         Some(RewardPreflightStatus::Validated)
     ) {
-        return true;
+        return CANISTER_STATE.with(|cell| {
+            let state = cell.borrow();
+            state
+                .operation_journal
+                .iter()
+                .find(|op| op.operation_id == operation_id)
+                .map(|op| {
+                    reward_reservation_for_operation(op, &state.manager.processed_transactions)
+                        .is_ok()
+                })
+                .unwrap_or(false)
+        });
     }
 
-    let (op, protocol_reserve, pending_reservations) = CANISTER_STATE.with(|cell| {
+    let snapshot = CANISTER_STATE.with(|cell| {
         let state = cell.borrow();
-        let op = state
-            .operation_journal
-            .iter()
-            .find(|op| op.operation_id == operation_id)
-            .cloned();
-        (
-            op,
+        capture_reward_preflight_snapshot(
+            &state.operation_journal,
+            &state.manager.processed_transactions,
             state.manager.state.protocol_reserve_io_e8s,
-            pending_reward_reservations(state.operation_journal.iter(), Some(operation_id)),
+            operation_id,
         )
+        .and_then(|snapshot| {
+            reward_reserve_available(
+                snapshot.protocol_reserve_io_e8s,
+                snapshot.pending_reservations.total_unavailable_e8s,
+            )?;
+            pending_reward_reservations(
+                state.operation_journal.iter(),
+                &state.manager.processed_transactions,
+                Some(operation_id),
+            )?;
+            Ok(snapshot)
+        })
     });
-    let Some(op) = op else {
-        return false;
-    };
-    let protocol_available = match reward_reserve_available(protocol_reserve, pending_reservations)
-    {
-        Ok(available) => available,
+    let snapshot = match snapshot {
+        Ok(snapshot) => snapshot,
         Err(err) => {
-            record_reward_preflight_failure(
-                operation_id,
-                RewardPreflightStatus::FailedTerminal,
-                err.clone(),
-                None,
-            );
+            record_preflight_retryable_query_failure(operation_id, err.clone());
             outcome.errors.push(err);
             return false;
         }
@@ -954,12 +1789,7 @@ async fn ensure_reward_preflight(
         Ok(fee) => fee,
         Err(err) => {
             let message = format!("finalized SNS ledger fee query failed: {err:?}");
-            record_reward_preflight_failure(
-                operation_id,
-                RewardPreflightStatus::Pending,
-                message.clone(),
-                None,
-            );
+            record_preflight_retryable_query_failure(operation_id, message.clone());
             outcome.errors.push(message);
             return false;
         }
@@ -971,24 +1801,28 @@ async fn ensure_reward_preflight(
     let real_reserve_balance = match icrc1_balance_of(io_canister, reserve_account).await {
         Ok(balance) => balance,
         Err(message) => {
-            record_reward_preflight_failure(
-                operation_id,
-                RewardPreflightStatus::Pending,
-                message.clone(),
-                Some(fee),
-            );
+            record_preflight_retryable_query_failure(operation_id, message.clone());
             outcome.errors.push(message);
             return false;
         }
     };
-    match build_reward_distribution_preflight(
-        &op,
-        sns_governance_canister,
-        fee,
-        protocol_available,
-        real_reserve_balance,
-        crate::canister_time(),
-    ) {
+    let finalized_preflight = CANISTER_STATE.with(|cell| {
+        let state = cell.borrow();
+        finalize_reward_preflight_snapshot(
+            &snapshot,
+            &state.operation_journal,
+            &state.manager.processed_transactions,
+            state.manager.state.protocol_reserve_io_e8s,
+            RewardPreflightObservedInputs {
+                sns_governance_canister,
+                ledger_fee_e8s: fee,
+                real_reserve_balance_e8s: real_reserve_balance,
+                validated_at_timestamp_nanos: crate::canister_time(),
+            },
+        )
+    });
+
+    match finalized_preflight {
         Ok(preflight) => {
             let reserved = preflight.total_reserve_debit_e8s;
             CANISTER_STATE.with(|cell| {
@@ -999,6 +1833,11 @@ async fn ensure_reward_preflight(
                     .find(|op| op.operation_id == operation_id)
                 {
                     op.reward_preflight = Some(preflight);
+                    op.reward_reservation = Some(RewardReservation {
+                        unspent_reserved_reward_debit_e8s: reserved,
+                        externally_spent_but_uncommitted_reward_debit_e8s: 0,
+                    });
+                    op.reward_fee_repreflight = None;
                     op.reserved_reward_debit_e8s = Some(reserved);
                     op.mark_updated(OperationPhase::PartiallyDistributed);
                 }
@@ -1006,25 +1845,23 @@ async fn ensure_reward_preflight(
             true
         }
         Err(err) => {
-            record_reward_preflight_failure(
-                operation_id,
-                RewardPreflightStatus::FailedTerminal,
-                err.clone(),
-                Some(fee),
-            );
-            outcome.errors.push(err);
-            false
+            let message = match err {
+                RewardPreflightCasError::RetryableConflict(message) => {
+                    record_preflight_retryable_query_failure(operation_id, message.clone());
+                    outcome.errors.push(message);
+                    return false;
+                }
+                RewardPreflightCasError::Terminal(message) => message,
+            };
+            record_preflight_state_aware_failure(operation_id, message.clone());
+            outcome.errors.push(message);
+            return false;
         }
     }
 }
 
-#[cfg(target_family = "wasm")]
-fn record_reward_preflight_failure(
-    operation_id: &str,
-    status: RewardPreflightStatus,
-    reason: String,
-    ledger_fee_e8s: Option<u128>,
-) {
+#[cfg(any(target_family = "wasm", test))]
+fn record_preflight_state_aware_failure(operation_id: &str, reason: String) {
     CANISTER_STATE.with(|cell| {
         if let Some(op) = cell
             .borrow_mut()
@@ -1032,37 +1869,116 @@ fn record_reward_preflight_failure(
             .iter_mut()
             .find(|op| op.operation_id == operation_id)
         {
-            op.reward_preflight = Some(RewardDistributionPreflight {
-                status,
-                ledger_fee_e8s: ledger_fee_e8s.unwrap_or(0),
-                recipient_count: u64::try_from(op.two_week_recipients.len()).unwrap_or(u64::MAX),
-                total_reward_e8s: op
-                    .two_week_recipients
-                    .iter()
-                    .map(|recipient| recipient.amount_e8s)
-                    .sum(),
-                total_fee_e8s: 0,
-                total_reserve_debit_e8s: 0,
-                protocol_reserve_available_e8s: 0,
-                real_ledger_reserve_balance_e8s: 0,
-                validated_at_timestamp_nanos: crate::canister_time(),
-                canonical_recipient_ids: Vec::new(),
-                compatibility_keys: Vec::new(),
-                dust_e8s: 0,
-                failure_reason: Some(reason.clone()),
-            });
-            op.reserved_reward_debit_e8s = Some(0);
-            match status {
-                RewardPreflightStatus::FailedTerminal
-                | RewardPreflightStatus::ManualReconciliationRequired => {
-                    op.mark_terminal_error(reason, OperationPhase::PartiallyDistributed);
-                }
-                RewardPreflightStatus::Pending | RewardPreflightStatus::Validated => {
-                    op.mark_retryable_error(reason, OperationPhase::PartiallyDistributed);
-                }
+            if op.reward_fee_repreflight.is_some() {
+                record_repreflight_retryable_failure(op, reason);
+            } else if operation_has_external_reward_effect_or_uncertainty(op) {
+                record_post_effect_preflight_failure(op, reason);
+            } else {
+                record_initial_preflight_terminal_failure(op, reason);
             }
         }
     });
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn record_preflight_retryable_query_failure(operation_id: &str, reason: String) {
+    CANISTER_STATE.with(|cell| {
+        if let Some(op) = cell
+            .borrow_mut()
+            .operation_journal
+            .iter_mut()
+            .find(|op| op.operation_id == operation_id)
+        {
+            if op.reward_fee_repreflight.is_some() {
+                record_repreflight_retryable_failure(op, reason);
+            } else if operation_has_external_reward_effect_or_uncertainty(op) {
+                record_post_effect_preflight_failure(op, reason);
+            } else {
+                record_initial_preflight_retryable_failure(op, reason);
+            }
+        }
+    });
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn record_initial_preflight_retryable_failure(op: &mut StreamOperation, reason: String) {
+    op.reward_preflight = None;
+    op.reward_reservation = Some(RewardReservation::default());
+    op.reserved_reward_debit_e8s = Some(0);
+    op.mark_retryable_error(reason, OperationPhase::PartiallyDistributed);
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn record_initial_preflight_terminal_failure(op: &mut StreamOperation, reason: String) {
+    op.reward_preflight = Some(RewardDistributionPreflight {
+        status: RewardPreflightStatus::FailedTerminal,
+        ledger_fee_e8s: 0,
+        recipient_count: 0,
+        total_reward_e8s: 0,
+        total_fee_e8s: 0,
+        total_reserve_debit_e8s: 0,
+        protocol_reserve_available_e8s: 0,
+        real_ledger_reserve_balance_e8s: 0,
+        validated_at_timestamp_nanos: crate::canister_time(),
+        canonical_recipient_ids: Vec::new(),
+        compatibility_keys: Vec::new(),
+        dust_e8s: 0,
+        failure_reason: Some(reason.clone()),
+    });
+    op.reward_reservation = Some(RewardReservation::default());
+    op.reserved_reward_debit_e8s = Some(0);
+    op.mark_terminal_error(reason, OperationPhase::PartiallyDistributed);
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn record_repreflight_retryable_failure(op: &mut StreamOperation, reason: String) {
+    if let Some(evidence) = op.reward_fee_repreflight {
+        if let Some(reservation) = op.reward_reservation {
+            op.reserved_reward_debit_e8s = reservation
+                .checked_total_unavailable_reward_debit_e8s()
+                .ok();
+        } else {
+            op.reward_reservation = Some(RewardReservation {
+                unspent_reserved_reward_debit_e8s: evidence.prior_reserved_debit_e8s,
+                externally_spent_but_uncommitted_reward_debit_e8s: 0,
+            });
+            op.reserved_reward_debit_e8s = Some(evidence.prior_reserved_debit_e8s);
+        }
+    }
+    op.mark_retryable_error(reason, OperationPhase::PartiallyDistributed);
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn record_repreflight_terminal_failure(op: &mut StreamOperation, reason: String) {
+    if let Some(preflight) = op.reward_preflight.as_mut() {
+        preflight.status = RewardPreflightStatus::ManualReconciliationRequired;
+        preflight.failure_reason = Some(reason.clone());
+    }
+    op.mark_terminal_error(reason, OperationPhase::PartiallyDistributed);
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn record_post_effect_preflight_failure(op: &mut StreamOperation, reason: String) {
+    if let Some(preflight) = op.reward_preflight.as_mut() {
+        preflight.status = RewardPreflightStatus::ManualReconciliationRequired;
+        preflight.failure_reason = Some(reason.clone());
+    }
+    if op.reward_reservation.is_none() {
+        match derived_reward_reservation_for_operation(op) {
+            Ok(reservation) => {
+                op.reserved_reward_debit_e8s = reservation
+                    .checked_total_unavailable_reward_debit_e8s()
+                    .ok();
+                op.reward_reservation = Some(reservation);
+            }
+            Err(err) => {
+                op.last_error = Some(format!(
+                    "reward preflight failure could not preserve reservation safely: {err}"
+                ));
+            }
+        }
+    }
+    record_repreflight_terminal_failure(op, reason);
 }
 
 #[cfg(target_family = "wasm")]
@@ -1299,10 +2215,11 @@ async fn scan_icp_account_through_index(
     ),
     String,
 > {
+    let client = IcpIndexCanisterClient {
+        canister: index_canister,
+    };
     scan_account_with_index_client(
-        IcpIndexCanisterClient {
-            canister: index_canister,
-        },
+        client,
         account,
         vec![
             AccountAlias {
@@ -1602,12 +2519,36 @@ fn recipient_refresh_status(recipient: &TwoWeekRecipientTransfer) -> TransferSta
 }
 
 #[cfg(any(target_family = "wasm", test))]
+fn reward_attempt_lifecycle(
+    attempt: &RewardTransferAttemptRecord,
+) -> Option<RewardTransferAttemptLifecycle> {
+    attempt.lifecycle.clone()
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn reward_attempt_is_prepared(attempt: &RewardTransferAttemptRecord) -> bool {
+    matches!(
+        reward_attempt_lifecycle(attempt),
+        Some(RewardTransferAttemptLifecycle::Prepared)
+    )
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn reward_recipient_can_submit(recipient: &TwoWeekRecipientTransfer) -> bool {
+    recipient
+        .reward_transfer_attempt
+        .as_ref()
+        .map(reward_attempt_is_prepared)
+        .unwrap_or(true)
+}
+
+#[cfg(any(target_family = "wasm", test))]
 fn recipient_is_completed(recipient: &TwoWeekRecipientTransfer) -> bool {
     recipient_ledger_status(recipient) == TransferStatus::Succeeded
         && recipient_refresh_status(recipient) == TransferStatus::Succeeded
 }
 
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", test))]
 fn reward_operation_can_progress(op: &StreamOperation) -> bool {
     op.kind == StreamOperationKind::TwoWeekMaturityStream
         && !matches!(
@@ -1616,7 +2557,7 @@ fn reward_operation_can_progress(op: &StreamOperation) -> bool {
         )
 }
 
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", test))]
 fn reward_recipient_attempt_key(
     operation_id: &str,
     recipient_index: usize,
@@ -1629,7 +2570,7 @@ fn reward_recipient_attempt_key(
         .unwrap_or_else(|| format!("{operation_id}:legacy-index:{recipient_index}"))
 }
 
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", test))]
 fn next_reward_ledger_recipient(
     attempted: &BTreeSet<String>,
 ) -> Option<(String, usize, TwoWeekRecipientTransfer, String)> {
@@ -1647,6 +2588,13 @@ fn next_reward_ledger_recipient(
             ) {
                 return None;
             }
+            if op
+                .two_week_recipients
+                .iter()
+                .any(crate::reward_recipient_has_submitted_or_proof_required_attempt)
+            {
+                return None;
+            }
             op.two_week_recipients
                 .iter()
                 .enumerate()
@@ -1654,6 +2602,7 @@ fn next_reward_ledger_recipient(
                     let key = reward_recipient_attempt_key(&op.operation_id, index, recipient);
                     (recipient_ledger_status(recipient) != TransferStatus::Succeeded
                         && recipient.ledger_transfer_proof_scan_state.is_none()
+                        && reward_recipient_can_submit(recipient)
                         && !attempted.contains(&key))
                     .then(|| (op.operation_id.clone(), index, recipient.clone(), key))
                 })
@@ -1685,7 +2634,7 @@ fn next_reward_refresh_recipient(
     })
 }
 
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", test))]
 fn next_reward_proof_pending_recipient(
     attempted: &BTreeSet<String>,
 ) -> Option<(String, usize, TwoWeekRecipientTransfer, String)> {
@@ -1700,8 +2649,21 @@ fn next_reward_proof_pending_recipient(
                 .enumerate()
                 .find_map(|(index, recipient)| {
                     let key = reward_recipient_attempt_key(&op.operation_id, index, recipient);
+                    let lifecycle_requires_proof = recipient
+                        .reward_transfer_attempt
+                        .as_ref()
+                        .and_then(|attempt| attempt.lifecycle.as_ref())
+                        .map(|lifecycle| {
+                            matches!(
+                                lifecycle,
+                                RewardTransferAttemptLifecycle::SubmittedAwaitingResult { .. }
+                                    | RewardTransferAttemptLifecycle::ProofRequired { .. }
+                            )
+                        })
+                        .unwrap_or(false);
                     (recipient_ledger_status(recipient) != TransferStatus::Succeeded
-                        && recipient.ledger_transfer_proof_scan_state.is_some()
+                        && (recipient.ledger_transfer_proof_scan_state.is_some()
+                            || lifecycle_requires_proof)
                         && !attempted.contains(&key))
                     .then(|| (op.operation_id.clone(), index, recipient.clone(), key))
                 })
@@ -1724,6 +2686,32 @@ fn mark_reward_transfer_proven(
             .find(|op| op.operation_id == operation_id)
         {
             if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index) {
+                if recipient.reward_transfer_attempt.as_ref() != Some(attempt) {
+                    return;
+                }
+                let debit = match attempt.amount_e8s.checked_add(attempt.fee_e8s) {
+                    Some(debit) => debit,
+                    None => {
+                        let message =
+                            "reward transfer succeeded but reserve debit overflowed".to_string();
+                        recipient.transfer_status = TransferStatus::FailedTerminal;
+                        recipient.ledger_transfer_status = Some(TransferStatus::FailedTerminal);
+                        recipient.last_error = Some(message.clone());
+                        op.mark_retryable_error(message, OperationPhase::PartiallyDistributed);
+                        return;
+                    }
+                };
+                if recipient.amount_e8s != attempt.amount_e8s {
+                    let message = format!(
+                        "reward transfer attempt amount {} does not match recipient amount {}",
+                        attempt.amount_e8s, recipient.amount_e8s
+                    );
+                    recipient.transfer_status = TransferStatus::FailedTerminal;
+                    recipient.ledger_transfer_status = Some(TransferStatus::FailedTerminal);
+                    recipient.last_error = Some(message.clone());
+                    op.mark_retryable_error(message, OperationPhase::PartiallyDistributed);
+                    return;
+                }
                 recipient.transfer_status = TransferStatus::Succeeded;
                 recipient.transfer_block_index = Some(block.0);
                 recipient.ledger_transfer_status = Some(TransferStatus::Succeeded);
@@ -1731,21 +2719,64 @@ fn mark_reward_transfer_proven(
                 recipient.governance_refresh_status = Some(recipient_refresh_status(recipient));
                 recipient.ledger_transfer_fee_e8s = Some(attempt.fee_e8s);
                 recipient.reward_amount_received_e8s = Some(attempt.amount_e8s);
-                recipient.reserve_debit_e8s =
-                    Some(attempt.amount_e8s.saturating_add(attempt.fee_e8s));
+                recipient.reserve_debit_e8s = Some(debit);
                 recipient.ledger_transfer_proof_scan_state = None;
+                recipient.reward_transfer_attempt = Some(RewardTransferAttemptRecord {
+                    lifecycle: Some(RewardTransferAttemptLifecycle::Proven {
+                        generation: attempt.created_at_time,
+                        block: block.0,
+                    }),
+                    ..attempt.clone()
+                });
                 recipient.last_error = None;
             }
-            op.reserved_reward_debit_e8s = Some(pending_reward_reservation_for_operation(op));
-            op.mark_updated(OperationPhase::PartiallyDistributed);
+            match derived_reward_reservation_for_operation(op).and_then(|reservation| {
+                let total = reservation.checked_total_unavailable_reward_debit_e8s()?;
+                Ok((reservation, total))
+            }) {
+                Ok((reservation, total)) => {
+                    op.reward_reservation = Some(reservation);
+                    op.reserved_reward_debit_e8s = Some(total);
+                    op.mark_updated(OperationPhase::PartiallyDistributed);
+                }
+                Err(err) => {
+                    op.mark_retryable_error(err, OperationPhase::PartiallyDistributed);
+                }
+            }
         }
     });
 }
 
-#[cfg(any(target_family = "wasm", test))]
+#[cfg(test)]
 fn reward_fee_adjusted_post_state(
     op: &StreamOperation,
 ) -> Result<crate::StableProtocolState, String> {
+    let total_reward = op
+        .two_week_recipients
+        .iter()
+        .try_fold(0_u128, |sum, recipient| {
+            sum.checked_add(recipient.amount_e8s)
+                .ok_or_else(|| "reward allocation sum overflowed".to_string())
+        })?;
+    let dust = op
+        .reward_preflight
+        .as_ref()
+        .map(|preflight| preflight.dust_e8s)
+        .map(Ok)
+        .unwrap_or_else(|| {
+            op.io_issued_e8s
+                .checked_sub(total_reward)
+                .ok_or_else(|| "reward allocations exceed backed reward pool".to_string())
+        })?;
+    let issued_plus_dust = total_reward
+        .checked_add(dust)
+        .ok_or_else(|| "reward allocation plus dust overflowed".to_string())?;
+    if issued_plus_dust != op.io_issued_e8s {
+        return Err(format!(
+            "reward allocations plus dust {issued_plus_dust} did not match backed reward pool {}",
+            op.io_issued_e8s
+        ));
+    }
     let total_fee = op
         .two_week_recipients
         .iter()
@@ -1759,6 +2790,10 @@ fn reward_fee_adjusted_post_state(
     let mut post_state = op.post_state;
     post_state.protocol_reserve_io_e8s = post_state
         .protocol_reserve_io_e8s
+        .checked_add(dust)
+        .ok_or_else(|| "protocol reserve dust restoration overflowed".to_string())?;
+    post_state.protocol_reserve_io_e8s = post_state
+        .protocol_reserve_io_e8s
         .checked_sub(total_fee)
         .ok_or_else(|| {
             "protocol reserve cannot cover completed reward transfer fees".to_string()
@@ -1768,6 +2803,229 @@ fn reward_fee_adjusted_post_state(
         .checked_sub(total_fee)
         .ok_or_else(|| "total IO supply cannot burn completed reward transfer fees".to_string())?;
     Ok(post_state)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(any(target_family = "wasm", test))]
+struct RewardModelDelta {
+    liquid_icp_credit_e8s: u128,
+    two_week_staked_icp_credit_e8s: u128,
+    allocation_debit_e8s: u128,
+    fee_burn_e8s: u128,
+    dust_retained_e8s: u128,
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn reward_model_delta(op: &StreamOperation) -> Result<RewardModelDelta, String> {
+    if op.kind != StreamOperationKind::TwoWeekMaturityStream {
+        return Err(format!(
+            "operation {} is not a two-week reward operation",
+            op.operation_id
+        ));
+    }
+    if !op.two_week_recipients.iter().all(recipient_is_completed) {
+        return Err(format!(
+            "operation {} has reward recipients that are not completed",
+            op.operation_id
+        ));
+    }
+    let split = split_40_60(op.amount_e8s);
+    let allocation_debit_e8s =
+        op.two_week_recipients
+            .iter()
+            .try_fold(0_u128, |sum, recipient| {
+                let received = recipient.reward_amount_received_e8s.ok_or_else(|| {
+                    "completed reward recipient is missing received amount".to_string()
+                })?;
+                if received != recipient.amount_e8s {
+                    return Err(format!(
+                        "completed reward recipient received {received} but planned {}",
+                        recipient.amount_e8s
+                    ));
+                }
+                sum.checked_add(recipient.amount_e8s)
+                    .ok_or_else(|| "reward allocation sum overflowed".to_string())
+            })?;
+    let fee_burn_e8s = op
+        .two_week_recipients
+        .iter()
+        .try_fold(0_u128, |sum, recipient| {
+            let fee = recipient.ledger_transfer_fee_e8s.ok_or_else(|| {
+                "completed reward recipient is missing ledger transfer fee".to_string()
+            })?;
+            let debit = recipient
+                .reserve_debit_e8s
+                .ok_or_else(|| "completed reward recipient is missing reserve debit".to_string())?;
+            let expected_debit = recipient
+                .amount_e8s
+                .checked_add(fee)
+                .ok_or_else(|| "reward recipient debit overflowed".to_string())?;
+            if debit != expected_debit {
+                return Err(format!(
+                    "completed reward recipient debit {debit} does not equal amount plus fee {expected_debit}"
+                ));
+            }
+            sum.checked_add(fee)
+                .ok_or_else(|| "reward transfer fee sum overflowed".to_string())
+        })?;
+    let dust_retained_e8s = op
+        .reward_preflight
+        .as_ref()
+        .map(|preflight| preflight.dust_e8s)
+        .map(Ok)
+        .unwrap_or_else(|| {
+            op.io_issued_e8s
+                .checked_sub(allocation_debit_e8s)
+                .ok_or_else(|| "reward allocations exceed backed reward pool".to_string())
+        })?;
+    let allocations_plus_dust = allocation_debit_e8s
+        .checked_add(dust_retained_e8s)
+        .ok_or_else(|| "reward allocation plus dust overflowed".to_string())?;
+    if allocations_plus_dust != op.io_issued_e8s {
+        return Err(format!(
+            "reward allocations plus dust {allocations_plus_dust} did not match backed reward pool {}",
+            op.io_issued_e8s
+        ));
+    }
+    if let Some(preflight) = &op.reward_preflight {
+        if preflight.total_reward_e8s != allocation_debit_e8s {
+            return Err(format!(
+                "reward preflight total reward {} does not match committed allocation {allocation_debit_e8s}",
+                preflight.total_reward_e8s
+            ));
+        }
+        if preflight.total_fee_e8s != fee_burn_e8s {
+            return Err(format!(
+                "reward preflight total fee {} does not match committed fee {fee_burn_e8s}",
+                preflight.total_fee_e8s
+            ));
+        }
+        let total_reserve_debit = allocation_debit_e8s
+            .checked_add(fee_burn_e8s)
+            .ok_or_else(|| "reward reserve debit overflowed".to_string())?;
+        if preflight.total_reserve_debit_e8s != total_reserve_debit {
+            return Err(format!(
+                "reward preflight total reserve debit {} does not match committed debit {total_reserve_debit}",
+                preflight.total_reserve_debit_e8s
+            ));
+        }
+    }
+    Ok(RewardModelDelta {
+        liquid_icp_credit_e8s: split.liquid_e8s,
+        two_week_staked_icp_credit_e8s: split.stake_e8s,
+        allocation_debit_e8s,
+        fee_burn_e8s,
+        dust_retained_e8s,
+    })
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn checked_reward_model_post_state(
+    current: io_core_model::ProtocolState,
+    delta: RewardModelDelta,
+) -> Result<io_core_model::ProtocolState, String> {
+    let reserve_debit = delta
+        .allocation_debit_e8s
+        .checked_add(delta.fee_burn_e8s)
+        .ok_or_else(|| "reward reserve debit overflowed".to_string())?;
+    let liquid_icp_e8s = current
+        .liquid_icp_e8s
+        .checked_add(delta.liquid_icp_credit_e8s)
+        .ok_or_else(|| "reward liquid ICP credit overflowed".to_string())?;
+    let two_week_staked_icp_e8s = current
+        .two_week_staked_icp_e8s
+        .checked_add(delta.two_week_staked_icp_credit_e8s)
+        .ok_or_else(|| "reward two-week staked ICP credit overflowed".to_string())?;
+    let protocol_reserve_io_e8s = current
+        .protocol_reserve_io_e8s
+        .checked_sub(reserve_debit)
+        .ok_or_else(|| "protocol reserve cannot cover reward allocations and fees".to_string())?;
+    let total_io_supply_e8s = current
+        .total_io_supply_e8s
+        .checked_sub(delta.fee_burn_e8s)
+        .ok_or_else(|| "total IO supply cannot burn reward transfer fees".to_string())?;
+    let next = io_core_model::ProtocolState {
+        liquid_icp_e8s,
+        two_year_staked_icp_e8s: current.two_year_staked_icp_e8s,
+        two_week_staked_icp_e8s,
+        total_io_supply_e8s,
+        protocol_reserve_io_e8s,
+        non_redeemable_governance_io_e8s: current.non_redeemable_governance_io_e8s,
+    };
+    next.redeemable_io_supply_e8s()
+        .map_err(|err| format!("reward model invariant failed after commit: {err:?}"))?;
+    Ok(next)
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn commit_completed_reward_operation_in_state(
+    manager: &mut StreamManager,
+    operation_journal: &mut [StreamOperation],
+    operation_id: &str,
+) -> Result<bool, String> {
+    let index = operation_journal
+        .iter()
+        .position(|op| op.operation_id == operation_id)
+        .ok_or_else(|| format!("reward operation {operation_id} disappeared before commit"))?;
+    let op_snapshot = operation_journal[index].clone();
+    if manager
+        .processed_transactions
+        .contains(&op_snapshot.source_transaction_id)
+    {
+        if op_snapshot.phase == OperationPhase::Completed
+            && op_snapshot.reward_reservation == Some(RewardReservation::default())
+            && op_snapshot.reserved_reward_debit_e8s.unwrap_or(0) == 0
+        {
+            return Ok(false);
+        }
+        return Err(format!(
+            "reward operation {operation_id} is already processed but journal/reservation are inconsistent"
+        ));
+    }
+
+    let delta = reward_model_delta(&op_snapshot)?;
+    let expected_reservation = delta
+        .allocation_debit_e8s
+        .checked_add(delta.fee_burn_e8s)
+        .ok_or_else(|| "reward reservation total overflowed".to_string())?;
+    let reservation =
+        reward_reservation_for_operation(&op_snapshot, &manager.processed_transactions)?;
+    if reservation.unspent_reserved_reward_debit_e8s != 0 {
+        return Err(format!(
+            "reward operation {operation_id} still has unspent reservation {} at commit",
+            reservation.unspent_reserved_reward_debit_e8s
+        ));
+    }
+    if reservation.externally_spent_but_uncommitted_reward_debit_e8s != expected_reservation {
+        return Err(format!(
+            "reward operation {operation_id} spent reservation {} does not match completed debit {expected_reservation}",
+            reservation.externally_spent_but_uncommitted_reward_debit_e8s
+        ));
+    }
+
+    let next_state = checked_reward_model_post_state(manager.state, delta)?;
+    manager.state = next_state;
+    manager
+        .processed_transactions
+        .insert(op_snapshot.source_transaction_id.clone());
+    let op = &mut operation_journal[index];
+    op.reward_reservation = Some(RewardReservation::default());
+    op.reserved_reward_debit_e8s = Some(0);
+    op.mark_updated(OperationPhase::Completed);
+    Ok(true)
+}
+
+#[cfg(target_family = "wasm")]
+fn commit_completed_reward_operation(operation_id: &str) -> Result<bool, String> {
+    CANISTER_STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let state = &mut *state;
+        commit_completed_reward_operation_in_state(
+            &mut state.manager,
+            &mut state.operation_journal,
+            operation_id,
+        )
+    })
 }
 
 #[cfg(target_family = "wasm")]
@@ -1811,6 +3069,13 @@ async fn reconcile_reward_transfer_proofs(
         let proof =
             scan_reward_transfer_proof_from_state(Some(io_index_canister), &attempt, scan_state)
                 .await;
+        if !stored_reward_attempt_still_matches(&operation_id, recipient_index, &attempt) {
+            let message = format!(
+                "reward operation {operation_id} recipient {recipient_index} proof reconciliation callback observed a different persisted attempt; stale callback ignored"
+            );
+            outcome.errors.push(message);
+            continue;
+        }
 
         match proof.disposition {
             RewardTransferProofDisposition::ProofFound(block) => {
@@ -1821,6 +3086,30 @@ async fn reconcile_reward_transfer_proofs(
                 let message = format!(
                     "reward transfer proof pending; automatic retry remains paused: {reason}"
                 );
+                let Some(reserve_debit) = attempt.amount_e8s.checked_add(attempt.fee_e8s) else {
+                    let message = "reward transfer attempt reserve debit overflowed".to_string();
+                    CANISTER_STATE.with(|cell| {
+                        if let Some(op) = cell
+                            .borrow_mut()
+                            .operation_journal
+                            .iter_mut()
+                            .find(|op| op.operation_id == operation_id)
+                        {
+                            if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index)
+                            {
+                                recipient.ledger_transfer_status =
+                                    Some(TransferStatus::FailedTerminal);
+                                recipient.last_error = Some(message.clone());
+                            }
+                            op.mark_retryable_error(
+                                message.clone(),
+                                OperationPhase::PartiallyDistributed,
+                            );
+                        }
+                    });
+                    outcome.errors.push(message);
+                    continue;
+                };
                 CANISTER_STATE.with(|cell| {
                     if let Some(op) = cell
                         .borrow_mut()
@@ -1829,11 +3118,22 @@ async fn reconcile_reward_transfer_proofs(
                         .find(|op| op.operation_id == operation_id)
                     {
                         if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index) {
+                            if recipient.reward_transfer_attempt.as_ref() != Some(&attempt) {
+                                return;
+                            }
                             recipient.transfer_status = TransferStatus::FailedRetryable;
                             recipient.ledger_transfer_status =
                                 Some(TransferStatus::FailedRetryable);
                             recipient.ledger_transfer_proof_scan_state =
                                 Some(proof.scan_state.clone());
+                            recipient.reserve_debit_e8s = Some(reserve_debit);
+                            recipient.reward_transfer_attempt = Some(RewardTransferAttemptRecord {
+                                lifecycle: Some(RewardTransferAttemptLifecycle::ProofRequired {
+                                    generation: attempt.created_at_time,
+                                    reason: message.clone(),
+                                }),
+                                ..attempt.clone()
+                            });
                             recipient.last_error = Some(message.clone());
                         }
                         op.mark_retryable_error(
@@ -1856,10 +3156,20 @@ async fn reconcile_reward_transfer_proofs(
                         .find(|op| op.operation_id == operation_id)
                     {
                         if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index) {
+                            if recipient.reward_transfer_attempt.as_ref() != Some(&attempt) {
+                                return;
+                            }
                             recipient.transfer_status = TransferStatus::FailedTerminal;
                             recipient.ledger_transfer_status = Some(TransferStatus::FailedTerminal);
                             recipient.ledger_transfer_proof_scan_state =
                                 Some(proof.scan_state.clone());
+                            recipient.reward_transfer_attempt = Some(RewardTransferAttemptRecord {
+                                lifecycle: Some(RewardTransferAttemptLifecycle::ProofRequired {
+                                    generation: attempt.created_at_time,
+                                    reason: message.clone(),
+                                }),
+                                ..attempt.clone()
+                            });
                             recipient.last_error = Some(message.clone());
                         }
                         op.mark_retryable_error(
@@ -1885,6 +3195,7 @@ async fn retry_pending_two_week_streams(
         canister: sns_governance_canister,
     };
     reconcile_reward_transfer_proofs(io_index_canister, outcome).await;
+    let mut saw_preflight_candidate = false;
     loop {
         let operation_id = CANISTER_STATE.with(|cell| {
             cell.borrow().operation_journal.iter().find_map(|op| {
@@ -1901,9 +3212,24 @@ async fn retry_pending_two_week_streams(
         let Some(operation_id) = operation_id else {
             break;
         };
+        saw_preflight_candidate = true;
         if !ensure_reward_preflight(&operation_id, io_canister, sns_governance_canister, outcome)
             .await
         {
+            return false;
+        }
+    }
+    #[cfg(debug_assertions)]
+    {
+        if saw_preflight_candidate
+            && crate::consume_debug_failpoint(
+                crate::DebugFailpoint::AfterTwoWeekRewardPreflightBeforeTransfer,
+            )
+        {
+            outcome.errors.push(
+                "debug failpoint AfterTwoWeekRewardPreflightBeforeTransfer triggered after two-week reward preflight"
+                    .to_string(),
+            );
             return false;
         }
     }
@@ -2020,50 +3346,54 @@ async fn retry_pending_two_week_streams(
             }
         }
 
-        let attempt = match recipient.reward_transfer_attempt.clone() {
-            Some(attempt) => attempt,
-            None => {
-                let fee = CANISTER_STATE.with(|cell| {
-                    cell.borrow()
-                        .operation_journal
-                        .iter()
-                        .find(|op| op.operation_id == operation_id)
-                        .and_then(|op| op.reward_preflight.as_ref())
-                        .filter(|preflight| preflight.status == RewardPreflightStatus::Validated)
-                        .map(|preflight| preflight.ledger_fee_e8s)
-                });
-                let Some(fee) = fee else {
-                    let message =
-                        "validated reward preflight is missing before first transfer".to_string();
-                    CANISTER_STATE.with(|cell| {
-                        if let Some(op) = cell
-                            .borrow_mut()
-                            .operation_journal
-                            .iter_mut()
-                            .find(|op| op.operation_id == operation_id)
-                        {
-                            op.mark_retryable_error(
-                                message.clone(),
-                                OperationPhase::PartiallyDistributed,
-                            );
-                        }
-                    });
-                    outcome.errors.push(message);
-                    continue;
-                };
-                let source = Account::new(
-                    ic_cdk::api::canister_self(),
-                    Some(icp_ledger::mock_subaccount(PROTOCOL_RESERVE_ACCOUNT)),
-                );
-                let attempt = reward_transfer_attempt_from_parts(
-                    source,
-                    to,
-                    recipient.amount_e8s,
-                    fee,
-                    crate::canister_time(),
-                    &operation_id,
-                    sns_neuron_id.0.clone(),
-                );
+        let fee = CANISTER_STATE.with(|cell| {
+            cell.borrow()
+                .operation_journal
+                .iter()
+                .find(|op| op.operation_id == operation_id)
+                .and_then(|op| op.reward_preflight.as_ref())
+                .filter(|preflight| preflight.status == RewardPreflightStatus::Validated)
+                .map(|preflight| preflight.ledger_fee_e8s)
+        });
+        let Some(fee) = fee else {
+            let message = "validated reward preflight is missing before first transfer".to_string();
+            CANISTER_STATE.with(|cell| {
+                if let Some(op) = cell
+                    .borrow_mut()
+                    .operation_journal
+                    .iter_mut()
+                    .find(|op| op.operation_id == operation_id)
+                {
+                    op.mark_retryable_error(message.clone(), OperationPhase::PartiallyDistributed);
+                }
+            });
+            outcome.errors.push(message);
+            continue;
+        };
+        let source = Account::new(
+            ic_cdk::api::canister_self(),
+            Some(icp_ledger::mock_subaccount(PROTOCOL_RESERVE_ACCOUNT)),
+        );
+        let attempt = match CANISTER_STATE.with(|cell| {
+            let mut state = cell.borrow_mut();
+            let processed_transactions = state.manager.processed_transactions.clone();
+            get_or_create_reward_transfer_attempt(
+                &mut state.operation_journal,
+                &processed_transactions,
+                &operation_id,
+                recipient_index,
+                RewardAttemptPlan {
+                    source_account: source,
+                    destination_account: to,
+                    amount_e8s: recipient.amount_e8s,
+                    fee_e8s: fee,
+                    created_at_time: crate::canister_time(),
+                    canonical_sns_neuron_id: sns_neuron_id.0.clone(),
+                },
+            )
+        }) {
+            Ok(attempt) => attempt,
+            Err(message) => {
                 CANISTER_STATE.with(|cell| {
                     if let Some(op) = cell
                         .borrow_mut()
@@ -2071,18 +3401,28 @@ async fn retry_pending_two_week_streams(
                         .iter_mut()
                         .find(|op| op.operation_id == operation_id)
                     {
-                        if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index) {
-                            recipient.reward_transfer_attempt = Some(attempt.clone());
-                            recipient.ledger_transfer_fee_e8s = Some(attempt.fee_e8s);
-                            recipient.reward_amount_received_e8s = Some(attempt.amount_e8s);
-                            recipient.reserve_debit_e8s =
-                                Some(attempt.amount_e8s.saturating_add(attempt.fee_e8s));
-                            recipient.last_error = None;
-                        }
-                        op.mark_updated(OperationPhase::PartiallyDistributed);
+                        op.mark_retryable_error(
+                            message.clone(),
+                            OperationPhase::PartiallyDistributed,
+                        );
                     }
                 });
-                attempt
+                outcome.errors.push(message);
+                continue;
+            }
+        };
+        let attempt = match CANISTER_STATE.with(|cell| {
+            mark_reward_attempt_submitted_if_prepared(
+                &mut cell.borrow_mut().operation_journal,
+                &operation_id,
+                recipient_index,
+                &attempt,
+            )
+        }) {
+            Ok(attempt) => attempt,
+            Err(message) => {
+                outcome.errors.push(message);
+                continue;
             }
         };
         let request = reward_transfer_request_from_attempt(&attempt);
@@ -2103,6 +3443,22 @@ async fn retry_pending_two_week_streams(
                 );
             }
         }
+        if !stored_reward_attempt_still_matches(&operation_id, recipient_index, &attempt) {
+            let message = format!(
+                "reward operation {operation_id} recipient {recipient_index} transfer callback observed a different persisted attempt; stale callback ignored"
+            );
+            outcome.errors.push(message);
+            continue;
+        }
+        if let Err(LedgerTransferError::BadFee { expected_fee_e8s }) = &transfer_result {
+            match record_reward_bad_fee_policy(&operation_id, recipient_index, *expected_fee_e8s) {
+                Ok(()) => outcome.errors.push(format!(
+                    "reward transfer BadFee observed current ledger fee {expected_fee_e8s}; preflight must be refreshed or manually reconciled"
+                )),
+                Err(message) => outcome.errors.push(message),
+            }
+            continue;
+        }
         let duplicate = match &transfer_result {
             Err(LedgerTransferError::Duplicate { duplicate_of }) => {
                 duplicate_block_from_account_history(
@@ -2114,6 +3470,13 @@ async fn retry_pending_two_week_streams(
             }
             _ => None,
         };
+        if !stored_reward_attempt_still_matches(&operation_id, recipient_index, &attempt) {
+            let message = format!(
+                "reward operation {operation_id} recipient {recipient_index} duplicate lookup callback observed a different persisted attempt; stale callback ignored"
+            );
+            outcome.errors.push(message);
+            continue;
+        }
         match classify_reward_transfer_result(&attempt, transfer_result.clone(), duplicate.as_ref())
         {
             BoundaryTransferDecision::Succeeded(block) => CANISTER_STATE.with(|cell| {
@@ -2124,6 +3487,37 @@ async fn retry_pending_two_week_streams(
                     .find(|op| op.operation_id == operation_id)
                 {
                     if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index) {
+                        if recipient.reward_transfer_attempt.as_ref() != Some(&attempt) {
+                            return;
+                        }
+                        let debit = match attempt.amount_e8s.checked_add(attempt.fee_e8s) {
+                            Some(debit) => debit,
+                            None => {
+                                let message =
+                                    "reward transfer succeeded but reserve debit overflowed"
+                                        .to_string();
+                                recipient.transfer_status = TransferStatus::FailedTerminal;
+                                recipient.ledger_transfer_status =
+                                    Some(TransferStatus::FailedTerminal);
+                                recipient.last_error = Some(message.clone());
+                                op.mark_retryable_error(
+                                    message,
+                                    OperationPhase::PartiallyDistributed,
+                                );
+                                return;
+                            }
+                        };
+                        if recipient.amount_e8s != attempt.amount_e8s {
+                            let message = format!(
+                                "reward transfer attempt amount {} does not match recipient amount {}",
+                                attempt.amount_e8s, recipient.amount_e8s
+                            );
+                            recipient.transfer_status = TransferStatus::FailedTerminal;
+                            recipient.ledger_transfer_status = Some(TransferStatus::FailedTerminal);
+                            recipient.last_error = Some(message.clone());
+                            op.mark_retryable_error(message, OperationPhase::PartiallyDistributed);
+                            return;
+                        }
                         recipient.transfer_status = TransferStatus::Succeeded;
                         recipient.transfer_block_index = Some(block);
                         recipient.ledger_transfer_status = Some(TransferStatus::Succeeded);
@@ -2132,19 +3526,42 @@ async fn retry_pending_two_week_streams(
                             Some(recipient_refresh_status(recipient));
                         recipient.ledger_transfer_fee_e8s = Some(attempt.fee_e8s);
                         recipient.reward_amount_received_e8s = Some(attempt.amount_e8s);
-                        recipient.reserve_debit_e8s =
-                            Some(attempt.amount_e8s.saturating_add(attempt.fee_e8s));
+                        recipient.reserve_debit_e8s = Some(debit);
+                        recipient.reward_transfer_attempt = Some(RewardTransferAttemptRecord {
+                            lifecycle: Some(RewardTransferAttemptLifecycle::Proven {
+                                generation: attempt.created_at_time,
+                                block,
+                            }),
+                            ..attempt.clone()
+                        });
                         recipient.last_error = None;
                     }
-                    op.reserved_reward_debit_e8s =
-                        Some(pending_reward_reservation_for_operation(op));
-                    op.mark_updated(OperationPhase::PartiallyDistributed);
+                    match derived_reward_reservation_for_operation(op)
+                        .and_then(|reservation| {
+                            let total =
+                                reservation.checked_total_unavailable_reward_debit_e8s()?;
+                            Ok((reservation, total))
+                        }) {
+                        Ok((reservation, total)) => {
+                            op.reward_reservation = Some(reservation);
+                            op.reserved_reward_debit_e8s = Some(total);
+                            op.mark_updated(OperationPhase::PartiallyDistributed);
+                        }
+                        Err(err) => {
+                            op.mark_retryable_error(err, OperationPhase::PartiallyDistributed);
+                        }
+                    }
                 }
             }),
             BoundaryTransferDecision::Retryable(err) => {
                 let proof_pending = matches!(
                     transfer_result,
-                    Err(LedgerTransferError::TooOld | LedgerTransferError::Duplicate { .. })
+                    Err(
+                        LedgerTransferError::TooOld
+                            | LedgerTransferError::Duplicate { .. }
+                            | LedgerTransferError::CanisterCallFailed { .. }
+                            | LedgerTransferError::DecodeError { .. }
+                    )
                 );
                 let proof = if proof_pending {
                     Some(
@@ -2161,6 +3578,15 @@ async fn retry_pending_two_week_streams(
                 } else {
                     None
                 };
+                if proof.is_some()
+                    && !stored_reward_attempt_still_matches(&operation_id, recipient_index, &attempt)
+                {
+                    let message = format!(
+                        "reward operation {operation_id} recipient {recipient_index} proof scan callback observed a different persisted attempt; stale callback ignored"
+                    );
+                    outcome.errors.push(message);
+                    continue;
+                }
                 if let Some(proof) = proof {
                     match proof.disposition {
                         RewardTransferProofDisposition::ProofFound(block) => {
@@ -2187,11 +3613,26 @@ async fn retry_pending_two_week_streams(
                                     if let Some(recipient) =
                                         op.two_week_recipients.get_mut(recipient_index)
                                     {
+                                        if recipient.reward_transfer_attempt.as_ref()
+                                            != Some(&attempt)
+                                        {
+                                            return;
+                                        }
                                         recipient.transfer_status = TransferStatus::FailedRetryable;
                                         recipient.ledger_transfer_status =
                                             Some(TransferStatus::FailedRetryable);
                                         recipient.ledger_transfer_proof_scan_state =
                                             Some(proof.scan_state.clone());
+                                        recipient.reward_transfer_attempt =
+                                            Some(RewardTransferAttemptRecord {
+                                                lifecycle: Some(
+                                                    RewardTransferAttemptLifecycle::ProofRequired {
+                                                        generation: attempt.created_at_time,
+                                                        reason: error.clone(),
+                                                    },
+                                                ),
+                                                ..attempt.clone()
+                                            });
                                         recipient.last_error = Some(error.clone());
                                     }
                                     op.mark_retryable_error(
@@ -2217,11 +3658,26 @@ async fn retry_pending_two_week_streams(
                                     if let Some(recipient) =
                                         op.two_week_recipients.get_mut(recipient_index)
                                     {
+                                        if recipient.reward_transfer_attempt.as_ref()
+                                            != Some(&attempt)
+                                        {
+                                            return;
+                                        }
                                         recipient.transfer_status = TransferStatus::FailedTerminal;
                                         recipient.ledger_transfer_status =
                                             Some(TransferStatus::FailedTerminal);
                                         recipient.ledger_transfer_proof_scan_state =
                                             Some(proof.scan_state.clone());
+                                        recipient.reward_transfer_attempt =
+                                            Some(RewardTransferAttemptRecord {
+                                                lifecycle: Some(
+                                                    RewardTransferAttemptLifecycle::ProofRequired {
+                                                        generation: attempt.created_at_time,
+                                                        reason: error.clone(),
+                                                    },
+                                                ),
+                                                ..attempt.clone()
+                                            });
                                         recipient.last_error = Some(error.clone());
                                     }
                                     op.mark_retryable_error(
@@ -2244,9 +3700,16 @@ async fn retry_pending_two_week_streams(
                         .find(|op| op.operation_id == operation_id)
                     {
                         if let Some(recipient) = op.two_week_recipients.get_mut(recipient_index) {
+                            if recipient.reward_transfer_attempt.as_ref() != Some(&attempt) {
+                                return;
+                            }
                             recipient.transfer_status = TransferStatus::FailedRetryable;
                             recipient.ledger_transfer_status =
                                 Some(TransferStatus::FailedRetryable);
+                            recipient.reward_transfer_attempt = Some(RewardTransferAttemptRecord {
+                                lifecycle: Some(RewardTransferAttemptLifecycle::Prepared),
+                                ..attempt.clone()
+                            });
                             recipient.last_error = Some(error.clone());
                         }
                         op.mark_retryable_error(
@@ -2264,9 +3727,11 @@ async fn retry_pending_two_week_streams(
             if crate::consume_debug_failpoint(
                 crate::DebugFailpoint::AfterTwoWeekRewardTransferBeforeGovernanceRefresh,
             ) {
-                panic!(
+                outcome.errors.push(
                     "debug failpoint AfterTwoWeekRewardTransferBeforeGovernanceRefresh triggered after two-week reward transfer"
+                        .to_string(),
                 );
+                return false;
             }
         }
     }
@@ -2473,43 +3938,17 @@ async fn retry_pending_two_week_streams(
         let Some(op) = completed else {
             break;
         };
-        let post_state = match reward_fee_adjusted_post_state(&op) {
-            Ok(post_state) => post_state,
-            Err(err) => {
-                outcome.errors.push(format!(
-                    "stream {} reward fee accounting failed: {err}",
-                    op.operation_id
-                ));
-                return false;
-            }
-        };
-        let committed = CANISTER_STATE.with(|cell| {
-            cell.borrow_mut()
-                .manager
-                .commit_previewed_stream(op.operation_id.clone(), post_state.into())
-        });
-        match committed {
-            Ok(()) => {
-                let operation_id = op.operation_id.clone();
-                CANISTER_STATE.with(|cell| {
-                    if let Some(op) = cell
-                        .borrow_mut()
-                        .operation_journal
-                        .iter_mut()
-                        .find(|op| op.operation_id == operation_id)
-                    {
-                        op.reserved_reward_debit_e8s = Some(0);
-                    }
-                });
-                mark_completed(&op.operation_id);
+        match commit_completed_reward_operation(&op.operation_id) {
+            Ok(true) => {
                 outcome.processed_authorized_streams += 1;
                 outcome.io_issued_e8s = outcome.io_issued_e8s.saturating_add(op.io_issued_e8s);
             }
-            Err(StreamManagerError::DuplicateTransaction) => mark_completed(&op.operation_id),
+            Ok(false) => {}
             Err(err) => {
-                outcome
-                    .errors
-                    .push(format!("stream {}: {err:?}", op.operation_id));
+                outcome.errors.push(format!(
+                    "stream {} reward commit failed: {err}",
+                    op.operation_id
+                ));
                 return false;
             }
         }
@@ -3109,26 +4548,7 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
             errors: Vec::new(),
         };
 
-        let neurons = match sns_governance {
-            Some(canister) => match refresh_finalized_sns_reward_snapshot(canister).await {
-                Ok(neurons) => neurons,
-                Err(real_err) => match sns_governance::debug_list_neurons(canister).await {
-                    Ok(neurons) => {
-                        CANISTER_STATE.with(|cell| {
-                            cell.borrow_mut()
-                                .manager
-                                .refresh_active_staked_io_from_neurons(&neurons);
-                        });
-                        neurons
-                    }
-                    Err(debug_err) => {
-                        outcome.errors.push(format!("{real_err}; {debug_err}"));
-                        Vec::new()
-                    }
-                },
-            },
-            None => Vec::new(),
-        };
+        let reward_snapshot = load_reward_snapshot(sns_governance).await;
 
         if let Some(io_canister) = io_transfer_ledger {
             if !retry_pending_io_issuances(io_canister, &mut outcome).await {
@@ -3213,7 +4633,7 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
             .await
             {
                 Ok((transactions, next_scan_state, latest_seen)) => {
-                    let relevant = transactions
+                    let mut relevant = transactions
                         .into_iter()
                         .filter(|tx| {
                             tx.to == STREAM_MANAGER_DEPOSIT_ACCOUNT
@@ -3222,6 +4642,7 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                                     .unwrap_or(true)
                         })
                         .collect::<Vec<_>>();
+                    relevant.sort_by_key(|tx| tx.block_index);
                     outcome.scanned_icp_transactions = relevant.len() as u64;
                     let page_error_count = outcome.errors.len();
 
@@ -3284,31 +4705,53 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                                 continue;
                             }
                         };
-                        let reward_reserve_available = CANISTER_STATE.with(|cell| {
-                            let state = cell.borrow();
-                            reward_reserve_available(
-                                state.manager.state.protocol_reserve_io_e8s,
-                                pending_reward_reservations(state.operation_journal.iter(), None),
-                            )
-                        });
-                        match reward_reserve_available {
-                            Ok(available) if preview.outcome.io_issued_e8s <= available => {}
-                            Ok(available) => {
-                                outcome.errors.push(format!(
-                                    "stream {tx_id}: protocol reserve {available} is reserved for pending reward operations; cannot issue {} IO e8s",
-                                    preview.outcome.io_issued_e8s
-                                ));
-                                continue;
-                            }
-                            Err(err) => {
+                        let recipient_policy =
+                            ApiIoRecipientPolicy::from(preview.outcome.recipient_policy);
+                        if recipient_policy == ApiIoRecipientPolicy::EligibleIoSnsNeurons {
+                            if let Err(err) = require_new_two_week_reward_inputs(
+                                io_transfer_ledger,
+                                io_ledger,
+                                sns_governance,
+                                &reward_snapshot,
+                            ) {
                                 outcome.errors.push(format!("stream {tx_id}: {err}"));
-                                continue;
+                                // Stop this tick so no newer ICP event advances beyond the blocked maturity
+                                // event. This postpones discovery of later new-ledger events until the next
+                                // successful tick; pending operations were already retried before this boundary.
+                                return outcome;
                             }
                         }
 
                         if let Some(io_canister) = io_transfer_ledger {
-                            match ApiIoRecipientPolicy::from(preview.outcome.recipient_policy) {
+                            match recipient_policy {
                                 ApiIoRecipientPolicy::JupiterFaucet => {
+                                    let reward_reserve_available = CANISTER_STATE.with(|cell| {
+                                        let state = cell.borrow();
+                                        let pending = pending_reward_reservations(
+                                            state.operation_journal.iter(),
+                                            &state.manager.processed_transactions,
+                                            None,
+                                        )?;
+                                        reward_reserve_available(
+                                            state.manager.state.protocol_reserve_io_e8s,
+                                            pending,
+                                        )
+                                    });
+                                    match reward_reserve_available {
+                                        Ok(available)
+                                            if preview.outcome.io_issued_e8s <= available => {}
+                                        Ok(available) => {
+                                            outcome.errors.push(format!(
+                                                "stream {tx_id}: protocol reserve {available} is reserved for pending reward operations; cannot issue {} IO e8s",
+                                                preview.outcome.io_issued_e8s
+                                            ));
+                                            continue;
+                                        }
+                                        Err(err) => {
+                                            outcome.errors.push(format!("stream {tx_id}: {err}"));
+                                            continue;
+                                        }
+                                    }
                                     ensure_stream_operation(
                                         "icp",
                                         tx.block_index,
@@ -3326,80 +4769,90 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                                     continue;
                                 }
                                 ApiIoRecipientPolicy::EligibleIoSnsNeurons => {
+                                    let Ok((
+                                        io_canister,
+                                        io_index_canister,
+                                        sns_governance_canister,
+                                        neurons,
+                                    )) = require_new_two_week_reward_inputs(
+                                        io_transfer_ledger,
+                                        io_ledger,
+                                        sns_governance,
+                                        &reward_snapshot,
+                                    )
+                                    else {
+                                        unreachable!(
+                                            "new two-week reward inputs were checked before operation creation"
+                                        );
+                                    };
                                     let allocations = CANISTER_STATE.with(|cell| {
                                         cell.borrow().manager.allocate_two_week_maturity_io(
                                             preview.outcome.io_issued_e8s,
-                                            &neurons,
+                                            neurons,
                                         )
                                     });
-                                    if !allocations.allocations.is_empty() {
-                                        CANISTER_STATE.with(|cell| {
-                                            let mut state = cell.borrow_mut();
-                                            if !state
-                                                .operation_journal
-                                                .iter()
-                                                .any(|op| op.operation_id == tx_id)
-                                            {
-                                                let mut op = StreamOperation::stream(
-                                                    "icp",
-                                                    tx.block_index,
-                                                    StreamOperationKind::TwoWeekMaturityStream,
-                                                    tx.amount_e8s,
-                                                    preview.post_state,
-                                                    preview.outcome.io_issued_e8s,
-                                                    OperationPhase::PartiallyDistributed,
-                                                );
-                                                op.two_week_recipients = allocations
-                                                    .allocations
-                                                    .into_iter()
-                                                    .map(|allocation| TwoWeekRecipientTransfer {
-                                                        sns_neuron_id: Some(
-                                                            allocation.sns_neuron_id.0,
-                                                        ),
-                                                        neuron_id: allocation.neuron_id,
-                                                        amount_e8s: allocation.io_e8s,
-                                                        transfer_status: TransferStatus::Pending,
-                                                        transfer_block_index: None,
-                                                        ledger_transfer_status: Some(
-                                                            TransferStatus::Pending,
-                                                        ),
-                                                        ledger_transfer_block: None,
-                                                        governance_refresh_status: Some(
-                                                            TransferStatus::Pending,
-                                                        ),
-                                                        stake_before_e8s: None,
-                                                        expected_stake_after_e8s: None,
-                                                        minimum_expected_stake_after_e8s: None,
-                                                        observed_stake_after_e8s: None,
-                                                        concurrent_stake_delta_e8s: None,
-                                                        refresh_retry_count: Some(0),
-                                                        refresh_last_error: None,
-                                                        reward_transfer_attempt: None,
-                                                        ledger_transfer_fee_e8s: None,
-                                                        reward_amount_received_e8s: None,
-                                                        reserve_debit_e8s: None,
-                                                        ledger_transfer_proof_scan_state: None,
-                                                        last_error: None,
-                                                    })
-                                                    .collect();
-                                                state.operation_journal.push(op);
-                                            }
-                                        });
-                                        retry_pending_two_week_streams(
-                                            io_canister,
-                                            io_ledger
-                                                .expect("IO index canister should be present for finalized reward proof"),
-                                            sns_governance
-                                                .expect("SNS governance canister should be present for finalized reward allocation"),
-                                            &mut outcome,
-                                        )
-                                        .await;
-                                        if !no_new_page_errors(&outcome, page_error_count) {
-                                            return outcome;
+                                    CANISTER_STATE.with(|cell| {
+                                        let mut state = cell.borrow_mut();
+                                        if !state
+                                            .operation_journal
+                                            .iter()
+                                            .any(|op| op.operation_id == tx_id)
+                                        {
+                                            let mut op = StreamOperation::stream(
+                                                "icp",
+                                                tx.block_index,
+                                                StreamOperationKind::TwoWeekMaturityStream,
+                                                tx.amount_e8s,
+                                                preview.post_state,
+                                                preview.outcome.io_issued_e8s,
+                                                OperationPhase::PartiallyDistributed,
+                                            );
+                                            op.two_week_recipients = allocations
+                                                .allocations
+                                                .into_iter()
+                                                .map(|allocation| TwoWeekRecipientTransfer {
+                                                    sns_neuron_id: Some(allocation.sns_neuron_id.0),
+                                                    neuron_id: allocation.neuron_id,
+                                                    amount_e8s: allocation.io_e8s,
+                                                    transfer_status: TransferStatus::Pending,
+                                                    transfer_block_index: None,
+                                                    ledger_transfer_status: Some(
+                                                        TransferStatus::Pending,
+                                                    ),
+                                                    ledger_transfer_block: None,
+                                                    governance_refresh_status: Some(
+                                                        TransferStatus::Pending,
+                                                    ),
+                                                    stake_before_e8s: None,
+                                                    expected_stake_after_e8s: None,
+                                                    minimum_expected_stake_after_e8s: None,
+                                                    observed_stake_after_e8s: None,
+                                                    concurrent_stake_delta_e8s: None,
+                                                    refresh_retry_count: Some(0),
+                                                    refresh_last_error: None,
+                                                    reward_transfer_attempt: None,
+                                                    ledger_transfer_fee_e8s: None,
+                                                    reward_amount_received_e8s: None,
+                                                    reserve_debit_e8s: None,
+                                                    ledger_transfer_proof_scan_state: None,
+                                                    last_error: None,
+                                                })
+                                                .collect();
+                                            state.operation_journal.push(op);
                                         }
-                                        advance_icp_cursor(tx.block_index);
-                                        continue;
+                                    });
+                                    retry_pending_two_week_streams(
+                                        io_canister,
+                                        io_index_canister,
+                                        sns_governance_canister,
+                                        &mut outcome,
+                                    )
+                                    .await;
+                                    if !no_new_page_errors(&outcome, page_error_count) {
+                                        return outcome;
                                     }
+                                    advance_icp_cursor(tx.block_index);
+                                    continue;
                                 }
                                 ApiIoRecipientPolicy::None => {}
                             }
@@ -4017,6 +5470,61 @@ mod tests {
         let outcome = scheduler_tick_plan_only();
         assert!(format!("{outcome:?}").contains("planned_steps"));
         candid::encode_one(outcome).unwrap();
+    }
+
+    fn test_principal(byte: u8) -> Principal {
+        Principal::from_slice(&[byte; 29])
+    }
+
+    fn unavailable_snapshot() -> RewardSnapshotAvailability {
+        RewardSnapshotAvailability::Unavailable("governance stopped".to_string())
+    }
+
+    fn available_empty_snapshot() -> RewardSnapshotAvailability {
+        RewardSnapshotAvailability::Available(Vec::new())
+    }
+
+    #[test]
+    fn governance_snapshot_unavailable_does_not_create_zero_recipient_reward() {
+        let err = require_new_two_week_reward_inputs(
+            Some(test_principal(1)),
+            Some(test_principal(2)),
+            Some(test_principal(3)),
+            &unavailable_snapshot(),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("reward snapshot unavailable"), "{err}");
+    }
+
+    #[test]
+    fn missing_sns_governance_does_not_fall_through_to_generic_commit() {
+        let snapshot = available_empty_snapshot();
+
+        let err = require_new_two_week_reward_inputs(
+            Some(test_principal(1)),
+            Some(test_principal(2)),
+            None,
+            &snapshot,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("SNS governance canister is required"), "{err}");
+    }
+
+    #[test]
+    fn missing_io_index_does_not_create_or_commit_new_reward_operation() {
+        let snapshot = available_empty_snapshot();
+
+        let err = require_new_two_week_reward_inputs(
+            Some(test_principal(1)),
+            None,
+            Some(test_principal(3)),
+            &snapshot,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("IO index canister is required"), "{err}");
     }
 
     #[test]
@@ -5094,6 +6602,688 @@ mod tests {
     }
 
     #[test]
+    fn initial_fee_query_failure_survives_stable_restore_and_retries() {
+        let mut op = reward_preflight_operation();
+        op.reward_preflight = None;
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = None;
+        let operation_id = op.operation_id.clone();
+        CANISTER_STATE.with(|cell| {
+            let mut state = cell.borrow_mut();
+            state.operation_journal = vec![op];
+            state.manager.processed_transactions.clear();
+        });
+
+        record_preflight_retryable_query_failure(
+            &operation_id,
+            "finalized SNS ledger fee query failed".to_string(),
+        );
+        let restored =
+            crate::migrate_stable_state_for_tests(crate::export_versioned_stable_state_for_tests())
+                .unwrap()
+                .operation_journal
+                .remove(0);
+
+        assert!(restored.reward_preflight.is_none());
+        assert_eq!(
+            restored.reward_reservation,
+            Some(RewardReservation::default())
+        );
+        assert_eq!(restored.reserved_reward_debit_e8s, Some(0));
+        assert!(build_reward_distribution_preflight(
+            &restored,
+            candid::Principal::from_text("qaa6y-5yaaa-aaaaa-aaafa-cai").unwrap(),
+            10_000,
+            300_020_000,
+            300_020_000,
+            124,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn initial_reserve_query_failure_survives_stable_restore_and_retries() {
+        let mut op = reward_preflight_operation();
+        op.reward_preflight = None;
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = None;
+        let operation_id = op.operation_id.clone();
+        CANISTER_STATE.with(|cell| {
+            let mut state = cell.borrow_mut();
+            state.operation_journal = vec![op];
+            state.manager.processed_transactions.clear();
+        });
+
+        record_preflight_retryable_query_failure(
+            &operation_id,
+            "finalized SNS ledger reserve balance query failed".to_string(),
+        );
+        let restored =
+            crate::migrate_stable_state_for_tests(crate::export_versioned_stable_state_for_tests())
+                .unwrap()
+                .operation_journal
+                .remove(0);
+
+        assert!(restored.reward_preflight.is_none());
+        assert_eq!(
+            restored.reward_reservation,
+            Some(RewardReservation::default())
+        );
+        assert_eq!(restored.reserved_reward_debit_e8s, Some(0));
+    }
+
+    #[test]
+    fn terminal_invalid_recipient_preflight_survives_stable_restore() {
+        let mut op = reward_preflight_operation();
+        op.reward_preflight = None;
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = None;
+        let operation_id = op.operation_id.clone();
+        CANISTER_STATE.with(|cell| {
+            let mut state = cell.borrow_mut();
+            state.operation_journal = vec![op];
+            state.manager.processed_transactions.clear();
+        });
+
+        record_preflight_state_aware_failure(
+            &operation_id,
+            "recipient missing canonical SNS neuron id".to_string(),
+        );
+        let restored =
+            crate::migrate_stable_state_for_tests(crate::export_versioned_stable_state_for_tests())
+                .unwrap()
+                .operation_journal
+                .remove(0);
+
+        assert_eq!(
+            restored.reward_preflight.as_ref().map(|p| p.status),
+            Some(RewardPreflightStatus::FailedTerminal)
+        );
+        assert_eq!(
+            restored.reward_reservation,
+            Some(RewardReservation::default())
+        );
+        assert_eq!(restored.reserved_reward_debit_e8s, Some(0));
+    }
+
+    #[test]
+    fn terminal_preflight_failure_does_not_poison_unrelated_reservation_aggregation() {
+        let mut failed = reward_preflight_operation();
+        failed.reward_preflight = Some(RewardDistributionPreflight {
+            status: RewardPreflightStatus::FailedTerminal,
+            ledger_fee_e8s: 0,
+            recipient_count: 0,
+            total_reward_e8s: 0,
+            total_fee_e8s: 0,
+            total_reserve_debit_e8s: 0,
+            protocol_reserve_available_e8s: 0,
+            real_ledger_reserve_balance_e8s: 0,
+            validated_at_timestamp_nanos: 123,
+            canonical_recipient_ids: Vec::new(),
+            compatibility_keys: Vec::new(),
+            dust_e8s: 0,
+            failure_reason: Some("invalid recipient plan".to_string()),
+        });
+        failed.reward_reservation = Some(RewardReservation::default());
+        failed.reserved_reward_debit_e8s = Some(0);
+        failed.phase = OperationPhase::FailedTerminal;
+        let unrelated = reward_operation_ready_for_attempt().remove(0);
+
+        assert_eq!(
+            pending_reward_reservations(
+                [failed, unrelated].iter(),
+                &empty_processed_transactions(),
+                None,
+            ),
+            Ok(300_020_000)
+        );
+    }
+
+    #[test]
+    fn pending_repreflight_fee_query_failure_preserves_prior_preflight() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 55 },
+        );
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 0, 20_000).unwrap();
+        let prior_preflight = op.reward_preflight.clone();
+        let prior_evidence = op.reward_fee_repreflight;
+        let operation_id = op.operation_id.clone();
+        CANISTER_STATE.with(|cell| {
+            let mut state = cell.borrow_mut();
+            state.operation_journal = vec![op];
+            state.manager.processed_transactions.clear();
+        });
+
+        record_preflight_retryable_query_failure(
+            &operation_id,
+            "finalized SNS ledger fee query failed during re-preflight".to_string(),
+        );
+        let restored =
+            crate::migrate_stable_state_for_tests(crate::export_versioned_stable_state_for_tests())
+                .unwrap()
+                .operation_journal
+                .remove(0);
+
+        assert_eq!(
+            restored.reward_preflight.as_ref().map(|p| p.ledger_fee_e8s),
+            prior_preflight.as_ref().map(|p| p.ledger_fee_e8s)
+        );
+        assert_eq!(restored.reward_fee_repreflight, prior_evidence);
+    }
+
+    #[test]
+    fn pending_repreflight_fee_query_failure_preserves_full_reservation() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 55 },
+        );
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 0, 20_000).unwrap();
+        let operation_id = op.operation_id.clone();
+        CANISTER_STATE.with(|cell| {
+            let mut state = cell.borrow_mut();
+            state.operation_journal = vec![op];
+            state.manager.processed_transactions.clear();
+        });
+
+        record_preflight_retryable_query_failure(
+            &operation_id,
+            "finalized SNS ledger fee query failed during re-preflight".to_string(),
+        );
+        let restored =
+            crate::migrate_stable_state_for_tests(crate::export_versioned_stable_state_for_tests())
+                .unwrap()
+                .operation_journal
+                .remove(0);
+
+        assert_eq!(
+            pending_reward_reservation_for_operation(&restored, &empty_processed_transactions()),
+            Ok(300_020_000)
+        );
+        assert_eq!(restored.reserved_reward_debit_e8s, Some(300_020_000));
+    }
+
+    #[test]
+    fn pending_repreflight_reserve_query_failure_preserves_fee_evidence() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 55 },
+        );
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 0, 20_000).unwrap();
+        let evidence = op.reward_fee_repreflight;
+        let operation_id = op.operation_id.clone();
+        CANISTER_STATE.with(|cell| {
+            let mut state = cell.borrow_mut();
+            state.operation_journal = vec![op];
+            state.manager.processed_transactions.clear();
+        });
+
+        record_preflight_retryable_query_failure(
+            &operation_id,
+            "finalized SNS ledger reserve balance query failed during re-preflight".to_string(),
+        );
+        let restored =
+            crate::migrate_stable_state_for_tests(crate::export_versioned_stable_state_for_tests())
+                .unwrap()
+                .operation_journal
+                .remove(0);
+
+        assert_eq!(restored.reward_fee_repreflight, evidence);
+    }
+
+    fn pending_repreflight_operation() -> StreamOperation {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 55 },
+        );
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 0, 20_000).unwrap();
+        op
+    }
+
+    fn assert_pending_repreflight_preserved(
+        op: &StreamOperation,
+        prior_preflight: &Option<RewardDistributionPreflight>,
+        prior_evidence: Option<RewardFeeRepreflightEvidence>,
+        prior_reservation: RewardReservation,
+    ) {
+        assert_eq!(
+            op.reward_preflight.as_ref().map(|p| p.status),
+            Some(RewardPreflightStatus::Pending)
+        );
+        assert_eq!(op.reward_preflight, *prior_preflight);
+        assert_eq!(op.reward_fee_repreflight, prior_evidence);
+        assert_eq!(op.reward_reservation, Some(prior_reservation));
+        assert_eq!(op.reserved_reward_debit_e8s, Some(300_020_000));
+        assert_eq!(
+            pending_reward_reservation_for_operation(op, &empty_processed_transactions()),
+            Ok(300_020_000)
+        );
+        assert!(op
+            .two_week_recipients
+            .iter()
+            .all(|recipient| recipient.reward_transfer_attempt.is_none()));
+    }
+
+    #[test]
+    fn pending_repreflight_insufficient_new_model_reserve_preserves_prior_reservation() {
+        let op = pending_repreflight_operation();
+        let prior_preflight = op.reward_preflight.clone();
+        let prior_evidence = op.reward_fee_repreflight;
+        let prior_reservation = op.reward_reservation.unwrap();
+        let snapshot = capture_reward_preflight_snapshot(
+            std::slice::from_ref(&op),
+            &empty_processed_transactions(),
+            300_020_000,
+            &op.operation_id,
+        )
+        .unwrap();
+
+        let err = finalize_reward_preflight_snapshot(
+            &snapshot,
+            std::slice::from_ref(&op),
+            &empty_processed_transactions(),
+            300_020_000,
+            RewardPreflightObservedInputs {
+                sns_governance_canister: candid::Principal::from_text(
+                    "qaa6y-5yaaa-aaaaa-aaafa-cai",
+                )
+                .unwrap(),
+                ledger_fee_e8s: 20_000,
+                real_reserve_balance_e8s: 300_040_000,
+                validated_at_timestamp_nanos: 124,
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(err, RewardPreflightCasError::Terminal(message) if message.contains("protocol model reserve cannot cover"))
+        );
+        assert_pending_repreflight_preserved(
+            &op,
+            &prior_preflight,
+            prior_evidence,
+            prior_reservation,
+        );
+    }
+
+    #[test]
+    fn pending_repreflight_insufficient_new_real_reserve_preserves_prior_reservation() {
+        let op = pending_repreflight_operation();
+        let prior_preflight = op.reward_preflight.clone();
+        let prior_evidence = op.reward_fee_repreflight;
+        let prior_reservation = op.reward_reservation.unwrap();
+        let snapshot = capture_reward_preflight_snapshot(
+            std::slice::from_ref(&op),
+            &empty_processed_transactions(),
+            300_040_000,
+            &op.operation_id,
+        )
+        .unwrap();
+
+        let err = finalize_reward_preflight_snapshot(
+            &snapshot,
+            std::slice::from_ref(&op),
+            &empty_processed_transactions(),
+            300_040_000,
+            RewardPreflightObservedInputs {
+                sns_governance_canister: candid::Principal::from_text(
+                    "qaa6y-5yaaa-aaaaa-aaafa-cai",
+                )
+                .unwrap(),
+                ledger_fee_e8s: 20_000,
+                real_reserve_balance_e8s: 300_039_999,
+                validated_at_timestamp_nanos: 124,
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(err, RewardPreflightCasError::Terminal(message) if message.contains("finalized SNS ledger reserve cannot cover"))
+        );
+        assert_pending_repreflight_preserved(
+            &op,
+            &prior_preflight,
+            prior_evidence,
+            prior_reservation,
+        );
+    }
+
+    #[test]
+    fn pending_repreflight_terminal_finalization_preserves_prior_preflight_and_fee_evidence() {
+        let op = pending_repreflight_operation();
+        let prior_preflight = op.reward_preflight.clone();
+        let prior_evidence = op.reward_fee_repreflight;
+        let prior_reservation = op.reward_reservation.unwrap();
+        let operation_id = op.operation_id.clone();
+        CANISTER_STATE.with(|cell| {
+            let mut state = cell.borrow_mut();
+            state.operation_journal = vec![op];
+            state.manager.processed_transactions.clear();
+        });
+
+        record_preflight_state_aware_failure(
+            &operation_id,
+            "protocol model reserve cannot cover reward distribution".to_string(),
+        );
+        let op = CANISTER_STATE.with(|cell| cell.borrow().operation_journal[0].clone());
+
+        assert_pending_repreflight_preserved(
+            &op,
+            &prior_preflight,
+            prior_evidence,
+            prior_reservation,
+        );
+        assert!(op
+            .last_error
+            .as_deref()
+            .unwrap()
+            .contains("protocol model reserve cannot cover"));
+    }
+
+    #[test]
+    fn pending_repreflight_terminal_finalization_survives_current_stable_restore() {
+        let op = pending_repreflight_operation();
+        let prior_preflight = op.reward_preflight.clone();
+        let prior_evidence = op.reward_fee_repreflight;
+        let prior_reservation = op.reward_reservation.unwrap();
+        let operation_id = op.operation_id.clone();
+        CANISTER_STATE.with(|cell| {
+            let mut state = cell.borrow_mut();
+            state.operation_journal = vec![op];
+            state.manager.processed_transactions.clear();
+        });
+
+        record_preflight_state_aware_failure(
+            &operation_id,
+            "finalized SNS ledger reserve cannot cover reward distribution".to_string(),
+        );
+        let restored =
+            crate::migrate_stable_state_for_tests(crate::export_versioned_stable_state_for_tests())
+                .unwrap()
+                .operation_journal
+                .remove(0);
+
+        assert_pending_repreflight_preserved(
+            &restored,
+            &prior_preflight,
+            prior_evidence,
+            prior_reservation,
+        );
+    }
+
+    #[test]
+    fn snapshot_capture_failure_does_not_clear_pending_repreflight() {
+        let mut current = pending_repreflight_operation();
+        let prior_preflight = current.reward_preflight.clone();
+        let prior_evidence = current.reward_fee_repreflight;
+        let prior_reservation = current.reward_reservation.unwrap();
+        let operation_id = current.operation_id.clone();
+        let mut unrelated = reward_operation_ready_for_attempt().remove(0);
+        unrelated.operation_id = "icp:unrelated".to_string();
+        unrelated.source_transaction_id = "icp:unrelated".to_string();
+        unrelated.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: u128::MAX,
+            externally_spent_but_uncommitted_reward_debit_e8s: 1,
+        });
+        current.mark_retryable_error(
+            "pending re-preflight".to_string(),
+            OperationPhase::PartiallyDistributed,
+        );
+        CANISTER_STATE.with(|cell| {
+            let mut state = cell.borrow_mut();
+            state.operation_journal = vec![current, unrelated];
+            state.manager.processed_transactions.clear();
+        });
+
+        record_preflight_state_aware_failure(
+            &operation_id,
+            "pending reward reservations overflowed".to_string(),
+        );
+        let op = CANISTER_STATE.with(|cell| cell.borrow().operation_journal[0].clone());
+
+        assert_pending_repreflight_preserved(
+            &op,
+            &prior_preflight,
+            prior_evidence,
+            prior_reservation,
+        );
+    }
+
+    #[test]
+    fn unrelated_corrupt_reservation_cannot_release_current_repreflight_reservation() {
+        let current = pending_repreflight_operation();
+        let prior_preflight = current.reward_preflight.clone();
+        let prior_evidence = current.reward_fee_repreflight;
+        let prior_reservation = current.reward_reservation.unwrap();
+        let operation_id = current.operation_id.clone();
+        let mut unrelated = reward_operation_ready_for_attempt().remove(0);
+        unrelated.operation_id = "icp:unrelated".to_string();
+        unrelated.source_transaction_id = "icp:unrelated".to_string();
+        unrelated.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 1,
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+        CANISTER_STATE.with(|cell| {
+            let mut state = cell.borrow_mut();
+            state.operation_journal = vec![current, unrelated];
+            state.manager.processed_transactions.clear();
+        });
+
+        record_preflight_state_aware_failure(
+            &operation_id,
+            "reservation split disagrees with recipient evidence".to_string(),
+        );
+        let op = CANISTER_STATE.with(|cell| cell.borrow().operation_journal[0].clone());
+
+        assert_pending_repreflight_preserved(
+            &op,
+            &prior_preflight,
+            prior_evidence,
+            prior_reservation,
+        );
+    }
+
+    #[test]
+    fn initial_invalid_plan_still_records_zero_reservation_terminal_failure() {
+        let mut op = reward_preflight_operation();
+        op.reward_preflight = None;
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = None;
+        let operation_id = op.operation_id.clone();
+        CANISTER_STATE.with(|cell| {
+            let mut state = cell.borrow_mut();
+            state.operation_journal = vec![op];
+            state.manager.processed_transactions.clear();
+        });
+
+        record_preflight_state_aware_failure(
+            &operation_id,
+            "recipient missing canonical SNS neuron id".to_string(),
+        );
+        let op = CANISTER_STATE.with(|cell| cell.borrow().operation_journal[0].clone());
+
+        assert_eq!(
+            op.reward_preflight.as_ref().map(|p| p.status),
+            Some(RewardPreflightStatus::FailedTerminal)
+        );
+        assert_eq!(op.reward_reservation, Some(RewardReservation::default()));
+        assert_eq!(op.reserved_reward_debit_e8s, Some(0));
+    }
+
+    #[test]
+    fn initial_snapshot_reservation_conflict_remains_retryable() {
+        let mut current = reward_preflight_operation();
+        current.reward_preflight = None;
+        current.reward_reservation = None;
+        current.reserved_reward_debit_e8s = None;
+        let operation_id = current.operation_id.clone();
+        let mut unrelated = reward_operation_ready_for_attempt().remove(0);
+        unrelated.operation_id = "icp:unrelated".to_string();
+        unrelated.source_transaction_id = "icp:unrelated".to_string();
+        unrelated.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: u128::MAX,
+            externally_spent_but_uncommitted_reward_debit_e8s: 1,
+        });
+        CANISTER_STATE.with(|cell| {
+            let mut state = cell.borrow_mut();
+            state.operation_journal = vec![current, unrelated];
+            state.manager.processed_transactions.clear();
+        });
+
+        record_preflight_retryable_query_failure(
+            &operation_id,
+            "pending reward reservations overflowed".to_string(),
+        );
+        let op = CANISTER_STATE.with(|cell| cell.borrow().operation_journal[0].clone());
+
+        assert!(op.reward_preflight.is_none());
+        assert_eq!(op.reward_reservation, Some(RewardReservation::default()));
+        assert_eq!(op.reserved_reward_debit_e8s, Some(0));
+        assert_eq!(op.phase, OperationPhase::PartiallyDistributed);
+        assert!(op
+            .last_error
+            .as_deref()
+            .unwrap()
+            .contains("pending reward reservations overflowed"));
+    }
+
+    #[test]
+    fn initial_snapshot_conflict_retries_after_other_operation_is_repaired() {
+        let mut current = reward_preflight_operation();
+        current.operation_id = "icp:current".to_string();
+        current.source_transaction_id = "icp:current".to_string();
+        current.reward_preflight = None;
+        current.reward_reservation = None;
+        current.reserved_reward_debit_e8s = None;
+        let mut unrelated = reward_operation_ready_for_attempt().remove(0);
+        unrelated.operation_id = "icp:unrelated".to_string();
+        unrelated.source_transaction_id = "icp:unrelated".to_string();
+        unrelated.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: u128::MAX,
+            externally_spent_but_uncommitted_reward_debit_e8s: 1,
+        });
+        let mut journal = vec![current.clone(), unrelated];
+        let err = capture_reward_preflight_snapshot(
+            &journal,
+            &empty_processed_transactions(),
+            700_000_000,
+            "icp:current",
+        )
+        .unwrap_err();
+        assert!(!err.is_empty());
+
+        journal[1] = reward_operation_ready_for_attempt().remove(0);
+        journal[1].operation_id = "icp:unrelated".to_string();
+        journal[1].source_transaction_id = "icp:unrelated".to_string();
+        let snapshot = capture_reward_preflight_snapshot(
+            &journal,
+            &empty_processed_transactions(),
+            700_000_000,
+            "icp:current",
+        )
+        .unwrap();
+        assert!(matches!(
+            finalize_preflight_for_tests(&snapshot, &journal, 700_000_000),
+            Ok(preflight) if preflight.status == RewardPreflightStatus::Validated
+        ));
+    }
+
+    #[test]
+    fn invalid_current_recipient_plan_remains_terminal() {
+        let mut op = reward_preflight_operation();
+        op.reward_preflight = None;
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = None;
+        op.two_week_recipients[0].sns_neuron_id = None;
+        let operation_id = op.operation_id.clone();
+        CANISTER_STATE.with(|cell| {
+            let mut state = cell.borrow_mut();
+            state.operation_journal = vec![op];
+            state.manager.processed_transactions.clear();
+        });
+
+        record_preflight_state_aware_failure(
+            &operation_id,
+            "recipient missing canonical SNS neuron id".to_string(),
+        );
+        let op = CANISTER_STATE.with(|cell| cell.borrow().operation_journal[0].clone());
+
+        assert_eq!(op.phase, OperationPhase::FailedTerminal);
+        assert_eq!(
+            op.reward_preflight.as_ref().map(|p| p.status),
+            Some(RewardPreflightStatus::FailedTerminal)
+        );
+        assert_eq!(op.reward_reservation, Some(RewardReservation::default()));
+        assert_eq!(op.reserved_reward_debit_e8s, Some(0));
+    }
+
+    #[test]
+    fn post_effect_preflight_failure_never_replaces_validated_evidence() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        let operation_id = op.operation_id.clone();
+        let attempt = RewardTransferAttemptRecord {
+            lifecycle: Some(RewardTransferAttemptLifecycle::Proven {
+                generation: 55,
+                block: 77,
+            }),
+            ..reward_attempt(200_000_000, 10_000, 55, &operation_id, [7; 32])
+        };
+        op.two_week_recipients[0].reward_transfer_attempt = Some(attempt.clone());
+        op.two_week_recipients[0].ledger_transfer_status = Some(TransferStatus::Succeeded);
+        op.two_week_recipients[0].transfer_status = TransferStatus::Succeeded;
+        op.two_week_recipients[0].transfer_block_index = Some(77);
+        op.two_week_recipients[0].ledger_transfer_block = Some(77);
+        op.two_week_recipients[0].reserve_debit_e8s = Some(200_010_000);
+        op.reward_reservation = Some(derived_reward_reservation_for_operation(&op).unwrap());
+        op.reserved_reward_debit_e8s = Some(300_020_000);
+        let prior_preflight = op.reward_preflight.clone();
+        CANISTER_STATE.with(|cell| {
+            let mut state = cell.borrow_mut();
+            state.operation_journal = vec![op];
+            state.manager.processed_transactions.clear();
+        });
+
+        record_preflight_retryable_query_failure(
+            &operation_id,
+            "unexpected preflight retry after transfer evidence".to_string(),
+        );
+        let restored =
+            crate::migrate_stable_state_for_tests(crate::export_versioned_stable_state_for_tests())
+                .unwrap()
+                .operation_journal
+                .remove(0);
+
+        assert_eq!(
+            restored.reward_preflight.as_ref().map(|p| p.ledger_fee_e8s),
+            prior_preflight.as_ref().map(|p| p.ledger_fee_e8s)
+        );
+        assert_eq!(
+            restored.two_week_recipients[0].reward_transfer_attempt,
+            Some(attempt)
+        );
+        assert_eq!(
+            restored.reward_preflight.as_ref().map(|p| p.status),
+            Some(RewardPreflightStatus::ManualReconciliationRequired)
+        );
+    }
+
+    #[test]
     fn real_redemption_reads_icrc1_fee() {
         let mut op = redemption_op_with_phase(OperationPhase::AwaitingIoReturn);
         op.io_amount = 123_456;
@@ -5143,6 +7333,88 @@ mod tests {
         }
     }
 
+    fn reward_attempt_plan(created_at_time: u64) -> RewardAttemptPlan {
+        let principal = candid::Principal::from_text("aaaaa-aa").unwrap();
+        RewardAttemptPlan {
+            source_account: Account::new(principal, Some(Subaccount([3; 32]))),
+            destination_account: Account::new(principal, Some(Subaccount([7; 32]))),
+            amount_e8s: 200_000_000,
+            fee_e8s: 10_000,
+            created_at_time,
+            canonical_sns_neuron_id: vec![7; 32],
+        }
+    }
+
+    fn install_reward_attempt(
+        op: &mut StreamOperation,
+        recipient_index: usize,
+        created_at_time: u64,
+        neuron_id: [u8; 32],
+        lifecycle: RewardTransferAttemptLifecycle,
+    ) -> RewardTransferAttemptRecord {
+        let amount = op.two_week_recipients[recipient_index].amount_e8s;
+        let operation_id = op.operation_id.clone();
+        let attempt = RewardTransferAttemptRecord {
+            lifecycle: Some(lifecycle),
+            ..reward_attempt(amount, 10_000, created_at_time, &operation_id, neuron_id)
+        };
+        let recipient = &mut op.two_week_recipients[recipient_index];
+        recipient.reward_transfer_attempt = Some(attempt.clone());
+        recipient.ledger_transfer_fee_e8s = Some(10_000);
+        recipient.reward_amount_received_e8s = Some(amount);
+        recipient.reserve_debit_e8s = Some(amount + 10_000);
+        attempt
+    }
+
+    fn reward_operation_ready_for_attempt() -> Vec<StreamOperation> {
+        let mut op = reward_preflight_operation();
+        op.reward_preflight = Some(validated_preflight_for(&op));
+        op.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 300_020_000,
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+        op.reserved_reward_debit_e8s = Some(300_020_000);
+        vec![op]
+    }
+
+    fn partial_distribution_bad_fee_shape() -> StreamOperation {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        let operation_id = op.operation_id.clone();
+        let first = RewardTransferAttemptRecord {
+            lifecycle: Some(RewardTransferAttemptLifecycle::Proven {
+                generation: 55,
+                block: 77,
+            }),
+            ..reward_attempt(200_000_000, 10_000, 55, &operation_id, [7; 32])
+        };
+        op.two_week_recipients[0].reward_transfer_attempt = Some(first);
+        op.two_week_recipients[0].transfer_status = TransferStatus::Succeeded;
+        op.two_week_recipients[0].transfer_block_index = Some(77);
+        op.two_week_recipients[0].ledger_transfer_status = Some(TransferStatus::Succeeded);
+        op.two_week_recipients[0].ledger_transfer_block = Some(77);
+        op.two_week_recipients[0].governance_refresh_status = Some(TransferStatus::Succeeded);
+        op.two_week_recipients[0].stake_before_e8s = Some(1_000_000_000);
+        op.two_week_recipients[0].expected_stake_after_e8s = Some(1_200_000_000);
+        op.two_week_recipients[0].minimum_expected_stake_after_e8s = Some(1_200_000_000);
+        op.two_week_recipients[0].observed_stake_after_e8s = Some(1_200_000_000);
+        op.two_week_recipients[0].ledger_transfer_fee_e8s = Some(10_000);
+        op.two_week_recipients[0].reward_amount_received_e8s = Some(200_000_000);
+        op.two_week_recipients[0].reserve_debit_e8s = Some(200_010_000);
+        install_reward_attempt(
+            &mut op,
+            1,
+            56,
+            [8; 32],
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 56 },
+        );
+        op.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 100_010_000,
+            externally_spent_but_uncommitted_reward_debit_e8s: 200_010_000,
+        });
+        op.reserved_reward_debit_e8s = Some(300_020_000);
+        op
+    }
+
     #[test]
     fn reward_transfer_attempt_is_persisted_before_external_call() {
         let attempt = reward_attempt(1_000_000, 10_000, 55, "icp:7", [7; 32]);
@@ -5153,6 +7425,567 @@ mod tests {
         assert_eq!(request.to, attempt.destination_account);
         assert_eq!(request.amount_e8s, 1_000_000);
         assert_eq!(request.fee_e8s, Some(10_000));
+    }
+
+    #[test]
+    fn overlapping_ticks_reuse_identical_reward_attempt() {
+        let mut journal = reward_operation_ready_for_attempt();
+        let operation_id = journal[0].operation_id.clone();
+
+        let first = get_or_create_reward_transfer_attempt(
+            &mut journal,
+            &empty_processed_transactions(),
+            &operation_id,
+            0,
+            reward_attempt_plan(55),
+        )
+        .unwrap();
+        let second = get_or_create_reward_transfer_attempt(
+            &mut journal,
+            &empty_processed_transactions(),
+            &operation_id,
+            0,
+            reward_attempt_plan(55),
+        )
+        .unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(
+            journal[0].two_week_recipients[0].reward_transfer_attempt,
+            Some(first)
+        );
+    }
+
+    #[test]
+    fn overlapping_tick_does_not_submit_second_inflight_attempt() {
+        let mut journal = reward_operation_ready_for_attempt();
+        let operation_id = journal[0].operation_id.clone();
+        let prepared = get_or_create_reward_transfer_attempt(
+            &mut journal,
+            &empty_processed_transactions(),
+            &operation_id,
+            0,
+            reward_attempt_plan(55),
+        )
+        .unwrap();
+
+        let submitted =
+            mark_reward_attempt_submitted_if_prepared(&mut journal, &operation_id, 0, &prepared)
+                .unwrap();
+        let second =
+            mark_reward_attempt_submitted_if_prepared(&mut journal, &operation_id, 0, &submitted)
+                .unwrap_err();
+
+        assert!(second.contains("already submitted"));
+        assert_eq!(
+            submitted.lifecycle,
+            Some(RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 55 })
+        );
+    }
+
+    #[test]
+    fn upgrade_with_submitted_attempt_does_not_blindly_resend() {
+        let mut journal = reward_operation_ready_for_attempt();
+        let operation_id = journal[0].operation_id.clone();
+        let prepared = get_or_create_reward_transfer_attempt(
+            &mut journal,
+            &empty_processed_transactions(),
+            &operation_id,
+            0,
+            reward_attempt_plan(55),
+        )
+        .unwrap();
+        let submitted =
+            mark_reward_attempt_submitted_if_prepared(&mut journal, &operation_id, 0, &prepared)
+                .unwrap();
+        let restored = journal.clone();
+
+        assert!(!reward_attempt_is_prepared(
+            restored[0].two_week_recipients[0]
+                .reward_transfer_attempt
+                .as_ref()
+                .unwrap()
+        ));
+        assert_eq!(
+            restored[0].two_week_recipients[0].reward_transfer_attempt,
+            Some(submitted)
+        );
+    }
+
+    #[test]
+    fn submitted_attempt_after_upgrade_enters_proof_reconciliation() {
+        let mut journal = reward_operation_ready_for_attempt();
+        let operation_id = journal[0].operation_id.clone();
+        let prepared = get_or_create_reward_transfer_attempt(
+            &mut journal,
+            &empty_processed_transactions(),
+            &operation_id,
+            0,
+            reward_attempt_plan(55),
+        )
+        .unwrap();
+        let submitted =
+            mark_reward_attempt_submitted_if_prepared(&mut journal, &operation_id, 0, &prepared)
+                .unwrap();
+        assert!(journal[0].two_week_recipients[0]
+            .ledger_transfer_proof_scan_state
+            .is_none());
+        CANISTER_STATE.with(|cell| {
+            cell.borrow_mut().operation_journal = journal;
+        });
+
+        let selected = next_reward_proof_pending_recipient(&BTreeSet::new()).unwrap();
+
+        assert_eq!(selected.0, operation_id);
+        assert_eq!(selected.1, 0);
+        assert_eq!(selected.2.reward_transfer_attempt, Some(submitted));
+        assert!(selected.2.ledger_transfer_proof_scan_state.is_none());
+    }
+
+    #[test]
+    fn proof_required_without_cursor_scans_from_default() {
+        let mut journal = reward_operation_ready_for_attempt();
+        let operation_id = journal[0].operation_id.clone();
+        let prepared = get_or_create_reward_transfer_attempt(
+            &mut journal,
+            &empty_processed_transactions(),
+            &operation_id,
+            0,
+            reward_attempt_plan(55),
+        )
+        .unwrap();
+        journal[0].two_week_recipients[0].reward_transfer_attempt =
+            Some(RewardTransferAttemptRecord {
+                lifecycle: Some(RewardTransferAttemptLifecycle::ProofRequired {
+                    generation: prepared.created_at_time,
+                    reason: "ambiguous transport failure".to_string(),
+                }),
+                ..prepared
+            });
+        journal[0].two_week_recipients[0].ledger_transfer_proof_scan_state = None;
+        CANISTER_STATE.with(|cell| {
+            cell.borrow_mut().operation_journal = journal;
+        });
+
+        let selected = next_reward_proof_pending_recipient(&BTreeSet::new()).unwrap();
+        let scan_state = selected
+            .2
+            .ledger_transfer_proof_scan_state
+            .clone()
+            .unwrap_or_default();
+
+        assert_eq!(selected.0, operation_id);
+        assert_eq!(scan_state, AccountHistoryScanState::default());
+    }
+
+    #[test]
+    fn ambiguous_transport_failure_keeps_attempt_and_full_reservation() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        let operation_id = op.operation_id.clone();
+        let attempt = reward_attempt(200_000_000, 10_000, 55, &operation_id, [7; 32]);
+        op.two_week_recipients[0].reward_transfer_attempt = Some(RewardTransferAttemptRecord {
+            lifecycle: Some(RewardTransferAttemptLifecycle::ProofRequired {
+                generation: 55,
+                reason: "CanisterCallFailed".to_string(),
+            }),
+            ..attempt.clone()
+        });
+        op.two_week_recipients[0].ledger_transfer_status = Some(TransferStatus::FailedRetryable);
+        op.two_week_recipients[0].transfer_status = TransferStatus::FailedRetryable;
+        op.two_week_recipients[0].reserve_debit_e8s = Some(200_010_000);
+
+        assert_eq!(
+            pending_reward_reservation_for_operation(&op, &empty_processed_transactions()),
+            Ok(300_020_000)
+        );
+        assert_eq!(
+            op.two_week_recipients[0].reward_transfer_attempt,
+            Some(RewardTransferAttemptRecord {
+                lifecycle: Some(RewardTransferAttemptLifecycle::ProofRequired {
+                    generation: 55,
+                    reason: "CanisterCallFailed".to_string(),
+                }),
+                ..attempt
+            })
+        );
+    }
+
+    #[test]
+    fn complete_history_no_match_does_not_blindly_resend() {
+        let mut scan = AccountHistoryScanState::default();
+        scan.cursor.backfill_complete = true;
+        scan.status.num_blocks_synced = Some(BlockIndex(100));
+
+        assert!(matches!(
+            classify_reward_transfer_proof_state(&scan, 1, TWO_WEEK_REWARD_PROOF_SCAN_MAX_PAGES),
+            RewardTransferProofDisposition::CompleteNoMatch(_)
+        ));
+    }
+
+    #[test]
+    fn submitted_attempt_never_becomes_prepared_without_proven_absence() {
+        let attempt = RewardTransferAttemptRecord {
+            lifecycle: Some(RewardTransferAttemptLifecycle::SubmittedAwaitingResult {
+                generation: 55,
+            }),
+            ..reward_attempt(200_000_000, 10_000, 55, "icp:7", [7; 32])
+        };
+
+        assert!(!reward_attempt_is_prepared(&attempt));
+    }
+
+    #[test]
+    fn second_get_or_create_cannot_replace_created_at_time() {
+        let mut journal = reward_operation_ready_for_attempt();
+        let operation_id = journal[0].operation_id.clone();
+
+        let first = get_or_create_reward_transfer_attempt(
+            &mut journal,
+            &empty_processed_transactions(),
+            &operation_id,
+            0,
+            reward_attempt_plan(55),
+        )
+        .unwrap();
+        let second = get_or_create_reward_transfer_attempt(
+            &mut journal,
+            &empty_processed_transactions(),
+            &operation_id,
+            0,
+            reward_attempt_plan(99),
+        )
+        .unwrap();
+
+        assert_eq!(second.created_at_time, 55);
+        assert_eq!(second, first);
+        assert_eq!(
+            journal[0].two_week_recipients[0]
+                .reward_transfer_attempt
+                .as_ref()
+                .unwrap()
+                .created_at_time,
+            55
+        );
+    }
+
+    #[test]
+    fn stale_transfer_callback_cannot_overwrite_newer_attempt_evidence() {
+        let mut journal = reward_operation_ready_for_attempt();
+        let operation_id = journal[0].operation_id.clone();
+        let stale = get_or_create_reward_transfer_attempt(
+            &mut journal,
+            &empty_processed_transactions(),
+            &operation_id,
+            0,
+            reward_attempt_plan(55),
+        )
+        .unwrap();
+        let newer = reward_attempt(200_000_000, 10_000, 99, &operation_id, [7; 32]);
+        journal[0].two_week_recipients[0].reward_transfer_attempt = Some(newer.clone());
+
+        assert!(!reward_attempt_matches_in_journal(
+            &journal,
+            &operation_id,
+            0,
+            &stale
+        ));
+        assert!(reward_attempt_matches_in_journal(
+            &journal,
+            &operation_id,
+            0,
+            &newer
+        ));
+    }
+
+    #[test]
+    fn two_sends_of_same_persisted_attempt_converge_to_one_block() {
+        let mut journal = reward_operation_ready_for_attempt();
+        let operation_id = journal[0].operation_id.clone();
+        let attempt = get_or_create_reward_transfer_attempt(
+            &mut journal,
+            &empty_processed_transactions(),
+            &operation_id,
+            0,
+            reward_attempt_plan(55),
+        )
+        .unwrap();
+        let duplicate = reward_duplicate_block(&attempt, 77);
+
+        assert_eq!(
+            classify_reward_transfer_result(
+                &attempt,
+                Ok(LedgerTransferSuccess {
+                    block_index: BlockIndex(77),
+                }),
+                None
+            ),
+            BoundaryTransferDecision::Succeeded(77)
+        );
+        assert_eq!(
+            classify_reward_transfer_result(
+                &attempt,
+                Err(LedgerTransferError::Duplicate {
+                    duplicate_of: BlockIndex(77)
+                }),
+                Some(&duplicate)
+            ),
+            BoundaryTransferDecision::Succeeded(77)
+        );
+    }
+
+    #[test]
+    fn attempt_identity_survives_same_wasm_upgrade() {
+        let mut journal = reward_operation_ready_for_attempt();
+        let operation_id = journal[0].operation_id.clone();
+        let attempt = get_or_create_reward_transfer_attempt(
+            &mut journal,
+            &empty_processed_transactions(),
+            &operation_id,
+            0,
+            reward_attempt_plan(55),
+        )
+        .unwrap();
+        let restored = journal.clone();
+
+        assert_eq!(
+            restored[0].two_week_recipients[0].reward_transfer_attempt,
+            Some(attempt)
+        );
+    }
+
+    #[test]
+    fn attempt_creation_rejects_processed_noncompleted_operation() {
+        let mut journal = reward_operation_ready_for_attempt();
+        let operation_id = journal[0].operation_id.clone();
+        let mut processed = BTreeSet::new();
+        processed.insert(journal[0].source_transaction_id.clone());
+
+        let err = get_or_create_reward_transfer_attempt(
+            &mut journal,
+            &processed,
+            &operation_id,
+            0,
+            reward_attempt_plan(55),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("non-completed reward operation"));
+        assert!(journal[0].two_week_recipients[0]
+            .reward_transfer_attempt
+            .is_none());
+    }
+
+    #[test]
+    fn live_reservation_rejects_small_recipient_debit() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        op.two_week_recipients[0].reserve_debit_e8s = Some(200_009_999);
+
+        assert!(
+            pending_reward_reservation_for_operation(&op, &empty_processed_transactions())
+                .unwrap_err()
+                .contains("recipient reserve debit")
+        );
+    }
+
+    #[test]
+    fn live_reservation_rejects_large_recipient_debit() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        op.two_week_recipients[0].reserve_debit_e8s = Some(200_010_001);
+
+        assert!(
+            pending_reward_reservation_for_operation(&op, &empty_processed_transactions())
+                .unwrap_err()
+                .contains("recipient reserve debit")
+        );
+    }
+
+    #[test]
+    fn live_reservation_rejects_attempt_fee_mismatch() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::Prepared,
+        );
+        op.two_week_recipients[0]
+            .reward_transfer_attempt
+            .as_mut()
+            .unwrap()
+            .fee_e8s = 20_000;
+        op.two_week_recipients[0].reserve_debit_e8s = Some(200_020_000);
+
+        assert!(
+            pending_reward_reservation_for_operation(&op, &empty_processed_transactions())
+                .unwrap_err()
+                .contains("attempt fee")
+        );
+    }
+
+    #[test]
+    fn live_reservation_rejects_lifecycle_generation_mismatch() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 54 },
+        );
+
+        assert!(
+            pending_reward_reservation_for_operation(&op, &empty_processed_transactions())
+                .unwrap_err()
+                .contains("lifecycle generation")
+        );
+    }
+
+    #[test]
+    fn live_reservation_rejects_preflight_total_mismatch() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        op.reward_preflight.as_mut().unwrap().total_reward_e8s += 1;
+
+        assert!(
+            pending_reward_reservation_for_operation(&op, &empty_processed_transactions())
+                .unwrap_err()
+                .contains("preflight totals")
+        );
+    }
+
+    #[test]
+    fn attempt_creation_rejects_invalid_live_reward_state() {
+        let mut journal = reward_operation_ready_for_attempt();
+        let operation_id = journal[0].operation_id.clone();
+        journal[0]
+            .reward_preflight
+            .as_mut()
+            .unwrap()
+            .total_reward_e8s += 1;
+
+        let err = get_or_create_reward_transfer_attempt(
+            &mut journal,
+            &empty_processed_transactions(),
+            &operation_id,
+            0,
+            reward_attempt_plan(55),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("preflight totals"));
+        assert!(journal[0].two_week_recipients[0]
+            .reward_transfer_attempt
+            .is_none());
+    }
+
+    #[test]
+    fn bad_fee_policy_rejects_invalid_live_reward_state() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 55 },
+        );
+        op.reward_preflight.as_mut().unwrap().total_reward_e8s += 1;
+
+        let err = apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 0, 20_000)
+            .unwrap_err();
+
+        assert!(err.contains("preflight totals"));
+        assert_eq!(
+            op.reward_preflight
+                .as_ref()
+                .map(|preflight| preflight.status),
+            Some(RewardPreflightStatus::Validated)
+        );
+    }
+
+    #[test]
+    fn model_commit_rejects_invalid_live_reward_state_without_mutation() {
+        let (mut manager, mut journal) = completed_reward_commit_fixture();
+        journal[0].two_week_recipients[0].reserve_debit_e8s = Some(200_009_999);
+        let before_manager = manager.clone();
+        let before_journal = journal.clone();
+        let operation_id = journal[0].operation_id.clone();
+
+        let err =
+            commit_completed_reward_operation_in_state(&mut manager, &mut journal, &operation_id)
+                .unwrap_err();
+
+        assert!(!err.is_empty());
+        assert_eq!(manager.state, before_manager.state);
+        assert_eq!(
+            manager.processed_transactions,
+            before_manager.processed_transactions
+        );
+        assert_eq!(
+            manager.active_staked_io_e8s,
+            before_manager.active_staked_io_e8s
+        );
+        assert_eq!(
+            manager.two_week_pool_backing_bps,
+            before_manager.two_week_pool_backing_bps
+        );
+        assert_eq!(journal, before_journal);
+    }
+
+    #[test]
+    fn bad_fee_policy_rejects_processed_noncompleted_operation() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        let operation_id = op.operation_id.clone();
+        op.two_week_recipients[0].reward_transfer_attempt = Some(reward_attempt(
+            200_000_000,
+            10_000,
+            55,
+            &operation_id,
+            [7; 32],
+        ));
+        let mut processed = BTreeSet::new();
+        processed.insert(op.source_transaction_id.clone());
+
+        let err = apply_reward_bad_fee_policy(&mut op, &processed, 0, 20_000).unwrap_err();
+
+        assert!(err.contains("non-completed reward operation"));
+        assert_ne!(
+            op.reward_preflight
+                .as_ref()
+                .map(|preflight| preflight.status),
+            Some(RewardPreflightStatus::Pending)
+        );
+    }
+
+    #[test]
+    fn live_helpers_and_aggregate_accounting_agree_on_processed_state() {
+        let op = reward_operation_ready_for_attempt().remove(0);
+        let mut processed = BTreeSet::new();
+        processed.insert(op.source_transaction_id.clone());
+
+        let aggregate = pending_reward_reservation_for_operation(&op, &processed).unwrap_err();
+        let components =
+            pending_reward_reservation_components(std::iter::once(&op), &processed, None)
+                .unwrap_err();
+
+        assert!(aggregate.contains("non-completed reward operation"));
+        assert_eq!(components, aggregate);
+    }
+
+    #[test]
+    fn debug_and_release_icp_scanner_use_same_client_shape() {
+        let source = include_str!("mod.rs");
+        let scanner = source
+            .split("async fn scan_icp_account_through_index")
+            .nth(1)
+            .and_then(|rest| {
+                rest.split("async fn scan_icrc_account_through_index")
+                    .next()
+            })
+            .expect("ICP scanner source section");
+
+        assert!(scanner.contains("IcpIndexCanisterClient"));
+        assert!(!scanner.contains("IcrcIndexCanisterClient"));
+        assert!(!scanner.contains("debug_assertions"));
     }
 
     #[test]
@@ -5791,6 +8624,13 @@ mod tests {
         a.ledger_transfer_fee_e8s = None;
         a.reward_amount_received_e8s = None;
         a.reserve_debit_e8s = None;
+        a.stake_before_e8s = None;
+        a.expected_stake_after_e8s = None;
+        a.minimum_expected_stake_after_e8s = None;
+        a.observed_stake_after_e8s = None;
+        a.concurrent_stake_delta_e8s = None;
+        a.refresh_retry_count = None;
+        a.refresh_last_error = None;
         let mut b = two_week_recipient_with_attempt(TransferStatus::Pending);
         b.sns_neuron_id = Some(vec![8; 32]);
         b.neuron_id = 8;
@@ -5799,8 +8639,34 @@ mod tests {
         b.ledger_transfer_fee_e8s = None;
         b.reward_amount_received_e8s = None;
         b.reserve_debit_e8s = None;
+        b.stake_before_e8s = None;
+        b.expected_stake_after_e8s = None;
+        b.minimum_expected_stake_after_e8s = None;
+        b.observed_stake_after_e8s = None;
+        b.concurrent_stake_delta_e8s = None;
+        b.refresh_retry_count = None;
+        b.refresh_last_error = None;
         op.two_week_recipients = vec![a, b];
         op
+    }
+
+    fn zero_recipient_reward_operation() -> StreamOperation {
+        StreamOperation::stream(
+            "icp",
+            19,
+            StreamOperationKind::TwoWeekMaturityStream,
+            500_000_000,
+            io_core_model::ProtocolState {
+                liquid_icp_e8s: 300_000_000,
+                two_year_staked_icp_e8s: 0,
+                two_week_staked_icp_e8s: 200_000_000,
+                total_io_supply_e8s: 100_000_000_000_000,
+                protocol_reserve_io_e8s: 89_999_700_000_000,
+                non_redeemable_governance_io_e8s: 10_000_000_000_000,
+            },
+            300_000_000,
+            OperationPhase::PartiallyDistributed,
+        )
     }
 
     fn validated_preflight_for(op: &StreamOperation) -> RewardDistributionPreflight {
@@ -5813,6 +8679,130 @@ mod tests {
             123,
         )
         .unwrap()
+    }
+
+    fn empty_processed_transactions() -> BTreeSet<String> {
+        BTreeSet::new()
+    }
+
+    fn processed_for(op: &StreamOperation) -> BTreeSet<String> {
+        BTreeSet::from([op.source_transaction_id.clone()])
+    }
+
+    fn completed_reward_operation_with_zero_reservation() -> StreamOperation {
+        let mut op = reward_preflight_operation();
+        op.reward_preflight = Some(validated_preflight_for(&op));
+        op.phase = OperationPhase::Completed;
+        op.reward_reservation = Some(RewardReservation::default());
+        op.reserved_reward_debit_e8s = Some(0);
+        for recipient in &mut op.two_week_recipients {
+            recipient.transfer_status = TransferStatus::Succeeded;
+            recipient.ledger_transfer_status = Some(TransferStatus::Succeeded);
+            recipient.governance_refresh_status = Some(TransferStatus::Succeeded);
+            recipient.ledger_transfer_fee_e8s = Some(10_000);
+            recipient.reward_amount_received_e8s = Some(recipient.amount_e8s);
+            recipient.reserve_debit_e8s = Some(recipient.amount_e8s + 10_000);
+        }
+        op
+    }
+
+    #[test]
+    fn completed_reward_is_zero_in_pending_reservation_aggregate() {
+        let completed = completed_reward_operation_with_zero_reservation();
+        let processed = processed_for(&completed);
+
+        assert_eq!(
+            pending_reward_reservation_for_operation(&completed, &processed),
+            Ok(0)
+        );
+        assert_eq!(
+            pending_reward_reservations(std::iter::once(&completed), &processed, None),
+            Ok(0)
+        );
+    }
+
+    #[test]
+    fn completed_reward_missing_processed_evidence_fails_closed() {
+        let completed = completed_reward_operation_with_zero_reservation();
+
+        let err =
+            pending_reward_reservation_for_operation(&completed, &empty_processed_transactions())
+                .unwrap_err();
+
+        assert!(err.contains("missing processed transaction evidence"));
+    }
+
+    #[test]
+    fn processed_noncompleted_reward_is_corrupt() {
+        let mut op = reward_preflight_operation();
+        op.reward_preflight = Some(validated_preflight_for(&op));
+        let processed = processed_for(&op);
+
+        let err = pending_reward_reservation_for_operation(&op, &processed).unwrap_err();
+
+        assert!(err.contains("non-completed reward operation"));
+    }
+
+    #[test]
+    fn completed_reward_with_nonzero_reservation_is_corrupt() {
+        let mut completed = completed_reward_operation_with_zero_reservation();
+        completed.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 1,
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+        completed.reserved_reward_debit_e8s = Some(1);
+        let processed = processed_for(&completed);
+
+        let err = pending_reward_reservation_for_operation(&completed, &processed).unwrap_err();
+
+        assert!(err.contains("nonzero reward reservation"));
+    }
+
+    #[test]
+    fn second_reward_preflight_after_completed_reward_succeeds() {
+        let completed = completed_reward_operation_with_zero_reservation();
+        let processed = processed_for(&completed);
+        let mut second = reward_preflight_operation();
+        second.operation_id = "icp:10".to_string();
+        second.source_transaction_id = "icp:10".to_string();
+        second.reward_preflight = Some(validated_preflight_for(&second));
+        let ops = [completed, second];
+
+        let reserved = pending_reward_reservations(ops.iter(), &processed, None).unwrap();
+
+        assert_eq!(reserved, 300_020_000);
+        assert_eq!(
+            reward_reserve_available(600_040_000, reserved).unwrap(),
+            300_020_000
+        );
+    }
+
+    #[test]
+    fn subsequent_jupiter_stream_is_not_blocked_by_valid_completed_reward() {
+        let completed = completed_reward_operation_with_zero_reservation();
+        let processed = processed_for(&completed);
+        let reserved =
+            pending_reward_reservations(std::iter::once(&completed), &processed, None).unwrap();
+
+        assert_eq!(reserved, 0);
+        assert_eq!(
+            reward_reserve_available(1_000_000_000, reserved).unwrap(),
+            1_000_000_000
+        );
+    }
+
+    #[test]
+    fn subsequent_two_year_stream_is_not_blocked_by_valid_completed_reward() {
+        let completed = completed_reward_operation_with_zero_reservation();
+        let processed = processed_for(&completed);
+        let reserved =
+            pending_reward_reservations(std::iter::once(&completed), &processed, None).unwrap();
+
+        assert_eq!(reserved, 0);
+        assert_eq!(
+            reward_reserve_available(42_000_000, reserved).unwrap(),
+            42_000_000
+        );
     }
 
     #[test]
@@ -5831,6 +8821,168 @@ mod tests {
             vec![vec![7; 32], vec![8; 32]]
         );
         assert_eq!(preflight.compatibility_keys, vec![7, 8]);
+    }
+
+    fn preflight_snapshot_for_tests(
+        journal: &[StreamOperation],
+        operation_id: &str,
+    ) -> RewardPreflightSnapshot {
+        capture_reward_preflight_snapshot(
+            journal,
+            &empty_processed_transactions(),
+            700_000_000,
+            operation_id,
+        )
+        .unwrap()
+    }
+
+    fn finalize_preflight_for_tests(
+        snapshot: &RewardPreflightSnapshot,
+        journal: &[StreamOperation],
+        protocol_reserve_io_e8s: u128,
+    ) -> Result<RewardDistributionPreflight, RewardPreflightCasError> {
+        finalize_reward_preflight_snapshot(
+            snapshot,
+            journal,
+            &empty_processed_transactions(),
+            protocol_reserve_io_e8s,
+            RewardPreflightObservedInputs {
+                sns_governance_canister: candid::Principal::from_text(
+                    "qaa6y-5yaaa-aaaaa-aaafa-cai",
+                )
+                .unwrap(),
+                ledger_fee_e8s: 10_000,
+                real_reserve_balance_e8s: 700_000_000,
+                validated_at_timestamp_nanos: 123,
+            },
+        )
+    }
+
+    #[test]
+    fn preflight_rejects_snapshot_after_other_reservation_is_added() {
+        let mut op = reward_preflight_operation();
+        op.operation_id = "icp:1".to_string();
+        let mut journal = vec![op];
+        let snapshot = preflight_snapshot_for_tests(&journal, "icp:1");
+        let mut other = reward_preflight_operation();
+        other.operation_id = "icp:2".to_string();
+        other.source_transaction_id = "icp:2".to_string();
+        other.reward_preflight = Some(validated_preflight_for(&other));
+        other.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 300_020_000,
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+        other.reserved_reward_debit_e8s = Some(300_020_000);
+        journal.push(other);
+
+        assert!(matches!(
+            finalize_preflight_for_tests(&snapshot, &journal, 700_000_000),
+            Err(RewardPreflightCasError::RetryableConflict(message))
+                if message.contains("reservation set changed")
+        ));
+    }
+
+    #[test]
+    fn preflight_rejects_snapshot_after_model_reserve_changes() {
+        let mut op = reward_preflight_operation();
+        op.operation_id = "icp:1".to_string();
+        let journal = vec![op];
+        let snapshot = preflight_snapshot_for_tests(&journal, "icp:1");
+
+        assert!(matches!(
+            finalize_preflight_for_tests(&snapshot, &journal, 700_000_001),
+            Err(RewardPreflightCasError::RetryableConflict(message))
+                if message.contains("protocol reserve changed")
+        ));
+    }
+
+    #[test]
+    fn preflight_rejects_snapshot_after_recipient_plan_changes() {
+        let mut op = reward_preflight_operation();
+        op.operation_id = "icp:1".to_string();
+        let mut journal = vec![op];
+        let snapshot = preflight_snapshot_for_tests(&journal, "icp:1");
+        journal[0].two_week_recipients[0].amount_e8s += 1;
+
+        assert!(matches!(
+            finalize_preflight_for_tests(&snapshot, &journal, 700_000_000),
+            Err(RewardPreflightCasError::RetryableConflict(message))
+                if message.contains("operation snapshot changed")
+        ));
+    }
+
+    #[test]
+    fn preflight_rejects_snapshot_after_attempt_state_changes() {
+        let mut op = reward_preflight_operation();
+        op.operation_id = "icp:1".to_string();
+        let mut journal = vec![op];
+        let snapshot = preflight_snapshot_for_tests(&journal, "icp:1");
+        journal[0].two_week_recipients[0].reward_transfer_attempt =
+            Some(reward_attempt(200_000_000, 10_000, 55, "icp:1", [7; 32]));
+
+        assert!(matches!(
+            finalize_preflight_for_tests(&snapshot, &journal, 700_000_000),
+            Err(RewardPreflightCasError::RetryableConflict(message))
+                if message.contains("operation snapshot changed")
+        ));
+    }
+
+    #[test]
+    fn preflight_cas_conflict_is_retryable_and_moves_no_value() {
+        let mut op = reward_preflight_operation();
+        op.operation_id = "icp:1".to_string();
+        let mut journal = vec![op];
+        let snapshot = preflight_snapshot_for_tests(&journal, "icp:1");
+        let before = journal.clone();
+        journal[0].two_week_recipients[0].amount_e8s += 1;
+
+        let err = finalize_preflight_for_tests(&snapshot, &journal, 700_000_000).unwrap_err();
+
+        assert!(matches!(err, RewardPreflightCasError::RetryableConflict(_)));
+        assert_eq!(before[0].reward_preflight, None);
+        assert!(before[0]
+            .two_week_recipients
+            .iter()
+            .all(|recipient| recipient.reward_transfer_attempt.is_none()));
+    }
+
+    #[test]
+    fn competing_preflight_reuses_one_validated_result() {
+        let mut op = reward_preflight_operation();
+        op.operation_id = "icp:1".to_string();
+        let mut journal = vec![op];
+        let snapshot = preflight_snapshot_for_tests(&journal, "icp:1");
+        let validated = validated_preflight_for(&journal[0]);
+        journal[0].reward_preflight = Some(validated.clone());
+        journal[0].reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: validated.total_reserve_debit_e8s,
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+        journal[0].reserved_reward_debit_e8s = Some(validated.total_reserve_debit_e8s);
+
+        assert!(matches!(
+            finalize_preflight_for_tests(&snapshot, &journal, 700_000_000),
+            Err(RewardPreflightCasError::RetryableConflict(_))
+        ));
+        assert_eq!(journal[0].reward_preflight, Some(validated));
+    }
+
+    #[test]
+    fn preflight_error_is_durable_and_visible() {
+        let mut op = reward_preflight_operation();
+        op.two_week_recipients[0].sns_neuron_id = None;
+
+        let err = build_reward_distribution_preflight(
+            &op,
+            candid::Principal::from_text("qaa6y-5yaaa-aaaaa-aaafa-cai").unwrap(),
+            10_000,
+            700_000_000,
+            700_000_000,
+            123,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("missing a canonical SNS neuron id"));
     }
 
     #[test]
@@ -6045,59 +9197,886 @@ mod tests {
     }
 
     #[test]
-    fn reservation_decreases_after_proven_transfer() {
+    fn reservation_total_does_not_decrease_after_proven_transfer() {
         let mut op = reward_preflight_operation();
         let preflight = validated_preflight_for(&op);
         op.reward_preflight = Some(preflight);
-        op.reserved_reward_debit_e8s = Some(pending_reward_reservation_for_operation(&op));
+        op.reserved_reward_debit_e8s = Some(
+            pending_reward_reservation_for_operation(&op, &empty_processed_transactions()).unwrap(),
+        );
+        install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::Proven {
+                generation: 55,
+                block: 44,
+            },
+        );
         op.two_week_recipients[0].ledger_transfer_status = Some(TransferStatus::Succeeded);
         op.two_week_recipients[0].transfer_status = TransferStatus::Succeeded;
+        op.two_week_recipients[0].transfer_block_index = Some(44);
+        op.two_week_recipients[0].ledger_transfer_block = Some(44);
         op.two_week_recipients[0].reserve_debit_e8s = Some(200_010_000);
 
-        assert_eq!(pending_reward_reservation_for_operation(&op), 100_010_000);
+        assert_eq!(
+            pending_reward_reservation_for_operation(&op, &empty_processed_transactions()),
+            Ok(300_020_000)
+        );
+        assert_eq!(
+            pending_reward_unspent_reservation_for_operation(&op, &empty_processed_transactions()),
+            Ok(100_010_000)
+        );
+        assert_eq!(
+            pending_reward_spent_uncommitted_reservation_for_operation(
+                &op,
+                &empty_processed_transactions()
+            ),
+            Ok(200_010_000)
+        );
     }
 
     #[test]
-    fn reservation_does_not_double_count_refresh_pending_recipient() {
+    fn refresh_pending_spent_debit_remains_unavailable() {
         let mut op = reward_preflight_operation();
         let preflight = validated_preflight_for(&op);
         op.reward_preflight = Some(preflight);
+        install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::Proven {
+                generation: 55,
+                block: 44,
+            },
+        );
         op.two_week_recipients[0].ledger_transfer_status = Some(TransferStatus::Succeeded);
         op.two_week_recipients[0].transfer_status = TransferStatus::Succeeded;
+        op.two_week_recipients[0].transfer_block_index = Some(44);
+        op.two_week_recipients[0].ledger_transfer_block = Some(44);
         op.two_week_recipients[0].governance_refresh_status = Some(TransferStatus::Pending);
+        op.two_week_recipients[0].reserve_debit_e8s = Some(200_010_000);
 
-        assert_eq!(pending_reward_reservation_for_operation(&op), 100_010_000);
+        assert_eq!(
+            pending_reward_reservation_for_operation(&op, &empty_processed_transactions()),
+            Ok(300_020_000)
+        );
+        assert_eq!(
+            pending_reward_spent_uncommitted_reservation_for_operation(
+                &op,
+                &empty_processed_transactions()
+            ),
+            Ok(200_010_000)
+        );
     }
 
     #[test]
     fn proof_pending_transfer_preserves_reservation() {
         let mut op = reward_preflight_operation();
         op.reward_preflight = Some(validated_preflight_for(&op));
+        install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::ProofRequired {
+                generation: 55,
+                reason: "TooOld".to_string(),
+            },
+        );
         op.two_week_recipients[0].ledger_transfer_status = Some(TransferStatus::FailedRetryable);
         op.two_week_recipients[0].ledger_transfer_proof_scan_state =
             Some(AccountHistoryScanState::default());
 
-        assert_eq!(pending_reward_reservation_for_operation(&op), 300_020_000);
+        assert_eq!(
+            pending_reward_reservation_for_operation(&op, &empty_processed_transactions()),
+            Ok(300_020_000)
+        );
     }
 
     #[test]
     fn manual_reconciliation_preserves_required_reservation() {
         let mut op = reward_preflight_operation();
         op.reward_preflight = Some(validated_preflight_for(&op));
+        install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::ProofRequired {
+                generation: 55,
+                reason: "manual".to_string(),
+            },
+        );
         op.two_week_recipients[0].ledger_transfer_status = Some(TransferStatus::FailedTerminal);
         op.two_week_recipients[0].ledger_transfer_proof_scan_state =
             Some(AccountHistoryScanState::default());
 
-        assert_eq!(pending_reward_reservation_for_operation(&op), 300_020_000);
+        assert_eq!(
+            pending_reward_reservation_for_operation(&op, &empty_processed_transactions()),
+            Ok(300_020_000)
+        );
     }
 
     #[test]
-    fn completed_operation_releases_reservation() {
+    fn terminal_after_proven_transfer_keeps_spent_uncommitted_reservation() {
         let mut op = reward_preflight_operation();
         op.reward_preflight = Some(validated_preflight_for(&op));
-        op.phase = OperationPhase::Completed;
+        op.phase = OperationPhase::FailedTerminal;
+        install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::Proven {
+                generation: 55,
+                block: 44,
+            },
+        );
+        op.two_week_recipients[0].transfer_status = TransferStatus::Succeeded;
+        op.two_week_recipients[0].ledger_transfer_status = Some(TransferStatus::Succeeded);
+        op.two_week_recipients[0].transfer_block_index = Some(44);
+        op.two_week_recipients[0].ledger_transfer_block = Some(44);
+        op.two_week_recipients[0].reserve_debit_e8s = Some(200_010_000);
 
-        assert_eq!(pending_reward_reservation_for_operation(&op), 0);
+        assert_eq!(
+            pending_reward_spent_uncommitted_reservation_for_operation(
+                &op,
+                &empty_processed_transactions()
+            ),
+            Ok(200_010_000)
+        );
+        assert_eq!(
+            pending_reward_reservation_for_operation(&op, &empty_processed_transactions()),
+            Ok(300_020_000)
+        );
+    }
+
+    #[test]
+    fn manual_reconciliation_after_too_old_keeps_full_reservation() {
+        let mut op = reward_preflight_operation();
+        op.reward_preflight = Some(RewardDistributionPreflight {
+            status: RewardPreflightStatus::ManualReconciliationRequired,
+            ..validated_preflight_for(&op)
+        });
+        op.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 300_020_000,
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+        op.reserved_reward_debit_e8s = Some(300_020_000);
+        install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::ProofRequired {
+                generation: 55,
+                reason: "TooOld".to_string(),
+            },
+        );
+        op.two_week_recipients[0].ledger_transfer_status = Some(TransferStatus::FailedRetryable);
+        op.two_week_recipients[0].ledger_transfer_proof_scan_state =
+            Some(AccountHistoryScanState::default());
+
+        assert_eq!(
+            pending_reward_reservation_for_operation(&op, &empty_processed_transactions()),
+            Ok(300_020_000)
+        );
+    }
+
+    #[test]
+    fn bad_fee_before_first_effect_repreflights_atomically() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 55 },
+        );
+
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 0, 20_000).unwrap();
+
+        assert_eq!(
+            op.reward_preflight
+                .as_ref()
+                .map(|preflight| preflight.status),
+            Some(RewardPreflightStatus::Pending)
+        );
+        assert_eq!(
+            op.reward_preflight
+                .as_ref()
+                .map(|preflight| preflight.ledger_fee_e8s),
+            Some(10_000)
+        );
+        assert_eq!(
+            op.reward_fee_repreflight,
+            Some(RewardFeeRepreflightEvidence {
+                prior_validated_fee_e8s: 10_000,
+                observed_current_fee_e8s: 20_000,
+                prior_reserved_debit_e8s: 300_020_000,
+                invalidated_at_timestamp_nanos: 0,
+                attempt_generation: 55,
+            })
+        );
+        assert_eq!(
+            op.reward_reservation,
+            Some(RewardReservation {
+                unspent_reserved_reward_debit_e8s: 300_020_000,
+                externally_spent_but_uncommitted_reward_debit_e8s: 0,
+            })
+        );
+        assert_eq!(op.reserved_reward_debit_e8s, Some(300_020_000));
+        assert!(op
+            .two_week_recipients
+            .iter()
+            .all(|recipient| recipient.reward_transfer_attempt.is_none()));
+        assert_eq!(
+            pending_reward_reservation_for_operation(&op, &empty_processed_transactions()),
+            Ok(300_020_000)
+        );
+    }
+
+    #[test]
+    fn operation_never_has_two_submitted_reward_attempts() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 55 },
+        );
+        install_reward_attempt(
+            &mut op,
+            1,
+            56,
+            [8; 32],
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 56 },
+        );
+
+        let err = crate::validate_reward_operation_accounting(
+            &op,
+            Some(&empty_processed_transactions()),
+            crate::RewardValidationMode::Current,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("more than one submitted/proof-required"));
+    }
+
+    #[test]
+    fn overlapping_ticks_cannot_submit_different_recipients() {
+        let mut journal = reward_operation_ready_for_attempt();
+        let operation_id = journal[0].operation_id.clone();
+        let prepared = get_or_create_reward_transfer_attempt(
+            &mut journal,
+            &empty_processed_transactions(),
+            &operation_id,
+            0,
+            reward_attempt_plan(55),
+        )
+        .unwrap();
+        mark_reward_attempt_submitted_if_prepared(&mut journal, &operation_id, 0, &prepared)
+            .unwrap();
+        CANISTER_STATE.with(|cell| {
+            cell.borrow_mut().operation_journal = journal;
+        });
+
+        assert!(next_reward_ledger_recipient(&BTreeSet::new()).is_none());
+    }
+
+    #[test]
+    fn bad_fee_on_second_recipient_cannot_clear_first_submitted_attempt() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        let first = install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 55 },
+        );
+        install_reward_attempt(
+            &mut op,
+            1,
+            56,
+            [8; 32],
+            RewardTransferAttemptLifecycle::Prepared,
+        );
+
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 1, 20_000).unwrap();
+
+        assert_eq!(
+            op.reward_preflight
+                .as_ref()
+                .map(|preflight| preflight.status),
+            Some(RewardPreflightStatus::ManualReconciliationRequired)
+        );
+        assert_eq!(
+            op.two_week_recipients[0].reward_transfer_attempt,
+            Some(first)
+        );
+        assert_eq!(op.reserved_reward_debit_e8s, Some(300_020_000));
+    }
+
+    #[test]
+    fn bad_fee_with_other_proof_required_attempt_requires_reconciliation() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        let first = install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::ProofRequired {
+                generation: 55,
+                reason: "ambiguous".to_string(),
+            },
+        );
+        install_reward_attempt(
+            &mut op,
+            1,
+            56,
+            [8; 32],
+            RewardTransferAttemptLifecycle::Prepared,
+        );
+
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 1, 20_000).unwrap();
+
+        assert_eq!(
+            op.reward_preflight
+                .as_ref()
+                .map(|preflight| preflight.status),
+            Some(RewardPreflightStatus::ManualReconciliationRequired)
+        );
+        assert_eq!(
+            op.two_week_recipients[0].reward_transfer_attempt,
+            Some(first)
+        );
+        assert_eq!(op.reserved_reward_debit_e8s, Some(300_020_000));
+    }
+
+    #[test]
+    fn single_exact_bad_fee_callback_can_repreflight() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 55 },
+        );
+
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 0, 20_000).unwrap();
+
+        assert_eq!(
+            op.reward_preflight
+                .as_ref()
+                .map(|preflight| preflight.status),
+            Some(RewardPreflightStatus::Pending)
+        );
+        assert!(op
+            .two_week_recipients
+            .iter()
+            .all(|recipient| recipient.reward_transfer_attempt.is_none()));
+    }
+
+    #[test]
+    fn pending_repreflight_old_and_observed_fee_evidence_survives_restore() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 55 },
+        );
+
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 0, 20_000).unwrap();
+        let bytes = Encode!(&op).unwrap();
+        let restored = Decode!(&bytes, StreamOperation).unwrap();
+
+        assert_eq!(
+            restored.reward_fee_repreflight,
+            Some(RewardFeeRepreflightEvidence {
+                prior_validated_fee_e8s: 10_000,
+                observed_current_fee_e8s: 20_000,
+                prior_reserved_debit_e8s: 300_020_000,
+                invalidated_at_timestamp_nanos: 0,
+                attempt_generation: 55,
+            })
+        );
+        assert_eq!(
+            restored
+                .reward_preflight
+                .as_ref()
+                .map(|preflight| preflight.ledger_fee_e8s),
+            Some(10_000)
+        );
+        assert_eq!(
+            pending_reward_reservation_for_operation(&restored, &empty_processed_transactions()),
+            Ok(300_020_000)
+        );
+    }
+
+    #[test]
+    fn pending_repreflight_missing_prior_reservation_fails_closed() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 55 },
+        );
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 0, 20_000).unwrap();
+        op.reward_reservation = None;
+        op.reserved_reward_debit_e8s = None;
+
+        assert!(
+            pending_reward_reservation_for_operation(&op, &empty_processed_transactions())
+                .unwrap_err()
+                .contains("missing prior reservation")
+        );
+    }
+
+    #[test]
+    fn pending_repreflight_new_validation_atomically_replaces_reservation() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 55 },
+        );
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 0, 20_000).unwrap();
+
+        let preflight = build_reward_distribution_preflight(
+            &op,
+            candid::Principal::from_text("qaa6y-5yaaa-aaaaa-aaafa-cai").unwrap(),
+            20_000,
+            300_040_000,
+            300_040_000,
+            124,
+        )
+        .unwrap();
+        let reserved = preflight.total_reserve_debit_e8s;
+        op.reward_preflight = Some(preflight);
+        op.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: reserved,
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+        op.reward_fee_repreflight = None;
+        op.reserved_reward_debit_e8s = Some(reserved);
+
+        assert_eq!(reserved, 300_040_000);
+        assert_eq!(
+            pending_reward_reservation_for_operation(&op, &empty_processed_transactions()),
+            Ok(300_040_000)
+        );
+        assert_eq!(
+            op.reward_preflight
+                .as_ref()
+                .map(|preflight| preflight.ledger_fee_e8s),
+            Some(20_000)
+        );
+    }
+
+    #[test]
+    fn bad_fee_before_first_effect_with_insufficient_new_reserve_moves_no_value() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 55 },
+        );
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 0, 400_000_000)
+            .unwrap();
+
+        let err = build_reward_distribution_preflight(
+            &op,
+            candid::Principal::from_text("qaa6y-5yaaa-aaaaa-aaafa-cai").unwrap(),
+            400_000_000,
+            300_020_000,
+            300_020_000,
+            124,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("protocol model reserve cannot cover"));
+        assert!(op
+            .two_week_recipients
+            .iter()
+            .all(|recipient| recipient.transfer_block_index.is_none()));
+        assert_eq!(
+            op.reward_fee_repreflight
+                .map(|evidence| evidence.prior_reserved_debit_e8s),
+            Some(300_020_000)
+        );
+        assert_eq!(
+            pending_reward_reservation_for_operation(&op, &empty_processed_transactions()),
+            Ok(300_020_000)
+        );
+    }
+
+    #[test]
+    fn bad_fee_after_partial_distribution_preserves_original_attempt() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        let operation_id = op.operation_id.clone();
+        let attempt = RewardTransferAttemptRecord {
+            lifecycle: Some(RewardTransferAttemptLifecycle::Proven {
+                generation: 55,
+                block: 77,
+            }),
+            ..reward_attempt(200_000_000, 10_000, 55, &operation_id, [7; 32])
+        };
+        op.two_week_recipients[0].reward_transfer_attempt = Some(attempt.clone());
+        op.two_week_recipients[0].ledger_transfer_status = Some(TransferStatus::Succeeded);
+        op.two_week_recipients[0].transfer_status = TransferStatus::Succeeded;
+        op.two_week_recipients[0].transfer_block_index = Some(77);
+        op.two_week_recipients[0].ledger_transfer_block = Some(77);
+        op.two_week_recipients[0].reserve_debit_e8s = Some(200_010_000);
+        let reservation =
+            derived_reward_reservation_for_operation(&op).expect("valid partial reward split");
+        op.reward_reservation = Some(reservation);
+        op.reserved_reward_debit_e8s = Some(
+            reservation
+                .checked_total_unavailable_reward_debit_e8s()
+                .unwrap(),
+        );
+
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 1, 20_000).unwrap();
+
+        assert_eq!(
+            op.reward_preflight
+                .as_ref()
+                .map(|preflight| preflight.status),
+            Some(RewardPreflightStatus::ManualReconciliationRequired)
+        );
+        assert_eq!(
+            op.two_week_recipients[0].reward_transfer_attempt,
+            Some(attempt)
+        );
+    }
+
+    #[test]
+    fn bad_fee_after_partial_distribution_preserves_full_uncommitted_reservation() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        let operation_id = op.operation_id.clone();
+        op.two_week_recipients[0].reward_transfer_attempt = Some(RewardTransferAttemptRecord {
+            lifecycle: Some(RewardTransferAttemptLifecycle::Proven {
+                generation: 55,
+                block: 77,
+            }),
+            ..reward_attempt(200_000_000, 10_000, 55, &operation_id, [7; 32])
+        });
+        op.two_week_recipients[0].ledger_transfer_status = Some(TransferStatus::Succeeded);
+        op.two_week_recipients[0].transfer_status = TransferStatus::Succeeded;
+        op.two_week_recipients[0].transfer_block_index = Some(77);
+        op.two_week_recipients[0].ledger_transfer_block = Some(77);
+        op.two_week_recipients[0].reserve_debit_e8s = Some(200_010_000);
+        let reservation =
+            derived_reward_reservation_for_operation(&op).expect("valid partial reward split");
+        op.reward_reservation = Some(reservation);
+        op.reserved_reward_debit_e8s = Some(
+            reservation
+                .checked_total_unavailable_reward_debit_e8s()
+                .unwrap(),
+        );
+
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 1, 20_000).unwrap();
+
+        assert_eq!(
+            pending_reward_reservation_for_operation(&op, &empty_processed_transactions()),
+            Ok(300_020_000)
+        );
+        assert_eq!(op.reserved_reward_debit_e8s, Some(300_020_000));
+    }
+
+    #[test]
+    fn bad_fee_exact_submitted_after_prior_proven_recipient_requires_manual_reconciliation() {
+        let mut op = partial_distribution_bad_fee_shape();
+
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 1, 20_000).unwrap();
+
+        assert_eq!(
+            op.reward_preflight
+                .as_ref()
+                .map(|preflight| preflight.status),
+            Some(RewardPreflightStatus::ManualReconciliationRequired)
+        );
+        assert_eq!(op.phase, OperationPhase::FailedTerminal);
+    }
+
+    #[test]
+    fn bad_fee_exact_submitted_after_prior_success_preserves_prior_attempt() {
+        let mut op = partial_distribution_bad_fee_shape();
+        let prior_attempt = op.two_week_recipients[0].reward_transfer_attempt.clone();
+        let current_attempt = op.two_week_recipients[1].reward_transfer_attempt.clone();
+
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 1, 20_000).unwrap();
+
+        assert_eq!(
+            op.two_week_recipients[0].reward_transfer_attempt,
+            prior_attempt
+        );
+        assert_eq!(
+            op.two_week_recipients[1].reward_transfer_attempt,
+            current_attempt
+        );
+    }
+
+    #[test]
+    fn bad_fee_exact_submitted_after_prior_success_preserves_prior_blocks() {
+        let mut op = partial_distribution_bad_fee_shape();
+
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 1, 20_000).unwrap();
+
+        assert_eq!(op.two_week_recipients[0].transfer_block_index, Some(77));
+        assert_eq!(op.two_week_recipients[0].ledger_transfer_block, Some(77));
+        assert_eq!(
+            op.two_week_recipients[0].ledger_transfer_status,
+            Some(TransferStatus::Succeeded)
+        );
+    }
+
+    #[test]
+    fn bad_fee_exact_submitted_after_prior_success_preserves_fee_debit_and_received_amount() {
+        let mut op = partial_distribution_bad_fee_shape();
+
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 1, 20_000).unwrap();
+
+        assert_eq!(
+            op.two_week_recipients[0].ledger_transfer_fee_e8s,
+            Some(10_000)
+        );
+        assert_eq!(
+            op.two_week_recipients[0].reward_amount_received_e8s,
+            Some(200_000_000)
+        );
+        assert_eq!(
+            op.two_week_recipients[0].reserve_debit_e8s,
+            Some(200_010_000)
+        );
+    }
+
+    #[test]
+    fn bad_fee_exact_submitted_after_prior_refresh_preserves_stake_evidence() {
+        let mut op = partial_distribution_bad_fee_shape();
+
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 1, 20_000).unwrap();
+
+        assert_eq!(
+            op.two_week_recipients[0].governance_refresh_status,
+            Some(TransferStatus::Succeeded)
+        );
+        assert_eq!(
+            op.two_week_recipients[0].stake_before_e8s,
+            Some(1_000_000_000)
+        );
+        assert_eq!(
+            op.two_week_recipients[0].expected_stake_after_e8s,
+            Some(1_200_000_000)
+        );
+        assert_eq!(
+            op.two_week_recipients[0].observed_stake_after_e8s,
+            Some(1_200_000_000)
+        );
+    }
+
+    #[test]
+    fn bad_fee_after_partial_distribution_preserves_spent_and_unspent_reservation_components() {
+        let mut op = partial_distribution_bad_fee_shape();
+
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 1, 20_000).unwrap();
+
+        assert_eq!(
+            op.reward_reservation,
+            Some(RewardReservation {
+                unspent_reserved_reward_debit_e8s: 100_010_000,
+                externally_spent_but_uncommitted_reward_debit_e8s: 200_010_000,
+            })
+        );
+        assert_eq!(op.reserved_reward_debit_e8s, Some(300_020_000));
+    }
+
+    #[test]
+    fn bad_fee_after_partial_distribution_does_not_create_repreflight_evidence() {
+        let mut op = partial_distribution_bad_fee_shape();
+
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 1, 20_000).unwrap();
+
+        assert_eq!(op.reward_fee_repreflight, None);
+    }
+
+    #[test]
+    fn bad_fee_after_partial_distribution_cannot_make_prior_recipient_submittable() {
+        let mut op = partial_distribution_bad_fee_shape();
+
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 1, 20_000).unwrap();
+
+        assert!(!reward_recipient_can_submit(&op.two_week_recipients[0]));
+        CANISTER_STATE.with(|cell| {
+            cell.borrow_mut().operation_journal = vec![op];
+        });
+        assert_eq!(
+            next_reward_ledger_recipient(&BTreeSet::new()).map(|(_, index, _, _)| index),
+            None
+        );
+    }
+
+    #[test]
+    fn live_manual_state_rejects_spent_debit_stored_as_unspent() {
+        let mut op = partial_distribution_bad_fee_shape();
+        op.reward_preflight.as_mut().unwrap().status =
+            RewardPreflightStatus::ManualReconciliationRequired;
+        op.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 300_020_000,
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+
+        let err =
+            reward_reservation_for_operation(&op, &empty_processed_transactions()).unwrap_err();
+
+        assert!(err.contains("split disagrees"));
+    }
+
+    #[test]
+    fn live_manual_state_rejects_unspent_debit_stored_as_spent() {
+        let mut op = partial_distribution_bad_fee_shape();
+        op.reward_preflight.as_mut().unwrap().status =
+            RewardPreflightStatus::ManualReconciliationRequired;
+        op.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 0,
+            externally_spent_but_uncommitted_reward_debit_e8s: 300_020_000,
+        });
+
+        let err =
+            reward_reservation_for_operation(&op, &empty_processed_transactions()).unwrap_err();
+
+        assert!(err.contains("split disagrees"));
+    }
+
+    #[test]
+    fn live_and_stable_manual_split_validation_agree() {
+        let mut op = partial_distribution_bad_fee_shape();
+        op.reward_preflight.as_mut().unwrap().status =
+            RewardPreflightStatus::ManualReconciliationRequired;
+
+        assert!(reward_reservation_for_operation(&op, &empty_processed_transactions()).is_ok());
+
+        let stable = crate::migrate_stable_state(crate::VersionedStableState {
+            schema_version: crate::STREAM_MANAGER_STABLE_SCHEMA_VERSION,
+            state: crate::StableState {
+                config: crate::StreamManagerConfig::default(),
+                protocol: crate::StableProtocolState::from(io_core_model::ProtocolState::new(
+                    100_000_000_000_000,
+                    90_000_000_000_000,
+                    10_000_000_000_000,
+                )),
+                processed_transactions: Vec::new(),
+                active_staked_io_e8s: 0,
+                two_week_pool_backing_bps: 10_000,
+                operation_journal: vec![op],
+                scheduler_cursors: crate::SchedulerCursors::default(),
+            },
+        });
+
+        assert!(stable.is_ok());
+    }
+
+    #[test]
+    fn fee_change_after_proof_pending_never_blindly_resends() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        let operation_id = op.operation_id.clone();
+        let attempt = RewardTransferAttemptRecord {
+            lifecycle: Some(RewardTransferAttemptLifecycle::ProofRequired {
+                generation: 55,
+                reason: "ambiguous".to_string(),
+            }),
+            ..reward_attempt(200_000_000, 10_000, 55, &operation_id, [7; 32])
+        };
+        op.two_week_recipients[0].reward_transfer_attempt = Some(attempt.clone());
+        op.two_week_recipients[0].ledger_transfer_proof_scan_state =
+            Some(AccountHistoryScanState::default());
+
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 0, 20_000).unwrap();
+
+        assert_eq!(
+            op.reward_preflight
+                .as_ref()
+                .map(|preflight| preflight.status),
+            Some(RewardPreflightStatus::ManualReconciliationRequired)
+        );
+        assert_eq!(
+            op.two_week_recipients[0].reward_transfer_attempt,
+            Some(attempt)
+        );
+    }
+
+    #[test]
+    fn fee_evidence_survives_same_wasm_upgrade() {
+        let mut op = reward_operation_ready_for_attempt().remove(0);
+        install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::SubmittedAwaitingResult { generation: 55 },
+        );
+        apply_reward_bad_fee_policy(&mut op, &empty_processed_transactions(), 0, 20_000).unwrap();
+        let restored = op.clone();
+
+        assert!(restored
+            .reward_preflight
+            .as_ref()
+            .and_then(|preflight| preflight.failure_reason.as_deref())
+            .unwrap()
+            .contains("observed current fee 20000"));
+        assert_eq!(
+            restored
+                .reward_fee_repreflight
+                .map(|evidence| evidence.observed_current_fee_e8s),
+            Some(20_000)
+        );
+    }
+
+    #[test]
+    fn refresh_terminal_after_transfer_keeps_spent_uncommitted_reservation() {
+        let mut op = reward_preflight_operation();
+        op.reward_preflight = Some(validated_preflight_for(&op));
+        install_reward_attempt(
+            &mut op,
+            0,
+            55,
+            [7; 32],
+            RewardTransferAttemptLifecycle::Proven {
+                generation: 55,
+                block: 45,
+            },
+        );
+        op.two_week_recipients[0].transfer_status = TransferStatus::Succeeded;
+        op.two_week_recipients[0].ledger_transfer_status = Some(TransferStatus::Succeeded);
+        op.two_week_recipients[0].transfer_block_index = Some(45);
+        op.two_week_recipients[0].ledger_transfer_block = Some(45);
+        op.two_week_recipients[0].governance_refresh_status = Some(TransferStatus::FailedTerminal);
+        op.two_week_recipients[0].reserve_debit_e8s = Some(200_010_000);
+
+        assert_eq!(
+            pending_reward_spent_uncommitted_reservation_for_operation(
+                &op,
+                &empty_processed_transactions()
+            ),
+            Ok(200_010_000)
+        );
+        assert_eq!(
+            pending_reward_reservation_for_operation(&op, &empty_processed_transactions()),
+            Ok(300_020_000)
+        );
     }
 
     #[test]
@@ -6113,14 +10092,101 @@ mod tests {
             protocol_reserve_available_e8s: 0,
             real_ledger_reserve_balance_e8s: 0,
             validated_at_timestamp_nanos: 123,
-            canonical_recipient_ids: Vec::new(),
-            compatibility_keys: Vec::new(),
-            dust_e8s: 0,
+            canonical_recipient_ids: vec![vec![7; 32], vec![8; 32]],
+            compatibility_keys: vec![7, 8],
+            dust_e8s: 123,
             failure_reason: Some("invalid recipient".to_string()),
         });
         op.phase = OperationPhase::FailedTerminal;
 
-        assert_eq!(pending_reward_reservation_for_operation(&op), 0);
+        assert_eq!(
+            pending_reward_reservation_for_operation(&op, &empty_processed_transactions()),
+            Ok(0)
+        );
+    }
+
+    #[test]
+    fn explicit_pretransfer_cancel_releases_only_without_attempt_or_external_uncertainty() {
+        let mut op = reward_preflight_operation();
+        op.reward_preflight = Some(validated_preflight_for(&op));
+        op.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 300_020_000,
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+        op.reserved_reward_debit_e8s = Some(300_020_000);
+
+        explicit_pretransfer_cancel_reward_reservation(&mut op).unwrap();
+        assert_eq!(
+            pending_reward_reservation_for_operation(&op, &empty_processed_transactions()),
+            Ok(0)
+        );
+
+        let mut attempted = reward_preflight_operation();
+        attempted.reward_preflight = Some(validated_preflight_for(&attempted));
+        attempted.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 300_020_000,
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+        attempted.reserved_reward_debit_e8s = Some(300_020_000);
+        attempted.two_week_recipients[0].reward_transfer_attempt =
+            Some(reward_attempt(200_000_000, 10_000, 55, "icp:9", [7; 32]));
+
+        assert!(explicit_pretransfer_cancel_reward_reservation(&mut attempted).is_err());
+        assert_eq!(
+            pending_reward_reservation_for_operation(&attempted, &empty_processed_transactions()),
+            Ok(300_020_000)
+        );
+    }
+
+    #[test]
+    fn reservation_component_overflow_is_error() {
+        let reservation = RewardReservation {
+            unspent_reserved_reward_debit_e8s: u128::MAX,
+            externally_spent_but_uncommitted_reward_debit_e8s: 1,
+        };
+
+        assert!(reservation
+            .checked_total_unavailable_reward_debit_e8s()
+            .unwrap_err()
+            .contains("overflow"));
+    }
+
+    #[test]
+    fn aggregate_reservation_overflow_is_error_not_wraparound() {
+        let mut a = reward_operation_ready_for_attempt().remove(0);
+        let mut a_preflight = validated_preflight_for(&a);
+        a_preflight.total_reward_e8s = u128::MAX - 10_000;
+        a_preflight.total_reserve_debit_e8s = u128::MAX;
+        a_preflight.dust_e8s = 0;
+        a.io_issued_e8s = u128::MAX - 10_000;
+        a.two_week_recipients[0].amount_e8s = u128::MAX - 200_010_000;
+        a.two_week_recipients[1].amount_e8s = 200_000_000;
+        a.reward_preflight = Some(a_preflight);
+        a.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: u128::MAX,
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+        a.reserved_reward_debit_e8s = Some(u128::MAX);
+        let mut b = reward_operation_ready_for_attempt().remove(0);
+        let mut b_preflight = validated_preflight_for(&b);
+        b_preflight.total_reward_e8s = 0;
+        b_preflight.total_reserve_debit_e8s = 20_000;
+        b_preflight.dust_e8s = 0;
+        b.io_issued_e8s = 0;
+        b.two_week_recipients[0].amount_e8s = 0;
+        b.two_week_recipients[1].amount_e8s = 0;
+        b.reward_preflight = Some(b_preflight);
+        b.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 20_000,
+            externally_spent_but_uncommitted_reward_debit_e8s: 0,
+        });
+        b.reserved_reward_debit_e8s = Some(20_000);
+
+        assert!(
+            pending_reward_reservations([a, b].iter(), &empty_processed_transactions(), None)
+                .unwrap_err()
+                .contains("overflow")
+        );
     }
 
     #[test]
@@ -6133,7 +10199,8 @@ mod tests {
         b.reward_preflight = Some(validated_preflight_for(&b));
         let ops = [a, b];
 
-        let reserved = pending_reward_reservations(ops.iter(), None);
+        let reserved =
+            pending_reward_reservations(ops.iter(), &empty_processed_transactions(), None).unwrap();
         assert_eq!(reserved, 600_040_000);
         assert_eq!(
             reward_reserve_available(700_000_000, reserved).unwrap(),
@@ -6145,7 +10212,9 @@ mod tests {
     fn concurrent_reward_operations_cannot_overcommit_reserve() {
         let mut a = reward_preflight_operation();
         a.reward_preflight = Some(validated_preflight_for(&a));
-        let reserved = pending_reward_reservations(std::iter::once(&a), None);
+        let reserved =
+            pending_reward_reservations(std::iter::once(&a), &empty_processed_transactions(), None)
+                .unwrap();
 
         assert!(reward_reserve_available(300_030_000, reserved).unwrap() < 300_020_000);
     }
@@ -6154,9 +10223,20 @@ mod tests {
     fn reservation_survives_same_wasm_upgrade() {
         let mut op = reward_preflight_operation();
         op.reward_preflight = Some(validated_preflight_for(&op));
-        op.reserved_reward_debit_e8s = Some(pending_reward_reservation_for_operation(&op));
+        op.reward_reservation =
+            Some(reward_reservation_for_operation(&op, &empty_processed_transactions()).unwrap());
+        op.reserved_reward_debit_e8s = Some(
+            pending_reward_reservation_for_operation(&op, &empty_processed_transactions()).unwrap(),
+        );
         let restored = op.clone();
 
+        assert_eq!(
+            restored.reward_reservation,
+            Some(RewardReservation {
+                unspent_reserved_reward_debit_e8s: 300_020_000,
+                externally_spent_but_uncommitted_reward_debit_e8s: 0,
+            })
+        );
         assert_eq!(restored.reserved_reward_debit_e8s, Some(300_020_000));
         assert_eq!(restored.reward_preflight, op.reward_preflight);
     }
@@ -6174,11 +10254,254 @@ mod tests {
     fn current_reward_reservation_round_trips() {
         let mut op = reward_preflight_operation();
         op.reward_preflight = Some(validated_preflight_for(&op));
-        op.reserved_reward_debit_e8s = Some(pending_reward_reservation_for_operation(&op));
+        op.reward_reservation =
+            Some(reward_reservation_for_operation(&op, &empty_processed_transactions()).unwrap());
+        op.reserved_reward_debit_e8s = Some(
+            pending_reward_reservation_for_operation(&op, &empty_processed_transactions()).unwrap(),
+        );
         let bytes = Encode!(&op).unwrap();
         let decoded = Decode!(&bytes, StreamOperation).unwrap();
 
+        assert_eq!(
+            decoded.reward_reservation,
+            Some(RewardReservation {
+                unspent_reserved_reward_debit_e8s: 300_020_000,
+                externally_spent_but_uncommitted_reward_debit_e8s: 0,
+            })
+        );
         assert_eq!(decoded.reserved_reward_debit_e8s, Some(300_020_000));
+    }
+
+    #[test]
+    fn nonzero_reward_allocation_dust_remains_protocol_reserve() {
+        let mut op = reward_preflight_operation();
+        op.io_issued_e8s = 300_000_001;
+        op.two_week_recipients[0].amount_e8s = 150_000_000;
+        op.two_week_recipients[1].amount_e8s = 150_000_000;
+        op.two_week_recipients[0].ledger_transfer_fee_e8s = Some(10_000);
+        op.two_week_recipients[1].ledger_transfer_fee_e8s = Some(10_000);
+        op.reward_preflight = Some(RewardDistributionPreflight {
+            status: RewardPreflightStatus::Validated,
+            ledger_fee_e8s: 10_000,
+            recipient_count: 2,
+            total_reward_e8s: 300_000_000,
+            total_fee_e8s: 20_000,
+            total_reserve_debit_e8s: 300_020_000,
+            protocol_reserve_available_e8s: 300_020_000,
+            real_ledger_reserve_balance_e8s: 300_020_000,
+            validated_at_timestamp_nanos: 123,
+            canonical_recipient_ids: vec![vec![7; 32], vec![8; 32]],
+            compatibility_keys: vec![7, 8],
+            dust_e8s: 1,
+            failure_reason: None,
+        });
+
+        let adjusted = reward_fee_adjusted_post_state(&op).unwrap();
+
+        assert_eq!(
+            adjusted.protocol_reserve_io_e8s,
+            op.post_state.protocol_reserve_io_e8s + 1 - 20_000
+        );
+        assert_eq!(
+            adjusted.total_io_supply_e8s,
+            op.post_state.total_io_supply_e8s - 20_000
+        );
+    }
+
+    #[test]
+    fn zero_recipient_reward_preflight_has_full_dust_and_zero_debit() {
+        let op = zero_recipient_reward_operation();
+
+        let preflight = build_reward_distribution_preflight(
+            &op,
+            candid::Principal::from_text("qaa6y-5yaaa-aaaaa-aaafa-cai").unwrap(),
+            10_000,
+            0,
+            0,
+            123,
+        )
+        .unwrap();
+
+        assert_eq!(preflight.recipient_count, 0);
+        assert_eq!(preflight.total_reward_e8s, 0);
+        assert_eq!(preflight.total_fee_e8s, 0);
+        assert_eq!(preflight.total_reserve_debit_e8s, 0);
+        assert_eq!(preflight.dust_e8s, op.io_issued_e8s);
+        assert!(preflight.canonical_recipient_ids.is_empty());
+        assert!(preflight.compatibility_keys.is_empty());
+    }
+
+    #[test]
+    fn zero_recipient_reward_model_delta_commits_40_60_icp_once() {
+        let mut op = zero_recipient_reward_operation();
+        op.reward_preflight = Some(
+            build_reward_distribution_preflight(
+                &op,
+                candid::Principal::from_text("qaa6y-5yaaa-aaaaa-aaafa-cai").unwrap(),
+                10_000,
+                0,
+                0,
+                123,
+            )
+            .unwrap(),
+        );
+
+        let delta = reward_model_delta(&op).unwrap();
+        let next = checked_reward_model_post_state(
+            io_core_model::ProtocolState::from(op.post_state),
+            delta,
+        )
+        .unwrap();
+
+        assert_eq!(delta.allocation_debit_e8s, 0);
+        assert_eq!(delta.fee_burn_e8s, 0);
+        assert_eq!(delta.dust_retained_e8s, op.io_issued_e8s);
+        assert_eq!(
+            next.liquid_icp_e8s,
+            op.post_state.liquid_icp_e8s + 300_000_000
+        );
+        assert_eq!(
+            next.two_week_staked_icp_e8s,
+            op.post_state.two_week_staked_icp_e8s + 200_000_000
+        );
+        assert_eq!(
+            next.protocol_reserve_io_e8s,
+            op.post_state.protocol_reserve_io_e8s
+        );
+        assert_eq!(next.total_io_supply_e8s, op.post_state.total_io_supply_e8s);
+    }
+
+    #[test]
+    fn zero_recipient_reward_replay_is_idempotent() {
+        let mut op = zero_recipient_reward_operation();
+        op.reward_preflight = Some(
+            build_reward_distribution_preflight(
+                &op,
+                candid::Principal::from_text("qaa6y-5yaaa-aaaaa-aaafa-cai").unwrap(),
+                10_000,
+                0,
+                0,
+                123,
+            )
+            .unwrap(),
+        );
+        op.reward_reservation = Some(RewardReservation::default());
+        op.reserved_reward_debit_e8s = Some(0);
+        let operation_id = op.operation_id.clone();
+        let mut manager = StreamManager {
+            state: io_core_model::ProtocolState::from(op.post_state),
+            processed_transactions: Default::default(),
+            active_staked_io_e8s: 0,
+            two_week_pool_backing_bps: 10_000,
+        };
+        let mut journal = vec![op];
+
+        assert_eq!(
+            commit_completed_reward_operation_in_state(&mut manager, &mut journal, &operation_id),
+            Ok(true)
+        );
+        let after_first_manager = manager.clone();
+        let after_first_journal = journal.clone();
+        assert_eq!(
+            commit_completed_reward_operation_in_state(&mut manager, &mut journal, &operation_id),
+            Ok(false)
+        );
+        assert_eq!(manager.state, after_first_manager.state);
+        assert_eq!(journal, after_first_journal);
+    }
+
+    #[test]
+    fn zero_recipient_reward_preserves_total_io_supply() {
+        let mut op = zero_recipient_reward_operation();
+        op.reward_preflight = Some(
+            build_reward_distribution_preflight(
+                &op,
+                candid::Principal::from_text("qaa6y-5yaaa-aaaaa-aaafa-cai").unwrap(),
+                10_000,
+                0,
+                0,
+                123,
+            )
+            .unwrap(),
+        );
+        let before = io_core_model::ProtocolState::from(op.post_state);
+        let delta = reward_model_delta(&op).unwrap();
+
+        let after = checked_reward_model_post_state(before, delta).unwrap();
+
+        assert_eq!(after.total_io_supply_e8s, before.total_io_supply_e8s);
+    }
+
+    #[test]
+    fn zero_recipient_reward_model_reserve_matches_real_ledger() {
+        let mut op = zero_recipient_reward_operation();
+        op.reward_preflight = Some(
+            build_reward_distribution_preflight(
+                &op,
+                candid::Principal::from_text("qaa6y-5yaaa-aaaaa-aaafa-cai").unwrap(),
+                10_000,
+                op.post_state.protocol_reserve_io_e8s,
+                op.post_state.protocol_reserve_io_e8s,
+                123,
+            )
+            .unwrap(),
+        );
+        let delta = reward_model_delta(&op).unwrap();
+
+        let after = checked_reward_model_post_state(
+            io_core_model::ProtocolState::from(op.post_state),
+            delta,
+        )
+        .unwrap();
+
+        assert_eq!(
+            after.protocol_reserve_io_e8s,
+            op.post_state.protocol_reserve_io_e8s
+        );
+        assert_eq!(
+            op.reward_preflight
+                .as_ref()
+                .unwrap()
+                .real_ledger_reserve_balance_e8s,
+            op.post_state.protocol_reserve_io_e8s
+        );
+    }
+
+    #[test]
+    fn zero_recipient_reward_same_wasm_upgrade_is_idempotent() {
+        let mut op = zero_recipient_reward_operation();
+        op.reward_preflight = Some(
+            build_reward_distribution_preflight(
+                &op,
+                candid::Principal::from_text("qaa6y-5yaaa-aaaaa-aaafa-cai").unwrap(),
+                10_000,
+                0,
+                0,
+                123,
+            )
+            .unwrap(),
+        );
+        op.reward_reservation = Some(RewardReservation::default());
+        op.reserved_reward_debit_e8s = Some(0);
+        let operation_id = op.operation_id.clone();
+        let mut manager = StreamManager {
+            state: io_core_model::ProtocolState::from(op.post_state),
+            processed_transactions: Default::default(),
+            active_staked_io_e8s: 0,
+            two_week_pool_backing_bps: 10_000,
+        };
+        let mut journal = vec![op];
+        commit_completed_reward_operation_in_state(&mut manager, &mut journal, &operation_id)
+            .unwrap();
+        let restored_manager = manager.clone();
+        let restored_journal = journal.clone();
+
+        assert_eq!(
+            commit_completed_reward_operation_in_state(&mut manager, &mut journal, &operation_id),
+            Ok(false)
+        );
+        assert_eq!(manager.state, restored_manager.state);
+        assert_eq!(journal, restored_journal);
     }
 
     #[test]
@@ -6190,6 +10513,282 @@ mod tests {
             adjusted.total_io_supply_e8s,
             op.post_state.total_io_supply_e8s - 30_000
         );
+    }
+
+    #[test]
+    fn reward_model_delta_preserves_intervening_unrelated_model_change() {
+        let mut op = reward_fee_accounting_operation();
+        for recipient in &mut op.two_week_recipients {
+            recipient.governance_refresh_status = Some(TransferStatus::Succeeded);
+        }
+        let delta = reward_model_delta(&op).unwrap();
+        let mut live_state = io_core_model::ProtocolState::from(op.post_state);
+        live_state.non_redeemable_governance_io_e8s += 777;
+        live_state.protocol_reserve_io_e8s += 123_456;
+
+        let next_state = checked_reward_model_post_state(live_state, delta).unwrap();
+
+        assert_eq!(
+            next_state.non_redeemable_governance_io_e8s,
+            10_000_000_000_777
+        );
+        assert_eq!(
+            next_state.protocol_reserve_io_e8s,
+            op.post_state.protocol_reserve_io_e8s + 123_456 - 300_030_000
+        );
+        assert_eq!(
+            next_state.total_io_supply_e8s,
+            op.post_state.total_io_supply_e8s - 30_000
+        );
+        assert_eq!(
+            next_state.liquid_icp_e8s,
+            op.post_state.liquid_icp_e8s + split_40_60(op.amount_e8s).liquid_e8s
+        );
+        assert_eq!(
+            next_state.two_week_staked_icp_e8s,
+            op.post_state.two_week_staked_icp_e8s + split_40_60(op.amount_e8s).stake_e8s
+        );
+    }
+
+    fn completed_reward_delta_for_tests() -> RewardModelDelta {
+        let mut op = reward_fee_accounting_operation();
+        for recipient in &mut op.two_week_recipients {
+            recipient.governance_refresh_status = Some(TransferStatus::Succeeded);
+        }
+        reward_model_delta(&op).unwrap()
+    }
+
+    fn completed_reward_commit_fixture() -> (StreamManager, Vec<StreamOperation>) {
+        let mut op = reward_fee_accounting_operation();
+        op.two_week_recipients[0].sns_neuron_id = Some(vec![7; 32]);
+        op.two_week_recipients[0].neuron_id = 7;
+        op.two_week_recipients[0].ledger_transfer_fee_e8s = Some(10_000);
+        op.two_week_recipients[0].reward_transfer_attempt = Some(RewardTransferAttemptRecord {
+            lifecycle: Some(RewardTransferAttemptLifecycle::Proven {
+                generation: 55,
+                block: 77,
+            }),
+            ..reward_attempt(200_000_000, 10_000, 55, &op.operation_id, [7; 32])
+        });
+        op.two_week_recipients[1].sns_neuron_id = Some(vec![8; 32]);
+        op.two_week_recipients[1].neuron_id = 8;
+        op.two_week_recipients[1].ledger_transfer_fee_e8s = Some(10_000);
+        op.two_week_recipients[1].reserve_debit_e8s = Some(100_010_000);
+        op.two_week_recipients[1].reward_transfer_attempt = Some(RewardTransferAttemptRecord {
+            lifecycle: Some(RewardTransferAttemptLifecycle::Proven {
+                generation: 55,
+                block: 77,
+            }),
+            ..reward_attempt(100_000_000, 10_000, 55, &op.operation_id, [8; 32])
+        });
+        op.reward_preflight = Some(RewardDistributionPreflight {
+            status: RewardPreflightStatus::Validated,
+            ledger_fee_e8s: 10_000,
+            recipient_count: 2,
+            total_reward_e8s: 300_000_000,
+            total_fee_e8s: 20_000,
+            total_reserve_debit_e8s: 300_020_000,
+            protocol_reserve_available_e8s: 300_020_000,
+            real_ledger_reserve_balance_e8s: 300_020_000,
+            validated_at_timestamp_nanos: 123,
+            canonical_recipient_ids: vec![vec![7; 32], vec![8; 32]],
+            compatibility_keys: vec![7, 8],
+            dust_e8s: 0,
+            failure_reason: None,
+        });
+        op.reward_reservation = Some(RewardReservation {
+            unspent_reserved_reward_debit_e8s: 0,
+            externally_spent_but_uncommitted_reward_debit_e8s: 300_020_000,
+        });
+        op.reserved_reward_debit_e8s = Some(300_020_000);
+        for recipient in &mut op.two_week_recipients {
+            recipient.governance_refresh_status = Some(TransferStatus::Succeeded);
+        }
+        let manager = StreamManager {
+            state: io_core_model::ProtocolState::from(op.post_state),
+            processed_transactions: Default::default(),
+            active_staked_io_e8s: 0,
+            two_week_pool_backing_bps: 10_000,
+        };
+        (manager, vec![op])
+    }
+
+    #[test]
+    fn reward_commit_invariant_failure_leaves_journal_and_reservation_unchanged() {
+        let (mut manager, mut journal) = completed_reward_commit_fixture();
+        manager.state.non_redeemable_governance_io_e8s = manager.state.total_io_supply_e8s;
+        let before_manager = manager.clone();
+        let before_journal = journal.clone();
+        let operation_id = journal[0].operation_id.clone();
+
+        let err =
+            commit_completed_reward_operation_in_state(&mut manager, &mut journal, &operation_id)
+                .unwrap_err();
+
+        assert!(err.contains("reward model invariant failed"));
+        assert_eq!(manager.state, before_manager.state);
+        assert_eq!(
+            manager.processed_transactions,
+            before_manager.processed_transactions
+        );
+        assert_eq!(
+            manager.active_staked_io_e8s,
+            before_manager.active_staked_io_e8s
+        );
+        assert_eq!(
+            manager.two_week_pool_backing_bps,
+            before_manager.two_week_pool_backing_bps
+        );
+        assert_eq!(journal, before_journal);
+    }
+
+    #[test]
+    fn reward_commit_success_updates_model_processed_set_reservation_and_phase_together() {
+        let (mut manager, mut journal) = completed_reward_commit_fixture();
+        let before = manager.state;
+        let operation_id = journal[0].operation_id.clone();
+        let source_transaction_id = journal[0].source_transaction_id.clone();
+
+        assert_eq!(
+            commit_completed_reward_operation_in_state(&mut manager, &mut journal, &operation_id,),
+            Ok(true)
+        );
+
+        assert!(manager
+            .processed_transactions
+            .contains(&source_transaction_id));
+        assert_eq!(journal[0].phase, OperationPhase::Completed);
+        assert_eq!(
+            journal[0].reward_reservation,
+            Some(RewardReservation::default())
+        );
+        assert_eq!(journal[0].reserved_reward_debit_e8s, Some(0));
+        assert_eq!(
+            manager.state.liquid_icp_e8s,
+            before.liquid_icp_e8s + 300_000_000
+        );
+        assert_eq!(
+            manager.state.two_week_staked_icp_e8s,
+            before.two_week_staked_icp_e8s + 200_000_000
+        );
+        assert_eq!(
+            manager.state.protocol_reserve_io_e8s,
+            before.protocol_reserve_io_e8s - 300_020_000
+        );
+        assert_eq!(
+            manager.state.total_io_supply_e8s,
+            before.total_io_supply_e8s - 20_000
+        );
+    }
+
+    #[test]
+    fn reward_commit_retry_is_idempotent() {
+        let (mut manager, mut journal) = completed_reward_commit_fixture();
+        let operation_id = journal[0].operation_id.clone();
+
+        assert_eq!(
+            commit_completed_reward_operation_in_state(&mut manager, &mut journal, &operation_id,),
+            Ok(true)
+        );
+        let after_first_manager = manager.clone();
+        let after_first_journal = journal.clone();
+
+        assert_eq!(
+            commit_completed_reward_operation_in_state(&mut manager, &mut journal, &operation_id,),
+            Ok(false)
+        );
+        assert_eq!(manager.state, after_first_manager.state);
+        assert_eq!(
+            manager.processed_transactions,
+            after_first_manager.processed_transactions
+        );
+        assert_eq!(
+            manager.active_staked_io_e8s,
+            after_first_manager.active_staked_io_e8s
+        );
+        assert_eq!(
+            manager.two_week_pool_backing_bps,
+            after_first_manager.two_week_pool_backing_bps
+        );
+        assert_eq!(journal, after_first_journal);
+    }
+
+    #[test]
+    fn reward_commit_reserve_underflow_leaves_entire_model_unchanged() {
+        let delta = completed_reward_delta_for_tests();
+        let current = io_core_model::ProtocolState {
+            protocol_reserve_io_e8s: delta.allocation_debit_e8s + delta.fee_burn_e8s - 1,
+            total_io_supply_e8s: u128::MAX,
+            ..io_core_model::ProtocolState::new(u128::MAX, u128::MAX, 0)
+        };
+
+        assert!(checked_reward_model_post_state(current, delta)
+            .unwrap_err()
+            .contains("protocol reserve cannot cover"));
+        assert_eq!(
+            current.protocol_reserve_io_e8s,
+            delta.allocation_debit_e8s + delta.fee_burn_e8s - 1
+        );
+    }
+
+    #[test]
+    fn reward_commit_supply_underflow_leaves_entire_model_unchanged() {
+        let delta = completed_reward_delta_for_tests();
+        let current = io_core_model::ProtocolState {
+            protocol_reserve_io_e8s: u128::MAX / 2,
+            total_io_supply_e8s: delta.fee_burn_e8s - 1,
+            ..io_core_model::ProtocolState::new(u128::MAX / 2, u128::MAX / 2, 0)
+        };
+
+        assert!(checked_reward_model_post_state(current, delta)
+            .unwrap_err()
+            .contains("total IO supply cannot burn"));
+        assert_eq!(current.total_io_supply_e8s, delta.fee_burn_e8s - 1);
+    }
+
+    #[test]
+    fn reward_commit_liquid_overflow_leaves_entire_model_unchanged() {
+        let delta = completed_reward_delta_for_tests();
+        let current = io_core_model::ProtocolState {
+            liquid_icp_e8s: u128::MAX,
+            protocol_reserve_io_e8s: u128::MAX / 2,
+            total_io_supply_e8s: u128::MAX / 2,
+            ..io_core_model::ProtocolState::new(u128::MAX / 2, u128::MAX / 2, 0)
+        };
+
+        assert!(checked_reward_model_post_state(current, delta)
+            .unwrap_err()
+            .contains("liquid ICP credit overflowed"));
+        assert_eq!(current.liquid_icp_e8s, u128::MAX);
+    }
+
+    #[test]
+    fn reward_commit_stake_overflow_leaves_entire_model_unchanged() {
+        let delta = completed_reward_delta_for_tests();
+        let current = io_core_model::ProtocolState {
+            two_week_staked_icp_e8s: u128::MAX,
+            protocol_reserve_io_e8s: u128::MAX / 2,
+            total_io_supply_e8s: u128::MAX / 2,
+            ..io_core_model::ProtocolState::new(u128::MAX / 2, u128::MAX / 2, 0)
+        };
+
+        assert!(checked_reward_model_post_state(current, delta)
+            .unwrap_err()
+            .contains("two-week staked ICP credit overflowed"));
+        assert_eq!(current.two_week_staked_icp_e8s, u128::MAX);
+    }
+
+    #[test]
+    fn reward_model_delta_rejects_incomplete_completion_evidence() {
+        let mut op = reward_fee_accounting_operation();
+        for recipient in &mut op.two_week_recipients {
+            recipient.governance_refresh_status = Some(TransferStatus::Succeeded);
+        }
+        op.two_week_recipients[0].reserve_debit_e8s = None;
+
+        assert!(reward_model_delta(&op)
+            .unwrap_err()
+            .contains("missing reserve debit"));
     }
 
     #[test]

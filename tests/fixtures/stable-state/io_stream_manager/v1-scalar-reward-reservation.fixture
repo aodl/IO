@@ -1,6 +1,6 @@
 canister=io_stream_manager
-schema_version=2
-scenario=current-round-trip
+schema_version=1
+scenario=v1-scalar-reward-reservation-migrates-to-v2-split-reservation
 source=local-test-builder
 production_wiring=absent
 live_snapshot=false
