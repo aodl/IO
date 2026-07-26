@@ -15,9 +15,9 @@ export const idlFactory = ({ IDL }) => {
   });
   const GovernanceExcludedCount = IDL.Record({ count: IDL.Nat64, reason: IDL.Text });
   const GovernanceNeuronParticipation = IDL.Record({
+    currently_destination_eligible: IDL.Bool,
     eligible_closed_proposals: IDL.Nat64,
-    eligible_seconds: IDL.Nat64,
-    eligible_stake_e8s: IDL.Nat,
+    frozen_stake_e8s: IDL.Nat,
     neuron_id: IDL.Nat64,
     participation_denominator: IDL.Nat,
     participation_numerator: IDL.Nat,
@@ -45,7 +45,7 @@ export const idlFactory = ({ IDL }) => {
     proposal_epoch_start: IDL.Opt(IDL.Nat64),
     sns_eligible_neuron_count: IDL.Nat64,
     sns_excluded_neuron_count_by_reason: IDL.Vec(GovernanceExcludedCount),
-    total_eligible_stake_e8s: IDL.Nat,
+    total_frozen_cohort_stake_e8s: IDL.Nat,
   });
   const RetentionLimits = IDL.Record({
     artifact_status: IDL.Nat64,
@@ -202,7 +202,7 @@ export const idlFactory = ({ IDL }) => {
   });
   const RewardDistributionRecord = IDL.Record({
     dust_unissued_e8s: IDL.Opt(IDL.Nat),
-    eligible_stake_e8s: IDL.Opt(IDL.Nat),
+    frozen_cohort_stake_e8s: IDL.Opt(IDL.Nat),
     epoch_end_timestamp_nanos: IDL.Opt(IDL.Nat64),
     epoch_start_timestamp_nanos: IDL.Opt(IDL.Nat64),
     participation_summary_id: IDL.Opt(IDL.Text),

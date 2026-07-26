@@ -1,29 +1,27 @@
 use io_governance_types::{
-    snapshot_sns_eligibility, summarize_sns_participation, SnsEligibilityPolicy,
-    SnsGovernanceClient, SnsGovernanceError, SnsNeuron, SnsNeuronEligibility, SnsNeuronId,
-    SnsNeuronPageRequest, SnsParticipationPolicy, SnsProposal, SnsProposalPageRequest,
+    snapshot_sns_eligibility, SnsEligibilityPolicy, SnsGovernanceClient, SnsGovernanceError,
+    SnsNeuron, SnsNeuronEligibility, SnsNeuronId, SnsNeuronPageRequest, SnsProposal,
+    SnsProposalPageRequest,
 };
 use io_reward_policy::{
-    sns_neuron_id_is_canonical_staking_subaccount, sns_neuron_id_is_valid, sns_neuron_id_to_u64,
-    NeuronSnapshot, SnsNeuronIdConversionError,
+    sns_neuron_id_is_canonical_staking_subaccount, sns_neuron_id_to_u64, SnsNeuronIdConversionError,
 };
 #[cfg(test)]
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GovernanceRewardSnapshotRequest {
     pub eligibility_policy: SnsEligibilityPolicy,
-    pub participation_policy: SnsParticipationPolicy,
     pub max_neuron_pages: u64,
     pub max_proposal_pages: u64,
     pub page_limit: u64,
-    pub eligible_since_overrides: BTreeMap<SnsNeuronId, u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GovernanceRewardSnapshot {
-    pub snapshots: Vec<NeuronSnapshot>,
+pub struct GovernanceRewardObservation {
+    pub eligibilities: Vec<SnsNeuronEligibility>,
+    pub proposals: Vec<SnsProposal>,
     pub excluded_neurons: Vec<ExcludedGovernanceNeuron>,
     pub conversion_errors: Vec<SnsNeuronIdConversionError>,
     pub fetched_neuron_count: u64,
@@ -71,7 +69,7 @@ impl From<SnsGovernanceError> for GovernanceSnapshotError {
 pub async fn build_governance_reward_snapshot<C: SnsGovernanceClient>(
     client: &C,
     request: GovernanceRewardSnapshotRequest,
-) -> Result<GovernanceRewardSnapshot, GovernanceSnapshotError> {
+) -> Result<GovernanceRewardObservation, GovernanceSnapshotError> {
     if request.page_limit == 0 {
         return Err(GovernanceSnapshotError::InvalidPageLimit);
     }
@@ -85,77 +83,12 @@ pub async fn build_governance_reward_snapshot<C: SnsGovernanceClient>(
     let fetched_neuron_count = neurons.len() as u64;
     let fetched_proposal_count = proposals.len() as u64;
     let mut eligibilities = snapshot_sns_eligibility(&neurons, &request.eligibility_policy);
-    for eligibility in &mut eligibilities {
-        if let Some(eligible_since) = request
-            .eligible_since_overrides
-            .get(&eligibility.neuron_id)
-            .copied()
-        {
-            eligibility.eligible_since_seconds = eligible_since;
-        }
-    }
-    let summaries =
-        summarize_sns_participation(&eligibilities, &proposals, &request.participation_policy);
-    let summary_by_id = summaries
-        .iter()
-        .map(|summary| (summary.neuron_id.clone(), summary))
-        .collect::<BTreeMap<_, _>>();
+    let (excluded_neurons, conversion_errors) =
+        resolve_reward_eligibility_records(&mut eligibilities)?;
 
-    let mut snapshots = Vec::new();
-    let mut excluded_neurons = Vec::new();
-    let mut conversion_errors = Vec::new();
-    for eligibility in &eligibilities {
-        if let Some(reason) = &eligibility.excluded_reason {
-            excluded_neurons.push(ExcludedGovernanceNeuron {
-                neuron_id: eligibility.neuron_id.clone(),
-                reason: reason.clone(),
-            });
-            continue;
-        }
-        let Some(summary) = summary_by_id.get(&eligibility.neuron_id) else {
-            continue;
-        };
-        let neuron_id = match sns_neuron_id_to_u64(&eligibility.neuron_id) {
-            Ok(id) => id,
-            Err(err) => {
-                conversion_errors.push(err);
-                excluded_neurons.push(ExcludedGovernanceNeuron {
-                    neuron_id: eligibility.neuron_id.clone(),
-                    reason: "invalid SNS neuron id".to_string(),
-                });
-                continue;
-            }
-        };
-        if !sns_neuron_id_is_canonical_staking_subaccount(&eligibility.neuron_id) {
-            excluded_neurons.push(ExcludedGovernanceNeuron {
-                neuron_id: eligibility.neuron_id.clone(),
-                reason: "non-canonical SNS neuron id".to_string(),
-            });
-            continue;
-        }
-        snapshots.push(NeuronSnapshot {
-            sns_neuron_id: eligibility.neuron_id.clone(),
-            neuron_id,
-            staked_io_e8s: eligibility.eligible_stake_e8s,
-            eligible_seconds: request
-                .participation_policy
-                .epoch_end_seconds
-                .saturating_sub(
-                    eligibility
-                        .eligible_since_seconds
-                        .min(request.participation_policy.epoch_end_seconds),
-                ),
-            eligible_closed_proposals: summary.eligible_closed_proposals_total,
-            voted_closed_proposals: summary.voted_proposals,
-            is_genesis_governance_neuron: false,
-            is_protocol_owned: false,
-            is_dissolving: !eligibility.is_non_dissolving,
-        });
-    }
-    reject_duplicate_reward_neuron_ids(&snapshots)?;
-
-    Ok(GovernanceRewardSnapshot {
-        snapshots,
+    Ok(GovernanceRewardObservation {
+        eligibilities,
+        proposals,
         excluded_neurons,
         conversion_errors,
         fetched_neuron_count,
@@ -175,34 +108,13 @@ pub async fn build_governance_active_stake_snapshot<C: SnsGovernanceClient>(
     reject_duplicate_neurons(&neurons)?;
 
     let fetched_neuron_count = neurons.len() as u64;
-    let eligibilities = snapshot_sns_eligibility(&neurons, &request.eligibility_policy);
+    let mut eligibilities = snapshot_sns_eligibility(&neurons, &request.eligibility_policy);
+    let (excluded_neurons, _) = resolve_reward_eligibility_records(&mut eligibilities)?;
     let active_staked_io_e8s = eligibilities
         .iter()
-        .filter(|eligibility| {
-            eligibility.excluded_reason.is_none()
-                && sns_neuron_id_is_valid(&eligibility.neuron_id)
-                && sns_neuron_id_is_canonical_staking_subaccount(&eligibility.neuron_id)
-        })
+        .filter(|eligibility| eligibility.excluded_reason.is_none())
         .map(|eligibility| eligibility.eligible_stake_e8s)
         .sum();
-    let excluded_neurons = eligibilities
-        .iter()
-        .filter_map(|eligibility| {
-            let reason = eligibility.excluded_reason.clone().or_else(|| {
-                if !sns_neuron_id_is_valid(&eligibility.neuron_id) {
-                    Some("invalid SNS neuron id".to_string())
-                } else if !sns_neuron_id_is_canonical_staking_subaccount(&eligibility.neuron_id) {
-                    Some("non-canonical SNS neuron id".to_string())
-                } else {
-                    None
-                }
-            })?;
-            Some(ExcludedGovernanceNeuron {
-                neuron_id: eligibility.neuron_id.clone(),
-                reason,
-            })
-        })
-        .collect();
 
     Ok(GovernanceActiveStakeSnapshot {
         eligibilities,
@@ -210,6 +122,43 @@ pub async fn build_governance_active_stake_snapshot<C: SnsGovernanceClient>(
         excluded_neurons,
         fetched_neuron_count,
     })
+}
+
+fn resolve_reward_eligibility_records(
+    eligibilities: &mut [SnsNeuronEligibility],
+) -> Result<
+    (
+        Vec<ExcludedGovernanceNeuron>,
+        Vec<SnsNeuronIdConversionError>,
+    ),
+    GovernanceSnapshotError,
+> {
+    let mut excluded_neurons = Vec::new();
+    let mut conversion_errors = Vec::new();
+    let mut seen_reward_ids = BTreeSet::new();
+    for eligibility in eligibilities {
+        if eligibility.excluded_reason.is_none() {
+            if let Err(err) = sns_neuron_id_to_u64(&eligibility.neuron_id) {
+                conversion_errors.push(err);
+                eligibility.excluded_reason = Some("invalid SNS neuron id".to_string());
+            } else if !sns_neuron_id_is_canonical_staking_subaccount(&eligibility.neuron_id) {
+                eligibility.excluded_reason = Some("non-canonical SNS neuron id".to_string());
+            } else {
+                let reward_id = sns_neuron_id_to_u64(&eligibility.neuron_id)
+                    .map_err(|_| GovernanceSnapshotError::DuplicateRewardNeuronId)?;
+                if !seen_reward_ids.insert(reward_id) {
+                    return Err(GovernanceSnapshotError::DuplicateRewardNeuronId);
+                }
+            }
+        }
+        if let Some(reason) = &eligibility.excluded_reason {
+            excluded_neurons.push(ExcludedGovernanceNeuron {
+                neuron_id: eligibility.neuron_id.clone(),
+                reason: reason.clone(),
+            });
+        }
+    }
+    Ok((excluded_neurons, conversion_errors))
 }
 
 async fn fetch_all_neurons<C: SnsGovernanceClient>(
@@ -292,18 +241,6 @@ fn reject_duplicate_proposals(proposals: &[SnsProposal]) -> Result<(), Governanc
     Ok(())
 }
 
-fn reject_duplicate_reward_neuron_ids(
-    snapshots: &[NeuronSnapshot],
-) -> Result<(), GovernanceSnapshotError> {
-    let mut seen = BTreeSet::new();
-    for snapshot in snapshots {
-        if !seen.insert(snapshot.neuron_id) {
-            return Err(GovernanceSnapshotError::DuplicateRewardNeuronId);
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,7 +248,6 @@ mod tests {
         SnsBallot, SnsDissolveState, SnsProposalId, SnsProposalPage, SnsProposalRewardStatus,
         SnsProposalStatus, SnsVote,
     };
-    use io_reward_policy::{allocate_rewards, RewardAllocation};
     use std::future::Future;
     use std::pin::Pin;
     use std::task::{Context, Poll};
@@ -426,38 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn governance_source_drives_equal_two_week_allocation() {
-        let result = block_on(build_governance_reward_snapshot(
-            &InMemoryClient {
-                neurons: vec![neuron(1, 1_000), neuron(2, 1_000)],
-                proposals: vec![proposal(1, 10, &[(1, SnsVote::Yes), (2, SnsVote::No)])],
-                ..Default::default()
-            },
-            request(2),
-        ))
-        .unwrap();
-        let out = allocate_rewards(200, &result.snapshots);
-        assert_eq!(
-            out.allocations,
-            vec![
-                RewardAllocation {
-                    sns_neuron_id: id(1),
-                    neuron_id: sns_neuron_id_to_u64(&id(1)).unwrap(),
-                    io_e8s: 100
-                },
-                RewardAllocation {
-                    sns_neuron_id: id(2),
-                    neuron_id: sns_neuron_id_to_u64(&id(2)).unwrap(),
-                    io_e8s: 100
-                }
-            ]
-        );
-    }
-
-    #[test]
-    fn participation_and_stake_time_weighting_flow_into_allocation() {
-        let mut req = request(1);
-        req.eligible_since_overrides.insert(id(2), 50);
+    fn reward_observation_contains_raw_eligibilities_and_proposals() {
         let result = block_on(build_governance_reward_snapshot(
             &InMemoryClient {
                 neurons: vec![neuron(1, 1_000), neuron(2, 1_000)],
@@ -467,15 +372,27 @@ mod tests {
                 ],
                 ..Default::default()
             },
-            req,
+            request(1),
         ))
         .unwrap();
         assert_eq!(result.fetched_neuron_count, 2);
         assert_eq!(result.fetched_proposal_count, 2);
-        let out = allocate_rewards(400, &result.snapshots);
-        assert_eq!(out.allocations[0].io_e8s, 266);
-        assert_eq!(out.allocations[1].io_e8s, 133);
-        assert_eq!(out.dust_e8s, 1);
+        assert_eq!(
+            result
+                .eligibilities
+                .iter()
+                .map(|eligibility| eligibility.neuron_id.clone())
+                .collect::<Vec<_>>(),
+            vec![id(1), id(2)]
+        );
+        assert_eq!(
+            result
+                .proposals
+                .iter()
+                .map(|proposal| proposal.id.0)
+                .collect::<Vec<_>>(),
+            vec![2, 1]
+        );
     }
 
     #[test]
@@ -513,11 +430,12 @@ mod tests {
             request(10),
         ))
         .unwrap();
-        assert_eq!(result.snapshots.len(), 1);
+        assert_eq!(result.eligibilities.len(), 8);
         assert!(result
-            .snapshots
+            .eligibilities
             .iter()
-            .any(|snapshot| snapshot.sns_neuron_id == id(7)));
+            .any(|eligibility| eligibility.neuron_id == id(7)
+                && eligibility.excluded_reason.is_none()));
         assert_eq!(
             result.conversion_errors,
             vec![SnsNeuronIdConversionError::Empty]
@@ -583,7 +501,7 @@ mod tests {
         ))
         .unwrap();
 
-        assert!(result.snapshots.is_empty());
+        assert_eq!(result.eligibilities.len(), 1);
         assert_eq!(
             result.conversion_errors,
             vec![SnsNeuronIdConversionError::Empty]
@@ -594,22 +512,6 @@ mod tests {
             SnsNeuronId(Vec::new())
         );
         assert_eq!(result.excluded_neurons[0].reason, "invalid SNS neuron id");
-    }
-
-    #[test]
-    fn no_closed_proposals_gives_full_participation_and_dust_stays_unissued() {
-        let result = block_on(build_governance_reward_snapshot(
-            &InMemoryClient {
-                neurons: vec![neuron(1, 1), neuron(2, 1), neuron(3, 1)],
-                proposals: Vec::new(),
-                ..Default::default()
-            },
-            request(10),
-        ))
-        .unwrap();
-        let out = allocate_rewards(100, &result.snapshots);
-        assert_eq!(out.allocations.iter().map(|a| a.io_e8s).sum::<u128>(), 99);
-        assert_eq!(out.dust_e8s, 1);
     }
 
     #[test]
@@ -658,68 +560,6 @@ mod tests {
     }
 
     #[test]
-    fn governance_reward_snapshot_rejects_duplicate_reward_neuron_ids_after_conversion() {
-        assert_eq!(
-            reject_duplicate_reward_neuron_ids(&[
-                NeuronSnapshot {
-                    sns_neuron_id: id(1),
-                    neuron_id: 1,
-                    staked_io_e8s: 1,
-                    eligible_seconds: 1,
-                    eligible_closed_proposals: 0,
-                    voted_closed_proposals: 0,
-                    is_genesis_governance_neuron: false,
-                    is_protocol_owned: false,
-                    is_dissolving: false,
-                },
-                NeuronSnapshot {
-                    sns_neuron_id: id(2),
-                    neuron_id: 1,
-                    staked_io_e8s: 2,
-                    eligible_seconds: 1,
-                    eligible_closed_proposals: 0,
-                    voted_closed_proposals: 0,
-                    is_genesis_governance_neuron: false,
-                    is_protocol_owned: false,
-                    is_dissolving: false,
-                },
-            ]),
-            Err(GovernanceSnapshotError::DuplicateRewardNeuronId)
-        );
-    }
-
-    #[test]
-    fn governance_reward_snapshot_reports_duplicate_converted_id_as_terminal_error() {
-        assert_eq!(
-            reject_duplicate_reward_neuron_ids(&[
-                NeuronSnapshot {
-                    sns_neuron_id: SnsNeuronId(vec![7]),
-                    neuron_id: 7,
-                    staked_io_e8s: 1,
-                    eligible_seconds: 1,
-                    eligible_closed_proposals: 0,
-                    voted_closed_proposals: 0,
-                    is_genesis_governance_neuron: false,
-                    is_protocol_owned: false,
-                    is_dissolving: false,
-                },
-                NeuronSnapshot {
-                    sns_neuron_id: SnsNeuronId(vec![8]),
-                    neuron_id: 7,
-                    staked_io_e8s: 2,
-                    eligible_seconds: 1,
-                    eligible_closed_proposals: 0,
-                    voted_closed_proposals: 0,
-                    is_genesis_governance_neuron: false,
-                    is_protocol_owned: false,
-                    is_dissolving: false,
-                },
-            ]),
-            Err(GovernanceSnapshotError::DuplicateRewardNeuronId)
-        );
-    }
-
-    #[test]
     fn duplicate_ids_are_rejected() {
         assert_eq!(
             block_on(build_governance_reward_snapshot(
@@ -742,33 +582,6 @@ mod tests {
             )),
             Err(GovernanceSnapshotError::DuplicateProposalId)
         );
-        assert_eq!(
-            reject_duplicate_reward_neuron_ids(&[
-                NeuronSnapshot {
-                    sns_neuron_id: id(1),
-                    neuron_id: 1,
-                    staked_io_e8s: 1,
-                    eligible_seconds: 1,
-                    eligible_closed_proposals: 0,
-                    voted_closed_proposals: 0,
-                    is_genesis_governance_neuron: false,
-                    is_protocol_owned: false,
-                    is_dissolving: false,
-                },
-                NeuronSnapshot {
-                    sns_neuron_id: id(2),
-                    neuron_id: 1,
-                    staked_io_e8s: 2,
-                    eligible_seconds: 1,
-                    eligible_closed_proposals: 0,
-                    voted_closed_proposals: 0,
-                    is_genesis_governance_neuron: false,
-                    is_protocol_owned: false,
-                    is_dissolving: false,
-                },
-            ]),
-            Err(GovernanceSnapshotError::DuplicateRewardNeuronId)
-        );
     }
 
     fn request(page_limit: u64) -> GovernanceRewardSnapshotRequest {
@@ -776,21 +589,11 @@ mod tests {
             eligibility_policy: SnsEligibilityPolicy {
                 protocol_neuron_ids: BTreeSet::new(),
                 jupiter_governance_neuron_ids: BTreeSet::new(),
-                minimum_dissolve_delay_seconds: 1_209_600,
-                require_non_dissolving: true,
-                current_timestamp_seconds: 0,
-            },
-            participation_policy: SnsParticipationPolicy {
-                count_direct_votes: true,
-                count_followed_votes: true,
-                excluded_topics: BTreeSet::new(),
-                epoch_start_seconds: 0,
-                epoch_end_seconds: 100,
+                required_dissolve_delay_seconds: io_core_model::TWO_WEEK_SECONDS,
             },
             max_neuron_pages: 10,
             max_proposal_pages: 10,
             page_limit,
-            eligible_since_overrides: BTreeMap::new(),
         }
     }
 

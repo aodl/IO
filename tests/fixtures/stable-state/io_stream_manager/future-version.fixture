@@ -1,5 +1,5 @@
 canister=io_stream_manager
-schema_version=3
+schema_version=4
 scenario=unsupported-future-version
 source=local-test-builder
 live_snapshot=false

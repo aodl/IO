@@ -22,9 +22,8 @@ type DataCompleteness = record {
   two_year_nns_principal : DataAvailability;
 };
 type GovernanceNeuronObservation = record {
-  eligible_closed_proposals : nat64; eligible_seconds : nat64; is_dissolving : bool;
-  is_genesis_governance_neuron : bool; is_protocol_owned : bool; neuron_id : nat64;
-  staked_io_e8s : nat; voted_closed_proposals : nat64;
+  currently_destination_eligible : bool; eligible_closed_proposals : nat64;
+  frozen_stake_e8s : nat; neuron_id : nat64; voted_closed_proposals : nat64;
 };
 type GovernanceObservation = record {
   counted_proposals : nat64; neurons : vec GovernanceNeuronObservation;
@@ -69,7 +68,7 @@ type RedemptionHistoryRecord = record {
   retry_status : opt text; timestamp_nanos : opt nat64; user_account : opt text;
 };
 type RewardDistributionRecord = record {
-  dust_unissued_e8s : opt nat; eligible_stake_e8s : opt nat;
+  dust_unissued_e8s : opt nat; frozen_cohort_stake_e8s : opt nat;
   epoch_end_timestamp_nanos : opt nat64; epoch_start_timestamp_nanos : opt nat64;
   participation_summary_id : opt text; payout_block : opt nat64; recipient_account : opt text;
   recipient_neuron_id : opt nat64; record_id : text; reward_amount_e8s : nat;

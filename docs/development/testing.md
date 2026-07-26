@@ -93,8 +93,8 @@ The stream-manager PocketIC coverage includes ICP deposit scans through descendi
 - Closed proposal non-participation reduces entitlement.
 - No closed proposals does not penalise neurons.
 - Proposal vote counts are capped at the eligible closed proposal count.
-- Genesis, protocol-owned, dissolving, zero-stake, and zero-time neurons are excluded.
-- Allocation uses stake-time, not a naive snapshot.
+- Genesis, protocol-owned, dissolving, zero-stake, and non-exact-product neurons are excluded.
+- Allocation uses frozen cohort stake multiplied only by closed-proposal participation.
 - Rounding dust is reported and not silently lost.
 
 ### NNS-neuron-manager model tests
@@ -180,5 +180,5 @@ The suite also covers:
 - maturity disbursement idempotency
 - split-entire-pool and split-too-much NNS manager behaviour
 - cancel-after-disbursement requiring the restake path rather than merge-back
-- zero-time fast-forward not accruing maturity
+- exact two-week timing boundaries for maturity and cohort processing
 - reward-policy saturation and exclusion safety cases

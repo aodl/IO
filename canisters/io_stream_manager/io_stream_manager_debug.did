@@ -45,14 +45,12 @@ type ApiState = record {
   protocol : ApiProtocolState;
   processed_transaction_count : nat64;
   active_staked_io_e8s : nat;
-  two_week_pool_backing_bps : nat;
 };
 
 type InitArgs = record {
   initial_total_io_supply_e8s : nat;
   initial_protocol_reserve_io_e8s : nat;
   non_redeemable_governance_io_e8s : nat;
-  two_week_pool_backing_bps : nat;
   jupiter_faucet_principal_text : opt text;
   io_nns_neuron_manager_principal_text : opt text;
   icp_ledger_principal_text : opt text;
@@ -136,7 +134,6 @@ type StreamManagerConfig = record {
   initial_total_io_supply_e8s : nat;
   initial_protocol_reserve_io_e8s : nat;
   non_redeemable_governance_io_e8s : nat;
-  two_week_pool_backing_bps : nat;
   jupiter_faucet_principal_text : opt text;
   io_nns_neuron_manager_principal_text : opt text;
   icp_ledger_principal_text : opt text;

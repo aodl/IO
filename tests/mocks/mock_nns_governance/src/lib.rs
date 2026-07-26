@@ -46,7 +46,7 @@ fn neuron_mut(state: &mut GovernanceState, id: u64) -> Result<&mut MockNeuron, S
         .neurons
         .iter_mut()
         .find(|n| n.neuron_id == id)
-        .ok_or_else(|| "unknown neuron".to_string())
+        .ok_or_else(|| format!("unknown neuron {id}"))
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -96,22 +96,22 @@ pub fn debug_disburse_maturity(args: NeuronIdArgs) -> Result<u128, String> {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn debug_split(args: NeuronAmountArgs) -> Result<u64, String> {
+pub fn debug_split(neuron_id: u64, amount_e8s: u128) -> Result<u64, String> {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         let child_id = state.next_neuron_id;
         state.next_neuron_id = state.next_neuron_id.saturating_add(1);
         let dissolve_delay_seconds = {
-            let source = neuron_mut(&mut state, args.neuron_id)?;
-            if source.principal_e8s < args.amount_e8s {
+            let source = neuron_mut(&mut state, neuron_id)?;
+            if source.principal_e8s < amount_e8s {
                 return Err("split exceeds principal".to_string());
             }
-            source.principal_e8s -= args.amount_e8s;
+            source.principal_e8s -= amount_e8s;
             source.dissolve_delay_seconds
         };
         state.neurons.push(MockNeuron {
             neuron_id: child_id,
-            principal_e8s: args.amount_e8s,
+            principal_e8s: amount_e8s,
             maturity_e8s: 0,
             dissolve_delay_seconds,
             is_dissolving: false,
@@ -122,11 +122,11 @@ pub fn debug_split(args: NeuronAmountArgs) -> Result<u64, String> {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn debug_start_dissolving(args: NeuronIdArgs) -> Result<(), String> {
+pub fn debug_start_dissolving(neuron_id: u64) -> Result<(), String> {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         let now = state.now_seconds;
-        let neuron = neuron_mut(&mut state, args.neuron_id)?;
+        let neuron = neuron_mut(&mut state, neuron_id)?;
         neuron.is_dissolving = true;
         neuron.dissolve_started_at_seconds = Some(now);
         Ok(())
@@ -134,10 +134,10 @@ pub fn debug_start_dissolving(args: NeuronIdArgs) -> Result<(), String> {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn debug_stop_dissolving(args: NeuronIdArgs) -> Result<(), String> {
+pub fn debug_stop_dissolving(neuron_id: u64) -> Result<(), String> {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        let neuron = neuron_mut(&mut state, args.neuron_id)?;
+        let neuron = neuron_mut(&mut state, neuron_id)?;
         neuron.is_dissolving = false;
         neuron.dissolve_started_at_seconds = None;
         Ok(())
@@ -145,31 +145,28 @@ pub fn debug_stop_dissolving(args: NeuronIdArgs) -> Result<(), String> {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn debug_merge(args: NeuronAmountArgs) -> Result<(), String> {
+pub fn debug_merge(neuron_id: u64, amount_e8s: u128) -> Result<(), String> {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         let amount = {
-            let source = neuron_mut(&mut state, args.neuron_id)?;
-            source.principal_e8s.min(args.amount_e8s)
+            let source = neuron_mut(&mut state, neuron_id)?;
+            source.principal_e8s.min(amount_e8s)
         };
-        let target = state
-            .neurons
-            .first_mut()
-            .ok_or_else(|| "missing target neuron".to_string())?;
+        let target = neuron_mut(&mut state, 2)?;
         target.principal_e8s = target.principal_e8s.saturating_add(amount);
         Ok(())
     })
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn debug_disburse_principal(args: NeuronIdArgs) -> Result<u128, String> {
+pub fn debug_disburse_principal(neuron_id: u64) -> Result<u128, String> {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         let now = state.now_seconds;
         let index = state
             .neurons
             .iter()
-            .position(|n| n.neuron_id == args.neuron_id)
+            .position(|n| n.neuron_id == neuron_id)
             .ok_or_else(|| "unknown neuron".to_string())?;
         let neuron = &state.neurons[index];
         let ready = neuron.is_dissolving

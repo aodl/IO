@@ -2,6 +2,8 @@
 use crate::clients::sns_governance;
 #[cfg(target_family = "wasm")]
 use crate::clients::{icp_ledger, io_ledger};
+#[cfg(any(target_family = "wasm", test))]
+use crate::governance_snapshot::GovernanceRewardObservation;
 #[cfg(target_family = "wasm")]
 use crate::governance_snapshot::{
     build_governance_reward_snapshot, GovernanceRewardSnapshotRequest, GovernanceSnapshotError,
@@ -14,17 +16,18 @@ use crate::StreamManager;
 #[cfg(target_family = "wasm")]
 use crate::{
     ApiIoRecipientPolicy, ApiStreamKind, OperationPhase, RejectedFundDisposition,
-    RejectedRefundAttemptRecord, RewardDistributionPreflight, RewardFeeRepreflightEvidence,
-    RewardPreflightStatus, RewardReservation, RewardTransferAttemptLifecycle,
-    RewardTransferAttemptRecord, StreamManagerError, StreamOperation, StreamOperationKind,
-    TransferStatus, TwoWeekRecipientTransfer, CANISTER_STATE,
+    RejectedRefundAttemptRecord, RewardCohort, RewardCohortMember, RewardDistributionPreflight,
+    RewardFeeRepreflightEvidence, RewardPreflightStatus, RewardReservation,
+    RewardTransferAttemptLifecycle, RewardTransferAttemptRecord, StreamManagerError,
+    StreamOperation, StreamOperationKind, TransferStatus, TwoWeekRecipientTransfer, CANISTER_STATE,
 };
 #[cfg(test)]
 use crate::{
-    OperationPhase, RejectedFundDisposition, RejectedRefundAttemptRecord,
-    RewardDistributionPreflight, RewardFeeRepreflightEvidence, RewardPreflightStatus,
-    RewardReservation, RewardTransferAttemptLifecycle, RewardTransferAttemptRecord,
-    StreamOperation, StreamOperationKind, TransferStatus, TwoWeekRecipientTransfer, CANISTER_STATE,
+    OperationPhase, RejectedFundDisposition, RejectedRefundAttemptRecord, RewardCohort,
+    RewardCohortMember, RewardDistributionPreflight, RewardFeeRepreflightEvidence,
+    RewardPreflightStatus, RewardReservation, RewardTransferAttemptLifecycle,
+    RewardTransferAttemptRecord, StreamOperation, StreamOperationKind, TransferStatus,
+    TwoWeekRecipientTransfer, CANISTER_STATE,
 };
 use candid::CandidType;
 #[cfg(target_family = "wasm")]
@@ -35,11 +38,14 @@ use candid::Principal;
 use io_core_model::split_40_60;
 #[cfg(target_family = "wasm")]
 use io_core_model::ModelError;
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", test))]
+use io_core_model::TWO_WEEK_SECONDS;
+#[cfg(any(target_family = "wasm", test))]
 use io_governance_types::{
-    SnsEligibilityPolicy, SnsGovernanceCanisterClient, SnsGovernanceClient, SnsNeuronId,
-    SnsParticipationPolicy,
+    summarize_sns_participation_for_neuron_ids, SnsNeuronId, SnsParticipationPolicy,
 };
+#[cfg(target_family = "wasm")]
+use io_governance_types::{SnsEligibilityPolicy, SnsGovernanceCanisterClient, SnsGovernanceClient};
 #[cfg(any(target_family = "wasm", test))]
 use io_ledger_types::Account;
 #[cfg(any(target_family = "wasm", test))]
@@ -74,7 +80,7 @@ use serde::Deserialize;
 #[cfg(any(target_family = "wasm", test))]
 use sha2::{Digest, Sha256};
 #[cfg(any(target_family = "wasm", test))]
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const STREAM_MANAGER_DEPOSIT_ACCOUNT: &str = "stream_manager_deposit";
 pub const REDEMPTION_ACCOUNT: &str = "redemption";
@@ -82,8 +88,6 @@ pub const PROTOCOL_RESERVE_ACCOUNT: &str = "protocol_reserve";
 pub const REDEMPTION_PAYOUT_MEMO: &str = "redemption_payout";
 pub const REDEEMED_IO_MEMO: &str = "redeemed_io_to_reserve";
 pub const TWO_WEEK_REWARD_ACCOUNT_PREFIX: &str = "sns_neuron_";
-#[cfg(target_family = "wasm")]
-const TWO_WEEK_DISSOLVE_DELAY_SECONDS: u64 = 14 * 24 * 60 * 60;
 #[cfg(target_family = "wasm")]
 const GOVERNANCE_SNAPSHOT_PAGE_LIMIT: u64 = 100;
 #[cfg(target_family = "wasm")]
@@ -180,8 +184,229 @@ enum BoundaryTransferDecision {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg(any(target_family = "wasm", test))]
 enum RewardSnapshotAvailability {
-    Available(Vec<io_reward_policy::NeuronSnapshot>),
+    Available(GovernanceRewardObservation),
     Unavailable(String),
+}
+
+#[cfg(any(target_family = "wasm", test))]
+#[cfg_attr(test, allow(dead_code))]
+fn has_incomplete_two_week_reward(journal: &[StreamOperation]) -> bool {
+    journal.iter().any(|op| {
+        op.kind == StreamOperationKind::TwoWeekMaturityStream
+            && op.phase != OperationPhase::Completed
+    })
+}
+
+#[cfg(any(target_family = "wasm", test))]
+#[cfg_attr(test, allow(dead_code))]
+fn capture_reward_cohort_from_snapshot(
+    generation: u64,
+    captured_at_timestamp_seconds: u64,
+    observation: &GovernanceRewardObservation,
+) -> Result<RewardCohort, String> {
+    if generation == 0 {
+        return Err("reward cohort generation must be positive".to_string());
+    }
+    let mut seen_canonical_ids = BTreeSet::new();
+    let mut seen_compatibility_ids = BTreeSet::new();
+    let mut total_stake = 0u128;
+    let mut members = observation
+        .eligibilities
+        .iter()
+        .filter(|eligibility| eligibility.excluded_reason.is_none())
+        .map(|eligibility| {
+            if !io_reward_policy::sns_neuron_id_is_valid(&eligibility.neuron_id) {
+                return Err("reward cohort contains invalid SNS neuron id".to_string());
+            }
+            if !io_reward_policy::sns_neuron_id_is_canonical_staking_subaccount(
+                &eligibility.neuron_id,
+            ) {
+                return Err("reward cohort contains non-canonical SNS neuron id".to_string());
+            }
+            if eligibility.eligible_stake_e8s == 0 {
+                return Err("reward cohort contains zero stake".to_string());
+            }
+            if !seen_canonical_ids.insert(eligibility.neuron_id.clone()) {
+                return Err("reward cohort contains duplicate canonical SNS neuron id".to_string());
+            }
+            let compatibility_id = io_reward_policy::sns_neuron_id_to_u64(&eligibility.neuron_id)
+                .map_err(|err| {
+                format!("reward cohort contains invalid SNS neuron id: {err:?}")
+            })?;
+            if !seen_compatibility_ids.insert(compatibility_id) {
+                return Err(
+                    "reward cohort contains duplicate compatibility SNS neuron id".to_string(),
+                );
+            }
+            total_stake = total_stake
+                .checked_add(eligibility.eligible_stake_e8s)
+                .ok_or_else(|| "reward cohort total stake overflow".to_string())?;
+            Ok(RewardCohortMember {
+                sns_neuron_id: eligibility.neuron_id.0.clone(),
+                frozen_stake_e8s: eligibility.eligible_stake_e8s,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    members.sort_by(|a, b| a.sns_neuron_id.cmp(&b.sns_neuron_id));
+    Ok(RewardCohort {
+        generation,
+        captured_at_timestamp_seconds,
+        members,
+        consumed_by_operation_id: None,
+    })
+}
+
+#[cfg(any(target_family = "wasm", test))]
+#[cfg_attr(test, allow(dead_code))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PreparedRewardCohortInstall {
+    active_staked_io_e8s: u128,
+    fresh_cohort: Option<RewardCohort>,
+}
+
+#[cfg(any(target_family = "wasm", test))]
+#[cfg_attr(test, allow(dead_code))]
+fn prepare_reward_cohort_install(
+    observation: &GovernanceRewardObservation,
+    captured_at_timestamp_seconds: u64,
+    existing_cohort: Option<&RewardCohort>,
+    has_incomplete_reward: bool,
+) -> Result<PreparedRewardCohortInstall, String> {
+    let mut active_staked_io_e8s = 0u128;
+    for eligibility in observation
+        .eligibilities
+        .iter()
+        .filter(|eligibility| eligibility.excluded_reason.is_none())
+    {
+        if !io_reward_policy::sns_neuron_id_is_valid(&eligibility.neuron_id) {
+            return Err("reward snapshot contains invalid SNS neuron id".to_string());
+        }
+        if !io_reward_policy::sns_neuron_id_is_canonical_staking_subaccount(&eligibility.neuron_id)
+        {
+            return Err("reward snapshot contains non-canonical SNS neuron id".to_string());
+        }
+        io_reward_policy::sns_neuron_id_to_u64(&eligibility.neuron_id)
+            .map_err(|err| format!("reward snapshot contains invalid SNS neuron id: {err:?}"))?;
+        active_staked_io_e8s = active_staked_io_e8s
+            .checked_add(eligibility.eligible_stake_e8s)
+            .ok_or_else(|| "reward snapshot active stake overflow".to_string())?;
+    }
+
+    let fresh_cohort = if has_incomplete_reward {
+        None
+    } else if existing_cohort.is_none_or(|cohort| cohort.consumed_by_operation_id.is_some()) {
+        let generation = existing_cohort
+            .map(|cohort| cohort.generation.checked_add(1).ok_or(()))
+            .unwrap_or(Ok(1))
+            .map_err(|_| "reward cohort generation overflow".to_string())?;
+        Some(capture_reward_cohort_from_snapshot(
+            generation,
+            captured_at_timestamp_seconds,
+            observation,
+        )?)
+    } else {
+        None
+    };
+
+    Ok(PreparedRewardCohortInstall {
+        active_staked_io_e8s,
+        fresh_cohort,
+    })
+}
+
+#[cfg(target_family = "wasm")]
+fn refresh_reward_cohort_if_ready(
+    reward_snapshot: &RewardSnapshotAvailability,
+    captured_at_timestamp_seconds: u64,
+) -> Result<(), String> {
+    let RewardSnapshotAvailability::Available(observation) = reward_snapshot else {
+        return Ok(());
+    };
+    CANISTER_STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let prepared = prepare_reward_cohort_install(
+            observation,
+            captured_at_timestamp_seconds,
+            state.reward_cohort.as_ref(),
+            has_incomplete_two_week_reward(&state.operation_journal),
+        )?;
+        state.manager.active_staked_io_e8s = prepared.active_staked_io_e8s;
+        if let Some(cohort) = prepared.fresh_cohort {
+            state.reward_cohort = Some(cohort);
+        }
+        Ok(())
+    })
+}
+
+#[cfg(any(target_family = "wasm", test))]
+#[cfg_attr(test, allow(dead_code))]
+fn cohort_reward_participants(
+    cohort: &RewardCohort,
+    observation: &GovernanceRewardObservation,
+    event_timestamp_seconds: u64,
+) -> Result<Vec<io_reward_policy::RewardParticipant>, String> {
+    if cohort.consumed_by_operation_id.is_some() {
+        return Err("reward cohort was already consumed by a reward operation".to_string());
+    }
+    if event_timestamp_seconds <= cohort.captured_at_timestamp_seconds {
+        return Err("two-week maturity event does not postdate reward cohort capture".to_string());
+    }
+    if event_timestamp_seconds
+        > cohort
+            .captured_at_timestamp_seconds
+            .saturating_add(TWO_WEEK_SECONDS)
+    {
+        return Err("two-week maturity event is beyond reward cohort expiry".to_string());
+    }
+    let current_by_id = observation
+        .eligibilities
+        .iter()
+        .map(|eligibility| (eligibility.neuron_id.clone(), eligibility))
+        .collect::<BTreeMap<_, _>>();
+    let frozen_ids = cohort
+        .members
+        .iter()
+        .map(|member| SnsNeuronId(member.sns_neuron_id.clone()))
+        .collect::<Vec<_>>();
+    let epoch_start_seconds = cohort
+        .captured_at_timestamp_seconds
+        .checked_add(1)
+        .ok_or_else(|| "reward cohort epoch start timestamp overflow".to_string())?;
+    let policy = SnsParticipationPolicy {
+        count_direct_votes: true,
+        count_followed_votes: true,
+        excluded_topics: BTreeSet::new(),
+        epoch_start_seconds,
+        epoch_end_seconds: event_timestamp_seconds,
+    };
+    let summaries =
+        summarize_sns_participation_for_neuron_ids(&frozen_ids, &observation.proposals, &policy);
+    let summary_by_id = summaries
+        .iter()
+        .map(|summary| (summary.neuron_id.clone(), summary))
+        .collect::<BTreeMap<_, _>>();
+    let mut participants = Vec::with_capacity(cohort.members.len());
+    for member in &cohort.members {
+        let sns_neuron_id = SnsNeuronId(member.sns_neuron_id.clone());
+        let current = current_by_id.get(&sns_neuron_id).copied();
+        let summary = summary_by_id
+            .get(&sns_neuron_id)
+            .ok_or_else(|| "missing participation summary for reward cohort member".to_string())?;
+        let neuron_id = io_reward_policy::sns_neuron_id_to_u64(&sns_neuron_id)
+            .map_err(|err| format!("invalid cohort SNS neuron id: {err:?}"))?;
+        let destination = current
+            .map(|eligibility| eligibility.excluded_reason.is_none())
+            .unwrap_or(false);
+        participants.push(io_reward_policy::RewardParticipant {
+            sns_neuron_id,
+            neuron_id,
+            frozen_stake_e8s: member.frozen_stake_e8s,
+            eligible_closed_proposals: summary.eligible_closed_proposals_total,
+            voted_closed_proposals: summary.voted_proposals,
+            destination_is_currently_eligible: destination,
+        });
+    }
+    Ok(participants)
 }
 
 #[cfg(any(target_family = "wasm", test))]
@@ -195,7 +420,7 @@ fn require_new_two_week_reward_inputs(
         Principal,
         Principal,
         Principal,
-        &[io_reward_policy::NeuronSnapshot],
+        &GovernanceRewardObservation,
     ),
     String,
 > {
@@ -207,8 +432,8 @@ fn require_new_two_week_reward_inputs(
         "SNS governance canister is required for new two-week rewards".to_string()
     })?;
     match reward_snapshot {
-        RewardSnapshotAvailability::Available(neurons) => {
-            Ok((io_canister, io_index, sns_governance, neurons))
+        RewardSnapshotAvailability::Available(observation) => {
+            Ok((io_canister, io_index, sns_governance, observation))
         }
         RewardSnapshotAvailability::Unavailable(reason) => Err(format!(
             "SNS governance reward snapshot unavailable for new two-week reward: {reason}"
@@ -517,39 +742,21 @@ fn kind_from_api(kind: ApiStreamKind) -> StreamOperationKind {
 #[cfg(target_family = "wasm")]
 async fn refresh_finalized_sns_reward_snapshot(
     canister: Principal,
-) -> Result<Vec<io_reward_policy::NeuronSnapshot>, GovernanceSnapshotError> {
+) -> Result<GovernanceRewardObservation, GovernanceSnapshotError> {
     let client = SnsGovernanceCanisterClient { canister };
-    let now_seconds = ic_cdk::api::time() / 1_000_000_000;
     let request = GovernanceRewardSnapshotRequest {
         eligibility_policy: SnsEligibilityPolicy {
             protocol_neuron_ids: BTreeSet::new(),
             jupiter_governance_neuron_ids: BTreeSet::new(),
-            minimum_dissolve_delay_seconds: TWO_WEEK_DISSOLVE_DELAY_SECONDS,
-            require_non_dissolving: true,
-            current_timestamp_seconds: 0,
-        },
-        participation_policy: SnsParticipationPolicy {
-            count_direct_votes: true,
-            count_followed_votes: true,
-            excluded_topics: BTreeSet::new(),
-            epoch_start_seconds: 0,
-            epoch_end_seconds: now_seconds,
+            required_dissolve_delay_seconds: TWO_WEEK_SECONDS,
         },
         max_neuron_pages: GOVERNANCE_SNAPSHOT_MAX_PAGES,
         max_proposal_pages: GOVERNANCE_SNAPSHOT_MAX_PAGES,
         page_limit: GOVERNANCE_SNAPSHOT_PAGE_LIMIT,
-        eligible_since_overrides: Default::default(),
     };
 
     match build_governance_reward_snapshot(&client, request).await {
-        Ok(snapshot) => {
-            CANISTER_STATE.with(|cell| {
-                cell.borrow_mut()
-                    .manager
-                    .refresh_active_staked_io_from_neurons(&snapshot.snapshots);
-            });
-            Ok(snapshot.snapshots)
-        }
+        Ok(observation) => Ok(observation),
         Err(err) => Err(err),
     }
 }
@@ -579,23 +786,27 @@ async fn load_reward_snapshot(sns_governance: Option<Principal>) -> RewardSnapsh
     };
 
     match refresh_finalized_sns_reward_snapshot(canister).await {
-        Ok(neurons) => RewardSnapshotAvailability::Available(neurons),
+        Ok(observation) => RewardSnapshotAvailability::Available(observation),
         Err(real_err) => {
             let real_err_message = governance_snapshot_error_message(&real_err);
             #[cfg(debug_assertions)]
             {
                 if reward_snapshot_debug_fallback_allowed(&real_err) {
-                    match sns_governance::debug_list_neurons(canister).await {
-                        Ok(neurons) => {
-                            CANISTER_STATE.with(|cell| {
-                                cell.borrow_mut()
-                                    .manager
-                                    .refresh_active_staked_io_from_neurons(&neurons);
-                            });
-                            RewardSnapshotAvailability::Available(neurons)
-                        }
+                    let client = sns_governance::MockSnsGovernanceClient { canister };
+                    let request = GovernanceRewardSnapshotRequest {
+                        eligibility_policy: SnsEligibilityPolicy {
+                            protocol_neuron_ids: BTreeSet::new(),
+                            jupiter_governance_neuron_ids: BTreeSet::new(),
+                            required_dissolve_delay_seconds: TWO_WEEK_SECONDS,
+                        },
+                        max_neuron_pages: GOVERNANCE_SNAPSHOT_MAX_PAGES,
+                        max_proposal_pages: GOVERNANCE_SNAPSHOT_MAX_PAGES,
+                        page_limit: GOVERNANCE_SNAPSHOT_PAGE_LIMIT,
+                    };
+                    match build_governance_reward_snapshot(&client, request).await {
+                        Ok(observation) => RewardSnapshotAvailability::Available(observation),
                         Err(debug_err) => RewardSnapshotAvailability::Unavailable(format!(
-                            "{real_err_message}; {debug_err}"
+                            "{real_err_message}; debug SNS governance reward snapshot refresh failed: {debug_err:?}"
                         )),
                     }
                 } else {
@@ -3195,6 +3406,7 @@ async fn retry_pending_two_week_streams(
         canister: sns_governance_canister,
     };
     reconcile_reward_transfer_proofs(io_index_canister, outcome).await;
+    #[cfg(debug_assertions)]
     let mut saw_preflight_candidate = false;
     loop {
         let operation_id = CANISTER_STATE.with(|cell| {
@@ -3212,7 +3424,10 @@ async fn retry_pending_two_week_streams(
         let Some(operation_id) = operation_id else {
             break;
         };
-        saw_preflight_candidate = true;
+        #[cfg(debug_assertions)]
+        {
+            saw_preflight_candidate = true;
+        }
         if !ensure_reward_preflight(&operation_id, io_canister, sns_governance_canister, outcome)
             .await
         {
@@ -3477,8 +3692,21 @@ async fn retry_pending_two_week_streams(
             outcome.errors.push(message);
             continue;
         }
-        match classify_reward_transfer_result(&attempt, transfer_result.clone(), duplicate.as_ref())
+        let transfer_decision =
+            classify_reward_transfer_result(&attempt, transfer_result.clone(), duplicate.as_ref());
+        #[cfg(debug_assertions)]
         {
+            if matches!(transfer_decision, BoundaryTransferDecision::Succeeded(_))
+                && crate::consume_debug_failpoint(
+                    crate::DebugFailpoint::AfterTwoWeekRewardTransferBeforeJournalUpdate,
+                )
+            {
+                panic!(
+                    "debug failpoint AfterTwoWeekRewardTransferBeforeJournalUpdate triggered after two-week reward transfer"
+                );
+            }
+        }
+        match transfer_decision {
             BoundaryTransferDecision::Succeeded(block) => CANISTER_STATE.with(|cell| {
                 if let Some(op) = cell
                     .borrow_mut()
@@ -4548,8 +4776,6 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
             errors: Vec::new(),
         };
 
-        let reward_snapshot = load_reward_snapshot(sns_governance).await;
-
         if let Some(io_canister) = io_transfer_ledger {
             if !retry_pending_io_issuances(io_canister, &mut outcome).await {
                 return outcome;
@@ -4605,6 +4831,17 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
             {
                 return outcome;
             }
+        }
+
+        let reward_snapshot = load_reward_snapshot(sns_governance).await;
+        let reward_snapshot_captured_at_seconds = ic_cdk::api::time() / 1_000_000_000;
+        if let Err(err) =
+            refresh_reward_cohort_if_ready(&reward_snapshot, reward_snapshot_captured_at_seconds)
+        {
+            outcome
+                .errors
+                .push(format!("reward cohort capture failed: {err}"));
+            return outcome;
         }
 
         if let Some(canister) = icp_ledger {
@@ -4773,7 +5010,7 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                                         io_canister,
                                         io_index_canister,
                                         sns_governance_canister,
-                                        neurons,
+                                        observation,
                                     )) = require_new_two_week_reward_inputs(
                                         io_transfer_ledger,
                                         io_ledger,
@@ -4785,12 +5022,41 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                                             "new two-week reward inputs were checked before operation creation"
                                         );
                                     };
+                                    let event_timestamp_seconds = tx.timestamp / 1_000_000_000;
+                                    let participants = CANISTER_STATE.with(|cell| {
+                                        let state = cell.borrow();
+                                        let cohort = state.reward_cohort.as_ref().ok_or_else(|| {
+                                            "no reward cohort is available for new two-week reward"
+                                                .to_string()
+                                        })?;
+                                        cohort_reward_participants(
+                                            cohort,
+                                            observation,
+                                            event_timestamp_seconds,
+                                        )
+                                    });
+                                    let participants = match participants {
+                                        Ok(participants) => participants,
+                                        Err(err) => {
+                                            outcome.errors.push(format!("stream {tx_id}: {err}"));
+                                            return outcome;
+                                        }
+                                    };
                                     let allocations = CANISTER_STATE.with(|cell| {
                                         cell.borrow().manager.allocate_two_week_maturity_io(
                                             preview.outcome.io_issued_e8s,
-                                            neurons,
+                                            &participants,
                                         )
                                     });
+                                    let allocations = match allocations {
+                                        Ok(allocations) => allocations,
+                                        Err(err) => {
+                                            outcome.errors.push(format!(
+                                                "stream {tx_id}: reward allocation failed: {err:?}"
+                                            ));
+                                            return outcome;
+                                        }
+                                    };
                                     CANISTER_STATE.with(|cell| {
                                         let mut state = cell.borrow_mut();
                                         if !state
@@ -4798,6 +5064,10 @@ pub async fn scheduler_tick_once() -> DebugTickOutcome {
                                             .iter()
                                             .any(|op| op.operation_id == tx_id)
                                         {
+                                            if let Some(cohort) = &mut state.reward_cohort {
+                                                cohort.consumed_by_operation_id =
+                                                    Some(tx_id.clone());
+                                            }
                                             let mut op = StreamOperation::stream(
                                                 "icp",
                                                 tx.block_index,
@@ -5436,6 +5706,338 @@ mod tests {
         }
     }
 
+    fn eligibility(
+        id: u8,
+        stake: u128,
+        current: bool,
+    ) -> io_governance_types::SnsNeuronEligibility {
+        io_governance_types::SnsNeuronEligibility {
+            neuron_id: io_governance_types::SnsNeuronId(vec![id; 32]),
+            owner: None,
+            eligible_stake_e8s: if current { stake } else { 0 },
+            dissolve_delay_seconds: TWO_WEEK_SECONDS,
+            is_non_dissolving: current,
+            excluded_reason: if current {
+                None
+            } else {
+                Some("neuron is dissolving".to_string())
+            },
+        }
+    }
+
+    fn observation(
+        eligibilities: Vec<io_governance_types::SnsNeuronEligibility>,
+        proposals: Vec<io_governance_types::SnsProposal>,
+    ) -> GovernanceRewardObservation {
+        GovernanceRewardObservation {
+            fetched_neuron_count: eligibilities.len() as u64,
+            fetched_proposal_count: proposals.len() as u64,
+            eligibilities,
+            proposals,
+            excluded_neurons: Vec::new(),
+            conversion_errors: Vec::new(),
+        }
+    }
+
+    fn proposal(
+        id: u64,
+        decided_timestamp_seconds: u64,
+        votes: &[(u8, io_governance_types::SnsVote)],
+    ) -> io_governance_types::SnsProposal {
+        io_governance_types::SnsProposal {
+            id: io_governance_types::SnsProposalId(id),
+            topic: Some(1),
+            status: io_governance_types::SnsProposalStatus::Rejected,
+            reward_status: io_governance_types::SnsProposalRewardStatus::Settled,
+            decided_timestamp_seconds: Some(decided_timestamp_seconds),
+            ballots: votes
+                .iter()
+                .map(|(id, vote)| io_governance_types::SnsBallot {
+                    neuron_id: io_governance_types::SnsNeuronId(vec![*id; 32]),
+                    vote: *vote,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn topup_after_capture_does_not_increase_current_weight() {
+        let captured = observation(
+            vec![eligibility(1, 100, true), eligibility(2, 100, true)],
+            vec![],
+        );
+        let cohort = capture_reward_cohort_from_snapshot(1, 100, &captured).unwrap();
+        let current = observation(
+            vec![
+                eligibility(1, 1_000, true),
+                eligibility(2, 100, true),
+                eligibility(3, 1_000, true),
+            ],
+            vec![proposal(
+                1,
+                101,
+                &[
+                    (1, io_governance_types::SnsVote::Yes),
+                    (2, io_governance_types::SnsVote::Yes),
+                    (3, io_governance_types::SnsVote::Yes),
+                ],
+            )],
+        );
+
+        let participants = cohort_reward_participants(&cohort, &current, 101).unwrap();
+        let out = io_reward_policy::allocate_rewards(200, &participants).unwrap();
+
+        assert_eq!(out.allocations.len(), 2);
+        assert_eq!(out.allocations[0].io_e8s, 100);
+        assert_eq!(out.allocations[1].io_e8s, 100);
+        assert!(out
+            .allocations
+            .iter()
+            .all(|allocation| allocation.neuron_id != 3));
+    }
+
+    #[test]
+    fn dissolving_cohort_member_share_becomes_dust() {
+        let captured = observation(
+            vec![eligibility(1, 100, true), eligibility(2, 100, true)],
+            vec![],
+        );
+        let cohort = capture_reward_cohort_from_snapshot(1, 100, &captured).unwrap();
+        let current = observation(
+            vec![eligibility(1, 100, true), eligibility(2, 0, false)],
+            vec![proposal(
+                1,
+                101,
+                &[
+                    (1, io_governance_types::SnsVote::Yes),
+                    (2, io_governance_types::SnsVote::Yes),
+                ],
+            )],
+        );
+
+        let participants = cohort_reward_participants(&cohort, &current, 101).unwrap();
+        let out = io_reward_policy::allocate_rewards(200, &participants).unwrap();
+
+        assert_eq!(out.allocations.len(), 1);
+        assert_eq!(out.allocations[0].io_e8s, 100);
+        assert_eq!(out.forfeited_reward_e8s, 100);
+        assert_eq!(out.dust_e8s, 100);
+    }
+
+    #[test]
+    fn dissolving_member_keeps_period_participation_but_cannot_receive() {
+        let captured = observation(
+            vec![eligibility(1, 100, true), eligibility(2, 100, true)],
+            vec![],
+        );
+        let cohort = capture_reward_cohort_from_snapshot(1, 100, &captured).unwrap();
+        let current = observation(
+            vec![eligibility(1, 100, true), eligibility(2, 0, false)],
+            vec![proposal(
+                1,
+                101,
+                &[
+                    (1, io_governance_types::SnsVote::Yes),
+                    (2, io_governance_types::SnsVote::Yes),
+                ],
+            )],
+        );
+
+        let participants = cohort_reward_participants(&cohort, &current, 101).unwrap();
+
+        assert_eq!(participants[1].eligible_closed_proposals, 1);
+        assert_eq!(participants[1].voted_closed_proposals, 1);
+        assert!(!participants[1].destination_is_currently_eligible);
+    }
+
+    #[test]
+    fn non_voting_dissolving_member_has_zero_weight_and_zero_forfeiture() {
+        let captured = observation(
+            vec![eligibility(1, 100, true), eligibility(2, 100, true)],
+            vec![],
+        );
+        let cohort = capture_reward_cohort_from_snapshot(1, 100, &captured).unwrap();
+        let current = observation(
+            vec![eligibility(1, 100, true), eligibility(2, 0, false)],
+            vec![proposal(1, 101, &[(1, io_governance_types::SnsVote::Yes)])],
+        );
+
+        let participants = cohort_reward_participants(&cohort, &current, 101).unwrap();
+        let out = io_reward_policy::allocate_rewards(100, &participants).unwrap();
+
+        assert_eq!(out.allocations.len(), 1);
+        assert_eq!(out.allocations[0].io_e8s, 100);
+        assert_eq!(out.forfeited_reward_e8s, 0);
+        assert_eq!(out.dust_e8s, 0);
+    }
+
+    #[test]
+    fn voting_dissolving_member_share_is_forfeited() {
+        let captured = observation(
+            vec![eligibility(1, 100, true), eligibility(2, 100, true)],
+            vec![],
+        );
+        let cohort = capture_reward_cohort_from_snapshot(1, 100, &captured).unwrap();
+        let current = observation(
+            vec![eligibility(1, 100, true), eligibility(2, 0, false)],
+            vec![proposal(
+                1,
+                101,
+                &[
+                    (1, io_governance_types::SnsVote::Yes),
+                    (2, io_governance_types::SnsVote::Yes),
+                ],
+            )],
+        );
+
+        let participants = cohort_reward_participants(&cohort, &current, 101).unwrap();
+        let out = io_reward_policy::allocate_rewards(200, &participants).unwrap();
+
+        assert_eq!(out.allocations[0].io_e8s, 100);
+        assert_eq!(out.forfeited_reward_e8s, 100);
+        assert_eq!(out.dust_e8s, 100);
+    }
+
+    #[test]
+    fn capture_rejects_duplicate_ids_instead_of_deduping() {
+        let captured = observation(
+            vec![eligibility(1, 100, true), eligibility(1, 200, true)],
+            vec![],
+        );
+
+        let err = capture_reward_cohort_from_snapshot(1, 100, &captured).unwrap_err();
+
+        assert!(err.contains("duplicate canonical"), "{err}");
+    }
+
+    #[test]
+    fn stale_or_pre_capture_reward_cohort_fails_closed() {
+        let captured = observation(vec![eligibility(1, 100, true)], vec![]);
+        let cohort = capture_reward_cohort_from_snapshot(1, 100, &captured).unwrap();
+
+        assert!(cohort_reward_participants(&cohort, &captured, 99)
+            .unwrap_err()
+            .contains("does not postdate"));
+        assert!(
+            cohort_reward_participants(&cohort, &captured, 100 + TWO_WEEK_SECONDS + 1)
+                .unwrap_err()
+                .contains("expiry")
+        );
+    }
+
+    #[test]
+    fn same_second_maturity_cannot_consume_newly_captured_cohort() {
+        let captured = observation(vec![eligibility(1, 100, true)], vec![]);
+        let cohort = capture_reward_cohort_from_snapshot(1, 100, &captured).unwrap();
+
+        let err = cohort_reward_participants(&cohort, &captured, 100).unwrap_err();
+
+        assert!(err.contains("does not postdate"), "{err}");
+    }
+
+    #[test]
+    fn same_second_proposal_is_not_counted_for_new_cohort() {
+        let captured = observation(vec![eligibility(1, 100, true)], vec![]);
+        let cohort = capture_reward_cohort_from_snapshot(1, 100, &captured).unwrap();
+        let current = observation(
+            vec![eligibility(1, 100, true)],
+            vec![proposal(1, 100, &[(1, io_governance_types::SnsVote::Yes)])],
+        );
+
+        let participants = cohort_reward_participants(&cohort, &current, 101).unwrap();
+
+        assert_eq!(participants[0].eligible_closed_proposals, 0);
+        assert_eq!(participants[0].voted_closed_proposals, 0);
+    }
+
+    #[test]
+    fn source_event_one_second_after_capture_is_accepted() {
+        let captured = observation(vec![eligibility(1, 100, true)], vec![]);
+        let cohort = capture_reward_cohort_from_snapshot(1, 100, &captured).unwrap();
+        let current = observation(
+            vec![eligibility(1, 100, true)],
+            vec![proposal(1, 101, &[(1, io_governance_types::SnsVote::Yes)])],
+        );
+
+        let participants = cohort_reward_participants(&cohort, &current, 101).unwrap();
+
+        assert_eq!(participants[0].eligible_closed_proposals, 1);
+        assert_eq!(participants[0].voted_closed_proposals, 1);
+    }
+
+    #[test]
+    fn cohort_capture_failure_preserves_active_stake_and_existing_cohort() {
+        let existing_snapshot = observation(vec![eligibility(1, 100, true)], vec![]);
+        let existing_cohort = capture_reward_cohort_from_snapshot(1, 100, &existing_snapshot)
+            .expect("existing cohort should be valid");
+        let invalid_snapshot = observation(
+            vec![
+                eligibility(2, 250, true),
+                io_governance_types::SnsNeuronEligibility {
+                    neuron_id: io_governance_types::SnsNeuronId(vec![3]),
+                    owner: None,
+                    eligible_stake_e8s: 250,
+                    dissolve_delay_seconds: TWO_WEEK_SECONDS,
+                    is_non_dissolving: true,
+                    excluded_reason: None,
+                },
+            ],
+            vec![],
+        );
+
+        let err =
+            prepare_reward_cohort_install(&invalid_snapshot, 200, Some(&existing_cohort), false)
+                .unwrap_err();
+
+        assert!(err.contains("non-canonical SNS neuron id"), "{err}");
+        assert_eq!(existing_cohort.generation, 1);
+        assert_eq!(existing_cohort.members[0].frozen_stake_e8s, 100);
+    }
+
+    #[test]
+    fn generation_overflow_preserves_active_stake_and_existing_cohort() {
+        let snapshot = observation(vec![eligibility(2, 250, true)], vec![]);
+        let mut existing_cohort = capture_reward_cohort_from_snapshot(1, 100, &snapshot)
+            .expect("existing cohort should be valid");
+        existing_cohort.generation = u64::MAX;
+        existing_cohort.consumed_by_operation_id = Some("op".to_string());
+
+        let err = prepare_reward_cohort_install(&snapshot, 200, Some(&existing_cohort), false)
+            .unwrap_err();
+
+        assert!(err.contains("generation overflow"), "{err}");
+        assert_eq!(existing_cohort.generation, u64::MAX);
+        assert_eq!(existing_cohort.members[0].frozen_stake_e8s, 250);
+    }
+
+    #[test]
+    fn observation_install_updates_active_stake_and_cohort_atomically() {
+        let snapshot = observation(vec![eligibility(2, 250, true)], vec![]);
+
+        let prepared = prepare_reward_cohort_install(&snapshot, 200, None, false)
+            .expect("valid observation should prepare install");
+
+        assert_eq!(prepared.active_staked_io_e8s, 250);
+        let cohort = prepared
+            .fresh_cohort
+            .expect("initial valid observation should prepare a fresh cohort");
+        assert_eq!(cohort.generation, 1);
+        assert_eq!(cohort.captured_at_timestamp_seconds, 200);
+        assert_eq!(cohort.members.len(), 1);
+        assert_eq!(cohort.members[0].frozen_stake_e8s, 250);
+    }
+
+    #[test]
+    fn consumed_reward_cohort_cannot_be_reused() {
+        let captured = observation(vec![eligibility(1, 100, true)], vec![]);
+        let mut cohort = capture_reward_cohort_from_snapshot(1, 100, &captured).unwrap();
+        cohort.consumed_by_operation_id = Some("op".to_string());
+
+        assert!(cohort_reward_participants(&cohort, &captured, 101)
+            .unwrap_err()
+            .contains("already consumed"));
+    }
+
     fn duplicate_proof_block(amount_e8s: u128, to: &str, memo: &str) -> LedgerBlock {
         duplicate_proof_block_with_memo(amount_e8s, to, Some(memo))
     }
@@ -5481,7 +6083,7 @@ mod tests {
     }
 
     fn available_empty_snapshot() -> RewardSnapshotAvailability {
-        RewardSnapshotAvailability::Available(Vec::new())
+        RewardSnapshotAvailability::Available(observation(Vec::new(), Vec::new()))
     }
 
     #[test]
@@ -7924,10 +8526,6 @@ mod tests {
             manager.active_staked_io_e8s,
             before_manager.active_staked_io_e8s
         );
-        assert_eq!(
-            manager.two_week_pool_backing_bps,
-            before_manager.two_week_pool_backing_bps
-        );
         assert_eq!(journal, before_journal);
     }
 
@@ -9980,7 +10578,7 @@ mod tests {
                 )),
                 processed_transactions: Vec::new(),
                 active_staked_io_e8s: 0,
-                two_week_pool_backing_bps: 10_000,
+                reward_cohort: None,
                 operation_journal: vec![op],
                 scheduler_cursors: crate::SchedulerCursors::default(),
             },
@@ -10392,7 +10990,6 @@ mod tests {
             state: io_core_model::ProtocolState::from(op.post_state),
             processed_transactions: Default::default(),
             active_staked_io_e8s: 0,
-            two_week_pool_backing_bps: 10_000,
         };
         let mut journal = vec![op];
 
@@ -10488,7 +11085,6 @@ mod tests {
             state: io_core_model::ProtocolState::from(op.post_state),
             processed_transactions: Default::default(),
             active_staked_io_e8s: 0,
-            two_week_pool_backing_bps: 10_000,
         };
         let mut journal = vec![op];
         commit_completed_reward_operation_in_state(&mut manager, &mut journal, &operation_id)
@@ -10608,7 +11204,6 @@ mod tests {
             state: io_core_model::ProtocolState::from(op.post_state),
             processed_transactions: Default::default(),
             active_staked_io_e8s: 0,
-            two_week_pool_backing_bps: 10_000,
         };
         (manager, vec![op])
     }
@@ -10634,10 +11229,6 @@ mod tests {
         assert_eq!(
             manager.active_staked_io_e8s,
             before_manager.active_staked_io_e8s
-        );
-        assert_eq!(
-            manager.two_week_pool_backing_bps,
-            before_manager.two_week_pool_backing_bps
         );
         assert_eq!(journal, before_journal);
     }
@@ -10705,10 +11296,6 @@ mod tests {
         assert_eq!(
             manager.active_staked_io_e8s,
             after_first_manager.active_staked_io_e8s
-        );
-        assert_eq!(
-            manager.two_week_pool_backing_bps,
-            after_first_manager.two_week_pool_backing_bps
         );
         assert_eq!(journal, after_first_journal);
     }

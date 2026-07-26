@@ -10,7 +10,7 @@ use std::cell::RefCell;
 pub const TWO_YEAR_NNS_NEURON_ID: u64 = 6_345_890_886_899_317_159;
 pub const CONTROLLER_CANISTER_PRINCIPAL_TEXT: &str = "oae4c-3iaaa-aaaar-qb5qq-cai";
 pub const SECONDS_PER_DAY: u64 = 86_400;
-pub const TWO_WEEK_DISSOLVE_SECONDS: u64 = 14 * SECONDS_PER_DAY;
+pub const TWO_WEEK_DISSOLVE_SECONDS: u64 = io_core_model::TWO_WEEK_SECONDS;
 pub const MAX_MODEL_ANNUAL_BPS: u128 = 100_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -189,7 +189,6 @@ pub struct NnsNeuronManagerModel {
 pub struct InitArgs {
     pub controller_canister_principal_text: String,
     pub two_year_nns_neuron_id: u64,
-    pub two_week_dissolve_seconds: u64,
     pub initial_two_year_principal_e8s: u128,
     pub initial_two_week_principal_e8s: u128,
     pub model_annual_bps: u128,
@@ -208,7 +207,6 @@ impl Default for InitArgs {
         Self {
             controller_canister_principal_text: CONTROLLER_CANISTER_PRINCIPAL_TEXT.to_string(),
             two_year_nns_neuron_id: TWO_YEAR_NNS_NEURON_ID,
-            two_week_dissolve_seconds: TWO_WEEK_DISSOLVE_SECONDS,
             initial_two_year_principal_e8s: 0,
             initial_two_week_principal_e8s: 0,
             model_annual_bps: 0,
@@ -228,7 +226,6 @@ impl Default for InitArgs {
 pub struct NnsNeuronManagerConfig {
     pub controller_canister_principal_text: String,
     pub two_year_nns_neuron_id: u64,
-    pub two_week_dissolve_seconds: u64,
     pub initial_two_year_principal_e8s: u128,
     pub initial_two_week_principal_e8s: u128,
     pub model_annual_bps: u128,
@@ -240,6 +237,44 @@ pub struct NnsNeuronManagerConfig {
     pub icp_ledger_principal_text: Option<String>,
     pub icp_index_principal_text: Option<String>,
     pub production_wiring: Option<ProductionWiringConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+struct LegacyPreV2NnsNeuronManagerConfig {
+    controller_canister_principal_text: String,
+    two_year_nns_neuron_id: u64,
+    two_week_dissolve_seconds: u64,
+    initial_two_year_principal_e8s: u128,
+    initial_two_week_principal_e8s: u128,
+    model_annual_bps: u128,
+    io_stream_manager_principal_text: Option<String>,
+    two_year_maturity_memo: Option<u64>,
+    two_week_maturity_memo: Option<u64>,
+    principal_unwind_memo: Option<u64>,
+    nns_governance_principal_text: Option<String>,
+    icp_ledger_principal_text: Option<String>,
+    icp_index_principal_text: Option<String>,
+    production_wiring: Option<ProductionWiringConfig>,
+}
+
+impl From<LegacyPreV2NnsNeuronManagerConfig> for NnsNeuronManagerConfig {
+    fn from(value: LegacyPreV2NnsNeuronManagerConfig) -> Self {
+        Self {
+            controller_canister_principal_text: value.controller_canister_principal_text,
+            two_year_nns_neuron_id: value.two_year_nns_neuron_id,
+            initial_two_year_principal_e8s: value.initial_two_year_principal_e8s,
+            initial_two_week_principal_e8s: value.initial_two_week_principal_e8s,
+            model_annual_bps: value.model_annual_bps,
+            io_stream_manager_principal_text: value.io_stream_manager_principal_text,
+            two_year_maturity_memo: value.two_year_maturity_memo,
+            two_week_maturity_memo: value.two_week_maturity_memo,
+            principal_unwind_memo: value.principal_unwind_memo,
+            nns_governance_principal_text: value.nns_governance_principal_text,
+            icp_ledger_principal_text: value.icp_ledger_principal_text,
+            icp_index_principal_text: value.icp_index_principal_text,
+            production_wiring: value.production_wiring,
+        }
+    }
 }
 
 impl Default for NnsNeuronManagerConfig {
@@ -260,7 +295,6 @@ pub enum InitArgsError {
     InvalidIcpIndexPrincipal { value: String },
     InvalidProductionWiring { message: String },
     ZeroTwoYearNeuronId,
-    ZeroTwoWeekDissolveSeconds,
     ModelAnnualBpsTooHigh { bps: u128, max_bps: u128 },
 }
 
@@ -278,9 +312,6 @@ impl TryFrom<InitArgs> for NnsNeuronManagerConfig {
         }
         if args.two_year_nns_neuron_id == 0 {
             return Err(InitArgsError::ZeroTwoYearNeuronId);
-        }
-        if args.two_week_dissolve_seconds == 0 {
-            return Err(InitArgsError::ZeroTwoWeekDissolveSeconds);
         }
         if args.model_annual_bps > MAX_MODEL_ANNUAL_BPS {
             return Err(InitArgsError::ModelAnnualBpsTooHigh {
@@ -327,7 +358,6 @@ impl TryFrom<InitArgs> for NnsNeuronManagerConfig {
         Ok(Self {
             controller_canister_principal_text: args.controller_canister_principal_text,
             two_year_nns_neuron_id: args.two_year_nns_neuron_id,
-            two_week_dissolve_seconds: args.two_week_dissolve_seconds,
             initial_two_year_principal_e8s: args.initial_two_year_principal_e8s,
             initial_two_week_principal_e8s: args.initial_two_week_principal_e8s,
             model_annual_bps: args.model_annual_bps,
@@ -615,7 +645,6 @@ impl NnsNeuronManagerModel {
             TWO_YEAR_NNS_NEURON_ID,
             two_year_principal_e8s,
             two_week_principal_e8s,
-            TWO_WEEK_DISSOLVE_SECONDS,
         )
     }
 
@@ -624,7 +653,6 @@ impl NnsNeuronManagerModel {
             config.two_year_nns_neuron_id,
             config.initial_two_year_principal_e8s,
             config.initial_two_week_principal_e8s,
-            config.two_week_dissolve_seconds,
         )
     }
 
@@ -632,7 +660,6 @@ impl NnsNeuronManagerModel {
         two_year_nns_neuron_id: u64,
         two_year_principal_e8s: u128,
         two_week_principal_e8s: u128,
-        two_week_dissolve_seconds: u64,
     ) -> Self {
         Self {
             now_seconds: 0,
@@ -647,7 +674,7 @@ impl NnsNeuronManagerModel {
                 2,
                 ManagedNeuronKind::TwoWeekPooled,
                 two_week_principal_e8s,
-                two_week_dissolve_seconds,
+                TWO_WEEK_DISSOLVE_SECONDS,
             ),
             unwind_neurons: vec![],
         }
@@ -804,6 +831,21 @@ pub struct VersionedStableState {
     pub state: StableState,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+struct LegacyPreV2VersionedStableState {
+    schema_version: u32,
+    state: LegacyPreV2StableState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+struct LegacyPreV2StableState {
+    config: LegacyPreV2NnsNeuronManagerConfig,
+    model: NnsNeuronManagerModel,
+    two_week_pool_state: TwoWeekPoolState,
+    operation_journal: Vec<NnsOperation>,
+    scheduler_cursors: NnsSchedulerCursors,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StableMigrationError {
     UnsupportedFutureVersion {
@@ -824,8 +866,8 @@ pub fn migrate_stable_state(
     snapshot: VersionedStableState,
 ) -> Result<StableState, StableMigrationError> {
     match snapshot.schema_version {
-        0 => Ok(snapshot.state),
-        NNS_NEURON_MANAGER_STABLE_SCHEMA_VERSION => Ok(snapshot.state),
+        0 => validate_stable_state(snapshot.state),
+        1 | NNS_NEURON_MANAGER_STABLE_SCHEMA_VERSION => validate_stable_state(snapshot.state),
         version if version > NNS_NEURON_MANAGER_STABLE_SCHEMA_VERSION => {
             Err(StableMigrationError::UnsupportedFutureVersion {
                 canister: "io_nns_neuron_manager",
@@ -839,23 +881,81 @@ pub fn migrate_stable_state(
     }
 }
 
+fn migrate_legacy_pre_v2_stable_state(
+    snapshot: LegacyPreV2VersionedStableState,
+) -> Result<StableState, StableMigrationError> {
+    if !matches!(snapshot.schema_version, 0 | 1) {
+        return Err(StableMigrationError::UnsupportedOldVersion {
+            canister: "io_nns_neuron_manager",
+            version: snapshot.schema_version,
+        });
+    }
+    if snapshot.state.config.two_week_dissolve_seconds != TWO_WEEK_DISSOLVE_SECONDS {
+        return Err(StableMigrationError::CorruptSnapshot {
+            canister: "io_nns_neuron_manager",
+            message: "legacy two_week_dissolve_seconds must be 1_209_600".to_string(),
+        });
+    }
+    validate_stable_state(StableState {
+        config: snapshot.state.config.into(),
+        model: snapshot.state.model,
+        two_week_pool_state: snapshot.state.two_week_pool_state,
+        operation_journal: snapshot.state.operation_journal,
+        scheduler_cursors: snapshot.state.scheduler_cursors,
+    })
+}
+
+fn validate_stable_state(state: StableState) -> Result<StableState, StableMigrationError> {
+    if state.model.two_week_pool.dissolve_delay_seconds != TWO_WEEK_DISSOLVE_SECONDS {
+        return Err(StableMigrationError::CorruptSnapshot {
+            canister: "io_nns_neuron_manager",
+            message: "pooled two-week neuron has non-14-day dissolve delay".to_string(),
+        });
+    }
+    if state
+        .model
+        .unwind_neurons
+        .iter()
+        .any(|neuron| neuron.dissolve_delay_seconds != TWO_WEEK_DISSOLVE_SECONDS)
+    {
+        return Err(StableMigrationError::CorruptSnapshot {
+            canister: "io_nns_neuron_manager",
+            message: "unwind neuron has non-14-day dissolve delay".to_string(),
+        });
+    }
+    Ok(state)
+}
+
+#[cfg(any(test, debug_assertions))]
 fn decode_stable_state_bytes(bytes: &[u8]) -> Result<StableState, StableMigrationError> {
+    if let Ok((snapshot,)) = candid::decode_args::<(LegacyPreV2VersionedStableState,)>(bytes) {
+        if matches!(snapshot.schema_version, 0 | 1) {
+            return migrate_legacy_pre_v2_stable_state(snapshot);
+        }
+    }
+
     let versioned_err = match candid::decode_args::<(VersionedStableState,)>(bytes) {
         Ok((snapshot,)) => return migrate_stable_state(snapshot),
         Err(err) => err,
     };
 
-    match candid::decode_args::<(StableState,)>(bytes) {
-        Ok((state,)) => migrate_stable_state(VersionedStableState {
+    match candid::decode_args::<(LegacyPreV2StableState,)>(bytes) {
+        Ok((state,)) => migrate_legacy_pre_v2_stable_state(LegacyPreV2VersionedStableState {
             schema_version: 0,
             state,
         }),
-        Err(unversioned_err) => Err(StableMigrationError::CorruptSnapshot {
-            canister: "io_nns_neuron_manager",
-            message: format!(
-                "failed to decode versioned stable state: {versioned_err}; failed to decode legacy unversioned stable state: {unversioned_err}"
-            ),
-        }),
+        Err(legacy_unversioned_err) => match candid::decode_args::<(StableState,)>(bytes) {
+            Ok((state,)) => migrate_stable_state(VersionedStableState {
+                schema_version: 0,
+                state,
+            }),
+            Err(unversioned_err) => Err(StableMigrationError::CorruptSnapshot {
+                canister: "io_nns_neuron_manager",
+                message: format!(
+                    "failed to decode versioned stable state: {versioned_err}; failed to decode legacy unversioned stable state: {legacy_unversioned_err}; failed to decode current unversioned stable state: {unversioned_err}"
+                ),
+            }),
+        },
     }
 }
 
@@ -915,8 +1015,33 @@ pub fn pre_upgrade() {
 
 #[cfg_attr(target_family = "wasm", ic_cdk::post_upgrade)]
 pub fn post_upgrade() {
-    let bytes = ic_cdk::stable::stable_bytes();
-    let state = decode_stable_state_bytes(&bytes).expect(
+    let state = match ic_cdk::storage::stable_restore::<(LegacyPreV2VersionedStableState,)>() {
+        Ok((snapshot,)) if matches!(snapshot.schema_version, 0 | 1) => {
+            migrate_legacy_pre_v2_stable_state(snapshot)
+        }
+        _ => match ic_cdk::storage::stable_restore::<(VersionedStableState,)>() {
+            Ok((snapshot,)) => migrate_stable_state(snapshot),
+            Err(versioned_err) => match ic_cdk::storage::stable_restore::<(LegacyPreV2StableState,)>() {
+                Ok((state,)) => migrate_legacy_pre_v2_stable_state(LegacyPreV2VersionedStableState {
+                    schema_version: 0,
+                    state,
+                }),
+                Err(legacy_unversioned_err) => match ic_cdk::storage::stable_restore::<(StableState,)>() {
+                Ok((state,)) => migrate_stable_state(VersionedStableState {
+                    schema_version: 0,
+                    state,
+                }),
+                Err(unversioned_err) => Err(StableMigrationError::CorruptSnapshot {
+                    canister: "io_nns_neuron_manager",
+                    message: format!(
+                        "failed to restore versioned stable state: {versioned_err}; failed to restore legacy unversioned stable state: {legacy_unversioned_err}; failed to restore current unversioned stable state: {unversioned_err}"
+                    ),
+                }),
+                },
+            },
+        },
+    }
+    .expect(
         "io_nns_neuron_manager stable state is missing, corrupt, or unsupported during upgrade",
     );
     import_stable_state(state);
@@ -1311,7 +1436,6 @@ mod tests {
     fn stable_state_round_trip_preserves_config_model_and_pool_state() {
         init(InitArgs {
             two_year_nns_neuron_id: 42,
-            two_week_dissolve_seconds: 7 * SECONDS_PER_DAY,
             initial_two_year_principal_e8s: 1_000_000_000,
             initial_two_week_principal_e8s: 500_000_000,
             model_annual_bps: 5_000,
@@ -1321,6 +1445,10 @@ mod tests {
             principal_unwind_memo: Some(300),
             ..InitArgs::default()
         });
+        assert_eq!(
+            debug_get_state().two_week_pool.dissolve_delay_seconds,
+            TWO_WEEK_DISSOLVE_SECONDS
+        );
         debug_advance_model_time(AdvanceModelTimeRequest {
             elapsed_seconds: 30 * SECONDS_PER_DAY,
             annual_bps: None,
@@ -1417,6 +1545,47 @@ mod tests {
         export_stable_state_for_tests()
     }
 
+    fn legacy_pre_v2_snapshot_from_current(
+        schema_version: u32,
+        state: StableState,
+        two_week_dissolve_seconds: u64,
+    ) -> LegacyPreV2VersionedStableState {
+        LegacyPreV2VersionedStableState {
+            schema_version,
+            state: LegacyPreV2StableState {
+                config: LegacyPreV2NnsNeuronManagerConfig {
+                    controller_canister_principal_text: state
+                        .config
+                        .controller_canister_principal_text,
+                    two_year_nns_neuron_id: state.config.two_year_nns_neuron_id,
+                    two_week_dissolve_seconds,
+                    initial_two_year_principal_e8s: state.config.initial_two_year_principal_e8s,
+                    initial_two_week_principal_e8s: state.config.initial_two_week_principal_e8s,
+                    model_annual_bps: state.config.model_annual_bps,
+                    io_stream_manager_principal_text: state.config.io_stream_manager_principal_text,
+                    two_year_maturity_memo: state.config.two_year_maturity_memo,
+                    two_week_maturity_memo: state.config.two_week_maturity_memo,
+                    principal_unwind_memo: state.config.principal_unwind_memo,
+                    nns_governance_principal_text: state.config.nns_governance_principal_text,
+                    icp_ledger_principal_text: state.config.icp_ledger_principal_text,
+                    icp_index_principal_text: state.config.icp_index_principal_text,
+                    production_wiring: state.config.production_wiring,
+                },
+                model: state.model,
+                two_week_pool_state: state.two_week_pool_state,
+                operation_journal: state.operation_journal,
+                scheduler_cursors: state.scheduler_cursors,
+            },
+        }
+    }
+
+    fn legacy_pre_v2_unversioned_from_current(
+        state: StableState,
+        two_week_dissolve_seconds: u64,
+    ) -> LegacyPreV2StableState {
+        legacy_pre_v2_snapshot_from_current(0, state, two_week_dissolve_seconds).state
+    }
+
     #[test]
     fn nns_neuron_manager_migrates_previous_stable_fixture() {
         let fixture = pending_lifecycle_fixture();
@@ -1428,6 +1597,63 @@ mod tests {
 
         assert_eq!(migrated, fixture);
         assert!(migrated.config.production_wiring.is_none());
+    }
+
+    #[test]
+    fn v1_two_week_config_migrates_to_constant() {
+        let fixture = pending_lifecycle_fixture();
+        let legacy =
+            legacy_pre_v2_snapshot_from_current(1, fixture.clone(), TWO_WEEK_DISSOLVE_SECONDS);
+        let bytes = candid::encode_args((legacy,)).unwrap();
+        let migrated = decode_stable_state_bytes_for_tests(&bytes).unwrap();
+
+        assert_eq!(
+            migrated.model.two_week_pool.dissolve_delay_seconds,
+            TWO_WEEK_DISSOLVE_SECONDS
+        );
+        assert_eq!(migrated.operation_journal, fixture.operation_journal);
+    }
+
+    #[test]
+    fn legacy_non_two_week_config_fails_migration() {
+        let legacy = legacy_pre_v2_snapshot_from_current(
+            1,
+            pending_lifecycle_fixture(),
+            7 * SECONDS_PER_DAY,
+        );
+        let bytes = candid::encode_args((legacy,)).unwrap();
+        let err = decode_stable_state_bytes_for_tests(&bytes).unwrap_err();
+
+        assert!(matches!(err, StableMigrationError::CorruptSnapshot { .. }));
+    }
+
+    #[test]
+    fn legacy_unversioned_config_model_mismatch_fails_migration() {
+        let mut fixture = pending_lifecycle_fixture();
+        fixture.model.two_week_pool.dissolve_delay_seconds = TWO_WEEK_DISSOLVE_SECONDS;
+        let legacy = legacy_pre_v2_unversioned_from_current(fixture, 7 * SECONDS_PER_DAY);
+        let bytes = candid::encode_args((legacy,)).unwrap();
+        let err = decode_stable_state_bytes_for_tests(&bytes).unwrap_err();
+
+        assert!(matches!(err, StableMigrationError::CorruptSnapshot { .. }));
+    }
+
+    #[test]
+    fn current_state_rejects_non_two_week_unwind_child() {
+        let mut state = pending_lifecycle_fixture();
+        state.model.unwind_neurons.push(SimulatedNnsNeuron::new(
+            99,
+            ManagedNeuronKind::TwoWeekUnwind,
+            100,
+            7 * SECONDS_PER_DAY,
+        ));
+        let err = migrate_stable_state_for_tests(VersionedStableState {
+            schema_version: NNS_NEURON_MANAGER_STABLE_SCHEMA_VERSION,
+            state,
+        })
+        .unwrap_err();
+
+        assert!(matches!(err, StableMigrationError::CorruptSnapshot { .. }));
     }
 
     #[test]

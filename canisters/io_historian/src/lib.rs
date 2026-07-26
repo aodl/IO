@@ -2,7 +2,7 @@ use candid::CandidType;
 use io_ledger_types::{
     AccountHistoryPageOrder, AccountHistoryScanState, IndexTransaction, LedgerKind,
 };
-use io_reward_policy::{eligible, participation_ratio, NeuronSnapshot};
+use io_reward_policy::{participation_ratio, RewardParticipant};
 use io_stable_schema::IO_HISTORIAN_SCHEMA_VERSION;
 use serde::Deserialize;
 use std::cell::RefCell;
@@ -331,7 +331,7 @@ pub struct RewardDistributionRecord {
     pub participation_summary_id: Option<String>,
     pub recipient_neuron_id: Option<u64>,
     pub recipient_account: Option<String>,
-    pub eligible_stake_e8s: Option<u128>,
+    pub frozen_cohort_stake_e8s: Option<u128>,
     pub reward_amount_e8s: u128,
     pub dust_unissued_e8s: Option<u128>,
     pub payout_block: Option<u64>,
@@ -393,19 +393,19 @@ pub struct GovernanceExcludedCount {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct GovernanceNeuronParticipation {
     pub neuron_id: u64,
-    pub eligible_stake_e8s: u128,
-    pub eligible_seconds: u64,
+    pub frozen_stake_e8s: u128,
     pub eligible_closed_proposals: u64,
     pub voted_closed_proposals: u64,
     pub participation_numerator: u128,
     pub participation_denominator: u128,
+    pub currently_destination_eligible: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
 pub struct GovernanceParticipationSnapshot {
     pub sns_eligible_neuron_count: u64,
     pub sns_excluded_neuron_count_by_reason: Vec<GovernanceExcludedCount>,
-    pub total_eligible_stake_e8s: u128,
+    pub total_frozen_cohort_stake_e8s: u128,
     pub proposal_epoch_start: Option<u64>,
     pub proposal_epoch_end: Option<u64>,
     pub counted_proposals: u64,
@@ -429,13 +429,10 @@ pub struct GovernanceObservation {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct GovernanceNeuronObservation {
     pub neuron_id: u64,
-    pub staked_io_e8s: u128,
-    pub eligible_seconds: u64,
+    pub frozen_stake_e8s: u128,
     pub eligible_closed_proposals: u64,
     pub voted_closed_proposals: u64,
-    pub is_genesis_governance_neuron: bool,
-    pub is_protocol_owned: bool,
-    pub is_dissolving: bool,
+    pub currently_destination_eligible: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -648,6 +645,74 @@ pub struct StableState {
     pub nns_lifecycle: Vec<NnsLifecycleSummary>,
     pub index_health: Vec<IndexHealthSummary>,
     pub governance: GovernanceParticipationSnapshot,
+    pub release_artifacts: Vec<CanisterArtifactStatus>,
+    pub canister_status: Vec<CanisterArtifactStatus>,
+    pub last_ingested_timestamp_nanos: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+struct LegacyV1RewardDistributionRecord {
+    pub record_id: String,
+    pub epoch_start_timestamp_nanos: Option<u64>,
+    pub epoch_end_timestamp_nanos: Option<u64>,
+    pub participation_summary_id: Option<String>,
+    pub recipient_neuron_id: Option<u64>,
+    pub recipient_account: Option<String>,
+    pub eligible_stake_e8s: Option<u128>,
+    pub reward_amount_e8s: u128,
+    pub dust_unissued_e8s: Option<u128>,
+    pub payout_block: Option<u64>,
+    pub status: PublicOperationPhase,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+struct LegacyV1GovernanceNeuronParticipation {
+    pub neuron_id: u64,
+    pub eligible_stake_e8s: u128,
+    pub eligible_seconds: u64,
+    pub eligible_closed_proposals: u64,
+    pub voted_closed_proposals: u64,
+    pub participation_numerator: u128,
+    pub participation_denominator: u128,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
+struct LegacyV1GovernanceParticipationSnapshot {
+    pub sns_eligible_neuron_count: u64,
+    pub sns_excluded_neuron_count_by_reason: Vec<GovernanceExcludedCount>,
+    pub total_eligible_stake_e8s: u128,
+    pub proposal_epoch_start: Option<u64>,
+    pub proposal_epoch_end: Option<u64>,
+    pub counted_proposals: u64,
+    pub pending_nns_operation_count: Option<u64>,
+    pub nns_lifecycle_status_summary: Option<String>,
+    pub last_governance_snapshot_timestamp_nanos: Option<u64>,
+    pub neuron_participation: Vec<LegacyV1GovernanceNeuronParticipation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+#[allow(dead_code)]
+struct LegacyV1GovernanceNeuronObservation {
+    pub neuron_id: u64,
+    pub staked_io_e8s: u128,
+    pub eligible_seconds: u64,
+    pub eligible_closed_proposals: u64,
+    pub voted_closed_proposals: u64,
+    pub is_genesis_governance_neuron: bool,
+    pub is_protocol_owned: bool,
+    pub is_dissolving: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+struct LegacyV1StableState {
+    pub schema_version: u32,
+    pub protocol: ProtocolSnapshot,
+    pub streams: Vec<StreamHistoryRecord>,
+    pub redemptions: Vec<RedemptionHistoryRecord>,
+    pub rewards: Vec<LegacyV1RewardDistributionRecord>,
+    pub nns_lifecycle: Vec<NnsLifecycleSummary>,
+    pub index_health: Vec<IndexHealthSummary>,
+    pub governance: LegacyV1GovernanceParticipationSnapshot,
     pub release_artifacts: Vec<CanisterArtifactStatus>,
     pub canister_status: Vec<CanisterArtifactStatus>,
     pub last_ingested_timestamp_nanos: Option<u64>,
@@ -1284,7 +1349,7 @@ pub fn redemption_record_from_ledger_flow(
 pub fn reward_record_from_observation(
     record_id: String,
     recipient_neuron_id: Option<u64>,
-    eligible_stake_e8s: Option<u128>,
+    frozen_cohort_stake_e8s: Option<u128>,
     reward_amount_e8s: u128,
     dust_unissued_e8s: Option<u128>,
     status: PublicOperationPhase,
@@ -1296,7 +1361,7 @@ pub fn reward_record_from_observation(
         participation_summary_id: None,
         recipient_neuron_id,
         recipient_account: None,
-        eligible_stake_e8s,
+        frozen_cohort_stake_e8s,
         reward_amount_e8s,
         dust_unissued_e8s,
         payout_block: None,
@@ -1338,31 +1403,29 @@ pub fn governance_snapshot_from_observation(
     let mut participation = Vec::new();
     let mut total_stake = 0_u128;
     for neuron in observation.neurons {
-        let policy_neuron = NeuronSnapshot {
+        let policy_neuron = RewardParticipant {
             sns_neuron_id: io_reward_policy::compatibility_sns_neuron_id_from_u64(neuron.neuron_id),
             neuron_id: neuron.neuron_id,
-            staked_io_e8s: neuron.staked_io_e8s,
-            eligible_seconds: neuron.eligible_seconds,
+            frozen_stake_e8s: neuron.frozen_stake_e8s,
             eligible_closed_proposals: neuron.eligible_closed_proposals,
             voted_closed_proposals: neuron.voted_closed_proposals,
-            is_genesis_governance_neuron: neuron.is_genesis_governance_neuron,
-            is_protocol_owned: neuron.is_protocol_owned,
-            is_dissolving: neuron.is_dissolving,
+            destination_is_currently_eligible: neuron.currently_destination_eligible,
         };
-        if eligible(&policy_neuron) {
+        if policy_neuron.frozen_stake_e8s > 0 {
             let (num, den) = participation_ratio(&policy_neuron);
-            total_stake = total_stake.saturating_add(policy_neuron.staked_io_e8s);
+            total_stake = total_stake.saturating_add(policy_neuron.frozen_stake_e8s);
             participation.push(GovernanceNeuronParticipation {
                 neuron_id: policy_neuron.neuron_id,
-                eligible_stake_e8s: policy_neuron.staked_io_e8s,
-                eligible_seconds: policy_neuron.eligible_seconds,
+                frozen_stake_e8s: policy_neuron.frozen_stake_e8s,
                 eligible_closed_proposals: policy_neuron.eligible_closed_proposals,
                 voted_closed_proposals: policy_neuron.voted_closed_proposals,
                 participation_numerator: num,
                 participation_denominator: den,
+                currently_destination_eligible: policy_neuron.destination_is_currently_eligible,
             });
-        } else {
-            for reason in exclusion_reasons(&policy_neuron) {
+        }
+        if policy_neuron.frozen_stake_e8s == 0 || !neuron.currently_destination_eligible {
+            for reason in exclusion_reasons(&policy_neuron, neuron.currently_destination_eligible) {
                 *excluded.entry(reason).or_default() += 1;
             }
         }
@@ -1376,7 +1439,7 @@ pub fn governance_snapshot_from_observation(
             .into_iter()
             .map(|(reason, count)| GovernanceExcludedCount { reason, count })
             .collect(),
-        total_eligible_stake_e8s: total_stake,
+        total_frozen_cohort_stake_e8s: total_stake,
         proposal_epoch_start: observation.proposal_epoch_start,
         proposal_epoch_end: observation.proposal_epoch_end,
         counted_proposals: observation.counted_proposals,
@@ -1459,22 +1522,16 @@ pub fn observed_index_transactions_to_stream_records(
         .collect()
 }
 
-fn exclusion_reasons(neuron: &NeuronSnapshot) -> Vec<String> {
+fn exclusion_reasons(
+    neuron: &RewardParticipant,
+    currently_destination_eligible: bool,
+) -> Vec<String> {
     let mut reasons = Vec::new();
-    if neuron.is_genesis_governance_neuron {
-        reasons.push("genesis_governance_neuron".to_string());
-    }
-    if neuron.is_protocol_owned {
-        reasons.push("protocol_owned".to_string());
-    }
-    if neuron.is_dissolving {
-        reasons.push("dissolving".to_string());
-    }
-    if neuron.staked_io_e8s == 0 {
+    if neuron.frozen_stake_e8s == 0 {
         reasons.push("zero_stake".to_string());
     }
-    if neuron.eligible_seconds == 0 {
-        reasons.push("zero_eligible_seconds".to_string());
+    if !currently_destination_eligible {
+        reasons.push("destination_ineligible".to_string());
     }
     if reasons.is_empty() {
         reasons.push("policy_ineligible".to_string());
@@ -1707,6 +1764,46 @@ fn export_stable_state() -> StableState {
     STATE.with(|cell| cell.borrow().clone())
 }
 
+fn migrate_legacy_v1_stable_state(
+    state: LegacyV1StableState,
+) -> Result<StableState, StableMigrationError> {
+    if state.schema_version > 1 {
+        return Err(StableMigrationError::UnsupportedFutureVersion {
+            canister: "io_historian",
+            version: state.schema_version,
+        });
+    }
+    Ok(StableState {
+        schema_version: HISTORIAN_SCHEMA_VERSION,
+        protocol: state.protocol,
+        streams: state.streams,
+        redemptions: state.redemptions,
+        rewards: state
+            .rewards
+            .into_iter()
+            .map(|record| RewardDistributionRecord {
+                record_id: record.record_id,
+                epoch_start_timestamp_nanos: record.epoch_start_timestamp_nanos,
+                epoch_end_timestamp_nanos: record.epoch_end_timestamp_nanos,
+                participation_summary_id: record.participation_summary_id,
+                recipient_neuron_id: record.recipient_neuron_id,
+                recipient_account: record.recipient_account,
+                frozen_cohort_stake_e8s: None,
+                reward_amount_e8s: record.reward_amount_e8s,
+                dust_unissued_e8s: record.dust_unissued_e8s,
+                payout_block: record.payout_block,
+                status: record.status,
+            })
+            .collect(),
+        nns_lifecycle: state.nns_lifecycle,
+        index_health: state.index_health,
+        governance: GovernanceParticipationSnapshot::default(),
+        release_artifacts: state.release_artifacts,
+        canister_status: state.canister_status,
+        last_ingested_timestamp_nanos: state.last_ingested_timestamp_nanos,
+    })
+}
+
 pub fn migrate_stable_state(mut state: StableState) -> Result<StableState, StableMigrationError> {
     match state.schema_version {
         0 => {
@@ -1744,9 +1841,20 @@ pub fn pre_upgrade() {
 
 #[cfg_attr(target_family = "wasm", ic_cdk::post_upgrade)]
 pub fn post_upgrade() {
-    let (state,) = ic_cdk::storage::stable_restore::<(StableState,)>()
-        .expect("io_historian stable state is missing or corrupt during upgrade");
-    import_stable_state(state);
+    match ic_cdk::storage::stable_restore::<(StableState,)>() {
+        Ok((state,)) => import_stable_state(state),
+        Err(current_err) => {
+            let (legacy,) = ic_cdk::storage::stable_restore::<(LegacyV1StableState,)>()
+                .unwrap_or_else(|legacy_err| {
+                    panic!(
+                        "io_historian stable state is missing or corrupt during upgrade: current={current_err}; legacy_v1={legacy_err}"
+                    )
+                });
+            let migrated = migrate_legacy_v1_stable_state(legacy)
+                .expect("io_historian legacy v1 stable schema migration failed");
+            import_stable_state(migrated);
+        }
+    }
 }
 
 #[cfg(any(test, debug_assertions))]
@@ -1764,6 +1872,14 @@ pub fn migrate_stable_state_for_tests(
     state: StableState,
 ) -> Result<StableState, StableMigrationError> {
     migrate_stable_state(state)
+}
+
+#[cfg(any(test, debug_assertions))]
+#[cfg_attr(not(test), allow(dead_code))]
+fn migrate_legacy_v1_stable_state_for_tests(
+    state: LegacyV1StableState,
+) -> Result<StableState, StableMigrationError> {
+    migrate_legacy_v1_stable_state(state)
 }
 
 #[cfg(any(test, debug_assertions))]
@@ -2273,29 +2389,23 @@ mod tests {
     }
 
     #[test]
-    fn governance_summary_ingestion_uses_reward_policy_eligibility() {
+    fn historian_outputs_currently_ineligible_frozen_member() {
         debug_clear();
         debug_ingest_governance_snapshot(GovernanceObservation {
             neurons: vec![
                 GovernanceNeuronObservation {
                     neuron_id: 1,
-                    staked_io_e8s: 100,
-                    eligible_seconds: 10,
+                    frozen_stake_e8s: 100,
                     eligible_closed_proposals: 4,
                     voted_closed_proposals: 2,
-                    is_genesis_governance_neuron: false,
-                    is_protocol_owned: false,
-                    is_dissolving: false,
+                    currently_destination_eligible: true,
                 },
                 GovernanceNeuronObservation {
                     neuron_id: 2,
-                    staked_io_e8s: 100,
-                    eligible_seconds: 10,
+                    frozen_stake_e8s: 100,
                     eligible_closed_proposals: 4,
                     voted_closed_proposals: 4,
-                    is_genesis_governance_neuron: true,
-                    is_protocol_owned: false,
-                    is_dissolving: false,
+                    currently_destination_eligible: false,
                 },
             ],
             proposal_epoch_start: Some(1),
@@ -2306,12 +2416,15 @@ mod tests {
             observed_at_timestamp_nanos: Some(100),
         });
         let summary = get_governance_summary();
-        assert_eq!(summary.sns_eligible_neuron_count, 1);
-        assert_eq!(summary.total_eligible_stake_e8s, 100);
+        assert_eq!(summary.sns_eligible_neuron_count, 2);
+        assert_eq!(summary.total_frozen_cohort_stake_e8s, 200);
+        assert_eq!(summary.neuron_participation.len(), 2);
         assert_eq!(summary.neuron_participation[0].participation_numerator, 2);
+        assert_eq!(summary.neuron_participation[1].participation_numerator, 4);
+        assert!(!summary.neuron_participation[1].currently_destination_eligible);
         assert_eq!(
             summary.sns_excluded_neuron_count_by_reason[0].reason,
-            "genesis_governance_neuron"
+            "destination_ineligible"
         );
     }
 
@@ -2662,13 +2775,10 @@ mod tests {
         debug_ingest_governance_snapshot(GovernanceObservation {
             neurons: vec![GovernanceNeuronObservation {
                 neuron_id: 10,
-                staked_io_e8s: 100,
-                eligible_seconds: 10,
+                frozen_stake_e8s: 100,
                 eligible_closed_proposals: 2,
                 voted_closed_proposals: 1,
-                is_genesis_governance_neuron: false,
-                is_protocol_owned: false,
-                is_dissolving: false,
+                currently_destination_eligible: true,
             }],
             proposal_epoch_start: Some(10),
             proposal_epoch_end: Some(20),
@@ -2768,6 +2878,70 @@ mod tests {
         assert_eq!(migrated.rewards.len(), 1);
         assert_eq!(migrated.nns_lifecycle.len(), 1);
         assert_eq!(migrated.index_health.len(), 1);
+    }
+
+    #[test]
+    fn historian_v1_nonempty_governance_migrates_without_fabricated_cohort() {
+        let fixture = historian_fixture();
+        let legacy = LegacyV1StableState {
+            schema_version: 1,
+            protocol: fixture.protocol.clone(),
+            streams: fixture.streams.clone(),
+            redemptions: fixture.redemptions.clone(),
+            rewards: vec![LegacyV1RewardDistributionRecord {
+                record_id: "reward:legacy".to_string(),
+                epoch_start_timestamp_nanos: Some(10),
+                epoch_end_timestamp_nanos: Some(20),
+                participation_summary_id: Some("governance:legacy".to_string()),
+                recipient_neuron_id: Some(42),
+                recipient_account: Some("recipient".to_string()),
+                eligible_stake_e8s: Some(123),
+                reward_amount_e8s: 456,
+                dust_unissued_e8s: Some(7),
+                payout_block: Some(8),
+                status: PublicOperationPhase::Completed,
+            }],
+            nns_lifecycle: fixture.nns_lifecycle.clone(),
+            index_health: fixture.index_health.clone(),
+            governance: LegacyV1GovernanceParticipationSnapshot {
+                sns_eligible_neuron_count: 1,
+                sns_excluded_neuron_count_by_reason: Vec::new(),
+                total_eligible_stake_e8s: 123,
+                proposal_epoch_start: Some(1),
+                proposal_epoch_end: Some(2),
+                counted_proposals: 1,
+                pending_nns_operation_count: Some(3),
+                nns_lifecycle_status_summary: Some("legacy".to_string()),
+                last_governance_snapshot_timestamp_nanos: Some(4),
+                neuron_participation: vec![LegacyV1GovernanceNeuronParticipation {
+                    neuron_id: 42,
+                    eligible_stake_e8s: 123,
+                    eligible_seconds: 1_209_600,
+                    eligible_closed_proposals: 1,
+                    voted_closed_proposals: 1,
+                    participation_numerator: 123 * 1_209_600,
+                    participation_denominator: 1,
+                }],
+            },
+            release_artifacts: fixture.release_artifacts.clone(),
+            canister_status: fixture.canister_status.clone(),
+            last_ingested_timestamp_nanos: fixture.last_ingested_timestamp_nanos,
+        };
+
+        let migrated = migrate_legacy_v1_stable_state_for_tests(legacy).unwrap();
+
+        assert_eq!(migrated.schema_version, HISTORIAN_SCHEMA_VERSION);
+        assert_eq!(migrated.streams.len(), fixture.streams.len());
+        assert_eq!(migrated.redemptions.len(), fixture.redemptions.len());
+        assert_eq!(migrated.nns_lifecycle.len(), fixture.nns_lifecycle.len());
+        assert_eq!(migrated.index_health.len(), fixture.index_health.len());
+        assert_eq!(migrated.rewards.len(), 1);
+        assert_eq!(migrated.rewards[0].reward_amount_e8s, 456);
+        assert_eq!(migrated.rewards[0].dust_unissued_e8s, Some(7));
+        assert_eq!(migrated.rewards[0].payout_block, Some(8));
+        assert_eq!(migrated.rewards[0].frozen_cohort_stake_e8s, None);
+        assert!(migrated.governance.neuron_participation.is_empty());
+        assert_eq!(migrated.governance.total_frozen_cohort_stake_e8s, 0);
     }
 
     #[test]

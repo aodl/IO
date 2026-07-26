@@ -11,7 +11,6 @@ pub struct StreamManager {
     pub state: ProtocolState,
     pub processed_transactions: BTreeSet<String>,
     pub active_staked_io_e8s: u128,
-    pub two_week_pool_backing_bps: u128,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,7 +47,6 @@ impl StreamManager {
             ),
             processed_transactions: BTreeSet::new(),
             active_staked_io_e8s: 0,
-            two_week_pool_backing_bps: 10_000,
         }
     }
 }

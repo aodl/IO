@@ -11,9 +11,9 @@ pub struct StableSchemaEntry {
     pub compaction_policy_summary: &'static str,
 }
 
-pub const IO_STREAM_MANAGER_SCHEMA_VERSION: u32 = 2;
-pub const IO_NNS_NEURON_MANAGER_SCHEMA_VERSION: u32 = 1;
-pub const IO_HISTORIAN_SCHEMA_VERSION: u32 = 1;
+pub const IO_STREAM_MANAGER_SCHEMA_VERSION: u32 = 3;
+pub const IO_NNS_NEURON_MANAGER_SCHEMA_VERSION: u32 = 2;
+pub const IO_HISTORIAN_SCHEMA_VERSION: u32 = 2;
 
 pub const IO_STREAM_MANAGER_FIXTURES: &[&str] = &[
     "tests/fixtures/stable-state/io_stream_manager/current.fixture",
@@ -50,10 +50,11 @@ pub const STABLE_SCHEMA_REGISTRY: &[StableSchemaEntry] = &[
     StableSchemaEntry {
         canister_name: "io_stream_manager",
         current_version: IO_STREAM_MANAGER_SCHEMA_VERSION,
-        previous_supported_versions: &[0, 1],
+        previous_supported_versions: &[0, 1, 2],
         migration_paths: &[
             "v0_unversioned_snapshot_to_v1_envelope",
             "v1_scalar_reward_reservation_to_v2_split_reward_reservation",
+            "v2_full_backing_snapshot_to_v3_reward_cohort_state",
         ],
         lossless: false,
         pre_production_only: true,
@@ -64,8 +65,11 @@ pub const STABLE_SCHEMA_REGISTRY: &[StableSchemaEntry] = &[
     StableSchemaEntry {
         canister_name: "io_nns_neuron_manager",
         current_version: IO_NNS_NEURON_MANAGER_SCHEMA_VERSION,
-        previous_supported_versions: &[0],
-        migration_paths: &["v0_unversioned_snapshot_to_v1_envelope"],
+        previous_supported_versions: &[0, 1],
+        migration_paths: &[
+            "v0_unversioned_snapshot_to_v1_envelope",
+            "v1_fixed_two_week_dissolve_config_to_v2_constant",
+        ],
         lossless: true,
         pre_production_only: true,
         fixture_files: IO_NNS_NEURON_MANAGER_FIXTURES,
@@ -75,9 +79,12 @@ pub const STABLE_SCHEMA_REGISTRY: &[StableSchemaEntry] = &[
     StableSchemaEntry {
         canister_name: "io_historian",
         current_version: IO_HISTORIAN_SCHEMA_VERSION,
-        previous_supported_versions: &[0],
-        migration_paths: &["v0_missing_source_health_to_v1_recomputed_read_model"],
-        lossless: true,
+        previous_supported_versions: &[0, 1],
+        migration_paths: &[
+            "v0_missing_source_health_to_v1_recomputed_read_model",
+            "v1_duration_weighted_governance_to_v2_frozen_cohort_read_model",
+        ],
+        lossless: false,
         pre_production_only: false,
         fixture_files: IO_HISTORIAN_FIXTURES,
         size_bounds_summary: "read-model histories are bounded and rebuildable; page limits are capped",

@@ -3,6 +3,7 @@ use io_nns_neuron_manager::{
     CONTROLLER_CANISTER_PRINCIPAL_TEXT, SECONDS_PER_DAY, TWO_WEEK_DISSOLVE_SECONDS,
     TWO_YEAR_NNS_NEURON_ID,
 };
+use std::path::PathBuf;
 
 fn t(n: u128) -> u128 {
     n * 100_000_000
@@ -13,7 +14,11 @@ fn pocketic_available() -> bool {
 }
 
 fn wasm(path: &str) -> Option<Vec<u8>> {
-    std::fs::read(path).ok()
+    let direct = PathBuf::from(path);
+    if direct.exists() {
+        return std::fs::read(direct).ok();
+    }
+    std::fs::read(PathBuf::from("../../").join(path)).ok()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize)]
@@ -446,6 +451,21 @@ mod live {
         assert!(split.errors.is_empty(), "{:?}", split.errors);
         assert_eq!(split.planned_pool_rebalances, 1);
         assert_eq!(split.disbursed_unwind_principal_e8s, 0);
+        fixture
+            .pic
+            .update_call(
+                fixture.manager,
+                Principal::anonymous(),
+                "debug_plan_rebalance",
+                encode_one(io_nns_neuron_manager::ApiTwoWeekPoolState {
+                    target_staked_e8s: 0,
+                    active_staked_e8s: 0,
+                    pending_unwind_e8s: t(100),
+                    pending_restake_e8s: 0,
+                })
+                .unwrap(),
+            )
+            .expect("record pending unwind");
 
         advance_model_time(&fixture, TWO_WEEK_DISSOLVE_SECONDS - 1, 0);
         let early = tick(&fixture);
@@ -476,7 +496,9 @@ mod live {
             return;
         };
         let governance = fixture.governance.expect("governance installed");
+        create_neuron(&fixture.pic, governance, TWO_YEAR_NNS_NEURON_ID, 0);
         create_neuron(&fixture.pic, governance, 2, t(100));
+        assert!(get_neuron(&fixture.pic, governance, 2).is_some());
 
         fixture
             .pic
@@ -499,6 +521,21 @@ mod live {
         let child = get_neuron(&fixture.pic, governance, 10_000).expect("mock child neuron");
         assert_eq!(child.principal_e8s, t(100));
         assert!(child.is_dissolving);
+        fixture
+            .pic
+            .update_call(
+                fixture.manager,
+                Principal::anonymous(),
+                "debug_plan_rebalance",
+                encode_one(io_nns_neuron_manager::ApiTwoWeekPoolState {
+                    target_staked_e8s: 0,
+                    active_staked_e8s: 0,
+                    pending_unwind_e8s: t(100),
+                    pending_restake_e8s: 0,
+                })
+                .unwrap(),
+            )
+            .expect("record pending unwind");
 
         advance_model_time(&fixture, TWO_WEEK_DISSOLVE_SECONDS, 0);
         advance_governance_time(&fixture.pic, governance, TWO_WEEK_DISSOLVE_SECONDS);
@@ -520,7 +557,9 @@ mod live {
             return;
         };
         let governance = fixture.governance.expect("governance installed");
+        create_neuron(&fixture.pic, governance, TWO_YEAR_NNS_NEURON_ID, 0);
         create_neuron(&fixture.pic, governance, 2, t(100));
+        assert!(get_neuron(&fixture.pic, governance, 2).is_some());
 
         fixture
             .pic
@@ -537,7 +576,14 @@ mod live {
                 .unwrap(),
             )
             .expect("plan unwind");
-        assert!(tick(&fixture).errors.is_empty());
+        let split = tick(&fixture);
+        assert!(
+            split.errors.is_empty(),
+            "{:?}; main={:?}; child={:?}",
+            split.errors,
+            get_neuron(&fixture.pic, governance, 2),
+            get_neuron(&fixture.pic, governance, 10_000)
+        );
 
         fixture
             .pic
