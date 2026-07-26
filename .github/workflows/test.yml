@@ -9,7 +9,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          # Release artifact provenance verifies that the manifest source commit
+          # is a reachable ancestor; shallow checkout can hide valid ancestors.
+          fetch-depth: 0
       - uses: Swatinem/rust-cache@v2
       - name: Add Wasm target
         run: rustup target add wasm32-unknown-unknown

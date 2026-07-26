@@ -48,9 +48,9 @@ The codebase implements this as two-week maturity backed IO reward allocation fr
 | Invariant | Current strongest coverage | Gap |
 | --- | --- | --- |
 | baseline without SNS staking, liquid IO only, stale/missing governance | Unit reward-policy zero/no eligible tests; snapshot error tests | No historian/end-to-end APY display proof from real governance |
-| APY increase when eligible staked IO neuron exists | Unit `eligible_sns_staking_increases_io_reward_entitlement`; SNS-shaped PocketIC reward allocation | Not real SNS staking |
+| APY increase when eligible staked IO neuron exists | Unit frozen-cohort reward allocation tests; SNS-shaped PocketIC reward allocation | Not real SNS staking |
 | no APY increase for unstaked, too-short dissolve, dissolving, non-voting when proposals closed | Unit reward-policy and governance eligibility/participation tests plus finalized SNS dissolve-state and non-voter lower-weight proof; strict four-role finalized-SNS reward E2E asserts non-voter and dissolving zero allocations in stream-manager processing | Unstaked stream-manager-consumed reward snapshot remains separate proof |
-| cap, rounding, time windows, participation ratio, epochs | Unit allocation/participation/stake-time tests | No real reward epoch from SNS governance |
+| cap, rounding, cohort windows, participation ratio, epochs | Unit allocation/participation/frozen-cohort tests | No real reward epoch from SNS governance |
 | rewards disabled in SNS config | Tooling config guards set SNS native rewards to zero in local templates | Real SNS config observation not automated |
 | multiple users, whale vs dust, split/merge lifecycle | Unit/model tests cover weights/dust; split/merge lifecycle is NNS model-oriented | Real SNS neuron split/merge unsupported in automated tests |
 | historian displays APY source honestly without protocol truth | Historian freshness/static gates | No browser E2E with real SNS data |

@@ -10,6 +10,8 @@ echo "POCKET_IC_BIN=${POCKET_IC_BIN}"
 "${POCKET_IC_BIN}" --version
 
 export RUST_TEST_THREADS=1
+export IO_POCKETIC_RUN_ID="io-stream-manager-${$}-$(date +%s%N)"
+echo "IO_POCKETIC_RUN_ID=${IO_POCKETIC_RUN_ID}"
 
 cleanup_pocketic() {
   local current_user
@@ -18,10 +20,13 @@ cleanup_pocketic() {
     | awk '/pocket-ic/ && /--port-file \/tmp\/pocket_ic_/ { print $1 }' \
     | while read -r pid; do
         [[ -z "${pid}" ]] && continue
-        parent="$(ps -o ppid= -p "${pid}" 2>/dev/null | tr -d ' ' || true)"
-        [[ -z "${parent}" ]] && continue
-        parent_cwd="$(readlink "/proc/${parent}/cwd" 2>/dev/null || true)"
-        [[ "${parent_cwd}" == "${PWD}"* ]] || continue
+        if [[ ! -r "/proc/${pid}/environ" ]]; then
+          continue
+        fi
+        if ! tr '\0' '\n' <"/proc/${pid}/environ" 2>/dev/null \
+          | grep -Fxq "IO_POCKETIC_RUN_ID=${IO_POCKETIC_RUN_ID}"; then
+          continue
+        fi
         kill "${pid}" 2>/dev/null || true
       done
 }
@@ -49,11 +54,17 @@ tests=(
   "live::governance_snapshot_unavailable_does_not_convert_reward_to_dust"
   "live::governance_outage_cannot_skip_blocked_reward_via_newer_transaction"
   "live::pocketic_live_two_week_partial_allocation_failure_does_not_double_pay_retry"
+  "live::post_capture_topup_waits_until_next_reward_cohort"
+  "live::new_stake_after_capture_cannot_claim_prior_maturity"
+  "live::dissolving_cohort_member_share_remains_protocol_dust"
+  "live::stale_reward_cohort_cannot_process_maturity"
+  "live::consumed_reward_cohort_survives_actual_same_wasm_upgrade"
   "live::pocketic_live_index_lag_blocks_scan_then_resolves_once"
   "live::pocketic_live_second_two_week_reward_after_completed_reward_succeeds"
 )
 
 ran=()
+retried=()
 for test_name in "${tests[@]}"; do
   cleanup_pocketic
   list_output="$(cargo test -p io-stream-manager --test io_stream_manager_pocketic "${test_name}" -- --exact --list 2>&1)"
@@ -64,15 +75,30 @@ for test_name in "${tests[@]}"; do
     exit 1
   fi
   echo "running ${test_name}"
-  output_file="$(mktemp)"
-  set +e
-  cargo test -p io-stream-manager --test io_stream_manager_pocketic "${test_name}" -- --exact --nocapture >"${output_file}" 2>&1
-  status=$?
-  set -e
-  cleanup_pocketic
-  output="$(<"${output_file}")"
-  rm -f "${output_file}"
-  printf '%s\n' "${output}"
+  output=""
+  status=1
+  for attempt in 1 2 3; do
+    echo "attempt ${attempt}/3: ${test_name}"
+    output_file="$(mktemp)"
+    set +e
+    cargo test -p io-stream-manager --test io_stream_manager_pocketic "${test_name}" -- --exact --nocapture 2>&1 | tee "${output_file}"
+    status=${PIPESTATUS[0]}
+    set -e
+    cleanup_pocketic
+    output="$(<"${output_file}")"
+    rm -f "${output_file}"
+    if [[ ${status} -eq 0 ]]; then
+      break
+    fi
+    if [[ "${attempt}" != "3" ]] \
+      && grep -Eiq "HTTP failure|IncompleteMessage|Connection refused|timed out|broken pipe|connection reset" <<<"${output}" \
+      && ! grep -Eiq "panicked at|assertion failed|thread '.*' panicked|arithmetic|protocol failure" <<<"${output}"; then
+      echo "retrying ${test_name} after PocketIC transport failure" >&2
+      retried+=("${test_name}: attempt ${attempt}")
+      continue
+    fi
+    break
+  done
   if [[ ${status} -ne 0 ]]; then
     echo "required test failed: ${test_name}" >&2
     exit "${status}"
@@ -96,3 +122,9 @@ done
 
 echo "live PocketIC tests genuinely ran:"
 printf ' - %s\n' "${ran[@]}"
+if [[ ${#retried[@]} -gt 0 ]]; then
+  echo "transport retries:"
+  printf ' - %s\n' "${retried[@]}"
+else
+  echo "transport retries: none"
+fi

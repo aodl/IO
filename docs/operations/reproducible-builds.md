@@ -35,9 +35,33 @@ Each raw/gz artifact has a `.sha256` sidecar. Gzip output is produced with `gzip
 - raw and gz byte size;
 - build profile;
 - target;
-- git commit if available.
+- source git commit.
 
 It intentionally omits build timestamps.
+
+The manifest source commit is the commit whose tree contains the build inputs
+for the release artifacts. Verification requires that commit to be available
+locally and reachable from `HEAD`. Branches carrying checked-in release
+artifacts whose manifest records an implementation source commit must be merged
+with GitHub's **Create a merge commit** option so the recorded source SHA
+remains an ancestor of the destination branch.
+
+Do not use **Squash and merge** or **Rebase and merge** for these branches.
+Squash merging discards the recorded source commit, and GitHub rebase merging
+creates new commit SHAs. Both invalidate the manifest's exact source-commit
+ancestry check.
+
+After merging this release-artifact branch to `master`, run:
+
+```bash
+git merge-base --is-ancestor \
+  e1f1e1e69c19fe08161706c4fc6345e7e63bf88c \
+  master
+
+cargo run -p xtask -- verify_artifacts
+```
+
+Both commands must pass on `master`.
 
 ## Multi-Builder Comparison
 
@@ -49,7 +73,8 @@ cargo run -p xtask -- verify_artifacts
 sha256sum release-artifacts/*.wasm release-artifacts/*.wasm.gz
 ```
 
-Compare `manifest.json` and all SHA sidecars. If the git commit differs, compare only artifact hashes and byte sizes.
+Compare `manifest.json` and all SHA sidecars. If the source git commit differs,
+compare only artifact hashes and byte sizes.
 
 ## Current Limitations
 

@@ -1573,6 +1573,49 @@ fn finalized_neuron_is_dissolving(neuron: &crate::sns_governance_setup::SnsNeuro
     )
 }
 
+#[cfg(test)]
+fn finalized_neuron_reward_eligibility(
+    participant: Principal,
+    neuron_id: &crate::sns_governance_setup::NeuronId,
+    neuron: &crate::sns_governance_setup::SnsNeuronRecord,
+) -> io_governance_types::SnsNeuronEligibility {
+    let dissolve_delay_seconds = finalized_neuron_dissolve_delay_seconds(neuron);
+    let dissolve_state = match neuron.dissolve_state {
+        Some(crate::sns_governance_setup::DissolveState::DissolveDelaySeconds(seconds)) => {
+            io_governance_types::SnsDissolveState::NotDissolving {
+                dissolve_delay_seconds: seconds,
+            }
+        }
+        Some(crate::sns_governance_setup::DissolveState::WhenDissolvedTimestampSeconds(
+            when_dissolved_timestamp_seconds,
+        )) => io_governance_types::SnsDissolveState::Dissolving {
+            when_dissolved_timestamp_seconds,
+        },
+        None => io_governance_types::SnsDissolveState::Dissolved,
+    };
+    io_governance_types::snapshot_sns_eligibility(
+        &[io_governance_types::SnsNeuron {
+            id: io_governance_types::SnsNeuronId(neuron_id.id.clone()),
+            controller: Some(participant),
+            stake_e8s: u128::from(neuron.cached_neuron_stake_e8s),
+            dissolve_delay_seconds,
+            dissolve_state,
+            cached_neuron_stake_e8s: u128::from(neuron.cached_neuron_stake_e8s),
+            voting_power: u128::from(neuron.cached_neuron_stake_e8s),
+            permissions: Vec::new(),
+            is_io_protocol_neuron: false,
+            is_jupiter_governance_neuron: false,
+        }],
+        &io_governance_types::SnsEligibilityPolicy {
+            protocol_neuron_ids: BTreeSet::new(),
+            jupiter_governance_neuron_ids: BTreeSet::new(),
+            required_dissolve_delay_seconds: io_core_model::TWO_WEEK_SECONDS,
+        },
+    )
+    .pop()
+    .expect("single finalized SNS neuron should produce one eligibility record")
+}
+
 pub fn deploy_finalized_sns_lifecycle_fixture_for_test(
     required: bool,
     participant: Principal,
@@ -1689,10 +1732,9 @@ fn is_finalized_lifecycle(lifecycle: Option<i32>) -> bool {
 
 pub fn build_io_test_create_service_nervous_system(now_seconds: u64) -> SnsInitPayload {
     const E8S: u64 = 100_000_000;
-    const YEAR_SECONDS: u64 = 365 * 24 * 60 * 60;
     SnsInitPayload {
         url: Some(format!("{}://example.invalid/io-local-sns", "https")),
-        max_dissolve_delay_seconds: Some(8 * YEAR_SECONDS),
+        max_dissolve_delay_seconds: Some(io_core_model::TWO_WEEK_SECONDS),
         max_dissolve_delay_bonus_percentage: Some(0),
         nns_proposal_id: Some(1),
         neurons_fund_participation: Some(false),
@@ -1712,7 +1754,7 @@ pub fn build_io_test_create_service_nervous_system(now_seconds: u64) -> SnsInitP
         swap_start_timestamp_seconds: Some(now_seconds.saturating_add(1)),
         swap_due_timestamp_seconds: Some(now_seconds.saturating_add(3_600)),
         initial_voting_period_seconds: Some(86_401),
-        neuron_minimum_dissolve_delay_to_vote_seconds: Some(0),
+        neuron_minimum_dissolve_delay_to_vote_seconds: Some(io_core_model::TWO_WEEK_SECONDS - 1),
         description: Some("Local-only IO SNS lifecycle test.".to_string()),
         max_neuron_age_seconds_for_age_bonus: Some(0),
         min_participants: Some(1),
@@ -1730,7 +1772,7 @@ pub fn build_io_test_create_service_nervous_system(now_seconds: u64) -> SnsInitP
                 developer_distribution: Some(DeveloperDistribution {
                     developer_neurons: vec![NeuronDistribution {
                         controller: Some(Principal::anonymous()),
-                        dissolve_delay_seconds: YEAR_SECONDS,
+                        dissolve_delay_seconds: io_core_model::TWO_WEEK_SECONDS - 1,
                         memo: 10_001,
                         stake_e8s: 1_000 * E8S,
                         vesting_period_seconds: Some(0),
@@ -2192,23 +2234,12 @@ mod tests {
 
         let neuron = finalized_neuron_for_participant(&fixture, participant, &neuron_id).unwrap();
         assert_eq!(finalized_neuron_dissolve_delay_seconds(&neuron), 604_800);
-        let snapshot = io_reward_policy::NeuronSnapshot {
-            sns_neuron_id: io_governance_types::SnsNeuronId(neuron_id.id.clone()),
-            neuron_id: 2,
-            staked_io_e8s: u128::from(neuron.cached_neuron_stake_e8s),
-            eligible_seconds: if finalized_neuron_dissolve_delay_seconds(&neuron) >= 1_209_600 {
-                finalized_neuron_dissolve_delay_seconds(&neuron)
-            } else {
-                0
-            },
-            eligible_closed_proposals: 0,
-            voted_closed_proposals: 0,
-            is_genesis_governance_neuron: false,
-            is_protocol_owned: false,
-            is_dissolving: false,
-        };
-        assert!(!io_reward_policy::eligible(&snapshot));
-        assert_eq!(io_reward_policy::reward_weight(&snapshot), 0);
+        let eligibility = finalized_neuron_reward_eligibility(participant, &neuron_id, &neuron);
+        assert_eq!(
+            eligibility.excluded_reason.as_deref(),
+            Some("dissolve delay below two weeks")
+        );
+        assert_eq!(eligibility.eligible_stake_e8s, 0);
     }
 
     #[test]
@@ -2236,6 +2267,68 @@ mod tests {
         assert_eq!(
             finalized_neuron_dissolve_delay_seconds(&eligible),
             1_209_600
+        );
+    }
+
+    #[test]
+    #[ignore = "requires pinned real NNS/SNS-W/SNS artifacts and POCKET_IC_BIN"]
+    fn real_sns_dissolve_delay_above_two_weeks_cannot_be_applied_after_finalization() {
+        let participant = Principal::from_slice(&[98; 29]);
+        let fixture =
+            deploy_finalized_sns_lifecycle_fixture_for_test(true, participant, PARTICIPANT_ICP_E8S)
+                .unwrap();
+        disburse_zero_delay_neuron_to_participant_for_test(&fixture, participant)
+            .expect("zero-delay finalized neuron should disburse to liquid SNS ledger account");
+        let neuron_id =
+            stake_finalized_liquid_sns_tokens_for_test(&fixture, participant, 100_000_000, 20_011)
+                .expect("finalized stake should claim a neuron");
+
+        configure_finalized_neuron_dissolve_delay_for_test(
+            &fixture,
+            participant,
+            &neuron_id,
+            io_core_model::TWO_WEEK_SECONDS as u32,
+        )
+        .expect("finalized governance should accept the exact two-week dissolve delay");
+        let exact = finalized_neuron_for_participant(&fixture, participant, &neuron_id).unwrap();
+        assert_eq!(
+            finalized_neuron_dissolve_delay_seconds(&exact),
+            io_core_model::TWO_WEEK_SECONDS
+        );
+
+        let response: crate::sns_governance_setup::ManageNeuronResponse = crate::icrc::update_one(
+            &fixture.pic,
+            fixture.governance,
+            participant,
+            "manage_neuron",
+            crate::sns_governance_setup::ManageNeuron {
+                subaccount: neuron_id.id.clone(),
+                command: Some(crate::sns_governance_setup::Command::Configure(
+                    crate::sns_governance_setup::Configure {
+                        operation: Some(
+                            crate::sns_governance_setup::Operation::IncreaseDissolveDelay(
+                                crate::sns_governance_setup::IncreaseDissolveDelay {
+                                    additional_dissolve_delay_seconds: 1,
+                                },
+                            ),
+                        ),
+                    },
+                )),
+            },
+        );
+        let after = finalized_neuron_for_participant(&fixture, participant, &neuron_id).unwrap();
+        match response.command {
+            Some(crate::sns_governance_setup::CommandResponse::Configure(_)) => {}
+            Some(crate::sns_governance_setup::CommandResponse::Error(err)) => panic!(
+                "unexpected above-two-week rejection: type={} message={}",
+                err.error_type, err.error_message
+            ),
+            other => panic!("unexpected above-two-week response classification: {other:?}"),
+        }
+        assert_eq!(
+            finalized_neuron_dissolve_delay_seconds(&after),
+            io_core_model::TWO_WEEK_SECONDS,
+            "above-two-week configure response must leave the neuron at the exact product delay"
         );
     }
 
@@ -2269,24 +2362,18 @@ mod tests {
             finalized_neuron_is_dissolving(&neuron),
             "finalized neuron should be dissolving after StartDissolving: {neuron:?}"
         );
-        let snapshot = io_reward_policy::NeuronSnapshot {
-            sns_neuron_id: io_governance_types::SnsNeuronId(neuron_id.id.clone()),
-            neuron_id: 4,
-            staked_io_e8s: u128::from(neuron.cached_neuron_stake_e8s),
-            eligible_seconds: 1_209_600,
-            eligible_closed_proposals: 0,
-            voted_closed_proposals: 0,
-            is_genesis_governance_neuron: false,
-            is_protocol_owned: false,
-            is_dissolving: finalized_neuron_is_dissolving(&neuron),
-        };
-        assert!(!io_reward_policy::eligible(&snapshot));
-        assert_eq!(io_reward_policy::reward_weight(&snapshot), 0);
+        let eligibility = finalized_neuron_reward_eligibility(participant, &neuron_id, &neuron);
+        assert_eq!(
+            eligibility.excluded_reason.as_deref(),
+            Some("neuron is dissolving")
+        );
+        assert_eq!(eligibility.eligible_stake_e8s, 0);
     }
 
     #[test]
     #[ignore = "requires pinned real NNS/SNS-W/SNS artifacts and POCKET_IC_BIN"]
-    fn real_sns_stop_dissolving_restores_eligibility_if_policy_allows_after_finalization() {
+    fn real_sns_stop_dissolving_uses_remaining_delay_and_requires_exact_relock_after_finalization()
+    {
         let participant = Principal::from_slice(&[112; 29]);
         let fixture =
             deploy_finalized_sns_lifecycle_fixture_for_test(true, participant, PARTICIPANT_ICP_E8S)
@@ -2305,6 +2392,8 @@ mod tests {
         .expect("finalized governance should accept two-week dissolve delay");
         start_finalized_neuron_dissolving_for_test(&fixture, participant, &neuron_id)
             .expect("finalized governance should accept start dissolving");
+        fixture.pic.advance_time(Duration::from_secs(1_800));
+        fixture.pic.tick();
         stop_finalized_neuron_dissolving_for_test(&fixture, participant, &neuron_id)
             .expect("finalized governance should accept stop dissolving");
         for _ in 0..5 {
@@ -2317,22 +2406,38 @@ mod tests {
             "finalized neuron should stop dissolving after StopDissolving: {neuron:?}"
         );
         assert!(
-            finalized_neuron_dissolve_delay_seconds(&neuron) >= 1_209_600,
-            "stop dissolving should restore a non-dissolving delay at or above two weeks: {neuron:?}"
+            finalized_neuron_dissolve_delay_seconds(&neuron) < io_core_model::TWO_WEEK_SECONDS,
+            "stop dissolving should preserve the remaining delay rather than restoring two weeks: {neuron:?}"
         );
-        let snapshot = io_reward_policy::NeuronSnapshot {
-            sns_neuron_id: io_governance_types::SnsNeuronId(neuron_id.id.clone()),
-            neuron_id: 5,
-            staked_io_e8s: u128::from(neuron.cached_neuron_stake_e8s),
-            eligible_seconds: finalized_neuron_dissolve_delay_seconds(&neuron),
-            eligible_closed_proposals: 0,
-            voted_closed_proposals: 0,
-            is_genesis_governance_neuron: false,
-            is_protocol_owned: false,
-            is_dissolving: finalized_neuron_is_dissolving(&neuron),
-        };
-        assert!(io_reward_policy::eligible(&snapshot));
-        assert!(io_reward_policy::reward_weight(&snapshot) > 0);
+        let eligibility = finalized_neuron_reward_eligibility(participant, &neuron_id, &neuron);
+        assert_eq!(
+            eligibility.excluded_reason.as_deref(),
+            Some("dissolve delay below two weeks")
+        );
+        assert_eq!(eligibility.eligible_stake_e8s, 0);
+
+        let missing = io_core_model::TWO_WEEK_SECONDS
+            .checked_sub(finalized_neuron_dissolve_delay_seconds(&neuron))
+            .expect("stopped neuron should be below exact delay");
+        configure_finalized_neuron_dissolve_delay_for_test(
+            &fixture,
+            participant,
+            &neuron_id,
+            missing as u32,
+        )
+        .expect("finalized governance should accept exact missing delay relock");
+        let relocked = finalized_neuron_for_participant(&fixture, participant, &neuron_id).unwrap();
+        assert_eq!(
+            finalized_neuron_dissolve_delay_seconds(&relocked),
+            io_core_model::TWO_WEEK_SECONDS
+        );
+        let relocked_eligibility =
+            finalized_neuron_reward_eligibility(participant, &neuron_id, &relocked);
+        assert_eq!(relocked_eligibility.excluded_reason, None);
+        assert_eq!(
+            relocked_eligibility.eligible_stake_e8s,
+            u128::from(relocked.cached_neuron_stake_e8s)
+        );
     }
 
     #[test]
@@ -2363,21 +2468,18 @@ mod tests {
         );
 
         let neuron = finalized_neuron_for_participant(&fixture, participant, &neuron_id).unwrap();
-        let snapshot = io_reward_policy::NeuronSnapshot {
+        let snapshot = io_reward_policy::RewardParticipant {
             sns_neuron_id: io_governance_types::SnsNeuronId(neuron_id.id.clone()),
             neuron_id: 1,
-            staked_io_e8s: u128::from(neuron.cached_neuron_stake_e8s),
-            eligible_seconds: finalized_neuron_dissolve_delay_seconds(&neuron),
+            frozen_stake_e8s: u128::from(neuron.cached_neuron_stake_e8s),
             eligible_closed_proposals: proposals.proposals.len() as u64,
             voted_closed_proposals: 0,
-            is_genesis_governance_neuron: false,
-            is_protocol_owned: false,
-            is_dissolving: false,
+            destination_is_currently_eligible: true,
         };
         assert_eq!(io_reward_policy::participation_ratio(&snapshot), (1, 1));
         assert_eq!(
-            io_reward_policy::reward_weight(&snapshot),
-            snapshot.staked_io_e8s * u128::from(snapshot.eligible_seconds)
+            io_reward_policy::reward_weight(&snapshot).unwrap(),
+            snapshot.frozen_stake_e8s
         );
     }
 
@@ -2606,27 +2708,21 @@ mod tests {
             non_voter_proposal.ballots
         );
 
-        let proposer_snapshot = io_reward_policy::NeuronSnapshot {
+        let proposer_snapshot = io_reward_policy::RewardParticipant {
             sns_neuron_id: io_governance_types::SnsNeuronId(proposer_neuron_id.id.clone()),
             neuron_id: 3,
-            staked_io_e8s: u128::from(proposer_neuron.cached_neuron_stake_e8s),
-            eligible_seconds: 1_209_600,
+            frozen_stake_e8s: u128::from(proposer_neuron.cached_neuron_stake_e8s),
             eligible_closed_proposals: 1,
             voted_closed_proposals: 1,
-            is_genesis_governance_neuron: false,
-            is_protocol_owned: false,
-            is_dissolving: false,
+            destination_is_currently_eligible: true,
         };
-        let non_voter_snapshot = io_reward_policy::NeuronSnapshot {
+        let non_voter_snapshot = io_reward_policy::RewardParticipant {
             sns_neuron_id: io_governance_types::SnsNeuronId(non_voter_neuron_id.id.clone()),
             neuron_id: 4,
-            staked_io_e8s: u128::from(non_voter_neuron.cached_neuron_stake_e8s),
-            eligible_seconds: 1_209_600,
+            frozen_stake_e8s: u128::from(non_voter_neuron.cached_neuron_stake_e8s),
             eligible_closed_proposals: 1,
             voted_closed_proposals: 0,
-            is_genesis_governance_neuron: false,
-            is_protocol_owned: false,
-            is_dissolving: false,
+            destination_is_currently_eligible: true,
         };
         assert_eq!(
             io_reward_policy::participation_ratio(&proposer_snapshot),
@@ -2636,8 +2732,11 @@ mod tests {
             io_reward_policy::participation_ratio(&non_voter_snapshot),
             (0, 1)
         );
-        assert!(io_reward_policy::reward_weight(&proposer_snapshot) > 0);
-        assert_eq!(io_reward_policy::reward_weight(&non_voter_snapshot), 0);
+        assert!(io_reward_policy::reward_weight(&proposer_snapshot).unwrap() > 0);
+        assert_eq!(
+            io_reward_policy::reward_weight(&non_voter_snapshot).unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -2735,31 +2834,31 @@ mod tests {
             "follower-visible ballots should include a yes vote after leader vote propagation: {:?}",
             proposal.ballots
         );
-        let follower_snapshot = io_reward_policy::NeuronSnapshot {
+        let follower_snapshot = io_reward_policy::RewardParticipant {
             sns_neuron_id: io_governance_types::SnsNeuronId(follower_neuron.id.clone()),
             neuron_id: 5,
-            staked_io_e8s: u128::from(follower_neuron_record.cached_neuron_stake_e8s),
-            eligible_seconds: 1_209_600,
+            frozen_stake_e8s: u128::from(follower_neuron_record.cached_neuron_stake_e8s),
             eligible_closed_proposals: 1,
             voted_closed_proposals: 1,
-            is_genesis_governance_neuron: false,
-            is_protocol_owned: false,
-            is_dissolving: false,
+            destination_is_currently_eligible: true,
         };
         assert_eq!(
             io_reward_policy::participation_ratio(&follower_snapshot),
             (1, 1)
         );
-        assert!(io_reward_policy::reward_weight(&follower_snapshot) > 0);
+        assert!(io_reward_policy::reward_weight(&follower_snapshot).unwrap() > 0);
     }
 
     #[test]
     #[ignore = "requires pinned real NNS/SNS-W/SNS artifacts and POCKET_IC_BIN"]
     fn real_sns_proposal_rejection_fee_is_100_io_if_configured_after_finalization() {
         let participant = Principal::from_slice(&[109; 29]);
-        let fixture =
-            deploy_finalized_sns_lifecycle_fixture_for_test(true, participant, PARTICIPANT_ICP_E8S)
-                .unwrap();
+        let fixture = deploy_finalized_sns_lifecycle_fixture_for_test(
+            true,
+            participant,
+            10 * PARTICIPANT_ICP_E8S,
+        )
+        .unwrap();
         let params: crate::sns_governance_setup::NervousSystemParameters = crate::icrc::query_one(
             &fixture.pic,
             fixture.governance,
@@ -2768,15 +2867,19 @@ mod tests {
         );
         assert_eq!(params.reject_cost_e8s, Some(100 * 100_000_000));
 
-        let proposer_neuron = find_direct_participation_neurons(&fixture, participant)
-            .unwrap()
-            .into_iter()
-            .next()
-            .expect("participant should have a finalized direct-participation neuron");
-        let proposer_neuron_id = proposer_neuron
-            .id
-            .clone()
-            .expect("participant neuron should have an id");
+        let mut neurons = find_direct_participation_neurons(&fixture, participant).unwrap();
+        neurons.sort_by_key(|neuron| std::cmp::Reverse(neuron.cached_neuron_stake_e8s));
+        let proposer_neuron_id = neurons
+            .first()
+            .and_then(|neuron| neuron.id.clone())
+            .expect("finalized direct participant should have a proposal neuron id");
+        configure_finalized_neuron_dissolve_delay_for_test(
+            &fixture,
+            participant,
+            &proposer_neuron_id,
+            io_core_model::TWO_WEEK_SECONDS as u32,
+        )
+        .expect("finalized governance should accept exact two-week proposal neuron delay");
         let proposal_id = make_finalized_motion_proposal_for_test(
             &fixture,
             participant,

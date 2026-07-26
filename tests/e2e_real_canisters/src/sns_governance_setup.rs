@@ -461,7 +461,7 @@ pub fn install_real_sns_governance_empty_state(
             mode: 1,
             parameters: Some(NervousSystemParameters {
                 default_followees: Some(DefaultFollowees { followees: vec![] }),
-                max_dissolve_delay_seconds: Some(252_288_000),
+                max_dissolve_delay_seconds: Some(io_core_model::TWO_WEEK_SECONDS),
                 max_dissolve_delay_bonus_percentage: Some(0),
                 max_followees_per_function: Some(15),
                 neuron_claimer_permissions: Some(NeuronPermissionList {
@@ -470,7 +470,9 @@ pub fn install_real_sns_governance_empty_state(
                 neuron_minimum_stake_e8s: Some(100_000_000),
                 max_neuron_age_for_age_bonus: Some(0),
                 initial_voting_period_seconds: Some(86_400),
-                neuron_minimum_dissolve_delay_to_vote_seconds: Some(1_209_600),
+                neuron_minimum_dissolve_delay_to_vote_seconds: Some(
+                    io_core_model::TWO_WEEK_SECONDS - 1,
+                ),
                 reject_cost_e8s: Some(10_000_000_000),
                 max_proposals_to_keep_per_action: Some(100),
                 wait_for_quiet_deadline_increase_seconds: Some(1),
@@ -798,7 +800,7 @@ pub fn governance_init_arg(ledger: Option<Principal>, root: Option<Principal>) -
 pub fn test_nervous_system_parameters() -> NervousSystemParameters {
     NervousSystemParameters {
         default_followees: Some(DefaultFollowees { followees: vec![] }),
-        max_dissolve_delay_seconds: Some(252_288_000),
+        max_dissolve_delay_seconds: Some(io_core_model::TWO_WEEK_SECONDS),
         max_dissolve_delay_bonus_percentage: Some(0),
         max_followees_per_function: Some(15),
         neuron_claimer_permissions: Some(NeuronPermissionList {
@@ -807,7 +809,7 @@ pub fn test_nervous_system_parameters() -> NervousSystemParameters {
         neuron_minimum_stake_e8s: Some(100_000_000),
         max_neuron_age_for_age_bonus: Some(0),
         initial_voting_period_seconds: Some(86_400),
-        neuron_minimum_dissolve_delay_to_vote_seconds: Some(1_209_600),
+        neuron_minimum_dissolve_delay_to_vote_seconds: Some(io_core_model::TWO_WEEK_SECONDS - 1),
         reject_cost_e8s: Some(10_000_000_000),
         max_proposals_to_keep_per_action: Some(100),
         wait_for_quiet_deadline_increase_seconds: Some(1),
