@@ -26,9 +26,9 @@ type DataCompleteness = record {
 };
 type GovernanceExcludedCount = record { count : nat64; reason : text };
 type GovernanceNeuronParticipation = record {
+  currently_destination_eligible : bool;
   eligible_closed_proposals : nat64;
-  eligible_seconds : nat64;
-  eligible_stake_e8s : nat;
+  frozen_stake_e8s : nat;
   neuron_id : nat64;
   participation_denominator : nat;
   participation_numerator : nat;
@@ -44,7 +44,7 @@ type GovernanceParticipationSnapshot = record {
   proposal_epoch_start : opt nat64;
   sns_eligible_neuron_count : nat64;
   sns_excluded_neuron_count_by_reason : vec GovernanceExcludedCount;
-  total_eligible_stake_e8s : nat;
+  total_frozen_cohort_stake_e8s : nat;
 };
 type HistorianIngestionStatus = record {
   artifact_status_count : nat64;
@@ -273,7 +273,7 @@ type StalenessPolicy = record {
 };
 type RewardDistributionRecord = record {
   dust_unissued_e8s : opt nat;
-  eligible_stake_e8s : opt nat;
+  frozen_cohort_stake_e8s : opt nat;
   epoch_end_timestamp_nanos : opt nat64;
   epoch_start_timestamp_nanos : opt nat64;
   participation_summary_id : opt text;

@@ -1,8 +1,9 @@
 //! Pure IO SNS staking entitlement policy.
 //!
-//! The policy rewards productive governance staking, not passive lockup. Native
-//! SNS maturity is expected to be disabled; this crate allocates protocol-backed
-//! IO released by the stream manager.
+//! The policy rewards frozen exact-product cohort stake multiplied only by
+//! closed-proposal participation. Native SNS maturity is expected to be
+//! disabled; this crate allocates protocol-backed IO released by the stream
+//! manager.
 
 use io_governance_types::SnsNeuronId;
 
@@ -40,16 +41,13 @@ pub fn compatibility_sns_neuron_id_from_u64(id: u64) -> SnsNeuronId {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NeuronSnapshot {
+pub struct RewardParticipant {
     pub sns_neuron_id: SnsNeuronId,
     pub neuron_id: u64,
-    pub staked_io_e8s: u128,
-    pub eligible_seconds: u64,
+    pub frozen_stake_e8s: u128,
     pub eligible_closed_proposals: u64,
     pub voted_closed_proposals: u64,
-    pub is_genesis_governance_neuron: bool,
-    pub is_protocol_owned: bool,
-    pub is_dissolving: bool,
+    pub destination_is_currently_eligible: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,21 +60,25 @@ pub struct RewardAllocation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AllocationOutcome {
     pub allocations: Vec<RewardAllocation>,
+    pub rounding_dust_e8s: u128,
+    pub forfeited_reward_e8s: u128,
     pub dust_e8s: u128,
     pub total_weight: u128,
 }
 
-pub fn eligible(n: &NeuronSnapshot) -> bool {
-    !n.is_genesis_governance_neuron
-        && !n.is_protocol_owned
-        && !n.is_dissolving
-        && n.staked_io_e8s > 0
-        && n.eligible_seconds > 0
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RewardPolicyError {
+    ArithmeticOverflow,
+    InvalidDenominator,
+}
+
+pub fn eligible(n: &RewardParticipant) -> bool {
+    n.destination_is_currently_eligible && n.frozen_stake_e8s > 0
 }
 
 /// Returns a rational numerator/denominator for voting participation.
-/// If no eligible proposals closed while the neuron was eligible, participation is 1.
-pub fn participation_ratio(n: &NeuronSnapshot) -> (u128, u128) {
+/// If no eligible proposals closed for the cohort, participation is 1.
+pub fn participation_ratio(n: &RewardParticipant) -> (u128, u128) {
     if n.eligible_closed_proposals == 0 {
         (1, 1)
     } else {
@@ -87,237 +89,269 @@ pub fn participation_ratio(n: &NeuronSnapshot) -> (u128, u128) {
     }
 }
 
-pub fn reward_weight(n: &NeuronSnapshot) -> u128 {
-    if !eligible(n) {
-        return 0;
-    }
-    let (num, den) = participation_ratio(n);
-    let stake_time = n
-        .staked_io_e8s
-        .saturating_mul(u128::from(n.eligible_seconds));
-    if num >= den {
-        stake_time
+fn mul_u128_wide(a: u128, b: u128) -> (u128, u128) {
+    const MASK: u128 = u64::MAX as u128;
+    let a0 = a & MASK;
+    let a1 = a >> 64;
+    let b0 = b & MASK;
+    let b1 = b >> 64;
+
+    let p0 = a0 * b0;
+    let p1 = a0 * b1;
+    let p2 = a1 * b0;
+    let p3 = a1 * b1;
+
+    let lo_low = p0 & MASK;
+    let carry = p0 >> 64;
+    let middle = (p1 & MASK) + (p2 & MASK) + carry;
+    let lo_high = middle & MASK;
+    let hi = p3 + (p1 >> 64) + (p2 >> 64) + (middle >> 64);
+    (hi, (lo_high << 64) | lo_low)
+}
+
+fn doubled_remainder_minus_denominator(
+    remainder: u128,
+    bit: u128,
+    denominator: u128,
+) -> Option<u128> {
+    let half = denominator / 2;
+    if denominator.is_multiple_of(2) {
+        (remainder >= half).then(|| (remainder - half) * 2 + bit)
+    } else if remainder > half {
+        Some((remainder - half) * 2 - 1 + bit)
+    } else if remainder == half && bit == 1 {
+        Some(0)
     } else {
-        // Divide before the final multiplication when possible to reduce overflow risk,
-        // while preserving the intended conservative floor rounding.
-        let quotient = stake_time / den;
-        let remainder = stake_time % den;
-        quotient
-            .saturating_mul(num)
-            .saturating_add(remainder.saturating_mul(num) / den)
+        None
     }
 }
 
-pub fn allocate_rewards(reward_pool_io_e8s: u128, neurons: &[NeuronSnapshot]) -> AllocationOutcome {
-    let weights: Vec<(SnsNeuronId, u64, u128)> = neurons
+fn mul_div_floor(
+    value: u128,
+    numerator: u128,
+    denominator: u128,
+) -> Result<u128, RewardPolicyError> {
+    if denominator == 0 {
+        return Err(RewardPolicyError::InvalidDenominator);
+    }
+    if numerator == 0 || value == 0 {
+        return Ok(0);
+    }
+
+    let (hi, lo) = mul_u128_wide(value, numerator);
+    let mut quotient = 0u128;
+    let mut remainder = 0u128;
+    for bit_index in (0..256).rev() {
+        let bit = if bit_index >= 128 {
+            (hi >> (bit_index - 128)) & 1
+        } else {
+            (lo >> bit_index) & 1
+        };
+        if let Some(next) = doubled_remainder_minus_denominator(remainder, bit, denominator) {
+            remainder = next;
+            if bit_index >= 128 {
+                return Err(RewardPolicyError::ArithmeticOverflow);
+            }
+            quotient |= 1u128 << bit_index;
+        } else {
+            remainder = remainder
+                .checked_mul(2)
+                .and_then(|value| value.checked_add(bit))
+                .ok_or(RewardPolicyError::ArithmeticOverflow)?;
+        }
+    }
+    Ok(quotient)
+}
+
+pub fn reward_weight(n: &RewardParticipant) -> Result<u128, RewardPolicyError> {
+    // Weight is frozen stake times period participation. Current destination eligibility is
+    // enforced later during allocation so a frozen member that later becomes ineligible still
+    // contributes its calculated share as forfeited protocol dust.
+    if n.frozen_stake_e8s == 0 {
+        return Ok(0);
+    }
+    let (num, den) = participation_ratio(n);
+    mul_div_floor(n.frozen_stake_e8s, num, den)
+}
+
+pub fn allocate_rewards(
+    reward_pool_io_e8s: u128,
+    participants: &[RewardParticipant],
+) -> Result<AllocationOutcome, RewardPolicyError> {
+    let weights: Vec<(SnsNeuronId, u64, bool, u128)> = participants
         .iter()
-        .map(|n| (n.sns_neuron_id.clone(), n.neuron_id, reward_weight(n)))
-        .collect();
-    let total_weight: u128 = weights
+        .map(|n| {
+            Ok((
+                n.sns_neuron_id.clone(),
+                n.neuron_id,
+                n.destination_is_currently_eligible,
+                reward_weight(n)?,
+            ))
+        })
+        .collect::<Result<_, RewardPolicyError>>()?;
+    let total_weight = weights
         .iter()
-        .map(|(_, _, w)| *w)
-        .fold(0u128, |acc, w| acc.saturating_add(w));
+        .map(|(_, _, _, w)| *w)
+        .try_fold(0u128, |acc, w| acc.checked_add(w))
+        .ok_or(RewardPolicyError::ArithmeticOverflow)?;
     if reward_pool_io_e8s == 0 || total_weight == 0 {
-        return AllocationOutcome {
+        return Ok(AllocationOutcome {
             allocations: vec![],
+            rounding_dust_e8s: reward_pool_io_e8s,
+            forfeited_reward_e8s: 0,
             dust_e8s: reward_pool_io_e8s,
             total_weight,
-        };
+        });
     }
+
     let mut issued = 0u128;
+    let mut forfeited_reward_e8s = 0u128;
     let mut allocations = Vec::new();
-    for (sns_neuron_id, neuron_id, weight) in weights {
+    for (sns_neuron_id, neuron_id, destination_is_currently_eligible, weight) in weights {
         if weight == 0 {
             continue;
         }
-        let amount = reward_pool_io_e8s.saturating_mul(weight) / total_weight;
-        issued = issued.saturating_add(amount);
-        if amount > 0 {
-            allocations.push(RewardAllocation {
-                sns_neuron_id,
-                neuron_id,
-                io_e8s: amount,
-            });
+        let amount = mul_div_floor(reward_pool_io_e8s, weight, total_weight)?;
+        if destination_is_currently_eligible {
+            issued = issued
+                .checked_add(amount)
+                .ok_or(RewardPolicyError::ArithmeticOverflow)?;
+            if amount > 0 {
+                allocations.push(RewardAllocation {
+                    sns_neuron_id,
+                    neuron_id,
+                    io_e8s: amount,
+                });
+            }
+        } else {
+            forfeited_reward_e8s = forfeited_reward_e8s
+                .checked_add(amount)
+                .ok_or(RewardPolicyError::ArithmeticOverflow)?;
         }
     }
-    AllocationOutcome {
+    let rounding_dust_e8s = reward_pool_io_e8s
+        .checked_sub(issued)
+        .and_then(|remaining| remaining.checked_sub(forfeited_reward_e8s))
+        .ok_or(RewardPolicyError::ArithmeticOverflow)?;
+    let dust_e8s = rounding_dust_e8s
+        .checked_add(forfeited_reward_e8s)
+        .ok_or(RewardPolicyError::ArithmeticOverflow)?;
+    Ok(AllocationOutcome {
         allocations,
-        dust_e8s: reward_pool_io_e8s.saturating_sub(issued),
+        rounding_dust_e8s,
+        forfeited_reward_e8s,
+        dust_e8s,
         total_weight,
-    }
+    })
 }
 
-pub fn active_staked_io_e8s(neurons: &[NeuronSnapshot]) -> u128 {
-    neurons
+pub fn active_staked_io_e8s(participants: &[RewardParticipant]) -> u128 {
+    participants
         .iter()
         .filter(|n| eligible(n))
-        .map(|n| n.staked_io_e8s)
+        .map(|n| n.frozen_stake_e8s)
         .sum()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn n(id: u64, stake: u128, voted: u64, total: u64) -> NeuronSnapshot {
-        NeuronSnapshot {
+
+    fn n(id: u64, stake: u128, voted: u64, total: u64) -> RewardParticipant {
+        RewardParticipant {
             sns_neuron_id: SnsNeuronId(id.to_be_bytes().to_vec()),
             neuron_id: id,
-            staked_io_e8s: stake,
-            eligible_seconds: 100,
+            frozen_stake_e8s: stake,
             eligible_closed_proposals: total,
             voted_closed_proposals: voted,
-            is_genesis_governance_neuron: false,
-            is_protocol_owned: false,
-            is_dissolving: false,
+            destination_is_currently_eligible: true,
         }
     }
 
-    #[test]
-    fn non_voter_gets_zero_when_proposals_closed() {
-        assert_eq!(reward_weight(&n(1, 1_000, 0, 4)), 0);
+    fn sum_allocations(out: &AllocationOutcome) -> u128 {
+        out.allocations.iter().map(|a| a.io_e8s).sum()
     }
 
     #[test]
-    fn half_voter_gets_half_stake_time_weight() {
-        assert_eq!(reward_weight(&n(1, 1_000, 2, 4)), 50_000);
+    fn equal_stake_equal_participation_has_equal_weight_without_time() {
+        assert_eq!(reward_weight(&n(1, 1_000, 4, 4)).unwrap(), 1_000);
+        assert_eq!(reward_weight(&n(2, 1_000, 4, 4)).unwrap(), 1_000);
+        let out = allocate_rewards(200, &[n(1, 1_000, 4, 4), n(2, 1_000, 4, 4)]).unwrap();
+        assert_eq!(out.allocations[0].io_e8s, 100);
+        assert_eq!(out.allocations[1].io_e8s, 100);
     }
 
     #[test]
-    fn no_closed_proposals_does_not_penalise() {
-        assert_eq!(reward_weight(&n(1, 1_000, 0, 0)), 100_000);
+    fn double_stake_has_double_weight_without_time() {
+        let out = allocate_rewards(300, &[n(1, 2_000, 1, 1), n(2, 1_000, 1, 1)]).unwrap();
+        assert_eq!(out.allocations[0].io_e8s, 200);
+        assert_eq!(out.allocations[1].io_e8s, 100);
     }
 
     #[test]
-    fn votes_are_capped_at_eligible_closed_proposals() {
+    fn half_participation_has_half_weight() {
+        assert_eq!(reward_weight(&n(1, 1_000, 2, 4)).unwrap(), 500);
+    }
+
+    #[test]
+    fn no_closed_proposals_has_full_participation() {
+        assert_eq!(participation_ratio(&n(1, 1_000, 0, 0)), (1, 1));
+        assert_eq!(reward_weight(&n(1, 1_000, 0, 0)).unwrap(), 1_000);
+    }
+
+    #[test]
+    fn non_voter_has_zero_participation_weight() {
+        assert_eq!(reward_weight(&n(1, 1_000, 0, 4)).unwrap(), 0);
+    }
+
+    #[test]
+    fn over_voting_is_capped() {
         assert_eq!(participation_ratio(&n(1, 1_000, 9, 4)), (4, 4));
-        assert_eq!(reward_weight(&n(1, 1_000, 9, 4)), 100_000);
+        assert_eq!(reward_weight(&n(1, 1_000, 9, 4)).unwrap(), 1_000);
     }
 
     #[test]
-    fn genesis_protocol_owned_dissolving_zero_stake_and_zero_time_neurons_are_excluded() {
-        let mut g = n(1, 1_000, 1, 1);
-        g.is_genesis_governance_neuron = true;
-        let mut p = n(2, 1_000, 1, 1);
-        p.is_protocol_owned = true;
-        let mut d = n(3, 1_000, 1, 1);
-        d.is_dissolving = true;
-        let z = n(4, 0, 1, 1);
-        let mut t = n(5, 1_000, 1, 1);
-        t.eligible_seconds = 0;
-        for neuron in [&g, &p, &d, &z, &t] {
-            assert!(!eligible(neuron));
-            assert_eq!(reward_weight(neuron), 0);
-        }
-    }
-
-    #[test]
-    fn allocation_respects_participation_weighting() {
-        let neurons = vec![n(1, 1_000, 4, 4), n(2, 1_000, 2, 4), n(3, 1_000, 0, 4)];
-        let out = allocate_rewards(150, &neurons);
-        assert_eq!(
-            out.allocations,
-            vec![
-                RewardAllocation {
-                    sns_neuron_id: SnsNeuronId(1_u64.to_be_bytes().to_vec()),
-                    neuron_id: 1,
-                    io_e8s: 100
-                },
-                RewardAllocation {
-                    sns_neuron_id: SnsNeuronId(2_u64.to_be_bytes().to_vec()),
-                    neuron_id: 2,
-                    io_e8s: 50
-                }
-            ]
-        );
-        assert_eq!(out.dust_e8s, 0);
-    }
-
-    #[test]
-    fn allocation_respects_stake_time_not_snapshot_only() {
-        let mut a = n(1, 1_000, 1, 1);
-        let mut b = n(2, 1_000, 1, 1);
-        a.eligible_seconds = 200;
-        b.eligible_seconds = 100;
-        let out = allocate_rewards(300, &[a, b]);
-        assert_eq!(
-            out.allocations,
-            vec![
-                RewardAllocation {
-                    sns_neuron_id: SnsNeuronId(1_u64.to_be_bytes().to_vec()),
-                    neuron_id: 1,
-                    io_e8s: 200
-                },
-                RewardAllocation {
-                    sns_neuron_id: SnsNeuronId(2_u64.to_be_bytes().to_vec()),
-                    neuron_id: 2,
-                    io_e8s: 100
-                }
-            ]
-        );
-    }
-
-    #[test]
-    fn dust_is_reported_not_lost() {
-        let neurons = vec![n(1, 1, 1, 1), n(2, 1, 1, 1), n(3, 1, 1, 1)];
-        let out = allocate_rewards(100, &neurons);
-        assert_eq!(out.allocations.iter().map(|a| a.io_e8s).sum::<u128>(), 99);
-        assert_eq!(out.dust_e8s, 1);
-    }
-
-    #[test]
-    fn no_eligible_neurons_leaves_entire_pool_as_dust() {
-        let mut g = n(1, 1_000, 1, 1);
-        g.is_genesis_governance_neuron = true;
-        let out = allocate_rewards(123, &[g]);
+    fn zero_current_destination_eligibility_means_no_transfer() {
+        let mut participant = n(1, 1_000, 1, 1);
+        participant.destination_is_currently_eligible = false;
+        assert!(!eligible(&participant));
+        let out = allocate_rewards(100, &[participant]).unwrap();
         assert!(out.allocations.is_empty());
-        assert_eq!(out.dust_e8s, 123);
-        assert_eq!(out.total_weight, 0);
+        assert_eq!(out.forfeited_reward_e8s, 100);
+        assert_eq!(out.dust_e8s, 100);
     }
 
     #[test]
-    fn two_week_reward_no_eligible_neurons_keeps_entire_pool_in_protocol_reserve() {
-        let mut g = n(1, 1_000, 1, 1);
-        g.is_genesis_governance_neuron = true;
-
-        let out = allocate_rewards(123, &[g]);
-
-        assert!(out.allocations.is_empty());
-        assert_eq!(out.dust_e8s, 123);
+    fn zero_stake_has_zero_weight() {
+        assert_eq!(reward_weight(&n(1, 0, 1, 1)).unwrap(), 0);
     }
 
     #[test]
-    fn active_staked_supply_excludes_ineligible_neurons() {
-        let mut g = n(1, 10, 1, 1);
-        g.is_genesis_governance_neuron = true;
-        let mut d = n(2, 20, 1, 1);
-        d.is_dissolving = true;
-        let e = n(3, 30, 1, 1);
-        assert_eq!(active_staked_io_e8s(&[g, d, e]), 30);
-    }
-}
-
-#[cfg(test)]
-mod additional_reward_tests {
-    use super::*;
-
-    fn n(id: u64, stake: u128, seconds: u64, voted: u64, total: u64) -> NeuronSnapshot {
-        NeuronSnapshot {
-            sns_neuron_id: SnsNeuronId(id.to_be_bytes().to_vec()),
-            neuron_id: id,
-            staked_io_e8s: stake,
-            eligible_seconds: seconds,
-            eligible_closed_proposals: total,
-            voted_closed_proposals: voted,
-            is_genesis_governance_neuron: false,
-            is_protocol_owned: false,
-            is_dissolving: false,
-        }
+    fn forfeited_destination_share_becomes_dust_not_redistribution() {
+        let eligible = n(1, 1_000, 1, 1);
+        let mut forfeited = n(2, 1_000, 1, 1);
+        forfeited.destination_is_currently_eligible = false;
+        let out = allocate_rewards(101, &[eligible, forfeited]).unwrap();
+        assert_eq!(out.allocations[0].io_e8s, 50);
+        assert_eq!(out.forfeited_reward_e8s, 50);
+        assert_eq!(out.rounding_dust_e8s, 1);
+        assert_eq!(out.dust_e8s, 51);
     }
 
     #[test]
-    fn allocation_order_is_stable_for_historian_replay() {
-        let neurons = vec![n(42, 10, 10, 1, 1), n(7, 10, 10, 1, 1), n(99, 10, 10, 1, 1)];
-        let out = allocate_rewards(30, &neurons);
+    fn allocations_plus_all_dust_equal_backed_pool() {
+        let mut forfeited = n(3, 1, 1, 1);
+        forfeited.destination_is_currently_eligible = false;
+        let out = allocate_rewards(100, &[n(1, 1, 1, 1), n(2, 1, 1, 1), forfeited]).unwrap();
+        assert_eq!(sum_allocations(&out) + out.dust_e8s, 100);
+        assert_eq!(out.rounding_dust_e8s, 1);
+        assert_eq!(out.forfeited_reward_e8s, 33);
+    }
+
+    #[test]
+    fn deterministic_order_preserves_input_order() {
+        let out =
+            allocate_rewards(30, &[n(42, 10, 1, 1), n(7, 10, 1, 1), n(99, 10, 1, 1)]).unwrap();
         assert_eq!(
             out.allocations
                 .iter()
@@ -328,486 +362,69 @@ mod additional_reward_tests {
     }
 
     #[test]
-    fn tiny_reward_pool_reports_dust_when_each_share_rounds_to_zero() {
-        let neurons = vec![n(1, 1, 1, 1, 1), n(2, 1, 1, 1, 1), n(3, 1, 1, 1, 1)];
-        let out = allocate_rewards(2, &neurons);
+    fn tiny_reward_pool_reports_rounding_dust() {
+        let out = allocate_rewards(2, &[n(1, 1, 1, 1), n(2, 1, 1, 1), n(3, 1, 1, 1)]).unwrap();
         assert!(out.allocations.is_empty());
+        assert_eq!(out.rounding_dust_e8s, 2);
         assert_eq!(out.dust_e8s, 2);
     }
 
     #[test]
-    fn two_week_reward_all_allocations_round_to_zero_keeps_entire_pool_in_protocol_reserve() {
-        let neurons = vec![n(1, 1, 1, 1, 1), n(2, 1, 1, 1, 1), n(3, 1, 1, 1, 1)];
-
-        let out = allocate_rewards(2, &neurons);
-
-        assert!(out.allocations.is_empty());
-        assert_eq!(out.dust_e8s, 2);
+    fn max_value_weight_does_not_panic() {
+        let weight = reward_weight(&n(1, u128::MAX, 1, 2)).unwrap();
+        assert_eq!(weight, u128::MAX / 2);
     }
 
     #[test]
-    fn participation_penalty_is_applied_after_stake_time_not_before() {
-        let full = n(1, 1_000, 200, 4, 4);
-        let half = n(2, 1_000, 200, 2, 4);
-        assert_eq!(reward_weight(&full), 200_000);
-        assert_eq!(reward_weight(&half), 100_000);
+    fn max_value_allocation_fails_closed_or_computes_exactly() {
+        let outcome = allocate_rewards(u128::MAX, &[n(1, u128::MAX, 1, 1)]).unwrap();
+        assert_eq!(outcome.allocations[0].io_e8s, u128::MAX);
+        assert_eq!(outcome.dust_e8s, 0);
     }
 
     #[test]
-    fn new_neuron_is_judged_only_against_proposals_it_was_eligible_for() {
-        let old = n(1, 1_000, 100, 10, 10);
-        let new = n(2, 1_000, 50, 2, 2);
-        let out = allocate_rewards(300, &[old, new]);
-        assert_eq!(
-            out.allocations,
-            vec![
-                RewardAllocation {
-                    sns_neuron_id: SnsNeuronId(1_u64.to_be_bytes().to_vec()),
-                    neuron_id: 1,
-                    io_e8s: 200
-                },
-                RewardAllocation {
-                    sns_neuron_id: SnsNeuronId(2_u64.to_be_bytes().to_vec()),
-                    neuron_id: 2,
-                    io_e8s: 100
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn over_voting_count_does_not_boost_above_full_participation() {
-        let normal = n(1, 1_000, 100, 4, 4);
-        let impossible = n(2, 1_000, 100, 40, 4);
-        assert_eq!(reward_weight(&normal), reward_weight(&impossible));
-    }
-
-    #[test]
-    fn active_staked_io_uses_eligibility_not_participation() {
-        let active_non_voter = n(1, 1_000, 100, 0, 10);
-        assert_eq!(
-            active_staked_io_e8s(std::slice::from_ref(&active_non_voter)),
-            1_000
-        );
-        assert_eq!(reward_weight(&active_non_voter), 0);
-    }
-
-    #[test]
-    fn zero_reward_pool_produces_no_allocations_even_with_weights() {
-        let out = allocate_rewards(0, &[n(1, 1_000, 100, 1, 1)]);
-        assert!(out.allocations.is_empty());
-        assert_eq!(out.dust_e8s, 0);
-        assert!(out.total_weight > 0);
-    }
-}
-
-#[cfg(test)]
-mod additional_policy_safety_tests {
-    use super::*;
-
-    fn neuron(id: u64, stake: u128, seconds: u64, voted: u64, total: u64) -> NeuronSnapshot {
-        NeuronSnapshot {
-            sns_neuron_id: SnsNeuronId(id.to_be_bytes().to_vec()),
-            neuron_id: id,
-            staked_io_e8s: stake,
-            eligible_seconds: seconds,
-            eligible_closed_proposals: total,
-            voted_closed_proposals: voted,
-            is_genesis_governance_neuron: false,
-            is_protocol_owned: false,
-            is_dissolving: false,
-        }
-    }
-
-    #[test]
-    fn zero_eligible_seconds_is_ineligible_even_if_it_voted() {
-        let n = neuron(1, 1_000, 0, 10, 10);
-        assert!(!eligible(&n));
-        assert_eq!(reward_weight(&n), 0);
-    }
-
-    #[test]
-    fn saturating_weight_calculation_does_not_panic_on_huge_values() {
-        let n = neuron(1, u128::MAX, u64::MAX, u64::MAX, u64::MAX);
-        assert_eq!(
-            participation_ratio(&n),
-            (u128::from(u64::MAX), u128::from(u64::MAX))
-        );
-        assert_eq!(reward_weight(&n), u128::MAX);
-    }
-
-    #[test]
-    fn allocation_dust_is_less_than_number_of_positive_weight_neurons() {
-        let neurons = vec![
-            neuron(1, 1, 1, 1, 1),
-            neuron(2, 1, 1, 1, 1),
-            neuron(3, 1, 1, 1, 1),
-        ];
-        let out = allocate_rewards(10, &neurons);
-        assert_eq!(out.dust_e8s, 1);
-        assert!(out.dust_e8s < out.allocations.len() as u128);
-    }
-
-    #[test]
-    fn excluded_neurons_do_not_receive_allocations_even_when_reward_pool_is_large() {
-        let mut genesis = neuron(1, 1_000, 1_000, 1, 1);
-        genesis.is_genesis_governance_neuron = true;
-        let mut protocol = neuron(2, 1_000, 1_000, 1, 1);
-        protocol.is_protocol_owned = true;
-        let mut dissolving = neuron(3, 1_000, 1_000, 1, 1);
-        dissolving.is_dissolving = true;
-        let out = allocate_rewards(1_000_000, &[genesis, protocol, dissolving]);
-        assert!(out.allocations.is_empty());
-        assert_eq!(out.dust_e8s, 1_000_000);
-    }
-}
-
-#[cfg(test)]
-mod sns_governance_allocation_tests {
-    use super::*;
-    use io_governance_types::{
-        snapshot_sns_eligibility, summarize_sns_participation, SnsBallot, SnsDissolveState,
-        SnsEligibilityPolicy, SnsNeuron, SnsNeuronEligibility, SnsNeuronId, SnsParticipationPolicy,
-        SnsParticipationSummary, SnsProposal, SnsProposalId, SnsProposalRewardStatus,
-        SnsProposalStatus, SnsVote,
-    };
-    use std::collections::BTreeSet;
-
-    #[test]
-    fn equal_eligible_neurons_get_equal_backed_io_allocation() {
-        let neurons = vec![
-            sns_neuron(1, 1_000, false, false),
-            sns_neuron(2, 1_000, false, false),
-        ];
-        let snapshots = snapshots_from_governance(
-            &neurons,
+    fn allocation_never_exceeds_pool() {
+        let outcome = allocate_rewards(
+            u128::MAX - 1,
             &[
-                proposal(1, 10, &[(1, SnsVote::Yes), (2, SnsVote::No)]),
-                proposal(
-                    2,
-                    20,
-                    &[(1, SnsVote::FollowedYes), (2, SnsVote::FollowedNo)],
-                ),
+                n(1, u128::MAX, 1, 3),
+                n(2, u128::MAX - 1, 2, 3),
+                n(3, u128::MAX - 2, 0, 3),
             ],
-        );
-        let out = allocate_rewards(200, &snapshots);
-        assert_eq!(out.allocations[0].io_e8s, 100);
-        assert_eq!(out.allocations[1].io_e8s, 100);
-    }
-
-    #[test]
-    fn canonical_finalized_sns_neuron_id_is_32_bytes() {
-        assert!(sns_neuron_id_is_canonical_staking_subaccount(&SnsNeuronId(
-            vec![7; 32]
-        )));
-        assert!(!sns_neuron_id_is_canonical_staking_subaccount(
-            &SnsNeuronId(vec![7; 31])
-        ));
-        assert!(!sns_neuron_id_is_canonical_staking_subaccount(
-            &SnsNeuronId(vec![7; 33])
-        ));
-        assert!(!sns_neuron_id_is_canonical_staking_subaccount(
-            &compatibility_sns_neuron_id_from_u64(7)
-        ));
-    }
-
-    #[test]
-    fn eligible_sns_staking_increases_io_reward_entitlement() {
-        let no_staking = allocate_rewards(500, &snapshots_from_governance(&[], &[]));
-        assert!(no_staking.allocations.is_empty());
-        assert_eq!(no_staking.dust_e8s, 500);
-
-        let eligible = snapshots_from_governance(
-            &[sns_neuron(1, 1_000, false, false)],
-            &[proposal(1, 10, &[(1, SnsVote::Yes)])],
-        );
-        let staking = allocate_rewards(500, &eligible);
-        assert_eq!(
-            staking.allocations,
-            vec![RewardAllocation {
-                sns_neuron_id: SnsNeuronId(1_u64.to_be_bytes().to_vec()),
-                neuron_id: 1,
-                io_e8s: 500
-            }]
-        );
-    }
-
-    #[test]
-    fn increasing_staked_io_increases_reward_weight_without_double_counting() {
-        let before = snapshots_from_governance(
-            &[sns_neuron(1, 1_000, false, false)],
-            &[proposal(1, 10, &[(1, SnsVote::Yes)])],
-        );
-        let after = snapshots_from_governance(
-            &[sns_neuron(1, 3_000, false, false)],
-            &[proposal(1, 10, &[(1, SnsVote::Yes)])],
-        );
-
-        assert_eq!(before.len(), 1);
-        assert_eq!(after.len(), 1);
-        assert_eq!(before[0].staked_io_e8s, 1_000);
-        assert_eq!(after[0].staked_io_e8s, 3_000);
-        assert_eq!(reward_weight(&after[0]), reward_weight(&before[0]) * 3);
-    }
-
-    #[test]
-    fn ineligible_sns_staking_does_not_increase_reward_entitlement() {
-        let mut short_delay = sns_neuron(1, 1_000, false, false);
-        short_delay.dissolve_delay_seconds = 60;
-        short_delay.dissolve_state = SnsDissolveState::NotDissolving {
-            dissolve_delay_seconds: 60,
-        };
-        let mut dissolving = sns_neuron(2, 1_000, false, false);
-        dissolving.dissolve_state = SnsDissolveState::Dissolving {
-            when_dissolved_timestamp_seconds: 200,
-        };
-        let mut liquid_only = sns_neuron(3, 0, false, false);
-        liquid_only.cached_neuron_stake_e8s = 0;
-
-        let snapshots = snapshots_from_governance(
-            &[short_delay, dissolving, liquid_only],
-            &[proposal(
-                1,
-                10,
-                &[(1, SnsVote::Yes), (2, SnsVote::Yes), (3, SnsVote::Yes)],
-            )],
-        );
-        let out = allocate_rewards(500, &snapshots);
-        assert!(out.allocations.is_empty());
-        assert_eq!(out.dust_e8s, 500);
-        assert_eq!(active_staked_io_e8s(&snapshots), 0);
-    }
-
-    #[test]
-    fn half_participation_gets_half_weight() {
-        let neurons = vec![
-            sns_neuron(1, 1_000, false, false),
-            sns_neuron(2, 1_000, false, false),
-        ];
-        let snapshots = snapshots_from_governance(
-            &neurons,
-            &[
-                proposal(1, 10, &[(1, SnsVote::Yes), (2, SnsVote::Yes)]),
-                proposal(2, 20, &[(1, SnsVote::Yes)]),
-            ],
-        );
-        let out = allocate_rewards(300, &snapshots);
-        assert_eq!(out.allocations[0].io_e8s, 200);
-        assert_eq!(out.allocations[1].io_e8s, 100);
-    }
-
-    #[test]
-    fn halfway_eligible_neuron_gets_half_stake_time_weight() {
-        let neurons = vec![
-            sns_neuron(1, 1_000, false, false),
-            sns_neuron(2, 1_000, false, false),
-        ];
-        let mut eligibilities = base_eligibilities(&neurons);
-        eligibilities[0].eligible_since_seconds = 0;
-        eligibilities[1].eligible_since_seconds = 50;
-        let summaries = summarize_sns_participation(
-            &eligibilities,
-            &[proposal(1, 75, &[(1, SnsVote::Yes), (2, SnsVote::Yes)])],
-            &participation_policy(),
-        );
-        let snapshots = snapshots_from_eligibility(&eligibilities, &summaries, 100);
-        let out = allocate_rewards(300, &snapshots);
-        assert_eq!(out.allocations[0].io_e8s, 200);
-        assert_eq!(out.allocations[1].io_e8s, 100);
-    }
-
-    #[test]
-    fn jupiter_and_protocol_governance_neurons_are_excluded() {
-        let neurons = vec![
-            sns_neuron(1, 10_000, true, false),
-            sns_neuron(2, 10_000, false, true),
-            sns_neuron(3, 1_000, false, false),
-        ];
-        let snapshots = snapshots_from_governance(
-            &neurons,
-            &[proposal(
-                1,
-                10,
-                &[(1, SnsVote::Yes), (2, SnsVote::Yes), (3, SnsVote::Yes)],
-            )],
-        );
-        let out = allocate_rewards(100, &snapshots);
-        assert_eq!(
-            out.allocations,
-            vec![RewardAllocation {
-                sns_neuron_id: SnsNeuronId(3_u64.to_be_bytes().to_vec()),
-                neuron_id: 3,
-                io_e8s: 100
-            }]
-        );
-    }
-
-    #[test]
-    fn no_closed_proposals_gives_full_participation_and_dust_does_not_over_issue() {
-        let neurons = vec![
-            sns_neuron(1, 1, false, false),
-            sns_neuron(2, 1, false, false),
-            sns_neuron(3, 1, false, false),
-        ];
-        let snapshots = snapshots_from_governance(&neurons, &[]);
-        let out = allocate_rewards(100, &snapshots);
-        assert_eq!(out.allocations.iter().map(|a| a.io_e8s).sum::<u128>(), 99);
-        assert_eq!(out.dust_e8s, 1);
-    }
-
-    #[test]
-    fn sns_neuron_id_to_u64_empty_id_is_rejected() {
-        let id = SnsNeuronId(Vec::new());
-        assert_eq!(
-            sns_neuron_id_to_u64(&id),
-            Err(SnsNeuronIdConversionError::Empty)
-        );
-    }
-
-    #[test]
-    fn sns_neuron_id_to_u64_eight_byte_id_preserves_big_endian_u64() {
-        let id = SnsNeuronId(42u64.to_be_bytes().to_vec());
-        assert_eq!(sns_neuron_id_to_u64(&id), Ok(42));
-        let high_bit = SnsNeuronId(0x8000_0000_0000_0001_u64.to_be_bytes().to_vec());
-        assert_eq!(sns_neuron_id_to_u64(&high_bit), Ok(0x8000_0000_0000_0001));
-    }
-
-    #[test]
-    fn sns_neuron_id_to_u64_non_eight_byte_id_is_stable() {
-        let id = SnsNeuronId(vec![1, 2, 3, 5, 8, 13, 21, 34, 55]);
-        assert_eq!(sns_neuron_id_to_u64(&id), sns_neuron_id_to_u64(&id));
-    }
-
-    #[test]
-    fn sns_neuron_id_to_u64_non_eight_byte_id_never_maps_to_zero() {
-        let ids = [
-            SnsNeuronId(vec![0]),
-            SnsNeuronId(vec![1]),
-            SnsNeuronId(vec![0; 9]),
-            SnsNeuronId(vec![255; 32]),
-        ];
-        for id in ids {
-            assert_ne!(sns_neuron_id_to_u64(&id), Ok(0));
-        }
-    }
-
-    #[test]
-    fn sns_neuron_id_to_u64_distinct_real_sns_ids_do_not_collide_in_fixture() {
-        let fixture_ids = [
-            SnsNeuronId(vec![0, 0, 0, 0, 0, 0, 0, 1, 136, 236, 211, 45]),
-            SnsNeuronId(vec![0, 0, 0, 0, 0, 0, 0, 2, 35, 159, 70, 117]),
-            SnsNeuronId(vec![0, 0, 0, 0, 0, 0, 0, 3, 209, 17, 188, 9]),
-            SnsNeuronId(vec![4, 214, 87, 18, 174, 66, 1, 9, 170, 0, 6, 91]),
-        ];
-        let mut seen = BTreeSet::new();
-        for id in fixture_ids {
-            let converted = sns_neuron_id_to_u64(&id).unwrap();
-            assert_ne!(converted, 0);
-            assert!(seen.insert(converted));
-        }
-    }
-
-    fn sns_neuron(
-        id: u64,
-        stake: u128,
-        jupiter_governance: bool,
-        protocol_owned: bool,
-    ) -> SnsNeuron {
-        SnsNeuron {
-            id: SnsNeuronId(id.to_be_bytes().to_vec()),
-            controller: None,
-            stake_e8s: stake,
-            dissolve_delay_seconds: 14 * 24 * 60 * 60,
-            dissolve_state: SnsDissolveState::NotDissolving {
-                dissolve_delay_seconds: 14 * 24 * 60 * 60,
-            },
-            cached_neuron_stake_e8s: stake,
-            voting_power: stake,
-            permissions: Vec::new(),
-            is_io_protocol_neuron: protocol_owned,
-            is_jupiter_governance_neuron: jupiter_governance,
-        }
-    }
-
-    fn base_eligibilities(neurons: &[SnsNeuron]) -> Vec<SnsNeuronEligibility> {
-        snapshot_sns_eligibility(
-            neurons,
-            &SnsEligibilityPolicy {
-                protocol_neuron_ids: BTreeSet::new(),
-                jupiter_governance_neuron_ids: BTreeSet::new(),
-                minimum_dissolve_delay_seconds: 14 * 24 * 60 * 60,
-                require_non_dissolving: true,
-                current_timestamp_seconds: 0,
-            },
         )
+        .unwrap();
+        assert!(sum_allocations(&outcome) < u128::MAX);
     }
 
-    fn snapshots_from_governance(
-        neurons: &[SnsNeuron],
-        proposals: &[SnsProposal],
-    ) -> Vec<NeuronSnapshot> {
-        let eligibilities = base_eligibilities(neurons);
-        let summaries =
-            summarize_sns_participation(&eligibilities, proposals, &participation_policy());
-        snapshots_from_eligibility(&eligibilities, &summaries, 100)
+    #[test]
+    fn allocations_plus_dust_always_equal_pool() {
+        let mut forfeited = n(4, u128::MAX / 8, 1, 2);
+        forfeited.destination_is_currently_eligible = false;
+        let pool = u128::MAX - 9;
+        let outcome = allocate_rewards(
+            pool,
+            &[
+                n(1, u128::MAX / 8, 1, 1),
+                n(2, u128::MAX / 8 - 1, 1, 2),
+                n(3, 10_000_000_000, 1, 3),
+                forfeited,
+            ],
+        )
+        .unwrap();
+        assert_eq!(sum_allocations(&outcome) + outcome.dust_e8s, pool);
     }
 
-    fn snapshots_from_eligibility(
-        eligibilities: &[SnsNeuronEligibility],
-        summaries: &[SnsParticipationSummary],
-        epoch_seconds: u64,
-    ) -> Vec<NeuronSnapshot> {
-        eligibilities
-            .iter()
-            .filter(|eligibility| eligibility.excluded_reason.is_none())
-            .filter_map(|eligibility| {
-                let summary = summaries
-                    .iter()
-                    .find(|summary| summary.neuron_id == eligibility.neuron_id)?;
-                Some(NeuronSnapshot {
-                    sns_neuron_id: eligibility.neuron_id.clone(),
-                    neuron_id: eight_byte_fixture_sns_neuron_id_to_u64(&eligibility.neuron_id),
-                    staked_io_e8s: eligibility.eligible_stake_e8s,
-                    eligible_seconds: epoch_seconds
-                        .saturating_sub(eligibility.eligible_since_seconds.min(epoch_seconds)),
-                    eligible_closed_proposals: summary.eligible_closed_proposals_total,
-                    voted_closed_proposals: summary.voted_proposals,
-                    is_genesis_governance_neuron: false,
-                    is_protocol_owned: false,
-                    is_dissolving: !eligibility.is_non_dissolving,
-                })
-            })
-            .collect()
+    #[test]
+    fn overflowing_weight_total_fails_closed() {
+        assert_eq!(
+            allocate_rewards(100, &[n(1, u128::MAX, 1, 1), n(2, 1, 1, 1)]),
+            Err(RewardPolicyError::ArithmeticOverflow)
+        );
     }
 
-    fn eight_byte_fixture_sns_neuron_id_to_u64(id: &SnsNeuronId) -> u64 {
-        sns_neuron_id_to_u64(id).expect("SNS governance allocation fixtures use 8-byte IDs")
-    }
-
-    fn participation_policy() -> SnsParticipationPolicy {
-        SnsParticipationPolicy {
-            count_direct_votes: true,
-            count_followed_votes: true,
-            excluded_topics: BTreeSet::new(),
-            epoch_start_seconds: 0,
-            epoch_end_seconds: 100,
-        }
-    }
-
-    fn proposal(id: u64, decided: u64, votes: &[(u64, SnsVote)]) -> SnsProposal {
-        SnsProposal {
-            id: SnsProposalId(id),
-            topic: Some(1),
-            status: SnsProposalStatus::Adopted,
-            reward_status: SnsProposalRewardStatus::Settled,
-            decided_timestamp_seconds: Some(decided),
-            ballots: votes
-                .iter()
-                .map(|(neuron_id, vote)| SnsBallot {
-                    neuron_id: SnsNeuronId(neuron_id.to_be_bytes().to_vec()),
-                    vote: *vote,
-                })
-                .collect(),
-        }
+    #[test]
+    fn active_staked_io_uses_current_destination_eligibility_not_participation() {
+        let active_non_voter = n(1, 1_000, 0, 10);
+        assert_eq!(active_staked_io_e8s(&[active_non_voter]), 1_000);
     }
 }

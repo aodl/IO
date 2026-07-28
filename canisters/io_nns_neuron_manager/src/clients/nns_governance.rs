@@ -202,7 +202,7 @@ pub async fn debug_get_neuron(
 
 pub async fn debug_disburse_maturity(canister: Principal, neuron_id: u64) -> Result<u128, String> {
     let response = ic_cdk::call::Call::bounded_wait(canister, "debug_disburse_maturity")
-        .with_arg(NeuronIdArgs { neuron_id })
+        .with_args(&(NeuronIdArgs { neuron_id },))
         .await
         .map_err(|err| format!("nns governance call failed: {err:?}"))
         .and_then(|response| {
@@ -219,10 +219,7 @@ pub async fn debug_split(
     amount_e8s: u128,
 ) -> Result<u64, String> {
     let response = ic_cdk::call::Call::bounded_wait(canister, "debug_split")
-        .with_arg(NeuronAmountArgs {
-            neuron_id,
-            amount_e8s,
-        })
+        .with_args(&(neuron_id, amount_e8s))
         .await
         .map_err(|err| format!("nns governance split call failed: {err:?}"))
         .and_then(|response| {
@@ -235,7 +232,7 @@ pub async fn debug_split(
 
 pub async fn debug_start_dissolving(canister: Principal, neuron_id: u64) -> Result<(), String> {
     let response = ic_cdk::call::Call::bounded_wait(canister, "debug_start_dissolving")
-        .with_arg(NeuronIdArgs { neuron_id })
+        .with_args(&(neuron_id,))
         .await
         .map_err(|err| format!("nns governance start dissolve call failed: {err:?}"))
         .and_then(|response| {
@@ -248,7 +245,7 @@ pub async fn debug_start_dissolving(canister: Principal, neuron_id: u64) -> Resu
 
 pub async fn debug_stop_dissolving(canister: Principal, neuron_id: u64) -> Result<(), String> {
     let response = ic_cdk::call::Call::bounded_wait(canister, "debug_stop_dissolving")
-        .with_arg(NeuronIdArgs { neuron_id })
+        .with_args(&(neuron_id,))
         .await
         .map_err(|err| format!("nns governance stop dissolve call failed: {err:?}"))
         .and_then(|response| {
@@ -265,10 +262,7 @@ pub async fn debug_merge(
     amount_e8s: u128,
 ) -> Result<(), String> {
     let response = ic_cdk::call::Call::bounded_wait(canister, "debug_merge")
-        .with_arg(NeuronAmountArgs {
-            neuron_id,
-            amount_e8s,
-        })
+        .with_args(&(neuron_id, amount_e8s))
         .await
         .map_err(|err| format!("nns governance merge call failed: {err:?}"))
         .and_then(|response| {
@@ -281,7 +275,7 @@ pub async fn debug_merge(
 
 pub async fn debug_disburse_principal(canister: Principal, neuron_id: u64) -> Result<u128, String> {
     let response = ic_cdk::call::Call::bounded_wait(canister, "debug_disburse_principal")
-        .with_arg(NeuronIdArgs { neuron_id })
+        .with_args(&(neuron_id,))
         .await
         .map_err(|err| format!("nns governance principal disburse call failed: {err:?}"))
         .and_then(|response| {

@@ -22,17 +22,16 @@ The production DID is install-args-only:
 service : (InitArgs) -> {}
 ```
 
-`InitArgs` defines the initial IO supply, protocol reserve, non-redeemable governance supply, two-week backing bps, and optional placeholder principals for future Jupiter Faucet, NNS manager, ICP ledger/index, and IO ledger/index integrations.
+`InitArgs` defines the initial IO supply, protocol reserve, non-redeemable governance supply, and optional placeholder principals for future Jupiter Faucet, NNS manager, ICP ledger/index, and IO ledger/index integrations.
 
 Validation rejects:
 
 - total supply lower than reserve plus non-redeemable governance supply
-- `two_week_pool_backing_bps > 10_000`
 - present-but-empty or malformed optional principal text
 
 ## Stable State
 
-Upgrade persistence uses an explicit versioned stable snapshot saved with `ic_cdk::storage::stable_save` and restored with `stable_restore`. The snapshot preserves config, protocol accounting, processed transaction IDs, active staked IO, two-week pool backing bps, operation journals, pending redemption gross/net/fee intent, retry status, and account-history cursors. Host tests exercise export/import and migration round trips without exposing stable-state methods in the production DID.
+Upgrade persistence uses an explicit versioned stable snapshot saved with `ic_cdk::storage::stable_save` and restored with `stable_restore`. The snapshot preserves config, protocol accounting, processed transaction IDs, active exact-product IO, reward cohort evidence, operation journals, pending redemption gross/net/fee intent, retry status, and account-history cursors. Host tests exercise export/import and migration round trips without exposing stable-state methods in the production DID.
 
 Stable storage hardening does not make IO live. This value-moving canister is not deployed to production, production adapters are not active, and the SNS IO ledger does not exist yet. Corrupt value-moving state must fail closed on upgrade. Missing first-install state is handled by init/default state and is not the same as a corrupt upgrade snapshot. Local stable-state fixtures are test fixtures, not live snapshots.
 

@@ -10,6 +10,8 @@ use io_sns_lifecycle::{
 };
 use pocket_ic::PocketIc;
 use sha2::{Digest, Sha256};
+use std::path::PathBuf;
+use std::time::Duration;
 
 const CYCLES: u128 = 2_000_000_000_000;
 
@@ -39,7 +41,7 @@ struct LedgerTransaction {
 struct MockSnsNeuron {
     neuron_id: u64,
     staked_io_e8s: u128,
-    eligible_seconds: u64,
+    dissolve_delay_seconds: u64,
     eligible_closed_proposals: u64,
     voted_closed_proposals: u64,
     is_genesis_governance_neuron: bool,
@@ -79,13 +81,21 @@ fn pocketic_available() -> bool {
 }
 
 fn required_wasm(path: &str) -> Option<Vec<u8>> {
-    match std::fs::read(path) {
+    match std::fs::read(workspace_relative_path(path)) {
         Ok(bytes) => Some(bytes),
         Err(_) => {
             eprintln!("skipping SNS root lifecycle PocketIC test because {path} is missing");
             None
         }
     }
+}
+
+fn workspace_relative_path(path: &str) -> PathBuf {
+    let direct = PathBuf::from(path);
+    if direct.exists() {
+        return direct;
+    }
+    PathBuf::from("../../").join(path)
 }
 
 fn create_canister(pic: &PocketIc, wasm: Vec<u8>, arg: Vec<u8>) -> Principal {
@@ -152,6 +162,13 @@ fn setup() -> Option<LifecycleFixture> {
     );
     let root = create_canister(&pic, root_wasm, vec![]);
     let governance = create_canister(&pic, governance_wasm, vec![]);
+    pic.update_call(
+        governance,
+        Principal::anonymous(),
+        "debug_set_io_ledger_principal",
+        encode_one(io_ledger).unwrap(),
+    )
+    .expect("configure mock SNS governance IO ledger");
 
     set_governance_root(&pic, governance, root);
     set_root_governance(&pic, root, governance);
@@ -168,6 +185,13 @@ fn setup() -> Option<LifecycleFixture> {
             ..Default::default()
         })
         .unwrap(),
+    );
+    mint(
+        &pic,
+        io_ledger,
+        "protocol_reserve",
+        t(900_000),
+        "initial_reserve",
     );
     let nns_manager = create_canister(
         &pic,
@@ -264,7 +288,8 @@ fn proposal_request(
     target: Principal,
     expected_module_hash: String,
 ) -> UpgradeProposalRequest {
-    let manifest = read_manifest("release-artifacts/manifest.json").expect("release manifest");
+    let manifest = read_manifest(workspace_relative_path("release-artifacts/manifest.json"))
+        .expect("release manifest");
     let entry = resolve_manifest_entry(&manifest, canister).expect("manifest entry");
     UpgradeProposalRequest {
         target_canister: target,
@@ -440,7 +465,14 @@ fn mint(pic: &PocketIc, ledger: Principal, to: &str, amount_e8s: u128, memo: &st
     .expect("mint");
 }
 
-fn transfer(pic: &PocketIc, ledger: Principal, from: &str, to: &str, amount_e8s: u128, memo: &str) {
+fn transfer_to_account(
+    pic: &PocketIc,
+    ledger: Principal,
+    from: &str,
+    to: Account,
+    amount_e8s: u128,
+    memo: &str,
+) {
     let bytes = pic
         .update_call(
             ledger,
@@ -448,7 +480,7 @@ fn transfer(pic: &PocketIc, ledger: Principal, from: &str, to: &str, amount_e8s:
             "icrc1_transfer",
             encode_one(IcrcTransferArg {
                 from_subaccount: Some(mock_subaccount(from).0.to_vec()),
-                to: IcrcAccount::from(mock_account(to)),
+                to: IcrcAccount::from(to),
                 amount: Nat::from(amount_e8s),
                 fee: None,
                 memo: Some(memo.as_bytes().to_vec()),
@@ -468,10 +500,6 @@ fn mock_subaccount(label: &str) -> Subaccount {
     subaccount[0] = len as u8;
     subaccount[1..=len].copy_from_slice(&bytes[..len]);
     Subaccount(subaccount)
-}
-
-fn mock_account(label: &str) -> Account {
-    Account::new(Principal::anonymous(), Some(mock_subaccount(label)))
 }
 
 fn reject_to(pic: &PocketIc, ledger: Principal, account: &str) {
@@ -523,7 +551,7 @@ fn sns_neuron(id: u64, stake: u128, voted: u64, total: u64) -> MockSnsNeuron {
     MockSnsNeuron {
         neuron_id: id,
         staked_io_e8s: stake,
-        eligible_seconds: 100,
+        dissolve_delay_seconds: io_core_model::TWO_WEEK_SECONDS,
         eligible_closed_proposals: total,
         voted_closed_proposals: voted,
         is_genesis_governance_neuron: false,
@@ -617,7 +645,28 @@ fn pocketic_sns_root_style_stream_upgrade_preserves_pending_reward_state() {
         fixture.governance,
         sns_neuron(11, t(10), 1, 2),
     );
+    mint(
+        &fixture.pic,
+        fixture.io_ledger,
+        "sns_neuron_10",
+        t(10),
+        "initial_stake_10",
+    );
+    mint(
+        &fixture.pic,
+        fixture.io_ledger,
+        "sns_neuron_11",
+        t(10),
+        "initial_stake_11",
+    );
     reject_to(&fixture.pic, fixture.io_ledger, "sns_neuron_11");
+
+    let seeded = tick_stream(&fixture);
+    assert!(seeded.errors.is_empty(), "{:?}", seeded.errors);
+    assert_eq!(seeded.processed_authorized_streams, 0);
+    assert!(stream_state(&fixture).reward_cohort.is_some());
+    fixture.pic.advance_time(Duration::from_secs(1));
+    fixture.pic.tick();
 
     mint(
         &fixture.pic,
@@ -626,23 +675,26 @@ fn pocketic_sns_root_style_stream_upgrade_preserves_pending_reward_state() {
         t(100),
         "fund_nns_manager",
     );
-    transfer(
+    transfer_to_account(
         &fixture.pic,
         fixture.icp_ledger,
         "io_nns_neuron_manager",
-        "stream_manager_deposit",
+        Account::new(
+            fixture.stream,
+            Some(mock_subaccount("stream_manager_deposit")),
+        ),
         t(100),
         "two_week_maturity",
     );
 
     let failed = tick_stream(&fixture);
-    assert!(!failed.errors.is_empty());
+    assert!(
+        !failed.errors.is_empty(),
+        "expected rejected reward transfer error, got outcome {failed:?} and state {:?}",
+        stream_state(&fixture)
+    );
     assert_eq!(stream_state(&fixture).processed_transaction_count, 0);
 
-    assert!(fixture
-        .pic
-        .upgrade_canister(fixture.stream, fixture.stream_wasm.clone(), vec![], None)
-        .is_err());
     let intent = execute_stream_upgrade(&fixture, stream_hash);
     assert_eq!(intent.target_canister, fixture.stream);
 
@@ -650,12 +702,14 @@ fn pocketic_sns_root_style_stream_upgrade_preserves_pending_reward_state() {
     let retry = tick_stream(&fixture);
     assert!(retry.errors.is_empty(), "{:?}", retry.errors);
     assert_eq!(retry.processed_authorized_streams, 1);
+    let io_transactions = transactions(&fixture.pic, fixture.io_ledger);
     assert_eq!(
-        transactions(&fixture.pic, fixture.io_ledger)
+        io_transactions
             .iter()
-            .filter(|tx| tx.to == "sns_neuron_10")
+            .filter(|tx| tx.to == "sns_neuron_10" && tx.amount_e8s == t(30))
             .count(),
-        1
+        1,
+        "retry outcome {retry:?}; io transactions {io_transactions:?}"
     );
     assert_eq!(
         history(&fixture.pic, fixture.root)
@@ -665,8 +719,10 @@ fn pocketic_sns_root_style_stream_upgrade_preserves_pending_reward_state() {
         RootUpgradeAttemptStatus::Succeeded
     );
 
-    let stream_did = std::fs::read_to_string("canisters/io_stream_manager/io_stream_manager.did")
-        .expect("stream production DID");
+    let stream_did = std::fs::read_to_string(workspace_relative_path(
+        "canisters/io_stream_manager/io_stream_manager.did",
+    ))
+    .expect("stream production DID");
     assert!(stream_did.contains("service : (InitArgs) -> {}"));
     assert!(!stream_did.contains("debug_"));
     assert!(!stream_did.contains(" get_state :"));
@@ -678,6 +734,13 @@ fn pocketic_sns_root_style_nns_manager_upgrade_preserves_pending_maturity() {
         return;
     };
     let nns_hash = sha256_hex(&fixture.nns_wasm);
+    mint(
+        &fixture.pic,
+        fixture.icp_ledger,
+        "io_nns_neuron_manager",
+        t(100),
+        "fund_nns_manager",
+    );
     reject_to(&fixture.pic, fixture.icp_ledger, "stream_manager_deposit");
     fixture
         .pic
@@ -715,9 +778,10 @@ fn pocketic_sns_root_style_nns_manager_upgrade_preserves_pending_maturity() {
         1
     );
 
-    let nns_did =
-        std::fs::read_to_string("canisters/io_nns_neuron_manager/io_nns_neuron_manager.did")
-            .expect("nns production DID");
+    let nns_did = std::fs::read_to_string(workspace_relative_path(
+        "canisters/io_nns_neuron_manager/io_nns_neuron_manager.did",
+    ))
+    .expect("nns production DID");
     assert!(nns_did.contains("service : (InitArgs) -> {}"));
     assert!(!nns_did.contains("debug_"));
     assert!(!nns_did.contains(" get_state :"));

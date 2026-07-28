@@ -34,7 +34,7 @@ The crate contains production-shaped SNS governance records for `list_neurons`, 
 
 `io_stream_manager::clients::sns_governance::MockSnsGovernanceClient` implements the boundary for mock neuron and proposal pages. The mock SNS governance canister stores production-shaped `SnsNeuron` and `SnsProposal` records, exposes debug-only page/get methods, and supports deterministic proposal pagination with `before_proposal` cursors.
 
-`io_stream_manager::governance_snapshot` fetches all local/mock SNS governance pages through the trait, applies SNS eligibility and participation policies, and converts valid eight-byte local/mock SNS neuron IDs into `NeuronSnapshot` values. Invalid SNS neuron IDs are excluded and surfaced as conversion errors rather than coerced to `0`.
+`io_stream_manager::governance_snapshot` fetches all local/mock SNS governance pages through the trait and returns a complete reward observation: current eligibility facts plus validated proposal facts. Reward participants are materialized later from a frozen cohort and a source ledger event timestamp. Invalid or noncanonical SNS neuron IDs are excluded and surfaced as conversion errors rather than coerced to `0`.
 
 The local SNS harness can install IO canisters with SNS-shaped local governance principals, includes read-only PocketIC governance read tests, and combines those snapshots with local SNS-ledger-shaped reward transfers. We currently run SNS-shaped mock/PocketIC tests; they are not official SNS launch tests, not SNS-W, not decentralization swap, and not mainnet testflight. Official SNS testing documentation is authoritative; the historical standalone `dfinity/sns-testing` repository is deprecated. `dfx sns` flows are optional/manual and are not part of required IO workflows.
 

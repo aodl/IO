@@ -812,19 +812,85 @@ struct ArtifactManifestEntry {
     git_commit: Option<String>,
 }
 
-fn current_git_commit() -> Option<String> {
+const RELEASE_SOURCE_COMMIT_ENV: &str = "IO_RELEASE_SOURCE_COMMIT";
+
+fn current_git_commit() -> Result<String, String> {
     let output = Command::new("git")
         .args(["rev-parse", "HEAD"])
         .output()
-        .ok()?;
+        .map_err(|err| format!("git rev-parse HEAD: {err}"))?;
     if !output.status.success() {
-        return None;
+        return Err(format!(
+            "git rev-parse HEAD failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
-    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn build_manifest(root: &Path) -> Result<ArtifactManifest, String> {
-    let git_commit = current_git_commit();
+fn is_full_lowercase_hex_sha(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn validate_release_source_commit(git_commit: &str) -> Result<(), String> {
+    if !is_full_lowercase_hex_sha(git_commit) {
+        return Err(format!(
+            "release source commit must be a full 40-character lowercase hexadecimal SHA, got {git_commit:?}"
+        ));
+    }
+
+    let cat_file = Command::new("git")
+        .args(["cat-file", "-e", &format!("{git_commit}^{{commit}}")])
+        .output()
+        .map_err(|err| format!("git cat-file {git_commit}: {err}"))?;
+    if !cat_file.status.success() {
+        return Err(format!(
+            "release source commit {git_commit} does not resolve locally as a commit"
+        ));
+    }
+
+    let ancestor = Command::new("git")
+        .args(["merge-base", "--is-ancestor", git_commit, "HEAD"])
+        .output()
+        .map_err(|err| format!("git merge-base --is-ancestor {git_commit} HEAD: {err}"))?;
+    if !ancestor.status.success() {
+        return Err(format!(
+            "release source commit {git_commit} is not an ancestor of HEAD"
+        ));
+    }
+
+    Ok(())
+}
+
+fn manifest_source_commit(root: &Path) -> Result<Option<String>, String> {
+    if !root.join(MANIFEST_PATH).is_file() {
+        return Ok(None);
+    }
+    let manifest = read_manifest(root)?;
+    let git_commit = manifest
+        .git_commit
+        .ok_or_else(|| format!("{MANIFEST_PATH}: git_commit is required"))?;
+    validate_release_source_commit(&git_commit).map_err(|err| format!("{MANIFEST_PATH}: {err}"))?;
+    Ok(Some(git_commit))
+}
+
+fn release_source_commit(root: &Path) -> Result<String, String> {
+    let git_commit = match env::var(RELEASE_SOURCE_COMMIT_ENV) {
+        Ok(value) => value,
+        Err(env::VarError::NotPresent) => match manifest_source_commit(root)? {
+            Some(value) => value,
+            None => current_git_commit()?,
+        },
+        Err(err) => return Err(format!("{RELEASE_SOURCE_COMMIT_ENV}: {err}")),
+    };
+    validate_release_source_commit(&git_commit)?;
+    Ok(git_commit)
+}
+
+fn build_manifest_for_commit(root: &Path, git_commit: String) -> Result<ArtifactManifest, String> {
     let mut artifacts = Vec::new();
     for canister in RELEASE_CANISTERS {
         let raw = format!("release-artifacts/{}.wasm", canister.artifact);
@@ -843,7 +909,7 @@ fn build_manifest(root: &Path) -> Result<ArtifactManifest, String> {
             gz_wasm_bytes: gz_metadata.len(),
             build_profile: RELEASE_PROFILE.to_string(),
             target: WASM_TARGET.to_string(),
-            git_commit: git_commit.clone(),
+            git_commit: Some(git_commit.clone()),
         });
     }
 
@@ -851,9 +917,13 @@ fn build_manifest(root: &Path) -> Result<ArtifactManifest, String> {
         schema_version: 1,
         build_profile: RELEASE_PROFILE.to_string(),
         target: WASM_TARGET.to_string(),
-        git_commit,
+        git_commit: Some(git_commit),
         artifacts,
     })
+}
+
+fn build_manifest(root: &Path) -> Result<ArtifactManifest, String> {
+    build_manifest_for_commit(root, release_source_commit(root)?)
 }
 
 fn write_manifest(root: &Path) -> Result<(), String> {
@@ -872,13 +942,28 @@ fn read_manifest(root: &Path) -> Result<ArtifactManifest, String> {
 
 fn verify_manifest(root: &Path) -> Result<(), String> {
     let actual = read_manifest(root)?;
-    let expected = build_manifest(root)?;
     if actual.schema_version != 1 {
         return Err(format!(
             "{MANIFEST_PATH}: unsupported schema_version {}",
             actual.schema_version
         ));
     }
+    let source_commit = actual
+        .git_commit
+        .clone()
+        .ok_or_else(|| format!("{MANIFEST_PATH}: git_commit is required"))?;
+    validate_release_source_commit(&source_commit)
+        .map_err(|err| format!("{MANIFEST_PATH}: {err}"))?;
+    for entry in &actual.artifacts {
+        if entry.git_commit.as_deref() != Some(source_commit.as_str()) {
+            return Err(format!(
+                "{MANIFEST_PATH}: artifact {} git_commit must equal top-level git_commit",
+                entry.canister
+            ));
+        }
+    }
+
+    let expected = build_manifest_for_commit(root, source_commit)?;
     if actual != expected {
         return Err(format!(
             "{MANIFEST_PATH}: manifest does not match current artifacts"
@@ -1043,10 +1128,6 @@ fn validate_nns_install_args_text(text: &str, mode: InstallArgsMode) -> Result<(
             "two_year_nns_neuron_id: expected known live id {KNOWN_TWO_YEAR_NNS_NEURON_ID}, got {neuron_id}"
         ));
     }
-    let dissolve_seconds = parse_required_u64_field(text, "two_week_dissolve_seconds")?;
-    if dissolve_seconds == 0 {
-        return Err("two_week_dissolve_seconds: missing or zero".to_string());
-    }
     for field in [
         "io_stream_manager_principal_text",
         "nns_governance_principal_text",
@@ -1099,7 +1180,6 @@ fn validate_install_args_at(root: &Path, mode: InstallArgsMode) -> Result<(), St
             r#"(record {
               controller_canister_principal_text = "aaaaa-aa";
               two_year_nns_neuron_id = 42 : nat64;
-              two_week_dissolve_seconds = 1_209_600 : nat64;
               io_stream_manager_principal_text = opt "oae4c-3iaaa-aaaar-qb5qq-cai";
               nns_governance_principal_text = null : opt text;
               icp_ledger_principal_text = null : opt text;
@@ -2747,6 +2827,7 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
             "deploy_io_test_sns_through_sns_w",
             "CreateServiceNervousSystemDtoMissing",
             "real_sns_lifecycle_deploys_sns_via_sns_w_is_blocked_on_sns_init_dto",
+            "real_sns_dissolve_delay_above_two_weeks_cannot_be_applied_after_finalization",
         ],
     )?;
     let brief_blockers = require_file(root, "tests/e2e_real_canisters/src/brief_blockers.rs")?;
@@ -2781,6 +2862,7 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
             "io_stream_manager_real_redemption_after_index_lag_waits_or_fails_closed",
             "real_stack_rejected_refund_too_old_waits_for_index_proof_no_double_refund",
             "real_finalized_sns_four_role_reward_reconciles_exactly_once",
+            "real_finalized_sns_frozen_cohort_blocks_late_stake_and_duration_bonus",
             "real_finalized_sns_zero_recipient_reward_retains_full_pool_as_dust",
             "io_stream_manager_real_redemption_after_holder_yield_is_higher_than_genesis",
             "io_stream_manager_real_redemption_after_staker_rewards_preserves_rate",
@@ -3039,6 +3121,11 @@ fn check_sns_harness_at(root: &Path) -> Result<(), String> {
             "proposal_rejection_fee_e8s: 10_000_000_000",
             "initial_reward_rate_basis_points: 0",
             "final_reward_rate_basis_points: 0",
+            "max_dissolve_delay_seconds: 1_209_600",
+            "max_dissolve_delay_bonus_percentage: 0",
+            "max_neuron_age_for_age_bonus: 0",
+            "max_age_bonus_percentage: 0",
+            "neuron_minimum_dissolve_delay_to_vote_seconds: 1_209_599",
             "age_bonus_percentage: 0",
             "jupiter_faucet_governance_neuron",
             "jupiter_faucet_non_dissolvable_neuron",
@@ -3875,6 +3962,7 @@ fn check_stable_storage_at(root: &Path) -> Result<(), String> {
     check_prelaunch_public_shell_at(root)?;
     check_production_wiring_at(root)?;
     check_historian_freshness_at(root)?;
+    check_exact_two_week_policy_at(root)?;
 
     if STABLE_SCHEMA_REGISTRY.len() != 3 {
         return Err(
@@ -4028,6 +4116,140 @@ fn check_stable_storage_at(root: &Path) -> Result<(), String> {
         ],
     )?;
     Ok(())
+}
+
+fn check_exact_two_week_policy_at(root: &Path) -> Result<(), String> {
+    let scanned_paths = [
+        "crates/io_core_model/src/lib.rs",
+        "crates/io_governance_types/src/lib.rs",
+        "crates/io_reward_policy/src/lib.rs",
+        "canisters/io_stream_manager/src/lib.rs",
+        "canisters/io_stream_manager/src/scheduler/mod.rs",
+        "canisters/io_stream_manager/src/governance_snapshot.rs",
+        "canisters/io_stream_manager/src/state.rs",
+        "canisters/io_stream_manager/src/logic.rs",
+        "canisters/io_nns_neuron_manager/src/lib.rs",
+        "canisters/io_historian/src/lib.rs",
+    ];
+    let forbidden = [
+        "eligible_seconds",
+        "eligible_since_overrides",
+        "stake_time",
+        "stake-time",
+        "minimum_dissolve_delay_seconds",
+    ];
+    for path in scanned_paths {
+        let text = require_file(root, path)?;
+        let lines = text.lines().collect::<Vec<_>>();
+        for (line_index, line) in lines.iter().enumerate() {
+            for needle in forbidden {
+                if line.contains(needle)
+                    && !legacy_historian_policy_remnant_allowed(path, &lines, line_index, needle)
+                {
+                    return Err(format!(
+                        "{path}:{} contains forbidden reward policy remnant {needle}",
+                        line_index + 1
+                    ));
+                }
+            }
+            if line.contains("two_week_pool_backing_bps")
+                && path != "canisters/io_stream_manager/src/lib.rs"
+            {
+                return Err(format!(
+                    "{path}:{} contains runtime backing-bps remnant",
+                    line_index + 1
+                ));
+            }
+            if line.contains("two_week_dissolve_seconds")
+                && path != "canisters/io_nns_neuron_manager/src/lib.rs"
+            {
+                return Err(format!(
+                    "{path}:{} contains runtime two-week duration-config remnant",
+                    line_index + 1
+                ));
+            }
+        }
+    }
+
+    let core = require_file(root, "crates/io_core_model/src/lib.rs")?;
+    require_present(
+        "exact two-week core policy",
+        &core,
+        &[
+            "pub const TWO_WEEK_SECONDS",
+            "preview_stream",
+            "StreamKind::TwoWeekMaturity",
+        ],
+    )?;
+    let governance = require_file(root, "crates/io_governance_types/src/lib.rs")?;
+    require_present(
+        "exact SNS eligibility policy",
+        &governance,
+        &[
+            "required_dissolve_delay_seconds",
+            "neuron.dissolve_delay_seconds < policy.required_dissolve_delay_seconds",
+            "neuron.dissolve_delay_seconds > policy.required_dissolve_delay_seconds",
+            "dissolve delay below two weeks",
+            "dissolve delay above two weeks",
+        ],
+    )?;
+    let scheduler = require_file(root, "canisters/io_stream_manager/src/scheduler/mod.rs")?;
+    require_present(
+        "stream-manager reward cohort policy",
+        &scheduler,
+        &[
+            "capture_reward_cohort_from_snapshot",
+            "cohort_reward_participants",
+            "event_timestamp_seconds <= cohort.captured_at_timestamp_seconds",
+            "two-week maturity event does not postdate reward cohort capture",
+            "two-week maturity event is beyond reward cohort expiry",
+            "TWO_WEEK_SECONDS",
+        ],
+    )?;
+    let stream_pocketic = require_file(root, "tests/pocketic/io_stream_manager_pocketic.rs")?;
+    require_present(
+        "stream-manager live reward cohort tests",
+        &stream_pocketic,
+        &["consumed_reward_cohort_survives_actual_same_wasm_upgrade"],
+    )?;
+    let stream = require_file(root, "canisters/io_stream_manager/src/lib.rs")?;
+    require_present(
+        "stream-manager legacy backing migration",
+        &stream,
+        &[
+            "LegacyPreV3StableState",
+            "LegacyPreV3VersionedStableState",
+            "two_week_pool_backing_bps",
+            "legacy two_week_pool_backing_bps must be 10_000",
+        ],
+    )?;
+    let nns = require_file(root, "canisters/io_nns_neuron_manager/src/lib.rs")?;
+    require_present(
+        "NNS-manager legacy duration migration",
+        &nns,
+        &[
+            "LegacyPreV2NnsNeuronManagerConfig",
+            "LegacyPreV2VersionedStableState",
+            "two_week_dissolve_seconds",
+            "legacy two_week_dissolve_seconds must be 1_209_600",
+        ],
+    )?;
+    Ok(())
+}
+
+fn legacy_historian_policy_remnant_allowed(
+    path: &str,
+    lines: &[&str],
+    line_index: usize,
+    needle: &str,
+) -> bool {
+    if path != "canisters/io_historian/src/lib.rs" || needle != "eligible_seconds" {
+        return false;
+    }
+    let start = line_index.saturating_sub(24);
+    lines[start..=line_index]
+        .iter()
+        .any(|line| line.contains("LegacyV1"))
 }
 
 fn fixture_schema_version(fixture: &str, text: &str) -> Result<u32, String> {
@@ -4465,6 +4687,17 @@ fn main() -> ExitCode {
                         "--nocapture",
                     ]),
                 );
+                ok &= run(
+                    "real-framework: finalized SNS above-two-week delay cannot be applied",
+                    cargo_test(&[
+                        "-p",
+                        "e2e-real-canisters",
+                        "real_sns_dissolve_delay_above_two_weeks_cannot_be_applied_after_finalization",
+                        "--",
+                        "--ignored",
+                        "--nocapture",
+                    ]),
+                );
             }
         }
         "real_io_e2e_tests" => {
@@ -4502,6 +4735,17 @@ fn main() -> ExitCode {
                                 "-p",
                                 "e2e-real-canisters",
                                 "real_finalized_sns_four_role_reward_reconciles_exactly_once",
+                                "--",
+                                "--ignored",
+                                "--nocapture",
+                            ]),
+                        );
+                        ok &= run(
+                            "real-stack: finalized-SNS two-cohort frozen reward proof",
+                            cargo_test(&[
+                                "-p",
+                                "e2e-real-canisters",
+                                "real_finalized_sns_frozen_cohort_blocks_late_stake_and_duration_bonus",
                                 "--",
                                 "--ignored",
                                 "--nocapture",
@@ -5053,6 +5297,50 @@ mod tests {
         write_manifest(root).unwrap();
     }
 
+    fn write_artifact_manifest(root: &Path, manifest: &ArtifactManifest) {
+        let text = serde_json::to_string_pretty(manifest).unwrap();
+        write(root, MANIFEST_PATH, &format!("{text}\n"));
+    }
+
+    fn read_artifact_manifest(root: &Path) -> ArtifactManifest {
+        read_manifest(root).unwrap()
+    }
+
+    fn parent_git_commit() -> String {
+        let output = Command::new("git")
+            .args(["rev-parse", "HEAD^"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn create_unreachable_commit() -> String {
+        let tree = Command::new("git")
+            .args(["mktree"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                child.stdin.take().unwrap();
+                child.wait_with_output()
+            })
+            .unwrap();
+        assert!(tree.status.success());
+        let tree = String::from_utf8_lossy(&tree.stdout).trim().to_string();
+
+        let commit = Command::new("git")
+            .args(["commit-tree", &tree, "-m", "xtask non-ancestor test commit"])
+            .env("GIT_AUTHOR_NAME", "IO xtask test")
+            .env("GIT_AUTHOR_EMAIL", "io-xtask@example.invalid")
+            .env("GIT_COMMITTER_NAME", "IO xtask test")
+            .env("GIT_COMMITTER_EMAIL", "io-xtask@example.invalid")
+            .output()
+            .unwrap();
+        assert!(commit.status.success());
+        String::from_utf8_lossy(&commit.stdout).trim().to_string()
+    }
+
     fn write_sns_harness_fixture(root: &Path) {
         write(
             root,
@@ -5083,6 +5371,11 @@ governance:
   proposal_rejection_fee_e8s: 10_000_000_000
   initial_reward_rate_basis_points: 0
   final_reward_rate_basis_points: 0
+  max_dissolve_delay_seconds: 1_209_600
+  max_dissolve_delay_bonus_percentage: 0
+  max_neuron_age_for_age_bonus: 0
+  max_age_bonus_percentage: 0
+  neuron_minimum_dissolve_delay_to_vote_seconds: 1_209_599
   age_bonus_percentage: 0
 neurons:
   jupiter_faucet_governance_neuron: {}
@@ -5604,6 +5897,88 @@ Template SNS principal values are planned wiring placeholders only.
     }
 
     #[test]
+    fn artifact_manifest_accepts_reachable_ancestor_source_commit() {
+        let root = temp_root("manifest-ancestor-source");
+        write_artifact_set(&root);
+        let source_commit = parent_git_commit();
+        let manifest = build_manifest_for_commit(&root, source_commit).unwrap();
+        write_artifact_manifest(&root, &manifest);
+        verify_artifacts_at(&root).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn artifact_manifest_rejects_unresolved_source_commit() {
+        let root = temp_root("manifest-unresolved-source");
+        write_artifact_set(&root);
+        let mut manifest = read_artifact_manifest(&root);
+        let missing = "0123456789abcdef0123456789abcdef01234567".to_string();
+        manifest.git_commit = Some(missing.clone());
+        for entry in &mut manifest.artifacts {
+            entry.git_commit = Some(missing.clone());
+        }
+        write_artifact_manifest(&root, &manifest);
+        assert!(verify_artifacts_at(&root)
+            .unwrap_err()
+            .contains("does not resolve locally as a commit"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn artifact_manifest_rejects_non_ancestor_source_commit() {
+        let root = temp_root("manifest-non-ancestor-source");
+        write_artifact_set(&root);
+        let non_ancestor = create_unreachable_commit();
+        let mut manifest = read_artifact_manifest(&root);
+        manifest.git_commit = Some(non_ancestor.clone());
+        for entry in &mut manifest.artifacts {
+            entry.git_commit = Some(non_ancestor.clone());
+        }
+        write_artifact_manifest(&root, &manifest);
+        assert!(verify_artifacts_at(&root)
+            .unwrap_err()
+            .contains("is not an ancestor of HEAD"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn artifact_manifest_rejects_mixed_per_artifact_source_commits() {
+        let root = temp_root("manifest-mixed-source");
+        write_artifact_set(&root);
+        let mut manifest = read_artifact_manifest(&root);
+        manifest.artifacts[0].git_commit =
+            Some("0123456789abcdef0123456789abcdef01234567".to_string());
+        write_artifact_manifest(&root, &manifest);
+        assert!(verify_artifacts_at(&root)
+            .unwrap_err()
+            .contains("must equal top-level git_commit"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn artifact_manifest_still_rejects_wrong_hash_or_size() {
+        let root = temp_root("manifest-wrong-hash-or-size");
+        write_artifact_set(&root);
+        let mut manifest = read_artifact_manifest(&root);
+        manifest.artifacts[0].raw_wasm_sha256 =
+            "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+        write_artifact_manifest(&root, &manifest);
+        assert!(verify_artifacts_at(&root)
+            .unwrap_err()
+            .contains("manifest does not match current artifacts"));
+
+        let mut manifest = read_artifact_manifest(&root);
+        manifest.artifacts[0].raw_wasm_sha256 =
+            sha256_hex(&root.join(&manifest.artifacts[0].raw_wasm_path)).unwrap();
+        manifest.artifacts[0].raw_wasm_bytes += 1;
+        write_artifact_manifest(&root, &manifest);
+        assert!(verify_artifacts_at(&root)
+            .unwrap_err()
+            .contains("manifest does not match current artifacts"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn artifact_manifest_validation_rejects_wrong_hash() {
         let root = temp_root("manifest-wrong-hash");
         write_artifact_set(&root);
@@ -5744,7 +6119,6 @@ Template SNS principal values are planned wiring placeholders only.
             r#"(record {
               controller_canister_principal_text = "aaaaa-aa";
               two_year_nns_neuron_id = 42 : nat64;
-              two_week_dissolve_seconds = 1_209_600 : nat64;
               io_stream_manager_principal_text = opt "oae4c-3iaaa-aaaar-qb5qq-cai";
               nns_governance_principal_text = opt "rrkah-fqaaa-aaaaa-aaaaq-cai";
               icp_ledger_principal_text = opt "ryjl3-tyaaa-aaaaa-aaaba-cai";
@@ -5761,7 +6135,6 @@ Template SNS principal values are planned wiring placeholders only.
             r#"(record {
               controller_canister_principal_text = "oae4c-3iaaa-aaaar-qb5qq-cai";
               two_year_nns_neuron_id = 6_345_890_886_899_317_159 : nat64;
-              two_week_dissolve_seconds = 1_209_600 : nat64;
               io_stream_manager_principal_text = null : opt text;
               nns_governance_principal_text = null : opt text;
               icp_ledger_principal_text = null : opt text;
@@ -6305,7 +6678,6 @@ Template SNS principal values are planned wiring placeholders only.
         let err = validate_nns_install_args_text(
             r#"(record {
               controller_canister_principal_text = "oae4c-3iaaa-aaaar-qb5qq-cai";
-              two_week_dissolve_seconds = 1_209_600 : nat64;
             })"#,
             InstallArgsMode::Mainnet,
         )

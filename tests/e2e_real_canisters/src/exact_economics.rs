@@ -4,7 +4,7 @@ use crate::pocketic_env;
 use candid::{Nat, Principal};
 use io_core_model::{process_stream, redeem_io, ProtocolState, StreamKind, E8S_PER_TOKEN};
 use io_ledger_types::IcrcAccount;
-use io_reward_policy::{allocate_rewards, NeuronSnapshot};
+use io_reward_policy::{allocate_rewards, RewardParticipant};
 use std::time::Duration;
 
 const DAY_SECONDS: u64 = 86_400;
@@ -13,9 +13,9 @@ const GOVERNANCE_IO_E8S: u128 = 100_000 * E8S_PER_TOKEN;
 const TOTAL_IO_E8S: u128 = 1_000_000 * E8S_PER_TOKEN;
 const ICP_TREASURY_E8S: u128 = 1_000_000 * E8S_PER_TOKEN;
 const TWO_WEEK_REWARD_POOL_E8S: u128 = 272_727_272;
-const FULL_PARTICIPATION_REWARD_E8S: u128 = 181_818_181;
-const HALF_PARTICIPATION_REWARD_E8S: u128 = 90_909_090;
-const TWO_WEEK_DUST_E8S: u128 = 1;
+const FULL_PARTICIPATION_REWARD_E8S: u128 = 109_090_908;
+const HALF_PARTICIPATION_REWARD_E8S: u128 = 54_545_454;
+const TWO_WEEK_DUST_E8S: u128 = 109_090_910;
 const HOLDER_REDEMPTION_PAYOUT_E8S: u128 = 550_000_000;
 const CREATED_AT_MARGIN_NANOS: u64 = 1_000;
 
@@ -229,17 +229,14 @@ fn assert_history_has_amount(
     assert_eq!(transfer.amount, nat_from_u128(amount));
 }
 
-fn neuron(id: u64, stake: u128, seconds: u64, voted: u64, total: u64) -> NeuronSnapshot {
-    NeuronSnapshot {
+fn neuron(id: u64, stake: u128, voted: u64, total: u64) -> RewardParticipant {
+    RewardParticipant {
         sns_neuron_id: io_governance_types::SnsNeuronId(id.to_be_bytes().to_vec()),
         neuron_id: id,
-        staked_io_e8s: stake,
-        eligible_seconds: seconds,
+        frozen_stake_e8s: stake,
         eligible_closed_proposals: total,
         voted_closed_proposals: voted,
-        is_genesis_governance_neuron: false,
-        is_protocol_owned: false,
-        is_dissolving: false,
+        destination_is_currently_eligible: true,
     }
 }
 
@@ -357,11 +354,11 @@ pub fn run_exact_economics(required: bool) {
         t(60) + TWO_WEEK_REWARD_POOL_E8S
     );
 
-    let alice = neuron(1, t(30), 14 * DAY_SECONDS, 2, 2);
-    let bob = neuron(2, t(30), 14 * DAY_SECONDS, 1, 2);
-    let mut ineligible = neuron(3, t(30), 14 * DAY_SECONDS, 2, 2);
-    ineligible.is_dissolving = true;
-    let allocations = allocate_rewards(two_week.io_issued_e8s, &[alice, bob, ineligible]);
+    let alice = neuron(1, t(30), 2, 2);
+    let bob = neuron(2, t(30), 1, 2);
+    let mut ineligible = neuron(3, t(30), 2, 2);
+    ineligible.destination_is_currently_eligible = false;
+    let allocations = allocate_rewards(two_week.io_issued_e8s, &[alice, bob, ineligible]).unwrap();
     assert_eq!(allocations.dust_e8s, TWO_WEEK_DUST_E8S);
     assert_eq!(allocations.allocations.len(), 2);
     assert_eq!(allocations.allocations[0].neuron_id, 1);

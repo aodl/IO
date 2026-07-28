@@ -22,7 +22,6 @@ pub struct InitArgs {
     pub initial_total_io_supply_e8s: u128,
     pub initial_protocol_reserve_io_e8s: u128,
     pub non_redeemable_governance_io_e8s: u128,
-    pub two_week_pool_backing_bps: u128,
     pub jupiter_faucet_principal_text: Option<String>,
     pub io_nns_neuron_manager_principal_text: Option<String>,
     pub icp_ledger_principal_text: Option<String>,
@@ -41,7 +40,6 @@ impl Default for InitArgs {
             initial_total_io_supply_e8s: 1_000_000 * E8S_PER_TOKEN,
             initial_protocol_reserve_io_e8s: 900_000 * E8S_PER_TOKEN,
             non_redeemable_governance_io_e8s: 100_000 * E8S_PER_TOKEN,
-            two_week_pool_backing_bps: 10_000,
             jupiter_faucet_principal_text: None,
             io_nns_neuron_manager_principal_text: None,
             icp_ledger_principal_text: None,
@@ -61,7 +59,6 @@ pub struct StreamManagerConfig {
     pub initial_total_io_supply_e8s: u128,
     pub initial_protocol_reserve_io_e8s: u128,
     pub non_redeemable_governance_io_e8s: u128,
-    pub two_week_pool_backing_bps: u128,
     pub jupiter_faucet_principal_text: Option<String>,
     pub io_nns_neuron_manager_principal_text: Option<String>,
     pub icp_ledger_principal_text: Option<String>,
@@ -72,6 +69,44 @@ pub struct StreamManagerConfig {
     pub io_sns_index_principal_text: Option<String>,
     pub sns_governance_principal_text: Option<String>,
     pub production_wiring: Option<ProductionWiringConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+struct LegacyPreV3StreamManagerConfig {
+    initial_total_io_supply_e8s: u128,
+    initial_protocol_reserve_io_e8s: u128,
+    non_redeemable_governance_io_e8s: u128,
+    two_week_pool_backing_bps: u128,
+    jupiter_faucet_principal_text: Option<String>,
+    io_nns_neuron_manager_principal_text: Option<String>,
+    icp_ledger_principal_text: Option<String>,
+    icp_index_principal_text: Option<String>,
+    io_ledger_principal_text: Option<String>,
+    io_index_principal_text: Option<String>,
+    io_sns_ledger_principal_text: Option<String>,
+    io_sns_index_principal_text: Option<String>,
+    sns_governance_principal_text: Option<String>,
+    production_wiring: Option<ProductionWiringConfig>,
+}
+
+impl From<LegacyPreV3StreamManagerConfig> for StreamManagerConfig {
+    fn from(value: LegacyPreV3StreamManagerConfig) -> Self {
+        Self {
+            initial_total_io_supply_e8s: value.initial_total_io_supply_e8s,
+            initial_protocol_reserve_io_e8s: value.initial_protocol_reserve_io_e8s,
+            non_redeemable_governance_io_e8s: value.non_redeemable_governance_io_e8s,
+            jupiter_faucet_principal_text: value.jupiter_faucet_principal_text,
+            io_nns_neuron_manager_principal_text: value.io_nns_neuron_manager_principal_text,
+            icp_ledger_principal_text: value.icp_ledger_principal_text,
+            icp_index_principal_text: value.icp_index_principal_text,
+            io_ledger_principal_text: value.io_ledger_principal_text,
+            io_index_principal_text: value.io_index_principal_text,
+            io_sns_ledger_principal_text: value.io_sns_ledger_principal_text,
+            io_sns_index_principal_text: value.io_sns_index_principal_text,
+            sns_governance_principal_text: value.sns_governance_principal_text,
+            production_wiring: value.production_wiring,
+        }
+    }
 }
 
 impl Default for StreamManagerConfig {
@@ -85,7 +120,6 @@ impl Default for StreamManagerConfig {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InitArgsError {
     ExcludedSupplyExceedsTotal,
-    InvalidBasisPoints { bps: u128 },
     InvalidPrincipalText { field: &'static str, value: String },
     InvalidProductionWiring { message: String },
 }
@@ -101,12 +135,6 @@ impl TryFrom<InitArgs> for StreamManagerConfig {
         if args.initial_total_io_supply_e8s < excluded_supply {
             return Err(InitArgsError::ExcludedSupplyExceedsTotal);
         }
-        if args.two_week_pool_backing_bps > 10_000 {
-            return Err(InitArgsError::InvalidBasisPoints {
-                bps: args.two_week_pool_backing_bps,
-            });
-        }
-
         validate_optional_principal(
             "jupiter_faucet_principal_text",
             &args.jupiter_faucet_principal_text,
@@ -143,7 +171,6 @@ impl TryFrom<InitArgs> for StreamManagerConfig {
             initial_total_io_supply_e8s: args.initial_total_io_supply_e8s,
             initial_protocol_reserve_io_e8s: args.initial_protocol_reserve_io_e8s,
             non_redeemable_governance_io_e8s: args.non_redeemable_governance_io_e8s,
-            two_week_pool_backing_bps: args.two_week_pool_backing_bps,
             jupiter_faucet_principal_text: args.jupiter_faucet_principal_text,
             io_nns_neuron_manager_principal_text: args.io_nns_neuron_manager_principal_text,
             icp_ledger_principal_text: args.icp_ledger_principal_text,
@@ -180,6 +207,7 @@ struct CanisterState {
     manager: StreamManager,
     operation_journal: Vec<StreamOperation>,
     scheduler_cursors: SchedulerCursors,
+    reward_cohort: Option<RewardCohort>,
     #[cfg(any(test, debug_assertions))]
     debug_failpoint: Option<DebugFailpoint>,
 }
@@ -194,13 +222,13 @@ impl CanisterState {
             ),
             processed_transactions: Default::default(),
             active_staked_io_e8s: 0,
-            two_week_pool_backing_bps: config.two_week_pool_backing_bps,
         };
         Self {
             config,
             manager,
             operation_journal: Vec::new(),
             scheduler_cursors: SchedulerCursors::default(),
+            reward_cohort: None,
             #[cfg(any(test, debug_assertions))]
             debug_failpoint: None,
         }
@@ -254,22 +282,54 @@ impl From<StableProtocolState> for ProtocolState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct RewardCohort {
+    pub generation: u64,
+    pub captured_at_timestamp_seconds: u64,
+    pub members: Vec<RewardCohortMember>,
+    pub consumed_by_operation_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct RewardCohortMember {
+    pub sns_neuron_id: Vec<u8>,
+    pub frozen_stake_e8s: u128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct StableState {
     pub config: StreamManagerConfig,
     pub protocol: StableProtocolState,
     pub processed_transactions: Vec<String>,
     pub active_staked_io_e8s: u128,
-    pub two_week_pool_backing_bps: u128,
+    pub reward_cohort: Option<RewardCohort>,
     pub operation_journal: Vec<StreamOperation>,
     pub scheduler_cursors: SchedulerCursors,
 }
 
 pub const STREAM_MANAGER_STABLE_SCHEMA_VERSION: u32 = IO_STREAM_MANAGER_SCHEMA_VERSION;
+const REWARD_COHORT_MAX_MEMBERS: usize = 10_000;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct VersionedStableState {
     pub schema_version: u32,
     pub state: StableState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+struct LegacyPreV3VersionedStableState {
+    schema_version: u32,
+    state: LegacyPreV3StableState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+struct LegacyPreV3StableState {
+    config: LegacyPreV3StreamManagerConfig,
+    protocol: StableProtocolState,
+    processed_transactions: Vec<String>,
+    active_staked_io_e8s: u128,
+    two_week_pool_backing_bps: u128,
+    operation_journal: Vec<StreamOperation>,
+    scheduler_cursors: SchedulerCursors,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -297,11 +357,9 @@ pub fn migrate_stable_state(
                 normalize_legacy_reward_reservations(snapshot.state)?,
                 RewardValidationMode::LegacyNormalization,
             )?;
-            validate_reward_reservation_consistency(normalized, RewardValidationMode::Current)
+            validate_current_stable_state(normalized)
         }
-        STREAM_MANAGER_STABLE_SCHEMA_VERSION => {
-            validate_reward_reservation_consistency(snapshot.state, RewardValidationMode::Current)
-        }
+        2 | STREAM_MANAGER_STABLE_SCHEMA_VERSION => validate_current_stable_state(snapshot.state),
         version if version > STREAM_MANAGER_STABLE_SCHEMA_VERSION => {
             Err(StableMigrationError::UnsupportedFutureVersion {
                 canister: "io_stream_manager",
@@ -313,6 +371,134 @@ pub fn migrate_stable_state(
             version,
         }),
     }
+}
+
+fn migrate_legacy_pre_v3_stable_state(
+    snapshot: LegacyPreV3VersionedStableState,
+) -> Result<StableState, StableMigrationError> {
+    if !matches!(snapshot.schema_version, 0..=2) {
+        return Err(StableMigrationError::UnsupportedOldVersion {
+            canister: "io_stream_manager",
+            version: snapshot.schema_version,
+        });
+    }
+    if snapshot.state.two_week_pool_backing_bps != 10_000
+        || snapshot.state.config.two_week_pool_backing_bps != 10_000
+    {
+        return Err(StableMigrationError::CorruptSnapshot {
+            canister: "io_stream_manager",
+            message: "legacy two_week_pool_backing_bps must be 10_000".to_string(),
+        });
+    }
+    let state = StableState {
+        config: snapshot.state.config.into(),
+        protocol: snapshot.state.protocol,
+        processed_transactions: snapshot.state.processed_transactions,
+        active_staked_io_e8s: snapshot.state.active_staked_io_e8s,
+        reward_cohort: None,
+        operation_journal: snapshot.state.operation_journal,
+        scheduler_cursors: snapshot.state.scheduler_cursors,
+    };
+    match snapshot.schema_version {
+        0 | 1 => {
+            let normalized = validate_reward_reservation_consistency(
+                normalize_legacy_reward_reservations(state)?,
+                RewardValidationMode::LegacyNormalization,
+            )?;
+            validate_current_stable_state(normalized)
+        }
+        2 => validate_current_stable_state(state),
+        _ => unreachable!("pre-v3 schema version checked above"),
+    }
+}
+
+fn validate_current_stable_state(state: StableState) -> Result<StableState, StableMigrationError> {
+    let state = validate_reward_reservation_consistency(state, RewardValidationMode::Current)?;
+    validate_reward_cohort(&state)?;
+    Ok(state)
+}
+
+fn validate_reward_cohort(state: &StableState) -> Result<(), StableMigrationError> {
+    let Some(cohort) = &state.reward_cohort else {
+        return Ok(());
+    };
+    if cohort.generation == 0 {
+        return Err(StableMigrationError::CorruptSnapshot {
+            canister: "io_stream_manager",
+            message: "reward cohort generation must be positive".to_string(),
+        });
+    }
+    if cohort.members.len() > REWARD_COHORT_MAX_MEMBERS {
+        return Err(StableMigrationError::CorruptSnapshot {
+            canister: "io_stream_manager",
+            message: "reward cohort member count exceeds governance pagination bound".to_string(),
+        });
+    }
+    let mut seen = BTreeSet::new();
+    let mut seen_compatibility_ids = BTreeSet::new();
+    let mut previous: Option<&[u8]> = None;
+    let mut total = 0u128;
+    for member in &cohort.members {
+        if member.sns_neuron_id.len() != 32 {
+            return Err(StableMigrationError::CorruptSnapshot {
+                canister: "io_stream_manager",
+                message: "reward cohort member SNS neuron id is not 32 bytes".to_string(),
+            });
+        }
+        if member.frozen_stake_e8s == 0 {
+            return Err(StableMigrationError::CorruptSnapshot {
+                canister: "io_stream_manager",
+                message: "reward cohort member has zero frozen stake".to_string(),
+            });
+        }
+        if previous.is_some_and(|id| id >= member.sns_neuron_id.as_slice()) {
+            return Err(StableMigrationError::CorruptSnapshot {
+                canister: "io_stream_manager",
+                message: "reward cohort members are not strictly sorted by SNS neuron id"
+                    .to_string(),
+            });
+        }
+        if !seen.insert(member.sns_neuron_id.clone()) {
+            return Err(StableMigrationError::CorruptSnapshot {
+                canister: "io_stream_manager",
+                message: "reward cohort has duplicate SNS neuron ids".to_string(),
+            });
+        }
+        let compatibility_id = io_reward_policy::sns_neuron_id_to_u64(
+            &io_governance_types::SnsNeuronId(member.sns_neuron_id.clone()),
+        )
+        .map_err(|err| StableMigrationError::CorruptSnapshot {
+            canister: "io_stream_manager",
+            message: format!("reward cohort member SNS neuron id is invalid: {err:?}"),
+        })?;
+        if !seen_compatibility_ids.insert(compatibility_id) {
+            return Err(StableMigrationError::CorruptSnapshot {
+                canister: "io_stream_manager",
+                message: "reward cohort has duplicate compatibility SNS neuron ids".to_string(),
+            });
+        }
+        total = total.checked_add(member.frozen_stake_e8s).ok_or_else(|| {
+            StableMigrationError::CorruptSnapshot {
+                canister: "io_stream_manager",
+                message: "reward cohort frozen stake total overflows".to_string(),
+            }
+        })?;
+        previous = Some(member.sns_neuron_id.as_slice());
+    }
+    if let Some(operation_id) = &cohort.consumed_by_operation_id {
+        let matching = state.operation_journal.iter().filter(|op| {
+            op.operation_id == *operation_id
+                && op.kind == StreamOperationKind::TwoWeekMaturityStream
+        });
+        if matching.count() != 1 {
+            return Err(StableMigrationError::CorruptSnapshot {
+                canister: "io_stream_manager",
+                message: "reward cohort consumed operation reference is missing or ambiguous"
+                    .to_string(),
+            });
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn reward_recipient_has_any_attempt_or_external_evidence(
@@ -1202,22 +1388,34 @@ fn normalize_legacy_reward_attempt_lifecycles(
 
 #[cfg_attr(not(any(test, debug_assertions)), allow(dead_code))]
 fn decode_stable_state_bytes(bytes: &[u8]) -> Result<StableState, StableMigrationError> {
+    if let Ok((snapshot,)) = candid::decode_args::<(LegacyPreV3VersionedStableState,)>(bytes) {
+        if matches!(snapshot.schema_version, 0..=2) {
+            return migrate_legacy_pre_v3_stable_state(snapshot);
+        }
+    }
+
     let versioned_err = match candid::decode_args::<(VersionedStableState,)>(bytes) {
         Ok((snapshot,)) => return migrate_stable_state(snapshot),
         Err(err) => err,
     };
 
-    match candid::decode_args::<(StableState,)>(bytes) {
-        Ok((state,)) => migrate_stable_state(VersionedStableState {
+    match candid::decode_args::<(LegacyPreV3StableState,)>(bytes) {
+        Ok((state,)) => migrate_legacy_pre_v3_stable_state(LegacyPreV3VersionedStableState {
             schema_version: 0,
             state,
         }),
-        Err(unversioned_err) => Err(StableMigrationError::CorruptSnapshot {
-            canister: "io_stream_manager",
-            message: format!(
-                "failed to decode versioned stable state: {versioned_err}; failed to decode legacy unversioned stable state: {unversioned_err}"
-            ),
-        }),
+        Err(legacy_unversioned_err) => match candid::decode_args::<(StableState,)>(bytes) {
+            Ok((state,)) => migrate_stable_state(VersionedStableState {
+                schema_version: 0,
+                state,
+            }),
+            Err(unversioned_err) => Err(StableMigrationError::CorruptSnapshot {
+                canister: "io_stream_manager",
+                message: format!(
+                    "failed to decode versioned stable state: {versioned_err}; failed to decode legacy unversioned stable state: {legacy_unversioned_err}; failed to decode current unversioned stable state: {unversioned_err}"
+                ),
+            }),
+        },
     }
 }
 
@@ -1232,7 +1430,7 @@ impl From<CanisterState> for StableState {
             protocol: state.manager.state.into(),
             processed_transactions: state.manager.processed_transactions.into_iter().collect(),
             active_staked_io_e8s: state.manager.active_staked_io_e8s,
-            two_week_pool_backing_bps: state.manager.two_week_pool_backing_bps,
+            reward_cohort: state.reward_cohort,
             operation_journal: state.operation_journal,
             scheduler_cursors: state.scheduler_cursors,
         }
@@ -1740,7 +1938,7 @@ pub struct ApiState {
     pub protocol: ApiProtocolState,
     pub processed_transaction_count: u64,
     pub active_staked_io_e8s: u128,
-    pub two_week_pool_backing_bps: u128,
+    pub reward_cohort: Option<RewardCohort>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -1789,6 +1987,9 @@ impl From<StreamManagerError> for ApiError {
                 format!("stream source {source:?} with memo {memo:?} is not authorized"),
             ),
             StreamManagerError::Model(err) => err.into(),
+            StreamManagerError::RewardPolicy(err) => {
+                Self::new("reward_policy_error", format!("{err:?}"))
+            }
         }
     }
 }
@@ -1818,7 +2019,7 @@ fn export_stable_state() -> StableState {
                 .cloned()
                 .collect(),
             active_staked_io_e8s: state.manager.active_staked_io_e8s,
-            two_week_pool_backing_bps: state.manager.two_week_pool_backing_bps,
+            reward_cohort: state.reward_cohort.clone(),
             operation_journal: state.operation_journal.clone(),
             scheduler_cursors: state.scheduler_cursors.clone(),
         }
@@ -1840,10 +2041,10 @@ fn import_stable_state(state: StableState) {
                 state: state.protocol.into(),
                 processed_transactions: state.processed_transactions.into_iter().collect(),
                 active_staked_io_e8s: state.active_staked_io_e8s,
-                two_week_pool_backing_bps: state.two_week_pool_backing_bps,
             },
             operation_journal: state.operation_journal,
             scheduler_cursors: state.scheduler_cursors,
+            reward_cohort: state.reward_cohort,
             #[cfg(any(test, debug_assertions))]
             debug_failpoint: None,
         };
@@ -1879,19 +2080,34 @@ pub fn pre_upgrade() {
 
 #[cfg_attr(target_family = "wasm", ic_cdk::post_upgrade)]
 pub fn post_upgrade() {
-    let state = match ic_cdk::storage::stable_restore::<(VersionedStableState,)>() {
-        Ok((snapshot,)) => migrate_stable_state(snapshot),
-        Err(versioned_err) => match ic_cdk::storage::stable_restore::<(StableState,)>() {
-            Ok((state,)) => migrate_stable_state(VersionedStableState {
-                schema_version: 0,
-                state,
-            }),
-            Err(unversioned_err) => Err(StableMigrationError::CorruptSnapshot {
-                canister: "io_stream_manager",
-                message: format!(
-                    "failed to restore versioned stable state: {versioned_err}; failed to restore legacy unversioned stable state: {unversioned_err}"
-                ),
-            }),
+    let state = match ic_cdk::storage::stable_restore::<(LegacyPreV3VersionedStableState,)>() {
+        Ok((snapshot,)) if matches!(snapshot.schema_version, 0..=2) => {
+            migrate_legacy_pre_v3_stable_state(snapshot)
+        }
+        _ => match ic_cdk::storage::stable_restore::<(VersionedStableState,)>() {
+            Ok((snapshot,)) => migrate_stable_state(snapshot),
+            Err(versioned_err) => match ic_cdk::storage::stable_restore::<(LegacyPreV3StableState,)>() {
+                Ok((state,)) => {
+                    migrate_legacy_pre_v3_stable_state(LegacyPreV3VersionedStableState {
+                        schema_version: 0,
+                        state,
+                    })
+                }
+                Err(legacy_unversioned_err) => {
+                    match ic_cdk::storage::stable_restore::<(StableState,)>() {
+                        Ok((state,)) => migrate_stable_state(VersionedStableState {
+                            schema_version: 0,
+                            state,
+                        }),
+                        Err(unversioned_err) => Err(StableMigrationError::CorruptSnapshot {
+                            canister: "io_stream_manager",
+                            message: format!(
+                                "failed to restore versioned stable state: {versioned_err}; failed to restore legacy unversioned stable state: {legacy_unversioned_err}; failed to restore current unversioned stable state: {unversioned_err}"
+                            ),
+                        }),
+                    }
+                }
+            },
         },
     }
     .expect("io_stream_manager stable state is missing, corrupt, or unsupported during upgrade");
@@ -1936,7 +2152,7 @@ fn state_snapshot() -> ApiState {
             protocol: state.manager.state.into(),
             processed_transaction_count: state.manager.processed_transactions.len() as u64,
             active_staked_io_e8s: state.manager.active_staked_io_e8s,
-            two_week_pool_backing_bps: state.manager.two_week_pool_backing_bps,
+            reward_cohort: state.reward_cohort.clone(),
         }
     })
 }
@@ -2132,7 +2348,7 @@ mod tests {
     }
 
     #[test]
-    fn init_rejects_supply_and_bps_config_that_cannot_be_valid() {
+    fn init_rejects_supply_config_that_cannot_be_valid() {
         let args = InitArgs {
             initial_total_io_supply_e8s: 10,
             initial_protocol_reserve_io_e8s: 9,
@@ -2142,15 +2358,6 @@ mod tests {
         assert_eq!(
             StreamManagerConfig::try_from(args).unwrap_err(),
             InitArgsError::ExcludedSupplyExceedsTotal
-        );
-
-        let args = InitArgs {
-            two_week_pool_backing_bps: 10_001,
-            ..InitArgs::default()
-        };
-        assert_eq!(
-            StreamManagerConfig::try_from(args).unwrap_err(),
-            InitArgsError::InvalidBasisPoints { bps: 10_001 }
         );
     }
 
@@ -2319,7 +2526,6 @@ mod tests {
             initial_total_io_supply_e8s: t(2_000),
             initial_protocol_reserve_io_e8s: t(1_200),
             non_redeemable_governance_io_e8s: t(300),
-            two_week_pool_backing_bps: 7_500,
             jupiter_faucet_principal_text: Some("oae4c-3iaaa-aaaar-qb5qq-cai".to_string()),
             ..InitArgs::default()
         });
@@ -2485,6 +2691,51 @@ mod tests {
         export_stable_state_for_tests()
     }
 
+    fn legacy_pre_v3_snapshot_from_current(
+        schema_version: u32,
+        state: StableState,
+        config_backing_bps: u128,
+        state_backing_bps: u128,
+    ) -> LegacyPreV3VersionedStableState {
+        LegacyPreV3VersionedStableState {
+            schema_version,
+            state: LegacyPreV3StableState {
+                config: LegacyPreV3StreamManagerConfig {
+                    initial_total_io_supply_e8s: state.config.initial_total_io_supply_e8s,
+                    initial_protocol_reserve_io_e8s: state.config.initial_protocol_reserve_io_e8s,
+                    non_redeemable_governance_io_e8s: state.config.non_redeemable_governance_io_e8s,
+                    two_week_pool_backing_bps: config_backing_bps,
+                    jupiter_faucet_principal_text: state.config.jupiter_faucet_principal_text,
+                    io_nns_neuron_manager_principal_text: state
+                        .config
+                        .io_nns_neuron_manager_principal_text,
+                    icp_ledger_principal_text: state.config.icp_ledger_principal_text,
+                    icp_index_principal_text: state.config.icp_index_principal_text,
+                    io_ledger_principal_text: state.config.io_ledger_principal_text,
+                    io_index_principal_text: state.config.io_index_principal_text,
+                    io_sns_ledger_principal_text: state.config.io_sns_ledger_principal_text,
+                    io_sns_index_principal_text: state.config.io_sns_index_principal_text,
+                    sns_governance_principal_text: state.config.sns_governance_principal_text,
+                    production_wiring: state.config.production_wiring,
+                },
+                protocol: state.protocol,
+                processed_transactions: state.processed_transactions,
+                active_staked_io_e8s: state.active_staked_io_e8s,
+                two_week_pool_backing_bps: state_backing_bps,
+                operation_journal: state.operation_journal,
+                scheduler_cursors: state.scheduler_cursors,
+            },
+        }
+    }
+
+    fn legacy_pre_v3_unversioned_from_current(
+        state: StableState,
+        config_backing_bps: u128,
+        state_backing_bps: u128,
+    ) -> LegacyPreV3StableState {
+        legacy_pre_v3_snapshot_from_current(0, state, config_backing_bps, state_backing_bps).state
+    }
+
     #[test]
     fn stream_manager_migrates_previous_stable_fixture() {
         let fixture = pending_redemption_fixture();
@@ -2519,6 +2770,180 @@ mod tests {
         let migrated = decode_stable_state_bytes_for_tests(&bytes).unwrap();
 
         assert_eq!(migrated, fixture);
+    }
+
+    #[test]
+    fn v0_full_backing_unversioned_migrates_without_cohort() {
+        let fixture = pending_redemption_fixture();
+        let legacy = legacy_pre_v3_unversioned_from_current(fixture.clone(), 10_000, 10_000);
+        let bytes = candid::encode_args((legacy,)).unwrap();
+        let migrated = decode_stable_state_bytes_for_tests(&bytes).unwrap();
+
+        assert_eq!(migrated.reward_cohort, None);
+        assert_eq!(migrated.operation_journal, fixture.operation_journal);
+        assert_eq!(migrated.scheduler_cursors, fixture.scheduler_cursors);
+    }
+
+    #[test]
+    fn v0_non_full_backing_unversioned_fails_closed() {
+        for (config_bps, state_bps) in [(7_500, 10_000), (10_000, 7_500)] {
+            let legacy = legacy_pre_v3_unversioned_from_current(
+                pending_redemption_fixture(),
+                config_bps,
+                state_bps,
+            );
+            let bytes = candid::encode_args((legacy,)).unwrap();
+            let err = decode_stable_state_bytes_for_tests(&bytes).unwrap_err();
+            assert!(matches!(err, StableMigrationError::CorruptSnapshot { .. }));
+        }
+    }
+
+    #[test]
+    fn v1_full_backing_versioned_migrates_without_cohort() {
+        let fixture = pending_redemption_fixture();
+        let legacy = legacy_pre_v3_snapshot_from_current(1, fixture.clone(), 10_000, 10_000);
+        let bytes = candid::encode_args((legacy,)).unwrap();
+        let migrated = decode_stable_state_bytes_for_tests(&bytes).unwrap();
+
+        assert_eq!(migrated.reward_cohort, None);
+        assert_eq!(migrated.operation_journal, fixture.operation_journal);
+        assert_eq!(migrated.scheduler_cursors, fixture.scheduler_cursors);
+    }
+
+    #[test]
+    fn v1_non_full_backing_versioned_fails_closed() {
+        for (config_bps, state_bps) in [(7_500, 10_000), (10_000, 7_500)] {
+            let legacy = legacy_pre_v3_snapshot_from_current(
+                1,
+                pending_redemption_fixture(),
+                config_bps,
+                state_bps,
+            );
+            let bytes = candid::encode_args((legacy,)).unwrap();
+            let err = decode_stable_state_bytes_for_tests(&bytes).unwrap_err();
+            assert!(matches!(err, StableMigrationError::CorruptSnapshot { .. }));
+        }
+    }
+
+    #[test]
+    fn v2_full_backing_versioned_migrates_without_cohort() {
+        let fixture = pending_redemption_fixture();
+        let legacy = legacy_pre_v3_snapshot_from_current(2, fixture.clone(), 10_000, 10_000);
+        let bytes = candid::encode_args((legacy,)).unwrap();
+        let migrated = decode_stable_state_bytes_for_tests(&bytes).unwrap();
+
+        assert_eq!(migrated.reward_cohort, None);
+        assert_eq!(migrated.operation_journal, fixture.operation_journal);
+        assert_eq!(migrated.scheduler_cursors, fixture.scheduler_cursors);
+    }
+
+    #[test]
+    fn v2_non_full_backing_versioned_fails_closed() {
+        for (config_bps, state_bps) in [(7_500, 10_000), (10_000, 7_500)] {
+            let legacy = legacy_pre_v3_snapshot_from_current(
+                2,
+                pending_redemption_fixture(),
+                config_bps,
+                state_bps,
+            );
+            let bytes = candid::encode_args((legacy,)).unwrap();
+            let err = decode_stable_state_bytes_for_tests(&bytes).unwrap_err();
+
+            assert!(matches!(err, StableMigrationError::CorruptSnapshot { .. }));
+        }
+    }
+
+    fn cohort_id(value: u8) -> Vec<u8> {
+        vec![value; 32]
+    }
+
+    #[test]
+    fn cohort_roundtrip_preserves_generation_members_and_consumed_operation() {
+        let mut state = default_first_install_stable_state();
+        let mut op = StreamOperation::stream(
+            "icp",
+            1,
+            StreamOperationKind::TwoWeekMaturityStream,
+            t(10),
+            ProtocolState::new(t(1_000_000), t(900_000), t(100_000)),
+            t(6),
+            OperationPhase::PartiallyDistributed,
+        );
+        op.operation_id = "cohort-op".to_string();
+        state.operation_journal.push(op);
+        state.reward_cohort = Some(RewardCohort {
+            generation: 7,
+            captured_at_timestamp_seconds: 100,
+            members: vec![
+                RewardCohortMember {
+                    sns_neuron_id: cohort_id(1),
+                    frozen_stake_e8s: 10,
+                },
+                RewardCohortMember {
+                    sns_neuron_id: cohort_id(2),
+                    frozen_stake_e8s: 20,
+                },
+            ],
+            consumed_by_operation_id: Some("cohort-op".to_string()),
+        });
+
+        let migrated = migrate_stable_state_for_tests(VersionedStableState {
+            schema_version: STREAM_MANAGER_STABLE_SCHEMA_VERSION,
+            state: state.clone(),
+        })
+        .unwrap();
+
+        assert_eq!(migrated.reward_cohort, state.reward_cohort);
+    }
+
+    #[test]
+    fn corrupt_cohort_duplicate_ids_fail_restore() {
+        let mut state = default_first_install_stable_state();
+        state.reward_cohort = Some(RewardCohort {
+            generation: 1,
+            captured_at_timestamp_seconds: 1,
+            members: vec![
+                RewardCohortMember {
+                    sns_neuron_id: cohort_id(1),
+                    frozen_stake_e8s: 10,
+                },
+                RewardCohortMember {
+                    sns_neuron_id: cohort_id(1),
+                    frozen_stake_e8s: 20,
+                },
+            ],
+            consumed_by_operation_id: None,
+        });
+
+        let err = migrate_stable_state_for_tests(VersionedStableState {
+            schema_version: STREAM_MANAGER_STABLE_SCHEMA_VERSION,
+            state,
+        })
+        .unwrap_err();
+
+        assert!(matches!(err, StableMigrationError::CorruptSnapshot { .. }));
+    }
+
+    #[test]
+    fn corrupt_cohort_unknown_consuming_operation_fails_restore() {
+        let mut state = default_first_install_stable_state();
+        state.reward_cohort = Some(RewardCohort {
+            generation: 1,
+            captured_at_timestamp_seconds: 1,
+            members: vec![RewardCohortMember {
+                sns_neuron_id: cohort_id(1),
+                frozen_stake_e8s: 10,
+            }],
+            consumed_by_operation_id: Some("missing".to_string()),
+        });
+
+        let err = migrate_stable_state_for_tests(VersionedStableState {
+            schema_version: STREAM_MANAGER_STABLE_SCHEMA_VERSION,
+            state,
+        })
+        .unwrap_err();
+
+        assert!(matches!(err, StableMigrationError::CorruptSnapshot { .. }));
     }
 
     #[test]
@@ -2796,7 +3221,7 @@ mod tests {
                 protocol: state.protocol,
                 processed_transactions: state.processed_transactions,
                 active_staked_io_e8s: state.active_staked_io_e8s,
-                two_week_pool_backing_bps: state.two_week_pool_backing_bps,
+                two_week_pool_backing_bps: 10_000,
                 operation_journal: state
                     .operation_journal
                     .into_iter()
@@ -4383,23 +4808,20 @@ mod additional_stream_manager_tests {
         TWO_YEAR_MATURITY_MEMO,
     };
     use io_governance_types::{SnsNeuronEligibility, SnsNeuronId};
-    use io_reward_policy::NeuronSnapshot;
+    use io_reward_policy::RewardParticipant;
 
     fn t(n: u128) -> u128 {
         n * E8S_PER_TOKEN
     }
 
-    fn neuron(id: u64, stake: u128, voted: u64, total: u64) -> NeuronSnapshot {
-        NeuronSnapshot {
+    fn neuron(id: u64, stake: u128, voted: u64, total: u64) -> RewardParticipant {
+        RewardParticipant {
             sns_neuron_id: SnsNeuronId(id.to_be_bytes().to_vec()),
             neuron_id: id,
-            staked_io_e8s: stake,
-            eligible_seconds: 100,
+            frozen_stake_e8s: stake,
             eligible_closed_proposals: total,
             voted_closed_proposals: voted,
-            is_genesis_governance_neuron: false,
-            is_protocol_owned: false,
-            is_dissolving: false,
+            destination_is_currently_eligible: true,
         }
     }
 
@@ -4483,13 +4905,12 @@ mod additional_stream_manager_tests {
     }
 
     #[test]
-    fn half_backing_fraction_halves_two_week_target() {
+    fn two_week_target_is_full_redemption_claim() {
         let mut m = StreamManager::default_for_tests();
         m.process_authorized_stream(StreamKind::JupiterFaucet, t(100), "faucet")
             .unwrap();
-        m.two_week_pool_backing_bps = 5_000;
         m.refresh_active_staked_io_from_neurons(&[neuron(1, t(20), 1, 1)]);
-        assert_eq!(m.target_two_week_pool_e8s().unwrap(), t(10));
+        assert_eq!(m.target_two_week_pool_e8s().unwrap(), t(20));
     }
 
     #[test]
@@ -4503,7 +4924,6 @@ mod additional_stream_manager_tests {
             }),
             owner: None,
             eligible_stake_e8s: t(20),
-            eligible_since_seconds: 0,
             dissolve_delay_seconds: 14 * 24 * 60 * 60,
             is_non_dissolving: true,
             excluded_reason: None,
@@ -4512,7 +4932,6 @@ mod additional_stream_manager_tests {
             neuron_id: SnsNeuronId(vec![7]),
             owner: None,
             eligible_stake_e8s: t(30),
-            eligible_since_seconds: 0,
             dissolve_delay_seconds: 14 * 24 * 60 * 60,
             is_non_dissolving: true,
             excluded_reason: None,
@@ -4527,8 +4946,8 @@ mod additional_stream_manager_tests {
     fn reward_allocation_with_no_eligible_neurons_keeps_pool_as_dust() {
         let m = StreamManager::default_for_tests();
         let mut genesis = neuron(1, t(10), 1, 1);
-        genesis.is_genesis_governance_neuron = true;
-        let out = m.allocate_two_week_maturity_io(t(5), &[genesis]);
+        genesis.destination_is_currently_eligible = false;
+        let out = m.allocate_two_week_maturity_io(t(5), &[genesis]).unwrap();
         assert!(out.allocations.is_empty());
         assert_eq!(out.dust_e8s, t(5));
     }
@@ -4560,19 +4979,6 @@ mod additional_stream_manager_tests {
         );
         assert_eq!(m.state, before);
         assert!(m.processed_transactions.is_empty());
-    }
-
-    #[test]
-    fn invalid_two_week_backing_fraction_surfaces_as_model_error() {
-        let mut m = StreamManager::default_for_tests();
-        m.process_authorized_stream(StreamKind::JupiterFaucet, t(100), "faucet")
-            .unwrap();
-        m.two_week_pool_backing_bps = 10_001;
-        let err = m.target_two_week_pool_e8s().unwrap_err();
-        assert_eq!(
-            err,
-            StreamManagerError::Model(ModelError::InvalidBasisPoints { bps: 10_001 })
-        );
     }
 
     #[test]

@@ -1,16 +1,15 @@
 use candid::{decode_one, encode_one, Principal};
 use io_governance_types::{
-    SnsBallot, SnsDissolveState, SnsEligibilityPolicy, SnsGovernanceClient, SnsGovernanceError,
-    SnsNeuron, SnsNeuronId, SnsNeuronPage, SnsNeuronPageRequest, SnsParticipationPolicy,
-    SnsProposal, SnsProposalId, SnsProposalPage, SnsProposalPageRequest, SnsProposalRewardStatus,
-    SnsProposalStatus, SnsVote,
+    summarize_sns_participation_for_neuron_ids, SnsBallot, SnsDissolveState, SnsEligibilityPolicy,
+    SnsGovernanceClient, SnsGovernanceError, SnsNeuron, SnsNeuronId, SnsNeuronPage,
+    SnsNeuronPageRequest, SnsParticipationPolicy, SnsProposal, SnsProposalId, SnsProposalPage,
+    SnsProposalPageRequest, SnsProposalRewardStatus, SnsProposalStatus, SnsVote,
 };
-use io_reward_policy::{allocate_rewards, RewardAllocation};
 use io_stream_manager::governance_snapshot::{
     build_governance_reward_snapshot, GovernanceRewardSnapshotRequest,
 };
 use pocket_ic::PocketIc;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -207,21 +206,11 @@ fn pocketic_live_sns_governance_reads_drive_two_week_allocation() {
             eligibility_policy: SnsEligibilityPolicy {
                 protocol_neuron_ids: BTreeSet::new(),
                 jupiter_governance_neuron_ids: BTreeSet::new(),
-                minimum_dissolve_delay_seconds: 1_209_600,
-                require_non_dissolving: true,
-                current_timestamp_seconds: 0,
-            },
-            participation_policy: SnsParticipationPolicy {
-                count_direct_votes: true,
-                count_followed_votes: true,
-                excluded_topics: BTreeSet::new(),
-                epoch_start_seconds: 0,
-                epoch_end_seconds: 100,
+                required_dissolve_delay_seconds: io_core_model::TWO_WEEK_SECONDS,
             },
             max_neuron_pages: 10,
             max_proposal_pages: 10,
             page_limit: 1,
-            eligible_since_overrides: BTreeMap::new(),
         },
     ))
     .unwrap();
@@ -229,28 +218,91 @@ fn pocketic_live_sns_governance_reads_drive_two_week_allocation() {
     assert_eq!(snapshot.fetched_neuron_count, 3);
     assert_eq!(snapshot.fetched_proposal_count, 2);
     assert_eq!(snapshot.excluded_neurons.len(), 1);
-    assert_eq!(snapshot.snapshots.len(), 2);
-
-    let out = allocate_rewards(300, &snapshot.snapshots);
     assert_eq!(
-        out.allocations,
-        vec![
-            RewardAllocation {
-                sns_neuron_id: io_reward_policy::compatibility_sns_neuron_id_from_u64(1),
-                neuron_id: 1,
-                io_e8s: 200
+        snapshot
+            .eligibilities
+            .iter()
+            .filter(|eligibility| eligibility.excluded_reason.is_none())
+            .count(),
+        2
+    );
+
+    let summaries = summarize_sns_participation_for_neuron_ids(
+        &[id(1), id(2)],
+        &snapshot.proposals,
+        &SnsParticipationPolicy {
+            count_direct_votes: true,
+            count_followed_votes: true,
+            excluded_topics: BTreeSet::new(),
+            epoch_start_seconds: 0,
+            epoch_end_seconds: 100,
+        },
+    );
+    assert_eq!(
+        summaries
+            .iter()
+            .map(|summary| (
+                summary.neuron_id.clone(),
+                summary.eligible_closed_proposals_total,
+                summary.voted_proposals
+            ))
+            .collect::<Vec<_>>(),
+        vec![(id(1), 2, 2), (id(2), 2, 1)]
+    );
+
+    let bounded = summarize_sns_participation_for_neuron_ids(
+        &[id(1), id(2)],
+        &snapshot.proposals,
+        &SnsParticipationPolicy {
+            count_direct_votes: true,
+            count_followed_votes: true,
+            excluded_topics: BTreeSet::new(),
+            epoch_start_seconds: 15,
+            epoch_end_seconds: 20,
+        },
+    );
+    assert_eq!(
+        bounded
+            .iter()
+            .map(|summary| (
+                summary.neuron_id.clone(),
+                summary.eligible_closed_proposals_total,
+                summary.voted_proposals
+            ))
+            .collect::<Vec<_>>(),
+        vec![(id(1), 1, 1), (id(2), 1, 0)]
+    );
+    let participants = snapshot
+        .eligibilities
+        .iter()
+        .filter(|eligibility| eligibility.excluded_reason.is_none())
+        .zip(bounded.iter())
+        .map(
+            |(eligibility, summary)| io_reward_policy::RewardParticipant {
+                sns_neuron_id: eligibility.neuron_id.clone(),
+                neuron_id: io_reward_policy::sns_neuron_id_to_u64(&eligibility.neuron_id).unwrap(),
+                frozen_stake_e8s: eligibility.eligible_stake_e8s,
+                eligible_closed_proposals: summary.eligible_closed_proposals_total,
+                voted_closed_proposals: summary.voted_proposals,
+                destination_is_currently_eligible: true,
             },
-            RewardAllocation {
-                sns_neuron_id: io_reward_policy::compatibility_sns_neuron_id_from_u64(2),
-                neuron_id: 2,
-                io_e8s: 100
-            }
-        ]
+        )
+        .collect::<Vec<_>>();
+    let allocation = io_reward_policy::allocate_rewards(100, &participants).unwrap();
+    assert_eq!(
+        allocation
+            .allocations
+            .iter()
+            .map(|allocation| (allocation.neuron_id, allocation.io_e8s))
+            .collect::<Vec<_>>(),
+        vec![(1, 100)]
     );
 }
 
 fn id(value: u64) -> SnsNeuronId {
-    SnsNeuronId(value.to_be_bytes().to_vec())
+    let mut bytes = [0_u8; 32];
+    bytes[24..].copy_from_slice(&value.to_be_bytes());
+    SnsNeuronId(bytes.to_vec())
 }
 
 fn neuron(value: u64, stake: u128) -> SnsNeuron {

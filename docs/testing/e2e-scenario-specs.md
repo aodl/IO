@@ -20,7 +20,7 @@ Starting state: user has liquid SNS IO. Canisters: real SNS ledger/index/governa
 
 ## 5. User increases IO neuron stake -> IO APY increases according to policy
 
-Starting state: eligible staked SNS neuron exists. Actions: normal SNS top-up or equivalent governance state change. Expected governance state: cached stake increases for same neuron. Expected IO protocol state: reward/APY entitlement increases by stake-time formula without duplicate counting. Current coverage: unit `increasing_staked_io_increases_reward_weight_without_double_counting`; real SNS top-up not covered.
+Starting state: eligible staked SNS neuron exists. Actions: normal SNS top-up or equivalent governance state change. Expected governance state: cached stake increases for same neuron. Expected IO protocol state: reward entitlement increases only after a fresh cohort captures the top-up. Current coverage: unit frozen-cohort top-up tests; real SNS top-up cohort proof is covered by ignored real-framework tests.
 
 ## 6. User votes/follows -> maturity/participation reflected if policy requires it
 

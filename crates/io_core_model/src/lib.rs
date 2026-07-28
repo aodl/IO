@@ -9,6 +9,7 @@ pub const SIXTY_PERCENT_BPS: u128 = 6_000;
 pub const BPS_DENOMINATOR: u128 = 10_000;
 pub const DEFAULT_MIN_STREAM_DEPOSIT_E8S: u128 = 3;
 pub const DEFAULT_MIN_REDEMPTION_IO_E8S: u128 = 1;
+pub const TWO_WEEK_SECONDS: u64 = 14 * 24 * 60 * 60;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StreamKind {
@@ -451,16 +452,8 @@ pub fn preview_redeem_io_with_policy(
 pub fn target_two_week_pool_e8s(
     active_staked_io_e8s: u128,
     rate: RedemptionRate,
-    backing_bps: u128,
 ) -> Result<u128, ModelError> {
-    if backing_bps > BPS_DENOMINATOR {
-        return Err(ModelError::InvalidBasisPoints { bps: backing_bps });
-    }
-    let full_claim = rate.icp_for_io(active_staked_io_e8s)?;
-    full_claim
-        .checked_mul(backing_bps)
-        .ok_or(ModelError::ArithmeticOverflow)
-        .map(|v| v / BPS_DENOMINATOR)
+    rate.icp_for_io(active_staked_io_e8s)
 }
 
 #[cfg(test)]
@@ -559,11 +552,8 @@ mod tests {
     fn target_two_week_pool_tracks_active_staked_io_claim() {
         let mut s = state();
         process_stream(&mut s, StreamKind::JupiterFaucet, t(100)).unwrap();
-        let target = target_two_week_pool_e8s(t(30), s.redemption_rate().unwrap(), 10_000).unwrap();
+        let target = target_two_week_pool_e8s(t(30), s.redemption_rate().unwrap()).unwrap();
         assert_eq!(target, t(30));
-        let half_target =
-            target_two_week_pool_e8s(t(30), s.redemption_rate().unwrap(), 5_000).unwrap();
-        assert_eq!(half_target, t(15));
     }
 
     #[test]
@@ -831,22 +821,22 @@ mod additional_edge_case_tests {
     }
 
     #[test]
-    fn target_two_week_pool_supports_zero_backing_fraction() {
+    fn target_two_week_pool_is_full_redemption_claim() {
         let mut s = base_state();
         process_stream(&mut s, StreamKind::JupiterFaucet, t(100)).unwrap();
         assert_eq!(
-            target_two_week_pool_e8s(t(100), s.redemption_rate().unwrap(), 0).unwrap(),
-            0
+            target_two_week_pool_e8s(t(100), s.redemption_rate().unwrap()).unwrap(),
+            t(100)
         );
     }
 
     #[test]
-    fn target_two_week_pool_rejects_backing_fraction_above_100_percent() {
+    fn no_runtime_backing_fraction_exists() {
         let mut s = base_state();
         process_stream(&mut s, StreamKind::JupiterFaucet, t(100)).unwrap();
         assert_eq!(
-            target_two_week_pool_e8s(t(10), s.redemption_rate().unwrap(), 10_001),
-            Err(ModelError::InvalidBasisPoints { bps: 10_001 })
+            target_two_week_pool_e8s(t(10), s.redemption_rate().unwrap()).unwrap(),
+            t(10)
         );
     }
 
@@ -857,9 +847,33 @@ mod additional_edge_case_tests {
             redeemable_io_e8s: 1,
         };
         assert_eq!(
-            target_two_week_pool_e8s(2, rate, 10_000),
+            target_two_week_pool_e8s(2, rate),
             Err(ModelError::ArithmeticOverflow)
         );
+    }
+
+    #[test]
+    fn jupiter_and_two_week_same_amount_have_same_backed_pool_and_split() {
+        let s = base_state();
+        let jupiter = preview_stream(&s, StreamKind::JupiterFaucet, t(100)).unwrap();
+        let two_week = preview_stream(&s, StreamKind::TwoWeekMaturity, t(100)).unwrap();
+
+        assert_eq!(jupiter.outcome.split, two_week.outcome.split);
+        assert_eq!(
+            jupiter.outcome.io_issued_e8s,
+            two_week.outcome.io_issued_e8s
+        );
+        assert_eq!(jupiter.outcome.rate_before, two_week.outcome.rate_before);
+        assert_eq!(
+            jupiter.outcome.recipient_policy,
+            IoRecipientPolicy::JupiterFaucet
+        );
+        assert_eq!(
+            two_week.outcome.recipient_policy,
+            IoRecipientPolicy::EligibleIoSnsNeurons
+        );
+        assert_eq!(jupiter.post_state.two_year_staked_icp_e8s, t(40));
+        assert_eq!(two_week.post_state.two_week_staked_icp_e8s, t(40));
     }
 
     #[test]

@@ -3,7 +3,7 @@ use io_nns_neuron_manager::{
     NnsNeuronManagerModel, RebalanceAction, TwoWeekPoolState, SECONDS_PER_DAY,
     TWO_WEEK_DISSOLVE_SECONDS,
 };
-use io_reward_policy::NeuronSnapshot;
+use io_reward_policy::RewardParticipant;
 use io_stream_manager::state::{
     IO_NNS_NEURON_MANAGER_SOURCE, JUPITER_FAUCET_SOURCE, TWO_WEEK_MATURITY_MEMO,
     TWO_YEAR_MATURITY_MEMO,
@@ -14,17 +14,14 @@ fn t(n: u128) -> u128 {
     n * E8S_PER_TOKEN
 }
 
-fn neuron(id: u64, stake: u128, voted: u64, total: u64) -> NeuronSnapshot {
-    NeuronSnapshot {
+fn neuron(id: u64, stake: u128, voted: u64, total: u64) -> RewardParticipant {
+    RewardParticipant {
         sns_neuron_id: io_reward_policy::compatibility_sns_neuron_id_from_u64(id),
         neuron_id: id,
-        staked_io_e8s: stake,
-        eligible_seconds: 14 * 24 * 60 * 60,
+        frozen_stake_e8s: stake,
         eligible_closed_proposals: total,
         voted_closed_proposals: voted,
-        is_genesis_governance_neuron: false,
-        is_protocol_owned: false,
-        is_dissolving: false,
+        destination_is_currently_eligible: true,
     }
 }
 
@@ -88,7 +85,9 @@ fn e2e_jupiter_to_staking_to_maturity_to_redemption() {
         )
         .unwrap();
     assert!(two_week.io_issued_e8s > 0);
-    let alloc = stream.allocate_two_week_maturity_io(two_week.io_issued_e8s, &[alice, bob]);
+    let alloc = stream
+        .allocate_two_week_maturity_io(two_week.io_issued_e8s, &[alice, bob])
+        .unwrap();
     assert_eq!(alloc.allocations.len(), 2);
     assert!(alloc.allocations[0].io_e8s > alloc.allocations[1].io_e8s);
 
@@ -168,8 +167,9 @@ fn e2e_multi_epoch_faucet_yield_staker_rewards_and_late_entry() {
             "2w-epoch-1",
         )
         .unwrap();
-    let alloc =
-        stream.allocate_two_week_maturity_io(two_week.io_issued_e8s, std::slice::from_ref(&alice));
+    let alloc = stream
+        .allocate_two_week_maturity_io(two_week.io_issued_e8s, std::slice::from_ref(&alice))
+        .unwrap();
     assert_eq!(alloc.allocations.len(), 1);
     assert_eq!(alloc.allocations[0].neuron_id, 1);
     let rate_before_late_faucet = stream.state.redemption_rate().unwrap();

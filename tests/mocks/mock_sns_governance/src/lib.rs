@@ -22,7 +22,7 @@ use std::cmp::Reverse;
 pub struct MockSnsNeuron {
     pub neuron_id: u64,
     pub staked_io_e8s: u128,
-    pub eligible_seconds: u64,
+    pub dissolve_delay_seconds: u64,
     pub eligible_closed_proposals: u64,
     pub voted_closed_proposals: u64,
     pub is_genesis_governance_neuron: bool,
@@ -47,15 +47,32 @@ struct SnsState {
     next_upgrade_proposal_id: u64,
     now: u64,
     io_ledger: Option<Principal>,
+    available: bool,
 }
 
 thread_local! {
-    static STATE: RefCell<SnsState> = RefCell::new(SnsState::default());
+    static STATE: RefCell<SnsState> = RefCell::new(SnsState {
+        available: true,
+        ..SnsState::default()
+    });
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn debug_add_neuron(neuron: MockSnsNeuron) {
-    STATE.with(|cell| cell.borrow_mut().neurons.push(neuron));
+    let production: SnsNeuron = mock_to_production_neuron(&neuron)
+        .try_into()
+        .expect("mock neuron should convert to production-shaped domain neuron");
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        state
+            .neurons
+            .retain(|existing| existing.neuron_id != neuron.neuron_id);
+        state.neurons.push(neuron);
+        state
+            .governance_neurons
+            .retain(|existing| existing.id != production.id);
+        state.governance_neurons.push(production);
+    });
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -100,6 +117,11 @@ pub fn debug_set_root_principal(root: Principal) {
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn debug_set_io_ledger_principal(ledger: Principal) {
     STATE.with(|cell| cell.borrow_mut().io_ledger = Some(ledger));
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_available(available: bool) {
+    STATE.with(|cell| cell.borrow_mut().available = available);
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -266,13 +288,19 @@ pub fn debug_close_proposal(proposal_id: u64) -> Result<(), String> {
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn debug_list_neurons() -> Vec<MockSnsNeuron> {
-    STATE.with(|cell| cell.borrow().neurons.clone())
+    STATE.with(|cell| {
+        let state = cell.borrow();
+        assert!(state.available, "mock SNS governance unavailable");
+        state.neurons.clone()
+    })
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn debug_list_governance_neurons(request: SnsNeuronPageRequest) -> SnsNeuronPage {
     STATE.with(|cell| {
-        let mut neurons = cell.borrow().governance_neurons.clone();
+        let state = cell.borrow();
+        assert!(state.available, "mock SNS governance unavailable");
+        let mut neurons = state.governance_neurons.clone();
         neurons.sort_by(|a, b| a.id.cmp(&b.id));
         let start = request
             .start_page_at
@@ -329,7 +357,7 @@ fn mock_to_production_neuron(neuron: &MockSnsNeuron) -> SnsNeuronRecord {
         dissolve_state: Some(if neuron.is_dissolving {
             SnsDissolveStateRecord::WhenDissolvedTimestampSeconds(0)
         } else {
-            SnsDissolveStateRecord::DissolveDelaySeconds(neuron.eligible_seconds)
+            SnsDissolveStateRecord::DissolveDelaySeconds(neuron.dissolve_delay_seconds)
         }),
         voting_power_percentage_multiplier: 100,
         vesting_period_seconds: None,
@@ -391,13 +419,22 @@ pub async fn manage_neuron(
             };
         };
         STATE.with(|cell| {
-            if let Some(neuron) = cell
-                .borrow_mut()
+            let mut state = cell.borrow_mut();
+            let updated: Option<SnsNeuron> = state
                 .neurons
                 .iter_mut()
                 .find(|neuron| mock_neuron_id(neuron.neuron_id) == id)
-            {
-                neuron.staked_io_e8s = balance;
+                .map(|neuron| {
+                    neuron.staked_io_e8s = balance;
+                    mock_to_production_neuron(neuron)
+                        .try_into()
+                        .expect("mock neuron should convert to production-shaped domain neuron")
+                });
+            if let Some(updated) = updated {
+                state
+                    .governance_neurons
+                    .retain(|existing| existing.id != updated.id);
+                state.governance_neurons.push(updated);
             }
         });
         return SnsProductionManageNeuronResponse {
@@ -455,7 +492,9 @@ async fn call_ledger_balance(ledger: Principal, account: IcrcAccount) -> Result<
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn debug_list_proposals(request: SnsProposalPageRequest) -> SnsProposalPage {
     STATE.with(|cell| {
-        let mut proposals = cell.borrow().governance_proposals.clone();
+        let state = cell.borrow();
+        assert!(state.available, "mock SNS governance unavailable");
+        let mut proposals = state.governance_proposals.clone();
         proposals.sort_by_key(|proposal| Reverse(proposal.id));
         let filtered = proposals
             .into_iter()
@@ -503,7 +542,12 @@ pub fn debug_list_closed_proposals() -> Vec<MockProposal> {
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn debug_clear() {
-    STATE.with(|cell| *cell.borrow_mut() = SnsState::default());
+    STATE.with(|cell| {
+        *cell.borrow_mut() = SnsState {
+            available: true,
+            ..SnsState::default()
+        }
+    });
 }
 
 fn decide_upgrade_proposal(
@@ -685,7 +729,7 @@ mod tests {
         debug_add_neuron(MockSnsNeuron {
             neuron_id: 1,
             staked_io_e8s: 100,
-            eligible_seconds: 1_209_600,
+            dissolve_delay_seconds: io_core_model::TWO_WEEK_SECONDS,
             eligible_closed_proposals: 0,
             voted_closed_proposals: 0,
             is_genesis_governance_neuron: false,
@@ -708,7 +752,7 @@ mod tests {
         debug_add_neuron(MockSnsNeuron {
             neuron_id: 1,
             staked_io_e8s: 100,
-            eligible_seconds: 1_209_600,
+            dissolve_delay_seconds: io_core_model::TWO_WEEK_SECONDS,
             eligible_closed_proposals: 0,
             voted_closed_proposals: 0,
             is_genesis_governance_neuron: false,

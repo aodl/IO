@@ -1,10 +1,10 @@
 use io_core_model::{StreamKind, E8S_PER_TOKEN};
-use io_reward_policy::NeuronSnapshot;
+use io_reward_policy::RewardParticipant;
 use io_stream_manager::state::{
     IO_NNS_NEURON_MANAGER_SOURCE, JUPITER_FAUCET_SOURCE, TWO_WEEK_MATURITY_MEMO,
     TWO_YEAR_MATURITY_MEMO,
 };
-use io_stream_manager::{ModelError, StreamManager, StreamManagerError};
+use io_stream_manager::{DebugFailpoint, ModelError, StreamManager, StreamManagerError};
 
 fn t(n: u128) -> u128 {
     n * E8S_PER_TOKEN
@@ -43,16 +43,6 @@ struct DebugFeeArgs {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize)]
-#[allow(clippy::enum_variant_names)]
-enum DebugFailpoint {
-    AfterRejectedRefundTransferBeforeJournalUpdate,
-    AfterTwoWeekRewardPreflightBeforeTransfer,
-    AfterTwoWeekRewardTransferBeforeJournalUpdate,
-    AfterTwoWeekRewardTransferBeforeGovernanceRefresh,
-    AfterTwoWeekGovernanceRefreshBeforeJournalCompletion,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize)]
 struct LedgerTransaction {
     from: String,
     to: String,
@@ -69,7 +59,7 @@ struct LedgerTransaction {
 struct MockSnsNeuron {
     neuron_id: u64,
     staked_io_e8s: u128,
-    eligible_seconds: u64,
+    dissolve_delay_seconds: u64,
     eligible_closed_proposals: u64,
     voted_closed_proposals: u64,
     is_genesis_governance_neuron: bool,
@@ -132,8 +122,9 @@ mod live {
     use super::*;
     use candid::{decode_one, encode_one, Nat, Principal};
     use io_governance_types::{
-        EmptyRecord, SnsClaimOrRefresh, SnsClaimOrRefreshBy, SnsManageNeuronCommand,
-        SnsProductionManageNeuronRequest, SnsProductionManageNeuronResponse,
+        EmptyRecord, SnsBallot, SnsClaimOrRefresh, SnsClaimOrRefreshBy, SnsManageNeuronCommand,
+        SnsProductionManageNeuronRequest, SnsProductionManageNeuronResponse, SnsProposal,
+        SnsProposalId, SnsProposalRewardStatus, SnsProposalStatus, SnsVote,
     };
     use io_ledger_types::{
         map_icrc_transfer_result, Account, IcrcAccount, IcrcTransferArg, IcrcTransferError,
@@ -489,6 +480,16 @@ mod live {
         .expect("set ledger fee");
     }
 
+    fn set_sns_available(pic: &PocketIc, sns: Principal, available: bool) {
+        pic.update_call(
+            sns,
+            Principal::anonymous(),
+            "debug_set_available",
+            encode_one(available).unwrap(),
+        )
+        .expect("set mock SNS governance availability");
+    }
+
     fn tick(fixture: &StreamFixture) -> DebugTickOutcome {
         let bytes = fixture
             .pic
@@ -500,6 +501,13 @@ mod live {
             )
             .expect("stream tick");
         decode_one::<DebugTickOutcome>(&bytes).unwrap()
+    }
+
+    fn seed_reward_cohort_and_advance_one_second(fixture: &StreamFixture) {
+        let seeded = tick(fixture);
+        assert!(seeded.errors.is_empty(), "{:?}", seeded.errors);
+        assert_eq!(seeded.processed_authorized_streams, 0);
+        fixture.pic.advance_time(std::time::Duration::from_secs(1));
     }
 
     fn upgrade_stream(fixture: &StreamFixture) {
@@ -603,15 +611,7 @@ mod live {
     fn add_sns_neuron(fixture: &StreamFixture, sns: Principal, neuron: MockSnsNeuron) {
         let initial_stake = neuron.staked_io_e8s;
         let neuron_id = neuron.neuron_id;
-        fixture
-            .pic
-            .update_call(
-                sns,
-                Principal::anonymous(),
-                "debug_add_neuron",
-                encode_one(neuron).unwrap(),
-            )
-            .expect("add sns neuron");
+        update_sns_neuron(fixture, sns, neuron);
         if initial_stake > 0 {
             transfer_to_account(
                 &fixture.pic,
@@ -621,6 +621,53 @@ mod live {
                 initial_stake,
                 "existing-stake",
             );
+        }
+    }
+
+    fn update_sns_neuron(fixture: &StreamFixture, sns: Principal, neuron: MockSnsNeuron) {
+        fixture
+            .pic
+            .update_call(
+                sns,
+                Principal::anonymous(),
+                "debug_add_neuron",
+                encode_one(neuron).unwrap(),
+            )
+            .expect("add sns neuron");
+    }
+
+    fn set_sns_proposals(fixture: &StreamFixture, sns: Principal, proposals: Vec<SnsProposal>) {
+        fixture
+            .pic
+            .update_call(
+                sns,
+                Principal::anonymous(),
+                "debug_set_proposals",
+                encode_one(proposals).unwrap(),
+            )
+            .expect("set sns proposals");
+    }
+
+    fn proposal(value: u64, decided: u64, votes: &[(u64, SnsVote)]) -> SnsProposal {
+        fn id(value: u64) -> io_governance_types::SnsNeuronId {
+            let mut bytes = [0_u8; 32];
+            bytes[24..].copy_from_slice(&value.to_be_bytes());
+            io_governance_types::SnsNeuronId(bytes.to_vec())
+        }
+
+        SnsProposal {
+            id: SnsProposalId(value),
+            topic: Some(1),
+            status: SnsProposalStatus::Adopted,
+            reward_status: SnsProposalRewardStatus::Settled,
+            decided_timestamp_seconds: Some(decided),
+            ballots: votes
+                .iter()
+                .map(|(neuron_id, vote)| SnsBallot {
+                    neuron_id: id(*neuron_id),
+                    vote: *vote,
+                })
+                .collect(),
         }
     }
 
@@ -704,7 +751,7 @@ mod live {
         MockSnsNeuron {
             neuron_id: id,
             staked_io_e8s: stake,
-            eligible_seconds: 100,
+            dissolve_delay_seconds: io_core_model::TWO_WEEK_SECONDS,
             eligible_closed_proposals: total,
             voted_closed_proposals: voted,
             is_genesis_governance_neuron: false,
@@ -1113,6 +1160,7 @@ mod live {
     }
 
     fn drive_zero_recipient_reward(fixture: &StreamFixture) -> ZeroRecipientRewardObservation {
+        seed_reward_cohort_and_advance_one_second(fixture);
         mint(
             &fixture.pic,
             fixture.icp_ledger,
@@ -1280,6 +1328,21 @@ mod live {
         let mut genesis = sns_neuron(13, t(10), 2, 2);
         genesis.is_genesis_governance_neuron = true;
         add_sns_neuron(&fixture, sns, genesis);
+        seed_reward_cohort_and_advance_one_second(&fixture);
+        let proposal_time = stable_state(&fixture)
+            .reward_cohort
+            .as_ref()
+            .expect("seeded reward cohort")
+            .captured_at_timestamp_seconds
+            + 1;
+        set_sns_proposals(
+            &fixture,
+            sns,
+            vec![
+                proposal(1, proposal_time, &[(10, SnsVote::Yes), (11, SnsVote::Yes)]),
+                proposal(2, proposal_time, &[(10, SnsVote::Yes)]),
+            ],
+        );
 
         mint(
             &fixture.pic,
@@ -1327,6 +1390,7 @@ mod live {
         };
         let sns = fixture.sns_governance.expect("sns governance installed");
         add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+        seed_reward_cohort_and_advance_one_second(&fixture);
 
         mint(
             &fixture.pic,
@@ -1346,10 +1410,7 @@ mod live {
         let before_stable = stable_state(&fixture);
         let before_io_reserve = balance(&fixture.pic, fixture.io_ledger, "protocol_reserve");
         let before_io_transactions = transactions(&fixture.pic, fixture.io_ledger).len();
-        fixture
-            .pic
-            .stop_canister(sns, None)
-            .expect("stop mock SNS governance");
+        set_sns_available(&fixture.pic, sns, false);
 
         let failed = tick(&fixture);
         assert_eq!(failed.processed_authorized_streams, 0);
@@ -1382,10 +1443,7 @@ mod live {
             before_io_transactions
         );
 
-        fixture
-            .pic
-            .start_canister(sns, None)
-            .expect("start mock SNS governance");
+        set_sns_available(&fixture.pic, sns, true);
 
         let recovered = tick(&fixture);
         assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
@@ -1422,6 +1480,7 @@ mod live {
         };
         let sns = fixture.sns_governance.expect("sns governance installed");
         add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+        seed_reward_cohort_and_advance_one_second(&fixture);
 
         mint(
             &fixture.pic,
@@ -1459,10 +1518,7 @@ mod live {
         let before_io_reserve = balance(&fixture.pic, fixture.io_ledger, "protocol_reserve");
         let before_total_supply = before_state.protocol.total_io_supply_e8s;
         let before_io_transactions = transactions(&fixture.pic, fixture.io_ledger).len();
-        fixture
-            .pic
-            .stop_canister(sns, None)
-            .expect("stop mock SNS governance");
+        set_sns_available(&fixture.pic, sns, false);
 
         let failed = tick(&fixture);
         assert_eq!(failed.processed_authorized_streams, 0);
@@ -1525,10 +1581,7 @@ mod live {
             0
         );
 
-        fixture
-            .pic
-            .start_canister(sns, None)
-            .expect("start mock SNS governance");
+        set_sns_available(&fixture.pic, sns, true);
 
         let recovered = tick(&fixture);
         assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
@@ -1592,6 +1645,7 @@ mod live {
         add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 2, 2));
         add_sns_neuron(&fixture, sns, sns_neuron(11, t(10), 1, 2));
         reject_to(&fixture.pic, fixture.io_ledger, "sns_neuron_11");
+        seed_reward_cohort_and_advance_one_second(&fixture);
 
         mint(
             &fixture.pic,
@@ -1613,7 +1667,7 @@ mod live {
         assert_eq!(state(&fixture).processed_transaction_count, 0);
         assert_eq!(
             balance(&fixture.pic, fixture.io_ledger, "sns_neuron_10"),
-            t(50)
+            t(40)
         );
         assert_eq!(
             balance(&fixture.pic, fixture.io_ledger, "sns_neuron_11"),
@@ -1630,16 +1684,16 @@ mod live {
         assert_eq!(retry.processed_authorized_streams, 1);
         assert_eq!(
             balance(&fixture.pic, fixture.io_ledger, "sns_neuron_10"),
-            t(50)
+            t(40)
         );
         assert_eq!(
             balance(&fixture.pic, fixture.io_ledger, "sns_neuron_11"),
-            t(30)
+            t(40)
         );
         assert_eq!(
             transactions(&fixture.pic, fixture.io_ledger)
                 .iter()
-                .filter(|tx| tx.to == "sns_neuron_10" && tx.amount_e8s == t(40))
+                .filter(|tx| tx.to == "sns_neuron_10" && tx.amount_e8s == t(30))
                 .count(),
             1
         );
@@ -1652,6 +1706,7 @@ mod live {
         };
         let sns = fixture.sns_governance.expect("sns governance installed");
         add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+        seed_reward_cohort_and_advance_one_second(&fixture);
 
         mint(
             &fixture.pic,
@@ -1731,6 +1786,7 @@ mod live {
         };
         let sns = fixture.sns_governance.expect("sns governance installed");
         add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+        seed_reward_cohort_and_advance_one_second(&fixture);
         let staking_account = sns_neuron_staking_account(sns, 10);
 
         mint(
@@ -1793,6 +1849,7 @@ mod live {
         };
         let sns = fixture.sns_governance.expect("sns governance installed");
         add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+        seed_reward_cohort_and_advance_one_second(&fixture);
 
         mint(
             &fixture.pic,
@@ -1869,6 +1926,7 @@ mod live {
         };
         let sns = fixture.sns_governance.expect("sns governance installed");
         add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+        seed_reward_cohort_and_advance_one_second(&fixture);
 
         mint(
             &fixture.pic,
@@ -1928,6 +1986,7 @@ mod live {
         };
         let sns = fixture.sns_governance.expect("sns governance installed");
         add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+        seed_reward_cohort_and_advance_one_second(&fixture);
 
         mint(
             &fixture.pic,
@@ -2014,6 +2073,7 @@ mod live {
         };
         let sns = fixture.sns_governance.expect("sns governance installed");
         add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+        seed_reward_cohort_and_advance_one_second(&fixture);
 
         mint(
             &fixture.pic,
@@ -2079,6 +2139,7 @@ mod live {
         let sns = fixture.sns_governance.expect("sns governance installed");
         add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
         add_sns_neuron(&fixture, sns, sns_neuron(11, t(10), 1, 1));
+        seed_reward_cohort_and_advance_one_second(&fixture);
 
         mint(
             &fixture.pic,
@@ -2250,7 +2311,7 @@ mod live {
         };
         let sns = fixture.sns_governance.expect("sns governance installed");
         add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
-        add_sns_neuron(&fixture, sns, sns_neuron(11, t(10), 1, 1));
+        seed_reward_cohort_and_advance_one_second(&fixture);
 
         mint(
             &fixture.pic,
@@ -2271,12 +2332,20 @@ mod live {
         assert_eq!(first.processed_authorized_streams, 1);
         assert_eq!(
             balance(&fixture.pic, fixture.io_ledger, "sns_neuron_10"),
-            t(40)
+            t(70)
         );
+
+        let refreshed = tick(&fixture);
+        assert!(refreshed.errors.is_empty(), "{:?}", refreshed.errors);
+        assert_eq!(refreshed.processed_authorized_streams, 0);
         assert_eq!(
-            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_11"),
-            t(40)
+            stable_state(&fixture)
+                .reward_cohort
+                .as_ref()
+                .map(|cohort| cohort.generation),
+            Some(2)
         );
+        fixture.pic.advance_time(std::time::Duration::from_secs(1));
 
         transfer_to_stream_deposit(
             &fixture,
@@ -2290,11 +2359,7 @@ mod live {
         assert_eq!(second.processed_authorized_streams, 1);
         assert_eq!(
             balance(&fixture.pic, fixture.io_ledger, "sns_neuron_10"),
-            t(55)
-        );
-        assert_eq!(
-            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_11"),
-            t(55)
+            t(100)
         );
         assert_eq!(state(&fixture).processed_transaction_count, 2);
         assert_eq!(
@@ -2303,6 +2368,360 @@ mod live {
                 .filter(|tx| tx.to == "sns_neuron_10" && tx.amount_e8s != t(10))
                 .count(),
             2
+        );
+    }
+
+    #[test]
+    fn post_capture_topup_waits_until_next_reward_cohort() {
+        let Some(fixture) = setup_stream(true) else {
+            return;
+        };
+        let sns = fixture.sns_governance.expect("sns governance installed");
+        add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+        add_sns_neuron(&fixture, sns, sns_neuron(11, t(10), 1, 1));
+
+        seed_reward_cohort_and_advance_one_second(&fixture);
+        assert_eq!(
+            stable_state(&fixture)
+                .reward_cohort
+                .as_ref()
+                .map(|cohort| cohort.generation),
+            Some(1)
+        );
+
+        transfer_to_account(
+            &fixture.pic,
+            fixture.io_ledger,
+            "protocol_reserve",
+            sns_neuron_staking_account(sns, 10),
+            t(30),
+            "post-capture-topup",
+        );
+        claim_or_refresh_sns_neuron(&fixture.pic, sns, 10);
+        assert_eq!(sns_neurons(&fixture.pic, sns)[0].staked_io_e8s, t(40));
+
+        mint(
+            &fixture.pic,
+            fixture.icp_ledger,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(250),
+            "fund_nns_manager",
+        );
+        transfer_to_stream_deposit(
+            &fixture,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            TWO_WEEK_MATURITY_MEMO,
+        );
+        let first = tick(&fixture);
+        assert!(first.errors.is_empty(), "{:?}", first.errors);
+        assert_eq!(first.processed_authorized_streams, 1);
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_10"),
+            t(70)
+        );
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_11"),
+            t(40)
+        );
+        assert!(tick(&fixture).errors.is_empty());
+        fixture.pic.advance_time(std::time::Duration::from_secs(1));
+
+        transfer_to_stream_deposit(
+            &fixture,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            TWO_WEEK_MATURITY_MEMO,
+        );
+        let second = tick(&fixture);
+        assert!(second.errors.is_empty(), "{:?}", second.errors);
+        assert_eq!(second.processed_authorized_streams, 1);
+        let second_a = t(60) * 70 / 110;
+        let second_b = t(60) * 40 / 110;
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_10"),
+            t(70) + second_a
+        );
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_11"),
+            t(40) + second_b
+        );
+
+        upgrade_stream(&fixture);
+        let replay = tick(&fixture);
+        assert_eq!(replay.processed_authorized_streams, 0);
+        assert!(replay.errors.is_empty(), "{:?}", replay.errors);
+    }
+
+    #[test]
+    fn new_stake_after_capture_cannot_claim_prior_maturity() {
+        let Some(fixture) = setup_stream(true) else {
+            return;
+        };
+        let sns = fixture.sns_governance.expect("sns governance installed");
+        add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+        add_sns_neuron(&fixture, sns, sns_neuron(11, t(10), 1, 1));
+        seed_reward_cohort_and_advance_one_second(&fixture);
+
+        add_sns_neuron(&fixture, sns, sns_neuron(12, t(10), 1, 1));
+        mint(
+            &fixture.pic,
+            fixture.icp_ledger,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(250),
+            "fund_nns_manager",
+        );
+        transfer_to_stream_deposit(
+            &fixture,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            TWO_WEEK_MATURITY_MEMO,
+        );
+        let first = tick(&fixture);
+        assert!(first.errors.is_empty(), "{:?}", first.errors);
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_10"),
+            t(40)
+        );
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_11"),
+            t(40)
+        );
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_12"),
+            t(10)
+        );
+
+        assert!(tick(&fixture).errors.is_empty());
+        fixture.pic.advance_time(std::time::Duration::from_secs(1));
+        transfer_to_stream_deposit(
+            &fixture,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            TWO_WEEK_MATURITY_MEMO,
+        );
+        let second = tick(&fixture);
+        assert!(second.errors.is_empty(), "{:?}", second.errors);
+        assert!(balance(&fixture.pic, fixture.io_ledger, "sns_neuron_12") > t(10));
+    }
+
+    #[test]
+    fn dissolving_cohort_member_share_remains_protocol_dust() {
+        let Some(fixture) = setup_stream(true) else {
+            return;
+        };
+        let sns = fixture.sns_governance.expect("sns governance installed");
+        add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+        add_sns_neuron(&fixture, sns, sns_neuron(11, t(10), 1, 1));
+        seed_reward_cohort_and_advance_one_second(&fixture);
+
+        let mut dissolving = sns_neuron(11, t(10), 1, 1);
+        dissolving.is_dissolving = true;
+        update_sns_neuron(&fixture, sns, dissolving);
+        mint(
+            &fixture.pic,
+            fixture.icp_ledger,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            "fund_nns_manager",
+        );
+        transfer_to_stream_deposit(
+            &fixture,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            TWO_WEEK_MATURITY_MEMO,
+        );
+        let outcome = tick(&fixture);
+        assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_10"),
+            t(40)
+        );
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_11"),
+            t(10)
+        );
+        let completed = stable_state(&fixture)
+            .operation_journal
+            .into_iter()
+            .find(|op| op.kind == io_stream_manager::StreamOperationKind::TwoWeekMaturityStream)
+            .expect("completed reward operation");
+        assert_eq!(
+            completed
+                .reward_preflight
+                .as_ref()
+                .map(|preflight| preflight.dust_e8s),
+            Some(t(30))
+        );
+    }
+
+    #[test]
+    fn stale_reward_cohort_cannot_process_maturity() {
+        let Some(fixture) = setup_stream(true) else {
+            return;
+        };
+        let sns = fixture.sns_governance.expect("sns governance installed");
+        add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+        seed_reward_cohort_and_advance_one_second(&fixture);
+        let cursor_before = stable_state(&fixture)
+            .scheduler_cursors
+            .last_scanned_icp_index_block;
+
+        fixture.pic.advance_time(std::time::Duration::from_secs(
+            io_core_model::TWO_WEEK_SECONDS + 1,
+        ));
+        mint(
+            &fixture.pic,
+            fixture.icp_ledger,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            "fund_nns_manager",
+        );
+        transfer_to_stream_deposit(
+            &fixture,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            TWO_WEEK_MATURITY_MEMO,
+        );
+        let blocked = tick(&fixture);
+        assert!(blocked
+            .errors
+            .iter()
+            .any(|err| err.contains("beyond reward cohort expiry")));
+        assert_eq!(blocked.processed_authorized_streams, 0);
+        assert_eq!(state(&fixture).processed_transaction_count, 0);
+        assert_eq!(
+            stable_state(&fixture)
+                .scheduler_cursors
+                .last_scanned_icp_index_block,
+            cursor_before
+        );
+    }
+
+    #[test]
+    fn consumed_reward_cohort_survives_actual_same_wasm_upgrade() {
+        let Some(fixture) = setup_stream(true) else {
+            return;
+        };
+        let sns = fixture.sns_governance.expect("sns governance installed");
+        add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
+        add_sns_neuron(&fixture, sns, sns_neuron(11, t(10), 1, 1));
+        reject_to(&fixture.pic, fixture.io_ledger, "sns_neuron_11");
+        seed_reward_cohort_and_advance_one_second(&fixture);
+
+        mint(
+            &fixture.pic,
+            fixture.icp_ledger,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            "fund_nns_manager",
+        );
+        transfer_to_stream_deposit(
+            &fixture,
+            IO_NNS_NEURON_MANAGER_SOURCE,
+            t(100),
+            TWO_WEEK_MATURITY_MEMO,
+        );
+
+        let interrupted = tick(&fixture);
+        assert!(!interrupted.errors.is_empty());
+        assert_eq!(interrupted.processed_authorized_streams, 0);
+        let before_upgrade = stable_state(&fixture);
+        let consumed = before_upgrade
+            .reward_cohort
+            .as_ref()
+            .expect("reward cohort should exist after operation creation");
+        let consumed_operation_id = consumed
+            .consumed_by_operation_id
+            .as_ref()
+            .expect("reward cohort should be consumed by the pending operation")
+            .clone();
+        let pending_op = before_upgrade
+            .operation_journal
+            .iter()
+            .find(|op| op.operation_id == consumed_operation_id)
+            .expect("consumed operation should be journaled");
+        assert_eq!(
+            pending_op.kind,
+            io_stream_manager::StreamOperationKind::TwoWeekMaturityStream
+        );
+        assert_ne!(
+            pending_op.phase,
+            io_stream_manager::OperationPhase::Completed
+        );
+        assert_eq!(pending_op.two_week_recipients.len(), 2);
+        let recipient_plan = pending_op
+            .two_week_recipients
+            .iter()
+            .map(|recipient| {
+                (
+                    recipient.sns_neuron_id.clone(),
+                    recipient.neuron_id,
+                    recipient.amount_e8s,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        upgrade_stream(&fixture);
+        let after_upgrade = stable_state(&fixture);
+        let upgraded_cohort = after_upgrade
+            .reward_cohort
+            .as_ref()
+            .expect("reward cohort should survive upgrade");
+        assert_eq!(upgraded_cohort.generation, consumed.generation);
+        assert_eq!(
+            upgraded_cohort.consumed_by_operation_id.as_ref(),
+            Some(&consumed_operation_id)
+        );
+        assert_eq!(
+            after_upgrade
+                .operation_journal
+                .iter()
+                .find(|op| op.operation_id == consumed_operation_id)
+                .unwrap()
+                .two_week_recipients
+                .iter()
+                .map(|recipient| {
+                    (
+                        recipient.sns_neuron_id.clone(),
+                        recipient.neuron_id,
+                        recipient.amount_e8s,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            recipient_plan
+        );
+
+        clear_rejections(&fixture.pic, fixture.io_ledger);
+        let completed = tick(&fixture);
+        assert!(completed.errors.is_empty(), "{:?}", completed.errors);
+        assert_eq!(completed.processed_authorized_streams, 1);
+        let after_completion = stable_state(&fixture);
+        let completed_ops = after_completion
+            .operation_journal
+            .iter()
+            .filter(|op| op.kind == io_stream_manager::StreamOperationKind::TwoWeekMaturityStream)
+            .collect::<Vec<_>>();
+        assert_eq!(completed_ops.len(), 1);
+        assert_eq!(completed_ops[0].operation_id, consumed_operation_id);
+        assert_eq!(
+            completed_ops[0].phase,
+            io_stream_manager::OperationPhase::Completed
+        );
+        assert!(after_completion
+            .reward_cohort
+            .as_ref()
+            .is_some_and(|cohort| {
+                cohort.generation > consumed.generation
+                    || cohort.consumed_by_operation_id.as_ref() == Some(&consumed_operation_id)
+            }));
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_10"),
+            t(40)
+        );
+        assert_eq!(
+            balance(&fixture.pic, fixture.io_ledger, "sns_neuron_11"),
+            t(40)
         );
     }
 
@@ -2569,6 +2988,7 @@ mod live {
         let sns = fixture.sns_governance.expect("sns governance installed");
         add_sns_neuron(&fixture, sns, sns_neuron(10, t(10), 1, 1));
         add_sns_neuron(&fixture, sns, sns_neuron(11, t(10), 1, 1));
+        seed_reward_cohort_and_advance_one_second(&fixture);
         mint(
             &fixture.pic,
             fixture.icp_ledger,
@@ -2616,17 +3036,14 @@ mod live {
     }
 }
 
-fn neuron(id: u64, stake: u128, voted: u64, total: u64) -> NeuronSnapshot {
-    NeuronSnapshot {
+fn neuron(id: u64, stake: u128, voted: u64, total: u64) -> RewardParticipant {
+    RewardParticipant {
         sns_neuron_id: io_reward_policy::compatibility_sns_neuron_id_from_u64(id),
         neuron_id: id,
-        staked_io_e8s: stake,
-        eligible_seconds: 100,
+        frozen_stake_e8s: stake,
         eligible_closed_proposals: total,
         voted_closed_proposals: voted,
-        is_genesis_governance_neuron: false,
-        is_protocol_owned: false,
-        is_dissolving: false,
+        destination_is_currently_eligible: true,
     }
 }
 
@@ -2658,7 +3075,9 @@ fn pocketic_model_full_stream_and_redemption_flow() {
     assert_eq!(two_week.io_issued_e8s, t(30));
 
     let neurons = vec![neuron(10, t(10), 2, 2), neuron(11, t(10), 1, 2)];
-    let alloc = manager.allocate_two_week_maturity_io(two_week.io_issued_e8s, &neurons);
+    let alloc = manager
+        .allocate_two_week_maturity_io(two_week.io_issued_e8s, &neurons)
+        .unwrap();
     assert_eq!(alloc.allocations[0].io_e8s, t(20));
     assert_eq!(alloc.allocations[1].io_e8s, t(10));
 
@@ -2761,9 +3180,9 @@ fn pocketic_active_stake_snapshot_drives_two_week_target() {
         )
         .unwrap(); // rate = 2
     let mut dissolving = neuron(12, t(10), 1, 1);
-    dissolving.is_dissolving = true;
+    dissolving.destination_is_currently_eligible = false;
     let mut genesis = neuron(13, t(10), 1, 1);
-    genesis.is_genesis_governance_neuron = true;
+    genesis.destination_is_currently_eligible = false;
     manager.refresh_active_staked_io_from_neurons(&[neuron(10, t(10), 1, 1), dissolving, genesis]);
     assert_eq!(manager.active_staked_io_e8s, t(10));
     assert_eq!(manager.target_two_week_pool_e8s().unwrap(), t(20));
@@ -2858,7 +3277,9 @@ fn pocketic_participation_snapshot_penalizes_non_voters_in_two_week_distribution
         neuron(2, t(10), 0, 3),
         neuron(3, t(10), 1, 3),
     ];
-    let out = manager.allocate_two_week_maturity_io(two_week.io_issued_e8s, &neurons);
+    let out = manager
+        .allocate_two_week_maturity_io(two_week.io_issued_e8s, &neurons)
+        .unwrap();
     assert_eq!(
         out.allocations
             .iter()
@@ -2881,17 +3302,4 @@ fn pocketic_blank_transaction_id_is_rejected_and_not_recorded() {
     );
     assert_eq!(manager.state, before);
     assert!(manager.processed_transactions.is_empty());
-}
-
-#[test]
-fn pocketic_backing_fraction_above_one_hundred_percent_is_rejected() {
-    let mut manager = StreamManager::default_for_tests();
-    manager
-        .process_scanned_icp(JUPITER_FAUCET_SOURCE, "", t(100), "faucet")
-        .unwrap();
-    manager.two_week_pool_backing_bps = 20_000;
-    assert_eq!(
-        manager.target_two_week_pool_e8s().unwrap_err(),
-        StreamManagerError::Model(ModelError::InvalidBasisPoints { bps: 20_000 })
-    );
 }

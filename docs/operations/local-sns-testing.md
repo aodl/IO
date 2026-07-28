@@ -22,7 +22,7 @@ Layer 3: Official SNS Local Launch Rehearsal.
 
 Official SNS testing is optional and heavier. Follow the current official ICP/DFINITY SNS testing documentation as the source of truth. The historical standalone `dfinity/sns-testing` repository is deprecated; if the official docs reference successor tooling or a new repository/location, use that current official location.
 
-The official SNS launch path may require `dfx sns`; any `dfx`-based SNS testing for IO is optional, local-only for this layer, and not part of `test_ci` or `verify_release`. Required repository workflows must not depend on `dfx`.
+The official SNS launch path may require `dfx sns`; any `dfx`-based SNS testing for IO is optional, local-only, and not part of `test_ci` or `verify_release`. Required repository workflows must not depend on `dfx`.
 
 The official local SNS rehearsal package lives under `deploy/local-sns-rehearsal/`. It provides a local `sns_init` candidate, local evidence template, no-network validators, and manual runbook for creating a real SNS-created local ledger/index/governance/root stack and recording local evidence in `canister-ids.local.toml`. The no-network package validator is:
 

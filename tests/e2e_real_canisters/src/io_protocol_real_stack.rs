@@ -45,7 +45,6 @@ pub struct StreamManagerInitArgs {
     pub initial_total_io_supply_e8s: u128,
     pub initial_protocol_reserve_io_e8s: u128,
     pub non_redeemable_governance_io_e8s: u128,
-    pub two_week_pool_backing_bps: u128,
     pub jupiter_faucet_principal_text: Option<String>,
     pub io_nns_neuron_manager_principal_text: Option<String>,
     pub icp_ledger_principal_text: Option<String>,
@@ -62,7 +61,6 @@ pub struct StreamManagerInitArgs {
 pub struct NnsNeuronManagerInitArgs {
     pub controller_canister_principal_text: String,
     pub two_year_nns_neuron_id: u64,
-    pub two_week_dissolve_seconds: u64,
     pub initial_two_year_principal_e8s: u128,
     pub initial_two_week_principal_e8s: u128,
     pub model_annual_bps: u128,
@@ -283,7 +281,6 @@ pub fn build_io_real_stack_install_args_from_ids(
             initial_total_io_supply_e8s: 100_000_000_000_000,
             initial_protocol_reserve_io_e8s: 90_000_000_000_000,
             non_redeemable_governance_io_e8s: 10_000_000_000_000,
-            two_week_pool_backing_bps: 10_000,
             jupiter_faucet_principal_text: Some(Principal::from_slice(&[106; 29]).to_text()),
             io_nns_neuron_manager_principal_text: None,
             icp_ledger_principal_text: Some(sns.nns_ledger.to_text()),
@@ -298,7 +295,6 @@ pub fn build_io_real_stack_install_args_from_ids(
         nns_neuron_manager: NnsNeuronManagerInitArgs {
             controller_canister_principal_text: sns.governance.to_text(),
             two_year_nns_neuron_id: LOCAL_TWO_YEAR_NEURON_ID,
-            two_week_dissolve_seconds: 14 * 24 * 60 * 60,
             initial_two_year_principal_e8s: 0,
             initial_two_week_principal_e8s: 0,
             model_annual_bps: 0,
@@ -566,7 +562,7 @@ fn finalized_governance_expected_active_stake_e8s(stack: &IoRealStackFixture) ->
             matches!(
                 neuron.dissolve_state,
                 Some(crate::sns_governance_setup::DissolveState::DissolveDelaySeconds(seconds))
-                    if seconds >= TWO_WEEK_DISSOLVE_DELAY_SECONDS
+                    if seconds == TWO_WEEK_DISSOLVE_DELAY_SECONDS
             )
         })
         .map(|neuron| u128::from(neuron.cached_neuron_stake_e8s))
@@ -585,7 +581,7 @@ fn finalized_governance_expected_reward_neuron_ids(
             matches!(
                 neuron.dissolve_state,
                 Some(crate::sns_governance_setup::DissolveState::DissolveDelaySeconds(seconds))
-                    if seconds >= TWO_WEEK_DISSOLVE_DELAY_SECONDS
+                    if seconds == TWO_WEEK_DISSOLVE_DELAY_SECONDS
             )
         })
         .map(|neuron| {
@@ -1240,8 +1236,9 @@ mod tests {
         list_finalized_sns_proposals_as, make_finalized_motion_proposal_for_test,
         register_finalized_sns_vote_for_test, set_finalized_sns_governance_following_for_test,
         stake_finalized_liquid_sns_tokens_for_test, start_finalized_neuron_dissolving_for_test,
+        stop_finalized_neuron_dissolving_for_test,
     };
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn fake_ids() -> FinalizedSnsCanisterIds {
         FinalizedSnsCanisterIds {
@@ -1264,6 +1261,23 @@ mod tests {
             .max_by_key(|neuron| neuron.cached_neuron_stake_e8s)
             .and_then(|neuron| neuron.id)
             .expect("participant should have a finalized direct-participation neuron")
+    }
+
+    fn nonzero_delay_direct_participation_neuron_id(
+        sns: &FinalizedSnsLifecycleFixture,
+        participant: Principal,
+    ) -> crate::sns_governance_setup::NeuronId {
+        find_direct_participation_neurons(sns, participant)
+            .expect("participant direct-participation neurons should list")
+            .into_iter()
+            .find(|neuron| {
+                !matches!(
+                    neuron.dissolve_state,
+                    Some(crate::sns_governance_setup::DissolveState::DissolveDelaySeconds(0))
+                )
+            })
+            .and_then(|neuron| neuron.id)
+            .expect("participant should have a nonzero-delay finalized direct-participation neuron")
     }
 
     fn stake_eligible_finalized_neuron(
@@ -1488,6 +1502,8 @@ mod tests {
     #[ignore = "requires pinned real SNS/NNS Wasms, IO Wasm artifacts, and POCKET_IC_BIN"]
     fn io_stream_manager_real_finalized_sns_list_neurons_updates_active_staked_io() {
         let stack = deploy_finalized_sns_with_io_real_stack_for_test(true).unwrap();
+        let participant = Principal::from_slice(&[105; 29]);
+        stake_eligible_finalized_neuron(&stack.sns, participant, 100_000_000, 40_001);
         let expected_active_stake = finalized_governance_expected_active_stake_e8s(&stack);
         assert!(
             expected_active_stake > 0,
@@ -2442,6 +2458,15 @@ mod tests {
     fn io_stream_manager_real_redemption_after_staker_rewards_preserves_rate() {
         let participant = Principal::from_slice(&[105; 29]);
         let stack = deploy_finalized_sns_with_io_real_stack_for_test(true).unwrap();
+        let reward_neuron_id =
+            nonzero_delay_direct_participation_neuron_id(&stack.sns, participant);
+        configure_finalized_neuron_dissolve_delay_for_test(
+            &stack.sns,
+            participant,
+            &reward_neuron_id,
+            TWO_WEEK_DISSOLVE_DELAY_SECONDS as u32,
+        )
+        .expect("finalized governance should exact-lock the reward neuron");
         let reward_neuron_ids = finalized_governance_expected_reward_neuron_ids(&stack);
         assert!(
             !reward_neuron_ids.is_empty(),
@@ -2453,6 +2478,12 @@ mod tests {
             (JUPITER_EXPECTED_IO_E8S + 300_000_000 + u128::from(2 * crate::icrc::FEE_E8S)) as u64,
         );
         let deposit_block = fund_real_jupiter_deposit(&stack, JUPITER_DEPOSIT_ICP_E8S);
+        let seed = stream_manager_tick(&stack);
+        assert!(seed.errors.is_empty(), "{:?}", seed.errors);
+        assert_eq!(seed.scanned_icp_transactions, 1);
+        assert_eq!(seed.processed_authorized_streams, 1);
+        assert_eq!(seed.io_issued_e8s, JUPITER_EXPECTED_IO_E8S);
+        stack.sns.pic.advance_time(Duration::from_secs(1));
         let maturity_block = fund_real_two_week_maturity_deposit(&stack, TWO_WEEK_MATURITY_ICP_E8S);
 
         let issuance_and_rewards = stream_manager_tick(&stack);
@@ -2461,12 +2492,9 @@ mod tests {
             "{:?}",
             issuance_and_rewards.errors
         );
-        assert_eq!(issuance_and_rewards.scanned_icp_transactions, 2);
-        assert_eq!(issuance_and_rewards.processed_authorized_streams, 2);
-        assert_eq!(
-            issuance_and_rewards.io_issued_e8s,
-            JUPITER_EXPECTED_IO_E8S + 300_000_000
-        );
+        assert_eq!(issuance_and_rewards.scanned_icp_transactions, 1);
+        assert_eq!(issuance_and_rewards.processed_authorized_streams, 1);
+        assert_eq!(issuance_and_rewards.io_issued_e8s, 300_000_000);
 
         let before_redemption = stream_manager_state(&stack);
         assert_eq!(before_redemption.protocol.liquid_icp_e8s, 6_300_000_000);
@@ -2522,6 +2550,15 @@ mod tests {
     fn io_stream_manager_real_two_week_maturity_5_icp_issues_exact_backed_reward_pool() {
         let participant = Principal::from_slice(&[105; 29]);
         let stack = deploy_finalized_sns_with_io_real_stack_for_test(true).unwrap();
+        let reward_neuron_id =
+            nonzero_delay_direct_participation_neuron_id(&stack.sns, participant);
+        configure_finalized_neuron_dissolve_delay_for_test(
+            &stack.sns,
+            participant,
+            &reward_neuron_id,
+            TWO_WEEK_DISSOLVE_DELAY_SECONDS as u32,
+        )
+        .expect("finalized governance should exact-lock the reward neuron");
         let reward_neuron_ids = finalized_governance_expected_reward_neuron_ids(&stack);
         assert!(
             !reward_neuron_ids.is_empty(),
@@ -2532,6 +2569,9 @@ mod tests {
             participant,
             JUPITER_EXPECTED_IO_E8S as u64 + crate::icrc::FEE_E8S,
         );
+        let seed = stream_manager_tick(&stack);
+        assert!(seed.errors.is_empty(), "{:?}", seed.errors);
+        stack.sns.pic.advance_time(Duration::from_secs(1));
         let maturity_block = fund_real_two_week_maturity_deposit(&stack, TWO_WEEK_MATURITY_ICP_E8S);
 
         let before = stream_manager_state(&stack);
@@ -2637,20 +2677,23 @@ mod tests {
             FINALIZED_SNS_PROPOSAL_REJECT_COST_E8S,
             40_002,
         );
+        let stack = deploy_io_real_stack_on_fixture(sns).unwrap();
+        let seed = stream_manager_tick(&stack);
+        assert!(seed.errors.is_empty(), "{:?}", seed.errors);
+        stack.sns.pic.advance_time(Duration::from_secs(1));
         let proposal_id = make_finalized_motion_proposal_for_test(
-            &sns,
+            &stack.sns,
             voter,
             &voter_neuron,
             "IO stream-manager voter-weighted reward smoke",
         )
         .expect("finalized governance should accept a motion proposal");
-        close_finalized_motion_proposal(&sns, voter, &proposal_id);
+        close_finalized_motion_proposal(&stack.sns, voter, &proposal_id);
 
-        let stack = deploy_io_real_stack_on_fixture(sns).unwrap();
         transfer_real_sns_protocol_reserve_from_participant(
             &stack,
             voter,
-            300_000_000 + crate::icrc::FEE_E8S,
+            300_000_000 + 2 * crate::icrc::FEE_E8S,
         );
         fund_real_two_week_maturity_deposit(&stack, TWO_WEEK_MATURITY_ICP_E8S);
         let voter_before = finalized_neuron_cached_stake_e8s(&stack, &voter_neuron);
@@ -2722,10 +2765,14 @@ mod tests {
         )
         .expect("finalized governance should accept proposer dissolve delay");
 
-        let function_id = finalized_motion_function_id_for_test(&sns)
+        let stack = deploy_io_real_stack_on_fixture(sns).unwrap();
+        let seed = stream_manager_tick(&stack);
+        assert!(seed.errors.is_empty(), "{:?}", seed.errors);
+        stack.sns.pic.advance_time(Duration::from_secs(1));
+        let function_id = finalized_motion_function_id_for_test(&stack.sns)
             .expect("finalized governance should expose Motion");
         follow_finalized_sns_neuron_for_test(
-            &sns,
+            &stack.sns,
             follower,
             &follower_neuron,
             leader_neuron.clone(),
@@ -2733,24 +2780,29 @@ mod tests {
         )
         .expect("follower should be able to follow leader for Motion");
         set_finalized_sns_governance_following_for_test(
-            &sns,
+            &stack.sns,
             follower,
             &follower_neuron,
             leader_neuron.clone(),
         )
         .expect("follower should be able to set topic following");
         let proposal_id = make_finalized_motion_proposal_for_test(
-            &sns,
+            &stack.sns,
             proposer,
             &proposer_neuron,
             "IO stream-manager followed-vote reward smoke",
         )
         .expect("finalized governance should accept a motion proposal");
-        register_finalized_sns_vote_for_test(&sns, leader, &leader_neuron, proposal_id.clone(), 1)
-            .expect("leader should vote yes after proposal creation");
-        close_finalized_motion_proposal(&sns, follower, &proposal_id);
+        register_finalized_sns_vote_for_test(
+            &stack.sns,
+            leader,
+            &leader_neuron,
+            proposal_id.clone(),
+            1,
+        )
+        .expect("leader should vote yes after proposal creation");
+        close_finalized_motion_proposal(&stack.sns, follower, &proposal_id);
 
-        let stack = deploy_io_real_stack_on_fixture(sns).unwrap();
         transfer_real_sns_protocol_reserve_from_participant(
             &stack,
             leader,
@@ -2802,6 +2854,9 @@ mod tests {
             reserve_funder,
             300_000_001 + 3 * crate::icrc::FEE_E8S,
         );
+        let seed = stream_manager_tick(&stack);
+        assert!(seed.errors.is_empty(), "{:?}", seed.errors);
+        stack.sns.pic.advance_time(Duration::from_secs(1));
         fund_real_two_week_maturity_deposit(&stack, 500_000_002);
 
         let outcome = stream_manager_tick(&stack);
@@ -2836,6 +2891,15 @@ mod tests {
     fn real_participation_reward_exact_fee_sum() {
         let participant = Principal::from_slice(&[105; 29]);
         let stack = deploy_finalized_sns_with_io_real_stack_for_test(true).unwrap();
+        let reward_neuron_id =
+            nonzero_delay_direct_participation_neuron_id(&stack.sns, participant);
+        configure_finalized_neuron_dissolve_delay_for_test(
+            &stack.sns,
+            participant,
+            &reward_neuron_id,
+            TWO_WEEK_DISSOLVE_DELAY_SECONDS as u32,
+        )
+        .expect("finalized governance should exact-lock the reward neuron");
         let reward_neuron_ids = finalized_governance_expected_reward_neuron_ids(&stack);
         assert!(
             !reward_neuron_ids.is_empty(),
@@ -2846,6 +2910,9 @@ mod tests {
             participant,
             300_000_000 + crate::icrc::FEE_E8S,
         );
+        let seed = stream_manager_tick(&stack);
+        assert!(seed.errors.is_empty(), "{:?}", seed.errors);
+        stack.sns.pic.advance_time(Duration::from_secs(1));
         fund_real_two_week_maturity_deposit(&stack, TWO_WEEK_MATURITY_ICP_E8S);
 
         let outcome = stream_manager_tick(&stack);
@@ -2877,11 +2944,23 @@ mod tests {
     fn real_participation_reward_replay_idempotent() {
         let participant = Principal::from_slice(&[105; 29]);
         let stack = deploy_finalized_sns_with_io_real_stack_for_test(true).unwrap();
+        let reward_neuron_id =
+            nonzero_delay_direct_participation_neuron_id(&stack.sns, participant);
+        configure_finalized_neuron_dissolve_delay_for_test(
+            &stack.sns,
+            participant,
+            &reward_neuron_id,
+            TWO_WEEK_DISSOLVE_DELAY_SECONDS as u32,
+        )
+        .expect("finalized governance should exact-lock the reward neuron");
         fund_real_sns_protocol_reserve_for_issuance(
             &stack,
             participant,
             300_000_000 + crate::icrc::FEE_E8S,
         );
+        let seed = stream_manager_tick(&stack);
+        assert!(seed.errors.is_empty(), "{:?}", seed.errors);
+        stack.sns.pic.advance_time(Duration::from_secs(1));
         fund_real_two_week_maturity_deposit(&stack, TWO_WEEK_MATURITY_ICP_E8S);
 
         let first = stream_manager_tick(&stack);
@@ -2926,8 +3005,8 @@ mod tests {
         let reserve_funder = Principal::from_slice(&[136; 29]);
         let role_stake_e8s = 100_000_000_u64;
         let reward_pool_e8s = 300_000_003_u128;
-        let expected_role_reward_e8s = 150_000_001_u128;
-        let expected_dust_e8s = 1_u128;
+        let expected_role_reward_e8s = 100_000_001_u128;
+        let expected_dust_e8s = 100_000_001_u128;
         let sns = deploy_finalized_sns_lifecycle_fixture_with_participants_for_test(
             true,
             &[
@@ -2941,6 +3020,15 @@ mod tests {
         )
         .unwrap();
         let proposer_neuron = direct_participation_neuron_id(&sns, proposer);
+        configure_finalized_neuron_dissolve_delay_for_test(
+            &sns,
+            proposer,
+            &proposer_neuron,
+            TWO_WEEK_DISSOLVE_DELAY_SECONDS as u32,
+        )
+        .expect("finalized governance should accept proposer dissolve delay");
+        start_finalized_neuron_dissolving_for_test(&sns, proposer, &proposer_neuron)
+            .expect("finalized governance should let facilitator leave the reward cohort");
         let direct_neuron = stake_eligible_finalized_neuron(&sns, direct, role_stake_e8s, 50_001);
         let follower_neuron =
             stake_eligible_finalized_neuron(&sns, follower, role_stake_e8s, 50_002);
@@ -2948,51 +3036,6 @@ mod tests {
             stake_eligible_finalized_neuron(&sns, non_voter, role_stake_e8s, 50_003);
         let dissolving_neuron =
             stake_eligible_finalized_neuron(&sns, dissolving, role_stake_e8s, 50_004);
-        start_finalized_neuron_dissolving_for_test(&sns, dissolving, &dissolving_neuron)
-            .expect("finalized governance should accept start dissolving");
-
-        let function_id = finalized_motion_function_id_for_test(&sns)
-            .expect("finalized governance should expose Motion");
-        follow_finalized_sns_neuron_for_test(
-            &sns,
-            follower,
-            &follower_neuron,
-            direct_neuron.clone(),
-            function_id,
-        )
-        .expect("follower should follow direct voter for Motion");
-        set_finalized_sns_governance_following_for_test(
-            &sns,
-            follower,
-            &follower_neuron,
-            direct_neuron.clone(),
-        )
-        .expect("follower should set topic following");
-        let proposal_id = make_finalized_motion_proposal_for_test(
-            &sns,
-            proposer,
-            &proposer_neuron,
-            "IO strict four-role participation reward",
-        )
-        .expect("finalized governance should accept a motion proposal");
-        register_finalized_sns_vote_for_test(&sns, direct, &direct_neuron, proposal_id.clone(), 1)
-            .expect("direct voter should vote yes");
-        close_finalized_motion_proposal(&sns, follower, &proposal_id);
-        let follower_proposals = list_finalized_sns_proposals_as(&sns, follower, 100)
-            .expect("follower should list finalized proposals");
-        let followed_proposal = follower_proposals
-            .proposals
-            .iter()
-            .find(|proposal| proposal.id == Some(proposal_id.clone()))
-            .expect("closed proposal should be visible to follower");
-        assert!(
-            followed_proposal
-                .ballots
-                .iter()
-                .any(|(id, ballot)| id == &hex::encode(&follower_neuron.id) && ballot.vote == 1),
-            "follower-visible real governance ballot should show propagated yes vote: {:?}",
-            followed_proposal.ballots
-        );
 
         let stack = deploy_io_real_stack_on_fixture_configured(
             sns,
@@ -3018,6 +3061,97 @@ mod tests {
             },
         )
         .unwrap();
+        let seed = stream_manager_tick(&stack);
+        assert!(seed.errors.is_empty(), "{:?}", seed.errors);
+        assert_eq!(seed.io_issued_e8s, 0);
+        assert_eq!(seed.processed_authorized_streams, 0);
+        let seeded_state = stream_manager_stable_state(&stack);
+        let seeded_cohort = seeded_state
+            .reward_cohort
+            .as_ref()
+            .expect("first successful tick should capture reward cohort");
+        let cohort_ids = seeded_cohort
+            .members
+            .iter()
+            .map(|member| member.sns_neuron_id.clone())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            cohort_ids,
+            BTreeSet::from([
+                direct_neuron.id.clone(),
+                follower_neuron.id.clone(),
+                non_voter_neuron.id.clone(),
+                dissolving_neuron.id.clone()
+            ])
+        );
+        assert!(
+            !cohort_ids.contains(&proposer_neuron.id),
+            "proposal facilitator must not enter the frozen reward cohort"
+        );
+        stack.sns.pic.advance_time(Duration::from_secs(1));
+        for _ in 0..5 {
+            stack.sns.pic.tick();
+        }
+        stop_finalized_neuron_dissolving_for_test(&stack.sns, proposer, &proposer_neuron)
+            .expect("finalized governance should restore facilitator voting eligibility");
+        let function_id = finalized_motion_function_id_for_test(&stack.sns)
+            .expect("finalized governance should expose Motion");
+        follow_finalized_sns_neuron_for_test(
+            &stack.sns,
+            follower,
+            &follower_neuron,
+            direct_neuron.clone(),
+            function_id,
+        )
+        .expect("follower should follow direct voter for Motion");
+        set_finalized_sns_governance_following_for_test(
+            &stack.sns,
+            follower,
+            &follower_neuron,
+            direct_neuron.clone(),
+        )
+        .expect("follower should set topic following");
+        let proposal_id = make_finalized_motion_proposal_for_test(
+            &stack.sns,
+            proposer,
+            &proposer_neuron,
+            "IO strict four-role participation reward",
+        )
+        .expect("finalized governance should accept a motion proposal");
+        register_finalized_sns_vote_for_test(
+            &stack.sns,
+            direct,
+            &direct_neuron,
+            proposal_id.clone(),
+            1,
+        )
+        .expect("direct voter should vote yes");
+        register_finalized_sns_vote_for_test(
+            &stack.sns,
+            dissolving,
+            &dissolving_neuron,
+            proposal_id.clone(),
+            1,
+        )
+        .expect("exiting voter should vote yes before dissolving");
+        close_finalized_motion_proposal(&stack.sns, follower, &proposal_id);
+        let follower_proposals = list_finalized_sns_proposals_as(&stack.sns, follower, 100)
+            .expect("follower should list finalized proposals");
+        let followed_proposal = follower_proposals
+            .proposals
+            .iter()
+            .find(|proposal| proposal.id == Some(proposal_id.clone()))
+            .expect("closed proposal should be visible to follower");
+        assert!(
+            followed_proposal
+                .ballots
+                .iter()
+                .any(|(id, ballot)| id == &hex::encode(&follower_neuron.id) && ballot.vote == 1),
+            "follower-visible real governance ballot should show propagated yes vote: {:?}",
+            followed_proposal.ballots
+        );
+        start_finalized_neuron_dissolving_for_test(&stack.sns, dissolving, &dissolving_neuron)
+            .expect("finalized governance should allow exiting voter to start dissolving");
         let role_stakes_before = [
             finalized_neuron_cached_stake_e8s(&stack, &direct_neuron),
             finalized_neuron_cached_stake_e8s(&stack, &follower_neuron),
@@ -3033,36 +3167,49 @@ mod tests {
         ]
         .into_iter()
         .map(
-            |(id, voted, eligible, is_dissolving)| io_reward_policy::NeuronSnapshot {
+            |(id, voted, eligible, is_dissolving)| io_reward_policy::RewardParticipant {
                 sns_neuron_id: io_governance_types::SnsNeuronId(id.id.clone()),
                 neuron_id: reward_id_for_sns_neuron_id(id),
-                staked_io_e8s: u128::from(role_stake_e8s),
-                eligible_seconds: TWO_WEEK_DISSOLVE_DELAY_SECONDS,
+                frozen_stake_e8s: u128::from(role_stake_e8s),
                 eligible_closed_proposals: eligible,
                 voted_closed_proposals: voted,
-                is_genesis_governance_neuron: false,
-                is_protocol_owned: false,
-                is_dissolving,
+                destination_is_currently_eligible: !is_dissolving,
             },
         )
         .collect::<Vec<_>>();
         assert_eq!(
-            io_reward_policy::reward_weight(&role_snapshots[0]),
-            role_snapshots[0].staked_io_e8s * u128::from(TWO_WEEK_DISSOLVE_DELAY_SECONDS)
+            io_reward_policy::reward_weight(&role_snapshots[0]).unwrap(),
+            role_snapshots[0].frozen_stake_e8s
         );
         assert_eq!(
-            io_reward_policy::reward_weight(&role_snapshots[1]),
-            io_reward_policy::reward_weight(&role_snapshots[0])
+            io_reward_policy::reward_weight(&role_snapshots[1]).unwrap(),
+            io_reward_policy::reward_weight(&role_snapshots[0]).unwrap()
         );
-        assert_eq!(io_reward_policy::reward_weight(&role_snapshots[2]), 0);
-        assert_eq!(io_reward_policy::reward_weight(&role_snapshots[3]), 0);
-        let oracle = io_reward_policy::allocate_rewards(reward_pool_e8s, &role_snapshots);
+        assert_eq!(
+            io_reward_policy::reward_weight(&role_snapshots[2]).unwrap(),
+            0
+        );
+        assert_eq!(
+            io_reward_policy::reward_weight(&role_snapshots[3]).unwrap(),
+            role_snapshots[3].frozen_stake_e8s
+        );
+        let oracle = io_reward_policy::allocate_rewards(reward_pool_e8s, &role_snapshots).unwrap();
         assert_eq!(oracle.dust_e8s, expected_dust_e8s);
+        assert_eq!(oracle.forfeited_reward_e8s, expected_dust_e8s);
         assert_eq!(oracle.allocations.len(), 2);
         assert!(oracle
             .allocations
             .iter()
             .all(|allocation| allocation.io_e8s == expected_role_reward_e8s));
+        assert_eq!(
+            oracle
+                .allocations
+                .iter()
+                .map(|allocation| allocation.io_e8s)
+                .sum::<u128>()
+                + oracle.dust_e8s,
+            reward_pool_e8s
+        );
 
         fund_real_two_week_maturity_deposit(&stack, 500_000_005);
         let model_before = stream_manager_state(&stack);
@@ -3107,6 +3254,15 @@ mod tests {
         assert_eq!(
             preflight.total_reserve_debit_e8s,
             2 * expected_role_reward_e8s + preflight.total_fee_e8s
+        );
+        assert_eq!(
+            preflight.total_reserve_debit_e8s,
+            oracle
+                .allocations
+                .iter()
+                .map(|allocation| allocation.io_e8s)
+                .sum::<u128>()
+                + preflight.total_fee_e8s
         );
         let canonical_recipient_ids = preflight
             .canonical_recipient_ids
@@ -3338,6 +3494,464 @@ mod tests {
 
     #[test]
     #[ignore = "requires pinned real SNS/NNS Wasms, IO debug Wasm artifacts, and POCKET_IC_BIN"]
+    fn real_finalized_sns_frozen_cohort_blocks_late_stake_and_duration_bonus() {
+        let participant_a = Principal::from_slice(&[137; 29]);
+        let participant_b = Principal::from_slice(&[138; 29]);
+        let participant_c = Principal::from_slice(&[139; 29]);
+        let reserve_funder = Principal::from_slice(&[140; 29]);
+        let frozen_stake_e8s = 10_000_000_000_u64;
+        let topup_e8s = 5_000_000_000_u64;
+        let first_reward_pool_e8s = 300_000_000_u128;
+        let second_reward_pool_e8s = 300_000_006_u128;
+        let planned_external_setup_fee_burn_e8s = u128::from(3 * crate::icrc::FEE_E8S);
+        let sns = deploy_finalized_sns_lifecycle_fixture_with_participants_for_test(
+            true,
+            &[
+                (participant_a, PARTICIPANT_ICP_E8S),
+                (participant_b, PARTICIPANT_ICP_E8S),
+                (participant_c, PARTICIPANT_ICP_E8S),
+                (reserve_funder, PARTICIPANT_ICP_E8S),
+            ],
+        )
+        .unwrap();
+        let neuron_a =
+            stake_eligible_finalized_neuron(&sns, participant_a, frozen_stake_e8s, 70_001);
+        let neuron_b =
+            stake_eligible_finalized_neuron(&sns, participant_b, frozen_stake_e8s, 70_002);
+
+        let stack = deploy_io_real_stack_on_fixture_configured(
+            sns,
+            |sns, stream_manager, stream_manager_args| {
+                fund_real_sns_protocol_reserve_account_for_issuance(
+                    sns,
+                    stream_manager,
+                    reserve_funder,
+                    (first_reward_pool_e8s + second_reward_pool_e8s) as u64
+                        + 5 * crate::icrc::FEE_E8S,
+                );
+                let reserve_balance = crate::icrc::icrc1_balance_of(
+                    &sns.pic,
+                    sns.ledger,
+                    reserve_account_for_stream_manager(stream_manager),
+                );
+                let total_supply = crate::icrc::icrc1_total_supply(&sns.pic, sns.ledger);
+                let initial_reserve =
+                    nat_to_u128(&reserve_balance, "two-cohort pre-install reserve balance");
+                let initial_supply =
+                    nat_to_u128(&total_supply, "two-cohort pre-install total supply");
+                stream_manager_args.initial_protocol_reserve_io_e8s = initial_reserve;
+                stream_manager_args.initial_total_io_supply_e8s =
+                    initial_supply - planned_external_setup_fee_burn_e8s;
+                stream_manager_args.non_redeemable_governance_io_e8s =
+                    stream_manager_args.initial_total_io_supply_e8s - initial_reserve;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        let capture = stream_manager_tick(&stack);
+        assert!(capture.errors.is_empty(), "{:?}", capture.errors);
+        assert_eq!(capture.io_issued_e8s, 0);
+        let cohort_1 = stream_manager_stable_state(&stack)
+            .reward_cohort
+            .expect("first successful tick should capture the starting reward cohort");
+        assert_eq!(cohort_1.generation, 1);
+        assert_eq!(cohort_1.members.len(), 2);
+        assert_eq!(
+            cohort_1
+                .members
+                .iter()
+                .map(|member| member.frozen_stake_e8s)
+                .collect::<Vec<_>>(),
+            vec![u128::from(frozen_stake_e8s), u128::from(frozen_stake_e8s)]
+        );
+        stack.sns.pic.advance_time(Duration::from_secs(1));
+        for _ in 0..5 {
+            stack.sns.pic.tick();
+        }
+
+        let topped_up = stake_finalized_liquid_sns_tokens_for_test(
+            &stack.sns,
+            participant_a,
+            topup_e8s,
+            70_001,
+        )
+        .expect("same memo/controller should top up participant A's neuron");
+        assert_eq!(topped_up, neuron_a);
+        let neuron_c =
+            stake_eligible_finalized_neuron(&stack.sns, participant_c, frozen_stake_e8s, 70_003);
+
+        let proposal_id = make_finalized_motion_proposal_for_test(
+            &stack.sns,
+            participant_a,
+            &neuron_a,
+            "IO frozen reward cohort excludes late stake",
+        )
+        .expect("finalized governance should accept a motion proposal");
+        register_finalized_sns_vote_for_test(
+            &stack.sns,
+            participant_b,
+            &neuron_b,
+            proposal_id.clone(),
+            1,
+        )
+        .expect("participant B should vote yes");
+        close_finalized_motion_proposal(&stack.sns, participant_b, &proposal_id);
+
+        let a_before_first = finalized_neuron_cached_stake_e8s(&stack, &neuron_a);
+        let b_before_first = finalized_neuron_cached_stake_e8s(&stack, &neuron_b);
+        let c_before_first = finalized_neuron_cached_stake_e8s(&stack, &neuron_c);
+        assert_eq!(a_before_first, frozen_stake_e8s + topup_e8s);
+        assert_eq!(b_before_first, frozen_stake_e8s);
+        assert_eq!(c_before_first, frozen_stake_e8s);
+
+        let reserve_before_first = crate::icrc::icrc1_balance_of(
+            &stack.sns.pic,
+            stack.sns.ledger,
+            reserve_account_for_stack(&stack),
+        );
+        let supply_before_first = crate::icrc::icrc1_total_supply(&stack.sns.pic, stack.sns.ledger);
+        let model_before_first = stream_manager_state(&stack);
+        assert_eq!(
+            model_before_first.protocol.protocol_reserve_io_e8s,
+            nat_to_u128(&reserve_before_first, "cohort 1 reserve before")
+        );
+        fund_real_two_week_maturity_deposit(&stack, 500_000_000);
+        let first = stream_manager_tick(&stack);
+        assert!(first.errors.is_empty(), "{:?}", first.errors);
+        assert_eq!(first.io_issued_e8s, first_reward_pool_e8s);
+        let first_op = completed_two_week_reward_operation(&stack, first.io_issued_e8s);
+        let a_reward_id = reward_id_for_sns_neuron_id(&neuron_a);
+        let b_reward_id = reward_id_for_sns_neuron_id(&neuron_b);
+        let c_reward_id = reward_id_for_sns_neuron_id(&neuron_c);
+        let first_a = first_op
+            .two_week_recipients
+            .iter()
+            .find(|recipient| recipient.neuron_id == a_reward_id)
+            .expect("A should receive first-cohort reward");
+        let first_b = first_op
+            .two_week_recipients
+            .iter()
+            .find(|recipient| recipient.neuron_id == b_reward_id)
+            .expect("B should receive first-cohort reward");
+        assert_eq!(first_a.amount_e8s, first_reward_pool_e8s / 2);
+        assert_eq!(first_b.amount_e8s, first_reward_pool_e8s / 2);
+        assert!(
+            first_op
+                .two_week_recipients
+                .iter()
+                .all(|recipient| recipient.neuron_id != c_reward_id),
+            "late-created C must not enter the first frozen cohort operation: {first_op:?}"
+        );
+        let a_after_first = finalized_neuron_cached_stake_e8s(&stack, &neuron_a);
+        let b_after_first = finalized_neuron_cached_stake_e8s(&stack, &neuron_b);
+        let c_after_first = finalized_neuron_cached_stake_e8s(&stack, &neuron_c);
+        let reserve_after_first = crate::icrc::icrc1_balance_of(
+            &stack.sns.pic,
+            stack.sns.ledger,
+            reserve_account_for_stack(&stack),
+        );
+        let supply_after_first = crate::icrc::icrc1_total_supply(&stack.sns.pic, stack.sns.ledger);
+        let model_after_first = stream_manager_state(&stack);
+        let first_preflight = first_op
+            .reward_preflight
+            .as_ref()
+            .expect("first operation should record reward preflight");
+        let first_allocated_e8s = first_op
+            .two_week_recipients
+            .iter()
+            .map(|recipient| recipient.amount_e8s)
+            .sum::<u128>();
+        assert_eq!(
+            first_allocated_e8s + first_preflight.dust_e8s,
+            first_reward_pool_e8s
+        );
+        assert_eq!(
+            first_preflight.total_reserve_debit_e8s,
+            first_allocated_e8s + first_preflight.total_fee_e8s
+        );
+        assert_eq!(
+            model_before_first.protocol.protocol_reserve_io_e8s
+                - model_after_first.protocol.protocol_reserve_io_e8s,
+            first_preflight.total_reserve_debit_e8s
+        );
+        assert_eq!(
+            nat_to_u128(&reserve_before_first, "cohort 1 reserve before")
+                - nat_to_u128(&reserve_after_first, "cohort 1 reserve after"),
+            first_preflight.total_reserve_debit_e8s
+        );
+        assert_eq!(
+            model_before_first.protocol.total_io_supply_e8s
+                - model_after_first.protocol.total_io_supply_e8s,
+            first_preflight.total_fee_e8s
+        );
+        assert_eq!(
+            nat_to_u128(&supply_before_first, "cohort 1 supply before")
+                - nat_to_u128(&supply_after_first, "cohort 1 supply after"),
+            first_preflight.total_fee_e8s
+        );
+        assert_eq!(
+            model_after_first.protocol.protocol_reserve_io_e8s,
+            nat_to_u128(&reserve_after_first, "cohort 1 reserve after")
+        );
+        assert_eq!(
+            model_before_first.protocol.total_io_supply_e8s,
+            nat_to_u128(&supply_before_first, "cohort 1 supply before")
+        );
+        assert_eq!(
+            model_after_first.protocol.total_io_supply_e8s,
+            nat_to_u128(&supply_after_first, "cohort 1 supply after")
+        );
+        assert_eq!(
+            a_after_first - a_before_first,
+            first_reward_pool_e8s as u64 / 2
+        );
+        assert_eq!(
+            b_after_first - b_before_first,
+            first_reward_pool_e8s as u64 / 2
+        );
+        assert_eq!(c_after_first, c_before_first);
+
+        let after_first_stable = stream_manager_stable_state(&stack);
+        assert_eq!(
+            after_first_stable
+                .reward_cohort
+                .as_ref()
+                .and_then(|cohort| cohort.consumed_by_operation_id.as_ref()),
+            Some(&first_op.operation_id)
+        );
+        upgrade_stream_manager_same_wasm(&stack);
+        let replay = stream_manager_tick(&stack);
+        assert!(replay.errors.is_empty(), "{:?}", replay.errors);
+        assert_eq!(replay.io_issued_e8s, 0);
+        assert_eq!(replay.processed_authorized_streams, 0);
+
+        let mut cohort_2 = stream_manager_stable_state(&stack)
+            .reward_cohort
+            .expect("same-Wasm replay should retain or refresh reward cohort state");
+        if cohort_2.generation == cohort_1.generation {
+            let refresh = stream_manager_tick(&stack);
+            assert!(refresh.errors.is_empty(), "{:?}", refresh.errors);
+            assert_eq!(refresh.io_issued_e8s, 0);
+            cohort_2 = stream_manager_stable_state(&stack)
+                .reward_cohort
+                .expect("a fresh successful tick after completion should capture cohort 2");
+        }
+        assert_eq!(cohort_2.generation, cohort_1.generation + 1);
+        stack.sns.pic.advance_time(Duration::from_secs(1));
+        for _ in 0..5 {
+            stack.sns.pic.tick();
+        }
+        assert_eq!(cohort_2.members.len(), 3);
+        assert!(cohort_2
+            .members
+            .iter()
+            .any(|member| member.sns_neuron_id == neuron_a.id
+                && member.frozen_stake_e8s == u128::from(a_after_first)));
+        assert!(cohort_2
+            .members
+            .iter()
+            .any(|member| member.sns_neuron_id == neuron_c.id
+                && member.frozen_stake_e8s == u128::from(c_after_first)));
+        let first_proposal = list_finalized_sns_proposals_as(&stack.sns, participant_a, 100)
+            .expect("participant A should list finalized proposals")
+            .proposals
+            .into_iter()
+            .find(|proposal| proposal.id == Some(proposal_id.clone()))
+            .expect("first-cohort proposal should remain visible");
+        assert!(
+            first_proposal.decided_timestamp_seconds < cohort_2.captured_at_timestamp_seconds,
+            "first-cohort proposal must be outside cohort 2 period: proposal={:?}, cohort_2={:?}",
+            first_proposal,
+            cohort_2
+        );
+        let second_oracle_participants = cohort_2
+            .members
+            .iter()
+            .map(|member| {
+                let sns_neuron_id = io_governance_types::SnsNeuronId(member.sns_neuron_id.clone());
+                io_reward_policy::RewardParticipant {
+                    neuron_id: io_reward_policy::sns_neuron_id_to_u64(&sns_neuron_id)
+                        .expect("cohort member should have a stable reward id"),
+                    sns_neuron_id,
+                    frozen_stake_e8s: member.frozen_stake_e8s,
+                    eligible_closed_proposals: 0,
+                    voted_closed_proposals: 0,
+                    destination_is_currently_eligible: true,
+                }
+            })
+            .collect::<Vec<_>>();
+        let second_oracle =
+            io_reward_policy::allocate_rewards(second_reward_pool_e8s, &second_oracle_participants)
+                .unwrap();
+        let expected_second_allocations = second_oracle
+            .allocations
+            .iter()
+            .map(|allocation| (allocation.neuron_id, allocation.io_e8s))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            expected_second_allocations.len(),
+            3,
+            "cohort 2 should allocate to A, B, and C with full participation"
+        );
+
+        let reserve_before_second = crate::icrc::icrc1_balance_of(
+            &stack.sns.pic,
+            stack.sns.ledger,
+            reserve_account_for_stack(&stack),
+        );
+        let supply_before_second =
+            crate::icrc::icrc1_total_supply(&stack.sns.pic, stack.sns.ledger);
+        let model_before_second = stream_manager_state(&stack);
+        assert_eq!(
+            model_before_second.protocol.protocol_reserve_io_e8s,
+            nat_to_u128(&reserve_before_second, "cohort 2 reserve before")
+        );
+        fund_real_two_week_maturity_deposit(&stack, 500_000_010);
+        let second = stream_manager_tick(&stack);
+        assert!(second.errors.is_empty(), "{:?}", second.errors);
+        assert_eq!(second.io_issued_e8s, second_reward_pool_e8s);
+        let second_op = completed_two_week_reward_operation(&stack, second.io_issued_e8s);
+        let actual_second_allocations = second_op
+            .two_week_recipients
+            .iter()
+            .map(|recipient| (recipient.neuron_id, recipient.amount_e8s))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(actual_second_allocations, expected_second_allocations);
+        let second_a = second_op
+            .two_week_recipients
+            .iter()
+            .find(|recipient| recipient.neuron_id == a_reward_id)
+            .expect("A should receive second-cohort reward");
+        let second_c = second_op
+            .two_week_recipients
+            .iter()
+            .find(|recipient| recipient.neuron_id == c_reward_id)
+            .expect("C should enter the later fresh cohort");
+        assert_eq!(
+            second_a.amount_e8s,
+            *expected_second_allocations.get(&a_reward_id).unwrap(),
+            "A's top-up and first reward should affect the exact cohort 2 oracle amount"
+        );
+        assert_eq!(
+            second_c.amount_e8s,
+            *expected_second_allocations.get(&c_reward_id).unwrap(),
+            "late-created C should receive exactly its cohort 2 oracle amount"
+        );
+        let reserve_after_second = crate::icrc::icrc1_balance_of(
+            &stack.sns.pic,
+            stack.sns.ledger,
+            reserve_account_for_stack(&stack),
+        );
+        let supply_after_second = crate::icrc::icrc1_total_supply(&stack.sns.pic, stack.sns.ledger);
+        let model_after_second = stream_manager_state(&stack);
+        let second_preflight = second_op
+            .reward_preflight
+            .as_ref()
+            .expect("second operation should record reward preflight");
+        let second_allocated_e8s = second_op
+            .two_week_recipients
+            .iter()
+            .map(|recipient| recipient.amount_e8s)
+            .sum::<u128>();
+        assert_eq!(
+            second_allocated_e8s + second_preflight.dust_e8s,
+            second_reward_pool_e8s
+        );
+        assert_eq!(
+            second_preflight.total_reserve_debit_e8s,
+            second_allocated_e8s + second_preflight.total_fee_e8s
+        );
+        assert_eq!(
+            model_before_second.protocol.protocol_reserve_io_e8s
+                - model_after_second.protocol.protocol_reserve_io_e8s,
+            second_preflight.total_reserve_debit_e8s
+        );
+        assert_eq!(
+            nat_to_u128(&reserve_before_second, "cohort 2 reserve before")
+                - nat_to_u128(&reserve_after_second, "cohort 2 reserve after"),
+            second_preflight.total_reserve_debit_e8s
+        );
+        assert_eq!(
+            model_before_second.protocol.total_io_supply_e8s
+                - model_after_second.protocol.total_io_supply_e8s,
+            second_preflight.total_fee_e8s
+        );
+        assert_eq!(
+            nat_to_u128(&supply_before_second, "cohort 2 supply before")
+                - nat_to_u128(&supply_after_second, "cohort 2 supply after"),
+            second_preflight.total_fee_e8s
+        );
+        assert_eq!(
+            model_after_second.protocol.protocol_reserve_io_e8s,
+            nat_to_u128(&reserve_after_second, "cohort 2 reserve after")
+        );
+        assert_eq!(
+            model_before_second.protocol.total_io_supply_e8s,
+            nat_to_u128(&supply_before_second, "cohort 2 supply before")
+        );
+        assert_eq!(
+            model_after_second.protocol.total_io_supply_e8s,
+            nat_to_u128(&supply_after_second, "cohort 2 supply after")
+        );
+        eprintln!(
+            "two_cohort_reward_summary cohort1_members={:?} cohort1_frozen_stakes={:?} cohort1_participation=[({},1,1),({},1,1)] cohort1_allocations={:?} cohort1_dust_e8s={} cohort1_total_fee_e8s={} cohort1_reserve_delta_e8s={} cohort1_supply_delta_e8s={} cohort2_members={:?} cohort2_frozen_stakes={:?} cohort2_participation=[({},0,0),({},0,0),({},0,0)] cohort2_allocations={:?} cohort2_dust_e8s={} cohort2_total_fee_e8s={} cohort2_reserve_delta_e8s={} cohort2_supply_delta_e8s={}",
+            cohort_1
+                .members
+                .iter()
+                .map(|member| hex::encode(&member.sns_neuron_id))
+                .collect::<Vec<_>>(),
+            cohort_1
+                .members
+                .iter()
+                .map(|member| member.frozen_stake_e8s)
+                .collect::<Vec<_>>(),
+            a_reward_id,
+            b_reward_id,
+            first_op
+                .two_week_recipients
+                .iter()
+                .map(|recipient| (recipient.neuron_id, recipient.amount_e8s))
+                .collect::<Vec<_>>(),
+            first_preflight.dust_e8s,
+            first_preflight.total_fee_e8s,
+            nat_to_u128(&reserve_before_first, "reserve_before_first")
+                - nat_to_u128(&reserve_after_first, "reserve_after_first"),
+            nat_to_u128(&supply_before_first, "supply_before_first")
+                - nat_to_u128(&supply_after_first, "supply_after_first"),
+            cohort_2
+                .members
+                .iter()
+                .map(|member| hex::encode(&member.sns_neuron_id))
+                .collect::<Vec<_>>(),
+            cohort_2
+                .members
+                .iter()
+                .map(|member| member.frozen_stake_e8s)
+                .collect::<Vec<_>>(),
+            a_reward_id,
+            b_reward_id,
+            c_reward_id,
+            second_op
+                .two_week_recipients
+                .iter()
+                .map(|recipient| (recipient.neuron_id, recipient.amount_e8s))
+                .collect::<Vec<_>>(),
+            second_preflight.dust_e8s,
+            second_preflight.total_fee_e8s,
+            nat_to_u128(&reserve_before_second, "reserve_before_second")
+                - nat_to_u128(&reserve_after_second, "reserve_after_second"),
+            nat_to_u128(&supply_before_second, "supply_before_second")
+                - nat_to_u128(&supply_after_second, "supply_after_second")
+        );
+        let final_replay = stream_manager_tick(&stack);
+        assert!(final_replay.errors.is_empty(), "{:?}", final_replay.errors);
+        assert_eq!(final_replay.io_issued_e8s, 0);
+        assert_eq!(final_replay.processed_authorized_streams, 0);
+    }
+
+    #[test]
+    #[ignore = "requires pinned real SNS/NNS Wasms, IO debug Wasm artifacts, and POCKET_IC_BIN"]
     fn real_finalized_sns_zero_recipient_reward_retains_full_pool_as_dust() {
         let reserve_funder = Principal::from_slice(&[142; 29]);
         let excluded_voter_owner = Principal::from_slice(&[143; 29]);
@@ -3395,6 +4009,15 @@ mod tests {
             },
         )
         .unwrap();
+
+        let seed = stream_manager_tick(&stack);
+        assert!(seed.errors.is_empty(), "{:?}", seed.errors);
+        assert_eq!(seed.io_issued_e8s, 0);
+        assert_eq!(seed.processed_authorized_streams, 0);
+        stack.sns.pic.advance_time(Duration::from_secs(1));
+        for _ in 0..5 {
+            stack.sns.pic.tick();
+        }
 
         fund_real_two_week_maturity_deposit(&stack, 500_000_005);
         let model_before = stream_manager_state(&stack);
@@ -3503,6 +4126,15 @@ mod tests {
     fn real_stack_upgrade_after_reward_transfer_before_journal_update_no_double_transfer() {
         let participant = Principal::from_slice(&[105; 29]);
         let stack = deploy_finalized_sns_with_io_real_stack_for_test(true).unwrap();
+        let reward_neuron_id =
+            nonzero_delay_direct_participation_neuron_id(&stack.sns, participant);
+        configure_finalized_neuron_dissolve_delay_for_test(
+            &stack.sns,
+            participant,
+            &reward_neuron_id,
+            TWO_WEEK_DISSOLVE_DELAY_SECONDS as u32,
+        )
+        .expect("finalized governance should exact-lock the reward neuron");
         let reward_neuron_ids = finalized_governance_expected_reward_neuron_ids(&stack);
         assert!(
             !reward_neuron_ids.is_empty(),
@@ -3513,6 +4145,9 @@ mod tests {
             participant,
             JUPITER_EXPECTED_IO_E8S as u64 + crate::icrc::FEE_E8S,
         );
+        let seed = stream_manager_tick(&stack);
+        assert!(seed.errors.is_empty(), "{:?}", seed.errors);
+        stack.sns.pic.advance_time(Duration::from_secs(1));
         fund_real_two_week_maturity_deposit(&stack, TWO_WEEK_MATURITY_ICP_E8S);
 
         stream_manager_set_failpoint(
@@ -3655,6 +4290,9 @@ mod tests {
             reserve_funder,
             JUPITER_EXPECTED_IO_E8S as u64 + crate::icrc::FEE_E8S,
         );
+        let seed = stream_manager_tick(&stack);
+        assert!(seed.errors.is_empty(), "{:?}", seed.errors);
+        stack.sns.pic.advance_time(Duration::from_secs(1));
         fund_real_two_week_maturity_deposit(&stack, TWO_WEEK_MATURITY_ICP_E8S);
 
         let eligible_before = finalized_neuron_cached_stake_e8s(&stack, &eligible_neuron);

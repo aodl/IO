@@ -20,9 +20,9 @@ The production DID is install-args-only:
 service : (InitArgs) -> {}
 ```
 
-`InitArgs` defines the controller canister principal, 2-year NNS neuron id, two-week dissolve delay, initial model principals, model annual bps, and optional placeholder stream-manager target config/memos.
+`InitArgs` defines the controller canister principal, 2-year NNS neuron id, initial model principals, model annual bps, and optional placeholder stream-manager target config/memos. The two-week pool uses the shared exact 1,209,600-second dissolve-delay constant.
 
-Defaults preserve the known live constants below. Validation rejects empty or malformed controller principal text, a zero 2-year neuron id, a zero two-week dissolve delay, malformed optional stream-manager principal text, and model annual bps above the test/model ceiling.
+Defaults preserve the known live constants below. Validation rejects empty or malformed controller principal text, a zero 2-year neuron id, malformed optional stream-manager principal text, and model annual bps above the test/model ceiling.
 
 ## Stable State
 

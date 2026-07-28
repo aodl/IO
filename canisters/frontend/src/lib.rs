@@ -326,19 +326,29 @@ mod tests {
     }
 
     #[test]
-    fn generated_bundle_is_immutable_when_built() {
+    fn generated_bundle_is_immutable_after_frontend_build() {
         let index = String::from_utf8_lossy(get("/").body()).to_string();
         let start = index.find("/generated/app.").expect("bundle path");
         let end = index[start..].find(".js").expect("bundle suffix") + start + 3;
-        let response = get(&index[start..end]);
-        if response.status_code() == StatusCode::NOT_FOUND {
-            let generated_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("public/generated");
-            assert!(
-                !generated_dir.exists(),
-                "generated bundle should be routable when public/generated exists"
+        let bundle_path = &index[start..end];
+        let response = get(bundle_path);
+        let generated_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("public/generated");
+        let bundle_manifest = generated_dir.join("frontend-bundle.json");
+
+        if !bundle_manifest.exists() {
+            assert_eq!(
+                response.status_code(),
+                StatusCode::NOT_FOUND,
+                "referenced generated bundle should not be served before the frontend build"
             );
             return;
         }
+
+        let manifest = std::fs::read_to_string(&bundle_manifest).expect("bundle manifest readable");
+        assert!(
+            manifest.contains(bundle_path),
+            "private bundle manifest should describe the index.html bundle path"
+        );
         assert_eq!(response.status_code(), StatusCode::OK);
         assert_eq!(header(&response, "Cache-Control"), IMMUTABLE);
         assert_eq!(

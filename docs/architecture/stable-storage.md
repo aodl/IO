@@ -14,21 +14,22 @@ inventory without network calls.
 
 Registered canisters:
 
-- `io_stream_manager`: current schema version 2, supports legacy unversioned v0 stable roots and
-  v1 stream-manager states with scalar reward reservations.
-- `io_nns_neuron_manager`: current schema version 1, supports legacy unversioned v0 stable roots.
-- `io_historian`: current schema version 1, supports v0 read-model fixtures with source health
-  recomputed from state.
+- `io_stream_manager`: current schema version 3, supports legacy unversioned v0 stable roots,
+  v1 stream-manager states with scalar reward reservations, and v2 full-backing snapshots.
+- `io_nns_neuron_manager`: current schema version 2, supports legacy unversioned v0 stable roots
+  and v1 fixed two-week dissolve configuration snapshots.
+- `io_historian`: current schema version 2, supports v0 read-model fixtures with source health
+  recomputed from state and legacy v1 duration-weighted governance summaries.
 
 ## io_stream_manager
 
 Root type: `VersionedStableState { schema_version, state: StableState }`.
 
-The stable state contains config, protocol accounting, processed transaction IDs, active staked IO,
-two-week pool backing bps, operation journal, and scheduler/index cursors. Production wiring is an
-optional config field and defaults absent in local fixtures. Pending redemption records preserve
-gross ICP payout, fee, net user payout, IO return fee, retry status, transfer blocks, user account,
-and last error.
+The stable state contains config, protocol accounting, processed transaction IDs, active exact
+two-week staked IO, reward cohort evidence, operation journal, and scheduler/index cursors.
+Production wiring is an optional config field and defaults absent in local fixtures. Pending
+redemption records preserve gross ICP payout, fee, net user payout, IO return fee, retry status,
+transfer blocks, user account, and last error.
 
 Schema v2 stores reward reservation accounting as explicit unspent and
 externally-spent-but-model-uncommitted buckets. Restore validates the split against recipient
@@ -36,6 +37,11 @@ transfer/proof evidence, validated preflight totals, and processed transaction e
 reward operations must have zero reservation and processed-transaction evidence. Terminal, manual,
 or uncertain value-moving reward states retain unavailable debit or fail closed; corrupt
 value-moving state must fail closed instead of silently initializing or releasing reserve.
+
+Schema v3 stores the frozen two-week reward cohort. Restore validates cohort ordering, exact member
+IDs, positive frozen stake, checked totals, and consumed-operation references. Legacy v2 snapshots
+must have 100% two-week backing in both config and state; any other backing value fails closed.
+No historical cohort is fabricated during migration.
 
 Pre-upgrade saves the versioned root. Post-upgrade first decodes the versioned root, then falls
 back to the prior unversioned `StableState` root as schema version 0. Stable state that is missing,
@@ -54,6 +60,9 @@ operation journal, and scheduler cursors. Defaults preserve the protected refere
 `oae4c-3iaaa-aaaar-qb5qq-cai` and `6345890886899317159`; they remain protected references only,
 not mutation targets.
 
+Schema v2 uses the shared exact 14-day dissolve-delay constant for pooled and unwind neurons.
+Legacy v1 snapshots must contain that same two-week duration; any other value fails closed.
+
 Pre-upgrade saves the versioned root. Post-upgrade first decodes the versioned root, then falls
 back to the prior unversioned `StableState` root as schema version 0. Stable state that is missing,
 corrupt, or uses an unsupported future version fails closed. Missing first-install state is handled
@@ -71,6 +80,10 @@ redemption, reward, and NNS lifecycle histories, index health, governance partic
 artifact observations, canister status observations, and last ingestion timestamp. Source health is
 recomputed from stable fields and policies so missing source-health fields default to honest
 prelaunch/missing semantics rather than zero protocol values.
+
+Schema v2 migrates legacy v1 duration-weighted governance by resetting the rebuildable governance
+summary. Historian is not protocol truth, so source observations can rebuild that read model without
+preserving stale duration-weighted summary data.
 
 Pre-upgrade saves the stable root. Post-upgrade fails closed if stable state is missing, corrupt, or
 uses an unsupported future version. First install uses default prelaunch read-model state.

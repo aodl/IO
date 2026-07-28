@@ -6,7 +6,7 @@ use io_governance_types::{
     SnsNeuronPage, SnsNeuronPageRequest, SnsParticipationSummary, SnsProposal, SnsProposalId,
     SnsProposalPage, SnsProposalPageRequest,
 };
-use io_reward_policy::{sns_neuron_id_to_u64, NeuronSnapshot, SnsNeuronIdConversionError};
+use io_reward_policy::{sns_neuron_id_to_u64, RewardParticipant, SnsNeuronIdConversionError};
 use serde::Deserialize;
 use std::future::Future;
 use std::pin::Pin;
@@ -15,7 +15,7 @@ use std::pin::Pin;
 pub struct MockSnsNeuron {
     pub neuron_id: u64,
     pub staked_io_e8s: u128,
-    pub eligible_seconds: u64,
+    pub dissolve_delay_seconds: u64,
     pub eligible_closed_proposals: u64,
     pub voted_closed_proposals: u64,
     pub is_genesis_governance_neuron: bool,
@@ -37,14 +37,14 @@ impl From<MockSnsNeuron> for SnsNeuron {
             }
         } else {
             SnsDissolveState::NotDissolving {
-                dissolve_delay_seconds: value.eligible_seconds,
+                dissolve_delay_seconds: value.dissolve_delay_seconds,
             }
         };
         Self {
             id: canonical_mock_sns_neuron_id(value.neuron_id),
             controller: None,
             stake_e8s: value.staked_io_e8s,
-            dissolve_delay_seconds: value.eligible_seconds,
+            dissolve_delay_seconds: value.dissolve_delay_seconds,
             dissolve_state,
             cached_neuron_stake_e8s: value.staked_io_e8s,
             voting_power: value.staked_io_e8s,
@@ -55,18 +55,18 @@ impl From<MockSnsNeuron> for SnsNeuron {
     }
 }
 
-impl From<MockSnsNeuron> for NeuronSnapshot {
+impl From<MockSnsNeuron> for RewardParticipant {
     fn from(value: MockSnsNeuron) -> Self {
         Self {
             sns_neuron_id: canonical_mock_sns_neuron_id(value.neuron_id),
             neuron_id: value.neuron_id,
-            staked_io_e8s: value.staked_io_e8s,
-            eligible_seconds: value.eligible_seconds,
+            frozen_stake_e8s: value.staked_io_e8s,
             eligible_closed_proposals: value.eligible_closed_proposals,
             voted_closed_proposals: value.voted_closed_proposals,
-            is_genesis_governance_neuron: value.is_genesis_governance_neuron,
-            is_protocol_owned: value.is_protocol_owned,
-            is_dissolving: value.is_dissolving,
+            destination_is_currently_eligible: !value.is_genesis_governance_neuron
+                && !value.is_protocol_owned
+                && !value.is_dissolving
+                && value.dissolve_delay_seconds == io_core_model::TWO_WEEK_SECONDS,
         }
     }
 }
@@ -109,20 +109,17 @@ impl SnsGovernanceClient for MockSnsGovernanceClient {
 pub fn participation_summary_to_snapshot(
     eligibility: &io_governance_types::SnsNeuronEligibility,
     summary: &SnsParticipationSummary,
-) -> Result<Option<NeuronSnapshot>, SnsNeuronIdConversionError> {
+) -> Result<Option<RewardParticipant>, SnsNeuronIdConversionError> {
     if eligibility.excluded_reason.is_some() {
         return Ok(None);
     }
-    Ok(Some(NeuronSnapshot {
+    Ok(Some(RewardParticipant {
         sns_neuron_id: eligibility.neuron_id.clone(),
         neuron_id: sns_neuron_id_to_u64(&eligibility.neuron_id)?,
-        staked_io_e8s: eligibility.eligible_stake_e8s,
-        eligible_seconds: 1,
+        frozen_stake_e8s: eligibility.eligible_stake_e8s,
         eligible_closed_proposals: summary.eligible_closed_proposals_total,
         voted_closed_proposals: summary.voted_proposals,
-        is_genesis_governance_neuron: false,
-        is_protocol_owned: false,
-        is_dissolving: !eligibility.is_non_dissolving,
+        destination_is_currently_eligible: eligibility.excluded_reason.is_none(),
     }))
 }
 
@@ -236,7 +233,7 @@ fn decode_neuron_page_response(bytes: &[u8]) -> Result<SnsNeuronPage, SnsGoverna
     })
 }
 
-pub async fn debug_list_neurons(canister: Principal) -> Result<Vec<NeuronSnapshot>, String> {
+pub async fn debug_list_neurons(canister: Principal) -> Result<Vec<RewardParticipant>, String> {
     debug_list_mock_neurons(canister)
         .await
         .map(|neurons| neurons.into_iter().map(Into::into).collect())
@@ -253,7 +250,6 @@ mod tests {
             neuron_id: id,
             owner: None,
             eligible_stake_e8s: 1_000,
-            eligible_since_seconds: 0,
             dissolve_delay_seconds: 14 * 24 * 60 * 60,
             is_non_dissolving: true,
             excluded_reason: None,
@@ -297,7 +293,7 @@ mod tests {
         ];
 
         let mut conversion_errors = Vec::new();
-        let snapshots: Vec<NeuronSnapshot> = inputs
+        let snapshots: Vec<RewardParticipant> = inputs
             .iter()
             .filter_map(|(eligibility, summary)| {
                 match participation_summary_to_snapshot(eligibility, summary) {
@@ -311,7 +307,7 @@ mod tests {
             .collect();
 
         assert_eq!(conversion_errors, vec![SnsNeuronIdConversionError::Empty]);
-        let out = io_reward_policy::allocate_rewards(100, &snapshots);
+        let out = io_reward_policy::allocate_rewards(100, &snapshots).unwrap();
         assert_eq!(out.allocations.len(), 1);
         assert_eq!(out.allocations[0].neuron_id, 7);
         assert_eq!(out.allocations[0].io_e8s, 100);

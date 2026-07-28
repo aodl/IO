@@ -11,7 +11,7 @@ use io_core_model::{
 use io_governance_types::SnsNeuronEligibility;
 use io_reward_policy::{
     active_staked_io_e8s, allocate_rewards, sns_neuron_id_is_canonical_staking_subaccount,
-    sns_neuron_id_is_valid, AllocationOutcome, NeuronSnapshot,
+    sns_neuron_id_is_valid, AllocationOutcome, RewardParticipant, RewardPolicyError,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,11 +20,18 @@ pub enum StreamManagerError {
     InvalidTransactionId,
     UnknownOrUnauthorizedStream { source: String, memo: String },
     Model(ModelError),
+    RewardPolicy(RewardPolicyError),
 }
 
 impl From<ModelError> for StreamManagerError {
     fn from(value: ModelError) -> Self {
         Self::Model(value)
+    }
+}
+
+impl From<RewardPolicyError> for StreamManagerError {
+    fn from(value: RewardPolicyError) -> Self {
+        Self::RewardPolicy(value)
     }
 }
 
@@ -132,15 +139,10 @@ impl StreamManager {
 
     pub fn target_two_week_pool_e8s(&self) -> Result<u128, StreamManagerError> {
         let rate = self.state.redemption_rate()?;
-        target_two_week_pool_e8s(
-            self.active_staked_io_e8s,
-            rate,
-            self.two_week_pool_backing_bps,
-        )
-        .map_err(StreamManagerError::from)
+        target_two_week_pool_e8s(self.active_staked_io_e8s, rate).map_err(StreamManagerError::from)
     }
 
-    pub fn refresh_active_staked_io_from_neurons(&mut self, neurons: &[NeuronSnapshot]) {
+    pub fn refresh_active_staked_io_from_neurons(&mut self, neurons: &[RewardParticipant]) {
         self.active_staked_io_e8s = active_staked_io_e8s(neurons);
     }
 
@@ -162,8 +164,8 @@ impl StreamManager {
     pub fn allocate_two_week_maturity_io(
         &self,
         reward_pool_io_e8s: u128,
-        neurons: &[NeuronSnapshot],
-    ) -> AllocationOutcome {
-        allocate_rewards(reward_pool_io_e8s, neurons)
+        neurons: &[RewardParticipant],
+    ) -> Result<AllocationOutcome, StreamManagerError> {
+        allocate_rewards(reward_pool_io_e8s, neurons).map_err(StreamManagerError::from)
     }
 }
