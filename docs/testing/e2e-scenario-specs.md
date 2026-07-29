@@ -28,7 +28,7 @@ Starting state: eligible neuron and reward-eligible proposal. Actions: direct vo
 
 ## 7. User redeems IO -> net ICP payout and IO return
 
-Starting state: user has liquid IO, stream manager has liquid ICP. Actions: user sends IO redemption transfer. Expected ledger blocks: SNS IO user-to-reserve transfer, ICP payout block. Expected IO state: gross/net/fee intent preserved, terminal success. Current coverage: model and mock/PocketIC; real SNS ledger not covered.
+Starting state: user has liquid IO, stream manager has liquid ICP. Actions: user sends IO redemption transfer. Expected ledger blocks: SNS IO user-to-redemption block, redemption-to-reserve return block, ICP payout block. Expected IO state: gross/net/fee intent preserved, terminal success. Current coverage: model and mock/PocketIC; real SNS ledger not covered.
 
 ## 8. Redemption retry after ICP payout failure
 
@@ -61,3 +61,7 @@ Expected historian state: source freshness/staleness explicit; local evidence lo
 ## 15. Frontend never calls value-moving canisters
 
 Expected: frontend imports only historian production declarations; no stream-manager/NNS-manager calls. Current coverage: static `did_surface`, `validate_prelaunch_public_shell`, and `validate_historian_freshness` gates.
+
+## 2026-07-28 Truth-Pass Fee/Supply Update
+
+Scenarios that mention local SNS ledger supply must not assume total supply is constant across reserve transfers. Under the current standard SNS ledger path, absent a fee collector, fees are burned. Local evidence remains local-only and does not prove production evidence.

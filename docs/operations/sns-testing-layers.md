@@ -87,7 +87,7 @@ Current package status:
 - Package/scaffolding exists: renderable local `sns_init` template, local variables template, evidence capture helpers, local command templates, no-network validators, and operator runbook.
 - Real proof is not completed: no local SNS ledger evidence file is committed, no local SNS canister IDs are recorded, no real SNS ledger/index/governance/root behavior has been observed, and `validate_local_sns_ledger` skips until evidence exists.
 
-Done criteria for this layer are intentionally concrete: official local SNS tooling must run locally; local SNS root/governance/ledger/index/swap IDs must be recorded; ledger fee, total supply, reserve balance, reserve-to-user transfer, user-to-reserve transfer, bad fee, insufficient funds, duplicate proof, and index account history must be observed; governance/root/swap availability and dapp controller state must be checked; and `cargo run -p xtask -- validate_local_sns_ledger` must pass against the filled local evidence file.
+Done criteria for this layer are intentionally concrete: official local SNS tooling must run locally; local SNS root/governance/ledger/index/swap IDs must be recorded; ledger fee disposition, total-supply deltas, reserve balance, reserve-to-user transfer, user-to-redemption transfer, redemption-to-reserve transfer, bad fee, insufficient funds, duplicate proof, and index account history must be observed; governance/root/swap availability and dapp controller state must be checked; and `cargo run -p xtask -- validate_local_sns_ledger` must pass against the filled local evidence file.
 
 ## Layer 4: Mainnet SNS Testflight
 

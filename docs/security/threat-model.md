@@ -31,3 +31,7 @@ service : (InitArgs) -> {}
 ```
 
 Debug/test APIs may exist only in debug DIDs and test builds. Constructor args may include ledger/governance principal configuration, but callable production APIs for value-moving canisters must not expand.
+
+## 2026-07-28 Monetary Boundary Status
+
+The post-merge truth pass keeps IO classified as inert and not production-ready. Standard current SNS ledger initialization does not set a fee collector, so IO must not assume constant total supply unless the final ledger configuration proves that property. P0 remediation remains required for fee-aware redemption, exact payout destinations, immutable transfer attempts, removal of release-reachable mock fallbacks, production Jupiter issuance, unified activation wiring, bootstrap reconciliation, and the zero-liquid redemption-rate guard.

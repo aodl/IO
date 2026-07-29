@@ -85,8 +85,8 @@ The local rehearsal must prove:
 - the protocol reserve account exists on the SNS ledger;
 - the reserve balance is funded at genesis;
 - stream-manager local wiring can construct the reserve-to-user transfer intent;
-- redemption local wiring can construct the user-to-reserve return intent;
-- total supply remains constant across issuance/redemption rehearsal transfers.
+- redemption local wiring can observe the user-to-redemption transfer and construct the redemption-to-reserve return intent;
+- fee disposition and total-supply deltas are recorded for each transfer.
 
 ## What Remains Unproven
 
@@ -98,6 +98,6 @@ IO protocol remains not live. The canonical SNS IO ledger remains not launched o
 
 ## Completion Checklist
 
-The rehearsal is complete only when official local SNS tooling was run locally; local SNS root/governance/ledger/index/swap IDs were recorded; local SNS ledger fee, total supply, and reserve balance were observed; reserve-to-user and user-to-reserve transfers were observed; bad fee, insufficient funds, duplicate behavior, duplicate block proof, and index account history were observed; SNS governance/root/swap availability and dapp controller state were checked; and `cargo run -p xtask -- validate_local_sns_ledger` passes against the filled evidence file.
+The rehearsal is complete only when official local SNS tooling was run locally; local SNS root/governance/ledger/index/swap IDs were recorded; local SNS ledger fee disposition, total-supply deltas, and reserve balance were observed; reserve-to-user, user-to-redemption, and redemption-to-reserve transfers were observed separately; bad fee, insufficient funds, duplicate behavior, duplicate block proof, and index account history were observed; SNS governance/root/swap availability and dapp controller state were checked; and `cargo run -p xtask -- validate_local_sns_ledger` passes against the filled evidence file.
 
 Passing this local evidence gate still does not prove mainnet SNS launch readiness, final tokenomics, final SNS config, mainnet testflight, audit readiness, or production adapter activation.
