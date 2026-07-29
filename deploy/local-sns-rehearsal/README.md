@@ -87,6 +87,8 @@ IO issuance is modelled as reserve transfer, not arbitrary minting:
 - redemption-to-reserve transfer for the protocol IO return;
 - observed fee disposition and total-supply deltas for each transfer.
 
+Under standard 10,000 e8s fee-burn evidence with no hidden top-up, the rehearsal amounts are `100_000_000`, `99_990_000`, and `99_980_000`. Any intervening funding transfer must be recorded as evidence rather than hidden in balances.
+
 The protocol reserve account/subaccount must be funded at SNS genesis in the local config. Any minting-based assumption is a blocker unless a later audited launch decision explicitly changes this model. A constant-supply assumption is also a blocker unless the observed ledger fee mode proves it.
 
 ## Done Criteria
