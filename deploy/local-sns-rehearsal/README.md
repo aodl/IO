@@ -55,7 +55,7 @@ Manual sequence:
 8. Let SNS-W deploy local SNS root, governance, ledger, index, swap, and archive canisters.
 9. Run `runbook.sh record-ids` and record those local IDs in ignored `canister-ids.local.toml`.
 10. Run `runbook.sh capture-evidence` and the command templates in `commands.local.example.md`.
-11. Verify total supply, reserve balance, fee, bad-fee, insufficient-funds, duplicate, and account-history behavior.
+11. Verify fee disposition, total supply deltas, reserve balance, bad-fee, insufficient-funds, duplicate, and account-history behavior.
 12. Verify SNS governance/root/swap availability and dapp controller state.
 13. Test an SNS-governance-controlled dapp upgrade proposal if the local tooling supports it; otherwise record a concrete gap.
 14. Run `runbook.sh validate` and `cargo run -p xtask -- validate_local_sns_ledger`.
@@ -83,10 +83,11 @@ Until `canister-ids.local.toml` is produced from a completed local rehearsal, no
 IO issuance is modelled as reserve transfer, not arbitrary minting:
 
 - reserve-to-user transfer for issuance;
-- user-to-reserve transfer for redemption return;
-- constant SNS ledger total supply during those flows.
+- user-to-redemption transfer for the incoming redemption IO;
+- redemption-to-reserve transfer for the protocol IO return;
+- observed fee disposition and total-supply deltas for each transfer.
 
-The protocol reserve account/subaccount must be funded at SNS genesis in the local config. Any minting-based assumption is a blocker unless a later audited launch decision explicitly changes this model.
+The protocol reserve account/subaccount must be funded at SNS genesis in the local config. Any minting-based assumption is a blocker unless a later audited launch decision explicitly changes this model. A constant-supply assumption is also a blocker unless the observed ledger fee mode proves it.
 
 ## Done Criteria
 
@@ -94,8 +95,8 @@ The local SNS rehearsal is complete only when:
 
 - official local SNS tooling was run locally;
 - local SNS root/governance/ledger/index/swap IDs were recorded;
-- local SNS ledger fee, total supply, and reserve balance were observed;
-- reserve-to-user transfer and user-to-reserve transfer were observed;
+- local SNS ledger fee disposition, total-supply deltas, and reserve balance were observed;
+- reserve-to-user, user-to-redemption, and redemption-to-reserve transfers were observed separately;
 - bad fee, insufficient funds, and duplicate behavior were observed;
 - duplicate block was verified;
 - index account history was observed;

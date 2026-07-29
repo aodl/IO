@@ -29,7 +29,10 @@ Use locally controlled accounts from the official local SNS rehearsal. Record bl
 # reserve-to-user issuance rehearsal
 dfx canister call --network local "$SNS_LEDGER" icrc1_transfer '(record { to = record { owner = principal "TODO_LOCAL_USER_PRINCIPAL"; subaccount = null }; amount = 100000000 : nat; fee = opt (10000 : nat); memo = opt blob "IO local issuance rehearsal"; from_subaccount = null; created_at_time = opt (TODO_LOCAL_CREATED_AT_TIME_NANOS : nat64) })'
 
-# user-to-reserve redemption return rehearsal
+# user-to-redemption incoming redemption rehearsal
+dfx canister call --network local "$SNS_LEDGER" icrc1_transfer '(record { to = record { owner = principal "TODO_LOCAL_REDEMPTION_OWNER"; subaccount = null }; amount = 100000000 : nat; fee = opt (10000 : nat); memo = opt blob "IO local redemption intake"; from_subaccount = null; created_at_time = opt (TODO_LOCAL_CREATED_AT_TIME_NANOS : nat64) })'
+
+# redemption-to-reserve protocol return rehearsal
 dfx canister call --network local "$SNS_LEDGER" icrc1_transfer '(record { to = record { owner = principal "TODO_LOCAL_PROTOCOL_RESERVE_OWNER"; subaccount = null }; amount = 100000000 : nat; fee = opt (10000 : nat); memo = opt blob "IO local redemption return"; from_subaccount = null; created_at_time = opt (TODO_LOCAL_CREATED_AT_TIME_NANOS : nat64) })'
 
 # bad-fee transfer

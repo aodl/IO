@@ -30,14 +30,14 @@ frontend = "TODO_LOCAL_FRONTEND_CANISTER"
 [ledger_evidence]
 token_symbol = "IO"
 transaction_fee_e8s = 10_000
-total_supply_e8s = 100_000_000_000_000
+total_supply_e8s = "TODO_LOCAL_FINAL_TOTAL_SUPPLY_AFTER_OBSERVED_TRANSFERS"
 protocol_reserve_account_owner = "TODO_LOCAL_PROTOCOL_RESERVE_OWNER_PRINCIPAL"
 protocol_reserve_subaccount_hex = "TODO_LOCAL_PROTOCOL_RESERVE_SUBACCOUNT_HEX_OR_NONE"
-protocol_reserve_balance_e8s = 60_000_000_000_000
+protocol_reserve_balance_e8s = "TODO_LOCAL_FINAL_PROTOCOL_RESERVE_BALANCE"
 reserve_transfer_block_index = "TODO_LOCAL_RESERVE_TO_USER_BLOCK_INDEX"
-redemption_return_block_index = "TODO_LOCAL_USER_TO_RESERVE_BLOCK_INDEX"
+redemption_return_block_index = "TODO_LOCAL_REDEMPTION_TO_RESERVE_BLOCK_INDEX"
 reserve_transfer_amount_e8s = 100_000_000
-redemption_return_amount_e8s = 100_000_000
+redemption_return_amount_e8s = "TODO_LOCAL_REDEMPTION_TO_RESERVE_AMOUNT_AFTER_FEE"
 bad_fee_error_observed = true
 insufficient_funds_error_observed = true
 duplicate_transfer_observed = true
@@ -46,6 +46,81 @@ duplicate_of_block_index = "TODO_LOCAL_DUPLICATE_OF_BLOCK_INDEX"
 index_account_history_observed = true
 index_history_order = "observed-local-order"
 index_lag_or_archive_required_observed = "not-observed"
+
+[transfer_reserve_to_user]
+block_index = "TODO_LOCAL_RESERVE_TO_USER_BLOCK_INDEX"
+from_account = "TODO_EXACT_RESERVE_ACCOUNT"
+to_account = "TODO_EXACT_USER_ACCOUNT"
+requested_amount_e8s = 100_000_000
+observed_fee_e8s = 10_000
+fee_disposition = "TODO_burned_OR_collected"
+sender_balance_before_e8s = "TODO"
+sender_balance_after_e8s = "TODO"
+recipient_balance_before_e8s = "TODO"
+recipient_balance_after_e8s = "TODO"
+fee_collector_account = "none"
+fee_collector_balance_before_e8s = "none"
+fee_collector_balance_after_e8s = "none"
+total_supply_before_e8s = 100_000_000_000_000
+total_supply_after_e8s = "TODO"
+reserve_balance_before_e8s = "TODO"
+reserve_balance_after_e8s = "TODO"
+ledger_tip_block_index = "TODO"
+index_synced_through_block_index = "TODO"
+duplicate_of_block_index = "TODO"
+canonical_duplicate_proof_source = "TODO_INDEX_OR_LEDGER_BLOCK_PROOF"
+archive_involvement = "none-or-local-archive-range"
+observation_timestamp = "TODO_UTC_TIMESTAMP"
+
+[transfer_user_to_redemption]
+block_index = "TODO_LOCAL_USER_TO_REDEMPTION_BLOCK_INDEX"
+from_account = "TODO_EXACT_USER_ACCOUNT"
+to_account = "TODO_EXACT_REDEMPTION_ACCOUNT"
+requested_amount_e8s = 100_000_000
+observed_fee_e8s = 10_000
+fee_disposition = "TODO_burned_OR_collected"
+sender_balance_before_e8s = "TODO"
+sender_balance_after_e8s = "TODO"
+recipient_balance_before_e8s = "TODO"
+recipient_balance_after_e8s = "TODO"
+fee_collector_account = "none"
+fee_collector_balance_before_e8s = "none"
+fee_collector_balance_after_e8s = "none"
+total_supply_before_e8s = "TODO"
+total_supply_after_e8s = "TODO"
+reserve_balance_before_e8s = "TODO"
+reserve_balance_after_e8s = "TODO"
+ledger_tip_block_index = "TODO"
+index_synced_through_block_index = "TODO"
+duplicate_of_block_index = "TODO"
+canonical_duplicate_proof_source = "TODO_INDEX_OR_LEDGER_BLOCK_PROOF"
+archive_involvement = "none-or-local-archive-range"
+observation_timestamp = "TODO_UTC_TIMESTAMP"
+
+[transfer_redemption_to_reserve]
+block_index = "TODO_LOCAL_REDEMPTION_TO_RESERVE_BLOCK_INDEX"
+from_account = "TODO_EXACT_REDEMPTION_ACCOUNT"
+to_account = "TODO_EXACT_RESERVE_ACCOUNT"
+requested_amount_e8s = "TODO_AMOUNT_AFTER_IO_RETURN_FEE"
+observed_fee_e8s = 10_000
+fee_disposition = "TODO_burned_OR_collected"
+sender_balance_before_e8s = "TODO"
+sender_balance_after_e8s = "TODO"
+recipient_balance_before_e8s = "TODO"
+recipient_balance_after_e8s = "TODO"
+fee_collector_account = "none"
+fee_collector_balance_before_e8s = "none"
+fee_collector_balance_after_e8s = "none"
+total_supply_before_e8s = "TODO"
+total_supply_after_e8s = "TODO"
+reserve_balance_before_e8s = "TODO"
+reserve_balance_after_e8s = "TODO"
+ledger_tip_block_index = "TODO"
+index_synced_through_block_index = "TODO"
+duplicate_of_block_index = "TODO"
+canonical_duplicate_proof_source = "TODO_INDEX_OR_LEDGER_BLOCK_PROOF"
+archive_involvement = "none-or-local-archive-range"
+observation_timestamp = "TODO_UTC_TIMESTAMP"
 
 [governance_evidence]
 governance_available = true
@@ -59,7 +134,8 @@ governance_upgrade_gap = "TODO_LOCAL_REASON_IF_NOT_TESTED"
 resolved_as = "protocol_reserve_transfer"
 minting_assumed = false
 treasury_transfer_assumed = false
-total_supply_constant_across_issuance_redemption = true
+fee_disposition_mode = "TODO_burned_OR_collected"
+total_supply_changes_explained = true
 
 [protected]
 must_not_touch_neuron_owner_canister = "oae4c-3iaaa-aaaar-qb5qq-cai"

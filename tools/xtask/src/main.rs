@@ -1444,7 +1444,8 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "Do not use `--network ic`",
             "protocol reserve",
             "reserve-to-user transfer",
-            "user-to-reserve transfer",
+            "user-to-redemption transfer",
+            "redemption-to-reserve transfer",
             "validate_local_sns_rehearsal",
             "validate_local_sns_ledger",
             "validate_local_sns_scripts",
@@ -1522,10 +1523,20 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "duplicate_transfer_observed = true",
             "duplicate_block_verified = true",
             "index_account_history_observed = true",
+            "[transfer_reserve_to_user]",
+            "[transfer_user_to_redemption]",
+            "[transfer_redemption_to_reserve]",
+            "fee_disposition",
+            "sender_balance_before_e8s",
+            "recipient_balance_after_e8s",
+            "total_supply_before_e8s",
+            "total_supply_after_e8s",
+            "canonical_duplicate_proof_source",
             "[issuance_model]",
             "resolved_as = \"protocol_reserve_transfer\"",
             "minting_assumed = false",
-            "total_supply_constant_across_issuance_redemption = true",
+            "fee_disposition_mode",
+            "total_supply_changes_explained = true",
         ],
     )?;
     require_absent(
@@ -1748,14 +1759,14 @@ frontend = "b77ix-eeaaa-aaaaa-qaada-cai"
 [ledger_evidence]
 token_symbol = "IO"
 transaction_fee_e8s = 10000
-total_supply_e8s = 100000000000000
+total_supply_e8s = 99999999970000
 protocol_reserve_account_owner = "a3shf-5eaaa-aaaaa-qaafa-cai"
 protocol_reserve_subaccount_hex = "none"
-protocol_reserve_balance_e8s = 60000000000000
+protocol_reserve_balance_e8s = 59999999980000
 reserve_transfer_block_index = 1
-redemption_return_block_index = 2
+redemption_return_block_index = 3
 reserve_transfer_amount_e8s = 100000000
-redemption_return_amount_e8s = 100000000
+redemption_return_amount_e8s = 99990000
 bad_fee_error_observed = true
 insufficient_funds_error_observed = true
 duplicate_transfer_observed = true
@@ -1764,6 +1775,81 @@ duplicate_of_block_index = 1
 index_account_history_observed = true
 index_history_order = "descending"
 index_lag_or_archive_required_observed = "not-observed"
+
+[transfer_reserve_to_user]
+block_index = 1
+from_account = "owner=a3shf-5eaaa-aaaaa-qaafa-cai/subaccount=none"
+to_account = "owner=bd3sg-teaaa-aaaaa-qaaba-cai/subaccount=user"
+requested_amount_e8s = 100000000
+observed_fee_e8s = 10000
+fee_disposition = "burned"
+sender_balance_before_e8s = 60000000000000
+sender_balance_after_e8s = 59999899990000
+recipient_balance_before_e8s = 0
+recipient_balance_after_e8s = 100000000
+fee_collector_account = "none"
+fee_collector_balance_before_e8s = "none"
+fee_collector_balance_after_e8s = "none"
+total_supply_before_e8s = 100000000000000
+total_supply_after_e8s = 99999999990000
+reserve_balance_before_e8s = 60000000000000
+reserve_balance_after_e8s = 59999899990000
+ledger_tip_block_index = 1
+index_synced_through_block_index = 1
+duplicate_of_block_index = 1
+canonical_duplicate_proof_source = "index-account-history"
+archive_involvement = "none"
+observation_timestamp = "2026-07-28T00:00:00Z"
+
+[transfer_user_to_redemption]
+block_index = 2
+from_account = "owner=bd3sg-teaaa-aaaaa-qaaba-cai/subaccount=user"
+to_account = "owner=avqkn-guaaa-aaaaa-qaaea-cai/subaccount=redemption"
+requested_amount_e8s = 100000000
+observed_fee_e8s = 10000
+fee_disposition = "burned"
+sender_balance_before_e8s = 100010000
+sender_balance_after_e8s = 0
+recipient_balance_before_e8s = 0
+recipient_balance_after_e8s = 100000000
+fee_collector_account = "none"
+fee_collector_balance_before_e8s = "none"
+fee_collector_balance_after_e8s = "none"
+total_supply_before_e8s = 99999999990000
+total_supply_after_e8s = 99999999980000
+reserve_balance_before_e8s = 59999899990000
+reserve_balance_after_e8s = 59999899990000
+ledger_tip_block_index = 2
+index_synced_through_block_index = 2
+duplicate_of_block_index = 2
+canonical_duplicate_proof_source = "index-account-history"
+archive_involvement = "none"
+observation_timestamp = "2026-07-28T00:00:01Z"
+
+[transfer_redemption_to_reserve]
+block_index = 3
+from_account = "owner=avqkn-guaaa-aaaaa-qaaea-cai/subaccount=redemption"
+to_account = "owner=a3shf-5eaaa-aaaaa-qaafa-cai/subaccount=none"
+requested_amount_e8s = 99990000
+observed_fee_e8s = 10000
+fee_disposition = "burned"
+sender_balance_before_e8s = 100000000
+sender_balance_after_e8s = 0
+recipient_balance_before_e8s = 59999899990000
+recipient_balance_after_e8s = 59999999980000
+fee_collector_account = "none"
+fee_collector_balance_before_e8s = "none"
+fee_collector_balance_after_e8s = "none"
+total_supply_before_e8s = 99999999980000
+total_supply_after_e8s = 99999999970000
+reserve_balance_before_e8s = 59999899990000
+reserve_balance_after_e8s = 59999999980000
+ledger_tip_block_index = 3
+index_synced_through_block_index = 3
+duplicate_of_block_index = 3
+canonical_duplicate_proof_source = "index-account-history"
+archive_involvement = "none"
+observation_timestamp = "2026-07-28T00:00:02Z"
 
 [governance_evidence]
 governance_available = true
@@ -1777,7 +1863,8 @@ governance_upgrade_gap = "local tooling did not support upgrade proposal in this
 resolved_as = "protocol_reserve_transfer"
 minting_assumed = false
 treasury_transfer_assumed = false
-total_supply_constant_across_issuance_redemption = true
+fee_disposition_mode = "burned"
+total_supply_changes_explained = true
 
 [protected]
 must_not_touch_neuron_owner_canister = "oae4c-3iaaa-aaaar-qb5qq-cai"
@@ -1942,6 +2029,9 @@ struct LocalSnsEvidence {
     sns_canisters: LocalSnsCanisters,
     io_dapp_canisters: LocalSnsIoDappCanisters,
     ledger: LocalSnsLedgerEvidence,
+    reserve_to_user_transfer: LocalSnsTransferEvidence,
+    user_to_redemption_transfer: LocalSnsTransferEvidence,
+    redemption_to_reserve_transfer: LocalSnsTransferEvidence,
     governance: LocalSnsGovernanceEvidence,
     issuance: LocalSnsIssuanceModel,
 }
@@ -2003,6 +2093,33 @@ struct LocalSnsLedgerEvidence {
 }
 
 #[derive(Clone, Debug)]
+struct LocalSnsTransferEvidence {
+    block_index: u64,
+    from_account: String,
+    to_account: String,
+    requested_amount_e8s: u128,
+    observed_fee_e8s: u128,
+    fee_disposition: String,
+    sender_balance_before_e8s: u128,
+    sender_balance_after_e8s: u128,
+    recipient_balance_before_e8s: u128,
+    recipient_balance_after_e8s: u128,
+    fee_collector_account: String,
+    fee_collector_balance_before_e8s: Option<u128>,
+    fee_collector_balance_after_e8s: Option<u128>,
+    total_supply_before_e8s: u128,
+    total_supply_after_e8s: u128,
+    reserve_balance_before_e8s: u128,
+    reserve_balance_after_e8s: u128,
+    ledger_tip_block_index: u64,
+    index_synced_through_block_index: u64,
+    duplicate_of_block_index: Option<u64>,
+    canonical_duplicate_proof_source: String,
+    archive_involvement: String,
+    observation_timestamp: String,
+}
+
+#[derive(Clone, Debug)]
 struct LocalSnsGovernanceEvidence {
     governance_available: bool,
     root_available: bool,
@@ -2017,7 +2134,8 @@ struct LocalSnsIssuanceModel {
     resolved_as: String,
     minting_assumed: bool,
     treasury_transfer_assumed: bool,
-    total_supply_constant_across_issuance_redemption: bool,
+    fee_disposition_mode: String,
+    total_supply_changes_explained: bool,
 }
 
 const LOCAL_SNS_MAINNET_CANISTER_IDS: &[&str] = &[
@@ -2046,6 +2164,9 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
             | "sns_canisters"
             | "io_dapp_canisters"
             | "ledger_evidence"
+            | "transfer_reserve_to_user"
+            | "transfer_user_to_redemption"
+            | "transfer_redemption_to_reserve"
             | "governance_evidence"
             | "issuance_model"
             | "protected" => {}
@@ -2219,6 +2340,21 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
                 "index_lag_or_archive_required_observed",
             )?,
         },
+        reserve_to_user_transfer: parse_local_sns_transfer_evidence(
+            path,
+            &doc,
+            "transfer_reserve_to_user",
+        )?,
+        user_to_redemption_transfer: parse_local_sns_transfer_evidence(
+            path,
+            &doc,
+            "transfer_user_to_redemption",
+        )?,
+        redemption_to_reserve_transfer: parse_local_sns_transfer_evidence(
+            path,
+            &doc,
+            "transfer_redemption_to_reserve",
+        )?,
         governance: LocalSnsGovernanceEvidence {
             governance_available: require_simple_bool(
                 path,
@@ -2266,16 +2402,134 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
                 "issuance_model",
                 "treasury_transfer_assumed",
             )?,
-            total_supply_constant_across_issuance_redemption: require_simple_bool(
+            fee_disposition_mode: require_simple_string(
                 path,
                 &doc,
                 "issuance_model",
-                "total_supply_constant_across_issuance_redemption",
+                "fee_disposition_mode",
+            )?,
+            total_supply_changes_explained: require_simple_bool(
+                path,
+                &doc,
+                "issuance_model",
+                "total_supply_changes_explained",
             )?,
         },
     };
     validate_local_sns_evidence(path, text, &doc, &evidence)?;
     Ok(evidence)
+}
+
+fn parse_local_sns_transfer_evidence(
+    path: &str,
+    doc: &SimpleTomlDocument,
+    section: &str,
+) -> Result<LocalSnsTransferEvidence, String> {
+    Ok(LocalSnsTransferEvidence {
+        block_index: require_simple_u64(path, doc, section, "block_index")?,
+        from_account: require_simple_string(path, doc, section, "from_account")?,
+        to_account: require_simple_string(path, doc, section, "to_account")?,
+        requested_amount_e8s: require_simple_u128(path, doc, section, "requested_amount_e8s")?,
+        observed_fee_e8s: require_simple_u128(path, doc, section, "observed_fee_e8s")?,
+        fee_disposition: require_simple_string(path, doc, section, "fee_disposition")?,
+        sender_balance_before_e8s: require_simple_u128(
+            path,
+            doc,
+            section,
+            "sender_balance_before_e8s",
+        )?,
+        sender_balance_after_e8s: require_simple_u128(
+            path,
+            doc,
+            section,
+            "sender_balance_after_e8s",
+        )?,
+        recipient_balance_before_e8s: require_simple_u128(
+            path,
+            doc,
+            section,
+            "recipient_balance_before_e8s",
+        )?,
+        recipient_balance_after_e8s: require_simple_u128(
+            path,
+            doc,
+            section,
+            "recipient_balance_after_e8s",
+        )?,
+        fee_collector_account: require_simple_string(path, doc, section, "fee_collector_account")?,
+        fee_collector_balance_before_e8s: parse_optional_u128(
+            path,
+            doc,
+            section,
+            "fee_collector_balance_before_e8s",
+        )?,
+        fee_collector_balance_after_e8s: parse_optional_u128(
+            path,
+            doc,
+            section,
+            "fee_collector_balance_after_e8s",
+        )?,
+        total_supply_before_e8s: require_simple_u128(
+            path,
+            doc,
+            section,
+            "total_supply_before_e8s",
+        )?,
+        total_supply_after_e8s: require_simple_u128(path, doc, section, "total_supply_after_e8s")?,
+        reserve_balance_before_e8s: require_simple_u128(
+            path,
+            doc,
+            section,
+            "reserve_balance_before_e8s",
+        )?,
+        reserve_balance_after_e8s: require_simple_u128(
+            path,
+            doc,
+            section,
+            "reserve_balance_after_e8s",
+        )?,
+        ledger_tip_block_index: require_simple_u64(path, doc, section, "ledger_tip_block_index")?,
+        index_synced_through_block_index: require_simple_u64(
+            path,
+            doc,
+            section,
+            "index_synced_through_block_index",
+        )?,
+        duplicate_of_block_index: parse_optional_u64(
+            path,
+            doc,
+            section,
+            "duplicate_of_block_index",
+        )?,
+        canonical_duplicate_proof_source: require_simple_string(
+            path,
+            doc,
+            section,
+            "canonical_duplicate_proof_source",
+        )?,
+        archive_involvement: require_simple_string(path, doc, section, "archive_involvement")?,
+        observation_timestamp: require_simple_string(path, doc, section, "observation_timestamp")?,
+    })
+}
+
+fn parse_optional_u128(
+    path: &str,
+    doc: &SimpleTomlDocument,
+    section: &str,
+    key: &str,
+) -> Result<Option<u128>, String> {
+    match doc.get(section).and_then(|section| section.get(key)) {
+        Some(SimpleTomlValue::String(value)) if value == "none" => Ok(None),
+        Some(SimpleTomlValue::Integer(value)) => Ok(Some(*value)),
+        Some(SimpleTomlValue::String(value)) => value
+            .parse::<u128>()
+            .map(Some)
+            .map_err(|_| format!("{path}: {section}.{key} must be an integer or \"none\"")),
+        Some(SimpleTomlValue::Bool(_)) => Err(format!(
+            "{path}: {section}.{key} must be an integer or \"none\""
+        )),
+        None => Err(format!("{path}: missing {section}.{key}")),
+    }
 }
 
 fn parse_required_principal(
@@ -2403,10 +2657,79 @@ fn validate_local_sns_evidence(
             evidence.ledger.transaction_fee_e8s, evidence.expected.transaction_fee_e8s
         ));
     }
-    if evidence.ledger.total_supply_e8s != evidence.expected.total_supply_e8s {
+    if evidence.reserve_to_user_transfer.total_supply_before_e8s
+        != evidence.expected.total_supply_e8s
+    {
         return Err(format!(
-            "{path}: observed total_supply_e8s {} does not match expected {}",
-            evidence.ledger.total_supply_e8s, evidence.expected.total_supply_e8s
+            "{path}: first observed total_supply_before_e8s {} does not match expected {}",
+            evidence.reserve_to_user_transfer.total_supply_before_e8s,
+            evidence.expected.total_supply_e8s
+        ));
+    }
+    validate_local_sns_transfer(
+        path,
+        "transfer_reserve_to_user",
+        &evidence.reserve_to_user_transfer,
+        Some(ReserveRole::Sender),
+    )?;
+    validate_local_sns_transfer(
+        path,
+        "transfer_user_to_redemption",
+        &evidence.user_to_redemption_transfer,
+        None,
+    )?;
+    validate_local_sns_transfer(
+        path,
+        "transfer_redemption_to_reserve",
+        &evidence.redemption_to_reserve_transfer,
+        Some(ReserveRole::Recipient),
+    )?;
+    if evidence.ledger.total_supply_e8s
+        != evidence
+            .redemption_to_reserve_transfer
+            .total_supply_after_e8s
+    {
+        return Err(format!(
+            "{path}: ledger_evidence.total_supply_e8s must match the final observed transfer supply"
+        ));
+    }
+    if evidence.ledger.protocol_reserve_balance_e8s
+        != evidence
+            .redemption_to_reserve_transfer
+            .reserve_balance_after_e8s
+    {
+        return Err(format!(
+            "{path}: ledger_evidence.protocol_reserve_balance_e8s must match final observed reserve balance"
+        ));
+    }
+    if evidence.issuance.fee_disposition_mode == "unknown" {
+        return Err(format!(
+            "{path}: issuance_model.fee_disposition_mode must not be unknown in completed evidence"
+        ));
+    }
+    for (section, transfer) in [
+        (
+            "transfer_reserve_to_user",
+            &evidence.reserve_to_user_transfer,
+        ),
+        (
+            "transfer_user_to_redemption",
+            &evidence.user_to_redemption_transfer,
+        ),
+        (
+            "transfer_redemption_to_reserve",
+            &evidence.redemption_to_reserve_transfer,
+        ),
+    ] {
+        if transfer.fee_disposition != evidence.issuance.fee_disposition_mode {
+            return Err(format!(
+                "{path}: {section}.fee_disposition must match issuance_model.fee_disposition_mode"
+            ));
+        }
+    }
+    if !evidence.issuance.total_supply_changes_explained {
+        return Err(format!(
+            "{path}: issuance_model.total_supply_changes_explained must be true"
         ));
     }
     if evidence.ledger.protocol_reserve_balance_e8s == 0 {
@@ -2478,17 +2801,176 @@ fn validate_local_sns_evidence(
     if evidence.issuance.treasury_transfer_assumed {
         return Err(format!("{path}: treasury_transfer_assumed must be false"));
     }
-    if !evidence
-        .issuance
-        .total_supply_constant_across_issuance_redemption
-    {
-        return Err(format!(
-            "{path}: total supply must be constant across issuance/redemption"
-        ));
-    }
     let _ = evidence.ledger.protocol_reserve_subaccount_hex.as_deref();
     let _ = evidence.ledger.reserve_transfer_block_index;
     let _ = evidence.ledger.redemption_return_block_index;
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum ReserveRole {
+    Sender,
+    Recipient,
+}
+
+fn validate_local_sns_transfer(
+    path: &str,
+    section: &str,
+    transfer: &LocalSnsTransferEvidence,
+    reserve_role: Option<ReserveRole>,
+) -> Result<(), String> {
+    if transfer.from_account.trim().is_empty()
+        || transfer.to_account.trim().is_empty()
+        || transfer.observation_timestamp.trim().is_empty()
+    {
+        return Err(format!(
+            "{path}: {section} must record exact accounts and observation timestamp"
+        ));
+    }
+    if transfer.requested_amount_e8s == 0 {
+        return Err(format!(
+            "{path}: {section}.requested_amount_e8s must be nonzero"
+        ));
+    }
+    if transfer.index_synced_through_block_index < transfer.block_index {
+        return Err(format!(
+            "{path}: {section} index evidence is stale or incomplete"
+        ));
+    }
+    if transfer.ledger_tip_block_index < transfer.block_index {
+        return Err(format!(
+            "{path}: {section} ledger tip evidence is stale or incomplete"
+        ));
+    }
+    if transfer.canonical_duplicate_proof_source.trim().is_empty()
+        || transfer.canonical_duplicate_proof_source == "none"
+        || transfer.duplicate_of_block_index.is_none()
+    {
+        return Err(format!("{path}: {section} missing duplicate proof"));
+    }
+    if transfer.archive_involvement.trim().is_empty() {
+        return Err(format!(
+            "{path}: {section}.archive_involvement must be recorded"
+        ));
+    }
+
+    let sender_decrease = transfer
+        .sender_balance_before_e8s
+        .checked_sub(transfer.sender_balance_after_e8s)
+        .ok_or_else(|| format!("{path}: {section} sender balance increased unexpectedly"))?;
+    let expected_sender_decrease = transfer
+        .requested_amount_e8s
+        .checked_add(transfer.observed_fee_e8s)
+        .ok_or_else(|| format!("{path}: {section} amount plus fee overflow"))?;
+    if sender_decrease != expected_sender_decrease {
+        return Err(format!(
+            "{path}: {section} sender decrease must equal amount plus fee"
+        ));
+    }
+
+    let recipient_increase = transfer
+        .recipient_balance_after_e8s
+        .checked_sub(transfer.recipient_balance_before_e8s)
+        .ok_or_else(|| format!("{path}: {section} recipient balance decreased unexpectedly"))?;
+    if recipient_increase != transfer.requested_amount_e8s {
+        return Err(format!(
+            "{path}: {section} recipient increase must equal requested amount"
+        ));
+    }
+
+    match transfer.fee_disposition.as_str() {
+        "burned" => {
+            if transfer.fee_collector_account != "none"
+                || transfer.fee_collector_balance_before_e8s.is_some()
+                || transfer.fee_collector_balance_after_e8s.is_some()
+            {
+                return Err(format!(
+                    "{path}: {section} burned fee mode must not claim fee collector evidence"
+                ));
+            }
+            let supply_decrease = transfer
+                .total_supply_before_e8s
+                .checked_sub(transfer.total_supply_after_e8s)
+                .ok_or_else(|| format!("{path}: {section} total supply increased unexpectedly"))?;
+            if supply_decrease != transfer.observed_fee_e8s {
+                return Err(format!(
+                    "{path}: {section} burned fee supply decrease must equal fee"
+                ));
+            }
+        }
+        "collected" => {
+            if transfer.fee_collector_account.trim().is_empty()
+                || transfer.fee_collector_account == "none"
+            {
+                return Err(format!(
+                    "{path}: {section} fee-collector mode requires exact collector account"
+                ));
+            }
+            let before = transfer.fee_collector_balance_before_e8s.ok_or_else(|| {
+                format!("{path}: {section} fee-collector mode requires collector balance before")
+            })?;
+            let after = transfer.fee_collector_balance_after_e8s.ok_or_else(|| {
+                format!("{path}: {section} fee-collector mode requires collector balance after")
+            })?;
+            let collector_increase = after.checked_sub(before).ok_or_else(|| {
+                format!("{path}: {section} fee collector balance decreased unexpectedly")
+            })?;
+            if collector_increase != transfer.observed_fee_e8s {
+                return Err(format!(
+                    "{path}: {section} fee collector increase must equal fee"
+                ));
+            }
+            if transfer.total_supply_before_e8s != transfer.total_supply_after_e8s {
+                return Err(format!(
+                    "{path}: {section} collected fee mode must keep total supply constant"
+                ));
+            }
+        }
+        "unknown" => {
+            return Err(format!(
+                "{path}: {section}.fee_disposition must not be unknown in completed evidence"
+            ));
+        }
+        other => {
+            return Err(format!(
+                "{path}: {section}.fee_disposition must be burned, collected or unknown, got {other}"
+            ));
+        }
+    }
+
+    match reserve_role {
+        Some(ReserveRole::Sender) => {
+            let reserve_decrease = transfer
+                .reserve_balance_before_e8s
+                .checked_sub(transfer.reserve_balance_after_e8s)
+                .ok_or_else(|| {
+                    format!("{path}: {section} reserve balance increased unexpectedly")
+                })?;
+            if reserve_decrease != expected_sender_decrease {
+                return Err(format!(
+                    "{path}: {section} reserve decrease must equal amount plus fee"
+                ));
+            }
+        }
+        Some(ReserveRole::Recipient) => {
+            let reserve_increase = transfer
+                .reserve_balance_after_e8s
+                .checked_sub(transfer.reserve_balance_before_e8s)
+                .ok_or_else(|| {
+                    format!("{path}: {section} reserve balance decreased unexpectedly")
+                })?;
+            if reserve_increase != transfer.requested_amount_e8s {
+                return Err(format!(
+                    "{path}: {section} reserve increase must equal requested amount"
+                ));
+            }
+        }
+        None => {
+            if transfer.reserve_balance_before_e8s != transfer.reserve_balance_after_e8s {
+                return Err(format!("{path}: {section} reserve change is unexplained"));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -5468,7 +5950,7 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "deploy/local-sns-rehearsal/README.md",
-            "local-only real SNS-created IO ledger/index/governance/root stack not final tokenomics not a mainnet SNS proposal not required CI Do not use `--network ic` protocol reserve reserve-to-user transfer user-to-reserve transfer validate_local_sns_rehearsal validate_local_sns_ledger validate_local_sns_scripts Human-readable local evidence-derived wiring Not accepted by production wiring validators Do not use as install args\n",
+            "local-only real SNS-created IO ledger/index/governance/root stack not final tokenomics not a mainnet SNS proposal not required CI Do not use `--network ic` protocol reserve reserve-to-user transfer user-to-redemption transfer redemption-to-reserve transfer validate_local_sns_rehearsal validate_local_sns_ledger validate_local_sns_scripts Human-readable local evidence-derived wiring Not accepted by production wiring validators Do not use as install args\n",
         );
         write(
             root,
@@ -5478,7 +5960,7 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "deploy/local-sns-rehearsal/canister-ids.local.example.toml",
-            "network = \"local\"\nsource = \"official-local-sns-rehearsal\"\n[sns_canisters]\nroot = \"TODO\"\ngovernance = \"TODO\"\nledger = \"TODO\"\nindex = \"TODO\"\nswap = \"TODO\"\narchive = \"TODO\"\n[expected_local_sns_config]\ntoken_symbol = \"IO\"\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\n[ledger_evidence]\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\nprotocol_reserve_balance_e8s = 1\nreserve_transfer_amount_e8s = 1\nredemption_return_amount_e8s = 1\nbad_fee_error_observed = true\ninsufficient_funds_error_observed = true\nduplicate_transfer_observed = true\nduplicate_block_verified = true\nindex_account_history_observed = true\n[issuance_model]\nresolved_as = \"protocol_reserve_transfer\"\nminting_assumed = false\ntotal_supply_constant_across_issuance_redemption = true\n",
+            "network = \"local\"\nsource = \"official-local-sns-rehearsal\"\n[sns_canisters]\nroot = \"TODO\"\ngovernance = \"TODO\"\nledger = \"TODO\"\nindex = \"TODO\"\nswap = \"TODO\"\narchive = \"TODO\"\n[expected_local_sns_config]\ntoken_symbol = \"IO\"\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\n[ledger_evidence]\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\nprotocol_reserve_balance_e8s = 1\nreserve_transfer_amount_e8s = 1\nredemption_return_amount_e8s = 1\nbad_fee_error_observed = true\ninsufficient_funds_error_observed = true\nduplicate_transfer_observed = true\nduplicate_block_verified = true\nindex_account_history_observed = true\n[transfer_reserve_to_user]\nfee_disposition = \"burned\"\nsender_balance_before_e8s = 1\nrecipient_balance_after_e8s = 1\ntotal_supply_before_e8s = 1\ntotal_supply_after_e8s = 1\ncanonical_duplicate_proof_source = \"index-account-history\"\n[transfer_user_to_redemption]\nfee_disposition = \"burned\"\nsender_balance_before_e8s = 1\nrecipient_balance_after_e8s = 1\ntotal_supply_before_e8s = 1\ntotal_supply_after_e8s = 1\ncanonical_duplicate_proof_source = \"index-account-history\"\n[transfer_redemption_to_reserve]\nfee_disposition = \"burned\"\nsender_balance_before_e8s = 1\nrecipient_balance_after_e8s = 1\ntotal_supply_before_e8s = 1\ntotal_supply_after_e8s = 1\ncanonical_duplicate_proof_source = \"index-account-history\"\n[issuance_model]\nresolved_as = \"protocol_reserve_transfer\"\nminting_assumed = false\nfee_disposition_mode = \"burned\"\ntotal_supply_changes_explained = true\n",
         );
         for path in [
             "deploy/local-sns-rehearsal/runbook.sh",
@@ -5518,71 +6000,7 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
     }
 
     fn completed_local_sns_evidence() -> String {
-        r#"[mode]
-network = "local"
-source = "official-local-sns-rehearsal"
-dfx_sns = "manual-local-only"
-io_protocol_live = false
-sns_io_ledger_mainnet_launched = false
-
-[expected_local_sns_config]
-token_symbol = "IO"
-transaction_fee_e8s = 10000
-total_supply_e8s = 100000000000000
-
-[sns_canisters]
-root = "bkyz2-fmaaa-aaaaa-qaaaq-cai"
-governance = "bd3sg-teaaa-aaaaa-qaaba-cai"
-ledger = "br5f7-7uaaa-aaaaa-qaaca-cai"
-index = "be2us-64aaa-aaaaa-qaabq-cai"
-swap = "bw4dl-smaaa-aaaaa-qaacq-cai"
-archive = "by6od-j4aaa-aaaaa-qaadq-cai"
-
-[io_dapp_canisters]
-io_stream_manager = "avqkn-guaaa-aaaaa-qaaea-cai"
-io_nns_neuron_manager = "aax3a-h4aaa-aaaaa-qaahq-cai"
-io_historian = "ajuq4-ruaaa-aaaaa-qaaga-cai"
-frontend = "b77ix-eeaaa-aaaaa-qaada-cai"
-
-[ledger_evidence]
-token_symbol = "IO"
-transaction_fee_e8s = 10000
-total_supply_e8s = 100000000000000
-protocol_reserve_account_owner = "a3shf-5eaaa-aaaaa-qaafa-cai"
-protocol_reserve_subaccount_hex = "none"
-protocol_reserve_balance_e8s = 60000000000000
-reserve_transfer_block_index = 1
-redemption_return_block_index = 2
-reserve_transfer_amount_e8s = 100000000
-redemption_return_amount_e8s = 100000000
-bad_fee_error_observed = true
-insufficient_funds_error_observed = true
-duplicate_transfer_observed = true
-duplicate_block_verified = true
-duplicate_of_block_index = 1
-index_account_history_observed = true
-index_history_order = "descending"
-index_lag_or_archive_required_observed = "not-observed"
-
-[governance_evidence]
-governance_available = true
-root_available = true
-swap_available = true
-dapp_controller_state_checked = true
-governance_upgrade_proposal_tested = false
-governance_upgrade_gap = "local tooling did not support upgrade proposal in this run"
-
-[issuance_model]
-resolved_as = "protocol_reserve_transfer"
-minting_assumed = false
-treasury_transfer_assumed = false
-total_supply_constant_across_issuance_redemption = true
-
-[protected]
-must_not_touch_neuron_owner_canister = "oae4c-3iaaa-aaaar-qb5qq-cai"
-must_not_touch_io_nns_neuron_id = "6345890886899317159"
-"#
-        .to_string()
+        crate::completed_local_sns_evidence()
     }
 
     fn write_completed_local_sns_evidence(root: &Path) {
@@ -6397,7 +6815,7 @@ Template SNS principal values are planned wiring placeholders only.
                     "duplicate_of_block_index = \"none\"",
                 )
             },
-            "duplicate_of_block_index",
+            "missing duplicate proof",
         );
     }
 
@@ -6406,7 +6824,7 @@ Template SNS principal values are planned wiring placeholders only.
         assert_local_sns_evidence_rejects(
             |text| {
                 text.replace(
-                    "protocol_reserve_balance_e8s = 60000000000000",
+                    "protocol_reserve_balance_e8s = 59999999980000",
                     "protocol_reserve_balance_e8s = 0",
                 )
             },
@@ -6419,11 +6837,51 @@ Template SNS principal values are planned wiring placeholders only.
         assert_local_sns_evidence_rejects(
             |text| {
                 text.replace(
-                    "transaction_fee_e8s = 10000\ntotal_supply_e8s = 100000000000000\nprotocol_reserve_account_owner",
-                    "transaction_fee_e8s = 10001\ntotal_supply_e8s = 100000000000000\nprotocol_reserve_account_owner",
+                    "transaction_fee_e8s = 10000\ntotal_supply_e8s = 99999999970000\nprotocol_reserve_account_owner",
+                    "transaction_fee_e8s = 10001\ntotal_supply_e8s = 99999999970000\nprotocol_reserve_account_owner",
                 )
             },
             "transaction_fee_e8s",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_unknown_fee_disposition() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replace(
+                    "fee_disposition_mode = \"burned\"",
+                    "fee_disposition_mode = \"unknown\"",
+                )
+            },
+            "fee_disposition_mode",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_stale_index_evidence() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replacen(
+                    "index_synced_through_block_index = 3",
+                    "index_synced_through_block_index = 2",
+                    1,
+                )
+            },
+            "stale or incomplete",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_constant_supply_claim_with_burn() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replace(
+                    "total_supply_after_e8s = 99999999990000",
+                    "total_supply_after_e8s = 100000000000000",
+                )
+            },
+            "burned fee supply decrease",
         );
     }
 
