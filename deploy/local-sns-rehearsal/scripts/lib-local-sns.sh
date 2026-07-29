@@ -49,6 +49,93 @@ require_local_script_guard() {
   reject_mainnet_args "$@"
 }
 
+phase_log_dir() {
+  local dir="${REHEARSAL_DIR}/generated/logs"
+  mkdir -p "$dir"
+  printf '%s\n' "$dir"
+}
+
+phase_log_file() {
+  local name="$1"
+  printf '%s/%s.log\n' "$(phase_log_dir)" "$name"
+}
+
+log_command_status() {
+  local log_file="$1"
+  local status="$2"
+  shift 2
+  {
+    printf 'command:'
+    printf ' %q' "$@"
+    printf '\nexit_status=%s\n' "$status"
+  } >> "$log_file"
+}
+
+run_logged() {
+  local log_file="$1"
+  shift
+  {
+    printf '+'
+    printf ' %q' "$@"
+    printf '\n'
+  } >> "$log_file"
+  "$@" >> "$log_file" 2>&1
+  local status=$?
+  log_command_status "$log_file" "$status" "$@"
+  return "$status"
+}
+
+record_blocker() {
+  local reason="$1"
+  local blocker_dir="${REHEARSAL_DIR}/generated/blockers"
+  mkdir -p "$blocker_dir"
+  printf '%s\n' "$reason" > "${blocker_dir}/latest-blocker.txt"
+  printf '%s\n' "$reason" >&2
+}
+
+require_loopback_url() {
+  local url="$1"
+  if [ "$url" != "${url#"${url%%[![:space:]]*}"}" ] || [ "$url" != "${url%"${url##*[![:space:]]}"}" ]; then
+    printf 'refusing URL with leading or trailing whitespace: %s\n' "$url" >&2
+    exit 2
+  fi
+  case "$url" in
+    http://*) ;;
+    *) printf 'refusing non-http loopback URL: %s\n' "$url" >&2; exit 2 ;;
+  esac
+  case "$url" in
+    *'#'*|*'@'*|*'%'*|*icp-api.io*|*icp.net*|*icp0.io*|*ic0.app*|*boundary*)
+      printf 'refusing unsafe local rehearsal URL: %s\n' "$url" >&2
+      exit 2
+      ;;
+  esac
+  local rest="${url#http://}"
+  local authority="${rest%%[/?]*}"
+  local host port
+  case "$authority" in
+    "[::1]":*) host="::1"; port="${authority#"[::1]:"}" ;;
+    *:*:*) printf 'refusing malformed URL authority: %s\n' "$url" >&2; exit 2 ;;
+    *:*) host="${authority%%:*}"; port="${authority#*:}" ;;
+    *) printf 'refusing URL without explicit port: %s\n' "$url" >&2; exit 2 ;;
+  esac
+  case "$host" in
+    localhost|127.0.0.1|::1) ;;
+    *) printf 'refusing non-loopback host: %s\n' "$url" >&2; exit 2 ;;
+  esac
+  if ! printf '%s' "$port" | grep -Eq '^[0-9]+$' || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+    printf 'refusing URL without valid explicit port: %s\n' "$url" >&2
+    exit 2
+  fi
+}
+
+require_command_available() {
+  local command_name="$1"
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    record_blocker "required command is unavailable: ${command_name}"
+    exit 2
+  fi
+}
+
 toml_string() {
   local file="$1"
   local section="$2"
@@ -89,4 +176,3 @@ require_file() {
     exit 2
   fi
 }
-

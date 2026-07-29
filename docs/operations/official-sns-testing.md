@@ -6,7 +6,7 @@ We do not currently run the official SNS launch locally in required CI.
 
 Official SNS testing is optional and heavier. The current official ICP/DFINITY SNS testing documentation is the source of truth. The historical standalone `dfinity/sns-testing` repository is deprecated; if the official docs reference successor tooling or a new repository/location, use that current official location.
 
-The official SNS launch path may require `dfx sns`; this is optional/manual, local-only for the local rehearsal layer, and not part of required IO workflows. SNS testflight is a future manual/mainnet rehearsal.
+The maintained official local SNS flow uses the source-built `sns` CLI; this is optional/manual, local-only for the local rehearsal layer, and not part of required IO workflows. SNS testflight is a future manual/mainnet rehearsal.
 
 IO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical.
 
@@ -26,7 +26,7 @@ It is useful for canister placement, principal ranges, constructor wiring, and c
 
 ## Layer 3: Official Local SNS Launch Rehearsal
 
-This optional layer follows the current official ICP/DFINITY SNS testing documentation and may use `dfx sns` to rehearse official local launch mechanics. It can validate whether a candidate `sns_init.yaml` can move through the local SNS launch process after a local operator completes the run.
+This optional layer follows the current official ICP/DFINITY SNS testing documentation and must use the source-built `sns` CLI to rehearse official local launch mechanics. It can validate whether a candidate `sns_init.yaml` can move through the local SNS launch process after a local operator completes the run.
 
 This layer is not required CI, not part of `verify_release`, not run by `test_ci`, and not a substitute for security review or tokenomics decisions.
 
@@ -55,4 +55,4 @@ It does not perform the real SNS launch, does not run a real swap, and must not 
 - `tools/sns/testflight/README.md`
 - `tools/sns/launch-readiness.toml`
 
-Official reference points used for this package are the current Internet Computer SNS docs for `dfx sns`, SNS testing, local SNS rehearsal tooling, testflight, and PocketIC NNS/SNS subnet integration.
+Official reference points used for this package are the pinned Internet Computer `rs/sns/testing` and `rs/sns/cli` sources for SNS testing, local SNS rehearsal tooling, testflight, and PocketIC NNS/SNS subnet integration.

@@ -46,14 +46,14 @@ What it proves:
 
 What it does not prove:
 
-- It does not run `dfx sns`.
+- It does not run the dfx SNS extension.
 - It does not run SNS-W.
 - It does not create an official SNS ledger stack.
 - It does not prove actual SNS ledger/index behavior.
 
 ## Layer 3: Official Local SNS Rehearsal
 
-This layer is optional/manual and local-only. It follows the current official ICP/DFINITY SNS testing documentation as the source of truth and may use `dfx sns` to create a real local SNS root, governance, ledger, index, swap, and archive stack from a local `sns_init` candidate. The historical standalone `dfinity/sns-testing` repository is deprecated; if the official docs reference successor tooling or a new repository/location, use that current official location.
+This layer is optional/manual and local-only. It follows the current official ICP/DFINITY SNS testing documentation as the source of truth and must use the source-built `sns` CLI with `sns-testing` to create a real local SNS root, governance, ledger, index, swap, and archive stack from a local `sns_init` candidate. The historical standalone `dfinity/sns-testing` repository is deprecated; if the official docs reference successor tooling or a new repository/location, use that current official location.
 
 Package:
 
@@ -106,6 +106,6 @@ What it does not prove:
 
 ## Current Gap Closed by the Local Rehearsal Package
 
-Before the official local rehearsal package, IO had strong mock/PocketIC coverage but no required artifact describing how to create and validate a real SNS-created local IO ledger/index/governance/root stack. The new package closes the scaffolding and evidence-validation gap while keeping `dfx sns` optional/manual and outside required CI.
+Before the official local rehearsal package, IO had strong mock/PocketIC coverage but no required artifact describing how to create and validate a real SNS-created local IO ledger/index/governance/root stack. The package closes the scaffolding and evidence-validation gap while keeping the dfx SNS extension outside required CI.
 
 IO_TEST ledgers remain non-canonical staging tools. The canonical IO ledger is intended to be the SNS ledger, and that ledger has not launched on mainnet.

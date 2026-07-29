@@ -14,6 +14,8 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 
 const RELEASE_PROFILE: &str = "release";
 const WASM_TARGET: &str = "wasm32-unknown-unknown";
@@ -182,12 +184,6 @@ fn script(path: &str, args: &[&str]) -> Command {
 
 fn npm(args: &[&str]) -> Command {
     let mut c = Command::new("npm");
-    c.args(args);
-    c
-}
-
-fn dfx(args: &[&str]) -> Command {
-    let mut c = Command::new("dfx");
     c.args(args);
     c
 }
@@ -1333,7 +1329,7 @@ fn check_sns_official_testing_at(root: &Path) -> Result<(), String> {
             "Official SNS testing is optional and heavier.",
             "current official ICP/DFINITY SNS testing documentation is the source of truth",
             "historical standalone `dfinity/sns-testing` repository is deprecated",
-            "The official SNS launch path may require `dfx sns`",
+            "The maintained official local SNS flow uses the source-built `sns` CLI",
             "not part of required IO workflows",
             "SNS testflight is a future manual/mainnet rehearsal.",
             "IO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical.",
@@ -1472,13 +1468,21 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "symbol: \"IO\"",
             "transaction_fee",
             "Distribution:",
-            "protocol_reserve",
+            "treasury: \"800_000 tokens\"",
+            "swap: \"100_000 tokens\"",
             "Swap:",
-            "archive_options",
-            "issuance_model: \"protocol reserve transfer\"",
-            "redemption_model: \"user transfer back to protocol reserve\"",
-            "io_test_ledger_role: \"non-canonical staging only\"",
+            "start_time:",
+            "NnsProposal:",
             "{{",
+        ],
+    )?;
+    require_absent(
+        "deploy/local-sns-rehearsal/sns_init.local.template.yaml",
+        &sns_init,
+        &[
+            "protocol_reserve:",
+            "archive_options:",
+            "io_rehearsal_notes:",
         ],
     )?;
     require_absent(
@@ -1514,13 +1518,19 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "sns_testing_source_path",
             "operator_identity_principal",
             "local_network_url",
+            "official_tooling = \"manual-local-only\"",
+            "sns_cli_sha256",
+            "sns_testing_init_sha256",
+            "sns_testing_cli_sha256",
             "[expected_local_sns_config]",
             "transaction_fee_e8s",
             "total_supply_e8s",
+            "protocol_reserve_funding_amount_e8s",
             "[ledger_evidence]",
             "transaction_fee_e8s",
             "total_supply_e8s",
             "protocol_reserve_balance_e8s",
+            "protocol_reserve_funding_block_index",
             "reserve_transfer_amount_e8s",
             "redemption_return_amount_e8s",
             "bad_fee_error_observed = true",
@@ -1547,6 +1557,7 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "[issuance_model]",
             "resolved_as = \"protocol_reserve_transfer\"",
             "minting_assumed = false",
+            "treasury_transfer_assumed = true",
             "fee_disposition_mode",
             "total_supply_changes_explained = true",
         ],
@@ -1560,11 +1571,22 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
     for path in [
         "deploy/local-sns-rehearsal/runbook.sh",
         "deploy/local-sns-rehearsal/scripts/00-check-prereqs.sh",
+        "deploy/local-sns-rehearsal/scripts/lib-local-sns.sh",
         "deploy/local-sns-rehearsal/scripts/01-render-sns-init.sh",
         "deploy/local-sns-rehearsal/scripts/02-record-canister-ids.sh",
         "deploy/local-sns-rehearsal/scripts/03-capture-ledger-evidence.sh",
         "deploy/local-sns-rehearsal/scripts/04-render-local-wiring.sh",
         "deploy/local-sns-rehearsal/scripts/05-validate-evidence.sh",
+        "deploy/local-sns-rehearsal/scripts/10-bootstrap-official-network.sh",
+        "deploy/local-sns-rehearsal/scripts/11-build-local-io-canisters.sh",
+        "deploy/local-sns-rehearsal/scripts/12-deploy-local-dapps.sh",
+        "deploy/local-sns-rehearsal/scripts/13-propose-and-finalize-sns.sh",
+        "deploy/local-sns-rehearsal/scripts/14-discover-sns-canisters.sh",
+        "deploy/local-sns-rehearsal/scripts/15-exercise-ledger.sh",
+        "deploy/local-sns-rehearsal/scripts/16-exercise-index-and-archives.sh",
+        "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
+        "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
+        "deploy/local-sns-rehearsal/scripts/19-cleanup-official-network.sh",
     ] {
         let text = require_file(root, path)?;
         require_present(
@@ -1578,6 +1600,29 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
         )?;
         require_absent(path, &text, &["dfx start"])?;
     }
+    require_absent(
+        "deploy/local-sns-rehearsal/scripts/00-check-prereqs.sh",
+        &require_file(
+            root,
+            "deploy/local-sns-rehearsal/scripts/00-check-prereqs.sh",
+        )?,
+        &["source-built sns"],
+    )?;
+    require_present(
+        "deploy/local-sns-rehearsal/scripts/10-bootstrap-official-network.sh",
+        &require_file(
+            root,
+            "deploy/local-sns-rehearsal/scripts/10-bootstrap-official-network.sh",
+        )?,
+        &[
+            "//rs/sns/testing:sns-testing-init",
+            "//rs/sns/testing:sns-testing",
+            "//rs/sns/cli:sns",
+            "sns init-config-file --init-config-file-path",
+            ". scripts/env.sh",
+        ],
+    )?;
+    validate_loopback_url_guardrails()?;
 
     let commands = require_file(root, "deploy/local-sns-rehearsal/commands.local.example.md")?;
     require_present(
@@ -1727,16 +1772,16 @@ io_nns_neuron_manager_canister = "{io_nns_neuron_manager}"
 io_historian_canister = "{io_historian}"
 frontend_canister = "{frontend}"
 developer_neuron_principal = "bkyz2-fmaaa-aaaaa-qaaaq-cai"
-protocol_reserve_principal = "bd3sg-teaaa-aaaaa-qaaba-cai"
-archive_controller_principal = "br5f7-7uaaa-aaaaa-qaaca-cai"
-logo_url = "http://127.0.0.1:4943/local-io-logo.png"
-token_logo_url = "http://127.0.0.1:4943/local-io-token-logo.png"
+logo_path = "generated/local-io-logo.png"
+token_logo_path = "generated/local-io-token-logo.png"
 
 [expected_local_sns_config]
 token_symbol = "IO"
 transaction_fee_e8s = 10_000
 total_supply_e8s = 100_000_000_000_000
-protocol_reserve_initial_balance_e8s = 60_000_000_000_000
+treasury_initial_balance_e8s = 80_000_000_000_000
+protocol_reserve_funding_amount_e8s = 60_000_000_000_000
+minimum_remaining_treasury_e8s = 19_999_999_990_000
 "#
     )
 }
@@ -1745,7 +1790,7 @@ fn completed_local_sns_evidence() -> String {
     r#"[mode]
 network = "local"
 source = "official-local-sns-rehearsal"
-dfx_sns = "manual-local-only"
+official_tooling = "manual-local-only"
 io_protocol_live = false
 sns_io_ledger_mainnet_launched = false
 
@@ -1756,8 +1801,11 @@ sns_testing_source_path = "rs/sns/testing"
 dfx_version = "dfx 0.27.0"
 bazel_version = "bazel not-installed-blocked"
 pocket_ic_version = "pocket-ic-server 14.0.0"
-sns_cli_version = "dfx sns unavailable-blocked"
-sns_testing_cli_version = "rs-sns-testing pinned-source"
+sns_cli_version = "source-built sns 1.0.0"
+sns_cli_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+sns_testing_init_sha256 = "1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+sns_testing_cli_version = "source-built sns-testing"
+sns_testing_cli_sha256 = "2123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 quill_version = "quill not-installed-blocked"
 rustc_version = "rustc repository-toolchain"
 cargo_version = "cargo repository-toolchain"
@@ -1770,6 +1818,9 @@ locally_built_binary_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0
 token_symbol = "IO"
 transaction_fee_e8s = 10000
 total_supply_e8s = 100000000000000
+treasury_initial_balance_e8s = 80000000000000
+protocol_reserve_funding_amount_e8s = 60000000000000
+minimum_remaining_treasury_e8s = 19999999990000
 
 [sns_canisters]
 root = "bkyz2-fmaaa-aaaaa-qaaaq-cai"
@@ -1792,6 +1843,11 @@ total_supply_e8s = 99999999970000
 protocol_reserve_account_owner = "a3shf-5eaaa-aaaaa-qaafa-cai"
 protocol_reserve_subaccount_hex = "none"
 protocol_reserve_balance_e8s = 59999999970000
+protocol_reserve_funding_proposal_id = 1
+protocol_reserve_funding_block_index = 0
+protocol_reserve_funding_amount_e8s = 60000000000000
+protocol_reserve_funding_fee_e8s = 10000
+activation_baseline_captured_after_reserve_funding = true
 reserve_transfer_block_index = 1
 redemption_return_block_index = 3
 reserve_transfer_amount_e8s = 100000000
@@ -1921,7 +1977,7 @@ governance_upgrade_gap = "local tooling did not support upgrade proposal in this
 [issuance_model]
 resolved_as = "protocol_reserve_transfer"
 minting_assumed = false
-treasury_transfer_assumed = false
+treasury_transfer_assumed = true
 fee_disposition_mode = "burned"
 total_supply_changes_explained = true
 
@@ -2100,7 +2156,7 @@ struct LocalSnsEvidence {
 struct LocalSnsModeEvidence {
     network: String,
     source: String,
-    dfx_sns: String,
+    official_tooling: String,
     io_protocol_live: bool,
     sns_io_ledger_mainnet_launched: bool,
 }
@@ -2114,7 +2170,10 @@ struct LocalSnsToolchainProvenance {
     bazel_version: String,
     pocket_ic_version: String,
     sns_cli_version: String,
+    sns_cli_sha256: String,
+    sns_testing_init_sha256: String,
     sns_testing_cli_version: String,
+    sns_testing_cli_sha256: String,
     quill_version: String,
     rustc_version: String,
     cargo_version: String,
@@ -2135,6 +2194,9 @@ struct LocalSnsExpectedConfig {
     token_symbol: String,
     transaction_fee_e8s: u128,
     total_supply_e8s: u128,
+    treasury_initial_balance_e8s: u128,
+    protocol_reserve_funding_amount_e8s: u128,
+    minimum_remaining_treasury_e8s: u128,
 }
 
 #[derive(Clone, Debug)]
@@ -2163,6 +2225,11 @@ struct LocalSnsLedgerEvidence {
     protocol_reserve_account_owner: Principal,
     protocol_reserve_subaccount_hex: Option<String>,
     protocol_reserve_balance_e8s: u128,
+    protocol_reserve_funding_proposal_id: u64,
+    protocol_reserve_funding_block_index: u64,
+    protocol_reserve_funding_amount_e8s: u128,
+    protocol_reserve_funding_fee_e8s: u128,
+    activation_baseline_captured_after_reserve_funding: bool,
     reserve_transfer_block_index: u64,
     redemption_return_block_index: u64,
     reserve_transfer_amount_e8s: u128,
@@ -2269,7 +2336,7 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
         mode: LocalSnsModeEvidence {
             network: require_simple_string(path, &doc, "mode", "network")?,
             source: require_simple_string(path, &doc, "mode", "source")?,
-            dfx_sns: require_simple_string(path, &doc, "mode", "dfx_sns")?,
+            official_tooling: require_simple_string(path, &doc, "mode", "official_tooling")?,
             io_protocol_live: require_simple_bool(path, &doc, "mode", "io_protocol_live")?,
             sns_io_ledger_mainnet_launched: require_simple_bool(
                 path,
@@ -2316,11 +2383,29 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
                 "toolchain_provenance",
                 "sns_cli_version",
             )?,
+            sns_cli_sha256: require_simple_string(
+                path,
+                &doc,
+                "toolchain_provenance",
+                "sns_cli_sha256",
+            )?,
+            sns_testing_init_sha256: require_simple_string(
+                path,
+                &doc,
+                "toolchain_provenance",
+                "sns_testing_init_sha256",
+            )?,
             sns_testing_cli_version: require_simple_string(
                 path,
                 &doc,
                 "toolchain_provenance",
                 "sns_testing_cli_version",
+            )?,
+            sns_testing_cli_sha256: require_simple_string(
+                path,
+                &doc,
+                "toolchain_provenance",
+                "sns_testing_cli_sha256",
             )?,
             quill_version: require_simple_string(
                 path,
@@ -2384,6 +2469,24 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
                 "expected_local_sns_config",
                 "total_supply_e8s",
             )?,
+            treasury_initial_balance_e8s: require_simple_u128(
+                path,
+                &doc,
+                "expected_local_sns_config",
+                "treasury_initial_balance_e8s",
+            )?,
+            protocol_reserve_funding_amount_e8s: require_simple_u128(
+                path,
+                &doc,
+                "expected_local_sns_config",
+                "protocol_reserve_funding_amount_e8s",
+            )?,
+            minimum_remaining_treasury_e8s: require_simple_u128(
+                path,
+                &doc,
+                "expected_local_sns_config",
+                "minimum_remaining_treasury_e8s",
+            )?,
         },
         sns_canisters: LocalSnsCanisters {
             root: parse_required_principal(path, &doc, "sns_canisters", "root")?,
@@ -2445,6 +2548,36 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
                 &doc,
                 "ledger_evidence",
                 "protocol_reserve_balance_e8s",
+            )?,
+            protocol_reserve_funding_proposal_id: require_simple_u64(
+                path,
+                &doc,
+                "ledger_evidence",
+                "protocol_reserve_funding_proposal_id",
+            )?,
+            protocol_reserve_funding_block_index: require_simple_u64(
+                path,
+                &doc,
+                "ledger_evidence",
+                "protocol_reserve_funding_block_index",
+            )?,
+            protocol_reserve_funding_amount_e8s: require_simple_u128(
+                path,
+                &doc,
+                "ledger_evidence",
+                "protocol_reserve_funding_amount_e8s",
+            )?,
+            protocol_reserve_funding_fee_e8s: require_simple_u128(
+                path,
+                &doc,
+                "ledger_evidence",
+                "protocol_reserve_funding_fee_e8s",
+            )?,
+            activation_baseline_captured_after_reserve_funding: require_simple_bool(
+                path,
+                &doc,
+                "ledger_evidence",
+                "activation_baseline_captured_after_reserve_funding",
             )?,
             reserve_transfer_block_index: require_simple_u64(
                 path,
@@ -2844,7 +2977,7 @@ fn validate_local_sns_evidence(
 ) -> Result<(), String> {
     if evidence.mode.network != "local"
         || evidence.mode.source != "official-local-sns-rehearsal"
-        || evidence.mode.dfx_sns != "manual-local-only"
+        || evidence.mode.official_tooling != "manual-local-only"
     {
         return Err(format!(
             "{path}: mode must describe official manual local-only SNS evidence"
@@ -2893,6 +3026,31 @@ fn validate_local_sns_evidence(
         return Err(format!(
             "{path}: observed transaction_fee_e8s {} does not match expected {}",
             evidence.ledger.transaction_fee_e8s, evidence.expected.transaction_fee_e8s
+        ));
+    }
+    let required_treasury = evidence
+        .expected
+        .protocol_reserve_funding_amount_e8s
+        .checked_add(evidence.expected.minimum_remaining_treasury_e8s)
+        .and_then(|value| value.checked_add(evidence.ledger.protocol_reserve_funding_fee_e8s))
+        .ok_or_else(|| format!("{path}: reserve funding treasury requirement overflow"))?;
+    if evidence.expected.treasury_initial_balance_e8s < required_treasury {
+        return Err(format!(
+            "{path}: expected treasury must cover desired reserve plus remaining treasury plus one transfer fee"
+        ));
+    }
+    if evidence.ledger.protocol_reserve_funding_amount_e8s
+        != evidence.expected.protocol_reserve_funding_amount_e8s
+        || evidence.ledger.protocol_reserve_funding_fee_e8s != evidence.ledger.transaction_fee_e8s
+        || !evidence
+            .ledger
+            .activation_baseline_captured_after_reserve_funding
+        || evidence.ledger.protocol_reserve_funding_proposal_id == 0
+        || evidence.ledger.protocol_reserve_funding_block_index
+            >= evidence.ledger.reserve_transfer_block_index
+    {
+        return Err(format!(
+            "{path}: completed evidence must record governance-funded reserve transfer before activation"
         ));
     }
     if evidence.reserve_to_user_transfer.total_supply_before_e8s
@@ -3041,8 +3199,10 @@ fn validate_local_sns_evidence(
     if evidence.issuance.minting_assumed {
         return Err(format!("{path}: minting_assumed must be false"));
     }
-    if evidence.issuance.treasury_transfer_assumed {
-        return Err(format!("{path}: treasury_transfer_assumed must be false"));
+    if !evidence.issuance.treasury_transfer_assumed {
+        return Err(format!(
+            "{path}: treasury_transfer_assumed must be true for post-finalisation reserve funding evidence"
+        ));
     }
     let _ = evidence.ledger.protocol_reserve_subaccount_hex.as_deref();
     let _ = evidence.ledger.reserve_transfer_block_index;
@@ -3106,14 +3266,25 @@ fn validate_local_sns_toolchain(
             ));
         }
     }
-    if toolchain.local_network_url.contains("ic0.app")
-        || toolchain.local_network_url.contains("icp0.io")
-        || toolchain.local_network_url.contains("icp-api.io")
-        || toolchain.local_network_url.contains("icp.net")
-        || toolchain.local_network_url.contains("boundary")
-        || !(toolchain.local_network_url.starts_with("http://127.0.0.1:")
-            || toolchain.local_network_url.starts_with("http://localhost:"))
-    {
+    for (name, value) in [
+        ("sns_cli_sha256", &toolchain.sns_cli_sha256),
+        (
+            "sns_testing_init_sha256",
+            &toolchain.sns_testing_init_sha256,
+        ),
+        ("sns_testing_cli_sha256", &toolchain.sns_testing_cli_sha256),
+        (
+            "locally_built_binary_sha256",
+            &toolchain.locally_built_binary_sha256,
+        ),
+    ] {
+        if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(format!(
+                "{path}: toolchain_provenance.{name} must be exact 64-hex SHA-256"
+            ));
+        }
+    }
+    if !is_strict_loopback_http_url(&toolchain.local_network_url) {
         return Err(format!(
             "{path}: toolchain_provenance.local_network_url must be loopback-only"
         ));
@@ -3196,39 +3367,76 @@ fn validate_local_sns_transfer_sequence(
 }
 
 fn timestamp_leq(left: &str, right: &str) -> bool {
-    parse_rfc3339_utc_seconds(left)
-        .zip(parse_rfc3339_utc_seconds(right))
+    parse_rfc3339_utc(left)
+        .zip(parse_rfc3339_utc(right))
         .map(|(left, right)| left <= right)
         .unwrap_or(false)
 }
 
-fn parse_rfc3339_utc_seconds(value: &str) -> Option<(u16, u8, u8, u8, u8, u8)> {
-    let bytes = value.as_bytes();
-    if bytes.len() != 20
-        || bytes[4] != b'-'
-        || bytes[7] != b'-'
-        || bytes[10] != b'T'
-        || bytes[13] != b':'
-        || bytes[16] != b':'
-        || bytes[19] != b'Z'
-    {
-        return None;
+fn parse_rfc3339_utc(value: &str) -> Option<OffsetDateTime> {
+    OffsetDateTime::parse(value, &Rfc3339).ok()
+}
+
+fn is_strict_loopback_http_url(value: &str) -> bool {
+    if value.trim() != value || !value.starts_with("http://") || value.contains('#') {
+        return false;
     }
-    let year = value[0..4].parse().ok()?;
-    let month = value[5..7].parse().ok()?;
-    let day = value[8..10].parse().ok()?;
-    let hour = value[11..13].parse().ok()?;
-    let minute = value[14..16].parse().ok()?;
-    let second = value[17..19].parse().ok()?;
-    if !(1..=12).contains(&month)
-        || !(1..=31).contains(&day)
-        || hour > 23
-        || minute > 59
-        || second > 60
-    {
-        return None;
+    let rest = &value["http://".len()..];
+    let authority_end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    if authority.is_empty() || authority.contains('@') || authority.contains('%') {
+        return false;
     }
-    Some((year, month, day, hour, minute, second))
+    let (host, port) = if let Some(remainder) = authority.strip_prefix("[::1]:") {
+        ("::1", remainder)
+    } else if authority.contains('[')
+        || authority.contains(']')
+        || authority.matches(':').count() != 1
+    {
+        return false;
+    } else {
+        let (host, port) = authority.split_once(':').unwrap_or(("", ""));
+        (host, port)
+    };
+    if !matches!(host, "localhost" | "127.0.0.1" | "::1") {
+        return false;
+    }
+    matches!(port.parse::<u16>(), Ok(1..=u16::MAX))
+}
+
+fn validate_loopback_url_guardrails() -> Result<(), String> {
+    for url in [
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
+        "http://[::1]:8080",
+        "http://localhost:8080/path?x=1",
+    ] {
+        if !is_strict_loopback_http_url(url) {
+            return Err(format!("loopback URL guard rejected valid local URL {url}"));
+        }
+    }
+    for url in [
+        "http://localhost:8080@evil.example",
+        "http://127.0.0.1:8080.evil.example",
+        "http://localhost.evil.example:8080",
+        "http://127.0.0.1.evil:8080",
+        "http://[::1]@evil.example",
+        "http://LOCALHOST:8080",
+        "http://%6cocalhost:8080",
+        " http://localhost:8080",
+        "http://localhost:8080 ",
+        "https://icp-api.io",
+        "https://localhost:8080",
+        "http://localhost",
+        "http://localhost:0",
+        "http://localhost:65536",
+        "http://localhost:8080#fragment",
+    ] {
+        if is_strict_loopback_http_url(url) {
+            return Err(format!("loopback URL guard accepted unsafe URL {url}"));
+        }
+    }
+    Ok(())
 }
 
 fn validate_local_sns_transfer(
@@ -3308,7 +3516,7 @@ fn validate_local_sns_transfer(
             ));
         }
     }
-    if !parse_rfc3339_utc_seconds(&transfer.observation_timestamp).is_some() {
+    if parse_rfc3339_utc(&transfer.observation_timestamp).is_none() {
         return Err(format!(
             "{path}: {section}.observation_timestamp must be RFC3339 UTC seconds"
         ));
@@ -3560,6 +3768,215 @@ fn check_local_sns_ledger_at(root: &Path) -> Result<bool, String> {
     let text = require_file(root, path)?;
     parse_local_sns_evidence(path, &text)?;
     Ok(true)
+}
+
+fn check_local_sns_committed_evidence_at(root: &Path) -> Result<(), String> {
+    let evidence_root = root.join("deploy/local-sns-rehearsal/evidence");
+    if !evidence_root.exists() {
+        return Ok(());
+    }
+    for entry in
+        fs::read_dir(&evidence_root).map_err(|err| format!("{}: {err}", evidence_root.display()))?
+    {
+        let entry = entry.map_err(|err| format!("{}: {err}", evidence_root.display()))?;
+        if !entry
+            .file_type()
+            .map_err(|err| format!("{}: {err}", entry.path().display()))?
+            .is_dir()
+        {
+            continue;
+        }
+        let rel = entry
+            .path()
+            .strip_prefix(root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let package_files = list_regular_files_relative(&entry.path())?;
+        let allowed: BTreeSet<&str> = [
+            "manifest.toml",
+            "blocker-report.md",
+            "canister-ids.local.toml",
+            "commands.local.md",
+            "SHA256SUMS",
+        ]
+        .into_iter()
+        .collect();
+        for file in &package_files {
+            if file.contains("..") || file.starts_with('/') || !allowed.contains(file.as_str()) {
+                return Err(format!("{rel}: unexpected evidence package file {file}"));
+            }
+        }
+        if !package_files.iter().any(|file| file == "SHA256SUMS") {
+            return Err(format!("{rel}: missing SHA256SUMS"));
+        }
+        let manifest_path = format!("{rel}/manifest.toml");
+        let manifest = require_file(root, &manifest_path)?;
+        require_absent(
+            &manifest_path,
+            &manifest,
+            &[
+                "BEGIN PRIVATE KEY",
+                "identity.pem",
+                "seed phrase",
+                "--network ic",
+                "-n ic",
+                "icp-api.io",
+                "icp0.io",
+                "ic0.app",
+            ],
+        )?;
+        let doc = parse_simple_toml_document(&manifest_path, &manifest)?;
+        if require_simple_string(&manifest_path, &doc, "provenance", "official_ic_repository")?
+            != "dfinity/ic"
+            || require_simple_string(
+                &manifest_path,
+                &doc,
+                "provenance",
+                "sns_testing_source_path",
+            )? != "rs/sns/testing"
+        {
+            return Err(format!("{manifest_path}: invalid official SNS provenance"));
+        }
+        let complete = require_simple_bool(&manifest_path, &doc, "provenance", "complete")?;
+        let commit = require_simple_string(
+            &manifest_path,
+            &doc,
+            "provenance",
+            "official_ic_source_commit",
+        )?;
+        if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(format!(
+                "{manifest_path}: official_ic_source_commit must be exact 40-hex commit"
+            ));
+        }
+        validate_evidence_package_sha256s(root, &rel, &package_files)?;
+        for file in &package_files {
+            if file == "SHA256SUMS" {
+                continue;
+            }
+            let file_path = format!("{rel}/{file}");
+            let text = require_file(root, &file_path)?;
+            require_absent(
+                &file_path,
+                &text,
+                &[
+                    "BEGIN PRIVATE KEY",
+                    "identity.pem",
+                    "seed phrase",
+                    "--network ic",
+                    "-n ic",
+                    "icp-api.io",
+                    "icp0.io",
+                    "ic0.app",
+                    "identity.pem",
+                ],
+            )?;
+        }
+        if complete {
+            require_absent(
+                &manifest_path,
+                &manifest,
+                &["blocker_report", "unavailable", "TODO", "blocked"],
+            )?;
+            if !package_files
+                .iter()
+                .any(|file| file == "canister-ids.local.toml")
+            {
+                return Err(format!(
+                    "{rel}: completed evidence package must include canister-ids.local.toml"
+                ));
+            }
+            let evidence_path = format!("{rel}/canister-ids.local.toml");
+            let evidence = require_file(root, &evidence_path)?;
+            parse_local_sns_evidence(&evidence_path, &evidence)?;
+        } else {
+            let blocker_report =
+                require_simple_string(&manifest_path, &doc, "provenance", "blocker_report")?;
+            if blocker_report != "blocker-report.md" {
+                return Err(format!(
+                    "{manifest_path}: incomplete package must reference blocker-report.md"
+                ));
+            }
+            let blocker_path = format!("{rel}/blocker-report.md");
+            let blocker = require_file(root, &blocker_path)?;
+            require_present(
+                &blocker_path,
+                &blocker,
+                &[
+                    "official local SNS rehearsal not completed",
+                    "source-built",
+                    "No mainnet call",
+                ],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn list_regular_files_relative(dir: &Path) -> Result<BTreeSet<String>, String> {
+    fn walk(base: &Path, current: &Path, out: &mut BTreeSet<String>) -> Result<(), String> {
+        for entry in fs::read_dir(current).map_err(|err| format!("{}: {err}", current.display()))? {
+            let entry = entry.map_err(|err| format!("{}: {err}", current.display()))?;
+            let path = entry.path();
+            let ty = entry
+                .file_type()
+                .map_err(|err| format!("{}: {err}", path.display()))?;
+            if ty.is_dir() {
+                walk(base, &path, out)?;
+            } else if ty.is_file() {
+                let rel = path
+                    .strip_prefix(base)
+                    .map_err(|err| format!("{}: {err}", path.display()))?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.insert(rel);
+            }
+        }
+        Ok(())
+    }
+    let mut out = BTreeSet::new();
+    walk(dir, dir, &mut out)?;
+    Ok(out)
+}
+
+fn validate_evidence_package_sha256s(
+    root: &Path,
+    rel: &str,
+    package_files: &BTreeSet<String>,
+) -> Result<(), String> {
+    let sha_path = format!("{rel}/SHA256SUMS");
+    let sha_text = require_file(root, &sha_path)?;
+    let mut covered = BTreeSet::new();
+    for line in sha_text.lines().filter(|line| !line.trim().is_empty()) {
+        let (hash, file) = line
+            .split_once("  ")
+            .ok_or_else(|| format!("{sha_path}: invalid sha256sum line {line:?}"))?;
+        if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(format!("{sha_path}: invalid SHA-256 hash for {file}"));
+        }
+        if file.contains("..") || file.starts_with('/') || file == "SHA256SUMS" {
+            return Err(format!("{sha_path}: invalid covered path {file}"));
+        }
+        let bytes =
+            fs::read(root.join(rel).join(file)).map_err(|err| format!("{rel}/{file}: {err}"))?;
+        let actual = hex_sha256(&bytes);
+        if actual != hash.to_ascii_lowercase() {
+            return Err(format!("{rel}/{file}: SHA-256 mismatch"));
+        }
+        covered.insert(file.to_string());
+    }
+    let expected: BTreeSet<String> = package_files
+        .iter()
+        .filter(|file| file.as_str() != "SHA256SUMS")
+        .cloned()
+        .collect();
+    if covered != expected {
+        return Err(format!(
+            "{sha_path}: SHA256SUMS must cover every package file except itself"
+        ));
+    }
+    Ok(())
 }
 
 fn check_e2e_coverage_matrix_at(root: &Path) -> Result<(), String> {
@@ -4152,7 +4569,7 @@ fn check_sns_harness_at(root: &Path) -> Result<(), String> {
             "not part of `test_ci`",
             "not used by `verify_release`",
             "must not call mainnet",
-            "dfx sns",
+            "source-built sns",
             "Do not use --network ic",
         ],
     )?;
@@ -5289,7 +5706,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_committed_evidence, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -5446,22 +5863,23 @@ fn main() -> ExitCode {
             }
         },
         "sns_config_validate_official" => {
-            if env::var_os("IO_RUN_DFX_SNS_VALIDATE").is_none() {
+            if env::var_os("IO_RUN_SOURCE_BUILT_SNS_VALIDATE").is_none() {
                 eprintln!(
-                    "skipping sns_config_validate_official: set IO_RUN_DFX_SNS_VALIDATE=1 to run optional dfx sns validation"
+                    "skipping sns_config_validate_official: set IO_RUN_SOURCE_BUILT_SNS_VALIDATE=1 to run optional source-built sns validation"
                 );
-            } else if Command::new("dfx").arg("--version").status().is_err() {
-                eprintln!("skipping sns_config_validate_official: dfx is unavailable");
+            } else if Command::new("sns").arg("--help").status().is_err() {
+                eprintln!(
+                    "skipping sns_config_validate_official: source-built sns CLI is unavailable"
+                );
             } else {
-                ok &= run(
-                    "optional dfx sns init-config-file validate",
-                    dfx(&[
-                        "sns",
-                        "init-config-file",
-                        "validate",
-                        "tools/sns/sns_init.io.local.yaml",
-                    ]),
-                );
+                let mut c = Command::new("sns");
+                c.args([
+                    "init-config-file",
+                    "--init-config-file-path",
+                    "tools/sns/sns_init.io.local.yaml",
+                    "validate",
+                ]);
+                ok &= run("optional source-built sns init-config-file validate", c);
             }
         }
         "sns_official_testing_check" => match check_sns_official_testing_at(&root) {
@@ -5504,6 +5922,15 @@ fn main() -> ExitCode {
                 ok = false;
             }
         },
+        "validate_local_sns_committed_evidence" => {
+            match check_local_sns_committed_evidence_at(&root) {
+                Ok(()) => eprintln!("✓ validate_local_sns_committed_evidence"),
+                Err(err) => {
+                    eprintln!("✗ validate_local_sns_committed_evidence: {err}");
+                    ok = false;
+                }
+            }
+        }
         "validate_local_sns_scripts" => match validate_local_sns_scripts_at(&root) {
             Ok(()) => eprintln!("✓ validate_local_sns_scripts"),
             Err(err) => {
@@ -5974,6 +6401,7 @@ fn main() -> ExitCode {
                 "validate_historian_freshness",
                 "validate_stable_storage",
                 "validate_local_sns_rehearsal",
+                "validate_local_sns_committed_evidence",
                 "validate_local_sns_scripts",
                 "e2e_coverage_matrix_check",
                 "live_stream_manager_pocketic_gate_check",
@@ -6212,6 +6640,7 @@ fn main() -> ExitCode {
                 "validate_historian_freshness",
                 "validate_stable_storage",
                 "validate_local_sns_rehearsal",
+                "validate_local_sns_committed_evidence",
                 "validate_local_sns_scripts",
                 "security_scan_required",
                 "test_unit",
@@ -6409,7 +6838,7 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "docs/operations/official-sns-testing.md",
-            "We currently run SNS-shaped mock/PocketIC tests.\nWe do not currently run the official SNS launch locally in required CI.\nOfficial SNS testing is optional and heavier.\nThe current official ICP/DFINITY SNS testing documentation is the source of truth.\nThe historical standalone `dfinity/sns-testing` repository is deprecated.\nThe official SNS launch path may require `dfx sns`; this is not part of required IO workflows.\nSNS testflight is a future manual/mainnet rehearsal.\nIO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical.\nThe existing canister that owns IO NNS neuron 6345890886899317159 is not touched by these tests.\nLayer 1\nLayer 2\nLayer 3\nLayer 4\n",
+            "We currently run SNS-shaped mock/PocketIC tests.\nWe do not currently run the official SNS launch locally in required CI.\nOfficial SNS testing is optional and heavier.\nThe current official ICP/DFINITY SNS testing documentation is the source of truth.\nThe historical standalone `dfinity/sns-testing` repository is deprecated.\nThe maintained official local SNS flow uses the source-built `sns` CLI; this is not part of required IO workflows.\nSNS testflight is a future manual/mainnet rehearsal.\nIO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical.\nThe existing canister that owns IO NNS neuron 6345890886899317159 is not touched by these tests.\nLayer 1\nLayer 2\nLayer 3\nLayer 4\n",
         );
         write(
             root,
@@ -6444,7 +6873,7 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "tools/sns/official-sns-testing-notes.md",
-            "optional local-only not part of `test_ci` not used by `verify_release` must not call mainnet dfx sns Do not use --network ic\n",
+            "optional local-only not part of `test_ci` not used by `verify_release` must not call mainnet source-built sns Do not use --network ic\n",
         );
         write(
             root,
@@ -6462,26 +6891,37 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "deploy/local-sns-rehearsal/sns_init.local.template.yaml",
-            "Local-only\nNot final tokenomics\nNot a mainnet SNS proposal\nfallback_controller_principals\n{{fallback_controller_principal}}\ndapp_canisters\nToken:\nsymbol: \"IO\"\ntransaction_fee\nDistribution:\nprotocol_reserve\nSwap:\narchive_options\nissuance_model: \"protocol reserve transfer\"\nredemption_model: \"user transfer back to protocol reserve\"\nio_test_ledger_role: \"non-canonical staging only\"\nTODO_LOCAL\n",
+            "Local-only\nNot final tokenomics\nNot a mainnet SNS proposal\nfallback_controller_principals\n{{fallback_controller_principal}}\ndapp_canisters\nToken:\nsymbol: \"IO\"\ntransaction_fee\nDistribution:\ntreasury: \"800_000 tokens\"\nswap: \"100_000 tokens\"\nSwap:\nstart_time:\nNnsProposal:\nTODO_LOCAL\n",
         );
         write(
             root,
             "deploy/local-sns-rehearsal/canister-ids.local.example.toml",
-            "network = \"local\"\nsource = \"official-local-sns-rehearsal\"\n[toolchain_provenance]\nofficial_ic_source_commit = \"0123456789abcdef0123456789abcdef01234567\"\nsns_testing_source_path = \"rs/sns/testing\"\noperator_identity_principal = \"bd3sg-teaaa-aaaaa-qaaba-cai\"\nlocal_network_url = \"http://127.0.0.1:8080\"\n[sns_canisters]\nroot = \"TODO\"\ngovernance = \"TODO\"\nledger = \"TODO\"\nindex = \"TODO\"\nswap = \"TODO\"\narchive = \"TODO\"\n[expected_local_sns_config]\ntoken_symbol = \"IO\"\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\n[ledger_evidence]\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\nprotocol_reserve_balance_e8s = 1\nreserve_transfer_amount_e8s = 1\nredemption_return_amount_e8s = 1\nbad_fee_error_observed = true\ninsufficient_funds_error_observed = true\nduplicate_transfer_observed = true\nduplicate_block_verified = true\nindex_account_history_observed = true\n[transfer_reserve_to_user]\nfrom_owner = \"TODO\"\nfrom_subaccount_hex = \"none\"\nto_owner = \"TODO\"\nto_subaccount_hex = \"none\"\nfee_disposition = \"burned\"\nsender_balance_before_e8s = 1\nrecipient_balance_after_e8s = 1\ntotal_supply_before_e8s = 1\ntotal_supply_after_e8s = 1\nproof_source_canister = \"TODO\"\nproof_method = \"get_account_transactions\"\nduplicate_proof_source = \"index_account_history\"\narchive_canister = \"none\"\n[transfer_user_to_redemption]\nfrom_owner = \"TODO\"\nfrom_subaccount_hex = \"none\"\nto_owner = \"TODO\"\nto_subaccount_hex = \"none\"\nfee_disposition = \"burned\"\nsender_balance_before_e8s = 1\nrecipient_balance_after_e8s = 1\ntotal_supply_before_e8s = 1\ntotal_supply_after_e8s = 1\nproof_source_canister = \"TODO\"\nproof_method = \"get_account_transactions\"\nduplicate_proof_source = \"index_account_history\"\narchive_canister = \"none\"\n[transfer_redemption_to_reserve]\nfrom_owner = \"TODO\"\nfrom_subaccount_hex = \"none\"\nto_owner = \"TODO\"\nto_subaccount_hex = \"none\"\nfee_disposition = \"burned\"\nsender_balance_before_e8s = 1\nrecipient_balance_after_e8s = 1\ntotal_supply_before_e8s = 1\ntotal_supply_after_e8s = 1\nproof_source_canister = \"TODO\"\nproof_method = \"get_account_transactions\"\nduplicate_proof_source = \"index_account_history\"\narchive_canister = \"none\"\n[issuance_model]\nresolved_as = \"protocol_reserve_transfer\"\nminting_assumed = false\nfee_disposition_mode = \"burned\"\ntotal_supply_changes_explained = true\n",
+            "network = \"local\"\nsource = \"official-local-sns-rehearsal\"\nofficial_tooling = \"manual-local-only\"\n[toolchain_provenance]\nofficial_ic_source_commit = \"0123456789abcdef0123456789abcdef01234567\"\nsns_testing_source_path = \"rs/sns/testing\"\noperator_identity_principal = \"bd3sg-teaaa-aaaaa-qaaba-cai\"\nlocal_network_url = \"http://127.0.0.1:8080\"\nsns_cli_sha256 = \"TODO\"\nsns_testing_init_sha256 = \"TODO\"\nsns_testing_cli_sha256 = \"TODO\"\n[sns_canisters]\nroot = \"TODO\"\ngovernance = \"TODO\"\nledger = \"TODO\"\nindex = \"TODO\"\nswap = \"TODO\"\narchive = \"TODO\"\n[expected_local_sns_config]\ntoken_symbol = \"IO\"\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\nprotocol_reserve_funding_amount_e8s = 1\n[ledger_evidence]\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\nprotocol_reserve_balance_e8s = 1\nprotocol_reserve_funding_block_index = 1\nreserve_transfer_amount_e8s = 1\nredemption_return_amount_e8s = 1\nbad_fee_error_observed = true\ninsufficient_funds_error_observed = true\nduplicate_transfer_observed = true\nduplicate_block_verified = true\nindex_account_history_observed = true\n[transfer_reserve_to_user]\nfrom_owner = \"TODO\"\nfrom_subaccount_hex = \"none\"\nto_owner = \"TODO\"\nto_subaccount_hex = \"none\"\nfee_disposition = \"burned\"\nsender_balance_before_e8s = 1\nrecipient_balance_after_e8s = 1\ntotal_supply_before_e8s = 1\ntotal_supply_after_e8s = 1\nproof_source_canister = \"TODO\"\nproof_method = \"get_account_transactions\"\nduplicate_proof_source = \"index_account_history\"\narchive_canister = \"none\"\n[transfer_user_to_redemption]\nfrom_owner = \"TODO\"\nfrom_subaccount_hex = \"none\"\nto_owner = \"TODO\"\nto_subaccount_hex = \"none\"\nfee_disposition = \"burned\"\nsender_balance_before_e8s = 1\nrecipient_balance_after_e8s = 1\ntotal_supply_before_e8s = 1\ntotal_supply_after_e8s = 1\nproof_source_canister = \"TODO\"\nproof_method = \"get_account_transactions\"\nduplicate_proof_source = \"index_account_history\"\narchive_canister = \"none\"\n[transfer_redemption_to_reserve]\nfrom_owner = \"TODO\"\nfrom_subaccount_hex = \"none\"\nto_owner = \"TODO\"\nto_subaccount_hex = \"none\"\nfee_disposition = \"burned\"\nsender_balance_before_e8s = 1\nrecipient_balance_after_e8s = 1\ntotal_supply_before_e8s = 1\ntotal_supply_after_e8s = 1\nproof_source_canister = \"TODO\"\nproof_method = \"get_account_transactions\"\nduplicate_proof_source = \"index_account_history\"\narchive_canister = \"none\"\n[issuance_model]\nresolved_as = \"protocol_reserve_transfer\"\nminting_assumed = false\ntreasury_transfer_assumed = true\nfee_disposition_mode = \"burned\"\ntotal_supply_changes_explained = true\n",
         );
         for path in [
             "deploy/local-sns-rehearsal/runbook.sh",
+            "deploy/local-sns-rehearsal/scripts/lib-local-sns.sh",
             "deploy/local-sns-rehearsal/scripts/00-check-prereqs.sh",
             "deploy/local-sns-rehearsal/scripts/01-render-sns-init.sh",
             "deploy/local-sns-rehearsal/scripts/02-record-canister-ids.sh",
             "deploy/local-sns-rehearsal/scripts/03-capture-ledger-evidence.sh",
             "deploy/local-sns-rehearsal/scripts/04-render-local-wiring.sh",
             "deploy/local-sns-rehearsal/scripts/05-validate-evidence.sh",
+            "deploy/local-sns-rehearsal/scripts/10-bootstrap-official-network.sh",
+            "deploy/local-sns-rehearsal/scripts/11-build-local-io-canisters.sh",
+            "deploy/local-sns-rehearsal/scripts/12-deploy-local-dapps.sh",
+            "deploy/local-sns-rehearsal/scripts/13-propose-and-finalize-sns.sh",
+            "deploy/local-sns-rehearsal/scripts/14-discover-sns-canisters.sh",
+            "deploy/local-sns-rehearsal/scripts/15-exercise-ledger.sh",
+            "deploy/local-sns-rehearsal/scripts/16-exercise-index-and-archives.sh",
+            "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
+            "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
+            "deploy/local-sns-rehearsal/scripts/19-cleanup-official-network.sh",
         ] {
             write(
                 root,
                 path,
-                "#!/usr/bin/env bash\n# local-only optional\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n",
+                "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# . scripts/env.sh //rs/sns/testing:sns-testing-init //rs/sns/testing:sns-testing //rs/sns/cli:sns sns init-config-file --init-config-file-path\n",
             );
         }
         write(
@@ -7301,12 +7741,12 @@ Template SNS principal values are planned wiring placeholders only.
     }
 
     #[test]
-    fn local_sns_ledger_check_rejects_treasury_transfer_assumption() {
+    fn local_sns_ledger_check_rejects_missing_treasury_transfer_assumption() {
         assert_local_sns_evidence_rejects(
             |text| {
                 text.replace(
-                    "treasury_transfer_assumed = false",
                     "treasury_transfer_assumed = true",
+                    "treasury_transfer_assumed = false",
                 )
             },
             "treasury_transfer_assumed",

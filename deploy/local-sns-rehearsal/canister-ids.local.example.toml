@@ -4,7 +4,7 @@
 [mode]
 network = "local"
 source = "official-local-sns-rehearsal"
-dfx_sns = "manual-local-only"
+official_tooling = "manual-local-only"
 io_protocol_live = false
 sns_io_ledger_mainnet_launched = false
 
@@ -12,11 +12,14 @@ sns_io_ledger_mainnet_launched = false
 official_ic_repository = "dfinity/ic"
 official_ic_source_commit = "2d7f90fb23672cc3b81c216a33d04c75672dd308"
 sns_testing_source_path = "rs/sns/testing"
-dfx_version = "TODO_EXACT_DFX_VERSION"
+dfx_version = "TODO_EXACT_DFX_VERSION_FOR_IDENTITY_AND_LOCAL_CANISTER_CALLS"
 bazel_version = "TODO_EXACT_BAZEL_VERSION_OR_BLOCKER"
 pocket_ic_version = "TODO_EXACT_POCKET_IC_VERSION"
-sns_cli_version = "TODO_EXACT_SNS_CLI_VERSION_OR_BLOCKER"
-sns_testing_cli_version = "TODO_EXACT_SNS_TESTING_CLI_VERSION_OR_SOURCE_BUILD"
+sns_cli_version = "TODO_EXACT_SOURCE_BUILT_SNS_CLI_VERSION"
+sns_cli_sha256 = "TODO_EXACT_64_HEX_SOURCE_BUILT_SNS_CLI_SHA256"
+sns_testing_init_sha256 = "TODO_EXACT_64_HEX_SOURCE_BUILT_SNS_TESTING_INIT_SHA256"
+sns_testing_cli_version = "TODO_EXACT_SOURCE_BUILT_SNS_TESTING_CLI_VERSION"
+sns_testing_cli_sha256 = "TODO_EXACT_64_HEX_SOURCE_BUILT_SNS_TESTING_CLI_SHA256"
 quill_version = "TODO_EXACT_QUILL_VERSION_OR_BLOCKER"
 rustc_version = "TODO_EXACT_RUSTC_VERSION"
 cargo_version = "TODO_EXACT_CARGO_VERSION"
@@ -29,6 +32,9 @@ locally_built_binary_sha256 = "TODO_SHA256_OR_EXACT_SOURCE_BUILD_PROVENANCE"
 token_symbol = "IO"
 transaction_fee_e8s = 10_000
 total_supply_e8s = 100_000_000_000_000
+treasury_initial_balance_e8s = 80_000_000_000_000
+protocol_reserve_funding_amount_e8s = 60_000_000_000_000
+minimum_remaining_treasury_e8s = 19_999_999_990_000
 
 [sns_canisters]
 root = "TODO_LOCAL_SNS_ROOT_CANISTER"
@@ -51,6 +57,11 @@ total_supply_e8s = "TODO_LOCAL_FINAL_TOTAL_SUPPLY_AFTER_OBSERVED_TRANSFERS"
 protocol_reserve_account_owner = "TODO_LOCAL_PROTOCOL_RESERVE_OWNER_PRINCIPAL"
 protocol_reserve_subaccount_hex = "TODO_LOCAL_PROTOCOL_RESERVE_SUBACCOUNT_HEX_OR_NONE"
 protocol_reserve_balance_e8s = "TODO_LOCAL_FINAL_PROTOCOL_RESERVE_BALANCE"
+protocol_reserve_funding_proposal_id = "TODO_LOCAL_SNS_TREASURY_TRANSFER_PROPOSAL_ID"
+protocol_reserve_funding_block_index = "TODO_LOCAL_TREASURY_TO_RESERVE_BLOCK_INDEX_BEFORE_ACTIVATION"
+protocol_reserve_funding_amount_e8s = 60_000_000_000_000
+protocol_reserve_funding_fee_e8s = 10_000
+activation_baseline_captured_after_reserve_funding = true
 reserve_transfer_block_index = "TODO_LOCAL_RESERVE_TO_USER_BLOCK_INDEX"
 redemption_return_block_index = "TODO_LOCAL_REDEMPTION_TO_RESERVE_BLOCK_INDEX"
 reserve_transfer_amount_e8s = 100_000_000
@@ -180,7 +191,7 @@ governance_upgrade_gap = "TODO_LOCAL_REASON_IF_NOT_TESTED"
 [issuance_model]
 resolved_as = "protocol_reserve_transfer"
 minting_assumed = false
-treasury_transfer_assumed = false
+treasury_transfer_assumed = true
 fee_disposition_mode = "TODO_burned_OR_collected"
 total_supply_changes_explained = true
 

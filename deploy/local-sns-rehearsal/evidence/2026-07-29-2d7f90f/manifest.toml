@@ -1,0 +1,6 @@
+[provenance]
+official_ic_repository = "dfinity/ic"
+official_ic_source_commit = "2d7f90fb23672cc3b81c216a33d04c75672dd308"
+sns_testing_source_path = "rs/sns/testing"
+complete = false
+blocker_report = "blocker-report.md"

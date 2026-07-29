@@ -24,10 +24,8 @@ required_keys=(
   io_historian_canister
   frontend_canister
   developer_neuron_principal
-  protocol_reserve_principal
-  archive_controller_principal
-  logo_url
-  token_logo_url
+  logo_path
+  token_logo_path
 )
 
 rendered="$(cat "$template")"
@@ -46,7 +44,11 @@ for key in "${required_keys[@]}"; do
       ;;
   esac
   case "$key" in
-    logo_url|token_logo_url) ;;
+    logo_path|token_logo_path)
+      case "$value" in
+        /*|*..*|*://*|*\\*|"") printf 'local image path %s must be relative and local\n' "$key" >&2; exit 2 ;;
+      esac
+      ;;
     *)
       if ! printf '%s' "$value" | grep -Eq '^[a-z0-9-]+$'; then
         printf 'local variable %s does not look like principal text\n' "$key" >&2

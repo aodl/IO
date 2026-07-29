@@ -20,6 +20,16 @@ Do not use `--network ic`. Do not call mainnet. Do not touch `oae4c-3iaaa-aaaar-
 - `scripts/03-capture-ledger-evidence.sh`: prints local evidence capture commands from recorded IDs.
 - `scripts/04-render-local-wiring.sh`: renders ignored local dry-run wiring from validated evidence.
 - `scripts/05-validate-evidence.sh`: validates completed local evidence.
+- `scripts/10-bootstrap-official-network.sh`: checks pinned `dfinity/ic` `rs/sns/testing` provenance and local SNS tooling prerequisites.
+- `scripts/11-build-local-io-canisters.sh`: builds local debug IO Wasms for rehearsal.
+- `scripts/12-deploy-local-dapps.sh`: guarded local-only dapp deployment phase.
+- `scripts/13-propose-and-finalize-sns.sh`: guarded local-only SNS proposal/finalization phase.
+- `scripts/14-discover-sns-canisters.sh`: guarded local-only SNS canister discovery phase.
+- `scripts/15-exercise-ledger.sh`: guarded local-only ledger evidence phase.
+- `scripts/16-exercise-index-and-archives.sh`: guarded local-only index/archive evidence phase.
+- `scripts/17-exercise-governance-and-controllers.sh`: guarded local-only governance/controller proof phase.
+- `scripts/18-package-evidence.sh`: packages sanitized completed evidence or a blocker report.
+- `scripts/19-cleanup-official-network.sh`: scoped cleanup reminder for local-only processes.
 
 `canister-ids.local.toml` is the operator-filled local evidence file and should not be treated as production config.
 
@@ -48,17 +58,22 @@ Manual sequence:
 1. Run `IO_LOCAL_SNS_REHEARSAL_ACK=local-only deploy/local-sns-rehearsal/runbook.sh check`.
 2. Copy `local-vars.example.toml` to ignored `local-vars.toml` and fill local values once.
 3. Run `runbook.sh render-sns-init` to produce ignored `generated/sns_init.local.yaml`.
-4. Deploy IO dapp canisters locally.
-5. Add local NNS root as co-controller where required by the local SNS launch tooling.
-6. Validate the rendered SNS init file with local SNS tooling. This may require `dfx sns`, but that remains optional/manual and local-only.
-7. Submit the local SNS proposal through the official local flow.
-8. Let SNS-W deploy local SNS root, governance, ledger, index, swap, and archive canisters.
-9. Run `runbook.sh record-ids` and record those local IDs in ignored `canister-ids.local.toml`.
-10. Run `runbook.sh capture-evidence` and the command templates in `commands.local.example.md`.
-11. Verify fee disposition, total supply deltas, reserve balance, bad-fee, insufficient-funds, duplicate, and account-history behavior.
-12. Verify SNS governance/root/swap availability and dapp controller state.
-13. Test an SNS-governance-controlled dapp upgrade proposal if the local tooling supports it; otherwise record a concrete gap.
-14. Run `runbook.sh validate` and `cargo run -p xtask -- validate_local_sns_ledger`.
+4. Run `runbook.sh bootstrap-official-network` against an isolated pinned clean `dfinity/ic` checkout and loopback endpoint.
+5. Run `runbook.sh build-local-io-canisters`.
+6. Run the guarded phases `deploy-local-dapps`, `propose-and-finalize-sns`, `discover-sns-canisters`, `exercise-ledger`, `exercise-index-and-archives`, and `exercise-governance-and-controllers` only after their prerequisites exist.
+7. Add local NNS root as co-controller where required by the local SNS launch tooling.
+8. Validate the rendered SNS init file with the source-built `sns` CLI from the pinned `dfinity/ic` checkout.
+9. Submit the local SNS proposal through the official local flow.
+10. Let SNS-W deploy local SNS root, governance, ledger, index, swap, and archive canisters.
+11. Run `runbook.sh record-ids` and record those local IDs in ignored `canister-ids.local.toml`.
+12. Run `runbook.sh capture-evidence` and the command templates in `commands.local.example.md`.
+13. After swap finalization, create and execute an SNS-governance treasury-transfer proposal that sends the exact desired reserve amount to the local `io_stream_manager` canister owner with the configured reserve subaccount.
+14. Observe the treasury-transfer fee burn and capture the canonical activation baseline after that transfer.
+15. Verify fee disposition, total supply deltas, reserve balance, bad-fee, insufficient-funds, duplicate, and account-history behavior.
+16. Verify SNS governance/root/swap availability and dapp controller state.
+17. Test an SNS-governance-controlled dapp upgrade proposal if the local tooling supports it; otherwise record a concrete gap.
+18. Run `runbook.sh validate` and `cargo run -p xtask -- validate_local_sns_ledger`.
+19. Run `runbook.sh package-evidence` to create sanitized committed evidence or a blocker report.
 
 ## Repository Validators
 
@@ -74,7 +89,7 @@ cargo run -p xtask -- validate_local_sns_scripts
 
 `validate_local_sns_ledger` checks the optional local evidence file. If `canister-ids.local.toml` is absent, it skips clearly. If present, it parses the evidence schema, rejects placeholders, known mainnet/prior canister IDs in local SNS/app wiring, protected IO IDs outside explicit reminders, invalid principals, live-protocol claims, minting assumptions, fee/supply mismatches, zero reserve balance, missing duplicate proof, and missing governance upgrade gap.
 
-`validate_local_sns_scripts` copies the operator scripts to a temp directory, writes fixture local variables and completed local evidence, runs the no-network executable paths, and checks positive and negative guardrails. It does not call canisters and does not require `dfx sns`.
+`validate_local_sns_scripts` copies the operator scripts to a temp directory, writes fixture local variables and completed local evidence, runs the no-network executable paths, and checks positive and negative guardrails. It does not call canisters and does not require the dfx SNS extension.
 
 Until `canister-ids.local.toml` is produced from a completed local rehearsal, no local SNS canister IDs are recorded and no real SNS ledger/index/governance/root behavior has been observed.
 
@@ -89,7 +104,7 @@ IO issuance is modelled as reserve transfer, not arbitrary minting:
 
 Under standard 10,000 e8s fee-burn evidence with no hidden top-up, the rehearsal amounts are `100_000_000`, `99_990_000`, and `99_980_000`. Any intervening funding transfer must be recorded as evidence rather than hidden in balances.
 
-The protocol reserve account/subaccount must be funded at SNS genesis in the local config. Any minting-based assumption is a blocker unless a later audited launch decision explicitly changes this model. A constant-supply assumption is also a blocker unless the observed ledger fee mode proves it.
+The protocol reserve account/subaccount is funded after finalization and before activation by an SNS-governance treasury-transfer proposal. For desired reserve `R`, remaining treasury `T`, and transfer fee `f`, genesis treasury must contain at least `R + T + f`. The reserve destination is the local `io_stream_manager` canister owner with the exact configured reserve subaccount; another subaccount owned by the same canister is still a distinct Account. Any minting-based assumption is a blocker unless a later audited launch decision explicitly changes this model. A constant-supply assumption is also a blocker unless the observed ledger fee mode proves it.
 
 ## Done Criteria
 
