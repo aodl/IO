@@ -1485,6 +1485,11 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "io_rehearsal_notes:",
         ],
     )?;
+    validate_local_sns_yaml_structure(
+        "deploy/local-sns-rehearsal/sns_init.local.template.yaml",
+        &sns_init,
+    )?;
+    validate_local_sns_logo_files(root)?;
     require_absent(
         "deploy/local-sns-rehearsal/sns_init.local.template.yaml",
         &sns_init,
@@ -1678,6 +1683,116 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_local_sns_yaml_structure(path: &str, text: &str) -> Result<(), String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut in_swap = false;
+    let mut start_time_count = 0_u8;
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if line
+            .chars()
+            .next()
+            .is_some_and(|character| !character.is_whitespace())
+        {
+            in_swap = trimmed == "Swap:";
+            continue;
+        }
+        if !in_swap {
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("start_time:") {
+            start_time_count += 1;
+            if value.trim() != "null" {
+                return Err(format!(
+                    "{path}: Swap.start_time must be the YAML null value for local rehearsal"
+                ));
+            }
+        }
+        if let Some(value) = trimmed.strip_prefix("restricted_countries:") {
+            let inline = value.trim();
+            if inline == "[]" {
+                return Err(format!(
+                    "{path}: Swap.restricted_countries must be omitted or non-empty"
+                ));
+            }
+            if inline.is_empty() {
+                let indent = line.len() - line.trim_start().len();
+                let has_item = lines[index + 1..]
+                    .iter()
+                    .take_while(|candidate| {
+                        candidate.trim().is_empty()
+                            || candidate.len() - candidate.trim_start().len() > indent
+                    })
+                    .any(|candidate| candidate.trim_start().starts_with("- "));
+                if !has_item {
+                    return Err(format!(
+                        "{path}: Swap.restricted_countries must be omitted or non-empty"
+                    ));
+                }
+            }
+        }
+    }
+    if start_time_count != 1 {
+        return Err(format!(
+            "{path}: Swap.start_time must appear exactly once and be null"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_local_sns_logo_files(root: &Path) -> Result<(), String> {
+    let vars_path = "deploy/local-sns-rehearsal/local-vars.example.toml";
+    let text = require_file(root, vars_path)?;
+    let doc = parse_simple_toml_document(vars_path, &text)?;
+    let rehearsal_dir = root.join("deploy/local-sns-rehearsal");
+    for (path_key, hash_key) in [
+        ("logo_path", "logo_sha256"),
+        ("token_logo_path", "token_logo_sha256"),
+    ] {
+        let relative = require_simple_string(vars_path, &doc, "local", path_key)?;
+        let hash = require_simple_string(vars_path, &doc, "local", hash_key)?;
+        let relative_path = Path::new(&relative);
+        if relative_path.is_absolute()
+            || relative.contains("://")
+            || relative.contains('\\')
+            || relative_path
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(format!(
+                "{vars_path}: local.{path_key} must be a traversal-free relative local path"
+            ));
+        }
+        if hash.len() != 64
+            || !hash
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(format!(
+                "{vars_path}: local.{hash_key} must be an exact lowercase SHA-256"
+            ));
+        }
+        let full_path = rehearsal_dir.join(relative_path);
+        let metadata = fs::symlink_metadata(&full_path)
+            .map_err(|err| format!("{}: {err}", full_path.display()))?;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            return Err(format!(
+                "{}: local logo must be a regular non-symlink file",
+                full_path.display()
+            ));
+        }
+        let bytes =
+            fs::read(&full_path).map_err(|err| format!("{}: {err}", full_path.display()))?;
+        if hex_sha256(&bytes) != hash {
+            return Err(format!(
+                "{}: local logo SHA-256 does not match {vars_path}",
+                full_path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     fs::create_dir_all(dst).map_err(|err| format!("{}: {err}", dst.display()))?;
     for entry in fs::read_dir(src).map_err(|err| format!("{}: {err}", src.display()))? {
@@ -1777,8 +1892,10 @@ io_nns_neuron_manager_canister = "{io_nns_neuron_manager}"
 io_historian_canister = "{io_historian}"
 frontend_canister = "{frontend}"
 developer_neuron_principal = "bkyz2-fmaaa-aaaaa-qaaaq-cai"
-logo_path = "generated/local-io-logo.png"
-token_logo_path = "generated/local-io-token-logo.png"
+logo_path = "assets/io-local-logo.svg"
+logo_sha256 = "241b04223fe83bfe8dfc6f5ef3de168cc4ef8b24107402773166566bf6ed962e"
+token_logo_path = "assets/io-local-token-logo.svg"
+token_logo_sha256 = "61ce92c31189e825ce0f277c73bb09d8905d0ab161f60f2bebedae802bbb48d8"
 
 [expected_local_sns_config]
 token_symbol = "IO"
@@ -1804,14 +1921,14 @@ official_ic_repository = "dfinity/ic"
 official_ic_source_commit = "2d7f90fb23672cc3b81c216a33d04c75672dd308"
 sns_testing_source_path = "rs/sns/testing"
 dfx_version = "dfx 0.27.0"
-bazel_version = "bazel not-installed-blocked"
+bazel_version = "bazel 7.4.1"
 pocket_ic_version = "pocket-ic-server 14.0.0"
 sns_cli_version = "source-built sns 1.0.0"
 sns_cli_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 sns_testing_init_sha256 = "1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 sns_testing_cli_version = "source-built sns-testing"
 sns_testing_cli_sha256 = "2123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-quill_version = "quill not-installed-blocked"
+quill_version = "quill 0.4.4"
 rustc_version = "rustc repository-toolchain"
 cargo_version = "cargo repository-toolchain"
 operator_identity_principal = "bd3sg-teaaa-aaaaa-qaaba-cai"
@@ -2059,7 +2176,7 @@ fn validate_local_sns_scripts_at(root: &Path) -> Result<(), String> {
     )?;
 
     run_rehearsal_script(&runbook, &["render-sns-init"], &xtask, true)?;
-    let rendered_sns_path = temp_rehearsal.join("generated/sns_init.local.yaml");
+    let rendered_sns_path = temp_rehearsal.join("sns_init.local.yaml");
     let rendered_sns = fs::read_to_string(&rendered_sns_path)
         .map_err(|err| format!("{}: {err}", rendered_sns_path.display()))?;
     require_absent(
@@ -3582,8 +3699,18 @@ fn validate_local_sns_toolchain(
             &toolchain.locally_built_binary_sha256,
         ),
     ] {
+        let normalized = value.to_ascii_lowercase();
         if value.trim().is_empty()
-            || value.contains("TODO")
+            || [
+                "blocked",
+                "unavailable",
+                "not-installed",
+                "unknown",
+                "placeholder",
+                "todo",
+            ]
+            .iter()
+            .any(|marker| normalized.contains(marker))
             || matches!(value.as_str(), "main" | "master" | "HEAD")
         {
             return Err(format!(
@@ -4205,12 +4332,14 @@ fn check_local_sns_committed_evidence_at(root: &Path) -> Result<(), String> {
         fs::read_dir(&evidence_root).map_err(|err| format!("{}: {err}", evidence_root.display()))?
     {
         let entry = entry.map_err(|err| format!("{}: {err}", evidence_root.display()))?;
-        if !entry
+        let entry_type = entry
             .file_type()
-            .map_err(|err| format!("{}: {err}", entry.path().display()))?
-            .is_dir()
-        {
-            continue;
+            .map_err(|err| format!("{}: {err}", entry.path().display()))?;
+        if !entry_type.is_dir() {
+            return Err(format!(
+                "{}: evidence root entries must be regular directories",
+                entry.path().display()
+            ));
         }
         let rel = entry
             .path()
@@ -4219,39 +4348,9 @@ fn check_local_sns_committed_evidence_at(root: &Path) -> Result<(), String> {
             .to_string_lossy()
             .replace('\\', "/");
         let package_files = list_regular_files_relative(&entry.path())?;
-        let allowed: BTreeSet<&str> = [
-            "manifest.toml",
-            "blocker-report.md",
-            "canister-ids.local.toml",
-            "commands.local.md",
-            "SHA256SUMS",
-        ]
-        .into_iter()
-        .collect();
-        for file in &package_files {
-            if file.contains("..") || file.starts_with('/') || !allowed.contains(file.as_str()) {
-                return Err(format!("{rel}: unexpected evidence package file {file}"));
-            }
-        }
-        if !package_files.iter().any(|file| file == "SHA256SUMS") {
-            return Err(format!("{rel}: missing SHA256SUMS"));
-        }
         let manifest_path = format!("{rel}/manifest.toml");
         let manifest = require_file(root, &manifest_path)?;
-        require_absent(
-            &manifest_path,
-            &manifest,
-            &[
-                "BEGIN PRIVATE KEY",
-                "identity.pem",
-                "seed phrase",
-                "--network ic",
-                "-n ic",
-                "icp-api.io",
-                "icp0.io",
-                "ic0.app",
-            ],
-        )?;
+        validate_committed_evidence_text(&manifest_path, &manifest)?;
         let doc = parse_simple_toml_document(&manifest_path, &manifest)?;
         if require_simple_string(&manifest_path, &doc, "provenance", "official_ic_repository")?
             != "dfinity/ic"
@@ -4276,6 +4375,42 @@ fn check_local_sns_committed_evidence_at(root: &Path) -> Result<(), String> {
                 "{manifest_path}: official_ic_source_commit must be exact 40-hex commit"
             ));
         }
+        let expected_files: BTreeSet<String> = if complete {
+            [
+                "manifest.toml",
+                "toolchain-provenance.toml",
+                "sns_init.local.yaml",
+                "canister-ids.local.toml",
+                "reserve-funding-evidence.toml",
+                "ledger-evidence.toml",
+                "governance-evidence.toml",
+                "controller-evidence.toml",
+                "archive-evidence.toml",
+                "commands.log",
+                "SHA256SUMS",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+        } else {
+            ["manifest.toml", "blocker-report.md", "SHA256SUMS"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        };
+        if package_files != expected_files {
+            let unexpected = package_files
+                .difference(&expected_files)
+                .cloned()
+                .collect::<Vec<_>>();
+            let missing = expected_files
+                .difference(&package_files)
+                .cloned()
+                .collect::<Vec<_>>();
+            return Err(format!(
+                "{rel}: evidence package inventory mismatch; unexpected={unexpected:?}, missing={missing:?}"
+            ));
+        }
         validate_evidence_package_sha256s(root, &rel, &package_files)?;
         for file in &package_files {
             if file == "SHA256SUMS" {
@@ -4283,39 +4418,28 @@ fn check_local_sns_committed_evidence_at(root: &Path) -> Result<(), String> {
             }
             let file_path = format!("{rel}/{file}");
             let text = require_file(root, &file_path)?;
-            require_absent(
-                &file_path,
-                &text,
-                &[
-                    "BEGIN PRIVATE KEY",
-                    "identity.pem",
-                    "seed phrase",
-                    "--network ic",
-                    "-n ic",
-                    "icp-api.io",
-                    "icp0.io",
-                    "ic0.app",
-                    "identity.pem",
-                ],
-            )?;
+            validate_committed_evidence_text(&file_path, &text)?;
         }
         if complete {
-            require_absent(
-                &manifest_path,
-                &manifest,
-                &["blocker_report", "unavailable", "TODO", "blocked"],
-            )?;
-            if !package_files
-                .iter()
-                .any(|file| file == "canister-ids.local.toml")
+            if doc
+                .get("provenance")
+                .is_some_and(|section| section.contains_key("blocker_report"))
             {
                 return Err(format!(
-                    "{rel}: completed evidence package must include canister-ids.local.toml"
+                    "{manifest_path}: completed evidence must not contain blocker_report"
                 ));
             }
-            let evidence_path = format!("{rel}/canister-ids.local.toml");
-            let evidence = require_file(root, &evidence_path)?;
-            parse_local_sns_evidence(&evidence_path, &evidence)?;
+            for file in &package_files {
+                if file == "SHA256SUMS" {
+                    continue;
+                }
+                let file_path = format!("{rel}/{file}");
+                let text = require_file(root, &file_path)?;
+                reject_completed_evidence_placeholders(&file_path, &text)?;
+            }
+            let toolchain_path = format!("{rel}/toolchain-provenance.toml");
+            let toolchain = require_file(root, &toolchain_path)?;
+            validate_completed_toolchain_provenance(&toolchain_path, &toolchain)?;
         } else {
             let blocker_report =
                 require_simple_string(&manifest_path, &doc, "provenance", "blocker_report")?;
@@ -4340,6 +4464,98 @@ fn check_local_sns_committed_evidence_at(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_committed_evidence_text(path: &str, text: &str) -> Result<(), String> {
+    let normalized = text.to_ascii_lowercase();
+    for marker in [
+        "-----begin private key-----",
+        "-----begin rsa private key-----",
+        "-----begin ec private key-----",
+        "-----begin openssh private key-----",
+        "identity.pem",
+        ".pem",
+        "seed phrase",
+        "mnemonic phrase",
+        "private_key",
+        "private-key",
+        "auth_token",
+        "access_token",
+        "--network ic",
+        "-n ic",
+        "icp-api.io",
+        "icp0.io",
+        "ic0.app",
+    ] {
+        if normalized.contains(marker) {
+            return Err(format!(
+                "{path}: committed evidence contains forbidden secret/private-key or mainnet material {marker:?}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn reject_completed_evidence_placeholders(path: &str, text: &str) -> Result<(), String> {
+    let normalized = text.to_ascii_lowercase();
+    for marker in [
+        "blocked",
+        "unavailable",
+        "not-installed",
+        "unknown",
+        "placeholder",
+        "todo",
+    ] {
+        if normalized.contains(marker) {
+            return Err(format!(
+                "{path}: completed evidence contains forbidden placeholder marker {marker:?}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_completed_toolchain_provenance(path: &str, text: &str) -> Result<(), String> {
+    let doc = parse_simple_toml_document(path, text)?;
+    let mut version_count = 0_usize;
+    for (section_name, section) in &doc {
+        for (key, value) in section {
+            if !key.ends_with("_version") {
+                continue;
+            }
+            let SimpleTomlValue::String(version) = value else {
+                return Err(format!("{path}: {section_name}.{key} must be a string"));
+            };
+            reject_completed_evidence_placeholders(path, version)?;
+            if version.trim().is_empty() {
+                return Err(format!(
+                    "{path}: {section_name}.{key} must contain an exact version"
+                ));
+            }
+            let hash_key = format!("{}_sha256", key.trim_end_matches("_version"));
+            let Some(SimpleTomlValue::String(hash)) = section.get(&hash_key) else {
+                return Err(format!(
+                    "{path}: {section_name}.{key} requires matching {hash_key}"
+                ));
+            };
+            if hash.len() != 64
+                || !hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            {
+                return Err(format!(
+                    "{path}: {section_name}.{hash_key} must be an exact lowercase SHA-256"
+                ));
+            }
+            version_count += 1;
+        }
+    }
+    if version_count == 0 {
+        return Err(format!(
+            "{path}: completed evidence must record at least one exact tool version and matching SHA-256"
+        ));
+    }
+    Ok(())
+}
+
 fn list_regular_files_relative(dir: &Path) -> Result<BTreeSet<String>, String> {
     fn walk(base: &Path, current: &Path, out: &mut BTreeSet<String>) -> Result<(), String> {
         for entry in fs::read_dir(current).map_err(|err| format!("{}: {err}", current.display()))? {
@@ -4356,7 +4572,26 @@ fn list_regular_files_relative(dir: &Path) -> Result<BTreeSet<String>, String> {
                     .map_err(|err| format!("{}: {err}", path.display()))?
                     .to_string_lossy()
                     .replace('\\', "/");
-                out.insert(rel);
+                if Path::new(&rel)
+                    .components()
+                    .any(|component| !matches!(component, std::path::Component::Normal(_)))
+                {
+                    return Err(format!(
+                        "{}: evidence package path must be traversal-free",
+                        path.display()
+                    ));
+                }
+                if !out.insert(rel) {
+                    return Err(format!(
+                        "{}: duplicate evidence package path",
+                        path.display()
+                    ));
+                }
+            } else {
+                return Err(format!(
+                    "{}: evidence packages reject symlinks and non-regular files",
+                    path.display()
+                ));
             }
         }
         Ok(())
@@ -4381,7 +4616,11 @@ fn validate_evidence_package_sha256s(
         if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(format!("{sha_path}: invalid SHA-256 hash for {file}"));
         }
-        if file.contains("..") || file.starts_with('/') || file == "SHA256SUMS" {
+        if file == "SHA256SUMS"
+            || Path::new(file)
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
             return Err(format!("{sha_path}: invalid covered path {file}"));
         }
         let bytes =
@@ -4390,7 +4629,9 @@ fn validate_evidence_package_sha256s(
         if actual != hash.to_ascii_lowercase() {
             return Err(format!("{rel}/{file}: SHA-256 mismatch"));
         }
-        covered.insert(file.to_string());
+        if !covered.insert(file.to_string()) {
+            return Err(format!("{sha_path}: duplicate SHA256SUMS entry for {file}"));
+        }
     }
     let expected: BTreeSet<String> = package_files
         .iter()
@@ -7123,6 +7364,83 @@ mod tests {
         fs::write(path, text).unwrap();
     }
 
+    fn write_evidence_sha256s(root: &Path, package: &str, files: &[&str]) {
+        let mut lines = String::new();
+        for file in files {
+            let bytes = fs::read(root.join(package).join(file)).unwrap();
+            lines.push_str(&format!("{}  {file}\n", hex_sha256(&bytes)));
+        }
+        write(root, &format!("{package}/SHA256SUMS"), &lines);
+    }
+
+    fn write_incomplete_evidence_package(root: &Path) -> String {
+        let package = "deploy/local-sns-rehearsal/evidence/2026-07-29-0123456".to_string();
+        write(
+            root,
+            &format!("{package}/manifest.toml"),
+            "[provenance]\nofficial_ic_repository = \"dfinity/ic\"\nofficial_ic_source_commit = \"0123456789abcdef0123456789abcdef01234567\"\nsns_testing_source_path = \"rs/sns/testing\"\ncomplete = false\nblocker_report = \"blocker-report.md\"\n",
+        );
+        write(
+            root,
+            &format!("{package}/blocker-report.md"),
+            "# Blocker\n\nThe official local SNS rehearsal not completed.\n\nsource-built SNS tools were not prepared.\n\nNo mainnet call was made.\n",
+        );
+        write_evidence_sha256s(root, &package, &["manifest.toml", "blocker-report.md"]);
+        package
+    }
+
+    fn write_completed_evidence_package(root: &Path) -> String {
+        let package = "deploy/local-sns-rehearsal/evidence/2026-07-29-fedcba9".to_string();
+        let manifest = "[provenance]\nofficial_ic_repository = \"dfinity/ic\"\nofficial_ic_source_commit = \"fedcba98765432100123456789abcdef01234567\"\nsns_testing_source_path = \"rs/sns/testing\"\ncomplete = true\n";
+        write(root, &format!("{package}/manifest.toml"), manifest);
+        write(
+            root,
+            &format!("{package}/toolchain-provenance.toml"),
+            "[tools]\nbazelisk_version = \"1.26.0\"\nbazelisk_sha256 = \"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"\nsns_version = \"source-2d7f90f\"\nsns_sha256 = \"1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"\n",
+        );
+        write(
+            root,
+            &format!("{package}/sns_init.local.yaml"),
+            "Swap:\n  start_time: null\n",
+        );
+        for file in [
+            "canister-ids.local.toml",
+            "reserve-funding-evidence.toml",
+            "ledger-evidence.toml",
+            "governance-evidence.toml",
+            "controller-evidence.toml",
+            "archive-evidence.toml",
+        ] {
+            write(
+                root,
+                &format!("{package}/{file}"),
+                "[evidence]\nobserved = true\n",
+            );
+        }
+        write(
+            root,
+            &format!("{package}/commands.log"),
+            "command: local-proof\nexit_status=0\n",
+        );
+        write_evidence_sha256s(
+            root,
+            &package,
+            &[
+                "manifest.toml",
+                "toolchain-provenance.toml",
+                "sns_init.local.yaml",
+                "canister-ids.local.toml",
+                "reserve-funding-evidence.toml",
+                "ledger-evidence.toml",
+                "governance-evidence.toml",
+                "controller-evidence.toml",
+                "archive-evidence.toml",
+                "commands.log",
+            ],
+        );
+        package
+    }
+
     fn write_artifact_set(root: &Path) {
         for canister in RELEASE_CANISTERS {
             let raw = format!("release-artifacts/{}.wasm", canister.artifact);
@@ -7317,7 +7635,27 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "deploy/local-sns-rehearsal/sns_init.local.template.yaml",
-            "Local-only\nNot final tokenomics\nNot a mainnet SNS proposal\nfallback_controller_principals\n{{fallback_controller_principal}}\ndapp_canisters\nToken:\nsymbol: \"IO\"\ntransaction_fee\nDistribution:\ntreasury: \"800_000 tokens\"\nswap: \"100_000 tokens\"\nSwap:\nstart_time:\nNnsProposal:\nTODO_LOCAL\n",
+            "Local-only\nNot final tokenomics\nNot a mainnet SNS proposal\nfallback_controller_principals\n{{fallback_controller_principal}}\ndapp_canisters\nToken:\nsymbol: \"IO\"\ntransaction_fee\nDistribution:\ntreasury: \"800_000 tokens\"\nswap: \"100_000 tokens\"\nSwap:\n  start_time: null\nNnsProposal:\nTODO_LOCAL\n",
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/local-vars.example.toml",
+            &fixture_local_vars(
+                "avqkn-guaaa-aaaaa-qaaea-cai",
+                "aax3a-h4aaa-aaaaa-qaahq-cai",
+                "ajuq4-ruaaa-aaaaa-qaaga-cai",
+                "b77ix-eeaaa-aaaaa-qaada-cai",
+            ),
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/assets/io-local-logo.svg",
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\" role=\"img\" aria-label=\"IO local rehearsal\">\n  <rect width=\"512\" height=\"512\" rx=\"96\" fill=\"#111827\"/>\n  <circle cx=\"256\" cy=\"256\" r=\"154\" fill=\"none\" stroke=\"#22d3ee\" stroke-width=\"36\"/>\n  <path d=\"M192 160v192M304 160c64 0 64 192 0 192s-64-192 0-192Z\" fill=\"none\" stroke=\"#f8fafc\" stroke-linecap=\"round\" stroke-width=\"32\"/>\n</svg>\n",
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/assets/io-local-token-logo.svg",
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\" role=\"img\" aria-label=\"IO local rehearsal token\">\n  <circle cx=\"256\" cy=\"256\" r=\"240\" fill=\"#0f172a\"/>\n  <circle cx=\"256\" cy=\"256\" r=\"180\" fill=\"#0891b2\"/>\n  <path d=\"M180 150v212M302 150c76 0 76 212 0 212s-76-212 0-212Z\" fill=\"none\" stroke=\"#fff\" stroke-linecap=\"round\" stroke-width=\"36\"/>\n</svg>\n",
         );
         write(
             root,
@@ -8067,6 +8405,171 @@ Template SNS principal values are planned wiring placeholders only.
         let root = temp_root("local-sns-rehearsal-good");
         write_local_sns_rehearsal_fixture(&root);
         check_local_sns_rehearsal_at(&root).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_sns_rehearsal_rejects_non_null_local_start_time() {
+        let root = temp_root("local-sns-rehearsal-start-time");
+        write_local_sns_rehearsal_fixture(&root);
+        let path = root.join("deploy/local-sns-rehearsal/sns_init.local.template.yaml");
+        let text = fs::read_to_string(&path)
+            .unwrap()
+            .replace("start_time: null", "start_time: \"2026-07-29 12:00:00Z\"");
+        fs::write(path, text).unwrap();
+        assert!(check_local_sns_rehearsal_at(&root)
+            .unwrap_err()
+            .contains("Swap.start_time"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_sns_rehearsal_rejects_empty_restricted_country_list() {
+        let root = temp_root("local-sns-rehearsal-empty-countries");
+        write_local_sns_rehearsal_fixture(&root);
+        let path = root.join("deploy/local-sns-rehearsal/sns_init.local.template.yaml");
+        let text = fs::read_to_string(&path).unwrap().replace(
+            "  start_time: null",
+            "  start_time: null\n  restricted_countries: []",
+        );
+        fs::write(path, text).unwrap();
+        assert!(check_local_sns_rehearsal_at(&root)
+            .unwrap_err()
+            .contains("restricted_countries"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_sns_rehearsal_rejects_logo_hash_mismatch() {
+        let root = temp_root("local-sns-rehearsal-logo-hash");
+        write_local_sns_rehearsal_fixture(&root);
+        write(
+            &root,
+            "deploy/local-sns-rehearsal/assets/io-local-logo.svg",
+            "<svg>changed</svg>\n",
+        );
+        assert!(check_local_sns_rehearsal_at(&root)
+            .unwrap_err()
+            .contains("SHA-256"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_sns_committed_evidence_accepts_exact_incomplete_inventory() {
+        let root = temp_root("local-sns-evidence-incomplete");
+        write_incomplete_evidence_package(&root);
+        check_local_sns_committed_evidence_at(&root).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_sns_committed_evidence_accepts_exact_completed_inventory() {
+        let root = temp_root("local-sns-evidence-completed");
+        write_completed_evidence_package(&root);
+        check_local_sns_committed_evidence_at(&root).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_sns_committed_evidence_rejects_duplicate_checksum_entry() {
+        let root = temp_root("local-sns-evidence-duplicate-sha");
+        let package = write_incomplete_evidence_package(&root);
+        let sha_path = root.join(&package).join("SHA256SUMS");
+        let first = fs::read_to_string(&sha_path)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap()
+            .to_string();
+        let mut text = fs::read_to_string(&sha_path).unwrap();
+        text.push_str(&format!("{first}\n"));
+        fs::write(sha_path, text).unwrap();
+        assert!(check_local_sns_committed_evidence_at(&root)
+            .unwrap_err()
+            .contains("duplicate SHA256SUMS"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_sns_committed_evidence_rejects_unexpected_file() {
+        let root = temp_root("local-sns-evidence-unexpected");
+        let package = write_incomplete_evidence_package(&root);
+        write(&root, &format!("{package}/extra.txt"), "extra\n");
+        assert!(check_local_sns_committed_evidence_at(&root)
+            .unwrap_err()
+            .contains("inventory mismatch"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_sns_committed_evidence_rejects_completed_placeholder_version() {
+        let root = temp_root("local-sns-evidence-version-placeholder");
+        let package = write_completed_evidence_package(&root);
+        let path = root.join(&package).join("toolchain-provenance.toml");
+        let text = fs::read_to_string(&path)
+            .unwrap()
+            .replace("1.26.0", "not-installed");
+        fs::write(&path, text).unwrap();
+        let files = [
+            "manifest.toml",
+            "toolchain-provenance.toml",
+            "sns_init.local.yaml",
+            "canister-ids.local.toml",
+            "reserve-funding-evidence.toml",
+            "ledger-evidence.toml",
+            "governance-evidence.toml",
+            "controller-evidence.toml",
+            "archive-evidence.toml",
+            "commands.log",
+        ];
+        write_evidence_sha256s(&root, &package, &files);
+        assert!(check_local_sns_committed_evidence_at(&root)
+            .unwrap_err()
+            .contains("placeholder marker"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_sns_committed_evidence_rejects_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_root("local-sns-evidence-symlink");
+        let package = write_incomplete_evidence_package(&root);
+        symlink(
+            root.join(&package).join("manifest.toml"),
+            root.join(&package).join("linked-manifest.toml"),
+        )
+        .unwrap();
+        assert!(check_local_sns_committed_evidence_at(&root)
+            .unwrap_err()
+            .contains("reject symlinks"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_sns_run_logged_records_failed_child_status_under_errexit() {
+        let root = temp_root("local-sns-run-logged");
+        let log = root.join("failed-command.log");
+        let library = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../deploy/local-sns-rehearsal/scripts/lib-local-sns.sh");
+        let output = Command::new("bash")
+            .args([
+                "-c",
+                "set -e; source \"$1\"; if run_logged \"$2\" sh -c 'exit 7'; then exit 90; fi",
+                "run-logged-test",
+            ])
+            .arg(&library)
+            .arg(&log)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let log = fs::read_to_string(log).unwrap();
+        assert!(log.contains("exit_status=7"));
         let _ = fs::remove_dir_all(root);
     }
 

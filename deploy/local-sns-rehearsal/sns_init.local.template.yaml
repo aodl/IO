@@ -67,11 +67,10 @@ Swap:
   maximum_direct_participation_icp: "10 tokens"
   minimum_participant_icp: "1 tokens"
   maximum_participant_icp: "10 tokens"
-  start_time: "12:00 UTC"
+  start_time: null
   duration: "1 days"
   neurons_fund_participation: false
   VestingSchedule:
     events: 1
     interval: "1 months"
   confirmation_text: "Local-only IO SNS rehearsal."
-  restricted_countries: []

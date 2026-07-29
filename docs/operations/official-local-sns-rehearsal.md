@@ -21,7 +21,7 @@ It must not use `--network ic`, must not call mainnet, must not touch `oae4c-3ia
 - `deploy/local-sns-rehearsal/scripts/04-render-local-wiring.sh`
 - `deploy/local-sns-rehearsal/scripts/05-validate-evidence.sh`
 
-The rendered local `generated/sns_init.local.yaml` is not final tokenomics and is not a mainnet SNS proposal. It exists only to create a real local SNS ledger/index/governance/root stack for integration testing.
+The rendered local `sns_init.local.yaml` is not final tokenomics and is not a mainnet SNS proposal. It exists only to create a real local SNS ledger/index/governance/root stack for integration testing.
 
 IO_TEST remains a non-canonical staging ledger label and must not be confused with the real SNS-created local IO ledger created by this rehearsal.
 
@@ -31,17 +31,17 @@ Follow the current official ICP/DFINITY SNS testing documentation as the source 
 
 Local SNS rehearsal uses Bazel, `. scripts/env.sh`, `sns-testing-init`, `sns-testing`, the source-built `sns` CLI, and Quill where governance proposals need it. Required repository workflows must not depend on the dfx SNS extension.
 
-The committed package is executable scaffolding and evidence validation: it includes a renderable local `sns_init` candidate, a local variables template, evidence capture helpers, no-network validators, and this manual runbook. It does not prove IO against a real SNS ledger until an operator completes the local rehearsal, records `deploy/local-sns-rehearsal/canister-ids.local.toml`, and validates that evidence.
+The committed package includes a renderable local `sns_init` candidate, a local variables template, evidence capture helpers, no-network validators, and this manual runbook. Runbook phases 12–17 are guarded placeholders, not implemented deployment or evidence automation. It does not prove IO against a real SNS ledger until an operator completes the local rehearsal, records the complete evidence package, and validates that evidence.
 
 ## Manual Flow
 
 1. Prepare a clean local SNS testing environment using the current official ICP/DFINITY SNS testing documentation.
 2. Run `IO_LOCAL_SNS_REHEARSAL_ACK=local-only deploy/local-sns-rehearsal/runbook.sh check`.
 3. Copy `deploy/local-sns-rehearsal/local-vars.example.toml` to ignored `local-vars.toml` and fill only local principals.
-4. Run `runbook.sh render-sns-init` to write ignored `generated/sns_init.local.yaml`.
+4. Run `runbook.sh render-sns-init` to write ignored `sns_init.local.yaml`.
 5. Deploy IO app canisters locally.
 6. Add local NNS root as co-controller where the official SNS launch tooling requires it.
-7. Validate `deploy/local-sns-rehearsal/generated/sns_init.local.yaml` with local SNS tooling.
+7. Validate `deploy/local-sns-rehearsal/sns_init.local.yaml` with local SNS tooling.
 8. Submit the local SNS proposal through the local SNS testing flow.
 9. Let SNS-W deploy local SNS canisters.
 10. Run `runbook.sh record-ids` and record root, governance, ledger, index, swap, and archive IDs in ignored `deploy/local-sns-rehearsal/canister-ids.local.toml`.
@@ -76,14 +76,14 @@ Run local canister calls against the local SNS ledger/index principals recorded 
 
 ## Issuance Model
 
-IO issuance is resolved conservatively as a transfer from a protocol reserve account/subaccount funded at SNS genesis.
+IO issuance is resolved conservatively as a transfer from a protocol reserve account/subaccount funded after SNS finalization and before activation by an executed SNS-governance treasury-transfer proposal.
 
 Redemption returns IO to the protocol reserve. IO must not assume arbitrary post-launch minting unless final SNS ledger configuration and governance policy explicitly support it and a later audited milestone changes this model.
 
 The local rehearsal must prove:
 
 - the protocol reserve account exists on the SNS ledger;
-- the reserve balance is funded at genesis;
+- the reserve balance is funded by the recorded post-finalization SNS-governance treasury transfer;
 - stream-manager local wiring can construct the reserve-to-user transfer intent;
 - redemption local wiring can observe the user-to-redemption transfer and construct the redemption-to-reserve return intent;
 - fee disposition and total-supply deltas are recorded for each transfer.

@@ -8,8 +8,10 @@ io_nns_neuron_manager_canister = "TODO_LOCAL_IO_NNS_NEURON_MANAGER_CANISTER"
 io_historian_canister = "TODO_LOCAL_IO_HISTORIAN_CANISTER"
 frontend_canister = "TODO_LOCAL_FRONTEND_CANISTER"
 developer_neuron_principal = "TODO_LOCAL_DEVELOPER_NEURON_PRINCIPAL"
-logo_path = "generated/local-io-logo.png"
-token_logo_path = "generated/local-io-token-logo.png"
+logo_path = "assets/io-local-logo.svg"
+logo_sha256 = "241b04223fe83bfe8dfc6f5ef3de168cc4ef8b24107402773166566bf6ed962e"
+token_logo_path = "assets/io-local-token-logo.svg"
+token_logo_sha256 = "61ce92c31189e825ce0f277c73bb09d8905d0ab161f60f2bebedae802bbb48d8"
 
 [expected_local_sns_config]
 token_symbol = "IO"

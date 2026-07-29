@@ -73,7 +73,7 @@ if [ ! -x "$checkout/rs/sns/testing/bin/sns" ] \
   exit 2
 fi
 
-rendered_sns="${REHEARSAL_DIR}/generated/sns_init.local.yaml"
+rendered_sns="${REHEARSAL_DIR}/sns_init.local.yaml"
 if [ -f "$rendered_sns" ]; then
   (cd "$checkout/rs/sns/testing" && run_logged "$log_file" ./bin/sns init-config-file --init-config-file-path "$rendered_sns" validate) || {
     record_blocker "rendered SNS init failed the pinned source-built SNS CLI parser"

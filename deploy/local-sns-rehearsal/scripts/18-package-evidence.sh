@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.
-# packages sanitized local-only evidence or a blocker report; no network calls.
+# packages the sanitized incomplete blocker form; completed-evidence collection
+# remains manual and must include the validator's full completed inventory.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib-local-sns.sh"
 require_local_script_guard "$@"

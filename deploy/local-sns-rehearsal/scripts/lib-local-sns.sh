@@ -79,8 +79,12 @@ run_logged() {
     printf ' %q' "$@"
     printf '\n'
   } >> "$log_file"
-  "$@" >> "$log_file" 2>&1
-  local status=$?
+  local status
+  if "$@" >> "$log_file" 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
   log_command_status "$log_file" "$status" "$@"
   return "$status"
 }

@@ -2,7 +2,7 @@
 
 These notes are optional local-only reference material. They are not part of `test_ci`, are not used by `verify_release`, and must not call mainnet.
 
-Official SNS local testing may require the `dfx sns` extension and SNS launch config inputs such as an `sns_init.yaml` file. IO does not run those commands in required workflows because the required IO toolchain remains `xtask`, `icp-cli`, Rust tests, and PocketIC.
+Official SNS local testing uses Bazel, `. scripts/env.sh`, `sns-testing-init`, `sns-testing`, the source-built sns CLI, and SNS launch config inputs such as an `sns_init.yaml` file. It does not use the `dfx sns` extension. IO does not run those commands in required workflows because the required IO toolchain remains `xtask`, `icp-cli`, Rust tests, and PocketIC.
 
 Use `tools/sns/sns_init.io.local.yaml` only after filling local placeholders. Do not use --network ic.
 
