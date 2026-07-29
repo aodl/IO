@@ -102,9 +102,13 @@ IO issuance is modelled as reserve transfer, not arbitrary minting:
 - redemption-to-reserve transfer for the protocol IO return;
 - observed fee disposition and total-supply deltas for each transfer.
 
-Under standard 10,000 e8s fee-burn evidence with no hidden top-up, the rehearsal amounts are `100_000_000`, `99_990_000`, and `99_980_000`. Any intervening funding transfer must be recorded as evidence rather than hidden in balances.
+Under standard 10,000 e8s fee-burn evidence with no hidden top-up, the rehearsal amounts are `100_000_000`, `99_990_000`, and `99_980_000`. The preceding SNS-governance reserve-funding transfer is a separate detailed record. For genesis supply `S`, reserve funding fee `f₀`, and later observed transfer fees `fᵢ`, final supply is `S - f₀ - sum(fᵢ)`.
 
-The protocol reserve account/subaccount is funded after finalization and before activation by an SNS-governance treasury-transfer proposal. For desired reserve `R`, remaining treasury `T`, and transfer fee `f`, genesis treasury must contain at least `R + T + f`. The reserve destination is the local `io_stream_manager` canister owner with the exact configured reserve subaccount; another subaccount owned by the same canister is still a distinct Account. Any minting-based assumption is a blocker unless a later audited launch decision explicitly changes this model. A constant-supply assumption is also a blocker unless the observed ledger fee mode proves it.
+The protocol reserve account/subaccount is funded after finalization and before activation by an SNS-governance treasury-transfer proposal. For desired reserve `R`, remaining treasury `T`, and transfer fee `f`, genesis treasury must contain at least `R + T + f`. Evidence must prove treasury decrease `R + f`, reserve increase `R`, and supply decrease `f`. The first reserve-to-user supply and reserve pre-balances must equal the reserve-funding post-balances.
+
+The reserve owner is the local `io_stream_manager` canister and its exact configured non-default subaccount distinguishes the reserve. The redemption Account may have that same owner but must use a distinct exact subaccount. Canister-role IDs remain mutually distinct; Accounts are validated separately from role uniqueness.
+
+Proof records use closed `ProofSource` values (`SnsLedgerBlock`, `SnsIndexAccountHistory`, `SnsLedgerArchive`) and closed `ProofMethod` values (`Icrc3GetBlocks`, `IcrcIndexGetAccountTransactions`, `ArchiveGetBlocks`). Source principals must match the recorded ledger/index/archive role. Archive proofs must be within a ledger/root-discovered archive range. Duplicate replay evidence is recorded separately and must point to the exact original successful block; each ordinary successful transfer does not need its own duplicate replay.
 
 ## Done Criteria
 

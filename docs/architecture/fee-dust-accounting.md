@@ -4,7 +4,7 @@ This document defines IO monetary accounting in e8s. It is a pre-activation poli
 
 ## Canonical Sources
 
-The stream manager state and its pending operation journal are the protocol accounting source once a production adapter is intentionally activated. Ledger and index canisters prove external transfers. The historian is a rebuildable read model and may show missing, incomplete, retryable, or observed-only fields; it is not protocol truth.
+Ledgers and governance canisters provide canonical asset and governance facts. The value-moving operation journal is canonical retry and operation-phase truth. The pure model deterministically interprets coherent canonical snapshots and authorised events; it does not replace the sources behind those snapshots. The historian is observation only: it is rebuildable, may show missing, incomplete, retryable, or observed-only fields, and is never monetary authority.
 
 Normal ledger history reads use index canisters. Raw ledger/archive traversal is not the default account-history design.
 
@@ -21,9 +21,9 @@ The remainder therefore stays liquid. The split never creates or loses ICP e8s.
 
 ## IO Issuance
 
-Jupiter Faucet and two-week maturity streams calculate IO issuance from the pre-deposit redemption rate and `liquid_e8s`. Issuance rounds down with integer division. Rounding favors solvency: IO is never over-issued. If calculated issuance is zero, the stream is economically invalid and is rejected before state mutation or downstream IO transfer.
+Jupiter Faucet and two-week maturity streams calculate IO issuance from the pre-deposit redemption rate and `liquid_e8s`. Issuance rounds down with integer division. Rounding favors solvency: IO is never over-issued. If calculated issuance is zero, the stream is economically invalid and is rejected before state mutation or downstream IO transfer. For delivered IO `I` and each reserve-paid IO transfer fee `f`, reserve debit is `I + sum(f)`, total supply decreases by `sum(f)`, and redeemable supply increases only by `I`.
 
-Two-year maturity streams issue no IO. Two-week reward allocation dust remains unissued in the protocol reserve and is reported as `dust_e8s` / `dust_unissued_e8s`; it is not silently lost.
+Two-year maturity streams issue no IO. For reward allocations `A_i` with per-recipient fees `f_i`, reserve debit is `sum(A_i) + sum(f_i)`. Reward dust is `pool - sum(A_i)`, remains in reserve, and is never redistributed. Each fee is accounted separately; one aggregate or default-ledger fee assumption is not sufficient.
 
 No zero-value downstream IO transfer may be attempted.
 
@@ -36,9 +36,10 @@ For a redemption:
 - `gross_icp_payout_e8s = floor(io_redeemed_e8s * liquid_icp_e8s / redeemable_io_e8s)` using the pre-redemption rate.
 - `icp_ledger_fee_e8s` is explicit in the fee policy.
 - `net_user_icp_payout_e8s = gross_icp_payout_e8s - icp_ledger_fee_e8s`.
-- `io_returned_to_reserve_e8s = io_redeemed_e8s`.
+- `io_returned_to_reserve_e8s = io_redeemed_e8s - io_ledger_transfer_fee_e8s`.
+- `io_redemption_intake_debit_e8s = io_redeemed_e8s`.
 
-`io_ledger_transfer_fee_e8s` is a transfer-boundary/protocol-paid IO ledger cost for returning redeemed IO to the protocol reserve. It is not deducted from `io_returned_to_reserve_e8s`, which remains the gross redeemed IO amount credited back to reserve after successful IO return proof.
+The incoming user-to-redemption fee has already burned before protocol processing and is not charged or counted a second time. The redemption intake is debited by the full redeemed amount; the IO return transfer delivers the redeemed amount minus its explicit IO fee to reserve.
 
 If `gross_icp_payout_e8s <= icp_ledger_fee_e8s`, the redemption is rejected as unpayable. If gross payout exceeds liquid reserve, the redemption is rejected. State mutates only after ICP payout and IO return are both proven by success or matching duplicate proof. Failed ICP payout remains retryable without mutating protocol state. Failed IO return remains retryable without paying ICP again.
 
@@ -46,7 +47,7 @@ Partial redemption removes the gross ICP payout from liquid reserve and returns 
 
 ## Ledger Transfer Boundaries
 
-Transfer requests preserve expected amount, fee intent, memo, source subaccount, destination account, and operation kind in the journal or reconstructed request. Current mock/local flows use zero explicit fees; production activation must set explicit ICP and IO ledger fees or document intentional delegation to ledger defaults before activation.
+Transfer requests preserve exact source and destination Accounts, expected amount, explicit fee, memo, created-at time, ledger principal, method, operation kind, and immutable attempt fingerprint. Every production monetary transfer uses an explicit fee. Production code has no permission to delegate monetary fees to a ledger default.
 
 Bad-fee responses do not mutate accounting. They are retryable with the expected fee surfaced. Insufficient-funds responses do not mutate accounting and surface the available balance.
 
@@ -56,8 +57,8 @@ Duplicate transfer responses complete safely only when the duplicate block match
 
 `redeemable_io_supply_e8s = total_io_supply_e8s - protocol_reserve_io_e8s - non_redeemable_governance_io_e8s`.
 
-Excluded supply must not exceed total supply. IO issuance decrements protocol reserve only for actually issued IO. Unissued dust remains in protocol reserve. Redemption returns gross IO to protocol reserve only after safe completion. Liquid ICP reserve decreases by gross payout only after safe completion.
+Excluded supply must not exceed total supply. IO issuance decrements protocol reserve by delivered IO plus all reserve-paid IO fees. Unissued dust remains in protocol reserve. Redemption credits reserve only with the IO return amount after its IO fee while reducing redeemable supply by the full intake debit. Liquid ICP reserve decreases by the gross claim only after safe completion.
 
 Historian snapshots may display gross IO redeemed, gross/net ICP payout, payout fee, IO returned to reserve, dust, and retry status when observed. Missing fields mean unavailable read-model observation, not zero protocol value.
 
-This policy is pre-production. No live value-moving stream-manager stable state exists that requires a compatibility migration for newly added fee fields. Local/defaulted pending redemption records must still retry with their legacy gross payout amount when explicit net payout fields are absent or zero.
+This policy is pre-production. No live value-moving stream-manager stable state exists that requires a compatibility migration for newly added fee fields. Even so, migration is fail closed: an incomplete legacy monetary operation without an exact Account and immutable attempt/proof evidence enters `ManualReconciliationRequired`. It must never retry from a display string, inferred subaccount, assumed gross amount, or reconstructed transfer intent.

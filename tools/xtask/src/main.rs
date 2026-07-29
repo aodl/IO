@@ -1530,14 +1530,18 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "transaction_fee_e8s",
             "total_supply_e8s",
             "protocol_reserve_balance_e8s",
-            "protocol_reserve_funding_block_index",
             "reserve_transfer_amount_e8s",
             "redemption_return_amount_e8s",
             "bad_fee_error_observed = true",
             "insufficient_funds_error_observed = true",
-            "duplicate_transfer_observed = true",
-            "duplicate_block_verified = true",
+            "duplicate_tested_transfer",
             "index_account_history_observed = true",
+            "[reserve_funding_transfer]",
+            "sns_proposal_id",
+            "proposal_adopted = true",
+            "proposal_executed = true",
+            "created_at_time_nanos",
+            "memo_hex",
             "[transfer_reserve_to_user]",
             "[transfer_user_to_redemption]",
             "[transfer_redemption_to_reserve]",
@@ -1551,9 +1555,10 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "total_supply_before_e8s",
             "total_supply_after_e8s",
             "proof_source_canister",
+            "proof_source",
             "proof_method",
-            "duplicate_proof_source",
             "archive_canister",
+            "[duplicate_test]",
             "[issuance_model]",
             "resolved_as = \"protocol_reserve_transfer\"",
             "minting_assumed = false",
@@ -1836,35 +1841,75 @@ io_nns_neuron_manager = "aax3a-h4aaa-aaaaa-qaahq-cai"
 io_historian = "ajuq4-ruaaa-aaaaa-qaaga-cai"
 frontend = "b77ix-eeaaa-aaaaa-qaada-cai"
 
+[archive_evidence]
+archive_canister = "by6od-j4aaa-aaaaa-qaadq-cai"
+discovered_from_ledger = true
+discovered_from_root = true
+range_start = 0
+range_end = 100
+
 [ledger_evidence]
 token_symbol = "IO"
 transaction_fee_e8s = 10000
-total_supply_e8s = 99999999970000
-protocol_reserve_account_owner = "a3shf-5eaaa-aaaaa-qaafa-cai"
-protocol_reserve_subaccount_hex = "none"
+total_supply_e8s = 99999999960000
+protocol_reserve_account_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
+protocol_reserve_subaccount_hex = "3333333333333333333333333333333333333333333333333333333333333333"
 protocol_reserve_balance_e8s = 59999999970000
-protocol_reserve_funding_proposal_id = 1
-protocol_reserve_funding_block_index = 0
-protocol_reserve_funding_amount_e8s = 60000000000000
-protocol_reserve_funding_fee_e8s = 10000
-activation_baseline_captured_after_reserve_funding = true
-reserve_transfer_block_index = 1
-redemption_return_block_index = 3
+reserve_transfer_block_index = 11
+redemption_return_block_index = 13
 reserve_transfer_amount_e8s = 100000000
 redemption_return_amount_e8s = 99980000
 bad_fee_error_observed = true
 insufficient_funds_error_observed = true
-duplicate_transfer_observed = true
-duplicate_block_verified = true
-duplicate_of_block_index = 1
+duplicate_of_block_index = 11
+duplicate_tested_transfer = "transfer_reserve_to_user"
 index_account_history_observed = true
 index_history_order = "descending"
 index_lag_or_archive_required_observed = "not-observed"
 
-[transfer_reserve_to_user]
-block_index = 1
-from_owner = "a3shf-5eaaa-aaaaa-qaafa-cai"
+[reserve_funding_transfer]
+sns_proposal_id = 1
+proposal_adopted = true
+proposal_executed = true
+created_at_time_nanos = 1785196799000000000
+memo_hex = "494f5f524553455256455f46554e44494e475f5631"
+block_index = 10
+from_owner = "bd3sg-teaaa-aaaaa-qaaba-cai"
 from_subaccount_hex = "none"
+to_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
+to_subaccount_hex = "3333333333333333333333333333333333333333333333333333333333333333"
+requested_amount_e8s = 60000000000000
+observed_fee_e8s = 10000
+fee_disposition = "burned"
+sender_balance_before_e8s = 80000000000000
+sender_balance_after_e8s = 19999999990000
+recipient_balance_before_e8s = 0
+recipient_balance_after_e8s = 60000000000000
+fee_collector_owner = "none"
+fee_collector_subaccount_hex = "none"
+fee_collector_balance_before_e8s = "none"
+fee_collector_balance_after_e8s = "none"
+total_supply_before_e8s = 100000000000000
+total_supply_after_e8s = 99999999990000
+reserve_balance_before_e8s = 0
+reserve_balance_after_e8s = 60000000000000
+ledger_tip_block_index = 10
+index_synced_through_block_index = 10
+proof_source = "SnsLedgerBlock"
+proof_source_canister = "br5f7-7uaaa-aaaaa-qaaca-cai"
+proof_method = "Icrc3GetBlocks"
+proof_account_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
+proof_account_subaccount_hex = "3333333333333333333333333333333333333333333333333333333333333333"
+archive_canister = "none"
+archive_range_start = "none"
+archive_range_end = "none"
+archive_involvement = "none"
+observation_timestamp = "2026-07-27T23:59:59Z"
+
+[transfer_reserve_to_user]
+block_index = 11
+from_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
+from_subaccount_hex = "3333333333333333333333333333333333333333333333333333333333333333"
 to_owner = "bd3sg-teaaa-aaaaa-qaaba-cai"
 to_subaccount_hex = "1111111111111111111111111111111111111111111111111111111111111111"
 requested_amount_e8s = 100000000
@@ -1878,18 +1923,17 @@ fee_collector_owner = "none"
 fee_collector_subaccount_hex = "none"
 fee_collector_balance_before_e8s = "none"
 fee_collector_balance_after_e8s = "none"
-total_supply_before_e8s = 100000000000000
-total_supply_after_e8s = 99999999990000
+total_supply_before_e8s = 99999999990000
+total_supply_after_e8s = 99999999980000
 reserve_balance_before_e8s = 60000000000000
 reserve_balance_after_e8s = 59999899990000
-ledger_tip_block_index = 1
-index_synced_through_block_index = 1
+ledger_tip_block_index = 11
+index_synced_through_block_index = 11
+proof_source = "SnsIndexAccountHistory"
 proof_source_canister = "be2us-64aaa-aaaaa-qaabq-cai"
-proof_method = "get_account_transactions"
-proof_account_owner = "a3shf-5eaaa-aaaaa-qaafa-cai"
-proof_account_subaccount_hex = "none"
-duplicate_of_block_index = 1
-duplicate_proof_source = "index_account_history"
+proof_method = "IcrcIndexGetAccountTransactions"
+proof_account_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
+proof_account_subaccount_hex = "3333333333333333333333333333333333333333333333333333333333333333"
 archive_canister = "none"
 archive_range_start = "none"
 archive_range_end = "none"
@@ -1897,7 +1941,7 @@ archive_involvement = "none"
 observation_timestamp = "2026-07-28T00:00:00Z"
 
 [transfer_user_to_redemption]
-block_index = 2
+block_index = 12
 from_owner = "bd3sg-teaaa-aaaaa-qaaba-cai"
 from_subaccount_hex = "1111111111111111111111111111111111111111111111111111111111111111"
 to_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
@@ -1913,18 +1957,17 @@ fee_collector_owner = "none"
 fee_collector_subaccount_hex = "none"
 fee_collector_balance_before_e8s = "none"
 fee_collector_balance_after_e8s = "none"
-total_supply_before_e8s = 99999999990000
-total_supply_after_e8s = 99999999980000
+total_supply_before_e8s = 99999999980000
+total_supply_after_e8s = 99999999970000
 reserve_balance_before_e8s = 59999899990000
 reserve_balance_after_e8s = 59999899990000
-ledger_tip_block_index = 2
-index_synced_through_block_index = 2
+ledger_tip_block_index = 12
+index_synced_through_block_index = 12
+proof_source = "SnsIndexAccountHistory"
 proof_source_canister = "be2us-64aaa-aaaaa-qaabq-cai"
-proof_method = "get_account_transactions"
+proof_method = "IcrcIndexGetAccountTransactions"
 proof_account_owner = "bd3sg-teaaa-aaaaa-qaaba-cai"
 proof_account_subaccount_hex = "1111111111111111111111111111111111111111111111111111111111111111"
-duplicate_of_block_index = 2
-duplicate_proof_source = "index_account_history"
 archive_canister = "none"
 archive_range_start = "none"
 archive_range_end = "none"
@@ -1932,11 +1975,11 @@ archive_involvement = "none"
 observation_timestamp = "2026-07-28T00:00:01Z"
 
 [transfer_redemption_to_reserve]
-block_index = 3
+block_index = 13
 from_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
 from_subaccount_hex = "2222222222222222222222222222222222222222222222222222222222222222"
-to_owner = "a3shf-5eaaa-aaaaa-qaafa-cai"
-to_subaccount_hex = "none"
+to_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
+to_subaccount_hex = "3333333333333333333333333333333333333333333333333333333333333333"
 requested_amount_e8s = 99980000
 observed_fee_e8s = 10000
 fee_disposition = "burned"
@@ -1948,23 +1991,32 @@ fee_collector_owner = "none"
 fee_collector_subaccount_hex = "none"
 fee_collector_balance_before_e8s = "none"
 fee_collector_balance_after_e8s = "none"
-total_supply_before_e8s = 99999999980000
-total_supply_after_e8s = 99999999970000
+total_supply_before_e8s = 99999999970000
+total_supply_after_e8s = 99999999960000
 reserve_balance_before_e8s = 59999899990000
 reserve_balance_after_e8s = 59999999970000
-ledger_tip_block_index = 3
-index_synced_through_block_index = 3
+ledger_tip_block_index = 13
+index_synced_through_block_index = 13
+proof_source = "SnsIndexAccountHistory"
 proof_source_canister = "be2us-64aaa-aaaaa-qaabq-cai"
-proof_method = "get_account_transactions"
+proof_method = "IcrcIndexGetAccountTransactions"
 proof_account_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
 proof_account_subaccount_hex = "2222222222222222222222222222222222222222222222222222222222222222"
-duplicate_of_block_index = 3
-duplicate_proof_source = "index_account_history"
 archive_canister = "none"
 archive_range_start = "none"
 archive_range_end = "none"
 archive_involvement = "none"
 observation_timestamp = "2026-07-28T00:00:02Z"
+
+[duplicate_test]
+original_transfer = "transfer_reserve_to_user"
+duplicate_of_block_index = 11
+proof_source = "SnsIndexAccountHistory"
+proof_method = "IcrcIndexGetAccountTransactions"
+proof_source_canister = "be2us-64aaa-aaaaa-qaabq-cai"
+proof_account_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
+proof_account_subaccount_hex = "3333333333333333333333333333333333333333333333333333333333333333"
+observation_timestamp = "2026-07-28T00:00:03Z"
 
 [governance_evidence]
 governance_available = true
@@ -2144,10 +2196,13 @@ struct LocalSnsEvidence {
     expected: LocalSnsExpectedConfig,
     sns_canisters: LocalSnsCanisters,
     io_dapp_canisters: LocalSnsIoDappCanisters,
+    archive: LocalSnsArchiveEvidence,
     ledger: LocalSnsLedgerEvidence,
+    reserve_funding_transfer: LocalSnsReserveFundingEvidence,
     reserve_to_user_transfer: LocalSnsTransferEvidence,
     user_to_redemption_transfer: LocalSnsTransferEvidence,
     redemption_to_reserve_transfer: LocalSnsTransferEvidence,
+    duplicate_test: LocalSnsDuplicateTestEvidence,
     governance: LocalSnsGovernanceEvidence,
     issuance: LocalSnsIssuanceModel,
 }
@@ -2218,6 +2273,15 @@ struct LocalSnsIoDappCanisters {
 }
 
 #[derive(Clone, Debug)]
+struct LocalSnsArchiveEvidence {
+    archive_canister: Option<Principal>,
+    discovered_from_ledger: bool,
+    discovered_from_root: bool,
+    range_start: Option<u64>,
+    range_end: Option<u64>,
+}
+
+#[derive(Clone, Debug)]
 struct LocalSnsLedgerEvidence {
     token_symbol: String,
     transaction_fee_e8s: u128,
@@ -2225,23 +2289,31 @@ struct LocalSnsLedgerEvidence {
     protocol_reserve_account_owner: Principal,
     protocol_reserve_subaccount_hex: Option<String>,
     protocol_reserve_balance_e8s: u128,
-    protocol_reserve_funding_proposal_id: u64,
-    protocol_reserve_funding_block_index: u64,
-    protocol_reserve_funding_amount_e8s: u128,
-    protocol_reserve_funding_fee_e8s: u128,
-    activation_baseline_captured_after_reserve_funding: bool,
     reserve_transfer_block_index: u64,
     redemption_return_block_index: u64,
     reserve_transfer_amount_e8s: u128,
     redemption_return_amount_e8s: u128,
     bad_fee_error_observed: bool,
     insufficient_funds_error_observed: bool,
-    duplicate_transfer_observed: bool,
-    duplicate_block_verified: bool,
     duplicate_of_block_index: Option<u64>,
+    duplicate_tested_transfer: String,
     index_account_history_observed: bool,
     index_history_order: String,
     index_lag_or_archive_required_observed: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LocalSnsProofSource {
+    SnsLedgerBlock,
+    SnsIndexAccountHistory,
+    SnsLedgerArchive,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LocalSnsProofMethod {
+    Icrc3GetBlocks,
+    IcrcIndexGetAccountTransactions,
+    ArchiveGetBlocks,
 }
 
 #[derive(Clone, Debug)]
@@ -2265,15 +2337,35 @@ struct LocalSnsTransferEvidence {
     reserve_balance_after_e8s: u128,
     ledger_tip_block_index: u64,
     index_synced_through_block_index: u64,
+    proof_source: LocalSnsProofSource,
     proof_source_canister: Principal,
-    proof_method: String,
+    proof_method: LocalSnsProofMethod,
     proof_account: LocalSnsAccountEvidence,
-    duplicate_of_block_index: Option<u64>,
-    duplicate_proof_source: String,
     archive_canister: Option<Principal>,
     archive_range_start: Option<u64>,
     archive_range_end: Option<u64>,
     archive_involvement: String,
+    observation_timestamp: String,
+}
+
+#[derive(Clone, Debug)]
+struct LocalSnsReserveFundingEvidence {
+    sns_proposal_id: u64,
+    proposal_adopted: bool,
+    proposal_executed: bool,
+    created_at_time_nanos: Option<u64>,
+    memo_hex: Option<String>,
+    transfer: LocalSnsTransferEvidence,
+}
+
+#[derive(Clone, Debug)]
+struct LocalSnsDuplicateTestEvidence {
+    original_transfer: String,
+    duplicate_of_block_index: u64,
+    proof_source: LocalSnsProofSource,
+    proof_method: LocalSnsProofMethod,
+    proof_source_canister: Principal,
+    proof_account: LocalSnsAccountEvidence,
     observation_timestamp: String,
 }
 
@@ -2322,10 +2414,13 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
             | "expected_local_sns_config"
             | "sns_canisters"
             | "io_dapp_canisters"
+            | "archive_evidence"
             | "ledger_evidence"
+            | "reserve_funding_transfer"
             | "transfer_reserve_to_user"
             | "transfer_user_to_redemption"
             | "transfer_redemption_to_reserve"
+            | "duplicate_test"
             | "governance_evidence"
             | "issuance_model"
             | "protected" => {}
@@ -2517,6 +2612,28 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
             )?,
             frontend: parse_required_principal(path, &doc, "io_dapp_canisters", "frontend")?,
         },
+        archive: LocalSnsArchiveEvidence {
+            archive_canister: parse_optional_principal_string(
+                path,
+                &doc,
+                "archive_evidence",
+                "archive_canister",
+            )?,
+            discovered_from_ledger: require_simple_bool(
+                path,
+                &doc,
+                "archive_evidence",
+                "discovered_from_ledger",
+            )?,
+            discovered_from_root: require_simple_bool(
+                path,
+                &doc,
+                "archive_evidence",
+                "discovered_from_root",
+            )?,
+            range_start: parse_optional_u64(path, &doc, "archive_evidence", "range_start")?,
+            range_end: parse_optional_u64(path, &doc, "archive_evidence", "range_end")?,
+        },
         ledger: LocalSnsLedgerEvidence {
             token_symbol: require_simple_string(path, &doc, "ledger_evidence", "token_symbol")?,
             transaction_fee_e8s: require_simple_u128(
@@ -2548,36 +2665,6 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
                 &doc,
                 "ledger_evidence",
                 "protocol_reserve_balance_e8s",
-            )?,
-            protocol_reserve_funding_proposal_id: require_simple_u64(
-                path,
-                &doc,
-                "ledger_evidence",
-                "protocol_reserve_funding_proposal_id",
-            )?,
-            protocol_reserve_funding_block_index: require_simple_u64(
-                path,
-                &doc,
-                "ledger_evidence",
-                "protocol_reserve_funding_block_index",
-            )?,
-            protocol_reserve_funding_amount_e8s: require_simple_u128(
-                path,
-                &doc,
-                "ledger_evidence",
-                "protocol_reserve_funding_amount_e8s",
-            )?,
-            protocol_reserve_funding_fee_e8s: require_simple_u128(
-                path,
-                &doc,
-                "ledger_evidence",
-                "protocol_reserve_funding_fee_e8s",
-            )?,
-            activation_baseline_captured_after_reserve_funding: require_simple_bool(
-                path,
-                &doc,
-                "ledger_evidence",
-                "activation_baseline_captured_after_reserve_funding",
             )?,
             reserve_transfer_block_index: require_simple_u64(
                 path,
@@ -2615,23 +2702,17 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
                 "ledger_evidence",
                 "insufficient_funds_error_observed",
             )?,
-            duplicate_transfer_observed: require_simple_bool(
-                path,
-                &doc,
-                "ledger_evidence",
-                "duplicate_transfer_observed",
-            )?,
-            duplicate_block_verified: require_simple_bool(
-                path,
-                &doc,
-                "ledger_evidence",
-                "duplicate_block_verified",
-            )?,
             duplicate_of_block_index: parse_optional_u64(
                 path,
                 &doc,
                 "ledger_evidence",
                 "duplicate_of_block_index",
+            )?,
+            duplicate_tested_transfer: require_simple_string(
+                path,
+                &doc,
+                "ledger_evidence",
+                "duplicate_tested_transfer",
             )?,
             index_account_history_observed: require_simple_bool(
                 path,
@@ -2652,6 +2733,34 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
                 "index_lag_or_archive_required_observed",
             )?,
         },
+        reserve_funding_transfer: LocalSnsReserveFundingEvidence {
+            sns_proposal_id: require_simple_u64(
+                path,
+                &doc,
+                "reserve_funding_transfer",
+                "sns_proposal_id",
+            )?,
+            proposal_adopted: require_simple_bool(
+                path,
+                &doc,
+                "reserve_funding_transfer",
+                "proposal_adopted",
+            )?,
+            proposal_executed: require_simple_bool(
+                path,
+                &doc,
+                "reserve_funding_transfer",
+                "proposal_executed",
+            )?,
+            created_at_time_nanos: parse_optional_u64(
+                path,
+                &doc,
+                "reserve_funding_transfer",
+                "created_at_time_nanos",
+            )?,
+            memo_hex: parse_optional_hex(path, &doc, "reserve_funding_transfer", "memo_hex")?,
+            transfer: parse_local_sns_transfer_evidence(path, &doc, "reserve_funding_transfer")?,
+        },
         reserve_to_user_transfer: parse_local_sns_transfer_evidence(
             path,
             &doc,
@@ -2667,6 +2776,45 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
             &doc,
             "transfer_redemption_to_reserve",
         )?,
+        duplicate_test: LocalSnsDuplicateTestEvidence {
+            original_transfer: require_simple_string(
+                path,
+                &doc,
+                "duplicate_test",
+                "original_transfer",
+            )?,
+            duplicate_of_block_index: require_simple_u64(
+                path,
+                &doc,
+                "duplicate_test",
+                "duplicate_of_block_index",
+            )?,
+            proof_source: parse_local_sns_proof_source(
+                path,
+                &doc,
+                "duplicate_test",
+                "proof_source",
+            )?,
+            proof_method: parse_local_sns_proof_method(
+                path,
+                &doc,
+                "duplicate_test",
+                "proof_method",
+            )?,
+            proof_source_canister: parse_required_principal(
+                path,
+                &doc,
+                "duplicate_test",
+                "proof_source_canister",
+            )?,
+            proof_account: parse_local_sns_account(path, &doc, "duplicate_test", "proof_account")?,
+            observation_timestamp: require_simple_string(
+                path,
+                &doc,
+                "duplicate_test",
+                "observation_timestamp",
+            )?,
+        },
         governance: LocalSnsGovernanceEvidence {
             governance_available: require_simple_bool(
                 path,
@@ -2812,32 +2960,76 @@ fn parse_local_sns_transfer_evidence(
             section,
             "index_synced_through_block_index",
         )?,
+        proof_source: parse_local_sns_proof_source(path, doc, section, "proof_source")?,
         proof_source_canister: parse_required_principal(
             path,
             doc,
             section,
             "proof_source_canister",
         )?,
-        proof_method: require_simple_string(path, doc, section, "proof_method")?,
+        proof_method: parse_local_sns_proof_method(path, doc, section, "proof_method")?,
         proof_account: parse_local_sns_account(path, doc, section, "proof_account")?,
-        duplicate_of_block_index: parse_optional_u64(
-            path,
-            doc,
-            section,
-            "duplicate_of_block_index",
-        )?,
-        duplicate_proof_source: require_simple_string(
-            path,
-            doc,
-            section,
-            "duplicate_proof_source",
-        )?,
         archive_canister: parse_optional_principal_string(path, doc, section, "archive_canister")?,
         archive_range_start: parse_optional_u64(path, doc, section, "archive_range_start")?,
         archive_range_end: parse_optional_u64(path, doc, section, "archive_range_end")?,
         archive_involvement: require_simple_string(path, doc, section, "archive_involvement")?,
         observation_timestamp: require_simple_string(path, doc, section, "observation_timestamp")?,
     })
+}
+
+fn parse_local_sns_proof_source(
+    path: &str,
+    doc: &SimpleTomlDocument,
+    section: &str,
+    key: &str,
+) -> Result<LocalSnsProofSource, String> {
+    match require_simple_string(path, doc, section, key)?.as_str() {
+        "SnsLedgerBlock" => Ok(LocalSnsProofSource::SnsLedgerBlock),
+        "SnsIndexAccountHistory" => Ok(LocalSnsProofSource::SnsIndexAccountHistory),
+        "SnsLedgerArchive" => Ok(LocalSnsProofSource::SnsLedgerArchive),
+        other => Err(format!(
+            "{path}: {section}.{key} must be SnsLedgerBlock, SnsIndexAccountHistory, or SnsLedgerArchive, got {other}"
+        )),
+    }
+}
+
+fn parse_local_sns_proof_method(
+    path: &str,
+    doc: &SimpleTomlDocument,
+    section: &str,
+    key: &str,
+) -> Result<LocalSnsProofMethod, String> {
+    match require_simple_string(path, doc, section, key)?.as_str() {
+        "Icrc3GetBlocks" => Ok(LocalSnsProofMethod::Icrc3GetBlocks),
+        "IcrcIndexGetAccountTransactions" => {
+            Ok(LocalSnsProofMethod::IcrcIndexGetAccountTransactions)
+        }
+        "ArchiveGetBlocks" => Ok(LocalSnsProofMethod::ArchiveGetBlocks),
+        other => Err(format!(
+            "{path}: {section}.{key} must be Icrc3GetBlocks, IcrcIndexGetAccountTransactions, or ArchiveGetBlocks, got {other}"
+        )),
+    }
+}
+
+fn parse_optional_hex(
+    path: &str,
+    doc: &SimpleTomlDocument,
+    section: &str,
+    key: &str,
+) -> Result<Option<String>, String> {
+    let value = require_simple_string(path, doc, section, key)?;
+    if value == "none" {
+        return Ok(None);
+    }
+    if !value.is_empty()
+        && value.len() % 2 == 0
+        && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Ok(Some(value.to_ascii_lowercase()));
+    }
+    Err(format!(
+        "{path}: {section}.{key} must be even-length hex or none"
+    ))
 }
 
 fn parse_local_sns_account(
@@ -3004,7 +3196,6 @@ fn validate_local_sns_evidence(
         evidence.io_dapp_canisters.io_nns_neuron_manager,
         evidence.io_dapp_canisters.io_historian,
         evidence.io_dapp_canisters.frontend,
-        evidence.ledger.protocol_reserve_account_owner,
     ];
     let mut unique = BTreeSet::new();
     for principal in principals {
@@ -3017,6 +3208,7 @@ fn validate_local_sns_evidence(
     if let Some(archive) = evidence.sns_canisters.archive {
         validate_local_principal_value(path, "sns_canisters.archive", &archive.to_text())?;
     }
+    validate_local_sns_archive_evidence(path, evidence)?;
     if evidence.expected.token_symbol != "IO" || evidence.ledger.token_symbol != "IO" {
         return Err(format!(
             "{path}: local SNS rehearsal token symbol must be IO"
@@ -3032,40 +3224,42 @@ fn validate_local_sns_evidence(
         .expected
         .protocol_reserve_funding_amount_e8s
         .checked_add(evidence.expected.minimum_remaining_treasury_e8s)
-        .and_then(|value| value.checked_add(evidence.ledger.protocol_reserve_funding_fee_e8s))
+        .and_then(|value| {
+            value.checked_add(evidence.reserve_funding_transfer.transfer.observed_fee_e8s)
+        })
         .ok_or_else(|| format!("{path}: reserve funding treasury requirement overflow"))?;
     if evidence.expected.treasury_initial_balance_e8s < required_treasury {
         return Err(format!(
             "{path}: expected treasury must cover desired reserve plus remaining treasury plus one transfer fee"
         ));
     }
-    if evidence.ledger.protocol_reserve_funding_amount_e8s
-        != evidence.expected.protocol_reserve_funding_amount_e8s
-        || evidence.ledger.protocol_reserve_funding_fee_e8s != evidence.ledger.transaction_fee_e8s
-        || !evidence
-            .ledger
-            .activation_baseline_captured_after_reserve_funding
-        || evidence.ledger.protocol_reserve_funding_proposal_id == 0
-        || evidence.ledger.protocol_reserve_funding_block_index
-            >= evidence.ledger.reserve_transfer_block_index
-    {
-        return Err(format!(
-            "{path}: completed evidence must record governance-funded reserve transfer before activation"
-        ));
-    }
-    if evidence.reserve_to_user_transfer.total_supply_before_e8s
-        != evidence.expected.total_supply_e8s
-    {
-        return Err(format!(
-            "{path}: first observed total_supply_before_e8s {} does not match expected {}",
-            evidence.reserve_to_user_transfer.total_supply_before_e8s,
-            evidence.expected.total_supply_e8s
-        ));
-    }
     let reserve_account = LocalSnsAccountEvidence {
         owner: evidence.ledger.protocol_reserve_account_owner,
         subaccount_hex: evidence.ledger.protocol_reserve_subaccount_hex.clone(),
     };
+    if reserve_account.owner != evidence.io_dapp_canisters.io_stream_manager {
+        return Err(format!(
+            "{path}: protocol reserve owner must equal io_dapp_canisters.io_stream_manager"
+        ));
+    }
+    if reserve_account.subaccount_hex.is_none() {
+        return Err(format!(
+            "{path}: protocol reserve account requires an exact configured subaccount"
+        ));
+    }
+    let redemption_account = &evidence.user_to_redemption_transfer.to_account;
+    if redemption_account == &reserve_account {
+        return Err(format!(
+            "{path}: protocol reserve Account must not collide with redemption Account"
+        ));
+    }
+    validate_local_sns_transfer(
+        path,
+        "reserve_funding_transfer",
+        &evidence.reserve_funding_transfer.transfer,
+        &reserve_account,
+    )?;
+    validate_local_sns_reserve_funding(path, evidence, &reserve_account)?;
     validate_local_sns_transfer(
         path,
         "transfer_reserve_to_user",
@@ -3084,7 +3278,28 @@ fn validate_local_sns_evidence(
         &evidence.redemption_to_reserve_transfer,
         &reserve_account,
     )?;
+    for (section, transfer) in [
+        (
+            "reserve_funding_transfer",
+            &evidence.reserve_funding_transfer.transfer,
+        ),
+        (
+            "transfer_reserve_to_user",
+            &evidence.reserve_to_user_transfer,
+        ),
+        (
+            "transfer_user_to_redemption",
+            &evidence.user_to_redemption_transfer,
+        ),
+        (
+            "transfer_redemption_to_reserve",
+            &evidence.redemption_to_reserve_transfer,
+        ),
+    ] {
+        validate_local_sns_transfer_proof(path, section, transfer, evidence)?;
+    }
     validate_local_sns_transfer_sequence(path, evidence, &reserve_account)?;
+    validate_local_sns_duplicate_test(path, evidence)?;
     if evidence.ledger.total_supply_e8s
         != evidence
             .redemption_to_reserve_transfer
@@ -3149,17 +3364,10 @@ fn validate_local_sns_evidence(
     if !evidence.ledger.insufficient_funds_error_observed {
         return Err(format!("{path}: insufficient funds error must be observed"));
     }
-    if evidence.ledger.duplicate_transfer_observed {
-        if !evidence.ledger.duplicate_block_verified {
-            return Err(format!(
-                "{path}: duplicate transfer observation requires duplicate_block_verified = true"
-            ));
-        }
-        if evidence.ledger.duplicate_of_block_index.is_none() {
-            return Err(format!(
-                "{path}: duplicate transfer observation requires duplicate_of_block_index"
-            ));
-        }
+    if evidence.ledger.duplicate_of_block_index.is_none() {
+        return Err(format!(
+            "{path}: top-level ledger evidence must reference the detailed duplicate test"
+        ));
     }
     if !evidence.ledger.index_account_history_observed {
         return Err(format!("{path}: index account history must be observed"));
@@ -3204,9 +3412,126 @@ fn validate_local_sns_evidence(
             "{path}: treasury_transfer_assumed must be true for post-finalisation reserve funding evidence"
         ));
     }
-    let _ = evidence.ledger.protocol_reserve_subaccount_hex.as_deref();
     let _ = evidence.ledger.reserve_transfer_block_index;
     let _ = evidence.ledger.redemption_return_block_index;
+    Ok(())
+}
+
+fn validate_local_sns_archive_evidence(
+    path: &str,
+    evidence: &LocalSnsEvidence,
+) -> Result<(), String> {
+    if evidence.archive.archive_canister != evidence.sns_canisters.archive {
+        return Err(format!(
+            "{path}: archive_evidence.archive_canister must match sns_canisters.archive"
+        ));
+    }
+    match evidence.archive.archive_canister {
+        None => {
+            if evidence.archive.discovered_from_ledger
+                || evidence.archive.discovered_from_root
+                || evidence.archive.range_start.is_some()
+                || evidence.archive.range_end.is_some()
+            {
+                return Err(format!(
+                    "{path}: absent archive must not claim discovery or a served range"
+                ));
+            }
+        }
+        Some(_) => {
+            if !evidence.archive.discovered_from_ledger || !evidence.archive.discovered_from_root {
+                return Err(format!(
+                    "{path}: archive canister must be present in ledger and root discovery evidence"
+                ));
+            }
+            let start = evidence
+                .archive
+                .range_start
+                .ok_or_else(|| format!("{path}: discovered archive requires exact range_start"))?;
+            let end = evidence
+                .archive
+                .range_end
+                .ok_or_else(|| format!("{path}: discovered archive requires exact range_end"))?;
+            if start > end {
+                return Err(format!("{path}: archive discovery range is inverted"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_local_sns_reserve_funding(
+    path: &str,
+    evidence: &LocalSnsEvidence,
+    reserve_account: &LocalSnsAccountEvidence,
+) -> Result<(), String> {
+    let funding = &evidence.reserve_funding_transfer;
+    let transfer = &funding.transfer;
+    if funding.sns_proposal_id == 0 || !funding.proposal_adopted || !funding.proposal_executed {
+        return Err(format!(
+            "{path}: reserve funding requires a nonzero adopted and executed SNS proposal"
+        ));
+    }
+    let _dedup_metadata = (funding.created_at_time_nanos, funding.memo_hex.as_deref());
+    if transfer.to_account != *reserve_account
+        || transfer.requested_amount_e8s != evidence.expected.protocol_reserve_funding_amount_e8s
+        || transfer.observed_fee_e8s != evidence.ledger.transaction_fee_e8s
+        || transfer.block_index >= evidence.reserve_to_user_transfer.block_index
+    {
+        return Err(format!(
+            "{path}: reserve funding transfer must fund the exact reserve before activation"
+        ));
+    }
+    if transfer.sender_balance_before_e8s != evidence.expected.treasury_initial_balance_e8s {
+        return Err(format!(
+            "{path}: reserve funding treasury-before must match configured genesis treasury"
+        ));
+    }
+    let treasury_decrease = transfer
+        .sender_balance_before_e8s
+        .checked_sub(transfer.sender_balance_after_e8s)
+        .ok_or_else(|| format!("{path}: reserve funding treasury balance increased"))?;
+    let expected_treasury_decrease = transfer
+        .requested_amount_e8s
+        .checked_add(transfer.observed_fee_e8s)
+        .ok_or_else(|| format!("{path}: reserve funding amount plus fee overflow"))?;
+    if treasury_decrease != expected_treasury_decrease {
+        return Err(format!(
+            "{path}: reserve funding treasury decrease must equal amount plus fee"
+        ));
+    }
+    let reserve_increase = transfer
+        .recipient_balance_after_e8s
+        .checked_sub(transfer.recipient_balance_before_e8s)
+        .ok_or_else(|| format!("{path}: reserve funding reserve balance decreased"))?;
+    if reserve_increase != transfer.requested_amount_e8s {
+        return Err(format!(
+            "{path}: reserve funding reserve increase must equal funded amount"
+        ));
+    }
+    if transfer.total_supply_before_e8s != evidence.expected.total_supply_e8s
+        || transfer
+            .total_supply_before_e8s
+            .checked_sub(transfer.total_supply_after_e8s)
+            != Some(transfer.observed_fee_e8s)
+    {
+        return Err(format!(
+            "{path}: reserve funding total-supply decrease must equal the burned fee"
+        ));
+    }
+    if evidence.reserve_to_user_transfer.total_supply_before_e8s != transfer.total_supply_after_e8s
+    {
+        return Err(format!(
+            "{path}: first reserve-to-user supply before must equal reserve-funding supply after"
+        ));
+    }
+    if evidence.reserve_to_user_transfer.reserve_balance_before_e8s
+        != transfer.reserve_balance_after_e8s
+    {
+        return Err(format!(
+            "{path}: first reserve balance before must equal reserve-funding reserve balance after"
+        ));
+    }
     Ok(())
 }
 
@@ -3334,6 +3659,22 @@ fn validate_local_sns_transfer_sequence(
             "{path}: reserve transfer endpoints must match configured protocol reserve account"
         ));
     }
+    let redemption_account = &t2.to_account;
+    if redemption_account != &t3.from_account {
+        return Err(format!(
+            "{path}: exact redemption account must be stable across intake and return"
+        ));
+    }
+    if redemption_account.owner != evidence.io_dapp_canisters.io_stream_manager {
+        return Err(format!(
+            "{path}: redemption account owner must equal io_dapp_canisters.io_stream_manager"
+        ));
+    }
+    if redemption_account == reserve_account {
+        return Err(format!(
+            "{path}: protocol reserve Account must not collide with redemption Account"
+        ));
+    }
     if t1.total_supply_after_e8s != t2.total_supply_before_e8s
         || t2.total_supply_after_e8s != t3.total_supply_before_e8s
     {
@@ -3363,7 +3704,128 @@ fn validate_local_sns_transfer_sequence(
             "{path}: top-level ledger evidence must match detailed transfer records"
         ));
     }
+    let expected_final_supply = evidence
+        .expected
+        .total_supply_e8s
+        .checked_sub(evidence.reserve_funding_transfer.transfer.observed_fee_e8s)
+        .and_then(|value| value.checked_sub(t1.observed_fee_e8s))
+        .and_then(|value| value.checked_sub(t2.observed_fee_e8s))
+        .and_then(|value| value.checked_sub(t3.observed_fee_e8s))
+        .ok_or_else(|| format!("{path}: total-supply fee-burn equation underflow"))?;
+    if t3.total_supply_after_e8s != expected_final_supply {
+        return Err(format!(
+            "{path}: final supply must equal genesis supply minus reserve-funding and subsequent transfer fees"
+        ));
+    }
     Ok(())
+}
+
+fn validate_local_sns_transfer_proof(
+    path: &str,
+    section: &str,
+    transfer: &LocalSnsTransferEvidence,
+    evidence: &LocalSnsEvidence,
+) -> Result<(), String> {
+    let (expected_canister, expected_method) = match transfer.proof_source {
+        LocalSnsProofSource::SnsLedgerBlock => (
+            evidence.sns_canisters.ledger,
+            LocalSnsProofMethod::Icrc3GetBlocks,
+        ),
+        LocalSnsProofSource::SnsIndexAccountHistory => (
+            evidence.sns_canisters.index,
+            LocalSnsProofMethod::IcrcIndexGetAccountTransactions,
+        ),
+        LocalSnsProofSource::SnsLedgerArchive => (
+            evidence
+                .archive
+                .archive_canister
+                .ok_or_else(|| format!("{path}: {section} archive proof lacks discovery"))?,
+            LocalSnsProofMethod::ArchiveGetBlocks,
+        ),
+    };
+    if transfer.proof_source_canister != expected_canister
+        || transfer.proof_method != expected_method
+    {
+        return Err(format!(
+            "{path}: {section} proof source/method is not bound to the recorded SNS canister role"
+        ));
+    }
+    if transfer.proof_source == LocalSnsProofSource::SnsLedgerArchive {
+        if transfer.archive_canister != Some(expected_canister) {
+            return Err(format!(
+                "{path}: {section} archive proof canister must match discovered archive"
+            ));
+        }
+        let start = transfer
+            .archive_range_start
+            .ok_or_else(|| format!("{path}: {section} archive proof requires exact range start"))?;
+        let end = transfer
+            .archive_range_end
+            .ok_or_else(|| format!("{path}: {section} archive proof requires exact range end"))?;
+        if start > transfer.block_index || transfer.block_index > end {
+            return Err(format!(
+                "{path}: {section} archive range must contain the relevant block"
+            ));
+        }
+        if evidence.archive.range_start > Some(start) || evidence.archive.range_end < Some(end) {
+            return Err(format!(
+                "{path}: {section} archive proof range exceeds discovered archive range"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn detailed_transfer_by_name<'a>(
+    evidence: &'a LocalSnsEvidence,
+    name: &str,
+) -> Option<&'a LocalSnsTransferEvidence> {
+    match name {
+        "reserve_funding_transfer" => Some(&evidence.reserve_funding_transfer.transfer),
+        "transfer_reserve_to_user" => Some(&evidence.reserve_to_user_transfer),
+        "transfer_user_to_redemption" => Some(&evidence.user_to_redemption_transfer),
+        "transfer_redemption_to_reserve" => Some(&evidence.redemption_to_reserve_transfer),
+        _ => None,
+    }
+}
+
+fn validate_local_sns_duplicate_test(
+    path: &str,
+    evidence: &LocalSnsEvidence,
+) -> Result<(), String> {
+    let duplicate = &evidence.duplicate_test;
+    let original =
+        detailed_transfer_by_name(evidence, &duplicate.original_transfer).ok_or_else(|| {
+            format!("{path}: duplicate_test.original_transfer is not a detailed transfer")
+        })?;
+    if evidence.ledger.duplicate_tested_transfer != duplicate.original_transfer
+        || evidence.ledger.duplicate_of_block_index != Some(duplicate.duplicate_of_block_index)
+        || duplicate.duplicate_of_block_index != original.block_index
+    {
+        return Err(format!(
+            "{path}: top-level duplicate evidence must reference one exact detailed transfer and its successful block"
+        ));
+    }
+    if duplicate.proof_account != original.from_account
+        && duplicate.proof_account != original.to_account
+    {
+        return Err(format!(
+            "{path}: duplicate proof Account must match the exact queried transfer Account"
+        ));
+    }
+    if parse_rfc3339_utc(&duplicate.observation_timestamp).is_none() {
+        return Err(format!(
+            "{path}: duplicate_test.observation_timestamp must be RFC3339 UTC seconds"
+        ));
+    }
+    let proof_transfer = LocalSnsTransferEvidence {
+        proof_source: duplicate.proof_source,
+        proof_method: duplicate.proof_method,
+        proof_source_canister: duplicate.proof_source_canister,
+        proof_account: duplicate.proof_account.clone(),
+        ..original.clone()
+    };
+    validate_local_sns_transfer_proof(path, "duplicate_test", &proof_transfer, evidence)
 }
 
 fn timestamp_leq(left: &str, right: &str) -> bool {
@@ -3477,13 +3939,6 @@ fn validate_local_sns_transfer(
         &format!("{section}.proof_source_canister"),
         &transfer.proof_source_canister.to_text(),
     )?;
-    if transfer.duplicate_proof_source.trim().is_empty()
-        || transfer.duplicate_proof_source == "none"
-        || transfer.proof_method.trim().is_empty()
-        || transfer.duplicate_of_block_index.is_none()
-    {
-        return Err(format!("{path}: {section} missing duplicate proof"));
-    }
     match transfer.archive_involvement.as_str() {
         "none" => {
             if transfer.archive_canister.is_some()
@@ -3556,35 +4011,6 @@ fn validate_local_sns_transfer(
                 ));
             }
         }
-        "collected" => {
-            let collector = transfer.fee_collector_account.clone().ok_or_else(|| {
-                format!("{path}: {section} fee-collector mode requires exact collector account")
-            })?;
-            let before = transfer.fee_collector_balance_before_e8s.ok_or_else(|| {
-                format!("{path}: {section} fee-collector mode requires collector balance before")
-            })?;
-            let after = transfer.fee_collector_balance_after_e8s.ok_or_else(|| {
-                format!("{path}: {section} fee-collector mode requires collector balance after")
-            })?;
-            add_delta(
-                &mut deltas,
-                collector.clone(),
-                checked_i128(path, section, transfer.observed_fee_e8s)?,
-            )?;
-            if transfer.total_supply_before_e8s != transfer.total_supply_after_e8s {
-                return Err(format!(
-                    "{path}: {section} collected fee mode must keep total supply constant"
-                ));
-            }
-            validate_observed_account_delta(
-                path,
-                section,
-                &mut BTreeMap::new(),
-                collector,
-                before,
-                after,
-            )?;
-        }
         "unknown" => {
             return Err(format!(
                 "{path}: {section}.fee_disposition must not be unknown in completed evidence"
@@ -3592,7 +4018,7 @@ fn validate_local_sns_transfer(
         }
         other => {
             return Err(format!(
-                "{path}: {section}.fee_disposition must be burned, collected or unknown, got {other}"
+                "{path}: {section}.fee_disposition must be burned under standard SNS fee policy, got {other}"
             ));
         }
     }
@@ -6896,7 +7322,7 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "deploy/local-sns-rehearsal/canister-ids.local.example.toml",
-            "network = \"local\"\nsource = \"official-local-sns-rehearsal\"\nofficial_tooling = \"manual-local-only\"\n[toolchain_provenance]\nofficial_ic_source_commit = \"0123456789abcdef0123456789abcdef01234567\"\nsns_testing_source_path = \"rs/sns/testing\"\noperator_identity_principal = \"bd3sg-teaaa-aaaaa-qaaba-cai\"\nlocal_network_url = \"http://127.0.0.1:8080\"\nsns_cli_sha256 = \"TODO\"\nsns_testing_init_sha256 = \"TODO\"\nsns_testing_cli_sha256 = \"TODO\"\n[sns_canisters]\nroot = \"TODO\"\ngovernance = \"TODO\"\nledger = \"TODO\"\nindex = \"TODO\"\nswap = \"TODO\"\narchive = \"TODO\"\n[expected_local_sns_config]\ntoken_symbol = \"IO\"\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\nprotocol_reserve_funding_amount_e8s = 1\n[ledger_evidence]\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\nprotocol_reserve_balance_e8s = 1\nprotocol_reserve_funding_block_index = 1\nreserve_transfer_amount_e8s = 1\nredemption_return_amount_e8s = 1\nbad_fee_error_observed = true\ninsufficient_funds_error_observed = true\nduplicate_transfer_observed = true\nduplicate_block_verified = true\nindex_account_history_observed = true\n[transfer_reserve_to_user]\nfrom_owner = \"TODO\"\nfrom_subaccount_hex = \"none\"\nto_owner = \"TODO\"\nto_subaccount_hex = \"none\"\nfee_disposition = \"burned\"\nsender_balance_before_e8s = 1\nrecipient_balance_after_e8s = 1\ntotal_supply_before_e8s = 1\ntotal_supply_after_e8s = 1\nproof_source_canister = \"TODO\"\nproof_method = \"get_account_transactions\"\nduplicate_proof_source = \"index_account_history\"\narchive_canister = \"none\"\n[transfer_user_to_redemption]\nfrom_owner = \"TODO\"\nfrom_subaccount_hex = \"none\"\nto_owner = \"TODO\"\nto_subaccount_hex = \"none\"\nfee_disposition = \"burned\"\nsender_balance_before_e8s = 1\nrecipient_balance_after_e8s = 1\ntotal_supply_before_e8s = 1\ntotal_supply_after_e8s = 1\nproof_source_canister = \"TODO\"\nproof_method = \"get_account_transactions\"\nduplicate_proof_source = \"index_account_history\"\narchive_canister = \"none\"\n[transfer_redemption_to_reserve]\nfrom_owner = \"TODO\"\nfrom_subaccount_hex = \"none\"\nto_owner = \"TODO\"\nto_subaccount_hex = \"none\"\nfee_disposition = \"burned\"\nsender_balance_before_e8s = 1\nrecipient_balance_after_e8s = 1\ntotal_supply_before_e8s = 1\ntotal_supply_after_e8s = 1\nproof_source_canister = \"TODO\"\nproof_method = \"get_account_transactions\"\nduplicate_proof_source = \"index_account_history\"\narchive_canister = \"none\"\n[issuance_model]\nresolved_as = \"protocol_reserve_transfer\"\nminting_assumed = false\ntreasury_transfer_assumed = true\nfee_disposition_mode = \"burned\"\ntotal_supply_changes_explained = true\n",
+            "network = \"local\"\nsource = \"official-local-sns-rehearsal\"\nofficial_tooling = \"manual-local-only\"\n[toolchain_provenance]\nofficial_ic_source_commit = \"0123456789abcdef0123456789abcdef01234567\"\nsns_testing_source_path = \"rs/sns/testing\"\noperator_identity_principal = \"bd3sg-teaaa-aaaaa-qaaba-cai\"\nlocal_network_url = \"http://127.0.0.1:8080\"\nsns_cli_sha256 = \"TODO\"\nsns_testing_init_sha256 = \"TODO\"\nsns_testing_cli_sha256 = \"TODO\"\n[sns_canisters]\nroot = \"TODO\"\ngovernance = \"TODO\"\nledger = \"TODO\"\nindex = \"TODO\"\nswap = \"TODO\"\narchive = \"TODO\"\n[expected_local_sns_config]\ntoken_symbol = \"IO\"\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\nprotocol_reserve_funding_amount_e8s = 1\n[ledger_evidence]\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\nprotocol_reserve_balance_e8s = 1\nreserve_transfer_amount_e8s = 1\nredemption_return_amount_e8s = 1\nbad_fee_error_observed = true\ninsufficient_funds_error_observed = true\nduplicate_tested_transfer = \"transfer_reserve_to_user\"\nindex_account_history_observed = true\n[reserve_funding_transfer]\nsns_proposal_id = 1\nproposal_adopted = true\nproposal_executed = true\ncreated_at_time_nanos = \"none\"\nmemo_hex = \"none\"\nproof_source = \"SnsLedgerBlock\"\nproof_source_canister = \"TODO\"\nproof_method = \"Icrc3GetBlocks\"\narchive_canister = \"none\"\n[transfer_reserve_to_user]\nfrom_owner = \"TODO\"\nfrom_subaccount_hex = \"none\"\nto_owner = \"TODO\"\nto_subaccount_hex = \"none\"\nfee_disposition = \"burned\"\nsender_balance_before_e8s = 1\nrecipient_balance_after_e8s = 1\ntotal_supply_before_e8s = 1\ntotal_supply_after_e8s = 1\nproof_source = \"SnsIndexAccountHistory\"\nproof_source_canister = \"TODO\"\nproof_method = \"IcrcIndexGetAccountTransactions\"\narchive_canister = \"none\"\n[transfer_user_to_redemption]\nfrom_owner = \"TODO\"\nfrom_subaccount_hex = \"none\"\nto_owner = \"TODO\"\nto_subaccount_hex = \"none\"\nfee_disposition = \"burned\"\nsender_balance_before_e8s = 1\nrecipient_balance_after_e8s = 1\ntotal_supply_before_e8s = 1\ntotal_supply_after_e8s = 1\nproof_source = \"SnsIndexAccountHistory\"\nproof_source_canister = \"TODO\"\nproof_method = \"IcrcIndexGetAccountTransactions\"\narchive_canister = \"none\"\n[transfer_redemption_to_reserve]\nfrom_owner = \"TODO\"\nfrom_subaccount_hex = \"none\"\nto_owner = \"TODO\"\nto_subaccount_hex = \"none\"\nfee_disposition = \"burned\"\nsender_balance_before_e8s = 1\nrecipient_balance_after_e8s = 1\ntotal_supply_before_e8s = 1\ntotal_supply_after_e8s = 1\nproof_source = \"SnsIndexAccountHistory\"\nproof_source_canister = \"TODO\"\nproof_method = \"IcrcIndexGetAccountTransactions\"\narchive_canister = \"none\"\n[duplicate_test]\n[issuance_model]\nresolved_as = \"protocol_reserve_transfer\"\nminting_assumed = false\ntreasury_transfer_assumed = true\nfee_disposition_mode = \"burned\"\ntotal_supply_changes_explained = true\n",
         );
         for path in [
             "deploy/local-sns-rehearsal/runbook.sh",
@@ -7758,11 +8184,11 @@ Template SNS principal values are planned wiring placeholders only.
         assert_local_sns_evidence_rejects(
             |text| {
                 text.replace(
-                    "duplicate_of_block_index = 1",
-                    "duplicate_of_block_index = \"none\"",
+                    "duplicate_of_block_index = 11\nduplicate_tested_transfer",
+                    "duplicate_of_block_index = \"none\"\nduplicate_tested_transfer",
                 )
             },
-            "missing duplicate proof",
+            "top-level duplicate evidence",
         );
     }
 
@@ -7784,8 +8210,8 @@ Template SNS principal values are planned wiring placeholders only.
         assert_local_sns_evidence_rejects(
             |text| {
                 text.replace(
-                    "transaction_fee_e8s = 10000\ntotal_supply_e8s = 99999999970000\nprotocol_reserve_account_owner",
-                    "transaction_fee_e8s = 10001\ntotal_supply_e8s = 99999999970000\nprotocol_reserve_account_owner",
+                    "transaction_fee_e8s = 10000\ntotal_supply_e8s = 99999999960000\nprotocol_reserve_account_owner",
+                    "transaction_fee_e8s = 10001\ntotal_supply_e8s = 99999999960000\nprotocol_reserve_account_owner",
                 )
             },
             "transaction_fee_e8s",
@@ -7810,8 +8236,8 @@ Template SNS principal values are planned wiring placeholders only.
         assert_local_sns_evidence_rejects(
             |text| {
                 text.replacen(
-                    "index_synced_through_block_index = 3",
-                    "index_synced_through_block_index = 2",
+                    "index_synced_through_block_index = 13",
+                    "index_synced_through_block_index = 12",
                     1,
                 )
             },
@@ -7828,7 +8254,7 @@ Template SNS principal values are planned wiring placeholders only.
                     "total_supply_after_e8s = 100000000000000",
                 )
             },
-            "burned fee supply decrease",
+            "supply decrease",
         );
     }
 
@@ -7884,7 +8310,7 @@ Template SNS principal values are planned wiring placeholders only.
         assert_local_sns_evidence_rejects(
             |text| {
                 text.replacen(
-                    "from_owner = \"a3shf-5eaaa-aaaaa-qaafa-cai\"",
+                    "from_owner = \"bd3sg-teaaa-aaaaa-qaaba-cai\"",
                     "from_owner = \"2vxsx-fae\"",
                     1,
                 )
@@ -7918,12 +8344,12 @@ Template SNS principal values are planned wiring placeholders only.
         assert_local_sns_evidence_rejects(
             |text| {
                 text.replacen(
-                    "total_supply_before_e8s = 99999999990000",
+                    "total_supply_before_e8s = 99999999980000",
                     "total_supply_before_e8s = 99999999985000",
                     1,
                 )
                 .replacen(
-                    "total_supply_after_e8s = 99999999980000",
+                    "total_supply_after_e8s = 99999999970000",
                     "total_supply_after_e8s = 99999999975000",
                     1,
                 )
@@ -7972,6 +8398,82 @@ Template SNS principal values are planned wiring placeholders only.
         );
     }
 
+    #[test]
+    fn local_sns_ledger_check_rejects_reserve_owner_not_stream_manager() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replacen(
+                    "protocol_reserve_account_owner = \"avqkn-guaaa-aaaaa-qaaea-cai\"",
+                    "protocol_reserve_account_owner = \"a3shf-5eaaa-aaaaa-qaafa-cai\"",
+                    1,
+                )
+            },
+            "reserve owner",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_exact_reserve_redemption_collision() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replace(
+                    "2222222222222222222222222222222222222222222222222222222222222222",
+                    "3333333333333333333333333333333333333333333333333333333333333333",
+                )
+            },
+            "must not collide",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_accepts_same_owner_distinct_subaccounts() {
+        let evidence = completed_local_sns_evidence();
+        let parsed = parse_local_sns_evidence("fixture", &evidence).unwrap();
+        assert_eq!(
+            parsed.ledger.protocol_reserve_account_owner,
+            parsed.user_to_redemption_transfer.to_account.owner
+        );
+        assert_ne!(
+            parsed.ledger.protocol_reserve_subaccount_hex,
+            parsed.user_to_redemption_transfer.to_account.subaccount_hex
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_swapped_dapp_roles() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replace(
+                    "io_stream_manager = \"avqkn-guaaa-aaaaa-qaaea-cai\"",
+                    "io_stream_manager = \"TEMP_ROLE\"",
+                )
+                .replace(
+                    "io_nns_neuron_manager = \"aax3a-h4aaa-aaaaa-qaahq-cai\"",
+                    "io_nns_neuron_manager = \"avqkn-guaaa-aaaaa-qaaea-cai\"",
+                )
+                .replace(
+                    "io_stream_manager = \"TEMP_ROLE\"",
+                    "io_stream_manager = \"aax3a-h4aaa-aaaaa-qaahq-cai\"",
+                )
+            },
+            "reserve owner",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_proof_canister_role_mismatch() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replacen(
+                    "proof_source_canister = \"be2us-64aaa-aaaaa-qaabq-cai\"",
+                    "proof_source_canister = \"br5f7-7uaaa-aaaaa-qaaca-cai\"",
+                    1,
+                )
+            },
+            "not bound",
+        );
+    }
+
     fn local_account(owner: &str, subaccount_hex: Option<&str>) -> LocalSnsAccountEvidence {
         LocalSnsAccountEvidence {
             owner: Principal::from_text(owner).unwrap(),
@@ -8008,11 +8510,10 @@ Template SNS principal values are planned wiring placeholders only.
             reserve_balance_after_e8s: reserve_balance.1,
             ledger_tip_block_index: 42,
             index_synced_through_block_index: 42,
+            proof_source: LocalSnsProofSource::SnsIndexAccountHistory,
             proof_source_canister: Principal::from_text("be2us-64aaa-aaaaa-qaabq-cai").unwrap(),
-            proof_method: "get_account_transactions".to_string(),
+            proof_method: LocalSnsProofMethod::IcrcIndexGetAccountTransactions,
             proof_account: sender,
-            duplicate_of_block_index: Some(42),
-            duplicate_proof_source: "index_account_history".to_string(),
             archive_canister: None,
             archive_range_start: None,
             archive_range_end: None,
@@ -8022,7 +8523,7 @@ Template SNS principal values are planned wiring placeholders only.
     }
 
     #[test]
-    fn local_sns_transfer_validator_accepts_collector_overlap_modes() {
+    fn local_sns_transfer_validator_rejects_fee_collector_mode() {
         let sender = local_account(
             "bd3sg-teaaa-aaaaa-qaaba-cai",
             Some("1111111111111111111111111111111111111111111111111111111111111111"),
@@ -8033,7 +8534,7 @@ Template SNS principal values are planned wiring placeholders only.
         );
         let collector = local_account("a3shf-5eaaa-aaaaa-qaafa-cai", None);
         let reserve = collector.clone();
-        validate_local_sns_transfer(
+        let err = validate_local_sns_transfer(
             "fixture",
             "transfer",
             &collected_overlap_transfer(
@@ -8047,37 +8548,8 @@ Template SNS principal values are planned wiring placeholders only.
             ),
             &reserve,
         )
-        .unwrap();
-        validate_local_sns_transfer(
-            "fixture",
-            "transfer",
-            &collected_overlap_transfer(
-                sender.clone(),
-                recipient.clone(),
-                sender.clone(),
-                (1_000, 900),
-                (0, 100),
-                (1_000, 900),
-                (0, 0),
-            ),
-            &reserve,
-        )
-        .unwrap();
-        validate_local_sns_transfer(
-            "fixture",
-            "transfer",
-            &collected_overlap_transfer(
-                sender.clone(),
-                recipient.clone(),
-                recipient.clone(),
-                (1_000, 890),
-                (0, 110),
-                (0, 110),
-                (0, 0),
-            ),
-            &reserve,
-        )
-        .unwrap();
+        .unwrap_err();
+        assert!(err.contains("standard SNS fee policy"));
     }
 
     #[test]
@@ -8124,6 +8596,12 @@ Template SNS principal values are planned wiring placeholders only.
             (10_000, 10_010),
             (10_000, 10_010),
         );
+        let mut transfer = transfer;
+        transfer.fee_disposition = "burned".to_string();
+        transfer.fee_collector_account = None;
+        transfer.fee_collector_balance_before_e8s = None;
+        transfer.fee_collector_balance_after_e8s = None;
+        transfer.total_supply_after_e8s = 990;
         assert!(
             validate_local_sns_transfer("fixture", "transfer", &transfer, &collector)
                 .unwrap_err()

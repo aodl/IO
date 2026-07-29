@@ -1,6 +1,6 @@
 # ADR: IO Ledger Fee Disposition and Supply Authority
 
-Status: Proposed, unresolved
+Status: Accepted — standard SNS fee burn
 
 Date: 2026-07-28
 
@@ -22,7 +22,7 @@ At that commit, the standard SNS init path builds ledger init args with minting 
 
 Working invariant:
 
-Ordinary protocol issuance must not mint IO. Canonical ledger fee effects, whether burned or collected, must be explicitly observed, modelled and reconciled. Total supply must not be assumed constant unless the final ledger configuration proves that property.
+Ordinary protocol issuance must not mint IO. The canonical IO supply is `icrc1_total_supply`. The standard SNS ledger fee is burned, no IO fee collector is configured, and a zero-fee production launch is forbidden. Canonical fee effects must be explicitly observed, modelled, and reconciled.
 
 ## Option A: Standard SNS Fee Burn
 
@@ -86,4 +86,4 @@ The SNS ledger uses zero fee or another explicitly approved tokenomics configura
 
 ## Decision
 
-Unresolved. No option is selected in this tranche.
+Option A is accepted. IO launches only with the standard positive SNS transfer fee and no fee collector. Every production monetary transfer supplies an explicit fee and reconciles the resulting supply burn. Options B and C are rejected for the P0 foundation.
