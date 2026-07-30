@@ -18,6 +18,7 @@ Authorized deposits split by floor rounding:
 - `liquid_e8s = amount_e8s - stake_e8s`
 
 The remainder therefore stays liquid. The split never creates or loses ICP e8s.
+Any fee needed to realize the 40% NNS staking leg is an operational ICP fee-buffer liability and is not deducted from the 60% liquid backing. If a direct staking operation cannot prove fee-free realization and the fee buffer cannot cover the fee, the operation fails closed.
 
 ## IO Issuance
 
@@ -31,9 +32,11 @@ No zero-value downstream IO transfer may be attempted.
 
 The minimum accepted redemption input is `1` IO e8. A zero redemption is rejected before state mutation.
 
+The canonical redemption pre-state is observed after the incoming IO redemption transfer has already occurred on the IO ledger. That incoming transfer fee must not be applied a second time by the protocol model.
+
 For a redemption:
 
-- `gross_icp_payout_e8s = floor(io_redeemed_e8s * liquid_icp_e8s / redeemable_io_e8s)` using the pre-redemption rate.
+- `gross_icp_payout_e8s = floor(io_redeemed_e8s * liquid_icp_e8s / redeemable_io_e8s)` using the canonical post-intake snapshot.
 - `icp_ledger_fee_e8s` is explicit in the fee policy.
 - `net_user_icp_payout_e8s = gross_icp_payout_e8s - icp_ledger_fee_e8s`.
 - `io_returned_to_reserve_e8s = io_redeemed_e8s - io_ledger_transfer_fee_e8s`.
@@ -41,7 +44,7 @@ For a redemption:
 
 The incoming user-to-redemption fee has already burned before protocol processing and is not charged or counted a second time. The redemption intake is debited by the full redeemed amount; the IO return transfer delivers the redeemed amount minus its explicit IO fee to reserve.
 
-If `gross_icp_payout_e8s <= icp_ledger_fee_e8s`, the redemption is rejected as unpayable. If gross payout exceeds liquid reserve, the redemption is rejected. State mutates only after ICP payout and IO return are both proven by success or matching duplicate proof. Failed ICP payout remains retryable without mutating protocol state. Failed IO return remains retryable without paying ICP again.
+The liquid ICP source account debit is exactly the gross ICP claim. If `gross_icp_payout_e8s <= icp_ledger_fee_e8s` or `io_redeemed_e8s <= io_ledger_transfer_fee_e8s`, the redemption is rejected as unpayable. If gross payout exceeds liquid reserve, the redemption is rejected. State mutates only after ICP payout and IO return are both proven by success or matching duplicate proof. Failed ICP payout remains retryable without mutating protocol state. Failed IO return remains retryable without paying ICP again.
 
 Partial redemption removes the gross ICP payout from liquid reserve and returns the redeemed IO to protocol reserve only at safe commit. Rounding favors solvency and can never overdraw liquid reserve or overpay a user.
 
@@ -55,9 +58,9 @@ Duplicate transfer responses complete safely only when the duplicate block match
 
 ## Reserve and Supply Invariants
 
-`redeemable_io_supply_e8s = total_io_supply_e8s - protocol_reserve_io_e8s - non_redeemable_governance_io_e8s`.
+`redeemable_io_supply_e8s = icrc1_total_supply - protocol_reserve_io_e8s - sum(excluded_account_balances_e8s)`.
 
-Excluded supply must not exceed total supply. IO issuance decrements protocol reserve by delivered IO plus all reserve-paid IO fees. Unissued dust remains in protocol reserve. Redemption credits reserve only with the IO return amount after its IO fee while reducing redeemable supply by the full intake debit. Liquid ICP reserve decreases by the gross claim only after safe completion.
+Excluded supply must be the checked sum of exact configured Accounts and must not exceed total supply. IO issuance decrements protocol reserve by delivered IO plus all reserve-paid IO fees. Unissued dust remains in protocol reserve. Redemption credits reserve only with the IO return amount after its IO fee while reducing redeemable supply by the full intake debit. Liquid ICP reserve decreases by the gross claim only after safe completion.
 
 Historian snapshots may display gross IO redeemed, gross/net ICP payout, payout fee, IO returned to reserve, dust, and retry status when observed. Missing fields mean unavailable read-model observation, not zero protocol value.
 
