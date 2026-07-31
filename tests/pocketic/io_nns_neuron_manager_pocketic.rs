@@ -12,8 +12,9 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
         eprintln!("skipping NNS-manager PocketIC test because POCKET_IC_BIN is not set");
         return;
     }
-    let wasm = match std::fs::read("target/wasm32-unknown-unknown/debug/io_nns_neuron_manager.wasm")
-    {
+    let wasm_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/wasm32-unknown-unknown/debug/io_nns_neuron_manager.wasm");
+    let wasm = match std::fs::read(wasm_path) {
         Ok(wasm) => wasm,
         Err(_) => {
             eprintln!("skipping NNS-manager PocketIC test because debug Wasm is missing");
@@ -30,7 +31,7 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
     };
     pic.install_canister(
         canister,
-        wasm,
+        wasm.clone(),
         encode_one(InitArgs {
             config: NnsConfig {
                 sns_governance: Principal::from_slice(&[2; 29]),
@@ -73,6 +74,19 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
     )
     .unwrap();
     assert_eq!(status.lifecycle, Lifecycle::Paused);
+    pic.upgrade_canister(canister, wasm, encode_one(()).unwrap(), None)
+        .unwrap();
+    let upgraded: Status = decode_one(
+        &pic.query_call(
+            canister,
+            Principal::anonymous(),
+            "get_status",
+            encode_one(()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(upgraded.lifecycle, Lifecycle::Paused);
     let result: Result<(), ApiError> = decode_one(
         &pic.update_call(
             canister,
