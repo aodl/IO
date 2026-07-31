@@ -12,7 +12,7 @@ The official-ledger baseline is `installed_stream_real_sns_icrc2_redemption`. It
 
 ## Jupiter 40/60
 
-Prove one exact configured Jupiter deposit block and sequential memo. Persist the typed operation, stake floor(40% of gross), refresh the protected neuron, prove the exact increase, prepare the Jupiter receipt, transfer the remaining liquid amount from Jupiter staging, prove it through ICP `query_blocks`, then settle backed IO from reserve to the fixed Jupiter account. Each update performs at most one external monetary or governance effect. No IO leaves reserve before deposit, stake increase and liquid receipt are all proved.
+Prove one exact Jupiter Faucet raw-ICP block from the configured faucet default Account to the NNS-manager default Account. The block, not a callback caller or fabricated sequential memo, is authority. Persist the typed operation, stake floor(40% of gross), refresh the protected neuron, prove the exact increase, prepare the Jupiter receipt, transfer the remaining liquid amount from Jupiter staging, prove it through ICP `query_blocks`, then settle backed IO from reserve to the fixed Jupiter account. Each update performs at most one external monetary or governance effect. No IO leaves reserve before deposit, stake increase and liquid receipt are all proved.
 
 ## Direct maturity
 

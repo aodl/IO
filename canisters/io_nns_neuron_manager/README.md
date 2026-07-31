@@ -18,9 +18,13 @@ The production DID contains only:
 - `set_paused`
 - `get_status`
 
-Jupiter notification is authenticated and sequential. Target updates are
-authenticated, strictly generated, coalesced to the latest desired target, and
-do not form a queue.
+Jupiter notification is permissionless and carries one exact ICP block. The
+configured Jupiter Faucet default Account, the NNS-manager default destination,
+and the canonical transfer are the authority; no Jupiter callback exists.
+Processed Jupiter blocks have narrow permanent replay protection. Target
+updates remain authenticated, strictly generated, coalesced to the latest
+desired target, and do not form a queue. See the pinned
+[Jupiter integration contract](../../docs/architecture/jupiter-integration-contract.md).
 
 ## Direct maturity policy
 
