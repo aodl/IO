@@ -1389,6 +1389,40 @@ fn validate_stream_install_args_text(text: &str, mode: InstallArgsMode) -> Resul
     Ok(())
 }
 
+fn validate_simplified_receipt_topology(stream: &str, nns: &str) -> Result<(), String> {
+    fn require_field_token(text: &str, field: &str, token: &str) -> Result<(), String> {
+        let line = text
+            .lines()
+            .find(|line| line.contains(field))
+            .ok_or_else(|| format!("missing topology field {field}"))?;
+        if !line.contains(token) {
+            return Err(format!("{field} must use shared topology token {token}"));
+        }
+        Ok(())
+    }
+    for (stream_field, nns_field, token) in [
+        (
+            "jupiter_receipt_source",
+            "jupiter_staging",
+            "TODO_JUPITER_STAGING",
+        ),
+        (
+            "two_week_receipt_source",
+            "two_week_maturity_staging",
+            "TODO_TWO_WEEK_STAGING",
+        ),
+        (
+            "liquid_icp",
+            "stream_liquid_account",
+            "TODO_STREAM_LIQUID_SUBACCOUNT",
+        ),
+    ] {
+        require_field_token(stream, stream_field, token)?;
+        require_field_token(nns, nns_field, token)?;
+    }
+    Ok(())
+}
+
 fn validate_install_args_at(root: &Path, mode: InstallArgsMode) -> Result<(), String> {
     if matches!(mode, InstallArgsMode::Local | InstallArgsMode::All) {
         validate_stream_install_args_text(
@@ -1434,6 +1468,7 @@ fn validate_install_args_at(root: &Path, mode: InstallArgsMode) -> Result<(), St
                 ));
             }
         }
+        validate_simplified_receipt_topology(&stream_args, &nns_args)?;
         validate_no_install_args_did(root, "canisters/io_historian/io_historian.did")
             .map_err(|err| format!("io_historian install args: {err}"))?;
         validate_no_install_args_did(root, "canisters/frontend/frontend.did")
@@ -7362,6 +7397,22 @@ mod tests {
         verify_manifest_entry_paths, verify_upgrade_proposal_against_manifest,
         UpgradeProposalRequest,
     };
+
+    #[test]
+    fn simplified_receipt_topology_requires_shared_account_tokens() {
+        let stream = "jupiter_receipt_source = TODO_JUPITER_STAGING\n\
+                      two_week_receipt_source = TODO_TWO_WEEK_STAGING\n\
+                      liquid_icp = TODO_STREAM_LIQUID_SUBACCOUNT";
+        let nns = "jupiter_staging = TODO_JUPITER_STAGING\n\
+                   two_week_maturity_staging = TODO_TWO_WEEK_STAGING\n\
+                   stream_liquid_account = TODO_STREAM_LIQUID_SUBACCOUNT";
+        validate_simplified_receipt_topology(stream, nns).unwrap();
+        assert!(validate_simplified_receipt_topology(
+            &stream.replace("TODO_JUPITER_STAGING", "TODO_WRONG",),
+            nns,
+        )
+        .is_err());
+    }
 
     fn temp_root(name: &str) -> PathBuf {
         let root = env::temp_dir().join(format!(

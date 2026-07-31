@@ -104,6 +104,9 @@ pub fn two_week_target(
     if redeemable_io_supply_e8s == 0 {
         return Err(EconomicsError::ZeroRedeemableSupply);
     }
+    if active_eligible_io_e8s > redeemable_io_supply_e8s {
+        return Err(EconomicsError::RedemptionExceedsSupply);
+    }
     active_eligible_io_e8s
         .checked_mul(liquid_icp_e8s)
         .ok_or(EconomicsError::ArithmeticOverflow)
@@ -146,6 +149,11 @@ mod tests {
         assert_eq!(two_week_target(100, 50, 100), Ok(50));
         assert_eq!(two_week_target(100, 100, 100), Ok(100));
         assert_eq!(two_week_target(100, 250, 100), Ok(250));
+        assert_eq!(two_week_target(99, 250, 100), Ok(247));
+        assert_eq!(
+            two_week_target(101, 250, 100),
+            Err(EconomicsError::RedemptionExceedsSupply)
+        );
     }
 
     #[test]
