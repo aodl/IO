@@ -5,6 +5,7 @@ members = [
   "canisters/io_stream_manager",
   "canisters/io_historian",
   "canisters/frontend",
+  "crates/io_accounts",
   "crates/io_core_model",
   "crates/io_governance_types",
   "crates/io_ledger_types",

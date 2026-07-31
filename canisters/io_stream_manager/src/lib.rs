@@ -10,7 +10,7 @@ pub mod transfer;
 use candid::{CandidType, Principal};
 use serde::Deserialize;
 
-pub use api::{ApiError, Status};
+pub use api::{ApiError, RedemptionProgress, Status};
 pub use receipt::{
     CompleteLiquidReceiptArgs, LiquidReceiptPermit, PrepareLiquidReceiptArgs, ReceiptKind,
 };
@@ -20,7 +20,6 @@ pub use state::{Account, Lifecycle, StreamConfig, StreamStateV1};
 #[derive(Clone, Debug, CandidType, Deserialize)]
 pub struct InitArgs {
     pub config: StreamConfig,
-    pub initial_lifecycle: Lifecycle,
     pub next_cohort_timestamp_seconds: u64,
 }
 
@@ -28,23 +27,25 @@ pub struct InitArgs {
 pub fn init(args: InitArgs) {
     let state = StreamStateV1 {
         config: args.config,
-        lifecycle: args.initial_lifecycle,
+        lifecycle: Lifecycle::Paused,
         active_operation: None,
         active_reward_cohort: None,
         pending_reward_cohort: None,
         next_nns_receipt_sequence: 0,
         next_cohort_timestamp_seconds: args.next_cohort_timestamp_seconds,
+        next_operation_sequence: state::OperationSequence(0),
     };
-    state::initialize(state).unwrap_or_else(|error| ic_cdk::trap(&error));
+    state::initialize(state, ic_cdk::api::canister_self())
+        .unwrap_or_else(|error| ic_cdk::trap(&error));
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::post_upgrade)]
 pub fn post_upgrade() {
-    state::reopen();
+    state::reopen(ic_cdk::api::canister_self());
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn redeem(args: RedeemArgs) -> Result<state::RedemptionResult, ApiError> {
+pub async fn redeem(args: RedeemArgs) -> Result<RedemptionProgress, ApiError> {
     api::redeem(ic_cdk::api::msg_caller(), args, ic_cdk::api::time()).await
 }
 
@@ -61,8 +62,8 @@ pub async fn complete_liquid_receipt(args: CompleteLiquidReceiptArgs) -> Result<
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn resume() -> Result<(), ApiError> {
-    api::resume().await
+pub async fn resume() -> Result<RedemptionProgress, ApiError> {
+    api::resume(ic_cdk::api::time()).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -71,12 +72,16 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<(), ApiError> {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn set_paused(paused: bool) -> Result<(), ApiError> {
+pub async fn set_paused(paused: bool) -> Result<(), ApiError> {
     let state = state::read();
     if ic_cdk::api::msg_caller() != state.config.sns_governance {
         return Err(ApiError::Unauthorized);
     }
-    lifecycle::set_paused(paused).map_err(ApiError::Invalid)
+    if paused {
+        lifecycle::set_paused(true).map_err(ApiError::Invalid)
+    } else {
+        lifecycle::readiness_preflight(ic_cdk::api::canister_self()).await
+    }
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]

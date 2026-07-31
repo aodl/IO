@@ -1018,6 +1018,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "io-accounts"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "serde",
+]
+
+[[package]]
 name = "io-build-support"
 version = "0.1.0"
 
@@ -1085,6 +1093,7 @@ dependencies = [
  "candid",
  "ic-cdk",
  "ic-stable-structures",
+ "io-accounts",
  "io-build-support",
  "pocket-ic",
  "serde",
@@ -1125,7 +1134,9 @@ dependencies = [
  "candid",
  "ic-cdk",
  "ic-stable-structures",
+ "io-accounts",
  "io-build-support",
+ "io-core-model",
  "io-reward-policy",
  "pocket-ic",
  "serde",

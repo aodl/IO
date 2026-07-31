@@ -11,30 +11,15 @@ pub struct StableSchemaEntry {
     pub compaction_policy_summary: &'static str,
 }
 
-pub const IO_STREAM_MANAGER_SCHEMA_VERSION: u32 = 3;
-pub const IO_NNS_NEURON_MANAGER_SCHEMA_VERSION: u32 = 2;
+pub const IO_STREAM_MANAGER_SCHEMA_VERSION: u32 = 1;
+pub const IO_NNS_NEURON_MANAGER_SCHEMA_VERSION: u32 = 1;
 pub const IO_HISTORIAN_SCHEMA_VERSION: u32 = 2;
 
-pub const IO_STREAM_MANAGER_FIXTURES: &[&str] = &[
-    "tests/fixtures/stable-state/io_stream_manager/current.fixture",
-    "tests/fixtures/stable-state/io_stream_manager/previous-minimal.fixture",
-    "tests/fixtures/stable-state/io_stream_manager/v1-scalar-reward-reservation.fixture",
-    "tests/fixtures/stable-state/io_stream_manager/missing-optional-fields.fixture",
-    "tests/fixtures/stable-state/io_stream_manager/empty-default.fixture",
-    "tests/fixtures/stable-state/io_stream_manager/pending-redemption-journal.fixture",
-    "tests/fixtures/stable-state/io_stream_manager/corrupt.fixture",
-    "tests/fixtures/stable-state/io_stream_manager/future-version.fixture",
-];
+pub const IO_STREAM_MANAGER_FIXTURES: &[&str] =
+    &["tests/fixtures/stable-state/io_stream_manager/launch-v1.fixture"];
 
-pub const IO_NNS_NEURON_MANAGER_FIXTURES: &[&str] = &[
-    "tests/fixtures/stable-state/io_nns_neuron_manager/current.fixture",
-    "tests/fixtures/stable-state/io_nns_neuron_manager/previous-minimal.fixture",
-    "tests/fixtures/stable-state/io_nns_neuron_manager/missing-optional-fields.fixture",
-    "tests/fixtures/stable-state/io_nns_neuron_manager/empty-default.fixture",
-    "tests/fixtures/stable-state/io_nns_neuron_manager/pending-lifecycle-journal.fixture",
-    "tests/fixtures/stable-state/io_nns_neuron_manager/corrupt.fixture",
-    "tests/fixtures/stable-state/io_nns_neuron_manager/future-version.fixture",
-];
+pub const IO_NNS_NEURON_MANAGER_FIXTURES: &[&str] =
+    &["tests/fixtures/stable-state/io_nns_neuron_manager/launch-v1.fixture"];
 
 pub const IO_HISTORIAN_FIXTURES: &[&str] = &[
     "tests/fixtures/stable-state/io_historian/current.fixture",
@@ -50,31 +35,24 @@ pub const STABLE_SCHEMA_REGISTRY: &[StableSchemaEntry] = &[
     StableSchemaEntry {
         canister_name: "io_stream_manager",
         current_version: IO_STREAM_MANAGER_SCHEMA_VERSION,
-        previous_supported_versions: &[0, 1, 2],
-        migration_paths: &[
-            "v0_unversioned_snapshot_to_v1_envelope",
-            "v1_scalar_reward_reservation_to_v2_split_reward_reservation",
-            "v2_full_backing_snapshot_to_v3_reward_cohort_state",
-        ],
-        lossless: false,
+        previous_supported_versions: &[],
+        migration_paths: &[],
+        lossless: true,
         pre_production_only: true,
         fixture_files: IO_STREAM_MANAGER_FIXTURES,
-        size_bounds_summary: "retry-critical operation journal and processed transaction set are not silently evicted; account-history cursors are scalar bounded state",
-        compaction_policy_summary: "no automatic compaction before audit/activation; completed and duplicate-proof records need explicit safe checkpoints",
+        size_bounds_summary: "one typed active operation, two fixed cohort slots and bounded per-caller nonce/results",
+        compaction_policy_summary: "launch V1 has no historical execution collection to compact",
     },
     StableSchemaEntry {
         canister_name: "io_nns_neuron_manager",
         current_version: IO_NNS_NEURON_MANAGER_SCHEMA_VERSION,
-        previous_supported_versions: &[0, 1],
-        migration_paths: &[
-            "v0_unversioned_snapshot_to_v1_envelope",
-            "v1_fixed_two_week_dissolve_config_to_v2_constant",
-        ],
+        previous_supported_versions: &[],
+        migration_paths: &[],
         lossless: true,
         pre_production_only: true,
         fixture_files: IO_NNS_NEURON_MANAGER_FIXTURES,
-        size_bounds_summary: "retry-critical lifecycle journal is not silently evicted; scheduler cursors are scalar bounded state",
-        compaction_policy_summary: "no automatic compaction before audit/activation; terminal lifecycle records need explicit audit checkpoints",
+        size_bounds_summary: "one immediate operation and fixed maturity/unwind slots",
+        compaction_policy_summary: "launch V1 has no historical execution collection to compact",
     },
     StableSchemaEntry {
         canister_name: "io_historian",

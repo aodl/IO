@@ -1,12 +1,24 @@
 use candid::{CandidType, Principal};
 use serde::Deserialize;
 
-use crate::{state::Account, transfer::OwnTransferAttempt};
+use crate::{state::Account, transfer::TransferAttempt};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum ReceiptKind {
     Jupiter,
+    TwoYearMaturity,
     TwoWeekMaturity,
+    UnwindPrincipal,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum ReceiptPhase {
+    Prepared,
+    AwaitingReceipt,
+    ReceiptProved,
+    Settling,
+    Completed,
+    Stuck,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -41,8 +53,9 @@ pub struct LiquidReceiptOperation {
     pub source: Account,
     pub destination: Account,
     pub memo: Vec<u8>,
+    pub phase: ReceiptPhase,
     pub proved_block: Option<u128>,
-    pub active_transfer: Option<OwnTransferAttempt>,
+    pub active_transfer: Option<TransferAttempt>,
     pub recipient_index: u32,
 }
 

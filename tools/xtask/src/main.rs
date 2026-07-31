@@ -551,9 +551,12 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
         "redemption_intake",
         "redemption_return",
         "rejected_refund",
+        "generic operation journal",
         "process_stream_event",
+        "pub fn process_event",
         "process_stream",
         "pub fn tick",
+        "IcpTransfer",
         "Legacy",
         "SchemaV2",
         "SchemaV3",
@@ -569,9 +572,9 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
             let text = fs::read_to_string(&path)
                 .map_err(|error| format!("{}: {error}", path.display()))?;
             let lines = text.lines().count();
-            if lines > 1_500 {
+            if lines > 1_200 {
                 return Err(format!(
-                    "{} has {lines} lines; the per-file limit is 1500",
+                    "{} has {lines} lines; the per-file limit is 1200",
                     path.display()
                 ));
             }
@@ -586,6 +589,16 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
             }
         }
     }
+    let economics_lines = rust_files_below(root, "crates/io_core_model/src")?
+        .into_iter()
+        .try_fold(0usize, |sum, path| {
+            fs::read_to_string(&path)
+                .map(|text| sum + text.lines().count())
+                .map_err(|error| format!("{}: {error}", path.display()))
+        })?;
+    if economics_lines > 350 {
+        return Err(format!("pure economics module has {economics_lines} lines"));
+    }
     for directory in ["crates/io_core_model/src", "crates/io_ledger_types/src"] {
         for path in rust_files_below(root, directory)? {
             combined_lines += fs::read_to_string(&path)
@@ -594,16 +607,57 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
                 .count();
         }
     }
-    if stream_lines > 6_000 {
+    if stream_lines > 4_000 {
         return Err(format!(
             "stream-manager production Rust has {stream_lines} lines"
         ));
     }
-    // The exact donor snapshot contains more than 32k lines in these paths.
-    if combined_lines >= 16_250 {
+    if combined_lines > 9_000 {
         return Err(format!(
             "combined production Rust has {combined_lines} lines; 50% donor reduction not met"
         ));
+    }
+    let nns_lines = rust_files_below(root, "canisters/io_nns_neuron_manager/src")?
+        .into_iter()
+        .try_fold(0usize, |sum, path| {
+            fs::read_to_string(&path)
+                .map(|text| sum + text.lines().count())
+                .map_err(|error| format!("{}: {error}", path.display()))
+        })?;
+    if nns_lines > 4_500 {
+        return Err(format!("NNS-manager production Rust has {nns_lines} lines"));
+    }
+    for path in [
+        "README.md",
+        "docs/architecture/api-surface.md",
+        "docs/architecture/stream-manager.md",
+        "docs/architecture/scheduler.md",
+        "docs/architecture/stable-storage.md",
+        "docs/operations/mainnet-readiness.md",
+        "docs/security/threat-model.md",
+        "docs/testing/current-test-inventory.md",
+        "docs/testing/e2e-coverage-matrix.md",
+    ] {
+        let text = require_file(root, path)?;
+        for needle in [
+            "production DIDs remain constructor-only",
+            "ledger/index-driven monetary intent",
+            "redemption intake Account",
+            "redemption return leg",
+            "automatic rejected-redemption refund",
+            "scanner-driven settlement",
+        ] {
+            if text.contains(needle) {
+                return Err(format!("{path} contains stale normative phrase {needle:?}"));
+            }
+        }
+    }
+    for path in [
+        "canisters/io_stream_manager/mainnet-install-args.did",
+        "canisters/io_nns_neuron_manager/mainnet-install-args.did",
+    ] {
+        let text = require_file(root, path)?;
+        require_present(path, &text, &["NON-RUNNABLE TEMPLATE", "TODO_"])?;
     }
     eprintln!("simplicity metrics: stream_manager={stream_lines} combined={combined_lines}");
     Ok(())
@@ -618,9 +672,10 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
     let historian_debug_path = "canisters/io_historian/io_historian_debug.did";
 
     let stream_production = read_file(root, stream_production_path)?;
-    let stream_debug = read_file(root, stream_debug_path)?;
     let nns_production = read_file(root, nns_production_path)?;
-    let nns_debug = read_file(root, nns_debug_path)?;
+    if root.join(stream_debug_path).exists() || root.join(nns_debug_path).exists() {
+        return Err("value-moving debug DIDs must be deleted".into());
+    }
     let historian_production = read_file(root, historian_production_path)?;
     let historian_debug = read_file(root, historian_debug_path)?;
 
@@ -695,49 +750,6 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
         ],
     )?;
 
-    require_present(
-        stream_debug_path,
-        &stream_debug,
-        &[
-            "debug_get_state",
-            "debug_get_redemption_rate",
-            "debug_process_stream_event",
-            "debug_redeem",
-            "debug_tick",
-        ],
-    )?;
-    require_present(
-        nns_debug_path,
-        &nns_debug,
-        &[
-            "debug_get_config",
-            "debug_get_state",
-            "debug_plan_rebalance",
-            "debug_advance_model_time",
-            "debug_tick",
-        ],
-    )?;
-
-    require_absent(
-        stream_debug_path,
-        &stream_debug,
-        &[
-            "  get_state :",
-            "  get_redemption_rate :",
-            "  process_stream_event :",
-            "  redeem :",
-        ],
-    )?;
-    require_absent(
-        nns_debug_path,
-        &nns_debug,
-        &[
-            "  get_config :",
-            "  get_state :",
-            "  plan_rebalance :",
-            "  advance_model_time :",
-        ],
-    )?;
     require_present(
         historian_debug_path,
         &historian_debug,
@@ -4930,9 +4942,9 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
             "real_sns_ledger_index_smoke",
             "real_sns_ledger_index_same_wasm_upgrade_preserves_balances_history_and_duplicates",
             "real_sns_icrc2_direct_reserve_pull",
+            "installed_stream_real_sns_icrc2_redemption",
             "real_sns_governance_staking_smoke",
             "real_canister_e2e_icp_to_io_stake_reward_redemption",
-            "exact_economics",
             "framework",
             "nns_setup",
             "sns_governance_setup",
@@ -5035,20 +5047,6 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
             "local_network_launches_with_nns_sns_features",
         ],
     )?;
-    let exact_economics = require_file(root, "tests/e2e_real_canisters/src/exact_economics.rs")?;
-    require_present(
-        "tests/e2e_real_canisters/src/exact_economics.rs",
-        &exact_economics,
-        &[
-            "run_exact_economics",
-            "StreamKind::JupiterFaucet",
-            "StreamKind::TwoYearMaturity",
-            "StreamKind::TwoWeekMaturity",
-            "allocate_rewards",
-            "advance_time",
-            "redeem_io",
-        ],
-    )?;
     let framework = require_file(root, "tests/e2e_real_canisters/src/framework.rs")?;
     require_present(
         "tests/e2e_real_canisters/src/framework.rs",
@@ -5065,14 +5063,17 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
     require_present(
         "tests/e2e_real_canisters/src/sns_ledger_index.rs",
         &ledger_index,
-        &["create_sns_canister", "run_icrc2_direct_reserve_pull"],
+        &[
+            "create_sns_canister",
+            "run_icrc2_direct_reserve_pull",
+            "run_installed_stream_redemption",
+        ],
     )?;
     require_absent(harness_path, &harness, &["--network ic", "dfx "])?;
     for path in [
         cargo_path,
         "tests/e2e_real_canisters/src/artifacts.rs",
         "tests/e2e_real_canisters/src/brief_blockers.rs",
-        "tests/e2e_real_canisters/src/exact_economics.rs",
         "tests/e2e_real_canisters/src/icrc.rs",
         "tests/e2e_real_canisters/src/pocketic_env.rs",
         "tests/e2e_real_canisters/src/framework.rs",
@@ -6181,16 +6182,19 @@ fn check_stable_storage_at(root: &Path) -> Result<(), String> {
                 }
             }
         }
-        if entry.canister_name == "io_stream_manager"
-            && !entry
-                .fixture_files
-                .iter()
-                .any(|fixture| fixture.ends_with("v1-scalar-reward-reservation.fixture"))
+        if matches!(
+            entry.canister_name,
+            "io_stream_manager" | "io_nns_neuron_manager"
+        ) && (entry.current_version != 1
+            || !entry.previous_supported_versions.is_empty()
+            || !entry.migration_paths.is_empty()
+            || entry.fixture_files.len() != 1
+            || !entry.fixture_files[0].ends_with("launch-v1.fixture"))
         {
-            return Err(
-                "io_stream_manager: v1 scalar reward reservation fixture must be registered"
-                    .to_string(),
-            );
+            return Err(format!(
+                "{} must register launch V1 only",
+                entry.canister_name
+            ));
         }
     }
 
@@ -6201,74 +6205,21 @@ fn check_stable_storage_at(root: &Path) -> Result<(), String> {
         &[
             "io_stream_manager",
             "io_nns_neuron_manager",
-            "io_historian",
-            "corrupt value-moving state must fail closed",
-            "missing first-install state",
-            "stable-state fixtures are local/test fixtures, not live snapshots",
-            "IO protocol remains not live",
-            "SNS IO ledger remains not launched",
+            "only `V1",
+            "Install always writes Paused",
+            "No stream/NNS V0",
         ],
     )?;
-
-    let compaction_doc = require_file(root, "docs/architecture/journal-compaction.md")?;
+    let stream_source = require_file(root, "canisters/io_stream_manager/src/state.rs")?;
+    let nns_source = require_file(root, "canisters/io_nns_neuron_manager/src/state.rs")?;
     require_present(
-        "docs/architecture/journal-compaction.md",
-        &compaction_doc,
+        "launch V1 stable envelopes",
+        &format!("{stream_source}\n{nns_source}"),
         &[
-            "pending operation journals",
-            "processed transaction IDs",
-            "must never be compacted before audit/activation",
-            "duplicate retry/idempotency",
-            "historian read model",
-        ],
-    )?;
-
-    let stable_structures_doc =
-        require_file(root, "docs/architecture/stable-structures-evaluation.md")?;
-    require_present(
-        "docs/architecture/stable-structures-evaluation.md",
-        &stable_structures_doc,
-        &[
-            "serialized whole-state snapshots",
-            "ic-stable-structures",
-            "defer",
-            "schema evolution",
-            "test requirements",
-        ],
-    )?;
-
-    let readiness = require_file(root, "docs/operations/mainnet-readiness.md")?;
-    let production_wiring = require_file(root, "docs/operations/production-wiring.md")?;
-    let combined_ops = format!("{readiness}\n{production_wiring}");
-    require_present(
-        "stable storage operations docs",
-        &combined_ops,
-        &[
-            "No value-moving IO canister is deployed to production",
-            "production adapters are not active",
-            "historian is a rebuildable read model",
-            "protected canister/neuron remain untouched",
-            PROTECTED_IO_NEURON_OWNER_CANISTER,
-            "6345890886899317159",
-        ],
-    )?;
-    require_absent(
-        "stable storage operations docs",
-        &combined_ops,
-        &["--network ic", "dfx canister", "dfx deploy"],
-    )?;
-
-    let stream_source = require_file(root, "canisters/io_stream_manager/src/lib.rs")?;
-    let nns_source = require_file(root, "canisters/io_nns_neuron_manager/src/lib.rs")?;
-    let historian_source = require_file(root, "canisters/io_historian/src/lib.rs")?;
-    require_present(
-        "stable migration source",
-        &format!("{stream_source}\n{nns_source}\n{historian_source}"),
-        &[
-            "migrate_stable_state",
-            "UnsupportedFutureVersion",
-            "default_first_install_stable_state",
-            "stable state is missing or corrupt during upgrade",
+            "enum StableStreamState",
+            "enum StableNnsState",
+            "invalid stable stream V1 state",
+            "invalid stable NNS V1 state",
         ],
     )?;
     Ok(())
@@ -7730,16 +7681,6 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
             root,
             "canisters/io_historian/io_historian.did",
             "service : {\n  get_dashboard_state : () -> (text) query;\n  get_protocol_snapshot : () -> (text) query;\n  get_redemption_rate : () -> (text) query;\n  list_streams : () -> (text) query;\n  list_redemptions : () -> (text) query;\n  list_rewards : () -> (text) query;\n  list_nns_lifecycle_events : () -> (text) query;\n  get_index_health : () -> (text) query;\n  get_governance_summary : () -> (text) query;\n  get_release_artifacts : () -> (text) query;\n  get_canister_status_summary : () -> (text) query;\n  get_public_status : () -> (text) query;\n  get_reserve_snapshot : () -> (text) query;\n  list_governance_participation : () -> (text) query;\n  version : () -> (text) query;\n}\n",
-        );
-        write(
-            root,
-            "canisters/io_stream_manager/io_stream_manager_debug.did",
-            "service : {\n  debug_get_state : () -> (text) query;\n  debug_get_redemption_rate : () -> (text) query;\n  debug_process_stream_event : () -> (text);\n  debug_redeem : () -> (text);\n  debug_tick : () -> (text);\n}\n",
-        );
-        write(
-            root,
-            "canisters/io_nns_neuron_manager/io_nns_neuron_manager_debug.did",
-            "service : {\n  debug_get_config : () -> (text) query;\n  debug_get_state : () -> (text) query;\n  debug_plan_rebalance : () -> (text);\n  debug_advance_model_time : () -> (text);\n  debug_tick : () -> (text);\n}\n",
         );
         write(
             root,

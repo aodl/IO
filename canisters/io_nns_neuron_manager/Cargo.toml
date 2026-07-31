@@ -16,6 +16,7 @@ path = "../../tests/pocketic/io_nns_neuron_manager_pocketic.rs"
 candid.workspace = true
 ic-cdk.workspace = true
 ic-stable-structures.workspace = true
+io-accounts = { path = "../../crates/io_accounts" }
 serde.workspace = true
 
 [build-dependencies]

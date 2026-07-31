@@ -383,3 +383,222 @@ pub fn run_icrc2_direct_reserve_pull(required: bool) {
         icrc::ApproveError::AllowanceChanged { .. }
     ));
 }
+
+pub fn run_installed_stream_redemption(required: bool) {
+    use candid::{decode_one, encode_one};
+    use io_stream_manager::{
+        Account, ApiError, InitArgs, Lifecycle, RedeemArgs, RedemptionProgress, Status,
+        StreamConfig,
+    };
+
+    let Some(artifacts) = maybe_artifacts(required) else {
+        return;
+    };
+    if !pocketic_env::pocketic_available() {
+        panic!("POCKET_IC_BIN is required for installed stream redemption");
+    }
+    let stream_wasm_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/wasm32-unknown-unknown/debug/io_stream_manager.wasm");
+    let stream_wasm = std::fs::read(&stream_wasm_path).unwrap_or_else(|error| {
+        panic!(
+            "build debug stream-manager Wasm before the installed real-ledger test ({}): {error}",
+            stream_wasm_path.display()
+        )
+    });
+    let ledger_wasm = artifacts.load_required("sns_ledger").unwrap();
+    let pic = pocketic_env::new_sns_pic();
+    let stream = pocketic_env::create_empty_application_canister(&pic);
+    let user = Principal::from_slice(&[21; 29]);
+    let governance = Principal::from_slice(&[22; 29]);
+    let nns_manager = Principal::from_slice(&[23; 29]);
+    let minting = icrc::account(Principal::from_slice(&[24; 29]), None);
+    let reserve_subaccount = icrc::subaccount("simplified-io-reserve");
+    let liquid_subaccount = icrc::subaccount("simplified-liquid-icp");
+    let reserve = icrc::account(stream, Some(reserve_subaccount));
+    let liquid = icrc::account(stream, Some(liquid_subaccount));
+    let user_account = icrc::account(user, None);
+    let io_reserve_e8s = 1_000_000_000_000u64;
+    let user_io_e8s = 100_000_000u64;
+    let liquid_icp_e8s = 1_000_000_000_000u64;
+    let io_ledger = pocketic_env::create_sns_canister(
+        &pic,
+        ledger_wasm.clone(),
+        icrc::ledger_init_arg(
+            Principal::anonymous(),
+            minting.clone(),
+            vec![
+                (reserve.clone(), io_reserve_e8s),
+                (user_account.clone(), user_io_e8s),
+            ],
+        ),
+    );
+    let icp_ledger = pocketic_env::create_sns_canister(
+        &pic,
+        ledger_wasm,
+        icrc::ledger_init_arg(
+            Principal::anonymous(),
+            minting,
+            vec![(liquid.clone(), liquid_icp_e8s)],
+        ),
+    );
+    let init = InitArgs {
+        config: StreamConfig {
+            io_ledger,
+            icp_ledger,
+            nns_manager,
+            nns_receipt_source: Account {
+                owner: nns_manager,
+                subaccount: None,
+            },
+            sns_governance: governance,
+            io_reserve: Account {
+                owner: stream,
+                subaccount: Some(reserve_subaccount.to_vec()),
+            },
+            liquid_icp: Account {
+                owner: stream,
+                subaccount: Some(liquid_subaccount.to_vec()),
+            },
+            excluded_io_accounts: Vec::new(),
+            minimum_redemption_io_e8s: 20_000,
+            expected_io_fee_e8s: icrc::FEE_E8S as u128,
+            expected_icp_fee_e8s: icrc::FEE_E8S as u128,
+            maximum_request_lifetime_nanos: 900_000_000_000,
+            retry_delay_nanos: 1_000_000_000,
+            ledger_deduplication_window_nanos: 86_400_000_000_000,
+        },
+        next_cohort_timestamp_seconds: 1_209_600,
+    };
+    pic.install_canister(stream, stream_wasm.clone(), encode_one(init).unwrap(), None);
+    let status: Status = decode_one(
+        &pic.query_call(stream, user, "get_status", encode_one(()).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(status.lifecycle, Lifecycle::Paused);
+    let unpause: Result<(), ApiError> = decode_one(
+        &pic.update_call(stream, governance, "set_paused", encode_one(false).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(unpause, Ok(()));
+
+    let now = pic.get_time().as_nanos_since_unix_epoch();
+    let amount = 20_000_000u64;
+    icrc::icrc2_approve(
+        &pic,
+        io_ledger,
+        user,
+        icrc::ApproveArgs {
+            from_subaccount: None,
+            spender: icrc::account(stream, None),
+            amount: Nat::from(amount + icrc::FEE_E8S),
+            expected_allowance: Some(Nat::from(0u8)),
+            expires_at: Some(now + 800_000_000_000),
+            fee: Some(Nat::from(icrc::FEE_E8S)),
+            memo: Some(b"stream-redemption-approval".to_vec()),
+            created_at_time: Some(now),
+        },
+    )
+    .expect("approval should succeed");
+    let supply_before = icrc::icrc1_total_supply(&pic, io_ledger)
+        .0
+        .try_into()
+        .unwrap();
+    let reserve_before = icrc::icrc1_balance_of(&pic, io_ledger, reserve.clone())
+        .0
+        .try_into()
+        .unwrap();
+    let liquid_before = icrc::icrc1_balance_of(&pic, icp_ledger, liquid.clone())
+        .0
+        .try_into()
+        .unwrap();
+    let quote = io_core_model::redemption_quote(
+        amount as u128,
+        icrc::FEE_E8S as u128,
+        supply_before,
+        reserve_before,
+        0,
+        liquid_before,
+        icrc::FEE_E8S as u128,
+    )
+    .unwrap();
+    let args = RedeemArgs {
+        from_subaccount: None,
+        io_amount_e8s: amount as u128,
+        min_icp_out_e8s: quote.net_icp_e8s,
+        max_io_fee_e8s: icrc::FEE_E8S as u128,
+        max_icp_fee_e8s: icrc::FEE_E8S as u128,
+        expires_at_nanos: now + 800_000_000_000,
+        nonce: 0,
+    };
+    let pulled: Result<RedemptionProgress, ApiError> = decode_one(
+        &pic.update_call(stream, user, "redeem", encode_one(args.clone()).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(pulled, Ok(RedemptionProgress::IoInReserve));
+    assert_eq!(
+        icrc::icrc1_balance_of(&pic, io_ledger, reserve.clone()),
+        Nat::from(io_reserve_e8s + amount),
+    );
+    assert_eq!(
+        icrc::icrc1_balance_of(&pic, icp_ledger, user_account.clone()),
+        Nat::from(0u8)
+    );
+    pocketic_env::upgrade_canister(&pic, stream, stream_wasm.clone(), encode_one(()).unwrap());
+
+    let paid: Result<RedemptionProgress, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            Principal::anonymous(),
+            "resume",
+            encode_one(()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(paid, Ok(RedemptionProgress::PayoutSucceeded));
+    assert_eq!(
+        icrc::icrc1_balance_of(&pic, icp_ledger, user_account),
+        Nat::from(quote.net_icp_e8s)
+    );
+    pocketic_env::upgrade_canister(&pic, stream, stream_wasm, encode_one(()).unwrap());
+    let completed: Result<RedemptionProgress, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            Principal::anonymous(),
+            "resume",
+            encode_one(()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let result = match completed {
+        Ok(RedemptionProgress::Completed(result)) => result,
+        other => panic!("expected completion, got {other:?}"),
+    };
+    assert_eq!(result.gross_icp_e8s, quote.gross_icp_e8s);
+    assert_eq!(result.net_icp_e8s, quote.net_icp_e8s);
+    let replay: Result<RedemptionProgress, ApiError> = decode_one(
+        &pic.update_call(stream, user, "redeem", encode_one(args.clone()).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(replay, Ok(RedemptionProgress::Completed(result)));
+    let conflict: Result<RedemptionProgress, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            user,
+            "redeem",
+            encode_one(RedeemArgs {
+                min_icp_out_e8s: args.min_icp_out_e8s.saturating_sub(1),
+                ..args
+            })
+            .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(conflict, Err(ApiError::NonceAlreadyUsed));
+}

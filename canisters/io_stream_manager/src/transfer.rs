@@ -1,59 +1,135 @@
 use candid::{CandidType, Nat, Principal};
+use io_accounts::Account;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
-use crate::state::Account;
+use crate::state::DispatchEpoch;
 
 pub const MAX_MEMO_BYTES: usize = 32;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum LedgerMethod {
-    Icrc1Transfer,
-    Icrc2TransferFrom,
-    IcpTransfer,
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum OwnTransferIntent {
+    Icrc1 {
+        ledger: Principal,
+        from_subaccount: [u8; 32],
+        to: Account,
+        amount: u128,
+        fee: u128,
+        memo: Vec<u8>,
+        created_at_time: u64,
+    },
+    Icrc2TransferFrom {
+        ledger: Principal,
+        spender_subaccount: [u8; 32],
+        from: Account,
+        to: Account,
+        amount: u128,
+        fee: u128,
+        memo: Vec<u8>,
+        created_at_time: u64,
+    },
+}
+
+impl OwnTransferIntent {
+    pub fn validate(&self) -> Result<(), String> {
+        let (ledger, source, to, amount, memo, created_at_time) = match self {
+            Self::Icrc1 {
+                ledger,
+                from_subaccount,
+                to,
+                amount,
+                memo,
+                created_at_time,
+                ..
+            } => (
+                ledger,
+                Account {
+                    owner: Principal::anonymous(),
+                    subaccount: Some(from_subaccount.to_vec()),
+                },
+                to,
+                amount,
+                memo,
+                created_at_time,
+            ),
+            Self::Icrc2TransferFrom {
+                ledger,
+                from,
+                to,
+                amount,
+                memo,
+                created_at_time,
+                ..
+            } => (ledger, from.clone(), to, amount, memo, created_at_time),
+        };
+        if *ledger == Principal::anonymous() || *ledger == Principal::management_canister() {
+            return Err("transfer ledger principal is forbidden".into());
+        }
+        source.validate()?;
+        to.validate()?;
+        if *amount == 0 || *created_at_time == 0 {
+            return Err("amount and created_at_time must be non-zero".into());
+        }
+        if memo.len() > MAX_MEMO_BYTES {
+            return Err("memo exceeds launch bound".into());
+        }
+        if matches!(self, Self::Icrc2TransferFrom { .. }) && source.effective_eq(to)? {
+            return Err("transfer source and destination must differ".into());
+        }
+        Ok(())
+    }
+
+    pub fn ledger(&self) -> Principal {
+        match self {
+            Self::Icrc1 { ledger, .. } | Self::Icrc2TransferFrom { ledger, .. } => *ledger,
+        }
+    }
+
+    pub fn fingerprint(&self) -> Vec<u8> {
+        Sha256::digest(candid::encode_one(self).expect("typed transfer intent must encode"))
+            .to_vec()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum TransferState {
     Prepared,
-    Submitted,
-    Succeeded { block: u128 },
-    Stuck { reason: String },
+    Submitted {
+        epoch: DispatchEpoch,
+        first_submitted_at: u64,
+        last_submitted_at: u64,
+    },
+    Succeeded {
+        block: u128,
+    },
+    Stuck {
+        reason: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct OwnTransferAttempt {
-    pub ledger: Principal,
-    pub method: LedgerMethod,
-    pub source_subaccount: Option<Vec<u8>>,
-    pub source_account: Option<Account>,
-    pub destination: Account,
-    pub amount_e8s: u128,
-    pub fee_e8s: u128,
-    pub memo: Vec<u8>,
-    pub created_at_time_nanos: u64,
+pub struct TransferAttempt {
+    pub intent: OwnTransferIntent,
+    pub fingerprint: Vec<u8>,
     pub state: TransferState,
 }
 
-impl OwnTransferAttempt {
-    pub fn validate(&self) -> Result<(), String> {
-        if self
-            .source_subaccount
-            .as_ref()
-            .is_some_and(|s| s.len() != 32)
-        {
-            return Err("source subaccount must contain exactly 32 bytes".into());
+impl TransferAttempt {
+    pub fn prepared(intent: OwnTransferIntent) -> Result<Self, String> {
+        intent.validate()?;
+        let fingerprint = intent.fingerprint();
+        Ok(Self {
+            intent,
+            fingerprint,
+            state: TransferState::Prepared,
+        })
+    }
+
+    pub fn succeeded_block(&self) -> Result<u128, String> {
+        match self.state {
+            TransferState::Succeeded { block } => Ok(block),
+            _ => Err("transfer lacks success evidence".into()),
         }
-        if self.memo.len() > MAX_MEMO_BYTES {
-            return Err("memo exceeds launch bound".into());
-        }
-        self.destination.validate()?;
-        if let Some(source) = &self.source_account {
-            source.validate()?;
-        }
-        if self.amount_e8s == 0 || self.created_at_time_nanos == 0 {
-            return Err("amount and created_at_time must be non-zero".into());
-        }
-        Ok(())
     }
 }
 
@@ -100,20 +176,17 @@ pub fn nat_to_u128(value: Nat) -> Result<u128, String> {
         .map_err(|_| "ledger value does not fit u128".into())
 }
 
-pub fn classify_result(
-    result: TransferResult,
-    attempt: &mut OwnTransferAttempt,
-) -> Result<u128, String> {
-    match result {
-        Ok(block) => {
-            let block = nat_to_u128(block)?;
-            attempt.state = TransferState::Succeeded { block };
-            Ok(block)
-        }
+pub enum ClassifiedResult {
+    Succeeded(u128),
+    NoEffect(String),
+    Ambiguous(String),
+}
+
+pub fn classify_result(result: TransferResult) -> Result<ClassifiedResult, String> {
+    Ok(match result {
+        Ok(block) => ClassifiedResult::Succeeded(nat_to_u128(block)?),
         Err(TransferError::Duplicate { duplicate_of }) => {
-            let block = nat_to_u128(duplicate_of)?;
-            attempt.state = TransferState::Succeeded { block };
-            Ok(block)
+            ClassifiedResult::Succeeded(nat_to_u128(duplicate_of)?)
         }
         Err(
             error @ (TransferError::BadFee { .. }
@@ -121,23 +194,17 @@ pub fn classify_result(
             | TransferError::InsufficientFunds { .. }
             | TransferError::InsufficientAllowance { .. }
             | TransferError::CreatedInFuture { .. }),
-        ) => Err(format!("{error:?}")),
-        Err(error) => {
-            attempt.state = TransferState::Stuck {
-                reason: format!("{error:?}"),
-            };
-            Err(format!("{error:?}"))
-        }
-    }
+        ) => ClassifiedResult::NoEffect(format!("{error:?}")),
+        Err(error) => ClassifiedResult::Ambiguous(format!("{error:?}")),
+    })
 }
 
 pub fn deterministic_memo(domain: &[u8], principal: Principal, nonce: u64) -> Vec<u8> {
-    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(domain);
     hasher.update(principal.as_slice());
     hasher.update(nonce.to_be_bytes());
-    hasher.finalize()[..32].to_vec()
+    hasher.finalize()[..MAX_MEMO_BYTES].to_vec()
 }
 
 #[cfg(test)]
@@ -146,31 +213,34 @@ mod tests {
 
     #[test]
     fn matching_duplicate_is_success_evidence() {
+        assert!(matches!(
+            classify_result(Err(TransferError::Duplicate {
+                duplicate_of: Nat::from(9u8)
+            }))
+            .unwrap(),
+            ClassifiedResult::Succeeded(9)
+        ));
+    }
+
+    #[test]
+    fn typed_fingerprint_changes_with_semantics() {
         let principal = Principal::from_slice(&[1]);
-        let mut attempt = OwnTransferAttempt {
+        let base = OwnTransferIntent::Icrc1 {
             ledger: principal,
-            method: LedgerMethod::Icrc1Transfer,
-            source_subaccount: None,
-            source_account: None,
-            destination: Account {
+            from_subaccount: [0; 32],
+            to: Account {
                 owner: principal,
                 subaccount: None,
             },
-            amount_e8s: 10,
-            fee_e8s: 1,
+            amount: 10,
+            fee: 1,
             memo: vec![1],
-            created_at_time_nanos: 1,
-            state: TransferState::Submitted,
+            created_at_time: 1,
         };
-        assert_eq!(
-            classify_result(
-                Err(TransferError::Duplicate {
-                    duplicate_of: Nat::from(9u8)
-                }),
-                &mut attempt
-            ),
-            Ok(9)
-        );
-        assert_eq!(attempt.state, TransferState::Succeeded { block: 9 });
+        let mut changed = base.clone();
+        if let OwnTransferIntent::Icrc1 { amount, .. } = &mut changed {
+            *amount = 11;
+        }
+        assert_ne!(base.fingerprint(), changed.fingerprint());
     }
 }

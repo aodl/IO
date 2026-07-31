@@ -1,48 +1,21 @@
+// NON-RUNNABLE TEMPLATE. Mainnet use requires a separately approved audit.
+// Replace every TODO_* token and validate the self-owned Accounts first.
 (record {
-  initial_total_io_supply_e8s = 100_000_000_000_000 : nat;
-  initial_protocol_reserve_io_e8s = 90_000_000_000_000 : nat;
-  non_redeemable_governance_io_e8s = 10_000_000_000_000 : nat;
-  jupiter_faucet_principal_text = null : opt text;
-  io_nns_neuron_manager_principal_text = null : opt text;
-  icp_ledger_principal_text = null : opt text;
-  icp_index_principal_text = null : opt text;
-  io_ledger_principal_text = null : opt text;
-  io_index_principal_text = null : opt text;
-  io_sns_ledger_principal_text = null : opt text;
-  io_sns_index_principal_text = null : opt text;
-  sns_governance_principal_text = null : opt text;
-  production_wiring = null : opt record {
-    mode : variant { Mock; Local; DryRun; ProductionPlanned; ProductionActive };
-    io_ledger_role : variant { IoTestNonCanonical; FutureCanonicalSnsIo };
-    fixture_marked : bool;
-    principals : record {
-      icp_ledger_principal_text : opt text;
-      icp_index_principal_text : opt text;
-      nns_governance_principal_text : opt text;
-      nns_ledger_principal_text : opt text;
-      nns_index_principal_text : opt text;
-      sns_root_principal_text : opt text;
-      sns_governance_principal_text : opt text;
-      sns_ledger_principal_text : opt text;
-      sns_index_principal_text : opt text;
-      io_ledger_principal_text : opt text;
-      io_index_principal_text : opt text;
-    };
-    fee_policy : record {
-      icp_transfer_fee_e8s : opt nat;
-      io_ledger_transfer_fee_e8s : opt nat;
-      tiny_value_policy_max_fee_e8s : opt nat;
-      allow_zero_fees_for_mock_or_local : bool;
-    };
-    protected : record {
-      neuron_owner_canister_principal_text : opt text;
-      io_nns_neuron_id : opt nat64;
-    };
-    deployment_targets : record {
-      io_stream_manager_principal_text : opt text;
-      io_nns_neuron_manager_principal_text : opt text;
-      mutation_target_principal_texts : vec text;
-      mutation_target_nns_neuron_ids : vec nat64;
-    };
+  config = record {
+    io_ledger = TODO_IO_LEDGER_PRINCIPAL;
+    icp_ledger = TODO_ICP_LEDGER_PRINCIPAL;
+    nns_manager = TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL;
+    nns_receipt_source = record { owner = TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL; subaccount = opt TODO_RECEIPT_SUBACCOUNT };
+    sns_governance = TODO_SNS_GOVERNANCE_PRINCIPAL;
+    io_reserve = record { owner = TODO_STREAM_MANAGER_SELF; subaccount = opt TODO_IO_RESERVE_SUBACCOUNT };
+    liquid_icp = record { owner = TODO_STREAM_MANAGER_SELF; subaccount = opt TODO_LIQUID_ICP_SUBACCOUNT };
+    excluded_io_accounts = vec { TODO_EXCLUDED_ACCOUNTS };
+    minimum_redemption_io_e8s = TODO_MINIMUM : nat;
+    expected_io_fee_e8s = TODO_IO_FEE : nat;
+    expected_icp_fee_e8s = TODO_ICP_FEE : nat;
+    maximum_request_lifetime_nanos = 900_000_000_000 : nat64;
+    retry_delay_nanos = TODO_RETRY_DELAY : nat64;
+    ledger_deduplication_window_nanos = TODO_DEDUP_WINDOW : nat64;
   };
+  next_cohort_timestamp_seconds = TODO_COHORT_TIMESTAMP : nat64;
 })

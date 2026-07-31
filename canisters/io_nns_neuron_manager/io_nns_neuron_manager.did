@@ -1,5 +1,5 @@
 type Account = record { owner : principal; subaccount : opt blob };
-type Lifecycle = variant { Inert; Paused; Ready };
+type Lifecycle = variant { Paused; Ready };
 type NnsConfig = record {
   sns_governance : principal;
   stream_manager : principal;
@@ -9,22 +9,20 @@ type NnsConfig = record {
   two_year_neuron_id : nat64;
   two_week_neuron_id : nat64;
   jupiter_account : Account;
-  staging_account : Account;
+  jupiter_staging : Account;
+  two_year_maturity_staging : Account;
+  two_week_maturity_staging : Account;
+  unwind_staging : Account;
   operational_fee_account : Account;
   stream_liquid_account : Account;
   expected_icp_fee_e8s : nat;
+  minimum_staging_fee_float_e8s : nat;
+  seeded_two_week_principal_e8s : nat;
 };
-type InitArgs = record { config : NnsConfig; initial_lifecycle : Lifecycle };
+type InitArgs = record { config : NnsConfig };
 type NotifyJupiterDepositArgs = record { block_index : nat; sequence : nat64 };
 type SetTwoWeekTargetArgs = record { target_e8s : nat; generation : nat64 };
-type ApiError = variant {
-  Unauthorized;
-  Inert;
-  Paused;
-  Busy;
-  Invalid : text;
-  Stuck : text;
-};
+type ApiError = variant { Unauthorized; Paused; Busy; Invalid : text; Stuck : text };
 type Status = record {
   lifecycle : Lifecycle;
   active_operation : opt text;
@@ -35,9 +33,7 @@ type Status = record {
   has_pending_unwind : bool;
 };
 service : (InitArgs) -> {
-  notify_jupiter_deposit : (NotifyJupiterDepositArgs) -> (
-    variant { Ok; Err : ApiError }
-  );
+  notify_jupiter_deposit : (NotifyJupiterDepositArgs) -> (variant { Ok; Err : ApiError });
   set_two_week_target : (SetTwoWeekTargetArgs) -> (variant { Ok; Err : ApiError });
   resume : () -> (variant { Ok; Err : ApiError });
   prove_active_transfer : (nat) -> (variant { Ok; Err : ApiError });

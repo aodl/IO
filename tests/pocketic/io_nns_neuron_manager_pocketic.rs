@@ -7,7 +7,7 @@ use pocket_ic::PocketIc;
 const CYCLES: u128 = 2_000_000_000_000;
 
 #[test]
-fn simplified_nns_installs_inert_and_rejects_unauthorized_target() {
+fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
     if std::env::var_os("POCKET_IC_BIN").is_none() {
         eprintln!("skipping NNS-manager PocketIC test because POCKET_IC_BIN is not set");
         return;
@@ -24,9 +24,9 @@ fn simplified_nns_installs_inert_and_rejects_unauthorized_target() {
     let canister = pic.create_canister();
     pic.add_cycles(canister, CYCLES);
     let principal = Principal::from_slice(&[1; 29]);
-    let account = Account {
+    let staging = |value: u8| Account {
         owner: canister,
-        subaccount: None,
+        subaccount: Some(vec![value; 32]),
     };
     pic.install_canister(
         canister,
@@ -40,13 +40,23 @@ fn simplified_nns_installs_inert_and_rejects_unauthorized_target() {
                 nns_governance: Principal::from_slice(&[5; 29]),
                 two_year_neuron_id: 1,
                 two_week_neuron_id: 2,
-                jupiter_account: account.clone(),
-                staging_account: account.clone(),
-                operational_fee_account: account.clone(),
-                stream_liquid_account: account,
+                jupiter_account: Account {
+                    owner: Principal::from_slice(&[4; 29]),
+                    subaccount: None,
+                },
+                jupiter_staging: staging(1),
+                two_year_maturity_staging: staging(2),
+                two_week_maturity_staging: staging(3),
+                unwind_staging: staging(4),
+                operational_fee_account: staging(5),
+                stream_liquid_account: Account {
+                    owner: Principal::from_slice(&[3; 29]),
+                    subaccount: None,
+                },
                 expected_icp_fee_e8s: 10_000,
+                minimum_staging_fee_float_e8s: 10_000,
+                seeded_two_week_principal_e8s: 1,
             },
-            initial_lifecycle: Lifecycle::Inert,
         })
         .unwrap(),
         None,
@@ -61,7 +71,7 @@ fn simplified_nns_installs_inert_and_rejects_unauthorized_target() {
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(status.lifecycle, Lifecycle::Inert);
+    assert_eq!(status.lifecycle, Lifecycle::Paused);
     let result: Result<(), ApiError> = decode_one(
         &pic.update_call(
             canister,
@@ -76,5 +86,5 @@ fn simplified_nns_installs_inert_and_rejects_unauthorized_target() {
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(result, Err(ApiError::Inert));
+    assert_eq!(result, Err(ApiError::Unauthorized));
 }

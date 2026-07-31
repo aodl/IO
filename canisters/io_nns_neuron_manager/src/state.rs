@@ -8,27 +8,9 @@ use serde::Deserialize;
 use std::{borrow::Cow, cell::RefCell};
 
 use crate::{maturity::PendingMaturity, pool::PendingUnwind, transfer::NnsTransferAttempt};
+pub use io_accounts::Account;
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct Account {
-    pub owner: Principal,
-    pub subaccount: Option<Vec<u8>>,
-}
-
-impl Account {
-    pub fn validate(&self) -> Result<(), String> {
-        if self
-            .subaccount
-            .as_ref()
-            .is_some_and(|value| value.len() != 32)
-        {
-            return Err("subaccount must contain exactly 32 bytes".into());
-        }
-        Ok(())
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct NnsConfig {
@@ -40,15 +22,71 @@ pub struct NnsConfig {
     pub two_year_neuron_id: u64,
     pub two_week_neuron_id: u64,
     pub jupiter_account: Account,
-    pub staging_account: Account,
+    pub jupiter_staging: Account,
+    pub two_year_maturity_staging: Account,
+    pub two_week_maturity_staging: Account,
+    pub unwind_staging: Account,
     pub operational_fee_account: Account,
     pub stream_liquid_account: Account,
     pub expected_icp_fee_e8s: u128,
+    pub minimum_staging_fee_float_e8s: u128,
+    pub seeded_two_week_principal_e8s: u128,
+}
+
+impl NnsConfig {
+    pub fn validate(&self, canister_self: Principal) -> Result<(), String> {
+        let management = Principal::management_canister();
+        for (name, principal) in [
+            ("canister self", canister_self),
+            ("SNS governance", self.sns_governance),
+            ("stream manager", self.stream_manager),
+            ("Jupiter", self.jupiter),
+            ("ICP ledger", self.icp_ledger),
+            ("NNS governance", self.nns_governance),
+        ] {
+            if principal == Principal::anonymous() || principal == management {
+                return Err(format!("{name} principal is forbidden"));
+            }
+        }
+        if self.two_year_neuron_id == 0
+            || self.two_week_neuron_id == 0
+            || self.two_year_neuron_id == self.two_week_neuron_id
+        {
+            return Err("protected neuron ids must be distinct and non-zero".into());
+        }
+        if self.stream_liquid_account.owner != self.stream_manager {
+            return Err("stream liquid account must be owned by stream manager".into());
+        }
+        let staging = [
+            &self.jupiter_staging,
+            &self.two_year_maturity_staging,
+            &self.two_week_maturity_staging,
+            &self.unwind_staging,
+            &self.operational_fee_account,
+        ];
+        let mut canonical = std::collections::BTreeSet::new();
+        for account in staging {
+            account.validate()?;
+            if account.owner != canister_self {
+                return Err("every staging/fee account must be owned by this canister".into());
+            }
+            if !canonical.insert(account.canonical()?) {
+                return Err("NNS staging and fee accounts must be distinct".into());
+            }
+        }
+        self.jupiter_account.validate()?;
+        self.stream_liquid_account.validate()?;
+        if self.expected_icp_fee_e8s == 0
+            || self.minimum_staging_fee_float_e8s < self.expected_icp_fee_e8s
+        {
+            return Err("explicit staging fee float must cover at least one ICP fee".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum Lifecycle {
-    Inert,
     Paused,
     Ready,
 }
@@ -62,10 +100,6 @@ pub enum NnsOperation {
         stake_e8s: u128,
         liquid_e8s: u128,
         active_transfer: Option<Box<NnsTransferAttempt>>,
-    },
-    PoolTopUp {
-        generation: u64,
-        amount_e8s: u128,
     },
     PoolMergeBack {
         generation: u64,
@@ -92,8 +126,13 @@ pub struct NnsStateV1 {
     pub pending_unwind: Option<PendingUnwind>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum StableNnsState {
+    V1(NnsStateV1),
+}
+
 impl NnsStateV1 {
-    fn inert_placeholder() -> Self {
+    fn decode_placeholder() -> Self {
         let principal = Principal::anonymous();
         let account = Account {
             owner: principal,
@@ -109,12 +148,17 @@ impl NnsStateV1 {
                 two_year_neuron_id: 0,
                 two_week_neuron_id: 0,
                 jupiter_account: account.clone(),
-                staging_account: account.clone(),
+                jupiter_staging: account.clone(),
+                two_year_maturity_staging: account.clone(),
+                two_week_maturity_staging: account.clone(),
+                unwind_staging: account.clone(),
                 operational_fee_account: account.clone(),
                 stream_liquid_account: account,
                 expected_icp_fee_e8s: 0,
+                minimum_staging_fee_float_e8s: 0,
+                seeded_two_week_principal_e8s: 0,
             },
-            lifecycle: Lifecycle::Inert,
+            lifecycle: Lifecycle::Paused,
             active_operation: None,
             next_jupiter_sequence: 0,
             latest_two_week_target: None,
@@ -126,7 +170,7 @@ impl NnsStateV1 {
     }
 }
 
-impl Storable for NnsStateV1 {
+impl Storable for StableNnsState {
     fn to_bytes(&self) -> Cow<'_, [u8]> {
         Cow::Owned(candid::encode_one(self).expect("NNS V1 state must encode"))
     }
@@ -145,30 +189,31 @@ impl Storable for NnsStateV1 {
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
         RefCell::new(MemoryManager::init(DefaultMemoryImpl::default()));
-    static STATE: RefCell<Option<StableCell<NnsStateV1, Memory>>> =
+    static STATE: RefCell<Option<StableCell<StableNnsState, Memory>>> =
         const { RefCell::new(None) };
 }
 
-pub fn initialize(state: NnsStateV1) -> Result<(), String> {
-    state.config.jupiter_account.validate()?;
-    state.config.staging_account.validate()?;
-    state.config.operational_fee_account.validate()?;
-    state.config.stream_liquid_account.validate()?;
-    if state.config.two_year_neuron_id == 0 || state.config.two_week_neuron_id == 0 {
-        return Err("protected neuron ids must be non-zero".into());
-    }
+pub fn initialize(state: NnsStateV1, canister_self: Principal) -> Result<(), String> {
+    state.config.validate(canister_self)?;
     STATE.with(|slot| {
         let memory = MEMORY_MANAGER.with(|manager| manager.borrow().get(MemoryId::new(0)));
-        *slot.borrow_mut() = Some(StableCell::init(memory, state));
+        *slot.borrow_mut() = Some(StableCell::init(memory, StableNnsState::V1(state)));
     });
     Ok(())
 }
 
-pub fn reopen() {
+pub fn reopen(canister_self: Principal) {
     STATE.with(|slot| {
         let memory = MEMORY_MANAGER.with(|manager| manager.borrow().get(MemoryId::new(0)));
-        *slot.borrow_mut() = Some(StableCell::init(memory, NnsStateV1::inert_placeholder()));
+        *slot.borrow_mut() = Some(StableCell::init(
+            memory,
+            StableNnsState::V1(NnsStateV1::decode_placeholder()),
+        ));
     });
+    read()
+        .config
+        .validate(canister_self)
+        .unwrap_or_else(|error| panic!("invalid stable NNS V1 state: {error}"));
 }
 
 pub fn read() -> NnsStateV1 {
@@ -178,6 +223,7 @@ pub fn read() -> NnsStateV1 {
             .expect("NNS state is not initialized")
             .get()
             .clone()
+            .into_v1()
     })
 }
 
@@ -186,6 +232,14 @@ pub fn write(state: NnsStateV1) {
         slot.borrow_mut()
             .as_mut()
             .expect("NNS state is not initialized")
-            .set(state);
+            .set(StableNnsState::V1(state));
     });
+}
+
+impl StableNnsState {
+    fn into_v1(self) -> NnsStateV1 {
+        match self {
+            Self::V1(state) => state,
+        }
+    }
 }

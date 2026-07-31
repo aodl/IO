@@ -1,0 +1,5 @@
+canister=io_nns_neuron_manager
+schema_version=1
+live_snapshot=false
+envelope=StableNnsState::V1
+lifecycle=Paused

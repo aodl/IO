@@ -1,11 +1,13 @@
 use candid::{decode_one, encode_one, Principal};
-use io_stream_manager::{Account, ApiError, InitArgs, Lifecycle, RedeemArgs, Status, StreamConfig};
+use io_stream_manager::{
+    Account, ApiError, InitArgs, Lifecycle, RedeemArgs, RedemptionProgress, Status, StreamConfig,
+};
 use pocket_ic::PocketIc;
 
 const CYCLES: u128 = 2_000_000_000_000;
 
 #[test]
-fn simplified_stream_installs_inert_and_rejects_anonymous_before_funds_move() {
+fn simplified_stream_installs_paused_and_rejects_anonymous_before_funds_move() {
     if std::env::var_os("POCKET_IC_BIN").is_none() {
         eprintln!("skipping stream-manager PocketIC test because POCKET_IC_BIN is not set");
         return;
@@ -20,7 +22,8 @@ fn simplified_stream_installs_inert_and_rejects_anonymous_before_funds_move() {
     let pic = PocketIc::new();
     let canister = pic.create_canister();
     pic.add_cycles(canister, CYCLES);
-    let ledger = Principal::from_slice(&[1; 29]);
+    let io_ledger = Principal::from_slice(&[1; 29]);
+    let icp_ledger = Principal::from_slice(&[4; 29]);
     let manager = Principal::from_slice(&[2; 29]);
     let governance = Principal::from_slice(&[3; 29]);
     let account = Account {
@@ -32,8 +35,8 @@ fn simplified_stream_installs_inert_and_rejects_anonymous_before_funds_move() {
         wasm,
         encode_one(InitArgs {
             config: StreamConfig {
-                io_ledger: ledger,
-                icp_ledger: ledger,
+                io_ledger,
+                icp_ledger,
                 nns_manager: manager,
                 nns_receipt_source: Account {
                     owner: manager,
@@ -41,13 +44,18 @@ fn simplified_stream_installs_inert_and_rejects_anonymous_before_funds_move() {
                 },
                 sns_governance: governance,
                 io_reserve: account.clone(),
-                liquid_icp: account,
+                liquid_icp: Account {
+                    owner: canister,
+                    subaccount: Some(vec![1; 32]),
+                },
                 excluded_io_accounts: Vec::new(),
-                minimum_redemption_io_e8s: 1,
+                minimum_redemption_io_e8s: 20_000,
                 expected_io_fee_e8s: 10_000,
                 expected_icp_fee_e8s: 10_000,
+                maximum_request_lifetime_nanos: 900_000_000_000,
+                retry_delay_nanos: 1_000_000_000,
+                ledger_deduplication_window_nanos: 86_400_000_000_000,
             },
-            initial_lifecycle: Lifecycle::Inert,
             next_cohort_timestamp_seconds: 1_209_600,
         })
         .unwrap(),
@@ -63,9 +71,9 @@ fn simplified_stream_installs_inert_and_rejects_anonymous_before_funds_move() {
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(status.lifecycle, Lifecycle::Inert);
+    assert_eq!(status.lifecycle, Lifecycle::Paused);
     assert!(status.operation_kind.is_none());
-    let result: Result<io_stream_manager::state::RedemptionResult, ApiError> = decode_one(
+    let result: Result<RedemptionProgress, ApiError> = decode_one(
         &pic.update_call(
             canister,
             Principal::anonymous(),

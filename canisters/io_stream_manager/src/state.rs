@@ -8,27 +8,9 @@ use serde::Deserialize;
 use std::{borrow::Cow, cell::RefCell};
 
 use crate::{receipt::LiquidReceiptOperation, redemption::RedemptionOperation};
+pub use io_accounts::Account;
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct Account {
-    pub owner: Principal,
-    pub subaccount: Option<Vec<u8>>,
-}
-
-impl Account {
-    pub fn validate(&self) -> Result<(), String> {
-        if self
-            .subaccount
-            .as_ref()
-            .is_some_and(|bytes| bytes.len() != 32)
-        {
-            return Err("subaccount must contain exactly 32 bytes".into());
-        }
-        Ok(())
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct StreamConfig {
@@ -43,14 +25,89 @@ pub struct StreamConfig {
     pub minimum_redemption_io_e8s: u128,
     pub expected_io_fee_e8s: u128,
     pub expected_icp_fee_e8s: u128,
+    pub maximum_request_lifetime_nanos: u64,
+    pub retry_delay_nanos: u64,
+    pub ledger_deduplication_window_nanos: u64,
+}
+
+impl StreamConfig {
+    pub const MAX_EXCLUDED_ACCOUNTS: usize = 32;
+    pub const MAX_FEE_E8S: u128 = 100_000_000;
+
+    pub fn validate(&self, canister_self: Principal) -> Result<(), String> {
+        let management = Principal::management_canister();
+        for (name, principal) in [
+            ("canister self", canister_self),
+            ("IO ledger", self.io_ledger),
+            ("ICP ledger", self.icp_ledger),
+            ("NNS manager", self.nns_manager),
+            ("SNS governance", self.sns_governance),
+        ] {
+            if principal == Principal::anonymous() || principal == management {
+                return Err(format!("{name} principal is forbidden"));
+            }
+        }
+        if self.io_ledger == self.icp_ledger {
+            return Err("IO and ICP ledgers must be distinct".into());
+        }
+        if self.nns_manager == self.sns_governance {
+            return Err("NNS manager and SNS governance must be distinct".into());
+        }
+        if self.io_reserve.owner != canister_self || self.liquid_icp.owner != canister_self {
+            return Err("reserve and liquid accounts must be owned by this canister".into());
+        }
+        if self.nns_receipt_source.owner != self.nns_manager {
+            return Err("receipt source owner must equal NNS manager".into());
+        }
+        self.io_reserve.validate()?;
+        self.liquid_icp.validate()?;
+        self.nns_receipt_source.validate()?;
+        if self.io_reserve.effective_eq(&self.liquid_icp)? {
+            return Err("reserve and liquid accounts must be distinct".into());
+        }
+        if self.excluded_io_accounts.len() > Self::MAX_EXCLUDED_ACCOUNTS {
+            return Err("too many excluded IO accounts".into());
+        }
+        let mut canonical_excluded = std::collections::BTreeSet::new();
+        for account in &self.excluded_io_accounts {
+            account.validate()?;
+            if account.effective_eq(&self.io_reserve)? {
+                return Err("reserve account cannot be excluded".into());
+            }
+            if !canonical_excluded.insert(account.canonical()?) {
+                return Err("excluded IO accounts must be unique".into());
+            }
+        }
+        if self.minimum_redemption_io_e8s <= self.expected_io_fee_e8s {
+            return Err("minimum redemption must exceed the IO fee".into());
+        }
+        for fee in [self.expected_io_fee_e8s, self.expected_icp_fee_e8s] {
+            if fee == 0 || fee > Self::MAX_FEE_E8S {
+                return Err("configured fee is outside launch bounds".into());
+            }
+        }
+        if self.maximum_request_lifetime_nanos == 0
+            || self.retry_delay_nanos == 0
+            || self.retry_delay_nanos >= self.ledger_deduplication_window_nanos
+            || self.maximum_request_lifetime_nanos > self.ledger_deduplication_window_nanos
+        {
+            return Err("request/retry windows are invalid".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum Lifecycle {
-    Inert,
     Paused,
     Ready,
 }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
+pub struct OperationSequence(pub u64);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
+pub struct DispatchEpoch(pub u64);
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum StreamOperation {
@@ -81,10 +138,16 @@ pub struct StreamStateV1 {
     pub pending_reward_cohort: Option<RewardCohort>,
     pub next_nns_receipt_sequence: u64,
     pub next_cohort_timestamp_seconds: u64,
+    pub next_operation_sequence: OperationSequence,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum StableStreamState {
+    V1(StreamStateV1),
 }
 
 impl StreamStateV1 {
-    fn inert_placeholder() -> Self {
+    fn decode_placeholder() -> Self {
         let anonymous = Principal::anonymous();
         let account = Account {
             owner: anonymous,
@@ -103,13 +166,17 @@ impl StreamStateV1 {
                 minimum_redemption_io_e8s: 1,
                 expected_io_fee_e8s: 0,
                 expected_icp_fee_e8s: 0,
+                maximum_request_lifetime_nanos: 1,
+                retry_delay_nanos: 1,
+                ledger_deduplication_window_nanos: 2,
             },
-            lifecycle: Lifecycle::Inert,
+            lifecycle: Lifecycle::Paused,
             active_operation: None,
             active_reward_cohort: None,
             pending_reward_cohort: None,
             next_nns_receipt_sequence: 0,
             next_cohort_timestamp_seconds: 0,
+            next_operation_sequence: OperationSequence(0),
         }
     }
 }
@@ -117,15 +184,21 @@ impl StreamStateV1 {
 #[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
 pub struct CallerRedemptionState {
     pub next_nonce: u64,
+    pub last_request_fingerprint: Option<Vec<u8>>,
     pub last_result: Option<RedemptionResult>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct RedemptionResult {
+    pub request_fingerprint: Vec<u8>,
     pub nonce: u64,
     pub io_block: u128,
     pub icp_block: u128,
     pub net_icp_e8s: u128,
+    pub gross_icp_e8s: u128,
+    pub io_fee_e8s: u128,
+    pub icp_fee_e8s: u128,
+    pub completed_at_nanos: u64,
 }
 
 macro_rules! candid_storable {
@@ -151,27 +224,23 @@ macro_rules! candid_storable {
     };
 }
 
-candid_storable!(StreamStateV1, 2_000_000);
+candid_storable!(StableStreamState, 2_000_000);
 candid_storable!(CallerRedemptionState, 1_024);
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
         RefCell::new(MemoryManager::init(DefaultMemoryImpl::default()));
-    static STATE: RefCell<Option<StableCell<StreamStateV1, Memory>>> =
+    static STATE: RefCell<Option<StableCell<StableStreamState, Memory>>> =
         const { RefCell::new(None) };
     static REDEMPTIONS: RefCell<Option<StableBTreeMap<Principal, CallerRedemptionState, Memory>>> =
         const { RefCell::new(None) };
 }
 
-pub fn initialize(state: StreamStateV1) -> Result<(), String> {
-    state.config.io_reserve.validate()?;
-    state.config.liquid_icp.validate()?;
-    for account in &state.config.excluded_io_accounts {
-        account.validate()?;
-    }
+pub fn initialize(state: StreamStateV1, canister_self: Principal) -> Result<(), String> {
+    state.config.validate(canister_self)?;
     STATE.with(|slot| {
         let memory = MEMORY_MANAGER.with(|manager| manager.borrow().get(MemoryId::new(0)));
-        let cell = StableCell::init(memory, state);
+        let cell = StableCell::init(memory, StableStreamState::V1(state));
         *slot.borrow_mut() = Some(cell);
     });
     REDEMPTIONS.with(|slot| {
@@ -181,15 +250,22 @@ pub fn initialize(state: StreamStateV1) -> Result<(), String> {
     Ok(())
 }
 
-pub fn reopen() {
+pub fn reopen(canister_self: Principal) {
     STATE.with(|slot| {
         let memory = MEMORY_MANAGER.with(|manager| manager.borrow().get(MemoryId::new(0)));
-        *slot.borrow_mut() = Some(StableCell::init(memory, StreamStateV1::inert_placeholder()));
+        *slot.borrow_mut() = Some(StableCell::init(
+            memory,
+            StableStreamState::V1(StreamStateV1::decode_placeholder()),
+        ));
     });
     REDEMPTIONS.with(|slot| {
         let memory = MEMORY_MANAGER.with(|manager| manager.borrow().get(MemoryId::new(1)));
         *slot.borrow_mut() = Some(StableBTreeMap::init(memory));
     });
+    read()
+        .config
+        .validate(canister_self)
+        .unwrap_or_else(|error| panic!("invalid stable stream V1 state: {error}"));
 }
 
 pub fn read() -> StreamStateV1 {
@@ -199,6 +275,7 @@ pub fn read() -> StreamStateV1 {
             .expect("stream state is not initialized")
             .get()
             .clone()
+            .into_v1()
     })
 }
 
@@ -207,8 +284,16 @@ pub fn write(state: StreamStateV1) {
         slot.borrow_mut()
             .as_mut()
             .expect("stream state is not initialized")
-            .set(state);
+            .set(StableStreamState::V1(state));
     });
+}
+
+impl StableStreamState {
+    fn into_v1(self) -> StreamStateV1 {
+        match self {
+            Self::V1(state) => state,
+        }
+    }
 }
 
 pub fn caller_state(caller: Principal) -> CallerRedemptionState {
@@ -236,41 +321,59 @@ mod tests {
 
     #[test]
     fn v1_cell_and_caller_nonce_survive_reopen() {
-        let principal = Principal::from_slice(&[42]);
+        let principal = Principal::from_slice(&[42; 29]);
+        let io_ledger = Principal::from_slice(&[1; 29]);
+        let icp_ledger = Principal::from_slice(&[2; 29]);
+        let manager = Principal::from_slice(&[3; 29]);
+        let governance = Principal::from_slice(&[4; 29]);
         let account = Account {
             owner: principal,
             subaccount: None,
         };
-        initialize(StreamStateV1 {
-            config: StreamConfig {
-                io_ledger: principal,
-                icp_ledger: principal,
-                nns_manager: principal,
-                nns_receipt_source: account.clone(),
-                sns_governance: principal,
-                io_reserve: account.clone(),
-                liquid_icp: account,
-                excluded_io_accounts: Vec::new(),
-                minimum_redemption_io_e8s: 1,
-                expected_io_fee_e8s: 1,
-                expected_icp_fee_e8s: 1,
+        initialize(
+            StreamStateV1 {
+                config: StreamConfig {
+                    io_ledger,
+                    icp_ledger,
+                    nns_manager: manager,
+                    nns_receipt_source: Account {
+                        owner: manager,
+                        subaccount: None,
+                    },
+                    sns_governance: governance,
+                    io_reserve: account.clone(),
+                    liquid_icp: Account {
+                        owner: principal,
+                        subaccount: Some(vec![1; 32]),
+                    },
+                    excluded_io_accounts: Vec::new(),
+                    minimum_redemption_io_e8s: 2,
+                    expected_io_fee_e8s: 1,
+                    expected_icp_fee_e8s: 1,
+                    maximum_request_lifetime_nanos: 100,
+                    retry_delay_nanos: 1,
+                    ledger_deduplication_window_nanos: 200,
+                },
+                lifecycle: Lifecycle::Paused,
+                active_operation: None,
+                active_reward_cohort: None,
+                pending_reward_cohort: None,
+                next_nns_receipt_sequence: 7,
+                next_cohort_timestamp_seconds: 8,
+                next_operation_sequence: OperationSequence(0),
             },
-            lifecycle: Lifecycle::Paused,
-            active_operation: None,
-            active_reward_cohort: None,
-            pending_reward_cohort: None,
-            next_nns_receipt_sequence: 7,
-            next_cohort_timestamp_seconds: 8,
-        })
+            principal,
+        )
         .unwrap();
         set_caller_state(
             principal,
             CallerRedemptionState {
                 next_nonce: 3,
+                last_request_fingerprint: None,
                 last_result: None,
             },
         );
-        reopen();
+        reopen(principal);
         assert_eq!(read().next_nns_receipt_sequence, 7);
         assert_eq!(caller_state(principal).next_nonce, 3);
     }

@@ -16,6 +16,8 @@ path = "../../tests/pocketic/io_stream_manager_pocketic.rs"
 candid.workspace = true
 ic-cdk.workspace = true
 ic-stable-structures.workspace = true
+io-accounts = { path = "../../crates/io_accounts" }
+io-core-model.workspace = true
 io-reward-policy.workspace = true
 serde.workspace = true
 sha2 = "0.10.9"

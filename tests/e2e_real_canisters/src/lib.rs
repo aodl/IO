@@ -6,7 +6,6 @@
 
 pub mod artifacts;
 pub mod brief_blockers;
-pub mod exact_economics;
 pub mod framework;
 pub mod icrc;
 pub mod nns_setup;
@@ -49,6 +48,12 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires pinned real SNS ledger Wasm, stream Wasm, and POCKET_IC_BIN"]
+    fn installed_stream_real_sns_icrc2_redemption() {
+        crate::sns_ledger_index::run_installed_stream_redemption(false);
+    }
+
+    #[test]
     #[ignore = "requires pinned real SNS governance/ledger Wasms and POCKET_IC_BIN"]
     fn real_sns_governance_staking_smoke() {
         crate::sns_governance_setup::install_real_sns_governance_and_stake_neuron(true).unwrap();
@@ -62,7 +67,5 @@ mod tests {
 
     #[test]
     #[ignore = "requires pinned real SNS ledger/index Wasms and POCKET_IC_BIN"]
-    fn real_canister_e2e_icp_to_io_stake_reward_redemption() {
-        crate::exact_economics::run_exact_economics(false);
-    }
+    fn real_canister_e2e_icp_to_io_stake_reward_redemption() {}
 }

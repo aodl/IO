@@ -1,0 +1,5 @@
+canister=io_stream_manager
+schema_version=1
+live_snapshot=false
+envelope=StableStreamState::V1
+lifecycle=Paused

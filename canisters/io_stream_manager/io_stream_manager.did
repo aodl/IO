@@ -1,5 +1,5 @@
 type Account = record { owner : principal; subaccount : opt blob };
-type Lifecycle = variant { Inert; Paused; Ready };
+type Lifecycle = variant { Paused; Ready };
 type StreamConfig = record {
   io_ledger : principal;
   icp_ledger : principal;
@@ -12,12 +12,11 @@ type StreamConfig = record {
   minimum_redemption_io_e8s : nat;
   expected_io_fee_e8s : nat;
   expected_icp_fee_e8s : nat;
+  maximum_request_lifetime_nanos : nat64;
+  retry_delay_nanos : nat64;
+  ledger_deduplication_window_nanos : nat64;
 };
-type InitArgs = record {
-  config : StreamConfig;
-  initial_lifecycle : Lifecycle;
-  next_cohort_timestamp_seconds : nat64;
-};
+type InitArgs = record { config : StreamConfig; next_cohort_timestamp_seconds : nat64 };
 type RedeemArgs = record {
   from_subaccount : opt blob;
   io_amount_e8s : nat;
@@ -28,12 +27,24 @@ type RedeemArgs = record {
   nonce : nat64;
 };
 type RedemptionResult = record {
+  request_fingerprint : blob;
   nonce : nat64;
   io_block : nat;
   icp_block : nat;
+  gross_icp_e8s : nat;
   net_icp_e8s : nat;
+  io_fee_e8s : nat;
+  icp_fee_e8s : nat;
+  completed_at_nanos : nat64;
 };
-type ReceiptKind = variant { Jupiter; TwoWeekMaturity };
+type RedemptionProgress = variant {
+  IoPullSubmitted;
+  IoInReserve;
+  PayoutSubmitted;
+  PayoutSucceeded;
+  Completed : RedemptionResult;
+};
+type ReceiptKind = variant { Jupiter; TwoYearMaturity; TwoWeekMaturity; UnwindPrincipal };
 type PrepareLiquidReceiptArgs = record {
   receipt_sequence : nat64;
   receipt_kind : ReceiptKind;
@@ -41,22 +52,15 @@ type PrepareLiquidReceiptArgs = record {
   liquid_amount_e8s : nat;
   cohort_generation : opt nat64;
 };
-type LiquidReceiptPermit = record {
-  sequence : nat64;
-  destination : Account;
-  memo : blob;
-};
-type CompleteLiquidReceiptArgs = record {
-  receipt_sequence : nat64;
-  block_index : nat;
-};
+type LiquidReceiptPermit = record { sequence : nat64; destination : Account; memo : blob };
+type CompleteLiquidReceiptArgs = record { receipt_sequence : nat64; block_index : nat };
 type ApiError = variant {
   Anonymous;
   Unauthorized;
-  Inert;
   Paused;
   Busy;
   WrongNonce : record { expected : nat64 };
+  NonceAlreadyUsed;
   Invalid : text;
   Ledger : text;
   Stuck : text;
@@ -69,14 +73,10 @@ type Status = record {
   next_cohort_timestamp_seconds : nat64;
 };
 service : (InitArgs) -> {
-  redeem : (RedeemArgs) -> (variant { Ok : RedemptionResult; Err : ApiError });
-  prepare_liquid_receipt : (PrepareLiquidReceiptArgs) -> (
-    variant { Ok : LiquidReceiptPermit; Err : ApiError }
-  );
-  complete_liquid_receipt : (CompleteLiquidReceiptArgs) -> (
-    variant { Ok; Err : ApiError }
-  );
-  resume : () -> (variant { Ok; Err : ApiError });
+  redeem : (RedeemArgs) -> (variant { Ok : RedemptionProgress; Err : ApiError });
+  prepare_liquid_receipt : (PrepareLiquidReceiptArgs) -> (variant { Ok : LiquidReceiptPermit; Err : ApiError });
+  complete_liquid_receipt : (CompleteLiquidReceiptArgs) -> (variant { Ok; Err : ApiError });
+  resume : () -> (variant { Ok : RedemptionProgress; Err : ApiError });
   prove_active_transfer : (nat) -> (variant { Ok; Err : ApiError });
   set_paused : (bool) -> (variant { Ok; Err : ApiError });
   get_status : () -> (Status) query;

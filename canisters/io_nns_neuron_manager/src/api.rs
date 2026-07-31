@@ -9,7 +9,6 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum ApiError {
     Unauthorized,
-    Inert,
     Paused,
     Busy,
     Invalid(String),
@@ -43,7 +42,6 @@ fn ready() -> Result<crate::state::NnsStateV1, ApiError> {
     let state = state::read();
     match state.lifecycle {
         Lifecycle::Ready => Ok(state),
-        Lifecycle::Inert => Err(ApiError::Inert),
         Lifecycle::Paused => Err(ApiError::Paused),
     }
 }
@@ -52,10 +50,11 @@ pub async fn notify_jupiter_deposit(
     caller: Principal,
     args: NotifyJupiterDepositArgs,
 ) -> Result<(), ApiError> {
-    let state = ready()?;
-    if caller != state.config.jupiter {
+    let snapshot = state::read();
+    if caller != snapshot.config.jupiter {
         return Err(ApiError::Unauthorized);
     }
+    let state = ready()?;
     if state.active_operation.is_some() {
         return Err(ApiError::Busy);
     }
@@ -74,14 +73,22 @@ pub async fn notify_jupiter_deposit(
 }
 
 pub fn set_two_week_target(caller: Principal, args: SetTwoWeekTargetArgs) -> Result<(), ApiError> {
-    let mut state = ready()?;
-    if caller != state.config.stream_manager {
+    if caller != state::read().config.stream_manager {
         return Err(ApiError::Unauthorized);
     }
+    let mut state = ready()?;
     let expected = state
         .latest_target_generation
         .checked_add(1)
         .ok_or_else(|| ApiError::Invalid("target generation overflow".into()))?;
+    if args.generation == state.latest_target_generation {
+        return match &state.latest_two_week_target {
+            Some(current) if current.target_e8s == args.target_e8s => Ok(()),
+            _ => Err(ApiError::Invalid(
+                "target generation conflicts with existing intent".into(),
+            )),
+        };
+    }
     if args.generation != expected {
         return Err(ApiError::Invalid(format!(
             "expected target generation {expected}"
@@ -120,7 +127,6 @@ pub fn get_status() -> Status {
         lifecycle: state.lifecycle,
         active_operation: state.active_operation.map(|operation| match operation {
             NnsOperation::JupiterDeposit { .. } => "JupiterDeposit".into(),
-            NnsOperation::PoolTopUp { .. } => "PoolTopUp".into(),
             NnsOperation::PoolMergeBack { .. } => "PoolMergeBack".into(),
         }),
         next_jupiter_sequence: state.next_jupiter_sequence,
@@ -137,35 +143,49 @@ mod tests {
 
     #[test]
     fn target_updates_are_strict_and_coalesced() {
-        let principal = Principal::from_slice(&[1]);
-        let account = crate::state::Account {
+        let principal = Principal::from_slice(&[1; 29]);
+        let account = |subaccount: u8| crate::state::Account {
             owner: principal,
-            subaccount: None,
+            subaccount: Some(vec![subaccount; 32]),
         };
-        state::initialize(crate::state::NnsStateV1 {
-            config: crate::state::NnsConfig {
-                sns_governance: principal,
-                stream_manager: principal,
-                jupiter: principal,
-                icp_ledger: principal,
-                nns_governance: principal,
-                two_year_neuron_id: 1,
-                two_week_neuron_id: 2,
-                jupiter_account: account.clone(),
-                staging_account: account.clone(),
-                operational_fee_account: account.clone(),
-                stream_liquid_account: account,
-                expected_icp_fee_e8s: 10_000,
+        state::initialize(
+            crate::state::NnsStateV1 {
+                config: crate::state::NnsConfig {
+                    sns_governance: Principal::from_slice(&[2; 29]),
+                    stream_manager: principal,
+                    jupiter: Principal::from_slice(&[3; 29]),
+                    icp_ledger: Principal::from_slice(&[4; 29]),
+                    nns_governance: Principal::from_slice(&[5; 29]),
+                    two_year_neuron_id: 1,
+                    two_week_neuron_id: 2,
+                    jupiter_account: crate::state::Account {
+                        owner: Principal::from_slice(&[3; 29]),
+                        subaccount: None,
+                    },
+                    jupiter_staging: account(1),
+                    two_year_maturity_staging: account(2),
+                    two_week_maturity_staging: account(3),
+                    unwind_staging: account(4),
+                    operational_fee_account: account(5),
+                    stream_liquid_account: crate::state::Account {
+                        owner: principal,
+                        subaccount: None,
+                    },
+                    expected_icp_fee_e8s: 10_000,
+                    minimum_staging_fee_float_e8s: 10_000,
+                    seeded_two_week_principal_e8s: 1,
+                },
+                lifecycle: Lifecycle::Ready,
+                active_operation: None,
+                next_jupiter_sequence: 0,
+                latest_two_week_target: None,
+                latest_target_generation: 0,
+                pending_two_year_maturity: None,
+                pending_two_week_maturity: None,
+                pending_unwind: None,
             },
-            lifecycle: Lifecycle::Ready,
-            active_operation: None,
-            next_jupiter_sequence: 0,
-            latest_two_week_target: None,
-            latest_target_generation: 0,
-            pending_two_year_maturity: None,
-            pending_two_week_maturity: None,
-            pending_unwind: None,
-        })
+            principal,
+        )
         .unwrap();
         set_two_week_target(
             principal,
