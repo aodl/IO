@@ -16,7 +16,7 @@ Examples:
 
 What it proves:
 
-- IO account/subaccount conversion, fee representation, transfer error mapping, duplicate proof checks, and index cursor handling are modelled at the boundary.
+- IO account/subaccount conversion, fee representation, transfer error mapping and duplicate proof checks are modelled at the value-moving boundary. Index history is historian/test observation only.
 - IO scheduler and journal behavior can process SNS-shaped ledger/index pages.
 - SNS governance and root records can be decoded or mocked into IO policy types.
 
@@ -40,7 +40,7 @@ Examples:
 
 What it proves:
 
-- IO canisters accept local SNS-shaped principals in constructor-only production DIDs.
+- IO canisters accept local SNS-shaped principals through the reviewed simplified production DIDs.
 - Mock SNS governance/root/ledger/index canisters can exercise IO value-flow and upgrade-lifecycle paths under PocketIC.
 - NNS/SNS/application subnet topology assumptions can be smoke-tested locally.
 

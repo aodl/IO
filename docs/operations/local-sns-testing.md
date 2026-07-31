@@ -1,12 +1,12 @@
 # Local SNS Testing
 
-We currently run SNS-shaped mock/PocketIC tests. We do not currently run the official SNS launch locally in required CI.
+Required CI uses SNS-shaped mock/PocketIC tests. The maintained official SNS launch rehearsal is an optional local operator layer and is not complete evidence until its committed-evidence validator passes.
 
-IO uses local SNS compatibility testing as an additional safety layer. It does not replace accounting, journal, retry, artifact, DID, or release guardrails.
+IO uses local SNS compatibility testing as an additional safety layer. It does not replace typed-operation, retry, artifact, DID, stable-state or release guardrails.
 
 Pure model tests remain the main accounting guardrail.
 
-Mock and PocketIC tests remain the main journal, retry, and upgrade guardrail.
+Mock and PocketIC tests exercise bounded failures, retry and upgrade behavior without becoming monetary truth.
 
 ## Four-Layer Compatibility Model
 
@@ -51,12 +51,12 @@ The IO-owned harness uses PocketIC where practical and stays inside the reposito
 The harness includes:
 
 - pure model tests as the main accounting guardrail;
-- mock and PocketIC tests as the main journal, retry, and upgrade guardrail;
+- mock and PocketIC tests for typed-operation retry and upgrade guardrails;
 - local SNS-like topology checks with NNS/SNS/application subnets where available;
-- mock SNS governance read tests through `SnsGovernanceClient`;
-- mock SNS ledger/index value-flow tests through `LedgerTransferClient` and `LedgerIndexClient`;
+- mock SNS governance observation and command-boundary tests;
+- standalone mock SNS ledger/index interface tests that are not launch monetary authority;
 - mock SNS root/controller lifecycle tests through proposal-shaped governance/root canisters;
-- production DID checks that keep `io_stream_manager` and `io_nns_neuron_manager` constructor-only.
+- production DID checks that keep `io_stream_manager` and `io_nns_neuron_manager` on the reviewed simplified command surfaces.
 
 The local SNS harness is not production launch configuration. It must not call mainnet, must not use `--network ic`, and must not deploy, install, upgrade, reinstall, or update settings on mainnet.
 

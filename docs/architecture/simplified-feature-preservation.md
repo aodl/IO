@@ -21,7 +21,7 @@ IO remains not live and its reserved production canisters remain inert.
 Feature preservation does not preserve experimental machinery. Value-moving
 canisters do not scan indexes, maintain account-history cursors, classify global
 liabilities, infer source events, refund unsupported transfers, or prove global
-absence. The stream manager has no redemption intake account or IO return leg.
+absence. Redemption pulls IO directly into reserve and has no intermediate custody or compensating transfer path.
 Only launch stable schema V1 is supported.
 
 ## Reward invariants

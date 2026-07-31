@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Date: 2026-07-31
-- Supersedes: constructor-only monetary DIDs, ledger/index intent inference,
+- Supersedes: pre-execution monetary DIDs, ledger/index intent inference,
   redemption intake and return, automatic complete-absence recovery, and
   prelaunch stable migration compatibility
 

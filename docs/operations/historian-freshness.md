@@ -20,4 +20,4 @@ Run the static freshness gate with:
 cargo run -p xtask -- validate_historian_freshness
 ```
 
-The command makes no network calls. It checks historian debug methods are absent from production DID, value-moving production DIDs remain constructor-only, prelaunch state does not claim live protocol or launched SNS IO ledger, protected references are not deployment targets, stale/missing/incomplete source states are represented, frontend declarations match the production historian DID, and frontend code does not import `.dfx`, `src/declarations`, or debug declarations.
+The command makes no network calls. It checks historian debug methods are absent from the production DID, value-moving production DIDs expose only the reviewed simplified command surface, prelaunch state does not claim a live protocol or launched SNS IO ledger, protected references are not deployment targets, stale/missing/incomplete source states are represented, frontend declarations match the production historian DID, and frontend code does not import `.dfx`, `src/declarations`, or debug declarations.

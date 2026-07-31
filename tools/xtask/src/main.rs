@@ -535,7 +535,52 @@ fn rust_files_below(root: &Path, relative: &str) -> Result<Vec<PathBuf>, String>
     Ok(files)
 }
 
+fn normative_markdown_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    fn walk(root: &Path, directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+        for entry in
+            fs::read_dir(directory).map_err(|error| format!("{}: {error}", directory.display()))?
+        {
+            let path = entry.map_err(|error| error.to_string())?.path();
+            let relative = path.strip_prefix(root).map_err(|error| error.to_string())?;
+            if path.is_dir() {
+                if matches!(
+                    relative
+                        .components()
+                        .next()
+                        .and_then(|value| value.as_os_str().to_str()),
+                    Some(
+                        ".git"
+                            | "target"
+                            | "node_modules"
+                            | "release-artifacts"
+                            | "debug-artifacts"
+                            | ".real-canister-wasms"
+                    )
+                ) || relative.starts_with("docs/research")
+                {
+                    continue;
+                }
+                walk(root, &path, files)?;
+            } else if path.extension().is_some_and(|extension| extension == "md") {
+                files.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    walk(root, root, &mut files)?;
+    Ok(files)
+}
+
 fn check_simplicity_at(root: &Path) -> Result<(), String> {
+    fn production_line_count(text: &str) -> usize {
+        text.split("\n#[cfg(test)]")
+            .next()
+            .unwrap_or(text)
+            .lines()
+            .count()
+    }
+
     const VALUE_MOVING_DIRS: &[&str] = &[
         "canisters/io_stream_manager/src",
         "canisters/io_nns_neuron_manager/src",
@@ -549,13 +594,21 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
         "MockLedgerCanisterClient",
         "debug_get_transactions",
         "redemption_intake",
+        "redemption intake",
         "redemption_return",
+        "redemption IO return",
         "rejected_refund",
+        "automatic rejected-transfer refund",
         "generic operation journal",
+        "automatic proof of absence",
         "process_stream_event",
         "pub fn process_event",
+        "pub async fn process_event",
         "process_stream",
         "pub fn tick",
+        "pub async fn tick",
+        "native ICP transfer submission",
+        "parallel old/new execution",
         "IcpTransfer",
         "Legacy",
         "SchemaV2",
@@ -571,10 +624,10 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
         for path in rust_files_below(root, directory)? {
             let text = fs::read_to_string(&path)
                 .map_err(|error| format!("{}: {error}", path.display()))?;
-            let lines = text.lines().count();
-            if lines > 1_200 {
+            let lines = production_line_count(&text);
+            if lines > 1_100 {
                 return Err(format!(
-                    "{} has {lines} lines; the per-file limit is 1200",
+                    "{} has {lines} production lines; the per-file limit is 1100",
                     path.display()
                 ));
             }
@@ -593,26 +646,25 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
         .into_iter()
         .try_fold(0usize, |sum, path| {
             fs::read_to_string(&path)
-                .map(|text| sum + text.lines().count())
+                .map(|text| sum + production_line_count(&text))
                 .map_err(|error| format!("{}: {error}", path.display()))
         })?;
-    if economics_lines > 350 {
+    if economics_lines > 220 {
         return Err(format!("pure economics module has {economics_lines} lines"));
     }
     for directory in ["crates/io_core_model/src", "crates/io_ledger_types/src"] {
         for path in rust_files_below(root, directory)? {
-            combined_lines += fs::read_to_string(&path)
-                .map_err(|error| format!("{}: {error}", path.display()))?
-                .lines()
-                .count();
+            let text = fs::read_to_string(&path)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            combined_lines += production_line_count(&text);
         }
     }
-    if stream_lines > 4_000 {
+    if stream_lines > 3_500 {
         return Err(format!(
             "stream-manager production Rust has {stream_lines} lines"
         ));
     }
-    if combined_lines > 9_000 {
+    if combined_lines > 8_500 {
         return Err(format!(
             "combined production Rust has {combined_lines} lines; 50% donor reduction not met"
         ));
@@ -621,34 +673,34 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
         .into_iter()
         .try_fold(0usize, |sum, path| {
             fs::read_to_string(&path)
-                .map(|text| sum + text.lines().count())
+                .map(|text| sum + production_line_count(&text))
                 .map_err(|error| format!("{}: {error}", path.display()))
         })?;
-    if nns_lines > 4_500 {
+    if nns_lines > 3_500 {
         return Err(format!("NNS-manager production Rust has {nns_lines} lines"));
     }
-    for path in [
-        "README.md",
-        "docs/architecture/api-surface.md",
-        "docs/architecture/stream-manager.md",
-        "docs/architecture/scheduler.md",
-        "docs/architecture/stable-storage.md",
-        "docs/operations/mainnet-readiness.md",
-        "docs/security/threat-model.md",
-        "docs/testing/current-test-inventory.md",
-        "docs/testing/e2e-coverage-matrix.md",
-    ] {
-        let text = require_file(root, path)?;
+    for path in normative_markdown_files(root)? {
+        let text =
+            fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        let lower = text.to_ascii_lowercase();
         for needle in [
             "production DIDs remain constructor-only",
+            "constructor-only monetary DIDs",
             "ledger/index-driven monetary intent",
             "redemption intake Account",
             "redemption return leg",
             "automatic rejected-redemption refund",
             "scanner-driven settlement",
+            "scanner-driven intent",
+            "automatic proof of absence",
+            "cursor recovery",
+            "timer-driven monetary execution",
         ] {
-            if text.contains(needle) {
-                return Err(format!("{path} contains stale normative phrase {needle:?}"));
+            if lower.contains(&needle.to_ascii_lowercase()) {
+                return Err(format!(
+                    "{} contains stale normative phrase {needle:?}",
+                    path.display()
+                ));
             }
         }
     }
@@ -659,7 +711,9 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
         let text = require_file(root, path)?;
         require_present(path, &text, &["NON-RUNNABLE TEMPLATE", "TODO_"])?;
     }
-    eprintln!("simplicity metrics: stream_manager={stream_lines} combined={combined_lines}");
+    eprintln!(
+        "simplicity metrics: stream_manager={stream_lines} nns_manager={nns_lines} economics={economics_lines} combined={combined_lines}"
+    );
     Ok(())
 }
 
@@ -1484,7 +1538,7 @@ fn check_sns_official_testing_at(root: &Path) -> Result<(), String> {
         "docs/operations/local-sns-testing.md",
         &local_doc,
         &[
-            "We currently run SNS-shaped mock/PocketIC tests.",
+            "Required CI uses SNS-shaped mock/PocketIC tests.",
             "not official SNS launch tests",
             "not SNS-W",
             "not decentralization swap",
@@ -4816,14 +4870,14 @@ fn check_e2e_coverage_matrix_at(root: &Path) -> Result<(), String> {
         scenarios_path,
         &scenarios,
         &[
-            "ICP deposit -> IO reserve issuance",
-            "User stakes IO into SNS neuron",
-            "User increases IO neuron stake",
-            "SNS governance unavailable",
-            "SNS index lag",
-            "Archive-required account history",
-            "Mid-flight upgrade",
-            "Frontend never calls value-moving canisters",
+            "Serialized redemption",
+            "Jupiter 40/60",
+            "Direct maturity",
+            "Exact rewards",
+            "One unwind child",
+            "Historian and frontend",
+            "Transport ambiguity",
+            "Every upgrade returns Paused",
         ],
     )?;
     Ok(())
@@ -5224,8 +5278,8 @@ fn check_sns_harness_at(root: &Path) -> Result<(), String> {
         &local_sns_doc,
         &[
             "Pure model tests remain the main accounting guardrail",
-            "Mock and PocketIC tests remain the main journal, retry, and upgrade guardrail",
-            "We currently run SNS-shaped mock/PocketIC tests.",
+            "Mock and PocketIC tests exercise bounded failures, retry and upgrade behavior",
+            "Required CI uses SNS-shaped mock/PocketIC tests.",
             "Four-Layer Compatibility Model",
             "Official SNS Local Launch Rehearsal",
             "optional, local-only, and not part of `test_ci` or `verify_release`",
@@ -7425,9 +7479,9 @@ mod tests {
             root,
             "docs/operations/local-sns-testing.md",
             r#"# Local SNS Testing
-We currently run SNS-shaped mock/PocketIC tests.
+Required CI uses SNS-shaped mock/PocketIC tests.
 Pure model tests remain the main accounting guardrail.
-Mock and PocketIC tests remain the main journal, retry, and upgrade guardrail.
+Mock and PocketIC tests exercise bounded failures, retry and upgrade behavior.
 ## Four-Layer Compatibility Model
 not official SNS launch tests not SNS-W not decentralization swap not mainnet testflight
 ## Official SNS Local Launch Rehearsal

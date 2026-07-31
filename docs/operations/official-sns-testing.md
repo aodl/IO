@@ -14,7 +14,7 @@ The existing canister that owns IO NNS neuron 6345890886899317159 is not touched
 
 ## Layer 1: IO Mock/PocketIC SNS-Shaped Harness
 
-This layer uses repo-owned mocks for SNS governance, SNS root, ledger, and index canisters. It tests IO-specific accounting, journal retry, governance-read mapping, root/controller upgrade intent, stable-state behavior, and constructor-only production DIDs.
+This layer uses repo-owned mocks for SNS governance, SNS root, ledger, and index canisters. It tests IO-specific accounting, typed-operation retry, governance-read mapping, root/controller upgrade intent, stable-state behavior, and the reviewed simplified production DIDs.
 
 It does not run official SNS launch, SNS-W, decentralization swap, or mainnet testflight.
 
@@ -34,7 +34,7 @@ The local package lives in `deploy/local-sns-rehearsal/`. It documents rendering
 
 The repository validator `cargo run -p xtask -- validate_local_sns_rehearsal` is no-network and may run in normal checks. The completed-ledger evidence validator `cargo run -p xtask -- validate_local_sns_ledger` is optional and skips until `deploy/local-sns-rehearsal/canister-ids.local.toml` exists. Until that evidence file exists, no local SNS canister IDs are recorded and no real SNS ledger/index/governance/root behavior has been observed.
 
-The issuance model under this layer is protocol reserve transfer: reserve-to-user for issuance, user-to-redemption for incoming redeemed IO, and redemption-to-reserve for the protocol return. IO does not assume arbitrary post-launch minting or constant supply unless the final ledger fee mode proves it.
+The issuance model under this layer is protocol reserve transfer. The standalone rehearsal proves reserve-to-user and direct user-to-reserve ledger mechanics. The launch stream manager separately uses an authenticated ICRC-2 pull from the caller Account directly into reserve. IO does not assume arbitrary post-launch minting or constant supply unless the final ledger fee mode proves it.
 
 ## Layer 4: Mainnet SNS Testflight
 

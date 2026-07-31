@@ -1,67 +1,35 @@
-# E2E Scenario Specs
+# Simplified E2E scenario specifications
 
-Each scenario states the intended real-canister proof target and the current coverage status.
+These scenarios describe explicit command execution against canonical ledgers and governance. No scenario authorizes mainnet work or uses account-history discovery as monetary authority.
 
-## 1. ICP deposit -> IO reserve issuance
+## Serialized redemption
 
-Starting state: user has ICP; IO reserve has funded SNS IO; stream manager is local/test only. Canisters: ICP ledger/index, IO stream manager, real SNS IO ledger/index. Actions: user deposits authorized ICP. Expected ledger blocks: ICP deposit block, SNS IO reserve-to-user block. Expected index history: both account histories expose the blocks in supported order. Expected governance state: unchanged. Expected IO state: journal terminal success, no minting. Historian/frontend: local/prelaunch only. Failure modes: duplicate deposit, BadFee, insufficient reserve, index lag. Current coverage: mock/model and SNS-shaped PocketIC for stream-manager flow; opt-in real-framework PocketIC proves the SNS reserve-to-user ledger/index slice when pinned artifacts are supplied.
+Install Paused with a pinned real SNS ledger as IO, the official ICP ledger interface as ICP, and the stream-manager Wasm. Governance readiness must validate standards, fees, supply/reserve/exclusions and liquid backing.
 
-## 2. Tiny ICP dust deposit -> terminal rejection, scanner advances
+For multiple users and canonical subaccounts, prove exact ICRC-2 allowance and pull, separate payout resume, separate canonical commit, balances and fee burns. Cover null/zero normalization, excluded/reserve rejection, exact replay, conflicting nonce, overlapping preparation, concurrent resume, stale callbacks, upgrades at Preparation/IO-in-reserve/payout/completion, delayed first payout, duplicate/ambiguous payout, deduplication expiry with exact proof and adverse postconditions.
 
-Starting state: scanner cursor before tiny deposit. Canisters: ICP ledger/index, stream manager. Actions: authorized tiny ICP transfer. Expected ledger blocks: ICP deposit only. Expected IO state: terminal rejection and cursor advance. Current coverage: SNS-shaped PocketIC; real ledger/index not covered.
+The official-ledger baseline is `installed_stream_real_sns_icrc2_redemption`. It proves Paused install, readiness, pinned SNS ICRC-2 pull, separate official ICP payout, separate completion, upgrades, exact balances, replay and nonce conflict. Deterministic response barriers and the remaining matrix are required before P0 completion.
 
-## 3. Duplicate ICP deposit -> no double issuance
+## Jupiter 40/60
 
-Starting state: processed deposit recorded. Actions: same ledger event observed again. Expected IO state: idempotent no-op/no second reserve transfer. Current coverage: unit/model and mock/PocketIC; real index duplicate replay not covered.
+Prove one exact configured Jupiter deposit block and sequential memo. Persist the typed operation, stake floor(40% of gross), refresh the protected neuron, prove the exact increase, prepare the Jupiter receipt, transfer the remaining liquid amount from Jupiter staging, prove it through ICP `query_blocks`, then settle backed IO from reserve to the fixed Jupiter account. Each update performs at most one external monetary or governance effect. No IO leaves reserve before deposit, stake increase and liquid receipt are all proved.
 
-## 4. User stakes IO into SNS neuron -> governance state observed
+## Direct maturity
 
-Starting state: user has liquid SNS IO. Canisters: real SNS ledger/index/governance/root. Actions: user follows normal SNS staking path. Expected ledger blocks: stake transfer/subaccount funding per SNS model. Expected governance state: neuron exists with controller/permissions/stake/dissolve state. Expected IO state: read-only snapshot can see neuron, no value-moving mutation. Current coverage: production-shaped DTO unit tests only; normal real SNS staking not covered.
+For each protected neuron, call `StakeMaturity(40%)` and then `DisburseMaturity(100% of remaining)`. Record drift between the two responses. Two-year actual ICP goes directly to stream liquid and issues no IO. Two-week actual staging balance increase is transferred through the proof-bound two-week receipt and settles the pending cohort.
 
-## 5. User increases IO neuron stake -> IO APY increases according to policy
+## Exact rewards
 
-Starting state: eligible staked SNS neuron exists. Actions: normal SNS top-up or equivalent governance state change. Expected governance state: cached stake increases for same neuron. Expected IO protocol state: reward entitlement increases only after a fresh cohort captures the top-up. Current coverage: unit frozen-cohort top-up tests; real SNS top-up cohort proof is covered by ignored real-framework tests.
+Capture bounded SNS neuron/proposal/ballot evidence into one active cohort, close it only after the actual 1,209,600-second interval and retain one pending cohort. The actual two-week liquid maturity drives the unchanged reward policy. Resume transfers one recipient, the next resume refreshes that exact SNS neuron, and upgrades preserve recipient progress. One IO fee is charged per recipient; dust remains in reserve.
 
-## 6. User votes/follows -> maturity/participation reflected if policy requires it
+## One unwind child
 
-Starting state: eligible neuron and reward-eligible proposal. Actions: direct vote or followed vote. Expected governance state: ballot records direct/followed vote and rewards/maturity fields are represented honestly. Expected IO state: participation ratio changes reward allocation. Current coverage: unit production-shaped DTO and mock governance tests; real voting/rewards not covered.
+Below target, report UnderTarget and do not stake liquid backing. Above target, split and dissolve one exact excess child. A rising target stops dissolution and merges the child back. A ready child disburses directly to stream liquid, issues no IO and clears the one pending slot.
 
-## 7. User redeems IO -> net ICP payout and IO return
+## Historian and frontend
 
-Starting state: user has liquid IO, stream manager has liquid ICP. Actions: user sends IO redemption transfer. Expected ledger blocks: SNS IO user-to-redemption block, redemption-to-reserve return block, ICP payout block. Expected IO state: gross/net/fee intent preserved, terminal success. Current coverage: model and mock/PocketIC; real SNS ledger not covered.
+The frontend selects one canonical subaccount, queries allowance, creates a short exact approval, supplies fee/output maxima and nonce, displays typed progress and warns that unsolicited transfers create no claim. The historian reports source freshness and simplified status but never supplies monetary inputs or completes work.
 
-## 8. Redemption retry after ICP payout failure
+## Failure expectations
 
-Expected: IO return proof remains pending or retryable, ICP not double-paid. Current coverage: mock/PocketIC retry tests; real ledgers not covered.
-
-## 9. Duplicate redemption retry after upgrade
-
-Expected: stable journal preserves payout/return intent and duplicate proof prevents double-pay. Current coverage: stable fixtures and mock/PocketIC upgrade retry tests; real ledgers not covered.
-
-## 10. SNS governance unavailable -> APY fails safe
-
-Expected: no fake APY/reward increase, retry/error state auditable. Current coverage: governance snapshot error unit tests; no real transient governance failure.
-
-## 11. SNS index lag -> scanner does not corrupt state
-
-Expected: cursor does not advance past unreadable history; later catch-up succeeds. Current coverage: unit and mock/PocketIC for induced lag; opt-in real-framework PocketIC observes index catch-up after ticks but does not deterministically induce lag.
-
-## 12. Archive-required account history -> documented/future handling
-
-Expected: archive-required is detected and scanner fails closed until archive traversal is implemented. Current coverage: unit and mock/PocketIC flag handling; real archive not covered because the real-framework smoke does not generate enough transactions or archive config pressure.
-
-## 13. Mid-flight upgrade at each critical boundary
-
-Boundaries: before deposit processing, after deposit before IO transfer, after IO transfer before journal terminal state, during redemption before ICP payout, after ICP payout before IO return, after IO return before terminal state, after SNS neuron stake observed before APY update. Current coverage: several mock/PocketIC retry upgrade paths and stable fixtures; SNS stake-observed boundary and all-real canisters not covered.
-
-## 14. Historian displays local/real/prelaunch status honestly
-
-Expected historian state: source freshness/staleness explicit; local evidence local-only; no protocol-truth claim. Frontend claim: IO protocol not live and SNS IO ledger not launched on mainnet. Current coverage: static/host historian freshness and prelaunch shell gates.
-
-## 15. Frontend never calls value-moving canisters
-
-Expected: frontend imports only historian production declarations; no stream-manager/NNS-manager calls. Current coverage: static `did_surface`, `validate_prelaunch_public_shell`, and `validate_historian_freshness` gates.
-
-## 2026-07-28 Truth-Pass Fee/Supply Update
-
-Scenarios that mention local SNS ledger supply must not assume total supply is constant across reserve transfers. Under the current standard SNS ledger path, absent a fee collector, fees are burned. Local evidence remains local-only and does not prove production evidence.
+Transport ambiguity preserves the identical Submitted intent and reports Pending. Exact effect proof uses only the canonical named block; there is no global absence proof. Every upgrade returns Paused. Corrupt V1 state fails reopening. A stale callback cannot mutate a newer sequence/variant/phase/fingerprint/epoch.

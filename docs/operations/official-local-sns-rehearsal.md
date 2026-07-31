@@ -68,7 +68,7 @@ Run local canister calls against the local SNS ledger/index principals recorded 
 - `icrc1_transfer` returns `BadFee` for an intentionally wrong fee.
 - `icrc1_transfer` returns `InsufficientFunds` for an unfunded source subaccount.
 - Repeating a transfer with the same created-at time/memo produces duplicate behavior that IO can prove against the duplicate block.
-- The SNS index `get_account_transactions` endpoint returns the expected reserve/user account history in a stable order for IO cursor handling.
+- The SNS index `get_account_transactions` endpoint returns the expected reserve/user account history in a stable order for historian observation evidence; it is not monetary command authority.
 - Index lag or archive-required behavior is either observed and recorded or explicitly marked as future work in the local evidence file.
 - SNS governance exposes nervous-system parameters.
 - SNS root is available and can report controlled dapp canisters or support the corresponding official local query.
@@ -78,14 +78,14 @@ Run local canister calls against the local SNS ledger/index principals recorded 
 
 IO issuance is resolved conservatively as a transfer from a protocol reserve account/subaccount funded after SNS finalization and before activation by an executed SNS-governance treasury-transfer proposal.
 
-Redemption returns IO to the protocol reserve. IO must not assume arbitrary post-launch minting unless final SNS ledger configuration and governance policy explicitly support it and a later audited milestone changes this model.
+Redemption uses an authenticated ICRC-2 pull directly into the protocol reserve. IO must not assume arbitrary post-launch minting unless final SNS ledger configuration and governance policy explicitly support it and a later audited milestone changes this model.
 
 The local rehearsal must prove:
 
 - the protocol reserve account exists on the SNS ledger;
 - the reserve balance is funded by the recorded post-finalization SNS-governance treasury transfer;
-- stream-manager local wiring can construct the reserve-to-user transfer intent;
-- redemption local wiring can observe the user-to-redemption transfer and construct the redemption-to-reserve return intent;
+- the standalone ledger fixture can execute a reserve-to-user transfer;
+- the standalone ledger fixture can execute a direct user-to-reserve transfer with the configured fee;
 - fee disposition and total-supply deltas are recorded for each transfer.
 
 ## What Remains Unproven
@@ -98,6 +98,6 @@ IO protocol remains not live. The canonical SNS IO ledger remains not launched o
 
 ## Completion Checklist
 
-The rehearsal is complete only when official local SNS tooling was run locally; local SNS root/governance/ledger/index/swap IDs were recorded; local SNS ledger fee disposition, total-supply deltas, and reserve balance were observed; reserve-to-user, user-to-redemption, and redemption-to-reserve transfers were observed separately; bad fee, insufficient funds, duplicate behavior, duplicate block proof, and index account history were observed; SNS governance/root/swap availability and dapp controller state were checked; and `cargo run -p xtask -- validate_local_sns_ledger` passes against the filled evidence file.
+The rehearsal is complete only when official local SNS tooling was run locally; local SNS root/governance/ledger/index/swap IDs were recorded; local SNS ledger fee disposition, total-supply deltas, and reserve balance were observed; reserve-to-user and direct user-to-reserve transfers were observed separately; bad fee, insufficient funds, duplicate behavior, duplicate block proof, and index account history were observed; SNS governance/root/swap availability and dapp controller state were checked; and `cargo run -p xtask -- validate_local_sns_ledger` passes against the filled evidence file.
 
 Passing this local evidence gate still does not prove mainnet SNS launch readiness, final tokenomics, final SNS config, mainnet testflight, audit readiness, or production adapter activation.

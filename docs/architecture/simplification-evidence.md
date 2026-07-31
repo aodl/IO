@@ -9,17 +9,16 @@ The comparison base is frozen research commit
 
 | Metric | P0 v2 donor | Simplified tree |
 |---|---:|---:|
-| Combined Rust LOC in both value-moving `src/` trees, `io_core_model`, and `io_ledger_types` | 36,925 | 6,600 |
-| Stream-manager production Rust LOC | over 20,000 | 1,506 |
+| Combined production Rust LOC in both value-moving `src/` trees, `io_core_model`, and `io_ledger_types` | 36,925 | 6,025 |
+| Stream-manager production Rust LOC | over 20,000 | 3,202 |
 | Production DID methods, stream / NNS | 0 / 0 | 7 / 6 |
-| Immediate operation variants, stream / NNS | generic bag | 2 / 3 |
+| Immediate operation variants, stream / NNS | generic bag | 3 / 2 |
 | Launch value-moving stable schemas | migration chains | V1 / V1 |
-| Largest production source file | over 13,000 LOC | under 500 LOC |
+| Largest production source file | over 13,000 LOC | under 1,100 LOC |
 
-The value-moving comparison diff is 32,436 deletions and 2,121 insertions.
-The combined LOC reduction is 82.1%, exceeding the 50% gate. No replacement
-production source file exceeds 1,500 lines. Stream operation records have fewer
-than 20 fields and fewer than five optional fields.
+The combined LOC reduction remains above the 50% gate. No replacement
+production source file exceeds the enforced 1,100-line limit. Typed preparation,
+redemption and receipt operations replace the deleted generic field bag.
 
 The release-target build produced local, uncommitted Wasm only:
 
@@ -74,17 +73,27 @@ Using the locally pinned official SNS ledger Wasm and PocketIC, the
 - approval fee burn;
 - transfer-from fee burn.
 
+`installed_stream_real_sns_icrc2_redemption` additionally installs the current
+stream-manager Wasm with the pinned SNS ledger for IO and PocketIC's official ICP
+ledger canister for payout. It proves Paused installation, readiness, approval
+and direct pull, a separately resumed official-ledger payout, a separately
+committed result, same-Wasm upgrades, exact replay and conflicting-nonce
+rejection. It also proves a Jupiter liquid receipt through the official ICP
+`query_blocks` interface, exact backed-IO settlement and durable receipt replay
+after an upgrade returns the canister to Paused.
+
 ## Intrinsic implementation blockers retained honestly
 
-This tranche does not claim completion of NNS execution. The clean NNS V1 state,
+NNS execution remains incomplete. The clean NNS V1 state,
 typed immediate operations, exact 40/60 arithmetic, direct maturity DTOs, fixed
 pending slots, target generation/coalescing, narrow DID, and lifecycle are
-implemented. Canonical Jupiter block decoding, real governance command
-execution, actual maturity receipt observation, receipt delivery, reward
-fan-out, and unwind lifecycle remain fail-closed rather than fabricating
-completion.
+implemented. Stream-side canonical Jupiter block decoding and settlement are
+installed and exercised. Real governance command execution, actual maturity
+receipt observation, NNS receipt delivery, reward fan-out, and unwind lifecycle
+remain fail-closed rather than fabricating completion.
 
-The stream-manager direct redemption path compiles and its canonical equations,
-stable reopen, immutable duplicate classification, and real-ledger ICRC-2
-boundary are tested. A full PocketIC test installing the simplified stream
-manager alongside the real ledger remains follow-up coverage.
+The stream-manager direct redemption path reserves typed preparation before
+pricing, commits through exact phases, creates payout intent after IO reaches
+reserve, validates V1, reopens Paused and passes the installed canonical-ledger
+path. The remaining response-barrier matrix, two-week fan-out and executable NNS
+governance continuations remain explicit blockers.

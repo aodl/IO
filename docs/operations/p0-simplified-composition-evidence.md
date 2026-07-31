@@ -1,0 +1,30 @@
+# P0 simplified composition evidence
+
+This document records the deterministic composition defects reproduced from the simplified-execution baseline and the launch invariant that replaces each defect. It is normative for the simplified protocol; scanner-era recovery remains non-normative research history.
+
+| Item | Baseline reproduction | Positive invariant and regression |
+| --- | --- | --- |
+| A | Canonical pricing ran before any active-operation reservation, so two `redeem` messages could interleave and an older callback could install its operation after a newer redemption. | Caller balance and allowance are read first; the exact caller nonce and fingerprint are re-read; `RedemptionPreparation` then exclusively reserves the one operation slot before global pricing. Only the byte-for-byte matching preparation may become executable. |
+| B | Completion wrote `CallerRedemptionState` before rechecking the active sequence, permitting two completion callbacks to advance caller state. | `CompletionPrepared` durably stores the exact result. Caller state accepts only `nonce` once or the exact already-applied `nonce + 1` replay. `CallerResultApplied` is persisted before the exact operation is cleared. |
+| C | A failed postcondition callback called an unconditional persistence helper and could overwrite a newer operation. | The callback compares sequence, variant, phase and request fingerprint after the await and before mutation. A stale callback returns `Busy` without writing. |
+| D | The ICP payout intent inherited the initial `redeem` timestamp and could be `TooOld` before its first submission. | Preparation creates only the IO pull. The ICP intent and checked deduplication deadline are created with the current time only on the first resume from `IoInReserve`. |
+| E | The request fingerprint encoded the caller's raw optional subaccount, so `null` and 32 zero bytes differed. | `CanonicalRedeemRequestV1` fingerprints one fixed effective `[u8; 32]` subaccount under a domain-separated hash. `null_and_zero_subaccounts_have_one_request_identity` proves equality. |
+| F | An unpause preflight re-read only lifecycle/work state, so a governance pause delivered during the awaits could be overwritten. | Every governance pause/unpause increments `control_epoch`; Ready may be written only for the captured epoch while the latest lifecycle is still Paused. |
+| G | `post_upgrade` reopened stable state without changing Ready. | Both launch canisters fully validate V1 and then force lifecycle to Paused while preserving typed work. Installed redemption upgrades exercise Paused replay/resume semantics. |
+| H | `complete_liquid_receipt` used SNS-style `get_transactions` against the configured ICP ledger. | Receipt completion calls the official ICP `query_blocks` interface and its exact returned archive callback, matching account identifiers, amount, fee, memo, timestamp and absence of spender. |
+| I | One `nns_receipt_source` could not represent distinct Jupiter and two-week staging accounts. | Stream configuration contains exact distinct `jupiter_receipt_source` and `two_week_receipt_source` accounts; the receipt operation persists the source selected by kind. |
+| J | Clearing a completed receipt discarded all exact replay evidence. | `LastCompletedReceipt` stores the request fingerprint, permit, exact ICP block, settlement result and completion time. Exact preparation replay returns the durable permit; a conflicting sequence is rejected. |
+| K | `two_week_target` returned eligible IO e8s directly. | The pure target is `floor(active eligible IO * liquid ICP / redeemable IO supply)`, without subtracting a payout fee. Tests cover backing rates below, equal to and above one. |
+| L | Stable reopening validated only configuration and accepted inconsistent active work. | `StreamStateV1::validate` and `NnsStateV1::validate` validate typed active work, transfer attempts, fingerprints, bounded fields and pending maturity identities before reopening. Caller replay records validate whenever read or written. |
+| M | `progress_for` mapped durable `Stuck` to `PayoutSubmitted`. | Public progress has an explicit `Stuck(text)` state and preparation has explicit `Preparing`. |
+| N | A transport rejection returned `ApiError::Stuck` while the durable transfer remained safely retryable `Submitted`. | Transport and ledger ambiguity return `ApiError::Pending`; only an explicit durable transition may report `Stuck` and pause.
+
+## Installed composition evidence
+
+`installed_stream_real_sns_icrc2_redemption` installs the stream-manager debug Wasm with the pinned real SNS ledger as IO and PocketIC's official ICP ledger canister as ICP. It proves Paused installation, readiness, excluded/reserve Account rejection, ICRC-2 approval/pull, exact IO fee burn, upgrade after the pull, a delayed first payout whose timestamp is not inherited from the redeem request, exact ICP movement, upgrade after payout, a separate canonical commit, null/zero normalization, durable exact redemption replay, and conflicting-nonce rejection.
+
+The same installed test prepares a Jupiter receipt, transfers ICP from the exact configured NNS source, proves that block through the official ledger's `query_blocks` shape, settles backed IO from reserve to the fixed Jupiter Account, checks the exact fee burn, upgrades, and replays the durable receipt permit while Paused. The test therefore composes both payout and receipt proof against the production-shaped ICP interface rather than a second SNS ledger substitute.
+
+## Remaining vertical work
+
+The safety and topology invariants above are implemented. The deterministic response-barrier matrix, exact stuck-transfer archive cases, two-week serialized reward fan-out, executable Jupiter/NNS governance chain, direct maturity/unwind drivers, frontend redemption flow, and complete historian status projection remain required before final P0 completion. NNS readiness deliberately returns `ImplementationIncomplete` rather than exposing Ready until those effects exist.
