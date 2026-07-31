@@ -32,15 +32,15 @@ pub enum OwnTransferIntent {
 
 impl OwnTransferIntent {
     pub fn validate(&self) -> Result<(), String> {
-        let (ledger, source, to, amount, memo, created_at_time) = match self {
+        let (ledger, source, to, amount, fee, memo, created_at_time) = match self {
             Self::Icrc1 {
                 ledger,
                 from_subaccount,
                 to,
                 amount,
+                fee,
                 memo,
                 created_at_time,
-                ..
             } => (
                 ledger,
                 Account {
@@ -49,6 +49,7 @@ impl OwnTransferIntent {
                 },
                 to,
                 amount,
+                fee,
                 memo,
                 created_at_time,
             ),
@@ -57,18 +58,19 @@ impl OwnTransferIntent {
                 from,
                 to,
                 amount,
+                fee,
                 memo,
                 created_at_time,
                 ..
-            } => (ledger, from.clone(), to, amount, memo, created_at_time),
+            } => (ledger, from.clone(), to, amount, fee, memo, created_at_time),
         };
         if *ledger == Principal::anonymous() || *ledger == Principal::management_canister() {
             return Err("transfer ledger principal is forbidden".into());
         }
         source.validate()?;
         to.validate()?;
-        if *amount == 0 || *created_at_time == 0 {
-            return Err("amount and created_at_time must be non-zero".into());
+        if *amount == 0 || *fee == 0 || *created_at_time == 0 {
+            return Err("amount, fee and created_at_time must be non-zero".into());
         }
         if memo.len() > MAX_MEMO_BYTES {
             return Err("memo exceeds launch bound".into());
@@ -82,6 +84,17 @@ impl OwnTransferIntent {
     pub fn ledger(&self) -> Principal {
         match self {
             Self::Icrc1 { ledger, .. } | Self::Icrc2TransferFrom { ledger, .. } => *ledger,
+        }
+    }
+
+    pub fn created_at_time(&self) -> u64 {
+        match self {
+            Self::Icrc1 {
+                created_at_time, ..
+            }
+            | Self::Icrc2TransferFrom {
+                created_at_time, ..
+            } => *created_at_time,
         }
     }
 
@@ -130,6 +143,34 @@ impl TransferAttempt {
             TransferState::Succeeded { block } => Ok(block),
             _ => Err("transfer lacks success evidence".into()),
         }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        self.intent.validate()?;
+        if self.fingerprint.len() != 32 || self.fingerprint != self.intent.fingerprint() {
+            return Err("transfer fingerprint is invalid".into());
+        }
+        match &self.state {
+            TransferState::Prepared => {}
+            TransferState::Submitted {
+                epoch,
+                first_submitted_at,
+                last_submitted_at,
+            } => {
+                if epoch.0 == 0
+                    || *first_submitted_at == 0
+                    || last_submitted_at < first_submitted_at
+                {
+                    return Err("submitted transfer epoch/timestamps are invalid".into());
+                }
+            }
+            TransferState::Succeeded { .. } => {}
+            TransferState::Stuck { reason } if reason.is_empty() || reason.len() > 512 => {
+                return Err("stuck transfer reason is invalid".into())
+            }
+            TransferState::Stuck { .. } => {}
+        }
+        Ok(())
     }
 }
 

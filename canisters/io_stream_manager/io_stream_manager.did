@@ -4,7 +4,9 @@ type StreamConfig = record {
   io_ledger : principal;
   icp_ledger : principal;
   nns_manager : principal;
-  nns_receipt_source : Account;
+  jupiter_receipt_source : Account;
+  two_week_receipt_source : Account;
+  jupiter_io_account : Account;
   sns_governance : principal;
   io_reserve : Account;
   liquid_icp : Account;
@@ -38,13 +40,16 @@ type RedemptionResult = record {
   completed_at_nanos : nat64;
 };
 type RedemptionProgress = variant {
+  Preparing;
   IoPullSubmitted;
   IoInReserve;
   PayoutSubmitted;
   PayoutSucceeded;
+  Completing;
   Completed : RedemptionResult;
+  Stuck : text;
 };
-type ReceiptKind = variant { Jupiter; TwoYearMaturity; TwoWeekMaturity; UnwindPrincipal };
+type ReceiptKind = variant { Jupiter; TwoWeekMaturity };
 type PrepareLiquidReceiptArgs = record {
   receipt_sequence : nat64;
   receipt_kind : ReceiptKind;
@@ -54,6 +59,18 @@ type PrepareLiquidReceiptArgs = record {
 };
 type LiquidReceiptPermit = record { sequence : nat64; destination : Account; memo : blob };
 type CompleteLiquidReceiptArgs = record { receipt_sequence : nat64; block_index : nat };
+type LiquidReceiptProgress = variant {
+  AwaitingReceipt;
+  ReceiptProved;
+  Settling;
+  Completed : blob;
+  Stuck : text;
+};
+type StreamProgress = variant {
+  Redemption : RedemptionProgress;
+  LiquidReceipt : LiquidReceiptProgress;
+  Idle;
+};
 type ApiError = variant {
   Anonymous;
   Unauthorized;
@@ -63,6 +80,7 @@ type ApiError = variant {
   NonceAlreadyUsed;
   Invalid : text;
   Ledger : text;
+  Pending : text;
   Stuck : text;
 };
 type Status = record {
@@ -76,7 +94,7 @@ service : (InitArgs) -> {
   redeem : (RedeemArgs) -> (variant { Ok : RedemptionProgress; Err : ApiError });
   prepare_liquid_receipt : (PrepareLiquidReceiptArgs) -> (variant { Ok : LiquidReceiptPermit; Err : ApiError });
   complete_liquid_receipt : (CompleteLiquidReceiptArgs) -> (variant { Ok; Err : ApiError });
-  resume : () -> (variant { Ok : RedemptionProgress; Err : ApiError });
+  resume : () -> (variant { Ok : StreamProgress; Err : ApiError });
   prove_active_transfer : (nat) -> (variant { Ok; Err : ApiError });
   set_paused : (bool) -> (variant { Ok; Err : ApiError });
   get_status : () -> (Status) query;

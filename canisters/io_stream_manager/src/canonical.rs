@@ -1,4 +1,4 @@
-use candid::{CandidType, Func, Nat};
+use candid::{CandidType, Nat};
 use ic_cdk::call::Call;
 use serde::Deserialize;
 
@@ -58,6 +58,10 @@ pub async fn redemption_snapshot(
 
 pub async fn balance(ledger: candid::Principal, account: Account) -> Result<u128, String> {
     nat_call(ledger, "icrc1_balance_of", account).await
+}
+
+pub async fn fee(ledger: candid::Principal) -> Result<u128, String> {
+    nat_call(ledger, "icrc1_fee", ()).await
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -121,13 +125,15 @@ struct GetTransactionsResponse {
 struct ArchivedTransactions {
     start: Nat,
     length: Nat,
-    callback: Func,
+    callback: IcrcArchiveCallback,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 struct TransactionRange {
     transactions: Vec<Transaction>,
 }
+
+candid::define_function!(IcrcArchiveCallback : (GetTransactionsRequest) -> (TransactionRange) query);
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 struct Transaction {
@@ -198,7 +204,7 @@ pub async fn exact_icrc_transfer(
             })
             .ok_or("exact block is neither current nor in returned archive ranges")?;
         let range: TransactionRange =
-            Call::bounded_wait(archived.callback.principal, &archived.callback.method)
+            Call::bounded_wait(archived.callback.0.principal, &archived.callback.0.method)
                 .with_arg(request)
                 .await
                 .map_err(|error| format!("archive callback failed: {error:?}"))?
@@ -288,7 +294,7 @@ struct IcpBlock {
 struct IcpArchivedRange {
     start: u64,
     length: u64,
-    callback: Func,
+    callback: IcpArchiveCallback,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -310,6 +316,8 @@ enum IcpArchiveResult {
     Ok(IcpBlockRange),
     Err(candid::Reserved),
 }
+
+candid::define_function!(IcpArchiveCallback : (IcpGetBlocksArgs) -> (IcpArchiveResult) query);
 
 pub struct ExactIcpLedgerBlock {
     pub from: Vec<u8>,
@@ -354,7 +362,7 @@ pub async fn exact_icp_transfer(
             })
             .ok_or("exact ICP block is neither current nor archived")?;
         let result: IcpArchiveResult =
-            Call::bounded_wait(archived.callback.principal, &archived.callback.method)
+            Call::bounded_wait(archived.callback.0.principal, &archived.callback.0.method)
                 .with_arg(request)
                 .await
                 .map_err(|error| format!("ICP archive callback failed: {error:?}"))?

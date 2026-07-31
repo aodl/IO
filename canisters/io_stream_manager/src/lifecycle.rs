@@ -2,6 +2,7 @@ use crate::state::{self, Lifecycle};
 
 pub async fn readiness_preflight(
     canister_self: candid::Principal,
+    captured_control_epoch: u64,
 ) -> Result<(), crate::api::ApiError> {
     let snapshot = state::read();
     if snapshot.active_operation.is_some() {
@@ -60,7 +61,10 @@ pub async fn readiness_preflight(
         ));
     }
     let mut latest = state::read();
-    if latest.active_operation.is_some() || latest.lifecycle != Lifecycle::Paused {
+    if latest.active_operation.is_some()
+        || latest.lifecycle != Lifecycle::Paused
+        || latest.control_epoch != captured_control_epoch
+    {
         return Err(crate::api::ApiError::Busy);
     }
     latest.lifecycle = Lifecycle::Ready;
@@ -68,16 +72,19 @@ pub async fn readiness_preflight(
     Ok(())
 }
 
-pub fn set_paused(paused: bool) -> Result<(), String> {
+pub fn begin_control_request() -> Result<u64, String> {
     let mut state = state::read();
-    if !paused && state.active_operation.is_some() {
-        return Err("cannot unpause with an active operation".into());
-    }
-    state.lifecycle = if paused {
-        Lifecycle::Paused
-    } else {
-        Lifecycle::Ready
-    };
+    state.control_epoch = state
+        .control_epoch
+        .checked_add(1)
+        .ok_or("control epoch overflow")?;
+    let epoch = state.control_epoch;
     state::write(state);
-    Ok(())
+    Ok(epoch)
+}
+
+pub fn set_paused() {
+    let mut state = state::read();
+    state.lifecycle = Lifecycle::Paused;
+    state::write(state);
 }

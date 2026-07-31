@@ -96,8 +96,18 @@ pub fn backed_io(
         .map(|value| value / liquid_icp_before_e8s)
 }
 
-pub fn two_week_target(active_staked_io_e8s: u128) -> u128 {
-    active_staked_io_e8s
+pub fn two_week_target(
+    active_eligible_io_e8s: u128,
+    liquid_icp_e8s: u128,
+    redeemable_io_supply_e8s: u128,
+) -> Result<u128, EconomicsError> {
+    if redeemable_io_supply_e8s == 0 {
+        return Err(EconomicsError::ZeroRedeemableSupply);
+    }
+    active_eligible_io_e8s
+        .checked_mul(liquid_icp_e8s)
+        .ok_or(EconomicsError::ArithmeticOverflow)
+        .map(|value| value / redeemable_io_supply_e8s)
 }
 
 #[cfg(test)]
@@ -129,6 +139,13 @@ mod tests {
             redemption_quote(499, 2, 1_000, 400, 100, 1_000, 10),
             Err(EconomicsError::RedemptionExceedsSupply)
         );
+    }
+
+    #[test]
+    fn two_week_target_is_the_gross_redemption_claim_at_any_rate() {
+        assert_eq!(two_week_target(100, 50, 100), Ok(50));
+        assert_eq!(two_week_target(100, 100, 100), Ok(100));
+        assert_eq!(two_week_target(100, 250, 100), Ok(250));
     }
 
     #[test]

@@ -3,12 +3,11 @@ use ic_cdk::call::Call;
 use serde::Deserialize;
 
 use crate::{
-    canonical,
-    receipt::{
-        receipt_memo, CompleteLiquidReceiptArgs, LiquidReceiptOperation, LiquidReceiptPermit,
-        PrepareLiquidReceiptArgs, ReceiptKind, ReceiptPhase,
+    canonical, receipt,
+    redemption::{
+        self, CanonicalRedeemRequestV1, RedeemArgs, RedemptionOperation, RedemptionPhase,
+        RedemptionPreparation,
     },
-    redemption::{self, RedeemArgs, RedemptionOperation, RedemptionPhase},
     state::{
         self, Account, DispatchEpoch, Lifecycle, OperationSequence, RedemptionResult,
         StreamOperation, StreamStateV1,
@@ -29,16 +28,36 @@ pub enum ApiError {
     NonceAlreadyUsed,
     Invalid(String),
     Ledger(String),
+    Pending(String),
     Stuck(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum RedemptionProgress {
+    Preparing,
     IoPullSubmitted,
     IoInReserve,
     PayoutSubmitted,
     PayoutSucceeded,
+    Completing,
     Completed(RedemptionResult),
+    Stuck(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum LiquidReceiptProgress {
+    AwaitingReceipt,
+    ReceiptProved,
+    Settling,
+    Completed(Vec<u8>),
+    Stuck(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum StreamProgress {
+    Redemption(RedemptionProgress),
+    LiquidReceipt(LiquidReceiptProgress),
+    Idle,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -53,6 +72,10 @@ pub struct Status {
 pub fn get_status() -> Status {
     let state = state::read();
     let (operation_kind, operation_phase) = match state.active_operation {
+        Some(StreamOperation::RedemptionPreparation(_)) => (
+            Some("RedemptionPreparation".into()),
+            Some("Preparing".into()),
+        ),
         Some(StreamOperation::Redemption(operation)) => (
             Some("Redemption".into()),
             Some(format!("{:?}", operation.phase)),
@@ -72,14 +95,14 @@ pub fn get_status() -> Status {
     }
 }
 
-fn require_ready(state: &StreamStateV1) -> Result<(), ApiError> {
+pub(crate) fn require_ready(state: &StreamStateV1) -> Result<(), ApiError> {
     match state.lifecycle {
         Lifecycle::Ready => Ok(()),
         Lifecycle::Paused => Err(ApiError::Paused),
     }
 }
 
-async fn submit(intent: &OwnTransferIntent) -> Result<TransferResult, String> {
+pub(crate) async fn submit(intent: &OwnTransferIntent) -> Result<TransferResult, String> {
     match intent {
         OwnTransferIntent::Icrc1 {
             ledger,
@@ -138,13 +161,18 @@ pub async fn redeem(
         return Err(ApiError::Anonymous);
     }
     let initial = state::read();
-    require_ready(&initial)?;
-    let account = Account {
-        owner: caller,
-        subaccount: args.from_subaccount.clone(),
-    };
+    let request = CanonicalRedeemRequestV1::from_args(&args).map_err(ApiError::Invalid)?;
+    let account = request.account(caller);
     account.validate().map_err(ApiError::Invalid)?;
-    let request_fingerprint = redemption::request_fingerprint(caller, &args, &account);
+    let request_fingerprint = redemption::request_fingerprint(caller, &request);
+    if let Some(StreamOperation::RedemptionPreparation(active)) = &initial.active_operation {
+        if active.caller == caller && active.request.nonce == args.nonce {
+            if active.request_fingerprint != request_fingerprint {
+                return Err(ApiError::NonceAlreadyUsed);
+            }
+            return Ok(RedemptionProgress::Preparing);
+        }
+    }
     if let Some(StreamOperation::Redemption(active)) = &initial.active_operation {
         if active.caller == caller && active.nonce == args.nonce {
             if active.request_fingerprint != request_fingerprint {
@@ -153,6 +181,19 @@ pub async fn redeem(
             return Ok(progress_for(active));
         }
     }
+    let replay_state = state::caller_state(caller);
+    if args.nonce.checked_add(1) == Some(replay_state.next_nonce)
+        && replay_state.last_request_fingerprint.as_deref() == Some(request_fingerprint.as_slice())
+    {
+        return replay_state
+            .last_result
+            .map(RedemptionProgress::Completed)
+            .ok_or(ApiError::Busy);
+    }
+    if args.nonce < replay_state.next_nonce {
+        return Err(ApiError::NonceAlreadyUsed);
+    }
+    require_ready(&initial)?;
     if initial.active_operation.is_some() {
         return Err(ApiError::Busy);
     }
@@ -182,19 +223,41 @@ pub async fn redeem(
     if args.expires_at_nanos < now {
         return Err(ApiError::Invalid("redemption expired".into()));
     }
-    let snapshot = canonical::redemption_snapshot(&initial.config)
-        .await
-        .map_err(ApiError::Ledger)?;
-    if snapshot.io_fee_e8s != initial.config.expected_io_fee_e8s
-        || snapshot.icp_fee_e8s != initial.config.expected_icp_fee_e8s
+    let latest_allowed_expiry = now
+        .checked_add(initial.config.maximum_request_lifetime_nanos)
+        .ok_or_else(|| ApiError::Invalid("redemption lifetime overflow".into()))?;
+    if args.expires_at_nanos > latest_allowed_expiry {
+        return Err(ApiError::Invalid(
+            "redemption expiry exceeds launch lifetime bound".into(),
+        ));
+    }
+    if args.max_io_fee_e8s < initial.config.expected_io_fee_e8s
+        || args.max_icp_fee_e8s < initial.config.expected_icp_fee_e8s
     {
         return Err(ApiError::Invalid(
-            "canonical fee differs from approved config".into(),
+            "caller fee maximum is below approved config".into(),
         ));
+    }
+    if account
+        .effective_eq(&initial.config.io_reserve)
+        .map_err(ApiError::Invalid)?
+    {
+        return Err(ApiError::Invalid("reserve account cannot redeem".into()));
+    }
+    if initial
+        .config
+        .excluded_io_accounts
+        .iter()
+        .try_fold(false, |matched, excluded| {
+            account.effective_eq(excluded).map(|same| matched || same)
+        })
+        .map_err(ApiError::Invalid)?
+    {
+        return Err(ApiError::Invalid("excluded account cannot redeem".into()));
     }
     let required_io = args
         .io_amount_e8s
-        .checked_add(snapshot.io_fee_e8s)
+        .checked_add(initial.config.expected_io_fee_e8s)
         .ok_or_else(|| ApiError::Invalid("redemption amount overflow".into()))?;
     let source_balance = canonical::balance(initial.config.io_ledger, account.clone())
         .await
@@ -207,7 +270,7 @@ pub async fn redeem(
         subaccount: None,
     };
     let (allowance, allowance_expiry) =
-        canonical::allowance(initial.config.io_ledger, account, spender)
+        canonical::allowance(initial.config.io_ledger, account.clone(), spender)
             .await
             .map_err(ApiError::Ledger)?;
     if allowance < required_io || allowance_expiry.is_some_and(|expiry| expiry < now) {
@@ -218,7 +281,11 @@ pub async fn redeem(
 
     let mut latest = state::read();
     require_ready(&latest)?;
-    if latest.active_operation.is_some() || args.expires_at_nanos < ic_cdk::api::time() {
+    let latest_caller = state::caller_state(caller);
+    if latest.active_operation.is_some()
+        || latest_caller.next_nonce != args.nonce
+        || args.expires_at_nanos < ic_cdk::api::time()
+    {
         return Err(ApiError::Busy);
     }
     let sequence = latest.next_operation_sequence;
@@ -227,11 +294,64 @@ pub async fn redeem(
         .0
         .checked_add(1)
         .ok_or_else(|| ApiError::Invalid("operation sequence overflow".into()))?;
-    let operation = redemption::calculate(caller, &args, snapshot, &latest.config, now, sequence)
-        .map_err(ApiError::Invalid)?;
+    let preparation = RedemptionPreparation {
+        sequence,
+        request_fingerprint: request_fingerprint.clone(),
+        request,
+        caller,
+        account,
+        prepared_at_nanos: now,
+    };
+    preparation.validate().map_err(ApiError::Invalid)?;
+    latest.active_operation = Some(StreamOperation::RedemptionPreparation(Box::new(
+        preparation.clone(),
+    )));
+    state::write(latest);
+
+    let snapshot = match canonical::redemption_snapshot(&initial.config).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            clear_matching_preparation(&preparation);
+            return Err(ApiError::Ledger(error));
+        }
+    };
+    if snapshot.io_fee_e8s != initial.config.expected_io_fee_e8s
+        || snapshot.icp_fee_e8s != initial.config.expected_icp_fee_e8s
+    {
+        clear_matching_preparation(&preparation);
+        return Err(ApiError::Invalid(
+            "canonical fee differs from approved config".into(),
+        ));
+    }
+    let operation = match redemption::calculate(&preparation, snapshot, &initial.config) {
+        Ok(operation) => operation,
+        Err(error) => {
+            clear_matching_preparation(&preparation);
+            return Err(ApiError::Invalid(error));
+        }
+    };
+    let mut latest = state::read();
+    if !matches!(
+        &latest.active_operation,
+        Some(StreamOperation::RedemptionPreparation(current))
+            if **current == preparation
+    ) {
+        return Err(ApiError::Busy);
+    }
     latest.active_operation = Some(StreamOperation::Redemption(Box::new(operation)));
     state::write(latest);
     dispatch_redemption_transfer(sequence, true, now).await
+}
+
+fn clear_matching_preparation(expected: &RedemptionPreparation) {
+    let mut current = state::read();
+    if matches!(
+        &current.active_operation,
+        Some(StreamOperation::RedemptionPreparation(value)) if **value == *expected
+    ) {
+        current.active_operation = None;
+        state::write(current);
+    }
 }
 
 fn progress_for(operation: &RedemptionOperation) -> RedemptionProgress {
@@ -241,10 +361,13 @@ fn progress_for(operation: &RedemptionOperation) -> RedemptionProgress {
         }
         RedemptionPhase::IoInReserve => RedemptionProgress::IoInReserve,
         RedemptionPhase::PayoutSubmitted => RedemptionProgress::PayoutSubmitted,
-        RedemptionPhase::PayoutSucceeded | RedemptionPhase::Completed => {
-            RedemptionProgress::PayoutSucceeded
+        RedemptionPhase::PayoutSucceeded => RedemptionProgress::PayoutSucceeded,
+        RedemptionPhase::CompletionPrepared | RedemptionPhase::CallerResultApplied => {
+            RedemptionProgress::Completing
         }
-        RedemptionPhase::Stuck => RedemptionProgress::PayoutSubmitted,
+        RedemptionPhase::Stuck => {
+            RedemptionProgress::Stuck("exact block proof or governance upgrade required".into())
+        }
     }
 }
 
@@ -278,10 +401,56 @@ async fn dispatch_redemption_transfer(
     if operation.phase != expected_phase {
         return Err(ApiError::Busy);
     }
+    if !io_pull && operation.icp_payout.is_none() {
+        let config = state::read().config;
+        let current_fee = canonical::fee(config.icp_ledger)
+            .await
+            .map_err(ApiError::Ledger)?;
+        let latest = active_redemption()?;
+        if latest.sequence != sequence
+            || latest.phase != RedemptionPhase::IoInReserve
+            || latest.request_fingerprint != operation.request_fingerprint
+            || latest.icp_payout.is_some()
+        {
+            return Err(ApiError::Busy);
+        }
+        if current_fee != latest.snapshot.icp_fee_e8s || current_fee > config.expected_icp_fee_e8s {
+            pause();
+            return Err(ApiError::Invalid(
+                "current ICP fee differs from approved redemption fee".into(),
+            ));
+        }
+        now.checked_add(config.ledger_deduplication_window_nanos)
+            .ok_or_else(|| ApiError::Invalid("payout deduplication deadline overflow".into()))?;
+        let intent = OwnTransferIntent::Icrc1 {
+            ledger: config.icp_ledger,
+            from_subaccount: config
+                .liquid_icp
+                .canonical()
+                .map_err(ApiError::Invalid)?
+                .subaccount,
+            to: latest.account.clone(),
+            amount: latest.net_icp_e8s,
+            fee: current_fee,
+            memo: crate::transfer::deterministic_memo(
+                b"io-redemption-pay-v1",
+                latest.caller,
+                latest.nonce,
+            ),
+            created_at_time: now,
+        };
+        operation = latest;
+        operation.icp_payout =
+            Some(crate::transfer::TransferAttempt::prepared(intent).map_err(ApiError::Invalid)?);
+        persist_redemption(operation.clone());
+    }
     let attempt = if io_pull {
         &mut operation.io_pull
     } else {
-        &mut operation.icp_payout
+        operation
+            .icp_payout
+            .as_mut()
+            .ok_or_else(|| ApiError::Invalid("payout intent is missing".into()))?
     };
     let epoch = match attempt.state {
         TransferState::Submitted {
@@ -323,6 +492,7 @@ async fn dispatch_redemption_transfer(
         first_submitted_at,
         last_submitted_at: now,
     };
+    let request_fingerprint = operation.request_fingerprint.clone();
     let fingerprint = attempt.fingerprint.clone();
     let intent = attempt.intent.clone();
     operation.phase = if io_pull {
@@ -333,11 +503,19 @@ async fn dispatch_redemption_transfer(
     persist_redemption(operation);
 
     let response = submit(&intent).await;
-    apply_transfer_callback(sequence, io_pull, fingerprint, epoch, response)
+    apply_transfer_callback(
+        sequence,
+        request_fingerprint,
+        io_pull,
+        fingerprint,
+        epoch,
+        response,
+    )
 }
 
 fn apply_transfer_callback(
     sequence: OperationSequence,
+    request_fingerprint: Vec<u8>,
     io_pull: bool,
     fingerprint: Vec<u8>,
     epoch: DispatchEpoch,
@@ -349,13 +527,19 @@ fn apply_transfer_callback(
     } else {
         RedemptionPhase::PayoutSubmitted
     };
-    if operation.sequence != sequence || operation.phase != expected_phase {
+    if operation.sequence != sequence
+        || operation.request_fingerprint != request_fingerprint
+        || operation.phase != expected_phase
+    {
         return Err(ApiError::Busy);
     }
     let attempt = if io_pull {
         &mut operation.io_pull
     } else {
-        &mut operation.icp_payout
+        operation
+            .icp_payout
+            .as_mut()
+            .ok_or_else(|| ApiError::Invalid("payout intent is missing".into()))?
     };
     if attempt.fingerprint != fingerprint
         || !matches!(attempt.state, TransferState::Submitted { epoch: current, .. } if current == epoch)
@@ -366,7 +550,7 @@ fn apply_transfer_callback(
         Ok(result) => classify_result(result).map_err(ApiError::Ledger)?,
         Err(error) => {
             persist_redemption(operation);
-            return Err(ApiError::Stuck(error));
+            return Err(ApiError::Pending(error));
         }
     };
     match classified {
@@ -401,7 +585,7 @@ fn apply_transfer_callback(
         }
         ClassifiedResult::Ambiguous(error) => {
             persist_redemption(operation);
-            Err(ApiError::Stuck(error))
+            Err(ApiError::Pending(error))
         }
     }
 }
@@ -418,7 +602,9 @@ pub async fn resume(now: u64) -> Result<RedemptionProgress, ApiError> {
         RedemptionPhase::Stuck => Err(ApiError::Stuck(
             "exact block proof or governance upgrade required".into(),
         )),
-        RedemptionPhase::Completed => Err(ApiError::Invalid("redemption already completed".into())),
+        RedemptionPhase::CompletionPrepared | RedemptionPhase::CallerResultApplied => {
+            finish_redemption(operation)
+        }
         RedemptionPhase::Prepared => {
             dispatch_redemption_transfer(operation.sequence, true, now).await
         }
@@ -448,6 +634,9 @@ async fn commit_redemption(
         .await
         .map_err(ApiError::Ledger)?;
     if let Err(error) = redemption::verify_postconditions(&operation, &post) {
+        if !active_matches(&operation, RedemptionPhase::PayoutSucceeded) {
+            return Err(ApiError::Busy);
+        }
         operation.phase = RedemptionPhase::Stuck;
         persist_redemption(operation);
         pause();
@@ -462,6 +651,8 @@ async fn commit_redemption(
             .map_err(ApiError::Invalid)?,
         icp_block: operation
             .icp_payout
+            .as_ref()
+            .ok_or_else(|| ApiError::Invalid("payout intent is missing".into()))?
             .succeeded_block()
             .map_err(ApiError::Invalid)?,
         gross_icp_e8s: operation.gross_icp_e8s,
@@ -470,16 +661,79 @@ async fn commit_redemption(
         icp_fee_e8s: operation.snapshot.icp_fee_e8s,
         completed_at_nanos: now,
     };
+    if !active_matches(&operation, RedemptionPhase::PayoutSucceeded) {
+        return Err(ApiError::Busy);
+    }
+    operation.completion_result = Some(result.clone());
+    operation.phase = RedemptionPhase::CompletionPrepared;
+    persist_redemption(operation.clone());
+    finish_redemption(operation)
+}
+
+fn active_matches(operation: &RedemptionOperation, phase: RedemptionPhase) -> bool {
+    matches!(
+        state::read().active_operation,
+        Some(StreamOperation::Redemption(current))
+            if *current == *operation
+                && current.phase == phase
+    )
+}
+
+fn finish_redemption(mut operation: RedemptionOperation) -> Result<RedemptionProgress, ApiError> {
+    let result = operation
+        .completion_result
+        .clone()
+        .ok_or_else(|| ApiError::Invalid("completion result is missing".into()))?;
     let mut caller_state = state::caller_state(operation.caller);
-    caller_state.next_nonce = caller_state
-        .next_nonce
-        .checked_add(1)
-        .ok_or_else(|| ApiError::Invalid("caller nonce overflow".into()))?;
-    caller_state.last_request_fingerprint = Some(operation.request_fingerprint.clone());
-    caller_state.last_result = Some(result.clone());
-    state::set_caller_state(operation.caller, caller_state);
+    match caller_state.next_nonce {
+        nonce if nonce == operation.nonce => {
+            caller_state.next_nonce = nonce
+                .checked_add(1)
+                .ok_or_else(|| ApiError::Invalid("caller nonce overflow".into()))?;
+            caller_state.last_request_fingerprint = Some(operation.request_fingerprint.clone());
+            caller_state.last_result = Some(result.clone());
+            state::set_caller_state(operation.caller, caller_state);
+        }
+        nonce
+            if Some(nonce) == operation.nonce.checked_add(1)
+                && caller_state.last_request_fingerprint.as_ref()
+                    == Some(&operation.request_fingerprint)
+                && caller_state.last_result.as_ref() == Some(&result) => {}
+        _ => {
+            pause();
+            return Err(ApiError::Stuck(
+                "caller redemption state conflicts with completion".into(),
+            ));
+        }
+    }
     let mut state = state::read();
-    if !matches!(&state.active_operation, Some(StreamOperation::Redemption(current)) if current.sequence == operation.sequence)
+    match &state.active_operation {
+        Some(StreamOperation::Redemption(current))
+            if current.sequence == operation.sequence
+                && current.request_fingerprint == operation.request_fingerprint
+                && current.phase == RedemptionPhase::CompletionPrepared =>
+        {
+            operation.phase = RedemptionPhase::CallerResultApplied;
+            state.active_operation = Some(StreamOperation::Redemption(Box::new(operation.clone())));
+            state::write(state);
+        }
+        Some(StreamOperation::Redemption(current))
+            if current.sequence == operation.sequence
+                && current.request_fingerprint == operation.request_fingerprint
+                && current.phase == RedemptionPhase::CallerResultApplied => {}
+        _ => {
+            pause();
+            return Err(ApiError::Stuck(
+                "active operation conflicts with caller result".into(),
+            ));
+        }
+    }
+    let mut state = state::read();
+    if !matches!(&state.active_operation, Some(StreamOperation::Redemption(current))
+        if current.sequence == operation.sequence
+            && current.request_fingerprint == operation.request_fingerprint
+            && current.phase == RedemptionPhase::CallerResultApplied
+            && current.completion_result.as_ref() == Some(&result))
     {
         return Err(ApiError::Busy);
     }
@@ -488,146 +742,25 @@ async fn commit_redemption(
     Ok(RedemptionProgress::Completed(result))
 }
 
-fn pause() {
+pub(crate) fn pause() {
     let mut state = state::read();
     state.lifecycle = Lifecycle::Paused;
     state::write(state);
 }
 
-pub fn prepare_liquid_receipt(
-    caller: Principal,
-    args: PrepareLiquidReceiptArgs,
-) -> Result<LiquidReceiptPermit, ApiError> {
-    let mut state = state::read();
-    require_ready(&state)?;
-    if caller != state.config.nns_manager {
-        return Err(ApiError::Unauthorized);
-    }
-    if let Some(StreamOperation::LiquidReceipt(existing)) = &state.active_operation {
-        if existing.sequence == args.receipt_sequence
-            && existing.kind == args.receipt_kind
-            && existing.source_operation_id == args.source_operation_id
-            && existing.liquid_amount_e8s == args.liquid_amount_e8s
-            && existing.cohort_generation == args.cohort_generation
-        {
-            return Ok(LiquidReceiptPermit {
-                sequence: existing.sequence,
-                destination: existing.destination.clone(),
-                memo: existing.memo.clone(),
-            });
+pub async fn resume_stream(now: u64) -> Result<StreamProgress, ApiError> {
+    match state::read().active_operation {
+        Some(StreamOperation::Redemption(_)) => resume(now).await.map(StreamProgress::Redemption),
+        Some(StreamOperation::RedemptionPreparation(_)) => {
+            Ok(StreamProgress::Redemption(RedemptionProgress::Preparing))
         }
-    }
-    if state.active_operation.is_some() {
-        return Err(ApiError::Busy);
-    }
-    if args.receipt_sequence != state.next_nns_receipt_sequence
-        || args.liquid_amount_e8s == 0
-        || args.source_operation_id.is_empty()
-        || args.source_operation_id.len() > 64
-    {
-        return Err(ApiError::Invalid(
-            "invalid receipt sequence or bounded intent".into(),
-        ));
-    }
-    if args.receipt_kind == ReceiptKind::TwoWeekMaturity {
-        if args.cohort_generation != state.pending_reward_cohort.as_ref().map(|c| c.generation) {
-            return Err(ApiError::Invalid(
-                "receipt does not match pending cohort".into(),
-            ));
+        Some(StreamOperation::LiquidReceipt(operation)) => {
+            receipt::resume_liquid_receipt(*operation, now)
+                .await
+                .map(StreamProgress::LiquidReceipt)
         }
-    } else if args.cohort_generation.is_some() {
-        return Err(ApiError::Invalid(
-            "only two-week maturity names a cohort".into(),
-        ));
+        None => Ok(StreamProgress::Idle),
     }
-    let memo = receipt_memo(caller, args.receipt_sequence);
-    let permit = LiquidReceiptPermit {
-        sequence: args.receipt_sequence,
-        destination: state.config.liquid_icp.clone(),
-        memo: memo.clone(),
-    };
-    state.active_operation = Some(StreamOperation::LiquidReceipt(Box::new(
-        LiquidReceiptOperation {
-            sequence: args.receipt_sequence,
-            kind: args.receipt_kind,
-            source_operation_id: args.source_operation_id,
-            liquid_amount_e8s: args.liquid_amount_e8s,
-            cohort_generation: args.cohort_generation,
-            source: state.config.nns_receipt_source.clone(),
-            destination: permit.destination.clone(),
-            memo,
-            phase: ReceiptPhase::AwaitingReceipt,
-            proved_block: None,
-            active_transfer: None,
-            recipient_index: 0,
-        },
-    )));
-    state::write(state);
-    Ok(permit)
-}
-
-pub async fn complete_liquid_receipt(
-    caller: Principal,
-    args: CompleteLiquidReceiptArgs,
-) -> Result<(), ApiError> {
-    let snapshot = state::read();
-    if caller != snapshot.config.nns_manager {
-        return Err(ApiError::Unauthorized);
-    }
-    let operation = match snapshot.active_operation {
-        Some(StreamOperation::LiquidReceipt(operation))
-            if operation.sequence == args.receipt_sequence =>
-        {
-            operation
-        }
-        _ => return Err(ApiError::Invalid("no matching liquid receipt".into())),
-    };
-    if operation.proved_block == Some(args.block_index) {
-        return Ok(());
-    }
-    if operation.proved_block.is_some() {
-        return Err(ApiError::Invalid("conflicting receipt block".into()));
-    }
-    let transfer = canonical::exact_icrc_transfer(snapshot.config.icp_ledger, args.block_index)
-        .await
-        .map_err(ApiError::Ledger)?;
-    let accounts_match = transfer
-        .from
-        .effective_eq(&operation.source)
-        .map_err(ApiError::Invalid)?
-        && transfer
-            .to
-            .effective_eq(&operation.destination)
-            .map_err(ApiError::Invalid)?;
-    if !accounts_match
-        || transfer.amount_e8s != operation.liquid_amount_e8s
-        || transfer.fee_e8s != Some(snapshot.config.expected_icp_fee_e8s)
-        || transfer.memo.as_deref() != Some(operation.memo.as_slice())
-        || transfer.created_at_time.is_none()
-        || transfer.spender.is_some()
-    {
-        return Err(ApiError::Invalid(
-            "canonical block does not match receipt intent".into(),
-        ));
-    }
-    let mut state = state::read();
-    match &mut state.active_operation {
-        Some(StreamOperation::LiquidReceipt(current))
-            if current.sequence == operation.sequence && current.proved_block.is_none() =>
-        {
-            current.proved_block = Some(args.block_index);
-            current.phase = ReceiptPhase::ReceiptProved;
-        }
-        Some(StreamOperation::LiquidReceipt(current))
-            if current.sequence == operation.sequence
-                && current.proved_block == Some(args.block_index) =>
-        {
-            return Ok(())
-        }
-        _ => return Err(ApiError::Busy),
-    }
-    state::write(state);
-    Ok(())
 }
 
 pub async fn prove_active_transfer(block_index: u128) -> Result<(), ApiError> {
@@ -641,7 +774,10 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<(), ApiError> {
     let attempt = if proving_pull {
         &operation.io_pull
     } else {
-        &operation.icp_payout
+        operation
+            .icp_payout
+            .as_ref()
+            .ok_or_else(|| ApiError::Invalid("payout intent is missing".into()))?
     };
     if !matches!(attempt.state, TransferState::Stuck { .. }) {
         return Err(ApiError::Invalid("active transfer is not Stuck".into()));
@@ -729,7 +865,10 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<(), ApiError> {
     let target = if proving_pull {
         &mut latest.io_pull
     } else {
-        &mut latest.icp_payout
+        latest
+            .icp_payout
+            .as_mut()
+            .ok_or_else(|| ApiError::Invalid("payout intent is missing".into()))?
     };
     if target.fingerprint != attempt.fingerprint
         || !matches!(target.state, TransferState::Stuck { .. })

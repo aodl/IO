@@ -7,7 +7,10 @@ use ic_stable_structures::{
 use serde::Deserialize;
 use std::{borrow::Cow, cell::RefCell};
 
-use crate::{receipt::LiquidReceiptOperation, redemption::RedemptionOperation};
+use crate::{
+    receipt::{LastCompletedReceipt, LiquidReceiptOperation},
+    redemption::{RedemptionOperation, RedemptionPreparation},
+};
 pub use io_accounts::Account;
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
@@ -17,7 +20,9 @@ pub struct StreamConfig {
     pub io_ledger: Principal,
     pub icp_ledger: Principal,
     pub nns_manager: Principal,
-    pub nns_receipt_source: Account,
+    pub jupiter_receipt_source: Account,
+    pub two_week_receipt_source: Account,
+    pub jupiter_io_account: Account,
     pub sns_governance: Principal,
     pub io_reserve: Account,
     pub liquid_icp: Account,
@@ -56,14 +61,33 @@ impl StreamConfig {
         if self.io_reserve.owner != canister_self || self.liquid_icp.owner != canister_self {
             return Err("reserve and liquid accounts must be owned by this canister".into());
         }
-        if self.nns_receipt_source.owner != self.nns_manager {
-            return Err("receipt source owner must equal NNS manager".into());
+        if self.jupiter_receipt_source.owner != self.nns_manager
+            || self.two_week_receipt_source.owner != self.nns_manager
+        {
+            return Err("receipt source owners must equal NNS manager".into());
         }
         self.io_reserve.validate()?;
         self.liquid_icp.validate()?;
-        self.nns_receipt_source.validate()?;
+        self.jupiter_receipt_source.validate()?;
+        self.two_week_receipt_source.validate()?;
+        self.jupiter_io_account.validate()?;
         if self.io_reserve.effective_eq(&self.liquid_icp)? {
             return Err("reserve and liquid accounts must be distinct".into());
+        }
+        if self
+            .jupiter_receipt_source
+            .effective_eq(&self.two_week_receipt_source)?
+            || self.jupiter_receipt_source.effective_eq(&self.io_reserve)?
+            || self.jupiter_receipt_source.effective_eq(&self.liquid_icp)?
+            || self
+                .two_week_receipt_source
+                .effective_eq(&self.io_reserve)?
+            || self
+                .two_week_receipt_source
+                .effective_eq(&self.liquid_icp)?
+            || self.jupiter_io_account.effective_eq(&self.io_reserve)?
+        {
+            return Err("receipt sources, reserve and liquid accounts must be distinct".into());
         }
         if self.excluded_io_accounts.len() > Self::MAX_EXCLUDED_ACCOUNTS {
             return Err("too many excluded IO accounts".into());
@@ -111,6 +135,7 @@ pub struct DispatchEpoch(pub u64);
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum StreamOperation {
+    RedemptionPreparation(Box<RedemptionPreparation>),
     Redemption(Box<RedemptionOperation>),
     LiquidReceipt(Box<LiquidReceiptOperation>),
 }
@@ -139,6 +164,8 @@ pub struct StreamStateV1 {
     pub next_nns_receipt_sequence: u64,
     pub next_cohort_timestamp_seconds: u64,
     pub next_operation_sequence: OperationSequence,
+    pub control_epoch: u64,
+    pub last_completed_receipt: Option<LastCompletedReceipt>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -158,7 +185,9 @@ impl StreamStateV1 {
                 io_ledger: anonymous,
                 icp_ledger: anonymous,
                 nns_manager: anonymous,
-                nns_receipt_source: account.clone(),
+                jupiter_receipt_source: account.clone(),
+                two_week_receipt_source: account.clone(),
+                jupiter_io_account: account.clone(),
                 sns_governance: anonymous,
                 io_reserve: account.clone(),
                 liquid_icp: account,
@@ -177,7 +206,104 @@ impl StreamStateV1 {
             next_nns_receipt_sequence: 0,
             next_cohort_timestamp_seconds: 0,
             next_operation_sequence: OperationSequence(0),
+            control_epoch: 0,
+            last_completed_receipt: None,
         }
+    }
+}
+
+impl StreamStateV1 {
+    pub fn validate(&self, canister_self: Principal) -> Result<(), String> {
+        self.config.validate(canister_self)?;
+        match &self.active_operation {
+            Some(StreamOperation::RedemptionPreparation(value)) => {
+                value.validate()?;
+                if value.sequence.0 >= self.next_operation_sequence.0
+                    || value.request.io_amount_e8s < self.config.minimum_redemption_io_e8s
+                    || value.request.max_io_fee_e8s < self.config.expected_io_fee_e8s
+                    || value.request.max_icp_fee_e8s < self.config.expected_icp_fee_e8s
+                    || value
+                        .request
+                        .expires_at_nanos
+                        .saturating_sub(value.prepared_at_nanos)
+                        > self.config.maximum_request_lifetime_nanos
+                    || value.account.effective_eq(&self.config.io_reserve)?
+                    || self.config.excluded_io_accounts.iter().try_fold(
+                        false,
+                        |matched, account| {
+                            value
+                                .account
+                                .effective_eq(account)
+                                .map(|same| matched || same)
+                        },
+                    )?
+                {
+                    return Err("redemption preparation does not match stream state".into());
+                }
+            }
+            Some(StreamOperation::Redemption(value)) => {
+                value.validate(&self.config)?;
+                if value.sequence.0 >= self.next_operation_sequence.0 {
+                    return Err("active redemption sequence was not reserved".into());
+                }
+            }
+            Some(StreamOperation::LiquidReceipt(value)) => value.validate(&self.config)?,
+            None => {}
+        }
+        for cohort in [
+            self.active_reward_cohort.as_ref(),
+            self.pending_reward_cohort.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            cohort.validate()?;
+        }
+        if let Some(completed) = &self.last_completed_receipt {
+            if completed.request_fingerprint.len() != 32
+                || completed.permit.memo.is_empty()
+                || completed.permit.memo.len() > 32
+                || completed.completed_at_nanos == 0
+            {
+                return Err("last completed receipt is invalid".into());
+            }
+            completed.permit.destination.validate()?;
+            if !completed
+                .permit
+                .destination
+                .effective_eq(&self.config.liquid_icp)?
+                || completed.permit.memo
+                    != crate::receipt::receipt_memo(
+                        self.config.nns_manager,
+                        completed.permit.sequence,
+                    )
+                || completed.settlement_result.is_empty()
+            {
+                return Err("last completed receipt does not match stream configuration".into());
+            }
+        }
+        Ok(())
+    }
+}
+
+impl RewardCohort {
+    pub const MAX_MEMBERS: usize = 1_000;
+    pub const MAX_NEURON_ID_BYTES: usize = 64;
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.captured_at_timestamp_seconds == 0 || self.members.len() > Self::MAX_MEMBERS {
+            return Err("reward cohort timestamp or capacity is invalid".into());
+        }
+        for member in &self.members {
+            if member.sns_neuron_id.is_empty()
+                || member.sns_neuron_id.len() > Self::MAX_NEURON_ID_BYTES
+                || member.frozen_stake_e8s == 0
+            {
+                return Err("reward cohort member is invalid".into());
+            }
+            member.account.validate()?;
+        }
+        Ok(())
     }
 }
 
@@ -199,6 +325,22 @@ pub struct RedemptionResult {
     pub io_fee_e8s: u128,
     pub icp_fee_e8s: u128,
     pub completed_at_nanos: u64,
+}
+
+impl CallerRedemptionState {
+    pub fn validate(&self) -> Result<(), String> {
+        match (&self.last_request_fingerprint, &self.last_result) {
+            (None, None) => {}
+            (Some(fingerprint), Some(result))
+                if fingerprint.len() == 32
+                    && result.request_fingerprint == *fingerprint
+                    && result.request_fingerprint.len() == 32
+                    && result.nonce.checked_add(1) == Some(self.next_nonce)
+                    && result.completed_at_nanos > 0 => {}
+            _ => return Err("caller redemption replay state is inconsistent".into()),
+        }
+        Ok(())
+    }
 }
 
 macro_rules! candid_storable {
@@ -237,7 +379,7 @@ thread_local! {
 }
 
 pub fn initialize(state: StreamStateV1, canister_self: Principal) -> Result<(), String> {
-    state.config.validate(canister_self)?;
+    state.validate(canister_self)?;
     STATE.with(|slot| {
         let memory = MEMORY_MANAGER.with(|manager| manager.borrow().get(MemoryId::new(0)));
         let cell = StableCell::init(memory, StableStreamState::V1(state));
@@ -262,10 +404,12 @@ pub fn reopen(canister_self: Principal) {
         let memory = MEMORY_MANAGER.with(|manager| manager.borrow().get(MemoryId::new(1)));
         *slot.borrow_mut() = Some(StableBTreeMap::init(memory));
     });
-    read()
-        .config
+    let mut reopened = read();
+    reopened
         .validate(canister_self)
         .unwrap_or_else(|error| panic!("invalid stable stream V1 state: {error}"));
+    reopened.lifecycle = Lifecycle::Paused;
+    write(reopened);
 }
 
 pub fn read() -> StreamStateV1 {
@@ -297,16 +441,23 @@ impl StableStreamState {
 }
 
 pub fn caller_state(caller: Principal) -> CallerRedemptionState {
-    REDEMPTIONS.with(|slot| {
+    let value = REDEMPTIONS.with(|slot| {
         slot.borrow()
             .as_ref()
             .expect("redemption map is not initialized")
             .get(&caller)
             .unwrap_or_default()
-    })
+    });
+    value
+        .validate()
+        .unwrap_or_else(|error| panic!("invalid caller redemption state: {error}"));
+    value
 }
 
 pub fn set_caller_state(caller: Principal, state: CallerRedemptionState) {
+    state
+        .validate()
+        .unwrap_or_else(|error| panic!("invalid caller redemption state write: {error}"));
     REDEMPTIONS.with(|slot| {
         slot.borrow_mut()
             .as_mut()
@@ -336,9 +487,17 @@ mod tests {
                     io_ledger,
                     icp_ledger,
                     nns_manager: manager,
-                    nns_receipt_source: Account {
+                    jupiter_receipt_source: Account {
                         owner: manager,
-                        subaccount: None,
+                        subaccount: Some(vec![2; 32]),
+                    },
+                    two_week_receipt_source: Account {
+                        owner: manager,
+                        subaccount: Some(vec![3; 32]),
+                    },
+                    jupiter_io_account: Account {
+                        owner: manager,
+                        subaccount: Some(vec![4; 32]),
                     },
                     sns_governance: governance,
                     io_reserve: account.clone(),
@@ -361,6 +520,8 @@ mod tests {
                 next_nns_receipt_sequence: 7,
                 next_cohort_timestamp_seconds: 8,
                 next_operation_sequence: OperationSequence(0),
+                control_epoch: 0,
+                last_completed_receipt: None,
             },
             principal,
         )

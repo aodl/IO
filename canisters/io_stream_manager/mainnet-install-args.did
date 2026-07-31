@@ -5,7 +5,9 @@
     io_ledger = TODO_IO_LEDGER_PRINCIPAL;
     icp_ledger = TODO_ICP_LEDGER_PRINCIPAL;
     nns_manager = TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL;
-    nns_receipt_source = record { owner = TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL; subaccount = opt TODO_RECEIPT_SUBACCOUNT };
+    jupiter_receipt_source = record { owner = TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL; subaccount = opt TODO_JUPITER_RECEIPT_SUBACCOUNT };
+    two_week_receipt_source = record { owner = TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL; subaccount = opt TODO_TWO_WEEK_RECEIPT_SUBACCOUNT };
+    jupiter_io_account = record { owner = TODO_JUPITER_PRINCIPAL; subaccount = opt TODO_JUPITER_IO_SUBACCOUNT };
     sns_governance = TODO_SNS_GOVERNANCE_PRINCIPAL;
     io_reserve = record { owner = TODO_STREAM_MANAGER_SELF; subaccount = opt TODO_IO_RESERVE_SUBACCOUNT };
     liquid_icp = record { owner = TODO_STREAM_MANAGER_SELF; subaccount = opt TODO_LIQUID_ICP_SUBACCOUNT };

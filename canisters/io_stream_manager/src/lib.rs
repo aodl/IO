@@ -10,7 +10,7 @@ pub mod transfer;
 use candid::{CandidType, Principal};
 use serde::Deserialize;
 
-pub use api::{ApiError, RedemptionProgress, Status};
+pub use api::{ApiError, LiquidReceiptProgress, RedemptionProgress, Status, StreamProgress};
 pub use receipt::{
     CompleteLiquidReceiptArgs, LiquidReceiptPermit, PrepareLiquidReceiptArgs, ReceiptKind,
 };
@@ -34,6 +34,8 @@ pub fn init(args: InitArgs) {
         next_nns_receipt_sequence: 0,
         next_cohort_timestamp_seconds: args.next_cohort_timestamp_seconds,
         next_operation_sequence: state::OperationSequence(0),
+        control_epoch: 0,
+        last_completed_receipt: None,
     };
     state::initialize(state, ic_cdk::api::canister_self())
         .unwrap_or_else(|error| ic_cdk::trap(&error));
@@ -53,17 +55,17 @@ pub async fn redeem(args: RedeemArgs) -> Result<RedemptionProgress, ApiError> {
 pub fn prepare_liquid_receipt(
     args: PrepareLiquidReceiptArgs,
 ) -> Result<LiquidReceiptPermit, ApiError> {
-    api::prepare_liquid_receipt(ic_cdk::api::msg_caller(), args)
+    receipt::prepare_liquid_receipt(ic_cdk::api::msg_caller(), args)
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub async fn complete_liquid_receipt(args: CompleteLiquidReceiptArgs) -> Result<(), ApiError> {
-    api::complete_liquid_receipt(ic_cdk::api::msg_caller(), args).await
+    receipt::complete_liquid_receipt(ic_cdk::api::msg_caller(), args).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn resume() -> Result<RedemptionProgress, ApiError> {
-    api::resume(ic_cdk::api::time()).await
+pub async fn resume() -> Result<StreamProgress, ApiError> {
+    api::resume_stream(ic_cdk::api::time()).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -77,10 +79,12 @@ pub async fn set_paused(paused: bool) -> Result<(), ApiError> {
     if ic_cdk::api::msg_caller() != state.config.sns_governance {
         return Err(ApiError::Unauthorized);
     }
+    let control_epoch = lifecycle::begin_control_request().map_err(ApiError::Invalid)?;
     if paused {
-        lifecycle::set_paused(true).map_err(ApiError::Invalid)
+        lifecycle::set_paused();
+        Ok(())
     } else {
-        lifecycle::readiness_preflight(ic_cdk::api::canister_self()).await
+        lifecycle::readiness_preflight(ic_cdk::api::canister_self(), control_epoch).await
     }
 }
 
