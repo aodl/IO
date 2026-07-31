@@ -43,8 +43,10 @@ The same installed test prepares a Jupiter receipt, transfers ICP from the exact
 
 The safety and topology invariants above are implemented. The NNS manager has a
 typed proof-bound Jupiter 40/60 executor and an executable direct maturity
-command/Mint-proof path. Installed official-Governance execution, two-week
-serialized reward fan-out, the direct unwind child, browser redemption, and
-complete historian status projection remain required before final P0
-completion. NNS readiness deliberately returns `ImplementationIncomplete`
-rather than exposing Ready until those effects and their upgrade matrix exist.
+command/Mint-proof path. The browser implements the explicit redemption flow
+against the stream manager and IO ledger while keeping historian reads
+observation-only. Installed official-Governance execution, two-week serialized
+reward fan-out, the direct unwind child, and complete historian status
+projection remain required before final P0 completion. NNS readiness
+deliberately returns `ImplementationIncomplete` rather than exposing Ready
+until those effects and their upgrade matrix exist.
