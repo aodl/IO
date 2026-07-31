@@ -1,49 +1,36 @@
 # io_nns_neuron_manager
 
-NNS-only operational canister. Intended deployment target for the already-created canister principal `oae4c-3iaaa-aaaar-qb5qq-cai`, which controls IO's 2-year NNS neuron `6345890886899317159`.
+The launch NNS canister exclusively owns proof and commands for the protected
+two-year neuron, pooled two-week position, Jupiter staging, operational fee
+float, direct maturity policy, and one pending unwind child.
 
-## Role
+IO is not live. Production canisters remain inert.
 
-- NNS neuron mechanics only.
-- Manages the 2-year protocol neuron.
-- Manages the pooled 2-week NNS neuron.
-- Manages temporary unwind child neurons.
-- Disburses maturity/principal to IO stream-manager accounts/subaccounts with distinguishable memos/subaccounts.
+## Production API
 
-This canister should not calculate IO issuance. This canister should not inspect IO SNS proposal participation. This canister should not expose broad production state APIs.
+The production DID contains only:
 
-## Production API and Init Args
+- `notify_jupiter_deposit`
+- `set_two_week_target`
+- `resume`
+- `prove_active_transfer`
+- `set_paused`
+- `get_status`
 
-The production DID is install-args-only:
+Jupiter notification is authenticated and sequential. Target updates are
+authenticated, strictly generated, coalesced to the latest desired target, and
+do not form a queue.
 
-```did
-service : (InitArgs) -> {}
-```
+## Direct maturity policy
 
-`InitArgs` defines the controller canister principal, 2-year NNS neuron id, initial model principals, model annual bps, and optional placeholder stream-manager target config/memos. The two-week pool uses the shared exact 1,209,600-second dissolve-delay constant.
+For canonical ordinary maturity `M`, the manager calls
+`StakeMaturity(40%)`, validates returned remaining and staked maturity, then
+calls `DisburseMaturity(100% of remaining)`. The actual modulated ICP received
+is liquid backing. Two-year receipts go directly to the stream liquid account
+and issue no IO. Two-week receipts stage for a proof-bound stream receipt.
 
-Defaults preserve the known live constants below. Validation rejects empty or malformed controller principal text, a zero 2-year neuron id, malformed optional stream-manager principal text, and model annual bps above the test/model ceiling.
+## Stable state
 
-## Stable State
-
-Upgrade persistence uses an explicit versioned stable snapshot saved with `ic_cdk::storage::stable_save` and restored with `stable_restore`. The snapshot preserves config, simulated NNS model state, unwind children, two-week pool state, lifecycle operation journal, retry status, and scheduler cursors. Host tests exercise export/import and migration round trips without exposing stable-state methods in the production DID.
-
-Stable storage hardening does not make IO live. This value-moving canister is not deployed to production, production adapters are not active, and the SNS IO ledger does not exist yet. Corrupt value-moving state must fail closed on upgrade. Missing first-install state is handled by init/default state and is not the same as a corrupt upgrade snapshot. Local stable-state fixtures are test fixtures, not live snapshots.
-
-The existing neuron-owner canister `oae4c-3iaaa-aaaar-qb5qq-cai` and IO neuron `6345890886899317159` remain protected references only. Retry-critical lifecycle journal entries are not silently compacted or evicted.
-
-## Scheduler Skeleton
-
-`src/scheduler/` contains a no-op `scheduler_tick_once()` for future timer-driven work. It currently records planned responsibilities only: checking/disbursing 2-year maturity, checking/disbursing 2-week maturity, rebalancing the pooled 2-week neuron, and disbursing ready unwind child neurons. It performs no NNS calls.
-
-`io-governance-types` contains production-shaped NNS governance DTOs and a Wasm-gated `NnsGovernanceCanisterClient` for future lifecycle reconciliation. Those adapters are fixture-tested only, not audited, and not wired into this canister's default execution path.
-
-## Known Constants
-
-```text
-2-year NNS neuron id:
-6345890886899317159
-
-Controller canister principal:
-oae4c-3iaaa-aaaar-qb5qq-cai
-```
+Launch state is one `StableCell<NnsStateV1>` with one typed immediate operation
+and fixed optional slots for two-year maturity, two-week maturity, and one
+unwind. Only V1 is supported; no prelaunch migration chain is compiled.

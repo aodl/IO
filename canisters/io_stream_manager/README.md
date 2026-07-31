@@ -1,71 +1,51 @@
 # io_stream_manager
 
-Main IO monetary-policy canister.
+The launch monetary canister owns direct-reserve redemption, liquid ICP and IO
+reserve roles, proof-bound NNS receipts, exact reward cohorts, serialized reward
+settlement, and local lifecycle.
 
-## Role
+IO is not live. The production canister remains inert and this repository does
+not contain a production activation transition.
 
-- Owns IO monetary policy.
-- Classifies incoming ICP/IO ledger streams.
-- Applies the canonical 40/60 split.
-- Issues backed IO from protocol reserve when applicable.
-- Handles redemption logic by ledger/index-observed IO deposits.
+## Production API
 
-This canister is value-moving. Its production API must remain minimal.
+The production DID contains only:
 
-Do not add public dashboard/query endpoints here. Do not add public methods that trust caller-supplied stream kinds in production. Use the debug DID for local/model tests.
+- `redeem`
+- `prepare_liquid_receipt`
+- `complete_liquid_receipt`
+- `resume`
+- `prove_active_transfer`
+- `set_paused`
+- `get_status`
 
-## Production API and Init Args
+Every update checks authority in the method. Redemption rejects anonymous
+callers, binds both token source and ICP payout to the caller's exact
+`Account`, enforces the per-caller nonce, and rejects `Busy` before moving
+funds. There is no caller-selected destination.
 
-The production DID is install-args-only:
+## Redemption
 
-```did
-service : (InitArgs) -> {}
-```
+The frontend first creates an exact, short-lived ICRC-2 allowance for the stream
+manager. The allowance normally covers `io_amount + transfer_from fee`; the
+approval itself burns a separate IO fee. It should use `expected_allowance`,
+clear an incompatible prior allowance when necessary, and set min-output and
+fee maxima.
 
-`InitArgs` defines the initial IO supply, protocol reserve, non-redeemable governance supply, and optional placeholder principals for future Jupiter Faucet, NNS manager, ICP ledger/index, and IO ledger/index integrations.
+`redeem` queries canonical fees, total supply, reserve, excluded balances, and
+liquid ICP. It persists the complete operation, pulls IO directly from the user
+to reserve with `icrc2_transfer_from`, then pays ICP to the same caller and
+subaccount. There is no intake account, scanner, IO return leg, or automatic
+refund.
 
-Validation rejects:
+## Stable state
 
-- total supply lower than reserve plus non-redeemable governance supply
-- present-but-empty or malformed optional principal text
+Launch state is `StableCell<StreamStateV1>` plus
+`StableBTreeMap<Principal, CallerRedemptionState>`. Only V1 is supported.
+Prelaunch migration chains are research history, not runtime code.
 
-## Stable State
+## Unsupported activity
 
-Upgrade persistence uses an explicit versioned stable snapshot saved with `ic_cdk::storage::stable_save` and restored with `stable_restore`. The snapshot preserves config, protocol accounting, processed transaction IDs, active exact-product IO, reward cohort evidence, operation journals, pending redemption gross/net/fee intent, retry status, and account-history cursors. Host tests exercise export/import and migration round trips without exposing stable-state methods in the production DID.
-
-Stable storage hardening does not make IO live. This value-moving canister is not deployed to production, production adapters are not active, and the SNS IO ledger does not exist yet. Corrupt value-moving state must fail closed on upgrade. Missing first-install state is handled by init/default state and is not the same as a corrupt upgrade snapshot. Local stable-state fixtures are test fixtures, not live snapshots.
-
-Retry-critical journals, processed transaction IDs, duplicate proofs, and cursor state are not silently evicted. Journal compaction is documented separately and requires an audited policy before activation.
-
-## Scheduler Skeleton
-
-`src/scheduler/` contains the internal scheduler boundary for ledger/index-observed work.
-On non-Wasm hosts, `scheduler_tick_plan_only()` remains a planning helper and `scheduler_tick_once()` does not perform external calls.
-In debug/test Wasm, `debug_tick` can scan configured local/mock ICP and IO ledger/index canisters, classify observed flows, execute downstream mock-ledger transfers through `LedgerTransferClient`, and update durable operation journals and scan progress.
-The scan path uses index canisters as the account-history abstraction. ICP-style descending/newest-first pages use separate latest/head and oldest/backfill cursors, and page contents are applied in chronological order after validation. Ascending local/mock pages keep forward cursor semantics and allow global ledger block gaps.
-Cursor advancement is conservative and journal-gated; unreadable, lagged, duplicate, or non-progressing index pages do not advance scan progress as if history were complete.
-
-Production-shaped ICP/ICRC ledger and index adapters live behind `io-ledger-types` traits, but they are not wired into default production execution in this milestone.
-The production DID remains constructor-only and does not expose scheduler control or query methods.
-Archive-required and index-lag states are modelled as retryable boundary errors; raw ledger/archive traversal is not implemented in scheduler execution.
-Public historian/frontend read surfaces for scan status remain future work.
-
-## Stream Semantics
-
-`JupiterFaucet`:
-
-- 40% 2-year stake accounting.
-- 60% liquid reserve.
-- IO to Jupiter Faucet.
-
-`TwoYearMaturity`:
-
-- 40% restake.
-- 60% liquid reserve.
-- No IO issuance.
-
-`TwoWeekMaturity`:
-
-- 40% restake into pooled 2-week position.
-- 60% liquid backing.
-- Backed IO to eligible IO SNS neurons.
+Direct transfers that do not correspond to an authenticated command create no
+protocol claim and are not automatically refunded. Rare unresolved transfer
+ambiguity safely pauses for exact proof or an SNS-governed forward fix.
