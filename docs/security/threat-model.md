@@ -1,45 +1,15 @@
-# Threat Model
+# Simplified launch threat model
 
-## Simplified trust boundary
+| Threat | Control |
+|---|---|
+| Unauthorized intent | Exact caller authority or exact canonical block proof |
+| Double redemption | Per-caller nonce plus request fingerprint |
+| Async stale callback | Operation sequence, kind, phase, transfer fingerprint and dispatch epoch must all match |
+| Double external effect | One persisted effect phase per update invocation |
+| Ambiguous transfer | Identical retry inside deduplication window, then Paused and exact-block proof |
+| Balance drift | Canonical pre/post balances with conservative inequalities |
+| Historian compromise | Historian state is never monetary input or completion authority |
+| Unsupported transfer | Creates no protocol claim and receives no automatic refund |
+| Upgrade corruption | V1 envelope decode and complete self-bound validation trap |
 
-Authenticated commands bind caller, sequence, exact accounts, amount, fee, memo,
-timestamp, and canonical destination. The historian is untrusted for monetary
-decisions. Unsupported direct transfers create no protocol claim and are not
-automatically refunded. Serialization deliberately substitutes `Busy` and safe
-pause for concurrency reservations and speculative rare-case recovery.
-
-This threat model tracks the current mock-driven IO implementation and the guardrails added before real ledger/NNS/SNS clients.
-
-| Threat | Current Mitigation | Tests / Guardrails | Remaining Gaps | Future Hardening |
-| --- | --- | --- | --- | --- |
-| Unauthorized stream classification | Production flow is intended to be ledger/index observed, not caller asserted. Debug stream methods are absent from production DIDs. Local/PocketIC scans can use `LedgerIndexClient` against mock index canisters. | `cargo run -p xtask -- did_surface`; scheduler tests for source/memo classification; `sns_ledger_index_tests`; `sns_ledger_index_required`. | Real index clients are not audited or wired to mainnet. | Verify source accounts/subaccounts and memos against real ledgers/indexes. |
-| Unbacked IO issuance | Monetary model issues IO only from backed flows and excludes protocol reserve/governance supply from redeemable supply. | Unit/e2e tests for Jupiter Faucet, 2-year, and 2-week flows. | Real IO ledger mint/transfer client is not audited. | Audit real ledger transfer semantics and supply reconciliation. |
-| Redemption double-pay | Redemption journal separates ICP payout and IO return phases. Completed phases are not repeated. Downstream transfer paths use `LedgerTransferClient`; duplicate transfer errors are modelled as idempotency signals only after amount/account/memo proof. | Retry and upgrade-before-retry tests; scheduler boundary duplicate-proof tests; `io-ledger-types` duplicate proof tests. | Real ledger/index finality, production scan adapters, and archive traversal are not integrated. | Idempotency keys tied to real ledger blocks and transfer memos. |
-| Redemption IO-return replay | IO return status and block are persisted before completion. | Journal replay tests. | Real IO ledger duplicate detection remains future work. | Use ledger block ids and subaccounts as durable replay guards. |
-| Stuck pending journal operations | Pending operations persist phase, retry count, last error, and downstream block data. | Stable-state and PocketIC upgrade/retry tests. | No production operator read API by policy. | Historian/governance-observed operational reporting. |
-| Cursor rewind/replay | Scheduler cursors advance only after observed work is represented safely; processed transaction ids remain duplicate guards. Account-filtered index history allows global block gaps while rejecting duplicate or non-monotonic returned account blocks. | Cursor and duplicate replay tests. | Archive handling is not production-wired. | Real index archive pagination and monotonic account-history cursor proofs. |
-| Index lag/archive gaps | Current tests use mock indexes and ledger histories. Debug/PocketIC scan sources can use mock `get_account_transactions` through `LedgerIndexClient`. Boundary types model lag, archive-required states, full-ledger missing blocks, duplicate account block indexes, and account-history cursor gaps. | Mock index tests exercise scans and cursors; scheduler boundary cursor tests; PocketIC lag/archive tests. | Real ICP/IO index clients and archive fetches are missing. | Explicit lag detection, archive range validation, and alerting. |
-| Governance boundary confusion | NNS/SNS governance records and traits are production-shaped, while mock adapters are clearly scoped to debug canisters. Local SNS governance reads use mock/PocketIC sources only. | Governance Candid fixture tests, mock adapter type names, DID guardrails, `sns_governance_read_tests`, `sns_governance_read_required`. | Real NNS/SNS adapters are not audited or wired. | Audit Candid mappings, pagination, retry policy, and proposal/neuron reconciliation before mainnet. |
-| Reward allocation includes excluded SNS neurons | Eligibility snapshots carry exclusion reasons for Jupiter governance, protocol-owned, dissolving, short-delay, zero-stake, and invalid-ID neurons. | SNS eligibility, governance snapshot, and allocation tests. | Real SNS snapshots and launch config remain future work. | Reconcile final SNS genesis neurons and protocol-owned IDs before enabling rewards. |
-| Mock/test assumptions leak into production | Debug APIs live in debug DIDs and are checked out of production DIDs. | DID guardrail and exact Wasm method string scan. | Rust runtime strings can cause false positives if scan is too broad. | Metadata/export inspection once final Wasm metadata policy is defined. |
-| Broad production API exposed | Value-moving production DIDs must remain install-args-only. | `did_surface` rejects broad/debug methods and checks service shape. | Manual review still required for hidden behavior changes. | CI required DID checks and external audit review. |
-| Artifact substitution | Raw/gz artifacts have SHA sidecars and a manifest. Local upgrade proposals must match manifest hashes. | `verify_artifacts` checks sidecars, manifest, sizes, and stale files; `sns_root_lifecycle_tests` checks proposal/manifest matching. | Builds are not fully hermetic. | Reproducible container/Nix builds and multi-builder comparison. |
-| Dependency compromise | Cargo.lock is respected and security tooling is wired. | `security_scan_required` runs cargo-deny, cargo-audit, and duplicate tree reporting. | Policy starts permissive for duplicates/licenses. | Tighten deny policy after reviewing the dependency graph. |
-| Controller compromise | Controller model and recovery expectations are documented. Local mock SNS root tests exercise controller handoff and unauthorized caller rejection. | Release checklist requires no mainnet calls and artifact hash checks; `sns_root_lifecycle_required`. | Final production SNS handoff process is unresolved. | SNS-root controlled upgrades and emergency governance procedures. |
-| Malicious/buggy upgrade | Stable snapshots and journals are tested across upgrades, including mock SNS-root-style proposal upgrades. | PocketIC upgrade-before-retry tests; artifact verification; `sns_root_lifecycle_required`. | Stable layout is not audited for mainnet scale. | Audit storage migrations and run proposal payload verification. |
-| Frontend misinformation | Frontend is not a source of protocol truth. | Docs separate frontend from value-moving canisters. | Certified assets/read-model plan is missing. | Certified historian/frontend and source-of-truth links. |
-| Historian divergence | Historian is a read-model canister, not a value-moving authority. | Placeholder historian has a narrow public DID. | Real reconstruction logic is not implemented. | Source-ledger reconciliation and divergence alerts. |
-
-## Production API Policy
-
-For `io_stream_manager` and `io_nns_neuron_manager`, the production DID shape remains:
-
-```did
-service : (InitArgs) -> {}
-```
-
-Debug/test APIs may exist only in debug DIDs and test builds. Constructor args may include ledger/governance principal configuration, but callable production APIs for value-moving canisters must not expand.
-
-## 2026-07-28 Monetary Boundary Status
-
-The post-merge truth pass keeps IO classified as inert and not production-ready. Standard current SNS ledger initialization does not set a fee collector, so IO must not assume constant total supply unless the final ledger configuration proves that property. P0 remediation remains required for fee-aware redemption, exact payout destinations, immutable transfer attempts, removal of release-reachable mock fallbacks, production Jupiter issuance, unified activation wiring, bootstrap reconciliation, and the zero-liquid redemption-rate guard.
+Production activation and mainnet operations remain unavailable.

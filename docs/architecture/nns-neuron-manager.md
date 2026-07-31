@@ -1,33 +1,7 @@
-# NNS Neuron Manager
+# NNS neuron manager
 
-## Simplified launch execution
+The manager is self-bound to its running canister principal and uses distinct Jupiter, two-year maturity, two-week maturity, unwind and operational-fee Accounts. Each sending staging Account requires explicit fee float.
 
-The NNS manager is the sole authority for NNS commands and proof. For ordinary
-maturity `M`, it stakes 40% and disburses 100% of the remaining maturity. The
-actual modulated ICP receipt is liquid backing. It retains one immediate active
-operation and fixed pending slots for two-year maturity, two-week maturity, and
-one unwind child. It does not scan ledger indexes or maintain inferred
-account-history state.
+Jupiter stakes checked 40% into the permanent neuron and delivers the remainder as proved liquid backing. Maturity stakes 40% of ordinary maturity and disburses all remaining maturity; actual modulated ICP is backing. Target growth above canonical principal reports UnderTarget and never consumes liquid backing. Target excess permits one unwind child.
 
-`io_nns_neuron_manager` manages IO's NNS-side operational model. It does not issue IO and it does not calculate SNS-staker rewards.
-
-## 2-Year Neuron
-
-The 2-year NNS neuron represents permanent productive capital. Its maturity can increase liquid ICP after disbursement, but the 2-year principal is not liquid NAV and never issues IO.
-
-## 2-Week Pool
-
-The pooled 2-week NNS neuron backs the active IO SNS staking strategy. The model has explicit lifecycle plans for:
-
-- `TwoWeekPoolRestake`
-- `TwoWeekPoolSplit`
-- `TwoWeekPoolStartDissolving`
-- `TwoWeekPoolStopDissolving`
-- `TwoWeekPoolMergeBack`
-- `TwoWeekUnwindPrincipalDisbursement`
-
-Target increases plan restake. Target decreases plan split and unwind. A cancel before readiness plans stop-dissolving and merge-back. A ready child plans principal disbursement into the liquid reserve path. If governance succeeds but a downstream ledger transfer fails, the journal retries the downstream transfer rather than repeating the governance mutation.
-
-## Boundary Status
-
-The canister has a production-shaped NNS governance trait and a mock adapter. The mock adapter calls debug methods only inside `clients::nns_governance`. Real NNS governance calls are future work.
+Production authority is intended to remain at existing controller `oae4c`; `tatch` is unused. No mainnet operation is authorized.
