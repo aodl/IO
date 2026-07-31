@@ -1,5 +1,15 @@
 # IO Canister Roles
 
+## Simplified launch ownership
+
+The stream manager owns direct-reserve ICRC-2 redemption, canonical reserves,
+receipt permits, exact reward cohorts, serialized settlement, and local
+lifecycle. The NNS manager exclusively owns NNS authority and proof, Jupiter
+staging, direct maturity commands, pooled two-week stake, and one unwind child.
+The historian exclusively owns ledger/index scans, archive traversal, global
+reconciliation, histories, and alerts; historian observations are never
+monetary authority.
+
 ## io_nns_neuron_manager
 
 NNS-only canister. It manages:

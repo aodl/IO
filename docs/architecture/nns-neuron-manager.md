@@ -1,5 +1,14 @@
 # NNS Neuron Manager
 
+## Simplified launch execution
+
+The NNS manager is the sole authority for NNS commands and proof. For ordinary
+maturity `M`, it stakes 40% and disburses 100% of the remaining maturity. The
+actual modulated ICP receipt is liquid backing. It retains one immediate active
+operation and fixed pending slots for two-year maturity, two-week maturity, and
+one unwind child. It does not scan ledger indexes or maintain inferred
+account-history state.
+
 `io_nns_neuron_manager` manages IO's NNS-side operational model. It does not issue IO and it does not calculate SNS-staker rewards.
 
 ## 2-Year Neuron

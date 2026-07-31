@@ -1,5 +1,13 @@
 # Controller And Recovery
 
+## Simplified recovery authority
+
+SNS governance may pause and later update configuration by upgrade, but cannot
+mark an operation complete. Permissionless recovery can only retry the immutable
+active request or provide an exact canonical block matching a `Stuck` transfer.
+Unresolved ambiguity outside the deduplication window safely pauses pending an
+exact proof or SNS-governed forward fix.
+
 IO is not production-mainnet-ready. This document defines the intended controller posture for the current canister set and records open governance questions before real ledger/NNS/SNS integrations.
 
 ## Controller Model

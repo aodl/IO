@@ -1,5 +1,14 @@
 # Fee, Dust, and Accounting Policy
 
+## Launch fee rule
+
+IO uses standard SNS fee burn: there is no fee collector and no zero-fee launch.
+Redemption queries current IO and ICP fees and enforces caller maxima. The
+approval call burns its own IO fee; `transfer_from` burns another IO fee, so a
+normal allowance covers the requested IO amount plus the transfer-from fee.
+Intentional fee changes require pause, a drained active operation, governance
+change, configuration upgrade, current-fee verification, and unpause.
+
 This document defines IO monetary accounting in e8s. It is a pre-activation policy for the pure model, stream-manager journal, historian read model, and ledger transfer boundaries. It does not imply IO issuance, redemption, a canonical SNS IO ledger, or production adapters are live.
 
 ## Canonical Sources

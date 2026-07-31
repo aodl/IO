@@ -1,5 +1,13 @@
 # Scheduler Architecture
 
+## Replacement
+
+The production inference scheduler is removed from value-moving canisters.
+Permissionless `resume()` deterministically advances only the exact persisted
+active operation. There is no account scan, automatic source discovery,
+complete-history reconciliation, or public tick/process method. Global
+observation is historian work.
+
 The value-moving canisters now contain internal scheduler logic for the first mock-driven integration slice.
 
 ## io_stream_manager

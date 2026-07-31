@@ -1,5 +1,14 @@
 # Reward Allocation
 
+## Preserved launch semantics
+
+The simplified executor does not change allocation results. The earning window
+is exactly 1,209,600 seconds; stake is frozen; direct and followed participation
+count; late stake and top-ups are excluded; forfeiture remains dust without
+redistribution; and the full backing target is preserved. Delayed maturity
+payout does not change eligibility. Settlement is sequential under the single
+active monetary operation.
+
 Two-week maturity may issue backed IO to eligible active IO SNS stakers. Ordinary IO reward eligibility requires exactly 14 days. Stock SNS parameters cap the maximum dissolve delay and can gate voting with a minimum delay, but they do not prevent a user from creating a shorter neuron. Longer-than-14-day reward positions are prevented by the SNS maximum; shorter neurons are technically creatable but receive no IO protocol rewards and do not contribute to the two-week NNS backing target. Rewards use frozen cohort stake multiplied only by closed-proposal participation; no duration or age multiplier exists.
 
 ```text

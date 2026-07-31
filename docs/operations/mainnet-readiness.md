@@ -1,5 +1,14 @@
 # Mainnet Readiness
 
+## Simplification tranche status
+
+IO remains not live. Reserved production canisters remain inert and
+`ProductionActive` is unavailable. This tranche performs no mainnet install,
+upgrade, deployment, funding, lifecycle, settings, controller, or boundary
+endpoint operation. Launch readiness requires clean V1 state, the explicit
+reset/first-install gate, exact official-interface evidence, and all validation
+gates; none of those statements authorize activation.
+
 IO is not ready for production protocol mainnet deployment.
 
 The previous Phase 1 public shell is now recorded as `DevMainnet` / `LegacyPhase1DevPublicShell`. These canisters are superseded as production targets, retained only as dev/test canisters, not on the fiduciary subnet, and not production IO protocol canisters:

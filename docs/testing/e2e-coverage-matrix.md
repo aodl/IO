@@ -1,5 +1,16 @@
 # E2E Coverage Matrix
 
+## Simplified launch coverage
+
+The replacement suite covers authenticated narrow methods, caller/account and
+nonce binding, one active operation, direct ICRC-2 reserve pull, exact fee-burn
+economics, immutable duplicate recovery, exact-block stuck proof, upgrade
+boundaries, Jupiter block/sequence and 40/60 split, direct maturity policy,
+unchanged reward allocation, serialized pool unwind, pause/drain fee changes,
+and the rule that unsolicited transfers create no protocol claim. Official
+local SNS and pinned real-source rows must report an exact skip/blocker when
+their required tooling or artifacts are unavailable.
+
 This matrix separates proof strength. A mock test uses IO-owned mock canisters or host fixtures. An SNS-shaped PocketIC test runs IO canisters plus mock SNS-shaped ledger/index/governance/root canisters. A real-framework PocketIC test runs real SNS framework Wasms in PocketIC. An official local SNS rehearsal uses local DFINITY SNS tooling and is complete only when `deploy/local-sns-rehearsal/canister-ids.local.toml` exists and `cargo run -p xtask -- validate_local_sns_ledger` passes.
 
 No current all-real-canister PocketIC E2E test exists for the full IO protocol. The real-framework PocketIC ledger/index, direct-governance, SNS-W publication, SNS-W deployment, and swap-open layers are executable only when pinned Wasms are supplied locally. No current test proves the canonical mainnet SNS IO ledger exists. IO protocol remains not live.

@@ -1,5 +1,16 @@
 # API Surface Architecture
 
+## Simplified launch surface
+
+Constructor-only monetary DIDs are superseded by narrow authenticated commands.
+The stream manager exposes only `redeem`, `prepare_liquid_receipt`,
+`complete_liquid_receipt`, permissionless `resume` and
+`prove_active_transfer`, governance-only `set_paused`, and `get_status`.
+The NNS manager exposes only `notify_jupiter_deposit`, `set_two_week_target`,
+permissionless `resume` and `prove_active_transfer`, governance-only
+`set_paused`, and `get_status`. No caller chooses a payout destination or
+asserts completion. Debug methods remain absent from production DIDs.
+
 IO follows a minimal production API pattern for value-moving canisters. The core canisters should behave like operational protocol components rather than public dashboards.
 
 ## Minimal Production API Principle

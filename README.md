@@ -1,5 +1,11 @@
 # IO Suite
 
+> **Launch redesign:** IO is not live. Reserved production canisters remain inert.
+> The normative launch architecture is the
+> [simplicity constitution](docs/architecture/simplicity-constitution.md):
+> authenticated proof-bound commands replace constructor-only monetary DIDs and
+> index-inferred intent. Value-moving canisters do not scan indexes.
+
 Initial Rust workspace for the IO protocol suite, following the Jupiter Faucet suite style without copying unnecessary canister boundaries.
 
 IO follows a minimal production API pattern for value-moving canisters.

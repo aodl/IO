@@ -1,5 +1,13 @@
 # Threat Model
 
+## Simplified trust boundary
+
+Authenticated commands bind caller, sequence, exact accounts, amount, fee, memo,
+timestamp, and canonical destination. The historian is untrusted for monetary
+decisions. Unsupported direct transfers create no protocol claim and are not
+automatically refunded. Serialization deliberately substitutes `Busy` and safe
+pause for concurrency reservations and speculative rare-case recovery.
+
 This threat model tracks the current mock-driven IO implementation and the guardrails added before real ledger/NNS/SNS clients.
 
 | Threat | Current Mitigation | Tests / Guardrails | Remaining Gaps | Future Hardening |

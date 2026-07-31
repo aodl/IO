@@ -1,5 +1,14 @@
 # Stable Storage
 
+## Clean launch schema
+
+Value-moving canisters support only launch schema V1. Prelaunch stream schemas
+0-6, NNS schemas 0-3, scanner cursors, reward reservation mirrors, lossy payout
+migrations, and experimental physical-backing states are not runtime
+compatibility obligations. Future post-launch migration history begins at V1.
+A later local/mainnet first-install or reinstall requires the explicit reset gate
+in the simplification plan; this tranche performs no mainnet operation.
+
 Stable storage hardening does not make IO live. No value-moving IO canister is deployed to production, production adapters are not active, the IO protocol remains not live, and the SNS IO ledger remains not launched.
 
 The stable-state fixtures are local/test fixtures, not live snapshots. Files under

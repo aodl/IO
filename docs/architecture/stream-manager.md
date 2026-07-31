@@ -1,5 +1,14 @@
 # Stream Manager Architecture
 
+## Simplified launch execution
+
+The stream manager has one typed active operation: `Redemption` or
+`LiquidReceipt`. Redemption pulls IO with ICRC-2 from the authenticated caller's
+exact account directly to reserve, then pays ICP to the same account. There is
+no intake account, IO return leg, scanner, automatic rejected-redemption refund,
+generic liability ledger, or authoritative cached monetary balance. Canonical
+balances are queried at settlement boundaries.
+
 The stream manager observes ledger/index flows and records durable operations before downstream value-moving work. Its production DID remains constructor-only; debug ticks and state inspection are debug/test APIs only.
 
 The ledger/index boundary lives in `io-ledger-types`. The stream scheduler uses boundary-level cursor validation for future production-shaped index scans while current PocketIC scan sources continue to use mock ledger and index canisters.
