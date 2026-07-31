@@ -387,9 +387,9 @@ pub fn run_icrc2_direct_reserve_pull(required: bool) {
 pub fn run_installed_stream_redemption(required: bool) {
     use candid::{decode_one, encode_one};
     use io_stream_manager::{
-        Account, ApiError, CompleteLiquidReceiptArgs, InitArgs, Lifecycle, LiquidReceiptProgress,
-        PrepareLiquidReceiptArgs, ReceiptKind, RedeemArgs, RedemptionProgress, Status,
-        StreamConfig, StreamProgress,
+        Account, ApiError, CompleteLiquidReceiptArgs, CompletedReceiptResult, InitArgs, Lifecycle,
+        LiquidReceiptProgress, PrepareLiquidReceiptArgs, ReceiptKind, RedeemArgs,
+        RedemptionProgress, Status, StreamConfig, StreamProgress,
     };
 
     let Some(artifacts) = maybe_artifacts(required) else {
@@ -815,21 +815,22 @@ pub fn run_installed_stream_redemption(required: bool) {
         ),
     )
     .expect("Jupiter staging should deliver exact liquid backing");
-    let proved: Result<(), ApiError> = decode_one(
+    let receipt_block_index = u128::try_from(receipt_block.0).unwrap();
+    let proved: Result<LiquidReceiptProgress, ApiError> = decode_one(
         &pic.update_call(
             stream,
             nns_manager,
             "complete_liquid_receipt",
             encode_one(CompleteLiquidReceiptArgs {
                 receipt_sequence: 0,
-                block_index: receipt_block.0.try_into().unwrap(),
+                block_index: receipt_block_index,
             })
             .unwrap(),
         )
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(proved, Ok(()));
+    assert_eq!(proved, Ok(LiquidReceiptProgress::ReceiptProved));
     let settling: Result<StreamProgress, ApiError> = decode_one(
         &pic.update_call(
             stream,
@@ -856,11 +857,13 @@ pub fn run_installed_stream_redemption(required: bool) {
         .unwrap(),
     )
     .unwrap();
-    let settlement = match settled {
-        Ok(StreamProgress::LiquidReceipt(LiquidReceiptProgress::Completed(bytes))) => {
-            decode_one::<u128>(&bytes).unwrap()
-        }
+    let completed = match settled {
+        Ok(StreamProgress::LiquidReceipt(LiquidReceiptProgress::Completed(result))) => result,
         other => panic!("expected completed Jupiter settlement, got {other:?}"),
+    };
+    let settlement = match &completed {
+        CompletedReceiptResult::Jupiter(result) => result.backed_io_e8s,
+        other => panic!("expected typed Jupiter result, got {other:?}"),
     };
     assert_eq!(settlement, expected_backed_io);
     let jupiter_io = icrc::account(nns_manager, Some([10; 32]));
@@ -883,6 +886,39 @@ pub fn run_installed_stream_redemption(required: bool) {
     )
     .unwrap();
     assert_eq!(paused_after_receipt_upgrade.lifecycle, Lifecycle::Paused);
+    let replayed_completion: Result<LiquidReceiptProgress, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            nns_manager,
+            "complete_liquid_receipt",
+            encode_one(CompleteLiquidReceiptArgs {
+                receipt_sequence: 0,
+                block_index: receipt_block_index,
+            })
+            .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        replayed_completion,
+        Ok(LiquidReceiptProgress::Completed(completed))
+    );
+    let conflicting_completion: Result<LiquidReceiptProgress, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            nns_manager,
+            "complete_liquid_receipt",
+            encode_one(CompleteLiquidReceiptArgs {
+                receipt_sequence: 0,
+                block_index: receipt_block_index + 1,
+            })
+            .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(conflicting_completion, Err(ApiError::Invalid(_))));
     let replayed_permit: Result<io_stream_manager::LiquidReceiptPermit, ApiError> = decode_one(
         &pic.update_call(
             stream,

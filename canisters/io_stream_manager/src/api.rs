@@ -49,7 +49,7 @@ pub enum LiquidReceiptProgress {
     AwaitingReceipt,
     ReceiptProved,
     Settling,
-    Completed(Vec<u8>),
+    Completed(crate::receipt::CompletedReceiptResult),
     Stuck(String),
 }
 
@@ -82,7 +82,7 @@ pub fn get_status() -> Status {
         ),
         Some(StreamOperation::LiquidReceipt(operation)) => (
             Some("LiquidReceipt".into()),
-            Some(format!("{:?}", operation.phase)),
+            Some(format!("{:?}", operation.phase())),
         ),
         None => (None, None),
     };
@@ -784,6 +784,12 @@ pub async fn resume_stream(now: u64) -> Result<StreamProgress, ApiError> {
 }
 
 pub async fn prove_active_transfer(block_index: u128) -> Result<(), ApiError> {
+    if matches!(
+        state::read().active_operation,
+        Some(StreamOperation::LiquidReceipt(_))
+    ) {
+        return receipt::prove_jupiter_settlement(block_index).await;
+    }
     let operation = active_redemption()?;
     if operation.phase != RedemptionPhase::Stuck {
         return Err(ApiError::Invalid(

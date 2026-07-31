@@ -71,6 +71,17 @@ impl StreamConfig {
         self.jupiter_receipt_source.validate()?;
         self.two_week_receipt_source.validate()?;
         self.jupiter_io_account.validate()?;
+        for (name, account) in [
+            ("IO reserve", &self.io_reserve),
+            ("liquid ICP", &self.liquid_icp),
+            ("Jupiter receipt source", &self.jupiter_receipt_source),
+            ("two-week receipt source", &self.two_week_receipt_source),
+            ("Jupiter IO account", &self.jupiter_io_account),
+        ] {
+            if account.owner == Principal::anonymous() || account.owner == management {
+                return Err(format!("{name} owner is forbidden"));
+            }
+        }
         if self.io_reserve.effective_eq(&self.liquid_icp)? {
             return Err("reserve and liquid accounts must be distinct".into());
         }
@@ -95,8 +106,14 @@ impl StreamConfig {
         let mut canonical_excluded = std::collections::BTreeSet::new();
         for account in &self.excluded_io_accounts {
             account.validate()?;
+            if account.owner == Principal::anonymous() || account.owner == management {
+                return Err("excluded IO account owner is forbidden".into());
+            }
             if account.effective_eq(&self.io_reserve)? {
                 return Err("reserve account cannot be excluded".into());
+            }
+            if account.effective_eq(&self.jupiter_io_account)? {
+                return Err("Jupiter IO account cannot be excluded".into());
             }
             if !canonical_excluded.insert(account.canonical()?) {
                 return Err("excluded IO accounts must be unique".into());
@@ -261,27 +278,7 @@ impl StreamStateV1 {
             cohort.validate()?;
         }
         if let Some(completed) = &self.last_completed_receipt {
-            if completed.request_fingerprint.len() != 32
-                || completed.permit.memo.is_empty()
-                || completed.permit.memo.len() > 32
-                || completed.completed_at_nanos == 0
-            {
-                return Err("last completed receipt is invalid".into());
-            }
-            completed.permit.destination.validate()?;
-            if !completed
-                .permit
-                .destination
-                .effective_eq(&self.config.liquid_icp)?
-                || completed.permit.memo
-                    != crate::receipt::receipt_memo(
-                        self.config.nns_manager,
-                        completed.permit.sequence,
-                    )
-                || completed.settlement_result.is_empty()
-            {
-                return Err("last completed receipt does not match stream configuration".into());
-            }
+            completed.validate(&self.config, self.next_nns_receipt_sequence)?;
         }
         Ok(())
     }
@@ -586,5 +583,15 @@ mod tests {
         assert_eq!(read().lifecycle, Lifecycle::Paused);
         assert!(read().active_operation.is_none());
         assert_eq!(caller_state(principal).next_nonce, 3);
+
+        let config = read().config;
+        let mut unsafe_jupiter = config.clone();
+        unsafe_jupiter.jupiter_io_account.owner = Principal::anonymous();
+        assert!(unsafe_jupiter.validate(principal).is_err());
+        let mut excluded_jupiter = config;
+        excluded_jupiter
+            .excluded_io_accounts
+            .push(excluded_jupiter.jupiter_io_account.clone());
+        assert!(excluded_jupiter.validate(principal).is_err());
     }
 }

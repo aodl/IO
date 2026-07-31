@@ -59,11 +59,31 @@ type PrepareLiquidReceiptArgs = record {
 };
 type LiquidReceiptPermit = record { sequence : nat64; destination : Account; memo : blob };
 type CompleteLiquidReceiptArgs = record { receipt_sequence : nat64; block_index : nat };
+type JupiterReceiptResult = record {
+  request_fingerprint : blob;
+  receipt_block : nat;
+  backed_io_e8s : nat;
+  io_transfer_block : nat;
+  io_fee_e8s : nat;
+  completed_at_nanos : nat64;
+};
+type TwoWeekReceiptResult = record {
+  request_fingerprint : blob;
+  receipt_block : nat;
+  backed_io_pool_e8s : nat;
+  distributed_io_e8s : nat;
+  dust_io_e8s : nat;
+  completed_at_nanos : nat64;
+};
+type CompletedReceiptResult = variant {
+  Jupiter : JupiterReceiptResult;
+  TwoWeek : TwoWeekReceiptResult;
+};
 type LiquidReceiptProgress = variant {
   AwaitingReceipt;
   ReceiptProved;
   Settling;
-  Completed : blob;
+  Completed : CompletedReceiptResult;
   Stuck : text;
 };
 type StreamProgress = variant {
@@ -93,7 +113,7 @@ type Status = record {
 service : (InitArgs) -> {
   redeem : (RedeemArgs) -> (variant { Ok : RedemptionProgress; Err : ApiError });
   prepare_liquid_receipt : (PrepareLiquidReceiptArgs) -> (variant { Ok : LiquidReceiptPermit; Err : ApiError });
-  complete_liquid_receipt : (CompleteLiquidReceiptArgs) -> (variant { Ok; Err : ApiError });
+  complete_liquid_receipt : (CompleteLiquidReceiptArgs) -> (variant { Ok : LiquidReceiptProgress; Err : ApiError });
   resume : () -> (variant { Ok : StreamProgress; Err : ApiError });
   prove_active_transfer : (nat) -> (variant { Ok; Err : ApiError });
   set_paused : (bool) -> (variant { Ok; Err : ApiError });

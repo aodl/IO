@@ -12,7 +12,8 @@ use serde::Deserialize;
 
 pub use api::{ApiError, LiquidReceiptProgress, RedemptionProgress, Status, StreamProgress};
 pub use receipt::{
-    CompleteLiquidReceiptArgs, LiquidReceiptPermit, PrepareLiquidReceiptArgs, ReceiptKind,
+    CompleteLiquidReceiptArgs, CompletedReceiptResult, LiquidReceiptPermit,
+    PrepareLiquidReceiptArgs, ReceiptKind,
 };
 pub use redemption::RedeemArgs;
 pub use state::{Account, Lifecycle, StreamConfig, StreamStateV1};
@@ -59,7 +60,9 @@ pub fn prepare_liquid_receipt(
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn complete_liquid_receipt(args: CompleteLiquidReceiptArgs) -> Result<(), ApiError> {
+pub async fn complete_liquid_receipt(
+    args: CompleteLiquidReceiptArgs,
+) -> Result<LiquidReceiptProgress, ApiError> {
     receipt::complete_liquid_receipt(ic_cdk::api::msg_caller(), args).await
 }
 
