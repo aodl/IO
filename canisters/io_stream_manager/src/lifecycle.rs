@@ -86,5 +86,11 @@ pub fn begin_control_request() -> Result<u64, String> {
 pub fn set_paused() {
     let mut state = state::read();
     state.lifecycle = Lifecycle::Paused;
+    if matches!(
+        &state.active_operation,
+        Some(crate::state::StreamOperation::RedemptionPreparation(_))
+    ) {
+        state.active_operation = None;
+    }
     state::write(state);
 }

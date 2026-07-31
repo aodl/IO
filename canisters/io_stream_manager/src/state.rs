@@ -219,6 +219,7 @@ impl StreamStateV1 {
             Some(StreamOperation::RedemptionPreparation(value)) => {
                 value.validate()?;
                 if value.sequence.0 >= self.next_operation_sequence.0
+                    || value.captured_control_epoch != self.control_epoch
                     || value.request.io_amount_e8s < self.config.minimum_redemption_io_e8s
                     || value.request.max_io_fee_e8s < self.config.expected_io_fee_e8s
                     || value.request.max_icp_fee_e8s < self.config.expected_icp_fee_e8s
@@ -409,6 +410,12 @@ pub fn reopen(canister_self: Principal) {
         .validate(canister_self)
         .unwrap_or_else(|error| panic!("invalid stable stream V1 state: {error}"));
     reopened.lifecycle = Lifecycle::Paused;
+    if matches!(
+        &reopened.active_operation,
+        Some(StreamOperation::RedemptionPreparation(_))
+    ) {
+        reopened.active_operation = None;
+    }
     write(reopened);
 }
 
@@ -471,7 +478,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn v1_cell_and_caller_nonce_survive_reopen() {
+    fn v1_cell_cancels_no_effect_preparation_and_preserves_caller_nonce() {
         let principal = Principal::from_slice(&[42; 29]);
         let io_ledger = Principal::from_slice(&[1; 29]);
         let icp_ledger = Principal::from_slice(&[2; 29]);
@@ -536,6 +543,48 @@ mod tests {
         );
         reopen(principal);
         assert_eq!(read().next_nns_receipt_sequence, 7);
+        assert_eq!(caller_state(principal).next_nonce, 3);
+
+        let user = Principal::from_slice(&[9; 29]);
+        let request = crate::redemption::CanonicalRedeemRequestV1 {
+            effective_subaccount: [0; 32],
+            io_amount_e8s: 2,
+            min_icp_out_e8s: 1,
+            max_io_fee_e8s: 1,
+            max_icp_fee_e8s: 1,
+            expires_at_nanos: 50,
+            nonce: 0,
+        };
+        let preparation = crate::redemption::RedemptionPreparation {
+            sequence: OperationSequence(0),
+            captured_control_epoch: 4,
+            request_fingerprint: crate::redemption::request_fingerprint(user, &request),
+            account: request.account(user),
+            request,
+            caller: user,
+            prepared_at_nanos: 1,
+        };
+        let mut with_preparation = read();
+        with_preparation.lifecycle = Lifecycle::Ready;
+        with_preparation.control_epoch = 4;
+        with_preparation.next_operation_sequence = OperationSequence(1);
+        with_preparation.active_operation = Some(StreamOperation::RedemptionPreparation(Box::new(
+            preparation.clone(),
+        )));
+        write(with_preparation);
+        crate::lifecycle::set_paused();
+        assert_eq!(read().lifecycle, Lifecycle::Paused);
+        assert!(read().active_operation.is_none());
+
+        let mut before_upgrade = read();
+        before_upgrade.lifecycle = Lifecycle::Ready;
+        before_upgrade.active_operation = Some(StreamOperation::RedemptionPreparation(Box::new(
+            preparation,
+        )));
+        write(before_upgrade);
+        reopen(principal);
+        assert_eq!(read().lifecycle, Lifecycle::Paused);
+        assert!(read().active_operation.is_none());
         assert_eq!(caller_state(principal).next_nonce, 3);
     }
 }

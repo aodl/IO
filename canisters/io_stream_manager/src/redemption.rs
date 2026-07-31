@@ -72,6 +72,7 @@ impl CanonicalRedeemRequestV1 {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct RedemptionPreparation {
     pub sequence: OperationSequence,
+    pub captured_control_epoch: u64,
     pub request_fingerprint: Vec<u8>,
     pub request: CanonicalRedeemRequestV1,
     pub caller: Principal,
@@ -468,6 +469,7 @@ mod tests {
         let request = CanonicalRedeemRequestV1::from_args(args).unwrap();
         RedemptionPreparation {
             sequence: OperationSequence(1),
+            captured_control_epoch: 1,
             request_fingerprint: request_fingerprint(principal(1), &request),
             account: request.account(principal(1)),
             request,

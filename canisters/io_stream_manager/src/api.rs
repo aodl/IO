@@ -279,6 +279,7 @@ pub async fn redeem(
         ));
     }
 
+    let reservation_time = ic_cdk::api::time();
     let mut latest = state::read();
     require_ready(&latest)?;
     let latest_caller = state::caller_state(caller);
@@ -296,11 +297,12 @@ pub async fn redeem(
         .ok_or_else(|| ApiError::Invalid("operation sequence overflow".into()))?;
     let preparation = RedemptionPreparation {
         sequence,
+        captured_control_epoch: latest.control_epoch,
         request_fingerprint: request_fingerprint.clone(),
         request,
         caller,
         account,
-        prepared_at_nanos: now,
+        prepared_at_nanos: reservation_time,
     };
     preparation.validate().map_err(ApiError::Invalid)?;
     latest.active_operation = Some(StreamOperation::RedemptionPreparation(Box::new(
@@ -331,6 +333,8 @@ pub async fn redeem(
         }
     };
     let mut latest = state::read();
+    let transition_time = ic_cdk::api::time();
+    let latest_caller = state::caller_state(caller);
     if !matches!(
         &latest.active_operation,
         Some(StreamOperation::RedemptionPreparation(current))
@@ -338,9 +342,18 @@ pub async fn redeem(
     ) {
         return Err(ApiError::Busy);
     }
+    if latest.lifecycle != Lifecycle::Ready
+        || latest.control_epoch != preparation.captured_control_epoch
+        || latest_caller.next_nonce != preparation.request.nonce
+        || preparation.request.expires_at_nanos < transition_time
+    {
+        latest.active_operation = None;
+        state::write(latest);
+        return Err(ApiError::Busy);
+    }
     latest.active_operation = Some(StreamOperation::Redemption(Box::new(operation)));
     state::write(latest);
-    dispatch_redemption_transfer(sequence, true, now).await
+    dispatch_redemption_transfer(sequence, true, reservation_time).await
 }
 
 fn clear_matching_preparation(expected: &RedemptionPreparation) {
@@ -455,14 +468,21 @@ async fn dispatch_redemption_transfer(
     let epoch = match attempt.state {
         TransferState::Submitted {
             epoch,
-            first_submitted_at,
+            first_submitted_at: _,
             last_submitted_at,
         } => {
             let config = &state::read().config;
             if now.saturating_sub(last_submitted_at) < config.retry_delay_nanos {
                 return Err(ApiError::Busy);
             }
-            if now.saturating_sub(first_submitted_at) >= config.ledger_deduplication_window_nanos {
+            let retry_deadline = attempt
+                .intent
+                .created_at_time()
+                .checked_add(config.ledger_deduplication_window_nanos)
+                .ok_or_else(|| {
+                    ApiError::Invalid("transfer deduplication deadline overflow".into())
+                })?;
+            if now >= retry_deadline {
                 attempt.state = TransferState::Stuck {
                     reason: "deduplication window expired".into(),
                 };
@@ -892,5 +912,27 @@ mod tests {
     #[test]
     fn status_does_not_claim_canonical_balances() {
         assert!(!format!("{:?}", std::any::type_name::<Status>()).contains("balance"));
+    }
+
+    #[test]
+    fn retry_expiry_is_anchored_to_immutable_intent_time() {
+        let owner = Principal::from_slice(&[1]);
+        let intent = OwnTransferIntent::Icrc1 {
+            ledger: Principal::from_slice(&[2]),
+            from_subaccount: [0; 32],
+            to: Account {
+                owner,
+                subaccount: None,
+            },
+            amount: 10,
+            fee: 1,
+            memo: vec![1],
+            created_at_time: 100,
+        };
+        let deadline = intent.created_at_time().checked_add(50).unwrap();
+        let misleading_first_submission = 140;
+        assert_eq!(deadline, 150);
+        assert!(151u64.saturating_sub(misleading_first_submission) < 50);
+        assert!(151 >= deadline);
     }
 }
