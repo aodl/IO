@@ -2,7 +2,7 @@ use candid::{CandidType, Principal};
 use serde::Deserialize;
 
 use crate::{
-    state::Account,
+    state::{Account, StreamConfig},
     transfer::{deterministic_memo, LedgerMethod, OwnTransferAttempt, TransferState},
 };
 
@@ -55,10 +55,7 @@ pub fn calculate(
     caller: Principal,
     args: &RedeemArgs,
     snapshot: CanonicalRedemptionSnapshot,
-    io_ledger: Principal,
-    icp_ledger: Principal,
-    reserve: Account,
-    liquid: Account,
+    config: &StreamConfig,
     now: u64,
 ) -> Result<RedemptionOperation, String> {
     let account = Account {
@@ -94,11 +91,11 @@ pub fn calculate(
     let io_memo = deterministic_memo(b"io-redemption-pull-v1", caller, args.nonce);
     let icp_memo = deterministic_memo(b"io-redemption-pay-v1", caller, args.nonce);
     let io_pull = OwnTransferAttempt {
-        ledger: io_ledger,
+        ledger: config.io_ledger,
         method: LedgerMethod::Icrc2TransferFrom,
         source_subaccount: None,
         source_account: Some(account.clone()),
-        destination: reserve,
+        destination: config.io_reserve.clone(),
         amount_e8s: args.io_amount_e8s,
         fee_e8s: snapshot.io_fee_e8s,
         memo: io_memo,
@@ -106,9 +103,9 @@ pub fn calculate(
         state: TransferState::Prepared,
     };
     let icp_payout = OwnTransferAttempt {
-        ledger: icp_ledger,
+        ledger: config.icp_ledger,
         method: LedgerMethod::IcpTransfer,
-        source_subaccount: liquid.subaccount.clone(),
+        source_subaccount: config.liquid_icp.subaccount.clone(),
         source_account: None,
         destination: account.clone(),
         amount_e8s: net,
@@ -175,6 +172,31 @@ mod tests {
         Principal::from_slice(&[id])
     }
 
+    fn config(liquid_subaccount: Option<Vec<u8>>) -> StreamConfig {
+        StreamConfig {
+            io_ledger: principal(2),
+            icp_ledger: principal(3),
+            nns_manager: principal(5),
+            nns_receipt_source: Account {
+                owner: principal(5),
+                subaccount: None,
+            },
+            sns_governance: principal(6),
+            io_reserve: Account {
+                owner: principal(4),
+                subaccount: None,
+            },
+            liquid_icp: Account {
+                owner: principal(4),
+                subaccount: liquid_subaccount,
+            },
+            excluded_io_accounts: Vec::new(),
+            minimum_redemption_io_e8s: 1,
+            expected_io_fee_e8s: 2,
+            expected_icp_fee_e8s: 10,
+        }
+    }
+
     #[test]
     fn exact_fee_burn_equation_and_account_binding() {
         let args = RedeemArgs {
@@ -197,16 +219,7 @@ mod tests {
                 io_fee_e8s: 2,
                 icp_fee_e8s: 10,
             },
-            principal(2),
-            principal(3),
-            Account {
-                owner: principal(4),
-                subaccount: None,
-            },
-            Account {
-                owner: principal(4),
-                subaccount: Some(vec![9; 32]),
-            },
+            &config(Some(vec![9; 32])),
             1,
         )
         .unwrap();
@@ -235,23 +248,7 @@ mod tests {
             io_fee_e8s: 2,
             icp_fee_e8s: 10,
         };
-        let operation = calculate(
-            principal(1),
-            &args,
-            snapshot,
-            principal(2),
-            principal(3),
-            Account {
-                owner: principal(4),
-                subaccount: None,
-            },
-            Account {
-                owner: principal(4),
-                subaccount: None,
-            },
-            1,
-        )
-        .unwrap();
+        let operation = calculate(principal(1), &args, snapshot, &config(None), 1).unwrap();
         let post = CanonicalRedemptionSnapshot {
             total_supply_e8s: 997,
             reserve_io_e8s: 501,

@@ -61,7 +61,7 @@ pub enum NnsOperation {
         gross_e8s: u128,
         stake_e8s: u128,
         liquid_e8s: u128,
-        active_transfer: Option<NnsTransferAttempt>,
+        active_transfer: Option<Box<NnsTransferAttempt>>,
     },
     PoolTopUp {
         generation: u64,

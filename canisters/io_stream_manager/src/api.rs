@@ -140,30 +140,21 @@ pub async fn redeem(
     if state::read().active_operation.is_some() {
         return Err(ApiError::Busy);
     }
-    let operation = redemption::calculate(
-        caller,
-        &args,
-        snapshot,
-        state.config.io_ledger,
-        state.config.icp_ledger,
-        state.config.io_reserve,
-        state.config.liquid_icp,
-        now,
-    )
-    .map_err(ApiError::Invalid)?;
+    let operation = redemption::calculate(caller, &args, snapshot, &state.config, now)
+        .map_err(ApiError::Invalid)?;
     let mut latest = state::read();
     require_ready(&latest)?;
     if latest.active_operation.is_some() {
         return Err(ApiError::Busy);
     }
-    latest.active_operation = Some(StreamOperation::Redemption(operation));
+    latest.active_operation = Some(StreamOperation::Redemption(Box::new(operation)));
     state::write(latest);
     progress_redemption().await
 }
 
 async fn progress_redemption() -> Result<RedemptionResult, ApiError> {
     let mut operation = match state::read().active_operation {
-        Some(StreamOperation::Redemption(operation)) => operation,
+        Some(StreamOperation::Redemption(operation)) => *operation,
         _ => return Err(ApiError::Invalid("no active redemption".into())),
     };
     if matches!(
@@ -293,7 +284,7 @@ fn succeeded_block(attempt: &crate::transfer::OwnTransferAttempt) -> Result<u128
 
 fn persist_redemption(operation: crate::redemption::RedemptionOperation) {
     let mut state = state::read();
-    state.active_operation = Some(StreamOperation::Redemption(operation));
+    state.active_operation = Some(StreamOperation::Redemption(Box::new(operation)));
     state::write(state);
 }
 
@@ -359,22 +350,24 @@ pub fn prepare_liquid_receipt(
         destination: state.config.liquid_icp.clone(),
         memo: memo.clone(),
     };
-    state.active_operation = Some(StreamOperation::LiquidReceipt(LiquidReceiptOperation {
-        sequence: args.receipt_sequence,
-        kind: args.receipt_kind,
-        source_operation_id: args.source_operation_id,
-        liquid_amount_e8s: args.liquid_amount_e8s,
-        cohort_generation: args.cohort_generation,
-        source: Account {
-            owner: state.config.nns_receipt_source.owner,
-            subaccount: state.config.nns_receipt_source.subaccount.clone(),
+    state.active_operation = Some(StreamOperation::LiquidReceipt(Box::new(
+        LiquidReceiptOperation {
+            sequence: args.receipt_sequence,
+            kind: args.receipt_kind,
+            source_operation_id: args.source_operation_id,
+            liquid_amount_e8s: args.liquid_amount_e8s,
+            cohort_generation: args.cohort_generation,
+            source: Account {
+                owner: state.config.nns_receipt_source.owner,
+                subaccount: state.config.nns_receipt_source.subaccount.clone(),
+            },
+            destination: permit.destination.clone(),
+            memo,
+            proved_block: None,
+            active_transfer: None,
+            recipient_index: 0,
         },
-        destination: permit.destination.clone(),
-        memo,
-        proved_block: None,
-        active_transfer: None,
-        recipient_index: 0,
-    }));
+    )));
     state::write(state);
     Ok(permit)
 }

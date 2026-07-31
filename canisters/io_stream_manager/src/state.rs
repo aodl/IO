@@ -54,8 +54,8 @@ pub enum Lifecycle {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum StreamOperation {
-    Redemption(RedemptionOperation),
-    LiquidReceipt(LiquidReceiptOperation),
+    Redemption(Box<RedemptionOperation>),
+    LiquidReceipt(Box<LiquidReceiptOperation>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]

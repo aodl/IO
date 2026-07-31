@@ -2541,9 +2541,9 @@ struct LocalSnsLedgerEvidence {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LocalSnsProofSource {
-    SnsLedgerBlock,
-    SnsIndexAccountHistory,
-    SnsLedgerArchive,
+    LedgerBlock,
+    IndexAccountHistory,
+    LedgerArchive,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3221,9 +3221,9 @@ fn parse_local_sns_proof_source(
     key: &str,
 ) -> Result<LocalSnsProofSource, String> {
     match require_simple_string(path, doc, section, key)?.as_str() {
-        "SnsLedgerBlock" => Ok(LocalSnsProofSource::SnsLedgerBlock),
-        "SnsIndexAccountHistory" => Ok(LocalSnsProofSource::SnsIndexAccountHistory),
-        "SnsLedgerArchive" => Ok(LocalSnsProofSource::SnsLedgerArchive),
+        "SnsLedgerBlock" => Ok(LocalSnsProofSource::LedgerBlock),
+        "SnsIndexAccountHistory" => Ok(LocalSnsProofSource::IndexAccountHistory),
+        "SnsLedgerArchive" => Ok(LocalSnsProofSource::LedgerArchive),
         other => Err(format!(
             "{path}: {section}.{key} must be SnsLedgerBlock, SnsIndexAccountHistory, or SnsLedgerArchive, got {other}"
         )),
@@ -3974,15 +3974,15 @@ fn validate_local_sns_transfer_proof(
     evidence: &LocalSnsEvidence,
 ) -> Result<(), String> {
     let (expected_canister, expected_method) = match transfer.proof_source {
-        LocalSnsProofSource::SnsLedgerBlock => (
+        LocalSnsProofSource::LedgerBlock => (
             evidence.sns_canisters.ledger,
             LocalSnsProofMethod::Icrc3GetBlocks,
         ),
-        LocalSnsProofSource::SnsIndexAccountHistory => (
+        LocalSnsProofSource::IndexAccountHistory => (
             evidence.sns_canisters.index,
             LocalSnsProofMethod::IcrcIndexGetAccountTransactions,
         ),
-        LocalSnsProofSource::SnsLedgerArchive => (
+        LocalSnsProofSource::LedgerArchive => (
             evidence
                 .archive
                 .archive_canister
@@ -3997,7 +3997,7 @@ fn validate_local_sns_transfer_proof(
             "{path}: {section} proof source/method is not bound to the recorded SNS canister role"
         ));
     }
-    if transfer.proof_source == LocalSnsProofSource::SnsLedgerArchive {
+    if transfer.proof_source == LocalSnsProofSource::LedgerArchive {
         if transfer.archive_canister != Some(expected_canister) {
             return Err(format!(
                 "{path}: {section} archive proof canister must match discovered archive"
@@ -9140,7 +9140,7 @@ Template SNS principal values are planned wiring placeholders only.
             reserve_balance_after_e8s: reserve_balance.1,
             ledger_tip_block_index: 42,
             index_synced_through_block_index: 42,
-            proof_source: LocalSnsProofSource::SnsIndexAccountHistory,
+            proof_source: LocalSnsProofSource::IndexAccountHistory,
             proof_source_canister: Principal::from_text("be2us-64aaa-aaaaa-qaabq-cai").unwrap(),
             proof_method: LocalSnsProofMethod::IcrcIndexGetAccountTransactions,
             proof_account: sender,

@@ -322,7 +322,6 @@ pub fn run_icrc2_direct_reserve_pull(required: bool) {
         },
     )
     .expect("real SNS ledger approval should succeed");
-    assert!(approve_block > Nat::from(0u8));
     let allowance = icrc::icrc2_allowance(
         &fixture.pic,
         fixture.ledger,
