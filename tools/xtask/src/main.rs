@@ -6139,7 +6139,6 @@ fn check_historian_freshness_at(root: &Path) -> Result<(), String> {
     )?;
 
     for path in [
-        "canisters/frontend/web/src/app/agent.js",
         "canisters/frontend/web/src/data/historian-loaders.js",
         "canisters/frontend/web/src/data/dashboard-transforms.js",
         "canisters/frontend/web/src/ui/dashboard-renderer.js",
@@ -6160,6 +6159,28 @@ fn check_historian_freshness_at(root: &Path) -> Result<(), String> {
             ],
         )?;
     }
+    let frontend_agent = require_file(root, "canisters/frontend/web/src/app/agent.js")?;
+    require_present(
+        "canisters/frontend/web/src/app/agent.js",
+        &frontend_agent,
+        &[
+            "io_historian/io_historian.did.js",
+            "io_stream_manager/io_stream_manager.did.js",
+            "io_ledger/io_ledger.did.js",
+            "createRedemptionActors",
+        ],
+    )?;
+    require_absent(
+        "canisters/frontend/web/src/app/agent.js",
+        &frontend_agent,
+        &[
+            ".dfx",
+            "src/declarations",
+            "io_historian_debug",
+            "io_nns_neuron_manager",
+            "debug_",
+        ],
+    )?;
     check_historian_js_declaration_at(root)?;
 
     let phase1 = require_file(root, DEV_MAINNET_CONFIG_PATH)?;
