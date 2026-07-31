@@ -8,6 +8,10 @@ license.workspace = true
 path = "src/lib.rs"
 crate-type = ["rlib", "cdylib"]
 
+[[test]]
+name = "io_nns_neuron_manager_pocketic"
+path = "../../tests/pocketic/io_nns_neuron_manager_pocketic.rs"
+
 [dependencies]
 candid.workspace = true
 ic-cdk.workspace = true
@@ -16,3 +20,6 @@ serde.workspace = true
 
 [build-dependencies]
 io-build-support.workspace = true
+
+[dev-dependencies]
+pocket-ic.workspace = true

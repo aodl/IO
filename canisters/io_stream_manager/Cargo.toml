@@ -8,6 +8,10 @@ license.workspace = true
 path = "src/lib.rs"
 crate-type = ["rlib", "cdylib"]
 
+[[test]]
+name = "io_stream_manager_pocketic"
+path = "../../tests/pocketic/io_stream_manager_pocketic.rs"
+
 [dependencies]
 candid.workspace = true
 ic-cdk.workspace = true
@@ -18,5 +22,8 @@ sha2 = "0.10.9"
 
 [build-dependencies]
 io-build-support.workspace = true
+
+[dev-dependencies]
+pocket-ic.workspace = true
 
 sha2 = "0.10.9"

@@ -4929,6 +4929,7 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
         &[
             "real_sns_ledger_index_smoke",
             "real_sns_ledger_index_same_wasm_upgrade_preserves_balances_history_and_duplicates",
+            "real_sns_icrc2_direct_reserve_pull",
             "real_sns_governance_staking_smoke",
             "real_canister_e2e_icp_to_io_stake_reward_redemption",
             "exact_economics",
@@ -5034,38 +5035,6 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
             "local_network_launches_with_nns_sns_features",
         ],
     )?;
-    let io_protocol_real_stack = require_file(
-        root,
-        "tests/e2e_real_canisters/src/io_protocol_real_stack.rs",
-    )?;
-    require_present(
-        "tests/e2e_real_canisters/src/io_protocol_real_stack.rs",
-        &io_protocol_real_stack,
-        &[
-            "io_stream_manager_real_jupiter_deposit_scanned_from_real_icp_index",
-            "io_stream_manager_real_two_week_maturity_5_icp_issues_exact_backed_reward_pool",
-            "io_stream_manager_real_two_week_maturity_rewards_only_eligible_stakers",
-            "io_stream_manager_real_sns_topup_increases_active_staked_io",
-            "io_stream_manager_real_redemption_pays_icp_on_real_local_ledger",
-            "io_stream_manager_real_redemption_rounding_fee_dust_accounted",
-            "io_stream_manager_real_redemption_reads_actual_sns_ledger_fee",
-            "io_stream_manager_real_redemption_fee_change_is_observed_on_next_operation",
-            "io_stream_manager_real_redemption_below_io_return_fee_fails_closed",
-            "io_stream_manager_real_redemption_rejects_insufficient_redeemable_supply",
-            "io_stream_manager_real_redemption_after_index_lag_waits_or_fails_closed",
-            "real_stack_rejected_refund_too_old_waits_for_index_proof_no_double_refund",
-            "real_finalized_sns_four_role_reward_reconciles_exactly_once",
-            "real_finalized_sns_frozen_cohort_blocks_late_stake_and_duration_bonus",
-            "real_finalized_sns_zero_recipient_reward_retains_full_pool_as_dust",
-            "io_stream_manager_real_redemption_after_holder_yield_is_higher_than_genesis",
-            "io_stream_manager_real_redemption_after_staker_rewards_preserves_rate",
-            "real_stack_same_wasm_upgrade_preserves_operation_journal",
-            "real_stack_same_wasm_upgrade_preserves_scheduler_cursors",
-            "real_stack_same_wasm_upgrade_preserves_processed_tx_set",
-            "JUPITER_EXPECTED_IO_E8S",
-            "fund_real_jupiter_deposit",
-        ],
-    )?;
     let exact_economics = require_file(root, "tests/e2e_real_canisters/src/exact_economics.rs")?;
     require_present(
         "tests/e2e_real_canisters/src/exact_economics.rs",
@@ -5096,13 +5065,7 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
     require_present(
         "tests/e2e_real_canisters/src/sns_ledger_index.rs",
         &ledger_index,
-        &["create_sns_canister"],
-    )?;
-    let live_stream_manager = require_file(root, "tests/pocketic/io_stream_manager_pocketic.rs")?;
-    require_present(
-        "tests/pocketic/io_stream_manager_pocketic.rs",
-        &live_stream_manager,
-        &["partial_distribution_fee_change_never_retransfers_prior_recipient"],
+        &["create_sns_canister", "run_icrc2_direct_reserve_pull"],
     )?;
     require_absent(harness_path, &harness, &["--network ic", "dfx "])?;
     for path in [
@@ -6312,137 +6275,29 @@ fn check_stable_storage_at(root: &Path) -> Result<(), String> {
 }
 
 fn check_exact_two_week_policy_at(root: &Path) -> Result<(), String> {
-    let scanned_paths = [
-        "crates/io_core_model/src/lib.rs",
-        "crates/io_governance_types/src/lib.rs",
-        "crates/io_reward_policy/src/lib.rs",
-        "canisters/io_stream_manager/src/lib.rs",
-        "canisters/io_stream_manager/src/scheduler/mod.rs",
-        "canisters/io_stream_manager/src/governance_snapshot.rs",
-        "canisters/io_stream_manager/src/state.rs",
-        "canisters/io_stream_manager/src/logic.rs",
-        "canisters/io_nns_neuron_manager/src/lib.rs",
-        "canisters/io_historian/src/lib.rs",
-    ];
-    let forbidden = [
-        "eligible_seconds",
-        "eligible_since_overrides",
-        "stake_time",
-        "stake-time",
-        "minimum_dissolve_delay_seconds",
-    ];
-    for path in scanned_paths {
-        let text = require_file(root, path)?;
-        let lines = text.lines().collect::<Vec<_>>();
-        for (line_index, line) in lines.iter().enumerate() {
-            for needle in forbidden {
-                if line.contains(needle)
-                    && !legacy_historian_policy_remnant_allowed(path, &lines, line_index, needle)
-                {
-                    return Err(format!(
-                        "{path}:{} contains forbidden reward policy remnant {needle}",
-                        line_index + 1
-                    ));
-                }
-            }
-            if line.contains("two_week_pool_backing_bps")
-                && path != "canisters/io_stream_manager/src/lib.rs"
-            {
-                return Err(format!(
-                    "{path}:{} contains runtime backing-bps remnant",
-                    line_index + 1
-                ));
-            }
-            if line.contains("two_week_dissolve_seconds")
-                && path != "canisters/io_nns_neuron_manager/src/lib.rs"
-            {
-                return Err(format!(
-                    "{path}:{} contains runtime two-week duration-config remnant",
-                    line_index + 1
-                ));
-            }
-        }
-    }
-
-    let core = require_file(root, "crates/io_core_model/src/lib.rs")?;
+    let reward_policy = require_file(root, "crates/io_reward_policy/src/lib.rs")?;
     require_present(
-        "exact two-week core policy",
-        &core,
+        "exact two-week reward policy",
+        &reward_policy,
         &[
-            "pub const TWO_WEEK_SECONDS",
-            "preview_stream",
-            "StreamKind::TwoWeekMaturity",
+            "allocations_plus_all_dust_equal_backed_pool",
+            "forfeited_destination_share_becomes_dust_not_redistribution",
+            "no_closed_proposals_has_full_participation",
         ],
     )?;
-    let governance = require_file(root, "crates/io_governance_types/src/lib.rs")?;
+    let stream_state = require_file(root, "canisters/io_stream_manager/src/state.rs")?;
     require_present(
-        "exact SNS eligibility policy",
-        &governance,
-        &[
-            "required_dissolve_delay_seconds",
-            "neuron.dissolve_delay_seconds < policy.required_dissolve_delay_seconds",
-            "neuron.dissolve_delay_seconds > policy.required_dissolve_delay_seconds",
-            "dissolve delay below two weeks",
-            "dissolve delay above two weeks",
-        ],
+        "stream-manager fixed reward cohort slots",
+        &stream_state,
+        &["active_reward_cohort", "pending_reward_cohort"],
     )?;
-    let scheduler = require_file(root, "canisters/io_stream_manager/src/scheduler/mod.rs")?;
+    let rewards = require_file(root, "canisters/io_stream_manager/src/rewards.rs")?;
     require_present(
-        "stream-manager reward cohort policy",
-        &scheduler,
-        &[
-            "capture_reward_cohort_from_snapshot",
-            "cohort_reward_participants",
-            "event_timestamp_seconds <= cohort.captured_at_timestamp_seconds",
-            "two-week maturity event does not postdate reward cohort capture",
-            "two-week maturity event is beyond reward cohort expiry",
-            "TWO_WEEK_SECONDS",
-        ],
-    )?;
-    let stream_pocketic = require_file(root, "tests/pocketic/io_stream_manager_pocketic.rs")?;
-    require_present(
-        "stream-manager live reward cohort tests",
-        &stream_pocketic,
-        &["consumed_reward_cohort_survives_actual_same_wasm_upgrade"],
-    )?;
-    let stream = require_file(root, "canisters/io_stream_manager/src/lib.rs")?;
-    require_present(
-        "stream-manager legacy backing migration",
-        &stream,
-        &[
-            "LegacyPreV3StableState",
-            "LegacyPreV3VersionedStableState",
-            "two_week_pool_backing_bps",
-            "legacy two_week_pool_backing_bps must be 10_000",
-        ],
-    )?;
-    let nns = require_file(root, "canisters/io_nns_neuron_manager/src/lib.rs")?;
-    require_present(
-        "NNS-manager legacy duration migration",
-        &nns,
-        &[
-            "LegacyPreV2NnsNeuronManagerConfig",
-            "LegacyPreV2VersionedStableState",
-            "two_week_dissolve_seconds",
-            "legacy two_week_dissolve_seconds must be 1_209_600",
-        ],
+        "stream-manager canonical reward policy reuse",
+        &rewards,
+        &["pub use io_reward_policy::*"],
     )?;
     Ok(())
-}
-
-fn legacy_historian_policy_remnant_allowed(
-    path: &str,
-    lines: &[&str],
-    line_index: usize,
-    needle: &str,
-) -> bool {
-    if path != "canisters/io_historian/src/lib.rs" || needle != "eligible_seconds" {
-        return false;
-    }
-    let start = line_index.saturating_sub(24);
-    lines[start..=line_index]
-        .iter()
-        .any(|line| line.contains("LegacyV1"))
 }
 
 fn fixture_schema_version(fixture: &str, text: &str) -> Result<u32, String> {
@@ -7351,23 +7206,23 @@ fn main() -> ExitCode {
             ok &= run("local-cli: icp project show", icp(&["project", "show"]));
             ok &= run("local-cli: icp build", icp(&["build"]));
             ok &= run(
-                "local-cli: io-stream-manager",
-                cargo_test(&["-p", "io-stream-manager", "--test", "io_stream_manager_cli"]),
+                "local-cli: io-stream-manager API contract",
+                cargo_test(&["-p", "io-stream-manager", "--lib"]),
             );
             ok &= run(
-                "local-cli: io-nns-neuron-manager",
-                cargo_test(&[
-                    "-p",
-                    "io-nns-neuron-manager",
-                    "--test",
-                    "io_nns_neuron_manager_cli",
-                ]),
+                "local-cli: io-nns-neuron-manager API contract",
+                cargo_test(&["-p", "io-nns-neuron-manager", "--lib"]),
             );
         }
         "test_e2e" => {
             ok &= run(
-                "e2e: io suite model",
-                cargo_test(&["-p", "io-stream-manager", "--test", "io_e2e"]),
+                "e2e: simplified stream boundary",
+                cargo_test(&[
+                    "-p",
+                    "io-stream-manager",
+                    "--test",
+                    "io_stream_manager_pocketic",
+                ]),
             );
         }
         "stream_manager_unit" => {

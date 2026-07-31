@@ -1086,6 +1086,7 @@ dependencies = [
  "ic-cdk",
  "ic-stable-structures",
  "io-build-support",
+ "pocket-ic",
  "serde",
 ]
 
@@ -1126,6 +1127,7 @@ dependencies = [
  "ic-stable-structures",
  "io-build-support",
  "io-reward-policy",
+ "pocket-ic",
  "serde",
  "sha2",
 ]

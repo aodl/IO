@@ -47,7 +47,8 @@ fn pocketic_frontend_serves_certified_assets_and_404() {
         "canisters/io_nns_neuron_manager/io_nns_neuron_manager.did",
     ] {
         let did = std::fs::read_to_string(path).expect("value-moving DID should be readable");
-        assert!(did.contains("service : (InitArgs) -> {}"));
+        assert!(did.contains("service : (InitArgs) -> {"));
+        assert!(did.contains(" get_status :"));
         assert!(!did.contains("debug_"));
         assert!(!did.contains(" get_state :"));
     }
