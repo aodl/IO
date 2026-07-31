@@ -30,6 +30,8 @@ pub fn init(args: InitArgs) {
             pending_two_year_maturity: None,
             pending_two_week_maturity: None,
             pending_unwind: None,
+            next_operation_sequence: 0,
+            control_epoch: 0,
         },
         ic_cdk::api::canister_self(),
     )
@@ -67,10 +69,12 @@ pub async fn set_paused(paused: bool) -> Result<(), ApiError> {
     if ic_cdk::api::msg_caller() != state.config.sns_governance {
         return Err(ApiError::Unauthorized);
     }
+    let control_epoch = lifecycle::begin_control_request().map_err(ApiError::Invalid)?;
     if paused {
-        lifecycle::set_paused(true).map_err(ApiError::Invalid)
+        lifecycle::set_paused();
+        Ok(())
     } else {
-        lifecycle::readiness_preflight(ic_cdk::api::canister_self()).await
+        lifecycle::readiness_preflight(ic_cdk::api::canister_self(), control_epoch).await
     }
 }
 

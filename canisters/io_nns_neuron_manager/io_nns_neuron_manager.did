@@ -10,19 +10,17 @@ type NnsConfig = record {
   two_week_neuron_id : nat64;
   jupiter_account : Account;
   jupiter_staging : Account;
-  two_year_maturity_staging : Account;
   two_week_maturity_staging : Account;
-  unwind_staging : Account;
-  operational_fee_account : Account;
   stream_liquid_account : Account;
   expected_icp_fee_e8s : nat;
-  minimum_staging_fee_float_e8s : nat;
+  jupiter_fee_float_e8s : nat;
+  two_week_fee_float_e8s : nat;
   seeded_two_week_principal_e8s : nat;
 };
 type InitArgs = record { config : NnsConfig };
 type NotifyJupiterDepositArgs = record { block_index : nat; sequence : nat64 };
 type SetTwoWeekTargetArgs = record { target_e8s : nat; generation : nat64 };
-type ApiError = variant { Unauthorized; Paused; Busy; Invalid : text; Stuck : text };
+type ApiError = variant { Unauthorized; Paused; Busy; Invalid : text; Stuck : text; ImplementationIncomplete : text };
 type Status = record {
   lifecycle : Lifecycle;
   active_operation : opt text;

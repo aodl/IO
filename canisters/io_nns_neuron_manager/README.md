@@ -1,8 +1,9 @@
 # io_nns_neuron_manager
 
 The launch NNS canister exclusively owns proof and commands for the protected
-two-year neuron, pooled two-week position, Jupiter staging, operational fee
-float, direct maturity policy, and one pending unwind child.
+two-year neuron, pooled two-week position, Jupiter staging, two-week maturity
+staging, direct maturity policy, and one pending unwind child. Each sending
+staging Account has its own bounded fee float; there is no general fee Account.
 
 IO is not live. Production canisters remain inert.
 

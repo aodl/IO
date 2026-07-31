@@ -13,6 +13,7 @@ pub enum ApiError {
     Busy,
     Invalid(String),
     Stuck(String),
+    ImplementationIncomplete(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -58,7 +59,7 @@ pub async fn notify_jupiter_deposit(
     if state.active_operation.is_some() {
         return Err(ApiError::Busy);
     }
-    if args.sequence != state.next_jupiter_sequence || args.block_index == 0 {
+    if args.sequence != state.next_jupiter_sequence {
         return Err(ApiError::Invalid(
             "Jupiter sequence or exact block is invalid".into(),
         ));
@@ -163,16 +164,14 @@ mod tests {
                         subaccount: None,
                     },
                     jupiter_staging: account(1),
-                    two_year_maturity_staging: account(2),
-                    two_week_maturity_staging: account(3),
-                    unwind_staging: account(4),
-                    operational_fee_account: account(5),
+                    two_week_maturity_staging: account(2),
                     stream_liquid_account: crate::state::Account {
                         owner: principal,
                         subaccount: None,
                     },
                     expected_icp_fee_e8s: 10_000,
-                    minimum_staging_fee_float_e8s: 10_000,
+                    jupiter_fee_float_e8s: 10_000,
+                    two_week_fee_float_e8s: 10_000,
                     seeded_two_week_principal_e8s: 1,
                 },
                 lifecycle: Lifecycle::Ready,
@@ -183,6 +182,8 @@ mod tests {
                 pending_two_year_maturity: None,
                 pending_two_week_maturity: None,
                 pending_unwind: None,
+                next_operation_sequence: 1,
+                control_epoch: 0,
             },
             principal,
         )

@@ -11,13 +11,11 @@
     two_week_neuron_id = TODO_TWO_WEEK_NEURON_ID : nat64;
     jupiter_account = record { owner = TODO_JUPITER_PRINCIPAL; subaccount = opt TODO_JUPITER_SOURCE_SUBACCOUNT };
     jupiter_staging = record { owner = TODO_EXISTING_NNS_CONTROLLER_SELF; subaccount = opt TODO_JUPITER_STAGING };
-    two_year_maturity_staging = record { owner = TODO_EXISTING_NNS_CONTROLLER_SELF; subaccount = opt TODO_TWO_YEAR_STAGING };
     two_week_maturity_staging = record { owner = TODO_EXISTING_NNS_CONTROLLER_SELF; subaccount = opt TODO_TWO_WEEK_STAGING };
-    unwind_staging = record { owner = TODO_EXISTING_NNS_CONTROLLER_SELF; subaccount = opt TODO_UNWIND_STAGING };
-    operational_fee_account = record { owner = TODO_EXISTING_NNS_CONTROLLER_SELF; subaccount = opt TODO_FEE_ACCOUNT };
     stream_liquid_account = record { owner = TODO_STREAM_MANAGER_PRINCIPAL; subaccount = opt TODO_STREAM_LIQUID_SUBACCOUNT };
     expected_icp_fee_e8s = TODO_ICP_FEE : nat;
-    minimum_staging_fee_float_e8s = TODO_FEE_FLOAT : nat;
+    jupiter_fee_float_e8s = TODO_JUPITER_FEE_FLOAT : nat;
+    two_week_fee_float_e8s = TODO_TWO_WEEK_FEE_FLOAT : nat;
     seeded_two_week_principal_e8s = TODO_SEEDED_PRINCIPAL : nat;
   };
 })
