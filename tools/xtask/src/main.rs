@@ -76,7 +76,10 @@ const STREAM_PRODUCTION_FORBIDDEN_DID: &[&str] = &[
     " get_config :",
     " get_redemption_rate :",
     " process_stream_event :",
-    " redeem :",
+    " redeem_to :",
+    " mark_complete :",
+    " force_retry :",
+    " force_success :",
     " tick :",
     " debug_tick :",
     " plan_rebalance :",
@@ -90,7 +93,7 @@ const NNS_PRODUCTION_FORBIDDEN_DID: &[&str] = &[
     " get_config :",
     " get_redemption_rate :",
     " process_stream_event :",
-    " redeem :",
+    " redeem_to :",
     " tick :",
     " debug_tick :",
     " plan_rebalance :",
@@ -488,10 +491,8 @@ fn check_minimal_value_moving_did(path: &str, text: &str) -> Result<(), String> 
         .filter(|line| !line.is_empty() && !line.starts_with("//"))
         .collect::<Vec<_>>()
         .join("\n");
-    if !stripped.contains("service : (InitArgs) -> {}") {
-        return Err(format!(
-            "{path} must keep value-moving production service install-args-only"
-        ));
+    if !stripped.contains("service : (InitArgs) -> {") {
+        return Err(format!("{path} must declare the launch InitArgs service"));
     }
     Ok(())
 }
@@ -515,6 +516,99 @@ fn check_wasm_forbidden_methods(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn rust_files_below(root: &Path, relative: &str) -> Result<Vec<PathBuf>, String> {
+    fn walk(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+        for entry in
+            fs::read_dir(directory).map_err(|error| format!("{}: {error}", directory.display()))?
+        {
+            let path = entry.map_err(|error| error.to_string())?.path();
+            if path.is_dir() {
+                walk(&path, files)?;
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                files.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    walk(&root.join(relative), &mut files)?;
+    Ok(files)
+}
+
+fn check_simplicity_at(root: &Path) -> Result<(), String> {
+    const VALUE_MOVING_DIRS: &[&str] = &[
+        "canisters/io_stream_manager/src",
+        "canisters/io_nns_neuron_manager/src",
+    ];
+    const FORBIDDEN: &[&str] = &[
+        "AccountHistoryScanState",
+        "LedgerIndexClient",
+        "CompleteRangeEvidence",
+        "CanonicalRangeJob",
+        "StableLiability",
+        "MockLedgerCanisterClient",
+        "debug_get_transactions",
+        "redemption_intake",
+        "redemption_return",
+        "rejected_refund",
+        "process_stream_event",
+        "process_stream",
+        "pub fn tick",
+        "Legacy",
+        "SchemaV2",
+        "SchemaV3",
+        "SchemaV4",
+        "SchemaV5",
+        "SchemaV6",
+    ];
+
+    let mut combined_lines = 0usize;
+    let mut stream_lines = 0usize;
+    for directory in VALUE_MOVING_DIRS {
+        for path in rust_files_below(root, directory)? {
+            let text = fs::read_to_string(&path)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            let lines = text.lines().count();
+            if lines > 1_500 {
+                return Err(format!(
+                    "{} has {lines} lines; the per-file limit is 1500",
+                    path.display()
+                ));
+            }
+            for needle in FORBIDDEN {
+                if text.contains(needle) {
+                    return Err(format!("{} contains forbidden {needle:?}", path.display()));
+                }
+            }
+            combined_lines += lines;
+            if directory.contains("io_stream_manager") {
+                stream_lines += lines;
+            }
+        }
+    }
+    for directory in ["crates/io_core_model/src", "crates/io_ledger_types/src"] {
+        for path in rust_files_below(root, directory)? {
+            combined_lines += fs::read_to_string(&path)
+                .map_err(|error| format!("{}: {error}", path.display()))?
+                .lines()
+                .count();
+        }
+    }
+    if stream_lines > 6_000 {
+        return Err(format!(
+            "stream-manager production Rust has {stream_lines} lines"
+        ));
+    }
+    // The exact donor snapshot contains more than 32k lines in these paths.
+    if combined_lines >= 16_250 {
+        return Err(format!(
+            "combined production Rust has {combined_lines} lines; 50% donor reduction not met"
+        ));
+    }
+    eprintln!("simplicity metrics: stream_manager={stream_lines} combined={combined_lines}");
+    Ok(())
+}
+
 fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
     let stream_production_path = "canisters/io_stream_manager/io_stream_manager.did";
     let stream_debug_path = "canisters/io_stream_manager/io_stream_manager_debug.did";
@@ -532,6 +626,32 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
 
     check_minimal_value_moving_did(stream_production_path, &stream_production)?;
     check_minimal_value_moving_did(nns_production_path, &nns_production)?;
+
+    require_present(
+        stream_production_path,
+        &stream_production,
+        &[
+            "  redeem :",
+            "  prepare_liquid_receipt :",
+            "  complete_liquid_receipt :",
+            "  resume :",
+            "  prove_active_transfer :",
+            "  set_paused :",
+            "  get_status :",
+        ],
+    )?;
+    require_present(
+        nns_production_path,
+        &nns_production,
+        &[
+            "  notify_jupiter_deposit :",
+            "  set_two_week_target :",
+            "  resume :",
+            "  prove_active_transfer :",
+            "  set_paused :",
+            "  get_status :",
+        ],
+    )?;
 
     let stream_forbidden =
         forbidden_did_methods(&stream_production, STREAM_PRODUCTION_FORBIDDEN_DID);
@@ -6373,7 +6493,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_committed_evidence, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, simplicity_check, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_committed_evidence, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -6399,6 +6519,13 @@ fn main() -> ExitCode {
             Ok(()) => eprintln!("✓ did_surface"),
             Err(err) => {
                 eprintln!("✗ did_surface: {err}");
+                ok = false;
+            }
+        },
+        "simplicity_check" => match check_simplicity_at(&root) {
+            Ok(()) => eprintln!("✓ simplicity_check"),
+            Err(err) => {
+                eprintln!("✗ simplicity_check: {err}");
                 ok = false;
             }
         },
@@ -7737,12 +7864,12 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "canisters/io_stream_manager/io_stream_manager.did",
-            "type InitArgs = record {};\nservice : (InitArgs) -> {}\n",
+            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  redeem : () -> ();\n  prepare_liquid_receipt : () -> ();\n  complete_liquid_receipt : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  get_status : () -> () query;\n}\n",
         );
         write(
             root,
             "canisters/io_nns_neuron_manager/io_nns_neuron_manager.did",
-            "type InitArgs = record {};\nservice : (InitArgs) -> {}\n",
+            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  notify_jupiter_deposit : () -> ();\n  set_two_week_target : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  get_status : () -> () query;\n}\n",
         );
         write(
             root,

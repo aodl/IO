@@ -9,7 +9,6 @@ pub mod brief_blockers;
 pub mod exact_economics;
 pub mod framework;
 pub mod icrc;
-pub mod io_protocol_real_stack;
 pub mod nns_setup;
 pub mod pocketic_env;
 pub mod sns_governance_setup;
@@ -41,6 +40,12 @@ mod tests {
     #[ignore = "requires pinned real SNS ledger/index Wasms and POCKET_IC_BIN"]
     fn real_sns_ledger_index_same_wasm_upgrade_preserves_balances_history_and_duplicates() {
         crate::sns_ledger_index::run_ledger_index_same_wasm_upgrade(false);
+    }
+
+    #[test]
+    #[ignore = "requires pinned real SNS ledger Wasm and POCKET_IC_BIN"]
+    fn real_sns_icrc2_direct_reserve_pull() {
+        crate::sns_ledger_index::run_icrc2_direct_reserve_pull(false);
     }
 
     #[test]

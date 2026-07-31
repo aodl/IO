@@ -288,3 +288,99 @@ pub fn run_ledger_index_same_wasm_upgrade(required: bool) {
     assert_index_has_transfer(&fixture, block, created_at_time);
     assert_error_paths(&fixture, block, created_at_time);
 }
+
+pub fn run_icrc2_direct_reserve_pull(required: bool) {
+    let Some(fixture) = setup(required) else {
+        return;
+    };
+    let standard_names = icrc::supported_standards(&fixture.pic, fixture.ledger)
+        .into_iter()
+        .map(|standard| standard.name)
+        .collect::<std::collections::BTreeSet<_>>();
+    for required_standard in ["ICRC-1", "ICRC-2", "ICRC-3"] {
+        assert!(standard_names.contains(required_standard));
+    }
+
+    let (_funding_block, funding_time) = transfer_reserve_to_user(&fixture);
+    let spender = Principal::from_slice(&[5; 29]);
+    let spender_account = icrc::account(spender, None);
+    let allowance_e8s = 20_000_000u64 + icrc::FEE_E8S;
+    let expires_at = funding_time + 1_000_000_000;
+    let approve_block = icrc::icrc2_approve(
+        &fixture.pic,
+        fixture.ledger,
+        fixture.user_owner,
+        icrc::ApproveArgs {
+            from_subaccount: None,
+            spender: spender_account.clone(),
+            amount: Nat::from(allowance_e8s),
+            expected_allowance: Some(Nat::from(0u8)),
+            expires_at: Some(expires_at),
+            fee: Some(Nat::from(icrc::FEE_E8S)),
+            memo: Some(b"exact-short-lived-allowance".to_vec()),
+            created_at_time: Some(funding_time + 1),
+        },
+    )
+    .expect("real SNS ledger approval should succeed");
+    assert!(approve_block > Nat::from(0u8));
+    let allowance = icrc::icrc2_allowance(
+        &fixture.pic,
+        fixture.ledger,
+        icrc::AllowanceArgs {
+            account: fixture.user.clone(),
+            spender: spender_account,
+        },
+    );
+    assert_eq!(allowance.allowance, Nat::from(allowance_e8s));
+    assert_eq!(allowance.expires_at, Some(expires_at));
+
+    let reserve_before =
+        icrc::icrc1_balance_of(&fixture.pic, fixture.ledger, fixture.reserve.clone());
+    let supply_before = icrc::icrc1_total_supply(&fixture.pic, fixture.ledger);
+    let pull_amount = 20_000_000u64;
+    let pull_block = icrc::icrc2_transfer_from(
+        &fixture.pic,
+        fixture.ledger,
+        spender,
+        icrc::TransferFromArgs {
+            spender_subaccount: None,
+            from: fixture.user.clone(),
+            to: fixture.reserve.clone(),
+            amount: Nat::from(pull_amount),
+            fee: Some(Nat::from(icrc::FEE_E8S)),
+            memo: Some(b"direct-reserve-redemption".to_vec()),
+            created_at_time: Some(funding_time + 2),
+        },
+    )
+    .expect("real SNS ledger transfer_from should succeed");
+    assert!(pull_block > approve_block);
+    assert_eq!(
+        icrc::icrc1_balance_of(&fixture.pic, fixture.ledger, fixture.reserve.clone()),
+        reserve_before + Nat::from(pull_amount)
+    );
+    assert_eq!(
+        icrc::icrc1_total_supply(&fixture.pic, fixture.ledger),
+        supply_before - Nat::from(icrc::FEE_E8S)
+    );
+
+    let changed = icrc::icrc2_approve(
+        &fixture.pic,
+        fixture.ledger,
+        fixture.user_owner,
+        icrc::ApproveArgs {
+            from_subaccount: None,
+            spender: icrc::account(spender, None),
+            amount: Nat::from(1u8),
+            expected_allowance: Some(Nat::from(1u8)),
+            expires_at: Some(expires_at),
+            fee: Some(Nat::from(icrc::FEE_E8S)),
+            memo: None,
+            created_at_time: Some(funding_time + 3),
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(
+        changed,
+        icrc::ApproveError::AllowanceChanged { .. }
+    ));
+}

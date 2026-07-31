@@ -3023,18 +3023,23 @@ mod tests {
     }
 
     #[test]
-    fn value_moving_production_dids_stay_constructor_only() {
-        for path in [
-            "canisters/io_stream_manager/io_stream_manager.did",
-            "canisters/io_nns_neuron_manager/io_nns_neuron_manager.did",
-        ] {
-            let did = read_repo(path);
-            assert!(did.contains("service : (InitArgs) -> {}"));
+    fn value_moving_production_dids_are_narrow_and_status_only_for_reads() {
+        let stream = read_repo("canisters/io_stream_manager/io_stream_manager.did");
+        let nns = read_repo("canisters/io_nns_neuron_manager/io_nns_neuron_manager.did");
+        for did in [&stream, &nns] {
+            assert!(did.contains("service : (InitArgs) -> {"));
+            assert!(did.contains(" get_status :"));
             assert!(!did.contains("debug_"));
             assert!(!did.contains(" get_state :"));
             assert!(!did.contains(" get_events :"));
             assert!(!did.contains(" tick :"));
+            assert!(!did.contains(" process_stream"));
+            assert!(!did.contains(" mark_complete"));
         }
+        assert!(stream.contains(" redeem :"));
+        assert!(stream.contains(" prepare_liquid_receipt :"));
+        assert!(nns.contains(" notify_jupiter_deposit :"));
+        assert!(nns.contains(" set_two_week_target :"));
     }
 
     #[test]
