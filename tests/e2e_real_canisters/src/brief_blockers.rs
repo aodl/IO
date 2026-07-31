@@ -372,12 +372,14 @@ mod frontend_honesty {
     }
 
     #[test]
-    fn frontend_does_not_import_stream_manager_declarations() {
+    fn frontend_imports_only_the_production_redemption_surface() {
         let source = web_source();
 
-        assert!(!source.contains("io_stream_manager"));
-        assert!(!source.contains("stream_manager"));
-        assert!(!repo_path("canisters/frontend/web/declarations/io_stream_manager").exists());
+        assert!(source.contains("io_stream_manager"));
+        assert!(repo_path("canisters/frontend/web/declarations/io_stream_manager").exists());
+        assert!(source.contains("get_caller_redemption_state"));
+        assert!(source.contains("icrc2_approve"));
+        assert!(!source.contains("debug_"));
     }
 
     #[test]
@@ -420,7 +422,7 @@ mod frontend_honesty {
     }
 
     #[test]
-    fn frontend_uses_historian_only_for_protocol_status() {
+    fn frontend_uses_historian_only_for_observed_protocol_status() {
         let agent = read("canisters/frontend/web/src/app/agent.js");
         let loaders = read("canisters/frontend/web/src/data/historian-loaders.js");
 
@@ -428,19 +430,21 @@ mod frontend_honesty {
         assert!(agent.contains("createHistorianActor"));
         assert!(loaders.contains("get_dashboard_state"));
         assert!(loaders.contains("get_public_status"));
-        assert!(!agent.contains("io_stream_manager"));
+        assert!(agent.contains("io_stream_manager"));
         assert!(!agent.contains("io_nns_neuron_manager"));
+        assert!(!loaders.contains("io_stream_manager"));
     }
 
     #[test]
-    fn frontend_build_uses_historian_only() {
+    fn frontend_build_separates_observation_and_redemption_canisters() {
         let build = read("canisters/frontend/web/build-frontend.mjs");
 
         assert!(build.contains("CANISTER_ID_IO_HISTORIAN"));
         assert!(build.contains("resolveCanisterId(\"io_historian\")"));
-        assert!(!build.contains("CANISTER_ID_IO_STREAM_MANAGER"));
+        assert!(build.contains("CANISTER_ID_IO_STREAM_MANAGER"));
+        assert!(build.contains("CANISTER_ID_IO_LEDGER"));
         assert!(!build.contains("CANISTER_ID_IO_NNS_NEURON_MANAGER"));
-        assert!(!build.contains("resolveCanisterId(\"io_stream_manager\")"));
+        assert!(build.contains("resolveCanisterId(\"io_stream_manager\")"));
         assert!(!build.contains("resolveCanisterId(\"io_nns_neuron_manager\")"));
     }
 
@@ -477,19 +481,21 @@ mod frontend_honesty {
     }
 
     #[test]
-    fn frontend_does_not_expose_value_moving_actions() {
+    fn frontend_exposes_only_the_simplified_redemption_action() {
         let source = web_source();
         let template = read("canisters/frontend/web/index.template.html");
         let combined = format!("{source}\n{template}");
 
+        assert!(combined.contains("<form"));
+        assert!(combined.contains("type=\"submit\""));
+        assert!(combined.contains("Sending IO directly is unsupported"));
+        assert!(combined.contains("canonicalSubaccount"));
         for forbidden in [
-            "<form",
-            "type=\"submit\"",
-            "approve(",
-            "transfer(",
+            "icrc1_transfer(",
+            ".transfer(",
             "stake(",
-            "redeem(",
             "claim(",
+            "payout_destination",
         ] {
             assert!(
                 !combined.contains(forbidden),
