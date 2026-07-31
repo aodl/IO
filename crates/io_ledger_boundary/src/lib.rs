@@ -39,24 +39,35 @@ pub struct ExactIcpMint {
     pub created_at_time: u64,
 }
 
+pub struct ExpectedIcrcTransfer<'a> {
+    pub from: &'a Account,
+    pub to: &'a Account,
+    pub amount_e8s: u128,
+    pub fee_e8s: Option<u128>,
+    pub memo: Option<&'a [u8]>,
+    pub created_at_time: Option<u64>,
+    pub spender: Option<&'a Account>,
+}
+
+pub struct ExpectedQueryBlockTransfer<'a> {
+    pub from: &'a [u8],
+    pub to: &'a [u8],
+    pub amount_e8s: u128,
+    pub fee_e8s: u128,
+    pub memo: Option<&'a [u8]>,
+    pub created_at_time: u64,
+    pub spender: Option<&'a [u8]>,
+}
+
 impl ExactIcrcTransfer {
-    pub fn matches(
-        &self,
-        from: &Account,
-        to: &Account,
-        amount_e8s: u128,
-        fee_e8s: Option<u128>,
-        memo: Option<&[u8]>,
-        created_at_time: Option<u64>,
-        spender: Option<&Account>,
-    ) -> Result<bool, String> {
-        Ok(self.from.effective_eq(from)?
-            && self.to.effective_eq(to)?
-            && self.amount_e8s == amount_e8s
-            && self.fee_e8s == fee_e8s
-            && self.memo.as_deref() == memo
-            && self.created_at_time == created_at_time
-            && match (&self.spender, spender) {
+    pub fn matches(&self, expected: &ExpectedIcrcTransfer<'_>) -> Result<bool, String> {
+        Ok(self.from.effective_eq(expected.from)?
+            && self.to.effective_eq(expected.to)?
+            && self.amount_e8s == expected.amount_e8s
+            && self.fee_e8s == expected.fee_e8s
+            && self.memo.as_deref() == expected.memo
+            && self.created_at_time == expected.created_at_time
+            && match (&self.spender, expected.spender) {
                 (Some(actual), Some(expected)) => actual.effective_eq(expected)?,
                 (None, None) => true,
                 _ => false,
@@ -65,23 +76,14 @@ impl ExactIcrcTransfer {
 }
 
 impl ExactIcpTransfer {
-    pub fn matches(
-        &self,
-        from: &[u8],
-        to: &[u8],
-        amount_e8s: u128,
-        fee_e8s: u128,
-        memo: Option<&[u8]>,
-        created_at_time: u64,
-        spender: Option<&[u8]>,
-    ) -> bool {
-        self.from == from
-            && self.to == to
-            && self.amount_e8s == amount_e8s
-            && self.fee_e8s == fee_e8s
-            && self.memo.as_deref() == memo
-            && self.created_at_time == created_at_time
-            && self.spender.as_deref() == spender
+    pub fn matches(&self, expected: &ExpectedQueryBlockTransfer<'_>) -> bool {
+        self.from == expected.from
+            && self.to == expected.to
+            && self.amount_e8s == expected.amount_e8s
+            && self.fee_e8s == expected.fee_e8s
+            && self.memo.as_deref() == expected.memo
+            && self.created_at_time == expected.created_at_time
+            && self.spender.as_deref() == expected.spender
     }
 }
 
@@ -438,65 +440,4 @@ fn crc32(bytes: &[u8]) -> u32 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn account_identifier_normalizes_zero_subaccount() {
-        let owner = Principal::from_slice(&[1]);
-        let implicit = Account {
-            owner,
-            subaccount: None,
-        };
-        let explicit = Account {
-            owner,
-            subaccount: Some(vec![0; 32]),
-        };
-        assert_eq!(
-            icp_account_identifier(&implicit),
-            icp_account_identifier(&explicit)
-        );
-    }
-
-    #[test]
-    fn exact_match_rejects_changed_transfer_semantics() {
-        let account = Account {
-            owner: Principal::from_slice(&[1]),
-            subaccount: None,
-        };
-        let transfer = ExactIcrcTransfer {
-            from: account.clone(),
-            to: Account {
-                owner: Principal::from_slice(&[2]),
-                subaccount: None,
-            },
-            amount_e8s: 10,
-            fee_e8s: Some(1),
-            memo: Some(vec![7]),
-            created_at_time: Some(8),
-            spender: None,
-        };
-        assert!(transfer
-            .matches(
-                &account,
-                &transfer.to,
-                10,
-                Some(1),
-                Some(&[7]),
-                Some(8),
-                None,
-            )
-            .unwrap());
-        assert!(!transfer
-            .matches(
-                &account,
-                &transfer.to,
-                11,
-                Some(1),
-                Some(&[7]),
-                Some(8),
-                None,
-            )
-            .unwrap());
-    }
-}
+mod tests;

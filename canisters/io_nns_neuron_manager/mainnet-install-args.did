@@ -10,7 +10,7 @@
     two_year_neuron_id = 6_345_890_886_899_317_159 : nat64;
     two_week_neuron_id = TODO_TWO_WEEK_NEURON_ID : nat64;
     jupiter_account = record { owner = TODO_JUPITER_PRINCIPAL; subaccount = opt TODO_JUPITER_SOURCE_SUBACCOUNT };
-    jupiter_staging = record { owner = TODO_EXISTING_NNS_CONTROLLER_SELF; subaccount = opt TODO_JUPITER_STAGING };
+    jupiter_staging = record { owner = TODO_EXISTING_NNS_CONTROLLER_SELF; subaccount = null };
     two_week_maturity_staging = record { owner = TODO_EXISTING_NNS_CONTROLLER_SELF; subaccount = opt TODO_TWO_WEEK_STAGING };
     stream_liquid_account = record { owner = TODO_STREAM_MANAGER_PRINCIPAL; subaccount = opt TODO_STREAM_LIQUID_SUBACCOUNT };
     expected_icp_fee_e8s = TODO_ICP_FEE : nat;

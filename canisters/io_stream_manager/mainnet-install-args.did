@@ -5,7 +5,7 @@
     io_ledger = TODO_IO_LEDGER_PRINCIPAL;
     icp_ledger = TODO_ICP_LEDGER_PRINCIPAL;
     nns_manager = TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL;
-    jupiter_receipt_source = record { owner = TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL; subaccount = opt TODO_JUPITER_STAGING };
+    jupiter_receipt_source = record { owner = TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL; subaccount = null };
     two_week_receipt_source = record { owner = TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL; subaccount = opt TODO_TWO_WEEK_STAGING };
     jupiter_io_account = record { owner = TODO_JUPITER_PRINCIPAL; subaccount = opt TODO_JUPITER_IO_SUBACCOUNT };
     sns_governance = TODO_SNS_GOVERNANCE_PRINCIPAL;

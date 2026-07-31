@@ -19,6 +19,7 @@ ic-stable-structures.workspace = true
 io-accounts = { path = "../../crates/io_accounts" }
 io-ledger-boundary.workspace = true
 serde.workspace = true
+sha2 = "0.10.9"
 
 [build-dependencies]
 io-build-support.workspace = true

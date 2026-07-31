@@ -1400,12 +1400,16 @@ fn validate_simplified_receipt_topology(stream: &str, nns: &str) -> Result<(), S
         }
         Ok(())
     }
+    for (text, field) in [(stream, "jupiter_receipt_source"), (nns, "jupiter_staging")] {
+        let line = text
+            .lines()
+            .find(|line| line.contains(field))
+            .ok_or_else(|| format!("missing topology field {field}"))?;
+        if !line.contains("subaccount = null") {
+            return Err(format!("{field} must use the NNS manager default Account"));
+        }
+    }
     for (stream_field, nns_field, token) in [
-        (
-            "jupiter_receipt_source",
-            "jupiter_staging",
-            "TODO_JUPITER_STAGING",
-        ),
         (
             "two_week_receipt_source",
             "two_week_maturity_staging",
@@ -7400,15 +7404,15 @@ mod tests {
 
     #[test]
     fn simplified_receipt_topology_requires_shared_account_tokens() {
-        let stream = "jupiter_receipt_source = TODO_JUPITER_STAGING\n\
+        let stream = "jupiter_receipt_source = record { subaccount = null }\n\
                       two_week_receipt_source = TODO_TWO_WEEK_STAGING\n\
                       liquid_icp = TODO_STREAM_LIQUID_SUBACCOUNT";
-        let nns = "jupiter_staging = TODO_JUPITER_STAGING\n\
+        let nns = "jupiter_staging = record { subaccount = null }\n\
                    two_week_maturity_staging = TODO_TWO_WEEK_STAGING\n\
                    stream_liquid_account = TODO_STREAM_LIQUID_SUBACCOUNT";
         validate_simplified_receipt_topology(stream, nns).unwrap();
         assert!(validate_simplified_receipt_topology(
-            &stream.replace("TODO_JUPITER_STAGING", "TODO_WRONG",),
+            &stream.replace("subaccount = null", "subaccount = opt TODO_WRONG",),
             nns,
         )
         .is_err());

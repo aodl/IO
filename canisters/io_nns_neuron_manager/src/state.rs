@@ -2,12 +2,16 @@ use candid::{CandidType, Principal};
 use ic_stable_structures::{
     memory_manager::{MemoryId, MemoryManager, VirtualMemory},
     storable::Bound,
-    DefaultMemoryImpl, StableCell, Storable,
+    DefaultMemoryImpl, StableBTreeMap, StableCell, Storable,
 };
 use serde::Deserialize;
 use std::{borrow::Cow, cell::RefCell};
 
-use crate::{maturity::PendingMaturity, pool::PendingUnwind, transfer::NnsTransferAttempt};
+use crate::{
+    jupiter::{JupiterCompleted, JupiterOperation},
+    maturity::{CompletedMaturity, PendingMaturity},
+    pool::{PendingUnwind, PoolRebalanceOperation},
+};
 pub use io_accounts::Account;
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
@@ -73,6 +77,9 @@ impl NnsConfig {
         }
         self.jupiter_account.validate()?;
         self.stream_liquid_account.validate()?;
+        if self.jupiter_staging.canonical()?.subaccount != [0; 32] {
+            return Err("Jupiter raw-ICP staging must be the NNS manager default Account".into());
+        }
         if staging.iter().try_fold(false, |matched, account| {
             account
                 .effective_eq(&self.stream_liquid_account)
@@ -83,13 +90,19 @@ impl NnsConfig {
         {
             return Err("staging, Jupiter and stream liquid accounts must be distinct".into());
         }
+        let two_fees = self
+            .expected_icp_fee_e8s
+            .checked_mul(2)
+            .ok_or("Jupiter staging fee requirement overflow")?;
         if self.expected_icp_fee_e8s == 0
-            || self.jupiter_fee_float_e8s < self.expected_icp_fee_e8s
+            || self.jupiter_fee_float_e8s < two_fees
             || self.two_week_fee_float_e8s < self.expected_icp_fee_e8s
             || self.jupiter_fee_float_e8s > Self::MAX_STAGING_FEE_FLOAT_E8S
             || self.two_week_fee_float_e8s > Self::MAX_STAGING_FEE_FLOAT_E8S
         {
-            return Err("explicit staging fee float must cover at least one ICP fee".into());
+            return Err(
+                "explicit staging fee floats do not cover their required ICP effects".into(),
+            );
         }
         Ok(())
     }
@@ -103,20 +116,8 @@ pub enum Lifecycle {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum NnsOperation {
-    JupiterDeposit {
-        operation_sequence: u64,
-        sequence: u64,
-        deposit_block: u128,
-        gross_e8s: u128,
-        stake_e8s: u128,
-        liquid_e8s: u128,
-        active_transfer: Option<Box<NnsTransferAttempt>>,
-    },
-    PoolMergeBack {
-        operation_sequence: u64,
-        generation: u64,
-        child_neuron_id: u64,
-    },
+    Jupiter(Box<JupiterOperation>),
+    PoolRebalance(PoolRebalanceOperation),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -130,11 +131,14 @@ pub struct NnsStateV1 {
     pub config: NnsConfig,
     pub lifecycle: Lifecycle,
     pub active_operation: Option<NnsOperation>,
-    pub next_jupiter_sequence: u64,
     pub latest_two_week_target: Option<TwoWeekTarget>,
     pub latest_target_generation: u64,
     pub pending_two_year_maturity: Option<PendingMaturity>,
     pub pending_two_week_maturity: Option<PendingMaturity>,
+    #[serde(default)]
+    pub last_two_year_maturity: Option<CompletedMaturity>,
+    #[serde(default)]
+    pub last_two_week_maturity: Option<CompletedMaturity>,
     pub pending_unwind: Option<PendingUnwind>,
     pub next_operation_sequence: u64,
     pub control_epoch: u64,
@@ -172,11 +176,12 @@ impl NnsStateV1 {
             },
             lifecycle: Lifecycle::Paused,
             active_operation: None,
-            next_jupiter_sequence: 0,
             latest_two_week_target: None,
             latest_target_generation: 0,
             pending_two_year_maturity: None,
             pending_two_week_maturity: None,
+            last_two_year_maturity: None,
+            last_two_week_maturity: None,
             pending_unwind: None,
             next_operation_sequence: 1,
             control_epoch: 0,
@@ -196,43 +201,14 @@ impl NnsStateV1 {
         }
         if let Some(operation) = &self.active_operation {
             match operation {
-                NnsOperation::JupiterDeposit {
-                    operation_sequence,
-                    sequence,
-                    gross_e8s,
-                    stake_e8s,
-                    liquid_e8s,
-                    active_transfer,
-                    ..
-                } => {
-                    let expected_stake =
-                        gross_e8s.checked_mul(40).ok_or("Jupiter split overflow")? / 100;
-                    if *operation_sequence >= self.next_operation_sequence
-                        || *sequence != self.next_jupiter_sequence
-                        || *gross_e8s == 0
-                        || *stake_e8s != expected_stake
-                        || gross_e8s.checked_sub(*stake_e8s) != Some(*liquid_e8s)
-                    {
-                        return Err("active Jupiter operation is inconsistent".into());
+                NnsOperation::Jupiter(operation) => {
+                    if operation.operation_sequence >= self.next_operation_sequence {
+                        return Err("active Jupiter sequence is inconsistent".into());
                     }
-                    if let Some(transfer) = active_transfer {
-                        transfer.validate()?;
-                        if transfer.ledger != self.config.icp_ledger {
-                            return Err("Jupiter transfer uses the wrong ledger".into());
-                        }
-                    }
+                    operation.validate(self.config.icp_ledger, self.config.nns_governance)?;
                 }
-                NnsOperation::PoolMergeBack {
-                    operation_sequence,
-                    generation,
-                    child_neuron_id,
-                } if *operation_sequence < self.next_operation_sequence
-                    && *generation > 0
-                    && *child_neuron_id > 0
-                    && *child_neuron_id != self.config.two_week_neuron_id => {}
-                NnsOperation::PoolMergeBack { .. } => {
-                    return Err("pool merge-back operation is inconsistent".into())
-                }
+                NnsOperation::PoolRebalance(operation) => operation
+                    .validate(self.next_operation_sequence, self.config.two_week_neuron_id)?,
             }
         }
         for (pending, kind, neuron_id, destination) in [
@@ -250,17 +226,31 @@ impl NnsStateV1 {
             ),
         ] {
             let Some(pending) = pending else { continue };
-            if pending.kind != kind
-                || pending.neuron_id != neuron_id
-                || pending.requested_at_seconds == 0
-                || pending.original_maturity_e8s == 0
-                || pending.staked_maturity_e8s > pending.original_maturity_e8s
-                || pending.amount_disbursed_e8s == Some(0)
-                || !pending.destination.effective_eq(destination)?
+            pending.validate(kind, neuron_id, destination, self.next_operation_sequence)?;
+        }
+        for (completed, kind, neuron_id, destination) in [
+            (
+                self.last_two_year_maturity.as_ref(),
+                crate::maturity::MaturityKind::TwoYear,
+                self.config.two_year_neuron_id,
+                &self.config.stream_liquid_account,
+            ),
+            (
+                self.last_two_week_maturity.as_ref(),
+                crate::maturity::MaturityKind::TwoWeek,
+                self.config.two_week_neuron_id,
+                &self.config.two_week_maturity_staging,
+            ),
+        ] {
+            let Some(completed) = completed else { continue };
+            if completed.kind != kind
+                || completed.neuron_id != neuron_id
+                || completed.actual_minted_e8s == 0
+                || completed.completed_at_nanos == 0
+                || !completed.destination.effective_eq(destination)?
             {
-                return Err("pending maturity contains an invalid identity".into());
+                return Err("completed maturity result is inconsistent".into());
             }
-            pending.destination.validate()?;
         }
         if let Some(unwind) = &self.pending_unwind {
             if unwind.generation == 0
@@ -296,6 +286,8 @@ thread_local! {
         RefCell::new(MemoryManager::init(DefaultMemoryImpl::default()));
     static STATE: RefCell<Option<StableCell<StableNnsState, Memory>>> =
         const { RefCell::new(None) };
+    static PROCESSED_JUPITER: RefCell<Option<StableBTreeMap<u64, JupiterCompleted, Memory>>> =
+        const { RefCell::new(None) };
 }
 
 pub fn initialize(state: NnsStateV1, canister_self: Principal) -> Result<(), String> {
@@ -304,6 +296,7 @@ pub fn initialize(state: NnsStateV1, canister_self: Principal) -> Result<(), Str
         let memory = MEMORY_MANAGER.with(|manager| manager.borrow().get(MemoryId::new(0)));
         *slot.borrow_mut() = Some(StableCell::init(memory, StableNnsState::V1(state)));
     });
+    reopen_processed_jupiter();
     Ok(())
 }
 
@@ -315,12 +308,69 @@ pub fn reopen(canister_self: Principal) {
             StableNnsState::V1(NnsStateV1::decode_placeholder()),
         ));
     });
+    reopen_processed_jupiter();
     let mut reopened = read();
     reopened
         .validate(canister_self)
         .unwrap_or_else(|error| panic!("invalid stable NNS V1 state: {error}"));
     reopened.lifecycle = Lifecycle::Paused;
     write(reopened);
+}
+
+fn reopen_processed_jupiter() {
+    PROCESSED_JUPITER.with(|slot| {
+        let memory = MEMORY_MANAGER.with(|manager| manager.borrow().get(MemoryId::new(1)));
+        *slot.borrow_mut() = Some(StableBTreeMap::init(memory));
+    });
+}
+
+pub fn processed_jupiter(block_index: u128) -> Result<Option<JupiterCompleted>, String> {
+    let block_index: u64 = block_index
+        .try_into()
+        .map_err(|_| "Jupiter block index does not fit u64")?;
+    Ok(PROCESSED_JUPITER.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .expect("processed Jupiter set is not initialized")
+            .get(&block_index)
+    }))
+}
+
+pub fn record_processed_jupiter(result: JupiterCompleted) -> Result<(), String> {
+    let block_index: u64 = result
+        .deposit_block
+        .try_into()
+        .map_err(|_| "Jupiter block index does not fit u64")?;
+    PROCESSED_JUPITER.with(|slot| {
+        let previous = slot
+            .borrow_mut()
+            .as_mut()
+            .expect("processed Jupiter set is not initialized")
+            .insert(block_index, result.clone());
+        if previous
+            .as_ref()
+            .is_some_and(|previous| previous != &result)
+        {
+            panic!("processed Jupiter block conflicts with its durable result");
+        }
+    });
+    Ok(())
+}
+
+impl Storable for JupiterCompleted {
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(candid::encode_one(self).expect("Jupiter result must encode"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        candid::encode_one(self).expect("Jupiter result must encode")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        candid::decode_one(bytes.as_ref()).expect("Jupiter result must decode")
+    }
+    const BOUND: Bound = Bound::Bounded {
+        max_size: 512,
+        is_fixed_size: false,
+    };
 }
 
 pub fn read() -> NnsStateV1 {
@@ -379,7 +429,10 @@ mod tests {
                     two_year_neuron_id: 1,
                     two_week_neuron_id: 2,
                     jupiter_account: account(jupiter, 4),
-                    jupiter_staging: account(canister_self, 1),
+                    jupiter_staging: Account {
+                        owner: canister_self,
+                        subaccount: None,
+                    },
                     two_week_maturity_staging: account(canister_self, 2),
                     stream_liquid_account: account(stream, 3),
                     expected_icp_fee_e8s: 10_000,
@@ -389,11 +442,12 @@ mod tests {
                 },
                 lifecycle: Lifecycle::Paused,
                 active_operation: None,
-                next_jupiter_sequence: 0,
                 latest_two_week_target: None,
                 latest_target_generation: 0,
                 pending_two_year_maturity: None,
                 pending_two_week_maturity: None,
+                last_two_year_maturity: None,
+                last_two_week_maturity: None,
                 pending_unwind: None,
                 next_operation_sequence: 1,
                 control_epoch: 0,
@@ -405,26 +459,39 @@ mod tests {
     fn semantic_validation_rejects_corrupt_active_and_pending_state() {
         let (canister_self, mut state) = valid_state();
         assert_eq!(state.validate(canister_self), Ok(()));
-        state.active_operation = Some(NnsOperation::JupiterDeposit {
-            operation_sequence: 0,
-            sequence: 0,
-            deposit_block: 0,
-            gross_e8s: 100,
-            stake_e8s: 39,
-            liquid_e8s: 61,
-            active_transfer: None,
-        });
+        state.active_operation = Some(NnsOperation::Jupiter(Box::new(
+            crate::jupiter::JupiterOperation {
+                operation_sequence: 0,
+                dispatch_epoch: 0,
+                captured_control_epoch: 0,
+                deposit: crate::jupiter::JupiterDeposit {
+                    block_index: 0,
+                    gross_e8s: 100,
+                    stake_e8s: 39,
+                    liquid_e8s: 61,
+                    created_at_time_nanos: 1,
+                },
+                phase: crate::jupiter::JupiterPhase::DepositProved,
+            },
+        )));
         assert!(state.validate(canister_self).is_err());
         state.active_operation = None;
         state.pending_two_year_maturity = Some(crate::maturity::PendingMaturity {
+            operation_sequence: 1,
+            dispatch_epoch: 0,
             kind: crate::maturity::MaturityKind::TwoYear,
-            neuron_id: 1,
-            original_maturity_e8s: 100,
-            staked_maturity_e8s: 40,
-            remaining_maturity_e8s: 60,
-            amount_disbursed_e8s: None,
-            destination: state.config.two_week_maturity_staging.clone(),
-            requested_at_seconds: 1,
+            phase: crate::maturity::MaturityPhase::Observed(crate::maturity::MaturityPlan {
+                neuron: crate::jupiter::NeuronSnapshot {
+                    neuron_id: 1,
+                    staking_subaccount: [1; 32],
+                    cached_stake_e8s: 1,
+                },
+                original_maturity_e8s: 100,
+                original_staked_maturity_e8s: 0,
+                stake_maturity_e8s: 40,
+                destination: state.config.two_week_maturity_staging.clone(),
+                requested_at_seconds: 1,
+            }),
         });
         assert!(state.validate(canister_self).is_err());
     }
@@ -434,5 +501,45 @@ mod tests {
         let (canister_self, mut state) = valid_state();
         state.latest_target_generation = 1;
         assert!(state.validate(canister_self).is_err());
+    }
+
+    #[test]
+    fn config_requires_default_jupiter_staging_and_two_fees() {
+        let (canister_self, mut state) = valid_state();
+        state.config.jupiter_fee_float_e8s = state.config.expected_icp_fee_e8s;
+        assert!(state.validate(canister_self).is_err());
+        state.config.jupiter_fee_float_e8s = state.config.expected_icp_fee_e8s * 2;
+        state.config.jupiter_staging.subaccount = Some(vec![9; 32]);
+        assert!(state.validate(canister_self).is_err());
+    }
+
+    #[test]
+    fn reopen_always_repauses_valid_v1() {
+        let (canister_self, mut state) = valid_state();
+        state.lifecycle = Lifecycle::Ready;
+        initialize(state, canister_self).unwrap();
+        reopen(canister_self);
+        assert_eq!(read().lifecycle, Lifecycle::Paused);
+    }
+
+    #[test]
+    fn processed_jupiter_block_replays_exact_typed_result() {
+        let (canister_self, state) = valid_state();
+        initialize(state, canister_self).unwrap();
+        let result = JupiterCompleted {
+            deposit_block: 9_223_372_036_854_000_001,
+            gross_e8s: 100,
+            stake_e8s: 40,
+            liquid_e8s: 60,
+            stake_transfer_block: 2,
+            liquid_transfer_block: 3,
+            stream_receipt_sequence: 4,
+            completed_at_nanos: 5,
+        };
+        record_processed_jupiter(result.clone()).unwrap();
+        assert_eq!(
+            processed_jupiter(result.deposit_block).unwrap(),
+            Some(result)
+        );
     }
 }

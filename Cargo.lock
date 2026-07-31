@@ -1109,6 +1109,7 @@ dependencies = [
  "io-ledger-boundary",
  "pocket-ic",
  "serde",
+ "sha2",
 ]
 
 [[package]]

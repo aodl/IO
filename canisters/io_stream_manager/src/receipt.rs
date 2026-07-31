@@ -83,8 +83,8 @@ pub struct TwoWeekReceiptOperation {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum LiquidReceiptOperation {
-    Jupiter(JupiterReceiptOperation),
-    TwoWeek(TwoWeekReceiptOperation),
+    Jupiter(Box<JupiterReceiptOperation>),
+    TwoWeek(Box<TwoWeekReceiptOperation>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -410,18 +410,22 @@ pub fn prepare_liquid_receipt(
         permit: permit.clone(),
     };
     let operation = match context.request.receipt_kind {
-        ReceiptKind::Jupiter => LiquidReceiptOperation::Jupiter(JupiterReceiptOperation {
-            context,
-            phase: ReceiptPhase::AwaitingReceipt,
-            receipt_block: None,
-            settlement: None,
-        }),
-        ReceiptKind::TwoWeekMaturity => LiquidReceiptOperation::TwoWeek(TwoWeekReceiptOperation {
-            context,
-            phase: ReceiptPhase::AwaitingReceipt,
-            receipt_block: None,
-            settlement: None,
-        }),
+        ReceiptKind::Jupiter => {
+            LiquidReceiptOperation::Jupiter(Box::new(JupiterReceiptOperation {
+                context,
+                phase: ReceiptPhase::AwaitingReceipt,
+                receipt_block: None,
+                settlement: None,
+            }))
+        }
+        ReceiptKind::TwoWeekMaturity => {
+            LiquidReceiptOperation::TwoWeek(Box::new(TwoWeekReceiptOperation {
+                context,
+                phase: ReceiptPhase::AwaitingReceipt,
+                receipt_block: None,
+                settlement: None,
+            }))
+        }
     };
     operation
         .validate(&current.config)
@@ -451,7 +455,7 @@ pub(crate) async fn resume_liquid_receipt(
     now: u64,
 ) -> Result<crate::api::LiquidReceiptProgress, crate::api::ApiError> {
     match operation {
-        LiquidReceiptOperation::Jupiter(operation) => resume_jupiter(operation, now).await,
+        LiquidReceiptOperation::Jupiter(operation) => resume_jupiter(*operation, now).await,
         LiquidReceiptOperation::TwoWeek(_) => Err(crate::api::ApiError::Stuck(
             "two-week reward fan-out is not yet executable".into(),
         )),
@@ -547,8 +551,8 @@ async fn prepare_jupiter_settlement(
         transfer,
     });
     persist_exact(
-        &LiquidReceiptOperation::Jupiter(operation),
-        LiquidReceiptOperation::Jupiter(submitted.clone()),
+        &LiquidReceiptOperation::Jupiter(Box::new(operation)),
+        LiquidReceiptOperation::Jupiter(Box::new(submitted.clone())),
     )?;
     let response = crate::api::submit(&intent).await;
     apply_jupiter_callback(
@@ -591,8 +595,8 @@ async fn retry_jupiter_settlement(
                 reason: "Jupiter IO settlement deduplication window expired".into(),
             };
             persist_exact(
-                &LiquidReceiptOperation::Jupiter(operation),
-                LiquidReceiptOperation::Jupiter(stuck),
+                &LiquidReceiptOperation::Jupiter(Box::new(operation)),
+                LiquidReceiptOperation::Jupiter(Box::new(stuck)),
             )?;
             crate::api::pause();
             return Err(ApiError::Stuck(
@@ -621,8 +625,8 @@ async fn retry_jupiter_settlement(
     let fingerprint = transfer.fingerprint.clone();
     let intent = transfer.intent.clone();
     persist_exact(
-        &LiquidReceiptOperation::Jupiter(operation),
-        LiquidReceiptOperation::Jupiter(submitted.clone()),
+        &LiquidReceiptOperation::Jupiter(Box::new(operation)),
+        LiquidReceiptOperation::Jupiter(Box::new(submitted.clone())),
     )?;
     let response = crate::api::submit(&intent).await;
     apply_jupiter_callback(
@@ -713,8 +717,8 @@ fn apply_jupiter_callback(
         ClassifiedResult::Succeeded(block) => {
             transfer.state = TransferState::Succeeded { block };
             persist_exact(
-                &LiquidReceiptOperation::Jupiter(current),
-                LiquidReceiptOperation::Jupiter(updated),
+                &LiquidReceiptOperation::Jupiter(Box::new(current)),
+                LiquidReceiptOperation::Jupiter(Box::new(updated)),
             )?;
             Ok(LiquidReceiptProgress::Settling)
         }
@@ -724,8 +728,8 @@ fn apply_jupiter_callback(
             };
             updated.phase = ReceiptPhase::Stuck;
             persist_exact(
-                &LiquidReceiptOperation::Jupiter(current),
-                LiquidReceiptOperation::Jupiter(updated),
+                &LiquidReceiptOperation::Jupiter(Box::new(current)),
+                LiquidReceiptOperation::Jupiter(Box::new(updated)),
             )?;
             crate::api::pause();
             Err(ApiError::Stuck(error))
@@ -758,7 +762,7 @@ fn complete_jupiter(
         io_fee_e8s: state::read().config.expected_io_fee_e8s,
         completed_at_nanos: now,
     });
-    let expected = LiquidReceiptOperation::Jupiter(operation.clone());
+    let expected = LiquidReceiptOperation::Jupiter(Box::new(operation.clone()));
     let mut latest = state::read();
     if !matches!(&latest.active_operation, Some(state::StreamOperation::LiquidReceipt(current)) if **current == expected)
     {
@@ -783,7 +787,7 @@ fn complete_jupiter(
 fn active_jupiter() -> Result<JupiterReceiptOperation, crate::api::ApiError> {
     match crate::state::read().active_operation {
         Some(crate::state::StreamOperation::LiquidReceipt(operation)) => match *operation {
-            LiquidReceiptOperation::Jupiter(operation) => Ok(operation),
+            LiquidReceiptOperation::Jupiter(operation) => Ok(*operation),
             LiquidReceiptOperation::TwoWeek(_) => Err(crate::api::ApiError::Busy),
         },
         _ => Err(crate::api::ApiError::Busy),
@@ -925,15 +929,15 @@ pub async fn prove_jupiter_settlement(block_index: u128) -> Result<(), crate::ap
         subaccount: (*from_subaccount != [0; 32]).then(|| from_subaccount.to_vec()),
     };
     if !exact
-        .matches(
-            &source,
+        .matches(&io_ledger_boundary::ExpectedIcrcTransfer {
+            from: &source,
             to,
-            *amount,
-            Some(*fee),
-            Some(memo),
-            Some(*created_at_time),
-            None,
-        )
+            amount_e8s: *amount,
+            fee_e8s: Some(*fee),
+            memo: Some(memo),
+            created_at_time: Some(*created_at_time),
+            spender: None,
+        })
         .map_err(ApiError::Invalid)?
     {
         return Err(ApiError::Invalid(
@@ -949,8 +953,8 @@ pub async fn prove_jupiter_settlement(block_index: u128) -> Result<(), crate::ap
         .transfer
         .state = TransferState::Succeeded { block: block_index };
     persist_exact(
-        &LiquidReceiptOperation::Jupiter(operation),
-        LiquidReceiptOperation::Jupiter(succeeded),
+        &LiquidReceiptOperation::Jupiter(Box::new(operation)),
+        LiquidReceiptOperation::Jupiter(Box::new(succeeded)),
     )
 }
 

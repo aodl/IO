@@ -1,4 +1,5 @@
 pub mod api;
+mod execution;
 pub mod jupiter;
 pub mod lifecycle;
 pub mod maturity;
@@ -9,7 +10,11 @@ pub mod transfer;
 use candid::CandidType;
 use serde::Deserialize;
 
-pub use api::{ApiError, NotifyJupiterDepositArgs, SetTwoWeekTargetArgs, Status};
+pub use api::{
+    ApiError, JupiterProgress, MaturityProgress, NnsProgress, NotifyJupiterDepositArgs,
+    SetTwoWeekTargetArgs, Status,
+};
+pub use maturity::MaturityKind;
 pub use state::{Lifecycle, NnsConfig, NnsStateV1};
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -24,13 +29,14 @@ pub fn init(args: InitArgs) {
             config: args.config,
             lifecycle: Lifecycle::Paused,
             active_operation: None,
-            next_jupiter_sequence: 0,
             latest_two_week_target: None,
             latest_target_generation: 0,
             pending_two_year_maturity: None,
             pending_two_week_maturity: None,
+            last_two_year_maturity: None,
+            last_two_week_maturity: None,
             pending_unwind: None,
-            next_operation_sequence: 0,
+            next_operation_sequence: 1,
             control_epoch: 0,
         },
         ic_cdk::api::canister_self(),
@@ -44,7 +50,9 @@ pub fn post_upgrade() {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn notify_jupiter_deposit(args: NotifyJupiterDepositArgs) -> Result<(), ApiError> {
+pub async fn notify_jupiter_deposit(
+    args: NotifyJupiterDepositArgs,
+) -> Result<JupiterProgress, ApiError> {
     api::notify_jupiter_deposit(ic_cdk::api::msg_caller(), args).await
 }
 
@@ -54,13 +62,26 @@ pub fn set_two_week_target(args: SetTwoWeekTargetArgs) -> Result<(), ApiError> {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn resume() -> Result<(), ApiError> {
+pub async fn resume() -> Result<NnsProgress, ApiError> {
     api::resume().await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn prove_active_transfer(block_index: u128) -> Result<(), ApiError> {
+pub async fn prove_active_transfer(block_index: u128) -> Result<NnsProgress, ApiError> {
     api::prove_active_transfer(block_index).await
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn start_maturity(kind: MaturityKind) -> Result<MaturityProgress, ApiError> {
+    api::start_maturity(ic_cdk::api::msg_caller(), kind).await
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn prove_maturity_mint(
+    kind: MaturityKind,
+    block_index: u128,
+) -> Result<MaturityProgress, ApiError> {
+    api::prove_maturity_mint(kind, block_index).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]

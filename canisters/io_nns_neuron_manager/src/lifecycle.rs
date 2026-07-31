@@ -5,7 +5,11 @@ pub async fn readiness_preflight(
     captured_control_epoch: u64,
 ) -> Result<(), crate::api::ApiError> {
     let snapshot = state::read();
-    if snapshot.active_operation.is_some() {
+    if snapshot.active_operation.is_some()
+        || snapshot.pending_two_year_maturity.is_some()
+        || snapshot.pending_two_week_maturity.is_some()
+        || snapshot.pending_unwind.is_some()
+    {
         return Err(crate::api::ApiError::Busy);
     }
     snapshot

@@ -15,6 +15,8 @@ The production DID contains only:
 - `set_two_week_target`
 - `resume`
 - `prove_active_transfer`
+- `start_maturity`
+- `prove_maturity_mint`
 - `set_paused`
 - `get_status`
 
@@ -31,8 +33,12 @@ desired target, and do not form a queue. See the pinned
 For canonical ordinary maturity `M`, the manager calls
 `StakeMaturity(40%)`, validates returned remaining and staked maturity, then
 calls `DisburseMaturity(100% of remaining)`. The actual modulated ICP received
-is liquid backing. Two-year receipts go directly to the stream liquid account
-and issue no IO. Two-week receipts stage for a proof-bound stream receipt.
+is proved from one exact ICP Mint block and becomes liquid backing. Two-year
+Mint proof completes directly against the stream liquid account and issues no
+IO. Two-week Mint proof persists a typed delivery phase for the proof-bound
+stream receipt. Governance DTOs are local and pinned to `dfinity/ic` commit
+`0c7c8b83144844e1a598633585b3ee1beebe338b`; the canister does not depend on a
+generic governance-types crate.
 
 ## Stable state
 

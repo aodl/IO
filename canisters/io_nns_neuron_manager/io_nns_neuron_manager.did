@@ -18,23 +18,85 @@ type NnsConfig = record {
   seeded_two_week_principal_e8s : nat;
 };
 type InitArgs = record { config : NnsConfig };
-type NotifyJupiterDepositArgs = record { block_index : nat; sequence : nat64 };
+type NotifyJupiterDepositArgs = record { block_index : nat };
 type SetTwoWeekTargetArgs = record { target_e8s : nat; generation : nat64 };
-type ApiError = variant { Unauthorized; Paused; Busy; Invalid : text; Stuck : text; ImplementationIncomplete : text };
+type ApiError = variant {
+  Unauthorized;
+  Paused;
+  Busy;
+  Invalid : text;
+  Pending : text;
+  Stuck : text;
+  ImplementationIncomplete : text;
+};
+type JupiterCompleted = record {
+  deposit_block : nat;
+  gross_e8s : nat;
+  stake_e8s : nat;
+  liquid_e8s : nat;
+  stake_transfer_block : nat;
+  liquid_transfer_block : nat;
+  stream_receipt_sequence : nat64;
+  completed_at_nanos : nat64;
+};
+type JupiterProgress = variant {
+  DepositProved;
+  StakeTransferPrepared;
+  StakeTransferSubmitted;
+  StakeTransferSucceeded;
+  RefreshSubmitted;
+  StakeIncreaseProved;
+  ReceiptPermitPrepared;
+  LiquidTransferPrepared;
+  LiquidTransferSubmitted;
+  LiquidTransferSucceeded;
+  ReceiptCompletionSubmitted;
+  AwaitingStreamSettlement;
+  Completed : JupiterCompleted;
+  Stuck : text;
+};
+type MaturityKind = variant { TwoYear; TwoWeek };
+type CompletedMaturity = record {
+  kind : MaturityKind;
+  neuron_id : nat64;
+  mint_block : nat;
+  actual_minted_e8s : nat;
+  destination : Account;
+  completed_at_nanos : nat64;
+};
+type MaturityProgress = variant {
+  Observed;
+  StakeMaturitySubmitted;
+  StakeMaturitySucceeded;
+  DisburseMaturitySubmitted;
+  DisburseMaturitySucceeded;
+  AwaitingMintProof;
+  MintProved;
+  DeliveringTwoWeekReceipt;
+  Completed : CompletedMaturity;
+  Stuck : text;
+};
+type NnsProgress = variant {
+  Jupiter : JupiterProgress;
+  Maturity : MaturityProgress;
+  PoolRebalance;
+  Idle;
+};
 type Status = record {
   lifecycle : Lifecycle;
   active_operation : opt text;
-  next_jupiter_sequence : nat64;
   latest_target_generation : nat64;
   has_pending_two_year_maturity : bool;
   has_pending_two_week_maturity : bool;
   has_pending_unwind : bool;
 };
 service : (InitArgs) -> {
-  notify_jupiter_deposit : (NotifyJupiterDepositArgs) -> (variant { Ok; Err : ApiError });
+  notify_jupiter_deposit : (NotifyJupiterDepositArgs) -> (variant { Ok : JupiterProgress; Err : ApiError });
   set_two_week_target : (SetTwoWeekTargetArgs) -> (variant { Ok; Err : ApiError });
-  resume : () -> (variant { Ok; Err : ApiError });
-  prove_active_transfer : (nat) -> (variant { Ok; Err : ApiError });
+  resume : () -> (variant { Ok : NnsProgress; Err : ApiError });
+  prove_active_transfer : (nat) -> (variant { Ok : NnsProgress; Err : ApiError });
+  start_maturity : (MaturityKind) -> (variant { Ok : MaturityProgress; Err : ApiError });
+  prove_maturity_mint : (MaturityKind, nat) -> (variant { Ok : MaturityProgress; Err : ApiError });
   set_paused : (bool) -> (variant { Ok; Err : ApiError });
   get_status : () -> (Status) query;
 }
