@@ -19,6 +19,20 @@ This document records the deterministic composition defects reproduced from the 
 | M | `progress_for` mapped durable `Stuck` to `PayoutSubmitted`. | Public progress has an explicit `Stuck(text)` state and preparation has explicit `Preparing`. |
 | N | A transport rejection returned `ApiError::Stuck` while the durable transfer remained safely retryable `Submitted`. | Transport and ledger ambiguity return `ApiError::Pending`; only an explicit durable transition may report `Stuck` and pause.
 
+## Remaining stream composition reproductions
+
+| Item | Baseline reproduction at `ce496d5` | Positive invariant and regression |
+| --- | --- | --- |
+| A | Governance pause could arrive while `RedemptionPreparation` awaited the global snapshot, after which the older callback still promoted the preparation. | Preparation captures `control_epoch`; promotion rechecks the exact preparation, Ready lifecycle, control epoch, caller nonce and expiry. Pause clears only the exact no-effect preparation, so the older callback observes no match and writes nothing. |
+| B | Same-Wasm upgrade preserved a Paused preparation with no executable resume path. | `post_upgrade` validates V1, forces Paused and clears only `RedemptionPreparation`; caller nonce remains unchanged. Any operation whose transfer may have been submitted is preserved. |
+| C | Transfer retry expiry was derived from operational `first_submitted_at`. | Every retry deadline is checked from immutable `intent.created_at_time + ledger_deduplication_window`; first-submission time remains telemetry. |
+| D | Two Jupiter `resume` calls could both observe `ReceiptProved` and create settlement transfers. | Canonical facts are queried first, then exact operation CAS installs one immutable settlement attempt. The other callback sees a phase mismatch and cannot submit or mutate. |
+| E | A Jupiter transport rejection left `Submitted` but had no identical-intent retry transition. | Ambiguity returns `Pending`; after the configured delay, resume reuses amount, fee, memo and created-at time while incrementing only the dispatch epoch. |
+| F | Jupiter settlement could age past the ledger window without a durable proof state. | Expiry moves the exact attempt to `Stuck`, pauses, and accepts only an exact ICRC current/archive block proof. No absence proof is attempted. |
+| G | `complete_liquid_receipt` could not return the result after active state was cleared. | Typed `LastCompletedReceipt` returns the exact completed progress for the same sequence and block and rejects a conflicting block. |
+| H | `jupiter_io_account` validation allowed unsafe or excluded destinations. | Every monetary Account has a safe owner; the Jupiter IO Account is neither reserve nor excluded. |
+| I | The target calculation accepted active eligible IO larger than redeemable supply. | The target rejects `active_eligible_io > redeemable_io`; regressions cover below-one, one and above-one rates plus equal/excess active supply. |
+
 ## Installed composition evidence
 
 `installed_stream_real_sns_icrc2_redemption` installs the stream-manager debug Wasm with the pinned real SNS ledger as IO and PocketIC's official ICP ledger canister as ICP. It proves Paused installation, readiness, excluded/reserve Account rejection, ICRC-2 approval/pull, exact IO fee burn, upgrade after the pull, a delayed first payout whose timestamp is not inherited from the redeem request, exact ICP movement, upgrade after payout, a separate canonical commit, null/zero normalization, durable exact redemption replay, and conflicting-nonce rejection.
@@ -27,4 +41,10 @@ The same installed test prepares a Jupiter receipt, transfers ICP from the exact
 
 ## Remaining vertical work
 
-The safety and topology invariants above are implemented. The deterministic response-barrier matrix, exact stuck-transfer archive cases, two-week serialized reward fan-out, executable Jupiter/NNS governance chain, direct maturity/unwind drivers, frontend redemption flow, and complete historian status projection remain required before final P0 completion. NNS readiness deliberately returns `ImplementationIncomplete` rather than exposing Ready until those effects exist.
+The safety and topology invariants above are implemented. The NNS manager has a
+typed proof-bound Jupiter 40/60 executor and an executable direct maturity
+command/Mint-proof path. Installed official-Governance execution, two-week
+serialized reward fan-out, the direct unwind child, browser redemption, and
+complete historian status projection remain required before final P0
+completion. NNS readiness deliberately returns `ImplementationIncomplete`
+rather than exposing Ready until those effects and their upgrade matrix exist.

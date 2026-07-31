@@ -31,6 +31,16 @@ Follow the current official ICP/DFINITY SNS testing documentation as the source 
 
 Local SNS rehearsal uses Bazel, `. scripts/env.sh`, `sns-testing-init`, `sns-testing`, the source-built `sns` CLI, and Quill where governance proposals need it. Required repository workflows must not depend on the dfx SNS extension.
 
+The user-local Bazel launcher is Bazelisk `v1.29.0`, downloaded from the
+published GitHub release artifact `bazelisk-linux-amd64`. Its published and
+observed SHA-256 is
+`5a408715e932c0250d28bd84555f12edbf70117de42f9181691c736eacc4a992`.
+It is installed as `/home/codexdev/.local/bin/bazelisk` with a local `bazel`
+symlink. No system package or elevated privilege is used. The official source
+bootstrap remains incomplete until an isolated clean `dfinity/ic` checkout at
+`2d7f90fb23672cc3b81c216a33d04c75672dd308` is supplied through
+`IO_LOCAL_SNS_IC_CHECKOUT`.
+
 The committed package includes a renderable local `sns_init` candidate, a local variables template, evidence capture helpers, no-network validators, and this manual runbook. Runbook phases 12–17 are guarded placeholders, not implemented deployment or evidence automation. It does not prove IO against a real SNS ledger until an operator completes the local rehearsal, records the complete evidence package, and validates that evidence.
 
 ## Manual Flow
