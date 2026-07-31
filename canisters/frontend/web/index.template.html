@@ -99,6 +99,23 @@
           </div>
         </div>
       </section>
+
+      <section class="activity" id="redeem" aria-labelledby="redeemTitle">
+        <div class="activity__inner">
+          <h2 id="redeemTitle">Redeem IO</h2>
+          <p>Redemption uses the wallet-selected canonical subaccount, ICRC-2 approval, exact caller nonce, short expiry and canister-recomputed monetary facts. Sending IO directly is unsupported.</p>
+          <form data-redemption-form>
+            <label>IO amount (e8s) <input name="ioAmount" inputmode="numeric" pattern="[0-9]+" required></label>
+            <label>Minimum ICP output (e8s) <input name="minIcpOut" inputmode="numeric" pattern="[0-9]+" required></label>
+            <label>Maximum ICP fee (e8s) <input name="maxIcpFee" inputmode="numeric" pattern="[0-9]+" required></label>
+            <button type="submit">Approve and prepare redemption</button>
+            <button type="button" data-redemption-resume>Resume</button>
+            <label>Exact Stuck transfer block <input name="proofBlock" inputmode="numeric" pattern="[0-9]*"></label>
+            <button type="button" data-redemption-proof>Prove exact block</button>
+          </form>
+          <p data-redemption-status aria-live="polite">Connect a wallet to redeem.</p>
+        </div>
+      </section>
     </div>
   </main>
 </body>

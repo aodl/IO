@@ -16,6 +16,7 @@ pub use receipt::{
     PrepareLiquidReceiptArgs, ReceiptKind,
 };
 pub use redemption::RedeemArgs;
+pub use state::CallerRedemptionState;
 pub use state::{Account, Lifecycle, StreamConfig, StreamStateV1};
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -94,6 +95,17 @@ pub async fn set_paused(paused: bool) -> Result<(), ApiError> {
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn get_status() -> Status {
     api::get_status()
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn get_caller_redemption_state() -> Result<CallerRedemptionState, ApiError> {
+    let caller = ic_cdk::api::msg_caller();
+    if caller == candid::Principal::anonymous() {
+        return Err(ApiError::Anonymous);
+    }
+    let state = state::caller_state(caller);
+    state.validate().map_err(ApiError::Invalid)?;
+    Ok(state)
 }
 
 pub fn version() -> &'static str {

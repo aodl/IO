@@ -43,6 +43,8 @@ const config = {
   network: env("IO_FRONTEND_NETWORK", "ICP_ENVIRONMENT", "ICP_NETWORK"),
   historianCanisterId: env("CANISTER_ID_IO_HISTORIAN") || resolveCanisterId("io_historian"),
   frontendCanisterId: env("CANISTER_ID_FRONTEND") || resolveCanisterId("frontend"),
+  streamManagerCanisterId: env("CANISTER_ID_IO_STREAM_MANAGER") || resolveCanisterId("io_stream_manager"),
+  ioLedgerCanisterId: env("CANISTER_ID_IO_LEDGER") || resolveCanisterId("io_ledger"),
   assetVersion: "",
   demoMode: env("IO_FRONTEND_DEMO") === "true",
 };

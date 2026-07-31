@@ -70,6 +70,22 @@ For the DevMainnet public shell, the browser bundle was built with `CANISTER_ID_
 
 The visual direction comes from `io-frontend-mock.zip`: dark Io sphere hero, corner links, primary nav, IO/REAL LIQUID STAKING copy, coming-soon tagline, and glassy metric cards. The production implementation self-hosts the image assets and omits the mock's base64 `texture-data.js` payload.
 
+## Redemption
+
+The production bundle includes the simplified redemption flow. A wallet
+integration supplies the authenticated identity and one selected canonical
+32-byte subaccount through `window.ioRedemptionSession`; the page does not
+derive an Account from user-entered text. The flow queries the IO fee, exact
+allowance and caller nonce, approves `amount + transfer_from fee` with expected
+allowance, deterministic memo/timestamp and short expiry, then submits minimum
+ICP output and both fee maxima. The canister recomputes every monetary fact.
+
+The page renders preparation, IO pull, IO-in-reserve, payout, completion and
+Stuck guidance. Resume is permissionless at the canister boundary, while the
+connected UI may invoke it. Exact block proof is available for a Stuck own
+transfer. Direct IO transfer is explicitly unsupported and cannot create a
+redemption intent.
+
 ## Limitations
 
 - Custom-domain certification setup is not implemented.

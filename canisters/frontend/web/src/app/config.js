@@ -2,6 +2,8 @@ export const DEFAULT_CONFIG = Object.freeze({
   network: "",
   historianCanisterId: "",
   frontendCanisterId: "",
+  streamManagerCanisterId: "",
+  ioLedgerCanisterId: "",
   assetVersion: "development",
   demoMode: false,
 });
