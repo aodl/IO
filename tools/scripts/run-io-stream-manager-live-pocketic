@@ -5,6 +5,10 @@ if [[ -z "${POCKET_IC_BIN:-}" ]]; then
   echo "POCKET_IC_BIN is required for live io_stream_manager PocketIC tests" >&2
   exit 1
 fi
+if [[ -z "${IO_REAL_SNS_WASM_DIR:-}" || -z "${IO_REAL_SNS_WASM_MANIFEST:-}" ]]; then
+  echo "IO_REAL_SNS_WASM_DIR and IO_REAL_SNS_WASM_MANIFEST are required" >&2
+  exit 1
+fi
 
 echo "POCKET_IC_BIN=${POCKET_IC_BIN}"
 "${POCKET_IC_BIN}" --version
@@ -35,39 +39,17 @@ trap cleanup_pocketic EXIT
 
 cargo build \
   -p io-stream-manager \
-  -p mock-icp-ledger \
-  -p mock-io-ledger \
-  -p mock-icp-index \
-  -p mock-io-index \
-  -p mock-jupiter-faucet \
-  -p mock-sns-governance \
   --target wasm32-unknown-unknown
 
 tests=(
-  "live::proof_found_after_submitted_upgrade_completes_once"
-  "live::pending_fee_repreflight_survives_actual_same_wasm_upgrade"
-  "live::submitted_attempt_without_callback_recovers_after_actual_same_wasm_upgrade"
-  "live::proof_required_without_cursor_recovers_after_actual_same_wasm_upgrade"
-  "live::spent_uncommitted_reservation_survives_actual_same_wasm_upgrade"
-  "live::partial_distribution_fee_change_never_retransfers_prior_recipient"
-  "live::zero_recipient_reward_creates_no_io_ledger_transfer"
-  "live::governance_snapshot_unavailable_does_not_convert_reward_to_dust"
-  "live::governance_outage_cannot_skip_blocked_reward_via_newer_transaction"
-  "live::pocketic_live_two_week_partial_allocation_failure_does_not_double_pay_retry"
-  "live::post_capture_topup_waits_until_next_reward_cohort"
-  "live::new_stake_after_capture_cannot_claim_prior_maturity"
-  "live::dissolving_cohort_member_share_remains_protocol_dust"
-  "live::stale_reward_cohort_cannot_process_maturity"
-  "live::consumed_reward_cohort_survives_actual_same_wasm_upgrade"
-  "live::pocketic_live_index_lag_blocks_scan_then_resolves_once"
-  "live::pocketic_live_second_two_week_reward_after_completed_reward_succeeds"
+  "installed_stream_real_sns_icrc2_redemption"
 )
 
 ran=()
 retried=()
 for test_name in "${tests[@]}"; do
   cleanup_pocketic
-  list_output="$(cargo test -p io-stream-manager --test io_stream_manager_pocketic "${test_name}" -- --exact --list 2>&1)"
+  list_output="$(cargo test -p e2e-real-canisters "${test_name}" -- --ignored --exact --list 2>&1)"
   discovered="$(grep -c "^${test_name}: test$" <<<"${list_output}" || true)"
   if [[ "${discovered}" != "1" ]]; then
     printf '%s\n' "${list_output}"
@@ -81,7 +63,7 @@ for test_name in "${tests[@]}"; do
     echo "attempt ${attempt}/3: ${test_name}"
     output_file="$(mktemp)"
     set +e
-    cargo test -p io-stream-manager --test io_stream_manager_pocketic "${test_name}" -- --exact --nocapture 2>&1 | tee "${output_file}"
+    cargo test -p e2e-real-canisters "${test_name}" -- --ignored --exact --nocapture 2>&1 | tee "${output_file}"
     status=${PIPESTATUS[0]}
     set -e
     cleanup_pocketic

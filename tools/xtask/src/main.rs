@@ -1323,10 +1323,16 @@ fn validate_install_args_at(root: &Path, mode: InstallArgsMode) -> Result<(), St
             root,
             "canisters/io_nns_neuron_manager/mainnet-install-args.did",
         )?;
-        validate_stream_install_args_text(&stream_args, InstallArgsMode::Mainnet)
-            .map_err(|err| format!("io_stream_manager mainnet install args: {err}"))?;
-        validate_nns_install_args_text(&nns_args, InstallArgsMode::Mainnet)
-            .map_err(|err| format!("io_nns_neuron_manager mainnet install args: {err}"))?;
+        for (name, args) in [
+            ("io_stream_manager", stream_args.as_str()),
+            ("io_nns_neuron_manager", nns_args.as_str()),
+        ] {
+            if !args.contains("NON-RUNNABLE TEMPLATE") || !args.contains("TODO_") {
+                return Err(format!(
+                    "{name} mainnet install args must remain an explicit non-runnable TODO template"
+                ));
+            }
+        }
         validate_no_install_args_did(root, "canisters/io_historian/io_historian.did")
             .map_err(|err| format!("io_historian install args: {err}"))?;
         validate_no_install_args_did(root, "canisters/frontend/frontend.did")
@@ -4788,17 +4794,10 @@ fn check_e2e_coverage_matrix_at(root: &Path) -> Result<(), String> {
         &matrix,
         &[
             "real SNS ledger",
-            "real SNS index",
-            "real SNS governance",
-            "SNS neuron staking",
-            "APY increase",
-            "reserve transfer",
-            "duplicate proof",
-            "index lag",
-            "archive-required",
-            "mid-flight upgrade",
-            "historian/frontend honesty",
-            "No current all-real-canister PocketIC E2E test exists",
+            "Installed direct-reserve redemption",
+            "Exact reward allocation",
+            "Historian separation",
+            "Scanner-era tests are historical",
         ],
     )?;
     let inventory = require_file(root, inventory_path)?;
@@ -4806,12 +4805,10 @@ fn check_e2e_coverage_matrix_at(root: &Path) -> Result<(), String> {
         inventory_path,
         &inventory,
         &[
-            "real SNS neuron staking",
-            "real SNS governance maturity/rewards",
-            "real SNS index account history",
-            "IO APY increase from real SNS staked IO",
-            "full ICP -> IO -> stake -> APY -> redemption E2E",
-            "not proved",
+            "io-core-model",
+            "io-reward-policy",
+            "installed serialized redemption",
+            "Historical scanner/journal coverage",
         ],
     )?;
     let scenarios = require_file(root, scenarios_path)?;
@@ -4836,32 +4833,19 @@ fn check_live_stream_manager_pocketic_gate_at(root: &Path) -> Result<(), String>
     let script_path = "tools/scripts/run-io-stream-manager-live-pocketic";
     let docs_path = "docs/testing/current-test-inventory.md";
     let script = require_file(root, script_path)?;
-    let required_tests = [
-        "live::proof_found_after_submitted_upgrade_completes_once",
-        "live::pending_fee_repreflight_survives_actual_same_wasm_upgrade",
-        "live::submitted_attempt_without_callback_recovers_after_actual_same_wasm_upgrade",
-        "live::proof_required_without_cursor_recovers_after_actual_same_wasm_upgrade",
-        "live::spent_uncommitted_reservation_survives_actual_same_wasm_upgrade",
-        "live::partial_distribution_fee_change_never_retransfers_prior_recipient",
-        "live::zero_recipient_reward_creates_no_io_ledger_transfer",
-        "live::pocketic_live_two_week_partial_allocation_failure_does_not_double_pay_retry",
-        "live::governance_outage_cannot_skip_blocked_reward_via_newer_transaction",
-        "live::governance_snapshot_unavailable_does_not_convert_reward_to_dust",
-        "live::pocketic_live_index_lag_blocks_scan_then_resolves_once",
-        "live::pocketic_live_second_two_week_reward_after_completed_reward_succeeds",
-    ];
+    let required_tests = ["installed_stream_real_sns_icrc2_redemption"];
     require_present(
         script_path,
         &script,
         &[
             "POCKET_IC_BIN=${POCKET_IC_BIN}",
             "\"${POCKET_IC_BIN}\" --version",
-            "-- --exact --list",
-            "-- --exact --nocapture",
+            "-- --ignored --exact --list",
+            "-- --ignored --exact --nocapture",
             "required test was not discovered exactly once",
             "required test did not report an explicit pass",
             "required test output looks like a skip instead of proof",
-            "cargo test -p io-stream-manager --test io_stream_manager_pocketic",
+            "cargo test -p e2e-real-canisters",
             "live PocketIC tests genuinely ran:",
         ],
     )?;
