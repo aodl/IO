@@ -38,9 +38,17 @@ fn simplified_stream_installs_paused_and_rejects_anonymous_before_funds_move() {
                 io_ledger,
                 icp_ledger,
                 nns_manager: manager,
-                nns_receipt_source: Account {
+                jupiter_receipt_source: Account {
                     owner: manager,
                     subaccount: Some(vec![7; 32]),
+                },
+                two_week_receipt_source: Account {
+                    owner: manager,
+                    subaccount: Some(vec![8; 32]),
+                },
+                jupiter_io_account: Account {
+                    owner: manager,
+                    subaccount: Some(vec![9; 32]),
                 },
                 sns_governance: governance,
                 io_reserve: account.clone(),

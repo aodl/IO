@@ -49,8 +49,9 @@ ran=()
 retried=()
 for test_name in "${tests[@]}"; do
   cleanup_pocketic
-  list_output="$(cargo test -p e2e-real-canisters "${test_name}" -- --ignored --exact --list 2>&1)"
-  discovered="$(grep -c "^${test_name}: test$" <<<"${list_output}" || true)"
+  qualified_test_name="tests::${test_name}"
+  list_output="$(cargo test -p e2e-real-canisters "${qualified_test_name}" -- --ignored --exact --list 2>&1)"
+  discovered="$(grep -c "^${qualified_test_name}: test$" <<<"${list_output}" || true)"
   if [[ "${discovered}" != "1" ]]; then
     printf '%s\n' "${list_output}"
     echo "required test was not discovered exactly once: ${test_name}" >&2
@@ -63,7 +64,7 @@ for test_name in "${tests[@]}"; do
     echo "attempt ${attempt}/3: ${test_name}"
     output_file="$(mktemp)"
     set +e
-    cargo test -p e2e-real-canisters "${test_name}" -- --ignored --exact --nocapture 2>&1 | tee "${output_file}"
+    cargo test -p e2e-real-canisters "${qualified_test_name}" -- --ignored --exact --nocapture 2>&1 | tee "${output_file}"
     status=${PIPESTATUS[0]}
     set -e
     cleanup_pocketic
@@ -89,7 +90,7 @@ for test_name in "${tests[@]}"; do
     echo "required test did not run exactly once: ${test_name}" >&2
     exit 1
   fi
-  if ! grep -q "test ${test_name} ..." <<<"${output}" \
+  if ! grep -q "test ${qualified_test_name} ..." <<<"${output}" \
     || ! grep -q "test result: ok. 1 passed" <<<"${output}"; then
     echo "required test did not report an explicit pass: ${test_name}" >&2
     exit 1
