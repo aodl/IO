@@ -8,6 +8,7 @@ members = [
   "crates/io_accounts",
   "crates/io_core_model",
   "crates/io_governance_types",
+  "crates/io_ledger_boundary",
   "crates/io_ledger_types",
   "crates/io_production_wiring",
   "crates/io_reward_policy",
@@ -40,6 +41,7 @@ include_dir = "0.7.4"
 ic-stable-structures = "0.7.2"
 io-core-model = { path = "crates/io_core_model" }
 io-governance-types = { path = "crates/io_governance_types" }
+io-ledger-boundary = { path = "crates/io_ledger_boundary" }
 io-ledger-types = { path = "crates/io_ledger_types" }
 io-production-wiring = { path = "crates/io_production_wiring" }
 io-reward-policy = { path = "crates/io_reward_policy" }

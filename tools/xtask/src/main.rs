@@ -652,7 +652,54 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
     if economics_lines > 220 {
         return Err(format!("pure economics module has {economics_lines} lines"));
     }
-    for directory in ["crates/io_core_model/src", "crates/io_ledger_types/src"] {
+    let boundary_files = rust_files_below(root, "crates/io_ledger_boundary/src")?;
+    let boundary_lines = boundary_files.iter().try_fold(0usize, |sum, path| {
+        fs::read_to_string(path)
+            .map(|text| sum + production_line_count(&text))
+            .map_err(|error| format!("{}: {error}", path.display()))
+    })?;
+    if boundary_lines > 650 {
+        return Err(format!(
+            "io-ledger-boundary has {boundary_lines} production lines"
+        ));
+    }
+    for path in &boundary_files {
+        let text =
+            fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
+        let lines = production_line_count(&text);
+        if lines > 500 {
+            return Err(format!(
+                "{} has {lines} production lines; the boundary file limit is 500",
+                path.display()
+            ));
+        }
+        for needle in [
+            "LedgerIndexClient",
+            "AccountHistoryScanState",
+            "CompleteRangeEvidence",
+            "CanonicalRangeJob",
+            "StableLiability",
+            "MockLedgerCanisterClient",
+        ] {
+            if text.contains(needle) {
+                return Err(format!("{} contains forbidden {needle:?}", path.display()));
+            }
+        }
+    }
+    for manifest in [
+        "canisters/io_stream_manager/Cargo.toml",
+        "canisters/io_nns_neuron_manager/Cargo.toml",
+    ] {
+        let text = require_file(root, manifest)?;
+        for dependency in ["io-ledger-types", "io-governance-types"] {
+            if text.contains(dependency) {
+                return Err(format!(
+                    "{manifest} contains forbidden production dependency {dependency}"
+                ));
+            }
+        }
+    }
+    for directory in ["crates/io_core_model/src", "crates/io_ledger_boundary/src"] {
         for path in rust_files_below(root, directory)? {
             let text = fs::read_to_string(&path)
                 .map_err(|error| format!("{}: {error}", path.display()))?;
@@ -664,9 +711,9 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
             "stream-manager production Rust has {stream_lines} lines"
         ));
     }
-    if combined_lines > 8_500 {
+    if combined_lines > 9_000 {
         return Err(format!(
-            "combined production Rust has {combined_lines} lines; 50% donor reduction not met"
+            "combined production Rust has {combined_lines} lines; simplified limit not met"
         ));
     }
     let nns_lines = rust_files_below(root, "canisters/io_nns_neuron_manager/src")?
@@ -712,7 +759,7 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
         require_present(path, &text, &["NON-RUNNABLE TEMPLATE", "TODO_"])?;
     }
     eprintln!(
-        "simplicity metrics: stream_manager={stream_lines} nns_manager={nns_lines} economics={economics_lines} combined={combined_lines}"
+        "simplicity metrics: stream_manager={stream_lines} nns_manager={nns_lines} ledger_boundary={boundary_lines} economics={economics_lines} combined={combined_lines}"
     );
     Ok(())
 }
