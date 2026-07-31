@@ -36,6 +36,7 @@ ic-cdk = "0.20.1"
 ic-asset-certification = "3.2.0"
 ic-http-certification = "3.2.0"
 include_dir = "0.7.4"
+ic-stable-structures = "0.7.2"
 io-core-model = { path = "crates/io_core_model" }
 io-governance-types = { path = "crates/io_governance_types" }
 io-ledger-types = { path = "crates/io_ledger_types" }

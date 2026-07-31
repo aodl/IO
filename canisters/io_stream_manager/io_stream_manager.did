@@ -1,63 +1,83 @@
+type Account = record { owner : principal; subaccount : opt blob };
+type Lifecycle = variant { Inert; Paused; Ready };
+type StreamConfig = record {
+  io_ledger : principal;
+  icp_ledger : principal;
+  nns_manager : principal;
+  nns_receipt_source : Account;
+  sns_governance : principal;
+  io_reserve : Account;
+  liquid_icp : Account;
+  excluded_io_accounts : vec Account;
+  minimum_redemption_io_e8s : nat;
+  expected_io_fee_e8s : nat;
+  expected_icp_fee_e8s : nat;
+};
 type InitArgs = record {
-  initial_total_io_supply_e8s : nat;
-  initial_protocol_reserve_io_e8s : nat;
-  non_redeemable_governance_io_e8s : nat;
-  jupiter_faucet_principal_text : opt text;
-  io_nns_neuron_manager_principal_text : opt text;
-  icp_ledger_principal_text : opt text;
-  icp_index_principal_text : opt text;
-  io_ledger_principal_text : opt text;
-  io_index_principal_text : opt text;
-  io_sns_ledger_principal_text : opt text;
-  io_sns_index_principal_text : opt text;
-  sns_governance_principal_text : opt text;
-  production_wiring : opt ProductionWiringConfig;
+  config : StreamConfig;
+  initial_lifecycle : Lifecycle;
+  next_cohort_timestamp_seconds : nat64;
 };
-
-type ProductionWiringConfig = record {
-  mode : WiringMode;
-  io_ledger_role : IoLedgerRole;
-  fixture_marked : bool;
-  principals : PrincipalWiring;
-  fee_policy : FeePolicyWiring;
-  protected : ProtectedReferences;
-  deployment_targets : DeploymentTargets;
+type RedeemArgs = record {
+  from_subaccount : opt blob;
+  io_amount_e8s : nat;
+  min_icp_out_e8s : nat;
+  max_io_fee_e8s : nat;
+  max_icp_fee_e8s : nat;
+  expires_at_nanos : nat64;
+  nonce : nat64;
 };
-
-type WiringMode = variant { Mock; Local; DryRun; ProductionPlanned; ProductionActive };
-type IoLedgerRole = variant { IoTestNonCanonical; FutureCanonicalSnsIo };
-
-type PrincipalWiring = record {
-  icp_ledger_principal_text : opt text;
-  icp_index_principal_text : opt text;
-  nns_governance_principal_text : opt text;
-  nns_ledger_principal_text : opt text;
-  nns_index_principal_text : opt text;
-  sns_root_principal_text : opt text;
-  sns_governance_principal_text : opt text;
-  sns_ledger_principal_text : opt text;
-  sns_index_principal_text : opt text;
-  io_ledger_principal_text : opt text;
-  io_index_principal_text : opt text;
+type RedemptionResult = record {
+  nonce : nat64;
+  io_block : nat;
+  icp_block : nat;
+  net_icp_e8s : nat;
 };
-
-type FeePolicyWiring = record {
-  icp_transfer_fee_e8s : opt nat;
-  io_ledger_transfer_fee_e8s : opt nat;
-  tiny_value_policy_max_fee_e8s : opt nat;
-  allow_zero_fees_for_mock_or_local : bool;
+type ReceiptKind = variant { Jupiter; TwoWeekMaturity };
+type PrepareLiquidReceiptArgs = record {
+  receipt_sequence : nat64;
+  receipt_kind : ReceiptKind;
+  source_operation_id : blob;
+  liquid_amount_e8s : nat;
+  cohort_generation : opt nat64;
 };
-
-type ProtectedReferences = record {
-  neuron_owner_canister_principal_text : opt text;
-  io_nns_neuron_id : opt nat64;
+type LiquidReceiptPermit = record {
+  sequence : nat64;
+  destination : Account;
+  memo : blob;
 };
-
-type DeploymentTargets = record {
-  io_stream_manager_principal_text : opt text;
-  io_nns_neuron_manager_principal_text : opt text;
-  mutation_target_principal_texts : vec text;
-  mutation_target_nns_neuron_ids : vec nat64;
+type CompleteLiquidReceiptArgs = record {
+  receipt_sequence : nat64;
+  block_index : nat;
 };
-
-service : (InitArgs) -> {}
+type ApiError = variant {
+  Anonymous;
+  Unauthorized;
+  Inert;
+  Paused;
+  Busy;
+  WrongNonce : record { expected : nat64 };
+  Invalid : text;
+  Ledger : text;
+  Stuck : text;
+};
+type Status = record {
+  lifecycle : Lifecycle;
+  operation_kind : opt text;
+  operation_phase : opt text;
+  next_nns_receipt_sequence : nat64;
+  next_cohort_timestamp_seconds : nat64;
+};
+service : (InitArgs) -> {
+  redeem : (RedeemArgs) -> (variant { Ok : RedemptionResult; Err : ApiError });
+  prepare_liquid_receipt : (PrepareLiquidReceiptArgs) -> (
+    variant { Ok : LiquidReceiptPermit; Err : ApiError }
+  );
+  complete_liquid_receipt : (CompleteLiquidReceiptArgs) -> (
+    variant { Ok; Err : ApiError }
+  );
+  resume : () -> (variant { Ok; Err : ApiError });
+  prove_active_transfer : (nat) -> (variant { Ok; Err : ApiError });
+  set_paused : (bool) -> (variant { Ok; Err : ApiError });
+  get_status : () -> (Status) query;
+}

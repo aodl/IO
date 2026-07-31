@@ -1,63 +1,46 @@
-type InitArgs = record {
-  controller_canister_principal_text : text;
-  two_year_nns_neuron_id : nat64;
-  initial_two_year_principal_e8s : nat;
-  initial_two_week_principal_e8s : nat;
-  model_annual_bps : nat;
-  io_stream_manager_principal_text : opt text;
-  two_year_maturity_memo : opt nat64;
-  two_week_maturity_memo : opt nat64;
-  principal_unwind_memo : opt nat64;
-  nns_governance_principal_text : opt text;
-  icp_ledger_principal_text : opt text;
-  icp_index_principal_text : opt text;
-  production_wiring : opt ProductionWiringConfig;
+type Account = record { owner : principal; subaccount : opt blob };
+type Lifecycle = variant { Inert; Paused; Ready };
+type NnsConfig = record {
+  sns_governance : principal;
+  stream_manager : principal;
+  jupiter : principal;
+  icp_ledger : principal;
+  nns_governance : principal;
+  two_year_neuron_id : nat64;
+  two_week_neuron_id : nat64;
+  jupiter_account : Account;
+  staging_account : Account;
+  operational_fee_account : Account;
+  stream_liquid_account : Account;
+  expected_icp_fee_e8s : nat;
 };
-
-type ProductionWiringConfig = record {
-  mode : WiringMode;
-  io_ledger_role : IoLedgerRole;
-  fixture_marked : bool;
-  principals : PrincipalWiring;
-  fee_policy : FeePolicyWiring;
-  protected : ProtectedReferences;
-  deployment_targets : DeploymentTargets;
+type InitArgs = record { config : NnsConfig; initial_lifecycle : Lifecycle };
+type NotifyJupiterDepositArgs = record { block_index : nat; sequence : nat64 };
+type SetTwoWeekTargetArgs = record { target_e8s : nat; generation : nat64 };
+type ApiError = variant {
+  Unauthorized;
+  Inert;
+  Paused;
+  Busy;
+  Invalid : text;
+  Stuck : text;
 };
-
-type WiringMode = variant { Mock; Local; DryRun; ProductionPlanned; ProductionActive };
-type IoLedgerRole = variant { IoTestNonCanonical; FutureCanonicalSnsIo };
-
-type PrincipalWiring = record {
-  icp_ledger_principal_text : opt text;
-  icp_index_principal_text : opt text;
-  nns_governance_principal_text : opt text;
-  nns_ledger_principal_text : opt text;
-  nns_index_principal_text : opt text;
-  sns_root_principal_text : opt text;
-  sns_governance_principal_text : opt text;
-  sns_ledger_principal_text : opt text;
-  sns_index_principal_text : opt text;
-  io_ledger_principal_text : opt text;
-  io_index_principal_text : opt text;
+type Status = record {
+  lifecycle : Lifecycle;
+  active_operation : opt text;
+  next_jupiter_sequence : nat64;
+  latest_target_generation : nat64;
+  has_pending_two_year_maturity : bool;
+  has_pending_two_week_maturity : bool;
+  has_pending_unwind : bool;
 };
-
-type FeePolicyWiring = record {
-  icp_transfer_fee_e8s : opt nat;
-  io_ledger_transfer_fee_e8s : opt nat;
-  tiny_value_policy_max_fee_e8s : opt nat;
-  allow_zero_fees_for_mock_or_local : bool;
-};
-
-type ProtectedReferences = record {
-  neuron_owner_canister_principal_text : opt text;
-  io_nns_neuron_id : opt nat64;
-};
-
-type DeploymentTargets = record {
-  io_stream_manager_principal_text : opt text;
-  io_nns_neuron_manager_principal_text : opt text;
-  mutation_target_principal_texts : vec text;
-  mutation_target_nns_neuron_ids : vec nat64;
-};
-
-service : (InitArgs) -> {}
+service : (InitArgs) -> {
+  notify_jupiter_deposit : (NotifyJupiterDepositArgs) -> (
+    variant { Ok; Err : ApiError }
+  );
+  set_two_week_target : (SetTwoWeekTargetArgs) -> (variant { Ok; Err : ApiError });
+  resume : () -> (variant { Ok; Err : ApiError });
+  prove_active_transfer : (nat) -> (variant { Ok; Err : ApiError });
+  set_paused : (bool) -> (variant { Ok; Err : ApiError });
+  get_status : () -> (Status) query;
+}
