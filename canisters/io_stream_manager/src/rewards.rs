@@ -9,95 +9,16 @@ use crate::{
         CompletedReceiptResult, LastCompletedReceipt, LiquidReceiptOperation, ReceiptPhase,
         RewardRecipient, TwoWeekReceiptOperation, TwoWeekReceiptResult, TwoWeekSettlement,
     },
-    state::{self, Account, Lifecycle, RewardCohort, RewardMember},
+    reward_evidence::{
+        canonical_eligible, eligible_members, list_all_neurons, list_all_proposals, participation,
+        NeuronId,
+    },
+    state::{self, Account, Lifecycle, RewardCohort},
     transfer::{
         classify_result, deterministic_memo, ClassifiedResult, OwnTransferIntent, TransferAttempt,
         TransferState,
     },
 };
-
-const PAGE_SIZE: u32 = 100;
-const MAX_PAGES: usize = 10;
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-struct NeuronId {
-    id: Vec<u8>,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-enum DissolveState {
-    DissolveDelaySeconds(u64),
-    WhenDissolvedTimestampSeconds(u64),
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-struct Neuron {
-    id: Option<NeuronId>,
-    cached_neuron_stake_e8s: u64,
-    dissolve_state: Option<DissolveState>,
-}
-
-#[derive(Clone, Debug, CandidType)]
-struct ListNeuronsRequest {
-    of_principal: Option<Principal>,
-    limit: u32,
-    start_page_at: Option<NeuronId>,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-struct ListNeuronsResponse {
-    neurons: Vec<Neuron>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-struct ProposalId {
-    id: u64,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-struct Ballot {
-    vote: i32,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-struct Proposal {
-    id: Option<ProposalId>,
-    ballots: Vec<(String, Ballot)>,
-    decided_timestamp_seconds: u64,
-    is_eligible_for_rewards: bool,
-}
-
-#[derive(Clone, Debug, CandidType)]
-struct ListProposalsRequest {
-    include_reward_status: Vec<i32>,
-    before_proposal: Option<ProposalId>,
-    limit: u32,
-    exclude_type: Vec<u64>,
-    include_status: Vec<i32>,
-    include_topics: Option<Vec<ReservedTopicSelector>>,
-}
-
-#[derive(Clone, Debug, CandidType)]
-struct ReservedTopicSelector {
-    topic: Option<SnsTopic>,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, CandidType)]
-enum SnsTopic {
-    DaoCommunitySettings,
-    SnsFrameworkManagement,
-    DappCanisterManagement,
-    ApplicationBusinessLogic,
-    Governance,
-    TreasuryAssetManagement,
-    CriticalDappOperations,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-struct ListProposalsResponse {
-    proposals: Vec<Proposal>,
-}
 
 #[derive(Clone, Debug, CandidType)]
 struct SetTargetArgs {
@@ -178,7 +99,11 @@ pub async fn capture(now_seconds: u64) -> Result<RewardCohort, ApiError> {
     let snapshot = state::read();
     require_capture_slot(&snapshot, now_seconds)?;
     let neurons = list_all_neurons(snapshot.config.sns_governance).await?;
-    let members = eligible_members(snapshot.config.sns_governance, &neurons)?;
+    let members = eligible_members(
+        snapshot.config.sns_governance,
+        &snapshot.config.excluded_io_accounts,
+        &neurons,
+    )?;
     if members.is_empty() {
         return Err(ApiError::Invalid(
             "reward cohort has no eligible members".into(),
@@ -266,7 +191,7 @@ pub async fn close(now_seconds: u64) -> Result<RewardCohort, ApiError> {
             cohort.captured_at_timestamp_seconds,
             cohort.closes_at_timestamp_seconds,
             &proposals,
-        );
+        )?;
         member.eligible_closed_proposals = eligible;
         member.voted_closed_proposals = voted;
     }
@@ -306,147 +231,6 @@ fn next_generation(state: &crate::state::StreamStateV1) -> Result<u64, ApiError>
         .ok_or_else(|| ApiError::Invalid("cohort generation exhausted".into()))
 }
 
-fn eligible_members(
-    governance: Principal,
-    neurons: &[Neuron],
-) -> Result<Vec<RewardMember>, ApiError> {
-    neurons
-        .iter()
-        .filter(|neuron| canonical_eligible(neuron))
-        .map(|neuron| {
-            let id = neuron
-                .id
-                .as_ref()
-                .ok_or_else(|| ApiError::Invalid("eligible SNS neuron lacks ID".into()))?
-                .id
-                .clone();
-            if id.len() != 32 {
-                return Err(ApiError::Invalid(
-                    "eligible SNS neuron ID is not a canonical staking subaccount".into(),
-                ));
-            }
-            Ok(RewardMember {
-                account: Account {
-                    owner: governance,
-                    subaccount: Some(id.clone()),
-                },
-                sns_neuron_id: id,
-                frozen_stake_e8s: u128::from(neuron.cached_neuron_stake_e8s),
-                observed_stake_e8s: u128::from(neuron.cached_neuron_stake_e8s),
-                eligible_closed_proposals: 0,
-                voted_closed_proposals: 0,
-                destination_is_currently_eligible: true,
-            })
-        })
-        .collect()
-}
-
-fn canonical_eligible(neuron: &Neuron) -> bool {
-    neuron.cached_neuron_stake_e8s > 0
-        && matches!(
-            neuron.dissolve_state.as_ref(),
-            Some(DissolveState::DissolveDelaySeconds(
-                io_core_model::TWO_WEEK_SECONDS
-            ))
-        )
-}
-
-fn participation(id: &[u8], start: u64, end: u64, proposals: &[Proposal]) -> (u64, u64) {
-    let id = crate::transfer::hex(id);
-    let mut eligible = 0u64;
-    let mut voted = 0u64;
-    for proposal in proposals {
-        let decided = proposal.decided_timestamp_seconds;
-        if decided < start || decided > end || decided == 0 || !proposal.is_eligible_for_rewards {
-            continue;
-        }
-        eligible = eligible.saturating_add(1);
-        if proposal.ballots.iter().any(|(neuron, ballot)| {
-            neuron.eq_ignore_ascii_case(&id) && matches!(ballot.vote, 1..=4)
-        }) {
-            voted = voted.saturating_add(1);
-        }
-    }
-    (eligible, voted)
-}
-
-async fn list_all_neurons(governance: Principal) -> Result<Vec<Neuron>, ApiError> {
-    let mut neurons = Vec::new();
-    let mut cursor = None;
-    for _ in 0..MAX_PAGES {
-        let response: ListNeuronsResponse = Call::bounded_wait(governance, "list_neurons")
-            .with_arg(ListNeuronsRequest {
-                of_principal: None,
-                limit: PAGE_SIZE,
-                start_page_at: cursor.clone(),
-            })
-            .await
-            .map_err(|error| ApiError::Pending(format!("SNS list_neurons failed: {error:?}")))?
-            .candid()
-            .map_err(|error| {
-                ApiError::Invalid(format!("SNS list_neurons decode failed: {error:?}"))
-            })?;
-        let count = response.neurons.len();
-        if count > PAGE_SIZE as usize {
-            return Err(ApiError::Invalid("SNS neuron page exceeds bound".into()));
-        }
-        let next = response.neurons.last().and_then(|neuron| neuron.id.clone());
-        if count == PAGE_SIZE as usize && next == cursor {
-            return Err(ApiError::Invalid(
-                "SNS neuron pagination did not progress".into(),
-            ));
-        }
-        neurons.extend(response.neurons);
-        if count < PAGE_SIZE as usize {
-            return Ok(neurons);
-        }
-        cursor = next;
-    }
-    Err(ApiError::Invalid(
-        "SNS neuron evidence exceeds bounded pages".into(),
-    ))
-}
-
-async fn list_all_proposals(governance: Principal) -> Result<Vec<Proposal>, ApiError> {
-    let mut proposals = Vec::new();
-    let mut before = None;
-    for _ in 0..MAX_PAGES {
-        let response: ListProposalsResponse = Call::bounded_wait(governance, "list_proposals")
-            .with_arg(ListProposalsRequest {
-                include_reward_status: Vec::new(),
-                before_proposal: before.clone(),
-                limit: PAGE_SIZE,
-                exclude_type: Vec::new(),
-                include_status: Vec::new(),
-                include_topics: None,
-            })
-            .await
-            .map_err(|error| ApiError::Pending(format!("SNS list_proposals failed: {error:?}")))?
-            .candid()
-            .map_err(|error| {
-                ApiError::Invalid(format!("SNS list_proposals decode failed: {error:?}"))
-            })?;
-        let count = response.proposals.len();
-        let next = response
-            .proposals
-            .last()
-            .and_then(|proposal| proposal.id.clone());
-        if count > PAGE_SIZE as usize || (count == PAGE_SIZE as usize && next == before) {
-            return Err(ApiError::Invalid(
-                "SNS proposal pagination is invalid".into(),
-            ));
-        }
-        proposals.extend(response.proposals);
-        if count < PAGE_SIZE as usize {
-            return Ok(proposals);
-        }
-        before = next;
-    }
-    Err(ApiError::Invalid(
-        "SNS proposal evidence exceeds bounded pages".into(),
-    ))
-}
-
 async fn set_nns_target(
     manager: Principal,
     generation: u64,
@@ -479,57 +263,6 @@ pub(crate) async fn resume_two_week(
             "completed two-week receipt must be available through replay".into(),
         )),
     }
-}
-
-pub(crate) fn validate_settlement(
-    settlement: &TwoWeekSettlement,
-    config: &crate::state::StreamConfig,
-) -> Result<(), String> {
-    let recipients = settlement
-        .recipients
-        .iter()
-        .try_fold(0u128, |sum, recipient| sum.checked_add(recipient.io_e8s))
-        .ok_or("two-week recipient total overflow")?;
-    if settlement.backed_io_pool_e8s
-        != recipients
-            .checked_add(settlement.dust_io_e8s)
-            .ok_or("two-week settlement total overflow")?
-        || settlement.recipient_index as usize > settlement.recipients.len()
-        || settlement.forfeited_io_e8s > settlement.dust_io_e8s
-    {
-        return Err("two-week reward settlement totals are inconsistent".into());
-    }
-    let reserve = config.io_reserve.canonical()?.subaccount;
-    for recipient in &settlement.recipients {
-        if recipient.sns_neuron_id.len() != 32
-            || recipient.io_e8s == 0
-            || recipient.destination.owner != config.sns_governance
-        {
-            return Err("two-week reward recipient is inconsistent".into());
-        }
-        let Some(attempt) = &recipient.transfer else {
-            continue;
-        };
-        attempt.validate()?;
-        if !matches!(
-            &attempt.intent,
-            OwnTransferIntent::Icrc1 {
-                ledger,
-                from_subaccount,
-                to,
-                amount,
-                fee,
-                ..
-            } if *ledger == config.io_ledger
-                && *from_subaccount == reserve
-                && to.effective_eq(&recipient.destination)?
-                && *amount == recipient.io_e8s
-                && *fee == config.expected_io_fee_e8s
-        ) {
-            return Err("two-week reward transfer intent is inconsistent".into());
-        }
-    }
-    Ok(())
 }
 
 async fn prepare_settlement(
@@ -994,82 +727,3 @@ pub(crate) async fn prove_recipient_transfer(block_index: u128) -> Result<(), Ap
 }
 
 pub use io_reward_policy::*;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn id(byte: u8) -> Vec<u8> {
-        vec![byte; 32]
-    }
-
-    fn neuron(byte: u8, stake: u64, delay: u64) -> Neuron {
-        Neuron {
-            id: Some(NeuronId { id: id(byte) }),
-            cached_neuron_stake_e8s: stake,
-            dissolve_state: Some(DissolveState::DissolveDelaySeconds(delay)),
-        }
-    }
-
-    fn proposal(decided: u64, votes: &[(u8, i32)]) -> Proposal {
-        Proposal {
-            id: Some(ProposalId { id: decided }),
-            ballots: votes
-                .iter()
-                .map(|(neuron, vote)| (crate::transfer::hex(&id(*neuron)), Ballot { vote: *vote }))
-                .collect(),
-            decided_timestamp_seconds: decided,
-            is_eligible_for_rewards: true,
-        }
-    }
-
-    #[test]
-    fn eligibility_is_exact_two_week_non_dissolving_positive_stake() {
-        assert!(canonical_eligible(&neuron(
-            1,
-            1,
-            io_core_model::TWO_WEEK_SECONDS
-        )));
-        assert!(!canonical_eligible(&neuron(
-            1,
-            0,
-            io_core_model::TWO_WEEK_SECONDS
-        )));
-        assert!(!canonical_eligible(&neuron(
-            1,
-            1,
-            io_core_model::TWO_WEEK_SECONDS + 1
-        )));
-        let mut dissolving = neuron(1, 1, io_core_model::TWO_WEEK_SECONDS);
-        dissolving.dissolve_state = Some(DissolveState::WhenDissolvedTimestampSeconds(10));
-        assert!(!canonical_eligible(&dissolving));
-    }
-
-    #[test]
-    fn capture_freezes_stake_and_canonical_staking_account() {
-        let governance = Principal::from_slice(&[9; 29]);
-        let members = eligible_members(
-            governance,
-            &[neuron(1, 123, io_core_model::TWO_WEEK_SECONDS)],
-        )
-        .unwrap();
-        assert_eq!(members[0].frozen_stake_e8s, 123);
-        assert_eq!(members[0].observed_stake_e8s, 123);
-        assert_eq!(members[0].account.owner, governance);
-        assert_eq!(members[0].account.subaccount, Some(id(1)));
-    }
-
-    #[test]
-    fn exact_interval_counts_direct_and_followed_but_not_late_or_non_vote() {
-        let start = 100;
-        let end = start + io_core_model::TWO_WEEK_SECONDS;
-        let proposals = vec![
-            proposal(start, &[(1, 1), (2, 3)]),
-            proposal(end, &[(1, 2), (2, 4)]),
-            proposal(end + 1, &[(1, 1), (2, 1)]),
-        ];
-        assert_eq!(participation(&id(1), start, end, &proposals), (2, 2));
-        assert_eq!(participation(&id(2), start, end, &proposals), (2, 2));
-        assert_eq!(participation(&id(3), start, end, &proposals), (2, 0));
-    }
-}

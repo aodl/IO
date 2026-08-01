@@ -1595,7 +1595,7 @@ fn finalized_neuron_reward_eligibility(
     };
     io_governance_types::snapshot_sns_eligibility(
         &[io_governance_types::SnsNeuron {
-            id: io_governance_types::SnsNeuronId(neuron_id.id.clone()),
+            id: io_reward_policy::SnsNeuronId(neuron_id.id.clone()),
             controller: Some(participant),
             stake_e8s: u128::from(neuron.cached_neuron_stake_e8s),
             dissolve_delay_seconds,
@@ -2469,7 +2469,7 @@ mod tests {
 
         let neuron = finalized_neuron_for_participant(&fixture, participant, &neuron_id).unwrap();
         let snapshot = io_reward_policy::RewardParticipant {
-            sns_neuron_id: io_governance_types::SnsNeuronId(neuron_id.id.clone()),
+            sns_neuron_id: io_reward_policy::SnsNeuronId(neuron_id.id.clone()),
             neuron_id: 1,
             frozen_stake_e8s: u128::from(neuron.cached_neuron_stake_e8s),
             eligible_closed_proposals: proposals.proposals.len() as u64,
@@ -2709,7 +2709,7 @@ mod tests {
         );
 
         let proposer_snapshot = io_reward_policy::RewardParticipant {
-            sns_neuron_id: io_governance_types::SnsNeuronId(proposer_neuron_id.id.clone()),
+            sns_neuron_id: io_reward_policy::SnsNeuronId(proposer_neuron_id.id.clone()),
             neuron_id: 3,
             frozen_stake_e8s: u128::from(proposer_neuron.cached_neuron_stake_e8s),
             eligible_closed_proposals: 1,
@@ -2717,7 +2717,7 @@ mod tests {
             destination_is_currently_eligible: true,
         };
         let non_voter_snapshot = io_reward_policy::RewardParticipant {
-            sns_neuron_id: io_governance_types::SnsNeuronId(non_voter_neuron_id.id.clone()),
+            sns_neuron_id: io_reward_policy::SnsNeuronId(non_voter_neuron_id.id.clone()),
             neuron_id: 4,
             frozen_stake_e8s: u128::from(non_voter_neuron.cached_neuron_stake_e8s),
             eligible_closed_proposals: 1,
@@ -2835,7 +2835,7 @@ mod tests {
             proposal.ballots
         );
         let follower_snapshot = io_reward_policy::RewardParticipant {
-            sns_neuron_id: io_governance_types::SnsNeuronId(follower_neuron.id.clone()),
+            sns_neuron_id: io_reward_policy::SnsNeuronId(follower_neuron.id.clone()),
             neuron_id: 5,
             frozen_stake_e8s: u128::from(follower_neuron_record.cached_neuron_stake_e8s),
             eligible_closed_proposals: 1,

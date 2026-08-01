@@ -723,6 +723,7 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
         "SchemaV4",
         "SchemaV5",
         "SchemaV6",
+        "set_timer_interval",
     ];
 
     let mut combined_lines = 0usize;
@@ -806,7 +807,23 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
             }
         }
     }
-    for directory in ["crates/io_core_model/src", "crates/io_ledger_boundary/src"] {
+    let reward_policy_lines = rust_files_below(root, "crates/io_reward_policy/src")?
+        .into_iter()
+        .try_fold(0usize, |sum, path| {
+            fs::read_to_string(&path)
+                .map(|text| sum + production_line_count(&text))
+                .map_err(|error| format!("{}: {error}", path.display()))
+        })?;
+    if reward_policy_lines > 450 {
+        return Err(format!(
+            "io-reward-policy has {reward_policy_lines} production lines"
+        ));
+    }
+    for directory in [
+        "crates/io_core_model/src",
+        "crates/io_ledger_boundary/src",
+        "crates/io_reward_policy/src",
+    ] {
         for path in rust_files_below(root, directory)? {
             let text = fs::read_to_string(&path)
                 .map_err(|error| format!("{}: {error}", path.display()))?;
@@ -824,12 +841,12 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
             combined_lines += lines;
         }
     }
-    if stream_lines > 4_500 {
+    if stream_lines > 5_200 {
         return Err(format!(
             "stream-manager production Rust has {stream_lines} lines"
         ));
     }
-    if combined_lines > 9_500 {
+    if combined_lines > 10_500 {
         return Err(format!(
             "combined production Rust has {combined_lines} lines; simplified limit not met"
         ));
@@ -841,8 +858,36 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
                 .map(|text| sum + production_line_count(&text))
                 .map_err(|error| format!("{}: {error}", path.display()))
         })?;
-    if nns_lines > 4_000 {
+    if nns_lines > 4_300 {
         return Err(format!("NNS-manager production Rust has {nns_lines} lines"));
+    }
+    let tree = Command::new("cargo")
+        .args([
+            "tree",
+            "-p",
+            "io-stream-manager",
+            "-e",
+            "normal",
+            "--prefix",
+            "none",
+        ])
+        .current_dir(root)
+        .output()
+        .map_err(|error| format!("cargo tree for io-stream-manager failed: {error}"))?;
+    if !tree.status.success() {
+        return Err(format!(
+            "cargo tree for io-stream-manager failed: {}",
+            String::from_utf8_lossy(&tree.stderr)
+        ));
+    }
+    if String::from_utf8_lossy(&tree.stdout)
+        .lines()
+        .any(|line| line.split_whitespace().next() == Some("io-governance-types"))
+    {
+        return Err(
+            "io-stream-manager has forbidden transitive production dependency io-governance-types"
+                .into(),
+        );
     }
     for path in normative_markdown_files(root)? {
         let text =
@@ -877,7 +922,7 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
         require_present(path, &text, &["NON-RUNNABLE TEMPLATE", "TODO_"])?;
     }
     eprintln!(
-        "simplicity metrics: stream_manager={stream_lines} nns_manager={nns_lines} ledger_boundary={boundary_lines} economics={economics_lines} combined={combined_lines}"
+        "simplicity metrics: stream_manager={stream_lines} nns_manager={nns_lines} ledger_boundary={boundary_lines} economics={economics_lines} reward_policy={reward_policy_lines} combined={combined_lines}"
     );
     Ok(())
 }

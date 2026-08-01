@@ -1146,9 +1146,6 @@ dependencies = [
 [[package]]
 name = "io-reward-policy"
 version = "0.1.0"
-dependencies = [
- "io-governance-types",
-]
 
 [[package]]
 name = "io-sns-lifecycle"

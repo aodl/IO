@@ -3,6 +3,8 @@ pub mod canonical;
 pub mod lifecycle;
 pub mod receipt;
 pub mod redemption;
+mod reward_evidence;
+mod reward_settlement;
 pub mod rewards;
 pub mod state;
 pub mod transfer;

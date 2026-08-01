@@ -5,7 +5,8 @@
 //! disabled; this crate allocates protocol-backed IO released by the stream
 //! manager.
 
-use io_governance_types::SnsNeuronId;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SnsNeuronId(pub Vec<u8>);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SnsNeuronIdConversionError {

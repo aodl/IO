@@ -212,7 +212,7 @@ impl TwoWeekReceiptOperation {
         match (&self.phase, &self.settlement) {
             (ReceiptPhase::AwaitingReceipt | ReceiptPhase::ReceiptProved, None) => Ok(()),
             (ReceiptPhase::Settling | ReceiptPhase::Completed, Some(settlement)) => {
-                crate::rewards::validate_settlement(settlement, config)
+                crate::reward_settlement::validate(settlement, config)
             }
             _ => Err("two-week receipt phase and settlement disagree".into()),
         }
