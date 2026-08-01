@@ -1595,7 +1595,7 @@ fn finalized_neuron_reward_eligibility(
     };
     io_governance_types::snapshot_sns_eligibility(
         &[io_governance_types::SnsNeuron {
-            id: io_reward_policy::SnsNeuronId(neuron_id.id.clone()),
+            id: io_governance_types::SnsNeuronId(neuron_id.id.clone()),
             controller: Some(participant),
             stake_e8s: u128::from(neuron.cached_neuron_stake_e8s),
             dissolve_delay_seconds,
@@ -2351,6 +2351,8 @@ mod tests {
             1_209_600,
         )
         .expect("finalized governance should accept two-week dissolve delay");
+        let frozen = finalized_neuron_for_participant(&fixture, participant, &neuron_id)
+            .expect("eligible neuron should be observable before payout");
         start_finalized_neuron_dissolving_for_test(&fixture, participant, &neuron_id)
             .expect("finalized governance should accept start dissolving");
         for _ in 0..5 {
@@ -2368,6 +2370,26 @@ mod tests {
             Some("neuron is dissolving")
         );
         assert_eq!(eligibility.eligible_stake_e8s, 0);
+        let forfeited = io_reward_policy::RewardParticipant {
+            sns_neuron_id: io_reward_policy::SnsNeuronId(neuron_id.id.clone()),
+            neuron_id: 1,
+            frozen_stake_e8s: u128::from(frozen.cached_neuron_stake_e8s),
+            eligible_closed_proposals: 1,
+            voted_closed_proposals: 1,
+            destination_is_currently_eligible: false,
+        };
+        let eligible = io_reward_policy::RewardParticipant {
+            sns_neuron_id: io_reward_policy::SnsNeuronId(vec![9; 32]),
+            neuron_id: 2,
+            destination_is_currently_eligible: true,
+            ..forfeited.clone()
+        };
+        let allocation = io_reward_policy::allocate_rewards(101, &[eligible, forfeited]).unwrap();
+        assert_eq!(allocation.allocations.len(), 1);
+        assert_eq!(allocation.allocations[0].io_e8s, 50);
+        assert_eq!(allocation.forfeited_reward_e8s, 50);
+        assert_eq!(allocation.rounding_dust_e8s, 1);
+        assert_eq!(allocation.dust_e8s, 51);
     }
 
     #[test]

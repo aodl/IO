@@ -259,9 +259,10 @@ impl NnsStateV1 {
                 }
                 _ => None,
             };
-            let pending_generation = self.pending_two_week_maturity.as_ref().and_then(|pending| {
-                pending.stake_evidence.plan.cohort_generation
-            });
+            let pending_generation = self
+                .pending_two_week_maturity
+                .as_ref()
+                .and_then(|pending| pending.stake_evidence.plan.cohort_generation);
             if active_generation != Some(self.latest_started_two_week_generation)
                 && pending_generation != Some(self.latest_started_two_week_generation)
             {
