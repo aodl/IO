@@ -1,12 +1,11 @@
 pub mod api;
 mod execution;
-pub mod jupiter;
+pub use io_nns_types::{jupiter, maturity, pool, transfer};
+mod jupiter_flow;
 pub mod lifecycle;
-pub mod maturity;
 mod maturity_flow;
-pub mod pool;
 pub mod state;
-pub mod transfer;
+mod unwind_flow;
 
 use candid::CandidType;
 use serde::Deserialize;
@@ -36,7 +35,6 @@ pub fn init(args: InitArgs) {
             pending_two_week_maturity: None,
             last_two_year_maturity: None,
             last_two_week_maturity: None,
-            pending_unwind: None,
             next_operation_sequence: 1,
             control_epoch: 0,
         },

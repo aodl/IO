@@ -8,7 +8,6 @@ pub async fn readiness_preflight(
     if snapshot.active_operation.is_some()
         || snapshot.pending_two_year_maturity.is_some()
         || snapshot.pending_two_week_maturity.is_some()
-        || snapshot.pending_unwind.is_some()
     {
         return Err(crate::api::ApiError::Busy);
     }
@@ -81,7 +80,7 @@ pub async fn readiness_preflight(
         return Err(crate::api::ApiError::Busy);
     }
     Err(crate::api::ApiError::ImplementationIncomplete(
-        "executable NNS Jupiter/maturity operations are not complete".into(),
+        "pinned real NNS Jupiter, maturity and unwind execution evidence is incomplete".into(),
     ))
 }
 

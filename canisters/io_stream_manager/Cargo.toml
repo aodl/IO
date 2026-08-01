@@ -20,6 +20,7 @@ io-accounts = { path = "../../crates/io_accounts" }
 io-core-model.workspace = true
 io-ledger-boundary.workspace = true
 io-reward-policy.workspace = true
+io-receipt-types.workspace = true
 serde.workspace = true
 sha2 = "0.10.9"
 

@@ -1107,7 +1107,21 @@ dependencies = [
  "io-accounts",
  "io-build-support",
  "io-ledger-boundary",
+ "io-nns-types",
+ "io-receipt-types",
  "pocket-ic",
+ "serde",
+ "sha2",
+]
+
+[[package]]
+name = "io-nns-types"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "ic-stable-structures",
+ "io-accounts",
+ "io-receipt-types",
  "serde",
  "sha2",
 ]
@@ -1117,6 +1131,15 @@ name = "io-production-wiring"
 version = "0.1.0"
 dependencies = [
  "candid",
+ "serde",
+]
+
+[[package]]
+name = "io-receipt-types"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "io-accounts",
  "serde",
 ]
 
@@ -1151,6 +1174,7 @@ dependencies = [
  "io-build-support",
  "io-core-model",
  "io-ledger-boundary",
+ "io-receipt-types",
  "io-reward-policy",
  "pocket-ic",
  "serde",

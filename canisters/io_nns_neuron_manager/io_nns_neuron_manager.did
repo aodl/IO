@@ -84,10 +84,20 @@ type MaturityProgress = variant {
   Completed : CompletedMaturity;
   Stuck : text;
 };
+type UnwindProgress = variant {
+  ChildCreated;
+  Dissolving;
+  MergeBack;
+  MergedBack;
+  ReadyToDisburse;
+  AwaitingTransferProof;
+  Completed : record { block_index : nat; liquid_e8s : nat };
+  Stuck : text;
+};
 type NnsProgress = variant {
   Jupiter : JupiterProgress;
   Maturity : MaturityProgress;
-  PoolRebalance;
+  Unwind : UnwindProgress;
   Idle;
 };
 type Status = record {

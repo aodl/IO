@@ -10,7 +10,7 @@ use std::{borrow::Cow, cell::RefCell};
 use crate::{
     jupiter::{JupiterCompleted, JupiterOperation},
     maturity::{CompletedMaturity, MaturityCommandOperation, PendingMaturityDisbursement},
-    pool::{PendingUnwind, UnwindOperation},
+    pool::UnwindOperation,
 };
 pub use io_accounts::Account;
 
@@ -152,7 +152,6 @@ pub struct NnsStateV1 {
     pub last_two_year_maturity: Option<CompletedMaturity>,
     #[serde(default)]
     pub last_two_week_maturity: Option<CompletedMaturity>,
-    pub pending_unwind: Option<PendingUnwind>,
     pub next_operation_sequence: u64,
     pub control_epoch: u64,
 }
@@ -196,7 +195,6 @@ impl NnsStateV1 {
             pending_two_week_maturity: None,
             last_two_year_maturity: None,
             last_two_week_maturity: None,
-            pending_unwind: None,
             next_operation_sequence: 1,
             control_epoch: 0,
         }
@@ -295,8 +293,9 @@ impl NnsStateV1 {
                         }
                     }
                 }
-                NnsOperation::Unwind(operation) => operation
-                    .validate(self.next_operation_sequence, self.config.two_week_neuron_id)?,
+                NnsOperation::Unwind(operation) => {
+                    operation.validate(self.next_operation_sequence)?
+                }
             }
         }
         for (pending, kind, neuron_id, destination) in [
@@ -339,15 +338,6 @@ impl NnsStateV1 {
                 || !completed.destination.effective_eq(destination)?
             {
                 return Err("completed maturity result is inconsistent".into());
-            }
-        }
-        if let Some(unwind) = &self.pending_unwind {
-            if unwind.generation == 0
-                || unwind.child_neuron_id == 0
-                || unwind.child_neuron_id == self.config.two_week_neuron_id
-                || unwind.principal_e8s == 0
-            {
-                return Err("pending unwind is inconsistent".into());
             }
         }
         Ok(())
@@ -454,22 +444,6 @@ pub fn record_processed_jupiter(result: JupiterCompleted) -> Result<(), String> 
     Ok(())
 }
 
-impl Storable for JupiterCompleted {
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(candid::encode_one(self).expect("Jupiter result must encode"))
-    }
-    fn into_bytes(self) -> Vec<u8> {
-        candid::encode_one(self).expect("Jupiter result must encode")
-    }
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        candid::decode_one(bytes.as_ref()).expect("Jupiter result must decode")
-    }
-    const BOUND: Bound = Bound::Bounded {
-        max_size: 512,
-        is_fixed_size: false,
-    };
-}
-
 pub fn read() -> NnsStateV1 {
     STATE.with(|slot| {
         slot.borrow()
@@ -546,7 +520,6 @@ mod tests {
                 pending_two_week_maturity: None,
                 last_two_year_maturity: None,
                 last_two_week_maturity: None,
-                pending_unwind: None,
                 next_operation_sequence: 1,
                 control_epoch: 0,
             },

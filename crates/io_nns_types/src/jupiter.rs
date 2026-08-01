@@ -1,7 +1,10 @@
 use candid::{CandidType, Principal};
+use ic_stable_structures::{storable::Bound, Storable};
 use serde::Deserialize;
+use std::borrow::Cow;
 
-use crate::{state::Account, transfer::NnsTransferAttempt};
+use crate::transfer::NnsTransferAttempt;
+pub use io_receipt_types::LiquidReceiptPermit as StreamReceiptPermit;
 
 pub const PINNED_DFINITY_IC_COMMIT: &str = "021bf342f66296d5605b355a61b2430406a83783";
 
@@ -35,13 +38,6 @@ pub struct StakeIncreaseProof {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct StreamReceiptPermit {
-    pub sequence: u64,
-    pub destination: Account,
-    pub memo: Vec<u8>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct LiquidTransferSucceeded {
     pub proof: StakeIncreaseProof,
     pub permit: StreamReceiptPermit,
@@ -62,6 +58,22 @@ pub struct JupiterCompleted {
     pub io_fee_e8s: u128,
     pub stream_receipt_fingerprint: Vec<u8>,
     pub completed_at_nanos: u64,
+}
+
+impl Storable for JupiterCompleted {
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(candid::encode_one(self).expect("Jupiter result must encode"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        candid::encode_one(self).expect("Jupiter result must encode")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        candid::decode_one(bytes.as_ref()).expect("Jupiter result must decode")
+    }
+    const BOUND: Bound = Bound::Bounded {
+        max_size: 512,
+        is_fixed_size: false,
+    };
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]

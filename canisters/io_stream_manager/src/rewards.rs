@@ -120,6 +120,7 @@ enum NnsError {
     ImplementationIncomplete(String),
 }
 
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 enum TargetStatus {
     UnderTarget,

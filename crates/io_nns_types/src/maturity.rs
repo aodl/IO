@@ -3,9 +3,9 @@ use serde::Deserialize;
 
 use crate::{
     jupiter::{NeuronSnapshot, StreamReceiptPermit},
-    state::Account,
     transfer::NnsTransferAttempt,
 };
+use io_accounts::Account;
 
 pub const MINIMUM_DISBURSEMENT_E8S: u64 = 100_000_000;
 pub const DISBURSEMENT_DELAY_SECONDS: u64 = 7 * 24 * 60 * 60;
@@ -97,6 +97,7 @@ pub struct TwoWeekDeliveryOperation {
     pub receipt_completed: bool,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum MaturityCommandPhase {
     Observed(MaturityPlan),

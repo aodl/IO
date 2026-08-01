@@ -16,6 +16,7 @@ The production DID contains only:
 - `resume`
 - `prove_active_transfer`
 - `start_maturity`
+- `resume_maturity`
 - `prove_maturity_mint`
 - `set_paused`
 - `get_status`
@@ -42,8 +43,19 @@ ledger Wasms and exact source behavior are recorded in
 [`nns-boundary-pin.md`](../../docs/testing/nns-boundary-pin.md). The canister
 does not depend on a generic governance-types crate.
 
+## Direct two-week unwind
+
+An over-target canonical two-week stake creates one immediate typed unwind
+operation. It splits exactly the excess, starts the one child dissolving,
+merges it back if a newer target rises before readiness, or disburses the ready
+child directly to the stream liquid Account. Completion requires the exact ICP
+Transfer block returned by NNS Governance (or an explicitly supplied block for
+an ambiguous callback); no staging Account, stream receipt, IO issuance, queue,
+or second child exists.
+
 ## Stable state
 
 Launch state is one `StableCell<NnsStateV1>` with one typed immediate operation
-and fixed optional slots for two-year maturity, two-week maturity, and one
-unwind. Only V1 is supported; no prelaunch migration chain is compiled.
+whose unwind variant owns its one child, plus fixed passive slots for two-year
+and two-week maturity. Only V1 is supported; no prelaunch migration chain is
+compiled.

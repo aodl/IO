@@ -153,14 +153,14 @@ async fn submit_stake(
     let expected = operation.clone();
     operation.dispatch_epoch = next_epoch(operation.dispatch_epoch)?;
     operation.phase = MaturityCommandPhase::StakeMaturitySubmitted(plan.clone());
-    replace(&expected, operation.clone())?;
+    write_exact(&expected, operation.clone(), false)?;
     let submitted = operation.clone();
     let result = execution::stake_maturity(&state::read().config, plan.neuron.neuron_id).await;
     ensure_exact(&submitted)?;
     let (remaining_maturity_e8s, staked_maturity_e8s) = match result {
         Ok(value) => value,
         Err(error) => {
-            pause_exact(&submitted)?;
+            write_exact(&submitted, submitted.clone(), true)?;
             return Err(ApiError::Pending(format!(
                 "StakeMaturity outcome requires canonical observation: {error:?}"
             )));
@@ -194,7 +194,7 @@ async fn recover_stake(
             MaturityEvidenceSource::CanonicalNeuronObservation,
         );
     }
-    pause_exact(&operation)?;
+    write_exact(&operation, operation.clone(), true)?;
     Err(ApiError::Pending(format!(
         "StakeMaturity remains ambiguous: expected ordinary {} and staked {}, observed ordinary {} and staked {}",
         plan.remaining_maturity_e8s,
@@ -215,7 +215,7 @@ fn apply_stake_result(
     if remaining_maturity_e8s != plan.remaining_maturity_e8s
         || staked_maturity_e8s != expected_staked
     {
-        pause_exact(&operation)?;
+        write_exact(&operation, operation.clone(), true)?;
         return Err(ApiError::Stuck(format!(
             "StakeMaturity response drift: expected ordinary {} and staked {}, observed ordinary {} and staked {}",
             plan.remaining_maturity_e8s,
@@ -231,7 +231,7 @@ fn apply_stake_result(
         staked_maturity_e8s,
         evidence_source,
     });
-    replace(&operation, replacement)?;
+    write_exact(&operation, replacement, false)?;
     Ok(MaturityProgress::StakeMaturitySucceeded)
 }
 
@@ -258,7 +258,7 @@ async fn check_pre_disburse_drift(
             reason: reason.clone(),
             stake,
         };
-        pause_and_replace(&operation, replacement)?;
+        write_exact(&operation, replacement, true)?;
         return Err(ApiError::Stuck(reason));
     }
     let mut replacement = operation.clone();
@@ -266,7 +266,7 @@ async fn check_pre_disburse_drift(
         stake,
         submitted_at_seconds: now_seconds()?,
     });
-    replace(&operation, replacement)?;
+    write_exact(&operation, replacement, false)?;
     Ok(MaturityProgress::StakeMaturitySucceeded)
 }
 
@@ -278,7 +278,7 @@ async fn submit_disburse(
     submission.submitted_at_seconds = now_seconds()?;
     operation.dispatch_epoch = next_epoch(operation.dispatch_epoch)?;
     operation.phase = MaturityCommandPhase::DisburseMaturitySubmitted(submission.clone());
-    replace(&expected, operation.clone())?;
+    write_exact(&expected, operation.clone(), false)?;
     let submitted = operation.clone();
     let result = execution::disburse_maturity(
         &state::read().config,
@@ -290,7 +290,7 @@ async fn submit_disburse(
     let amount = match result {
         Ok(amount) => amount,
         Err(error) => {
-            pause_exact(&submitted)?;
+            write_exact(&submitted, submitted.clone(), true)?;
             return Err(ApiError::Pending(format!(
                 "DisburseMaturity outcome requires canonical observation: {error:?}"
             )));
@@ -307,7 +307,7 @@ async fn submit_disburse(
             submission,
             observed_amount_e8s: amount,
         };
-        pause_and_replace(&submitted, replacement)?;
+        write_exact(&submitted, replacement, true)?;
         return Err(ApiError::Stuck(reason));
     }
     let mut replacement = submitted.clone();
@@ -317,7 +317,7 @@ async fn submit_disburse(
             amount_disbursed_e8s: amount,
             evidence_source: MaturityEvidenceSource::CommandResponse,
         });
-    replace(&submitted, replacement)?;
+    write_exact(&submitted, replacement, false)?;
     Ok(MaturityProgress::DisburseMaturitySucceeded)
 }
 
@@ -338,7 +338,7 @@ async fn recover_disburse(
         submission.submitted_at_seconds,
     );
     if canonical.is_err() {
-        pause_exact(&operation)?;
+        write_exact(&operation, operation.clone(), true)?;
         return Err(ApiError::Pending(
             "DisburseMaturity remains ambiguous; no exact canonical pending record exists".into(),
         ));
@@ -350,7 +350,7 @@ async fn recover_disburse(
             submission,
             evidence_source: MaturityEvidenceSource::CanonicalNeuronObservation,
         });
-    replace(&operation, replacement)?;
+    write_exact(&operation, replacement, false)?;
     Ok(MaturityProgress::DisburseMaturitySucceeded)
 }
 
@@ -388,8 +388,8 @@ pub async fn prove_mint(
     kind: MaturityKind,
     block_index: u128,
 ) -> Result<MaturityProgress, ApiError> {
-    let expected =
-        pending(kind).ok_or_else(|| ApiError::Invalid("no pending maturity proof slot".into()))?;
+    let expected = pending_from(&state::read(), kind)
+        .ok_or_else(|| ApiError::Invalid("no pending maturity proof slot".into()))?;
     if !matches!(expected.mint_proof, MintProofState::Awaiting) {
         return replay_proved(&expected, block_index);
     }
@@ -528,7 +528,7 @@ async fn resume_two_week_delivery(
             unreachable!()
         };
         next.permit = Some(permit);
-        replace(&operation, replacement)?;
+        write_exact(&operation, replacement, false)?;
         return Ok(MaturityProgress::DeliveringTwoWeekReceipt);
     };
     let Some(attempt) = delivery.transfer.clone() else {
@@ -550,7 +550,7 @@ async fn resume_two_week_delivery(
             unreachable!()
         };
         next.transfer = Some(NnsTransferAttempt::prepared(intent).map_err(ApiError::Invalid)?);
-        replace(&operation, replacement)?;
+        write_exact(&operation, replacement, false)?;
         return Ok(MaturityProgress::DeliveringTwoWeekReceipt);
     };
     match attempt.state {
@@ -595,7 +595,7 @@ async fn submit_two_week_transfer(
                 next.transfer.as_mut().expect("delivery transfer").state = TransferState::Stuck {
                     reason: reason.into(),
                 };
-                pause_and_replace(&operation, replacement)?;
+                write_exact(&operation, replacement, true)?;
                 return Err(ApiError::Stuck(reason.into()));
             }
             (
@@ -619,7 +619,7 @@ async fn submit_two_week_transfer(
         last_submitted_at_nanos: now,
     };
     let intent = transfer.intent.clone();
-    replace(&expected, operation.clone())?;
+    write_exact(&expected, operation.clone(), false)?;
     let submitted = operation.clone();
     let result = execution::submit_transfer(&intent).await;
     ensure_exact(&submitted)?;
@@ -631,7 +631,7 @@ async fn submit_two_week_transfer(
             };
             next.transfer.as_mut().expect("delivery transfer").state =
                 TransferState::Succeeded { block };
-            replace(&submitted, replacement)?;
+            write_exact(&submitted, replacement, false)?;
             Ok(MaturityProgress::DeliveringTwoWeekReceipt)
         }
         Ok(None) => Err(ApiError::Pending(
@@ -645,7 +645,7 @@ async fn submit_two_week_transfer(
             next.transfer.as_mut().expect("delivery transfer").state = TransferState::Stuck {
                 reason: reason.clone(),
             };
-            pause_and_replace(&submitted, replacement)?;
+            write_exact(&submitted, replacement, true)?;
             Err(ApiError::Stuck(reason))
         }
         Err(error) => Err(error),
@@ -677,14 +677,14 @@ async fn complete_two_week_receipt(
     block: u128,
 ) -> Result<MaturityProgress, ApiError> {
     let progress =
-        execution::complete_two_week_receipt(&state::read().config, &permit, block).await?;
+        execution::complete_jupiter_receipt(&state::read().config, &permit, block).await?;
     ensure_exact(&operation)?;
     let mut replacement = operation.clone();
     let MaturityCommandPhase::TwoWeekDelivery(delivery) = &mut replacement.phase else {
         unreachable!()
     };
     delivery.receipt_completed = true;
-    replace(&operation, replacement.clone())?;
+    write_exact(&operation, replacement.clone(), false)?;
     match progress {
         execution::StreamLiquidProgress::Completed(result) => {
             finish_two_week(replacement, block, result)
@@ -846,9 +846,10 @@ fn identity(config: &crate::state::NnsConfig, kind: MaturityKind) -> (u64, crate
     }
 }
 
-fn replace(
+fn write_exact(
     expected: &MaturityCommandOperation,
     replacement: MaturityCommandOperation,
+    pause: bool,
 ) -> Result<(), ApiError> {
     let mut latest = state::read();
     if !matches!(&latest.active_operation, Some(NnsOperation::Maturity(active)) if **active == *expected)
@@ -860,32 +861,9 @@ fn replace(
         .validate(latest.next_operation_sequence, neuron_id, &destination)
         .map_err(ApiError::Invalid)?;
     latest.active_operation = Some(NnsOperation::Maturity(Box::new(replacement)));
-    state::write(latest);
-    Ok(())
-}
-
-fn pause_and_replace(
-    expected: &MaturityCommandOperation,
-    replacement: MaturityCommandOperation,
-) -> Result<(), ApiError> {
-    let mut latest = state::read();
-    if !matches!(&latest.active_operation, Some(NnsOperation::Maturity(active)) if **active == *expected)
-    {
-        return Err(ApiError::Busy);
+    if pause {
+        latest.lifecycle = Lifecycle::Paused;
     }
-    latest.active_operation = Some(NnsOperation::Maturity(Box::new(replacement)));
-    latest.lifecycle = Lifecycle::Paused;
-    state::write(latest);
-    Ok(())
-}
-
-fn pause_exact(expected: &MaturityCommandOperation) -> Result<(), ApiError> {
-    let mut latest = state::read();
-    if !matches!(&latest.active_operation, Some(NnsOperation::Maturity(active)) if **active == *expected)
-    {
-        return Err(ApiError::Busy);
-    }
-    latest.lifecycle = Lifecycle::Paused;
     state::write(latest);
     Ok(())
 }
@@ -915,10 +893,6 @@ fn move_to_passive(
     Ok(())
 }
 
-fn pending(kind: MaturityKind) -> Option<PendingMaturityDisbursement> {
-    pending_from(&state::read(), kind)
-}
-
 fn pending_from(
     state: &crate::state::NnsStateV1,
     kind: MaturityKind,
@@ -937,7 +911,7 @@ fn set_pending(state: &mut crate::state::NnsStateV1, pending: PendingMaturityDis
 }
 
 fn ensure_pending(expected: &PendingMaturityDisbursement) -> Result<(), ApiError> {
-    if pending(expected.kind).as_ref() == Some(expected) {
+    if pending_from(&state::read(), expected.kind).as_ref() == Some(expected) {
         Ok(())
     } else {
         Err(ApiError::Busy)

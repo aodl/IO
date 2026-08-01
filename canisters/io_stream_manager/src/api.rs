@@ -1,5 +1,6 @@
 use candid::{CandidType, Nat, Principal};
 use ic_cdk::call::Call;
+pub use io_receipt_types::LiquidReceiptProgress;
 use serde::Deserialize;
 
 use crate::{
@@ -41,15 +42,6 @@ pub enum RedemptionProgress {
     PayoutSucceeded,
     Completing,
     Completed(RedemptionResult),
-    Stuck(String),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum LiquidReceiptProgress {
-    AwaitingReceipt,
-    ReceiptProved,
-    Settling,
-    Completed(crate::receipt::CompletedReceiptResult),
     Stuck(String),
 }
 

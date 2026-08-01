@@ -246,7 +246,7 @@ fn quoted_rust_const(text: &str, name: &str) -> Result<String, String> {
 }
 
 fn check_nns_boundary_pin_at(root: &Path) -> Result<(), String> {
-    let implementation_path = "canisters/io_nns_neuron_manager/src/jupiter.rs";
+    let implementation_path = "crates/io_nns_types/src/jupiter.rs";
     let manifest_path = "tests/e2e_real_canisters/wasms.example.toml";
     let evidence_path = "docs/testing/nns-boundary-pin.md";
     let implementation = require_file(root, implementation_path)?;
@@ -811,6 +811,17 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
             let text = fs::read_to_string(&path)
                 .map_err(|error| format!("{}: {error}", path.display()))?;
             combined_lines += production_line_count(&text);
+        }
+    }
+    for directory in ["crates/io_nns_types/src", "crates/io_receipt_types/src"] {
+        for path in rust_files_below(root, directory)? {
+            let text = fs::read_to_string(&path)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            let lines = production_line_count(&text);
+            if lines > 500 {
+                return Err(format!("{} has {lines} production lines", path.display()));
+            }
+            combined_lines += lines;
         }
     }
     if stream_lines > 4_500 {

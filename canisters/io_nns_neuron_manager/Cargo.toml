@@ -18,6 +18,8 @@ ic-cdk.workspace = true
 ic-stable-structures.workspace = true
 io-accounts = { path = "../../crates/io_accounts" }
 io-ledger-boundary.workspace = true
+io-nns-types.workspace = true
+io-receipt-types.workspace = true
 serde.workspace = true
 sha2 = "0.10.9"
 
