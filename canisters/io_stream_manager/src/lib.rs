@@ -17,7 +17,7 @@ pub use receipt::{
 };
 pub use redemption::RedeemArgs;
 pub use state::CallerRedemptionState;
-pub use state::{Account, Lifecycle, StreamConfig, StreamStateV1};
+pub use state::{Account, Lifecycle, RewardCohort, StreamConfig, StreamStateV1};
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 pub struct InitArgs {
@@ -33,6 +33,7 @@ pub fn init(args: InitArgs) {
         active_operation: None,
         active_reward_cohort: None,
         pending_reward_cohort: None,
+        latest_cohort_generation: 0,
         next_nns_receipt_sequence: 0,
         next_cohort_timestamp_seconds: args.next_cohort_timestamp_seconds,
         next_operation_sequence: state::OperationSequence(0),
@@ -75,6 +76,16 @@ pub async fn resume() -> Result<StreamProgress, ApiError> {
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub async fn prove_active_transfer(block_index: u128) -> Result<(), ApiError> {
     api::prove_active_transfer(block_index).await
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn capture_reward_cohort() -> Result<RewardCohort, ApiError> {
+    rewards::capture(ic_cdk::api::time() / 1_000_000_000).await
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn close_reward_cohort() -> Result<RewardCohort, ApiError> {
+    rewards::close(ic_cdk::api::time() / 1_000_000_000).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]

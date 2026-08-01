@@ -19,7 +19,7 @@ pub struct PendingUnwind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct PoolRebalanceOperation {
+pub struct UnwindOperation {
     pub operation_sequence: u64,
     pub dispatch_epoch: u64,
     pub generation: u64,
@@ -27,7 +27,7 @@ pub struct PoolRebalanceOperation {
     pub phase: UnwindPhase,
 }
 
-impl PoolRebalanceOperation {
+impl UnwindOperation {
     pub fn validate(
         &self,
         next_operation_sequence: u64,

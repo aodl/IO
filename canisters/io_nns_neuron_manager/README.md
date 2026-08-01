@@ -37,8 +37,10 @@ is proved from one exact ICP Mint block and becomes liquid backing. Two-year
 Mint proof completes directly against the stream liquid account and issues no
 IO. Two-week Mint proof persists a typed delivery phase for the proof-bound
 stream receipt. Governance DTOs are local and pinned to `dfinity/ic` commit
-`0c7c8b83144844e1a598633585b3ee1beebe338b`; the canister does not depend on a
-generic governance-types crate.
+`021bf342f66296d5605b355a61b2430406a83783`; the matching Governance and ICP
+ledger Wasms and exact source behavior are recorded in
+[`nns-boundary-pin.md`](../../docs/testing/nns-boundary-pin.md). The canister
+does not depend on a generic governance-types crate.
 
 ## Stable state
 

@@ -3,7 +3,7 @@ use serde::Deserialize;
 
 use crate::{state::Account, transfer::NnsTransferAttempt};
 
-pub const PINNED_DFINITY_IC_COMMIT: &str = "0c7c8b83144844e1a598633585b3ee1beebe338b";
+pub const PINNED_DFINITY_IC_COMMIT: &str = "021bf342f66296d5605b355a61b2430406a83783";
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct JupiterDeposit {
@@ -57,6 +57,10 @@ pub struct JupiterCompleted {
     pub stake_transfer_block: u128,
     pub liquid_transfer_block: u128,
     pub stream_receipt_sequence: u64,
+    pub backed_io_e8s: u128,
+    pub io_transfer_block: u128,
+    pub io_fee_e8s: u128,
+    pub stream_receipt_fingerprint: Vec<u8>,
     pub completed_at_nanos: u64,
 }
 
@@ -71,6 +75,16 @@ pub enum JupiterStuckTransfer {
         permit: StreamReceiptPermit,
         attempt: NnsTransferAttempt,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum JupiterPauseReason {
+    AmbiguousPossibleEffect,
+    InsufficientFunds,
+    BadFee,
+    RefreshUnconfirmed,
+    StakeIncreaseMismatch,
+    Other,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -106,6 +120,7 @@ pub enum JupiterPhase {
     AwaitingStreamSettlement(LiquidTransferSucceeded),
     Stuck {
         reason: String,
+        pause_reason: JupiterPauseReason,
         transfer: Option<JupiterStuckTransfer>,
     },
 }
@@ -193,7 +208,9 @@ impl JupiterOperation {
                 validate_stake_increase(&value.proof, self.deposit.stake_e8s)?;
                 validate_permit(&value.permit)
             }
-            JupiterPhase::Stuck { reason, transfer } => {
+            JupiterPhase::Stuck {
+                reason, transfer, ..
+            } => {
                 if reason.is_empty() || reason.len() > 512 {
                     return Err("Jupiter Stuck reason is malformed".into());
                 }

@@ -13,6 +13,7 @@
     jupiter_staging = record { owner = TODO_EXISTING_NNS_CONTROLLER_SELF; subaccount = null };
     two_week_maturity_staging = record { owner = TODO_EXISTING_NNS_CONTROLLER_SELF; subaccount = opt TODO_TWO_WEEK_STAGING };
     stream_liquid_account = record { owner = TODO_STREAM_MANAGER_PRINCIPAL; subaccount = opt TODO_STREAM_LIQUID_SUBACCOUNT };
+    expected_io_fee_e8s = TODO_IO_FEE : nat;
     expected_icp_fee_e8s = TODO_ICP_FEE : nat;
     jupiter_fee_float_e8s = TODO_JUPITER_FEE_FLOAT : nat;
     two_week_fee_float_e8s = TODO_TWO_WEEK_FEE_FLOAT : nat;

@@ -60,9 +60,21 @@ pub struct JupiterSettlement {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct TwoWeekSettlement {
     pub backed_io_pool_e8s: u128,
+    pub recipients: Vec<RewardRecipient>,
     pub recipient_index: u32,
     pub distributed_io_e8s: u128,
+    pub forfeited_io_e8s: u128,
     pub dust_io_e8s: u128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct RewardRecipient {
+    pub sns_neuron_id: Vec<u8>,
+    pub destination: Account,
+    pub before_stake_e8s: u128,
+    pub io_e8s: u128,
+    pub transfer: Option<TransferAttempt>,
+    pub refreshed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -249,14 +261,8 @@ impl TwoWeekReceiptOperation {
         validate_phase_proof(self.phase, self.receipt_block)?;
         match (&self.phase, &self.settlement) {
             (ReceiptPhase::AwaitingReceipt | ReceiptPhase::ReceiptProved, None) => Ok(()),
-            (ReceiptPhase::Settling | ReceiptPhase::Completed, Some(settlement))
-                if settlement.backed_io_pool_e8s
-                    == settlement
-                        .distributed_io_e8s
-                        .checked_add(settlement.dust_io_e8s)
-                        .ok_or("two-week settlement total overflow")? =>
-            {
-                Ok(())
+            (ReceiptPhase::Settling | ReceiptPhase::Completed, Some(settlement)) => {
+                crate::rewards::validate_settlement(settlement, config)
             }
             _ => Err("two-week receipt phase and settlement disagree".into()),
         }
@@ -456,9 +462,9 @@ pub(crate) async fn resume_liquid_receipt(
 ) -> Result<crate::api::LiquidReceiptProgress, crate::api::ApiError> {
     match operation {
         LiquidReceiptOperation::Jupiter(operation) => resume_jupiter(*operation, now).await,
-        LiquidReceiptOperation::TwoWeek(_) => Err(crate::api::ApiError::Stuck(
-            "two-week reward fan-out is not yet executable".into(),
-        )),
+        LiquidReceiptOperation::TwoWeek(operation) => {
+            crate::rewards::resume_two_week(*operation, now).await
+        }
     }
 }
 
@@ -794,7 +800,7 @@ fn active_jupiter() -> Result<JupiterReceiptOperation, crate::api::ApiError> {
     }
 }
 
-fn persist_exact(
+pub(crate) fn persist_exact(
     expected: &LiquidReceiptOperation,
     replacement: LiquidReceiptOperation,
 ) -> Result<(), crate::api::ApiError> {
@@ -863,7 +869,8 @@ pub async fn complete_liquid_receipt(
                 .map_err(ApiError::Invalid)?
         || transfer.amount_e8s != context.request.liquid_amount_e8s
         || transfer.fee_e8s != snapshot.config.expected_icp_fee_e8s
-        || transfer.memo.as_deref() != Some(context.permit.memo.as_slice())
+        || transfer.native_memo_u64 != 0
+        || transfer.icrc1_memo.as_deref() != Some(context.permit.memo.as_slice())
         || transfer.created_at_time == 0
         || transfer.spender.is_some()
     {

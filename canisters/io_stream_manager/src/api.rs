@@ -67,6 +67,9 @@ pub struct Status {
     pub operation_phase: Option<String>,
     pub next_nns_receipt_sequence: u64,
     pub next_cohort_timestamp_seconds: u64,
+    pub latest_cohort_generation: u64,
+    pub has_active_reward_cohort: bool,
+    pub has_pending_reward_cohort: bool,
 }
 
 pub fn get_status() -> Status {
@@ -92,6 +95,9 @@ pub fn get_status() -> Status {
         operation_phase,
         next_nns_receipt_sequence: state.next_nns_receipt_sequence,
         next_cohort_timestamp_seconds: state.next_cohort_timestamp_seconds,
+        latest_cohort_generation: state.latest_cohort_generation,
+        has_active_reward_cohort: state.active_reward_cohort.is_some(),
+        has_pending_reward_cohort: state.pending_reward_cohort.is_some(),
     }
 }
 
@@ -784,11 +790,15 @@ pub async fn resume_stream(now: u64) -> Result<StreamProgress, ApiError> {
 }
 
 pub async fn prove_active_transfer(block_index: u128) -> Result<(), ApiError> {
-    if matches!(
-        state::read().active_operation,
-        Some(StreamOperation::LiquidReceipt(_))
-    ) {
-        return receipt::prove_jupiter_settlement(block_index).await;
+    if let Some(StreamOperation::LiquidReceipt(operation)) = state::read().active_operation {
+        return match *operation {
+            crate::receipt::LiquidReceiptOperation::Jupiter(_) => {
+                receipt::prove_jupiter_settlement(block_index).await
+            }
+            crate::receipt::LiquidReceiptOperation::TwoWeek(_) => {
+                crate::rewards::prove_recipient_transfer(block_index).await
+            }
+        };
     }
     let operation = active_redemption()?;
     if operation.phase != RedemptionPhase::Stuck {
@@ -873,7 +883,8 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<(), ApiError> {
             && exact.to == canonical::icp_account_identifier(to).map_err(ApiError::Invalid)?
             && exact.amount_e8s == *amount
             && exact.fee_e8s == *fee
-            && exact.memo.as_deref() == Some(memo.as_slice())
+            && exact.native_memo_u64 == 0
+            && exact.icrc1_memo.as_deref() == Some(memo.as_slice())
             && exact.created_at_time == *created_at_time
             && exact.spender.is_none();
         if !matches {

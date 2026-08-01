@@ -161,6 +161,8 @@ pub enum StreamOperation {
 pub struct RewardCohort {
     pub generation: u64,
     pub captured_at_timestamp_seconds: u64,
+    pub closes_at_timestamp_seconds: u64,
+    pub target_icp_e8s: u128,
     pub members: Vec<RewardMember>,
 }
 
@@ -169,6 +171,10 @@ pub struct RewardMember {
     pub sns_neuron_id: Vec<u8>,
     pub account: Account,
     pub frozen_stake_e8s: u128,
+    pub observed_stake_e8s: u128,
+    pub eligible_closed_proposals: u64,
+    pub voted_closed_proposals: u64,
+    pub destination_is_currently_eligible: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -178,6 +184,7 @@ pub struct StreamStateV1 {
     pub active_operation: Option<StreamOperation>,
     pub active_reward_cohort: Option<RewardCohort>,
     pub pending_reward_cohort: Option<RewardCohort>,
+    pub latest_cohort_generation: u64,
     pub next_nns_receipt_sequence: u64,
     pub next_cohort_timestamp_seconds: u64,
     pub next_operation_sequence: OperationSequence,
@@ -220,6 +227,7 @@ impl StreamStateV1 {
             active_operation: None,
             active_reward_cohort: None,
             pending_reward_cohort: None,
+            latest_cohort_generation: 0,
             next_nns_receipt_sequence: 0,
             next_cohort_timestamp_seconds: 0,
             next_operation_sequence: OperationSequence(0),
@@ -276,6 +284,9 @@ impl StreamStateV1 {
         .flatten()
         {
             cohort.validate()?;
+            if cohort.generation > self.latest_cohort_generation {
+                return Err("reward cohort generation exceeds state generation".into());
+            }
         }
         if let Some(completed) = &self.last_completed_receipt {
             completed.validate(&self.config, self.next_nns_receipt_sequence)?;
@@ -289,13 +300,24 @@ impl RewardCohort {
     pub const MAX_NEURON_ID_BYTES: usize = 64;
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.captured_at_timestamp_seconds == 0 || self.members.len() > Self::MAX_MEMBERS {
+        if self.generation == 0
+            || self.captured_at_timestamp_seconds == 0
+            || self.closes_at_timestamp_seconds
+                != self
+                    .captured_at_timestamp_seconds
+                    .checked_add(io_core_model::TWO_WEEK_SECONDS)
+                    .ok_or("reward cohort close timestamp overflow")?
+            || self.members.len() > Self::MAX_MEMBERS
+        {
             return Err("reward cohort timestamp or capacity is invalid".into());
         }
         for member in &self.members {
             if member.sns_neuron_id.is_empty()
                 || member.sns_neuron_id.len() > Self::MAX_NEURON_ID_BYTES
                 || member.frozen_stake_e8s == 0
+                || (member.destination_is_currently_eligible
+                    && member.observed_stake_e8s < member.frozen_stake_e8s)
+                || member.voted_closed_proposals > member.eligible_closed_proposals
             {
                 return Err("reward cohort member is invalid".into());
             }
@@ -521,6 +543,7 @@ mod tests {
                 active_operation: None,
                 active_reward_cohort: None,
                 pending_reward_cohort: None,
+                latest_cohort_generation: 0,
                 next_nns_receipt_sequence: 7,
                 next_cohort_timestamp_seconds: 8,
                 next_operation_sequence: OperationSequence(0),

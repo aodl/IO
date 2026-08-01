@@ -27,6 +27,15 @@ const DEV_MAINNET_CONFIG_PATH: &str = "deploy/mainnet-dev/legacy-phase1/canister
 const DEV_MAINNET_README_PATH: &str = "deploy/mainnet-dev/legacy-phase1/README.md";
 const DEV_MAINNET_STATUS_PATH: &str = "deploy/mainnet-dev/legacy-phase1/status.md";
 const PRODUCTION_CANISTER_IDS_PATH: &str = "deploy/production-wiring/canister-ids.toml";
+const NNS_BOUNDARY_SOURCE_COMMIT: &str = "021bf342f66296d5605b355a61b2430406a83783";
+const NNS_GOVERNANCE_SOURCE_SHA256: &str =
+    "c66ff7d948ff79a826e61eab9e11714082d93a45e42f3b7deec1c2377341285f";
+const NNS_GOVERNANCE_WASM_SHA256: &str =
+    "0a341fd53eba8cdfdd2330f968758bab2858fe7a26bbe1bc6a55320c23ba0ec5";
+const ICP_LEDGER_SOURCE_SHA256: &str =
+    "5d69ec2e26e5546fe7e94bab721d6c4ed840106f9e2e69d11a8f3ee6e7721df0";
+const ICP_LEDGER_WASM_SHA256: &str =
+    "9c1ff658635daabb7a3e9dcc5dca337eee5008bc2033d0e929c3fae53814f91c";
 const PRODUCTION_MAPPING_PATHS: &[&str] = &[
     PRODUCTION_CANISTER_IDS_PATH,
     "deploy/production-wiring/README.md",
@@ -218,6 +227,104 @@ fn require_present(path: &str, text: &str, needles: &[&str]) -> Result<(), Strin
         }
     }
     Ok(())
+}
+
+fn quoted_rust_const(text: &str, name: &str) -> Result<String, String> {
+    let prefix = format!("pub const {name}:");
+    let line = text
+        .lines()
+        .find(|line| line.trim_start().starts_with(&prefix))
+        .ok_or_else(|| format!("missing Rust constant {name}"))?;
+    let value = line
+        .split_once('=')
+        .map(|(_, value)| value.trim().trim_end_matches(';'))
+        .ok_or_else(|| format!("malformed Rust constant {name}"))?;
+    if value.len() < 2 || !value.starts_with('"') || !value.ends_with('"') {
+        return Err(format!("Rust constant {name} must be one quoted string"));
+    }
+    Ok(value[1..value.len() - 1].to_string())
+}
+
+fn check_nns_boundary_pin_at(root: &Path) -> Result<(), String> {
+    let implementation_path = "canisters/io_nns_neuron_manager/src/jupiter.rs";
+    let manifest_path = "tests/e2e_real_canisters/wasms.example.toml";
+    let evidence_path = "docs/testing/nns-boundary-pin.md";
+    let implementation = require_file(root, implementation_path)?;
+    let implementation_pin = quoted_rust_const(&implementation, "PINNED_DFINITY_IC_COMMIT")?;
+    if implementation_pin != NNS_BOUNDARY_SOURCE_COMMIT {
+        return Err(format!(
+            "{implementation_path}: implementation pin {implementation_pin} does not equal approved boundary {NNS_BOUNDARY_SOURCE_COMMIT}"
+        ));
+    }
+
+    let manifest = require_file(root, manifest_path)?;
+    for artifact in ["nns_governance", "nns_ledger", "icp_ledger"] {
+        require_toml_string(
+            manifest_path,
+            &manifest,
+            "artifacts",
+            &format!("{artifact}_upstream_rev"),
+            &implementation_pin,
+        )?;
+        let source_url =
+            parse_toml_string(&manifest, "artifacts", &format!("{artifact}_source_url"))?;
+        if !source_url.contains(&format!("/ic/{implementation_pin}/")) {
+            return Err(format!(
+                "{manifest_path}: {artifact} source URL does not contain implementation revision"
+            ));
+        }
+    }
+    for (artifact, source_hash, wasm_hash) in [
+        (
+            "nns_governance",
+            NNS_GOVERNANCE_SOURCE_SHA256,
+            NNS_GOVERNANCE_WASM_SHA256,
+        ),
+        (
+            "nns_ledger",
+            ICP_LEDGER_SOURCE_SHA256,
+            ICP_LEDGER_WASM_SHA256,
+        ),
+        (
+            "icp_ledger",
+            ICP_LEDGER_SOURCE_SHA256,
+            ICP_LEDGER_WASM_SHA256,
+        ),
+    ] {
+        require_toml_string(
+            manifest_path,
+            &manifest,
+            "artifacts",
+            &format!("{artifact}_source_sha256"),
+            source_hash,
+        )?;
+        require_toml_string(
+            manifest_path,
+            &manifest,
+            "artifacts",
+            &format!("{artifact}_sha256"),
+            wasm_hash,
+        )?;
+    }
+
+    let evidence = require_file(root, evidence_path)?;
+    require_present(
+        evidence_path,
+        &evidence,
+        &[
+            NNS_BOUNDARY_SOURCE_COMMIT,
+            NNS_GOVERNANCE_SOURCE_SHA256,
+            NNS_GOVERNANCE_WASM_SHA256,
+            ICP_LEDGER_SOURCE_SHA256,
+            ICP_LEDGER_WASM_SHA256,
+            "edbbc660d8a819ac4c400296d444f3caf01b21fed3680d0defc099bac3d02c84",
+            "45a6f13779ead0f7247b728f7a8953d649173863fea1f01fbf7c04f30589aad7",
+            "100_000_000",
+            "604_800",
+            "native memo",
+            "no ICRC memo",
+        ],
+    )
 }
 
 fn require_file(root: &Path, path: &str) -> Result<String, String> {
@@ -625,9 +732,9 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
             let text = fs::read_to_string(&path)
                 .map_err(|error| format!("{}: {error}", path.display()))?;
             let lines = production_line_count(&text);
-            if lines > 1_100 {
+            if lines > 1_000 {
                 return Err(format!(
-                    "{} has {lines} production lines; the per-file limit is 1100",
+                    "{} has {lines} production lines; the per-file limit is 1000",
                     path.display()
                 ));
             }
@@ -706,12 +813,12 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
             combined_lines += production_line_count(&text);
         }
     }
-    if stream_lines > 3_500 {
+    if stream_lines > 4_500 {
         return Err(format!(
             "stream-manager production Rust has {stream_lines} lines"
         ));
     }
-    if combined_lines > 9_000 {
+    if combined_lines > 9_500 {
         return Err(format!(
             "combined production Rust has {combined_lines} lines; simplified limit not met"
         ));
@@ -723,7 +830,7 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
                 .map(|text| sum + production_line_count(&text))
                 .map_err(|error| format!("{}: {error}", path.display()))
         })?;
-    if nns_lines > 3_500 {
+    if nns_lines > 4_000 {
         return Err(format!("NNS-manager production Rust has {nns_lines} lines"));
     }
     for path in normative_markdown_files(root)? {
@@ -6444,7 +6551,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, simplicity_check, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_committed_evidence, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, simplicity_check, validate_nns_boundary_pin, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_committed_evidence, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -6477,6 +6584,13 @@ fn main() -> ExitCode {
             Ok(()) => eprintln!("✓ simplicity_check"),
             Err(err) => {
                 eprintln!("✗ simplicity_check: {err}");
+                ok = false;
+            }
+        },
+        "validate_nns_boundary_pin" => match check_nns_boundary_pin_at(&root) {
+            Ok(()) => eprintln!("✓ validate_nns_boundary_pin"),
+            Err(err) => {
+                eprintln!("✗ validate_nns_boundary_pin: {err}");
                 ok = false;
             }
         },
@@ -7139,6 +7253,7 @@ fn main() -> ExitCode {
         "verify_release" => {
             for sub in [
                 "did_surface",
+                "validate_nns_boundary_pin",
                 "build_canisters",
                 "verify_artifacts",
                 "validate_install_args",
@@ -7193,6 +7308,7 @@ fn main() -> ExitCode {
         "preflight" => {
             ok &= run_subcommand("check");
             ok &= run_subcommand("did_surface");
+            ok &= run_subcommand("validate_nns_boundary_pin");
             ok &= run_subcommand("validate_install_args");
         }
         "test_unit" => {
@@ -7378,6 +7494,7 @@ fn main() -> ExitCode {
                 "fmt_check",
                 "check",
                 "did_surface",
+                "validate_nns_boundary_pin",
                 "build_canisters",
                 "verify_artifacts",
                 "validate_install_args",

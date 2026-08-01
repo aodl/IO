@@ -26,7 +26,8 @@ pub struct ExactIcpTransfer {
     pub to: Vec<u8>,
     pub amount_e8s: u128,
     pub fee_e8s: u128,
-    pub memo: Option<Vec<u8>>,
+    pub native_memo_u64: u64,
+    pub icrc1_memo: Option<Vec<u8>>,
     pub created_at_time: u64,
     pub spender: Option<Vec<u8>>,
 }
@@ -35,7 +36,8 @@ pub struct ExactIcpTransfer {
 pub struct ExactIcpMint {
     pub to: Vec<u8>,
     pub amount_e8s: u128,
-    pub memo: Option<Vec<u8>>,
+    pub native_memo_u64: u64,
+    pub icrc1_memo: Option<Vec<u8>>,
     pub created_at_time: u64,
 }
 
@@ -54,7 +56,8 @@ pub struct ExpectedQueryBlockTransfer<'a> {
     pub to: &'a [u8],
     pub amount_e8s: u128,
     pub fee_e8s: u128,
-    pub memo: Option<&'a [u8]>,
+    pub native_memo_u64: u64,
+    pub icrc1_memo: Option<&'a [u8]>,
     pub created_at_time: u64,
     pub spender: Option<&'a [u8]>,
 }
@@ -81,7 +84,8 @@ impl ExactIcpTransfer {
             && self.to == expected.to
             && self.amount_e8s == expected.amount_e8s
             && self.fee_e8s == expected.fee_e8s
-            && self.memo.as_deref() == expected.memo
+            && self.native_memo_u64 == expected.native_memo_u64
+            && self.icrc1_memo.as_deref() == expected.icrc1_memo
             && self.created_at_time == expected.created_at_time
             && self.spender.as_deref() == expected.spender
     }
@@ -92,12 +96,14 @@ impl ExactIcpMint {
         &self,
         to: &[u8],
         amount_e8s: u128,
-        memo: Option<&[u8]>,
+        native_memo_u64: u64,
+        icrc1_memo: Option<&[u8]>,
         created_at_time: u64,
     ) -> bool {
         self.to == to
             && self.amount_e8s == amount_e8s
-            && self.memo.as_deref() == memo
+            && self.native_memo_u64 == native_memo_u64
+            && self.icrc1_memo.as_deref() == icrc1_memo
             && self.created_at_time == created_at_time
     }
 }
@@ -247,6 +253,7 @@ struct IcpTimestamp {
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 struct IcpTransaction {
+    memo: u64,
     icrc1_memo: Option<Vec<u8>>,
     operation: Option<IcpOperation>,
     created_at_time: IcpTimestamp,
@@ -358,7 +365,8 @@ pub async fn exact_icp_block(
             }
         }
     };
-    let memo = block.transaction.icrc1_memo;
+    let native_memo_u64 = block.transaction.memo;
+    let icrc1_memo = block.transaction.icrc1_memo;
     let created_at_time = block.transaction.created_at_time.timestamp_nanos;
     match block.transaction.operation {
         Some(IcpOperation::Transfer {
@@ -372,14 +380,16 @@ pub async fn exact_icp_block(
             to,
             amount_e8s: amount.e8s.into(),
             fee_e8s: fee.e8s.into(),
-            memo,
+            native_memo_u64,
+            icrc1_memo,
             created_at_time,
             spender,
         })),
         Some(IcpOperation::Mint { to, amount }) => Ok(IcpExactResult::Mint(ExactIcpMint {
             to,
             amount_e8s: amount.e8s.into(),
-            memo,
+            native_memo_u64,
+            icrc1_memo,
             created_at_time,
         })),
         _ => Err("exact ICP block is neither Transfer nor Mint".into()),

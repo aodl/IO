@@ -64,6 +64,22 @@ type PrepareLiquidReceiptArgs = record {
 };
 type LiquidReceiptPermit = record { sequence : nat64; destination : Account; memo : blob };
 type CompleteLiquidReceiptArgs = record { receipt_sequence : nat64; block_index : nat };
+type RewardMember = record {
+  sns_neuron_id : blob;
+  account : Account;
+  frozen_stake_e8s : nat;
+  observed_stake_e8s : nat;
+  eligible_closed_proposals : nat64;
+  voted_closed_proposals : nat64;
+  destination_is_currently_eligible : bool;
+};
+type RewardCohort = record {
+  generation : nat64;
+  captured_at_timestamp_seconds : nat64;
+  closes_at_timestamp_seconds : nat64;
+  target_icp_e8s : nat;
+  members : vec RewardMember;
+};
 type JupiterReceiptResult = record {
   request_fingerprint : blob;
   receipt_block : nat;
@@ -114,6 +130,9 @@ type Status = record {
   operation_phase : opt text;
   next_nns_receipt_sequence : nat64;
   next_cohort_timestamp_seconds : nat64;
+  latest_cohort_generation : nat64;
+  has_active_reward_cohort : bool;
+  has_pending_reward_cohort : bool;
 };
 service : (InitArgs) -> {
   redeem : (RedeemArgs) -> (variant { Ok : RedemptionProgress; Err : ApiError });
@@ -121,6 +140,8 @@ service : (InitArgs) -> {
   complete_liquid_receipt : (CompleteLiquidReceiptArgs) -> (variant { Ok : LiquidReceiptProgress; Err : ApiError });
   resume : () -> (variant { Ok : StreamProgress; Err : ApiError });
   prove_active_transfer : (nat) -> (variant { Ok; Err : ApiError });
+  capture_reward_cohort : () -> (variant { Ok : RewardCohort; Err : ApiError });
+  close_reward_cohort : () -> (variant { Ok : RewardCohort; Err : ApiError });
   set_paused : (bool) -> (variant { Ok; Err : ApiError });
   get_status : () -> (Status) query;
   get_caller_redemption_state : () -> (variant { Ok : CallerRedemptionState; Err : ApiError }) query;

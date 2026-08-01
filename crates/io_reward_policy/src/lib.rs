@@ -50,6 +50,25 @@ pub struct RewardParticipant {
     pub destination_is_currently_eligible: bool,
 }
 
+pub fn participant_from_bytes(
+    sns_neuron_id: Vec<u8>,
+    frozen_stake_e8s: u128,
+    eligible_closed_proposals: u64,
+    voted_closed_proposals: u64,
+    destination_is_currently_eligible: bool,
+) -> Result<RewardParticipant, SnsNeuronIdConversionError> {
+    let sns_neuron_id = SnsNeuronId(sns_neuron_id);
+    let neuron_id = sns_neuron_id_to_u64(&sns_neuron_id)?;
+    Ok(RewardParticipant {
+        sns_neuron_id,
+        neuron_id,
+        frozen_stake_e8s,
+        eligible_closed_proposals,
+        voted_closed_proposals,
+        destination_is_currently_eligible,
+    })
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RewardAllocation {
     pub sns_neuron_id: SnsNeuronId,

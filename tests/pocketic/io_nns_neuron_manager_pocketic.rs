@@ -1,6 +1,7 @@
 use candid::{decode_one, encode_one, Principal};
 use io_nns_neuron_manager::{
     state::Account, ApiError, InitArgs, Lifecycle, NnsConfig, SetTwoWeekTargetArgs, Status,
+    TwoWeekTargetStatus,
 };
 use pocket_ic::PocketIc;
 
@@ -54,6 +55,7 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
                     owner: Principal::from_slice(&[3; 29]),
                     subaccount: None,
                 },
+                expected_io_fee_e8s: 10_000,
                 expected_icp_fee_e8s: 10_000,
                 jupiter_fee_float_e8s: 20_000,
                 two_week_fee_float_e8s: 10_000,
@@ -87,7 +89,7 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
     )
     .unwrap();
     assert_eq!(upgraded.lifecycle, Lifecycle::Paused);
-    let result: Result<(), ApiError> = decode_one(
+    let result: Result<TwoWeekTargetStatus, ApiError> = decode_one(
         &pic.update_call(
             canister,
             principal,

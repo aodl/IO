@@ -3,6 +3,7 @@ mod execution;
 pub mod jupiter;
 pub mod lifecycle;
 pub mod maturity;
+mod maturity_flow;
 pub mod pool;
 pub mod state;
 pub mod transfer;
@@ -15,7 +16,7 @@ pub use api::{
     SetTwoWeekTargetArgs, Status,
 };
 pub use maturity::MaturityKind;
-pub use state::{Lifecycle, NnsConfig, NnsStateV1};
+pub use state::{Lifecycle, NnsConfig, NnsStateV1, TwoWeekTargetStatus};
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 pub struct InitArgs {
@@ -57,8 +58,10 @@ pub async fn notify_jupiter_deposit(
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn set_two_week_target(args: SetTwoWeekTargetArgs) -> Result<(), ApiError> {
-    api::set_two_week_target(ic_cdk::api::msg_caller(), args)
+pub async fn set_two_week_target(
+    args: SetTwoWeekTargetArgs,
+) -> Result<TwoWeekTargetStatus, ApiError> {
+    api::set_two_week_target(ic_cdk::api::msg_caller(), args).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -74,6 +77,11 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<NnsProgress, Api
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub async fn start_maturity(kind: MaturityKind) -> Result<MaturityProgress, ApiError> {
     api::start_maturity(ic_cdk::api::msg_caller(), kind).await
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn resume_maturity(kind: MaturityKind) -> Result<MaturityProgress, ApiError> {
+    api::resume_maturity(kind).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]

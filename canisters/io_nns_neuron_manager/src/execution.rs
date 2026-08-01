@@ -6,6 +6,9 @@ use serde::Deserialize;
 use crate::{
     api::ApiError,
     jupiter::{NeuronSnapshot, StreamReceiptPermit},
+    maturity::{
+        CanonicalDisbursementEvidence, PendingMaturityDisbursement, DISBURSEMENT_DELAY_SECONDS,
+    },
     state::{Account, NnsConfig},
     transfer::NnsTransferIntent,
 };
@@ -26,7 +29,7 @@ struct GovernanceError {
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 struct Neuron {
-    id: u64,
+    id: Option<NeuronId>,
     account: Vec<u8>,
     cached_neuron_stake_e8s: u64,
     maturity_e8s_equivalent: u64,
@@ -151,7 +154,7 @@ pub async fn query_neuron_observation(
             error.error_type, error.error_message
         ))
     })?;
-    if neuron.id != neuron_id {
+    if neuron.id.as_ref().map(|id| id.id) != Some(neuron_id) {
         return Err(ApiError::Invalid(
             "NNS returned the wrong protected neuron".into(),
         ));
@@ -280,16 +283,20 @@ fn governance_error(method: &str, error: GovernanceError) -> ApiError {
     ))
 }
 
-pub fn exact_maturity_finalization(
+pub fn exact_maturity_disbursement(
     observation: &NeuronObservation,
     amount_e8s: u64,
     destination: &Account,
-) -> Result<u64, ApiError> {
+    submitted_at_seconds: u64,
+) -> Result<CanonicalDisbursementEvidence, ApiError> {
     let matching = observation
         .maturity_disbursements
         .iter()
         .filter(|entry| {
             entry.amount_e8s == Some(amount_e8s)
+                && entry
+                    .timestamp_of_disbursement_seconds
+                    .is_some_and(|timestamp| timestamp >= submitted_at_seconds)
                 && entry
                     .account_to_disburse_to
                     .as_ref()
@@ -310,11 +317,52 @@ pub fn exact_maturity_finalization(
         ));
     }
     let entry = matching[0];
-    let _started_at = entry.timestamp_of_disbursement_seconds;
-    entry
+    let initiated_at_seconds = entry
+        .timestamp_of_disbursement_seconds
+        .ok_or_else(|| ApiError::Invalid("maturity initiation timestamp is absent".into()))?;
+    let scheduled_finalization_timestamp_seconds = entry
         .finalize_disbursement_timestamp_seconds
         .filter(|timestamp| *timestamp > 0)
-        .ok_or_else(|| ApiError::Invalid("maturity finalization timestamp is absent".into()))
+        .ok_or_else(|| ApiError::Invalid("maturity finalization timestamp is absent".into()))?;
+    if scheduled_finalization_timestamp_seconds
+        != initiated_at_seconds
+            .checked_add(DISBURSEMENT_DELAY_SECONDS)
+            .ok_or_else(|| ApiError::Invalid("maturity finalization overflow".into()))?
+    {
+        return Err(ApiError::Invalid(
+            "maturity finalization is not the pinned seven-day delay".into(),
+        ));
+    }
+    Ok(CanonicalDisbursementEvidence {
+        initiated_at_seconds,
+        scheduled_finalization_timestamp_seconds,
+    })
+}
+
+pub fn has_exact_maturity_disbursement(
+    observation: &NeuronObservation,
+    amount_e8s: u64,
+    destination: &Account,
+    initiated_at_seconds: u64,
+    finalization_timestamp_seconds: u64,
+) -> bool {
+    observation.maturity_disbursements.iter().any(|entry| {
+        entry.amount_e8s == Some(amount_e8s)
+            && entry.timestamp_of_disbursement_seconds == Some(initiated_at_seconds)
+            && entry.finalize_disbursement_timestamp_seconds == Some(finalization_timestamp_seconds)
+            && entry
+                .account_to_disburse_to
+                .as_ref()
+                .is_some_and(|account| {
+                    account.owner == Some(destination.owner)
+                        && Account {
+                            owner: destination.owner,
+                            subaccount: account.subaccount.clone(),
+                        }
+                        .effective_eq(destination)
+                        .unwrap_or(false)
+                })
+    })
 }
 
 pub async fn submit_transfer(intent: &NnsTransferIntent) -> Result<IcrcTransferResult, String> {
@@ -336,6 +384,7 @@ pub async fn submit_transfer(intent: &NnsTransferIntent) -> Result<IcrcTransferR
 #[derive(Clone, Debug, CandidType, Deserialize)]
 enum ReceiptKind {
     Jupiter,
+    TwoWeekMaturity,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -372,12 +421,38 @@ enum StreamError {
     Stuck(String),
 }
 
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct JupiterReceiptResult {
+    pub request_fingerprint: Vec<u8>,
+    pub receipt_block: u128,
+    pub backed_io_e8s: u128,
+    pub io_transfer_block: u128,
+    pub io_fee_e8s: u128,
+    pub completed_at_nanos: u64,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct TwoWeekReceiptResult {
+    pub request_fingerprint: Vec<u8>,
+    pub receipt_block: u128,
+    pub backed_io_pool_e8s: u128,
+    pub distributed_io_e8s: u128,
+    pub dust_io_e8s: u128,
+    pub completed_at_nanos: u64,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub enum CompletedReceiptResult {
+    Jupiter(JupiterReceiptResult),
+    TwoWeek(TwoWeekReceiptResult),
+}
+
 #[derive(Clone, Debug, CandidType, Deserialize)]
 pub enum StreamLiquidProgress {
     AwaitingReceipt,
     ReceiptProved,
     Settling,
-    Completed(Reserved),
+    Completed(CompletedReceiptResult),
     Stuck(String),
 }
 
@@ -419,6 +494,111 @@ pub async fn prepare_jupiter_receipt(
     result.map_err(|error| ApiError::Invalid(format!("stream rejected receipt: {error:?}")))
 }
 
+fn two_week_source_operation_id(pending: &PendingMaturityDisbursement) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(
+        candid::encode_one((
+            pending.neuron_id,
+            pending.initiation_timestamp_seconds,
+            pending.scheduled_finalization_timestamp_seconds,
+            pending.nominal_disbursed_maturity_e8s,
+            &pending.destination,
+        ))
+        .expect("two-week source operation must encode"),
+    )
+    .to_vec()
+}
+
+fn two_week_request(
+    sequence: u64,
+    pending: &PendingMaturityDisbursement,
+    actual_minted_e8s: u128,
+) -> Result<PrepareLiquidReceiptArgs, ApiError> {
+    Ok(PrepareLiquidReceiptArgs {
+        receipt_sequence: sequence,
+        receipt_kind: ReceiptKind::TwoWeekMaturity,
+        source_operation_id: two_week_source_operation_id(pending),
+        liquid_amount_e8s: actual_minted_e8s,
+        cohort_generation: Some(pending.stake_evidence.plan.cohort_generation.ok_or_else(
+            || ApiError::Invalid("two-week maturity lacks cohort generation".into()),
+        )?),
+    })
+}
+
+pub async fn prepare_two_week_receipt(
+    config: &NnsConfig,
+    pending: &PendingMaturityDisbursement,
+    actual_minted_e8s: u128,
+) -> Result<StreamReceiptPermit, ApiError> {
+    let status: StreamStatus = Call::bounded_wait(config.stream_manager, "get_status")
+        .with_arg(())
+        .await
+        .map_err(|error| ApiError::Pending(format!("stream status query failed: {error:?}")))?
+        .candid()
+        .map_err(|error| ApiError::Invalid(format!("stream status decode failed: {error:?}")))?;
+    let request = two_week_request(status.next_nns_receipt_sequence, pending, actual_minted_e8s)?;
+    let result: Result<StreamReceiptPermit, StreamError> =
+        Call::bounded_wait(config.stream_manager, "prepare_liquid_receipt")
+            .with_arg(request)
+            .await
+            .map_err(|error| {
+                ApiError::Pending(format!(
+                    "two-week receipt prepare call ambiguous: {error:?}"
+                ))
+            })?
+            .candid()
+            .map_err(|error| {
+                ApiError::Invalid(format!("two-week receipt permit decode failed: {error:?}"))
+            })?;
+    result
+        .map_err(|error| ApiError::Invalid(format!("stream rejected two-week receipt: {error:?}")))
+}
+
+pub fn two_week_receipt_fingerprint(
+    sequence: u64,
+    pending: &PendingMaturityDisbursement,
+    actual_minted_e8s: u128,
+) -> Result<Vec<u8>, ApiError> {
+    use sha2::{Digest, Sha256};
+    let request = two_week_request(sequence, pending, actual_minted_e8s)?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"io-liquid-receipt-request-v1\0");
+    hasher.update(candid::encode_one(request).expect("two-week receipt request must encode"));
+    Ok(hasher.finalize().to_vec())
+}
+
+pub fn jupiter_receipt_fingerprint(
+    sequence: u64,
+    deposit_block: u128,
+    liquid_e8s: u128,
+) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    let request = PrepareLiquidReceiptArgs {
+        receipt_sequence: sequence,
+        receipt_kind: ReceiptKind::Jupiter,
+        source_operation_id: deposit_block.to_be_bytes().to_vec(),
+        liquid_amount_e8s: liquid_e8s,
+        cohort_generation: None,
+    };
+    let mut hasher = Sha256::new();
+    hasher.update(b"io-liquid-receipt-request-v1\0");
+    hasher.update(candid::encode_one(request).expect("Jupiter receipt request must encode"));
+    hasher.finalize().to_vec()
+}
+
+pub async fn icp_balance(config: &NnsConfig, account: &Account) -> Result<u128, ApiError> {
+    let balance: Nat = Call::bounded_wait(config.icp_ledger, "icrc1_balance_of")
+        .with_arg(account.clone())
+        .await
+        .map_err(|error| ApiError::Pending(format!("ICP balance query failed: {error:?}")))?
+        .candid()
+        .map_err(|error| ApiError::Invalid(format!("ICP balance decode failed: {error:?}")))?;
+    balance
+        .0
+        .try_into()
+        .map_err(|_| ApiError::Invalid("ICP balance does not fit u128".into()))
+}
+
 pub async fn complete_jupiter_receipt(
     config: &NnsConfig,
     permit: &StreamReceiptPermit,
@@ -439,6 +619,14 @@ pub async fn complete_jupiter_receipt(
                 ApiError::Invalid(format!("receipt completion decode failed: {error:?}"))
             })?;
     result.map_err(|error| ApiError::Invalid(format!("stream rejected receipt proof: {error:?}")))
+}
+
+pub async fn complete_two_week_receipt(
+    config: &NnsConfig,
+    permit: &StreamReceiptPermit,
+    block_index: u128,
+) -> Result<StreamLiquidProgress, ApiError> {
+    complete_jupiter_receipt(config, permit, block_index).await
 }
 
 pub async fn resume_stream(config: &NnsConfig) -> Result<StreamLiquidProgress, ApiError> {

@@ -1,22 +1,18 @@
 use candid::{CandidType, Nat, Principal};
 use io_ledger_boundary::{
-    exact_icp_block, exact_icp_transfer, icp_account_identifier, ExpectedQueryBlockTransfer,
-    IcpExactResult, IcrcTransferError, IcrcTransferResult,
+    exact_icp_transfer, icp_account_identifier, ExpectedQueryBlockTransfer, IcrcTransferError,
+    IcrcTransferResult,
 };
 use serde::Deserialize;
 
 use crate::{
     execution::{self, StreamLiquidProgress},
     jupiter::{
-        self, JupiterCompleted, JupiterDeposit, JupiterOperation, JupiterPhase,
+        self, JupiterCompleted, JupiterDeposit, JupiterOperation, JupiterPauseReason, JupiterPhase,
         JupiterStuckTransfer, LiquidTransferSucceeded, StakeIncreaseProof, StakeTransferSucceeded,
     },
-    maturity::{
-        AwaitingMintProof, CompletedMaturity, DisburseMaturitySucceeded, MaturityKind,
-        MaturityPhase, MaturityPlan, PendingMaturity,
-        StakeMaturitySucceeded as MaturityStakeSucceeded,
-    },
-    state::{self, Lifecycle, NnsOperation, TwoWeekTarget},
+    maturity::{CompletedMaturity, MaturityKind},
+    state::{self, Lifecycle, NnsOperation, TwoWeekTarget, TwoWeekTargetStatus},
     transfer::{NnsTransferAttempt, NnsTransferIntent, TransferState},
 };
 
@@ -31,6 +27,10 @@ pub enum ApiError {
     Invalid(String),
     Pending(String),
     Stuck(String),
+    BelowMaturityThreshold {
+        remaining_e8s: u64,
+        minimum_e8s: u64,
+    },
     ImplementationIncomplete(String),
 }
 
@@ -119,10 +119,7 @@ pub async fn notify_jupiter_deposit(
         }
         return Err(ApiError::Busy);
     }
-    if current.active_operation.is_some()
-        || current.pending_two_year_maturity.is_some()
-        || current.pending_two_week_maturity.is_some()
-    {
+    if current.active_operation.is_some() {
         return Err(ApiError::Busy);
     }
 
@@ -146,6 +143,17 @@ pub async fn notify_jupiter_deposit(
     }
     let (stake_e8s, liquid_e8s) =
         jupiter::checked_split(transfer.amount_e8s).map_err(ApiError::Invalid)?;
+    let staging_balance =
+        execution::icp_balance(&current.config, &current.config.jupiter_staging).await?;
+    let required_staging = transfer
+        .amount_e8s
+        .checked_add(current.config.jupiter_fee_float_e8s)
+        .ok_or_else(|| ApiError::Invalid("Jupiter staging preflight overflow".into()))?;
+    if staging_balance < required_staging {
+        return Err(ApiError::Invalid(format!(
+            "Jupiter staging balance {staging_balance} is below gross deposit plus fee float {required_staging}"
+        )));
+    }
 
     let mut latest = state::read();
     if latest.lifecycle != Lifecycle::Ready
@@ -175,7 +183,10 @@ pub async fn notify_jupiter_deposit(
     Ok(JupiterProgress::DepositProved)
 }
 
-pub fn set_two_week_target(caller: Principal, args: SetTwoWeekTargetArgs) -> Result<(), ApiError> {
+pub async fn set_two_week_target(
+    caller: Principal,
+    args: SetTwoWeekTargetArgs,
+) -> Result<TwoWeekTargetStatus, ApiError> {
     if caller != state::read().config.stream_manager {
         return Err(ApiError::Unauthorized);
     }
@@ -186,7 +197,7 @@ pub fn set_two_week_target(caller: Principal, args: SetTwoWeekTargetArgs) -> Res
         .ok_or_else(|| ApiError::Invalid("target generation overflow".into()))?;
     if args.generation == state.latest_target_generation {
         return match &state.latest_two_week_target {
-            Some(current) if current.target_e8s == args.target_e8s => Ok(()),
+            Some(current) if current.target_e8s == args.target_e8s => Ok(current.status),
             _ => Err(ApiError::Invalid(
                 "target generation conflicts with existing intent".into(),
             )),
@@ -197,32 +208,37 @@ pub fn set_two_week_target(caller: Principal, args: SetTwoWeekTargetArgs) -> Res
             "expected target generation {expected}"
         )));
     }
+    let observation =
+        execution::query_neuron_observation(&state.config, state.config.two_week_neuron_id).await?;
+    if state::read() != state {
+        return Err(ApiError::Busy);
+    }
+    let actual_cached_principal_e8s = observation.snapshot.cached_stake_e8s;
+    let status = crate::state::target_status(actual_cached_principal_e8s, args.target_e8s);
     state.latest_two_week_target = Some(TwoWeekTarget {
         generation: args.generation,
         target_e8s: args.target_e8s,
+        actual_cached_principal_e8s,
+        status,
     });
     state.latest_target_generation = args.generation;
     state::write(state);
-    Ok(())
+    Ok(status)
 }
 
 pub async fn resume() -> Result<NnsProgress, ApiError> {
-    let operation = match state::read().active_operation {
-        None => {
-            let snapshot = state::read();
-            if let Some(pending) = snapshot.pending_two_year_maturity {
-                return resume_maturity(pending).await.map(NnsProgress::Maturity);
-            }
-            if let Some(pending) = snapshot.pending_two_week_maturity {
-                return resume_maturity(pending).await.map(NnsProgress::Maturity);
-            }
-            return Ok(NnsProgress::Idle);
+    match state::read().active_operation {
+        None => return Ok(NnsProgress::Idle),
+        Some(NnsOperation::Jupiter(operation)) => {
+            return resume_jupiter(*operation).await.map(NnsProgress::Jupiter)
         }
-        Some(NnsOperation::Jupiter(operation)) => *operation,
-        Some(NnsOperation::PoolRebalance(_)) => return Ok(NnsProgress::PoolRebalance),
-    };
-    let progress = resume_jupiter(operation).await?;
-    Ok(NnsProgress::Jupiter(progress))
+        Some(NnsOperation::Maturity(operation)) => {
+            return crate::maturity_flow::resume_active(*operation)
+                .await
+                .map(NnsProgress::Maturity)
+        }
+        Some(NnsOperation::Unwind(_)) => return Ok(NnsProgress::PoolRebalance),
+    }
 }
 
 async fn resume_jupiter(operation: JupiterOperation) -> Result<JupiterProgress, ApiError> {
@@ -265,304 +281,106 @@ async fn resume_jupiter(operation: JupiterOperation) -> Result<JupiterProgress, 
         | JupiterPhase::AwaitingStreamSettlement(succeeded) => {
             observe_stream_settlement(operation, succeeded).await
         }
+        JupiterPhase::Stuck {
+            pause_reason: JupiterPauseReason::InsufficientFunds,
+            transfer: Some(transfer),
+            ..
+        } => resume_insufficient_transfer(operation, transfer).await,
         JupiterPhase::Stuck { reason, .. } => Ok(JupiterProgress::Stuck(reason)),
     }
+}
+
+async fn resume_insufficient_transfer(
+    mut operation: JupiterOperation,
+    transfer: JupiterStuckTransfer,
+) -> Result<JupiterProgress, ApiError> {
+    let expected = operation.clone();
+    let attempt = match &transfer {
+        JupiterStuckTransfer::Stake { attempt, .. }
+        | JupiterStuckTransfer::Liquid { attempt, .. } => attempt,
+    };
+    let account = crate::state::Account {
+        owner: ic_cdk::api::canister_self(),
+        subaccount: Some(attempt.intent.source_subaccount.to_vec()),
+    };
+    let config = state::read().config;
+    let balance = execution::icp_balance(&config, &account).await?;
+    ensure_exact_jupiter(&expected, &state::read())?;
+    let required = attempt
+        .intent
+        .amount_e8s
+        .checked_add(attempt.intent.fee_e8s)
+        .ok_or_else(|| ApiError::Invalid("Jupiter transfer funding requirement overflow".into()))?;
+    if balance < required {
+        return Ok(JupiterProgress::Stuck(format!(
+            "staging balance {balance} remains below immutable transfer requirement {required}"
+        )));
+    }
+    operation.phase = match transfer {
+        JupiterStuckTransfer::Stake {
+            before,
+            mut attempt,
+        } => {
+            attempt.state = TransferState::Prepared;
+            JupiterPhase::StakeTransferPrepared { before, attempt }
+        }
+        JupiterStuckTransfer::Liquid {
+            proof,
+            permit,
+            mut attempt,
+        } => {
+            attempt.state = TransferState::Prepared;
+            JupiterPhase::LiquidTransferPrepared {
+                proof,
+                permit,
+                attempt,
+            }
+        }
+    };
+    replace_jupiter(&expected, operation.clone())?;
+    Ok(jupiter_progress(&operation))
 }
 
 pub async fn start_maturity(
     caller: Principal,
     kind: MaturityKind,
 ) -> Result<MaturityProgress, ApiError> {
-    let snapshot = ready()?;
-    if caller != snapshot.config.sns_governance {
-        return Err(ApiError::Unauthorized);
-    }
-    if snapshot.active_operation.is_some()
-        || snapshot.pending_two_year_maturity.is_some()
-        || snapshot.pending_two_week_maturity.is_some()
-    {
-        return Err(ApiError::Busy);
-    }
-    let (neuron_id, destination) = maturity_identity(&snapshot.config, kind);
-    let observation = execution::query_neuron_observation(&snapshot.config, neuron_id).await?;
-    if observation.maturity_e8s == 0 {
-        return Err(ApiError::Invalid(
-            "protected neuron has no ordinary maturity".into(),
-        ));
-    }
-    let stake_maturity_e8s = observation
-        .maturity_e8s
-        .checked_mul(40)
-        .ok_or_else(|| ApiError::Invalid("maturity stake calculation overflow".into()))?
-        / 100;
-    if stake_maturity_e8s == 0 {
-        return Err(ApiError::Invalid(
-            "ordinary maturity is too small for 40% staking".into(),
-        ));
-    }
-    let mut latest = state::read();
-    if latest.lifecycle != Lifecycle::Ready
-        || latest.control_epoch != snapshot.control_epoch
-        || latest.active_operation.is_some()
-        || latest.pending_two_year_maturity.is_some()
-        || latest.pending_two_week_maturity.is_some()
-    {
-        return Err(ApiError::Busy);
-    }
-    let operation_sequence = latest.next_operation_sequence;
-    latest.next_operation_sequence = operation_sequence
-        .checked_add(1)
-        .ok_or_else(|| ApiError::Invalid("operation sequence exhausted".into()))?;
-    let pending = PendingMaturity {
-        operation_sequence,
-        dispatch_epoch: 0,
-        kind,
-        phase: MaturityPhase::Observed(MaturityPlan {
-            neuron: observation.snapshot,
-            original_maturity_e8s: observation.maturity_e8s,
-            original_staked_maturity_e8s: observation.staked_maturity_e8s,
-            stake_maturity_e8s,
-            destination,
-            requested_at_seconds: checked_now()? / 1_000_000_000,
-        }),
-    };
-    set_pending_maturity(&mut latest, pending);
-    state::write(latest);
-    Ok(MaturityProgress::Observed)
+    crate::maturity_flow::start(caller, kind).await
 }
 
-async fn resume_maturity(mut pending: PendingMaturity) -> Result<MaturityProgress, ApiError> {
-    match pending.phase.clone() {
-        MaturityPhase::Observed(plan) => {
-            let expected = pending.clone();
-            pending.dispatch_epoch = pending
-                .dispatch_epoch
-                .checked_add(1)
-                .ok_or_else(|| ApiError::Invalid("maturity dispatch epoch exhausted".into()))?;
-            pending.phase = MaturityPhase::StakeMaturitySubmitted(plan.clone());
-            replace_pending_maturity(&expected, pending.clone())?;
-            let result = execution::stake_maturity(&state::read().config, plan.neuron.neuron_id).await;
-            if !pending_maturity_equals(&pending) {
-                return Ok(crate::maturity::progress(&pending));
-            }
-            let (remaining_maturity_e8s, staked_maturity_e8s) = match result {
-                Ok(value) => value,
-                Err(error) => {
-                    let reason = format!("StakeMaturity outcome is ambiguous: {error:?}");
-                    let expected = pending.clone();
-                    pending.phase = MaturityPhase::Stuck {
-                        reason: reason.clone(),
-                        plan: Box::new(plan),
-                    };
-                    replace_pending_maturity(&expected, pending)?;
-                    let mut latest = state::read();
-                    latest.lifecycle = Lifecycle::Paused;
-                    state::write(latest);
-                    return Err(ApiError::Stuck(reason));
-                }
-            };
-            let expected_remaining = plan
-                .original_maturity_e8s
-                .checked_sub(plan.stake_maturity_e8s)
-                .ok_or_else(|| ApiError::Invalid("maturity split underflow".into()))?;
-            let expected_staked = plan
-                .original_staked_maturity_e8s
-                .checked_add(plan.stake_maturity_e8s)
-                .ok_or_else(|| ApiError::Invalid("staked maturity overflow".into()))?;
-            if remaining_maturity_e8s != expected_remaining || staked_maturity_e8s != expected_staked {
-                let reason = format!(
-                    "ordinary maturity drifted during StakeMaturity: expected remaining {expected_remaining} and staked {expected_staked}, observed {remaining_maturity_e8s} and {staked_maturity_e8s}"
-                );
-                let expected = pending.clone();
-                pending.phase = MaturityPhase::Stuck {
-                    reason: reason.clone(),
-                    plan: Box::new(plan),
-                };
-                replace_pending_maturity(&expected, pending)?;
-                let mut latest = state::read();
-                latest.lifecycle = Lifecycle::Paused;
-                state::write(latest);
-                return Err(ApiError::Stuck(reason));
-            }
-            let expected = pending.clone();
-            pending.phase = MaturityPhase::StakeMaturitySucceeded(MaturityStakeSucceeded {
-                plan,
-                remaining_maturity_e8s,
-                staked_maturity_e8s,
-            });
-            replace_pending_maturity(&expected, pending)?;
-            Ok(MaturityProgress::StakeMaturitySucceeded)
-        }
-        MaturityPhase::StakeMaturitySubmitted(_) => Err(ApiError::Pending(
-            "StakeMaturity response was ambiguous; exact governance review is required".into(),
-        )),
-        MaturityPhase::StakeMaturitySucceeded(stake) => {
-            let expected = pending.clone();
-            pending.dispatch_epoch = pending
-                .dispatch_epoch
-                .checked_add(1)
-                .ok_or_else(|| ApiError::Invalid("maturity dispatch epoch exhausted".into()))?;
-            pending.phase = MaturityPhase::DisburseMaturitySubmitted(stake.clone());
-            replace_pending_maturity(&expected, pending.clone())?;
-            let result = execution::disburse_maturity(
-                &state::read().config,
-                stake.plan.neuron.neuron_id,
-                &stake.plan.destination,
-            )
-            .await;
-            if !pending_maturity_equals(&pending) {
-                return Ok(crate::maturity::progress(&pending));
-            }
-            let amount = match result {
-                Ok(value) => value,
-                Err(error) => {
-                    let reason = format!("DisburseMaturity outcome is ambiguous: {error:?}");
-                    let expected = pending.clone();
-                    pending.phase = MaturityPhase::Stuck {
-                        reason: reason.clone(),
-                        plan: Box::new(stake.plan),
-                    };
-                    replace_pending_maturity(&expected, pending)?;
-                    let mut latest = state::read();
-                    latest.lifecycle = Lifecycle::Paused;
-                    state::write(latest);
-                    return Err(ApiError::Stuck(reason));
-                }
-            };
-            let expected = pending.clone();
-            pending.phase = MaturityPhase::DisburseMaturitySucceeded(
-                DisburseMaturitySucceeded {
-                    stake,
-                    amount_disbursed_e8s: amount,
-                },
-            );
-            replace_pending_maturity(&expected, pending)?;
-            Ok(MaturityProgress::DisburseMaturitySucceeded)
-        }
-        MaturityPhase::DisburseMaturitySubmitted(_) => Err(ApiError::Pending(
-            "DisburseMaturity response was ambiguous; inspect the exact neuron before a forward fix"
-                .into(),
-        )),
-        MaturityPhase::DisburseMaturitySucceeded(disbursement) => {
-            let observation = execution::query_neuron_observation(
-                &state::read().config,
-                disbursement.stake.plan.neuron.neuron_id,
-            )
-            .await?;
-            if !pending_maturity_equals(&pending) {
-                return Ok(crate::maturity::progress(&pending));
-            }
-            let finalization = execution::exact_maturity_finalization(
-                &observation,
-                disbursement.amount_disbursed_e8s,
-                &disbursement.stake.plan.destination,
-            )?;
-            let expected = pending.clone();
-            pending.phase = MaturityPhase::AwaitingMintProof(AwaitingMintProof {
-                stake: disbursement.stake,
-                amount_disbursed_e8s: disbursement.amount_disbursed_e8s,
-                expected_finalization_timestamp_seconds: finalization,
-            });
-            replace_pending_maturity(&expected, pending)?;
-            Ok(MaturityProgress::AwaitingMintProof)
-        }
-        MaturityPhase::AwaitingMintProof(_) => Ok(MaturityProgress::AwaitingMintProof),
-        MaturityPhase::MintProved { .. } => Ok(MaturityProgress::MintProved),
-        MaturityPhase::DeliveringTwoWeekReceipt { .. } => {
-            Ok(MaturityProgress::DeliveringTwoWeekReceipt)
-        }
-        MaturityPhase::Stuck { reason, .. } => Ok(MaturityProgress::Stuck(reason)),
-    }
+pub async fn resume_maturity(kind: MaturityKind) -> Result<MaturityProgress, ApiError> {
+    crate::maturity_flow::resume_kind(kind).await
 }
 
 pub async fn prove_maturity_mint(
     kind: MaturityKind,
     block_index: u128,
 ) -> Result<MaturityProgress, ApiError> {
-    let mut pending = pending_maturity(kind)
-        .ok_or_else(|| ApiError::Invalid("no pending maturity proof slot".into()))?;
-    let proof = match pending.phase.clone() {
-        MaturityPhase::AwaitingMintProof(proof) => proof,
-        _ => {
-            return Err(ApiError::Invalid(
-                "maturity is not awaiting an exact Mint proof".into(),
-            ))
-        }
-    };
-    let exact = exact_icp_block(state::read().config.icp_ledger, block_index)
-        .await
-        .map_err(ApiError::Invalid)?;
-    if !pending_maturity_equals(&pending) {
-        return Err(ApiError::Busy);
-    }
-    let mint = match exact {
-        IcpExactResult::Mint(mint) => mint,
-        IcpExactResult::Transfer(_) => {
-            return Err(ApiError::Invalid(
-                "maturity proof block is not an ICP Mint".into(),
-            ))
-        }
-    };
-    let destination =
-        icp_account_identifier(&proof.stake.plan.destination).map_err(ApiError::Invalid)?;
-    if mint.to != destination
-        || mint.amount_e8s != u128::from(proof.amount_disbursed_e8s)
-        || mint.amount_e8s == 0
-        || mint.created_at_time / 1_000_000_000 < proof.stake.plan.requested_at_seconds
-    {
-        return Err(ApiError::Invalid(
-            "exact Mint does not match pending maturity".into(),
-        ));
-    }
-    if kind == MaturityKind::TwoWeek {
-        let expected = pending.clone();
-        pending.phase = MaturityPhase::DeliveringTwoWeekReceipt {
-            proof,
-            mint_block: block_index,
-            actual_minted_e8s: mint.amount_e8s,
-        };
-        replace_pending_maturity(&expected, pending)?;
-        return Ok(MaturityProgress::DeliveringTwoWeekReceipt);
-    }
-    let completed = CompletedMaturity {
-        kind,
-        neuron_id: proof.stake.plan.neuron.neuron_id,
-        mint_block: block_index,
-        actual_minted_e8s: mint.amount_e8s,
-        destination: proof.stake.plan.destination,
-        completed_at_nanos: checked_now()?,
-    };
-    let mut latest = state::read();
-    if pending_maturity_from(&latest, kind).as_ref() != Some(&pending) {
-        return Err(ApiError::Busy);
-    }
-    latest.pending_two_year_maturity = None;
-    latest.last_two_year_maturity = Some(completed.clone());
-    state::write(latest);
-    Ok(MaturityProgress::Completed(completed))
+    crate::maturity_flow::prove_mint(kind, block_index).await
 }
 
 async fn prepare_stake_transfer(
     mut operation: JupiterOperation,
 ) -> Result<JupiterProgress, ApiError> {
-    let snapshot = state::read();
-    let before =
-        execution::query_neuron(&snapshot.config, snapshot.config.two_year_neuron_id).await?;
-    if before.neuron_id != snapshot.config.two_year_neuron_id {
+    let expected = operation.clone();
+    let config = state::read().config;
+    let before = execution::query_neuron(&config, config.two_year_neuron_id).await?;
+    let latest = state::read();
+    ensure_exact_jupiter(&expected, &latest)?;
+    if before.neuron_id != latest.config.two_year_neuron_id {
         return Err(ApiError::Invalid("wrong Jupiter protected neuron".into()));
     }
-    ensure_exact_jupiter(&operation, &snapshot)?;
     let intent = NnsTransferIntent {
-        ledger: snapshot.config.icp_ledger,
-        source_subaccount: snapshot
+        ledger: latest.config.icp_ledger,
+        source_subaccount: latest
             .config
             .jupiter_staging
             .canonical()
             .map(|account| account.subaccount)
             .map_err(ApiError::Invalid)?,
-        destination: execution::staking_account(&snapshot.config, &before),
+        destination: execution::staking_account(&latest.config, &before),
         amount_e8s: operation.deposit.stake_e8s,
-        fee_e8s: snapshot.config.expected_icp_fee_e8s,
+        fee_e8s: latest.config.expected_icp_fee_e8s,
         memo: b"IO:JUPITER:STAKE".to_vec(),
         created_at_time_nanos: checked_now()?,
     };
@@ -570,7 +388,7 @@ async fn prepare_stake_transfer(
         before,
         attempt: NnsTransferAttempt::prepared(intent).map_err(ApiError::Invalid)?,
     };
-    write_exact_jupiter(&operation)?;
+    replace_jupiter(&expected, operation)?;
     Ok(JupiterProgress::StakeTransferPrepared)
 }
 
@@ -580,6 +398,7 @@ async fn submit_jupiter_transfer(
     liquid: Option<(StakeIncreaseProof, jupiter::StreamReceiptPermit)>,
     mut attempt: NnsTransferAttempt,
 ) -> Result<JupiterProgress, ApiError> {
+    let expected = operation.clone();
     let now = checked_now()?;
     let snapshot = state::read();
     ensure_exact_jupiter(&operation, &snapshot)?;
@@ -601,11 +420,17 @@ async fn submit_jupiter_transfer(
         _ => return Err(ApiError::Invalid("transfer is not dispatchable".into())),
     };
     if now >= deadline {
+        let proof_allowed = matches!(attempt.state, TransferState::Submitted { .. });
         attempt.state = TransferState::Stuck {
             reason: "immutable ICP transfer intent reached its deduplication deadline".into(),
         };
         operation.phase = JupiterPhase::Stuck {
             reason: "Jupiter ICP transfer requires exact block proof".into(),
+            pause_reason: if proof_allowed {
+                JupiterPauseReason::AmbiguousPossibleEffect
+            } else {
+                JupiterPauseReason::Other
+            },
             transfer: Some(match liquid {
                 Some((proof, permit)) => JupiterStuckTransfer::Liquid {
                     proof,
@@ -615,7 +440,7 @@ async fn submit_jupiter_transfer(
                 None => JupiterStuckTransfer::Stake { before, attempt },
             }),
         };
-        pause_and_write_exact_jupiter(&operation)?;
+        pause_and_replace_jupiter(&expected, operation)?;
         return Ok(JupiterProgress::Stuck(
             "Jupiter ICP transfer requires exact block proof".into(),
         ));
@@ -647,21 +472,21 @@ async fn submit_jupiter_transfer(
             attempt: attempt.clone(),
         },
     };
-    write_exact_jupiter(&operation)?;
+    replace_jupiter(&expected, operation.clone())?;
     let submitted = operation.clone();
     let result = execution::submit_transfer(&attempt.intent).await;
     if !active_jupiter_equals(&submitted) {
-        return Ok(jupiter_progress(&submitted));
+        return Err(ApiError::Busy);
     }
-    let block = match classify_transfer_result(result) {
-        Ok(value) => value,
-        Err(error) => {
-            let reason = format!("Jupiter ICP transfer requires exact review: {error:?}");
+    let block = match classify_transfer_result(result)? {
+        TransferOutcome::Succeeded(block) => block,
+        TransferOutcome::AmbiguousPossibleEffect(reason) => {
             attempt.state = TransferState::Stuck {
                 reason: reason.clone(),
             };
             operation.phase = JupiterPhase::Stuck {
                 reason: reason.clone(),
+                pause_reason: JupiterPauseReason::AmbiguousPossibleEffect,
                 transfer: Some(match liquid {
                     Some((proof, permit)) => JupiterStuckTransfer::Liquid {
                         proof,
@@ -671,14 +496,31 @@ async fn submit_jupiter_transfer(
                     None => JupiterStuckTransfer::Stake { before, attempt },
                 }),
             };
-            pause_and_write_exact_jupiter(&operation)?;
+            pause_and_replace_jupiter(&submitted, operation)?;
+            return Err(ApiError::Pending(reason));
+        }
+        TransferOutcome::RejectedNoEffect {
+            reason,
+            pause_reason,
+        } => {
+            attempt.state = TransferState::Stuck {
+                reason: reason.clone(),
+            };
+            operation.phase = JupiterPhase::Stuck {
+                reason: reason.clone(),
+                pause_reason,
+                transfer: Some(match liquid {
+                    Some((proof, permit)) => JupiterStuckTransfer::Liquid {
+                        proof,
+                        permit,
+                        attempt,
+                    },
+                    None => JupiterStuckTransfer::Stake { before, attempt },
+                }),
+            };
+            pause_and_replace_jupiter(&submitted, operation)?;
             return Err(ApiError::Stuck(reason));
         }
-    };
-    let Some(block) = block else {
-        return Err(ApiError::Pending(
-            "identical ICP intent remains retryable".into(),
-        ));
     };
     attempt.state = TransferState::Succeeded { block };
     operation.phase = match liquid {
@@ -692,7 +534,7 @@ async fn submit_jupiter_transfer(
             block_index: block,
         }),
     };
-    write_exact_jupiter(&operation)?;
+    replace_jupiter(&submitted, operation.clone())?;
     Ok(jupiter_progress(&operation))
 }
 
@@ -700,26 +542,24 @@ async fn refresh(
     mut operation: JupiterOperation,
     succeeded: StakeTransferSucceeded,
 ) -> Result<JupiterProgress, ApiError> {
+    let expected = operation.clone();
     operation.dispatch_epoch = operation
         .dispatch_epoch
         .checked_add(1)
         .ok_or_else(|| ApiError::Invalid("dispatch epoch exhausted".into()))?;
     operation.phase = JupiterPhase::RefreshSubmitted(succeeded.clone());
-    write_exact_jupiter(&operation)?;
+    replace_jupiter(&expected, operation.clone())?;
     let submitted = operation.clone();
     let config = state::read().config;
     let result = execution::refresh_neuron(&config, succeeded.before.neuron_id).await;
     if !active_jupiter_equals(&submitted) {
-        return Ok(jupiter_progress(&submitted));
+        return Err(ApiError::Busy);
     }
     if let Err(error) = result {
-        let reason = format!("claim/refresh requires operator review: {error:?}");
-        operation.phase = JupiterPhase::Stuck {
-            reason: reason.clone(),
-            transfer: None,
-        };
-        pause_and_write_exact_jupiter(&operation)?;
-        return Err(ApiError::Stuck(reason));
+        pause_exact_jupiter(&submitted)?;
+        return Err(ApiError::Pending(format!(
+            "claim/refresh outcome requires canonical neuron observation: {error:?}"
+        )));
     }
     Ok(JupiterProgress::RefreshSubmitted)
 }
@@ -728,6 +568,7 @@ async fn prove_stake_increase(
     mut operation: JupiterOperation,
     succeeded: StakeTransferSucceeded,
 ) -> Result<JupiterProgress, ApiError> {
+    let expected = operation.clone();
     let snapshot = state::read();
     let after = execution::query_neuron(&snapshot.config, succeeded.before.neuron_id).await?;
     ensure_exact_jupiter(&operation, &state::read())?;
@@ -741,9 +582,10 @@ async fn prove_stake_increase(
             "protected neuron cached stake did not increase by the exact 40% deposit".into();
         operation.phase = JupiterPhase::Stuck {
             reason: reason.clone(),
+            pause_reason: JupiterPauseReason::RefreshUnconfirmed,
             transfer: None,
         };
-        pause_and_write_exact_jupiter(&operation)?;
+        pause_and_replace_jupiter(&expected, operation)?;
         return Err(ApiError::Stuck(reason));
     }
     operation.phase = JupiterPhase::StakeIncreaseProved(StakeIncreaseProof {
@@ -751,7 +593,7 @@ async fn prove_stake_increase(
         after_cached_stake_e8s: after.cached_stake_e8s,
         stake_transfer_block: succeeded.block_index,
     });
-    write_exact_jupiter(&operation)?;
+    replace_jupiter(&expected, operation.clone())?;
     Ok(JupiterProgress::StakeIncreaseProved)
 }
 
@@ -759,6 +601,7 @@ async fn prepare_receipt(
     mut operation: JupiterOperation,
     proof: StakeIncreaseProof,
 ) -> Result<JupiterProgress, ApiError> {
+    let expected = operation.clone();
     let config = state::read().config;
     let permit = execution::prepare_jupiter_receipt(
         &config,
@@ -777,7 +620,7 @@ async fn prepare_receipt(
         ));
     }
     operation.phase = JupiterPhase::ReceiptPermitPrepared { proof, permit };
-    write_exact_jupiter(&operation)?;
+    replace_jupiter(&expected, operation.clone())?;
     Ok(JupiterProgress::ReceiptPermitPrepared)
 }
 
@@ -786,6 +629,7 @@ fn prepare_liquid_transfer(
     proof: StakeIncreaseProof,
     permit: jupiter::StreamReceiptPermit,
 ) -> Result<JupiterProgress, ApiError> {
+    let expected = operation.clone();
     let config = state::read().config;
     let intent = NnsTransferIntent {
         ledger: config.icp_ledger,
@@ -805,7 +649,7 @@ fn prepare_liquid_transfer(
         permit,
         attempt: NnsTransferAttempt::prepared(intent).map_err(ApiError::Invalid)?,
     };
-    write_exact_jupiter(&operation)?;
+    replace_jupiter(&expected, operation.clone())?;
     Ok(JupiterProgress::LiquidTransferPrepared)
 }
 
@@ -813,12 +657,13 @@ async fn complete_receipt(
     mut operation: JupiterOperation,
     succeeded: LiquidTransferSucceeded,
 ) -> Result<JupiterProgress, ApiError> {
+    let expected = operation.clone();
     operation.dispatch_epoch = operation
         .dispatch_epoch
         .checked_add(1)
         .ok_or_else(|| ApiError::Invalid("dispatch epoch exhausted".into()))?;
     operation.phase = JupiterPhase::ReceiptCompletionSubmitted(succeeded.clone());
-    write_exact_jupiter(&operation)?;
+    replace_jupiter(&expected, operation.clone())?;
     let submitted = operation.clone();
     let progress = execution::complete_jupiter_receipt(
         &state::read().config,
@@ -827,14 +672,13 @@ async fn complete_receipt(
     )
     .await?;
     if !active_jupiter_equals(&submitted) {
-        return Ok(jupiter_progress(&submitted));
+        return Err(ApiError::Busy);
     }
     operation.phase = JupiterPhase::AwaitingStreamSettlement(succeeded.clone());
-    write_exact_jupiter(&operation)?;
-    if matches!(progress, StreamLiquidProgress::Completed(_)) {
-        finish_jupiter(operation, succeeded)
-    } else {
-        Ok(JupiterProgress::AwaitingStreamSettlement)
+    replace_jupiter(&submitted, operation.clone())?;
+    match progress {
+        StreamLiquidProgress::Completed(result) => finish_jupiter(operation, succeeded, result),
+        _ => Ok(JupiterProgress::AwaitingStreamSettlement),
     }
 }
 
@@ -845,7 +689,7 @@ async fn observe_stream_settlement(
     let progress = execution::resume_stream(&state::read().config).await?;
     ensure_exact_jupiter(&operation, &state::read())?;
     match progress {
-        StreamLiquidProgress::Completed(_) => finish_jupiter(operation, succeeded),
+        StreamLiquidProgress::Completed(result) => finish_jupiter(operation, succeeded, result),
         StreamLiquidProgress::Stuck(reason) => Err(ApiError::Stuck(reason)),
         _ => Ok(JupiterProgress::AwaitingStreamSettlement),
     }
@@ -854,7 +698,32 @@ async fn observe_stream_settlement(
 fn finish_jupiter(
     operation: JupiterOperation,
     succeeded: LiquidTransferSucceeded,
+    completed: execution::CompletedReceiptResult,
 ) -> Result<JupiterProgress, ApiError> {
+    let stream = match completed {
+        execution::CompletedReceiptResult::Jupiter(result) => result,
+        execution::CompletedReceiptResult::TwoWeek(_) => {
+            return Err(ApiError::Invalid(
+                "stream completed the wrong receipt kind for Jupiter".into(),
+            ))
+        }
+    };
+    let expected_fingerprint = execution::jupiter_receipt_fingerprint(
+        succeeded.permit.sequence,
+        operation.deposit.block_index,
+        operation.deposit.liquid_e8s,
+    );
+    if stream.request_fingerprint != expected_fingerprint
+        || stream.receipt_block != succeeded.block_index
+        || stream.backed_io_e8s == 0
+        || stream.io_transfer_block == 0
+        || stream.io_fee_e8s != state::read().config.expected_io_fee_e8s
+        || stream.completed_at_nanos == 0
+    {
+        return Err(ApiError::Invalid(
+            "stream Jupiter completion evidence does not match the exact receipt".into(),
+        ));
+    }
     ensure_exact_jupiter(&operation, &state::read())?;
     let result = JupiterCompleted {
         deposit_block: operation.deposit.block_index,
@@ -864,6 +733,10 @@ fn finish_jupiter(
         stake_transfer_block: succeeded.proof.stake_transfer_block,
         liquid_transfer_block: succeeded.block_index,
         stream_receipt_sequence: succeeded.permit.sequence,
+        backed_io_e8s: stream.backed_io_e8s,
+        io_transfer_block: stream.io_transfer_block,
+        io_fee_e8s: stream.io_fee_e8s,
+        stream_receipt_fingerprint: stream.request_fingerprint,
         completed_at_nanos: checked_now()?,
     };
     state::record_processed_jupiter(result.clone()).map_err(ApiError::Invalid)?;
@@ -883,8 +756,10 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<NnsProgress, Api
             ))
         }
     };
+    let expected = operation.clone();
     let (context, attempt) = match operation.phase.clone() {
         JupiterPhase::Stuck {
+            pause_reason: JupiterPauseReason::AmbiguousPossibleEffect,
             transfer: Some(transfer),
             ..
         } => match transfer {
@@ -897,7 +772,7 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<NnsProgress, Api
         },
         _ => {
             return Err(ApiError::Invalid(
-                "active operation is not a Stuck transfer".into(),
+                "active operation is not an ambiguous possible-effect transfer".into(),
             ))
         }
     };
@@ -916,7 +791,8 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<NnsProgress, Api
         to: &to,
         amount_e8s: attempt.1.intent.amount_e8s,
         fee_e8s: attempt.1.intent.fee_e8s,
-        memo: Some(&attempt.1.intent.memo),
+        native_memo_u64: 0,
+        icrc1_memo: Some(&attempt.1.intent.memo),
         created_at_time: attempt.1.intent.created_at_time_nanos,
         spender: None,
     }) {
@@ -935,20 +811,53 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<NnsProgress, Api
             block_index,
         }),
     };
-    write_exact_jupiter(&operation)?;
+    replace_jupiter(&expected, operation.clone())?;
     Ok(NnsProgress::Jupiter(jupiter_progress(&operation)))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TransferOutcome {
+    Succeeded(u128),
+    AmbiguousPossibleEffect(String),
+    RejectedNoEffect {
+        reason: String,
+        pause_reason: JupiterPauseReason,
+    },
 }
 
 fn classify_transfer_result(
     result: Result<IcrcTransferResult, String>,
-) -> Result<Option<u128>, ApiError> {
+) -> Result<TransferOutcome, ApiError> {
     match result {
-        Ok(Ok(block)) => nat_to_u128(block).map(Some).map_err(ApiError::Invalid),
-        Ok(Err(IcrcTransferError::Duplicate { duplicate_of })) => nat_to_u128(duplicate_of)
-            .map(Some)
+        Ok(Ok(block)) => nat_to_u128(block)
+            .map(TransferOutcome::Succeeded)
             .map_err(ApiError::Invalid),
-        Err(_) | Ok(Err(IcrcTransferError::TemporarilyUnavailable)) => Ok(None),
-        Ok(Err(error)) => Err(ApiError::Stuck(format!("ICP transfer rejected: {error:?}"))),
+        Ok(Err(IcrcTransferError::Duplicate { duplicate_of })) => nat_to_u128(duplicate_of)
+            .map(TransferOutcome::Succeeded)
+            .map_err(ApiError::Invalid),
+        Err(error) => Ok(TransferOutcome::AmbiguousPossibleEffect(format!(
+            "ICP transfer callback is ambiguous: {error}"
+        ))),
+        Ok(Err(IcrcTransferError::BadFee { expected_fee })) => {
+            Ok(TransferOutcome::RejectedNoEffect {
+                reason: format!(
+                    "ICP transfer rejected BadFee; approved fee update required (ledger expected {expected_fee})"
+                ),
+                pause_reason: JupiterPauseReason::BadFee,
+            })
+        }
+        Ok(Err(IcrcTransferError::InsufficientFunds { balance })) => {
+            Ok(TransferOutcome::RejectedNoEffect {
+                reason: format!(
+                    "ICP transfer rejected InsufficientFunds; replenish exact staging Account (balance {balance})"
+                ),
+                pause_reason: JupiterPauseReason::InsufficientFunds,
+            })
+        }
+        Ok(Err(error)) => Ok(TransferOutcome::RejectedNoEffect {
+            reason: format!("ICP transfer rejected without effect: {error:?}"),
+            pause_reason: JupiterPauseReason::Other,
+        }),
     }
 }
 
@@ -968,65 +877,6 @@ fn checked_now() -> Result<u64, ApiError> {
     }
 }
 
-fn maturity_identity(
-    config: &crate::state::NnsConfig,
-    kind: MaturityKind,
-) -> (u64, crate::state::Account) {
-    match kind {
-        MaturityKind::TwoYear => (
-            config.two_year_neuron_id,
-            config.stream_liquid_account.clone(),
-        ),
-        MaturityKind::TwoWeek => (
-            config.two_week_neuron_id,
-            config.two_week_maturity_staging.clone(),
-        ),
-    }
-}
-
-fn pending_maturity(kind: MaturityKind) -> Option<PendingMaturity> {
-    pending_maturity_from(&state::read(), kind)
-}
-
-fn pending_maturity_from(
-    state: &crate::state::NnsStateV1,
-    kind: MaturityKind,
-) -> Option<PendingMaturity> {
-    match kind {
-        MaturityKind::TwoYear => state.pending_two_year_maturity.clone(),
-        MaturityKind::TwoWeek => state.pending_two_week_maturity.clone(),
-    }
-}
-
-fn set_pending_maturity(state: &mut crate::state::NnsStateV1, pending: PendingMaturity) {
-    match pending.kind {
-        MaturityKind::TwoYear => state.pending_two_year_maturity = Some(pending),
-        MaturityKind::TwoWeek => state.pending_two_week_maturity = Some(pending),
-    }
-}
-
-fn replace_pending_maturity(
-    expected: &PendingMaturity,
-    replacement: PendingMaturity,
-) -> Result<(), ApiError> {
-    if expected.kind != replacement.kind {
-        return Err(ApiError::Invalid(
-            "maturity kind changed during transition".into(),
-        ));
-    }
-    let mut latest = state::read();
-    if pending_maturity_from(&latest, expected.kind).as_ref() != Some(expected) {
-        return Err(ApiError::Busy);
-    }
-    set_pending_maturity(&mut latest, replacement);
-    state::write(latest);
-    Ok(())
-}
-
-fn pending_maturity_equals(expected: &PendingMaturity) -> bool {
-    pending_maturity(expected.kind).as_ref() == Some(expected)
-}
-
 fn ensure_exact_jupiter(
     operation: &JupiterOperation,
     state: &crate::state::NnsStateV1,
@@ -1044,22 +894,47 @@ fn active_jupiter_equals(operation: &JupiterOperation) -> bool {
     )
 }
 
-fn write_exact_jupiter(operation: &JupiterOperation) -> Result<(), ApiError> {
+fn replace_jupiter(
+    expected: &JupiterOperation,
+    replacement: JupiterOperation,
+) -> Result<(), ApiError> {
     let mut latest = state::read();
     match &latest.active_operation {
-        Some(NnsOperation::Jupiter(active))
-            if active.operation_sequence == operation.operation_sequence
-                && active.deposit.block_index == operation.deposit.block_index => {}
+        Some(NnsOperation::Jupiter(active)) if **active == *expected => {}
         _ => return Err(ApiError::Busy),
     }
-    latest.active_operation = Some(NnsOperation::Jupiter(Box::new(operation.clone())));
+    replacement
+        .validate(latest.config.icp_ledger, latest.config.nns_governance)
+        .map_err(ApiError::Invalid)?;
+    latest.active_operation = Some(NnsOperation::Jupiter(Box::new(replacement)));
     state::write(latest);
     Ok(())
 }
 
-fn pause_and_write_exact_jupiter(operation: &JupiterOperation) -> Result<(), ApiError> {
-    write_exact_jupiter(operation)?;
+fn pause_and_replace_jupiter(
+    expected: &JupiterOperation,
+    replacement: JupiterOperation,
+) -> Result<(), ApiError> {
     let mut latest = state::read();
+    match &latest.active_operation {
+        Some(NnsOperation::Jupiter(active)) if **active == *expected => {}
+        _ => return Err(ApiError::Busy),
+    }
+    replacement
+        .validate(latest.config.icp_ledger, latest.config.nns_governance)
+        .map_err(ApiError::Invalid)?;
+    latest.active_operation = Some(NnsOperation::Jupiter(Box::new(replacement)));
+    latest.lifecycle = Lifecycle::Paused;
+    state::write(latest);
+    Ok(())
+}
+
+fn pause_exact_jupiter(expected: &JupiterOperation) -> Result<(), ApiError> {
+    let mut latest = state::read();
+    match &latest.active_operation {
+        Some(NnsOperation::Jupiter(active)) if **active == *expected => {}
+        _ => return Err(ApiError::Busy),
+    }
     latest.lifecycle = Lifecycle::Paused;
     state::write(latest);
     Ok(())
@@ -1089,7 +964,8 @@ pub fn get_status() -> Status {
         lifecycle: state.lifecycle,
         active_operation: state.active_operation.map(|operation| match operation {
             NnsOperation::Jupiter(_) => "Jupiter".into(),
-            NnsOperation::PoolRebalance(_) => "PoolRebalance".into(),
+            NnsOperation::Maturity(_) => "Maturity".into(),
+            NnsOperation::Unwind(_) => "Unwind".into(),
         }),
         latest_target_generation: state.latest_target_generation,
         has_pending_two_year_maturity: state.pending_two_year_maturity.is_some(),
@@ -1132,6 +1008,7 @@ mod tests {
                         owner: principal,
                         subaccount: Some(vec![3; 32]),
                     },
+                    expected_io_fee_e8s: 10_000,
                     expected_icp_fee_e8s: 10_000,
                     jupiter_fee_float_e8s: 20_000,
                     two_week_fee_float_e8s: 10_000,
@@ -1152,24 +1029,18 @@ mod tests {
             principal,
         )
         .unwrap();
-        set_two_week_target(
-            principal,
-            SetTwoWeekTargetArgs {
-                target_e8s: 10,
-                generation: 1,
-            },
-        )
-        .unwrap();
-        set_two_week_target(
-            principal,
-            SetTwoWeekTargetArgs {
-                target_e8s: 20,
-                generation: 2,
-            },
-        )
-        .unwrap();
-        let state = state::read();
-        assert_eq!(state.latest_two_week_target.unwrap().target_e8s, 20);
+        assert_eq!(
+            crate::state::target_status(9, 10),
+            TwoWeekTargetStatus::UnderTarget
+        );
+        assert_eq!(
+            crate::state::target_status(10, 10),
+            TwoWeekTargetStatus::AtTarget
+        );
+        assert_eq!(
+            crate::state::target_status(11, 10),
+            TwoWeekTargetStatus::OverTarget
+        );
     }
 
     #[test]
