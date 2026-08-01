@@ -163,6 +163,8 @@ pub struct RewardCohort {
     pub captured_at_timestamp_seconds: u64,
     pub closes_at_timestamp_seconds: u64,
     pub target_icp_e8s: u128,
+    pub latest_proposal_id_at_capture: Option<u64>,
+    pub open_proposal_ids_at_capture: Vec<u64>,
     pub members: Vec<RewardMember>,
 }
 
@@ -297,7 +299,8 @@ impl StreamStateV1 {
 
 impl RewardCohort {
     pub const MAX_MEMBERS: usize = 1_000;
-    pub const MAX_NEURON_ID_BYTES: usize = 64;
+    pub const MAX_PROPOSALS_PER_COHORT: usize = 1_000;
+    pub const MAX_OPEN_PROPOSALS_AT_CAPTURE: usize = 100;
 
     pub fn validate(&self) -> Result<(), String> {
         if self.generation == 0
@@ -307,13 +310,25 @@ impl RewardCohort {
                     .captured_at_timestamp_seconds
                     .checked_add(io_core_model::TWO_WEEK_SECONDS)
                     .ok_or("reward cohort close timestamp overflow")?
+            || self.members.is_empty()
             || self.members.len() > Self::MAX_MEMBERS
+            || self.open_proposal_ids_at_capture.len() > Self::MAX_OPEN_PROPOSALS_AT_CAPTURE
         {
             return Err("reward cohort timestamp or capacity is invalid".into());
         }
+        let mut proposal_ids = std::collections::BTreeSet::new();
+        for proposal_id in &self.open_proposal_ids_at_capture {
+            if *proposal_id == 0
+                || self
+                    .latest_proposal_id_at_capture
+                    .is_some_and(|anchor| *proposal_id > anchor)
+                || !proposal_ids.insert(*proposal_id)
+            {
+                return Err("reward cohort proposal evidence is invalid".into());
+            }
+        }
         for member in &self.members {
-            if member.sns_neuron_id.is_empty()
-                || member.sns_neuron_id.len() > Self::MAX_NEURON_ID_BYTES
+            if member.sns_neuron_id.len() != 32
                 || member.frozen_stake_e8s == 0
                 || (member.destination_is_currently_eligible
                     && member.observed_stake_e8s < member.frozen_stake_e8s)

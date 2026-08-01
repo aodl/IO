@@ -78,6 +78,8 @@ type RewardCohort = record {
   captured_at_timestamp_seconds : nat64;
   closes_at_timestamp_seconds : nat64;
   target_icp_e8s : nat;
+  latest_proposal_id_at_capture : opt nat64;
+  open_proposal_ids_at_capture : vec nat64;
   members : vec RewardMember;
 };
 type JupiterReceiptResult = record {

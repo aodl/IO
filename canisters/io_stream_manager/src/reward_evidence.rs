@@ -4,7 +4,7 @@ use serde::Deserialize;
 
 use crate::{
     api::ApiError,
-    state::{Account, RewardMember},
+    state::{Account, RewardCohort, RewardMember},
 };
 
 const PAGE_SIZE: u32 = 100;
@@ -88,6 +88,83 @@ enum SnsTopic {
 #[derive(Clone, Debug, CandidType, Deserialize)]
 struct ListProposalsResponse {
     proposals: Vec<Proposal>,
+}
+
+#[derive(Clone, Debug, CandidType)]
+struct GetProposalRequest {
+    proposal_id: Option<ProposalId>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct GetProposalResponse {
+    result: Option<GetProposalResult>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+enum GetProposalResult {
+    Error(GovernanceError),
+    Proposal(Proposal),
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct GovernanceError {
+    error_message: String,
+    error_type: i32,
+}
+
+pub(crate) async fn capture_proposal_window(
+    governance: Principal,
+) -> Result<(Option<u64>, Vec<u64>), ApiError> {
+    let latest = list_proposal_page(governance, None, 1, Vec::new()).await?;
+    let anchor = latest.first().map(required_proposal_id).transpose()?;
+    let open = list_open_proposals(governance).await?;
+    let mut ids = std::collections::BTreeSet::new();
+    for proposal in open {
+        let id = required_proposal_id(&proposal)?;
+        if proposal.decided_timestamp_seconds == 0
+            && proposal.is_eligible_for_rewards
+            && !ids.insert(id)
+        {
+            return Err(ApiError::Invalid(
+                "SNS open proposal evidence contains duplicate IDs".into(),
+            ));
+        }
+    }
+    if ids.len() > RewardCohort::MAX_OPEN_PROPOSALS_AT_CAPTURE {
+        return Err(ApiError::Invalid(
+            "open reward proposal capacity exhausted".into(),
+        ));
+    }
+    Ok((anchor, ids.into_iter().collect()))
+}
+
+pub(crate) async fn close_proposal_window(
+    governance: Principal,
+    cohort: &RewardCohort,
+) -> Result<Vec<Proposal>, ApiError> {
+    let mut by_id = std::collections::BTreeMap::new();
+    for proposal in list_proposals_after(governance, cohort.latest_proposal_id_at_capture).await? {
+        let id = required_proposal_id(&proposal)?;
+        if by_id.insert(id, proposal).is_some() {
+            return Err(ApiError::Invalid(
+                "SNS proposal pagination returned duplicate IDs".into(),
+            ));
+        }
+    }
+    for id in &cohort.open_proposal_ids_at_capture {
+        let proposal = get_proposal(governance, *id).await?;
+        if required_proposal_id(&proposal)? != *id || by_id.insert(*id, proposal).is_some() {
+            return Err(ApiError::Invalid(
+                "carried proposal evidence conflicts with cohort window".into(),
+            ));
+        }
+    }
+    if by_id.len() > RewardCohort::MAX_PROPOSALS_PER_COHORT {
+        return Err(ApiError::Invalid(
+            "reward proposal capacity exhausted".into(),
+        ));
+    }
+    Ok(by_id.into_values().collect())
 }
 
 pub(crate) fn eligible_members(
@@ -220,44 +297,146 @@ pub(crate) async fn list_all_neurons(governance: Principal) -> Result<Vec<Neuron
     ))
 }
 
-pub(crate) async fn list_all_proposals(governance: Principal) -> Result<Vec<Proposal>, ApiError> {
+async fn list_open_proposals(governance: Principal) -> Result<Vec<Proposal>, ApiError> {
     let mut proposals = Vec::new();
     let mut before = None;
     for _ in 0..MAX_PAGES {
-        let response: ListProposalsResponse = Call::bounded_wait(governance, "list_proposals")
-            .with_arg(ListProposalsRequest {
-                include_reward_status: Vec::new(),
-                before_proposal: before.clone(),
-                limit: PAGE_SIZE,
-                exclude_type: Vec::new(),
-                include_status: Vec::new(),
-                include_topics: None,
-            })
-            .await
-            .map_err(|error| ApiError::Pending(format!("SNS list_proposals failed: {error:?}")))?
-            .candid()
-            .map_err(|error| {
-                ApiError::Invalid(format!("SNS list_proposals decode failed: {error:?}"))
-            })?;
-        let count = response.proposals.len();
-        let next = response
-            .proposals
-            .last()
-            .and_then(|proposal| proposal.id.clone());
+        let page = list_proposal_page(governance, before.clone(), PAGE_SIZE, vec![1]).await?;
+        let count = page.len();
+        let next = page.last().and_then(|proposal| proposal.id.clone());
         if count > PAGE_SIZE as usize || (count == PAGE_SIZE as usize && next == before) {
             return Err(ApiError::Invalid(
                 "SNS proposal pagination is invalid".into(),
             ));
         }
-        proposals.extend(response.proposals);
+        proposals.extend(page);
+        if proposals.len() > RewardCohort::MAX_OPEN_PROPOSALS_AT_CAPTURE {
+            return Err(ApiError::Invalid(
+                "open reward proposal capacity exhausted".into(),
+            ));
+        }
         if count < PAGE_SIZE as usize {
             return Ok(proposals);
         }
         before = next;
     }
     Err(ApiError::Invalid(
-        "SNS proposal evidence exceeds bounded pages".into(),
+        "open reward proposal capacity exhausted".into(),
     ))
+}
+
+async fn list_proposals_after(
+    governance: Principal,
+    anchor: Option<u64>,
+) -> Result<Vec<Proposal>, ApiError> {
+    let mut proposals = Vec::new();
+    let mut before = None;
+    let mut previous_id = None;
+    for _ in 0..MAX_PAGES {
+        let page = list_proposal_page(governance, before.clone(), PAGE_SIZE, Vec::new()).await?;
+        if page.is_empty() {
+            return Ok(proposals);
+        }
+        let reached_anchor =
+            append_new_proposal_page(&page, anchor, &mut previous_id, &mut proposals)?;
+        if reached_anchor || page.len() < PAGE_SIZE as usize {
+            return Ok(proposals);
+        }
+        let next = page.last().and_then(|proposal| proposal.id.clone());
+        if next == before {
+            return Err(ApiError::Invalid(
+                "SNS proposal pagination did not progress".into(),
+            ));
+        }
+        before = next;
+    }
+    Err(ApiError::Invalid(
+        "reward proposal capacity exhausted".into(),
+    ))
+}
+
+fn append_new_proposal_page(
+    page: &[Proposal],
+    anchor: Option<u64>,
+    previous_id: &mut Option<u64>,
+    proposals: &mut Vec<Proposal>,
+) -> Result<bool, ApiError> {
+    for proposal in page {
+        let id = required_proposal_id(proposal)?;
+        if previous_id.is_some_and(|previous| id >= previous) {
+            return Err(ApiError::Invalid(
+                "SNS proposal pagination is non-descending".into(),
+            ));
+        }
+        *previous_id = Some(id);
+        if anchor.is_some_and(|anchor| id <= anchor) {
+            return Ok(true);
+        }
+        proposals.push(proposal.clone());
+        if proposals.len() > RewardCohort::MAX_PROPOSALS_PER_COHORT {
+            return Err(ApiError::Invalid(
+                "reward proposal capacity exhausted".into(),
+            ));
+        }
+    }
+    Ok(false)
+}
+
+async fn list_proposal_page(
+    governance: Principal,
+    before_proposal: Option<ProposalId>,
+    limit: u32,
+    include_status: Vec<i32>,
+) -> Result<Vec<Proposal>, ApiError> {
+    let response: ListProposalsResponse = Call::bounded_wait(governance, "list_proposals")
+        .with_arg(ListProposalsRequest {
+            include_reward_status: Vec::new(),
+            before_proposal,
+            limit,
+            exclude_type: Vec::new(),
+            include_status,
+            include_topics: None,
+        })
+        .await
+        .map_err(|error| ApiError::Pending(format!("SNS list_proposals failed: {error:?}")))?
+        .candid()
+        .map_err(|error| {
+            ApiError::Invalid(format!("SNS list_proposals decode failed: {error:?}"))
+        })?;
+    if response.proposals.len() > limit as usize {
+        return Err(ApiError::Invalid("SNS proposal page exceeds bound".into()));
+    }
+    Ok(response.proposals)
+}
+
+async fn get_proposal(governance: Principal, id: u64) -> Result<Proposal, ApiError> {
+    let response: GetProposalResponse = Call::bounded_wait(governance, "get_proposal")
+        .with_arg(GetProposalRequest {
+            proposal_id: Some(ProposalId { id }),
+        })
+        .await
+        .map_err(|error| ApiError::Pending(format!("SNS get_proposal failed: {error:?}")))?
+        .candid()
+        .map_err(|error| ApiError::Invalid(format!("SNS get_proposal decode failed: {error:?}")))?;
+    match response.result {
+        Some(GetProposalResult::Proposal(proposal)) => Ok(proposal),
+        Some(GetProposalResult::Error(error)) => Err(ApiError::Invalid(format!(
+            "SNS get_proposal rejected ({}): {}",
+            error.error_type, error.error_message
+        ))),
+        None => Err(ApiError::Invalid(
+            "SNS get_proposal returned no result".into(),
+        )),
+    }
+}
+
+fn required_proposal_id(proposal: &Proposal) -> Result<u64, ApiError> {
+    proposal
+        .id
+        .as_ref()
+        .map(|id| id.id)
+        .filter(|id| *id > 0)
+        .ok_or_else(|| ApiError::Invalid("SNS proposal lacks a nonzero ID".into()))
 }
 
 #[cfg(test)]
@@ -386,5 +565,42 @@ mod tests {
         assert_eq!(participation(&id(2), start, end, &proposals), Ok((2, 2)));
         assert_eq!(participation(&id(3), start, end, &proposals), Ok((2, 0)));
         assert_eq!(participation(&id(4), start, end, &proposals), Ok((2, 0)));
+    }
+
+    #[test]
+    fn lifetime_history_before_capture_anchor_does_not_consume_window_capacity() {
+        let mut page = (995..=1_005)
+            .rev()
+            .map(|id| proposal(id, &[]))
+            .collect::<Vec<_>>();
+        for (offset, proposal) in page.iter_mut().enumerate() {
+            proposal.id = Some(ProposalId {
+                id: 1_005 - offset as u64,
+            });
+        }
+        let mut previous = None;
+        let mut selected = Vec::new();
+        assert_eq!(
+            append_new_proposal_page(&page, Some(1_000), &mut previous, &mut selected),
+            Ok(true)
+        );
+        assert_eq!(
+            selected
+                .iter()
+                .map(|proposal| proposal.id.as_ref().unwrap().id)
+                .collect::<Vec<_>>(),
+            vec![1_005, 1_004, 1_003, 1_002, 1_001]
+        );
+    }
+
+    #[test]
+    fn malformed_or_duplicate_proposal_pagination_is_rejected() {
+        let mut previous = None;
+        let mut selected = Vec::new();
+        let page = vec![proposal(2, &[]), proposal(2, &[])];
+        assert!(matches!(
+            append_new_proposal_page(&page, None, &mut previous, &mut selected),
+            Err(ApiError::Invalid(message)) if message.contains("non-descending")
+        ));
     }
 }

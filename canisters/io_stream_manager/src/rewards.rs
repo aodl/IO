@@ -10,8 +10,8 @@ use crate::{
         RewardRecipient, TwoWeekReceiptOperation, TwoWeekReceiptResult, TwoWeekSettlement,
     },
     reward_evidence::{
-        canonical_eligible, eligible_members, list_all_neurons, list_all_proposals, participation,
-        NeuronId,
+        canonical_eligible, capture_proposal_window, close_proposal_window, eligible_members,
+        list_all_neurons, participation, NeuronId,
     },
     state::{self, Account, Lifecycle, RewardCohort},
     transfer::{
@@ -109,6 +109,8 @@ pub async fn capture(now_seconds: u64) -> Result<RewardCohort, ApiError> {
             "reward cohort has no eligible members".into(),
         ));
     }
+    let (latest_proposal_id_at_capture, open_proposal_ids_at_capture) =
+        capture_proposal_window(snapshot.config.sns_governance).await?;
     let canonical = canonical::redemption_snapshot(&snapshot.config)
         .await
         .map_err(ApiError::Ledger)?;
@@ -147,6 +149,8 @@ pub async fn capture(now_seconds: u64) -> Result<RewardCohort, ApiError> {
             .checked_add(io_core_model::TWO_WEEK_SECONDS)
             .ok_or_else(|| ApiError::Invalid("cohort close timestamp overflow".into()))?,
         target_icp_e8s: target,
+        latest_proposal_id_at_capture,
+        open_proposal_ids_at_capture,
         members,
     };
     cohort.validate().map_err(ApiError::Invalid)?;
@@ -177,7 +181,7 @@ pub async fn close(now_seconds: u64) -> Result<RewardCohort, ApiError> {
         )));
     }
     let neurons = list_all_neurons(snapshot.config.sns_governance).await?;
-    let proposals = list_all_proposals(snapshot.config.sns_governance).await?;
+    let proposals = close_proposal_window(snapshot.config.sns_governance, &cohort).await?;
     for member in &mut cohort.members {
         let current = neurons
             .iter()
