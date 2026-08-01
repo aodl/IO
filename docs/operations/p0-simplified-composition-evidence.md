@@ -59,6 +59,15 @@ The same installed test prepares a Jupiter receipt, transfers ICP from the exact
 | N | A successful refresh response advanced a reward without stake evidence. | Refresh submission is persisted first; a later exact neuron observation must show at least the pre-transfer stake plus the full reward. |
 | O | Stable reward state accepted duplicate neuron IDs or mismatched destinations. | V1 validation requires unique 32-byte IDs and effective Accounts, exact SNS-governance ownership/subaccount derivation, exclusions, checked totals, and unique proposal IDs. |
 
+Pinned finalized-SNS PocketIC evidence includes
+`real_sns_following_vote_counts_for_participation_if_policy_allows_after_finalization`,
+which observes a followed vote as canonical `Yes = 1`, and
+`real_sns_dissolving_neuron_is_excluded_if_policy_requires_after_finalization`,
+which freezes stake before `StartDissolving` and then proves the exact 50 e8
+forfeiture, 1 e8 rounding dust, 51 e8 total dust, and no redistribution for a
+101 e8 pool. These tests use the pinned real governance and ledger artifacts;
+they do not use mock-only vote values 3 or 4.
+
 ## Remaining vertical work
 
 The safety and topology invariants above are implemented. The NNS manager has a
