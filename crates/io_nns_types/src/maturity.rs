@@ -9,6 +9,7 @@ use io_accounts::Account;
 
 pub const MINIMUM_DISBURSEMENT_E8S: u64 = 100_000_000;
 pub const DISBURSEMENT_DELAY_SECONDS: u64 = 7 * 24 * 60 * 60;
+pub const TWO_WEEK_COHORT_SECONDS: u64 = 1_209_600;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum MaturityKind {
@@ -26,6 +27,8 @@ pub struct MaturityPlan {
     pub destination: Account,
     pub requested_at_seconds: u64,
     pub cohort_generation: Option<u64>,
+    pub cohort_captured_at_seconds: Option<u64>,
+    pub cohort_closes_at_seconds: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -180,8 +183,18 @@ impl MaturityCommandOperation {
             || plan.requested_at_seconds == 0
             || !plan.destination.effective_eq(expected_destination)?
             || (self.kind == MaturityKind::TwoWeek) != plan.cohort_generation.is_some()
+            || (self.kind == MaturityKind::TwoWeek) != plan.cohort_captured_at_seconds.is_some()
+            || (self.kind == MaturityKind::TwoWeek) != plan.cohort_closes_at_seconds.is_some()
         {
             return Err("maturity command plan is inconsistent".into());
+        }
+        if self.kind == MaturityKind::TwoWeek
+            && plan
+                .cohort_captured_at_seconds
+                .and_then(|capture| capture.checked_add(TWO_WEEK_COHORT_SECONDS))
+                != plan.cohort_closes_at_seconds
+        {
+            return Err("two-week maturity cohort interval is inconsistent".into());
         }
         Ok(())
     }
@@ -196,6 +209,8 @@ impl PendingMaturityDisbursement {
     ) -> Result<(), String> {
         if self.kind != expected_kind
             || self.neuron_id != expected_neuron_id
+            || self.stake_evidence.plan.neuron.neuron_id != self.neuron_id
+            || self.disburse_evidence.submission.stake != self.stake_evidence
             || self.nominal_disbursed_maturity_e8s < MINIMUM_DISBURSEMENT_E8S
             || self.nominal_disbursed_maturity_e8s != self.stake_evidence.remaining_maturity_e8s
             || self.nominal_disbursed_maturity_e8s != self.disburse_evidence.amount_disbursed_e8s
@@ -206,6 +221,11 @@ impl PendingMaturityDisbursement {
                     .checked_add(DISBURSEMENT_DELAY_SECONDS)
                     .ok_or("maturity finalization overflow")?
             || !self.destination.effective_eq(expected_destination)?
+            || !self
+                .stake_evidence
+                .plan
+                .destination
+                .effective_eq(&self.destination)?
         {
             return Err("passive maturity disbursement is inconsistent".into());
         }

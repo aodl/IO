@@ -60,6 +60,8 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
                 jupiter_fee_float_e8s: 20_000,
                 two_week_fee_float_e8s: 10_000,
                 seeded_two_week_principal_e8s: 1,
+                transfer_retry_delay_nanos: 1_000_000_000,
+                ledger_deduplication_window_nanos: 86_400_000_000_000,
             },
         })
         .unwrap(),

@@ -46,7 +46,9 @@ pub struct TwoWeekReceiptResult {
     pub receipt_block: u128,
     pub backed_io_pool_e8s: u128,
     pub distributed_io_e8s: u128,
-    pub dust_io_e8s: u128,
+    pub forfeited_io_e8s: u128,
+    pub rounding_dust_io_e8s: u128,
+    pub total_dust_io_e8s: u128,
     pub completed_at_nanos: u64,
 }
 

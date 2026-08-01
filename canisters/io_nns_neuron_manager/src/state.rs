@@ -34,6 +34,8 @@ pub struct NnsConfig {
     pub jupiter_fee_float_e8s: u128,
     pub two_week_fee_float_e8s: u128,
     pub seeded_two_week_principal_e8s: u128,
+    pub transfer_retry_delay_nanos: u64,
+    pub ledger_deduplication_window_nanos: u64,
 }
 
 impl NnsConfig {
@@ -102,6 +104,8 @@ impl NnsConfig {
             || self.two_week_fee_float_e8s < self.expected_icp_fee_e8s
             || self.jupiter_fee_float_e8s > Self::MAX_STAGING_FEE_FLOAT_E8S
             || self.two_week_fee_float_e8s > Self::MAX_STAGING_FEE_FLOAT_E8S
+            || self.transfer_retry_delay_nanos == 0
+            || self.transfer_retry_delay_nanos >= self.ledger_deduplication_window_nanos
         {
             return Err(
                 "explicit staging fee floats do not cover their required ICP effects".into(),
@@ -128,7 +132,8 @@ pub enum NnsOperation {
 pub struct TwoWeekTarget {
     pub generation: u64,
     pub target_e8s: u128,
-    pub actual_cached_principal_e8s: u128,
+    pub active_parent_principal_e8s: u128,
+    pub unwinding_child_principal_e8s: u128,
     pub status: TwoWeekTargetStatus,
 }
 
@@ -136,6 +141,7 @@ pub struct TwoWeekTarget {
 pub enum TwoWeekTargetStatus {
     UnderTarget,
     AtTarget,
+    AtTargetWithinUnwindTolerance,
     OverTarget,
 }
 
@@ -146,6 +152,9 @@ pub struct NnsStateV1 {
     pub active_operation: Option<NnsOperation>,
     pub latest_two_week_target: Option<TwoWeekTarget>,
     pub latest_target_generation: u64,
+    pub two_week_maturity_baseline_reconciled: bool,
+    pub latest_started_two_week_generation: u64,
+    pub latest_completed_two_week_generation: u64,
     pub pending_two_year_maturity: Option<PendingMaturityDisbursement>,
     pub pending_two_week_maturity: Option<PendingMaturityDisbursement>,
     #[serde(default)]
@@ -186,11 +195,16 @@ impl NnsStateV1 {
                 jupiter_fee_float_e8s: 0,
                 two_week_fee_float_e8s: 0,
                 seeded_two_week_principal_e8s: 0,
+                transfer_retry_delay_nanos: 1,
+                ledger_deduplication_window_nanos: 2,
             },
             lifecycle: Lifecycle::Paused,
             active_operation: None,
             latest_two_week_target: None,
             latest_target_generation: 0,
+            two_week_maturity_baseline_reconciled: false,
+            latest_started_two_week_generation: 0,
+            latest_completed_two_week_generation: 0,
             pending_two_year_maturity: None,
             pending_two_week_maturity: None,
             last_two_year_maturity: None,
@@ -205,15 +219,54 @@ impl NnsStateV1 {
     pub fn validate(&self, canister_self: Principal) -> Result<(), String> {
         self.config.validate(canister_self)?;
         if let Some(target) = &self.latest_two_week_target {
+            let tracked_child = match &self.active_operation {
+                Some(NnsOperation::Unwind(operation)) => operation.principal_e8s,
+                _ => 0,
+            };
             if target.generation == 0
                 || target.generation != self.latest_target_generation
+                || target.unwinding_child_principal_e8s != tracked_child
                 || target.status
-                    != target_status(target.actual_cached_principal_e8s, target.target_e8s)
+                    != target_status(
+                        target.active_parent_principal_e8s,
+                        target.target_e8s,
+                        self.config
+                            .expected_icp_fee_e8s
+                            .checked_mul(2)
+                            .ok_or("unwind tolerance overflow")?,
+                    )
             {
                 return Err("latest two-week target generation is inconsistent".into());
             }
         } else if self.latest_target_generation != 0 {
             return Err("target generation exists without a target".into());
+        }
+        if self.latest_completed_two_week_generation > self.latest_started_two_week_generation
+            || self.latest_started_two_week_generation > self.latest_target_generation
+            || (self.latest_started_two_week_generation > 0
+                && !self.two_week_maturity_baseline_reconciled)
+            || (self.latest_completed_two_week_generation > 0
+                && self.last_two_week_maturity.is_none())
+        {
+            return Err("two-week maturity generation tracking is inconsistent".into());
+        }
+        if self.latest_started_two_week_generation > self.latest_completed_two_week_generation {
+            let active_generation = match &self.active_operation {
+                Some(NnsOperation::Maturity(operation))
+                    if operation.kind == crate::maturity::MaturityKind::TwoWeek =>
+                {
+                    operation.plan().cohort_generation
+                }
+                _ => None,
+            };
+            let pending_generation = self.pending_two_week_maturity.as_ref().and_then(|pending| {
+                pending.stake_evidence.plan.cohort_generation
+            });
+            if active_generation != Some(self.latest_started_two_week_generation)
+                && pending_generation != Some(self.latest_started_two_week_generation)
+            {
+                return Err("started two-week generation lacks exact work evidence".into());
+            }
         }
         if let Some(operation) = &self.active_operation {
             match operation {
@@ -344,10 +397,13 @@ impl NnsStateV1 {
     }
 }
 
-pub fn target_status(actual: u128, target: u128) -> TwoWeekTargetStatus {
+pub fn target_status(actual: u128, target: u128, tolerance: u128) -> TwoWeekTargetStatus {
     match actual.cmp(&target) {
         std::cmp::Ordering::Less => TwoWeekTargetStatus::UnderTarget,
         std::cmp::Ordering::Equal => TwoWeekTargetStatus::AtTarget,
+        std::cmp::Ordering::Greater if actual - target <= tolerance => {
+            TwoWeekTargetStatus::AtTargetWithinUnwindTolerance
+        }
         std::cmp::Ordering::Greater => TwoWeekTargetStatus::OverTarget,
     }
 }
@@ -511,11 +567,16 @@ mod tests {
                     jupiter_fee_float_e8s: 20_000,
                     two_week_fee_float_e8s: 20_000,
                     seeded_two_week_principal_e8s: 1,
+                    transfer_retry_delay_nanos: 1_000_000_000,
+                    ledger_deduplication_window_nanos: 86_400_000_000_000,
                 },
                 lifecycle: Lifecycle::Paused,
                 active_operation: None,
                 latest_two_week_target: None,
                 latest_target_generation: 0,
+                two_week_maturity_baseline_reconciled: false,
+                latest_started_two_week_generation: 0,
+                latest_completed_two_week_generation: 0,
                 pending_two_year_maturity: None,
                 pending_two_week_maturity: None,
                 last_two_year_maturity: None,
@@ -560,6 +621,8 @@ mod tests {
             destination: state.config.two_week_maturity_staging.clone(),
             requested_at_seconds: 1,
             cohort_generation: None,
+            cohort_captured_at_seconds: None,
+            cohort_closes_at_seconds: None,
         };
         let stake = crate::maturity::StakeMaturitySucceeded {
             plan,

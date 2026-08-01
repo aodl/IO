@@ -164,7 +164,12 @@ type SimplifiedExecutionProjection = record {
   cohort_closes_at_timestamp_seconds : opt nat64;
   reward_recipient_index : opt nat32;
   reward_recipient_count : opt nat32;
+  forfeited_io_e8s : opt nat;
+  rounding_dust_io_e8s : opt nat;
+  total_dust_io_e8s : opt nat;
   under_target : bool;
+  active_parent_principal_e8s : opt nat;
+  unwinding_child_principal_e8s : opt nat;
   pending_unwind_child : opt nat64;
   paused_reason : opt text;
 };

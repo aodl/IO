@@ -305,8 +305,8 @@ pub fn calculate(
     }
     if args
         .expires_at_nanos
-        .saturating_sub(preparation.prepared_at_nanos)
-        > config.maximum_request_lifetime_nanos
+        .checked_sub(preparation.prepared_at_nanos)
+        .is_none_or(|lifetime| lifetime > config.maximum_request_lifetime_nanos)
     {
         return Err("redemption expiry exceeds launch lifetime bound".into());
     }

@@ -15,6 +15,7 @@ path = "../../tests/pocketic/io_stream_manager_pocketic.rs"
 [dependencies]
 candid.workspace = true
 ic-cdk.workspace = true
+ic-cdk-timers.workspace = true
 ic-stable-structures.workspace = true
 io-accounts = { path = "../../crates/io_accounts" }
 io-core-model.workspace = true

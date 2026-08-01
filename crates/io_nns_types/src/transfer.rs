@@ -47,9 +47,24 @@ pub enum TransferState {
     Succeeded {
         block: u128,
     },
+    Paused {
+        epoch: u64,
+        first_submitted_at_nanos: u64,
+        last_submitted_at_nanos: u64,
+        classification: TransferOutcomeClassification,
+        reason: String,
+    },
     Stuck {
         reason: String,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum TransferOutcomeClassification {
+    AmbiguousPossibleEffect,
+    BadFee,
+    InsufficientFunds,
+    RejectedNoEffect,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -83,6 +98,20 @@ impl NnsTransferAttempt {
             } if *epoch > 0
                 && *first_submitted_at_nanos > 0
                 && last_submitted_at_nanos >= first_submitted_at_nanos =>
+            {
+                Ok(())
+            }
+            TransferState::Paused {
+                epoch,
+                first_submitted_at_nanos,
+                last_submitted_at_nanos,
+                reason,
+                ..
+            } if *epoch > 0
+                && *first_submitted_at_nanos > 0
+                && last_submitted_at_nanos >= first_submitted_at_nanos
+                && !reason.is_empty()
+                && reason.len() <= 512 =>
             {
                 Ok(())
             }

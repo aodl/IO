@@ -55,7 +55,10 @@ type SimplifiedExecutionProjection = record {
   scheduled_finalization_timestamp_seconds : opt nat64; actual_minted_icp_e8s : opt nat;
   two_week_receipt_sequence : opt nat64; cohort_generation : opt nat64;
   cohort_closes_at_timestamp_seconds : opt nat64; reward_recipient_index : opt nat32;
-  reward_recipient_count : opt nat32; under_target : bool; pending_unwind_child : opt nat64;
+  reward_recipient_count : opt nat32; forfeited_io_e8s : opt nat;
+  rounding_dust_io_e8s : opt nat; total_dust_io_e8s : opt nat; under_target : bool;
+  active_parent_principal_e8s : opt nat; unwinding_child_principal_e8s : opt nat;
+  pending_unwind_child : opt nat64;
   paused_reason : opt text;
 };
 type ObservedLedgerFlow = record {

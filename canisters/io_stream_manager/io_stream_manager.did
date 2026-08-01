@@ -95,7 +95,9 @@ type TwoWeekReceiptResult = record {
   receipt_block : nat;
   backed_io_pool_e8s : nat;
   distributed_io_e8s : nat;
-  dust_io_e8s : nat;
+  forfeited_io_e8s : nat;
+  rounding_dust_io_e8s : nat;
+  total_dust_io_e8s : nat;
   completed_at_nanos : nat64;
 };
 type CompletedReceiptResult = variant {

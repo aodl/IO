@@ -1,6 +1,6 @@
 use candid::{CandidType, Nat, Principal, Reserved};
 use ic_cdk::call::Call;
-use io_ledger_boundary::{IcrcTransferArg, IcrcTransferResult};
+use io_ledger_boundary::{IcrcTransferArg, IcrcTransferError, IcrcTransferResult};
 use io_receipt_types::{CompleteLiquidReceiptArgs, PrepareLiquidReceiptArgs, ReceiptKind};
 pub use io_receipt_types::{CompletedReceiptResult, LiquidReceiptProgress as StreamLiquidProgress};
 use serde::Deserialize;
@@ -12,8 +12,45 @@ use crate::{
         CanonicalDisbursementEvidence, PendingMaturityDisbursement, DISBURSEMENT_DELAY_SECONDS,
     },
     state::{Account, NnsConfig},
-    transfer::NnsTransferIntent,
+    transfer::{NnsTransferIntent, TransferOutcomeClassification},
 };
+
+pub enum ExactTransferOutcome {
+    Succeeded(u128),
+    Paused(TransferOutcomeClassification, String),
+}
+
+pub fn classify_transfer(
+    result: Result<IcrcTransferResult, String>,
+) -> Result<ExactTransferOutcome, ApiError> {
+    let paused = |class, reason| Ok(ExactTransferOutcome::Paused(class, reason));
+    match result {
+        Ok(Ok(block))
+        | Ok(Err(IcrcTransferError::Duplicate {
+            duplicate_of: block,
+        })) => block
+            .0
+            .try_into()
+            .map(ExactTransferOutcome::Succeeded)
+            .map_err(|_| ApiError::Invalid("ICP block does not fit u128".into())),
+        Err(error) => paused(
+            TransferOutcomeClassification::AmbiguousPossibleEffect,
+            format!("ICP transfer callback is ambiguous: {error}"),
+        ),
+        Ok(Err(IcrcTransferError::BadFee { expected_fee })) => paused(
+            TransferOutcomeClassification::BadFee,
+            format!("ICP transfer BadFee; approved fee update required ({expected_fee})"),
+        ),
+        Ok(Err(IcrcTransferError::InsufficientFunds { balance })) => paused(
+            TransferOutcomeClassification::InsufficientFunds,
+            format!("ICP transfer requires staging replenishment ({balance})"),
+        ),
+        Ok(Err(error)) => paused(
+            TransferOutcomeClassification::RejectedNoEffect,
+            format!("ICP transfer rejected without effect: {error:?}"),
+        ),
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct NeuronObservation {
@@ -727,5 +764,32 @@ pub fn staking_account(config: &NnsConfig, neuron: &NeuronSnapshot) -> Account {
     Account {
         owner: config.nns_governance,
         subaccount: Some(neuron.staking_subaccount.to_vec()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transfer_outcomes_distinguish_ambiguity_from_no_effect() {
+        assert!(matches!(
+            classify_transfer(Err("transport".into())).unwrap(),
+            ExactTransferOutcome::Paused(TransferOutcomeClassification::AmbiguousPossibleEffect, _)
+        ));
+        assert!(matches!(
+            classify_transfer(Ok(Err(IcrcTransferError::BadFee {
+                expected_fee: Nat::from(10u8),
+            })))
+            .unwrap(),
+            ExactTransferOutcome::Paused(TransferOutcomeClassification::BadFee, _)
+        ));
+        assert!(matches!(
+            classify_transfer(Ok(Err(IcrcTransferError::InsufficientFunds {
+                balance: Nat::from(0u8),
+            })))
+            .unwrap(),
+            ExactTransferOutcome::Paused(TransferOutcomeClassification::InsufficientFunds, _)
+        ));
     }
 }

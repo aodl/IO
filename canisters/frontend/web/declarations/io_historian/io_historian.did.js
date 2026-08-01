@@ -143,7 +143,12 @@ export const idlFactory = ({ IDL }) => {
     cohort_closes_at_timestamp_seconds: IDL.Opt(IDL.Nat64),
     reward_recipient_index: IDL.Opt(IDL.Nat32),
     reward_recipient_count: IDL.Opt(IDL.Nat32),
+    forfeited_io_e8s: IDL.Opt(IDL.Nat),
+    rounding_dust_io_e8s: IDL.Opt(IDL.Nat),
+    total_dust_io_e8s: IDL.Opt(IDL.Nat),
     under_target: IDL.Bool,
+    active_parent_principal_e8s: IDL.Opt(IDL.Nat),
+    unwinding_child_principal_e8s: IDL.Opt(IDL.Nat),
     pending_unwind_child: IDL.Opt(IDL.Nat64),
     paused_reason: IDL.Opt(IDL.Text),
   });

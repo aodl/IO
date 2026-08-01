@@ -192,6 +192,16 @@ async fn merge(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiErro
         execution::query_neuron_observation(&current.config, current.config.two_week_neuron_id)
             .await?;
     ensure(&operation)?;
+    let minimum_parent = operation
+        .target_e8s
+        .checked_add(operation.principal_e8s)
+        .ok_or_else(|| ApiError::Invalid("merged parent expectation overflow".into()))?;
+    if observation.snapshot.cached_stake_e8s < minimum_parent {
+        return pause(
+            operation,
+            "merged child principal is not canonically observable in the parent".into(),
+        );
+    }
     clear(&operation, observation.snapshot.cached_stake_e8s)?;
     Ok(UnwindProgress::MergedBack)
 }
@@ -276,7 +286,11 @@ pub async fn prove(
             "exact ICP block does not match direct child disbursement".into(),
         ));
     }
-    clear(&operation, operation.target_e8s)?;
+    let parent =
+        execution::query_neuron_observation(&current.config, current.config.two_week_neuron_id)
+            .await?;
+    ensure(&operation)?;
+    clear(&operation, parent.snapshot.cached_stake_e8s)?;
     Ok(UnwindProgress::Completed {
         block_index,
         liquid_e8s: amount,
@@ -301,6 +315,9 @@ fn replace(expected: &UnwindOperation, replacement: UnwindOperation) -> Result<(
     replacement
         .validate(latest.next_operation_sequence)
         .map_err(ApiError::Invalid)?;
+    if let Some(target) = latest.latest_two_week_target.as_mut() {
+        target.unwinding_child_principal_e8s = replacement.principal_e8s;
+    }
     latest.active_operation = Some(NnsOperation::Unwind(replacement));
     state::write(latest);
     Ok(())
@@ -333,8 +350,17 @@ fn clear(expected: &UnwindOperation, actual_principal_e8s: u128) -> Result<(), A
     }
     latest.active_operation = None;
     if let Some(target) = latest.latest_two_week_target.as_mut() {
-        target.actual_cached_principal_e8s = actual_principal_e8s;
-        target.status = state::target_status(actual_principal_e8s, target.target_e8s);
+        target.active_parent_principal_e8s = actual_principal_e8s;
+        target.unwinding_child_principal_e8s = 0;
+        target.status = state::target_status(
+            actual_principal_e8s,
+            target.target_e8s,
+            latest
+                .config
+                .expected_icp_fee_e8s
+                .checked_mul(2)
+                .ok_or_else(|| ApiError::Invalid("unwind tolerance overflow".into()))?,
+        );
     }
     state::write(latest);
     Ok(())

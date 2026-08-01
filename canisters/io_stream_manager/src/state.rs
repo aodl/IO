@@ -254,8 +254,10 @@ impl StreamStateV1 {
                     || value
                         .request
                         .expires_at_nanos
-                        .saturating_sub(value.prepared_at_nanos)
-                        > self.config.maximum_request_lifetime_nanos
+                        .checked_sub(value.prepared_at_nanos)
+                        .is_none_or(|lifetime| {
+                            lifetime > self.config.maximum_request_lifetime_nanos
+                        })
                     || value.account.effective_eq(&self.config.io_reserve)?
                     || self.config.excluded_io_accounts.iter().try_fold(
                         false,
@@ -292,10 +294,37 @@ impl StreamStateV1 {
         .into_iter()
         .flatten()
         {
-            cohort.validate()?;
+            cohort.validate(&self.config)?;
             if cohort.generation > self.latest_cohort_generation {
                 return Err("reward cohort generation exceeds state generation".into());
             }
+        }
+        if let (Some(active), Some(pending)) = (
+            self.active_reward_cohort.as_ref(),
+            self.pending_reward_cohort.as_ref(),
+        ) {
+            if pending.generation.checked_add(1) != Some(active.generation) {
+                return Err("active reward cohort must follow pending cohort".into());
+            }
+        }
+        if self
+            .active_reward_cohort
+            .as_ref()
+            .or(self.pending_reward_cohort.as_ref())
+            .is_some_and(|cohort| cohort.generation != self.latest_cohort_generation)
+        {
+            return Err("latest reward cohort slot does not match state generation".into());
+        }
+        match &self.active_reward_cohort {
+            Some(active)
+                if self.next_cohort_timestamp_seconds != active.closes_at_timestamp_seconds =>
+            {
+                return Err("active cohort deadline is inconsistent".into())
+            }
+            None if self.next_cohort_timestamp_seconds != 0 => {
+                return Err("cohort deadline exists without an active cohort".into())
+            }
+            _ => {}
         }
         if let Some(completed) = &self.last_completed_receipt {
             completed.validate(&self.config, self.next_nns_receipt_sequence)?;
@@ -309,7 +338,7 @@ impl RewardCohort {
     pub const MAX_PROPOSALS_PER_COHORT: usize = 1_000;
     pub const MAX_OPEN_PROPOSALS_AT_CAPTURE: usize = 100;
 
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self, config: &StreamConfig) -> Result<(), String> {
         if self.generation == 0
             || self.captured_at_timestamp_seconds == 0
             || self.closes_at_timestamp_seconds
@@ -320,6 +349,7 @@ impl RewardCohort {
             || self.members.is_empty()
             || self.members.len() > Self::MAX_MEMBERS
             || self.open_proposal_ids_at_capture.len() > Self::MAX_OPEN_PROPOSALS_AT_CAPTURE
+            || self.latest_proposal_id_at_capture == Some(0)
         {
             return Err("reward cohort timestamp or capacity is invalid".into());
         }
@@ -334,8 +364,24 @@ impl RewardCohort {
                 return Err("reward cohort proposal evidence is invalid".into());
             }
         }
+        let mut neuron_ids = std::collections::BTreeSet::new();
+        let mut accounts = std::collections::BTreeSet::new();
         for member in &self.members {
+            let account = member.account.canonical()?;
             if member.sns_neuron_id.len() != 32
+                || !neuron_ids.insert(member.sns_neuron_id.clone())
+                || !accounts.insert(account)
+                || account.owner != config.sns_governance
+                || account.subaccount.as_slice() != member.sns_neuron_id
+                || config
+                    .excluded_io_accounts
+                    .iter()
+                    .try_fold(false, |matched, excluded| {
+                        member
+                            .account
+                            .effective_eq(excluded)
+                            .map(|same| matched || same)
+                    })?
                 || member.frozen_stake_e8s == 0
                 || (member.destination_is_currently_eligible
                     && member.observed_stake_e8s < member.frozen_stake_e8s)
@@ -343,7 +389,6 @@ impl RewardCohort {
             {
                 return Err("reward cohort member is invalid".into());
             }
-            member.account.validate()?;
         }
         Ok(())
     }
@@ -567,7 +612,7 @@ mod tests {
                 pending_reward_cohort: None,
                 latest_cohort_generation: 0,
                 next_nns_receipt_sequence: 7,
-                next_cohort_timestamp_seconds: 8,
+                next_cohort_timestamp_seconds: 0,
                 next_operation_sequence: OperationSequence(0),
                 control_epoch: 0,
                 last_completed_receipt: None,
@@ -658,10 +703,43 @@ mod tests {
         let mut unsafe_jupiter = config.clone();
         unsafe_jupiter.jupiter_io_account.owner = Principal::anonymous();
         assert!(unsafe_jupiter.validate(principal).is_err());
-        let mut excluded_jupiter = config;
+        let mut excluded_jupiter = config.clone();
         excluded_jupiter
             .excluded_io_accounts
             .push(excluded_jupiter.jupiter_io_account.clone());
         assert!(excluded_jupiter.validate(principal).is_err());
+
+        let member = RewardMember {
+            sns_neuron_id: vec![7; 32],
+            account: Account {
+                owner: config.sns_governance,
+                subaccount: Some(vec![7; 32]),
+            },
+            frozen_stake_e8s: 1,
+            observed_stake_e8s: 1,
+            eligible_closed_proposals: 0,
+            voted_closed_proposals: 0,
+            destination_is_currently_eligible: true,
+        };
+        let cohort = RewardCohort {
+            generation: 1,
+            captured_at_timestamp_seconds: 1,
+            closes_at_timestamp_seconds: 1 + io_core_model::TWO_WEEK_SECONDS,
+            target_icp_e8s: 1,
+            latest_proposal_id_at_capture: Some(1),
+            open_proposal_ids_at_capture: Vec::new(),
+            members: vec![member.clone()],
+        };
+        assert_eq!(cohort.validate(&config), Ok(()));
+        let mut duplicate = cohort.clone();
+        duplicate.members.push(member.clone());
+        assert!(duplicate.validate(&config).is_err());
+        let mut wrong_destination = cohort;
+        wrong_destination.members[0].account.subaccount = Some(vec![8; 32]);
+        assert!(wrong_destination.validate(&config).is_err());
+        let mut excluded = config.clone();
+        excluded.excluded_io_accounts.push(member.account);
+        duplicate.members.truncate(1);
+        assert!(duplicate.validate(&excluded).is_err());
     }
 }

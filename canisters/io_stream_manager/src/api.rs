@@ -473,7 +473,11 @@ async fn dispatch_redemption_transfer(
             last_submitted_at,
         } => {
             let config = &state::read().config;
-            if now.saturating_sub(last_submitted_at) < config.retry_delay_nanos {
+            if now
+                .checked_sub(last_submitted_at)
+                .ok_or_else(|| ApiError::Invalid("transfer retry clock regressed".into()))?
+                < config.retry_delay_nanos
+            {
                 return Err(ApiError::Busy);
             }
             let retry_deadline = attempt

@@ -40,6 +40,22 @@ struct ListNeuronsResponse {
     neurons: Vec<Neuron>,
 }
 
+#[derive(Clone, Debug, CandidType)]
+struct GetNeuronRequest {
+    neuron_id: Option<NeuronId>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct GetNeuronResponse {
+    result: Option<GetNeuronResult>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+enum GetNeuronResult {
+    Error(GovernanceError),
+    Neuron(Box<Neuron>),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, CandidType, Deserialize)]
 pub(crate) struct ProposalId {
     pub(crate) id: u64,
@@ -230,6 +246,36 @@ pub(crate) fn canonical_eligible(neuron: &Neuron) -> bool {
                 io_core_model::TWO_WEEK_SECONDS
             ))
         )
+}
+
+pub(crate) async fn exact_neuron(
+    governance: Principal,
+    id: &[u8],
+) -> Result<Option<Neuron>, ApiError> {
+    let response: GetNeuronResponse = Call::bounded_wait(governance, "get_neuron")
+        .with_arg(GetNeuronRequest {
+            neuron_id: Some(NeuronId { id: id.to_vec() }),
+        })
+        .await
+        .map_err(|error| ApiError::Pending(format!("SNS get_neuron failed: {error:?}")))?
+        .candid()
+        .map_err(|error| ApiError::Invalid(format!("SNS get_neuron decode failed: {error:?}")))?;
+    match response.result {
+        Some(GetNeuronResult::Neuron(neuron))
+            if neuron.id.as_ref().map(|value| &value.id) == Some(&id.to_vec()) =>
+        {
+            Ok(Some(*neuron))
+        }
+        Some(GetNeuronResult::Neuron(_)) => Err(ApiError::Invalid(
+            "SNS get_neuron returned a different neuron ID".into(),
+        )),
+        Some(GetNeuronResult::Error(error)) if error.error_type == 2 => Ok(None),
+        Some(GetNeuronResult::Error(error)) => Err(ApiError::Invalid(format!(
+            "SNS get_neuron rejected ({}): {}",
+            error.error_type, error.error_message
+        ))),
+        None => Ok(None),
+    }
 }
 
 pub(crate) fn participation(

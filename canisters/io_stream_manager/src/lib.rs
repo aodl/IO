@@ -1,5 +1,7 @@
 pub mod api;
 pub mod canonical;
+mod cohort_timer;
+mod completed_receipt;
 pub mod lifecycle;
 pub mod receipt;
 mod receipt_preparation;
@@ -50,6 +52,7 @@ pub fn init(args: InitArgs) {
 #[cfg_attr(target_family = "wasm", ic_cdk::post_upgrade)]
 pub fn post_upgrade() {
     state::reopen(ic_cdk::api::canister_self());
+    cohort_timer::reinstall_from_state();
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]

@@ -378,7 +378,12 @@ pub struct SimplifiedExecutionProjection {
     pub cohort_closes_at_timestamp_seconds: Option<u64>,
     pub reward_recipient_index: Option<u32>,
     pub reward_recipient_count: Option<u32>,
+    pub forfeited_io_e8s: Option<u128>,
+    pub rounding_dust_io_e8s: Option<u128>,
+    pub total_dust_io_e8s: Option<u128>,
     pub under_target: bool,
+    pub active_parent_principal_e8s: Option<u128>,
+    pub unwinding_child_principal_e8s: Option<u128>,
     pub pending_unwind_child: Option<u64>,
     pub paused_reason: Option<String>,
 }

@@ -1,21 +1,17 @@
 use crate::{
     api::{ApiError, JupiterProgress, NotifyJupiterDepositArgs},
-    execution::{self, StreamLiquidProgress},
+    execution::{self, ExactTransferOutcome, StreamLiquidProgress},
     jupiter::{
         self, JupiterCompleted, JupiterDeposit, JupiterOperation, JupiterPauseReason, JupiterPhase,
         JupiterStuckTransfer, LiquidTransferSucceeded, StakeIncreaseProof, StakeTransferSucceeded,
     },
     state::{self, Lifecycle, NnsOperation},
-    transfer::{NnsTransferAttempt, NnsTransferIntent, TransferState},
+    transfer::{
+        NnsTransferAttempt, NnsTransferIntent, TransferOutcomeClassification, TransferState,
+    },
 };
-use candid::{Nat, Principal};
-use io_ledger_boundary::{
-    exact_icp_transfer, icp_account_identifier, ExpectedQueryBlockTransfer, IcrcTransferError,
-    IcrcTransferResult,
-};
-
-const TRANSFER_RETRY_DELAY_NANOS: u64 = 1_000_000_000;
-const ICP_LEDGER_DEDUPLICATION_WINDOW_NANOS: u64 = 86_400_000_000_000;
+use candid::Principal;
+use io_ledger_boundary::{exact_icp_transfer, icp_account_identifier, ExpectedQueryBlockTransfer};
 
 pub async fn notify_jupiter_deposit(
     _caller: Principal,
@@ -243,7 +239,7 @@ async fn submit_jupiter_transfer(
     let deadline = attempt
         .intent
         .created_at_time_nanos
-        .checked_add(ICP_LEDGER_DEDUPLICATION_WINDOW_NANOS)
+        .checked_add(snapshot.config.ledger_deduplication_window_nanos)
         .ok_or_else(|| ApiError::Invalid("transfer deduplication deadline overflow".into()))?;
     let (first, can_submit) = match attempt.state {
         TransferState::Prepared => (now, true),
@@ -253,7 +249,8 @@ async fn submit_jupiter_transfer(
             ..
         } => (
             first_submitted_at_nanos,
-            now >= last_submitted_at_nanos.saturating_add(TRANSFER_RETRY_DELAY_NANOS),
+            now.checked_sub(last_submitted_at_nanos)
+                .is_some_and(|elapsed| elapsed >= snapshot.config.transfer_retry_delay_nanos),
         ),
         _ => return Err(ApiError::Invalid("transfer is not dispatchable".into())),
     };
@@ -316,33 +313,21 @@ async fn submit_jupiter_transfer(
     if ensure_exact_jupiter(&submitted, &state::read()).is_err() {
         return Err(ApiError::Busy);
     }
-    let block = match classify_transfer_result(result)? {
-        TransferOutcome::Succeeded(block) => block,
-        TransferOutcome::AmbiguousPossibleEffect(reason) => {
+    let block = match execution::classify_transfer(result)? {
+        ExactTransferOutcome::Succeeded(block) => block,
+        ExactTransferOutcome::Paused(classification, reason) => {
             attempt.state = TransferState::Stuck {
                 reason: reason.clone(),
             };
-            operation.phase = JupiterPhase::Stuck {
-                reason: reason.clone(),
-                pause_reason: JupiterPauseReason::AmbiguousPossibleEffect,
-                transfer: Some(match liquid {
-                    Some((proof, permit)) => JupiterStuckTransfer::Liquid {
-                        proof,
-                        permit,
-                        attempt,
-                    },
-                    None => JupiterStuckTransfer::Stake { before, attempt },
-                }),
-            };
-            pause_and_replace_jupiter(&submitted, operation)?;
-            return Err(ApiError::Pending(reason));
-        }
-        TransferOutcome::RejectedNoEffect {
-            reason,
-            pause_reason,
-        } => {
-            attempt.state = TransferState::Stuck {
-                reason: reason.clone(),
+            let pause_reason = match classification {
+                TransferOutcomeClassification::AmbiguousPossibleEffect => {
+                    JupiterPauseReason::AmbiguousPossibleEffect
+                }
+                TransferOutcomeClassification::BadFee => JupiterPauseReason::BadFee,
+                TransferOutcomeClassification::InsufficientFunds => {
+                    JupiterPauseReason::InsufficientFunds
+                }
+                TransferOutcomeClassification::RejectedNoEffect => JupiterPauseReason::Other,
             };
             operation.phase = JupiterPhase::Stuck {
                 reason: reason.clone(),
@@ -357,7 +342,13 @@ async fn submit_jupiter_transfer(
                 }),
             };
             pause_and_replace_jupiter(&submitted, operation)?;
-            return Err(ApiError::Stuck(reason));
+            return Err(
+                if classification == TransferOutcomeClassification::AmbiguousPossibleEffect {
+                    ApiError::Pending(reason)
+                } else {
+                    ApiError::Stuck(reason)
+                },
+            );
         }
     };
     attempt.state = TransferState::Succeeded { block };
@@ -653,59 +644,6 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<JupiterProgress,
     Ok(jupiter_progress(&operation))
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum TransferOutcome {
-    Succeeded(u128),
-    AmbiguousPossibleEffect(String),
-    RejectedNoEffect {
-        reason: String,
-        pause_reason: JupiterPauseReason,
-    },
-}
-
-fn classify_transfer_result(
-    result: Result<IcrcTransferResult, String>,
-) -> Result<TransferOutcome, ApiError> {
-    match result {
-        Ok(Ok(block)) => nat_to_u128(block)
-            .map(TransferOutcome::Succeeded)
-            .map_err(ApiError::Invalid),
-        Ok(Err(IcrcTransferError::Duplicate { duplicate_of })) => nat_to_u128(duplicate_of)
-            .map(TransferOutcome::Succeeded)
-            .map_err(ApiError::Invalid),
-        Err(error) => Ok(TransferOutcome::AmbiguousPossibleEffect(format!(
-            "ICP transfer callback is ambiguous: {error}"
-        ))),
-        Ok(Err(IcrcTransferError::BadFee { expected_fee })) => {
-            Ok(TransferOutcome::RejectedNoEffect {
-                reason: format!(
-                    "ICP transfer rejected BadFee; approved fee update required (ledger expected {expected_fee})"
-                ),
-                pause_reason: JupiterPauseReason::BadFee,
-            })
-        }
-        Ok(Err(IcrcTransferError::InsufficientFunds { balance })) => {
-            Ok(TransferOutcome::RejectedNoEffect {
-                reason: format!(
-                    "ICP transfer rejected InsufficientFunds; replenish exact staging Account (balance {balance})"
-                ),
-                pause_reason: JupiterPauseReason::InsufficientFunds,
-            })
-        }
-        Ok(Err(error)) => Ok(TransferOutcome::RejectedNoEffect {
-            reason: format!("ICP transfer rejected without effect: {error:?}"),
-            pause_reason: JupiterPauseReason::Other,
-        }),
-    }
-}
-
-fn nat_to_u128(value: Nat) -> Result<u128, String> {
-    value
-        .0
-        .try_into()
-        .map_err(|_| "ledger block does not fit u128".into())
-}
-
 fn checked_now() -> Result<u64, ApiError> {
     let now = ic_cdk::api::time();
     if now == 0 {
@@ -829,11 +767,16 @@ mod tests {
                     jupiter_fee_float_e8s: 20_000,
                     two_week_fee_float_e8s: 10_000,
                     seeded_two_week_principal_e8s: 1,
+                    transfer_retry_delay_nanos: 1_000_000_000,
+                    ledger_deduplication_window_nanos: 86_400_000_000_000,
                 },
                 lifecycle: Lifecycle::Ready,
                 active_operation: None,
                 latest_two_week_target: None,
                 latest_target_generation: 0,
+                two_week_maturity_baseline_reconciled: false,
+                latest_started_two_week_generation: 0,
+                latest_completed_two_week_generation: 0,
                 pending_two_year_maturity: None,
                 pending_two_week_maturity: None,
                 last_two_year_maturity: None,
@@ -849,15 +792,19 @@ mod tests {
         let (principal, state) = valid_test_state();
         crate::state::initialize(state, principal).unwrap();
         assert_eq!(
-            crate::state::target_status(9, 10),
+            crate::state::target_status(9, 10, 1),
             TwoWeekTargetStatus::UnderTarget
         );
         assert_eq!(
-            crate::state::target_status(10, 10),
+            crate::state::target_status(10, 10, 1),
             TwoWeekTargetStatus::AtTarget
         );
         assert_eq!(
-            crate::state::target_status(11, 10),
+            crate::state::target_status(11, 10, 1),
+            TwoWeekTargetStatus::AtTargetWithinUnwindTolerance
+        );
+        assert_eq!(
+            crate::state::target_status(12, 10, 1),
             TwoWeekTargetStatus::OverTarget
         );
     }

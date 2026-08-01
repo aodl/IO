@@ -1,10 +1,11 @@
 use candid::Principal;
 use io_ledger_boundary::{
-    exact_icp_block, icp_account_identifier, IcpExactResult, IcrcTransferError, IcrcTransferResult,
+    exact_icp_block, exact_icp_transfer, icp_account_identifier, ExpectedQueryBlockTransfer,
+    IcpExactResult,
 };
 
 use crate::{
-    api::{ApiError, MaturityProgress},
+    api::{ApiError, MaturityProgress, PrepareTwoWeekMaturityArgs},
     execution,
     maturity::{
         CompletedMaturity, DisburseMaturitySubmission, DisburseMaturitySucceeded,
@@ -13,7 +14,9 @@ use crate::{
         StakeMaturitySucceeded, TwoWeekDeliveryOperation, MINIMUM_DISBURSEMENT_E8S,
     },
     state::{self, Lifecycle, NnsOperation},
-    transfer::{NnsTransferAttempt, NnsTransferIntent, TransferState},
+    transfer::{
+        NnsTransferAttempt, NnsTransferIntent, TransferOutcomeClassification, TransferState,
+    },
 };
 
 pub async fn start(caller: Principal, kind: MaturityKind) -> Result<MaturityProgress, ApiError> {
@@ -21,6 +24,19 @@ pub async fn start(caller: Principal, kind: MaturityKind) -> Result<MaturityProg
     if caller != snapshot.config.sns_governance {
         return Err(ApiError::Unauthorized);
     }
+    if kind == MaturityKind::TwoWeek {
+        return Err(ApiError::Invalid(
+            "two-week maturity must be prepared by the stream manager for a closed cohort".into(),
+        ));
+    }
+    start_observed(snapshot, kind, None).await
+}
+
+pub(crate) async fn start_observed(
+    snapshot: crate::state::NnsStateV1,
+    kind: MaturityKind,
+    cohort: Option<PrepareTwoWeekMaturityArgs>,
+) -> Result<MaturityProgress, ApiError> {
     if snapshot.active_operation.is_some() || pending_from(&snapshot, kind).is_some() {
         return Err(ApiError::Busy);
     }
@@ -41,26 +57,19 @@ pub async fn start(caller: Principal, kind: MaturityKind) -> Result<MaturityProg
             minimum_e8s: MINIMUM_DISBURSEMENT_E8S,
         });
     }
-    let cohort_generation = match kind {
-        MaturityKind::TwoYear => None,
-        MaturityKind::TwoWeek => Some(
-            snapshot
-                .latest_two_week_target
-                .as_ref()
-                .map(|target| target.generation)
-                .ok_or_else(|| {
-                    ApiError::Invalid(
-                        "two-week maturity requires an exact target generation".into(),
-                    )
-                })?,
-        ),
-    };
+    let cohort_generation = cohort.as_ref().map(|value| value.cohort_generation);
+    let cohort_captured_at_seconds = cohort
+        .as_ref()
+        .map(|value| value.captured_at_timestamp_seconds);
+    let cohort_closes_at_seconds = cohort
+        .as_ref()
+        .map(|value| value.closes_at_timestamp_seconds);
 
     let mut latest = state::read();
-    if latest.lifecycle != Lifecycle::Ready
-        || latest.control_epoch != snapshot.control_epoch
-        || latest.active_operation.is_some()
-        || pending_from(&latest, kind).is_some()
+    if latest != snapshot
+        || latest.lifecycle != Lifecycle::Ready
+        || (kind == MaturityKind::TwoWeek
+            && latest.latest_started_two_week_generation.checked_add(1) != cohort_generation)
     {
         return Err(ApiError::Busy);
     }
@@ -81,6 +90,8 @@ pub async fn start(caller: Principal, kind: MaturityKind) -> Result<MaturityProg
             destination,
             requested_at_seconds: now_seconds()?,
             cohort_generation,
+            cohort_captured_at_seconds,
+            cohort_closes_at_seconds,
         }),
     };
     operation
@@ -91,6 +102,9 @@ pub async fn start(caller: Principal, kind: MaturityKind) -> Result<MaturityProg
         )
         .map_err(ApiError::Invalid)?;
     latest.active_operation = Some(NnsOperation::Maturity(Box::new(operation)));
+    if let Some(generation) = cohort_generation {
+        latest.latest_started_two_week_generation = generation;
+    }
     state::write(latest);
     Ok(MaturityProgress::Observed)
 }
@@ -137,7 +151,7 @@ pub async fn resume_kind(kind: MaturityKind) -> Result<MaturityProgress, ApiErro
     match &pending.mint_proof {
         MintProofState::Awaiting => Ok(MaturityProgress::AwaitingMintProof),
         MintProofState::Proved(_) if kind == MaturityKind::TwoWeek => {
-            start_two_week_delivery(pending).await
+            crate::two_week_binding::start_delivery(pending).await
         }
         MintProofState::Delivering(_) => Ok(MaturityProgress::DeliveringTwoWeekReceipt),
         MintProofState::Proved(_) => Err(ApiError::Invalid(
@@ -447,52 +461,6 @@ pub async fn prove_mint(
     }
 }
 
-async fn start_two_week_delivery(
-    expected: PendingMaturityDisbursement,
-) -> Result<MaturityProgress, ApiError> {
-    let MintProofState::Proved(mint) = expected.mint_proof.clone() else {
-        return Err(ApiError::Busy);
-    };
-    let config = state::read().config;
-    let balance = execution::icp_balance(&config, &config.two_week_maturity_staging).await?;
-    ensure_pending(&expected)?;
-    let required = mint
-        .actual_minted_icp_e8s
-        .checked_add(config.two_week_fee_float_e8s)
-        .ok_or_else(|| ApiError::Invalid("two-week delivery preflight overflow".into()))?;
-    if balance < required {
-        return Err(ApiError::Stuck(format!(
-            "two-week staging balance {balance} is below actual Mint plus fee float {required}"
-        )));
-    }
-    let mut latest = state::read();
-    if latest.active_operation.is_some()
-        || pending_from(&latest, MaturityKind::TwoWeek).as_ref() != Some(&expected)
-    {
-        return Err(ApiError::Busy);
-    }
-    let operation_sequence = latest.next_operation_sequence;
-    latest.next_operation_sequence = operation_sequence
-        .checked_add(1)
-        .ok_or_else(|| ApiError::Invalid("operation sequence exhausted".into()))?;
-    let mut passive = expected.clone();
-    passive.mint_proof = MintProofState::Delivering(mint);
-    latest.pending_two_week_maturity = Some(passive.clone());
-    latest.active_operation = Some(NnsOperation::Maturity(Box::new(MaturityCommandOperation {
-        operation_sequence,
-        dispatch_epoch: 0,
-        kind: MaturityKind::TwoWeek,
-        phase: MaturityCommandPhase::TwoWeekDelivery(TwoWeekDeliveryOperation {
-            pending: passive,
-            permit: None,
-            transfer: None,
-            receipt_completed: false,
-        }),
-    })));
-    state::write(latest);
-    Ok(MaturityProgress::DeliveringTwoWeekReceipt)
-}
-
 async fn resume_two_week_delivery(
     operation: MaturityCommandOperation,
     delivery: TwoWeekDeliveryOperation,
@@ -557,6 +525,13 @@ async fn resume_two_week_delivery(
         TransferState::Prepared | TransferState::Submitted { .. } => {
             submit_two_week_transfer(operation, attempt).await
         }
+        TransferState::Paused {
+            classification:
+                TransferOutcomeClassification::AmbiguousPossibleEffect
+                | TransferOutcomeClassification::InsufficientFunds,
+            ..
+        } => submit_two_week_transfer(operation, attempt).await,
+        TransferState::Paused { reason, .. } => Ok(MaturityProgress::Stuck(reason)),
         TransferState::Succeeded { block } if !delivery.receipt_completed => {
             complete_two_week_receipt(operation, permit, block).await
         }
@@ -576,23 +551,41 @@ async fn submit_two_week_transfer(
             epoch,
             first_submitted_at_nanos,
             last_submitted_at_nanos,
+        }
+        | TransferState::Paused {
+            epoch,
+            first_submitted_at_nanos,
+            last_submitted_at_nanos,
+            classification:
+                TransferOutcomeClassification::AmbiguousPossibleEffect
+                | TransferOutcomeClassification::InsufficientFunds,
+            ..
         } => {
-            if now.saturating_sub(last_submitted_at_nanos) < 1_000_000_000 {
+            let config = &state::read().config;
+            if now
+                .checked_sub(last_submitted_at_nanos)
+                .ok_or_else(|| ApiError::Invalid("two-week retry clock regressed".into()))?
+                < config.transfer_retry_delay_nanos
+            {
                 return Ok(MaturityProgress::DeliveringTwoWeekReceipt);
             }
-            if now
-                >= attempt
-                    .intent
-                    .created_at_time_nanos
-                    .saturating_add(86_400_000_000_000)
-            {
+            let deadline = attempt
+                .intent
+                .created_at_time_nanos
+                .checked_add(config.ledger_deduplication_window_nanos)
+                .ok_or_else(|| ApiError::Invalid("two-week retry deadline overflow".into()))?;
+            if now >= deadline {
                 let reason =
                     "two-week transfer retry window expired; exact block proof is required";
                 let mut replacement = operation.clone();
                 let MaturityCommandPhase::TwoWeekDelivery(next) = &mut replacement.phase else {
                     unreachable!()
                 };
-                next.transfer.as_mut().expect("delivery transfer").state = TransferState::Stuck {
+                next.transfer.as_mut().expect("delivery transfer").state = TransferState::Paused {
+                    epoch,
+                    first_submitted_at_nanos,
+                    last_submitted_at_nanos,
+                    classification: TransferOutcomeClassification::AmbiguousPossibleEffect,
                     reason: reason.into(),
                 };
                 write_exact(&operation, replacement, true)?;
@@ -623,8 +616,8 @@ async fn submit_two_week_transfer(
     let submitted = operation.clone();
     let result = execution::submit_transfer(&intent).await;
     ensure_exact(&submitted)?;
-    match classify_transfer(result) {
-        Ok(Some(block)) => {
+    match execution::classify_transfer(result)? {
+        execution::ExactTransferOutcome::Succeeded(block) => {
             let mut replacement = submitted.clone();
             let MaturityCommandPhase::TwoWeekDelivery(next) = &mut replacement.phase else {
                 unreachable!()
@@ -634,41 +627,91 @@ async fn submit_two_week_transfer(
             write_exact(&submitted, replacement, false)?;
             Ok(MaturityProgress::DeliveringTwoWeekReceipt)
         }
-        Ok(None) => Err(ApiError::Pending(
-            "two-week ICP transfer callback is ambiguous; immutable retry remains safe".into(),
-        )),
-        Err(ApiError::Stuck(reason)) => {
+        execution::ExactTransferOutcome::Paused(classification, reason) => {
             let mut replacement = submitted.clone();
             let MaturityCommandPhase::TwoWeekDelivery(next) = &mut replacement.phase else {
                 unreachable!()
             };
-            next.transfer.as_mut().expect("delivery transfer").state = TransferState::Stuck {
+            let TransferState::Submitted {
+                epoch,
+                first_submitted_at_nanos,
+                last_submitted_at_nanos,
+            } = next.transfer.as_ref().expect("delivery transfer").state
+            else {
+                unreachable!()
+            };
+            next.transfer.as_mut().expect("delivery transfer").state = TransferState::Paused {
+                epoch,
+                first_submitted_at_nanos,
+                last_submitted_at_nanos,
+                classification,
                 reason: reason.clone(),
             };
             write_exact(&submitted, replacement, true)?;
             Err(ApiError::Stuck(reason))
         }
-        Err(error) => Err(error),
     }
 }
 
-fn classify_transfer(result: Result<IcrcTransferResult, String>) -> Result<Option<u128>, ApiError> {
-    match result {
-        Ok(Ok(block)) => block
-            .0
-            .try_into()
-            .map(Some)
-            .map_err(|_| ApiError::Invalid("ICP block does not fit u128".into())),
-        Ok(Err(IcrcTransferError::Duplicate { duplicate_of })) => duplicate_of
-            .0
-            .try_into()
-            .map(Some)
-            .map_err(|_| ApiError::Invalid("duplicate ICP block does not fit u128".into())),
-        Err(_) => Ok(None),
-        Ok(Err(error)) => Err(ApiError::Stuck(format!(
-            "two-week ICP transfer rejected without effect: {error:?}"
-        ))),
+pub async fn prove_active_transfer(
+    operation: MaturityCommandOperation,
+    block_index: u128,
+) -> Result<MaturityProgress, ApiError> {
+    let delivery = match &operation.phase {
+        MaturityCommandPhase::TwoWeekDelivery(delivery) => delivery,
+        _ => {
+            return Err(ApiError::Invalid(
+                "active maturity operation has no two-week transfer proof slot".into(),
+            ))
+        }
+    };
+    let attempt = delivery
+        .transfer
+        .as_ref()
+        .ok_or_else(|| ApiError::Invalid("two-week transfer is not prepared".into()))?;
+    if !matches!(
+        attempt.state,
+        TransferState::Paused {
+            classification: TransferOutcomeClassification::AmbiguousPossibleEffect,
+            ..
+        }
+    ) {
+        return Err(ApiError::Invalid(
+            "only an ambiguous possible-effect transfer accepts exact proof".into(),
+        ));
     }
+    let exact = exact_icp_transfer(attempt.intent.ledger, block_index)
+        .await
+        .map_err(ApiError::Invalid)?;
+    ensure_exact(&operation)?;
+    let from = icp_account_identifier(&crate::state::Account {
+        owner: ic_cdk::api::canister_self(),
+        subaccount: Some(attempt.intent.source_subaccount.to_vec()),
+    })
+    .map_err(ApiError::Invalid)?;
+    let to = icp_account_identifier(&attempt.intent.destination).map_err(ApiError::Invalid)?;
+    if !exact.matches(&ExpectedQueryBlockTransfer {
+        from: &from,
+        to: &to,
+        amount_e8s: attempt.intent.amount_e8s,
+        fee_e8s: attempt.intent.fee_e8s,
+        native_memo_u64: 0,
+        icrc1_memo: Some(&attempt.intent.memo),
+        created_at_time: attempt.intent.created_at_time_nanos,
+        spender: None,
+    }) {
+        return Err(ApiError::Invalid(
+            "exact ICP block does not match the two-week delivery intent".into(),
+        ));
+    }
+    let mut replacement = operation.clone();
+    let MaturityCommandPhase::TwoWeekDelivery(delivery) = &mut replacement.phase else {
+        unreachable!()
+    };
+    delivery.transfer.as_mut().expect("delivery transfer").state =
+        TransferState::Succeeded { block: block_index };
+    write_exact(&operation, replacement, false)?;
+    Ok(MaturityProgress::DeliveringTwoWeekReceipt)
 }
 
 async fn complete_two_week_receipt(
@@ -743,7 +786,16 @@ fn finish_two_week(
     )?;
     if stream.request_fingerprint != fingerprint
         || stream.receipt_block != receipt_block
-        || stream.backed_io_pool_e8s != stream.distributed_io_e8s.saturating_add(stream.dust_io_e8s)
+        || stream.backed_io_pool_e8s
+            != stream
+                .distributed_io_e8s
+                .checked_add(stream.total_dust_io_e8s)
+                .ok_or_else(|| ApiError::Invalid("two-week receipt total overflow".into()))?
+        || stream.total_dust_io_e8s
+            != stream
+                .forfeited_io_e8s
+                .checked_add(stream.rounding_dust_io_e8s)
+                .ok_or_else(|| ApiError::Invalid("two-week receipt dust overflow".into()))?
         || stream.completed_at_nanos == 0
     {
         return Err(ApiError::Invalid(
@@ -768,6 +820,18 @@ fn finish_two_week(
     latest.active_operation = None;
     latest.pending_two_week_maturity = None;
     latest.last_two_week_maturity = Some(completed.clone());
+    let generation = delivery
+        .pending
+        .stake_evidence
+        .plan
+        .cohort_generation
+        .ok_or_else(|| ApiError::Invalid("two-week completion lacks generation".into()))?;
+    if generation != latest.latest_started_two_week_generation
+        || generation <= latest.latest_completed_two_week_generation
+    {
+        return Err(ApiError::Busy);
+    }
+    latest.latest_completed_two_week_generation = generation;
     state::write(latest);
     Ok(MaturityProgress::Completed(completed))
 }
@@ -893,7 +957,7 @@ fn move_to_passive(
     Ok(())
 }
 
-fn pending_from(
+pub(crate) fn pending_from(
     state: &crate::state::NnsStateV1,
     kind: MaturityKind,
 ) -> Option<PendingMaturityDisbursement> {
@@ -910,7 +974,7 @@ fn set_pending(state: &mut crate::state::NnsStateV1, pending: PendingMaturityDis
     }
 }
 
-fn ensure_pending(expected: &PendingMaturityDisbursement) -> Result<(), ApiError> {
+pub(crate) fn ensure_pending(expected: &PendingMaturityDisbursement) -> Result<(), ApiError> {
     if pending_from(&state::read(), expected.kind).as_ref() == Some(expected) {
         Ok(())
     } else {

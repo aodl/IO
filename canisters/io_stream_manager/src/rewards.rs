@@ -11,7 +11,7 @@ use crate::{
     },
     reward_evidence::{
         canonical_eligible, capture_proposal_window, close_proposal_window, eligible_members,
-        list_all_neurons, participation, NeuronId,
+        exact_neuron, list_all_neurons, participation,
     },
     state::{self, Account, Lifecycle, RewardCohort},
     transfer::{
@@ -24,6 +24,18 @@ use crate::{
 struct SetTargetArgs {
     target_e8s: u128,
     generation: u64,
+}
+
+#[derive(Clone, Debug, CandidType)]
+struct PrepareTwoWeekMaturityArgs {
+    cohort_generation: u64,
+    captured_at_timestamp_seconds: u64,
+    closes_at_timestamp_seconds: u64,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+enum PreparedMaturityProgress {
+    Observed,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -46,6 +58,7 @@ enum NnsError {
 enum TargetStatus {
     UnderTarget,
     AtTarget,
+    AtTargetWithinUnwindTolerance,
     OverTarget,
 }
 
@@ -72,28 +85,6 @@ enum ClaimBy {
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 struct Empty {}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-struct GovernanceError {
-    error_message: String,
-    error_type: i32,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-struct ClaimOrRefreshResponse {
-    refreshed_neuron_id: Option<NeuronId>,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-enum ManageNeuronCommandResponse {
-    Error(GovernanceError),
-    ClaimOrRefresh(ClaimOrRefreshResponse),
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-struct ManageNeuronResponse {
-    command: Option<ManageNeuronCommandResponse>,
-}
 
 pub async fn capture(now_seconds: u64) -> Result<RewardCohort, ApiError> {
     let snapshot = state::read();
@@ -153,12 +144,15 @@ pub async fn capture(now_seconds: u64) -> Result<RewardCohort, ApiError> {
         open_proposal_ids_at_capture,
         members,
     };
-    cohort.validate().map_err(ApiError::Invalid)?;
+    cohort
+        .validate(&snapshot.config)
+        .map_err(ApiError::Invalid)?;
     let mut latest = snapshot;
     latest.latest_cohort_generation = generation;
     latest.next_cohort_timestamp_seconds = cohort.closes_at_timestamp_seconds;
     latest.active_reward_cohort = Some(cohort.clone());
     state::write(latest);
+    crate::cohort_timer::install(Some(cohort.closes_at_timestamp_seconds));
     Ok(cohort)
 }
 
@@ -199,16 +193,51 @@ pub async fn close(now_seconds: u64) -> Result<RewardCohort, ApiError> {
         member.eligible_closed_proposals = eligible;
         member.voted_closed_proposals = voted;
     }
+    prepare_two_week_maturity(snapshot.config.nns_manager, &cohort).await?;
     if state::read() != snapshot {
         return Err(ApiError::Busy);
     }
-    cohort.validate().map_err(ApiError::Invalid)?;
+    cohort
+        .validate(&snapshot.config)
+        .map_err(ApiError::Invalid)?;
     let mut latest = snapshot;
     latest.active_reward_cohort = None;
     latest.pending_reward_cohort = Some(cohort.clone());
     latest.next_cohort_timestamp_seconds = 0;
     state::write(latest);
+    crate::cohort_timer::install(None);
     Ok(cohort)
+}
+
+async fn prepare_two_week_maturity(
+    manager: Principal,
+    cohort: &RewardCohort,
+) -> Result<(), ApiError> {
+    let result: Result<PreparedMaturityProgress, NnsError> =
+        Call::bounded_wait(manager, "prepare_two_week_maturity")
+            .with_arg(PrepareTwoWeekMaturityArgs {
+                cohort_generation: cohort.generation,
+                captured_at_timestamp_seconds: cohort.captured_at_timestamp_seconds,
+                closes_at_timestamp_seconds: cohort.closes_at_timestamp_seconds,
+            })
+            .await
+            .map_err(|error| {
+                ApiError::Pending(format!(
+                    "two-week maturity preparation ambiguous: {error:?}"
+                ))
+            })?
+            .candid()
+            .map_err(|error| {
+                ApiError::Invalid(format!(
+                    "two-week maturity preparation decode failed: {error:?}"
+                ))
+            })?;
+    match result {
+        Ok(PreparedMaturityProgress::Observed) => Ok(()),
+        Err(error) => Err(ApiError::Invalid(format!(
+            "NNS rejected two-week maturity preparation: {error:?}"
+        ))),
+    }
 }
 
 fn require_capture_slot(
@@ -218,7 +247,6 @@ fn require_capture_slot(
     if state.lifecycle != Lifecycle::Ready
         || state.active_operation.is_some()
         || state.active_reward_cohort.is_some()
-        || state.pending_reward_cohort.is_some()
     {
         return Err(ApiError::Busy);
     }
@@ -343,8 +371,10 @@ async fn prepare_settlement(
                 destination: member.account.clone(),
                 before_stake_e8s: member.observed_stake_e8s,
                 io_e8s: allocation.io_e8s,
+                eligibility_checked: false,
+                forfeited: false,
                 transfer: None,
-                refreshed: false,
+                refresh_submitted: false,
             })
         })
         .collect::<Result<Vec<_>, ApiError>>()?;
@@ -377,7 +407,8 @@ async fn prepare_settlement(
         recipient_index: 0,
         distributed_io_e8s: 0,
         forfeited_io_e8s: allocation.forfeited_reward_e8s,
-        dust_io_e8s: allocation.dust_e8s,
+        rounding_dust_io_e8s: allocation.rounding_dust_e8s,
+        total_dust_io_e8s: allocation.dust_e8s,
     });
     crate::receipt::persist_exact(
         &LiquidReceiptOperation::TwoWeek(Box::new(operation)),
@@ -399,23 +430,98 @@ async fn resume_recipient(
         return complete_settlement(operation, now);
     }
     let recipient = &settlement.recipients[index];
+    if !recipient.eligibility_checked {
+        return check_recipient_eligibility(operation).await;
+    }
+    if recipient.forfeited {
+        return Err(ApiError::Invalid(
+            "forfeited reward recipient index was not advanced".into(),
+        ));
+    }
     match &recipient.transfer {
         None => submit_recipient(operation, now).await,
         Some(transfer) => match transfer.state {
             TransferState::Prepared | TransferState::Submitted { .. } => {
                 submit_recipient(operation, now).await
             }
-            TransferState::Succeeded { .. } if !recipient.refreshed => {
+            TransferState::Succeeded { .. } if !recipient.refresh_submitted => {
                 refresh_recipient(operation).await
             }
-            TransferState::Succeeded { .. } => Err(ApiError::Invalid(
-                "refreshed recipient index was not advanced".into(),
-            )),
+            TransferState::Succeeded { .. } => observe_refresh(operation).await,
             TransferState::Stuck { ref reason } => {
                 Ok(crate::api::LiquidReceiptProgress::Stuck(reason.clone()))
             }
         },
     }
+}
+
+async fn check_recipient_eligibility(
+    operation: TwoWeekReceiptOperation,
+) -> Result<crate::api::LiquidReceiptProgress, ApiError> {
+    let snapshot = state::read();
+    let settlement = operation.settlement.as_ref().expect("validated settlement");
+    let index = settlement.recipient_index as usize;
+    let recipient = &settlement.recipients[index];
+    let neuron = exact_neuron(snapshot.config.sns_governance, &recipient.sns_neuron_id).await?;
+    if active_two_week()? != operation {
+        return Err(ApiError::Busy);
+    }
+    let account = Account {
+        owner: snapshot.config.sns_governance,
+        subaccount: Some(recipient.sns_neuron_id.clone()),
+    };
+    if !account
+        .effective_eq(&recipient.destination)
+        .map_err(ApiError::Invalid)?
+    {
+        return Err(ApiError::Invalid(
+            "reward destination does not match its SNS neuron ID".into(),
+        ));
+    }
+    let excluded = snapshot
+        .config
+        .excluded_io_accounts
+        .iter()
+        .try_fold(false, |matched, excluded| {
+            account.effective_eq(excluded).map(|same| matched || same)
+        })
+        .map_err(ApiError::Invalid)?;
+    let mut replacement = operation.clone();
+    let settlement = replacement
+        .settlement
+        .as_mut()
+        .expect("validated settlement");
+    let recipient = &mut settlement.recipients[index];
+    recipient.eligibility_checked = true;
+    if let Some(neuron) = neuron.filter(|value| canonical_eligible(value) && !excluded) {
+        recipient.before_stake_e8s = u128::from(neuron.cached_neuron_stake_e8s);
+    } else {
+        forfeit_current_recipient(settlement)?;
+    }
+    crate::receipt::persist_exact(
+        &LiquidReceiptOperation::TwoWeek(Box::new(operation)),
+        LiquidReceiptOperation::TwoWeek(Box::new(replacement)),
+    )?;
+    Ok(crate::api::LiquidReceiptProgress::Settling)
+}
+
+fn forfeit_current_recipient(settlement: &mut TwoWeekSettlement) -> Result<(), ApiError> {
+    let index = settlement.recipient_index as usize;
+    let amount = settlement.recipients[index].io_e8s;
+    settlement.recipients[index].forfeited = true;
+    settlement.forfeited_io_e8s = settlement
+        .forfeited_io_e8s
+        .checked_add(amount)
+        .ok_or_else(|| ApiError::Invalid("reward forfeiture overflow".into()))?;
+    settlement.total_dust_io_e8s = settlement
+        .total_dust_io_e8s
+        .checked_add(amount)
+        .ok_or_else(|| ApiError::Invalid("reward dust overflow".into()))?;
+    settlement.recipient_index = settlement
+        .recipient_index
+        .checked_add(1)
+        .ok_or_else(|| ApiError::Invalid("reward recipient index overflow".into()))?;
+    Ok(())
 }
 
 async fn submit_recipient(
@@ -455,15 +561,19 @@ async fn submit_recipient(
                 first_submitted_at,
                 last_submitted_at,
             } => {
-                if now.saturating_sub(last_submitted_at) < config.retry_delay_nanos {
+                if now
+                    .checked_sub(last_submitted_at)
+                    .ok_or_else(|| ApiError::Invalid("reward retry clock regressed".into()))?
+                    < config.retry_delay_nanos
+                {
                     return Ok(crate::api::LiquidReceiptProgress::Settling);
                 }
-                if now
-                    >= attempt
-                        .intent
-                        .created_at_time()
-                        .saturating_add(config.ledger_deduplication_window_nanos)
-                {
+                let deadline = attempt
+                    .intent
+                    .created_at_time()
+                    .checked_add(config.ledger_deduplication_window_nanos)
+                    .ok_or_else(|| ApiError::Invalid("reward retry deadline overflow".into()))?;
+                if now >= deadline {
                     return stick_recipient(operation, "reward transfer retry window expired");
                 }
                 (
@@ -550,46 +660,63 @@ async fn refresh_recipient(
 ) -> Result<crate::api::LiquidReceiptProgress, ApiError> {
     let settlement = operation.settlement.as_ref().expect("validated settlement");
     let index = settlement.recipient_index as usize;
+    let neuron_id = settlement.recipients[index].sns_neuron_id.clone();
+    let mut submitted = operation.clone();
+    submitted
+        .settlement
+        .as_mut()
+        .expect("validated settlement")
+        .recipients[index]
+        .refresh_submitted = true;
+    crate::receipt::persist_exact(
+        &LiquidReceiptOperation::TwoWeek(Box::new(operation)),
+        LiquidReceiptOperation::TwoWeek(Box::new(submitted.clone())),
+    )?;
+    let result = Call::bounded_wait(state::read().config.sns_governance, "manage_neuron")
+        .with_arg(ManageNeuronRequest {
+            subaccount: neuron_id,
+            command: Some(ManageNeuronCommand::ClaimOrRefresh(ClaimOrRefresh {
+                by: Some(ClaimBy::NeuronId(Empty {})),
+            })),
+        })
+        .await;
+    if active_two_week()? != submitted {
+        return Err(ApiError::Busy);
+    }
+    result
+        .map(|_| crate::api::LiquidReceiptProgress::Settling)
+        .map_err(|error| ApiError::Pending(format!("SNS reward refresh ambiguous: {error:?}")))
+}
+
+async fn observe_refresh(
+    operation: TwoWeekReceiptOperation,
+) -> Result<crate::api::LiquidReceiptProgress, ApiError> {
+    let settlement = operation.settlement.as_ref().expect("validated settlement");
+    let index = settlement.recipient_index as usize;
     let recipient = &settlement.recipients[index];
-    let response: ManageNeuronResponse =
-        Call::bounded_wait(state::read().config.sns_governance, "manage_neuron")
-            .with_arg(ManageNeuronRequest {
-                subaccount: recipient.sns_neuron_id.clone(),
-                command: Some(ManageNeuronCommand::ClaimOrRefresh(ClaimOrRefresh {
-                    by: Some(ClaimBy::NeuronId(Empty {})),
-                })),
-            })
-            .await
-            .map_err(|error| ApiError::Pending(format!("SNS reward refresh ambiguous: {error:?}")))?
-            .candid()
-            .map_err(|error| {
-                ApiError::Invalid(format!("SNS reward refresh decode failed: {error:?}"))
-            })?;
+    let neuron = exact_neuron(
+        state::read().config.sns_governance,
+        &recipient.sns_neuron_id,
+    )
+    .await?
+    .ok_or_else(|| ApiError::Pending("refreshed SNS neuron is absent".into()))?;
     if active_two_week()? != operation {
         return Err(ApiError::Busy);
     }
-    match response.command {
-        Some(ManageNeuronCommandResponse::ClaimOrRefresh(value))
-            if value.refreshed_neuron_id.as_ref().map(|id| &id.id)
-                == Some(&recipient.sns_neuron_id) => {}
-        Some(ManageNeuronCommandResponse::Error(error)) => {
-            return Err(ApiError::Invalid(format!(
-                "SNS reward refresh rejected ({}): {}",
-                error.error_type, error.error_message
-            )))
-        }
-        _ => {
-            return Err(ApiError::Invalid(
-                "SNS reward refresh returned wrong result".into(),
-            ))
-        }
+    let expected = recipient
+        .before_stake_e8s
+        .checked_add(recipient.io_e8s)
+        .ok_or_else(|| ApiError::Invalid("reward stake expectation overflow".into()))?;
+    if u128::from(neuron.cached_neuron_stake_e8s) < expected {
+        return Err(ApiError::Pending(
+            "SNS reward refresh stake increase is not canonically observable".into(),
+        ));
     }
     let mut replacement = operation.clone();
     let settlement = replacement
         .settlement
         .as_mut()
         .expect("validated settlement");
-    settlement.recipients[index].refreshed = true;
     settlement.distributed_io_e8s = settlement
         .distributed_io_e8s
         .checked_add(settlement.recipients[index].io_e8s)
@@ -615,7 +742,8 @@ fn complete_settlement(
         .ok_or_else(|| ApiError::Invalid("two-week receipt block is missing".into()))?;
     if settlement
         .distributed_io_e8s
-        .saturating_add(settlement.dust_io_e8s)
+        .checked_add(settlement.total_dust_io_e8s)
+        .ok_or_else(|| ApiError::Invalid("two-week settlement total overflow".into()))?
         != settlement.backed_io_pool_e8s
     {
         return Err(ApiError::Invalid(
@@ -627,7 +755,9 @@ fn complete_settlement(
         receipt_block,
         backed_io_pool_e8s: settlement.backed_io_pool_e8s,
         distributed_io_e8s: settlement.distributed_io_e8s,
-        dust_io_e8s: settlement.dust_io_e8s,
+        forfeited_io_e8s: settlement.forfeited_io_e8s,
+        rounding_dust_io_e8s: settlement.rounding_dust_io_e8s,
+        total_dust_io_e8s: settlement.total_dust_io_e8s,
         completed_at_nanos: now,
     });
     let expected = LiquidReceiptOperation::TwoWeek(Box::new(operation.clone()));
@@ -742,3 +872,42 @@ pub(crate) async fn prove_recipient_transfer(block_index: u128) -> Result<(), Ap
 }
 
 pub use io_reward_policy::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn payout_ineligibility_preserves_rounding_and_adds_exact_forfeiture() {
+        let recipient = RewardRecipient {
+            sns_neuron_id: vec![1; 32],
+            destination: Account {
+                owner: Principal::from_slice(&[2; 29]),
+                subaccount: Some(vec![1; 32]),
+            },
+            before_stake_e8s: 0,
+            io_e8s: 50,
+            eligibility_checked: true,
+            forfeited: false,
+            transfer: None,
+            refresh_submitted: false,
+        };
+        let mut settlement = TwoWeekSettlement {
+            backed_io_pool_e8s: 101,
+            recipients: vec![recipient],
+            recipient_index: 0,
+            distributed_io_e8s: 50,
+            forfeited_io_e8s: 0,
+            rounding_dust_io_e8s: 1,
+            total_dust_io_e8s: 1,
+        };
+        forfeit_current_recipient(&mut settlement).unwrap();
+        assert_eq!(settlement.forfeited_io_e8s, 50);
+        assert_eq!(settlement.rounding_dust_io_e8s, 1);
+        assert_eq!(settlement.total_dust_io_e8s, 51);
+        assert_eq!(
+            settlement.distributed_io_e8s + settlement.total_dust_io_e8s,
+            101
+        );
+    }
+}
