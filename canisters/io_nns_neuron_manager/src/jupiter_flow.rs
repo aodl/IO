@@ -794,14 +794,14 @@ mod tests {
     use super::*;
     use crate::TwoWeekTargetStatus;
 
-    #[test]
-    fn target_updates_are_strict_and_coalesced() {
+    fn valid_test_state() -> (Principal, crate::state::NnsStateV1) {
         let principal = Principal::from_slice(&[1; 29]);
         let account = |subaccount: u8| crate::state::Account {
             owner: principal,
             subaccount: Some(vec![subaccount; 32]),
         };
-        state::initialize(
+        (
+            principal,
             crate::state::NnsStateV1 {
                 config: crate::state::NnsConfig {
                     sns_governance: Principal::from_slice(&[2; 29]),
@@ -841,9 +841,13 @@ mod tests {
                 next_operation_sequence: 1,
                 control_epoch: 0,
             },
-            principal,
         )
-        .unwrap();
+    }
+
+    #[test]
+    fn target_updates_are_strict_and_coalesced() {
+        let (principal, state) = valid_test_state();
+        crate::state::initialize(state, principal).unwrap();
         assert_eq!(
             crate::state::target_status(9, 10),
             TwoWeekTargetStatus::UnderTarget
@@ -865,5 +869,145 @@ mod tests {
         let first_submitted = 90;
         assert_eq!(deadline, 110);
         assert_ne!(first_submitted + 100, deadline);
+    }
+
+    #[test]
+    fn reverse_callbacks_cannot_overwrite_any_newer_jupiter_phase() {
+        let (principal, mut latest) = valid_test_state();
+        latest.next_operation_sequence = 2;
+        state::initialize(latest.clone(), principal).unwrap();
+        let neuron = jupiter::NeuronSnapshot {
+            neuron_id: 1,
+            staking_subaccount: [7; 32],
+            cached_stake_e8s: 1_000,
+        };
+        let stake_attempt = NnsTransferAttempt::prepared(NnsTransferIntent {
+            ledger: latest.config.icp_ledger,
+            source_subaccount: [1; 32],
+            destination: crate::state::Account {
+                owner: latest.config.nns_governance,
+                subaccount: Some(neuron.staking_subaccount.to_vec()),
+            },
+            amount_e8s: 400,
+            fee_e8s: 10,
+            memo: vec![1],
+            created_at_time_nanos: 1,
+        })
+        .unwrap();
+        let succeeded = StakeTransferSucceeded {
+            before: neuron.clone(),
+            block_index: 10,
+        };
+        let proof = StakeIncreaseProof {
+            before: neuron,
+            after_cached_stake_e8s: 1_400,
+            stake_transfer_block: 10,
+        };
+        let permit = jupiter::StreamReceiptPermit {
+            sequence: 11,
+            destination: latest.config.stream_liquid_account.clone(),
+            memo: vec![2],
+        };
+        let liquid_attempt = NnsTransferAttempt::prepared(NnsTransferIntent {
+            ledger: latest.config.icp_ledger,
+            source_subaccount: [1; 32],
+            destination: permit.destination.clone(),
+            amount_e8s: 600,
+            fee_e8s: 10,
+            memo: permit.memo.clone(),
+            created_at_time_nanos: 2,
+        })
+        .unwrap();
+        let liquid = LiquidTransferSucceeded {
+            proof: proof.clone(),
+            permit: permit.clone(),
+            block_index: 12,
+        };
+        let operation = |phase| JupiterOperation {
+            operation_sequence: 1,
+            dispatch_epoch: 0,
+            captured_control_epoch: 0,
+            deposit: JupiterDeposit {
+                block_index: 1,
+                gross_e8s: 1_000,
+                stake_e8s: 400,
+                liquid_e8s: 600,
+                created_at_time_nanos: 1,
+            },
+            phase,
+        };
+        let cases = [
+            (
+                "neuron query during stake preparation",
+                operation(JupiterPhase::DepositProved),
+                operation(JupiterPhase::StakeTransferPrepared {
+                    before: succeeded.before.clone(),
+                    attempt: stake_attempt.clone(),
+                }),
+            ),
+            (
+                "stake transfer callback",
+                operation(JupiterPhase::StakeTransferSubmitted {
+                    before: succeeded.before.clone(),
+                    attempt: stake_attempt,
+                }),
+                operation(JupiterPhase::StakeTransferSucceeded(succeeded.clone())),
+            ),
+            (
+                "claim or refresh callback",
+                operation(JupiterPhase::StakeTransferSucceeded(succeeded.clone())),
+                operation(JupiterPhase::RefreshSubmitted(succeeded)),
+            ),
+            (
+                "stake increase query",
+                operation(JupiterPhase::RefreshSubmitted(StakeTransferSucceeded {
+                    before: proof.before.clone(),
+                    block_index: proof.stake_transfer_block,
+                })),
+                operation(JupiterPhase::StakeIncreaseProved(proof.clone())),
+            ),
+            (
+                "receipt preparation",
+                operation(JupiterPhase::StakeIncreaseProved(proof.clone())),
+                operation(JupiterPhase::ReceiptPermitPrepared {
+                    proof: proof.clone(),
+                    permit: permit.clone(),
+                }),
+            ),
+            (
+                "liquid transfer callback",
+                operation(JupiterPhase::LiquidTransferSubmitted {
+                    proof: proof.clone(),
+                    permit: permit.clone(),
+                    attempt: liquid_attempt,
+                }),
+                operation(JupiterPhase::LiquidTransferSucceeded(liquid.clone())),
+            ),
+            (
+                "receipt completion",
+                operation(JupiterPhase::ReceiptCompletionSubmitted(liquid.clone())),
+                operation(JupiterPhase::AwaitingStreamSettlement(liquid.clone())),
+            ),
+            (
+                "stream settlement observation",
+                operation(JupiterPhase::AwaitingStreamSettlement(liquid)),
+                operation(JupiterPhase::Stuck {
+                    reason: "newer reviewed state".into(),
+                    pause_reason: JupiterPauseReason::Other,
+                    transfer: None,
+                }),
+            ),
+        ];
+        for (name, expected, active) in cases {
+            latest.active_operation = Some(NnsOperation::Jupiter(Box::new(active.clone())));
+            state::write(latest.clone());
+            let before = state::read();
+            assert_eq!(
+                replace_jupiter(&expected, active),
+                Err(ApiError::Busy),
+                "{name}"
+            );
+            assert_eq!(state::read(), before, "{name} mutated the newer operation");
+        }
     }
 }
