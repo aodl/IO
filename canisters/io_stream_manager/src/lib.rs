@@ -32,6 +32,9 @@ pub struct InitArgs {
 
 #[cfg_attr(target_family = "wasm", ic_cdk::init)]
 pub fn init(args: InitArgs) {
+    // The V1 install field is retained for Candid compatibility. A cohort's
+    // only deadline is derived from its actual capture time, so an empty
+    // launch state never installs or persists a pre-capture deadline.
     let state = StreamStateV1 {
         config: args.config,
         lifecycle: Lifecycle::Paused,
@@ -40,7 +43,7 @@ pub fn init(args: InitArgs) {
         pending_reward_cohort: None,
         latest_cohort_generation: 0,
         next_nns_receipt_sequence: 0,
-        next_cohort_timestamp_seconds: args.next_cohort_timestamp_seconds,
+        next_cohort_timestamp_seconds: 0,
         next_operation_sequence: state::OperationSequence(0),
         control_epoch: 0,
         last_completed_receipt: None,

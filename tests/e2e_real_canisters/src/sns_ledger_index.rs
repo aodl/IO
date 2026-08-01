@@ -489,7 +489,7 @@ pub fn run_installed_stream_redemption(required: bool) {
             retry_delay_nanos: 1_000_000_000,
             ledger_deduplication_window_nanos: 86_400_000_000_000,
         },
-        next_cohort_timestamp_seconds: 1_209_600,
+        next_cohort_timestamp_seconds: 0,
     };
     pic.install_canister(stream, stream_wasm.clone(), encode_one(init).unwrap(), None);
     let status: Status = decode_one(

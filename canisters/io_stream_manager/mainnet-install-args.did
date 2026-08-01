@@ -19,5 +19,5 @@
     retry_delay_nanos = TODO_RETRY_DELAY : nat64;
     ledger_deduplication_window_nanos = TODO_DEDUP_WINDOW : nat64;
   };
-  next_cohort_timestamp_seconds = TODO_COHORT_TIMESTAMP : nat64;
+  next_cohort_timestamp_seconds = 0 : nat64;
 })
