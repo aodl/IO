@@ -39,14 +39,34 @@ This document records the deterministic composition defects reproduced from the 
 
 The same installed test prepares a Jupiter receipt, transfers ICP from the exact configured NNS source, proves that block through the official ledger's `query_blocks` shape, settles backed IO from reserve to the fixed Jupiter Account, checks the exact fee burn, upgrades, and replays the durable receipt permit while Paused. The test therefore composes both payout and receipt proof against the production-shaped ICP interface rather than a second SNS ledger substitute.
 
+## Exact reward, receipt, and target regressions
+
+| Item | Reproduced defect | Durable correction |
+| --- | --- | --- |
+| A | A proposal decided in the capture second entered a new cohort. | Participation uses `captured_at < decided_at <= closes_at`; `same_second_proposal_is_not_counted_for_new_cohort` protects the exclusive lower bound. |
+| B | Synthetic ballot values 3 and 4 were treated as followed votes. | Only the pinned SNS `Yes = 1` and `No = 2` values count. Finalized-SNS following evidence observes the follower's resulting canonical Yes ballot. |
+| C | Protocol-owned and Jupiter-governance staking Accounts could enter membership and inflate the target. | The exact staking Account is SNS governance plus the 32-byte neuron ID subaccount; configured excluded Accounts are removed from membership, frozen stake, and target input. |
+| D | Close-time eligibility was sufficient for payout. | Each recipient is re-read through exact `get_neuron` before transfer. A missing, dissolving, wrong-delay, zero-stake, malformed, or newly excluded destination is advanced without transfer and its immutable allocation becomes forfeiture. |
+| E | Completed receipt evidence collapsed forfeiture and rounding. | Settlement and typed completion preserve `forfeited_io_e8s`, `rounding_dust_io_e8s`, and their checked `total_dust_io_e8s`; no component is redistributed. |
+| F | A liquid donation after permit preparation changed issuance. | `ReceiptPreparation` captures one immutable canonical backing snapshot before returning the permit. Jupiter and reward pricing use that snapshot, while conservative postconditions permit only donations and extra fee burn. |
+| G | Two-week maturity could start before cohort close. | Only the configured stream manager may prepare it, and the exact generation, capture time, close time, target generation, and 1,209,600-second interval must match after the deadline. |
+| H | A target generation could be started twice. | Stable latest-started and latest-completed generation counters plus exact active/passive plan matching make replay idempotent and conflicting reuse invalid. |
+| I | A dissolving unwind child inflated active capacity. | Capacity is the canonical non-dissolving parent stake only; child principal is exposed separately. |
+| J | Same-generation UnderTarget replay returned stale state. | Every exact replay queries the parent again and replaces the observed target status by full-state compare-and-swap. |
+| K | A target written while another NNS operation was active never created its later unwind. | An idle `resume` first reconciles the latest target and creates at most one direct child when the parent is materially OverTarget. |
+| L | Lifetime proposal count exhausted close capacity. | Capture stores the latest proposal anchor and bounded open IDs. Close pages only newer IDs, re-fetches carried opens, de-duplicates, and fails closed at per-cohort bounds. |
+| M | Two-week staging ambiguity had no exact-proof route. | NNS `prove_active_transfer` dispatches by typed operation. Only `AmbiguousPossibleEffect` accepts a single exact ICP block matching the immutable intent. |
+| N | A successful refresh response advanced a reward without stake evidence. | Refresh submission is persisted first; a later exact neuron observation must show at least the pre-transfer stake plus the full reward. |
+| O | Stable reward state accepted duplicate neuron IDs or mismatched destinations. | V1 validation requires unique 32-byte IDs and effective Accounts, exact SNS-governance ownership/subaccount derivation, exclusions, checked totals, and unique proposal IDs. |
+
 ## Remaining vertical work
 
 The safety and topology invariants above are implemented. The NNS manager has a
-typed proof-bound Jupiter 40/60 executor and an executable direct maturity
-command/Mint-proof path. The browser implements the explicit redemption flow
-against the stream manager and IO ledger while keeping historian reads
-observation-only. Installed official-Governance execution, two-week serialized
-reward fan-out, the direct unwind child, and complete historian status
-projection remain required before final P0 completion. NNS readiness
-deliberately returns `ImplementationIncomplete` rather than exposing Ready
-until those effects and their upgrade matrix exist.
+typed proof-bound Jupiter 40/60 executor, direct maturity/Mint proof, exact
+cohort binding, two-week delivery recovery, and one direct unwind child. The
+stream manager has immutable receipt pricing and recipient-serialized reward
+fan-out with payout-time eligibility and observed refresh completion. The
+browser keeps an explicit wallet boundary and historian reads remain
+observation-only. Controlled real-NNS execution and the complete upgrade/failure
+matrix remain incomplete, so NNS readiness deliberately returns
+`ImplementationIncomplete` and IO remains Paused.

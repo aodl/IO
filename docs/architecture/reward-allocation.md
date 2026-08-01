@@ -18,7 +18,7 @@ participation_factor =
 
 If no eligible proposals closed during the interval, participation is treated as 100%.
 
-Votes through following count as participation in the model. Accepted and rejected closed reward-eligible proposals count. Open proposals, proposals outside the cohort period, and excluded topics do not count.
+Direct and followed votes are both represented by their resulting canonical SNS ballot. Only `Yes = 1` and `No = 2` count; `Unspecified = 0` and unsupported values do not. A reward-eligible proposal counts only when `captured_at < decided_at <= closes_at`. A proposal open before capture is carried by bounded ID and counts if it closes in that interval; a proposal already closed at capture does not.
 
 Rounding is conservative. Dust is reported and remains unissued. Excluded Jupiter governance and protocol-owned neurons cannot receive allocations.
 
@@ -36,6 +36,6 @@ redemption_rate =
 
 Only liquid ICP counts as redemption NAV.
 
-Read-only SNS governance snapshotting feeds this policy by capturing a frozen cohort of exact reward-eligible 14-day, non-dissolving user neurons and then summarizing closed-proposal participation for that cohort. New stake, top-ups, and shorter technically creatable SNS neurons join no current reward cohort unless they satisfy the exact eligibility policy at a later capture. A cohort member that is no longer an exact eligible destination at payout forfeits its calculated share to protocol-reserve dust.
+Read-only SNS governance evidence feeds this policy by capturing a frozen cohort of exact reward-eligible 14-day, non-dissolving user neurons and a bounded proposal-window anchor. Protocol-owned and Jupiter-governance staking Accounts are excluded by exact effective Account. New stake and top-ups do not alter the frozen cohort. Every destination is rechecked immediately before payout; a member that has become ineligible forfeits its calculated share to reserve dust.
 
-The launch settlement design persists the exact allocations, recipient index and dust in the active two-week receipt. One `resume` transfers one recipient, and the following `resume` refreshes that exact SNS neuron before advancing. Each recipient pays one explicit IO fee; dust remains in reserve and is never redistributed. This fan-out remains an implementation blocker until installed recipient-by-recipient and upgrade tests pass; the 18 pure reward-policy tests alone are not settlement proof.
+The launch settlement persists exact allocations, recipient progress, rounding dust, forfeiture, and total dust in the active two-week receipt. One `resume` performs at most one recipient transition. The immutable transfer precedes a separately persisted refresh submission, and a later canonical observation must show the expected stake increase before progress advances. Each actual recipient consumes one explicit IO fee; every dust component remains in reserve and is never redistributed.
