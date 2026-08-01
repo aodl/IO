@@ -2,6 +2,7 @@ pub mod api;
 pub mod canonical;
 pub mod lifecycle;
 pub mod receipt;
+mod receipt_preparation;
 pub mod redemption;
 mod reward_evidence;
 mod reward_settlement;
@@ -57,10 +58,10 @@ pub async fn redeem(args: RedeemArgs) -> Result<RedemptionProgress, ApiError> {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn prepare_liquid_receipt(
+pub async fn prepare_liquid_receipt(
     args: PrepareLiquidReceiptArgs,
 ) -> Result<LiquidReceiptPermit, ApiError> {
-    receipt::prepare_liquid_receipt(ic_cdk::api::msg_caller(), args)
+    receipt::prepare_liquid_receipt(ic_cdk::api::msg_caller(), args, ic_cdk::api::time()).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]

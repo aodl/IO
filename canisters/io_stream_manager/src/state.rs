@@ -8,7 +8,7 @@ use serde::Deserialize;
 use std::{borrow::Cow, cell::RefCell};
 
 use crate::{
-    receipt::{LastCompletedReceipt, LiquidReceiptOperation},
+    receipt::{LastCompletedReceipt, LiquidReceiptOperation, ReceiptPreparation},
     redemption::{RedemptionOperation, RedemptionPreparation},
 };
 pub use io_accounts::Account;
@@ -153,6 +153,7 @@ pub struct DispatchEpoch(pub u64);
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum StreamOperation {
     RedemptionPreparation(Box<RedemptionPreparation>),
+    ReceiptPreparation(Box<ReceiptPreparation>),
     Redemption(Box<RedemptionOperation>),
     LiquidReceipt(Box<LiquidReceiptOperation>),
 }
@@ -273,6 +274,12 @@ impl StreamStateV1 {
                 value.validate(&self.config)?;
                 if value.sequence.0 >= self.next_operation_sequence.0 {
                     return Err("active redemption sequence was not reserved".into());
+                }
+            }
+            Some(StreamOperation::ReceiptPreparation(value)) => {
+                value.validate(&self.config)?;
+                if value.captured_control_epoch != self.control_epoch {
+                    return Err("receipt preparation control epoch is stale".into());
                 }
             }
             Some(StreamOperation::LiquidReceipt(value)) => value.validate(&self.config)?,
@@ -446,7 +453,7 @@ pub fn reopen(canister_self: Principal) {
     reopened.lifecycle = Lifecycle::Paused;
     if matches!(
         &reopened.active_operation,
-        Some(StreamOperation::RedemptionPreparation(_))
+        Some(StreamOperation::RedemptionPreparation(_) | StreamOperation::ReceiptPreparation(_))
     ) {
         reopened.active_operation = None;
     }
@@ -621,6 +628,31 @@ mod tests {
         assert_eq!(read().lifecycle, Lifecycle::Paused);
         assert!(read().active_operation.is_none());
         assert_eq!(caller_state(principal).next_nonce, 3);
+
+        let receipt_request = io_receipt_types::PrepareLiquidReceiptArgs {
+            receipt_sequence: 7,
+            receipt_kind: io_receipt_types::ReceiptKind::Jupiter,
+            source_operation_id: vec![8],
+            liquid_amount_e8s: 10,
+            cohort_generation: None,
+        };
+        let receipt_preparation = crate::receipt::ReceiptPreparation {
+            request_fingerprint: crate::receipt::request_fingerprint(&receipt_request),
+            request: receipt_request,
+            authority: manager,
+            captured_control_epoch: 4,
+            prepared_at_nanos: 1,
+        };
+        let mut before_receipt_upgrade = read();
+        before_receipt_upgrade.lifecycle = Lifecycle::Ready;
+        before_receipt_upgrade.control_epoch = 4;
+        before_receipt_upgrade.active_operation = Some(StreamOperation::ReceiptPreparation(
+            Box::new(receipt_preparation),
+        ));
+        write(before_receipt_upgrade);
+        reopen(principal);
+        assert_eq!(read().lifecycle, Lifecycle::Paused);
+        assert!(read().active_operation.is_none());
 
         let config = read().config;
         let mut unsafe_jupiter = config.clone();

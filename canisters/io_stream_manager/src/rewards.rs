@@ -286,23 +286,29 @@ async fn prepare_settlement(
     let canonical = canonical::redemption_snapshot(&snapshot.config)
         .await
         .map_err(ApiError::Ledger)?;
-    let pre_liquid = canonical
-        .liquid_icp_e8s
-        .checked_sub(operation.context.request.liquid_amount_e8s)
-        .ok_or_else(|| ApiError::Invalid("two-week receipt exceeds liquid ICP".into()))?;
-    let excluded = canonical
+    crate::receipt_preparation::validate_post_receipt_snapshot(
+        &operation.context.backing_snapshot,
+        &canonical,
+        operation.context.request.liquid_amount_e8s,
+        0,
+    )?;
+    let excluded = operation
+        .context
+        .backing_snapshot
         .excluded_io_balances
         .iter()
         .try_fold(0u128, |sum, (_, value)| sum.checked_add(*value))
         .ok_or_else(|| ApiError::Invalid("excluded IO overflow".into()))?;
-    let redeemable = canonical
-        .total_supply_e8s
-        .checked_sub(canonical.reserve_io_e8s)
+    let redeemable = operation
+        .context
+        .backing_snapshot
+        .total_io_supply_e8s
+        .checked_sub(operation.context.backing_snapshot.reserve_io_e8s)
         .and_then(|value| value.checked_sub(excluded))
         .ok_or_else(|| ApiError::Invalid("invalid redeemable IO supply".into()))?;
     let pool = io_core_model::backed_io(
         operation.context.request.liquid_amount_e8s,
-        pre_liquid,
+        operation.context.backing_snapshot.liquid_icp_e8s,
         redeemable,
     )
     .map_err(|error| ApiError::Invalid(format!("reward backing failed: {error:?}")))?;
@@ -342,16 +348,20 @@ async fn prepare_settlement(
             })
         })
         .collect::<Result<Vec<_>, ApiError>>()?;
-    let fees = snapshot
-        .config
-        .expected_io_fee_e8s
+    let fees = operation
+        .context
+        .backing_snapshot
+        .io_fee_e8s
         .checked_mul(recipients.len() as u128)
         .ok_or_else(|| ApiError::Invalid("reward fee total overflow".into()))?;
     let issued = recipients
         .iter()
         .try_fold(0u128, |sum, recipient| sum.checked_add(recipient.io_e8s))
         .ok_or_else(|| ApiError::Invalid("reward issue total overflow".into()))?;
-    if canonical.reserve_io_e8s < issued.saturating_add(fees) {
+    let required_reserve = issued
+        .checked_add(fees)
+        .ok_or_else(|| ApiError::Invalid("reward reserve requirement overflow".into()))?;
+    if canonical.reserve_io_e8s < required_reserve {
         return Err(ApiError::Invalid(
             "IO reserve does not cover rewards plus one fee per recipient".into(),
         ));
@@ -639,6 +649,7 @@ fn complete_settlement(
         request: operation.context.request,
         request_fingerprint: operation.context.request_fingerprint,
         permit: operation.context.permit,
+        backing_snapshot: operation.context.backing_snapshot,
         receipt_block,
         result: result.clone(),
     });

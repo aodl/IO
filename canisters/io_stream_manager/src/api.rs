@@ -71,6 +71,9 @@ pub fn get_status() -> Status {
             Some("RedemptionPreparation".into()),
             Some("Preparing".into()),
         ),
+        Some(StreamOperation::ReceiptPreparation(_)) => {
+            (Some("ReceiptPreparation".into()), Some("Preparing".into()))
+        }
         Some(StreamOperation::Redemption(operation)) => (
             Some("Redemption".into()),
             Some(format!("{:?}", operation.phase)),
@@ -772,6 +775,9 @@ pub async fn resume_stream(now: u64) -> Result<StreamProgress, ApiError> {
         Some(StreamOperation::RedemptionPreparation(_)) => {
             Ok(StreamProgress::Redemption(RedemptionProgress::Preparing))
         }
+        Some(StreamOperation::ReceiptPreparation(_)) => Err(ApiError::Pending(
+            "no-effect receipt preparation must be retried by the NNS manager".into(),
+        )),
         Some(StreamOperation::LiquidReceipt(operation)) => {
             receipt::resume_liquid_receipt(*operation, now)
                 .await

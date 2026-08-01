@@ -5,6 +5,10 @@ pub use io_receipt_types::{
 };
 use serde::Deserialize;
 
+pub use crate::receipt_preparation::{
+    receipt_memo, request_fingerprint, BackingSnapshot, ReceiptPreparation,
+};
+
 use crate::{
     state::{Account, DispatchEpoch, StreamConfig},
     transfer::{OwnTransferIntent, TransferAttempt, TransferState},
@@ -25,6 +29,7 @@ pub struct ReceiptContext {
     pub request_fingerprint: Vec<u8>,
     pub source: Account,
     pub permit: LiquidReceiptPermit,
+    pub backing_snapshot: BackingSnapshot,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -80,6 +85,7 @@ pub struct LastCompletedReceipt {
     pub request: PrepareLiquidReceiptArgs,
     pub request_fingerprint: Vec<u8>,
     pub permit: LiquidReceiptPermit,
+    pub backing_snapshot: BackingSnapshot,
     pub receipt_block: u128,
     pub result: CompletedReceiptResult,
 }
@@ -94,6 +100,7 @@ impl ReceiptContext {
         {
             return Err("invalid canonical receipt request".into());
         }
+        self.backing_snapshot.validate(config)?;
         let expected_source = match self.request.receipt_kind {
             ReceiptKind::Jupiter => &config.jupiter_receipt_source,
             ReceiptKind::TwoWeekMaturity => &config.two_week_receipt_source,
@@ -229,6 +236,7 @@ impl LastCompletedReceipt {
                 ReceiptKind::TwoWeekMaturity => config.two_week_receipt_source.clone(),
             },
             permit: self.permit.clone(),
+            backing_snapshot: self.backing_snapshot.clone(),
         };
         context.validate(config)?;
         if self
@@ -281,23 +289,12 @@ fn validate_phase_proof(phase: ReceiptPhase, block: Option<u128>) -> Result<(), 
     }
 }
 
-pub fn request_fingerprint(args: &PrepareLiquidReceiptArgs) -> Vec<u8> {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(b"io-liquid-receipt-request-v1\0");
-    hasher.update(candid::encode_one(args).expect("receipt request must encode"));
-    hasher.finalize().to_vec()
-}
-
-pub fn receipt_memo(manager: Principal, sequence: u64) -> Vec<u8> {
-    crate::transfer::deterministic_memo(b"io-liquid-receipt-v1", manager, sequence)
-}
-
-pub fn prepare_liquid_receipt(
+pub async fn prepare_liquid_receipt(
     caller: Principal,
     args: PrepareLiquidReceiptArgs,
+    now: u64,
 ) -> Result<LiquidReceiptPermit, crate::api::ApiError> {
-    use crate::{api::ApiError, state};
+    use crate::{api::ApiError, canonical, state};
     let mut current = state::read();
     if caller != current.config.nns_manager {
         return Err(ApiError::Unauthorized);
@@ -319,8 +316,23 @@ pub fn prepare_liquid_receipt(
             return Err(ApiError::NonceAlreadyUsed);
         }
     }
+    if let Some(state::StreamOperation::ReceiptPreparation(existing)) = &current.active_operation {
+        if existing.request.receipt_sequence == args.receipt_sequence
+            && existing.request_fingerprint != fingerprint
+        {
+            return Err(ApiError::NonceAlreadyUsed);
+        }
+        if existing.request_fingerprint != fingerprint || existing.authority != caller {
+            return Err(ApiError::Busy);
+        }
+    }
     crate::api::require_ready(&current)?;
-    if current.active_operation.is_some() {
+    if current.active_operation.is_some()
+        && !matches!(
+            current.active_operation,
+            Some(state::StreamOperation::ReceiptPreparation(_))
+        )
+    {
         return Err(ApiError::Busy);
     }
     if args.receipt_sequence != current.next_nns_receipt_sequence
@@ -351,6 +363,59 @@ pub fn prepare_liquid_receipt(
         }
         _ => {}
     }
+    let preparation = ReceiptPreparation {
+        request: args.clone(),
+        request_fingerprint: fingerprint.clone(),
+        authority: caller,
+        captured_control_epoch: current.control_epoch,
+        prepared_at_nanos: now,
+    };
+    preparation
+        .validate(&current.config)
+        .map_err(ApiError::Invalid)?;
+    current.active_operation = Some(state::StreamOperation::ReceiptPreparation(Box::new(
+        preparation.clone(),
+    )));
+    state::write(current.clone());
+
+    let canonical = match canonical::redemption_snapshot(&current.config).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            clear_matching_preparation(&preparation);
+            return Err(ApiError::Ledger(error));
+        }
+    };
+    if canonical.io_fee_e8s != current.config.expected_io_fee_e8s
+        || canonical.icp_fee_e8s != current.config.expected_icp_fee_e8s
+    {
+        clear_matching_preparation(&preparation);
+        return Err(ApiError::Invalid(
+            "canonical fee differs from approved receipt configuration".into(),
+        ));
+    }
+    let observed_at_nanos = ic_cdk::api::time().max(now);
+    let backing_snapshot = BackingSnapshot {
+        total_io_supply_e8s: canonical.total_supply_e8s,
+        reserve_io_e8s: canonical.reserve_io_e8s,
+        excluded_io_balances: canonical.excluded_io_balances,
+        liquid_icp_e8s: canonical.liquid_icp_e8s,
+        io_fee_e8s: canonical.io_fee_e8s,
+        observed_at_nanos,
+    };
+    backing_snapshot
+        .validate(&current.config)
+        .map_err(ApiError::Invalid)?;
+
+    let mut latest = state::read();
+    if latest.config != current.config
+        || latest.control_epoch != preparation.captured_control_epoch
+        || !matches!(
+            &latest.active_operation,
+            Some(state::StreamOperation::ReceiptPreparation(active)) if **active == preparation
+        )
+    {
+        return Err(ApiError::Busy);
+    }
     let permit = LiquidReceiptPermit {
         sequence: args.receipt_sequence,
         destination: current.config.liquid_icp.clone(),
@@ -364,6 +429,7 @@ pub fn prepare_liquid_receipt(
         request: args,
         request_fingerprint: fingerprint,
         permit: permit.clone(),
+        backing_snapshot,
     };
     let operation = match context.request.receipt_kind {
         ReceiptKind::Jupiter => {
@@ -384,25 +450,22 @@ pub fn prepare_liquid_receipt(
         }
     };
     operation
-        .validate(&current.config)
+        .validate(&latest.config)
         .map_err(ApiError::Invalid)?;
-    current.active_operation = Some(state::StreamOperation::LiquidReceipt(Box::new(operation)));
-    state::write(current);
+    latest.active_operation = Some(state::StreamOperation::LiquidReceipt(Box::new(operation)));
+    state::write(latest);
     Ok(permit)
 }
 
-fn progress(operation: &LiquidReceiptOperation) -> crate::api::LiquidReceiptProgress {
-    use crate::api::LiquidReceiptProgress;
-    match operation.phase() {
-        ReceiptPhase::AwaitingReceipt => LiquidReceiptProgress::AwaitingReceipt,
-        ReceiptPhase::ReceiptProved => LiquidReceiptProgress::ReceiptProved,
-        ReceiptPhase::Settling => LiquidReceiptProgress::Settling,
-        ReceiptPhase::Completed => LiquidReceiptProgress::Stuck(
-            "completed receipt must have been cleared into typed replay".into(),
-        ),
-        ReceiptPhase::Stuck => LiquidReceiptProgress::Stuck(
-            "exact receipt settlement proof or governance upgrade required".into(),
-        ),
+fn clear_matching_preparation(expected: &ReceiptPreparation) {
+    use crate::state::{self, StreamOperation};
+    let mut latest = state::read();
+    if matches!(
+        &latest.active_operation,
+        Some(StreamOperation::ReceiptPreparation(active)) if **active == *expected
+    ) {
+        latest.active_operation = None;
+        state::write(latest);
     }
 }
 
@@ -457,23 +520,29 @@ async fn prepare_jupiter_settlement(
     let snapshot = canonical::redemption_snapshot(&config)
         .await
         .map_err(ApiError::Ledger)?;
-    let pre_liquid = snapshot
-        .liquid_icp_e8s
-        .checked_sub(operation.context.request.liquid_amount_e8s)
-        .ok_or_else(|| ApiError::Invalid("proved receipt exceeds liquid balance".into()))?;
-    let excluded = snapshot
+    crate::receipt_preparation::validate_post_receipt_snapshot(
+        &operation.context.backing_snapshot,
+        &snapshot,
+        operation.context.request.liquid_amount_e8s,
+        0,
+    )?;
+    let excluded = operation
+        .context
+        .backing_snapshot
         .excluded_io_balances
         .iter()
         .try_fold(0u128, |sum, (_, value)| sum.checked_add(*value))
         .ok_or_else(|| ApiError::Invalid("excluded balance overflow".into()))?;
-    let redeemable = snapshot
-        .total_supply_e8s
-        .checked_sub(snapshot.reserve_io_e8s)
+    let redeemable = operation
+        .context
+        .backing_snapshot
+        .total_io_supply_e8s
+        .checked_sub(operation.context.backing_snapshot.reserve_io_e8s)
         .and_then(|value| value.checked_sub(excluded))
         .ok_or_else(|| ApiError::Invalid("invalid redeemable supply".into()))?;
     let backed_io = io_core_model::backed_io(
         operation.context.request.liquid_amount_e8s,
-        pre_liquid,
+        operation.context.backing_snapshot.liquid_icp_e8s,
         redeemable,
     )
     .map_err(|error| ApiError::Invalid(format!("backed IO calculation failed: {error:?}")))?;
@@ -486,12 +555,20 @@ async fn prepare_jupiter_settlement(
             .subaccount,
         to: config.jupiter_io_account,
         amount: backed_io,
-        fee: config.expected_io_fee_e8s,
+        fee: operation.context.backing_snapshot.io_fee_e8s,
         memo: operation.context.permit.memo.clone(),
         created_at_time: now,
     };
     now.checked_add(config.ledger_deduplication_window_nanos)
         .ok_or_else(|| ApiError::Invalid("settlement deduplication deadline overflow".into()))?;
+    let reserve_required = backed_io
+        .checked_add(operation.context.backing_snapshot.io_fee_e8s)
+        .ok_or_else(|| ApiError::Invalid("Jupiter reserve requirement overflow".into()))?;
+    if snapshot.reserve_io_e8s < reserve_required {
+        return Err(ApiError::Invalid(
+            "IO reserve does not cover Jupiter backing plus fee".into(),
+        ));
+    }
     let mut transfer = TransferAttempt::prepared(intent).map_err(ApiError::Invalid)?;
     transfer.state = TransferState::Submitted {
         epoch: DispatchEpoch(1),
@@ -728,6 +805,7 @@ fn complete_jupiter(
         request: operation.context.request,
         request_fingerprint: operation.context.request_fingerprint,
         permit: operation.context.permit,
+        backing_snapshot: operation.context.backing_snapshot,
         receipt_block,
         result: result.clone(),
     });
@@ -804,7 +882,7 @@ pub async fn complete_liquid_receipt(
         LiquidReceiptOperation::TwoWeek(value) => value.receipt_block,
     };
     if existing_block == Some(args.block_index) {
-        return Ok(progress(&operation));
+        return Ok(crate::reward_settlement::receipt_progress(&operation));
     }
     if existing_block.is_some() {
         return Err(ApiError::Invalid("conflicting receipt block".into()));

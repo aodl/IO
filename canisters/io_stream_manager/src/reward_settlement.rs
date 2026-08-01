@@ -1,4 +1,23 @@
-use crate::{receipt::TwoWeekSettlement, state::StreamConfig, transfer::OwnTransferIntent};
+use crate::{
+    api::LiquidReceiptProgress,
+    receipt::{LiquidReceiptOperation, ReceiptPhase, TwoWeekSettlement},
+    state::StreamConfig,
+    transfer::OwnTransferIntent,
+};
+
+pub(crate) fn receipt_progress(operation: &LiquidReceiptOperation) -> LiquidReceiptProgress {
+    match operation.phase() {
+        ReceiptPhase::AwaitingReceipt => LiquidReceiptProgress::AwaitingReceipt,
+        ReceiptPhase::ReceiptProved => LiquidReceiptProgress::ReceiptProved,
+        ReceiptPhase::Settling => LiquidReceiptProgress::Settling,
+        ReceiptPhase::Completed => LiquidReceiptProgress::Stuck(
+            "completed receipt must have been cleared into typed replay".into(),
+        ),
+        ReceiptPhase::Stuck => LiquidReceiptProgress::Stuck(
+            "exact receipt settlement proof or governance upgrade required".into(),
+        ),
+    }
+}
 
 pub(crate) fn validate(
     settlement: &TwoWeekSettlement,

@@ -88,7 +88,10 @@ pub fn set_paused() {
     state.lifecycle = Lifecycle::Paused;
     if matches!(
         &state.active_operation,
-        Some(crate::state::StreamOperation::RedemptionPreparation(_))
+        Some(
+            crate::state::StreamOperation::RedemptionPreparation(_)
+                | crate::state::StreamOperation::ReceiptPreparation(_)
+        )
     ) {
         state.active_operation = None;
     }
