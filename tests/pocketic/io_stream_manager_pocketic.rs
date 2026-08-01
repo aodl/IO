@@ -12,7 +12,9 @@ fn simplified_stream_installs_paused_and_rejects_anonymous_before_funds_move() {
         eprintln!("skipping stream-manager PocketIC test because POCKET_IC_BIN is not set");
         return;
     }
-    let wasm = match std::fs::read("target/wasm32-unknown-unknown/debug/io_stream_manager.wasm") {
+    let wasm_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/wasm32-unknown-unknown/debug/io_stream_manager.wasm");
+    let wasm = match std::fs::read(wasm_path) {
         Ok(wasm) => wasm,
         Err(_) => {
             eprintln!("skipping stream-manager PocketIC test because debug Wasm is missing");
