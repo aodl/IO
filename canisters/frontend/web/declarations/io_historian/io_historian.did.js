@@ -130,6 +130,23 @@ export const idlFactory = ({ IDL }) => {
     TwoYearMaturityDisbursement: IDL.Null,
     Unknown: IDL.Null,
   });
+  const SimplifiedExecutionProjection = IDL.Record({
+    jupiter_phase: IDL.Opt(IDL.Text),
+    jupiter_backed_io_e8s: IDL.Opt(IDL.Nat),
+    jupiter_io_transfer_block: IDL.Opt(IDL.Nat),
+    stream_receipt_fingerprint: IDL.Opt(IDL.Vec(IDL.Nat8)),
+    pending_maturity_nominal_e8s: IDL.Opt(IDL.Nat64),
+    scheduled_finalization_timestamp_seconds: IDL.Opt(IDL.Nat64),
+    actual_minted_icp_e8s: IDL.Opt(IDL.Nat),
+    two_week_receipt_sequence: IDL.Opt(IDL.Nat64),
+    cohort_generation: IDL.Opt(IDL.Nat64),
+    cohort_closes_at_timestamp_seconds: IDL.Opt(IDL.Nat64),
+    reward_recipient_index: IDL.Opt(IDL.Nat32),
+    reward_recipient_count: IDL.Opt(IDL.Nat32),
+    under_target: IDL.Bool,
+    pending_unwind_child: IDL.Opt(IDL.Nat64),
+    paused_reason: IDL.Opt(IDL.Text),
+  });
   const NnsLifecycleSummary = IDL.Record({
     amount_e8s: IDL.Opt(IDL.Nat),
     kind: NnsLifecycleKind,
@@ -138,6 +155,7 @@ export const idlFactory = ({ IDL }) => {
     record_id: IDL.Text,
     retry_count: IDL.Nat32,
     safe_error: IDL.Opt(IDL.Text),
+    execution: IDL.Opt(SimplifiedExecutionProjection),
     timestamp_nanos: IDL.Opt(IDL.Nat64),
   });
   const ListNnsLifecycleEventsResponse = IDL.Record({

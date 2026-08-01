@@ -10,7 +10,8 @@ export function mountRedemptionForm(document, actors, session) {
   const resume = document.querySelector("[data-redemption-resume]");
   const proof = document.querySelector("[data-redemption-proof]");
   if (!form) return;
-  if (!actors || !session?.identity || !(session.selectedSubaccount instanceof Uint8Array)) {
+  if (!actors || !session?.identity || !(session.selectedSubaccount instanceof Uint8Array)
+      || typeof session.requestApprovalConsent !== "function") {
     text(status, "Connect a wallet that supplies one canonical subaccount. Direct IO transfers are unsupported and will not start redemption.");
     form.querySelector("button").disabled = true;
     resume.disabled = true;
@@ -20,6 +21,12 @@ export function mountRedemptionForm(document, actors, session) {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     try {
+      const consent = await session.requestApprovalConsent({
+        action: "icrc2_approve_for_io_redemption",
+        ioAmountE8s: BigInt(form.elements.ioAmount.value),
+        network: session.network,
+      });
+      if (consent !== true) throw new Error("Wallet approval consent was not granted");
       text(status, "Querying exact fee, allowance and caller nonce");
       const request = await prepareRedemption({
         ...actors,

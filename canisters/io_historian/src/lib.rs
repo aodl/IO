@@ -361,6 +361,26 @@ pub struct NnsLifecycleSummary {
     pub timestamp_nanos: Option<u64>,
     pub retry_count: u32,
     pub safe_error: Option<String>,
+    pub execution: Option<SimplifiedExecutionProjection>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SimplifiedExecutionProjection {
+    pub jupiter_phase: Option<String>,
+    pub jupiter_backed_io_e8s: Option<u128>,
+    pub jupiter_io_transfer_block: Option<u128>,
+    pub stream_receipt_fingerprint: Option<Vec<u8>>,
+    pub pending_maturity_nominal_e8s: Option<u64>,
+    pub scheduled_finalization_timestamp_seconds: Option<u64>,
+    pub actual_minted_icp_e8s: Option<u128>,
+    pub two_week_receipt_sequence: Option<u64>,
+    pub cohort_generation: Option<u64>,
+    pub cohort_closes_at_timestamp_seconds: Option<u64>,
+    pub reward_recipient_index: Option<u32>,
+    pub reward_recipient_count: Option<u32>,
+    pub under_target: bool,
+    pub pending_unwind_child: Option<u64>,
+    pub paused_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -2146,6 +2166,7 @@ mod tests {
             timestamp_nanos: Some(id),
             retry_count: 0,
             safe_error: None,
+            execution: None,
         }
     }
 
