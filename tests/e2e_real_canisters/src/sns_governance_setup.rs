@@ -2,9 +2,11 @@ use crate::artifacts::{resolve_from_env, ArtifactStatus};
 use crate::icrc::{self, FEE_E8S};
 use crate::pocketic_env;
 use candid::{CandidType, Principal};
+use io_governance_types::{SnsRewardEvent, SnsRewardEventParticipation};
 use pocket_ic::PocketIc;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::time::Duration;
 
 #[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
 pub struct Governance {
@@ -148,6 +150,22 @@ pub struct ListNeuronsResponse {
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct GetNeuron {
+    pub neuron_id: Option<NeuronId>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct GetNeuronResponse {
+    pub result: Option<GetNeuronResult>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub enum GetNeuronResult {
+    Error(GovernanceError),
+    Neuron(Box<SnsNeuronRecord>),
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
 pub struct SnsNeuronRecord {
     pub id: Option<NeuronId>,
     pub staked_maturity_e8s_equivalent: Option<u64>,
@@ -165,6 +183,7 @@ pub struct SnsNeuronRecord {
     pub followees: Vec<(u64, Followees)>,
     pub topic_followees: Option<EmptyRecord>,
     pub neuron_fees_e8s: u64,
+    pub latest_reward_event_participation: Option<SnsRewardEventParticipation>,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
@@ -427,7 +446,7 @@ pub enum SnsGovernanceSetupError {
 }
 
 struct GovernanceLedgerFixture {
-    pic: PocketIc,
+    pic: std::rc::Rc<PocketIc>,
     governance: Principal,
     ledger: Principal,
     controller: Principal,
@@ -449,7 +468,7 @@ pub fn install_real_sns_governance_empty_state(
     let governance_wasm = artifacts
         .load_required("sns_governance")
         .map_err(SnsGovernanceSetupError::Artifact)?;
-    let pic = pocketic_env::new_sns_pic();
+    let pic = std::rc::Rc::new(pocketic_env::new_sns_pic());
     let governance = pocketic_env::create_sns_canister(
         &pic,
         governance_wasm,
@@ -612,6 +631,789 @@ pub fn install_real_sns_governance_and_observe_dissolve_delay_boundaries(
     Ok(())
 }
 
+pub fn run_candidate_reward_event_participation_contract(
+    required: bool,
+) -> Result<(), SnsGovernanceSetupError> {
+    let fixture = setup_real_sns_governance_with_ledger(required, 5_000_000_000)?;
+    let neuron_ids = (1_u64..=5)
+        .map(|memo| {
+            let id = stake_and_claim_neuron(&fixture, 500_000_000, memo, b"reward-contract")
+                .expect("candidate contract neuron claim should succeed");
+            configure_increase_dissolve_delay(
+                &fixture,
+                &id,
+                u32::try_from(io_core_model::TWO_WEEK_SECONDS).unwrap(),
+            );
+            id
+        })
+        .collect::<Vec<_>>();
+    let alice = &neuron_ids[0];
+    let bob = &neuron_ids[1];
+    let carol = &neuron_ids[2];
+    let follower = &neuron_ids[3];
+    let non_voter = &neuron_ids[4];
+
+    expect_manage_success(
+        &fixture,
+        follower,
+        Command::Follow(Follow {
+            function_id: 1,
+            followees: vec![alice.clone()],
+        }),
+        "follow",
+    );
+    let proposal_1 = make_motion(&fixture, alice, "candidate reward event one");
+    register_vote(&fixture, bob, proposal_1, 2);
+    register_vote(&fixture, carol, proposal_1, 1);
+    let proposal_2 = make_motion(&fixture, bob, "candidate reward event two");
+    register_vote(&fixture, alice, proposal_2, 2);
+    register_vote(&fixture, carol, proposal_2, 2);
+
+    let event_1 = advance_until_reward_event(&fixture, 2, 0);
+    assert_eq!(event_1.distributed_e8s_equivalent, 0);
+    assert_eq!(event_1.settled_proposals.len(), 2);
+    let event_1_end = event_1
+        .end_timestamp_seconds
+        .expect("candidate reward event must have an end timestamp");
+    let listed_1 = list_all_neurons_paged(&fixture, 2);
+    assert_eq!(listed_1.len(), 5);
+    let listed_ids = listed_1
+        .iter()
+        .filter_map(|neuron| neuron.id.as_ref())
+        .map(|id| id.id.clone())
+        .collect::<Vec<_>>();
+    let mut sorted_ids = listed_ids.clone();
+    sorted_ids.sort();
+    assert_eq!(
+        listed_ids, sorted_ids,
+        "list_neurons pagination must be deterministic by neuron ID"
+    );
+    let expected_ids = neuron_ids
+        .iter()
+        .map(|id| id.id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        listed_ids.into_iter().collect::<std::collections::BTreeSet<_>>(),
+        expected_ids
+    );
+    let expected_two_proposal_shares = 1_000_000_000_u128;
+    for id in [alice, bob, carol, follower] {
+        let neuron = find_neuron(&listed_1, id);
+        let participation = neuron
+            .latest_reward_event_participation
+            .clone()
+            .expect("direct and followed voters must have event participation");
+        assert_eq!(
+            participation.reward_event_end_timestamp_seconds,
+            event_1_end
+        );
+        assert_eq!(
+            participation.exact_reward_shares().unwrap(),
+            expected_two_proposal_shares
+        );
+        assert_eq!(neuron.maturity_e8s_equivalent, 0);
+        assert_eq!(neuron.staked_maturity_e8s_equivalent.unwrap_or(0), 0);
+    }
+    assert!(
+        find_neuron(&listed_1, non_voter)
+            .latest_reward_event_participation
+            .is_none(),
+        "non-voter must not be tagged to the event"
+    );
+    assert_eq!(
+        listed_1
+            .iter()
+            .filter_map(|neuron| neuron.latest_reward_event_participation.clone())
+            .map(|participation| participation.exact_reward_shares().unwrap())
+            .sum::<u128>(),
+        4_000_000_000,
+        "multiple-proposal voting powers must sum exactly"
+    );
+    let direct: GetNeuronResponse = icrc::query_one(
+        &fixture.pic,
+        fixture.governance,
+        "get_neuron",
+        GetNeuron {
+            neuron_id: Some(alice.clone()),
+        },
+    );
+    let direct = match direct.result {
+        Some(GetNeuronResult::Neuron(neuron)) => neuron,
+        other => panic!("candidate get_neuron did not return the requested neuron: {other:?}"),
+    };
+    assert_eq!(
+        direct
+            .latest_reward_event_participation
+            .as_ref()
+            .map(|participation| participation.reward_event_end_timestamp_seconds),
+        Some(event_1_end),
+        "get_neuron and paginated list_neurons must expose the same event tag"
+    );
+
+    let proposal_3 = make_motion(&fixture, bob, "candidate replacement event");
+    let event_2 = advance_until_reward_event(&fixture, 1, event_1.round);
+    assert_eq!(
+        event_2
+            .settled_proposals
+            .iter()
+            .map(|proposal| proposal.id)
+            .collect::<Vec<_>>(),
+        vec![proposal_3]
+    );
+    let event_2_end = event_2.end_timestamp_seconds.unwrap();
+    let listed_2 = list_all_neurons_paged(&fixture, 2);
+    assert_eq!(
+        find_neuron(&listed_2, bob)
+            .latest_reward_event_participation
+            .as_ref()
+            .unwrap()
+            .reward_event_end_timestamp_seconds,
+        event_2_end
+    );
+    for id in [alice, carol, follower] {
+        assert_eq!(
+            find_neuron(&listed_2, id)
+                .latest_reward_event_participation
+                .as_ref()
+                .unwrap()
+                .reward_event_end_timestamp_seconds,
+            event_1_end,
+            "non-participant must retain its older tag, which clients ignore for the new event"
+        );
+    }
+
+    let event_3 = advance_until_reward_event(&fixture, 0, event_2.round);
+    assert!(event_3.settled_proposals.is_empty());
+
+    let consistency_e1 = latest_reward_event(&fixture);
+    let first_page = list_neurons_page(&fixture, 2, None);
+    assert_eq!(first_page.neurons.len(), 2);
+    let consistency_e2 = advance_until_reward_event(&fixture, 0, consistency_e1.round);
+    let _mixed_second_page = list_neurons_page(
+        &fixture,
+        2,
+        first_page.neurons.last().and_then(|neuron| neuron.id.clone()),
+    );
+    assert_ne!(
+        (consistency_e1.end_timestamp_seconds, consistency_e1.round),
+        (consistency_e2.end_timestamp_seconds, consistency_e2.round),
+        "E1/pages/E2 client must discard pages when an event occurs between page reads"
+    );
+    let delayed_before = latest_reward_event(&fixture);
+    fixture.pic.advance_time(Duration::from_secs(
+        io_core_model::TWO_WEEK_SECONDS
+            .checked_mul(3)
+            .unwrap()
+            .saturating_add(1),
+    ));
+    for _ in 0..30 {
+        fixture.pic.tick();
+    }
+    let delayed_after = latest_reward_event(&fixture);
+    let delta = delayed_after
+        .round
+        .checked_sub(delayed_before.round)
+        .expect("candidate reward-event round must not regress");
+    assert!(delta >= 3, "delayed periodic work should catch up multiple rounds");
+    assert_eq!(
+        delayed_after.rounds_since_last_distribution,
+        Some(delta),
+        "one actual catch-up event must report the complete elapsed round span"
+    );
+    Ok(())
+}
+
+fn expect_manage_success(
+    fixture: &GovernanceLedgerFixture,
+    neuron_id: &NeuronId,
+    command: Command,
+    operation: &str,
+) -> ManageNeuronResponse {
+    let response: ManageNeuronResponse = icrc::update_one(
+        &fixture.pic,
+        fixture.governance,
+        fixture.controller,
+        "manage_neuron",
+        ManageNeuron {
+            subaccount: neuron_id.id.clone(),
+            command: Some(command),
+        },
+    );
+    match &response.command {
+        Some(CommandResponse::Error(error)) => panic!("{operation} failed: {error:?}"),
+        None => panic!("{operation} returned no command response"),
+        Some(_) => response,
+    }
+}
+
+fn make_motion(fixture: &GovernanceLedgerFixture, neuron_id: &NeuronId, title: &str) -> u64 {
+    let response = expect_manage_success(
+        fixture,
+        neuron_id,
+        Command::MakeProposal(Proposal {
+            url: String::new(),
+            title: title.to_string(),
+            summary: title.to_string(),
+            action: Some(Action::Motion(Motion {
+                motion_text: title.to_string(),
+            })),
+        }),
+        "make proposal",
+    );
+    match response.command {
+        Some(CommandResponse::MakeProposal(response)) => response
+            .proposal_id
+            .expect("proposal response must contain an id")
+            .id,
+        other => panic!("unexpected make proposal response: {other:?}"),
+    }
+}
+
+fn register_vote(
+    fixture: &GovernanceLedgerFixture,
+    neuron_id: &NeuronId,
+    proposal_id: u64,
+    vote: i32,
+) {
+    expect_manage_success(
+        fixture,
+        neuron_id,
+        Command::RegisterVote(RegisterVote {
+            vote,
+            proposal: Some(ProposalId { id: proposal_id }),
+        }),
+        "register vote",
+    );
+}
+
+fn latest_reward_event(fixture: &GovernanceLedgerFixture) -> SnsRewardEvent {
+    icrc::query_one(&fixture.pic, fixture.governance, "get_latest_reward_event", ())
+}
+
+fn advance_until_reward_event(
+    fixture: &GovernanceLedgerFixture,
+    expected_settled: usize,
+    after_round: u64,
+) -> SnsRewardEvent {
+    for _ in 0..8 {
+        fixture.pic.advance_time(Duration::from_secs(
+            io_core_model::TWO_WEEK_SECONDS + 1,
+        ));
+        for _ in 0..20 {
+            fixture.pic.tick();
+        }
+        let event = latest_reward_event(fixture);
+        if event.round > after_round && event.settled_proposals.len() == expected_settled {
+            return event;
+        }
+    }
+    panic!(
+        "candidate Governance did not produce expected reward event after round {after_round} with {expected_settled} settled proposals"
+    )
+}
+
+fn list_neurons_page(
+    fixture: &GovernanceLedgerFixture,
+    limit: u32,
+    start_page_at: Option<NeuronId>,
+) -> ListNeuronsResponse {
+    icrc::query_one(
+        &fixture.pic,
+        fixture.governance,
+        "list_neurons",
+        ListNeurons {
+            of_principal: None,
+            limit,
+            start_page_at,
+        },
+    )
+}
+
+fn list_all_neurons_paged(fixture: &GovernanceLedgerFixture, limit: u32) -> Vec<SnsNeuronRecord> {
+    let mut all = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = list_neurons_page(fixture, limit, cursor);
+        if page.neurons.is_empty() {
+            return all;
+        }
+        cursor = page.neurons.last().and_then(|neuron| neuron.id.clone());
+        all.extend(page.neurons);
+    }
+}
+
+fn find_neuron<'a>(neurons: &'a [SnsNeuronRecord], id: &NeuronId) -> &'a SnsNeuronRecord {
+    neurons
+        .iter()
+        .find(|neuron| neuron.id.as_ref() == Some(id))
+        .expect("expected neuron in paginated result")
+}
+
+pub fn run_candidate_reward_shares_drive_io_rewards(
+    required: bool,
+) -> Result<(), SnsGovernanceSetupError> {
+    use crate::sns_root_setup::SnsRootCanister;
+    use candid::{decode_one, encode_one, Nat};
+    use io_stream_manager::{
+        Account as StreamAccount, ApiError, CompleteLiquidReceiptArgs, CompletedReceiptResult,
+        InitArgs, LiquidReceiptProgress, PrepareLiquidReceiptArgs, ReceiptKind, RewardCohort,
+        Status, StreamConfig, StreamProgress,
+    };
+    use pocket_ic::CanisterSettings;
+
+    let artifacts = match resolve_from_env(required) {
+        Ok(ArtifactStatus::Ready(set)) => set,
+        Ok(ArtifactStatus::Skipped(message)) => {
+            return Err(SnsGovernanceSetupError::Artifact(message));
+        }
+        Err(error) => return Err(SnsGovernanceSetupError::Artifact(error)),
+    };
+    if !pocketic_env::pocketic_available() {
+        return Err(SnsGovernanceSetupError::PocketIcMissing);
+    }
+    let candidate_governance_wasm = artifacts
+        .load_required("sns_governance")
+        .map_err(SnsGovernanceSetupError::Artifact)?;
+    let root_wasm = artifacts
+        .load_required("sns_root")
+        .map_err(SnsGovernanceSetupError::Artifact)?;
+    let ledger_wasm = artifacts
+        .load_required("sns_ledger")
+        .map_err(SnsGovernanceSetupError::Artifact)?;
+    let stream_wasm = local_debug_wasm("io_stream_manager")?;
+    let nns_wasm = local_debug_wasm("mock_nns_governance")?;
+    let governance_hash = Sha256::digest(&candidate_governance_wasm).to_vec();
+
+    let pic = std::rc::Rc::new(pocketic_env::new_sns_pic());
+    let sns_subnet = pic.topology().get_sns().expect("SNS subnet exists");
+    let root = pic.create_canister_on_subnet(None, None, sns_subnet);
+    pic.add_cycles(root, 2_000_000_000_000);
+    let governance = pic.create_canister_on_subnet(
+        None,
+        Some(CanisterSettings {
+            controllers: Some(vec![root]),
+            ..Default::default()
+        }),
+        sns_subnet,
+    );
+    pic.add_cycles(governance, 2_000_000_000_000);
+    let stream = pocketic_env::create_empty_application_canister(&pic);
+    let nns_manager = pocketic_env::create_application_canister(&pic, nns_wasm, Vec::new());
+    let controller = Principal::from_slice(&[71; 29]);
+    let reserve_subaccount = icrc::subaccount("candidate-reward-reserve");
+    let liquid_subaccount = icrc::subaccount("candidate-reward-liquid");
+    let reserve = icrc::account(stream, Some(reserve_subaccount));
+    let liquid = icrc::account(stream, Some(liquid_subaccount));
+    let io_ledger = pocketic_env::create_sns_canister(
+        &pic,
+        ledger_wasm.clone(),
+        icrc::ledger_init_arg(
+            Principal::anonymous(),
+            icrc::account(Principal::from_slice(&[72; 29]), None),
+            vec![
+                (icrc::account(controller, None), 5_000_000_000),
+                (reserve.clone(), 20_000_000_000),
+            ],
+        ),
+    );
+    let maturity_subaccount = [9_u8; 32];
+    let icp_ledger = pocketic_env::create_sns_canister(
+        &pic,
+        ledger_wasm,
+        icrc::ledger_init_arg(
+            Principal::anonymous(),
+            icrc::account(Principal::from_slice(&[73; 29]), None),
+            vec![
+                (liquid.clone(), 10_000_000_000),
+                (
+                    icrc::account(nns_manager, Some(maturity_subaccount)),
+                    2_000_000_000,
+                ),
+            ],
+        ),
+    );
+    pic.install_canister(
+        root,
+        root_wasm,
+        encode_one(SnsRootCanister {
+            dapp_canister_ids: vec![stream],
+            extensions: None,
+            testflight: true,
+            archive_canister_ids: vec![],
+            governance_canister_id: Some(governance),
+            index_canister_id: None,
+            swap_canister_id: None,
+            ledger_canister_id: Some(io_ledger),
+            timers: None,
+        })
+        .unwrap(),
+        None,
+    );
+    pic.install_canister(
+        governance,
+        candidate_governance_wasm,
+        governance_init_arg(Some(io_ledger), Some(root)),
+        None,
+    );
+    for _ in 0..5 {
+        pic.tick();
+    }
+    let neuron_ids = (1_u64..=3)
+        .map(|memo| {
+            let fixture = GovernanceLedgerFixture {
+                pic: pic.clone(),
+                governance,
+                ledger: io_ledger,
+                controller,
+            };
+            let id = stake_and_claim_neuron(&fixture, 500_000_000, memo, b"io-reward")
+                .expect("candidate neuron claim succeeds");
+            configure_increase_dissolve_delay(
+                &fixture,
+                &id,
+                u32::try_from(io_core_model::TWO_WEEK_SECONDS).unwrap(),
+            );
+            id
+        })
+        .collect::<Vec<_>>();
+    let excluded = StreamAccount {
+        owner: governance,
+        subaccount: Some(neuron_ids[2].id.clone()),
+    };
+    pic.install_canister(
+        stream,
+        stream_wasm.clone(),
+        encode_one(InitArgs {
+            config: StreamConfig {
+                io_ledger,
+                icp_ledger,
+                nns_manager,
+                jupiter_receipt_source: StreamAccount {
+                    owner: nns_manager,
+                    subaccount: None,
+                },
+                two_week_receipt_source: StreamAccount {
+                    owner: nns_manager,
+                    subaccount: Some(maturity_subaccount.to_vec()),
+                },
+                jupiter_io_account: StreamAccount {
+                    owner: controller,
+                    subaccount: Some(vec![10; 32]),
+                },
+                sns_governance: governance,
+                sns_root: Some(root),
+                expected_sns_governance_module_hash: Some(governance_hash),
+                approved_reward_event_duration_seconds: Some(io_core_model::TWO_WEEK_SECONDS),
+                approved_initial_reward_rate_basis_points: Some(0),
+                approved_final_reward_rate_basis_points: Some(0),
+                io_reserve: StreamAccount {
+                    owner: stream,
+                    subaccount: Some(reserve_subaccount.to_vec()),
+                },
+                liquid_icp: StreamAccount {
+                    owner: stream,
+                    subaccount: Some(liquid_subaccount.to_vec()),
+                },
+                excluded_io_accounts: vec![excluded],
+                minimum_redemption_io_e8s: 20_000,
+                expected_io_fee_e8s: FEE_E8S as u128,
+                expected_icp_fee_e8s: FEE_E8S as u128,
+                maximum_request_lifetime_nanos: 900_000_000_000,
+                retry_delay_nanos: 1_000_000_000,
+                ledger_deduplication_window_nanos: 86_400_000_000_000,
+            },
+            next_cohort_timestamp_seconds: 0,
+        })
+        .unwrap(),
+        None,
+    );
+    let ready: Result<(), ApiError> = decode_one(
+        &pic.update_call(stream, governance, "set_paused", encode_one(false).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(ready, Ok(()));
+    let cohort: Result<RewardCohort, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            Principal::anonymous(),
+            "capture_reward_cohort",
+            encode_one(()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let cohort = cohort.expect("installed stream captures the candidate cohort");
+    assert_eq!(cohort.members.len(), 2, "configured neuron is excluded");
+    let fixture = GovernanceLedgerFixture {
+        pic: pic.clone(),
+        governance,
+        ledger: io_ledger,
+        controller,
+    };
+    let proposal = make_motion(&fixture, &neuron_ids[0], "installed IO reward shares");
+    register_vote(&fixture, &neuron_ids[1], proposal, 2);
+    register_vote(&fixture, &neuron_ids[2], proposal, 1);
+    let event = advance_until_reward_event(&fixture, 1, cohort.reward_event_at_capture.unwrap().round);
+    assert_eq!(event.settled_proposals.len(), 1);
+    let status: Status = decode_one(
+        &pic.query_call(stream, controller, "get_status", encode_one(()).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    if status.has_active_reward_cohort {
+        let closed: Result<RewardCohort, ApiError> = decode_one(
+            &pic.update_call(
+                stream,
+                Principal::anonymous(),
+                "close_reward_cohort",
+                encode_one(()).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        closed.expect("installed stream closes from the candidate event");
+    }
+    let status: Status = decode_one(
+        &pic.query_call(stream, controller, "get_status", encode_one(()).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(status.has_pending_reward_cohort);
+    let liquid_amount = 1_000_000_000_u64;
+    let permit: Result<io_stream_manager::LiquidReceiptPermit, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            nns_manager,
+            "prepare_liquid_receipt",
+            encode_one(PrepareLiquidReceiptArgs {
+                receipt_sequence: 0,
+                receipt_kind: ReceiptKind::TwoWeekMaturity,
+                source_operation_id: b"candidate-event-1".to_vec(),
+                liquid_amount_e8s: liquid_amount as u128,
+                cohort_generation: Some(cohort.generation),
+            })
+            .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let permit = permit.expect("two-week receipt permit is prepared");
+    let before = neuron_ids[..2]
+        .iter()
+        .map(|id| {
+            icrc::icrc1_balance_of(
+                &pic,
+                io_ledger,
+                icrc::account(governance, Some(id.id.clone().try_into().unwrap())),
+            )
+        })
+        .collect::<Vec<Nat>>();
+    let receipt_block = icrc::icrc1_transfer(
+        &pic,
+        icp_ledger,
+        nns_manager,
+        icrc::transfer_arg(
+            Some(maturity_subaccount),
+            icrc::account(
+                permit.destination.owner,
+                permit.destination.subaccount.clone().map(|bytes| bytes.try_into().unwrap()),
+            ),
+            liquid_amount,
+            Some(FEE_E8S),
+            Some(&permit.memo),
+            Some(pic.get_time().as_nanos_since_unix_epoch()),
+        ),
+    )
+    .expect("maturity source delivers exact liquid receipt");
+    let proved: Result<LiquidReceiptProgress, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            nns_manager,
+            "complete_liquid_receipt",
+            encode_one(CompleteLiquidReceiptArgs {
+                receipt_sequence: 0,
+                block_index: u128::try_from(receipt_block.0).unwrap(),
+            })
+            .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(proved, Ok(LiquidReceiptProgress::ReceiptProved));
+    let mut completed = None;
+    let mut upgraded_between_recipients = false;
+    for _ in 0..12 {
+        let progress: Result<StreamProgress, ApiError> = decode_one(
+            &pic.update_call(stream, Principal::anonymous(), "resume", encode_one(()).unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        if let Ok(StreamProgress::LiquidReceipt(LiquidReceiptProgress::Completed(result))) = progress
+        {
+            completed = Some(result);
+            break;
+        }
+        let after = neuron_ids[..2]
+            .iter()
+            .map(|id| {
+                icrc::icrc1_balance_of(
+                    &pic,
+                    io_ledger,
+                    icrc::account(governance, Some(id.id.clone().try_into().unwrap())),
+                )
+            })
+            .collect::<Vec<Nat>>();
+        if !upgraded_between_recipients
+            && after.iter().zip(&before).filter(|(after, before)| after > before).count() == 1
+        {
+            pocketic_env::upgrade_canister(&pic, stream, stream_wasm.clone(), encode_one(()).unwrap());
+            upgraded_between_recipients = true;
+        }
+    }
+    assert!(upgraded_between_recipients, "stream upgrades after exactly one recipient");
+    let result = match completed.expect("reward receipt completes") {
+        CompletedReceiptResult::TwoWeek(result) => result,
+        other => panic!("unexpected receipt result: {other:?}"),
+    };
+    assert!(result.backed_io_pool_e8s > 0);
+    assert!(result.distributed_io_e8s > 0);
+    assert_eq!(
+        result
+            .distributed_io_e8s
+            .checked_add(result.total_dust_io_e8s),
+        Some(result.backed_io_pool_e8s)
+    );
+    let after = neuron_ids[..2]
+        .iter()
+        .map(|id| {
+            icrc::icrc1_balance_of(
+                &pic,
+                io_ledger,
+                icrc::account(governance, Some(id.id.clone().try_into().unwrap())),
+            )
+        })
+        .collect::<Vec<Nat>>();
+    assert!(after.iter().zip(before).all(|(after, before)| after > &before));
+    Ok(())
+}
+
+pub fn run_official_to_candidate_reward_participation_upgrade(
+    required: bool,
+) -> Result<(), SnsGovernanceSetupError> {
+    let artifacts = match resolve_from_env(required) {
+        Ok(ArtifactStatus::Ready(set)) => set,
+        Ok(ArtifactStatus::Skipped(message)) => {
+            return Err(SnsGovernanceSetupError::Artifact(message));
+        }
+        Err(error) => return Err(SnsGovernanceSetupError::Artifact(error)),
+    };
+    let baseline_name = artifacts
+        .manifest
+        .value("baseline", "sns_governance_wasm")
+        .ok_or_else(|| SnsGovernanceSetupError::Artifact("bundle lacks official Governance baseline".into()))?;
+    let baseline = std::fs::read(artifacts.wasm_dir.join(baseline_name))
+        .map_err(|error| SnsGovernanceSetupError::Artifact(error.to_string()))?;
+    let candidate = artifacts
+        .load_required("sns_governance")
+        .map_err(SnsGovernanceSetupError::Artifact)?;
+    let ledger_wasm = artifacts
+        .load_required("sns_ledger")
+        .map_err(SnsGovernanceSetupError::Artifact)?;
+    if !pocketic_env::pocketic_available() {
+        return Err(SnsGovernanceSetupError::PocketIcMissing);
+    }
+    let pic = std::rc::Rc::new(pocketic_env::new_sns_pic());
+    let sns_subnet = pic.topology().get_sns().expect("SNS subnet exists");
+    let governance = pic.create_canister_on_subnet(None, None, sns_subnet);
+    pic.add_cycles(governance, 2_000_000_000_000);
+    let controller = Principal::from_slice(&[81; 29]);
+    let ledger = pocketic_env::create_sns_canister(
+        &pic,
+        ledger_wasm,
+        icrc::ledger_init_arg(
+            Principal::anonymous(),
+            icrc::account(Principal::from_slice(&[82; 29]), None),
+            vec![(icrc::account(controller, None), 2_000_000_000)],
+        ),
+    );
+    pic.install_canister(
+        governance,
+        baseline,
+        governance_init_arg(Some(ledger), Some(Principal::from_slice(&[83; 29]))),
+        None,
+    );
+    for _ in 0..5 {
+        pic.tick();
+    }
+    let fixture = GovernanceLedgerFixture {
+        pic,
+        governance,
+        ledger,
+        controller,
+    };
+    let neuron_id = stake_and_claim_neuron(&fixture, 500_000_000, 1, b"old-state")
+        .expect("official Governance creates the old neuron state");
+    configure_increase_dissolve_delay(
+        &fixture,
+        &neuron_id,
+        u32::try_from(io_core_model::TWO_WEEK_SECONDS).unwrap(),
+    );
+    assert_eq!(
+        listed_neuron(&fixture, &neuron_id).latest_reward_event_participation,
+        None,
+        "official old Governance must decode without the additive field"
+    );
+    fixture
+        .pic
+        .upgrade_canister(governance, candidate.clone(), candid::encode_one(()).unwrap(), None)
+        .expect("official-to-candidate Governance upgrade succeeds");
+    for _ in 0..5 {
+        fixture.pic.tick();
+    }
+    assert_eq!(
+        listed_neuron(&fixture, &neuron_id).latest_reward_event_participation,
+        None,
+        "old neuron state upgrades with None"
+    );
+    let proposal = make_motion(&fixture, &neuron_id, "candidate upgrade reward event");
+    let event = advance_until_reward_event(&fixture, 1, 0);
+    assert_eq!(event.settled_proposals[0].id, proposal);
+    let populated = listed_neuron(&fixture, &neuron_id)
+        .latest_reward_event_participation
+        .expect("first candidate reward event populates the additive field");
+    assert_eq!(
+        populated.reward_event_end_timestamp_seconds,
+        event.end_timestamp_seconds.unwrap()
+    );
+    assert!(populated.exact_reward_shares().unwrap() > 0);
+    fixture
+        .pic
+        .upgrade_canister(governance, candidate, candid::encode_one(()).unwrap(), None)
+        .expect("candidate same-Wasm upgrade succeeds");
+    for _ in 0..5 {
+        fixture.pic.tick();
+    }
+    assert_eq!(
+        listed_neuron(&fixture, &neuron_id).latest_reward_event_participation,
+        Some(populated),
+        "candidate same-Wasm upgrade preserves reward participation"
+    );
+    run_candidate_reward_shares_drive_io_rewards(required)
+}
+
+fn local_debug_wasm(name: &str) -> Result<Vec<u8>, SnsGovernanceSetupError> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/wasm32-unknown-unknown/debug")
+        .join(format!("{name}.wasm"));
+    std::fs::read(&path).map_err(|error| {
+        SnsGovernanceSetupError::Artifact(format!(
+            "build local debug Wasm {} before the profile: {error}",
+            path.display()
+        ))
+    })
+}
+
 fn setup_real_sns_governance_with_ledger(
     required: bool,
     initial_user_balance_e8s: u64,
@@ -659,7 +1461,7 @@ fn setup_real_sns_governance_with_ledger(
         pic.tick();
     }
     Ok(GovernanceLedgerFixture {
-        pic,
+        pic: std::rc::Rc::new(pic),
         governance,
         ledger,
         controller,
@@ -824,7 +1626,7 @@ pub fn test_nervous_system_parameters() -> NervousSystemParameters {
             final_reward_rate_basis_points: Some(0),
             initial_reward_rate_basis_points: Some(0),
             reward_rate_transition_duration_seconds: Some(1),
-            round_duration_seconds: Some(86_400),
+            round_duration_seconds: Some(io_core_model::TWO_WEEK_SECONDS),
         }),
         maturity_modulation_disabled: Some(true),
         max_number_of_principals_per_neuron: Some(10),

@@ -1,163 +1,27 @@
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+pub use io_sns_manifest::{FetchMetadata, SnsManifest as ArtifactManifest};
 
 pub const DEFAULT_MANIFEST: &str = "tests/e2e_real_canisters/wasms.local.toml";
 pub const ENV_WASM_DIR: &str = "IO_REAL_SNS_WASM_DIR";
 pub const ENV_MANIFEST: &str = "IO_REAL_SNS_WASM_MANIFEST";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ArtifactStatus {
     Skipped(String),
     Ready(ArtifactSet),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ArtifactSet {
     pub wasm_dir: PathBuf,
     pub manifest_path: Option<PathBuf>,
     pub manifest: ArtifactManifest,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ArtifactManifest {
-    entries: BTreeMap<String, String>,
-}
-
-impl ArtifactManifest {
-    pub fn parse(input: &str) -> Result<Self, String> {
-        let mut section = String::new();
-        let mut entries = BTreeMap::new();
-        for (line_no, raw) in input.lines().enumerate() {
-            let without_comment = raw.split_once('#').map_or(raw, |(prefix, _)| prefix).trim();
-            if without_comment.is_empty() {
-                continue;
-            }
-            if without_comment.starts_with('[') && without_comment.ends_with(']') {
-                section = without_comment
-                    .trim_start_matches('[')
-                    .trim_end_matches(']')
-                    .trim()
-                    .to_string();
-                continue;
-            }
-            let Some((key, value)) = without_comment.split_once('=') else {
-                return Err(format!("line {}: expected key = value", line_no + 1));
-            };
-            let key = key.trim();
-            let value = parse_quoted(value.trim())
-                .ok_or_else(|| format!("line {}: value for {key} must be quoted", line_no + 1))?;
-            let full_key = if section.is_empty() {
-                key.to_string()
-            } else {
-                format!("{section}.{key}")
-            };
-            entries.insert(full_key, value);
-        }
-        Ok(Self { entries })
-    }
-
-    pub fn from_file(path: &Path) -> Result<Self, String> {
-        let text = fs::read_to_string(path)
-            .map_err(|err| format!("failed to read manifest {}: {err}", path.display()))?;
-        Self::parse(&text)
-    }
-
-    fn field(&self, key: &str, field: &str) -> Option<&str> {
-        self.entries
-            .get(&format!("artifacts.{key}.{field}"))
-            .or_else(|| self.entries.get(&format!("artifacts.{key}_{field}")))
-            .or_else(|| self.entries.get(&format!("{key}_{field}")))
-            .map(String::as_str)
-    }
-
-    pub fn artifact_name(&self, key: &str) -> Result<&str, String> {
-        self.field(key, "filename")
-            .or_else(|| self.field(key, "wasm"))
-            .map(|value| value.trim())
-            .filter(|value| !value.is_empty() && !value.starts_with('<'))
-            .ok_or_else(|| format!("manifest is missing artifacts.{key}.filename"))
-    }
-
-    pub fn expected_hash(&self, key: &str) -> Option<&str> {
-        self.field(key, "sha256")
-            .filter(|value| !value.starts_with('<'))
-    }
-
-    pub fn require_hash(&self, key: &str) -> Result<&str, String> {
-        self.expected_hash(key)
-            .ok_or_else(|| format!("manifest is missing pinned artifacts.{key}_sha256"))
-    }
-
-    pub fn source_url(&self, key: &str) -> Option<&str> {
-        self.field(key, "source_url")
-            .filter(|value| !value.starts_with('<'))
-    }
-
-    pub fn source_sha256(&self, key: &str) -> Option<&str> {
-        self.field(key, "source_sha256")
-            .filter(|value| !value.starts_with('<'))
-    }
-
-    pub fn source_kind(&self, key: &str) -> Option<&str> {
-        self.field(key, "source_kind")
-            .filter(|value| !value.starts_with('<'))
-    }
-
-    pub fn source_filename(&self, key: &str) -> Option<&str> {
-        self.field(key, "source_filename")
-            .filter(|value| !value.starts_with('<'))
-    }
-
-    pub fn source_artifact_name(&self, key: &str) -> Result<String, String> {
-        if let Some(source_filename) = self.source_filename(key) {
-            return Ok(source_filename.trim().to_string());
-        }
-        let source_url = self
-            .source_url(key)
-            .ok_or_else(|| format!("manifest is missing pinned artifacts.{key}.source_url"))?;
-        let file_name = source_url
-            .rsplit('/')
-            .next()
-            .map(str::trim)
-            .filter(|value| !value.is_empty() && !value.starts_with('<'))
-            .ok_or_else(|| format!("manifest artifacts.{key}.source_url has no filename"))?;
-        Ok(file_name.to_string())
-    }
-
-    pub fn require_fetch_metadata(&self, key: &str) -> Result<FetchMetadata<'_>, String> {
-        let source_url = self
-            .source_url(key)
-            .ok_or_else(|| format!("manifest is missing pinned artifacts.{key}.source_url"))?;
-        let source_sha256 = self
-            .source_sha256(key)
-            .ok_or_else(|| format!("manifest is missing pinned artifacts.{key}.source_sha256"))?;
-        let source_kind = self
-            .source_kind(key)
-            .ok_or_else(|| format!("manifest is missing artifacts.{key}.source_kind"))?;
-        Ok(FetchMetadata {
-            source_url,
-            source_sha256,
-            source_kind,
-            source_filename: self.source_filename(key),
-        })
-    }
-
-    pub fn has_artifact(&self, key: &str) -> bool {
-        self.artifact_name(key).is_ok()
-            && (self.expected_hash(key).is_some() || self.source_sha256(key).is_some())
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FetchMetadata<'a> {
-    pub source_url: &'a str,
-    pub source_sha256: &'a str,
-    pub source_kind: &'a str,
-    pub source_filename: Option<&'a str>,
-}
 
 impl ArtifactSet {
     pub fn load_required(&self, key: &str) -> Result<Vec<u8>, String> {
@@ -253,14 +117,6 @@ pub fn verify_sha256_bytes(path: &Path, bytes: &[u8], expected_hex: &str) -> Res
         ));
     }
     Ok(())
-}
-
-fn parse_quoted(value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
-        return Some(value[1..value.len() - 1].to_string());
-    }
-    None
 }
 
 #[cfg(test)]

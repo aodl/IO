@@ -8,6 +8,7 @@ license.workspace = true
 candid.workspace = true
 hex = "0.4.3"
 io-production-wiring.workspace = true
+io-sns-manifest.workspace = true
 io-sns-lifecycle.workspace = true
 io-stable-schema.workspace = true
 serde.workspace = true

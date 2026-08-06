@@ -22,6 +22,8 @@ export const idlFactory = ({ IDL }) => {
     participation_denominator: IDL.Nat,
     participation_numerator: IDL.Nat,
     voted_closed_proposals: IDL.Nat64,
+    reward_event_end_timestamp_seconds: IDL.Opt(IDL.Nat64),
+    reward_shares: IDL.Opt(IDL.Nat),
   });
   const PublicOperationPhase = IDL.Variant({
     AwaitingIcpPayout: IDL.Null,
@@ -46,6 +48,16 @@ export const idlFactory = ({ IDL }) => {
     sns_eligible_neuron_count: IDL.Nat64,
     sns_excluded_neuron_count_by_reason: IDL.Vec(GovernanceExcludedCount),
     total_frozen_cohort_stake_e8s: IDL.Nat,
+    reward_event_round: IDL.Opt(IDL.Nat64),
+    reward_event_end_timestamp_seconds: IDL.Opt(IDL.Nat64),
+    settled_proposal_count: IDL.Opt(IDL.Nat64),
+    total_eligible_reward_shares: IDL.Opt(IDL.Nat),
+    no_proposal_fallback: IDL.Opt(IDL.Bool),
+    no_eligible_participation: IDL.Opt(IDL.Bool),
+    reward_event_missed: IDL.Opt(IDL.Bool),
+    expected_governance_module_hash: IDL.Opt(IDL.Text),
+    observed_governance_module_hash: IDL.Opt(IDL.Text),
+    latest_reward_event_participation_capability: IDL.Opt(IDL.Bool),
   });
   const RetentionLimits = IDL.Record({
     artifact_status: IDL.Nat64,

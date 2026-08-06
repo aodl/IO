@@ -42,59 +42,6 @@ value_for() {
   ' "${MANIFEST}"
 }
 
-set_value() {
-  local artifact="$1" field="$2" value="$3" tmp="${MANIFEST}.tmp"
-  local legacy_key="${artifact}_${field}"
-  [[ "${field}" == "filename" ]] && legacy_key="${artifact}_wasm"
-  awk -v artifact="$artifact" -v field="$field" -v value="$value" -v legacy_key="$legacy_key" '
-    BEGIN { section = ""; in_target = 0; changed = 0; saw_target = 0 }
-    /^[[:space:]]*\[/ {
-      if (in_target && !changed) {
-        print field " = \"" value "\""
-        changed = 1
-      }
-      section=$0
-      gsub(/^[[:space:]]*\[|\][[:space:]]*$/, "", section)
-      in_target = section == "artifacts." artifact
-      if (in_target) { saw_target = 1 }
-      print
-      next
-    }
-    {
-      left=$0
-      sub(/=.*/, "", left)
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", left)
-      if (in_target) {
-        if (left == field) {
-          prefix=$0
-          sub(/[^[:space:]].*/, "", prefix)
-          print prefix field " = \"" value "\""
-          changed = 1
-          next
-        }
-      }
-      if (!saw_target && (section == "" || section == "artifacts") && left == legacy_key) {
-        prefix=$0
-        sub(/[^[:space:]].*/, "", prefix)
-        print prefix legacy_key " = \"" value "\""
-        changed = 1
-        next
-      }
-      print
-    }
-    END {
-      if (!changed) {
-        if (!in_target && !saw_target) {
-          print ""
-          print "[artifacts." artifact "]"
-        }
-        print field " = \"" value "\""
-      }
-    }
-  ' "${MANIFEST}" > "${tmp}"
-  mv "${tmp}" "${MANIFEST}"
-}
-
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
@@ -128,8 +75,8 @@ fetch_one() {
     https://download.dfinity.systems/*|https://github.com/*/releases/download/*) ;;
     *) printf 'refusing unapproved source_url for %s: %s\n' "${key}" "${url}" >&2; exit 2 ;;
   esac
-  if is_placeholder "${source_expected}" && is_placeholder "${expected}"; then
-    printf 'refusing %s: provide %s_source_sha256 or %s_sha256 before fetching\n' "${key}" "${key}" "${key}" >&2
+  if is_placeholder "${source_expected}" || is_placeholder "${expected}"; then
+    printf 'refusing %s: both reviewed source_sha256 and sha256 are required before fetching\n' "${key}" >&2
     exit 2
   fi
 
@@ -150,13 +97,11 @@ fetch_one() {
   curl --fail --location --proto '=https' --tlsv1.2 --output "${tmp_download}" "${url}"
 
   source_actual="$(sha256_file "${tmp_download}")"
-  if ! is_placeholder "${source_expected}"; then
-    lower_source_expected="$(printf '%s' "${source_expected}" | tr '[:upper:]' '[:lower:]')"
-    if [[ "${source_actual}" != "${lower_source_expected}" ]]; then
-      rm -f "${tmp_download}" "${tmp_wasm}" "${tmp_source}"
-      printf 'source sha256 mismatch for %s: expected %s got %s\n' "${key}" "${source_expected}" "${source_actual}" >&2
-      exit 1
-    fi
+  lower_source_expected="$(printf '%s' "${source_expected}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${source_actual}" != "${lower_source_expected}" ]]; then
+    rm -f "${tmp_download}" "${tmp_wasm}" "${tmp_source}"
+    printf 'source sha256 mismatch for %s: expected %s got %s\n' "${key}" "${source_expected}" "${source_actual}" >&2
+    exit 1
   fi
   cp "${tmp_download}" "${tmp_source}"
 
@@ -170,16 +115,11 @@ fetch_one() {
   esac
 
   actual="$(sha256_file "${tmp_wasm}")"
-  if ! is_placeholder "${expected}"; then
-    lower_expected="$(printf '%s' "${expected}" | tr '[:upper:]' '[:lower:]')"
-    if [[ "${actual}" != "${lower_expected}" ]]; then
-      rm -f "${tmp_download}" "${tmp_wasm}" "${tmp_source}"
-      printf 'uncompressed wasm sha256 mismatch for %s: expected %s got %s\n' "${key}" "${expected}" "${actual}" >&2
-      exit 1
-    fi
-  else
-    printf 'pinning artifacts.%s.sha256 = %s in %s\n' "${key}" "${actual}" "${MANIFEST}"
-    set_value "${key}" sha256 "${actual}"
+  lower_expected="$(printf '%s' "${expected}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${actual}" != "${lower_expected}" ]]; then
+    rm -f "${tmp_download}" "${tmp_wasm}" "${tmp_source}"
+    printf 'uncompressed wasm sha256 mismatch for %s: expected %s got %s\n' "${key}" "${expected}" "${actual}" >&2
+    exit 1
   fi
 
   mv "${tmp_wasm}" "${dest}"

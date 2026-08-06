@@ -470,6 +470,11 @@ pub fn run_installed_stream_redemption(required: bool) {
                 subaccount: Some(vec![10; 32]),
             },
             sns_governance: governance,
+            sns_root: None,
+            expected_sns_governance_module_hash: None,
+            approved_reward_event_duration_seconds: None,
+            approved_initial_reward_rate_basis_points: None,
+            approved_final_reward_rate_basis_points: None,
             io_reserve: Account {
                 owner: stream,
                 subaccount: Some(reserve_subaccount.to_vec()),

@@ -28,7 +28,11 @@ pub(crate) fn install(deadline_seconds: Option<u64>) {
                 slot.borrow_mut().take();
             });
             let now_seconds = ic_cdk::api::time() / 1_000_000_000;
-            let _ = crate::rewards::close(now_seconds).await;
+            if let Err(error) = crate::rewards::close(now_seconds).await {
+                ic_cdk::api::debug_print(format!(
+                    "cohort deadline work remains due after failure: {error:?}"
+                ));
+            }
         });
         *slot.borrow_mut() = Some(timer);
     });

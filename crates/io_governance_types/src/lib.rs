@@ -1141,6 +1141,47 @@ pub struct SnsNeuron {
     pub permissions: Vec<SnsNeuronPermission>,
     pub is_io_protocol_neuron: bool,
     pub is_jupiter_governance_neuron: bool,
+    pub latest_reward_event_participation: Option<SnsRewardEventParticipation>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SnsUint128 {
+    pub high: u64,
+    pub low: u64,
+}
+
+impl SnsUint128 {
+    pub fn exact(self) -> u128 {
+        (u128::from(self.high) << 64) | u128::from(self.low)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SnsRewardEventParticipation {
+    pub reward_event_end_timestamp_seconds: u64,
+    pub reward_shares: Option<SnsUint128>,
+}
+
+impl SnsRewardEventParticipation {
+    pub fn exact_reward_shares(self) -> Result<u128, SnsGovernanceError> {
+        self.reward_shares
+            .map(SnsUint128::exact)
+            .ok_or_else(|| SnsGovernanceError::DecodeError {
+                message: "latest_reward_event_participation is present without reward_shares"
+                    .to_string(),
+            })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SnsRewardEvent {
+    pub rounds_since_last_distribution: Option<u64>,
+    pub actual_timestamp_seconds: u64,
+    pub end_timestamp_seconds: Option<u64>,
+    pub total_available_e8s_equivalent: Option<u64>,
+    pub distributed_e8s_equivalent: u64,
+    pub round: u64,
+    pub settled_proposals: Vec<SnsProposalIdRecord>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -1283,6 +1324,10 @@ impl SnsGovernanceError {
 }
 
 pub trait SnsGovernanceClient {
+    fn get_latest_reward_event<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<SnsRewardEvent, SnsGovernanceError>> + 'a>>;
+
     fn list_neurons<'a>(
         &'a self,
         page: SnsNeuronPageRequest,
@@ -1607,6 +1652,7 @@ pub struct SnsNeuronRecord {
     pub neuron_fees_e8s: u64,
     pub permissions: Vec<SnsNeuronPermissionRecord>,
     pub topic_followees: Option<SnsTopicFollowees>,
+    pub latest_reward_event_participation: Option<SnsRewardEventParticipation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -1792,6 +1838,7 @@ impl TryFrom<SnsNeuronRecord> for SnsNeuron {
                 .collect(),
             is_io_protocol_neuron: false,
             is_jupiter_governance_neuron: false,
+            latest_reward_event_participation: value.latest_reward_event_participation,
         })
     }
 }
@@ -2041,6 +2088,12 @@ pub struct SnsGovernanceCanisterClient {
 }
 
 impl SnsGovernanceClient for SnsGovernanceCanisterClient {
+    fn get_latest_reward_event<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<SnsRewardEvent, SnsGovernanceError>> + 'a>> {
+        Box::pin(async move { sns_canister_get_latest_reward_event(self.canister).await })
+    }
+
     fn list_neurons<'a>(
         &'a self,
         page: SnsNeuronPageRequest,
@@ -2074,6 +2127,30 @@ impl SnsGovernanceClient for SnsGovernanceCanisterClient {
         id: SnsNeuronId,
     ) -> Pin<Box<dyn Future<Output = Result<SnsNeuronId, SnsGovernanceError>> + 'a>> {
         Box::pin(async move { sns_canister_claim_or_refresh_neuron(self.canister, id).await })
+    }
+}
+
+async fn sns_canister_get_latest_reward_event(
+    canister: Principal,
+) -> Result<SnsRewardEvent, SnsGovernanceError> {
+    #[cfg(target_family = "wasm")]
+    {
+        ic_cdk::call::Call::bounded_wait(canister, "get_latest_reward_event")
+            .with_arg(())
+            .await
+            .map_err(|err| SnsGovernanceError::CanisterCallFailed {
+                method: "get_latest_reward_event".to_string(),
+                message: format!("{err:?}"),
+            })?
+            .candid::<SnsRewardEvent>()
+            .map_err(|err| SnsGovernanceError::DecodeError {
+                message: format!("{err:?}"),
+            })
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let _ = canister;
+        Err(SnsGovernanceError::Unsupported)
     }
 }
 
@@ -2304,6 +2381,7 @@ mod tests {
             }],
             is_io_protocol_neuron: false,
             is_jupiter_governance_neuron: false,
+            latest_reward_event_participation: None,
         }
     }
 
@@ -2368,7 +2446,85 @@ mod tests {
                 permission_type: vec![1],
             }],
             topic_followees: None,
+            latest_reward_event_participation: None,
         }
+    }
+
+    #[test]
+    fn sns_reward_shares_decode_additively_and_convert_exactly() {
+        #[derive(CandidType, Deserialize)]
+        struct LegacyNeuronRecord {
+            id: Option<SnsNeuronIdRecord>,
+            staked_maturity_e8s_equivalent: Option<u64>,
+            cached_neuron_stake_e8s: u64,
+            maturity_e8s_equivalent: u64,
+            created_timestamp_seconds: u64,
+            source_nns_neuron_id: Option<u64>,
+            auto_stake_maturity: Option<bool>,
+            aging_since_timestamp_seconds: u64,
+            dissolve_state: Option<SnsDissolveStateRecord>,
+            voting_power_percentage_multiplier: u64,
+            vesting_period_seconds: Option<u64>,
+            disburse_maturity_in_progress: Vec<SnsDisburseMaturityInProgress>,
+            followees: Vec<(u64, SnsFollowees)>,
+            neuron_fees_e8s: u64,
+            permissions: Vec<SnsNeuronPermissionRecord>,
+            topic_followees: Option<SnsTopicFollowees>,
+        }
+
+        let old = LegacyNeuronRecord {
+            id: Some(SnsNeuronIdRecord { id: vec![7; 32] }),
+            staked_maturity_e8s_equivalent: None,
+            cached_neuron_stake_e8s: 123,
+            maturity_e8s_equivalent: 0,
+            created_timestamp_seconds: 1,
+            source_nns_neuron_id: None,
+            auto_stake_maturity: None,
+            aging_since_timestamp_seconds: 1,
+            dissolve_state: Some(SnsDissolveStateRecord::DissolveDelaySeconds(
+                TWO_WEEK_SECONDS,
+            )),
+            voting_power_percentage_multiplier: 100,
+            vesting_period_seconds: None,
+            disburse_maturity_in_progress: Vec::new(),
+            followees: Vec::new(),
+            neuron_fees_e8s: 0,
+            permissions: Vec::new(),
+            topic_followees: None,
+        };
+        let old_bytes = Encode!(&old).unwrap();
+        let old_decoded = Decode!(&old_bytes, SnsNeuronRecord).unwrap();
+        assert_eq!(old_decoded.latest_reward_event_participation, None);
+
+        let mut candidate = sns_neuron_record(
+            vec![8; 32],
+            456,
+            SnsDissolveStateRecord::DissolveDelaySeconds(TWO_WEEK_SECONDS),
+        );
+        candidate.latest_reward_event_participation = Some(SnsRewardEventParticipation {
+            reward_event_end_timestamp_seconds: 1_209_600,
+            reward_shares: Some(SnsUint128 {
+                high: 0x0123_4567_89ab_cdef,
+                low: 0xfedc_ba98_7654_3210,
+            }),
+        });
+        let bytes = Encode!(&candidate).unwrap();
+        let decoded = Decode!(&bytes, SnsNeuronRecord).unwrap();
+        let participation = decoded.latest_reward_event_participation.unwrap();
+        assert_eq!(participation.reward_event_end_timestamp_seconds, 1_209_600);
+        assert_eq!(
+            participation.exact_reward_shares().unwrap(),
+            (u128::from(0x0123_4567_89ab_cdef_u64) << 64) | u128::from(0xfedc_ba98_7654_3210_u64)
+        );
+
+        let malformed = SnsRewardEventParticipation {
+            reward_event_end_timestamp_seconds: 1,
+            reward_shares: None,
+        };
+        assert!(matches!(
+            malformed.exact_reward_shares(),
+            Err(SnsGovernanceError::DecodeError { .. })
+        ));
     }
 
     struct SnsProposalFixture {

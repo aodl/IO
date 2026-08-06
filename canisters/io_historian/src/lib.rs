@@ -2,7 +2,6 @@ use candid::CandidType;
 use io_ledger_types::{
     AccountHistoryPageOrder, AccountHistoryScanState, IndexTransaction, LedgerKind,
 };
-use io_reward_policy::{participation_ratio, RewardParticipant};
 use io_stable_schema::IO_HISTORIAN_SCHEMA_VERSION;
 use serde::Deserialize;
 use std::cell::RefCell;
@@ -424,6 +423,8 @@ pub struct GovernanceNeuronParticipation {
     pub participation_numerator: u128,
     pub participation_denominator: u128,
     pub currently_destination_eligible: bool,
+    pub reward_event_end_timestamp_seconds: Option<u64>,
+    pub reward_shares: Option<u128>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
@@ -438,6 +439,16 @@ pub struct GovernanceParticipationSnapshot {
     pub nns_lifecycle_status_summary: Option<String>,
     pub last_governance_snapshot_timestamp_nanos: Option<u64>,
     pub neuron_participation: Vec<GovernanceNeuronParticipation>,
+    pub reward_event_round: Option<u64>,
+    pub reward_event_end_timestamp_seconds: Option<u64>,
+    pub settled_proposal_count: Option<u64>,
+    pub total_eligible_reward_shares: Option<u128>,
+    pub no_proposal_fallback: Option<bool>,
+    pub no_eligible_participation: Option<bool>,
+    pub reward_event_missed: Option<bool>,
+    pub expected_governance_module_hash: Option<String>,
+    pub observed_governance_module_hash: Option<String>,
+    pub latest_reward_event_participation_capability: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -449,6 +460,15 @@ pub struct GovernanceObservation {
     pub pending_nns_operation_count: Option<u64>,
     pub nns_lifecycle_status_summary: Option<String>,
     pub observed_at_timestamp_nanos: Option<u64>,
+    pub reward_event_round: Option<u64>,
+    pub reward_event_end_timestamp_seconds: Option<u64>,
+    pub settled_proposal_count: Option<u64>,
+    pub no_proposal_fallback: Option<bool>,
+    pub no_eligible_participation: Option<bool>,
+    pub reward_event_missed: Option<bool>,
+    pub expected_governance_module_hash: Option<String>,
+    pub observed_governance_module_hash: Option<String>,
+    pub latest_reward_event_participation_capability: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -458,6 +478,8 @@ pub struct GovernanceNeuronObservation {
     pub eligible_closed_proposals: u64,
     pub voted_closed_proposals: u64,
     pub currently_destination_eligible: bool,
+    pub reward_event_end_timestamp_seconds: Option<u64>,
+    pub reward_shares: Option<u128>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -1175,11 +1197,15 @@ fn index_health_source(state: &StableState, now_timestamp_nanos: u64) -> SourceH
 }
 
 fn governance_health(state: &StableState, now_timestamp_nanos: u64) -> SourceHealth {
-    let complete = state.governance.counted_proposals > 0
+    let complete = state
+        .governance
+        .reward_event_end_timestamp_seconds
+        .is_some()
         && state
             .governance
             .last_governance_snapshot_timestamp_nanos
-            .is_some();
+            .is_some()
+        && state.governance.reward_event_missed != Some(true);
     source_health(SourceHealthInput {
         source_id: "nns-governance-freshness".to_string(),
         kind: IngestionSourceKind::NnsGovernanceFreshness,
@@ -1427,30 +1453,31 @@ pub fn governance_snapshot_from_observation(
     let mut excluded = BTreeMap::<String, u64>::new();
     let mut participation = Vec::new();
     let mut total_stake = 0_u128;
+    let total_reward_shares = observation.neurons.iter().try_fold(0u128, |sum, neuron| {
+        sum.checked_add(neuron.reward_shares.unwrap_or(0))
+    });
     for neuron in observation.neurons {
-        let policy_neuron = RewardParticipant {
-            sns_neuron_id: io_reward_policy::compatibility_sns_neuron_id_from_u64(neuron.neuron_id),
-            neuron_id: neuron.neuron_id,
-            frozen_stake_e8s: neuron.frozen_stake_e8s,
-            eligible_closed_proposals: neuron.eligible_closed_proposals,
-            voted_closed_proposals: neuron.voted_closed_proposals,
-            destination_is_currently_eligible: neuron.currently_destination_eligible,
-        };
-        if policy_neuron.frozen_stake_e8s > 0 {
-            let (num, den) = participation_ratio(&policy_neuron);
-            total_stake = total_stake.saturating_add(policy_neuron.frozen_stake_e8s);
+        if neuron.frozen_stake_e8s > 0 {
+            let num = neuron.reward_shares.unwrap_or(0);
+            let den = total_reward_shares.unwrap_or(0);
+            total_stake = total_stake.saturating_add(neuron.frozen_stake_e8s);
             participation.push(GovernanceNeuronParticipation {
-                neuron_id: policy_neuron.neuron_id,
-                frozen_stake_e8s: policy_neuron.frozen_stake_e8s,
-                eligible_closed_proposals: policy_neuron.eligible_closed_proposals,
-                voted_closed_proposals: policy_neuron.voted_closed_proposals,
+                neuron_id: neuron.neuron_id,
+                frozen_stake_e8s: neuron.frozen_stake_e8s,
+                eligible_closed_proposals: neuron.eligible_closed_proposals,
+                voted_closed_proposals: neuron.voted_closed_proposals,
                 participation_numerator: num,
                 participation_denominator: den,
-                currently_destination_eligible: policy_neuron.destination_is_currently_eligible,
+                currently_destination_eligible: neuron.currently_destination_eligible,
+                reward_event_end_timestamp_seconds: neuron.reward_event_end_timestamp_seconds,
+                reward_shares: neuron.reward_shares,
             });
         }
-        if policy_neuron.frozen_stake_e8s == 0 || !neuron.currently_destination_eligible {
-            for reason in exclusion_reasons(&policy_neuron, neuron.currently_destination_eligible) {
+        if neuron.frozen_stake_e8s == 0 || !neuron.currently_destination_eligible {
+            for reason in exclusion_reasons(
+                neuron.frozen_stake_e8s,
+                neuron.currently_destination_eligible,
+            ) {
                 *excluded.entry(reason).or_default() += 1;
             }
         }
@@ -1472,6 +1499,17 @@ pub fn governance_snapshot_from_observation(
         nns_lifecycle_status_summary: observation.nns_lifecycle_status_summary,
         last_governance_snapshot_timestamp_nanos: observation.observed_at_timestamp_nanos,
         neuron_participation: participation,
+        reward_event_round: observation.reward_event_round,
+        reward_event_end_timestamp_seconds: observation.reward_event_end_timestamp_seconds,
+        settled_proposal_count: observation.settled_proposal_count,
+        total_eligible_reward_shares: total_reward_shares,
+        no_proposal_fallback: observation.no_proposal_fallback,
+        no_eligible_participation: observation.no_eligible_participation,
+        reward_event_missed: observation.reward_event_missed,
+        expected_governance_module_hash: observation.expected_governance_module_hash,
+        observed_governance_module_hash: observation.observed_governance_module_hash,
+        latest_reward_event_participation_capability: observation
+            .latest_reward_event_participation_capability,
     }
 }
 
@@ -1547,12 +1585,9 @@ pub fn observed_index_transactions_to_stream_records(
         .collect()
 }
 
-fn exclusion_reasons(
-    neuron: &RewardParticipant,
-    currently_destination_eligible: bool,
-) -> Vec<String> {
+fn exclusion_reasons(frozen_stake_e8s: u128, currently_destination_eligible: bool) -> Vec<String> {
     let mut reasons = Vec::new();
-    if neuron.frozen_stake_e8s == 0 {
+    if frozen_stake_e8s == 0 {
         reasons.push("zero_stake".to_string());
     }
     if !currently_destination_eligible {
@@ -2425,6 +2460,8 @@ mod tests {
                     eligible_closed_proposals: 4,
                     voted_closed_proposals: 2,
                     currently_destination_eligible: true,
+                    reward_event_end_timestamp_seconds: Some(2),
+                    reward_shares: Some(50),
                 },
                 GovernanceNeuronObservation {
                     neuron_id: 2,
@@ -2432,6 +2469,8 @@ mod tests {
                     eligible_closed_proposals: 4,
                     voted_closed_proposals: 4,
                     currently_destination_eligible: false,
+                    reward_event_end_timestamp_seconds: Some(2),
+                    reward_shares: Some(100),
                 },
             ],
             proposal_epoch_start: Some(1),
@@ -2440,13 +2479,23 @@ mod tests {
             pending_nns_operation_count: Some(3),
             nns_lifecycle_status_summary: Some("observed".to_string()),
             observed_at_timestamp_nanos: Some(100),
+            reward_event_round: Some(4),
+            reward_event_end_timestamp_seconds: Some(2),
+            settled_proposal_count: Some(4),
+            no_proposal_fallback: Some(false),
+            no_eligible_participation: Some(false),
+            reward_event_missed: Some(false),
+            expected_governance_module_hash: Some("expected".into()),
+            observed_governance_module_hash: Some("expected".into()),
+            latest_reward_event_participation_capability: Some(true),
         });
         let summary = get_governance_summary();
         assert_eq!(summary.sns_eligible_neuron_count, 2);
         assert_eq!(summary.total_frozen_cohort_stake_e8s, 200);
         assert_eq!(summary.neuron_participation.len(), 2);
-        assert_eq!(summary.neuron_participation[0].participation_numerator, 2);
-        assert_eq!(summary.neuron_participation[1].participation_numerator, 4);
+        assert_eq!(summary.neuron_participation[0].participation_numerator, 50);
+        assert_eq!(summary.neuron_participation[1].participation_numerator, 100);
+        assert_eq!(summary.total_eligible_reward_shares, Some(150));
         assert!(!summary.neuron_participation[1].currently_destination_eligible);
         assert_eq!(
             summary.sns_excluded_neuron_count_by_reason[0].reason,
@@ -2805,6 +2854,8 @@ mod tests {
                 eligible_closed_proposals: 2,
                 voted_closed_proposals: 1,
                 currently_destination_eligible: true,
+                reward_event_end_timestamp_seconds: Some(20),
+                reward_shares: Some(50),
             }],
             proposal_epoch_start: Some(10),
             proposal_epoch_end: Some(20),
@@ -2812,6 +2863,15 @@ mod tests {
             pending_nns_operation_count: Some(0),
             nns_lifecycle_status_summary: Some("observed".to_string()),
             observed_at_timestamp_nanos: Some(100),
+            reward_event_round: Some(2),
+            reward_event_end_timestamp_seconds: Some(20),
+            settled_proposal_count: Some(2),
+            no_proposal_fallback: Some(false),
+            no_eligible_participation: Some(false),
+            reward_event_missed: Some(false),
+            expected_governance_module_hash: Some("expected".into()),
+            observed_governance_module_hash: Some("expected".into()),
+            latest_reward_event_participation_capability: Some(true),
         });
         let health = get_dashboard_state().source_health;
         assert_eq!(

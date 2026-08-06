@@ -53,6 +53,11 @@ fn simplified_stream_installs_paused_and_rejects_anonymous_before_funds_move() {
                     subaccount: Some(vec![9; 32]),
                 },
                 sns_governance: governance,
+                sns_root: None,
+                expected_sns_governance_module_hash: None,
+                approved_reward_event_duration_seconds: None,
+                approved_initial_reward_rate_basis_points: None,
+                approved_final_reward_rate_basis_points: None,
                 io_reserve: account.clone(),
                 liquid_icp: Account {
                     owner: canister,

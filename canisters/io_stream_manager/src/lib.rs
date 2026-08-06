@@ -7,6 +7,7 @@ pub mod receipt;
 mod receipt_preparation;
 pub mod redemption;
 mod reward_evidence;
+mod reward_nns;
 mod reward_settlement;
 pub mod rewards;
 pub mod state;
@@ -32,9 +33,7 @@ pub struct InitArgs {
 
 #[cfg_attr(target_family = "wasm", ic_cdk::init)]
 pub fn init(args: InitArgs) {
-    // The V1 install field is retained for Candid compatibility. A cohort's
-    // only deadline is derived from its actual capture time, so an empty
-    // launch state never installs or persists a pre-capture deadline.
+    // Empty launch state has no deadline; cohort capture derives the only deadline.
     let state = StreamStateV1 {
         config: args.config,
         lifecycle: Lifecycle::Paused,
@@ -47,6 +46,10 @@ pub fn init(args: InitArgs) {
         next_operation_sequence: state::OperationSequence(0),
         control_epoch: 0,
         last_completed_receipt: None,
+        last_consumed_reward_event: None,
+        cohort_capture_operation: None,
+        cohort_close_operation: None,
+        reward_work_due: None,
     };
     state::initialize(state, ic_cdk::api::canister_self())
         .unwrap_or_else(|error| ic_cdk::trap(&error));
@@ -94,6 +97,11 @@ pub async fn capture_reward_cohort() -> Result<RewardCohort, ApiError> {
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub async fn close_reward_cohort() -> Result<RewardCohort, ApiError> {
+    rewards::close(ic_cdk::api::time() / 1_000_000_000).await
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn resume_reward_work() -> Result<RewardCohort, ApiError> {
     rewards::close(ic_cdk::api::time() / 1_000_000_000).await
 }
 

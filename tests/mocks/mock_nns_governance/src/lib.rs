@@ -35,10 +35,84 @@ struct GovernanceState {
     now_seconds: u64,
     next_neuron_id: u64,
     neurons: Vec<MockNeuron>,
+    two_week_target: Option<SetTargetArgs>,
+    maturity_preparation: Option<PrepareTwoWeekMaturityArgs>,
 }
 
 thread_local! {
-    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new() }) };
+    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new(), two_week_target: None, maturity_preparation: None }) };
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SetTargetArgs {
+    pub target_e8s: u128,
+    pub generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum TargetStatus {
+    UnderTarget,
+    AtTarget,
+    AtTargetWithinUnwindTolerance,
+    OverTarget,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct PrepareTwoWeekMaturityArgs {
+    pub cohort_generation: u64,
+    pub captured_at_timestamp_seconds: u64,
+    pub closes_at_timestamp_seconds: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum PreparedMaturityProgress {
+    Observed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum NnsError {
+    Invalid(String),
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn set_two_week_target(args: SetTargetArgs) -> Result<TargetStatus, NnsError> {
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        if let Some(existing) = &state.two_week_target {
+            if existing.generation == args.generation && existing != &args {
+                return Err(NnsError::Invalid(
+                    "generation was reused with a different target".into(),
+                ));
+            }
+        }
+        state.two_week_target = Some(args);
+        Ok(TargetStatus::AtTarget)
+    })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn prepare_two_week_maturity(
+    args: PrepareTwoWeekMaturityArgs,
+) -> Result<PreparedMaturityProgress, NnsError> {
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        if state.two_week_target.as_ref().map(|target| target.generation)
+            != Some(args.cohort_generation)
+        {
+            return Err(NnsError::Invalid(
+                "maturity preparation lacks the matching target generation".into(),
+            ));
+        }
+        if let Some(existing) = &state.maturity_preparation {
+            if existing != &args {
+                return Err(NnsError::Invalid(
+                    "maturity preparation retry changed its request".into(),
+                ));
+            }
+        }
+        state.maturity_preparation = Some(args);
+        Ok(PreparedMaturityProgress::Observed)
+    })
 }
 
 fn neuron_mut(state: &mut GovernanceState, id: u64) -> Result<&mut MockNeuron, String> {

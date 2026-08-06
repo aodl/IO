@@ -66,6 +66,26 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a capability-bearing production SNS Governance Wasm and POCKET_IC_BIN"]
+    fn candidate_latest_reward_event_participation_contract() {
+        crate::sns_governance_setup::run_candidate_reward_event_participation_contract(true)
+            .unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires candidate Governance, SNS Root/ledger, stream/mock NNS Wasms, and POCKET_IC_BIN"]
+    fn candidate_reward_shares_drive_io_rewards() {
+        crate::sns_governance_setup::run_candidate_reward_shares_drive_io_rewards(true).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires official and candidate Governance, ledger, stream, and POCKET_IC_BIN"]
+    fn official_to_candidate_reward_participation_upgrade() {
+        crate::sns_governance_setup::run_official_to_candidate_reward_participation_upgrade(true)
+            .unwrap();
+    }
+
+    #[test]
     #[ignore = "requires pinned real SNS ledger/index Wasms and POCKET_IC_BIN"]
     fn real_canister_e2e_icp_to_io_stake_reward_redemption() {}
 }

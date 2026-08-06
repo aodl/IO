@@ -1,9 +1,7 @@
 //! Pure IO SNS staking entitlement policy.
 //!
-//! The policy rewards frozen exact-product cohort stake multiplied only by
-//! closed-proposal participation. Native SNS maturity is expected to be
-//! disabled; this crate allocates protocol-backed IO released by the stream
-//! manager.
+//! The policy allocates protocol-backed IO from exact SNS Governance reward
+//! shares. Native SNS maturity is expected to be disabled.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnsNeuronId(pub Vec<u8>);
@@ -46,16 +44,14 @@ pub struct RewardParticipant {
     pub sns_neuron_id: SnsNeuronId,
     pub neuron_id: u64,
     pub frozen_stake_e8s: u128,
-    pub eligible_closed_proposals: u64,
-    pub voted_closed_proposals: u64,
+    pub reward_shares: u128,
     pub destination_is_currently_eligible: bool,
 }
 
 pub fn participant_from_bytes(
     sns_neuron_id: Vec<u8>,
     frozen_stake_e8s: u128,
-    eligible_closed_proposals: u64,
-    voted_closed_proposals: u64,
+    reward_shares: u128,
     destination_is_currently_eligible: bool,
 ) -> Result<RewardParticipant, SnsNeuronIdConversionError> {
     let sns_neuron_id = SnsNeuronId(sns_neuron_id);
@@ -64,8 +60,7 @@ pub fn participant_from_bytes(
         sns_neuron_id,
         neuron_id,
         frozen_stake_e8s,
-        eligible_closed_proposals,
-        voted_closed_proposals,
+        reward_shares,
         destination_is_currently_eligible,
     })
 }
@@ -94,19 +89,6 @@ pub enum RewardPolicyError {
 
 pub fn eligible(n: &RewardParticipant) -> bool {
     n.destination_is_currently_eligible && n.frozen_stake_e8s > 0
-}
-
-/// Returns a rational numerator/denominator for voting participation.
-/// If no eligible proposals closed for the cohort, participation is 1.
-pub fn participation_ratio(n: &RewardParticipant) -> (u128, u128) {
-    if n.eligible_closed_proposals == 0 {
-        (1, 1)
-    } else {
-        (
-            u128::from(n.voted_closed_proposals.min(n.eligible_closed_proposals)),
-            u128::from(n.eligible_closed_proposals),
-        )
-    }
 }
 
 fn mul_u128_wide(a: u128, b: u128) -> (u128, u128) {
@@ -183,21 +165,31 @@ fn mul_div_floor(
     Ok(quotient)
 }
 
-pub fn reward_weight(n: &RewardParticipant) -> Result<u128, RewardPolicyError> {
-    // Weight is frozen stake times period participation. Current destination eligibility is
-    // enforced later during allocation so a frozen member that later becomes ineligible still
-    // contributes its calculated share as forfeited protocol dust.
-    if n.frozen_stake_e8s == 0 {
-        return Ok(0);
+pub fn reward_weight_for_event(n: &RewardParticipant, no_settled_proposals: bool) -> u128 {
+    if no_settled_proposals {
+        n.frozen_stake_e8s
+    } else {
+        n.reward_shares
     }
-    let (num, den) = participation_ratio(n);
-    mul_div_floor(n.frozen_stake_e8s, num, den)
+}
+
+pub fn reward_weight(n: &RewardParticipant) -> Result<u128, RewardPolicyError> {
+    Ok(reward_weight_for_event(n, false))
 }
 
 pub fn allocate_rewards(
     reward_pool_io_e8s: u128,
     participants: &[RewardParticipant],
 ) -> Result<AllocationOutcome, RewardPolicyError> {
+    allocate_rewards_for_event(reward_pool_io_e8s, participants, 1)
+}
+
+pub fn allocate_rewards_for_event(
+    reward_pool_io_e8s: u128,
+    participants: &[RewardParticipant],
+    settled_proposal_count: u64,
+) -> Result<AllocationOutcome, RewardPolicyError> {
+    let no_settled_proposals = settled_proposal_count == 0;
     let weights: Vec<(SnsNeuronId, u64, bool, u128)> = participants
         .iter()
         .map(|n| {
@@ -205,7 +197,7 @@ pub fn allocate_rewards(
                 n.sns_neuron_id.clone(),
                 n.neuron_id,
                 n.destination_is_currently_eligible,
-                reward_weight(n)?,
+                reward_weight_for_event(n, no_settled_proposals),
             ))
         })
         .collect::<Result<_, RewardPolicyError>>()?;
@@ -278,12 +270,16 @@ mod tests {
     use super::*;
 
     fn n(id: u64, stake: u128, voted: u64, total: u64) -> RewardParticipant {
+        let reward_shares = if total == 0 {
+            stake
+        } else {
+            mul_div_floor(stake, u128::from(voted.min(total)), u128::from(total)).unwrap()
+        };
         RewardParticipant {
             sns_neuron_id: SnsNeuronId(id.to_be_bytes().to_vec()),
             neuron_id: id,
             frozen_stake_e8s: stake,
-            eligible_closed_proposals: total,
-            voted_closed_proposals: voted,
+            reward_shares,
             destination_is_currently_eligible: true,
         }
     }
@@ -315,7 +311,6 @@ mod tests {
 
     #[test]
     fn no_closed_proposals_has_full_participation() {
-        assert_eq!(participation_ratio(&n(1, 1_000, 0, 0)), (1, 1));
         assert_eq!(reward_weight(&n(1, 1_000, 0, 0)).unwrap(), 1_000);
     }
 
@@ -326,7 +321,6 @@ mod tests {
 
     #[test]
     fn over_voting_is_capped() {
-        assert_eq!(participation_ratio(&n(1, 1_000, 9, 4)), (4, 4));
         assert_eq!(reward_weight(&n(1, 1_000, 9, 4)).unwrap(), 1_000);
     }
 

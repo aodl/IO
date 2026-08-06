@@ -4,6 +4,11 @@ The launch monetary canister owns direct-reserve redemption, liquid ICP and IO
 reserve roles, proof-bound NNS receipts, exact reward cohorts, serialized reward
 settlement, and local lifecycle.
 
+Two-week entitlement uses only the latest SNS Governance reward-event share
+field. Readiness remains fail-closed until the reviewed Governance artifact
+manifest declares and contract-tests that capability; proposal ballots and SNS
+maturity are not fallback entitlement sources.
+
 IO is not live. The production canister remains inert and this repository does
 not contain a production activation transition.
 

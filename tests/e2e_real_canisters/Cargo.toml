@@ -12,6 +12,7 @@ io-ledger-types.workspace = true
 io-stream-manager = { path = "../../canisters/io_stream_manager" }
 io-production-wiring.workspace = true
 io-reward-policy.workspace = true
+io-sns-manifest.workspace = true
 io-core-model.workspace = true
 pocket-ic.workspace = true
 serde.workspace = true

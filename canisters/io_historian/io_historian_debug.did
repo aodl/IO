@@ -24,12 +24,18 @@ type DataCompleteness = record {
 type GovernanceNeuronObservation = record {
   currently_destination_eligible : bool; eligible_closed_proposals : nat64;
   frozen_stake_e8s : nat; neuron_id : nat64; voted_closed_proposals : nat64;
+  reward_event_end_timestamp_seconds : opt nat64; reward_shares : opt nat;
 };
 type GovernanceObservation = record {
   counted_proposals : nat64; neurons : vec GovernanceNeuronObservation;
   nns_lifecycle_status_summary : opt text; observed_at_timestamp_nanos : opt nat64;
   pending_nns_operation_count : opt nat64; proposal_epoch_end : opt nat64;
   proposal_epoch_start : opt nat64;
+  reward_event_round : opt nat64; reward_event_end_timestamp_seconds : opt nat64;
+  settled_proposal_count : opt nat64; no_proposal_fallback : opt bool;
+  no_eligible_participation : opt bool; reward_event_missed : opt bool;
+  expected_governance_module_hash : opt text; observed_governance_module_hash : opt text;
+  latest_reward_event_participation_capability : opt bool;
 };
 type IndexHealthSummary = record {
   account_label : text; backfill_complete : bool; invariant_broken_count : nat64;

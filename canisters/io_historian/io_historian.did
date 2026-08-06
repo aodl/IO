@@ -33,6 +33,8 @@ type GovernanceNeuronParticipation = record {
   participation_denominator : nat;
   participation_numerator : nat;
   voted_closed_proposals : nat64;
+  reward_event_end_timestamp_seconds : opt nat64;
+  reward_shares : opt nat;
 };
 type GovernanceParticipationSnapshot = record {
   counted_proposals : nat64;
@@ -45,6 +47,16 @@ type GovernanceParticipationSnapshot = record {
   sns_eligible_neuron_count : nat64;
   sns_excluded_neuron_count_by_reason : vec GovernanceExcludedCount;
   total_frozen_cohort_stake_e8s : nat;
+  reward_event_round : opt nat64;
+  reward_event_end_timestamp_seconds : opt nat64;
+  settled_proposal_count : opt nat64;
+  total_eligible_reward_shares : opt nat;
+  no_proposal_fallback : opt bool;
+  no_eligible_participation : opt bool;
+  reward_event_missed : opt bool;
+  expected_governance_module_hash : opt text;
+  observed_governance_module_hash : opt text;
+  latest_reward_event_participation_capability : opt bool;
 };
 type HistorianIngestionStatus = record {
   artifact_status_count : nat64;

@@ -1,5 +1,4 @@
-use candid::{CandidType, Principal};
-use ic_cdk::call::Call;
+use candid::CandidType;
 use serde::Deserialize;
 
 use crate::{
@@ -10,57 +9,16 @@ use crate::{
         RewardRecipient, TwoWeekReceiptOperation, TwoWeekReceiptResult, TwoWeekSettlement,
     },
     reward_evidence::{
-        canonical_eligible, capture_proposal_window, close_proposal_window, eligible_members,
-        exact_neuron, list_all_neurons, participation,
+        apply_reward_share_snapshot, canonical_eligible, eligible_members, event_id, exact_neuron,
+        latest_reward_event, list_all_neurons, require_consistent_event, require_next_event,
     },
-    state::{self, Account, Lifecycle, RewardCohort},
+    reward_nns::{self as reward_nns, CallError, TargetStatus},
+    state::{self, Account, CohortCaptureOperation, CohortCloseOperation, Lifecycle, RewardCohort},
     transfer::{
         classify_result, deterministic_memo, ClassifiedResult, OwnTransferIntent, TransferAttempt,
         TransferState,
     },
 };
-
-#[derive(Clone, Debug, CandidType)]
-struct SetTargetArgs {
-    target_e8s: u128,
-    generation: u64,
-}
-
-#[derive(Clone, Debug, CandidType)]
-struct PrepareTwoWeekMaturityArgs {
-    cohort_generation: u64,
-    captured_at_timestamp_seconds: u64,
-    closes_at_timestamp_seconds: u64,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-enum PreparedMaturityProgress {
-    Observed,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-enum NnsError {
-    Unauthorized,
-    Paused,
-    Busy,
-    Invalid(String),
-    Pending(String),
-    Stuck(String),
-    BelowMaturityThreshold {
-        remaining_e8s: u64,
-        minimum_e8s: u64,
-    },
-    ImplementationIncomplete(String),
-}
-
-#[allow(clippy::enum_variant_names)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-enum TargetStatus {
-    UnderTarget,
-    AtTarget,
-    AtTargetWithinUnwindTolerance,
-    OverTarget,
-}
 
 #[derive(Clone, Debug, CandidType)]
 struct ManageNeuronRequest {
@@ -87,7 +45,67 @@ enum ClaimBy {
 struct Empty {}
 
 pub async fn capture(now_seconds: u64) -> Result<RewardCohort, ApiError> {
-    let snapshot = state::read();
+    let mut snapshot = state::read();
+    if snapshot.cohort_capture_operation.is_none() {
+        snapshot = prepare_capture(snapshot, now_seconds).await?;
+    }
+    let operation = snapshot
+        .cohort_capture_operation
+        .clone()
+        .ok_or_else(|| ApiError::Invalid("cohort capture preparation disappeared".into()))?;
+    let (cohort, fingerprint, submitted) = match operation {
+        CohortCaptureOperation::CohortCapturePrepared {
+            cohort,
+            target_request_fingerprint,
+        } => (cohort, target_request_fingerprint, false),
+        CohortCaptureOperation::TargetSubmitted {
+            cohort,
+            target_request_fingerprint,
+        } => (cohort, target_request_fingerprint, true),
+        CohortCaptureOperation::TargetAccepted {
+            cohort,
+            target_request_fingerprint,
+        } => return finish_capture(snapshot, cohort, target_request_fingerprint),
+    };
+    if fingerprint != reward_nns::target_fingerprint(cohort.generation, cohort.target_icp_e8s) {
+        return Err(ApiError::Invalid(
+            "durable NNS target request fingerprint mismatch".into(),
+        ));
+    }
+    if !submitted {
+        snapshot.cohort_capture_operation = Some(CohortCaptureOperation::TargetSubmitted {
+            cohort: cohort.clone(),
+            target_request_fingerprint: fingerprint.clone(),
+        });
+        state::write(snapshot.clone());
+    }
+    let capacity = reward_nns::set_target(
+        snapshot.config.nns_manager,
+        cohort.generation,
+        cohort.target_icp_e8s,
+    )
+    .await
+    .map_err(nns_call_error)?;
+    if capacity == TargetStatus::UnderTarget {
+        return Err(ApiError::Pending(
+            "canonical two-week NNS principal is UnderTarget".into(),
+        ));
+    }
+    if state::read() != snapshot {
+        return Err(ApiError::Busy);
+    }
+    snapshot.cohort_capture_operation = Some(CohortCaptureOperation::TargetAccepted {
+        cohort: cohort.clone(),
+        target_request_fingerprint: fingerprint.clone(),
+    });
+    state::write(snapshot.clone());
+    finish_capture(snapshot, cohort, fingerprint)
+}
+
+async fn prepare_capture(
+    snapshot: crate::state::StreamStateV1,
+    now_seconds: u64,
+) -> Result<crate::state::StreamStateV1, ApiError> {
     require_capture_slot(&snapshot, now_seconds)?;
     let neurons = list_all_neurons(snapshot.config.sns_governance).await?;
     let members = eligible_members(
@@ -100,8 +118,8 @@ pub async fn capture(now_seconds: u64) -> Result<RewardCohort, ApiError> {
             "reward cohort has no eligible members".into(),
         ));
     }
-    let (latest_proposal_id_at_capture, open_proposal_ids_at_capture) =
-        capture_proposal_window(snapshot.config.sns_governance).await?;
+    let reward_event_at_capture =
+        event_id(&latest_reward_event(snapshot.config.sns_governance).await?)?;
     let canonical = canonical::redemption_snapshot(&snapshot.config)
         .await
         .map_err(ApiError::Ledger)?;
@@ -124,12 +142,6 @@ pub async fn capture(now_seconds: u64) -> Result<RewardCohort, ApiError> {
     let target = io_core_model::two_week_target(active_io, canonical.liquid_icp_e8s, redeemable)
         .map_err(|error| ApiError::Invalid(format!("two-week target failed: {error:?}")))?;
     let generation = next_generation(&snapshot)?;
-    let capacity = set_nns_target(snapshot.config.nns_manager, generation, target).await?;
-    if capacity == TargetStatus::UnderTarget {
-        return Err(ApiError::Pending(
-            "canonical two-week NNS principal is UnderTarget".into(),
-        ));
-    }
     if state::read() != snapshot {
         return Err(ApiError::Busy);
     }
@@ -140,24 +152,117 @@ pub async fn capture(now_seconds: u64) -> Result<RewardCohort, ApiError> {
             .checked_add(io_core_model::TWO_WEEK_SECONDS)
             .ok_or_else(|| ApiError::Invalid("cohort close timestamp overflow".into()))?,
         target_icp_e8s: target,
-        latest_proposal_id_at_capture,
-        open_proposal_ids_at_capture,
+        reward_event_at_capture: Some(reward_event_at_capture),
+        reward_share_snapshot: None,
         members,
     };
     cohort
         .validate(&snapshot.config)
         .map_err(ApiError::Invalid)?;
     let mut latest = snapshot;
-    latest.latest_cohort_generation = generation;
-    latest.next_cohort_timestamp_seconds = cohort.closes_at_timestamp_seconds;
-    latest.active_reward_cohort = Some(cohort.clone());
-    state::write(latest);
+    latest.cohort_capture_operation = Some(CohortCaptureOperation::CohortCapturePrepared {
+        cohort,
+        target_request_fingerprint: reward_nns::target_fingerprint(generation, target),
+    });
+    state::write(latest.clone());
+    Ok(latest)
+}
+
+fn finish_capture(
+    mut snapshot: crate::state::StreamStateV1,
+    cohort: RewardCohort,
+    fingerprint: Vec<u8>,
+) -> Result<RewardCohort, ApiError> {
+    let expected = CohortCaptureOperation::TargetAccepted {
+        cohort: cohort.clone(),
+        target_request_fingerprint: fingerprint,
+    };
+    if snapshot.cohort_capture_operation.as_ref() != Some(&expected) || state::read() != snapshot {
+        return Err(ApiError::Busy);
+    }
+    snapshot.latest_cohort_generation = cohort.generation;
+    snapshot.cohort_capture_operation = None;
+    snapshot.next_cohort_timestamp_seconds = cohort.closes_at_timestamp_seconds;
+    snapshot.active_reward_cohort = Some(cohort.clone());
+    snapshot.reward_work_due = Some(false);
+    state::write(snapshot);
     crate::cohort_timer::install(Some(cohort.closes_at_timestamp_seconds));
     Ok(cohort)
 }
 
 pub async fn close(now_seconds: u64) -> Result<RewardCohort, ApiError> {
-    let snapshot = state::read();
+    let mut snapshot = state::read();
+    if snapshot
+        .active_reward_cohort
+        .as_ref()
+        .is_some_and(|cohort| now_seconds >= cohort.closes_at_timestamp_seconds)
+        && snapshot.reward_work_due != Some(true)
+    {
+        snapshot.reward_work_due = Some(true);
+        state::write(snapshot.clone());
+    }
+    if snapshot.cohort_close_operation.is_none() {
+        snapshot = prepare_close(snapshot, now_seconds).await?;
+    }
+    let operation = snapshot
+        .cohort_close_operation
+        .clone()
+        .ok_or_else(|| ApiError::Invalid("cohort close preparation disappeared".into()))?;
+    let (cohort, reward_event, fingerprint, submitted) = match operation {
+        CohortCloseOperation::CohortClosingPrepared {
+            cohort,
+            reward_event,
+            maturity_request_fingerprint,
+        } => (cohort, reward_event, maturity_request_fingerprint, false),
+        CohortCloseOperation::MaturityPreparationSubmitted {
+            cohort,
+            reward_event,
+            maturity_request_fingerprint,
+        } => (cohort, reward_event, maturity_request_fingerprint, true),
+        CohortCloseOperation::PendingCohort {
+            cohort,
+            reward_event,
+            maturity_request_fingerprint,
+        } => return finish_close(snapshot, cohort, reward_event, maturity_request_fingerprint),
+    };
+    if fingerprint != maturity_fingerprint(&cohort) {
+        return Err(ApiError::Invalid(
+            "durable NNS maturity request fingerprint mismatch".into(),
+        ));
+    }
+    if !submitted {
+        snapshot.cohort_close_operation =
+            Some(CohortCloseOperation::MaturityPreparationSubmitted {
+                cohort: cohort.clone(),
+                reward_event,
+                maturity_request_fingerprint: fingerprint.clone(),
+            });
+        state::write(snapshot.clone());
+    }
+    reward_nns::prepare_maturity(
+        snapshot.config.nns_manager,
+        cohort.generation,
+        cohort.captured_at_timestamp_seconds,
+        cohort.closes_at_timestamp_seconds,
+    )
+    .await
+    .map_err(nns_call_error)?;
+    if state::read() != snapshot {
+        return Err(ApiError::Busy);
+    }
+    snapshot.cohort_close_operation = Some(CohortCloseOperation::PendingCohort {
+        cohort: cohort.clone(),
+        reward_event,
+        maturity_request_fingerprint: fingerprint.clone(),
+    });
+    state::write(snapshot.clone());
+    finish_close(snapshot, cohort, reward_event, fingerprint)
+}
+
+async fn prepare_close(
+    mut snapshot: crate::state::StreamStateV1,
+    now_seconds: u64,
+) -> Result<crate::state::StreamStateV1, ApiError> {
     if snapshot.lifecycle != Lifecycle::Ready
         || snapshot.active_operation.is_some()
         || snapshot.pending_reward_cohort.is_some()
@@ -174,70 +279,66 @@ pub async fn close(now_seconds: u64) -> Result<RewardCohort, ApiError> {
             cohort.closes_at_timestamp_seconds
         )));
     }
-    let neurons = list_all_neurons(snapshot.config.sns_governance).await?;
-    let proposals = close_proposal_window(snapshot.config.sns_governance, &cohort).await?;
-    for member in &mut cohort.members {
-        let current = neurons
-            .iter()
-            .find(|neuron| neuron.id.as_ref().map(|id| &id.id) == Some(&member.sns_neuron_id));
-        member.destination_is_currently_eligible = current.is_some_and(canonical_eligible);
-        member.observed_stake_e8s = current
-            .map(|neuron| u128::from(neuron.cached_neuron_stake_e8s))
-            .unwrap_or(member.frozen_stake_e8s);
-        let (eligible, voted) = participation(
-            &member.sns_neuron_id,
-            cohort.captured_at_timestamp_seconds,
-            cohort.closes_at_timestamp_seconds,
-            &proposals,
-        )?;
-        member.eligible_closed_proposals = eligible;
-        member.voted_closed_proposals = voted;
+    let event_before = latest_reward_event(snapshot.config.sns_governance).await?;
+    let event_before_id = event_id(&event_before)?;
+    let captured_event = cohort.reward_event_at_capture.ok_or_else(|| {
+        ApiError::Invalid("reward cohort lacks its capture event checkpoint".into())
+    })?;
+    require_next_event(captured_event, &event_before)?;
+    if snapshot
+        .last_consumed_reward_event
+        .is_some_and(|consumed| event_before_id.round <= consumed.round)
+    {
+        return Err(ApiError::Invalid(
+            "SNS latest reward event was already consumed".into(),
+        ));
     }
-    prepare_two_week_maturity(snapshot.config.nns_manager, &cohort).await?;
+    let neurons = list_all_neurons(snapshot.config.sns_governance).await?;
+    let event_after = latest_reward_event(snapshot.config.sns_governance).await?;
+    require_consistent_event(&event_before, &event_after)?;
+    let captured_at_nanos = now_seconds
+        .checked_mul(1_000_000_000)
+        .ok_or_else(|| ApiError::Invalid("reward snapshot timestamp overflow".into()))?;
+    apply_reward_share_snapshot(&mut cohort, &event_before, &neurons, captured_at_nanos)?;
     if state::read() != snapshot {
         return Err(ApiError::Busy);
     }
     cohort
         .validate(&snapshot.config)
         .map_err(ApiError::Invalid)?;
-    let mut latest = snapshot;
-    latest.active_reward_cohort = None;
-    latest.pending_reward_cohort = Some(cohort.clone());
-    latest.next_cohort_timestamp_seconds = 0;
-    state::write(latest);
-    crate::cohort_timer::install(None);
-    Ok(cohort)
+    let maturity_request_fingerprint = maturity_fingerprint(&cohort);
+    snapshot.reward_work_due = Some(true);
+    snapshot.cohort_close_operation = Some(CohortCloseOperation::CohortClosingPrepared {
+        cohort,
+        reward_event: event_before_id,
+        maturity_request_fingerprint,
+    });
+    state::write(snapshot.clone());
+    Ok(snapshot)
 }
 
-async fn prepare_two_week_maturity(
-    manager: Principal,
-    cohort: &RewardCohort,
-) -> Result<(), ApiError> {
-    let result: Result<PreparedMaturityProgress, NnsError> =
-        Call::bounded_wait(manager, "prepare_two_week_maturity")
-            .with_arg(PrepareTwoWeekMaturityArgs {
-                cohort_generation: cohort.generation,
-                captured_at_timestamp_seconds: cohort.captured_at_timestamp_seconds,
-                closes_at_timestamp_seconds: cohort.closes_at_timestamp_seconds,
-            })
-            .await
-            .map_err(|error| {
-                ApiError::Pending(format!(
-                    "two-week maturity preparation ambiguous: {error:?}"
-                ))
-            })?
-            .candid()
-            .map_err(|error| {
-                ApiError::Invalid(format!(
-                    "two-week maturity preparation decode failed: {error:?}"
-                ))
-            })?;
-    match result {
-        Ok(PreparedMaturityProgress::Observed) => Ok(()),
-        Err(error) => Err(ApiError::Invalid(format!(
-            "NNS rejected two-week maturity preparation: {error:?}"
-        ))),
+fn finish_close(
+    mut snapshot: crate::state::StreamStateV1,
+    cohort: RewardCohort,
+    reward_event: crate::state::RewardEventId,
+    fingerprint: Vec<u8>,
+) -> Result<RewardCohort, ApiError> {
+    let expected = CohortCloseOperation::PendingCohort {
+        cohort: cohort.clone(),
+        reward_event,
+        maturity_request_fingerprint: fingerprint,
+    };
+    if snapshot.cohort_close_operation.as_ref() != Some(&expected) || state::read() != snapshot {
+        return Err(ApiError::Busy);
     }
+    snapshot.cohort_close_operation = None;
+    snapshot.active_reward_cohort = None;
+    snapshot.pending_reward_cohort = Some(cohort.clone());
+    snapshot.next_cohort_timestamp_seconds = 0;
+    snapshot.reward_work_due = Some(false);
+    state::write(snapshot);
+    crate::cohort_timer::install(None);
+    Ok(cohort)
 }
 
 fn require_capture_slot(
@@ -263,21 +364,20 @@ fn next_generation(state: &crate::state::StreamStateV1) -> Result<u64, ApiError>
         .ok_or_else(|| ApiError::Invalid("cohort generation exhausted".into()))
 }
 
-async fn set_nns_target(
-    manager: Principal,
-    generation: u64,
-    target: u128,
-) -> Result<TargetStatus, ApiError> {
-    let result: Result<TargetStatus, NnsError> = Call::bounded_wait(manager, "set_two_week_target")
-        .with_arg(SetTargetArgs {
-            target_e8s: target,
-            generation,
-        })
-        .await
-        .map_err(|error| ApiError::Pending(format!("NNS target call ambiguous: {error:?}")))?
-        .candid()
-        .map_err(|error| ApiError::Invalid(format!("NNS target decode failed: {error:?}")))?;
-    result.map_err(|error| ApiError::Invalid(format!("NNS rejected target: {error:?}")))
+fn maturity_fingerprint(cohort: &RewardCohort) -> Vec<u8> {
+    reward_nns::maturity_fingerprint(
+        cohort.generation,
+        cohort.captured_at_timestamp_seconds,
+        cohort.closes_at_timestamp_seconds,
+    )
+}
+
+fn nns_call_error(error: CallError) -> ApiError {
+    match error {
+        CallError::Pending(message) | CallError::Waiting(message) => ApiError::Pending(message),
+        CallError::Paused => ApiError::Paused,
+        CallError::Invalid(message) => ApiError::Invalid(message),
+    }
 }
 
 pub(crate) async fn resume_two_week(
@@ -340,6 +440,9 @@ async fn prepare_settlement(
         redeemable,
     )
     .map_err(|error| ApiError::Invalid(format!("reward backing failed: {error:?}")))?;
+    let reward_snapshot = cohort.reward_share_snapshot.as_ref().ok_or_else(|| {
+        ApiError::Invalid("pending cohort lacks an immutable reward-share snapshot".into())
+    })?;
     let participants = cohort
         .members
         .iter()
@@ -347,15 +450,18 @@ async fn prepare_settlement(
             io_reward_policy::participant_from_bytes(
                 member.sns_neuron_id.clone(),
                 member.frozen_stake_e8s,
-                member.eligible_closed_proposals,
-                member.voted_closed_proposals,
+                member.reward_shares.unwrap_or(0),
                 member.destination_is_currently_eligible,
             )
             .map_err(|error| ApiError::Invalid(format!("reward participant failed: {error:?}")))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let allocation = io_reward_policy::allocate_rewards(pool, &participants)
-        .map_err(|error| ApiError::Invalid(format!("reward allocation failed: {error:?}")))?;
+    let allocation = io_reward_policy::allocate_rewards_for_event(
+        pool,
+        &participants,
+        reward_snapshot.settled_proposal_count,
+    )
+    .map_err(|error| ApiError::Invalid(format!("reward allocation failed: {error:?}")))?;
     let recipients = allocation
         .allocations
         .iter()
@@ -672,14 +778,15 @@ async fn refresh_recipient(
         &LiquidReceiptOperation::TwoWeek(Box::new(operation)),
         LiquidReceiptOperation::TwoWeek(Box::new(submitted.clone())),
     )?;
-    let result = Call::bounded_wait(state::read().config.sns_governance, "manage_neuron")
-        .with_arg(ManageNeuronRequest {
-            subaccount: neuron_id,
-            command: Some(ManageNeuronCommand::ClaimOrRefresh(ClaimOrRefresh {
-                by: Some(ClaimBy::NeuronId(Empty {})),
-            })),
-        })
-        .await;
+    let result =
+        ic_cdk::call::Call::bounded_wait(state::read().config.sns_governance, "manage_neuron")
+            .with_arg(ManageNeuronRequest {
+                subaccount: neuron_id,
+                command: Some(ManageNeuronCommand::ClaimOrRefresh(ClaimOrRefresh {
+                    by: Some(ClaimBy::NeuronId(Empty {})),
+                })),
+            })
+            .await;
     if active_two_week()? != submitted {
         return Err(ApiError::Busy);
     }
@@ -788,6 +895,11 @@ fn complete_settlement(
         .checked_add(1)
         .ok_or_else(|| ApiError::Invalid("receipt sequence overflow".into()))?;
     latest.active_operation = None;
+    latest.last_consumed_reward_event = latest
+        .pending_reward_cohort
+        .as_ref()
+        .and_then(|cohort| cohort.reward_share_snapshot.as_ref())
+        .map(|snapshot| snapshot.event);
     latest.pending_reward_cohort = None;
     state::write(latest);
     Ok(crate::api::LiquidReceiptProgress::Completed(result))
@@ -882,7 +994,7 @@ mod tests {
         let recipient = RewardRecipient {
             sns_neuron_id: vec![1; 32],
             destination: Account {
-                owner: Principal::from_slice(&[2; 29]),
+                owner: candid::Principal::from_slice(&[2; 29]),
                 subaccount: Some(vec![1; 32]),
             },
             before_stake_e8s: 0,

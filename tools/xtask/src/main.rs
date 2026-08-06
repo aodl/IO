@@ -17,6 +17,8 @@ use std::process::{Command, ExitCode};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
+mod sns_framework;
+
 const RELEASE_PROFILE: &str = "release";
 const WASM_TARGET: &str = "wasm32-unknown-unknown";
 const MANIFEST_PATH: &str = "release-artifacts/manifest.json";
@@ -820,6 +822,29 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
             "io-reward-policy has {reward_policy_lines} production lines"
         ));
     }
+    let reward_boundary_lines = rust_files_below(root, "crates/io_sns_reward_boundary/src")?
+        .into_iter()
+        .try_fold(0usize, |sum, path| {
+            fs::read_to_string(&path)
+                .map(|text| sum + production_line_count(&text))
+                .map_err(|error| format!("{}: {error}", path.display()))
+        })?;
+    if reward_boundary_lines > 500 {
+        return Err(format!(
+            "SNS reward-event boundary has {reward_boundary_lines} production lines"
+        ));
+    }
+    let account_lines = rust_files_below(root, "crates/io_accounts/src")?
+        .into_iter()
+        .try_fold(0usize, |sum, path| {
+            fs::read_to_string(&path)
+                .map(|text| sum + production_line_count(&text))
+                .map_err(|error| format!("{}: {error}", path.display()))
+        })?;
+    combined_lines = combined_lines
+        .checked_add(reward_boundary_lines)
+        .and_then(|lines| lines.checked_add(account_lines))
+        .ok_or_else(|| "combined production line count overflow".to_string())?;
     for directory in [
         "crates/io_core_model/src",
         "crates/io_ledger_boundary/src",
@@ -923,7 +948,7 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
         require_present(path, &text, &["NON-RUNNABLE TEMPLATE", "TODO_"])?;
     }
     eprintln!(
-        "simplicity metrics: stream_manager={stream_lines} nns_manager={nns_lines} ledger_boundary={boundary_lines} economics={economics_lines} reward_policy={reward_policy_lines} combined={combined_lines}"
+        "simplicity metrics: stream_manager={stream_lines} nns_manager={nns_lines} accounts={account_lines} ledger_boundary={boundary_lines} economics={economics_lines} reward_policy={reward_policy_lines} sns_reward_boundary={reward_boundary_lines} combined={combined_lines}"
     );
     Ok(())
 }
@@ -6619,6 +6644,9 @@ fn main() -> ExitCode {
     } else {
         args.remove(0)
     };
+    if cmd == "sns_framework" {
+        return sns_framework::run(&args);
+    }
     let root = PathBuf::from(".");
     let mut ok = true;
     match cmd.as_str() {
