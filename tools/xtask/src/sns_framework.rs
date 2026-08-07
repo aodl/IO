@@ -7,7 +7,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const OFFICIAL_LOCK: &str = "tests/e2e_real_canisters/wasms.example.toml";
 const GOVERNANCE_DID: &str = "rs/sns/governance/canister/governance.did";
@@ -1019,11 +1019,7 @@ impl ProfileRun {
                         run_bin.display()
                     ));
                 }
-                let wrapper = format!(
-                    "#!/bin/sh\nprintf '%s\\n' \"$$\" > {}\nexec setsid {} \"$@\"\n",
-                    shell_quote(&pid_file.to_string_lossy()),
-                    shell_quote(&source.to_string_lossy()),
-                );
+                let wrapper = pocket_ic_wrapper(&pid_file, &source);
                 fs::write(&run_bin, wrapper)
                     .map_err(|error| format!("failed to write {}: {error}", run_bin.display()))?;
                 #[cfg(unix)]
@@ -1054,9 +1050,23 @@ impl ProfileRun {
             if let Ok(pid) = fs::read_to_string(pid_file) {
                 if pid.trim().bytes().all(|byte| byte.is_ascii_digit()) {
                     let group = format!("-{}", pid.trim());
-                    for signal in ["TERM", "KILL"] {
+                    let _ = Command::new("kill")
+                        .args(["-TERM", "--", &group])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
+                    std::thread::sleep(Duration::from_millis(100));
+                    let still_running = Command::new("kill")
+                        .args(["-0", "--", &group])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status()
+                        .is_ok_and(|status| status.success());
+                    if still_running {
                         let _ = Command::new("kill")
-                            .args([format!("-{signal}"), "--".into(), group.clone()])
+                            .args(["-KILL", "--", &group])
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
                             .status();
                     }
                 }
@@ -1065,6 +1075,14 @@ impl ProfileRun {
         }
         let _ = fs::remove_file(run_bin);
     }
+}
+
+fn pocket_ic_wrapper(pid_file: &Path, source: &Path) -> String {
+    format!(
+        "#!/bin/sh\nexport IO_SNS_RUN_PID_FILE={}\nexport IO_SNS_RUN_POCKET_IC={}\nexec setsid sh -c 'printf \"%s\\n\" \"$$\" > \"$IO_SNS_RUN_PID_FILE\"\nexec \"$IO_SNS_RUN_POCKET_IC\" \"$@\"' sh \"$@\"\n",
+        shell_quote(&pid_file.to_string_lossy()),
+        shell_quote(&source.to_string_lossy()),
+    )
 }
 
 impl Drop for ProfileRun {
@@ -2027,5 +2045,19 @@ mod tests {
         assert_eq!(commands[1].output, ProfileOutput::Stream);
         assert!(commands[1].args.iter().any(|arg| arg == "--nocapture"));
         assert!(!commands[1].args.iter().any(|arg| arg == "--list"));
+    }
+
+    #[test]
+    fn pocket_ic_wrapper_records_the_new_session_leader() {
+        let wrapper = pocket_ic_wrapper(
+            Path::new("/tmp/io sns run.pid"),
+            Path::new("/tmp/pocket ic server"),
+        );
+        let setsid = wrapper.find("exec setsid sh -c").unwrap();
+        let write_pid = wrapper.find("printf \"%s\\n\" \"$$\"").unwrap();
+        assert!(setsid < write_pid);
+        assert!(wrapper.contains("exec \"$IO_SNS_RUN_POCKET_IC\" \"$@\""));
+        assert!(wrapper.contains("'/tmp/io sns run.pid'"));
+        assert!(wrapper.contains("'/tmp/pocket ic server'"));
     }
 }

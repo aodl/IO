@@ -1659,7 +1659,7 @@ pub fn test_nervous_system_parameters() -> NervousSystemParameters {
         max_neuron_age_for_age_bonus: Some(0),
         initial_voting_period_seconds: Some(86_400),
         neuron_minimum_dissolve_delay_to_vote_seconds: Some(io_core_model::TWO_WEEK_SECONDS - 1),
-        reject_cost_e8s: Some(10_000_000_000),
+        reject_cost_e8s: Some(100_000_000),
         max_proposals_to_keep_per_action: Some(100),
         wait_for_quiet_deadline_increase_seconds: Some(1),
         max_number_of_neurons: Some(100_000),
