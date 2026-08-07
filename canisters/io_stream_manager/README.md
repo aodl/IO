@@ -50,8 +50,10 @@ Launch state is `StableCell<StreamStateV1>` plus
 `StableBTreeMap<Principal, CallerRedemptionState>`. Only V1 is supported.
 Prelaunch migration chains are research history, not runtime code.
 One `StreamOperation` slot serializes redemption, liquid receipt, cohort capture,
-and cohort close. Capture and close each have only Prepared and Submitted phases;
-their exact NNS generation is the replay boundary.
+and cohort close. Capture has Prepared and TargetSubmitted phases; close has only
+Prepared. Once a closed cohort contains its immutable reward snapshot, the
+pending cohort is the exact NNS maturity request intent and does not occupy the
+monetary operation slot.
 
 ## Unsupported activity
 

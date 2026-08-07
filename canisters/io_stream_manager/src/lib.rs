@@ -40,6 +40,7 @@ pub fn init(args: InitArgs) {
         active_operation: None,
         active_reward_cohort: None,
         pending_reward_cohort: None,
+        pending_maturity_prepared: false,
         latest_cohort_generation: 0,
         next_nns_receipt_sequence: 0,
         next_cohort_timestamp_seconds: 0,

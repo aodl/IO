@@ -14,8 +14,8 @@ use crate::{
     },
     reward_nns::{self as reward_nns, CallError, TargetStatus},
     state::{
-        self, Account, CohortCaptureOperation, CohortCloseOperation, Lifecycle,
-        LiquidReceiptStreamOperation, RewardCohort, StreamOperation,
+        self, Account, CohortCaptureOperation, Lifecycle, LiquidReceiptStreamOperation,
+        RewardCohort, StreamOperation,
     },
     transfer::{
         classify_result, deterministic_memo, ClassifiedResult, OwnTransferIntent, TransferAttempt,
@@ -208,6 +208,14 @@ async fn prepare_capture(
 
 pub async fn close(now_seconds: u64) -> Result<RewardCohort, ApiError> {
     let mut snapshot = state::read();
+    if let Some(pending) = snapshot.pending_reward_cohort.clone() {
+        if !snapshot.pending_maturity_prepared {
+            return submit_pending_maturity(snapshot, pending).await;
+        }
+        if snapshot.active_reward_cohort.is_none() {
+            return Ok(pending);
+        }
+    }
     if snapshot
         .active_reward_cohort
         .as_ref()
@@ -221,36 +229,40 @@ pub async fn close(now_seconds: u64) -> Result<RewardCohort, ApiError> {
         snapshot = reserve_close(snapshot, now_seconds)?;
     }
     match snapshot.active_operation.clone() {
-        Some(StreamOperation::CohortClose(operation)) => match *operation {
-            CohortCloseOperation::Prepared { cohort } => {
-                prepare_close(snapshot, cohort, now_seconds).await
-            }
-            CohortCloseOperation::MaturitySubmitted {
-                cohort,
-                reward_event: _,
-            } => submit_close(snapshot, cohort).await,
-        },
+        Some(StreamOperation::CohortClose(cohort)) => {
+            prepare_close(snapshot, *cohort, now_seconds).await
+        }
         _ => Err(ApiError::Busy),
     }
 }
 
-async fn submit_close(
-    mut snapshot: crate::state::StreamStateV1,
+async fn submit_pending_maturity(
+    snapshot: crate::state::StreamStateV1,
     cohort: RewardCohort,
 ) -> Result<RewardCohort, ApiError> {
-    reward_nns::prepare_maturity(
+    if snapshot.lifecycle != Lifecycle::Ready {
+        return Err(ApiError::Paused);
+    }
+    let result = reward_nns::prepare_maturity(
         snapshot.config.nns_manager,
         cohort.generation,
         cohort.captured_at_timestamp_seconds,
         cohort.closes_at_timestamp_seconds,
     )
-    .await
-    .map_err(nns_call_error)?;
+    .await;
+    complete_pending_maturity(snapshot, cohort, result)
+}
+
+pub(crate) fn complete_pending_maturity(
+    mut snapshot: crate::state::StreamStateV1,
+    cohort: RewardCohort,
+    result: Result<(), CallError>,
+) -> Result<RewardCohort, ApiError> {
+    result.map_err(nns_call_error)?;
     if state::read() != snapshot {
         return Err(ApiError::Busy);
     }
-    snapshot.active_operation = None;
-    snapshot.pending_reward_cohort = Some(cohort.clone());
+    snapshot.pending_maturity_prepared = true;
     snapshot.reward_work_due = false;
     state::write(snapshot);
     Ok(cohort)
@@ -288,14 +300,12 @@ async fn prepare_close(
     cohort
         .validate(&snapshot.config)
         .map_err(ApiError::Invalid)?;
-    snapshot.active_operation = Some(StreamOperation::CohortClose(Box::new(
-        CohortCloseOperation::MaturitySubmitted {
-            cohort: cohort.clone(),
-            reward_event: event_before_id,
-        },
-    )));
+    snapshot.active_operation = None;
+    snapshot.pending_reward_cohort = Some(cohort.clone());
+    snapshot.pending_maturity_prepared = false;
+    snapshot.reward_work_due = true;
     state::write(snapshot.clone());
-    submit_close(snapshot, cohort).await
+    submit_pending_maturity(snapshot, cohort).await
 }
 
 fn reserve_close(
@@ -315,9 +325,7 @@ fn reserve_close(
             cohort.closes_at_timestamp_seconds
         )));
     }
-    snapshot.active_operation = Some(StreamOperation::CohortClose(Box::new(
-        CohortCloseOperation::Prepared { cohort },
-    )));
+    snapshot.active_operation = Some(StreamOperation::CohortClose(Box::new(cohort)));
     snapshot.next_cohort_timestamp_seconds = 0;
     snapshot.reward_work_due = true;
     state::write(snapshot.clone());
@@ -325,11 +333,14 @@ fn reserve_close(
     Ok(snapshot)
 }
 
-fn require_capture_slot(
+pub(crate) fn require_capture_slot(
     state: &crate::state::StreamStateV1,
     now_seconds: u64,
 ) -> Result<(), ApiError> {
-    if state.lifecycle != Lifecycle::Ready || state.active_reward_cohort.is_some() {
+    if state.lifecycle != Lifecycle::Ready
+        || state.active_reward_cohort.is_some()
+        || (state.pending_reward_cohort.is_some() && !state.pending_maturity_prepared)
+    {
         return Err(ApiError::Busy);
     }
     if now_seconds == 0 {
@@ -892,6 +903,7 @@ fn complete_settlement(
         .and_then(|cohort| cohort.reward_share_snapshot.as_ref())
         .map(|snapshot| snapshot.event);
     latest.pending_reward_cohort = None;
+    latest.pending_maturity_prepared = false;
     state::write(latest);
     Ok(crate::api::LiquidReceiptProgress::Completed(result))
 }

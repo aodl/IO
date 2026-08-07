@@ -89,8 +89,8 @@ pub fn get_status() -> Status {
             Some("CohortCapture".into()),
             Some(format!("{:?}", operation)),
         ),
-        Some(StreamOperation::CohortClose(operation)) => {
-            (Some("CohortClose".into()), Some(format!("{:?}", operation)))
+        Some(StreamOperation::CohortClose(_)) => {
+            (Some("CohortClose".into()), Some("Prepared".into()))
         }
         None => (None, None),
     };

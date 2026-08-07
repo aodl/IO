@@ -65,8 +65,8 @@ impl StreamConfig {
         if self.expected_sns_governance_module_hash.len() != 32 {
             return Err("expected SNS Governance module hash must contain 32 bytes".into());
         }
-        if self.approved_reward_event_duration_seconds == 0 {
-            return Err("approved reward-event duration must be nonzero".into());
+        if self.approved_reward_event_duration_seconds != io_core_model::TWO_WEEK_SECONDS {
+            return Err("approved reward-event duration must equal two weeks".into());
         }
         if self.io_ledger == self.icp_ledger {
             return Err("IO and ICP ledgers must be distinct".into());
@@ -171,7 +171,7 @@ pub enum StreamOperation {
     Redemption(Box<RedemptionStreamOperation>),
     LiquidReceipt(Box<LiquidReceiptStreamOperation>),
     CohortCapture(Box<CohortCaptureOperation>),
-    CohortClose(Box<CohortCloseOperation>),
+    CohortClose(Box<RewardCohort>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -233,23 +233,14 @@ pub enum CohortCaptureOperation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum CohortCloseOperation {
-    Prepared {
-        cohort: RewardCohort,
-    },
-    MaturitySubmitted {
-        cohort: RewardCohort,
-        reward_event: RewardEventId,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct StreamStateV1 {
     pub config: StreamConfig,
     pub lifecycle: Lifecycle,
     pub active_operation: Option<StreamOperation>,
     pub active_reward_cohort: Option<RewardCohort>,
     pub pending_reward_cohort: Option<RewardCohort>,
+    #[serde(default)]
+    pub pending_maturity_prepared: bool,
     pub latest_cohort_generation: u64,
     pub next_nns_receipt_sequence: u64,
     pub next_cohort_timestamp_seconds: u64,
@@ -298,6 +289,7 @@ impl StreamStateV1 {
             active_operation: None,
             active_reward_cohort: None,
             pending_reward_cohort: None,
+            pending_maturity_prepared: false,
             latest_cohort_generation: 0,
             next_nns_receipt_sequence: 0,
             next_cohort_timestamp_seconds: 0,
@@ -380,25 +372,11 @@ impl StreamStateV1 {
                     }
                 }
             },
-            Some(StreamOperation::CohortClose(operation)) => {
-                let (cohort, event) = match operation.as_ref() {
-                    CohortCloseOperation::Prepared { cohort } => (cohort, None),
-                    CohortCloseOperation::MaturitySubmitted {
-                        cohort,
-                        reward_event,
-                    } => (cohort, Some(*reward_event)),
-                };
+            Some(StreamOperation::CohortClose(cohort)) => {
                 cohort.validate(&self.config)?;
                 if cohort.generation != self.latest_cohort_generation
                     || self.active_reward_cohort.is_some()
                     || self.pending_reward_cohort.is_some()
-                    || event.is_some_and(|event| {
-                        cohort
-                            .reward_share_snapshot
-                            .as_ref()
-                            .map(|snapshot| snapshot.event)
-                            != Some(event)
-                    })
                 {
                     return Err("cohort close operation is inconsistent".into());
                 }
@@ -424,6 +402,9 @@ impl StreamStateV1 {
             if pending.generation.checked_add(1) != Some(active.generation) {
                 return Err("active reward cohort must follow pending cohort".into());
             }
+        }
+        if self.pending_reward_cohort.is_none() && self.pending_maturity_prepared {
+            return Err("prepared maturity lacks a pending reward cohort".into());
         }
         if self
             .active_reward_cohort
@@ -774,6 +755,7 @@ mod tests {
                 active_operation: None,
                 active_reward_cohort: None,
                 pending_reward_cohort: None,
+                pending_maturity_prepared: false,
                 latest_cohort_generation: 0,
                 next_nns_receipt_sequence: 0,
                 next_cohort_timestamp_seconds: 0,
@@ -846,6 +828,7 @@ mod tests {
                 active_operation: None,
                 active_reward_cohort: None,
                 pending_reward_cohort: None,
+                pending_maturity_prepared: false,
                 latest_cohort_generation: 0,
                 next_nns_receipt_sequence: 7,
                 next_cohort_timestamp_seconds: 0,
@@ -981,6 +964,87 @@ mod tests {
         excluded.excluded_io_accounts.push(member.account);
         duplicate.members.truncate(1);
         assert!(duplicate.validate(&excluded).is_err());
+
+        let mut one_day = config.clone();
+        one_day.approved_reward_event_duration_seconds = 86_400;
+        assert!(one_day.validate(principal).is_err());
+        let mut wrong_interval = config.clone();
+        wrong_interval.approved_reward_event_duration_seconds = io_core_model::TWO_WEEK_SECONDS + 1;
+        assert!(wrong_interval.validate(principal).is_err());
+        let mut installed = io_sns_reward_boundary::InstalledGovernance {
+            canister: config.sns_governance,
+            module_hash: config.expected_sns_governance_module_hash.clone(),
+            initial_reward_rate_basis_points: 0,
+            final_reward_rate_basis_points: 0,
+            round_duration_seconds: io_core_model::TWO_WEEK_SECONDS,
+        };
+        assert_eq!(
+            crate::lifecycle::validate_installed_governance(&config, &installed),
+            Ok(())
+        );
+        installed.round_duration_seconds = 86_400;
+        assert!(crate::lifecycle::validate_installed_governance(&config, &installed).is_err());
+        installed.round_duration_seconds = io_core_model::TWO_WEEK_SECONDS + 1;
+        assert!(crate::lifecycle::validate_installed_governance(&config, &installed).is_err());
+
+        let prepared = CohortCaptureOperation::Prepared {
+            generation: 1,
+            captured_at_timestamp_seconds: 10,
+        };
+        let mut prepared_state = read();
+        prepared_state.lifecycle = Lifecycle::Ready;
+        prepared_state.active_operation =
+            Some(StreamOperation::CohortCapture(Box::new(prepared.clone())));
+        write(prepared_state.clone());
+        crate::lifecycle::set_paused();
+        assert!(read().active_operation.is_none());
+
+        prepared_state.lifecycle = Lifecycle::Ready;
+        write(prepared_state);
+        reopen(principal);
+        assert_eq!(read().lifecycle, Lifecycle::Paused);
+        assert!(read().active_operation.is_none());
+
+        let mut submitted_state = read();
+        submitted_state.lifecycle = Lifecycle::Ready;
+        submitted_state.active_operation = Some(StreamOperation::CohortCapture(Box::new(
+            CohortCaptureOperation::TargetSubmitted {
+                cohort: duplicate.clone(),
+            },
+        )));
+        write(submitted_state.clone());
+        reopen(principal);
+        assert_eq!(read().lifecycle, Lifecycle::Paused);
+        assert_eq!(read().active_operation, submitted_state.active_operation);
+
+        let mut under_target = read();
+        under_target.lifecycle = Lifecycle::Ready;
+        write(under_target.clone());
+        assert!(matches!(
+            crate::rewards::reject_under_target(under_target),
+            crate::api::ApiError::Pending(_)
+        ));
+        assert!(read().active_operation.is_none());
+        assert_eq!(read().latest_cohort_generation, 0);
+        assert_eq!(crate::api::require_ready(&read()), Ok(()));
+
+        let fresh = CohortCaptureOperation::Prepared {
+            generation: 1,
+            captured_at_timestamp_seconds: 11,
+        };
+        let mut fresh_state = read();
+        fresh_state.active_operation =
+            Some(StreamOperation::CohortCapture(Box::new(fresh.clone())));
+        write(fresh_state.clone());
+        crate::rewards::clear_matching_capture_preparation(&prepared);
+        assert_eq!(read(), fresh_state);
+
+        let mut failed_capture = read();
+        failed_capture.lifecycle = Lifecycle::Ready;
+        failed_capture.active_operation = None;
+        write(failed_capture);
+        assert!(poll_ready(crate::rewards::capture(12)).is_err());
+        assert!(read().active_operation.is_none());
     }
 
     #[test]
@@ -1067,6 +1131,7 @@ mod tests {
             active_operation: None,
             active_reward_cohort: None,
             pending_reward_cohort: None,
+            pending_maturity_prepared: false,
             latest_cohort_generation: 1,
             next_nns_receipt_sequence: 0,
             next_cohort_timestamp_seconds: 0,
@@ -1092,21 +1157,93 @@ mod tests {
 
         let mut close_state = base.clone();
         close_state.reward_work_due = true;
-        close_state.active_operation = Some(StreamOperation::CohortClose(Box::new(
-            CohortCloseOperation::MaturitySubmitted {
-                cohort: settled.clone(),
-                reward_event: settled.reward_share_snapshot.as_ref().unwrap().event,
-            },
-        )));
+        close_state.active_operation = Some(StreamOperation::CohortClose(Box::new(active.clone())));
         close_state.validate(canister).unwrap();
-        let mut forbidden = close_state.clone();
-        forbidden.active_reward_cohort = Some(active.clone());
-        forbidden.next_cohort_timestamp_seconds = active.closes_at_timestamp_seconds;
-        assert!(forbidden.validate(canister).is_err());
 
         let mut pending_state = base.clone();
         pending_state.pending_reward_cohort = Some(settled.clone());
         pending_state.validate(canister).unwrap();
+        pending_state.lifecycle = Lifecycle::Ready;
+        assert_eq!(crate::api::require_ready(&pending_state), Ok(()));
+        assert!(pending_state.active_operation.is_none());
+        assert!(crate::rewards::require_capture_slot(&pending_state, 2).is_err());
+        let caller = Principal::from_slice(&[9; 29]);
+        let redeem_request = crate::redemption::CanonicalRedeemRequestV1 {
+            effective_subaccount: [0; 32],
+            io_amount_e8s: 2,
+            min_icp_out_e8s: 1,
+            max_io_fee_e8s: 1,
+            max_icp_fee_e8s: 1,
+            expires_at_nanos: 50,
+            nonce: 0,
+        };
+        let mut redemption_available = pending_state.clone();
+        redemption_available.next_operation_sequence = OperationSequence(1);
+        redemption_available.active_operation = Some(StreamOperation::Redemption(Box::new(
+            RedemptionStreamOperation::Preparing(Box::new(
+                crate::redemption::RedemptionPreparation {
+                    sequence: OperationSequence(0),
+                    captured_control_epoch: 0,
+                    request_fingerprint: crate::redemption::request_fingerprint(
+                        caller,
+                        &redeem_request,
+                    ),
+                    account: redeem_request.account(caller),
+                    request: redeem_request,
+                    caller,
+                    prepared_at_nanos: 1,
+                },
+            )),
+        )));
+        redemption_available.validate(canister).unwrap();
+        initialize(pending_state.clone(), canister).unwrap();
+        for error in [
+            crate::reward_nns::CallError::Waiting("below threshold".into()),
+            crate::reward_nns::CallError::Paused,
+            crate::reward_nns::CallError::Pending("ambiguous".into()),
+        ] {
+            let expected = read();
+            assert!(crate::rewards::complete_pending_maturity(
+                expected.clone(),
+                settled.clone(),
+                Err(error),
+            )
+            .is_err());
+            assert_eq!(read(), expected);
+            assert!(read().active_operation.is_none());
+            assert_eq!(crate::api::require_ready(&read()), Ok(()));
+        }
+        let expected = read();
+        assert_eq!(
+            crate::rewards::complete_pending_maturity(expected, settled.clone(), Ok(()),).unwrap(),
+            settled
+        );
+        assert!(read().pending_maturity_prepared);
+        write(pending_state.clone());
+        pending_state.pending_maturity_prepared = true;
+        pending_state.validate(canister).unwrap();
+        assert_eq!(
+            crate::rewards::require_capture_slot(&pending_state, 2),
+            Ok(())
+        );
+        let mut orphan_prepared = base.clone();
+        orphan_prepared.pending_maturity_prepared = true;
+        assert!(orphan_prepared.validate(canister).is_err());
+        let mut second_pending = pending_state.clone();
+        second_pending.active_operation =
+            Some(StreamOperation::CohortClose(Box::new(active.clone())));
+        assert!(second_pending.validate(canister).is_err());
+        pending_state.lifecycle = Lifecycle::Paused;
+
+        let pending_unprepared = {
+            let mut state = pending_state.clone();
+            state.pending_maturity_prepared = false;
+            state
+        };
+        initialize(pending_unprepared.clone(), canister).unwrap();
+        write(pending_unprepared.clone());
+        reopen(canister);
+        assert_eq!(read(), pending_unprepared);
 
         let request = PrepareLiquidReceiptArgs {
             receipt_sequence: 0,
@@ -1168,7 +1305,13 @@ mod tests {
         )));
         receipt_state.validate(canister).unwrap();
 
-        let states = [active_state, capture_state, close_state, receipt_state];
+        let states = [
+            active_state,
+            capture_state,
+            close_state,
+            pending_unprepared,
+            receipt_state,
+        ];
         let encoded = states
             .iter()
             .map(|state| candid::encode_one(StableStreamState::V1(state.clone())).unwrap())

@@ -311,11 +311,12 @@ pub async fn prepare_liquid_receipt(
             ))
         }
         ReceiptKind::TwoWeekMaturity
-            if args.cohort_generation
-                != current
-                    .pending_reward_cohort
-                    .as_ref()
-                    .map(|cohort| cohort.generation) =>
+            if !current.pending_maturity_prepared
+                || args.cohort_generation
+                    != current
+                        .pending_reward_cohort
+                        .as_ref()
+                        .map(|cohort| cohort.generation) =>
         {
             return Err(ApiError::Invalid(
                 "receipt does not match pending cohort".into(),
