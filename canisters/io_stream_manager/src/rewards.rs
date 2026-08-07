@@ -189,9 +189,8 @@ async fn prepare_capture(
         Ok(cohort)
     }
     .await
-    .map_err(|error| {
+    .inspect_err(|_| {
         clear_matching_capture_preparation(&expected);
-        error
     })?;
     if let Err(error) = require_unchanged(&snapshot) {
         clear_matching_capture_preparation(&expected);
@@ -601,7 +600,7 @@ async fn check_recipient_eligibility(
     let recipient = &mut settlement.recipients[index];
     recipient.eligibility_checked = true;
     if let Some(neuron) = neuron.filter(|value| canonical_eligible(value) && !excluded) {
-        recipient.before_stake_e8s = u128::from(neuron.cached_neuron_stake_e8s);
+        recipient.before_stake_e8s = neuron.cached_neuron_stake_e8s;
     } else {
         forfeit_current_recipient(settlement)?;
     }
@@ -815,7 +814,7 @@ async fn observe_refresh(
         .before_stake_e8s
         .checked_add(recipient.io_e8s)
         .ok_or_else(|| ApiError::Invalid("reward stake expectation overflow".into()))?;
-    if u128::from(neuron.cached_neuron_stake_e8s) < expected {
+    if neuron.cached_neuron_stake_e8s < expected {
         return Err(ApiError::Pending(
             "SNS reward refresh stake increase is not canonically observable".into(),
         ));

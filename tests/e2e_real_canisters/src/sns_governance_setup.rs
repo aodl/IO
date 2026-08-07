@@ -703,7 +703,6 @@ pub fn run_candidate_reward_event_participation_contract(
         let neuron = find_neuron(&listed_1, id);
         let participation = neuron
             .latest_reward_event_participation
-            .clone()
             .expect("direct and followed voters must have event participation");
         assert_eq!(
             participation.reward_event_end_timestamp_seconds,
@@ -725,7 +724,7 @@ pub fn run_candidate_reward_event_participation_contract(
     assert_eq!(
         listed_1
             .iter()
-            .filter_map(|neuron| neuron.latest_reward_event_participation.clone())
+            .filter_map(|neuron| neuron.latest_reward_event_participation)
             .map(|participation| participation.exact_reward_shares().unwrap())
             .sum::<u128>(),
         4_000_000_000,

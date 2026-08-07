@@ -180,10 +180,13 @@ pub(crate) fn apply_reward_share_snapshot(
                         let shares = participation
                             .exact_reward_shares()
                             .map_err(governance_error)?;
-                        (participation.reward_event_end_timestamp_seconds
-                            == event.end_timestamp_seconds)
-                            .then_some(shares)
-                            .unwrap_or(0)
+                        if participation.reward_event_end_timestamp_seconds
+                            == event.end_timestamp_seconds
+                        {
+                            shares
+                        } else {
+                            0
+                        }
                     }
                     None => 0,
                 },

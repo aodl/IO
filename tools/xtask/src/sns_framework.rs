@@ -1251,9 +1251,10 @@ fn run_exact_ignored(
     test: &str,
 ) -> Result<(), String> {
     if profile_run.pocket_ic_bin.is_none() {
-        return Err(format!(
+        return Err(
             "profile requires POCKET_IC_BIN; expected /home/codexdev/.local/bin/pocket-ic-server for local IO validation"
-        ));
+                .to_string(),
+        );
     }
     let qualified = format!("tests::{test}");
     for command in exact_profile_commands(&qualified) {
