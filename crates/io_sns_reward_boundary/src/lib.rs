@@ -295,7 +295,7 @@ pub async fn installed_governance(
         root,
         "get_sns_canisters_summary",
         SummaryRequest {
-            update_canister_list: Some(true),
+            update_canister_list: Some(false),
         },
     )
     .await?;

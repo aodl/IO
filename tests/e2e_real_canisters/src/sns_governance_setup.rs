@@ -999,7 +999,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     let nns_wasm = local_debug_wasm("mock_nns_governance")?;
     let governance_hash = Sha256::digest(&candidate_governance_wasm).to_vec();
 
-    let pic = std::rc::Rc::new(pocketic_env::new_sns_pic());
+    let pic = std::rc::Rc::new(pocketic_env::new_pic_with_icp_sns_features());
     let sns_subnet = pic.topology().get_sns().expect("SNS subnet exists");
     let root = pic.create_canister_on_subnet(None, None, sns_subnet);
     pic.add_cycles(root, 2_000_000_000_000);
@@ -1012,16 +1012,23 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         sns_subnet,
     );
     pic.add_cycles(governance, 2_000_000_000_000);
+    let auxiliary_settings = CanisterSettings {
+        controllers: Some(vec![root]),
+        ..Default::default()
+    };
+    let index = pic.create_canister_on_subnet(None, Some(auxiliary_settings.clone()), sns_subnet);
+    pic.add_cycles(index, 2_000_000_000_000);
+    let swap = pic.create_canister_on_subnet(None, Some(auxiliary_settings), sns_subnet);
+    pic.add_cycles(swap, 2_000_000_000_000);
     let stream = pocketic_env::create_empty_application_canister(&pic);
     let nns_manager = pocketic_env::create_application_canister(&pic, nns_wasm, Vec::new());
     let controller = Principal::from_slice(&[71; 29]);
     let reserve_subaccount = icrc::subaccount("candidate-reward-reserve");
     let liquid_subaccount = icrc::subaccount("candidate-reward-liquid");
     let reserve = icrc::account(stream, Some(reserve_subaccount));
-    let liquid = icrc::account(stream, Some(liquid_subaccount));
     let io_ledger = pocketic_env::create_sns_canister(
         &pic,
-        ledger_wasm.clone(),
+        ledger_wasm,
         icrc::ledger_init_arg(
             Principal::anonymous(),
             icrc::account(Principal::from_slice(&[72; 29]), None),
@@ -1032,21 +1039,36 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         ),
     );
     let maturity_subaccount = [9_u8; 32];
-    let icp_ledger = pocketic_env::create_sns_canister(
+    let icp_ledger = Principal::from_text(crate::nns_setup::install_nns_ledger().canister_id)
+        .expect("official ICP ledger ID should parse");
+    icrc::icrc1_transfer(
         &pic,
-        ledger_wasm,
-        icrc::ledger_init_arg(
-            Principal::anonymous(),
-            icrc::account(Principal::from_slice(&[73; 29]), None),
-            vec![
-                (liquid.clone(), 10_000_000_000),
-                (
-                    icrc::account(nns_manager, Some(maturity_subaccount)),
-                    2_000_000_000,
-                ),
-            ],
+        icp_ledger,
+        Principal::anonymous(),
+        icrc::transfer_arg(
+            None,
+            icrc::account(stream, Some(liquid_subaccount)),
+            10_000_000_000,
+            Some(FEE_E8S),
+            Some(b"fund-candidate-liquid-backing"),
+            None,
         ),
-    );
+    )
+    .expect("default ICP ledger account funds candidate liquid backing");
+    icrc::icrc1_transfer(
+        &pic,
+        icp_ledger,
+        Principal::anonymous(),
+        icrc::transfer_arg(
+            None,
+            icrc::account(nns_manager, Some(maturity_subaccount)),
+            2_000_000_000,
+            Some(FEE_E8S),
+            Some(b"fund-candidate-maturity-source"),
+            None,
+        ),
+    )
+    .expect("default ICP ledger account funds the candidate maturity source");
     pic.install_canister(
         root,
         root_wasm,
@@ -1056,8 +1078,8 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             testflight: true,
             archive_canister_ids: vec![],
             governance_canister_id: Some(governance),
-            index_canister_id: None,
-            swap_canister_id: None,
+            index_canister_id: Some(index),
+            swap_canister_id: Some(swap),
             ledger_canister_id: Some(io_ledger),
             timers: None,
         })
@@ -1068,7 +1090,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         governance,
         candidate_governance_wasm,
         governance_init_arg(Some(io_ledger), Some(root)),
-        None,
+        Some(root),
     );
     for _ in 0..5 {
         pic.tick();
@@ -1261,6 +1283,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     assert_eq!(proved, Ok(LiquidReceiptProgress::ReceiptProved));
     let mut completed = None;
     let mut upgraded_between_recipients = false;
+    let mut settlement_observations = Vec::new();
     for _ in 0..12 {
         let progress: Result<StreamProgress, ApiError> = decode_one(
             &pic.update_call(
@@ -1273,9 +1296,9 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         )
         .unwrap();
         if let Ok(StreamProgress::LiquidReceipt(LiquidReceiptProgress::Completed(result))) =
-            progress
+            &progress
         {
-            completed = Some(result);
+            completed = Some(result.clone());
             break;
         }
         let after = neuron_ids[..2]
@@ -1288,6 +1311,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                 )
             })
             .collect::<Vec<Nat>>();
+        settlement_observations.push(format!("{progress:?}; balances={after:?}"));
         if !upgraded_between_recipients
             && after
                 .iter()
@@ -1307,7 +1331,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     }
     assert!(
         upgraded_between_recipients,
-        "stream upgrades after exactly one recipient"
+        "stream upgrades after exactly one recipient; observations: {settlement_observations:?}"
     );
     let result = match completed.expect("reward receipt completes") {
         CompletedReceiptResult::TwoWeek(result) => result,

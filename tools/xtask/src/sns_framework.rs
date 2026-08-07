@@ -1012,7 +1012,7 @@ impl ProfileRun {
                     )
                 })?;
                 let run_bin = run_root.join(format!("pocket-ic-server-{id}"));
-                let pid_file = run_root.join(format!("pocket-ic-server-{id}.pid"));
+                let pid_file = run_root.join(format!("pocket-ic-server-{id}.pids"));
                 if run_bin.exists() {
                     return Err(format!(
                         "run-owned PocketIC path already exists: {}",
@@ -1047,9 +1047,12 @@ impl ProfileRun {
             return;
         };
         if let Some(pid_file) = &self.pocket_ic_pid {
-            if let Ok(pid) = fs::read_to_string(pid_file) {
-                if pid.trim().bytes().all(|byte| byte.is_ascii_digit()) {
-                    let group = format!("-{}", pid.trim());
+            if let Ok(pids) = fs::read_to_string(pid_file) {
+                for pid in pids
+                    .lines()
+                    .filter(|pid| !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit()))
+                {
+                    let group = format!("-{pid}");
                     let _ = Command::new("kill")
                         .args(["-TERM", "--", &group])
                         .stdout(Stdio::null())
@@ -1079,7 +1082,7 @@ impl ProfileRun {
 
 fn pocket_ic_wrapper(pid_file: &Path, source: &Path) -> String {
     format!(
-        "#!/bin/sh\nexport IO_SNS_RUN_PID_FILE={}\nexport IO_SNS_RUN_POCKET_IC={}\nexec setsid sh -c 'printf \"%s\\n\" \"$$\" > \"$IO_SNS_RUN_PID_FILE\"\nexec \"$IO_SNS_RUN_POCKET_IC\" \"$@\"' sh \"$@\"\n",
+        "#!/bin/sh\nexport IO_SNS_RUN_PID_FILE={}\nexport IO_SNS_RUN_POCKET_IC={}\nexec setsid sh -c 'printf \"%s\\n\" \"$$\" >> \"$IO_SNS_RUN_PID_FILE\"\nexec \"$IO_SNS_RUN_POCKET_IC\" \"$@\"' sh \"$@\"\n",
         shell_quote(&pid_file.to_string_lossy()),
         shell_quote(&source.to_string_lossy()),
     )
@@ -2056,6 +2059,7 @@ mod tests {
         let setsid = wrapper.find("exec setsid sh -c").unwrap();
         let write_pid = wrapper.find("printf \"%s\\n\" \"$$\"").unwrap();
         assert!(setsid < write_pid);
+        assert!(wrapper.contains(">> \"$IO_SNS_RUN_PID_FILE\""));
         assert!(wrapper.contains("exec \"$IO_SNS_RUN_POCKET_IC\" \"$@\""));
         assert!(wrapper.contains("'/tmp/io sns run.pid'"));
         assert!(wrapper.contains("'/tmp/pocket ic server'"));
