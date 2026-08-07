@@ -113,7 +113,8 @@ contract. A capability-bearing bundle makes the exact candidate tests
 mandatory; exact-test discovery must find one test before execution begins.
 
 Runtime readiness independently verifies exact SNS Root, exact Governance
-principal, exact Governance module hash, the approved reward-event duration,
+principal, exact Governance module hash, the exact 1,209,600-second native
+reward-event duration,
 and that both current native Governance reward rates are zero. Canonical SNS
 Governance reward shares are the complete weight for a proposal-bearing event,
 including the SNS's native voting-power policy. IO filters the exact eligible
@@ -127,11 +128,15 @@ and does not fall back to full participation.
 IO accepts only the exact next reward event: round delta one and
 `rounds_since_last_distribution` one. A missed event or multi-round span is
 reported as `RewardEventMissed` or `RewardEventSpanUnsupported`; no allocation
-occurs and the backed pool remains in reserve.
+occurs and the backed pool remains in reserve. The field is latest-event-only;
+IO does not reconstruct skipped events.
 
 ## Profiles and execution safety
 
-- `contract` validates the resolved bundle and runs exact DTO/contract tests.
+- `contract` validates the resolved bundle, runs the complete
+  `io-sns-reward-boundary` unit suite, enforces the exact additive DTO test, and
+  requires the exact candidate Governance contract test when the capability is
+  present.
 - `io` runs contract coverage plus the installed IO reward path.
 - `upgrade` runs the exact official-to-candidate Governance upgrade test.
 - `lifecycle` always returns `ProfileNotImplemented` in this tranche.

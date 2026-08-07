@@ -31,3 +31,6 @@ non-dissolving positive frozen stake. Proposal-bearing events use canonical SNS
 Governance reward shares; late stake and top-ups do not alter the cohort.
 Forfeiture becomes dust, is not redistributed, and the full backing target
 remains unchanged. Delayed NNS payout does not change eligibility.
+The immutable pending cohort is the exact maturity-preparation replay intent;
+below-threshold, paused or ambiguous NNS preparation leaves it visible without
+occupying the stream monetary operation slot.
