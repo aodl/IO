@@ -1079,6 +1079,7 @@ fn shell_quote(value: &str) -> String {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProfileStep {
+    RewardBoundary,
     DtoCompatibility,
     CandidateContract,
     IoIntegration,
@@ -1087,7 +1088,7 @@ enum ProfileStep {
 
 fn shared_profile_plan(profile: Profile, capability: bool) -> Result<Vec<ProfileStep>, String> {
     let contract = || {
-        let mut steps = vec![ProfileStep::DtoCompatibility];
+        let mut steps = vec![ProfileStep::RewardBoundary, ProfileStep::DtoCompatibility];
         if capability {
             steps.push(ProfileStep::CandidateContract);
         }
@@ -1132,14 +1133,21 @@ fn dispatch_profile(
     }
     for step in shared_profile_plan(bundle.profile, bundle.capability)? {
         match step {
-            ProfileStep::DtoCompatibility => {
+            ProfileStep::RewardBoundary => {
                 run_cargo(
                     io_root,
                     bundle,
                     profile_run,
-                    &["test", "-p", "io-governance-types", "sns_reward_shares"],
+                    &["test", "-p", "io-sns-reward-boundary"],
                 )?;
             }
+            ProfileStep::DtoCompatibility => run_exact_unit(
+                io_root,
+                bundle,
+                profile_run,
+                "io-governance-types",
+                "tests::sns_reward_shares_decode_additively_and_convert_exactly",
+            )?,
             ProfileStep::CandidateContract => run_exact_ignored(
                 io_root,
                 bundle,
@@ -1170,6 +1178,28 @@ fn dispatch_profile(
         eprintln!("Compatibility-only contract completed; the resolved Governance DID has no {CAPABILITY_FIELD} field");
     }
     Ok(())
+}
+
+fn run_exact_unit(
+    io_root: &Path,
+    bundle: &ResolvedBundle,
+    profile_run: &ProfileRun,
+    package: &str,
+    test: &str,
+) -> Result<(), String> {
+    let listed = cargo_list_output(
+        io_root,
+        bundle,
+        profile_run,
+        &["test", "-p", package, "--", "--list"],
+    )?;
+    require_exact_test_match(&listed, test)?;
+    run_cargo(
+        io_root,
+        bundle,
+        profile_run,
+        &["test", "-p", package, test, "--", "--exact", "--nocapture"],
+    )
 }
 
 fn build_io_profile_wasms(
@@ -1969,6 +1999,8 @@ mod tests {
                 "{resolved_manifest_is_the_only_source_input:?} selected a different test implementation"
             );
         }
+        assert!(expected.contains(&ProfileStep::RewardBoundary));
+        assert!(expected.contains(&ProfileStep::DtoCompatibility));
         assert!(expected.contains(&ProfileStep::CandidateContract));
         assert!(expected.contains(&ProfileStep::IoIntegration));
     }
