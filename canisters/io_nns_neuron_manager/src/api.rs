@@ -136,13 +136,14 @@ pub async fn set_two_week_target(
         .checked_add(1)
         .ok_or_else(|| ApiError::Invalid("target generation overflow".into()))?;
     if args.generation == current.latest_target_generation {
-        if !matches!(&current.latest_two_week_target, Some(target) if target.target_e8s == args.target_e8s)
-        {
-            return Err(ApiError::Invalid(
+        return match &current.latest_two_week_target {
+            Some(target) if target.target_e8s == args.target_e8s => Ok(target.status),
+            _ => Err(ApiError::Invalid(
                 "target generation conflicts with existing intent".into(),
-            ));
-        }
-    } else if args.generation != expected {
+            )),
+        };
+    }
+    if args.generation != expected {
         return Err(ApiError::Invalid(format!(
             "expected target generation {expected}"
         )));
@@ -153,14 +154,14 @@ pub async fn set_two_week_target(
     if state::read() != current {
         return Err(ApiError::Busy);
     }
-    if args.generation == 1 && !current.two_week_maturity_baseline_reconciled {
-        if observation.maturity_e8s != 0 {
-            return Err(ApiError::Pending(
-                "first cohort requires governance-reviewed reconciliation of pre-cohort maturity"
-                    .into(),
-            ));
-        }
-        current.two_week_maturity_baseline_reconciled = true;
+    if args.generation == 1
+        && !current.two_week_maturity_baseline_reconciled
+        && observation.maturity_e8s != 0
+    {
+        return Err(ApiError::Pending(
+            "first cohort requires governance-reviewed reconciliation of pre-cohort maturity"
+                .into(),
+        ));
     }
     let actual = observation.snapshot.cached_stake_e8s;
     let tolerance = current
@@ -169,6 +170,10 @@ pub async fn set_two_week_target(
         .checked_mul(2)
         .ok_or_else(|| ApiError::Invalid("unwind tolerance overflow".into()))?;
     let status = state::target_status(actual, args.target_e8s, tolerance);
+    if status == TwoWeekTargetStatus::UnderTarget {
+        return Ok(status);
+    }
+    current.two_week_maturity_baseline_reconciled |= args.generation == 1;
     current.latest_two_week_target = Some(TwoWeekTarget {
         generation: args.generation,
         target_e8s: args.target_e8s,
@@ -178,7 +183,6 @@ pub async fn set_two_week_target(
     });
     current.latest_target_generation = args.generation;
     if status == TwoWeekTargetStatus::OverTarget && current.active_operation.is_none() {
-        let excess_e8s = actual - args.target_e8s;
         let operation_sequence = current.next_operation_sequence;
         current.next_operation_sequence = operation_sequence
             .checked_add(1)
@@ -187,7 +191,7 @@ pub async fn set_two_week_target(
             operation_sequence,
             generation: args.generation,
             target_e8s: args.target_e8s,
-            excess_e8s,
+            excess_e8s: actual - args.target_e8s,
             child_neuron_id: 0,
             principal_e8s: 0,
             child_staking_subaccount: Vec::new(),

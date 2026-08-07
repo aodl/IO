@@ -661,6 +661,21 @@ mod tests {
     }
 
     #[test]
+    fn under_target_is_no_effect_until_the_same_generation_is_accepted() {
+        let (_, state) = valid_state();
+        let original = state.clone();
+        assert_eq!(
+            target_status(100, 101, state.config.expected_icp_fee_e8s * 2),
+            TwoWeekTargetStatus::UnderTarget
+        );
+        assert_eq!(state, original);
+        assert_eq!(
+            target_status(101, 101, state.config.expected_icp_fee_e8s * 2),
+            TwoWeekTargetStatus::AtTarget
+        );
+    }
+
+    #[test]
     fn config_requires_default_jupiter_staging_and_two_fees() {
         let (canister_self, mut state) = valid_state();
         state.config.jupiter_fee_float_e8s = state.config.expected_icp_fee_e8s;
