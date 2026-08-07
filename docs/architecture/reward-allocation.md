@@ -45,4 +45,10 @@ missed or multi-round event allocates nothing and leaves the backed pool in
 reserve. Every destination is rechecked immediately before payout; a member
 that has become ineligible forfeits its calculated share to reserve dust.
 
+Readiness binds the reviewed Governance module to an exact native reward-event
+duration of 1,209,600 seconds and requires both native reward rates to be zero.
+The Governance event field is latest-event-only: IO does not reconstruct a
+missed event. Proposal-bearing events with zero eligible canonical shares issue
+no reward; no-proposal events use exact eligible stake frozen at capture.
+
 The launch settlement persists exact allocations, recipient progress, rounding dust, forfeiture, and total dust in the active two-week receipt. One `resume` performs at most one recipient transition. The immutable transfer precedes a separately persisted refresh submission, and a later canonical observation must show the expected stake increase before progress advances. Each actual recipient consumes one explicit IO fee; every dust component remains in reserve and is never redistributed.

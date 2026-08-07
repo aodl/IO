@@ -25,18 +25,7 @@ pub async fn readiness_preflight(
             "SNS Governance readiness verification failed: {other:?}"
         )),
     })?;
-    if installed.canister != snapshot.config.sns_governance
-        || installed.module_hash != snapshot.config.expected_sns_governance_module_hash
-        || installed.initial_reward_rate_basis_points != 0
-        || installed.final_reward_rate_basis_points != 0
-        || installed.round_duration_seconds
-            != snapshot.config.approved_reward_event_duration_seconds
-    {
-        return Err(crate::api::ApiError::Invalid(
-            "installed SNS Governance hash or reward parameters differ from reviewed readiness configuration"
-                .into(),
-        ));
-    }
+    validate_installed_governance(&snapshot.config, &installed)?;
     let io_standards = crate::canonical::supported_standards(snapshot.config.io_ledger)
         .await
         .map_err(crate::api::ApiError::Ledger)?;
@@ -94,6 +83,24 @@ pub async fn readiness_preflight(
     }
     latest.lifecycle = Lifecycle::Ready;
     state::write(latest);
+    Ok(())
+}
+
+pub(crate) fn validate_installed_governance(
+    config: &crate::state::StreamConfig,
+    installed: &io_sns_reward_boundary::InstalledGovernance,
+) -> Result<(), crate::api::ApiError> {
+    if installed.canister != config.sns_governance
+        || installed.module_hash != config.expected_sns_governance_module_hash
+        || installed.initial_reward_rate_basis_points != 0
+        || installed.final_reward_rate_basis_points != 0
+        || installed.round_duration_seconds != io_core_model::TWO_WEEK_SECONDS
+    {
+        return Err(crate::api::ApiError::Invalid(
+            "installed SNS Governance hash or reward parameters differ from reviewed readiness configuration"
+                .into(),
+        ));
+    }
     Ok(())
 }
 
