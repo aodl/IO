@@ -1,11 +1,16 @@
 use candid::{CandidType, Principal};
 use serde::Deserialize;
 
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    Retryable { method: &'static str, message: String },
-    Invalid { method: &'static str, message: String },
+    Retryable {
+        method: &'static str,
+        message: String,
+    },
+    Invalid {
+        method: &'static str,
+        message: String,
+    },
     NotFound,
 }
 
@@ -29,10 +34,12 @@ pub struct RewardEventParticipation {
 
 impl RewardEventParticipation {
     pub fn exact_reward_shares(self) -> Result<u128, Error> {
-        self.reward_shares.map(Uint128::exact).ok_or_else(|| Error::Invalid {
-            method: "list_neurons",
-            message: "latest reward-event participation lacks reward_shares".into(),
-        })
+        self.reward_shares
+            .map(Uint128::exact)
+            .ok_or_else(|| Error::Invalid {
+                method: "list_neurons",
+                message: "latest reward-event participation lacks reward_shares".into(),
+            })
     }
 }
 
@@ -69,7 +76,15 @@ pub struct EventId {
 pub enum EventSequenceError {
     MissingEndTimestamp,
     Pending,
-    Missed { previous: EventId, next: EventId },
+    Missed {
+        previous: EventId,
+        next: EventId,
+    },
+    SpanUnsupported {
+        previous: EventId,
+        next: EventId,
+        span: u64,
+    },
     Invalid(&'static str),
 }
 
@@ -83,10 +98,7 @@ pub fn event_id(event: &RewardEvent) -> Result<EventId, EventSequenceError> {
     })
 }
 
-pub fn require_next_event(
-    previous: EventId,
-    next: &RewardEvent,
-) -> Result<(), EventSequenceError> {
+pub fn require_next_event(previous: EventId, next: &RewardEvent) -> Result<(), EventSequenceError> {
     let next_id = event_id(next)?;
     let delta = next_id
         .round
@@ -110,16 +122,20 @@ pub fn require_next_event(
         .ok_or(EventSequenceError::Invalid(
             "rounds_since_last_distribution is missing or zero",
         ))?;
-    match delta.cmp(&span) {
-        std::cmp::Ordering::Greater => Err(EventSequenceError::Missed {
+    if span != 1 {
+        return Err(EventSequenceError::SpanUnsupported {
             previous,
             next: next_id,
-        }),
-        std::cmp::Ordering::Less => Err(EventSequenceError::Invalid(
-            "round delta is smaller than distribution span",
-        )),
-        std::cmp::Ordering::Equal => Ok(()),
+            span,
+        });
     }
+    if delta != 1 {
+        return Err(EventSequenceError::Missed {
+            previous,
+            next: next_id,
+        });
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -306,10 +322,12 @@ pub async fn installed_governance(
         })?;
     let parameters: NervousSystemParameters =
         call(canister, "get_nervous_system_parameters", ()).await?;
-    let rewards = parameters.voting_rewards_parameters.ok_or_else(|| Error::Invalid {
-        method: "get_nervous_system_parameters",
-        message: "Governance lacks voting reward parameters".into(),
-    })?;
+    let rewards = parameters
+        .voting_rewards_parameters
+        .ok_or_else(|| Error::Invalid {
+            method: "get_nervous_system_parameters",
+            message: "Governance lacks voting reward parameters".into(),
+        })?;
     Ok(InstalledGovernance {
         canister,
         module_hash,
@@ -350,10 +368,7 @@ pub async fn list_neurons(
     response.neurons.into_iter().map(Neuron::try_from).collect()
 }
 
-pub async fn get_neuron(
-    governance: Principal,
-    id: Vec<u8>,
-) -> Result<Neuron, Error> {
+pub async fn get_neuron(governance: Principal, id: Vec<u8>) -> Result<Neuron, Error> {
     let response: GetNeuronResponse = call(
         governance,
         "get_neuron",
@@ -376,10 +391,7 @@ pub async fn get_neuron(
     }
 }
 
-pub async fn get_exact_neuron(
-    governance: Principal,
-    id: &[u8],
-) -> Result<Option<Neuron>, Error> {
+pub async fn get_exact_neuron(governance: Principal, id: &[u8]) -> Result<Option<Neuron>, Error> {
     match get_neuron(governance, id.to_vec()).await {
         Ok(neuron) if neuron.id == id => Ok(Some(neuron)),
         Ok(_) => Err(Error::Invalid {
@@ -472,6 +484,23 @@ async fn call<A: CandidType, R: for<'de> Deserialize<'de> + CandidType>(
 mod tests {
     use super::*;
 
+    fn event(round: u64, end: Option<u64>, span: Option<u64>) -> RewardEvent {
+        RewardEvent {
+            rounds_since_last_distribution: span,
+            actual_timestamp_seconds: end.unwrap_or_default(),
+            end_timestamp_seconds: end,
+            round,
+            settled_proposals: Vec::new(),
+        }
+    }
+
+    fn previous() -> EventId {
+        EventId {
+            end_timestamp_seconds: 10,
+            round: 1,
+        }
+    }
+
     #[test]
     fn uint128_is_exact() {
         assert_eq!(Uint128 { high: 1, low: 7 }.exact(), (1_u128 << 64) | 7);
@@ -493,5 +522,49 @@ mod tests {
         .unwrap();
         let decoded: NeuronRecord = candid::decode_one(&bytes).unwrap();
         assert_eq!(decoded.latest_reward_event_participation, None);
+    }
+
+    #[test]
+    fn pending_same_event_is_not_consumed() {
+        assert_eq!(
+            require_next_event(previous(), &event(1, Some(10), Some(1))),
+            Err(EventSequenceError::Pending)
+        );
+    }
+
+    #[test]
+    fn exact_next_single_round_event_is_accepted() {
+        assert_eq!(
+            require_next_event(previous(), &event(2, Some(20), Some(1))),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn missed_event_is_rejected() {
+        assert!(matches!(
+            require_next_event(previous(), &event(3, Some(30), Some(1))),
+            Err(EventSequenceError::Missed { .. })
+        ));
+    }
+
+    #[test]
+    fn multi_round_span_is_unsupported() {
+        assert!(matches!(
+            require_next_event(previous(), &event(4, Some(40), Some(3))),
+            Err(EventSequenceError::SpanUnsupported { span: 3, .. })
+        ));
+    }
+
+    #[test]
+    fn regressed_and_malformed_events_are_rejected() {
+        assert!(matches!(
+            require_next_event(previous(), &event(0, Some(5), Some(1))),
+            Err(EventSequenceError::Invalid("round regressed"))
+        ));
+        assert!(matches!(
+            require_next_event(previous(), &event(2, Some(20), None)),
+            Err(EventSequenceError::Invalid(_))
+        ));
     }
 }

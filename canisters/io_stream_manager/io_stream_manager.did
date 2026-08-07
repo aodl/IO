@@ -8,11 +8,9 @@ type StreamConfig = record {
   two_week_receipt_source : Account;
   jupiter_io_account : Account;
   sns_governance : principal;
-  sns_root : opt principal;
-  expected_sns_governance_module_hash : opt blob;
-  approved_reward_event_duration_seconds : opt nat64;
-  approved_initial_reward_rate_basis_points : opt nat64;
-  approved_final_reward_rate_basis_points : opt nat64;
+  sns_root : principal;
+  expected_sns_governance_module_hash : blob;
+  approved_reward_event_duration_seconds : nat64;
   io_reserve : Account;
   liquid_icp : Account;
   excluded_io_accounts : vec Account;
@@ -75,7 +73,6 @@ type RewardMember = record {
   frozen_stake_e8s : nat;
   observed_stake_e8s : nat;
   reward_shares : opt nat;
-  reward_event_end_timestamp_seconds : opt nat64;
   destination_is_currently_eligible : bool;
 };
 type RewardEventId = record {
@@ -87,8 +84,6 @@ type RewardShareSnapshot = record {
   settled_proposal_count : nat64;
   total_eligible_reward_shares : nat;
   captured_at_nanos : nat64;
-  no_proposal_fallback : opt bool;
-  no_eligible_participation : opt bool;
 };
 type RewardCohort = record {
   generation : nat64;

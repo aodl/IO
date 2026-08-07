@@ -22,7 +22,6 @@ pub struct ArtifactSet {
     pub manifest: ArtifactManifest,
 }
 
-
 impl ArtifactSet {
     pub fn load_required(&self, key: &str) -> Result<Vec<u8>, String> {
         let file_name = self.manifest.artifact_name(key)?;

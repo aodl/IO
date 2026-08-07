@@ -10,8 +10,8 @@ use crate::{
         RedemptionPreparation,
     },
     state::{
-        self, Account, DispatchEpoch, Lifecycle, OperationSequence, RedemptionResult,
-        StreamOperation, StreamStateV1,
+        self, Account, DispatchEpoch, Lifecycle, LiquidReceiptStreamOperation, OperationSequence,
+        RedemptionResult, RedemptionStreamOperation, StreamOperation, StreamStateV1,
     },
     transfer::{
         classify_result, ClassifiedResult, IcrcTransferArg, IcrcTransferFromArg, OwnTransferIntent,
@@ -67,21 +67,31 @@ pub struct Status {
 pub fn get_status() -> Status {
     let state = state::read();
     let (operation_kind, operation_phase) = match state.active_operation {
-        Some(StreamOperation::RedemptionPreparation(_)) => (
-            Some("RedemptionPreparation".into()),
-            Some("Preparing".into()),
+        Some(StreamOperation::Redemption(operation)) => match *operation {
+            RedemptionStreamOperation::Preparing(_) => {
+                (Some("Redemption".into()), Some("Preparing".into()))
+            }
+            RedemptionStreamOperation::Active(operation) => (
+                Some("Redemption".into()),
+                Some(format!("{:?}", operation.phase)),
+            ),
+        },
+        Some(StreamOperation::LiquidReceipt(operation)) => match *operation {
+            LiquidReceiptStreamOperation::Preparing(_) => {
+                (Some("LiquidReceipt".into()), Some("Preparing".into()))
+            }
+            LiquidReceiptStreamOperation::Active(operation) => (
+                Some("LiquidReceipt".into()),
+                Some(format!("{:?}", operation.phase())),
+            ),
+        },
+        Some(StreamOperation::CohortCapture(operation)) => (
+            Some("CohortCapture".into()),
+            Some(format!("{:?}", operation)),
         ),
-        Some(StreamOperation::ReceiptPreparation(_)) => {
-            (Some("ReceiptPreparation".into()), Some("Preparing".into()))
+        Some(StreamOperation::CohortClose(operation)) => {
+            (Some("CohortClose".into()), Some(format!("{:?}", operation)))
         }
-        Some(StreamOperation::Redemption(operation)) => (
-            Some("Redemption".into()),
-            Some(format!("{:?}", operation.phase)),
-        ),
-        Some(StreamOperation::LiquidReceipt(operation)) => (
-            Some("LiquidReceipt".into()),
-            Some(format!("{:?}", operation.phase())),
-        ),
         None => (None, None),
     };
     Status {
@@ -166,20 +176,24 @@ pub async fn redeem(
     let account = request.account(caller);
     account.validate().map_err(ApiError::Invalid)?;
     let request_fingerprint = redemption::request_fingerprint(caller, &request);
-    if let Some(StreamOperation::RedemptionPreparation(active)) = &initial.active_operation {
-        if active.caller == caller && active.request.nonce == args.nonce {
-            if active.request_fingerprint != request_fingerprint {
-                return Err(ApiError::NonceAlreadyUsed);
+    if let Some(StreamOperation::Redemption(operation)) = &initial.active_operation {
+        if let RedemptionStreamOperation::Preparing(active) = operation.as_ref() {
+            if active.caller == caller && active.request.nonce == args.nonce {
+                if active.request_fingerprint != request_fingerprint {
+                    return Err(ApiError::NonceAlreadyUsed);
+                }
+                return Ok(RedemptionProgress::Preparing);
             }
-            return Ok(RedemptionProgress::Preparing);
         }
     }
-    if let Some(StreamOperation::Redemption(active)) = &initial.active_operation {
-        if active.caller == caller && active.nonce == args.nonce {
-            if active.request_fingerprint != request_fingerprint {
-                return Err(ApiError::NonceAlreadyUsed);
+    if let Some(StreamOperation::Redemption(operation)) = &initial.active_operation {
+        if let RedemptionStreamOperation::Active(active) = operation.as_ref() {
+            if active.caller == caller && active.nonce == args.nonce {
+                if active.request_fingerprint != request_fingerprint {
+                    return Err(ApiError::NonceAlreadyUsed);
+                }
+                return Ok(progress_for(active));
             }
-            return Ok(progress_for(active));
         }
     }
     let replay_state = state::caller_state(caller);
@@ -306,8 +320,8 @@ pub async fn redeem(
         prepared_at_nanos: reservation_time,
     };
     preparation.validate().map_err(ApiError::Invalid)?;
-    latest.active_operation = Some(StreamOperation::RedemptionPreparation(Box::new(
-        preparation.clone(),
+    latest.active_operation = Some(StreamOperation::Redemption(Box::new(
+        RedemptionStreamOperation::Preparing(Box::new(preparation.clone())),
     )));
     state::write(latest);
 
@@ -338,8 +352,8 @@ pub async fn redeem(
     let latest_caller = state::caller_state(caller);
     if !matches!(
         &latest.active_operation,
-        Some(StreamOperation::RedemptionPreparation(current))
-            if **current == preparation
+        Some(StreamOperation::Redemption(current))
+            if matches!(current.as_ref(), RedemptionStreamOperation::Preparing(value) if **value == preparation)
     ) {
         return Err(ApiError::Busy);
     }
@@ -352,7 +366,9 @@ pub async fn redeem(
         state::write(latest);
         return Err(ApiError::Busy);
     }
-    latest.active_operation = Some(StreamOperation::Redemption(Box::new(operation)));
+    latest.active_operation = Some(StreamOperation::Redemption(Box::new(
+        RedemptionStreamOperation::Active(Box::new(operation)),
+    )));
     state::write(latest);
     dispatch_redemption_transfer(sequence, true, reservation_time).await
 }
@@ -361,7 +377,8 @@ fn clear_matching_preparation(expected: &RedemptionPreparation) {
     let mut current = state::read();
     if matches!(
         &current.active_operation,
-        Some(StreamOperation::RedemptionPreparation(value)) if **value == *expected
+        Some(StreamOperation::Redemption(value))
+            if matches!(value.as_ref(), RedemptionStreamOperation::Preparing(current) if **current == *expected)
     ) {
         current.active_operation = None;
         state::write(current);
@@ -387,14 +404,21 @@ fn progress_for(operation: &RedemptionOperation) -> RedemptionProgress {
 
 fn active_redemption() -> Result<RedemptionOperation, ApiError> {
     match state::read().active_operation {
-        Some(StreamOperation::Redemption(operation)) => Ok(*operation),
+        Some(StreamOperation::Redemption(operation)) => match *operation {
+            RedemptionStreamOperation::Active(operation) => Ok(*operation),
+            RedemptionStreamOperation::Preparing(_) => {
+                Err(ApiError::Invalid("redemption is still preparing".into()))
+            }
+        },
         _ => Err(ApiError::Invalid("no active redemption".into())),
     }
 }
 
 fn persist_redemption(operation: RedemptionOperation) {
     let mut state = state::read();
-    state.active_operation = Some(StreamOperation::Redemption(Box::new(operation)));
+    state.active_operation = Some(StreamOperation::Redemption(Box::new(
+        RedemptionStreamOperation::Active(Box::new(operation)),
+    )));
     state::write(state);
 }
 
@@ -699,8 +723,8 @@ fn active_matches(operation: &RedemptionOperation, phase: RedemptionPhase) -> bo
     matches!(
         state::read().active_operation,
         Some(StreamOperation::Redemption(current))
-            if *current == *operation
-                && current.phase == phase
+            if matches!(current.as_ref(), RedemptionStreamOperation::Active(value)
+                if **value == *operation && value.phase == phase)
     )
 }
 
@@ -734,18 +758,22 @@ fn finish_redemption(mut operation: RedemptionOperation) -> Result<RedemptionPro
     let mut state = state::read();
     match &state.active_operation {
         Some(StreamOperation::Redemption(current))
-            if current.sequence == operation.sequence
-                && current.request_fingerprint == operation.request_fingerprint
-                && current.phase == RedemptionPhase::CompletionPrepared =>
+            if matches!(current.as_ref(), RedemptionStreamOperation::Active(value)
+                if value.sequence == operation.sequence
+                    && value.request_fingerprint == operation.request_fingerprint
+                    && value.phase == RedemptionPhase::CompletionPrepared) =>
         {
             operation.phase = RedemptionPhase::CallerResultApplied;
-            state.active_operation = Some(StreamOperation::Redemption(Box::new(operation.clone())));
+            state.active_operation = Some(StreamOperation::Redemption(Box::new(
+                RedemptionStreamOperation::Active(Box::new(operation.clone())),
+            )));
             state::write(state);
         }
         Some(StreamOperation::Redemption(current))
-            if current.sequence == operation.sequence
-                && current.request_fingerprint == operation.request_fingerprint
-                && current.phase == RedemptionPhase::CallerResultApplied => {}
+            if matches!(current.as_ref(), RedemptionStreamOperation::Active(value)
+                if value.sequence == operation.sequence
+                    && value.request_fingerprint == operation.request_fingerprint
+                    && value.phase == RedemptionPhase::CallerResultApplied) => {}
         _ => {
             pause();
             return Err(ApiError::Stuck(
@@ -755,10 +783,11 @@ fn finish_redemption(mut operation: RedemptionOperation) -> Result<RedemptionPro
     }
     let mut state = state::read();
     if !matches!(&state.active_operation, Some(StreamOperation::Redemption(current))
-        if current.sequence == operation.sequence
-            && current.request_fingerprint == operation.request_fingerprint
-            && current.phase == RedemptionPhase::CallerResultApplied
-            && current.completion_result.as_ref() == Some(&result))
+        if matches!(current.as_ref(), RedemptionStreamOperation::Active(value)
+            if value.sequence == operation.sequence
+                && value.request_fingerprint == operation.request_fingerprint
+                && value.phase == RedemptionPhase::CallerResultApplied
+                && value.completion_result.as_ref() == Some(&result)))
     {
         return Err(ApiError::Busy);
     }
@@ -775,18 +804,30 @@ pub(crate) fn pause() {
 
 pub async fn resume_stream(now: u64) -> Result<StreamProgress, ApiError> {
     match state::read().active_operation {
-        Some(StreamOperation::Redemption(_)) => resume(now).await.map(StreamProgress::Redemption),
-        Some(StreamOperation::RedemptionPreparation(_)) => {
-            Ok(StreamProgress::Redemption(RedemptionProgress::Preparing))
-        }
-        Some(StreamOperation::ReceiptPreparation(_)) => Err(ApiError::Pending(
-            "no-effect receipt preparation must be retried by the NNS manager".into(),
+        Some(StreamOperation::Redemption(operation)) => match *operation {
+            RedemptionStreamOperation::Preparing(_) => {
+                Ok(StreamProgress::Redemption(RedemptionProgress::Preparing))
+            }
+            RedemptionStreamOperation::Active(_) => {
+                resume(now).await.map(StreamProgress::Redemption)
+            }
+        },
+        Some(StreamOperation::LiquidReceipt(operation)) => match *operation {
+            LiquidReceiptStreamOperation::Preparing(_) => Err(ApiError::Pending(
+                "no-effect receipt preparation must be retried by the NNS manager".into(),
+            )),
+            LiquidReceiptStreamOperation::Active(operation) => {
+                receipt::resume_liquid_receipt(*operation, now)
+                    .await
+                    .map(StreamProgress::LiquidReceipt)
+            }
+        },
+        Some(StreamOperation::CohortCapture(_)) => Err(ApiError::Pending(
+            "cohort capture must be retried through capture_reward_cohort".into(),
         )),
-        Some(StreamOperation::LiquidReceipt(operation)) => {
-            receipt::resume_liquid_receipt(*operation, now)
-                .await
-                .map(StreamProgress::LiquidReceipt)
-        }
+        Some(StreamOperation::CohortClose(_)) => Err(ApiError::Pending(
+            "cohort close must be retried through resume_reward_work".into(),
+        )),
         None => Ok(StreamProgress::Idle),
     }
 }
@@ -794,12 +835,17 @@ pub async fn resume_stream(now: u64) -> Result<StreamProgress, ApiError> {
 pub async fn prove_active_transfer(block_index: u128) -> Result<(), ApiError> {
     if let Some(StreamOperation::LiquidReceipt(operation)) = state::read().active_operation {
         return match *operation {
-            crate::receipt::LiquidReceiptOperation::Jupiter(_) => {
-                receipt::prove_jupiter_settlement(block_index).await
-            }
-            crate::receipt::LiquidReceiptOperation::TwoWeek(_) => {
-                crate::rewards::prove_recipient_transfer(block_index).await
-            }
+            LiquidReceiptStreamOperation::Active(operation) => match *operation {
+                crate::receipt::LiquidReceiptOperation::Jupiter(_) => {
+                    receipt::prove_jupiter_settlement(block_index).await
+                }
+                crate::receipt::LiquidReceiptOperation::TwoWeek(_) => {
+                    crate::rewards::prove_recipient_transfer(block_index).await
+                }
+            },
+            LiquidReceiptStreamOperation::Preparing(_) => Err(ApiError::Invalid(
+                "receipt preparation has no active transfer".into(),
+            )),
         };
     }
     let operation = active_redemption()?;

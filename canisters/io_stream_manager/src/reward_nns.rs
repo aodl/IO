@@ -1,6 +1,5 @@
 use candid::{CandidType, Principal};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CallError {
@@ -52,16 +51,6 @@ pub enum TargetStatus {
     OverTarget,
 }
 
-pub fn target_fingerprint(generation: u64, target_e8s: u128) -> Vec<u8> {
-    fingerprint(
-        b"io-target-v1",
-        &SetTargetArgs {
-            target_e8s,
-            generation,
-        },
-    )
-}
-
 pub async fn set_target(
     manager: Principal,
     generation: u64,
@@ -78,21 +67,6 @@ pub async fn set_target(
             .candid()
             .map_err(|error| CallError::Invalid(format!("NNS target decode failed: {error:?}")))?;
     result.map_err(|error| classify("NNS target rejected", error))
-}
-
-pub fn maturity_fingerprint(
-    generation: u64,
-    captured_at_timestamp_seconds: u64,
-    closes_at_timestamp_seconds: u64,
-) -> Vec<u8> {
-    fingerprint(
-        b"io-maturity-v1",
-        &maturity_args(
-            generation,
-            captured_at_timestamp_seconds,
-            closes_at_timestamp_seconds,
-        ),
-    )
 }
 
 pub async fn prepare_maturity(
@@ -150,11 +124,4 @@ fn maturity_args(
         captured_at_timestamp_seconds,
         closes_at_timestamp_seconds,
     }
-}
-
-fn fingerprint<T: CandidType>(domain: &[u8], args: &T) -> Vec<u8> {
-    let mut hasher = Sha256::new();
-    hasher.update(domain);
-    hasher.update(candid::encode_one(args).expect("typed NNS request must encode"));
-    hasher.finalize().to_vec()
 }

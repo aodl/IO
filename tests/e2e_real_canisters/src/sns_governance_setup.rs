@@ -693,7 +693,9 @@ pub fn run_candidate_reward_event_participation_contract(
         .map(|id| id.id.clone())
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(
-        listed_ids.into_iter().collect::<std::collections::BTreeSet<_>>(),
+        listed_ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>(),
         expected_ids
     );
     let expected_two_proposal_shares = 1_000_000_000_u128;
@@ -792,7 +794,10 @@ pub fn run_candidate_reward_event_participation_contract(
     let _mixed_second_page = list_neurons_page(
         &fixture,
         2,
-        first_page.neurons.last().and_then(|neuron| neuron.id.clone()),
+        first_page
+            .neurons
+            .last()
+            .and_then(|neuron| neuron.id.clone()),
     );
     assert_ne!(
         (consistency_e1.end_timestamp_seconds, consistency_e1.round),
@@ -814,7 +819,10 @@ pub fn run_candidate_reward_event_participation_contract(
         .round
         .checked_sub(delayed_before.round)
         .expect("candidate reward-event round must not regress");
-    assert!(delta >= 3, "delayed periodic work should catch up multiple rounds");
+    assert!(
+        delta >= 3,
+        "delayed periodic work should catch up multiple rounds"
+    );
     assert_eq!(
         delayed_after.rounds_since_last_distribution,
         Some(delta),
@@ -861,10 +869,12 @@ fn make_motion(fixture: &GovernanceLedgerFixture, neuron_id: &NeuronId, title: &
         "make proposal",
     );
     match response.command {
-        Some(CommandResponse::MakeProposal(response)) => response
-            .proposal_id
-            .expect("proposal response must contain an id")
-            .id,
+        Some(CommandResponse::MakeProposal(response)) => {
+            response
+                .proposal_id
+                .expect("proposal response must contain an id")
+                .id
+        }
         other => panic!("unexpected make proposal response: {other:?}"),
     }
 }
@@ -887,7 +897,12 @@ fn register_vote(
 }
 
 fn latest_reward_event(fixture: &GovernanceLedgerFixture) -> SnsRewardEvent {
-    icrc::query_one(&fixture.pic, fixture.governance, "get_latest_reward_event", ())
+    icrc::query_one(
+        &fixture.pic,
+        fixture.governance,
+        "get_latest_reward_event",
+        (),
+    )
 }
 
 fn advance_until_reward_event(
@@ -896,9 +911,9 @@ fn advance_until_reward_event(
     after_round: u64,
 ) -> SnsRewardEvent {
     for _ in 0..8 {
-        fixture.pic.advance_time(Duration::from_secs(
-            io_core_model::TWO_WEEK_SECONDS + 1,
-        ));
+        fixture
+            .pic
+            .advance_time(Duration::from_secs(io_core_model::TWO_WEEK_SECONDS + 1));
         for _ in 0..20 {
             fixture.pic.tick();
         }
@@ -1101,11 +1116,9 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                     subaccount: Some(vec![10; 32]),
                 },
                 sns_governance: governance,
-                sns_root: Some(root),
-                expected_sns_governance_module_hash: Some(governance_hash),
-                approved_reward_event_duration_seconds: Some(io_core_model::TWO_WEEK_SECONDS),
-                approved_initial_reward_rate_basis_points: Some(0),
-                approved_final_reward_rate_basis_points: Some(0),
+                sns_root: root,
+                expected_sns_governance_module_hash: governance_hash,
+                approved_reward_event_duration_seconds: io_core_model::TWO_WEEK_SECONDS,
                 io_reserve: StreamAccount {
                     owner: stream,
                     subaccount: Some(reserve_subaccount.to_vec()),
@@ -1154,7 +1167,8 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     let proposal = make_motion(&fixture, &neuron_ids[0], "installed IO reward shares");
     register_vote(&fixture, &neuron_ids[1], proposal, 2);
     register_vote(&fixture, &neuron_ids[2], proposal, 1);
-    let event = advance_until_reward_event(&fixture, 1, cohort.reward_event_at_capture.unwrap().round);
+    let event =
+        advance_until_reward_event(&fixture, 1, cohort.reward_event_at_capture.unwrap().round);
     assert_eq!(event.settled_proposals.len(), 1);
     let status: Status = decode_one(
         &pic.query_call(stream, controller, "get_status", encode_one(()).unwrap())
@@ -1217,7 +1231,11 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             Some(maturity_subaccount),
             icrc::account(
                 permit.destination.owner,
-                permit.destination.subaccount.clone().map(|bytes| bytes.try_into().unwrap()),
+                permit
+                    .destination
+                    .subaccount
+                    .clone()
+                    .map(|bytes| bytes.try_into().unwrap()),
             ),
             liquid_amount,
             Some(FEE_E8S),
@@ -1245,11 +1263,17 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     let mut upgraded_between_recipients = false;
     for _ in 0..12 {
         let progress: Result<StreamProgress, ApiError> = decode_one(
-            &pic.update_call(stream, Principal::anonymous(), "resume", encode_one(()).unwrap())
-                .unwrap(),
+            &pic.update_call(
+                stream,
+                Principal::anonymous(),
+                "resume",
+                encode_one(()).unwrap(),
+            )
+            .unwrap(),
         )
         .unwrap();
-        if let Ok(StreamProgress::LiquidReceipt(LiquidReceiptProgress::Completed(result))) = progress
+        if let Ok(StreamProgress::LiquidReceipt(LiquidReceiptProgress::Completed(result))) =
+            progress
         {
             completed = Some(result);
             break;
@@ -1265,13 +1289,26 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             })
             .collect::<Vec<Nat>>();
         if !upgraded_between_recipients
-            && after.iter().zip(&before).filter(|(after, before)| after > before).count() == 1
+            && after
+                .iter()
+                .zip(&before)
+                .filter(|(after, before)| after > before)
+                .count()
+                == 1
         {
-            pocketic_env::upgrade_canister(&pic, stream, stream_wasm.clone(), encode_one(()).unwrap());
+            pocketic_env::upgrade_canister(
+                &pic,
+                stream,
+                stream_wasm.clone(),
+                encode_one(()).unwrap(),
+            );
             upgraded_between_recipients = true;
         }
     }
-    assert!(upgraded_between_recipients, "stream upgrades after exactly one recipient");
+    assert!(
+        upgraded_between_recipients,
+        "stream upgrades after exactly one recipient"
+    );
     let result = match completed.expect("reward receipt completes") {
         CompletedReceiptResult::TwoWeek(result) => result,
         other => panic!("unexpected receipt result: {other:?}"),
@@ -1294,7 +1331,10 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             )
         })
         .collect::<Vec<Nat>>();
-    assert!(after.iter().zip(before).all(|(after, before)| after > &before));
+    assert!(after
+        .iter()
+        .zip(before)
+        .all(|(after, before)| after > &before));
     Ok(())
 }
 
@@ -1311,7 +1351,9 @@ pub fn run_official_to_candidate_reward_participation_upgrade(
     let baseline_name = artifacts
         .manifest
         .value("baseline", "sns_governance_wasm")
-        .ok_or_else(|| SnsGovernanceSetupError::Artifact("bundle lacks official Governance baseline".into()))?;
+        .ok_or_else(|| {
+            SnsGovernanceSetupError::Artifact("bundle lacks official Governance baseline".into())
+        })?;
     let baseline = std::fs::read(artifacts.wasm_dir.join(baseline_name))
         .map_err(|error| SnsGovernanceSetupError::Artifact(error.to_string()))?;
     let candidate = artifacts
@@ -1366,7 +1408,12 @@ pub fn run_official_to_candidate_reward_participation_upgrade(
     );
     fixture
         .pic
-        .upgrade_canister(governance, candidate.clone(), candid::encode_one(()).unwrap(), None)
+        .upgrade_canister(
+            governance,
+            candidate.clone(),
+            candid::encode_one(()).unwrap(),
+            None,
+        )
         .expect("official-to-candidate Governance upgrade succeeds");
     for _ in 0..5 {
         fixture.pic.tick();

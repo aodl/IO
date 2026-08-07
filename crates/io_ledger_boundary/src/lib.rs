@@ -344,7 +344,10 @@ pub async fn exact_icp_block(
                 .into_iter()
                 .find(|range| {
                     block_index >= range.start
-                        && block_index < range.start.saturating_add(range.length)
+                        && range
+                            .start
+                            .checked_add(range.length)
+                            .is_some_and(|end| block_index < end)
                 })
                 .ok_or("exact ICP block is neither current nor archived")?;
             match Call::bounded_wait(archived.callback.0.principal, &archived.callback.0.method)
@@ -434,7 +437,10 @@ fn range_contains(start: &Nat, length: &Nat, block_index: u128) -> bool {
         .ok()
         .zip(nat_to_u128(length.clone()).ok())
         .is_some_and(|(start, length)| {
-            block_index >= start && block_index < start.saturating_add(length)
+            block_index >= start
+                && start
+                    .checked_add(length)
+                    .is_some_and(|end| block_index < end)
         })
 }
 

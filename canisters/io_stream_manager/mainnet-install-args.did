@@ -18,11 +18,9 @@
     maximum_request_lifetime_nanos = 900_000_000_000 : nat64;
     retry_delay_nanos = TODO_RETRY_DELAY : nat64;
     ledger_deduplication_window_nanos = TODO_DEDUP_WINDOW : nat64;
-    sns_root = null;
-    expected_sns_governance_module_hash = null;
-    approved_reward_event_duration_seconds = null;
-    approved_initial_reward_rate_basis_points = null;
-    approved_final_reward_rate_basis_points = null;
+    sns_root = TODO_SNS_ROOT_PRINCIPAL;
+    expected_sns_governance_module_hash = TODO_SNS_GOVERNANCE_MODULE_HASH;
+    approved_reward_event_duration_seconds = TODO_REWARD_EVENT_DURATION : nat64;
   };
   next_cohort_timestamp_seconds = 0 : nat64;
 })

@@ -32,23 +32,6 @@ const ALL_ARTIFACTS: &[&str] = &[
 ];
 
 const GOVERNANCE_TARGET: &str = "//rs/sns/governance:sns-governance-canister";
-const SUITE_TARGETS: &[(&str, &str)] = &[
-    ("sns_governance", GOVERNANCE_TARGET),
-    ("sns_root", "//rs/sns/root:sns-root-canister"),
-    (
-        "sns_ledger",
-        "//rs/ledger_suite/icrc1/ledger:ledger_canister",
-    ),
-    (
-        "sns_index",
-        "//rs/ledger_suite/icrc1/index-ng:index_ng_canister",
-    ),
-    (
-        "sns_archive",
-        "//rs/ledger_suite/icrc1/archive:archive_canister",
-    ),
-    ("sns_swap", "//rs/sns/swap:sns-swap-canister"),
-];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Source {
@@ -81,16 +64,14 @@ impl Source {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Scope {
     Governance,
-    SnsSuite,
 }
 
 impl Scope {
     fn parse(value: &str) -> Result<Self, String> {
         match value {
             "governance" => Ok(Self::Governance),
-            "sns-suite" => Ok(Self::SnsSuite),
             _ => Err(format!(
-                "unsupported SNS scope {value:?}; expected governance or sns-suite"
+                "unsupported SNS scope {value:?}; expected governance"
             )),
         }
     }
@@ -98,7 +79,6 @@ impl Scope {
     fn as_str(self) -> &'static str {
         match self {
             Self::Governance => "governance",
-            Self::SnsSuite => "sns-suite",
         }
     }
 }
@@ -206,8 +186,8 @@ SOURCE (flag overrides environment)
   --require-capability NAME      require latest_reward_event_participation
 
 BUILD AND TEST
-  --scope governance|sns-suite   IO_SNS_SCOPE; local default: governance
-  --profile contract|io|upgrade|lifecycle
+  --scope governance             IO_SNS_SCOPE; only local overlay implemented
+  --profile contract|io|upgrade  implemented profiles
                                  IO_SNS_PROFILE; default: contract
   --cache-dir PATH               IO_SNS_CACHE_DIR; default:
                                  ${{XDG_CACHE_HOME:-$HOME/.cache}}/io/sns-framework
@@ -223,7 +203,8 @@ EXAMPLES
 
 Every mode resolves to one manifest and uses the existing real-canister loader.
 Local Governance scope overlays only Governance onto the checked-in official
-baseline. No command in this workflow contacts an IC mainnet endpoint."#
+baseline. The lifecycle profile is accepted only to return ProfileNotImplemented.
+No command in this workflow contacts an IC mainnet endpoint."#
     );
 }
 
@@ -461,6 +442,24 @@ fn prepare_official_bundle(
             "official fetch completed without every verified raw and compressed artifact".into(),
         );
     }
+    if lock.bool_value("capabilities", CAPABILITY_FIELD) == Some(true) {
+        let did_source = canonical_or_join(
+            io_root,
+            Path::new(required_value(lock, "contract", "governance_did")?),
+        )?;
+        if !did_source.starts_with(io_root) {
+            return Err("official Governance DID must resolve inside the IO repository".into());
+        }
+        verify_hash(
+            &did_source,
+            required_value(lock, "contract", "governance_did_sha256")?,
+        )?;
+        let did_text = fs::read_to_string(&did_source)
+            .map_err(|err| format!("failed to read {}: {err}", did_source.display()))?;
+        verify_candidate_did(&did_text)?;
+        fs::copy(&did_source, staging.join("governance.did"))
+            .map_err(|err| format!("failed to copy reviewed Governance DID: {err}"))?;
+    }
     fs::write(staging.join("manifest.toml"), &resolved_text)
         .map_err(|err| format!("failed to write resolved manifest: {err}"))?;
     let provenance = format!(
@@ -521,10 +520,7 @@ fn resolve_local_overlay(
     )
     .map_err(|err| format!("failed to retain official Governance baseline: {err}"))?;
 
-    let mut targets = SUITE_TARGETS.to_vec();
-    if options.scope == Scope::Governance {
-        targets.truncate(1);
-    }
+    let targets = vec![("sns_governance", GOVERNANCE_TARGET)];
     let outputs = build_local_targets(
         &ic_root,
         &bazel_rc,
@@ -575,6 +571,11 @@ fn resolve_local_overlay(
     fs::write(staging.join("governance.did"), &did_text)
         .map_err(|err| format!("failed to write candidate DID: {err}"))?;
     resolved.set_bool("capabilities", CAPABILITY_FIELD, capability)?;
+    resolved.set_value(
+        "contract",
+        "governance_did_sha256",
+        sha256(did_text.as_bytes()),
+    )?;
     resolved.set_value(
         "baseline",
         "sns_governance_wasm",
@@ -763,6 +764,11 @@ fn bundle_from_root(
     };
     if declared_capability && governance_did_hash.is_empty() {
         return Err("capability is true but governance.did is missing".into());
+    }
+    if declared_capability
+        && manifest.value("contract", "governance_did_sha256") != Some(governance_did_hash.as_str())
+    {
+        return Err("capability-bearing Governance DID is not hash-bound by the manifest".into());
     }
     Ok(ResolvedBundle {
         wasm_dir: root.join("wasms"),
@@ -1392,7 +1398,12 @@ fn validate_official_lock(lock: &SnsManifest) -> Result<(), String> {
         }
     }
     match lock.bool_value("capabilities", CAPABILITY_FIELD) {
-        Some(_) => Ok(()),
+        Some(true) => {
+            let path = required_value(lock, "contract", "governance_did")?;
+            reject_relative_unsafe(Path::new(path))?;
+            validate_sha(required_value(lock, "contract", "governance_did_sha256")?)
+        }
+        Some(false) => Ok(()),
         _ => Err(format!(
             "official lock must declare [capabilities].{CAPABILITY_FIELD} as a boolean"
         )),
@@ -1916,6 +1927,16 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.source, Source::Bundle);
         assert_eq!(parsed.profile, Profile::Upgrade);
+    }
+
+    #[test]
+    fn only_implemented_scope_and_profiles_are_advertised() {
+        assert!(Scope::parse("sns-suite").is_err());
+        assert!(Profile::parse("all").is_err());
+        assert!(matches!(
+            shared_profile_plan(Profile::Lifecycle, true),
+            Err(message) if message.contains("ProfileNotImplemented")
+        ));
     }
 
     #[test]

@@ -1,243 +1,148 @@
 # SNS framework sources
 
-`tools/scripts/test-sns-framework` is the normative entry point for testing IO
-against SNS framework variants. Every invocation resolves immutable Wasm bytes,
-a Governance DID, capabilities, hashes, and provenance before it starts the
-shared IO tests. The runner never contacts an IC boundary node and never
-deploys to mainnet.
+`tools/scripts/test-sns-framework` is the single entry point for resolving SNS
+framework Wasms and running IO variant tests. It supports three source modes:
+the reviewed official lock, a local Governance overlay built from the sibling
+IC checkout, and replay of an immutable resolved bundle. It never deploys or
+contacts an IC mainnet endpoint.
 
-## Workspace and source selection
+## Supported interface
 
-The normal workspace has sibling repositories:
-
-```text
-<workspace>/src/
-├── IO/
-└── ic/
-```
-
-The runner resolves the IO root with `git rev-parse --show-toplevel`. Local
-mode defaults to the canonicalized `<IO root>/../ic` path. Flags override the
-matching environment variables.
-
-| Flag | CI environment alias | Values/default |
+| Flag | Environment | Supported values |
 | --- | --- | --- |
 | `--source` | `IO_SNS_SOURCE` | `official`, `local`, `bundle`; default `official` |
-| `--ic-repo` | `IO_IC_REPO` | local IC checkout path |
-| `--scope` | `IO_SNS_SCOPE` | `governance`, `sns-suite`; default `governance` |
-| `--profile` | `IO_SNS_PROFILE` | `contract`, `io`, `upgrade`, `lifecycle`, `all`; default `contract` |
-| `--bundle` | `IO_SNS_BUNDLE` | absolute immutable bundle path |
-| `--cache-dir` | `IO_SNS_CACHE_DIR` | content-addressed cache root |
+| `--ic-repo` | `IO_IC_REPO` | local IC checkout; default `<IO>/../ic` |
+| `--scope` | `IO_SNS_SCOPE` | `governance` only |
+| `--profile` | `IO_SNS_PROFILE` | `contract`, `io`, `upgrade`; default `contract` |
+| `--bundle` | `IO_SNS_BUNDLE` | absolute bundle path for bundle mode |
+| `--cache-dir` | `IO_SNS_CACHE_DIR` | external content-addressed cache root |
+| `--require-capability` | — | `latest_reward_event_participation` |
 
-The default cache is
-`${XDG_CACHE_HOME:-$HOME/.cache}/io/sns-framework`. It is deliberately outside
-the IO worktree. Do not copy its Wasms into the repository.
+`lifecycle` is recognized only so the runner can fail explicitly with
+`ProfileNotImplemented`; no lifecycle test is implemented in this tranche.
+There is no `all` profile or local full-SNS-suite overlay.
 
-Common commands are:
+Examples:
 
 ```bash
-# The reviewed repository pin.
-tools/scripts/test-sns-framework --source official
+tools/scripts/test-sns-framework --source official --profile contract
 
-# The current sibling Governance candidate over the official base.
-tools/scripts/test-sns-framework --source local
-
-# A coordinated full-suite candidate.
 tools/scripts/test-sns-framework \
-  --source local --scope sns-suite --profile all
+  --source local \
+  --scope governance \
+  --require-capability latest_reward_event_participation \
+  --profile io
 
-# Replay exactly the bytes prepared elsewhere.
 tools/scripts/test-sns-framework \
-  --source bundle --bundle /absolute/path/to/bundle --profile upgrade
+  --source bundle \
+  --bundle /absolute/path/to/resolved-bundle \
+  --profile upgrade
 ```
 
-`--help` lists all supported flags. Callers do not export
-`IO_REAL_SNS_WASM_DIR` or `IO_REAL_SNS_WASM_MANIFEST`; the runner sets those
-low-level compatibility variables only for the child test process.
+The default cache is
+`${XDG_CACHE_HOME:-$HOME/.cache}/io/sns-framework`. Wasms, bundles, and build
+caches remain outside the IO worktree and must not be committed.
 
 ## Official source
 
-Official means the exact reviewed baseline in
-`tests/e2e_real_canisters/wasms.example.toml`, which acts as IO's official lock.
-It pins component revisions, HTTPS artifact URLs, compressed hashes, raw Wasm
-hashes, and capabilities. It does not perform a mutable “latest” lookup.
+Official mode reads `tests/e2e_real_canisters/wasms.example.toml`. That reviewed
+lock pins component revisions, artifact URLs, compressed and raw hashes, and
+test-orchestration capability metadata. A normal run never edits the lock and
+never searches for a moving latest release. An official result is only as
+current as the checked-in reviewed lock.
 
-An official run validates the lock and reuses
-`tools/scripts/fetch-real-canister-artifacts`, the existing allowlisted and
-hash-verifying fetch path. A normal run never edits the lock. An official run
-is only as current as this checked-in pin.
+When artifacts are absent from the external cache, the runner uses the existing
+allowlisted, hash-verifying fetch script. `--official-manifest` can test a
+separately prepared proposed lock without editing the repository; the runner
+does not create or bless that proposal.
 
-To propose a newly blessed revision, use the explicit updater:
+## Local Governance overlay
 
-```bash
-tools/scripts/update-official-sns-baseline \
-  --revision <40-hex-blessed-IC-revision>
-```
-
-The command prepares a proposed lock, verifies artifacts through the same
-fetcher, and prints the repository diff. It does not commit. Review the
-authoritative blessed-version evidence, component revisions, hashes, DIDs, and
-capabilities separately. Never infer a blessed release from `master`, the
-newest Git tag, or the newest GitHub commit.
-
-When DFINITY provides a complete proposed manifest, test it before adoption
-without modifying the checked-in lock:
-
-```bash
-tools/scripts/test-sns-framework --source official \
-  --official-manifest /absolute/path/to/proposed-official.toml
-```
-
-## Local source
-
-Local mode treats the sibling checkout as a read/build input. The runner never
-changes its branch, index, worktree, remotes, or configuration. It validates
-the Git repository, Governance DID, and canonical Bazel files, then records:
-
-- canonical repository path, branch/detached state, HEAD, remotes, and upstream
-  merge base when available;
-- clean/dirty state and SHA-256 of `git diff --binary HEAD`;
-- Bazel version, exact targets, artifact hashes, and Governance DID hash.
-
-The runner rejects changed credential-like paths. A dirty developer checkout
-is allowed with a prominent warning: its diff hash enters the bundle ID,
-`source_tree_clean = false`, and `source.patch` is saved inside the ignored
-bundle. CI and `--reject-dirty` reject it. A local feature branch is not an
-official SNS release, whether or not it is published.
-
-The runner uses a generated local Bazel rc under the IO cache. It disables the
-DFINITY-internal remote cache and relocates the hermetic Zig cache under the
-user's IO cache. It does not write an rc or build output into tracked IC source.
-
-### Governance overlay
-
-`--scope governance` is the local default. It builds only the canonical
-production target discovered with `bazel cquery --output=files`:
+Local mode treats `<IO>/../ic` as read/build input. The runner does not switch,
+clean, reset, pull, rebase, commit, or otherwise modify that checkout. It builds
+only the production Governance target:
 
 ```text
 //rs/sns/governance:sns-governance-canister
 ```
 
-Both `sns_governance.wasm.gz` and its decompressed Wasm are retained. The exact
-local Governance DID is copied and hashed. Governance is marked as a local
-override; Root, Ledger, Index, Archive, and Swap remain byte-for-byte pinned to
-the official baseline. A requested local build never substitutes official
-Governance.
+The candidate Governance Wasm and DID replace Governance in the official base;
+all other artifacts remain byte-for-byte official. A requested local build is
+never silently replaced with official Governance.
 
-### Full SNS suite
+The runner records the IC commit, branch, merge base, clean/dirty state, tracked
+diff SHA-256, Bazel version, exact target, candidate DID hash, artifact hashes,
+official baseline, and component override. A dirty tree is local-only and its
+diff hash enters the bundle identity. The runner does not export a source patch.
+A local candidate Wasm is not an official release.
 
-`--scope sns-suite` builds the canonical local Governance, Root, ICRC Ledger,
-Index-ng, Archive, and Swap targets from one checkout. SNS-W is included only
-for `lifecycle` or `all`. Target outputs are always located with Bazel cquery,
-not a hard-coded `bazel-bin` path. Use this scope for coordinated framework or
-release-branch changes, Root/Governance upgrades, and local SNS-W publication.
+Local Bazel uses the same selected Bazel version for version reporting, cquery,
+and build. It runs in batch mode through a generated external rc, defaults to
+`IO_SNS_BAZEL_JOBS=2`, and accepts a lower override. On the 4-GiB/no-swap local
+VM use `IO_SNS_BAZEL_JOBS=1`. The sibling checkout remains unchanged.
 
-The same resolved manifest feeds direct PocketIC installation, baseline to
-candidate upgrades, and SNS-W publication. Tests must compare the published
-compressed hashes with the resolved bundle hashes.
+## Immutable bundle replay
 
-## Bundle format and validation
-
-Bundles are immutable, content-addressed directories:
+A resolved bundle contains the exact manifest, provenance, hashes, Governance
+DID when present, and Wasms used by a run:
 
 ```text
 <cache>/<bundle-id>/
 ├── manifest.toml
 ├── provenance.toml
 ├── SHA256SUMS
-├── governance.did          # capability-bearing local candidates
-├── source.patch            # dirty local candidates only
+├── governance.did
 └── wasms/
-    ├── sns_governance.wasm
-    ├── sns_governance.wasm.gz
-    └── ...
 ```
 
-The manifest extends the existing real-canister format additively. Each
-artifact retains its filename, raw/compressed SHA-256, source kind, source
-revision, and source URL or local target provenance. `[variant]` records the
-official baseline, IC state, build targets, and component overrides.
-`[capabilities]` records additive API capabilities.
+Bundle mode requires an absolute path. Validation rejects missing or unexpected
+files, path traversal, symlinks, non-regular artifacts, credential-like names,
+malformed hashes, artifact hash mismatches, and a mismatched `SHA256SUMS` file
+set. Replay uses those exact bytes; it does not rebuild or substitute sources.
 
-Bundle mode requires an absolute path. Before tests it rejects missing or
-unexpected files, unlisted files, path traversal, symlinks, non-regular Wasm
-files, credential-like names, malformed hashes, hash mismatches, and a
-`SHA256SUMS` file-set mismatch. Share the entire directory as an immutable CI
-artifact; CI invokes the same runner with `--source bundle`.
+Every result must report source mode, resolved manifest path, profile, official
+baseline, IC commit and dirty state when applicable, diff hash, component
+overrides, Governance DID hash, and artifact hashes.
 
-## Capability and compatibility behavior
+## Capability and runtime policy
 
-`latest_reward_event_participation` is not a caller assertion. A local bundle
-sets it only after the candidate DID proves the additive optional neuron field,
-the `Uint128` share shape, `get_latest_reward_event`, and paginated
-`list_neurons`. The `contract` profile then proves its runtime semantics with
-the production Governance Wasm.
+`latest_reward_event_participation` in a bundle is test-orchestration metadata,
+not a runtime authorization or caller-supplied capability Boolean. Local mode
+sets it only after the candidate DID proves the additive participation/share
+contract. A capability-bearing bundle makes the exact candidate tests
+mandatory; exact-test discovery must find one test before execution begins.
 
-The current official lock declares the capability false. Its old neuron value
-decodes with `None`; compatibility tests run, candidate allocation tests report
-an explicit skip, and IO readiness fails closed with “SNS latest reward-event
-participation feature unavailable.” There is no ballot/proposal fallback. Once
-a reviewed official lock enables the capability, the same contract and IO tests
-become mandatory without another IO binary or code-path switch.
+Runtime readiness independently verifies exact SNS Root, exact Governance
+principal, exact Governance module hash, the approved reward-event duration,
+and that both current native Governance reward rates are zero. Canonical SNS
+Governance reward shares are the complete weight for a proposal-bearing event,
+including the SNS's native voting-power policy. IO filters the exact eligible
+two-week non-dissolving neurons and excluded protocol/Jupiter accounts; it does
+not reconstruct age, dissolve-delay, or voting-power multiplier arithmetic.
 
-## Profiles
+If no proposals settled, allocation may use exact eligible captured stake. If
+proposals settled but eligible canonical shares total zero, IO issues no reward
+and does not fall back to full participation.
 
-- `contract` validates the bundle, additive DID/DTO compatibility, exact
-  reward shares, zero native reward, event replacement, deterministic
-  pagination, and E1/pages/E2 consistency.
-- `io` includes `contract`, the installed stream manager, the backed reward
-  pool, immutable reward-share snapshot, sequential transfers, exact dust,
-  same-Wasm upgrade between recipients, and zero native SNS maturity.
-- `upgrade` installs the pinned official Governance baseline, preserves old
-  state through candidate upgrade, proves the post-upgrade field, exercises IO,
-  and upgrades the populated candidate again.
-- `lifecycle` uses the existing local NNS/SNS-W real-framework infrastructure
-  for publication/deployment or Root-mediated upgrade. It is intentionally not
-  an edit-loop default.
-- `all` runs every available profile serially.
+IO accepts only the exact next reward event: round delta one and
+`rounds_since_last_distribution` one. A missed event or multi-round span is
+reported as `RewardEventMissed` or `RewardEventSpanUnsupported`; no allocation
+occurs and the backed pool remains in reserve.
 
-The integration is latest-event-only. If Governance overwrites an unprocessed
-event, IO reports `RewardEventMissed`, retains the backed pool in reserve, and
-does not reconstruct ballots or maturity. Supporting several unprocessed daily
-events requires a separately approved upstream history or checkpoint
-accumulator and is out of scope.
+## Profiles and execution safety
 
-Candidate IO fixtures configure the native Governance reward-event duration to
-the IO two-week backed-reward cadence and set both native reward rates to zero.
-The participation field is therefore populated without native ordinary or
-staked maturity, and one retained latest event corresponds to one IO capture
-window.
+- `contract` validates the resolved bundle and runs exact DTO/contract tests.
+- `io` runs contract coverage plus the installed IO reward path.
+- `upgrade` runs the exact official-to-candidate Governance upgrade test.
+- `lifecycle` always returns `ProfileNotImplemented` in this tranche.
 
-## Failure guide and safety
+Test enumeration is the only captured child output. Actual `--nocapture` test
+output is inherited and streamed. Each profile run creates one
+`IO_POCKETIC_RUN_ID`; cleanup targets only descendant processes carrying that
+run ID. `CARGO_BUILD_JOBS` defaults to 2 and `RUST_TEST_THREADS` to 1 unless the
+caller explicitly overrides them. Staging directory names include the bundle
+or run identity so an interrupted resolver can be reviewed safely.
 
-- “dirty IC checkout rejected” means CI or `--reject-dirty` observed a local
-  patch; the runner does not alter it.
-- “canonical target … did not resolve” means the IC Bazel graph has changed;
-  inspect and review the new canonical target rather than hard-coding output.
-- “capability is true but governance.did is missing” means provenance is
-  incomplete; never bypass this check.
-- “SHA-256 mismatch” or “file set mismatch” invalidates the entire bundle.
-- “feature unavailable” is the expected fail-closed state for an old official
-  Governance. It must never trigger a ballot fallback.
-- A PocketIC profile requires the pinned local `POCKET_IC_BIN`; preparation-only
-  artifact resolution does not.
-
-This workflow permits only local PocketIC execution and no-network artifact
-preparation after bytes are cached. It must never use `--network ic`, `-n ic`,
-public mainnet boundary URLs, production identities, or mainnet canister
-install/upgrade/settings operations.
-
-## Reusable CI path
-
-`.github/workflows/sns-framework-variant.yml` accepts an IO ref, public IC
-repository URL, exact IC ref, scope, and profile. It checks out sibling trees,
-rejects a dirty candidate, calls this runner once, and uploads the manifest,
-provenance, hashes, DID, and log. Candidate code is restricted to an ephemeral
-GitHub-hosted runner with read-only repository permissions.
-
-The repository does not yet contain a reviewed download URL and SHA-256 for the
-pinned PocketIC 14 server. The workflow therefore fails explicitly at its
-PocketIC provisioning step instead of downloading an unpinned executable or
-silently skipping candidate tests. Enabling the reusable job requires one
-infrastructure follow-up: provision that exact server on the hosted runner from
-a reviewed hash-pinned source, then retain the runner invocation unchanged.
+Never run Bazel, a PocketIC profile, `test_all`, or `verify_release`
+concurrently. Candidate testing is local only: no `--network ic`, mainnet
+install, upgrade, settings change, push, or deployment is part of this workflow.

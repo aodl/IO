@@ -29,11 +29,7 @@ impl SnsManifest {
     }
 
     pub fn value(&self, section: &str, key: &str) -> Option<&str> {
-        self.document
-            .get(section)?
-            .as_table()?
-            .get(key)?
-            .as_str()
+        self.document.get(section)?.as_table()?.get(key)?.as_str()
     }
 
     pub fn bool_value(&self, section: &str, key: &str) -> Option<bool> {
@@ -45,7 +41,10 @@ impl SnsManifest {
 
     pub fn artifact(&self, component: &str, field: &str) -> Option<&str> {
         let nested_field = if field == "wasm" { "filename" } else { field };
-        let artifacts = self.document.get("artifacts").and_then(toml::Value::as_table);
+        let artifacts = self
+            .document
+            .get("artifacts")
+            .and_then(toml::Value::as_table);
         let nested = artifacts
             .and_then(|artifacts| artifacts.get(component))
             .and_then(toml::Value::as_table)
@@ -110,9 +109,9 @@ impl SnsManifest {
         if let Some(source_filename) = self.source_filename(component) {
             return Ok(source_filename.trim().to_string());
         }
-        let source_url = self
-            .source_url(component)
-            .ok_or_else(|| format!("manifest is missing pinned artifacts.{component}.source_url"))?;
+        let source_url = self.source_url(component).ok_or_else(|| {
+            format!("manifest is missing pinned artifacts.{component}.source_url")
+        })?;
         source_url
             .rsplit('/')
             .next()
@@ -130,17 +129,16 @@ impl SnsManifest {
             source_sha256: self.source_sha256(component).ok_or_else(|| {
                 format!("manifest is missing pinned artifacts.{component}.source_sha256")
             })?,
-            source_kind: self.source_kind(component).ok_or_else(|| {
-                format!("manifest is missing artifacts.{component}.source_kind")
-            })?,
+            source_kind: self
+                .source_kind(component)
+                .ok_or_else(|| format!("manifest is missing artifacts.{component}.source_kind"))?,
             source_filename: self.source_filename(component),
         })
     }
 
     pub fn has_artifact(&self, component: &str) -> bool {
         self.artifact_name(component).is_ok()
-            && (self.expected_hash(component).is_some()
-                || self.source_sha256(component).is_some())
+            && (self.expected_hash(component).is_some() || self.source_sha256(component).is_some())
     }
 
     pub fn set_artifact(

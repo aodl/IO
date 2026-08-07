@@ -4,10 +4,11 @@ The launch monetary canister owns direct-reserve redemption, liquid ICP and IO
 reserve roles, proof-bound NNS receipts, exact reward cohorts, serialized reward
 settlement, and local lifecycle.
 
-Two-week entitlement uses only the latest SNS Governance reward-event share
-field. Readiness remains fail-closed until the reviewed Governance artifact
-manifest declares and contract-tests that capability; proposal ballots and SNS
-maturity are not fallback entitlement sources.
+Two-week entitlement uses canonical SNS Governance reward shares as the complete
+weight for a proposal-bearing latest event. When no proposal settled, exact
+eligible captured stake is the fallback; settled proposals with zero eligible
+shares issue no reward. Readiness verifies exact Root, Governance principal and
+module hash, the approved event duration, and zero current native reward rates.
 
 IO is not live. The production canister remains inert and this repository does
 not contain a production activation transition.
@@ -48,6 +49,9 @@ refund.
 Launch state is `StableCell<StreamStateV1>` plus
 `StableBTreeMap<Principal, CallerRedemptionState>`. Only V1 is supported.
 Prelaunch migration chains are research history, not runtime code.
+One `StreamOperation` slot serializes redemption, liquid receipt, cohort capture,
+and cohort close. Capture and close each have only Prepared and Submitted phases;
+their exact NNS generation is the replay boundary.
 
 ## Unsupported activity
 

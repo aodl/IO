@@ -96,7 +96,10 @@ pub fn prepare_two_week_maturity(
 ) -> Result<PreparedMaturityProgress, NnsError> {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        if state.two_week_target.as_ref().map(|target| target.generation)
+        if state
+            .two_week_target
+            .as_ref()
+            .map(|target| target.generation)
             != Some(args.cohort_generation)
         {
             return Err(NnsError::Invalid(

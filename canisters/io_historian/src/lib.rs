@@ -443,12 +443,9 @@ pub struct GovernanceParticipationSnapshot {
     pub reward_event_end_timestamp_seconds: Option<u64>,
     pub settled_proposal_count: Option<u64>,
     pub total_eligible_reward_shares: Option<u128>,
-    pub no_proposal_fallback: Option<bool>,
-    pub no_eligible_participation: Option<bool>,
     pub reward_event_missed: Option<bool>,
     pub expected_governance_module_hash: Option<String>,
     pub observed_governance_module_hash: Option<String>,
-    pub latest_reward_event_participation_capability: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -463,12 +460,9 @@ pub struct GovernanceObservation {
     pub reward_event_round: Option<u64>,
     pub reward_event_end_timestamp_seconds: Option<u64>,
     pub settled_proposal_count: Option<u64>,
-    pub no_proposal_fallback: Option<bool>,
-    pub no_eligible_participation: Option<bool>,
     pub reward_event_missed: Option<bool>,
     pub expected_governance_module_hash: Option<String>,
     pub observed_governance_module_hash: Option<String>,
-    pub latest_reward_event_participation_capability: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -988,7 +982,10 @@ pub fn classify_observation_freshness(
     let Some(max_age) = policy.max_age_nanos else {
         return ObservationFreshness::ObservedOnly;
     };
-    if now_timestamp_nanos.saturating_sub(last_success) > max_age {
+    if now_timestamp_nanos
+        .checked_sub(last_success)
+        .is_none_or(|age| age > max_age)
+    {
         ObservationFreshness::Stale
     } else {
         ObservationFreshness::Fresh
@@ -1460,7 +1457,9 @@ pub fn governance_snapshot_from_observation(
         if neuron.frozen_stake_e8s > 0 {
             let num = neuron.reward_shares.unwrap_or(0);
             let den = total_reward_shares.unwrap_or(0);
-            total_stake = total_stake.saturating_add(neuron.frozen_stake_e8s);
+            total_stake = total_stake
+                .checked_add(neuron.frozen_stake_e8s)
+                .expect("bounded Governance neuron stake total must fit u128");
             participation.push(GovernanceNeuronParticipation {
                 neuron_id: neuron.neuron_id,
                 frozen_stake_e8s: neuron.frozen_stake_e8s,
@@ -1503,13 +1502,9 @@ pub fn governance_snapshot_from_observation(
         reward_event_end_timestamp_seconds: observation.reward_event_end_timestamp_seconds,
         settled_proposal_count: observation.settled_proposal_count,
         total_eligible_reward_shares: total_reward_shares,
-        no_proposal_fallback: observation.no_proposal_fallback,
-        no_eligible_participation: observation.no_eligible_participation,
         reward_event_missed: observation.reward_event_missed,
         expected_governance_module_hash: observation.expected_governance_module_hash,
         observed_governance_module_hash: observation.observed_governance_module_hash,
-        latest_reward_event_participation_capability: observation
-            .latest_reward_event_participation_capability,
     }
 }
 
@@ -2482,12 +2477,9 @@ mod tests {
             reward_event_round: Some(4),
             reward_event_end_timestamp_seconds: Some(2),
             settled_proposal_count: Some(4),
-            no_proposal_fallback: Some(false),
-            no_eligible_participation: Some(false),
             reward_event_missed: Some(false),
             expected_governance_module_hash: Some("expected".into()),
             observed_governance_module_hash: Some("expected".into()),
-            latest_reward_event_participation_capability: Some(true),
         });
         let summary = get_governance_summary();
         assert_eq!(summary.sns_eligible_neuron_count, 2);
@@ -2866,12 +2858,9 @@ mod tests {
             reward_event_round: Some(2),
             reward_event_end_timestamp_seconds: Some(20),
             settled_proposal_count: Some(2),
-            no_proposal_fallback: Some(false),
-            no_eligible_participation: Some(false),
             reward_event_missed: Some(false),
             expected_governance_module_hash: Some("expected".into()),
             observed_governance_module_hash: Some("expected".into()),
-            latest_reward_event_participation_capability: Some(true),
         });
         let health = get_dashboard_state().source_health;
         assert_eq!(

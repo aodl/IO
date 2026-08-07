@@ -20,7 +20,14 @@ For each protected neuron, call `StakeMaturity(40%)` and then `DisburseMaturity(
 
 ## Exact rewards
 
-Capture bounded SNS neuron/proposal/ballot evidence into one active cohort, close it only after the actual 1,209,600-second interval and retain one pending cohort. The actual two-week liquid maturity drives the unchanged reward policy. Resume transfers one recipient, the next resume refreshes that exact SNS neuron, and upgrades preserve recipient progress. One IO fee is charged per recipient; dust remains in reserve.
+Capture bounded eligible SNS neurons and a latest-event checkpoint into one
+active cohort. Close only after the actual 1,209,600-second interval and accept
+only the exact next single-round event. Proposal-bearing allocation uses
+canonical Governance reward shares; no-proposal allocation uses exact frozen
+eligible stake. The actual two-week liquid maturity drives settlement. Resume
+transfers one recipient, the next resume refreshes that exact SNS neuron, and
+upgrades preserve recipient progress. One IO fee is charged per recipient;
+dust remains in reserve.
 
 ## One unwind child
 

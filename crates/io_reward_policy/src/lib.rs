@@ -257,12 +257,13 @@ pub fn allocate_rewards_for_event(
     })
 }
 
-pub fn active_staked_io_e8s(participants: &[RewardParticipant]) -> u128 {
+pub fn active_staked_io_e8s(participants: &[RewardParticipant]) -> Result<u128, RewardPolicyError> {
     participants
         .iter()
         .filter(|n| eligible(n))
         .map(|n| n.frozen_stake_e8s)
-        .sum()
+        .try_fold(0u128, |sum, stake| sum.checked_add(stake))
+        .ok_or(RewardPolicyError::ArithmeticOverflow)
 }
 
 #[cfg(test)]
@@ -439,6 +440,6 @@ mod tests {
     #[test]
     fn active_staked_io_uses_current_destination_eligibility_not_participation() {
         let active_non_voter = n(1, 1_000, 0, 10);
-        assert_eq!(active_staked_io_e8s(&[active_non_voter]), 1_000);
+        assert_eq!(active_staked_io_e8s(&[active_non_voter]), Ok(1_000));
     }
 }

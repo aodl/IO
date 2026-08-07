@@ -409,9 +409,9 @@ pub fn get_nervous_system_parameters() -> NervousSystemParameters {
             final_reward_rate_basis_points: Some(0),
             initial_reward_rate_basis_points: Some(0),
             reward_rate_transition_duration_seconds: Some(0),
-            round_duration_seconds: Some(STATE.with(|cell| {
-                cell.borrow().reward_round_duration_seconds
-            })),
+            round_duration_seconds: Some(
+                STATE.with(|cell| cell.borrow().reward_round_duration_seconds),
+            ),
         }),
     }
 }
@@ -615,8 +615,8 @@ pub async fn manage_neuron(
                         &reward_event,
                         reward_shares.get(&neuron.neuron_id).copied(),
                     )
-                        .try_into()
-                        .expect("mock neuron should convert to production-shaped domain neuron")
+                    .try_into()
+                    .expect("mock neuron should convert to production-shaped domain neuron")
                 });
             if let Some(updated) = updated {
                 state

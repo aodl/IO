@@ -12,54 +12,25 @@ pub async fn readiness_preflight(
         .config
         .validate(canister_self)
         .map_err(crate::api::ApiError::Invalid)?;
-    let root = snapshot.config.sns_root.ok_or_else(|| {
-        crate::api::ApiError::Invalid("SNS Root readiness configuration is absent".into())
+    let installed = io_sns_reward_boundary::installed_governance(
+        snapshot.config.sns_root,
+        snapshot.config.sns_governance,
+    )
+    .await
+    .map_err(|error| match error {
+        io_sns_reward_boundary::Error::Retryable { method, message } => {
+            crate::api::ApiError::Pending(format!("SNS {method} readiness failed: {message}"))
+        }
+        other => crate::api::ApiError::Invalid(format!(
+            "SNS Governance readiness verification failed: {other:?}"
+        )),
     })?;
-    let expected_hash = snapshot
-        .config
-        .expected_sns_governance_module_hash
-        .as_deref()
-        .ok_or_else(|| {
-            crate::api::ApiError::Invalid("expected SNS Governance module hash is absent".into())
-        })?;
-    let approved_duration = snapshot
-        .config
-        .approved_reward_event_duration_seconds
-        .ok_or_else(|| {
-            crate::api::ApiError::Invalid("approved reward-event duration is absent".into())
-        })?;
-    let approved_initial = snapshot
-        .config
-        .approved_initial_reward_rate_basis_points
-        .ok_or_else(|| {
-            crate::api::ApiError::Invalid("approved initial reward rate is absent".into())
-        })?;
-    let approved_final = snapshot
-        .config
-        .approved_final_reward_rate_basis_points
-        .ok_or_else(|| {
-            crate::api::ApiError::Invalid("approved final reward rate is absent".into())
-        })?;
-    let installed =
-        io_sns_reward_boundary::installed_governance(root, snapshot.config.sns_governance)
-            .await
-            .map_err(|error| match error {
-                io_sns_reward_boundary::Error::Retryable { method, message } => {
-                    crate::api::ApiError::Pending(format!(
-                        "SNS {method} readiness failed: {message}"
-                    ))
-                }
-                other => crate::api::ApiError::Invalid(format!(
-                    "SNS Governance readiness verification failed: {other:?}"
-                )),
-            })?;
     if installed.canister != snapshot.config.sns_governance
-        || installed.module_hash.as_slice() != expected_hash
-        || installed.initial_reward_rate_basis_points != approved_initial
-        || installed.final_reward_rate_basis_points != approved_final
+        || installed.module_hash != snapshot.config.expected_sns_governance_module_hash
         || installed.initial_reward_rate_basis_points != 0
         || installed.final_reward_rate_basis_points != 0
-        || installed.round_duration_seconds != approved_duration
+        || installed.round_duration_seconds
+            != snapshot.config.approved_reward_event_duration_seconds
     {
         return Err(crate::api::ApiError::Invalid(
             "installed SNS Governance hash or reward parameters differ from reviewed readiness configuration"
@@ -142,10 +113,12 @@ pub fn set_paused() {
     state.lifecycle = Lifecycle::Paused;
     if matches!(
         &state.active_operation,
-        Some(
-            crate::state::StreamOperation::RedemptionPreparation(_)
-                | crate::state::StreamOperation::ReceiptPreparation(_)
-        )
+        Some(crate::state::StreamOperation::Redemption(operation))
+            if matches!(operation.as_ref(), crate::state::RedemptionStreamOperation::Preparing(_))
+    ) || matches!(
+        &state.active_operation,
+        Some(crate::state::StreamOperation::LiquidReceipt(operation))
+            if matches!(operation.as_ref(), crate::state::LiquidReceiptStreamOperation::Preparing(_))
     ) {
         state.active_operation = None;
     }

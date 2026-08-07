@@ -51,12 +51,9 @@ type GovernanceParticipationSnapshot = record {
   reward_event_end_timestamp_seconds : opt nat64;
   settled_proposal_count : opt nat64;
   total_eligible_reward_shares : opt nat;
-  no_proposal_fallback : opt bool;
-  no_eligible_participation : opt bool;
   reward_event_missed : opt bool;
   expected_governance_module_hash : opt text;
   observed_governance_module_hash : opt text;
-  latest_reward_event_participation_capability : opt bool;
 };
 type HistorianIngestionStatus = record {
   artifact_status_count : nat64;

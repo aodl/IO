@@ -2,23 +2,24 @@
 
 ## Preserved launch semantics
 
-The simplified executor does not change allocation results. The earning window
-is exactly 1,209,600 seconds; stake is frozen; direct and followed participation
-count; late stake and top-ups are excluded; forfeiture remains dust without
-redistribution; and the full backing target is preserved. Delayed maturity
-payout does not change eligibility. Settlement is sequential under the single
-active monetary operation.
+The earning window is exactly 1,209,600 seconds; eligible stake is frozen; late
+stake and top-ups are excluded; forfeiture remains dust without redistribution;
+and the full backing target is preserved. Delayed maturity payout does not
+change eligibility. Settlement is sequential under the single stream operation.
 
-Two-week maturity may issue backed IO to eligible active IO SNS stakers. Ordinary IO reward eligibility requires exactly 14 days. Stock SNS parameters cap the maximum dissolve delay and can gate voting with a minimum delay, but they do not prevent a user from creating a shorter neuron. Longer-than-14-day reward positions are prevented by the SNS maximum; shorter neurons are technically creatable but receive no IO protocol rewards and do not contribute to the two-week NNS backing target. Rewards use frozen cohort stake multiplied only by closed-proposal participation; no duration or age multiplier exists.
+Two-week maturity may issue backed IO to eligible active IO SNS stakers.
+Eligibility requires an exact 14-day non-dissolving neuron. Proposal-bearing
+events use canonical SNS Governance reward shares as the complete weight,
+including the SNS's approved native voting-power policy. IO does not reconstruct
+ballots, age bonus, dissolve-delay bonus, or voting-power multiplier arithmetic.
 
 ```text
-participation_factor =
-  eligible_closed_proposals_voted_on / eligible_closed_proposals_total
+recipient_weight = canonical_latest_reward_event_reward_shares
 ```
 
-If no eligible proposals closed during the interval, participation is treated as 100%.
-
-Direct and followed votes are both represented by their resulting canonical SNS ballot. Only `Yes = 1` and `No = 2` count; `Unspecified = 0` and unsupported values do not. A reward-eligible proposal counts only when `captured_at < decided_at <= closes_at`. A proposal open before capture is carried by bounded ID and counts if it closes in that interval; a proposal already closed at capture does not.
+If no proposal settled in the event, the fallback weight is exact eligible stake
+frozen at capture. If proposals settled but eligible canonical shares total
+zero, IO issues no reward and does not fall back to full participation.
 
 Rounding is conservative. Dust is reported and remains unissued. Excluded Jupiter governance and protocol-owned neurons cannot receive allocations.
 
@@ -36,6 +37,12 @@ redemption_rate =
 
 Only liquid ICP counts as redemption NAV.
 
-Read-only SNS governance evidence feeds this policy by capturing a frozen cohort of exact reward-eligible 14-day, non-dissolving user neurons and a bounded proposal-window anchor. Protocol-owned and Jupiter-governance staking Accounts are excluded by exact effective Account. New stake and top-ups do not alter the frozen cohort. Every destination is rechecked immediately before payout; a member that has become ineligible forfeits its calculated share to reserve dust.
+Read-only SNS governance evidence captures a frozen cohort of exact eligible
+14-day, non-dissolving user neurons and the latest reward-event checkpoint.
+Protocol-owned and Jupiter-governance staking Accounts are excluded by exact
+effective Account. Close accepts only the exact next single-round event. A
+missed or multi-round event allocates nothing and leaves the backed pool in
+reserve. Every destination is rechecked immediately before payout; a member
+that has become ineligible forfeits its calculated share to reserve dust.
 
 The launch settlement persists exact allocations, recipient progress, rounding dust, forfeiture, and total dust in the active two-week receipt. One `resume` performs at most one recipient transition. The immutable transfer precedes a separately persisted refresh submission, and a later canonical observation must show the expected stake increase before progress advances. Each actual recipient consumes one explicit IO fee; every dust component remains in reserve and is never redistributed.

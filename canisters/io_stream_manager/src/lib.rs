@@ -47,9 +47,7 @@ pub fn init(args: InitArgs) {
         control_epoch: 0,
         last_completed_receipt: None,
         last_consumed_reward_event: None,
-        cohort_capture_operation: None,
-        cohort_close_operation: None,
-        reward_work_due: None,
+        reward_work_due: false,
     };
     state::initialize(state, ic_cdk::api::canister_self())
         .unwrap_or_else(|error| ic_cdk::trap(&error));

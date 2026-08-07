@@ -61,6 +61,14 @@ fn event_sequence_error(error: EventSequenceError) -> ApiError {
             "RewardEventMissed: captured round {} at {}, latest round {} at {}; backed pool remains in reserve",
             previous.round, previous.end_timestamp_seconds, next.round, next.end_timestamp_seconds
         )),
+        EventSequenceError::SpanUnsupported {
+            previous,
+            next,
+            span,
+        } => ApiError::Invalid(format!(
+            "RewardEventSpanUnsupported: captured round {} at {}, latest round {} at {} spans {span} rounds; backed pool remains in reserve",
+            previous.round, previous.end_timestamp_seconds, next.round, next.end_timestamp_seconds
+        )),
         EventSequenceError::Invalid(message) => {
             ApiError::Invalid(format!("invalid canonical reward-event sequence: {message}"))
         }
@@ -121,7 +129,6 @@ pub(crate) fn eligible_members(
                 frozen_stake_e8s: neuron.cached_neuron_stake_e8s,
                 observed_stake_e8s: neuron.cached_neuron_stake_e8s,
                 reward_shares: None,
-                reward_event_end_timestamp_seconds: None,
                 destination_is_currently_eligible: true,
             }))
         })
@@ -182,7 +189,6 @@ pub(crate) fn apply_reward_share_snapshot(
                 },
             )
         };
-        member.reward_event_end_timestamp_seconds = Some(event.end_timestamp_seconds);
         total_eligible_reward_shares = total_eligible_reward_shares
             .checked_add(member.reward_shares.unwrap_or(0))
             .ok_or_else(|| ApiError::Invalid("eligible reward-share total overflow".into()))?;
@@ -192,10 +198,6 @@ pub(crate) fn apply_reward_share_snapshot(
         settled_proposal_count,
         total_eligible_reward_shares,
         captured_at_nanos,
-        no_proposal_fallback: Some(settled_proposal_count == 0),
-        no_eligible_participation: Some(
-            settled_proposal_count > 0 && total_eligible_reward_shares == 0,
-        ),
     });
     Ok(())
 }
@@ -247,15 +249,15 @@ mod tests {
     }
 
     #[test]
-    fn delayed_periodic_work_consumes_one_multi_round_event() {
+    fn event_sequence_accepts_only_the_exact_next_single_round_event() {
         let previous = RewardEventId {
             round: 4,
             end_timestamp_seconds: 40,
         };
-        assert_eq!(require_next_event(previous, &event(7, 70, 3)), Ok(()));
+        assert_eq!(require_next_event(previous, &event(5, 50, 1)), Ok(()));
         assert!(matches!(
-            require_next_event(previous, &event(6, 60, 3)),
-            Err(ApiError::Invalid(message)) if message.contains("invalid canonical")
+            require_next_event(previous, &event(7, 70, 3)),
+            Err(ApiError::Invalid(message)) if message.contains("RewardEventSpanUnsupported")
         ));
     }
 

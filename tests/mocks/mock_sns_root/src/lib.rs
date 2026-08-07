@@ -3,9 +3,9 @@ use io_sns_lifecycle::{
     DappCanisterRecord, ExpectedModuleHashRequest, RegisterDappCanisterRequest, RootUpgradeAttempt,
     RootUpgradeAttemptStatus, RootUpgradeIntent, RootUpgradeOutcomeRequest, RootUpgradeRequest,
 };
+use serde::Deserialize;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use serde::Deserialize;
 
 #[derive(Default)]
 struct RootState {
@@ -75,12 +75,14 @@ pub fn get_sns_canisters_summary(
     STATE.with(|cell| {
         let state = cell.borrow();
         GetSnsCanistersSummaryResponse {
-            governance: state.governance_principal.map(|canister_id| CanisterSummary {
-                canister_id: Some(canister_id),
-                status: Some(CanisterStatus {
-                    module_hash: state.governance_module_hash.clone(),
+            governance: state
+                .governance_principal
+                .map(|canister_id| CanisterSummary {
+                    canister_id: Some(canister_id),
+                    status: Some(CanisterStatus {
+                        module_hash: state.governance_module_hash.clone(),
+                    }),
                 }),
-            }),
         }
     })
 }

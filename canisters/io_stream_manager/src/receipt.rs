@@ -263,29 +263,34 @@ pub async fn prepare_liquid_receipt(
             return Err(ApiError::NonceAlreadyUsed);
         }
     }
-    if let Some(state::StreamOperation::LiquidReceipt(existing)) = &current.active_operation {
-        if existing.context().request_fingerprint == fingerprint {
-            return Ok(existing.context().permit.clone());
-        }
-        if existing.context().request.receipt_sequence == args.receipt_sequence {
-            return Err(ApiError::NonceAlreadyUsed);
-        }
-    }
-    if let Some(state::StreamOperation::ReceiptPreparation(existing)) = &current.active_operation {
-        if existing.request.receipt_sequence == args.receipt_sequence
-            && existing.request_fingerprint != fingerprint
-        {
-            return Err(ApiError::NonceAlreadyUsed);
-        }
-        if existing.request_fingerprint != fingerprint || existing.authority != caller {
-            return Err(ApiError::Busy);
+    if let Some(state::StreamOperation::LiquidReceipt(operation)) = &current.active_operation {
+        match operation.as_ref() {
+            state::LiquidReceiptStreamOperation::Active(existing) => {
+                if existing.context().request_fingerprint == fingerprint {
+                    return Ok(existing.context().permit.clone());
+                }
+                if existing.context().request.receipt_sequence == args.receipt_sequence {
+                    return Err(ApiError::NonceAlreadyUsed);
+                }
+            }
+            state::LiquidReceiptStreamOperation::Preparing(existing) => {
+                if existing.request.receipt_sequence == args.receipt_sequence
+                    && existing.request_fingerprint != fingerprint
+                {
+                    return Err(ApiError::NonceAlreadyUsed);
+                }
+                if existing.request_fingerprint != fingerprint || existing.authority != caller {
+                    return Err(ApiError::Busy);
+                }
+            }
         }
     }
     crate::api::require_ready(&current)?;
     if current.active_operation.is_some()
         && !matches!(
-            current.active_operation,
-            Some(state::StreamOperation::ReceiptPreparation(_))
+            &current.active_operation,
+            Some(state::StreamOperation::LiquidReceipt(operation))
+                if matches!(operation.as_ref(), state::LiquidReceiptStreamOperation::Preparing(_))
         )
     {
         return Err(ApiError::Busy);
@@ -328,8 +333,8 @@ pub async fn prepare_liquid_receipt(
     preparation
         .validate(&current.config)
         .map_err(ApiError::Invalid)?;
-    current.active_operation = Some(state::StreamOperation::ReceiptPreparation(Box::new(
-        preparation.clone(),
+    current.active_operation = Some(state::StreamOperation::LiquidReceipt(Box::new(
+        state::LiquidReceiptStreamOperation::Preparing(Box::new(preparation.clone())),
     )));
     state::write(current.clone());
 
@@ -366,7 +371,8 @@ pub async fn prepare_liquid_receipt(
         || latest.control_epoch != preparation.captured_control_epoch
         || !matches!(
             &latest.active_operation,
-            Some(state::StreamOperation::ReceiptPreparation(active)) if **active == preparation
+            Some(state::StreamOperation::LiquidReceipt(active))
+                if matches!(active.as_ref(), state::LiquidReceiptStreamOperation::Preparing(value) if **value == preparation)
         )
     {
         return Err(ApiError::Busy);
@@ -407,17 +413,20 @@ pub async fn prepare_liquid_receipt(
     operation
         .validate(&latest.config)
         .map_err(ApiError::Invalid)?;
-    latest.active_operation = Some(state::StreamOperation::LiquidReceipt(Box::new(operation)));
+    latest.active_operation = Some(state::StreamOperation::LiquidReceipt(Box::new(
+        state::LiquidReceiptStreamOperation::Active(Box::new(operation)),
+    )));
     state::write(latest);
     Ok(permit)
 }
 
 fn clear_matching_preparation(expected: &ReceiptPreparation) {
-    use crate::state::{self, StreamOperation};
+    use crate::state::{self, LiquidReceiptStreamOperation, StreamOperation};
     let mut latest = state::read();
     if matches!(
         &latest.active_operation,
-        Some(StreamOperation::ReceiptPreparation(active)) if **active == *expected
+        Some(StreamOperation::LiquidReceipt(active))
+            if matches!(active.as_ref(), LiquidReceiptStreamOperation::Preparing(value) if **value == *expected)
     ) {
         latest.active_operation = None;
         state::write(latest);
@@ -756,7 +765,8 @@ fn complete_jupiter(
     });
     let expected = LiquidReceiptOperation::Jupiter(Box::new(operation.clone()));
     let mut latest = state::read();
-    if !matches!(&latest.active_operation, Some(state::StreamOperation::LiquidReceipt(current)) if **current == expected)
+    if !matches!(&latest.active_operation, Some(state::StreamOperation::LiquidReceipt(current))
+        if matches!(current.as_ref(), state::LiquidReceiptStreamOperation::Active(value) if **value == expected))
     {
         return Err(ApiError::Busy);
     }
@@ -780,8 +790,13 @@ fn complete_jupiter(
 fn active_jupiter() -> Result<JupiterReceiptOperation, crate::api::ApiError> {
     match crate::state::read().active_operation {
         Some(crate::state::StreamOperation::LiquidReceipt(operation)) => match *operation {
-            LiquidReceiptOperation::Jupiter(operation) => Ok(*operation),
-            LiquidReceiptOperation::TwoWeek(_) => Err(crate::api::ApiError::Busy),
+            crate::state::LiquidReceiptStreamOperation::Active(operation) => match *operation {
+                LiquidReceiptOperation::Jupiter(operation) => Ok(*operation),
+                LiquidReceiptOperation::TwoWeek(_) => Err(crate::api::ApiError::Busy),
+            },
+            crate::state::LiquidReceiptStreamOperation::Preparing(_) => {
+                Err(crate::api::ApiError::Busy)
+            }
         },
         _ => Err(crate::api::ApiError::Busy),
     }
@@ -793,14 +808,17 @@ pub(crate) fn persist_exact(
 ) -> Result<(), crate::api::ApiError> {
     use crate::{api::ApiError, state};
     let mut latest = state::read();
-    if !matches!(&latest.active_operation, Some(state::StreamOperation::LiquidReceipt(current)) if **current == *expected)
+    if !matches!(&latest.active_operation, Some(state::StreamOperation::LiquidReceipt(current))
+        if matches!(current.as_ref(), state::LiquidReceiptStreamOperation::Active(value) if **value == *expected))
     {
         return Err(ApiError::Busy);
     }
     replacement
         .validate(&latest.config)
         .map_err(ApiError::Invalid)?;
-    latest.active_operation = Some(state::StreamOperation::LiquidReceipt(Box::new(replacement)));
+    latest.active_operation = Some(state::StreamOperation::LiquidReceipt(Box::new(
+        state::LiquidReceiptStreamOperation::Active(Box::new(replacement)),
+    )));
     state::write(latest);
     Ok(())
 }
@@ -828,11 +846,14 @@ pub async fn complete_liquid_receipt(
         }
     }
     let operation = match snapshot.active_operation {
-        Some(state::StreamOperation::LiquidReceipt(operation))
-            if operation.context().request.receipt_sequence == args.receipt_sequence =>
-        {
-            *operation
-        }
+        Some(state::StreamOperation::LiquidReceipt(operation)) => match *operation {
+            state::LiquidReceiptStreamOperation::Active(operation)
+                if operation.context().request.receipt_sequence == args.receipt_sequence =>
+            {
+                *operation
+            }
+            _ => return Err(ApiError::Invalid("no matching liquid receipt".into())),
+        },
         _ => return Err(ApiError::Invalid("no matching liquid receipt".into())),
     };
     let context = operation.context();
