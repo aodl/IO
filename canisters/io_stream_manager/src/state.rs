@@ -638,6 +638,10 @@ pub fn reopen(canister_self: Principal) {
         &reopened.active_operation,
         Some(StreamOperation::LiquidReceipt(operation))
             if matches!(operation.as_ref(), LiquidReceiptStreamOperation::Preparing(_))
+    ) || matches!(
+        &reopened.active_operation,
+        Some(StreamOperation::CohortCapture(operation))
+            if matches!(operation.as_ref(), CohortCaptureOperation::Prepared { .. })
     ) {
         reopened.active_operation = None;
     }

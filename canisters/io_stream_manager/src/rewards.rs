@@ -100,9 +100,7 @@ async fn submit_capture(
     .await
     .map_err(nns_call_error)?;
     if capacity == TargetStatus::UnderTarget {
-        return Err(ApiError::Pending(
-            "canonical two-week NNS principal is UnderTarget".into(),
-        ));
+        return Err(reject_under_target(snapshot));
     }
     if state::read() != snapshot {
         return Err(ApiError::Busy);
@@ -117,62 +115,88 @@ async fn submit_capture(
     Ok(cohort)
 }
 
+pub(crate) fn reject_under_target(mut snapshot: crate::state::StreamStateV1) -> ApiError {
+    if state::read() != snapshot {
+        return ApiError::Busy;
+    }
+    snapshot.active_operation = None;
+    state::write(snapshot);
+    ApiError::Pending("canonical two-week NNS principal is UnderTarget".into())
+}
+
 async fn prepare_capture(
     mut snapshot: crate::state::StreamStateV1,
     generation: u64,
     captured_at_timestamp_seconds: u64,
 ) -> Result<RewardCohort, ApiError> {
-    let neurons = list_all_neurons(snapshot.config.sns_governance).await?;
-    require_unchanged(&snapshot)?;
-    let members = eligible_members(
-        snapshot.config.sns_governance,
-        &snapshot.config.excluded_io_accounts,
-        &neurons,
-    )?;
-    if members.is_empty() {
-        return Err(ApiError::Invalid(
-            "reward cohort has no eligible members".into(),
-        ));
-    }
-    let reward_event_at_capture =
-        event_id(&latest_reward_event(snapshot.config.sns_governance).await?)?;
-    require_unchanged(&snapshot)?;
-    let canonical = canonical::redemption_snapshot(&snapshot.config)
-        .await
-        .map_err(ApiError::Ledger)?;
-    require_unchanged(&snapshot)?;
-    let excluded = canonical
-        .excluded_io_balances
-        .iter()
-        .try_fold(0u128, |sum, (_, value)| sum.checked_add(*value))
-        .ok_or_else(|| ApiError::Invalid("excluded IO balance overflow".into()))?;
-    let redeemable = canonical
-        .total_supply_e8s
-        .checked_sub(canonical.reserve_io_e8s)
-        .and_then(|value| value.checked_sub(excluded))
-        .ok_or_else(|| ApiError::Invalid("invalid redeemable IO supply".into()))?;
-    let active_io = members
-        .iter()
-        .try_fold(0u128, |sum, member| {
-            sum.checked_add(member.frozen_stake_e8s)
-        })
-        .ok_or_else(|| ApiError::Invalid("eligible cohort stake overflow".into()))?;
-    let target = io_core_model::two_week_target(active_io, canonical.liquid_icp_e8s, redeemable)
-        .map_err(|error| ApiError::Invalid(format!("two-week target failed: {error:?}")))?;
-    let cohort = RewardCohort {
+    let expected = CohortCaptureOperation::Prepared {
         generation,
         captured_at_timestamp_seconds,
-        closes_at_timestamp_seconds: captured_at_timestamp_seconds
-            .checked_add(io_core_model::TWO_WEEK_SECONDS)
-            .ok_or_else(|| ApiError::Invalid("cohort close timestamp overflow".into()))?,
-        target_icp_e8s: target,
-        reward_event_at_capture: Some(reward_event_at_capture),
-        reward_share_snapshot: None,
-        members,
     };
-    cohort
-        .validate(&snapshot.config)
-        .map_err(ApiError::Invalid)?;
+    let cohort = async {
+        let neurons = list_all_neurons(snapshot.config.sns_governance).await?;
+        require_unchanged(&snapshot)?;
+        let members = eligible_members(
+            snapshot.config.sns_governance,
+            &snapshot.config.excluded_io_accounts,
+            &neurons,
+        )?;
+        if members.is_empty() {
+            return Err(ApiError::Invalid(
+                "reward cohort has no eligible members".into(),
+            ));
+        }
+        let reward_event_at_capture =
+            event_id(&latest_reward_event(snapshot.config.sns_governance).await?)?;
+        require_unchanged(&snapshot)?;
+        let canonical = canonical::redemption_snapshot(&snapshot.config)
+            .await
+            .map_err(ApiError::Ledger)?;
+        require_unchanged(&snapshot)?;
+        let excluded = canonical
+            .excluded_io_balances
+            .iter()
+            .try_fold(0u128, |sum, (_, value)| sum.checked_add(*value))
+            .ok_or_else(|| ApiError::Invalid("excluded IO balance overflow".into()))?;
+        let redeemable = canonical
+            .total_supply_e8s
+            .checked_sub(canonical.reserve_io_e8s)
+            .and_then(|value| value.checked_sub(excluded))
+            .ok_or_else(|| ApiError::Invalid("invalid redeemable IO supply".into()))?;
+        let active_io = members
+            .iter()
+            .try_fold(0u128, |sum, member| {
+                sum.checked_add(member.frozen_stake_e8s)
+            })
+            .ok_or_else(|| ApiError::Invalid("eligible cohort stake overflow".into()))?;
+        let target =
+            io_core_model::two_week_target(active_io, canonical.liquid_icp_e8s, redeemable)
+                .map_err(|error| ApiError::Invalid(format!("two-week target failed: {error:?}")))?;
+        let cohort = RewardCohort {
+            generation,
+            captured_at_timestamp_seconds,
+            closes_at_timestamp_seconds: captured_at_timestamp_seconds
+                .checked_add(io_core_model::TWO_WEEK_SECONDS)
+                .ok_or_else(|| ApiError::Invalid("cohort close timestamp overflow".into()))?,
+            target_icp_e8s: target,
+            reward_event_at_capture: Some(reward_event_at_capture),
+            reward_share_snapshot: None,
+            members,
+        };
+        cohort
+            .validate(&snapshot.config)
+            .map_err(ApiError::Invalid)?;
+        Ok(cohort)
+    }
+    .await
+    .map_err(|error| {
+        clear_matching_capture_preparation(&expected);
+        error
+    })?;
+    if let Err(error) = require_unchanged(&snapshot) {
+        clear_matching_capture_preparation(&expected);
+        return Err(error);
+    }
     snapshot.active_operation = Some(StreamOperation::CohortCapture(Box::new(
         CohortCaptureOperation::TargetSubmitted {
             cohort: cohort.clone(),
@@ -325,6 +349,17 @@ fn require_unchanged(expected: &crate::state::StreamStateV1) -> Result<(), ApiEr
     (state::read() == *expected)
         .then_some(())
         .ok_or(ApiError::Busy)
+}
+
+pub(crate) fn clear_matching_capture_preparation(expected: &CohortCaptureOperation) {
+    let mut current = state::read();
+    if matches!(
+        &current.active_operation,
+        Some(StreamOperation::CohortCapture(operation)) if operation.as_ref() == expected
+    ) {
+        current.active_operation = None;
+        state::write(current);
+    }
 }
 
 fn nns_call_error(error: CallError) -> ApiError {

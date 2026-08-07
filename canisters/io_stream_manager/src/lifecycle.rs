@@ -119,6 +119,10 @@ pub fn set_paused() {
         &state.active_operation,
         Some(crate::state::StreamOperation::LiquidReceipt(operation))
             if matches!(operation.as_ref(), crate::state::LiquidReceiptStreamOperation::Preparing(_))
+    ) || matches!(
+        &state.active_operation,
+        Some(crate::state::StreamOperation::CohortCapture(operation))
+            if matches!(operation.as_ref(), crate::state::CohortCaptureOperation::Prepared { .. })
     ) {
         state.active_operation = None;
     }
