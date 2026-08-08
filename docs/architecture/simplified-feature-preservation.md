@@ -35,4 +35,6 @@ accumulate once with no moving average or ballot reconstruction.
 
 The immutable pending entitlement batch is the exact maturity-preparation replay
 intent. Below-threshold, paused, pending, or ambiguous NNS work leaves it visible
-while later daily events accumulate separately and redemption remains available.
+while later daily events accumulate separately. Observation and backing waits
+leave redemption available; exact reserve-transfer fan-out is serialized with
+redemption, and best-effort refresh cannot prolong that serialization.

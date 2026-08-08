@@ -79,6 +79,37 @@ fraction; the eligible pool is then allocated over eligible credits. A frozen
 zero-eligible-credit batch completes without recipient transfers and leaves
 the full backed amount in protocol reserve; later events cannot claim it.
 
+The first successful readiness transition seeds the latest canonical event as
+`last_processed_event` without adding eligible or policy credit. This prevents
+pre-activation events from becoming retroactive IO entitlement. An existing
+checkpoint survives pause/unpause and same-Wasm upgrade and is never reseeded.
+
+Before freezing, the stream manager obtains authenticated no-effect NNS
+readiness evidence for the current target. `UnderTarget`, `OverTarget`,
+`BelowThreshold`, `Busy`, `Paused`, or an unreconciled baseline leaves every
+live credit in place. A ready result permits one exact compare-and-swap freeze;
+later observations accumulate in the fresh live accumulator while that single
+batch is pending.
+
+Governance readiness and every daily boundary require
+`max_number_of_neurons <= 1,000`. This is a bound on the complete SNS Governance
+population, not the eligible reward subset. An unexpected module hash or
+parameter pauses reward processing and prevents a new freeze, but does not
+invalidate immutable pending transfer intents or pause redemption.
+
+The next observation is scheduled for the prior event end plus 86,400 seconds
+and a 300-second safety margin. A pending or retryable read keeps work due and
+installs one replacement one-shot timer after 60 seconds. Invalid reviewed
+configuration pauses reward processing without automatic retry; no interval
+timer or backoff scheduler exists.
+
+An exact ICRC transfer to the canonical neuron staking account is recipient
+monetary completion. IO persists at most one subsequent `claim_or_refresh`
+attempt as best-effort work and advances on success, explicit reject, transport
+failure, or replay after callback loss. Observation and backing waits do not
+block redemption. Reserve-transfer fan-out is serialized with redemption, but
+refresh availability cannot prolong that serialization indefinitely.
+
 The exact 1,209,600-second duration remains authoritative for ordinary IO
 reward-neuron eligibility, user withdrawal delay and the protected two-week NNS
 position. It is a staking-product rule, not the SNS reward-event duration or an
@@ -102,6 +133,12 @@ Historian and frontend views may derive rolling seven-day or thirty-day
 participation, APY or other display averages from available observations. Those
 views are explicitly non-authoritative and never affect allocation. Missing
 observations remain missing rather than becoming zero.
+
+Historian projection distinguishes daily policy credit, eligible credit,
+policy-forfeited credit, live and pending totals, distributed IO, forfeited IO,
+rounding dust, event classification, skips, Governance freshness and NNS
+backing readiness. Legacy proposal-count and frozen-cohort-shaped fields are
+historical compatibility observations only and have no allocation authority.
 
 ## Replaced policy
 

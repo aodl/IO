@@ -28,7 +28,7 @@ record ambiguous skipped spans without credits, and preserve redemption.
 
 Freeze at most one immutable batch for the two-week NNS maturity path. Continue
 daily accumulation while waiting for actual ICP. Resume transfers one recipient,
-the next resume refreshes that exact SNS neuron, and upgrades preserve recipient
+the next resume attempts one best-effort refresh of that exact SNS neuron, and upgrades preserve recipient
 progress. One IO fee is charged per recipient; dust remains in reserve.
 
 ## One unwind child

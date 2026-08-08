@@ -12,7 +12,8 @@ IO is not live. Production canisters remain inert.
 The production DID contains only:
 
 - `notify_jupiter_deposit`
-- `set_two_week_target`
+- `observe_two_week_backing_readiness`
+- `prepare_two_week_maturity`
 - `resume`
 - `prove_active_transfer`
 - `start_maturity`
@@ -24,9 +25,11 @@ The production DID contains only:
 Jupiter notification is permissionless and carries one exact ICP block. The
 configured Jupiter Faucet default Account, the NNS-manager default destination,
 and the canonical transfer are the authority; no Jupiter callback exists.
-Processed Jupiter blocks have narrow permanent replay protection. Target
-updates remain authenticated, strictly generated, coalesced to the latest
-desired target, and do not form a queue. See the pinned
+Processed Jupiter blocks have narrow permanent replay protection. The
+authenticated readiness query is no-effect evidence that the exact two-week
+target and liquid 60% maturity leg can start immediately. Only then does the
+stream manager freeze one entitlement batch and submit its generation and
+target to `prepare_two_week_maturity`. There is no target queue. See the pinned
 [Jupiter integration contract](../../docs/architecture/jupiter-integration-contract.md).
 
 ## Direct maturity policy

@@ -341,6 +341,7 @@ dependencies = [
  "io-governance-types",
  "io-ledger-types",
  "io-production-wiring",
+ "io-receipt-types",
  "io-reward-policy",
  "io-sns-manifest",
  "io-stream-manager",

@@ -13,3 +13,13 @@ Canister status observations distinguish DevMainnet public shell canisters from 
 Index health uses index canisters as the normal account-history abstraction. Raw ledger/archive traversal is not the default path. Index health observations can represent latest/head height, oldest/backfill cursor, account-history cursor state, lag, stale observations, incomplete scans, and archive-required states surfaced by ledger/index DTOs.
 
 Governance freshness covers NNS and SNS-shaped observations without implying launch. IO protocol is not live. SNS IO ledger remains not launched. SNS governance missing because SNS has not launched is prelaunch/not-applicable, not an error.
+
+Daily reward projection is observation only. It distinguishes policy credit,
+eligible credit, policy-forfeited credit, proposal/no-proposal/zero-share/skip
+classification, live and pending policy/eligible totals, distributed IO,
+forfeited IO, rounding dust, NNS backing readiness, missed-event count, and
+Governance parameter freshness. Missing observations remain missing, never
+zero. Proposal-count ratios and frozen-cohort-shaped compatibility fields are
+historical displays and do not influence entitlement or allocation. Rolling
+7-day and 30-day participation or APY displays may be derived here, but no
+display window is protocol truth.

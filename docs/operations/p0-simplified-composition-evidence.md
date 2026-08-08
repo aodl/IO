@@ -81,6 +81,24 @@ policy.
 | F | The reader accepts ten 100-neuron pages and rejects any nonempty eleventh page: exactly 1,000 total neurons fit, while 1,001 fails. Governance readiness does not expose or pin this product bound. | Require the reviewed Governance `max_number_of_neurons` parameter to be at most 1,000 before pagination. |
 | G | The next observation is scheduled only one second after the nominal event boundary. If Governance has not advanced, `Pending` leaves work due but installs no replacement timer. | Use a documented safety margin and one bounded replacement one-shot timer for retryable latest-event reads. |
 
+## Normalized correction evidence
+
+The corrected path gives every successfully observed non-skipped event exactly
+`1,000,000,000,000,000,000` policy-credit units. Current-event canonical SNS
+shares are normalized over all tagged neurons, while no-proposal events are
+normalized over current eligible stake. Eligible entries may sum below the
+policy total; excluded, ineligible, zero-share, no-eligible, and fixed-point
+remainder fractions are forfeited and remain in reserve.
+
+First readiness stores the already completed event only as a zero-credit
+baseline. A new batch cannot freeze until authenticated no-effect NNS evidence
+says the exact target is ready and its liquid 60% leg meets the canonical
+minimum. An exact recipient transfer is monetary completion; one persisted
+best-effort refresh attempt cannot strand the active monetary slot. Governance
+readiness pins a maximum of 1,000 total neurons. Observation uses a 300-second
+margin and one 60-second replacement one-shot after `Pending` or a retryable
+read.
+
 ## Remaining vertical work
 
 The safety and topology invariants above are implemented. The NNS manager has a

@@ -4,11 +4,15 @@ The launch monetary canister owns direct-reserve redemption, liquid ICP and IO
 reserve roles, proof-bound NNS receipts, daily entitlement accumulation, one
 pending backed batch, serialized reward settlement, and local lifecycle.
 
-Each daily proposal-bearing event uses canonical SNS Governance reward shares as
-its complete weight. An empty `settled_proposals` list uses current exact
-eligible stake; settled proposals with zero eligible shares add no weight.
+Each daily proposal-bearing event normalizes canonical SNS Governance reward
+shares into one fixed policy credit. The denominator includes current-event
+shares from excluded and ineligible neurons, so their fraction is forfeited
+rather than redistributed. An empty `settled_proposals` list normalizes current
+exact eligible stake into the same daily credit; settled proposals with zero
+canonical shares forfeit the complete opportunity.
 Readiness verifies exact Root, Governance principal and module hash, the 86,400
-second duration, zero native reward rates, and approved zero bonus parameters.
+It also requires Governance's configured maximum to be at most 1,000 total
+neurons. First activation seeds the current event as a zero-credit baseline.
 
 IO is not live. The production canister remains inert and this repository does
 not contain a production activation transition.
@@ -56,6 +60,12 @@ no external value effect and does not occupy that slot. A bounded live
 accumulator persists across upgrades; at most one immutable pending entitlement
 batch binds the NNS maturity request and recipient progress while later daily
 events continue accumulating live.
+
+Observation and NNS backing waits do not occupy the monetary slot, so they do
+not block redemption. Actual reserve-to-recipient transfers share that slot
+with redemption. An exact ICRC transfer completes one recipient; the following
+SNS neuron refresh is attempted at most once and cannot extend serialization
+indefinitely.
 
 ## Unsupported activity
 
