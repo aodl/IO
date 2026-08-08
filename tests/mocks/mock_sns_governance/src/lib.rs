@@ -59,6 +59,7 @@ pub struct VotingRewardsParameters {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct NervousSystemParameters {
     pub voting_rewards_parameters: Option<VotingRewardsParameters>,
+    pub max_number_of_neurons: Option<u64>,
     pub max_dissolve_delay_bonus_percentage: Option<u64>,
     pub max_age_bonus_percentage: Option<u64>,
 }
@@ -78,6 +79,7 @@ struct SnsState {
     latest_reward_event: SnsRewardEvent,
     latest_reward_shares: BTreeMap<u64, SnsUint128>,
     reward_round_duration_seconds: u64,
+    max_number_of_neurons: u64,
 }
 
 thread_local! {
@@ -90,6 +92,7 @@ thread_local! {
             ..SnsRewardEvent::default()
         },
         reward_round_duration_seconds: 86_400,
+        max_number_of_neurons: 1_000,
         ..SnsState::default()
     });
 }
@@ -404,9 +407,15 @@ pub fn debug_set_reward_round_duration_seconds(duration: u64) -> Result<(), Stri
     Ok(())
 }
 
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_max_number_of_neurons(maximum: u64) {
+    STATE.with(|cell| cell.borrow_mut().max_number_of_neurons = maximum);
+}
+
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn get_nervous_system_parameters() -> NervousSystemParameters {
     NervousSystemParameters {
+        max_number_of_neurons: Some(STATE.with(|cell| cell.borrow().max_number_of_neurons)),
         max_dissolve_delay_bonus_percentage: Some(0),
         max_age_bonus_percentage: Some(0),
         voting_rewards_parameters: Some(VotingRewardsParameters {

@@ -264,6 +264,7 @@ struct CanisterStatus {
 #[derive(Clone, Debug, CandidType, Deserialize)]
 struct NervousSystemParameters {
     voting_rewards_parameters: Option<VotingRewardsParameters>,
+    max_number_of_neurons: Option<u64>,
     max_dissolve_delay_bonus_percentage: Option<u64>,
     max_age_bonus_percentage: Option<u64>,
 }
@@ -281,6 +282,7 @@ pub struct InstalledGovernance {
     pub initial_reward_rate_basis_points: u64,
     pub final_reward_rate_basis_points: u64,
     pub round_duration_seconds: u64,
+    pub max_number_of_neurons: u64,
     pub max_dissolve_delay_bonus_percentage: u64,
     pub max_age_bonus_percentage: u64,
 }
@@ -340,6 +342,10 @@ pub async fn installed_governance(
         round_duration_seconds: required_parameter(
             rewards.round_duration_seconds,
             "round_duration_seconds",
+        )?,
+        max_number_of_neurons: required_parameter(
+            parameters.max_number_of_neurons,
+            "max_number_of_neurons",
         )?,
         max_dissolve_delay_bonus_percentage: required_parameter(
             parameters.max_dissolve_delay_bonus_percentage,
