@@ -59,9 +59,7 @@ pub enum TargetStatus {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct PrepareTwoWeekMaturityArgs {
-    pub cohort_generation: u64,
-    pub captured_at_timestamp_seconds: u64,
-    pub closes_at_timestamp_seconds: u64,
+    pub entitlement_batch_generation: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -100,16 +98,21 @@ pub fn prepare_two_week_maturity(
             .two_week_target
             .as_ref()
             .map(|target| target.generation)
-            != Some(args.cohort_generation)
+            != Some(args.entitlement_batch_generation)
         {
             return Err(NnsError::Invalid(
                 "maturity preparation lacks the matching target generation".into(),
             ));
         }
         if let Some(existing) = &state.maturity_preparation {
-            if existing != &args {
+            if existing == &args {
+                return Ok(PreparedMaturityProgress::Observed);
+            }
+            if existing.entitlement_batch_generation.checked_add(1)
+                != Some(args.entitlement_batch_generation)
+            {
                 return Err(NnsError::Invalid(
-                    "maturity preparation retry changed its request".into(),
+                    "maturity preparation generation is not sequential".into(),
                 ));
             }
         }

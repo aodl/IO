@@ -635,15 +635,32 @@ pub fn run_candidate_reward_event_participation_contract(
     required: bool,
 ) -> Result<(), SnsGovernanceSetupError> {
     let fixture = setup_real_sns_governance_with_ledger(required, 5_000_000_000)?;
-    let neuron_ids = (1_u64..=5)
-        .map(|memo| {
-            let id = stake_and_claim_neuron(&fixture, 500_000_000, memo, b"reward-contract")
-                .expect("candidate contract neuron claim should succeed");
-            configure_increase_dissolve_delay(
+    let stakes = [
+        200_000_000_u64,
+        400_000_000,
+        200_000_000,
+        500_000_000,
+        300_000_000,
+        600_000_000,
+    ];
+    let neuron_ids = stakes
+        .iter()
+        .enumerate()
+        .map(|(index, stake)| {
+            let id = stake_and_claim_neuron(
                 &fixture,
-                &id,
-                u32::try_from(io_core_model::TWO_WEEK_SECONDS).unwrap(),
-            );
+                *stake,
+                u64::try_from(index + 1).unwrap(),
+                b"reward-contract",
+            )
+            .expect("candidate contract neuron claim should succeed");
+            if index < 5 {
+                configure_increase_dissolve_delay(
+                    &fixture,
+                    &id,
+                    u32::try_from(io_core_model::TWO_WEEK_SECONDS).unwrap(),
+                );
+            }
             id
         })
         .collect::<Vec<_>>();
@@ -652,6 +669,7 @@ pub fn run_candidate_reward_event_participation_contract(
     let carol = &neuron_ids[2];
     let follower = &neuron_ids[3];
     let non_voter = &neuron_ids[4];
+    let ineligible = &neuron_ids[5];
 
     expect_manage_success(
         &fixture,
@@ -667,16 +685,16 @@ pub fn run_candidate_reward_event_participation_contract(
     register_vote(&fixture, carol, proposal_1, 1);
     let proposal_2 = make_motion(&fixture, bob, "candidate reward event two");
     register_vote(&fixture, alice, proposal_2, 2);
-    register_vote(&fixture, carol, proposal_2, 2);
 
     let event_1 = advance_until_reward_event(&fixture, 2, 0);
     assert_eq!(event_1.distributed_e8s_equivalent, 0);
+    assert_eq!(event_1.rounds_since_last_distribution, Some(1));
     assert_eq!(event_1.settled_proposals.len(), 2);
     let event_1_end = event_1
         .end_timestamp_seconds
         .expect("candidate reward event must have an end timestamp");
     let listed_1 = list_all_neurons_paged(&fixture, 2);
-    assert_eq!(listed_1.len(), 5);
+    assert_eq!(listed_1.len(), 6);
     let listed_ids = listed_1
         .iter()
         .filter_map(|neuron| neuron.id.as_ref())
@@ -698,8 +716,13 @@ pub fn run_candidate_reward_event_participation_contract(
             .collect::<std::collections::BTreeSet<_>>(),
         expected_ids
     );
-    let expected_two_proposal_shares = 1_000_000_000_u128;
-    for id in [alice, bob, carol, follower] {
+    let expected_shares = [
+        (alice, 400_000_000_u128),
+        (bob, 800_000_000),
+        (carol, 200_000_000),
+        (follower, 1_000_000_000),
+    ];
+    for (id, expected) in expected_shares {
         let neuron = find_neuron(&listed_1, id);
         let participation = neuron
             .latest_reward_event_participation
@@ -708,18 +731,42 @@ pub fn run_candidate_reward_event_participation_contract(
             participation.reward_event_end_timestamp_seconds,
             event_1_end
         );
-        assert_eq!(
-            participation.exact_reward_shares().unwrap(),
-            expected_two_proposal_shares
-        );
+        assert_eq!(participation.exact_reward_shares().unwrap(), expected);
         assert_eq!(neuron.maturity_e8s_equivalent, 0);
         assert_eq!(neuron.staked_maturity_e8s_equivalent.unwrap_or(0), 0);
     }
+    let alice_shares = find_neuron(&listed_1, alice)
+        .latest_reward_event_participation
+        .unwrap()
+        .exact_reward_shares()
+        .unwrap();
+    let bob_shares = find_neuron(&listed_1, bob)
+        .latest_reward_event_participation
+        .unwrap()
+        .exact_reward_shares()
+        .unwrap();
+    let carol_shares = find_neuron(&listed_1, carol)
+        .latest_reward_event_participation
+        .unwrap()
+        .exact_reward_shares()
+        .unwrap();
+    assert_eq!(bob_shares, alice_shares * 2, "same two-proposal participation with twice the canonical voting power must produce twice the raw shares");
+    assert_eq!(
+        alice_shares,
+        carol_shares * 2,
+        "equal stake on two settled proposals versus one must produce twice the raw shares"
+    );
     assert!(
         find_neuron(&listed_1, non_voter)
             .latest_reward_event_participation
             .is_none(),
         "non-voter must not be tagged to the event"
+    );
+    assert!(
+        find_neuron(&listed_1, ineligible)
+            .latest_reward_event_participation
+            .is_none(),
+        "the ineligible neuron must not be tagged to the event"
     );
     assert_eq!(
         listed_1
@@ -727,7 +774,7 @@ pub fn run_candidate_reward_event_participation_contract(
             .filter_map(|neuron| neuron.latest_reward_event_participation)
             .map(|participation| participation.exact_reward_shares().unwrap())
             .sum::<u128>(),
-        4_000_000_000,
+        2_400_000_000,
         "multiple-proposal voting powers must sum exactly"
     );
     let direct: GetNeuronResponse = icrc::query_one(
@@ -751,7 +798,8 @@ pub fn run_candidate_reward_event_participation_contract(
         "get_neuron and paginated list_neurons must expose the same event tag"
     );
 
-    let proposal_3 = make_motion(&fixture, bob, "candidate replacement event");
+    let proposal_3 = make_motion(&fixture, carol, "candidate replacement event");
+    register_vote(&fixture, bob, proposal_3, 2);
     let event_2 = advance_until_reward_event(&fixture, 1, event_1.round);
     assert_eq!(
         event_2
@@ -762,6 +810,9 @@ pub fn run_candidate_reward_event_participation_contract(
         vec![proposal_3]
     );
     let event_2_end = event_2.end_timestamp_seconds.unwrap();
+    assert_eq!(event_2.round, event_1.round + 1);
+    assert_eq!(event_2_end, event_1_end + 86_400);
+    assert_eq!(event_2.rounds_since_last_distribution, Some(1));
     let listed_2 = list_all_neurons_paged(&fixture, 2);
     assert_eq!(
         find_neuron(&listed_2, bob)
@@ -771,7 +822,15 @@ pub fn run_candidate_reward_event_participation_contract(
             .reward_event_end_timestamp_seconds,
         event_2_end
     );
-    for id in [alice, carol, follower] {
+    assert_eq!(
+        find_neuron(&listed_2, carol)
+            .latest_reward_event_participation
+            .as_ref()
+            .unwrap()
+            .reward_event_end_timestamp_seconds,
+        event_2_end
+    );
+    for id in [alice, follower] {
         assert_eq!(
             find_neuron(&listed_2, id)
                 .latest_reward_event_participation
@@ -782,9 +841,123 @@ pub fn run_candidate_reward_event_participation_contract(
             "non-participant must retain its older tag, which clients ignore for the new event"
         );
     }
+    assert!(find_neuron(&listed_2, non_voter)
+        .latest_reward_event_participation
+        .is_none());
 
     let event_3 = advance_until_reward_event(&fixture, 0, event_2.round);
     assert!(event_3.settled_proposals.is_empty());
+    assert_eq!(event_3.distributed_e8s_equivalent, 0);
+    assert_eq!(event_3.round, event_2.round + 1);
+    assert_eq!(event_3.end_timestamp_seconds.unwrap(), event_2_end + 86_400);
+    assert_eq!(event_3.rounds_since_last_distribution, Some(1));
+    let listed_3 = list_all_neurons_paged(&fixture, 2);
+    for id in &neuron_ids {
+        assert_eq!(
+            find_neuron(&listed_3, id).latest_reward_event_participation,
+            find_neuron(&listed_2, id).latest_reward_event_participation,
+            "a no-proposal event must not create or refresh participation fields"
+        );
+        let neuron = find_neuron(&listed_3, id);
+        assert_eq!(neuron.maturity_e8s_equivalent, 0);
+        assert_eq!(neuron.staked_maturity_e8s_equivalent.unwrap_or(0), 0);
+    }
+    assert_eq!(
+        find_neuron(&listed_3, alice)
+            .latest_reward_event_participation
+            .as_ref()
+            .unwrap()
+            .reward_event_end_timestamp_seconds,
+        event_1_end,
+        "an old direct-voter tag remains stale on a no-proposal event"
+    );
+    assert_eq!(
+        find_neuron(&listed_3, bob)
+            .latest_reward_event_participation
+            .as_ref()
+            .unwrap()
+            .reward_event_end_timestamp_seconds,
+        event_2_end,
+        "the most recent participant tag remains stale on a no-proposal event"
+    );
+    assert!(
+        find_neuron(&listed_3, non_voter)
+            .latest_reward_event_participation
+            .is_none(),
+        "a neuron that never voted can still have no participation field"
+    );
+
+    let mut previous_event = event_3;
+    let mut previous_participation = listed_3
+        .iter()
+        .map(|neuron| {
+            (
+                neuron.id.as_ref().unwrap().id.clone(),
+                neuron.latest_reward_event_participation,
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for day in 4_u64..=14 {
+        let current_participants: Vec<&NeuronId> = match day % 3 {
+            1 => {
+                let proposal = make_motion(&fixture, alice, &format!("daily event {day}"));
+                register_vote(&fixture, bob, proposal, 2);
+                vec![alice, bob, follower]
+            }
+            2 => {
+                make_motion(&fixture, carol, &format!("daily event {day}"));
+                vec![carol]
+            }
+            _ => Vec::new(),
+        };
+        let event = advance_until_reward_event(
+            &fixture,
+            usize::from(!current_participants.is_empty()),
+            previous_event.round,
+        );
+        assert_eq!(event.round, previous_event.round + 1);
+        assert_eq!(event.rounds_since_last_distribution, Some(1));
+        assert_eq!(
+            event.end_timestamp_seconds.unwrap(),
+            previous_event.end_timestamp_seconds.unwrap() + 86_400
+        );
+        assert_eq!(event.distributed_e8s_equivalent, 0);
+        let neurons = list_all_neurons_paged(&fixture, 2);
+        let event_end = event.end_timestamp_seconds.unwrap();
+        for id in &neuron_ids {
+            let neuron = find_neuron(&neurons, id);
+            let is_current = current_participants
+                .iter()
+                .any(|participant| *participant == id);
+            if is_current {
+                assert_eq!(
+                    neuron
+                        .latest_reward_event_participation
+                        .as_ref()
+                        .map(|participation| participation.reward_event_end_timestamp_seconds),
+                    Some(event_end),
+                    "daily direct/followed participant must receive the new tag"
+                );
+            } else {
+                assert_eq!(
+                    neuron.latest_reward_event_participation, previous_participation[&id.id],
+                    "daily inactive neuron must retain its absent or stale tag"
+                );
+            }
+            assert_eq!(neuron.maturity_e8s_equivalent, 0);
+            assert_eq!(neuron.staked_maturity_e8s_equivalent.unwrap_or(0), 0);
+        }
+        previous_participation = neurons
+            .into_iter()
+            .map(|neuron| {
+                (
+                    neuron.id.unwrap().id,
+                    neuron.latest_reward_event_participation,
+                )
+            })
+            .collect();
+        previous_event = event;
+    }
 
     let consistency_e1 = latest_reward_event(&fixture);
     let first_page = list_neurons_page(&fixture, 2, None);
@@ -804,12 +977,9 @@ pub fn run_candidate_reward_event_participation_contract(
         "E1/pages/E2 client must discard pages when an event occurs between page reads"
     );
     let delayed_before = latest_reward_event(&fixture);
-    fixture.pic.advance_time(Duration::from_secs(
-        io_core_model::TWO_WEEK_SECONDS
-            .checked_mul(3)
-            .unwrap()
-            .saturating_add(1),
-    ));
+    fixture
+        .pic
+        .advance_time(Duration::from_secs(86_400 * 3 + 1));
     for _ in 0..30 {
         fixture.pic.tick();
     }
@@ -910,9 +1080,7 @@ fn advance_until_reward_event(
     after_round: u64,
 ) -> SnsRewardEvent {
     for _ in 0..8 {
-        fixture
-            .pic
-            .advance_time(Duration::from_secs(io_core_model::TWO_WEEK_SECONDS + 1));
+        fixture.pic.advance_time(Duration::from_secs(86_401));
         for _ in 0..20 {
             fixture.pic.tick();
         }
@@ -970,8 +1138,9 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     use candid::{decode_one, encode_one, Nat};
     use io_stream_manager::{
         Account as StreamAccount, ApiError, CompleteLiquidReceiptArgs, CompletedReceiptResult,
-        InitArgs, LiquidReceiptProgress, PrepareLiquidReceiptArgs, ReceiptKind, RewardCohort,
-        Status, StreamConfig, StreamProgress,
+        InitArgs, Lifecycle, LiquidReceiptProgress, PrepareLiquidReceiptArgs, ReceiptKind,
+        RedeemArgs, RedemptionProgress, RewardBackingProgress, RewardEventClassification,
+        RewardEventObservation, Status, StreamConfig, StreamProgress,
     };
     use pocket_ic::CanisterSettings;
 
@@ -1094,28 +1263,66 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     for _ in 0..5 {
         pic.tick();
     }
-    let neuron_ids = (1_u64..=3)
-        .map(|memo| {
-            let fixture = GovernanceLedgerFixture {
-                pic: pic.clone(),
-                governance,
-                ledger: io_ledger,
-                controller,
-            };
-            let id = stake_and_claim_neuron(&fixture, 500_000_000, memo, b"io-reward")
-                .expect("candidate neuron claim succeeds");
-            configure_increase_dissolve_delay(
+
+    let fixture = GovernanceLedgerFixture {
+        pic: pic.clone(),
+        governance,
+        ledger: io_ledger,
+        controller,
+    };
+    let stakes = [
+        100_000_000_u64,
+        200_000_000,
+        300_000_000,
+        400_000_000,
+        500_000_000,
+    ];
+    let neuron_ids = stakes
+        .iter()
+        .enumerate()
+        .map(|(index, stake)| {
+            let id = stake_and_claim_neuron(
                 &fixture,
-                &id,
-                u32::try_from(io_core_model::TWO_WEEK_SECONDS).unwrap(),
-            );
+                *stake,
+                u64::try_from(index + 1).unwrap(),
+                b"io-reward",
+            )
+            .expect("candidate neuron claim succeeds");
+            let delay = if index == 4 {
+                io_core_model::TWO_WEEK_SECONDS - 1
+            } else {
+                io_core_model::TWO_WEEK_SECONDS
+            };
+            configure_increase_dissolve_delay(&fixture, &id, u32::try_from(delay).unwrap());
             id
         })
         .collect::<Vec<_>>();
     let excluded = StreamAccount {
         owner: governance,
-        subaccount: Some(neuron_ids[2].id.clone()),
+        subaccount: Some(neuron_ids[3].id.clone()),
     };
+
+    let proposal = make_motion(
+        &fixture,
+        &neuron_ids[0],
+        "establish stale participation before no-proposal fallback",
+    );
+    register_vote(&fixture, &neuron_ids[1], proposal, 2);
+    register_vote(&fixture, &neuron_ids[3], proposal, 1);
+    let event_1 = advance_until_reward_event(&fixture, 1, 0);
+    let event_1_neurons = list_all_neurons_paged(&fixture, 2);
+    let event_2 = advance_until_reward_event(&fixture, 0, event_1.round);
+    assert!(event_2.settled_proposals.is_empty());
+    assert_eq!(event_2.distributed_e8s_equivalent, 0);
+    let event_2_neurons = list_all_neurons_paged(&fixture, 2);
+    for id in &neuron_ids {
+        assert_eq!(
+            find_neuron(&event_2_neurons, id).latest_reward_event_participation,
+            find_neuron(&event_1_neurons, id).latest_reward_event_participation,
+            "no-proposal event must retain every old or absent participation field"
+        );
+    }
+
     pic.install_canister(
         stream,
         stream_wasm.clone(),
@@ -1139,7 +1346,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                 sns_governance: governance,
                 sns_root: root,
                 expected_sns_governance_module_hash: governance_hash,
-                approved_reward_event_duration_seconds: io_core_model::TWO_WEEK_SECONDS,
+                approved_reward_event_duration_seconds: 86_400,
                 io_reserve: StreamAccount {
                     owner: stream,
                     subaccount: Some(reserve_subaccount.to_vec()),
@@ -1148,7 +1355,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                     owner: stream,
                     subaccount: Some(liquid_subaccount.to_vec()),
                 },
-                excluded_io_accounts: vec![excluded],
+                excluded_io_accounts: vec![excluded.clone()],
                 minimum_redemption_io_e8s: 20_000,
                 expected_io_fee_e8s: FEE_E8S as u128,
                 expected_icp_fee_e8s: FEE_E8S as u128,
@@ -1156,7 +1363,6 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                 retry_delay_nanos: 1_000_000_000,
                 ledger_deduplication_window_nanos: 86_400_000_000_000,
             },
-            next_cohort_timestamp_seconds: 0,
         })
         .unwrap(),
         None,
@@ -1167,54 +1373,60 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     )
     .unwrap();
     assert_eq!(ready, Ok(()));
-    let cohort: Result<RewardCohort, ApiError> = decode_one(
+
+    let observation: Result<RewardEventObservation, ApiError> = decode_one(
         &pic.update_call(
             stream,
             Principal::anonymous(),
-            "capture_reward_cohort",
+            "resume_reward_work",
             encode_one(()).unwrap(),
         )
         .unwrap(),
     )
     .unwrap();
-    let cohort = cohort.expect("installed stream captures the candidate cohort");
-    assert_eq!(cohort.members.len(), 2, "configured neuron is excluded");
-    let fixture = GovernanceLedgerFixture {
-        pic: pic.clone(),
-        governance,
-        ledger: io_ledger,
-        controller,
-    };
-    let proposal = make_motion(&fixture, &neuron_ids[0], "installed IO reward shares");
-    register_vote(&fixture, &neuron_ids[1], proposal, 2);
-    register_vote(&fixture, &neuron_ids[2], proposal, 1);
-    let event =
-        advance_until_reward_event(&fixture, 1, cohort.reward_event_at_capture.unwrap().round);
-    assert_eq!(event.settled_proposals.len(), 1);
-    let status: Status = decode_one(
-        &pic.query_call(stream, controller, "get_status", encode_one(()).unwrap())
-            .unwrap(),
-    )
-    .unwrap();
-    if status.has_active_reward_cohort {
-        let closed: Result<RewardCohort, ApiError> = decode_one(
+    let observation = observation.expect("stream consumes the no-proposal event");
+    assert_eq!(
+        observation.classification,
+        RewardEventClassification::NoProposalFallback
+    );
+    assert_eq!(observation.event.round, event_2.round);
+    let observed_weights = observation
+        .weights
+        .iter()
+        .map(|weight| (weight.sns_neuron_id.clone(), weight.event_weight))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for (id, expected) in neuron_ids[..3].iter().zip(stakes[..3].iter()) {
+        assert_eq!(observed_weights[&id.id], u128::from(*expected));
+    }
+    assert!(!observed_weights.contains_key(&neuron_ids[3].id));
+
+    let backing_step = |expected: RewardBackingProgress| {
+        let progress: Result<RewardBackingProgress, ApiError> = decode_one(
             &pic.update_call(
                 stream,
                 Principal::anonymous(),
-                "close_reward_cohort",
+                "resume_reward_backing",
                 encode_one(()).unwrap(),
             )
             .unwrap(),
         )
         .unwrap();
-        closed.expect("installed stream closes from the candidate event");
-    }
+        assert_eq!(progress, Ok(expected));
+    };
+    backing_step(RewardBackingProgress::BatchFrozen { generation: 1 });
+    backing_step(RewardBackingProgress::TargetAccepted { generation: 1 });
+    backing_step(RewardBackingProgress::MaturityPrepared { generation: 1 });
+
     let status: Status = decode_one(
         &pic.query_call(stream, controller, "get_status", encode_one(()).unwrap())
             .unwrap(),
     )
     .unwrap();
-    assert!(status.has_pending_reward_cohort);
+    assert_eq!(
+        status.pending_entitlement_batch_total_weight,
+        Some(600_000_000)
+    );
+
     let liquid_amount = 1_000_000_000_u64;
     let permit: Result<io_stream_manager::LiquidReceiptPermit, ApiError> = decode_one(
         &pic.update_call(
@@ -1224,9 +1436,9 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             encode_one(PrepareLiquidReceiptArgs {
                 receipt_sequence: 0,
                 receipt_kind: ReceiptKind::TwoWeekMaturity,
-                source_operation_id: b"candidate-event-1".to_vec(),
+                source_operation_id: b"candidate-no-proposal-1".to_vec(),
                 liquid_amount_e8s: liquid_amount as u128,
-                cohort_generation: Some(cohort.generation),
+                entitlement_batch_generation: Some(1),
             })
             .unwrap(),
         )
@@ -1234,7 +1446,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     )
     .unwrap();
     let permit = permit.expect("two-week receipt permit is prepared");
-    let before = neuron_ids[..2]
+    let before = neuron_ids
         .iter()
         .map(|id| {
             icrc::icrc1_balance_of(
@@ -1244,6 +1456,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             )
         })
         .collect::<Vec<Nat>>();
+    let reserve_before = icrc::icrc1_balance_of(&pic, io_ledger, reserve.clone());
     let receipt_block = icrc::icrc1_transfer(
         &pic,
         icp_ledger,
@@ -1280,10 +1493,11 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     )
     .unwrap();
     assert_eq!(proved, Ok(LiquidReceiptProgress::ReceiptProved));
+
     let mut completed = None;
     let mut upgraded_between_recipients = false;
     let mut settlement_observations = Vec::new();
-    for _ in 0..12 {
+    for _ in 0..24 {
         let progress: Result<StreamProgress, ApiError> = decode_one(
             &pic.update_call(
                 stream,
@@ -1300,7 +1514,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             completed = Some(result.clone());
             break;
         }
-        let after = neuron_ids[..2]
+        let after = neuron_ids[..3]
             .iter()
             .map(|id| {
                 icrc::icrc1_balance_of(
@@ -1314,7 +1528,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         if !upgraded_between_recipients
             && after
                 .iter()
-                .zip(&before)
+                .zip(&before[..3])
                 .filter(|(after, before)| after > before)
                 .count()
                 == 1
@@ -1337,14 +1551,13 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         other => panic!("unexpected receipt result: {other:?}"),
     };
     assert!(result.backed_io_pool_e8s > 0);
-    assert!(result.distributed_io_e8s > 0);
     assert_eq!(
         result
             .distributed_io_e8s
-            .checked_add(result.total_dust_io_e8s),
+            .checked_add(result.rounding_dust_io_e8s),
         Some(result.backed_io_pool_e8s)
     );
-    let after = neuron_ids[..2]
+    let after = neuron_ids
         .iter()
         .map(|id| {
             icrc::icrc1_balance_of(
@@ -1354,13 +1567,614 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             )
         })
         .collect::<Vec<Nat>>();
-    assert!(after
+    let deltas = after[..3]
         .iter()
-        .zip(before)
-        .all(|(after, before)| after > &before));
+        .zip(&before[..3])
+        .map(|(after, before)| {
+            u128::try_from(after.0.clone()).unwrap() - u128::try_from(before.0.clone()).unwrap()
+        })
+        .collect::<Vec<_>>();
+    let expected_deltas = stakes[..3]
+        .iter()
+        .map(|stake| result.backed_io_pool_e8s * u128::from(*stake) / 600_000_000)
+        .collect::<Vec<_>>();
+    assert_eq!(deltas, expected_deltas);
+    assert!(deltas.iter().all(|amount| *amount > 0));
+    assert_eq!(
+        deltas.iter().sum::<u128>() + result.rounding_dust_io_e8s,
+        result.backed_io_pool_e8s
+    );
+    assert_eq!(after[3], before[3], "excluded neuron receives nothing");
+    assert_eq!(
+        after[4], before[4],
+        "one-second-short neuron receives nothing"
+    );
+    let reserve_after = icrc::icrc1_balance_of(&pic, io_ledger, reserve.clone());
+    assert_eq!(
+        u128::try_from(reserve_before.0).unwrap() - u128::try_from(reserve_after.0).unwrap(),
+        result.distributed_io_e8s + 3 * u128::from(FEE_E8S)
+    );
+
+    let resumed: Result<(), ApiError> = decode_one(
+        &pic.update_call(stream, governance, "set_paused", encode_one(false).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(resumed, Ok(()));
+
+    let zero_share_proposal = make_motion(
+        &fixture,
+        &neuron_ids[3],
+        "excluded-only proposal has zero eligible current-event shares",
+    );
+    let event_3 = advance_until_reward_event(&fixture, 1, event_2.round);
+    assert_eq!(event_3.settled_proposals[0].id, zero_share_proposal);
+    let zero_observation: Result<RewardEventObservation, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            Principal::anonymous(),
+            "resume_reward_work",
+            encode_one(()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    match zero_observation {
+        Ok(observation) => {
+            assert_eq!(
+                observation.classification,
+                RewardEventClassification::ZeroEligibleParticipation
+            );
+            assert!(observation.weights.is_empty());
+        }
+        Err(ApiError::Pending(message)) if message == "SNS reward event has not advanced" => {
+            // The one-shot timer is deliberately allowed to win the race with a
+            // permissionless keeper. Prove that it consumed this exact event
+            // with no entitlement instead of requiring the keeper call to win.
+            let status: Status = decode_one(
+                &pic.query_call(stream, controller, "get_status", encode_one(()).unwrap())
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                status
+                    .latest_processed_reward_event
+                    .map(|event| event.round),
+                Some(event_3.round)
+            );
+            assert_eq!(
+                status.latest_reward_event_classification,
+                Some(RewardEventClassification::ZeroEligibleParticipation)
+            );
+            assert_eq!(status.accumulated_entitlement_weight, 0);
+        }
+        other => panic!("zero-share proposal event is not consumed: {other:?}"),
+    }
+
+    backing_step(RewardBackingProgress::BatchFrozen { generation: 2 });
+    backing_step(RewardBackingProgress::TargetAccepted { generation: 2 });
+    backing_step(RewardBackingProgress::MaturityPrepared { generation: 2 });
+    let zero_permit: Result<io_stream_manager::LiquidReceiptPermit, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            nns_manager,
+            "prepare_liquid_receipt",
+            encode_one(PrepareLiquidReceiptArgs {
+                receipt_sequence: 1,
+                receipt_kind: ReceiptKind::TwoWeekMaturity,
+                source_operation_id: b"candidate-zero-share-2".to_vec(),
+                liquid_amount_e8s: 500_000_000,
+                entitlement_batch_generation: Some(2),
+            })
+            .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let zero_permit = zero_permit.expect("zero-share batch receipt permit is prepared");
+    let reserve_before_zero = icrc::icrc1_balance_of(&pic, io_ledger, reserve.clone());
+    let balances_before_zero = after.clone();
+    let zero_block = icrc::icrc1_transfer(
+        &pic,
+        icp_ledger,
+        nns_manager,
+        icrc::transfer_arg(
+            Some(maturity_subaccount),
+            icrc::account(
+                zero_permit.destination.owner,
+                zero_permit
+                    .destination
+                    .subaccount
+                    .clone()
+                    .map(|bytes| bytes.try_into().unwrap()),
+            ),
+            500_000_000,
+            Some(FEE_E8S),
+            Some(&zero_permit.memo),
+            Some(pic.get_time().as_nanos_since_unix_epoch()),
+        ),
+    )
+    .expect("zero-share batch still receives actual ICP backing");
+    let _: Result<LiquidReceiptProgress, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            nns_manager,
+            "complete_liquid_receipt",
+            encode_one(CompleteLiquidReceiptArgs {
+                receipt_sequence: 1,
+                block_index: u128::try_from(zero_block.0).unwrap(),
+            })
+            .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let mut zero_completed = None;
+    for _ in 0..4 {
+        let progress: Result<StreamProgress, ApiError> = decode_one(
+            &pic.update_call(
+                stream,
+                Principal::anonymous(),
+                "resume",
+                encode_one(()).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        if let Ok(StreamProgress::LiquidReceipt(LiquidReceiptProgress::Completed(result))) =
+            progress
+        {
+            zero_completed = Some(result);
+            break;
+        }
+    }
+    let zero_result = match zero_completed.expect("zero-share batch completes exactly") {
+        CompletedReceiptResult::TwoWeek(result) => result,
+        other => panic!("unexpected zero-share receipt result: {other:?}"),
+    };
+    assert!(zero_result.backed_io_pool_e8s > 0);
+    assert_eq!(zero_result.distributed_io_e8s, 0);
+    assert_eq!(
+        zero_result.rounding_dust_io_e8s,
+        zero_result.backed_io_pool_e8s
+    );
+    assert_eq!(
+        icrc::icrc1_balance_of(&pic, io_ledger, reserve.clone()),
+        reserve_before_zero,
+        "zero-share backed IO remains in reserve"
+    );
+    let balances_after_zero = neuron_ids
+        .iter()
+        .map(|id| {
+            icrc::icrc1_balance_of(
+                &pic,
+                io_ledger,
+                icrc::account(governance, Some(id.id.clone().try_into().unwrap())),
+            )
+        })
+        .collect::<Vec<Nat>>();
+    assert_eq!(balances_after_zero, balances_before_zero);
+
+    let set_stream_paused = |paused: bool| {
+        let result: Result<(), ApiError> = decode_one(
+            &pic.update_call(
+                stream,
+                governance,
+                "set_paused",
+                encode_one(paused).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(result, Ok(()));
+    };
+    let stream_status = || -> Status {
+        decode_one(
+            &pic.query_call(stream, controller, "get_status", encode_one(()).unwrap())
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    let entry_map = |status: &Status| {
+        status
+            .accumulated_entitlements
+            .iter()
+            .map(|entry| (entry.sns_neuron_id.clone(), entry.accumulated_weight))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+
+    expect_manage_success(
+        &fixture,
+        &neuron_ids[2],
+        Command::Follow(Follow {
+            function_id: 1,
+            followees: vec![neuron_ids[0].clone()],
+        }),
+        "configure installed accumulation follower",
+    );
+    let mut previous_round = event_3.round;
+    let mut expected_live = std::collections::BTreeMap::<Vec<u8>, u128>::new();
+    let mut redemption = None;
+    let mut redemption_icp_before = None;
+    for day in 4_u64..=15 {
+        set_stream_paused(true);
+        let (expected_settled, expected_weights, expected_classification) = match day {
+            4 => {
+                let proposal = make_motion(&fixture, &neuron_ids[0], "installed daily event 4");
+                register_vote(&fixture, &neuron_ids[1], proposal, 2);
+                (
+                    1,
+                    vec![(0_usize, stakes[0]), (1, stakes[1]), (2, stakes[2])],
+                    RewardEventClassification::ProposalBearing,
+                )
+            }
+            5 | 8 => (
+                0,
+                vec![(0, stakes[0]), (1, stakes[1]), (2, stakes[2])],
+                RewardEventClassification::NoProposalFallback,
+            ),
+            6 => {
+                make_motion(&fixture, &neuron_ids[0], "installed daily event 6");
+                (
+                    1,
+                    vec![(0, stakes[0]), (2, stakes[2])],
+                    RewardEventClassification::ProposalBearing,
+                )
+            }
+            7 => {
+                let proposal = make_motion(&fixture, &neuron_ids[1], "installed daily event 7");
+                register_vote(&fixture, &neuron_ids[0], proposal, 2);
+                (
+                    1,
+                    vec![(0, stakes[0]), (1, stakes[1]), (2, stakes[2])],
+                    RewardEventClassification::ProposalBearing,
+                )
+            }
+            9 | 15 => {
+                make_motion(
+                    &fixture,
+                    &neuron_ids[3],
+                    &format!("installed excluded-only daily event {day}"),
+                );
+                (
+                    1,
+                    Vec::new(),
+                    RewardEventClassification::ZeroEligibleParticipation,
+                )
+            }
+            10 => {
+                configure_increase_dissolve_delay(&fixture, &neuron_ids[4], 1);
+                (
+                    0,
+                    vec![
+                        (0, stakes[0]),
+                        (1, stakes[1]),
+                        (2, stakes[2]),
+                        (4, stakes[4]),
+                    ],
+                    RewardEventClassification::NoProposalFallback,
+                )
+            }
+            11 => {
+                make_motion(&fixture, &neuron_ids[4], "installed daily event 11");
+                (
+                    1,
+                    vec![(4, stakes[4])],
+                    RewardEventClassification::ProposalBearing,
+                )
+            }
+            12 => {
+                configure_start_dissolving(&fixture, &neuron_ids[1]);
+                (
+                    0,
+                    vec![(0, stakes[0]), (2, stakes[2]), (4, stakes[4])],
+                    RewardEventClassification::NoProposalFallback,
+                )
+            }
+            13 => {
+                make_motion(&fixture, &neuron_ids[0], "installed daily event 13");
+                (
+                    1,
+                    vec![(0, stakes[0]), (2, stakes[2])],
+                    RewardEventClassification::ProposalBearing,
+                )
+            }
+            14 => (
+                0,
+                vec![(0, stakes[0]), (2, stakes[2]), (4, stakes[4])],
+                RewardEventClassification::NoProposalFallback,
+            ),
+            _ => unreachable!(),
+        };
+        let event = advance_until_reward_event(&fixture, expected_settled, previous_round);
+        assert_eq!(event.round, previous_round + 1);
+        assert_eq!(event.rounds_since_last_distribution, Some(1));
+        set_stream_paused(false);
+        let observation: Result<RewardEventObservation, ApiError> = decode_one(
+            &pic.update_call(
+                stream,
+                Principal::anonymous(),
+                "resume_reward_work",
+                encode_one(()).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let observation = observation.expect("keeper consumes each installed daily event exactly");
+        assert_eq!(observation.event.round, event.round);
+        assert_eq!(observation.classification, expected_classification);
+        let actual_event_weights = observation
+            .weights
+            .iter()
+            .map(|weight| (weight.sns_neuron_id.clone(), weight.event_weight))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let expected_event_weights = expected_weights
+            .into_iter()
+            .map(|(index, weight)| (neuron_ids[index].id.clone(), u128::from(weight)))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            actual_event_weights, expected_event_weights,
+            "unexpected canonical candidate event weights on installed day {day}"
+        );
+        for (id, weight) in expected_event_weights {
+            *expected_live.entry(id).or_default() += weight;
+        }
+        let status = stream_status();
+        assert_eq!(
+            status.processed_reward_event_count,
+            day - 1,
+            "stream must consume events 2 through {day} exactly once"
+        );
+        assert_eq!(entry_map(&status), expected_live);
+        assert_eq!(
+            status.pending_entitlement_batch_total_weight,
+            if day > 4 { Some(600_000_000) } else { None }
+        );
+
+        if day == 4 {
+            backing_step(RewardBackingProgress::BatchFrozen { generation: 3 });
+            backing_step(RewardBackingProgress::TargetAccepted { generation: 3 });
+            backing_step(RewardBackingProgress::MaturityPrepared { generation: 3 });
+            expected_live.clear();
+            let frozen = stream_status();
+            assert_eq!(
+                frozen.pending_entitlement_batch_total_weight,
+                Some(600_000_000)
+            );
+            assert!(frozen.accumulated_entitlements.is_empty());
+        }
+        if day == 8 {
+            let before_upgrade = stream_status();
+            pocketic_env::upgrade_canister(
+                &pic,
+                stream,
+                stream_wasm.clone(),
+                encode_one(()).unwrap(),
+            );
+            let after_upgrade = stream_status();
+            assert_eq!(after_upgrade.lifecycle, Lifecycle::Paused);
+            assert_eq!(
+                after_upgrade.accumulated_entitlements,
+                before_upgrade.accumulated_entitlements
+            );
+            assert_eq!(
+                after_upgrade.pending_entitlement_batch_total_weight,
+                before_upgrade.pending_entitlement_batch_total_weight
+            );
+            set_stream_paused(false);
+        }
+        if day == 10 {
+            let amount = 20_000_000_u64;
+            let now = pic.get_time().as_nanos_since_unix_epoch();
+            icrc::icrc2_approve(
+                &pic,
+                io_ledger,
+                controller,
+                icrc::ApproveArgs {
+                    from_subaccount: None,
+                    spender: icrc::account(stream, None),
+                    amount: Nat::from(amount + FEE_E8S),
+                    expected_allowance: Some(Nat::from(0_u8)),
+                    expires_at: Some(now + 800_000_000_000),
+                    fee: Some(Nat::from(FEE_E8S)),
+                    memo: Some(b"candidate-pending-batch-redemption".to_vec()),
+                    created_at_time: Some(now),
+                },
+            )
+            .expect("controller approves redemption while backing is pending");
+            let total_supply = u128::try_from(icrc::icrc1_total_supply(&pic, io_ledger).0).unwrap();
+            let reserve_balance =
+                u128::try_from(icrc::icrc1_balance_of(&pic, io_ledger, reserve.clone()).0).unwrap();
+            let excluded_balance = u128::try_from(
+                icrc::icrc1_balance_of(
+                    &pic,
+                    io_ledger,
+                    icrc::account(
+                        governance,
+                        Some(neuron_ids[3].id.clone().try_into().unwrap()),
+                    ),
+                )
+                .0,
+            )
+            .unwrap();
+            let liquid_account = icrc::account(stream, Some(liquid_subaccount));
+            let liquid_balance =
+                u128::try_from(icrc::icrc1_balance_of(&pic, icp_ledger, liquid_account).0).unwrap();
+            let quote = io_core_model::redemption_quote(
+                u128::from(amount),
+                u128::from(FEE_E8S),
+                total_supply,
+                reserve_balance,
+                excluded_balance,
+                liquid_balance,
+                u128::from(FEE_E8S),
+            )
+            .unwrap();
+            let args = RedeemArgs {
+                from_subaccount: None,
+                io_amount_e8s: u128::from(amount),
+                min_icp_out_e8s: quote.net_icp_e8s,
+                max_io_fee_e8s: u128::from(FEE_E8S),
+                max_icp_fee_e8s: u128::from(FEE_E8S),
+                expires_at_nanos: now + 800_000_000_000,
+                nonce: 0,
+            };
+            redemption_icp_before = Some(icrc::icrc1_balance_of(
+                &pic,
+                icp_ledger,
+                icrc::account(controller, None),
+            ));
+            let pulled: Result<RedemptionProgress, ApiError> = decode_one(
+                &pic.update_call(stream, controller, "redeem", encode_one(args).unwrap())
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(pulled, Ok(RedemptionProgress::IoInReserve));
+            assert_eq!(
+                stream_status().operation_kind.as_deref(),
+                Some("Redemption")
+            );
+            redemption = Some(quote);
+        }
+        if day == 11 {
+            let paid: Result<StreamProgress, ApiError> = decode_one(
+                &pic.update_call(
+                    stream,
+                    Principal::anonymous(),
+                    "resume",
+                    encode_one(()).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                paid,
+                Ok(StreamProgress::Redemption(
+                    RedemptionProgress::PayoutSucceeded
+                ))
+            );
+        }
+        if day == 12 {
+            let completed: Result<StreamProgress, ApiError> = decode_one(
+                &pic.update_call(
+                    stream,
+                    Principal::anonymous(),
+                    "resume",
+                    encode_one(()).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let result = match completed {
+                Ok(StreamProgress::Redemption(RedemptionProgress::Completed(result))) => result,
+                other => panic!("pending-batch redemption did not complete: {other:?}"),
+            };
+            let quote = redemption.expect("redemption quote was captured");
+            assert_eq!(result.gross_icp_e8s, quote.gross_icp_e8s);
+            assert_eq!(result.net_icp_e8s, quote.net_icp_e8s);
+            assert_eq!(
+                icrc::icrc1_balance_of(&pic, icp_ledger, icrc::account(controller, None)),
+                redemption_icp_before.as_ref().unwrap().clone() + Nat::from(quote.net_icp_e8s)
+            );
+            assert_eq!(
+                stream_status().pending_entitlement_batch_total_weight,
+                Some(600_000_000)
+            );
+        }
+        previous_round = event.round;
+    }
+    let after_fourteen = stream_status();
+    assert_eq!(after_fourteen.processed_reward_event_count, 14);
+    assert_eq!(entry_map(&after_fourteen), expected_live);
+    backing_step(RewardBackingProgress::AwaitingReceipt { generation: 3 });
+
+    set_stream_paused(true);
+    let missed_one = advance_until_reward_event(&fixture, 0, previous_round);
+    let missed_two = advance_until_reward_event(&fixture, 0, missed_one.round);
+    set_stream_paused(false);
+    let skipped: Result<RewardEventObservation, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            Principal::anonymous(),
+            "resume_reward_work",
+            encode_one(()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let skipped = skipped.expect("missed candidate events advance through one typed skip");
+    assert_eq!(skipped.event.round, missed_two.round);
+    assert_eq!(
+        skipped.classification,
+        RewardEventClassification::MissedSkipped
+    );
+    assert!(skipped.weights.is_empty());
+    let after_skip = stream_status();
+    assert_eq!(after_skip.processed_reward_event_count, 14);
+    assert_eq!(after_skip.missed_reward_event_count, 2);
+    assert_eq!(entry_map(&after_skip), expected_live);
+    let replay: Result<RewardEventObservation, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            Principal::anonymous(),
+            "resume_reward_work",
+            encode_one(()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        replay,
+        Err(ApiError::Pending(
+            "SNS reward event has not advanced".into()
+        ))
+    );
+
+    set_stream_paused(true);
+    let recovered = advance_until_reward_event(&fixture, 0, missed_two.round);
+    set_stream_paused(false);
+    let recovered_observation: Result<RewardEventObservation, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            Principal::anonymous(),
+            "resume_reward_work",
+            encode_one(()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let recovered_observation =
+        recovered_observation.expect("normal candidate event follows a typed skip");
+    assert_eq!(recovered_observation.event.round, recovered.round);
+    assert_eq!(
+        recovered_observation.classification,
+        RewardEventClassification::NoProposalFallback
+    );
+    let recovered_weights = recovered_observation
+        .weights
+        .iter()
+        .map(|weight| (weight.sns_neuron_id.clone(), weight.event_weight))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        recovered_weights,
+        [(0_usize, stakes[0]), (2, stakes[2]), (4, stakes[4])]
+            .into_iter()
+            .map(|(index, weight)| (neuron_ids[index].id.clone(), u128::from(weight)))
+            .collect()
+    );
+    let recovered_status = stream_status();
+    assert_eq!(recovered_status.processed_reward_event_count, 15);
+    assert_eq!(recovered_status.missed_reward_event_count, 2);
+    assert_eq!(
+        recovered_status.pending_entitlement_batch_total_weight,
+        Some(600_000_000)
+    );
+    for neuron in list_all_neurons_paged(&fixture, 2) {
+        assert_eq!(neuron.maturity_e8s_equivalent, 0);
+        assert_eq!(neuron.staked_maturity_e8s_equivalent.unwrap_or(0), 0);
+    }
     Ok(())
 }
-
 pub fn run_official_to_candidate_reward_participation_upgrade(
     required: bool,
 ) -> Result<(), SnsGovernanceSetupError> {
@@ -1629,6 +2443,17 @@ fn configure_increase_dissolve_delay(
     }
 }
 
+fn configure_start_dissolving(fixture: &GovernanceLedgerFixture, neuron_id: &NeuronId) {
+    expect_manage_success(
+        fixture,
+        neuron_id,
+        Command::Configure(Configure {
+            operation: Some(Operation::StartDissolving(EmptyRecord {})),
+        }),
+        "start dissolving",
+    );
+}
+
 fn dissolve_delay_seconds(neuron: &SnsNeuronRecord) -> u64 {
     match neuron.dissolve_state {
         Some(DissolveState::DissolveDelaySeconds(seconds)) => seconds,
@@ -1696,7 +2521,7 @@ pub fn test_nervous_system_parameters() -> NervousSystemParameters {
             final_reward_rate_basis_points: Some(0),
             initial_reward_rate_basis_points: Some(0),
             reward_rate_transition_duration_seconds: Some(1),
-            round_duration_seconds: Some(io_core_model::TWO_WEEK_SECONDS),
+            round_duration_seconds: Some(86_400),
         }),
         maturity_modulation_disabled: Some(true),
         max_number_of_principals_per_neuron: Some(10),

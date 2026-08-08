@@ -664,7 +664,7 @@ fn pocketic_sns_root_style_stream_upgrade_preserves_pending_reward_state() {
     let seeded = tick_stream(&fixture);
     assert!(seeded.errors.is_empty(), "{:?}", seeded.errors);
     assert_eq!(seeded.processed_authorized_streams, 0);
-    assert!(stream_state(&fixture).reward_cohort.is_some());
+    assert!(stream_state(&fixture).latest_processed_reward_event.is_some());
     fixture.pic.advance_time(Duration::from_secs(1));
     fixture.pic.tick();
 

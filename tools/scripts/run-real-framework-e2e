@@ -89,7 +89,6 @@ for test_name in \
   io_stream_manager_real_two_week_maturity_5_icp_issues_exact_backed_reward_pool \
   io_stream_manager_real_two_week_maturity_rewards_only_eligible_stakers \
   real_finalized_sns_four_role_reward_reconciles_exactly_once \
-  real_finalized_sns_frozen_cohort_blocks_late_stake_and_duration_bonus \
   real_finalized_sns_zero_recipient_reward_retains_full_pool_as_dust \
   io_stream_manager_real_sns_topup_increases_active_staked_io \
   io_stream_manager_real_redemption_pays_icp_on_real_local_ledger \

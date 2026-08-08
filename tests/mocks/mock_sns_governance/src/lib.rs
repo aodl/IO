@@ -59,6 +59,8 @@ pub struct VotingRewardsParameters {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct NervousSystemParameters {
     pub voting_rewards_parameters: Option<VotingRewardsParameters>,
+    pub max_dissolve_delay_bonus_percentage: Option<u64>,
+    pub max_age_bonus_percentage: Option<u64>,
 }
 
 #[derive(Default)]
@@ -87,7 +89,7 @@ thread_local! {
             round: 1,
             ..SnsRewardEvent::default()
         },
-        reward_round_duration_seconds: io_core_model::TWO_WEEK_SECONDS,
+        reward_round_duration_seconds: 86_400,
         ..SnsState::default()
     });
 }
@@ -405,6 +407,8 @@ pub fn debug_set_reward_round_duration_seconds(duration: u64) -> Result<(), Stri
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn get_nervous_system_parameters() -> NervousSystemParameters {
     NervousSystemParameters {
+        max_dissolve_delay_bonus_percentage: Some(0),
+        max_age_bonus_percentage: Some(0),
         voting_rewards_parameters: Some(VotingRewardsParameters {
             final_reward_rate_basis_points: Some(0),
             initial_reward_rate_basis_points: Some(0),

@@ -2371,25 +2371,7 @@ mod tests {
             Some("neuron is dissolving")
         );
         assert_eq!(eligibility.eligible_stake_e8s, 0);
-        let forfeited = io_reward_policy::RewardParticipant {
-            sns_neuron_id: io_reward_policy::SnsNeuronId(neuron_id.id.clone()),
-            neuron_id: 1,
-            frozen_stake_e8s: u128::from(frozen.cached_neuron_stake_e8s),
-            reward_shares: u128::from(frozen.cached_neuron_stake_e8s),
-            destination_is_currently_eligible: false,
-        };
-        let eligible = io_reward_policy::RewardParticipant {
-            sns_neuron_id: io_reward_policy::SnsNeuronId(vec![9; 32]),
-            neuron_id: 2,
-            destination_is_currently_eligible: true,
-            ..forfeited.clone()
-        };
-        let allocation = io_reward_policy::allocate_rewards(101, &[eligible, forfeited]).unwrap();
-        assert_eq!(allocation.allocations.len(), 1);
-        assert_eq!(allocation.allocations[0].io_e8s, 50);
-        assert_eq!(allocation.forfeited_reward_e8s, 50);
-        assert_eq!(allocation.rounding_dust_e8s, 1);
-        assert_eq!(allocation.dust_e8s, 51);
+        assert!(frozen.cached_neuron_stake_e8s > 0);
     }
 
     #[test]
@@ -2490,14 +2472,12 @@ mod tests {
         );
 
         let neuron = finalized_neuron_for_participant(&fixture, participant, &neuron_id).unwrap();
-        let snapshot = io_reward_policy::RewardParticipant {
+        let snapshot = io_reward_policy::EntitlementWeight {
             sns_neuron_id: io_reward_policy::SnsNeuronId(neuron_id.id.clone()),
             neuron_id: 1,
-            frozen_stake_e8s: u128::from(neuron.cached_neuron_stake_e8s),
-            reward_shares: 0,
-            destination_is_currently_eligible: true,
+            accumulated_weight: u128::from(neuron.cached_neuron_stake_e8s),
         };
-        let allocation = io_reward_policy::allocate_rewards_for_event(100, &[snapshot], 0)
+        let allocation = io_reward_policy::allocate_rewards(100, &[snapshot])
             .expect("no-proposal stake allocation should be exact");
         assert_eq!(allocation.allocations[0].io_e8s, 100);
     }
@@ -2727,25 +2707,8 @@ mod tests {
             non_voter_proposal.ballots
         );
 
-        let proposer_snapshot = io_reward_policy::RewardParticipant {
-            sns_neuron_id: io_reward_policy::SnsNeuronId(proposer_neuron_id.id.clone()),
-            neuron_id: 3,
-            frozen_stake_e8s: u128::from(proposer_neuron.cached_neuron_stake_e8s),
-            reward_shares: u128::from(proposer_neuron.cached_neuron_stake_e8s),
-            destination_is_currently_eligible: true,
-        };
-        let non_voter_snapshot = io_reward_policy::RewardParticipant {
-            sns_neuron_id: io_reward_policy::SnsNeuronId(non_voter_neuron_id.id.clone()),
-            neuron_id: 4,
-            frozen_stake_e8s: u128::from(non_voter_neuron.cached_neuron_stake_e8s),
-            reward_shares: 0,
-            destination_is_currently_eligible: true,
-        };
-        assert!(io_reward_policy::reward_weight(&proposer_snapshot).unwrap() > 0);
-        assert_eq!(
-            io_reward_policy::reward_weight(&non_voter_snapshot).unwrap(),
-            0
-        );
+        assert!(proposer_neuron.cached_neuron_stake_e8s > 0);
+        assert!(non_voter_neuron.cached_neuron_stake_e8s > 0);
     }
 
     #[test]
@@ -2843,14 +2806,7 @@ mod tests {
             "follower-visible ballots should include a yes vote after leader vote propagation: {:?}",
             proposal.ballots
         );
-        let follower_snapshot = io_reward_policy::RewardParticipant {
-            sns_neuron_id: io_reward_policy::SnsNeuronId(follower_neuron.id.clone()),
-            neuron_id: 5,
-            frozen_stake_e8s: u128::from(follower_neuron_record.cached_neuron_stake_e8s),
-            reward_shares: u128::from(follower_neuron_record.cached_neuron_stake_e8s),
-            destination_is_currently_eligible: true,
-        };
-        assert!(io_reward_policy::reward_weight(&follower_snapshot).unwrap() > 0);
+        assert!(follower_neuron_record.cached_neuron_stake_e8s > 0);
     }
 
     #[test]

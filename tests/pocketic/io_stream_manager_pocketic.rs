@@ -55,7 +55,7 @@ fn simplified_stream_installs_paused_and_rejects_anonymous_before_funds_move() {
                 sns_governance: governance,
                 sns_root: Principal::from_slice(&[6; 29]),
                 expected_sns_governance_module_hash: vec![0; 32],
-                approved_reward_event_duration_seconds: io_core_model::TWO_WEEK_SECONDS,
+                approved_reward_event_duration_seconds: 86_400,
                 io_reserve: account.clone(),
                 liquid_icp: Account {
                     owner: canister,
@@ -69,7 +69,6 @@ fn simplified_stream_installs_paused_and_rejects_anonymous_before_funds_move() {
                 retry_delay_nanos: 1_000_000_000,
                 ledger_deduplication_window_nanos: 86_400_000_000_000,
             },
-            next_cohort_timestamp_seconds: 0,
         })
         .unwrap(),
         None,

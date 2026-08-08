@@ -472,7 +472,7 @@ pub fn run_installed_stream_redemption(required: bool) {
             sns_governance: governance,
             sns_root: Principal::from_slice(&[6; 29]),
             expected_sns_governance_module_hash: vec![0; 32],
-            approved_reward_event_duration_seconds: io_core_model::TWO_WEEK_SECONDS,
+            approved_reward_event_duration_seconds: 86_400,
             io_reserve: Account {
                 owner: stream,
                 subaccount: Some(reserve_subaccount.to_vec()),
@@ -492,7 +492,6 @@ pub fn run_installed_stream_redemption(required: bool) {
             retry_delay_nanos: 1_000_000_000,
             ledger_deduplication_window_nanos: 86_400_000_000_000,
         },
-        next_cohort_timestamp_seconds: 0,
     };
     pic.install_canister(stream, stream_wasm.clone(), encode_one(init).unwrap(), None);
     let status: Status = decode_one(
@@ -762,7 +761,7 @@ pub fn run_installed_stream_redemption(required: bool) {
         receipt_kind: ReceiptKind::Jupiter,
         source_operation_id: b"installed-jupiter-0".to_vec(),
         liquid_amount_e8s: jupiter_liquid_e8s as u128,
-        cohort_generation: None,
+        entitlement_batch_generation: None,
     };
     let permit: Result<io_stream_manager::LiquidReceiptPermit, ApiError> = decode_one(
         &pic.update_call(

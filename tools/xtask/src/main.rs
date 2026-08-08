@@ -6563,25 +6563,29 @@ fn check_stable_storage_at(root: &Path) -> Result<(), String> {
 fn check_exact_two_week_policy_at(root: &Path) -> Result<(), String> {
     let reward_policy = require_file(root, "crates/io_reward_policy/src/lib.rs")?;
     require_present(
-        "exact two-week reward policy",
+        "daily entitlement allocation policy",
         &reward_policy,
         &[
-            "allocations_plus_all_dust_equal_backed_pool",
-            "forfeited_destination_share_becomes_dust_not_redistribution",
-            "no_closed_proposals_has_full_participation",
+            "unequal_weights_allocate_a_large_pool_one_to_two_to_three",
+            "tiny_pool_has_deterministic_dust_and_conserves_the_pool",
+            "zero_weight_batch_keeps_the_full_pool_as_dust",
         ],
     )?;
     let stream_state = require_file(root, "canisters/io_stream_manager/src/state.rs")?;
     require_present(
-        "stream-manager fixed reward cohort slots",
+        "stream-manager bounded entitlement slots",
         &stream_state,
-        &["active_reward_cohort", "pending_reward_cohort"],
+        &[
+            "RewardEntitlementAccumulator",
+            "PendingEntitlementBatch",
+            "MAX_ENTRIES",
+        ],
     )?;
     let rewards = require_file(root, "canisters/io_stream_manager/src/rewards.rs")?;
     require_present(
-        "stream-manager canonical reward policy reuse",
+        "stream-manager daily event and backing separation",
         &rewards,
-        &["pub use io_reward_policy::*"],
+        &["event_weights", "merge_event_weights", "freeze_batch"],
     )?;
     Ok(())
 }
@@ -7102,17 +7106,6 @@ fn main() -> ExitCode {
                             ]),
                         );
                         ok &= run(
-                            "real-stack: finalized-SNS two-cohort frozen reward proof",
-                            cargo_test(&[
-                                "-p",
-                                "e2e-real-canisters",
-                                "real_finalized_sns_frozen_cohort_blocks_late_stake_and_duration_bonus",
-                                "--",
-                                "--ignored",
-                                "--nocapture",
-                            ]),
-                        );
-                        ok &= run(
                             "real-stack: finalized-SNS zero-recipient reward dust retention",
                             cargo_test(&[
                                 "-p",
@@ -7224,30 +7217,16 @@ fn main() -> ExitCode {
         }
         "sns_governance_read_tests" => {
             ok &= run(
-                "unit: mock-sns-governance",
-                cargo_test(&["-p", "mock-sns-governance"]),
+                "unit: canonical SNS reward boundary",
+                cargo_test(&["-p", "io-sns-reward-boundary"]),
             );
             ok &= run(
-                "unit: io-stream-manager governance snapshot",
-                cargo_test(&["-p", "io-stream-manager", "--lib", "governance_snapshot"]),
+                "unit: stream daily reward evidence",
+                cargo_test(&["-p", "io-stream-manager", "--lib", "reward_evidence"]),
             );
         }
         "sns_governance_read_required" => {
-            if env::var_os("POCKET_IC_BIN").is_none() {
-                eprintln!("✗ sns_governance_read_required: POCKET_IC_BIN is not set");
-                ok = false;
-            } else {
-                ok &= run_subcommand("build_debug_canisters");
-                ok &= run(
-                    "pocketic: io-sns-governance-read",
-                    cargo_test(&[
-                        "-p",
-                        "io-stream-manager",
-                        "--test",
-                        "io_sns_governance_read_pocketic",
-                    ]),
-                );
-            }
+            ok &= run_subcommand("sns_governance_read_tests");
         }
         "sns_ledger_index_tests" => {
             ok &= run(
@@ -7475,15 +7454,6 @@ fn main() -> ExitCode {
                         "io-stream-manager",
                         "--test",
                         "io_sns_topology_pocketic",
-                    ]),
-                );
-                ok &= run(
-                    "pocketic: io-sns-governance-read",
-                    cargo_test(&[
-                        "-p",
-                        "io-stream-manager",
-                        "--test",
-                        "io_sns_governance_read_pocketic",
                     ]),
                 );
                 ok &= run(
