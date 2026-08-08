@@ -1663,7 +1663,8 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     assert_eq!(
         result
             .distributed_io_e8s
-            .checked_add(result.rounding_dust_io_e8s),
+            .checked_add(result.forfeited_io_e8s)
+            .and_then(|total| total.checked_add(result.rounding_dust_io_e8s)),
         Some(result.backed_io_pool_e8s)
     );
     let after = neuron_ids
