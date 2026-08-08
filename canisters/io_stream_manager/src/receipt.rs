@@ -52,11 +52,9 @@ pub struct TwoWeekSettlement {
 pub struct RewardRecipient {
     pub sns_neuron_id: Vec<u8>,
     pub destination: Account,
-    pub before_stake_e8s: u128,
     pub io_e8s: u128,
-    pub stake_observed: bool,
     pub transfer: Option<TransferAttempt>,
-    pub refresh_submitted: bool,
+    pub refresh_attempted: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]

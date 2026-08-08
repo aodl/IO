@@ -14,7 +14,6 @@ pub enum Error {
         method: &'static str,
         message: String,
     },
-    NotFound,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
@@ -242,28 +241,6 @@ struct ListNeuronsResponse {
 }
 
 #[derive(Clone, Debug, CandidType)]
-struct GetNeuronRequest {
-    neuron_id: Option<NeuronId>,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-struct GetNeuronResponse {
-    result: Option<GetNeuronResult>,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-enum GetNeuronResult {
-    Error(GovernanceError),
-    Neuron(Box<NeuronRecord>),
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-struct GovernanceError {
-    error_message: String,
-    error_type: i32,
-}
-
-#[derive(Clone, Debug, CandidType)]
 struct SummaryRequest {
     update_canister_list: Option<bool>,
 }
@@ -395,41 +372,6 @@ pub async fn list_neurons(
     )
     .await?;
     response.neurons.into_iter().map(Neuron::try_from).collect()
-}
-
-pub async fn get_neuron(governance: Principal, id: Vec<u8>) -> Result<Neuron, Error> {
-    let response: GetNeuronResponse = call(
-        governance,
-        "get_neuron",
-        GetNeuronRequest {
-            neuron_id: Some(NeuronId { id }),
-        },
-    )
-    .await?;
-    match response.result {
-        Some(GetNeuronResult::Neuron(neuron)) => (*neuron).try_into(),
-        Some(GetNeuronResult::Error(error)) if error.error_type == 2 => Err(Error::NotFound),
-        Some(GetNeuronResult::Error(error)) => Err(Error::Invalid {
-            method: "get_neuron",
-            message: error.error_message,
-        }),
-        None => Err(Error::Invalid {
-            method: "get_neuron",
-            message: "response lacks a result".into(),
-        }),
-    }
-}
-
-pub async fn get_exact_neuron(governance: Principal, id: &[u8]) -> Result<Option<Neuron>, Error> {
-    match get_neuron(governance, id.to_vec()).await {
-        Ok(neuron) if neuron.id == id => Ok(Some(neuron)),
-        Ok(_) => Err(Error::Invalid {
-            method: "get_neuron",
-            message: "response returned a different neuron ID".into(),
-        }),
-        Err(Error::NotFound) => Ok(None),
-        Err(error) => Err(error),
-    }
 }
 
 pub async fn list_all_neurons(governance: Principal) -> Result<Vec<Neuron>, Error> {

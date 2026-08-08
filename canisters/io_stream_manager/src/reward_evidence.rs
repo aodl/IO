@@ -20,7 +20,6 @@ fn governance_error(error: Error) -> ApiError {
         Error::Invalid { method, message } => {
             ApiError::Invalid(format!("SNS {method} failed: {message}"))
         }
-        Error::NotFound => ApiError::Invalid("SNS neuron was not found".into()),
     }
 }
 
@@ -88,19 +87,6 @@ pub(crate) fn require_consistent_event(
     }
 }
 
-pub(crate) fn canonical_eligible(neuron: &Neuron) -> bool {
-    neuron.is_non_dissolving_for(io_core_model::TWO_WEEK_SECONDS)
-}
-
-pub(crate) async fn exact_neuron(
-    governance: Principal,
-    id: &[u8],
-) -> Result<Option<Neuron>, ApiError> {
-    reward_governance::get_exact_neuron(governance, id)
-        .await
-        .map_err(governance_error)
-}
-
 pub(crate) async fn list_all_neurons(governance: Principal) -> Result<Vec<Neuron>, ApiError> {
     reward_governance::list_all_neurons(governance)
         .await
@@ -120,7 +106,7 @@ pub(crate) fn eligible_stake_total(
                 "SNS list_neurons returned a duplicate neuron ID".into(),
             ));
         }
-        if !canonical_eligible(neuron) {
+        if !neuron.is_non_dissolving_for(io_core_model::TWO_WEEK_SECONDS) {
             continue;
         }
         if neuron.id.len() != 32 {
@@ -187,7 +173,7 @@ pub(crate) fn event_credits(
         canonical_share_total = canonical_share_total
             .checked_add(current_shares)
             .ok_or_else(|| ApiError::Invalid("canonical reward-share total overflow".into()))?;
-        if !canonical_eligible(neuron) {
+        if !neuron.is_non_dissolving_for(io_core_model::TWO_WEEK_SECONDS) {
             continue;
         }
         if neuron.id.len() != 32 {

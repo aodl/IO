@@ -7,40 +7,12 @@ pub struct SnsNeuronId(pub Vec<u8>);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SnsNeuronIdConversionError {
-    Empty,
-}
-
-pub fn sns_neuron_id_to_u64(id: &SnsNeuronId) -> Result<u64, SnsNeuronIdConversionError> {
-    if id.0.is_empty() {
-        return Err(SnsNeuronIdConversionError::Empty);
-    }
-    if let Ok(bytes) = <[u8; 8]>::try_from(id.0.as_slice()) {
-        return Ok(u64::from_be_bytes(bytes));
-    }
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in &id.0 {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    Ok(hash.max(1))
-}
-
-pub fn sns_neuron_id_is_valid(id: &SnsNeuronId) -> bool {
-    sns_neuron_id_to_u64(id).is_ok()
-}
-
-pub fn sns_neuron_id_is_canonical_staking_subaccount(id: &SnsNeuronId) -> bool {
-    id.0.len() == 32
-}
-
-pub fn compatibility_sns_neuron_id_from_u64(id: u64) -> SnsNeuronId {
-    SnsNeuronId(id.to_be_bytes().to_vec())
+    NonCanonical,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntitlementCredit {
     pub sns_neuron_id: SnsNeuronId,
-    pub neuron_id: u64,
     pub accumulated_eligible_credit: u128,
 }
 
@@ -48,11 +20,11 @@ pub fn entitlement_credit_from_bytes(
     sns_neuron_id: Vec<u8>,
     accumulated_eligible_credit: u128,
 ) -> Result<EntitlementCredit, SnsNeuronIdConversionError> {
-    let sns_neuron_id = SnsNeuronId(sns_neuron_id);
-    let neuron_id = sns_neuron_id_to_u64(&sns_neuron_id)?;
+    if sns_neuron_id.len() != 32 {
+        return Err(SnsNeuronIdConversionError::NonCanonical);
+    }
     Ok(EntitlementCredit {
-        sns_neuron_id,
-        neuron_id,
+        sns_neuron_id: SnsNeuronId(sns_neuron_id),
         accumulated_eligible_credit,
     })
 }
@@ -60,7 +32,6 @@ pub fn entitlement_credit_from_bytes(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RewardAllocation {
     pub sns_neuron_id: SnsNeuronId,
-    pub neuron_id: u64,
     pub io_e8s: u128,
 }
 
@@ -202,7 +173,6 @@ pub fn allocate_rewards(
         if amount > 0 {
             allocations.push(RewardAllocation {
                 sns_neuron_id: entitlement.sns_neuron_id.clone(),
-                neuron_id: entitlement.neuron_id,
                 io_e8s: amount,
             });
         }
@@ -225,8 +195,7 @@ mod tests {
 
     fn credit(id: u64, accumulated_eligible_credit: u128) -> EntitlementCredit {
         EntitlementCredit {
-            sns_neuron_id: SnsNeuronId(id.to_be_bytes().to_vec()),
-            neuron_id: id,
+            sns_neuron_id: SnsNeuronId(vec![id as u8; 32]),
             accumulated_eligible_credit,
         }
     }
@@ -285,7 +254,7 @@ mod tests {
             outcome
                 .allocations
                 .iter()
-                .map(|allocation| allocation.neuron_id)
+                .map(|allocation| allocation.sns_neuron_id.0[0])
                 .collect::<Vec<_>>(),
             vec![7, 42, 99]
         );
