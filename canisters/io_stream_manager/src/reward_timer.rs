@@ -3,7 +3,8 @@ use std::{cell::RefCell, time::Duration};
 
 use crate::state::{Lifecycle, RewardEventId};
 
-const OBSERVATION_MARGIN_SECONDS: u64 = 1;
+const OBSERVATION_MARGIN_SECONDS: u64 = 300;
+const RETRY_DELAY_SECONDS: u64 = 60;
 
 thread_local! {
     static ACTIVE_REWARD_TIMER: RefCell<Option<TimerId>> = const { RefCell::new(None) };
@@ -35,8 +36,9 @@ fn observation_deadline(event: RewardEventId) -> Option<u64> {
         .checked_add(OBSERVATION_MARGIN_SECONDS)
 }
 
-fn retry_deadline(_error: &crate::api::ApiError, _now_seconds: u64) -> Option<u64> {
-    None
+fn retry_deadline(error: &crate::api::ApiError, now_seconds: u64) -> Option<u64> {
+    matches!(error, crate::api::ApiError::Pending(_))
+        .then(|| now_seconds.checked_add(RETRY_DELAY_SECONDS))?
 }
 
 pub(crate) fn install(deadline_seconds: Option<u64>) {
@@ -80,17 +82,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn gap_one_second_margin_has_no_pending_replacement_timer() {
+    fn pending_event_uses_margin_and_one_fixed_replacement_deadline() {
         let event = RewardEventId {
             end_timestamp_seconds: 1_000,
             round: 1,
         };
-        assert_eq!(observation_deadline(event), Some(87_401));
+        assert_eq!(observation_deadline(event), Some(87_700));
         assert_eq!(
             retry_deadline(
                 &crate::api::ApiError::Pending("event has not advanced".into()),
-                87_401,
+                87_700,
             ),
+            Some(87_760)
+        );
+        assert_eq!(
+            retry_deadline(&crate::api::ApiError::Invalid("bad".into()), 1),
             None
         );
     }
