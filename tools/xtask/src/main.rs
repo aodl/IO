@@ -6566,9 +6566,9 @@ fn check_exact_two_week_policy_at(root: &Path) -> Result<(), String> {
         "daily entitlement allocation policy",
         &reward_policy,
         &[
-            "unequal_weights_allocate_a_large_pool_one_to_two_to_three",
+            "unequal_credits_allocate_a_large_pool_one_to_two_to_three",
             "tiny_pool_has_deterministic_dust_and_conserves_the_pool",
-            "zero_weight_batch_keeps_the_full_pool_as_dust",
+            "zero_eligible_credit_forfeits_the_full_pool",
         ],
     )?;
     let stream_state = require_file(root, "canisters/io_stream_manager/src/state.rs")?;
@@ -6582,10 +6582,11 @@ fn check_exact_two_week_policy_at(root: &Path) -> Result<(), String> {
         ],
     )?;
     let rewards = require_file(root, "canisters/io_stream_manager/src/rewards.rs")?;
+    let reward_evidence = require_file(root, "canisters/io_stream_manager/src/reward_evidence.rs")?;
     require_present(
         "stream-manager daily event and backing separation",
-        &rewards,
-        &["event_weights", "merge_event_weights", "freeze_batch"],
+        &format!("{rewards}\n{reward_evidence}"),
+        &["event_credits", "merge_event_credits", "freeze_batch"],
     )?;
     Ok(())
 }
