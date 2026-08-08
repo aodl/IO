@@ -449,7 +449,7 @@ mod tests {
             sns_governance: principal(6),
             sns_root: Principal::from_slice(&[5; 29]),
             expected_sns_governance_module_hash: vec![0; 32],
-            approved_reward_event_duration_seconds: io_core_model::TWO_WEEK_SECONDS,
+            approved_reward_event_duration_seconds: 86_400,
             io_reserve: Account {
                 owner: principal(4),
                 subaccount: None,

@@ -21,7 +21,7 @@ type StreamConfig = record {
   retry_delay_nanos : nat64;
   ledger_deduplication_window_nanos : nat64;
 };
-type InitArgs = record { config : StreamConfig; next_cohort_timestamp_seconds : nat64 };
+type InitArgs = record { config : StreamConfig };
 type RedeemArgs = record {
   from_subaccount : opt blob;
   io_amount_e8s : nat;
@@ -63,36 +63,47 @@ type PrepareLiquidReceiptArgs = record {
   receipt_kind : ReceiptKind;
   source_operation_id : blob;
   liquid_amount_e8s : nat;
-  cohort_generation : opt nat64;
+  entitlement_batch_generation : opt nat64;
 };
 type LiquidReceiptPermit = record { sequence : nat64; destination : Account; memo : blob };
 type CompleteLiquidReceiptArgs = record { receipt_sequence : nat64; block_index : nat };
-type RewardMember = record {
-  sns_neuron_id : blob;
-  account : Account;
-  frozen_stake_e8s : nat;
-  observed_stake_e8s : nat;
-  reward_shares : opt nat;
-  destination_is_currently_eligible : bool;
-};
 type RewardEventId = record {
   end_timestamp_seconds : nat64;
   round : nat64;
 };
-type RewardShareSnapshot = record {
-  event : RewardEventId;
-  settled_proposal_count : nat64;
-  total_eligible_reward_shares : nat;
-  captured_at_nanos : nat64;
+type RewardEventClassification = variant {
+  ProposalBearing;
+  NoProposalFallback;
+  ZeroEligibleParticipation;
+  MissedSkipped;
 };
-type RewardCohort = record {
-  generation : nat64;
-  captured_at_timestamp_seconds : nat64;
-  closes_at_timestamp_seconds : nat64;
-  target_icp_e8s : nat;
-  reward_event_at_capture : opt RewardEventId;
-  reward_share_snapshot : opt RewardShareSnapshot;
-  members : vec RewardMember;
+type RewardEventWeight = record {
+  sns_neuron_id : blob;
+  destination : Account;
+  event_weight : nat;
+};
+type RewardEntitlementEntry = record {
+  sns_neuron_id : blob;
+  destination : Account;
+  accumulated_weight : nat;
+};
+type RewardEventObservation = record {
+  event : RewardEventId;
+  proposal_count : nat64;
+  classification : RewardEventClassification;
+  weights : vec RewardEventWeight;
+  observed_at_nanos : nat64;
+};
+type PendingEntitlementStatus = variant {
+  Frozen;
+  TargetAccepted;
+  MaturityPrepared;
+};
+type RewardBackingProgress = variant {
+  BatchFrozen : record { generation : nat64 };
+  TargetAccepted : record { generation : nat64 };
+  MaturityPrepared : record { generation : nat64 };
+  AwaitingReceipt : record { generation : nat64 };
 };
 type JupiterReceiptResult = record {
   request_fingerprint : blob;
@@ -107,9 +118,7 @@ type TwoWeekReceiptResult = record {
   receipt_block : nat;
   backed_io_pool_e8s : nat;
   distributed_io_e8s : nat;
-  forfeited_io_e8s : nat;
   rounding_dust_io_e8s : nat;
-  total_dust_io_e8s : nat;
   completed_at_nanos : nat64;
 };
 type CompletedReceiptResult = variant {
@@ -145,10 +154,18 @@ type Status = record {
   operation_kind : opt text;
   operation_phase : opt text;
   next_nns_receipt_sequence : nat64;
-  next_cohort_timestamp_seconds : nat64;
-  latest_cohort_generation : nat64;
-  has_active_reward_cohort : bool;
-  has_pending_reward_cohort : bool;
+  latest_entitlement_batch_generation : nat64;
+  latest_processed_reward_event : opt RewardEventId;
+  latest_reward_event_classification : opt RewardEventClassification;
+  accumulated_entitlements : vec RewardEntitlementEntry;
+  accumulated_entitlement_weight : nat;
+  processed_reward_event_count : nat64;
+  missed_reward_event_count : nat64;
+  reward_work_due : bool;
+  reward_processing_paused : bool;
+  governance_parameters_fresh : bool;
+  pending_entitlement_batch_total_weight : opt nat;
+  pending_entitlement_status : opt PendingEntitlementStatus;
 };
 service : (InitArgs) -> {
   redeem : (RedeemArgs) -> (variant { Ok : RedemptionProgress; Err : ApiError });
@@ -156,9 +173,8 @@ service : (InitArgs) -> {
   complete_liquid_receipt : (CompleteLiquidReceiptArgs) -> (variant { Ok : LiquidReceiptProgress; Err : ApiError });
   resume : () -> (variant { Ok : StreamProgress; Err : ApiError });
   prove_active_transfer : (nat) -> (variant { Ok; Err : ApiError });
-  capture_reward_cohort : () -> (variant { Ok : RewardCohort; Err : ApiError });
-  close_reward_cohort : () -> (variant { Ok : RewardCohort; Err : ApiError });
-  resume_reward_work : () -> (variant { Ok : RewardCohort; Err : ApiError });
+  resume_reward_work : () -> (variant { Ok : RewardEventObservation; Err : ApiError });
+  resume_reward_backing : () -> (variant { Ok : RewardBackingProgress; Err : ApiError });
   set_paused : (bool) -> (variant { Ok; Err : ApiError });
   get_status : () -> (Status) query;
   get_caller_redemption_state : () -> (variant { Ok : CallerRedemptionState; Err : ApiError }) query;

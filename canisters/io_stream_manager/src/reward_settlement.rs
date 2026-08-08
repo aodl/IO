@@ -26,19 +26,13 @@ pub(crate) fn validate(
     let recipients = settlement
         .recipients
         .iter()
-        .filter(|recipient| !recipient.forfeited)
         .try_fold(0u128, |sum, recipient| sum.checked_add(recipient.io_e8s))
         .ok_or("two-week recipient total overflow")?;
     if settlement.backed_io_pool_e8s
         != recipients
-            .checked_add(settlement.total_dust_io_e8s)
+            .checked_add(settlement.rounding_dust_io_e8s)
             .ok_or("two-week settlement total overflow")?
         || settlement.recipient_index as usize > settlement.recipients.len()
-        || settlement.total_dust_io_e8s
-            != settlement
-                .forfeited_io_e8s
-                .checked_add(settlement.rounding_dust_io_e8s)
-                .ok_or("two-week dust total overflow")?
     {
         return Err("two-week reward settlement totals are inconsistent".into());
     }
@@ -62,15 +56,9 @@ pub(crate) fn validate(
                         .effective_eq(excluded)
                         .map(|same| matched || same)
                 })?
-            || recipient.forfeited && recipient.transfer.is_some()
-            || recipient.forfeited && !recipient.eligibility_checked
             || recipient.refresh_submitted && recipient.transfer.is_none()
-            || recipient.eligibility_checked
-                && !recipient.forfeited
-                && recipient.before_stake_e8s == 0
-            || index < settlement.recipient_index as usize
-                && !recipient.forfeited
-                && !recipient.refresh_submitted
+            || recipient.stake_observed && recipient.before_stake_e8s == 0
+            || index < settlement.recipient_index as usize && !recipient.refresh_submitted
         {
             return Err("two-week reward recipient is inconsistent".into());
         }

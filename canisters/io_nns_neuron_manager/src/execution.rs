@@ -600,7 +600,7 @@ pub async fn prepare_jupiter_receipt(
             receipt_kind: ReceiptKind::Jupiter,
             source_operation_id: deposit_block.to_be_bytes().to_vec(),
             liquid_amount_e8s: liquid_e8s,
-            cohort_generation: None,
+            entitlement_batch_generation: None,
         },
     )
     .await
@@ -631,9 +631,15 @@ fn two_week_request(
         receipt_kind: ReceiptKind::TwoWeekMaturity,
         source_operation_id: two_week_source_operation_id(pending),
         liquid_amount_e8s: actual_minted_e8s,
-        cohort_generation: Some(pending.stake_evidence.plan.cohort_generation.ok_or_else(
-            || ApiError::Invalid("two-week maturity lacks cohort generation".into()),
-        )?),
+        entitlement_batch_generation: Some(
+            pending
+                .stake_evidence
+                .plan
+                .entitlement_batch_generation
+                .ok_or_else(|| {
+                    ApiError::Invalid("two-week maturity lacks entitlement batch generation".into())
+                })?,
+        ),
     })
 }
 
@@ -695,7 +701,7 @@ pub fn jupiter_receipt_fingerprint(
         receipt_kind: ReceiptKind::Jupiter,
         source_operation_id: deposit_block.to_be_bytes().to_vec(),
         liquid_amount_e8s: liquid_e8s,
-        cohort_generation: None,
+        entitlement_batch_generation: None,
     };
     request_fingerprint(request)
 }

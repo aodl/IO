@@ -330,7 +330,10 @@ pub struct RewardDistributionRecord {
     pub participation_summary_id: Option<String>,
     pub recipient_neuron_id: Option<u64>,
     pub recipient_account: Option<String>,
+    /// Historical compatibility field. Daily entitlement accounting does not use cohorts.
     pub frozen_cohort_stake_e8s: Option<u128>,
+    pub entitlement_weight: Option<u128>,
+    pub entitlement_batch_generation: Option<u64>,
     pub reward_amount_e8s: u128,
     pub dust_unissued_e8s: Option<u128>,
     pub payout_block: Option<u64>,
@@ -373,8 +376,10 @@ pub struct SimplifiedExecutionProjection {
     pub scheduled_finalization_timestamp_seconds: Option<u64>,
     pub actual_minted_icp_e8s: Option<u128>,
     pub two_week_receipt_sequence: Option<u64>,
+    /// Historical compatibility fields. New observations use entitlement_batch_generation.
     pub cohort_generation: Option<u64>,
     pub cohort_closes_at_timestamp_seconds: Option<u64>,
+    pub entitlement_batch_generation: Option<u64>,
     pub reward_recipient_index: Option<u32>,
     pub reward_recipient_count: Option<u32>,
     pub forfeited_io_e8s: Option<u128>,
@@ -420,17 +425,29 @@ pub struct GovernanceNeuronParticipation {
     pub frozen_stake_e8s: u128,
     pub eligible_closed_proposals: u64,
     pub voted_closed_proposals: u64,
+    /// Historical display-only ratio inputs. They are not monetary authority.
     pub participation_numerator: u128,
     pub participation_denominator: u128,
     pub currently_destination_eligible: bool,
     pub reward_event_end_timestamp_seconds: Option<u64>,
     pub reward_shares: Option<u128>,
+    pub event_weight: Option<u128>,
+    pub accumulated_entitlement_weight: Option<u128>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum GovernanceRewardEventClassification {
+    ProposalBearing,
+    NoProposalFallback,
+    ZeroEligibleParticipation,
+    MissedSkipped,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
 pub struct GovernanceParticipationSnapshot {
     pub sns_eligible_neuron_count: u64,
     pub sns_excluded_neuron_count_by_reason: Vec<GovernanceExcludedCount>,
+    /// Historical compatibility field. It is not the daily entitlement denominator.
     pub total_frozen_cohort_stake_e8s: u128,
     pub proposal_epoch_start: Option<u64>,
     pub proposal_epoch_end: Option<u64>,
@@ -446,6 +463,12 @@ pub struct GovernanceParticipationSnapshot {
     pub reward_event_missed: Option<bool>,
     pub expected_governance_module_hash: Option<String>,
     pub observed_governance_module_hash: Option<String>,
+    pub reward_event_classification: Option<GovernanceRewardEventClassification>,
+    pub current_accumulator_total_weight: Option<u128>,
+    pub pending_batch_total_weight: Option<u128>,
+    pub pending_backing_status: Option<String>,
+    pub missed_event_count: Option<u64>,
+    pub governance_parameters_fresh: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -463,6 +486,12 @@ pub struct GovernanceObservation {
     pub reward_event_missed: Option<bool>,
     pub expected_governance_module_hash: Option<String>,
     pub observed_governance_module_hash: Option<String>,
+    pub reward_event_classification: Option<GovernanceRewardEventClassification>,
+    pub current_accumulator_total_weight: Option<u128>,
+    pub pending_batch_total_weight: Option<u128>,
+    pub pending_backing_status: Option<String>,
+    pub missed_event_count: Option<u64>,
+    pub governance_parameters_fresh: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -474,6 +503,8 @@ pub struct GovernanceNeuronObservation {
     pub currently_destination_eligible: bool,
     pub reward_event_end_timestamp_seconds: Option<u64>,
     pub reward_shares: Option<u128>,
+    pub event_weight: Option<u128>,
+    pub accumulated_entitlement_weight: Option<u128>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -1410,6 +1441,8 @@ pub fn reward_record_from_observation(
         recipient_neuron_id,
         recipient_account: None,
         frozen_cohort_stake_e8s,
+        entitlement_weight: None,
+        entitlement_batch_generation: None,
         reward_amount_e8s,
         dust_unissued_e8s,
         payout_block: None,
@@ -1470,6 +1503,8 @@ pub fn governance_snapshot_from_observation(
                 currently_destination_eligible: neuron.currently_destination_eligible,
                 reward_event_end_timestamp_seconds: neuron.reward_event_end_timestamp_seconds,
                 reward_shares: neuron.reward_shares,
+                event_weight: neuron.event_weight,
+                accumulated_entitlement_weight: neuron.accumulated_entitlement_weight,
             });
         }
         if neuron.frozen_stake_e8s == 0 || !neuron.currently_destination_eligible {
@@ -1505,6 +1540,12 @@ pub fn governance_snapshot_from_observation(
         reward_event_missed: observation.reward_event_missed,
         expected_governance_module_hash: observation.expected_governance_module_hash,
         observed_governance_module_hash: observation.observed_governance_module_hash,
+        reward_event_classification: observation.reward_event_classification,
+        current_accumulator_total_weight: observation.current_accumulator_total_weight,
+        pending_batch_total_weight: observation.pending_batch_total_weight,
+        pending_backing_status: observation.pending_backing_status,
+        missed_event_count: observation.missed_event_count,
+        governance_parameters_fresh: observation.governance_parameters_fresh,
     }
 }
 
@@ -1844,6 +1885,8 @@ fn migrate_legacy_v1_stable_state(
                 recipient_neuron_id: record.recipient_neuron_id,
                 recipient_account: record.recipient_account,
                 frozen_cohort_stake_e8s: None,
+                entitlement_weight: None,
+                entitlement_batch_generation: None,
                 reward_amount_e8s: record.reward_amount_e8s,
                 dust_unissued_e8s: record.dust_unissued_e8s,
                 payout_block: record.payout_block,
@@ -2445,7 +2488,7 @@ mod tests {
     }
 
     #[test]
-    fn historian_outputs_currently_ineligible_frozen_member() {
+    fn historian_outputs_daily_entitlement_observation_without_monetary_authority() {
         debug_clear();
         debug_ingest_governance_snapshot(GovernanceObservation {
             neurons: vec![
@@ -2457,6 +2500,8 @@ mod tests {
                     currently_destination_eligible: true,
                     reward_event_end_timestamp_seconds: Some(2),
                     reward_shares: Some(50),
+                    event_weight: Some(50),
+                    accumulated_entitlement_weight: Some(150),
                 },
                 GovernanceNeuronObservation {
                     neuron_id: 2,
@@ -2466,6 +2511,8 @@ mod tests {
                     currently_destination_eligible: false,
                     reward_event_end_timestamp_seconds: Some(2),
                     reward_shares: Some(100),
+                    event_weight: None,
+                    accumulated_entitlement_weight: None,
                 },
             ],
             proposal_epoch_start: Some(1),
@@ -2480,6 +2527,12 @@ mod tests {
             reward_event_missed: Some(false),
             expected_governance_module_hash: Some("expected".into()),
             observed_governance_module_hash: Some("expected".into()),
+            reward_event_classification: Some(GovernanceRewardEventClassification::ProposalBearing),
+            current_accumulator_total_weight: Some(150),
+            pending_batch_total_weight: Some(600),
+            pending_backing_status: Some("awaiting_receipt".into()),
+            missed_event_count: Some(2),
+            governance_parameters_fresh: Some(true),
         });
         let summary = get_governance_summary();
         assert_eq!(summary.sns_eligible_neuron_count, 2);
@@ -2488,6 +2541,10 @@ mod tests {
         assert_eq!(summary.neuron_participation[0].participation_numerator, 50);
         assert_eq!(summary.neuron_participation[1].participation_numerator, 100);
         assert_eq!(summary.total_eligible_reward_shares, Some(150));
+        assert_eq!(summary.neuron_participation[0].event_weight, Some(50));
+        assert_eq!(summary.current_accumulator_total_weight, Some(150));
+        assert_eq!(summary.pending_batch_total_weight, Some(600));
+        assert_eq!(summary.missed_event_count, Some(2));
         assert!(!summary.neuron_participation[1].currently_destination_eligible);
         assert_eq!(
             summary.sns_excluded_neuron_count_by_reason[0].reason,
@@ -2848,6 +2905,8 @@ mod tests {
                 currently_destination_eligible: true,
                 reward_event_end_timestamp_seconds: Some(20),
                 reward_shares: Some(50),
+                event_weight: Some(50),
+                accumulated_entitlement_weight: Some(50),
             }],
             proposal_epoch_start: Some(10),
             proposal_epoch_end: Some(20),
@@ -2861,6 +2920,12 @@ mod tests {
             reward_event_missed: Some(false),
             expected_governance_module_hash: Some("expected".into()),
             observed_governance_module_hash: Some("expected".into()),
+            reward_event_classification: Some(GovernanceRewardEventClassification::ProposalBearing),
+            current_accumulator_total_weight: Some(50),
+            pending_batch_total_weight: None,
+            pending_backing_status: None,
+            missed_event_count: Some(0),
+            governance_parameters_fresh: Some(true),
         });
         let health = get_dashboard_state().source_health;
         assert_eq!(

@@ -45,7 +45,7 @@ impl RewardEventParticipation {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct ProposalId {
-    id: u64,
+    pub id: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
@@ -75,17 +75,20 @@ pub struct EventId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventSequenceError {
     MissingEndTimestamp,
-    Pending,
-    Missed {
-        previous: EventId,
-        next: EventId,
-    },
-    SpanUnsupported {
-        previous: EventId,
-        next: EventId,
-        span: u64,
-    },
     Invalid(&'static str),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventSequence {
+    First,
+    Next,
+    Same,
+    Skipped {
+        previous: Option<EventId>,
+        next: EventId,
+        ambiguous_event_count: u64,
+        rounds_since_last_distribution: u64,
+    },
 }
 
 pub fn event_id(event: &RewardEvent) -> Result<EventId, EventSequenceError> {
@@ -98,15 +101,36 @@ pub fn event_id(event: &RewardEvent) -> Result<EventId, EventSequenceError> {
     })
 }
 
-pub fn require_next_event(previous: EventId, next: &RewardEvent) -> Result<(), EventSequenceError> {
+pub fn classify_event_sequence(
+    previous: Option<EventId>,
+    next: &RewardEvent,
+) -> Result<EventSequence, EventSequenceError> {
     let next_id = event_id(next)?;
+    let span = next
+        .rounds_since_last_distribution
+        .filter(|span| *span > 0)
+        .ok_or(EventSequenceError::Invalid(
+            "rounds_since_last_distribution is missing or zero",
+        ))?;
+    let Some(previous) = previous else {
+        return if span == 1 {
+            Ok(EventSequence::First)
+        } else {
+            Ok(EventSequence::Skipped {
+                previous: None,
+                next: next_id,
+                ambiguous_event_count: span,
+                rounds_since_last_distribution: span,
+            })
+        };
+    };
     let delta = next_id
         .round
         .checked_sub(previous.round)
         .ok_or(EventSequenceError::Invalid("round regressed"))?;
     if delta == 0 {
         return if next_id.end_timestamp_seconds == previous.end_timestamp_seconds {
-            Err(EventSequenceError::Pending)
+            Ok(EventSequence::Same)
         } else {
             Err(EventSequenceError::Invalid(
                 "unchanged round changed end timestamp",
@@ -116,26 +140,16 @@ pub fn require_next_event(previous: EventId, next: &RewardEvent) -> Result<(), E
     if next_id.end_timestamp_seconds <= previous.end_timestamp_seconds {
         return Err(EventSequenceError::Invalid("end timestamp did not advance"));
     }
-    let span = next
-        .rounds_since_last_distribution
-        .filter(|span| *span > 0)
-        .ok_or(EventSequenceError::Invalid(
-            "rounds_since_last_distribution is missing or zero",
-        ))?;
-    if span != 1 {
-        return Err(EventSequenceError::SpanUnsupported {
-            previous,
+    if delta == 1 && span == 1 {
+        Ok(EventSequence::Next)
+    } else {
+        Ok(EventSequence::Skipped {
+            previous: Some(previous),
             next: next_id,
-            span,
-        });
+            ambiguous_event_count: delta.max(span),
+            rounds_since_last_distribution: span,
+        })
     }
-    if delta != 1 {
-        return Err(EventSequenceError::Missed {
-            previous,
-            next: next_id,
-        });
-    }
-    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -270,6 +284,8 @@ struct CanisterStatus {
 #[derive(Clone, Debug, CandidType, Deserialize)]
 struct NervousSystemParameters {
     voting_rewards_parameters: Option<VotingRewardsParameters>,
+    max_dissolve_delay_bonus_percentage: Option<u64>,
+    max_age_bonus_percentage: Option<u64>,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -285,6 +301,8 @@ pub struct InstalledGovernance {
     pub initial_reward_rate_basis_points: u64,
     pub final_reward_rate_basis_points: u64,
     pub round_duration_seconds: u64,
+    pub max_dissolve_delay_bonus_percentage: u64,
+    pub max_age_bonus_percentage: u64,
 }
 
 pub async fn installed_governance(
@@ -342,6 +360,14 @@ pub async fn installed_governance(
         round_duration_seconds: required_parameter(
             rewards.round_duration_seconds,
             "round_duration_seconds",
+        )?,
+        max_dissolve_delay_bonus_percentage: required_parameter(
+            parameters.max_dissolve_delay_bonus_percentage,
+            "max_dissolve_delay_bonus_percentage",
+        )?,
+        max_age_bonus_percentage: required_parameter(
+            parameters.max_age_bonus_percentage,
+            "max_age_bonus_percentage",
         )?,
     })
 }
@@ -525,45 +551,75 @@ mod tests {
     }
 
     #[test]
-    fn pending_same_event_is_not_consumed() {
+    fn same_event_is_pending_without_mutation() {
         assert_eq!(
-            require_next_event(previous(), &event(1, Some(10), Some(1))),
-            Err(EventSequenceError::Pending)
+            classify_event_sequence(Some(previous()), &event(1, Some(10), Some(1))),
+            Ok(EventSequence::Same)
         );
     }
 
     #[test]
     fn exact_next_single_round_event_is_accepted() {
         assert_eq!(
-            require_next_event(previous(), &event(2, Some(20), Some(1))),
-            Ok(())
+            classify_event_sequence(Some(previous()), &event(2, Some(20), Some(1))),
+            Ok(EventSequence::Next)
         );
     }
 
     #[test]
-    fn missed_event_is_rejected() {
+    fn one_or_several_missed_events_are_typed_skips() {
         assert!(matches!(
-            require_next_event(previous(), &event(3, Some(30), Some(1))),
-            Err(EventSequenceError::Missed { .. })
+            classify_event_sequence(Some(previous()), &event(3, Some(30), Some(1))),
+            Ok(EventSequence::Skipped {
+                ambiguous_event_count: 2,
+                rounds_since_last_distribution: 1,
+                ..
+            })
+        ));
+        assert!(matches!(
+            classify_event_sequence(Some(previous()), &event(5, Some(50), Some(1))),
+            Ok(EventSequence::Skipped {
+                ambiguous_event_count: 4,
+                ..
+            })
         ));
     }
 
     #[test]
-    fn multi_round_span_is_unsupported() {
+    fn catch_up_span_is_a_typed_skip() {
         assert!(matches!(
-            require_next_event(previous(), &event(4, Some(40), Some(3))),
-            Err(EventSequenceError::SpanUnsupported { span: 3, .. })
+            classify_event_sequence(Some(previous()), &event(4, Some(40), Some(3))),
+            Ok(EventSequence::Skipped {
+                ambiguous_event_count: 3,
+                rounds_since_last_distribution: 3,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn first_single_round_event_is_processable_and_first_catch_up_is_skipped() {
+        assert!(matches!(
+            classify_event_sequence(None, &event(7, Some(70), Some(1))),
+            Ok(EventSequence::First)
+        ));
+        assert!(matches!(
+            classify_event_sequence(None, &event(7, Some(70), Some(7))),
+            Ok(EventSequence::Skipped {
+                ambiguous_event_count: 7,
+                ..
+            })
         ));
     }
 
     #[test]
     fn regressed_and_malformed_events_are_rejected() {
         assert!(matches!(
-            require_next_event(previous(), &event(0, Some(5), Some(1))),
+            classify_event_sequence(Some(previous()), &event(0, Some(5), Some(1))),
             Err(EventSequenceError::Invalid("round regressed"))
         ));
         assert!(matches!(
-            require_next_event(previous(), &event(2, Some(20), None)),
+            classify_event_sequence(Some(previous()), &event(2, Some(20), None)),
             Err(EventSequenceError::Invalid(_))
         ));
     }

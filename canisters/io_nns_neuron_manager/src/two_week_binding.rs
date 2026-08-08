@@ -5,7 +5,7 @@ use crate::{
     execution,
     maturity::{
         MaturityCommandOperation, MaturityCommandPhase, MaturityKind, MaturityPlan, MintProofState,
-        PendingMaturityDisbursement, TwoWeekDeliveryOperation, TWO_WEEK_COHORT_SECONDS,
+        PendingMaturityDisbursement, TwoWeekDeliveryOperation,
     },
     maturity_flow,
     state::{self, Lifecycle, NnsOperation, NnsStateV1},
@@ -68,31 +68,26 @@ pub async fn prepare(
     if caller != snapshot.config.stream_manager {
         return Err(ApiError::Unauthorized);
     }
-    if args.cohort_generation == 0
-        || args
-            .captured_at_timestamp_seconds
-            .checked_add(TWO_WEEK_COHORT_SECONDS)
-            != Some(args.closes_at_timestamp_seconds)
-        || now_seconds()? < args.closes_at_timestamp_seconds
-        || args.cohort_generation != snapshot.latest_target_generation
+    if args.entitlement_batch_generation == 0
+        || args.entitlement_batch_generation != snapshot.latest_target_generation
         || snapshot
             .latest_two_week_target
             .as_ref()
-            .is_none_or(|target| target.generation != args.cohort_generation)
+            .is_none_or(|target| target.generation != args.entitlement_batch_generation)
         || !snapshot.two_week_maturity_baseline_reconciled
     {
         return Err(ApiError::Invalid(
-            "two-week maturity does not match one closed target generation".into(),
+            "two-week maturity does not match one frozen entitlement target generation".into(),
         ));
     }
-    if args.cohort_generation == snapshot.latest_completed_two_week_generation {
+    if args.entitlement_batch_generation == snapshot.latest_completed_two_week_generation {
         return snapshot
             .last_two_week_maturity
             .clone()
             .map(MaturityProgress::Completed)
             .ok_or_else(|| ApiError::Invalid("completed generation lacks evidence".into()));
     }
-    if args.cohort_generation == snapshot.latest_started_two_week_generation {
+    if args.entitlement_batch_generation == snapshot.latest_started_two_week_generation {
         if replay_matches(&snapshot, &args) {
             return Ok(MaturityProgress::Observed);
         }
@@ -104,7 +99,7 @@ pub async fn prepare(
         .latest_started_two_week_generation
         .checked_add(1)
         .ok_or_else(|| ApiError::Invalid("two-week generation overflow".into()))?;
-    if args.cohort_generation != expected_generation {
+    if args.entitlement_batch_generation != expected_generation {
         return Err(ApiError::Invalid(format!(
             "expected two-week maturity generation {expected_generation}"
         )));
@@ -114,9 +109,7 @@ pub async fn prepare(
 
 fn replay_matches(state: &NnsStateV1, args: &PrepareTwoWeekMaturityArgs) -> bool {
     let plan_matches = |plan: &MaturityPlan| {
-        plan.cohort_generation == Some(args.cohort_generation)
-            && plan.cohort_captured_at_seconds == Some(args.captured_at_timestamp_seconds)
-            && plan.cohort_closes_at_seconds == Some(args.closes_at_timestamp_seconds)
+        plan.entitlement_batch_generation == Some(args.entitlement_batch_generation)
     };
     matches!(
         &state.active_operation,
@@ -126,11 +119,4 @@ fn replay_matches(state: &NnsStateV1, args: &PrepareTwoWeekMaturityArgs) -> bool
         .pending_two_week_maturity
         .as_ref()
         .is_some_and(|pending| plan_matches(&pending.stake_evidence.plan))
-}
-
-fn now_seconds() -> Result<u64, ApiError> {
-    let now = ic_cdk::api::time() / 1_000_000_000;
-    (now > 0)
-        .then_some(now)
-        .ok_or_else(|| ApiError::Invalid("time is zero".into()))
 }

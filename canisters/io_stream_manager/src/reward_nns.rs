@@ -17,9 +17,7 @@ struct SetTargetArgs {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType)]
 struct PrepareMaturityArgs {
-    cohort_generation: u64,
-    captured_at_timestamp_seconds: u64,
-    closes_at_timestamp_seconds: u64,
+    entitlement_batch_generation: u64,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -69,19 +67,12 @@ pub async fn set_target(
     result.map_err(|error| classify("NNS target rejected", error))
 }
 
-pub async fn prepare_maturity(
-    manager: Principal,
-    generation: u64,
-    captured_at_timestamp_seconds: u64,
-    closes_at_timestamp_seconds: u64,
-) -> Result<(), CallError> {
+pub async fn prepare_maturity(manager: Principal, generation: u64) -> Result<(), CallError> {
     let result: Result<MaturityProgress, NnsError> =
         ic_cdk::call::Call::bounded_wait(manager, "prepare_two_week_maturity")
-            .with_arg(maturity_args(
-                generation,
-                captured_at_timestamp_seconds,
-                closes_at_timestamp_seconds,
-            ))
+            .with_arg(PrepareMaturityArgs {
+                entitlement_batch_generation: generation,
+            })
             .await
             .map_err(|error| {
                 CallError::Pending(format!("two-week maturity call ambiguous: {error:?}"))
@@ -111,17 +102,5 @@ fn classify(context: &str, error: NnsError) -> CallError {
         | NnsError::ImplementationIncomplete(_) => {
             CallError::Invalid(format!("{context}: {error:?}"))
         }
-    }
-}
-
-fn maturity_args(
-    cohort_generation: u64,
-    captured_at_timestamp_seconds: u64,
-    closes_at_timestamp_seconds: u64,
-) -> PrepareMaturityArgs {
-    PrepareMaturityArgs {
-        cohort_generation,
-        captured_at_timestamp_seconds,
-        closes_at_timestamp_seconds,
     }
 }

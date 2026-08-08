@@ -9,7 +9,6 @@ use io_accounts::Account;
 
 pub const MINIMUM_DISBURSEMENT_E8S: u64 = 100_000_000;
 pub const DISBURSEMENT_DELAY_SECONDS: u64 = 7 * 24 * 60 * 60;
-pub const TWO_WEEK_COHORT_SECONDS: u64 = 1_209_600;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum MaturityKind {
@@ -26,9 +25,7 @@ pub struct MaturityPlan {
     pub remaining_maturity_e8s: u64,
     pub destination: Account,
     pub requested_at_seconds: u64,
-    pub cohort_generation: Option<u64>,
-    pub cohort_captured_at_seconds: Option<u64>,
-    pub cohort_closes_at_seconds: Option<u64>,
+    pub entitlement_batch_generation: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -182,19 +179,9 @@ impl MaturityCommandOperation {
             || plan.remaining_maturity_e8s < MINIMUM_DISBURSEMENT_E8S
             || plan.requested_at_seconds == 0
             || !plan.destination.effective_eq(expected_destination)?
-            || (self.kind == MaturityKind::TwoWeek) != plan.cohort_generation.is_some()
-            || (self.kind == MaturityKind::TwoWeek) != plan.cohort_captured_at_seconds.is_some()
-            || (self.kind == MaturityKind::TwoWeek) != plan.cohort_closes_at_seconds.is_some()
+            || (self.kind == MaturityKind::TwoWeek) != plan.entitlement_batch_generation.is_some()
         {
             return Err("maturity command plan is inconsistent".into());
-        }
-        if self.kind == MaturityKind::TwoWeek
-            && plan
-                .cohort_captured_at_seconds
-                .and_then(|capture| capture.checked_add(TWO_WEEK_COHORT_SECONDS))
-                != plan.cohort_closes_at_seconds
-        {
-            return Err("two-week maturity cohort interval is inconsistent".into());
         }
         Ok(())
     }

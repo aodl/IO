@@ -255,14 +255,14 @@ impl NnsStateV1 {
                 Some(NnsOperation::Maturity(operation))
                     if operation.kind == crate::maturity::MaturityKind::TwoWeek =>
                 {
-                    operation.plan().cohort_generation
+                    operation.plan().entitlement_batch_generation
                 }
                 _ => None,
             };
             let pending_generation = self
                 .pending_two_week_maturity
                 .as_ref()
-                .and_then(|pending| pending.stake_evidence.plan.cohort_generation);
+                .and_then(|pending| pending.stake_evidence.plan.entitlement_batch_generation);
             if active_generation != Some(self.latest_started_two_week_generation)
                 && pending_generation != Some(self.latest_started_two_week_generation)
             {
@@ -621,9 +621,7 @@ mod tests {
             remaining_maturity_e8s: 120_000_000,
             destination: state.config.two_week_maturity_staging.clone(),
             requested_at_seconds: 1,
-            cohort_generation: None,
-            cohort_captured_at_seconds: None,
-            cohort_closes_at_seconds: None,
+            entitlement_batch_generation: None,
         };
         let stake = crate::maturity::StakeMaturitySucceeded {
             plan,

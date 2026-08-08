@@ -26,7 +26,7 @@ pub async fn start(caller: Principal, kind: MaturityKind) -> Result<MaturityProg
     }
     if kind == MaturityKind::TwoWeek {
         return Err(ApiError::Invalid(
-            "two-week maturity must be prepared by the stream manager for a closed cohort".into(),
+            "two-week maturity must be prepared by the stream manager for a frozen entitlement batch".into(),
         ));
     }
     start_observed(snapshot, kind, None).await
@@ -35,7 +35,7 @@ pub async fn start(caller: Principal, kind: MaturityKind) -> Result<MaturityProg
 pub(crate) async fn start_observed(
     snapshot: crate::state::NnsStateV1,
     kind: MaturityKind,
-    cohort: Option<PrepareTwoWeekMaturityArgs>,
+    entitlement_batch: Option<PrepareTwoWeekMaturityArgs>,
 ) -> Result<MaturityProgress, ApiError> {
     if snapshot.active_operation.is_some() || pending_from(&snapshot, kind).is_some() {
         return Err(ApiError::Busy);
@@ -57,19 +57,16 @@ pub(crate) async fn start_observed(
             minimum_e8s: MINIMUM_DISBURSEMENT_E8S,
         });
     }
-    let cohort_generation = cohort.as_ref().map(|value| value.cohort_generation);
-    let cohort_captured_at_seconds = cohort
+    let entitlement_batch_generation = entitlement_batch
         .as_ref()
-        .map(|value| value.captured_at_timestamp_seconds);
-    let cohort_closes_at_seconds = cohort
-        .as_ref()
-        .map(|value| value.closes_at_timestamp_seconds);
+        .map(|value| value.entitlement_batch_generation);
 
     let mut latest = state::read();
     if latest != snapshot
         || latest.lifecycle != Lifecycle::Ready
         || (kind == MaturityKind::TwoWeek
-            && latest.latest_started_two_week_generation.checked_add(1) != cohort_generation)
+            && latest.latest_started_two_week_generation.checked_add(1)
+                != entitlement_batch_generation)
     {
         return Err(ApiError::Busy);
     }
@@ -89,9 +86,7 @@ pub(crate) async fn start_observed(
             remaining_maturity_e8s,
             destination,
             requested_at_seconds: now_seconds()?,
-            cohort_generation,
-            cohort_captured_at_seconds,
-            cohort_closes_at_seconds,
+            entitlement_batch_generation,
         }),
     };
     operation
@@ -102,7 +97,7 @@ pub(crate) async fn start_observed(
         )
         .map_err(ApiError::Invalid)?;
     latest.active_operation = Some(NnsOperation::Maturity(Box::new(operation)));
-    if let Some(generation) = cohort_generation {
+    if let Some(generation) = entitlement_batch_generation {
         latest.latest_started_two_week_generation = generation;
     }
     state::write(latest);
@@ -789,13 +784,8 @@ fn finish_two_week(
         || stream.backed_io_pool_e8s
             != stream
                 .distributed_io_e8s
-                .checked_add(stream.total_dust_io_e8s)
-                .ok_or_else(|| ApiError::Invalid("two-week receipt total overflow".into()))?
-        || stream.total_dust_io_e8s
-            != stream
-                .forfeited_io_e8s
                 .checked_add(stream.rounding_dust_io_e8s)
-                .ok_or_else(|| ApiError::Invalid("two-week receipt dust overflow".into()))?
+                .ok_or_else(|| ApiError::Invalid("two-week receipt total overflow".into()))?
         || stream.completed_at_nanos == 0
     {
         return Err(ApiError::Invalid(
@@ -824,7 +814,7 @@ fn finish_two_week(
         .pending
         .stake_evidence
         .plan
-        .cohort_generation
+        .entitlement_batch_generation
         .ok_or_else(|| ApiError::Invalid("two-week completion lacks generation".into()))?;
     if generation != latest.latest_started_two_week_generation
         || generation <= latest.latest_completed_two_week_generation

@@ -14,6 +14,12 @@ export const idlFactory = ({ IDL }) => {
     two_year_nns_principal: DataAvailability,
   });
   const GovernanceExcludedCount = IDL.Record({ count: IDL.Nat64, reason: IDL.Text });
+  const GovernanceRewardEventClassification = IDL.Variant({
+    ProposalBearing: IDL.Null,
+    NoProposalFallback: IDL.Null,
+    ZeroEligibleParticipation: IDL.Null,
+    MissedSkipped: IDL.Null,
+  });
   const GovernanceNeuronParticipation = IDL.Record({
     currently_destination_eligible: IDL.Bool,
     eligible_closed_proposals: IDL.Nat64,
@@ -24,6 +30,8 @@ export const idlFactory = ({ IDL }) => {
     voted_closed_proposals: IDL.Nat64,
     reward_event_end_timestamp_seconds: IDL.Opt(IDL.Nat64),
     reward_shares: IDL.Opt(IDL.Nat),
+    event_weight: IDL.Opt(IDL.Nat),
+    accumulated_entitlement_weight: IDL.Opt(IDL.Nat),
   });
   const PublicOperationPhase = IDL.Variant({
     AwaitingIcpPayout: IDL.Null,
@@ -55,6 +63,12 @@ export const idlFactory = ({ IDL }) => {
     reward_event_missed: IDL.Opt(IDL.Bool),
     expected_governance_module_hash: IDL.Opt(IDL.Text),
     observed_governance_module_hash: IDL.Opt(IDL.Text),
+    reward_event_classification: IDL.Opt(GovernanceRewardEventClassification),
+    current_accumulator_total_weight: IDL.Opt(IDL.Nat),
+    pending_batch_total_weight: IDL.Opt(IDL.Nat),
+    pending_backing_status: IDL.Opt(IDL.Text),
+    missed_event_count: IDL.Opt(IDL.Nat64),
+    governance_parameters_fresh: IDL.Opt(IDL.Bool),
   });
   const RetentionLimits = IDL.Record({
     artifact_status: IDL.Nat64,
@@ -150,6 +164,7 @@ export const idlFactory = ({ IDL }) => {
     two_week_receipt_sequence: IDL.Opt(IDL.Nat64),
     cohort_generation: IDL.Opt(IDL.Nat64),
     cohort_closes_at_timestamp_seconds: IDL.Opt(IDL.Nat64),
+    entitlement_batch_generation: IDL.Opt(IDL.Nat64),
     reward_recipient_index: IDL.Opt(IDL.Nat32),
     reward_recipient_count: IDL.Opt(IDL.Nat32),
     forfeited_io_e8s: IDL.Opt(IDL.Nat),
@@ -235,6 +250,8 @@ export const idlFactory = ({ IDL }) => {
   const RewardDistributionRecord = IDL.Record({
     dust_unissued_e8s: IDL.Opt(IDL.Nat),
     frozen_cohort_stake_e8s: IDL.Opt(IDL.Nat),
+    entitlement_weight: IDL.Opt(IDL.Nat),
+    entitlement_batch_generation: IDL.Opt(IDL.Nat64),
     epoch_end_timestamp_nanos: IDL.Opt(IDL.Nat64),
     epoch_start_timestamp_nanos: IDL.Opt(IDL.Nat64),
     participation_summary_id: IDL.Opt(IDL.Text),

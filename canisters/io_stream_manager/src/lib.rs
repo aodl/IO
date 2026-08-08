@@ -1,6 +1,5 @@
 pub mod api;
 pub mod canonical;
-mod cohort_timer;
 mod completed_receipt;
 pub mod lifecycle;
 pub mod receipt;
@@ -9,6 +8,7 @@ pub mod redemption;
 mod reward_evidence;
 mod reward_nns;
 mod reward_settlement;
+mod reward_timer;
 pub mod rewards;
 pub mod state;
 pub mod transfer;
@@ -22,33 +22,34 @@ pub use receipt::{
     PrepareLiquidReceiptArgs, ReceiptKind,
 };
 pub use redemption::RedeemArgs;
+pub use rewards::RewardBackingProgress;
 pub use state::CallerRedemptionState;
-pub use state::{Account, Lifecycle, RewardCohort, StreamConfig, StreamStateV1};
+pub use state::{
+    Account, Lifecycle, PendingEntitlementBatch, RewardEntitlementAccumulator,
+    RewardEntitlementEntry, RewardEventClassification, RewardEventId, RewardEventObservation,
+    RewardEventWeight, SkippedRewardEvent, StreamConfig, StreamStateV1,
+};
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 pub struct InitArgs {
     pub config: StreamConfig,
-    pub next_cohort_timestamp_seconds: u64,
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::init)]
 pub fn init(args: InitArgs) {
-    // Empty launch state has no deadline; cohort capture derives the only deadline.
+    // Launch stays inert; reviewed unpause installs at most one reward-event timer.
     let state = StreamStateV1 {
         config: args.config,
         lifecycle: Lifecycle::Paused,
         active_operation: None,
-        active_reward_cohort: None,
-        pending_reward_cohort: None,
-        pending_maturity_prepared: false,
-        latest_cohort_generation: 0,
+        reward_entitlements: RewardEntitlementAccumulator::default(),
+        pending_entitlement_batch: None,
+        pending_entitlement_status: state::PendingEntitlementStatus::Frozen,
+        latest_entitlement_batch_generation: 0,
         next_nns_receipt_sequence: 0,
-        next_cohort_timestamp_seconds: 0,
         next_operation_sequence: state::OperationSequence(0),
         control_epoch: 0,
         last_completed_receipt: None,
-        last_consumed_reward_event: None,
-        reward_work_due: false,
     };
     state::initialize(state, ic_cdk::api::canister_self())
         .unwrap_or_else(|error| ic_cdk::trap(&error));
@@ -57,7 +58,6 @@ pub fn init(args: InitArgs) {
 #[cfg_attr(target_family = "wasm", ic_cdk::post_upgrade)]
 pub fn post_upgrade() {
     state::reopen(ic_cdk::api::canister_self());
-    cohort_timer::reinstall_from_state();
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -90,18 +90,13 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<(), ApiError> {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn capture_reward_cohort() -> Result<RewardCohort, ApiError> {
-    rewards::capture(ic_cdk::api::time() / 1_000_000_000).await
+pub async fn resume_reward_work() -> Result<RewardEventObservation, ApiError> {
+    rewards::observe(ic_cdk::api::time()).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn close_reward_cohort() -> Result<RewardCohort, ApiError> {
-    rewards::close(ic_cdk::api::time() / 1_000_000_000).await
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn resume_reward_work() -> Result<RewardCohort, ApiError> {
-    rewards::close(ic_cdk::api::time() / 1_000_000_000).await
+pub async fn resume_reward_backing() -> Result<RewardBackingProgress, ApiError> {
+    rewards::resume_backing(ic_cdk::api::time()).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -113,9 +108,12 @@ pub async fn set_paused(paused: bool) -> Result<(), ApiError> {
     let control_epoch = lifecycle::begin_control_request().map_err(ApiError::Invalid)?;
     if paused {
         lifecycle::set_paused();
+        reward_timer::install(None);
         Ok(())
     } else {
-        lifecycle::readiness_preflight(ic_cdk::api::canister_self(), control_epoch).await
+        lifecycle::readiness_preflight(ic_cdk::api::canister_self(), control_epoch).await?;
+        reward_timer::install_for_ready_state();
+        Ok(())
     }
 }
 

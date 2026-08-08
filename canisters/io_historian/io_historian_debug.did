@@ -1,6 +1,9 @@
 type AccountHistoryPageOrder = variant { Ascending; Descending };
 type ArtifactMatchStatus = variant { Matching; Mismatch; Unknown; Unobserved };
 type DataAvailability = variant { Missing; NotApplicable; Observed };
+type GovernanceRewardEventClassification = variant {
+  ProposalBearing; NoProposalFallback; ZeroEligibleParticipation; MissedSkipped;
+};
 type LedgerKind = variant { IcpLedger; IoLedger };
 type PublicOperationPhase = variant {
   AwaitingIcpPayout; AwaitingIoIssuance; AwaitingIoReturn; Completed;
@@ -25,6 +28,7 @@ type GovernanceNeuronObservation = record {
   currently_destination_eligible : bool; eligible_closed_proposals : nat64;
   frozen_stake_e8s : nat; neuron_id : nat64; voted_closed_proposals : nat64;
   reward_event_end_timestamp_seconds : opt nat64; reward_shares : opt nat;
+  event_weight : opt nat; accumulated_entitlement_weight : opt nat;
 };
 type GovernanceObservation = record {
   counted_proposals : nat64; neurons : vec GovernanceNeuronObservation;
@@ -34,6 +38,10 @@ type GovernanceObservation = record {
   reward_event_round : opt nat64; reward_event_end_timestamp_seconds : opt nat64;
   settled_proposal_count : opt nat64; reward_event_missed : opt bool;
   expected_governance_module_hash : opt text; observed_governance_module_hash : opt text;
+  reward_event_classification : opt GovernanceRewardEventClassification;
+  current_accumulator_total_weight : opt nat; pending_batch_total_weight : opt nat;
+  pending_backing_status : opt text; missed_event_count : opt nat64;
+  governance_parameters_fresh : opt bool;
 };
 type IndexHealthSummary = record {
   account_label : text; backfill_complete : bool; invariant_broken_count : nat64;
@@ -59,6 +67,7 @@ type SimplifiedExecutionProjection = record {
   scheduled_finalization_timestamp_seconds : opt nat64; actual_minted_icp_e8s : opt nat;
   two_week_receipt_sequence : opt nat64; cohort_generation : opt nat64;
   cohort_closes_at_timestamp_seconds : opt nat64; reward_recipient_index : opt nat32;
+  entitlement_batch_generation : opt nat64;
   reward_recipient_count : opt nat32; forfeited_io_e8s : opt nat;
   rounding_dust_io_e8s : opt nat; total_dust_io_e8s : opt nat; under_target : bool;
   active_parent_principal_e8s : opt nat; unwinding_child_principal_e8s : opt nat;
@@ -85,6 +94,7 @@ type RedemptionHistoryRecord = record {
 };
 type RewardDistributionRecord = record {
   dust_unissued_e8s : opt nat; frozen_cohort_stake_e8s : opt nat;
+  entitlement_weight : opt nat; entitlement_batch_generation : opt nat64;
   epoch_end_timestamp_nanos : opt nat64; epoch_start_timestamp_nanos : opt nat64;
   participation_summary_id : opt text; payout_block : opt nat64; recipient_account : opt text;
   recipient_neuron_id : opt nat64; record_id : text; reward_amount_e8s : nat;

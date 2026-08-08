@@ -20,7 +20,6 @@
     ledger_deduplication_window_nanos = TODO_DEDUP_WINDOW : nat64;
     sns_root = TODO_SNS_ROOT_PRINCIPAL;
     expected_sns_governance_module_hash = TODO_SNS_GOVERNANCE_MODULE_HASH;
-    approved_reward_event_duration_seconds = TODO_REWARD_EVENT_DURATION : nat64;
+    approved_reward_event_duration_seconds = 86_400 : nat64;
   };
-  next_cohort_timestamp_seconds = 0 : nat64;
 })

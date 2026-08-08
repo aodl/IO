@@ -37,9 +37,7 @@ pub struct SetTwoWeekTargetArgs {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct PrepareTwoWeekMaturityArgs {
-    pub cohort_generation: u64,
-    pub captured_at_timestamp_seconds: u64,
-    pub closes_at_timestamp_seconds: u64,
+    pub entitlement_batch_generation: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]

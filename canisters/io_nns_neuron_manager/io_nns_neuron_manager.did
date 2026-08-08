@@ -24,9 +24,7 @@ type InitArgs = record { config : NnsConfig };
 type NotifyJupiterDepositArgs = record { block_index : nat };
 type SetTwoWeekTargetArgs = record { target_e8s : nat; generation : nat64 };
 type PrepareTwoWeekMaturityArgs = record {
-  cohort_generation : nat64;
-  captured_at_timestamp_seconds : nat64;
-  closes_at_timestamp_seconds : nat64;
+  entitlement_batch_generation : nat64;
 };
 type TwoWeekTargetStatus = variant {
   UnderTarget;

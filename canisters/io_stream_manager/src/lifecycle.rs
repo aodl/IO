@@ -82,6 +82,9 @@ pub async fn readiness_preflight(
         return Err(crate::api::ApiError::Busy);
     }
     latest.lifecycle = Lifecycle::Ready;
+    latest.reward_entitlements.reward_processing_paused = false;
+    latest.reward_entitlements.reward_work_due = true;
+    latest.reward_entitlements.governance_parameters_fresh = true;
     state::write(latest);
     Ok(())
 }
@@ -94,7 +97,10 @@ pub(crate) fn validate_installed_governance(
         || installed.module_hash != config.expected_sns_governance_module_hash
         || installed.initial_reward_rate_basis_points != 0
         || installed.final_reward_rate_basis_points != 0
-        || installed.round_duration_seconds != io_core_model::TWO_WEEK_SECONDS
+        || installed.round_duration_seconds != config.approved_reward_event_duration_seconds
+        || installed.round_duration_seconds != 86_400
+        || installed.max_dissolve_delay_bonus_percentage != 0
+        || installed.max_age_bonus_percentage != 0
     {
         return Err(crate::api::ApiError::Invalid(
             "installed SNS Governance hash or reward parameters differ from reviewed readiness configuration"
@@ -126,10 +132,6 @@ pub fn set_paused() {
         &state.active_operation,
         Some(crate::state::StreamOperation::LiquidReceipt(operation))
             if matches!(operation.as_ref(), crate::state::LiquidReceiptStreamOperation::Preparing(_))
-    ) || matches!(
-        &state.active_operation,
-        Some(crate::state::StreamOperation::CohortCapture(operation))
-            if matches!(operation.as_ref(), crate::state::CohortCaptureOperation::Prepared { .. })
     ) {
         state.active_operation = None;
     }

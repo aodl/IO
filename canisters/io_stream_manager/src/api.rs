@@ -58,10 +58,18 @@ pub struct Status {
     pub operation_kind: Option<String>,
     pub operation_phase: Option<String>,
     pub next_nns_receipt_sequence: u64,
-    pub next_cohort_timestamp_seconds: u64,
-    pub latest_cohort_generation: u64,
-    pub has_active_reward_cohort: bool,
-    pub has_pending_reward_cohort: bool,
+    pub latest_entitlement_batch_generation: u64,
+    pub latest_processed_reward_event: Option<crate::state::RewardEventId>,
+    pub latest_reward_event_classification: Option<crate::state::RewardEventClassification>,
+    pub accumulated_entitlements: Vec<crate::state::RewardEntitlementEntry>,
+    pub accumulated_entitlement_weight: u128,
+    pub processed_reward_event_count: u64,
+    pub missed_reward_event_count: u64,
+    pub reward_work_due: bool,
+    pub reward_processing_paused: bool,
+    pub governance_parameters_fresh: bool,
+    pub pending_entitlement_batch_total_weight: Option<u128>,
+    pub pending_entitlement_status: Option<crate::state::PendingEntitlementStatus>,
 }
 
 pub fn get_status() -> Status {
@@ -85,24 +93,43 @@ pub fn get_status() -> Status {
                 Some(format!("{:?}", operation.phase())),
             ),
         },
-        Some(StreamOperation::CohortCapture(operation)) => (
-            Some("CohortCapture".into()),
-            Some(format!("{:?}", operation)),
-        ),
-        Some(StreamOperation::CohortClose(_)) => {
-            (Some("CohortClose".into()), Some("Prepared".into()))
-        }
         None => (None, None),
     };
+    let accumulated_entitlement_weight = state
+        .reward_entitlements
+        .entries
+        .iter()
+        .try_fold(0u128, |sum, entry| {
+            sum.checked_add(entry.accumulated_weight)
+        })
+        .expect("validated entitlement accumulator total");
     Status {
         lifecycle: state.lifecycle,
         operation_kind,
         operation_phase,
         next_nns_receipt_sequence: state.next_nns_receipt_sequence,
-        next_cohort_timestamp_seconds: state.next_cohort_timestamp_seconds,
-        latest_cohort_generation: state.latest_cohort_generation,
-        has_active_reward_cohort: state.active_reward_cohort.is_some(),
-        has_pending_reward_cohort: state.pending_reward_cohort.is_some(),
+        latest_entitlement_batch_generation: state.latest_entitlement_batch_generation,
+        latest_processed_reward_event: state.reward_entitlements.last_processed_event,
+        latest_reward_event_classification: state
+            .reward_entitlements
+            .latest_observation
+            .as_ref()
+            .map(|observation| observation.classification),
+        accumulated_entitlements: state.reward_entitlements.entries,
+        accumulated_entitlement_weight,
+        processed_reward_event_count: state.reward_entitlements.processed_event_count,
+        missed_reward_event_count: state.reward_entitlements.missed_event_count,
+        reward_work_due: state.reward_entitlements.reward_work_due,
+        reward_processing_paused: state.reward_entitlements.reward_processing_paused,
+        governance_parameters_fresh: state.reward_entitlements.governance_parameters_fresh,
+        pending_entitlement_batch_total_weight: state
+            .pending_entitlement_batch
+            .as_ref()
+            .map(|batch| batch.total_weight),
+        pending_entitlement_status: state
+            .pending_entitlement_batch
+            .as_ref()
+            .map(|_| state.pending_entitlement_status),
     }
 }
 
@@ -822,12 +849,6 @@ pub async fn resume_stream(now: u64) -> Result<StreamProgress, ApiError> {
                     .map(StreamProgress::LiquidReceipt)
             }
         },
-        Some(StreamOperation::CohortCapture(_)) => Err(ApiError::Pending(
-            "cohort capture must be retried through capture_reward_cohort".into(),
-        )),
-        Some(StreamOperation::CohortClose(_)) => Err(ApiError::Pending(
-            "cohort close must be retried through resume_reward_work".into(),
-        )),
         None => Ok(StreamProgress::Idle),
     }
 }

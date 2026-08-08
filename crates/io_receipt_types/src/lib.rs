@@ -14,7 +14,7 @@ pub struct PrepareLiquidReceiptArgs {
     pub receipt_kind: ReceiptKind,
     pub source_operation_id: Vec<u8>,
     pub liquid_amount_e8s: u128,
-    pub cohort_generation: Option<u64>,
+    pub entitlement_batch_generation: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -46,9 +46,7 @@ pub struct TwoWeekReceiptResult {
     pub receipt_block: u128,
     pub backed_io_pool_e8s: u128,
     pub distributed_io_e8s: u128,
-    pub forfeited_io_e8s: u128,
     pub rounding_dust_io_e8s: u128,
-    pub total_dust_io_e8s: u128,
     pub completed_at_nanos: u64,
 }
 

@@ -44,9 +44,7 @@ pub struct TwoWeekSettlement {
     pub recipients: Vec<RewardRecipient>,
     pub recipient_index: u32,
     pub distributed_io_e8s: u128,
-    pub forfeited_io_e8s: u128,
     pub rounding_dust_io_e8s: u128,
-    pub total_dust_io_e8s: u128,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -55,8 +53,7 @@ pub struct RewardRecipient {
     pub destination: Account,
     pub before_stake_e8s: u128,
     pub io_e8s: u128,
-    pub eligibility_checked: bool,
-    pub forfeited: bool,
+    pub stake_observed: bool,
     pub transfer: Option<TransferAttempt>,
     pub refresh_submitted: bool,
 }
@@ -116,11 +113,11 @@ impl ReceiptContext {
             return Err("receipt context does not match immutable configuration".into());
         }
         match self.request.receipt_kind {
-            ReceiptKind::Jupiter if self.request.cohort_generation.is_some() => {
-                Err("Jupiter receipt cannot name a cohort".into())
+            ReceiptKind::Jupiter if self.request.entitlement_batch_generation.is_some() => {
+                Err("Jupiter receipt cannot name an entitlement batch".into())
             }
-            ReceiptKind::TwoWeekMaturity if self.request.cohort_generation.is_none() => {
-                Err("two-week receipt must name its cohort".into())
+            ReceiptKind::TwoWeekMaturity if self.request.entitlement_batch_generation.is_none() => {
+                Err("two-week receipt must name its entitlement batch".into())
             }
             _ => Ok(()),
         }
@@ -305,21 +302,22 @@ pub async fn prepare_liquid_receipt(
         ));
     }
     match args.receipt_kind {
-        ReceiptKind::Jupiter if args.cohort_generation.is_some() => {
+        ReceiptKind::Jupiter if args.entitlement_batch_generation.is_some() => {
             return Err(ApiError::Invalid(
-                "only two-week maturity names a cohort".into(),
+                "only two-week maturity names an entitlement batch".into(),
             ))
         }
         ReceiptKind::TwoWeekMaturity
-            if !current.pending_maturity_prepared
-                || args.cohort_generation
+            if current.pending_entitlement_status
+                != state::PendingEntitlementStatus::MaturityPrepared
+                || args.entitlement_batch_generation
                     != current
-                        .pending_reward_cohort
+                        .pending_entitlement_batch
                         .as_ref()
-                        .map(|cohort| cohort.generation) =>
+                        .map(|batch| batch.generation) =>
         {
             return Err(ApiError::Invalid(
-                "receipt does not match pending cohort".into(),
+                "receipt does not match pending entitlement batch".into(),
             ))
         }
         _ => {}
@@ -1012,7 +1010,7 @@ mod tests {
             receipt_kind: ReceiptKind::Jupiter,
             source_operation_id: vec![1],
             liquid_amount_e8s: 10,
-            cohort_generation: None,
+            entitlement_batch_generation: None,
         };
         assert_ne!(
             std::mem::discriminant(&CompletedReceiptResult::Jupiter(JupiterReceiptResult {
@@ -1028,9 +1026,7 @@ mod tests {
                 receipt_block: 1,
                 backed_io_pool_e8s: 2,
                 distributed_io_e8s: 2,
-                forfeited_io_e8s: 0,
                 rounding_dust_io_e8s: 0,
-                total_dust_io_e8s: 0,
                 completed_at_nanos: 4,
             }))
         );

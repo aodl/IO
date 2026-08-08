@@ -40,7 +40,7 @@ pub const STABLE_SCHEMA_REGISTRY: &[StableSchemaEntry] = &[
         lossless: true,
         pre_production_only: true,
         fixture_files: IO_STREAM_MANAGER_FIXTURES,
-        size_bounds_summary: "one typed active operation, two fixed cohort slots and bounded per-caller nonce/results",
+        size_bounds_summary: "one typed active operation, one bounded live entitlement accumulator, one pending batch and bounded per-caller nonce/results",
         compaction_policy_summary: "launch V1 has no historical execution collection to compact",
     },
     StableSchemaEntry {

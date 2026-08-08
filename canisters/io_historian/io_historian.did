@@ -25,6 +25,12 @@ type DataCompleteness = record {
   two_year_nns_principal : DataAvailability;
 };
 type GovernanceExcludedCount = record { count : nat64; reason : text };
+type GovernanceRewardEventClassification = variant {
+  ProposalBearing;
+  NoProposalFallback;
+  ZeroEligibleParticipation;
+  MissedSkipped;
+};
 type GovernanceNeuronParticipation = record {
   currently_destination_eligible : bool;
   eligible_closed_proposals : nat64;
@@ -35,6 +41,8 @@ type GovernanceNeuronParticipation = record {
   voted_closed_proposals : nat64;
   reward_event_end_timestamp_seconds : opt nat64;
   reward_shares : opt nat;
+  event_weight : opt nat;
+  accumulated_entitlement_weight : opt nat;
 };
 type GovernanceParticipationSnapshot = record {
   counted_proposals : nat64;
@@ -54,6 +62,12 @@ type GovernanceParticipationSnapshot = record {
   reward_event_missed : opt bool;
   expected_governance_module_hash : opt text;
   observed_governance_module_hash : opt text;
+  reward_event_classification : opt GovernanceRewardEventClassification;
+  current_accumulator_total_weight : opt nat;
+  pending_batch_total_weight : opt nat;
+  pending_backing_status : opt text;
+  missed_event_count : opt nat64;
+  governance_parameters_fresh : opt bool;
 };
 type HistorianIngestionStatus = record {
   artifact_status_count : nat64;
@@ -171,6 +185,7 @@ type SimplifiedExecutionProjection = record {
   two_week_receipt_sequence : opt nat64;
   cohort_generation : opt nat64;
   cohort_closes_at_timestamp_seconds : opt nat64;
+  entitlement_batch_generation : opt nat64;
   reward_recipient_index : opt nat32;
   reward_recipient_count : opt nat32;
   forfeited_io_e8s : opt nat;
@@ -306,6 +321,8 @@ type StalenessPolicy = record {
 type RewardDistributionRecord = record {
   dust_unissued_e8s : opt nat;
   frozen_cohort_stake_e8s : opt nat;
+  entitlement_weight : opt nat;
+  entitlement_batch_generation : opt nat64;
   epoch_end_timestamp_nanos : opt nat64;
   epoch_start_timestamp_nanos : opt nat64;
   participation_summary_id : opt text;
