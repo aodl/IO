@@ -509,7 +509,7 @@ fn validate_entitlement_entries(
         let account = entry.destination.canonical()?;
         if entry.sns_neuron_id.len() != 32
             || previous_id.is_some_and(|previous| previous >= entry.sns_neuron_id.as_slice())
-            || !accounts.insert(account.clone())
+            || !accounts.insert(account)
             || account.owner != config.sns_governance
             || account.subaccount.as_slice() != entry.sns_neuron_id
             || entry.accumulated_weight == 0

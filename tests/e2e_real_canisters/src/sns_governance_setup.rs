@@ -926,9 +926,7 @@ pub fn run_candidate_reward_event_participation_contract(
         let event_end = event.end_timestamp_seconds.unwrap();
         for id in &neuron_ids {
             let neuron = find_neuron(&neurons, id);
-            let is_current = current_participants
-                .iter()
-                .any(|participant| *participant == id);
+            let is_current = current_participants.contains(&id);
             if is_current {
                 assert_eq!(
                     neuron
