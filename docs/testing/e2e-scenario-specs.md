@@ -18,7 +18,7 @@ Prove one exact Jupiter Faucet raw-ICP block from the configured faucet default 
 
 For each protected neuron, call `StakeMaturity(40%)` and then `DisburseMaturity(100% of remaining)`. Record drift between the two responses. Two-year actual ICP goes directly to stream liquid and issues no IO. Two-week actual staging balance increase is transferred through the proof-bound two-week receipt and settles the pending entitlement batch.
 
-## Daily entitlements and delayed backing
+## Exact rewards: daily entitlements and delayed backing
 
 Observe consecutive 86,400-second Governance reward events around bounded
 neuron pagination. Proposal-bearing events use exact current-event canonical
