@@ -22,15 +22,34 @@ type NnsConfig = record {
 };
 type InitArgs = record { config : NnsConfig };
 type NotifyJupiterDepositArgs = record { block_index : nat };
-type SetTwoWeekTargetArgs = record { target_e8s : nat; generation : nat64 };
 type PrepareTwoWeekMaturityArgs = record {
   entitlement_batch_generation : nat64;
+  target_e8s : nat;
 };
+type ObserveTwoWeekBackingReadinessArgs = record { target_e8s : nat };
 type TwoWeekTargetStatus = variant {
   UnderTarget;
   AtTarget;
   AtTargetWithinUnwindTolerance;
   OverTarget;
+};
+type BackingNotReadyReason = variant {
+  Paused;
+  Busy;
+  BaselineUnreconciled;
+  UnderTarget;
+  OverTarget;
+  BelowThreshold;
+};
+type TwoWeekBackingReadiness = variant {
+  Ready : record {
+    target_status : TwoWeekTargetStatus;
+    ordinary_maturity_e8s : nat64;
+    retained_maturity_e8s : nat64;
+    liquid_maturity_e8s : nat64;
+    minimum_disbursement_e8s : nat64;
+  };
+  NotReady : BackingNotReadyReason;
 };
 type ApiError = variant {
   Unauthorized;
@@ -124,11 +143,11 @@ type Status = record {
 };
 service : (InitArgs) -> {
   notify_jupiter_deposit : (NotifyJupiterDepositArgs) -> (variant { Ok : JupiterProgress; Err : ApiError });
-  set_two_week_target : (SetTwoWeekTargetArgs) -> (variant { Ok : TwoWeekTargetStatus; Err : ApiError });
   resume : () -> (variant { Ok : NnsProgress; Err : ApiError });
   prove_active_transfer : (nat) -> (variant { Ok : NnsProgress; Err : ApiError });
   start_maturity : (MaturityKind) -> (variant { Ok : MaturityProgress; Err : ApiError });
   prepare_two_week_maturity : (PrepareTwoWeekMaturityArgs) -> (variant { Ok : MaturityProgress; Err : ApiError });
+  observe_two_week_backing_readiness : (ObserveTwoWeekBackingReadinessArgs) -> (variant { Ok : TwoWeekBackingReadiness; Err : ApiError });
   resume_maturity : (MaturityKind) -> (variant { Ok : MaturityProgress; Err : ApiError });
   prove_maturity_mint : (MaturityKind, nat) -> (variant { Ok : MaturityProgress; Err : ApiError });
   set_paused : (bool) -> (variant { Ok; Err : ApiError });

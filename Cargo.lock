@@ -1131,6 +1131,7 @@ name = "io-nns-types"
 version = "0.1.0"
 dependencies = [
  "candid",
+ "ic-cdk",
  "ic-stable-structures",
  "io-accounts",
  "io-receipt-types",
@@ -1200,6 +1201,7 @@ dependencies = [
  "io-build-support",
  "io-core-model",
  "io-ledger-boundary",
+ "io-nns-types",
  "io-receipt-types",
  "io-reward-policy",
  "io-sns-reward-boundary",
@@ -1397,6 +1399,7 @@ version = "0.1.0"
 dependencies = [
  "candid",
  "ic-cdk",
+ "io-receipt-types",
  "serde",
 ]
 

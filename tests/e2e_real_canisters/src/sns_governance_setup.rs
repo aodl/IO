@@ -495,7 +495,7 @@ pub fn install_real_sns_governance_empty_state(
                 reject_cost_e8s: Some(10_000_000_000),
                 max_proposals_to_keep_per_action: Some(100),
                 wait_for_quiet_deadline_increase_seconds: Some(1),
-                max_number_of_neurons: Some(100_000),
+                max_number_of_neurons: Some(1_000),
                 transaction_fee_e8s: Some(10_000),
                 max_number_of_proposals_with_ballots: Some(700),
                 max_age_bonus_percentage: Some(0),
@@ -1412,7 +1412,6 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         assert_eq!(progress, Ok(expected));
     };
     backing_step(RewardBackingProgress::BatchFrozen { generation: 1 });
-    backing_step(RewardBackingProgress::TargetAccepted { generation: 1 });
     backing_step(RewardBackingProgress::MaturityPrepared { generation: 1 });
 
     let status: Status = decode_one(
@@ -1650,7 +1649,6 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     }
 
     backing_step(RewardBackingProgress::BatchFrozen { generation: 2 });
-    backing_step(RewardBackingProgress::TargetAccepted { generation: 2 });
     backing_step(RewardBackingProgress::MaturityPrepared { generation: 2 });
     let zero_permit: Result<io_stream_manager::LiquidReceiptPermit, ApiError> = decode_one(
         &pic.update_call(
@@ -1997,7 +1995,6 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         if day == 4 {
             let total = expected_live.values().copied().sum::<u128>();
             backing_step(RewardBackingProgress::BatchFrozen { generation: 3 });
-            backing_step(RewardBackingProgress::TargetAccepted { generation: 3 });
             backing_step(RewardBackingProgress::MaturityPrepared { generation: 3 });
             frozen_batch_total = Some(total);
             expected_live.clear();
@@ -2151,7 +2148,6 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     let after_fourteen = stream_status();
     assert_eq!(after_fourteen.processed_reward_event_count, 14);
     assert_eq!(entry_map(&after_fourteen), expected_live);
-    backing_step(RewardBackingProgress::AwaitingReceipt { generation: 3 });
 
     set_stream_paused(true);
     let missed_one = advance_until_reward_event(&fixture, 0, previous_round);
@@ -2583,7 +2579,7 @@ pub fn test_nervous_system_parameters() -> NervousSystemParameters {
         reject_cost_e8s: Some(100_000_000),
         max_proposals_to_keep_per_action: Some(100),
         wait_for_quiet_deadline_increase_seconds: Some(1),
-        max_number_of_neurons: Some(100_000),
+        max_number_of_neurons: Some(1_000),
         transaction_fee_e8s: Some(10_000),
         max_number_of_proposals_with_ballots: Some(700),
         max_age_bonus_percentage: Some(0),

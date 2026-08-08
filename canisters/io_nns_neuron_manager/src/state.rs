@@ -137,13 +137,7 @@ pub struct TwoWeekTarget {
     pub status: TwoWeekTargetStatus,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum TwoWeekTargetStatus {
-    UnderTarget,
-    AtTarget,
-    AtTargetWithinUnwindTolerance,
-    OverTarget,
-}
+pub use io_receipt_types::BackingTargetStatus as TwoWeekTargetStatus;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct NnsStateV1 {

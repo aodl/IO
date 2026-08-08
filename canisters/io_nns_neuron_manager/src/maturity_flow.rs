@@ -42,15 +42,9 @@ pub(crate) async fn start_observed(
     }
     let (neuron_id, destination) = identity(&snapshot.config, kind);
     let observation = execution::query_neuron_observation(&snapshot.config, neuron_id).await?;
-    let stake_maturity_e8s = observation
-        .maturity_e8s
-        .checked_mul(40)
-        .ok_or_else(|| ApiError::Invalid("maturity stake calculation overflow".into()))?
-        / 100;
-    let remaining_maturity_e8s = observation
-        .maturity_e8s
-        .checked_sub(stake_maturity_e8s)
-        .ok_or_else(|| ApiError::Invalid("maturity split underflow".into()))?;
+    let (stake_maturity_e8s, remaining_maturity_e8s) =
+        crate::maturity::split_maturity(observation.maturity_e8s)
+            .ok_or_else(|| ApiError::Invalid("maturity split overflow".into()))?;
     if remaining_maturity_e8s < MINIMUM_DISBURSEMENT_E8S {
         return Err(ApiError::BelowMaturityThreshold {
             remaining_e8s: remaining_maturity_e8s,

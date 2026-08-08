@@ -307,13 +307,11 @@ pub async fn prepare_liquid_receipt(
             ))
         }
         ReceiptKind::TwoWeekMaturity
-            if current.pending_entitlement_status
-                != state::PendingEntitlementStatus::MaturityPrepared
-                || args.entitlement_batch_generation
-                    != current
-                        .pending_entitlement_batch
-                        .as_ref()
-                        .map(|batch| batch.generation) =>
+            if args.entitlement_batch_generation
+                != current
+                    .pending_entitlement_batch
+                    .as_ref()
+                    .map(|batch| batch.generation) =>
         {
             return Err(ApiError::Invalid(
                 "receipt does not match pending entitlement batch".into(),

@@ -3,6 +3,36 @@ use io_accounts::Account;
 use serde::Deserialize;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum BackingTargetStatus {
+    UnderTarget,
+    AtTarget,
+    AtTargetWithinUnwindTolerance,
+    OverTarget,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum BackingNotReadyReason {
+    Paused,
+    Busy,
+    BaselineUnreconciled,
+    UnderTarget,
+    OverTarget,
+    BelowThreshold,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum TwoWeekBackingReadiness {
+    Ready {
+        target_status: BackingTargetStatus,
+        ordinary_maturity_e8s: u64,
+        retained_maturity_e8s: u64,
+        liquid_maturity_e8s: u64,
+        minimum_disbursement_e8s: u64,
+    },
+    NotReady(BackingNotReadyReason),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum ReceiptKind {
     Jupiter,
     TwoWeekMaturity,

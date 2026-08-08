@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 candid.workspace = true
 ic-stable-structures.workspace = true
+ic-cdk.workspace = true
 io-accounts = { path = "../io_accounts" }
 io-receipt-types.workspace = true
 serde.workspace = true

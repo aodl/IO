@@ -10,6 +10,11 @@ use io_accounts::Account;
 pub const MINIMUM_DISBURSEMENT_E8S: u64 = 100_000_000;
 pub const DISBURSEMENT_DELAY_SECONDS: u64 = 7 * 24 * 60 * 60;
 
+pub fn split_maturity(maturity_e8s: u64) -> Option<(u64, u64)> {
+    let retained = maturity_e8s.checked_mul(40)? / 100;
+    Some((retained, maturity_e8s - retained))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum MaturityKind {
     TwoYear,

@@ -61,13 +61,28 @@ pub async fn prepare(
     caller: Principal,
     args: PrepareTwoWeekMaturityArgs,
 ) -> Result<MaturityProgress, ApiError> {
-    let snapshot = state::read();
-    if snapshot.lifecycle != Lifecycle::Ready {
+    let initial = state::read();
+    if initial.lifecycle != Lifecycle::Ready {
         return Err(ApiError::Paused);
     }
-    if caller != snapshot.config.stream_manager {
+    if caller != initial.config.stream_manager {
         return Err(ApiError::Unauthorized);
     }
+    let target_status = crate::api::accept_two_week_target(crate::api::SetTwoWeekTargetArgs {
+        generation: args.entitlement_batch_generation,
+        target_e8s: args.target_e8s,
+    })
+    .await?;
+    if !matches!(
+        target_status,
+        crate::state::TwoWeekTargetStatus::AtTarget
+            | crate::state::TwoWeekTargetStatus::AtTargetWithinUnwindTolerance
+    ) {
+        return Err(ApiError::Pending(format!(
+            "two-week target is {target_status:?}"
+        )));
+    }
+    let snapshot = state::read();
     if args.entitlement_batch_generation == 0
         || args.entitlement_batch_generation != snapshot.latest_target_generation
         || snapshot

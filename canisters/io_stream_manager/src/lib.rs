@@ -6,7 +6,6 @@ pub mod receipt;
 mod receipt_preparation;
 pub mod redemption;
 mod reward_evidence;
-mod reward_nns;
 mod reward_settlement;
 mod reward_timer;
 pub mod rewards;
@@ -17,6 +16,7 @@ use candid::{CandidType, Principal};
 use serde::Deserialize;
 
 pub use api::{ApiError, LiquidReceiptProgress, RedemptionProgress, Status, StreamProgress};
+pub use io_nns_types::reward_boundary::BackingNotReadyReason;
 pub use receipt::{
     CompleteLiquidReceiptArgs, CompletedReceiptResult, LiquidReceiptPermit,
     PrepareLiquidReceiptArgs, ReceiptKind,
@@ -44,7 +44,6 @@ pub fn init(args: InitArgs) {
         active_operation: None,
         reward_entitlements: RewardEntitlementAccumulator::default(),
         pending_entitlement_batch: None,
-        pending_entitlement_status: state::PendingEntitlementStatus::Frozen,
         latest_entitlement_batch_generation: 0,
         next_nns_receipt_sequence: 0,
         next_operation_sequence: state::OperationSequence(0),

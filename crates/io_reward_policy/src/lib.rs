@@ -3,46 +3,32 @@
 pub const DAILY_EVENT_CREDIT: u128 = 1_000_000_000_000_000_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SnsNeuronId(pub Vec<u8>);
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SnsNeuronIdConversionError {
-    NonCanonical,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntitlementCredit {
-    pub sns_neuron_id: SnsNeuronId,
+    pub sns_neuron_id: Vec<u8>,
     pub accumulated_eligible_credit: u128,
 }
 
 pub fn entitlement_credit_from_bytes(
     sns_neuron_id: Vec<u8>,
     accumulated_eligible_credit: u128,
-) -> Result<EntitlementCredit, SnsNeuronIdConversionError> {
-    if sns_neuron_id.len() != 32 {
-        return Err(SnsNeuronIdConversionError::NonCanonical);
-    }
-    Ok(EntitlementCredit {
-        sns_neuron_id: SnsNeuronId(sns_neuron_id),
+) -> EntitlementCredit {
+    EntitlementCredit {
+        sns_neuron_id,
         accumulated_eligible_credit,
-    })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RewardAllocation {
-    pub sns_neuron_id: SnsNeuronId,
+    pub sns_neuron_id: Vec<u8>,
     pub io_e8s: u128,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AllocationOutcome {
     pub allocations: Vec<RewardAllocation>,
-    pub eligible_pool_e8s: u128,
     pub forfeited_io_e8s: u128,
     pub rounding_dust_e8s: u128,
-    pub eligible_credit_total: u128,
-    pub policy_credit_total: u128,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,11 +135,8 @@ pub fn allocate_rewards(
     if eligible_pool_e8s == 0 || eligible_credit_total == 0 {
         return Ok(AllocationOutcome {
             allocations: Vec::new(),
-            eligible_pool_e8s,
             forfeited_io_e8s,
             rounding_dust_e8s: eligible_pool_e8s,
-            eligible_credit_total,
-            policy_credit_total,
         });
     }
     let mut issued = 0u128;
@@ -179,13 +162,10 @@ pub fn allocate_rewards(
     }
     Ok(AllocationOutcome {
         allocations,
-        eligible_pool_e8s,
         forfeited_io_e8s,
         rounding_dust_e8s: eligible_pool_e8s
             .checked_sub(issued)
             .ok_or(RewardPolicyError::ArithmeticOverflow)?,
-        eligible_credit_total,
-        policy_credit_total,
     })
 }
 
@@ -195,7 +175,7 @@ mod tests {
 
     fn credit(id: u64, accumulated_eligible_credit: u128) -> EntitlementCredit {
         EntitlementCredit {
-            sns_neuron_id: SnsNeuronId(vec![id as u8; 32]),
+            sns_neuron_id: vec![id as u8; 32],
             accumulated_eligible_credit,
         }
     }
@@ -241,7 +221,6 @@ mod tests {
     fn zero_eligible_credit_forfeits_the_full_pool() {
         let outcome = allocate_rewards(100, DAILY_EVENT_CREDIT, &[]).unwrap();
         assert!(outcome.allocations.is_empty());
-        assert_eq!(outcome.eligible_credit_total, 0);
         assert_eq!(outcome.forfeited_io_e8s, 100);
         assert_eq!(outcome.rounding_dust_e8s, 0);
     }
@@ -254,7 +233,7 @@ mod tests {
             outcome
                 .allocations
                 .iter()
-                .map(|allocation| allocation.sns_neuron_id.0[0])
+                .map(|allocation| allocation.sns_neuron_id[0])
                 .collect::<Vec<_>>(),
             vec![7, 42, 99]
         );
@@ -287,7 +266,6 @@ mod tests {
     #[test]
     fn distributed_forfeited_and_dust_conserve_the_backed_pool() {
         let outcome = allocate_rewards(101, 6, &[credit(1, 1), credit(2, 2)]).unwrap();
-        assert_eq!(outcome.eligible_pool_e8s, 50);
         assert_eq!(outcome.forfeited_io_e8s, 51);
         assert_eq!(outcome.rounding_dust_e8s, 1);
         assert_eq!(sum_allocations(&outcome), 49);

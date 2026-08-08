@@ -12,8 +12,9 @@ use candid::CandidType;
 use serde::Deserialize;
 
 pub use api::{
-    ApiError, JupiterProgress, MaturityProgress, NnsProgress, NotifyJupiterDepositArgs,
-    PrepareTwoWeekMaturityArgs, SetTwoWeekTargetArgs, Status,
+    ApiError, BackingNotReadyReason, JupiterProgress, MaturityProgress, NnsProgress,
+    NotifyJupiterDepositArgs, ObserveTwoWeekBackingReadinessArgs, PrepareTwoWeekMaturityArgs,
+    Status, TwoWeekBackingReadiness,
 };
 pub use maturity::MaturityKind;
 pub use state::{Lifecycle, NnsConfig, NnsStateV1, TwoWeekTargetStatus};
@@ -60,13 +61,6 @@ pub async fn notify_jupiter_deposit(
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn set_two_week_target(
-    args: SetTwoWeekTargetArgs,
-) -> Result<TwoWeekTargetStatus, ApiError> {
-    api::set_two_week_target(ic_cdk::api::msg_caller(), args).await
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub async fn resume() -> Result<NnsProgress, ApiError> {
     api::resume().await
 }
@@ -86,6 +80,13 @@ pub async fn prepare_two_week_maturity(
     args: PrepareTwoWeekMaturityArgs,
 ) -> Result<MaturityProgress, ApiError> {
     api::prepare_two_week_maturity(ic_cdk::api::msg_caller(), args).await
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn observe_two_week_backing_readiness(
+    args: ObserveTwoWeekBackingReadinessArgs,
+) -> Result<TwoWeekBackingReadiness, ApiError> {
+    api::observe_two_week_backing_readiness(ic_cdk::api::msg_caller(), args).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]

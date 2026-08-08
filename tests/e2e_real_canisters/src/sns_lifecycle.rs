@@ -2473,7 +2473,7 @@ mod tests {
 
         let neuron = finalized_neuron_for_participant(&fixture, participant, &neuron_id).unwrap();
         let snapshot = io_reward_policy::EntitlementCredit {
-            sns_neuron_id: io_reward_policy::SnsNeuronId(neuron_id.id.clone()),
+            sns_neuron_id: neuron_id.id.clone(),
             accumulated_eligible_credit: u128::from(neuron.cached_neuron_stake_e8s),
         };
         let allocation = io_reward_policy::allocate_rewards(

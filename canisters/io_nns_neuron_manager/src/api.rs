@@ -1,4 +1,5 @@
 use candid::{CandidType, Principal};
+pub use io_receipt_types::{BackingNotReadyReason, TwoWeekBackingReadiness};
 use serde::Deserialize;
 
 use crate::{
@@ -38,6 +39,12 @@ pub struct SetTwoWeekTargetArgs {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct PrepareTwoWeekMaturityArgs {
     pub entitlement_batch_generation: u64,
+    pub target_e8s: u128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct ObserveTwoWeekBackingReadinessArgs {
+    pub target_e8s: u128,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -121,13 +128,9 @@ pub async fn notify_jupiter_deposit(
     crate::jupiter_flow::notify_jupiter_deposit(caller, args).await
 }
 
-pub async fn set_two_week_target(
-    caller: Principal,
+pub(crate) async fn accept_two_week_target(
     args: SetTwoWeekTargetArgs,
 ) -> Result<TwoWeekTargetStatus, ApiError> {
-    if caller != state::read().config.stream_manager {
-        return Err(ApiError::Unauthorized);
-    }
     let mut current = ready()?;
     let expected = current
         .latest_target_generation
@@ -247,6 +250,62 @@ pub async fn prepare_two_week_maturity(
     args: PrepareTwoWeekMaturityArgs,
 ) -> Result<MaturityProgress, ApiError> {
     crate::two_week_binding::prepare(caller, args).await
+}
+
+pub async fn observe_two_week_backing_readiness(
+    caller: Principal,
+    args: ObserveTwoWeekBackingReadinessArgs,
+) -> Result<TwoWeekBackingReadiness, ApiError> {
+    let snapshot = state::read();
+    if caller != snapshot.config.stream_manager {
+        return Err(ApiError::Unauthorized);
+    }
+    let observation =
+        execution::query_neuron_observation(&snapshot.config, snapshot.config.two_week_neuron_id)
+            .await?;
+    let maturity = observation.maturity_e8s;
+    let (retained, liquid) = crate::maturity::split_maturity(maturity)
+        .ok_or_else(|| ApiError::Invalid("maturity readiness split overflow".into()))?;
+    let tolerance = snapshot
+        .config
+        .expected_icp_fee_e8s
+        .checked_mul(2)
+        .ok_or_else(|| ApiError::Invalid("unwind tolerance overflow".into()))?;
+    let target_status = state::target_status(
+        observation.snapshot.cached_stake_e8s,
+        args.target_e8s,
+        tolerance,
+    );
+    let baseline_reconciled = snapshot.two_week_maturity_baseline_reconciled
+        || (snapshot.latest_target_generation == 0 && maturity == 0);
+    let reason = if snapshot.lifecycle != Lifecycle::Ready {
+        Some(BackingNotReadyReason::Paused)
+    } else if state::read() != snapshot
+        || snapshot.active_operation.is_some()
+        || snapshot.pending_two_week_maturity.is_some()
+    {
+        Some(BackingNotReadyReason::Busy)
+    } else if !baseline_reconciled {
+        Some(BackingNotReadyReason::BaselineUnreconciled)
+    } else if target_status == TwoWeekTargetStatus::UnderTarget {
+        Some(BackingNotReadyReason::UnderTarget)
+    } else if target_status == TwoWeekTargetStatus::OverTarget {
+        Some(BackingNotReadyReason::OverTarget)
+    } else if liquid < crate::maturity::MINIMUM_DISBURSEMENT_E8S {
+        Some(BackingNotReadyReason::BelowThreshold)
+    } else {
+        None
+    };
+    if let Some(reason) = reason {
+        return Ok(TwoWeekBackingReadiness::NotReady(reason));
+    }
+    Ok(TwoWeekBackingReadiness::Ready {
+        target_status,
+        ordinary_maturity_e8s: maturity,
+        retained_maturity_e8s: retained,
+        liquid_maturity_e8s: liquid,
+        minimum_disbursement_e8s: crate::maturity::MINIMUM_DISBURSEMENT_E8S,
+    })
 }
 
 pub async fn resume_maturity(kind: MaturityKind) -> Result<MaturityProgress, ApiError> {

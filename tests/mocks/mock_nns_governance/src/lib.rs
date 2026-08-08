@@ -60,6 +60,7 @@ pub enum TargetStatus {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct PrepareTwoWeekMaturityArgs {
     pub entitlement_batch_generation: u64,
+    pub target_e8s: u128,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -73,27 +74,23 @@ pub enum NnsError {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn set_two_week_target(args: SetTargetArgs) -> Result<TargetStatus, NnsError> {
-    STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
-        if let Some(existing) = &state.two_week_target {
-            if existing.generation == args.generation && existing != &args {
-                return Err(NnsError::Invalid(
-                    "generation was reused with a different target".into(),
-                ));
-            }
-        }
-        state.two_week_target = Some(args);
-        Ok(TargetStatus::AtTarget)
-    })
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn prepare_two_week_maturity(
     args: PrepareTwoWeekMaturityArgs,
 ) -> Result<PreparedMaturityProgress, NnsError> {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
+        let target = SetTargetArgs {
+            generation: args.entitlement_batch_generation,
+            target_e8s: args.target_e8s,
+        };
+        if state
+            .two_week_target
+            .as_ref()
+            .is_some_and(|existing| existing != &target)
+        {
+            return Err(NnsError::Invalid("generation conflicts with target".into()));
+        }
+        state.two_week_target = Some(target);
         if state
             .two_week_target
             .as_ref()
@@ -118,6 +115,25 @@ pub fn prepare_two_week_maturity(
         }
         state.maturity_preparation = Some(args);
         Ok(PreparedMaturityProgress::Observed)
+    })
+}
+
+#[derive(CandidType, Deserialize)]
+pub struct ObserveReadinessArgs {
+    target_e8s: u128,
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn observe_two_week_backing_readiness(
+    args: ObserveReadinessArgs,
+) -> Result<io_receipt_types::TwoWeekBackingReadiness, NnsError> {
+    let _ = args.target_e8s;
+    Ok(io_receipt_types::TwoWeekBackingReadiness::Ready {
+        target_status: io_receipt_types::BackingTargetStatus::AtTarget,
+        ordinary_maturity_e8s: 200_000_000,
+        retained_maturity_e8s: 80_000_000,
+        liquid_maturity_e8s: 120_000_000,
+        minimum_disbursement_e8s: 100_000_000,
     })
 }
 

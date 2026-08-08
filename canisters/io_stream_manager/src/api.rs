@@ -71,7 +71,6 @@ pub struct Status {
     pub governance_parameters_fresh: bool,
     pub pending_entitlement_batch_eligible_credit: Option<u128>,
     pub pending_entitlement_batch_policy_credit: Option<u128>,
-    pub pending_entitlement_status: Option<crate::state::PendingEntitlementStatus>,
 }
 
 pub fn get_status() -> Status {
@@ -133,10 +132,6 @@ pub fn get_status() -> Status {
             .pending_entitlement_batch
             .as_ref()
             .map(|batch| batch.policy_credit_total),
-        pending_entitlement_status: state
-            .pending_entitlement_batch
-            .as_ref()
-            .map(|_| state.pending_entitlement_status),
     }
 }
 

@@ -1,7 +1,7 @@
 use candid::{decode_one, encode_one, Principal};
 use io_nns_neuron_manager::{
-    state::Account, ApiError, InitArgs, Lifecycle, NnsConfig, SetTwoWeekTargetArgs, Status,
-    TwoWeekTargetStatus,
+    state::Account, ApiError, InitArgs, Lifecycle, MaturityProgress, NnsConfig,
+    PrepareTwoWeekMaturityArgs, Status,
 };
 use pocket_ic::PocketIc;
 
@@ -91,14 +91,14 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
     )
     .unwrap();
     assert_eq!(upgraded.lifecycle, Lifecycle::Paused);
-    let result: Result<TwoWeekTargetStatus, ApiError> = decode_one(
+    let result: Result<MaturityProgress, ApiError> = decode_one(
         &pic.update_call(
             canister,
             principal,
-            "set_two_week_target",
-            encode_one(SetTwoWeekTargetArgs {
+            "prepare_two_week_maturity",
+            encode_one(PrepareTwoWeekMaturityArgs {
+                entitlement_batch_generation: 1,
                 target_e8s: 1,
-                generation: 1,
             })
             .unwrap(),
         )

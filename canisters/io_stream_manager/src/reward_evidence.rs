@@ -93,40 +93,54 @@ pub(crate) async fn list_all_neurons(governance: Principal) -> Result<Vec<Neuron
         .map_err(governance_error)
 }
 
+fn require_unique_neurons(neurons: &[Neuron]) -> Result<(), ApiError> {
+    let mut seen = std::collections::BTreeSet::new();
+    if neurons.iter().any(|neuron| !seen.insert(&neuron.id)) {
+        return Err(ApiError::Invalid(
+            "SNS list_neurons returned a duplicate neuron ID".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn eligible_destination(
+    governance: Principal,
+    excluded_io_accounts: &[Account],
+    neuron: &Neuron,
+) -> Result<Option<Account>, ApiError> {
+    if !neuron.is_non_dissolving_for(io_core_model::TWO_WEEK_SECONDS) {
+        return Ok(None);
+    }
+    if neuron.id.len() != 32 {
+        return Err(ApiError::Invalid(
+            "eligible SNS neuron ID is not a canonical staking subaccount".into(),
+        ));
+    }
+    let destination = Account {
+        owner: governance,
+        subaccount: Some(neuron.id.clone()),
+    };
+    let excluded = excluded_io_accounts
+        .iter()
+        .try_fold(false, |matched, account| {
+            destination
+                .effective_eq(account)
+                .map(|same| matched || same)
+        });
+    excluded
+        .map(|excluded| (!excluded).then_some(destination))
+        .map_err(ApiError::Invalid)
+}
+
 pub(crate) fn eligible_stake_total(
     governance: Principal,
     excluded_io_accounts: &[Account],
     neurons: &[Neuron],
 ) -> Result<u128, ApiError> {
-    let mut seen = std::collections::BTreeSet::new();
+    require_unique_neurons(neurons)?;
     let mut total = 0u128;
     for neuron in neurons {
-        if !seen.insert(neuron.id.clone()) {
-            return Err(ApiError::Invalid(
-                "SNS list_neurons returned a duplicate neuron ID".into(),
-            ));
-        }
-        if !neuron.is_non_dissolving_for(io_core_model::TWO_WEEK_SECONDS) {
-            continue;
-        }
-        if neuron.id.len() != 32 {
-            return Err(ApiError::Invalid(
-                "eligible SNS neuron ID is not a canonical staking subaccount".into(),
-            ));
-        }
-        let destination = Account {
-            owner: governance,
-            subaccount: Some(neuron.id.clone()),
-        };
-        let excluded = excluded_io_accounts
-            .iter()
-            .try_fold(false, |matched, excluded| {
-                destination
-                    .effective_eq(excluded)
-                    .map(|same| matched || same)
-            })
-            .map_err(ApiError::Invalid)?;
-        if !excluded {
+        if eligible_destination(governance, excluded_io_accounts, neuron)?.is_some() {
             total = total
                 .checked_add(neuron.cached_neuron_stake_e8s)
                 .ok_or_else(|| ApiError::Invalid("eligible stake total overflow".into()))?;
@@ -144,17 +158,11 @@ pub(crate) fn event_credits(
     let proposal_count = event.settled_proposal_count().map_err(governance_error)?;
     let event_id = event_id(event)?;
     let no_proposals = proposal_count == 0;
-    let mut seen_neurons = std::collections::BTreeSet::new();
-    let mut seen_destinations = std::collections::BTreeSet::new();
+    require_unique_neurons(neurons)?;
     let mut canonical_share_total = 0u128;
     let mut eligible_stake_total = 0u128;
     let mut eligible = Vec::new();
     for neuron in neurons {
-        if !seen_neurons.insert(neuron.id.clone()) {
-            return Err(ApiError::Invalid(
-                "SNS list_neurons returned a duplicate neuron ID".into(),
-            ));
-        }
         let current_shares = if no_proposals {
             0
         } else {
@@ -173,35 +181,10 @@ pub(crate) fn event_credits(
         canonical_share_total = canonical_share_total
             .checked_add(current_shares)
             .ok_or_else(|| ApiError::Invalid("canonical reward-share total overflow".into()))?;
-        if !neuron.is_non_dissolving_for(io_core_model::TWO_WEEK_SECONDS) {
+        let Some(destination) = eligible_destination(governance, excluded_io_accounts, neuron)?
+        else {
             continue;
-        }
-        if neuron.id.len() != 32 {
-            return Err(ApiError::Invalid(
-                "eligible SNS neuron ID is not a canonical staking subaccount".into(),
-            ));
-        }
-        let destination = Account {
-            owner: governance,
-            subaccount: Some(neuron.id.clone()),
         };
-        if excluded_io_accounts
-            .iter()
-            .try_fold(false, |matched, excluded| {
-                destination
-                    .effective_eq(excluded)
-                    .map(|same| matched || same)
-            })
-            .map_err(ApiError::Invalid)?
-        {
-            continue;
-        }
-        let canonical_destination = destination.canonical().map_err(ApiError::Invalid)?;
-        if !seen_destinations.insert(canonical_destination) {
-            return Err(ApiError::Invalid(
-                "eligible SNS neurons produced duplicate destinations".into(),
-            ));
-        }
         eligible_stake_total = eligible_stake_total
             .checked_add(neuron.cached_neuron_stake_e8s)
             .ok_or_else(|| ApiError::Invalid("eligible stake total overflow".into()))?;
@@ -734,7 +717,6 @@ mod tests {
                     entry.sns_neuron_id.clone(),
                     entry.accumulated_eligible_credit,
                 )
-                .unwrap()
             })
             .collect::<Vec<_>>();
         let allocation = io_reward_policy::allocate_rewards(
@@ -784,8 +766,7 @@ mod tests {
             &[io_reward_policy::entitlement_credit_from_bytes(
                 weights[0].sns_neuron_id.clone(),
                 weights[0].event_credit,
-            )
-            .unwrap()],
+            )],
         )
         .unwrap();
         assert_eq!(allocation.allocations[0].io_e8s, 500);

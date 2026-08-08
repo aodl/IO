@@ -96,16 +96,18 @@ type RewardEventObservation = record {
   eligible_credit_total : nat;
   observed_at_nanos : nat64;
 };
-type PendingEntitlementStatus = variant {
-  Frozen;
-  TargetAccepted;
-  MaturityPrepared;
+type BackingNotReadyReason = variant {
+  Paused;
+  Busy;
+  BaselineUnreconciled;
+  UnderTarget;
+  OverTarget;
+  BelowThreshold;
 };
 type RewardBackingProgress = variant {
+  Pending : record { reason : BackingNotReadyReason };
   BatchFrozen : record { generation : nat64 };
-  TargetAccepted : record { generation : nat64 };
   MaturityPrepared : record { generation : nat64 };
-  AwaitingReceipt : record { generation : nat64 };
 };
 type JupiterReceiptResult = record {
   request_fingerprint : blob;
@@ -170,7 +172,6 @@ type Status = record {
   governance_parameters_fresh : bool;
   pending_entitlement_batch_eligible_credit : opt nat;
   pending_entitlement_batch_policy_credit : opt nat;
-  pending_entitlement_status : opt PendingEntitlementStatus;
 };
 service : (InitArgs) -> {
   redeem : (RedeemArgs) -> (variant { Ok : RedemptionProgress; Err : ApiError });

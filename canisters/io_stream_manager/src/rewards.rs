@@ -12,17 +12,17 @@ use crate::{
         classify_sequence, eligible_stake_total, event_credits, event_id, installed_governance,
         latest_reward_event, list_all_neurons, merge_event_credits, require_consistent_event,
     },
-    reward_nns::{self as reward_nns, CallError, TargetStatus},
     state::{
         self, Account, Lifecycle, LiquidReceiptStreamOperation, PendingEntitlementBatch,
-        PendingEntitlementStatus, RewardEventClassification, RewardEventId, RewardEventObservation,
-        SkippedRewardEvent, StreamOperation,
+        RewardEventClassification, RewardEventId, RewardEventObservation, SkippedRewardEvent,
+        StreamOperation,
     },
     transfer::{
         classify_result, deterministic_memo, ClassifiedResult, OwnTransferIntent, TransferAttempt,
         TransferState,
     },
 };
+use io_nns_types::reward_boundary::{self as reward_nns, CallError};
 
 #[derive(Clone, Debug, CandidType)]
 struct ManageNeuronRequest {
@@ -50,10 +50,15 @@ struct Empty {}
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum RewardBackingProgress {
-    BatchFrozen { generation: u64 },
-    TargetAccepted { generation: u64 },
-    MaturityPrepared { generation: u64 },
-    AwaitingReceipt { generation: u64 },
+    Pending {
+        reason: reward_nns::BackingNotReadyReason,
+    },
+    BatchFrozen {
+        generation: u64,
+    },
+    MaturityPrepared {
+        generation: u64,
+    },
 }
 
 pub async fn observe(now_nanos: u64) -> Result<RewardEventObservation, ApiError> {
@@ -232,23 +237,9 @@ pub async fn resume_backing(now_nanos: u64) -> Result<RewardBackingProgress, Api
     if snapshot.lifecycle != Lifecycle::Ready {
         return Err(ApiError::Paused);
     }
-    match (
-        snapshot.pending_entitlement_batch.clone(),
-        snapshot.pending_entitlement_status,
-    ) {
-        (Some(batch), PendingEntitlementStatus::Frozen) => submit_target(snapshot, batch).await,
-        (Some(batch), PendingEntitlementStatus::TargetAccepted) => {
-            submit_maturity(snapshot, batch).await
-        }
-        (Some(batch), PendingEntitlementStatus::MaturityPrepared) => {
-            Ok(RewardBackingProgress::AwaitingReceipt {
-                generation: batch.generation,
-            })
-        }
-        (None, PendingEntitlementStatus::Frozen) => freeze_batch(snapshot, now_nanos).await,
-        (None, _) => Err(ApiError::Invalid(
-            "pending entitlement status lacks a batch".into(),
-        )),
+    match snapshot.pending_entitlement_batch.clone() {
+        Some(batch) => submit_maturity(snapshot, batch).await,
+        None => freeze_batch(snapshot, now_nanos).await,
     }
 }
 
@@ -256,6 +247,13 @@ async fn freeze_batch(
     snapshot: crate::state::StreamStateV1,
     now_nanos: u64,
 ) -> Result<RewardBackingProgress, ApiError> {
+    if snapshot.reward_entitlements.reward_processing_paused
+        || !snapshot.reward_entitlements.governance_parameters_fresh
+    {
+        return Err(ApiError::Invalid(
+            "reward backing cannot freeze without fresh Governance readiness".into(),
+        ));
+    }
     if snapshot.reward_entitlements.accumulated_policy_credit == 0 {
         return Err(ApiError::Pending(
             "no new entitlement event is available to freeze".into(),
@@ -286,6 +284,15 @@ async fn freeze_batch(
         .ok_or_else(|| ApiError::Invalid("invalid redeemable IO supply".into()))?;
     let target = io_core_model::two_week_target(active_io, canonical.liquid_icp_e8s, redeemable)
         .map_err(|error| ApiError::Invalid(format!("two-week target failed: {error:?}")))?;
+    let readiness = reward_nns::observe_readiness(snapshot.config.nns_manager, target)
+        .await
+        .map_err(nns_call_error)?;
+    match readiness {
+        io_receipt_types::TwoWeekBackingReadiness::NotReady(reason) => {
+            return Ok(RewardBackingProgress::Pending { reason });
+        }
+        io_receipt_types::TwoWeekBackingReadiness::Ready { .. } => {}
+    }
     let generation = snapshot
         .latest_entitlement_batch_generation
         .checked_add(1)
@@ -323,75 +330,28 @@ async fn freeze_batch(
     latest.reward_entitlements.entries.clear();
     latest.reward_entitlements.accumulated_policy_credit = 0;
     latest.pending_entitlement_batch = Some(batch);
-    latest.pending_entitlement_status = PendingEntitlementStatus::Frozen;
     latest.latest_entitlement_batch_generation = generation;
     state::write(latest);
     Ok(RewardBackingProgress::BatchFrozen { generation })
-}
-
-async fn submit_target(
-    snapshot: crate::state::StreamStateV1,
-    batch: PendingEntitlementBatch,
-) -> Result<RewardBackingProgress, ApiError> {
-    let capacity = reward_nns::set_target(
-        snapshot.config.nns_manager,
-        batch.generation,
-        batch.target_icp_e8s,
-    )
-    .await
-    .map_err(nns_call_error)?;
-    if capacity == TargetStatus::UnderTarget {
-        return Err(ApiError::Pending(
-            "canonical two-week NNS principal is UnderTarget".into(),
-        ));
-    }
-    advance_pending_status(
-        &snapshot,
-        &batch,
-        PendingEntitlementStatus::Frozen,
-        PendingEntitlementStatus::TargetAccepted,
-    )?;
-    Ok(RewardBackingProgress::TargetAccepted {
-        generation: batch.generation,
-    })
 }
 
 async fn submit_maturity(
     snapshot: crate::state::StreamStateV1,
     batch: PendingEntitlementBatch,
 ) -> Result<RewardBackingProgress, ApiError> {
-    reward_nns::prepare_maturity(snapshot.config.nns_manager, batch.generation)
-        .await
-        .map_err(nns_call_error)?;
-    advance_pending_status(
-        &snapshot,
-        &batch,
-        PendingEntitlementStatus::TargetAccepted,
-        PendingEntitlementStatus::MaturityPrepared,
-    )?;
+    reward_nns::prepare_maturity(
+        snapshot.config.nns_manager,
+        batch.generation,
+        batch.target_icp_e8s,
+    )
+    .await
+    .map_err(nns_call_error)?;
+    if state::read() != snapshot {
+        return Err(ApiError::Busy);
+    }
     Ok(RewardBackingProgress::MaturityPrepared {
         generation: batch.generation,
     })
-}
-
-fn advance_pending_status(
-    expected: &crate::state::StreamStateV1,
-    batch: &PendingEntitlementBatch,
-    from: PendingEntitlementStatus,
-    to: PendingEntitlementStatus,
-) -> Result<(), ApiError> {
-    let mut latest = state::read();
-    if latest.config != expected.config
-        || latest.control_epoch != expected.control_epoch
-        || latest.lifecycle != Lifecycle::Ready
-        || latest.pending_entitlement_batch.as_ref() != Some(batch)
-        || latest.pending_entitlement_status != from
-    {
-        return Err(ApiError::Busy);
-    }
-    latest.pending_entitlement_status = to;
-    state::write(latest);
-    Ok(())
 }
 
 fn nns_call_error(error: CallError) -> ApiError {
@@ -472,9 +432,8 @@ async fn prepare_settlement(
                 entry.sns_neuron_id.clone(),
                 entry.accumulated_eligible_credit,
             )
-            .map_err(|error| ApiError::Invalid(format!("reward participant failed: {error:?}")))
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Vec<_>>();
     let allocation =
         io_reward_policy::allocate_rewards(pool, batch.policy_credit_total, &participants)
             .map_err(|error| ApiError::Invalid(format!("reward allocation failed: {error:?}")))?;
@@ -482,7 +441,7 @@ async fn prepare_settlement(
         .allocations
         .iter()
         .map(|allocation| {
-            let id = allocation.sns_neuron_id.0.clone();
+            let id = allocation.sns_neuron_id.clone();
             let entry = batch
                 .entries
                 .iter()
@@ -825,7 +784,6 @@ fn complete_settlement(
         .ok_or_else(|| ApiError::Invalid("receipt sequence overflow".into()))?;
     latest.active_operation = None;
     latest.pending_entitlement_batch = None;
-    latest.pending_entitlement_status = PendingEntitlementStatus::Frozen;
     state::write(latest);
     Ok(crate::api::LiquidReceiptProgress::Completed(result))
 }

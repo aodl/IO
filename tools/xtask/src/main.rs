@@ -990,7 +990,7 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
         &nns_production,
         &[
             "  notify_jupiter_deposit :",
-            "  set_two_week_target :",
+            "  observe_two_week_backing_readiness :",
             "  prepare_two_week_maturity :",
             "  resume :",
             "  prove_active_transfer :",
@@ -8009,7 +8009,7 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "canisters/io_nns_neuron_manager/io_nns_neuron_manager.did",
-            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  notify_jupiter_deposit : () -> ();\n  set_two_week_target : () -> ();\n  prepare_two_week_maturity : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  get_status : () -> () query;\n}\n",
+            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  notify_jupiter_deposit : () -> ();\n  observe_two_week_backing_readiness : () -> ();\n  prepare_two_week_maturity : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  get_status : () -> () query;\n}\n",
         );
         write(
             root,

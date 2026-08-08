@@ -270,14 +270,6 @@ pub struct PendingEntitlementBatch {
     pub processed_event_count: u64,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
-pub enum PendingEntitlementStatus {
-    #[default]
-    Frozen,
-    TargetAccepted,
-    MaturityPrepared,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct RewardEventId {
     pub end_timestamp_seconds: u64,
@@ -293,8 +285,6 @@ pub struct StreamStateV1 {
     pub reward_entitlements: RewardEntitlementAccumulator,
     #[serde(default)]
     pub pending_entitlement_batch: Option<PendingEntitlementBatch>,
-    #[serde(default)]
-    pub pending_entitlement_status: PendingEntitlementStatus,
     #[serde(default)]
     pub latest_entitlement_batch_generation: u64,
     pub next_nns_receipt_sequence: u64,
@@ -341,7 +331,6 @@ impl StreamStateV1 {
             active_operation: None,
             reward_entitlements: RewardEntitlementAccumulator::default(),
             pending_entitlement_batch: None,
-            pending_entitlement_status: PendingEntitlementStatus::Frozen,
             latest_entitlement_batch_generation: 0,
             next_nns_receipt_sequence: 0,
             next_operation_sequence: OperationSequence(0),
@@ -408,8 +397,6 @@ impl StreamStateV1 {
             if batch.generation != self.latest_entitlement_batch_generation {
                 return Err("pending entitlement batch generation is inconsistent".into());
             }
-        } else if self.pending_entitlement_status != PendingEntitlementStatus::Frozen {
-            return Err("pending entitlement status lacks a batch".into());
         }
         if let Some(completed) = &self.last_completed_receipt {
             completed.validate(&self.config, self.next_nns_receipt_sequence)?;
@@ -799,7 +786,6 @@ mod tests {
                     governance_parameters_fresh: true,
                 },
                 pending_entitlement_batch: None,
-                pending_entitlement_status: PendingEntitlementStatus::Frozen,
                 latest_entitlement_batch_generation: 0,
                 next_nns_receipt_sequence: 0,
                 next_operation_sequence: OperationSequence(1),
@@ -845,7 +831,7 @@ mod tests {
     }
 
     #[test]
-    fn one_zero_weight_pending_batch_is_valid_and_status_is_typed() {
+    fn one_zero_credit_pending_batch_is_valid_without_a_parallel_status_machine() {
         let (canister_self, mut state) = valid_state();
         state.reward_entitlements.entries.clear();
         state.reward_entitlements.accumulated_policy_credit = 0;
@@ -859,11 +845,10 @@ mod tests {
             policy_credit_total: io_reward_policy::DAILY_EVENT_CREDIT,
             processed_event_count: 1,
         });
-        state.pending_entitlement_status = PendingEntitlementStatus::MaturityPrepared;
         state.latest_entitlement_batch_generation = 1;
         state.validate(canister_self).unwrap();
         state.pending_entitlement_batch = None;
-        assert!(state.validate(canister_self).is_err());
+        state.validate(canister_self).unwrap();
     }
 
     #[test]
@@ -882,7 +867,6 @@ mod tests {
             policy_credit_total: io_reward_policy::DAILY_EVENT_CREDIT,
             processed_event_count: 1,
         });
-        state.pending_entitlement_status = PendingEntitlementStatus::MaturityPrepared;
         state.latest_entitlement_batch_generation = 1;
         state.reward_entitlements.processed_event_count = 2;
         state.reward_entitlements.last_processed_event = Some(RewardEventId {
