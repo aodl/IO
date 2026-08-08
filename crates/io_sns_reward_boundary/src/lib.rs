@@ -1,6 +1,9 @@
 use candid::{CandidType, Principal};
 use serde::Deserialize;
 
+pub const MAX_NUMBER_OF_NEURONS: u64 = 1_000;
+const NEURON_PAGE_SIZE: u32 = 100;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     Retryable {
@@ -430,13 +433,12 @@ pub async fn get_exact_neuron(governance: Principal, id: &[u8]) -> Result<Option
 }
 
 pub async fn list_all_neurons(governance: Principal) -> Result<Vec<Neuron>, Error> {
-    const PAGE_SIZE: u32 = 100;
-    const MAX_PAGES: usize = 10;
+    const MAX_PAGES: usize = MAX_NUMBER_OF_NEURONS as usize / NEURON_PAGE_SIZE as usize;
     let mut neurons = Vec::new();
     let mut cursor = None;
     for page_index in 0..=MAX_PAGES {
-        let page = list_neurons(governance, PAGE_SIZE, cursor.clone()).await?;
-        if page.len() > PAGE_SIZE as usize {
+        let page = list_neurons(governance, NEURON_PAGE_SIZE, cursor.clone()).await?;
+        if page.len() > NEURON_PAGE_SIZE as usize {
             return Err(Error::Invalid {
                 method: "list_neurons",
                 message: "neuron page exceeds bound".into(),
@@ -453,7 +455,7 @@ pub async fn list_all_neurons(governance: Principal) -> Result<Vec<Neuron>, Erro
             };
         }
         let next = page.last().map(|neuron| neuron.id.clone());
-        if page.len() == PAGE_SIZE as usize && next == cursor {
+        if page.len() == NEURON_PAGE_SIZE as usize && next == cursor {
             return Err(Error::Invalid {
                 method: "list_neurons",
                 message: "pagination did not progress".into(),
@@ -461,7 +463,7 @@ pub async fn list_all_neurons(governance: Principal) -> Result<Vec<Neuron>, Erro
         }
         let count = page.len();
         neurons.extend(page);
-        if count < PAGE_SIZE as usize {
+        if count < NEURON_PAGE_SIZE as usize {
             return Ok(neurons);
         }
         cursor = next;
@@ -622,5 +624,13 @@ mod tests {
             classify_event_sequence(Some(previous()), &event(2, Some(20), None)),
             Err(EventSequenceError::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn gap_reader_capacity_is_exactly_one_thousand_total_neurons() {
+        let complete_pages = MAX_NUMBER_OF_NEURONS / u64::from(NEURON_PAGE_SIZE);
+        assert_eq!(complete_pages, 10);
+        assert!(complete_pages * u64::from(NEURON_PAGE_SIZE) <= MAX_NUMBER_OF_NEURONS);
+        assert!(complete_pages * u64::from(NEURON_PAGE_SIZE) + 1 > MAX_NUMBER_OF_NEURONS);
     }
 }

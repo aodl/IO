@@ -57,6 +57,40 @@ pub enum RewardBackingProgress {
     AwaitingReceipt { generation: u64 },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecipientStep {
+    ObserveStake,
+    SubmitTransfer,
+    SubmitRefresh,
+    ObserveRefresh,
+    Stuck,
+}
+
+fn recipient_step(recipient: &RewardRecipient) -> RecipientStep {
+    if !recipient.stake_observed {
+        return RecipientStep::ObserveStake;
+    }
+    match &recipient.transfer {
+        None
+        | Some(TransferAttempt {
+            state: TransferState::Prepared | TransferState::Submitted { .. },
+            ..
+        }) => RecipientStep::SubmitTransfer,
+        Some(TransferAttempt {
+            state: TransferState::Succeeded { .. },
+            ..
+        }) if !recipient.refresh_submitted => RecipientStep::SubmitRefresh,
+        Some(TransferAttempt {
+            state: TransferState::Succeeded { .. },
+            ..
+        }) => RecipientStep::ObserveRefresh,
+        Some(TransferAttempt {
+            state: TransferState::Stuck { .. },
+            ..
+        }) => RecipientStep::Stuck,
+    }
+}
+
 pub async fn observe(now_nanos: u64) -> Result<RewardEventObservation, ApiError> {
     let snapshot = state::read();
     if snapshot.lifecycle != Lifecycle::Ready {
@@ -535,23 +569,21 @@ async fn resume_recipient(
         return complete_settlement(operation, now);
     }
     let recipient = &settlement.recipients[index];
-    if !recipient.stake_observed {
-        return observe_recipient_stake(operation).await;
-    }
-    match &recipient.transfer {
-        None => submit_recipient(operation, now).await,
-        Some(transfer) => match transfer.state {
-            TransferState::Prepared | TransferState::Submitted { .. } => {
-                submit_recipient(operation, now).await
-            }
-            TransferState::Succeeded { .. } if !recipient.refresh_submitted => {
-                refresh_recipient(operation).await
-            }
-            TransferState::Succeeded { .. } => observe_refresh(operation).await,
-            TransferState::Stuck { ref reason } => {
-                Ok(crate::api::LiquidReceiptProgress::Stuck(reason.clone()))
-            }
-        },
+    match recipient_step(recipient) {
+        RecipientStep::ObserveStake => observe_recipient_stake(operation).await,
+        RecipientStep::SubmitTransfer => submit_recipient(operation, now).await,
+        RecipientStep::SubmitRefresh => refresh_recipient(operation).await,
+        RecipientStep::ObserveRefresh => observe_refresh(operation).await,
+        RecipientStep::Stuck => {
+            let Some(TransferAttempt {
+                state: TransferState::Stuck { reason },
+                ..
+            }) = &recipient.transfer
+            else {
+                unreachable!("recipient step and transfer state disagree")
+            };
+            Ok(crate::api::LiquidReceiptProgress::Stuck(reason.clone()))
+        }
     }
 }
 
@@ -948,4 +980,63 @@ pub(crate) async fn prove_recipient_transfer(block_index: u128) -> Result<(), Ap
         &LiquidReceiptOperation::TwoWeek(Box::new(operation)),
         LiquidReceiptOperation::TwoWeek(Box::new(replacement)),
     )
+}
+
+#[cfg(test)]
+mod gap_tests {
+    use super::*;
+
+    fn recipient(
+        stake_observed: bool,
+        before_stake_e8s: u128,
+        transfer_succeeded: bool,
+        refresh_submitted: bool,
+    ) -> RewardRecipient {
+        let owner = candid::Principal::from_slice(&[1; 29]);
+        let destination = Account {
+            owner,
+            subaccount: Some(vec![7; 32]),
+        };
+        let transfer = transfer_succeeded.then(|| {
+            let mut attempt = TransferAttempt::prepared(OwnTransferIntent::Icrc1 {
+                ledger: candid::Principal::from_slice(&[2; 29]),
+                from_subaccount: [3; 32],
+                to: destination.clone(),
+                amount: 10,
+                fee: 1,
+                memo: vec![4],
+                created_at_time: 1,
+            })
+            .unwrap();
+            attempt.state = TransferState::Succeeded { block: 1 };
+            attempt
+        });
+        RewardRecipient {
+            sns_neuron_id: vec![7; 32],
+            destination,
+            before_stake_e8s,
+            io_e8s: 10,
+            stake_observed,
+            transfer,
+            refresh_submitted,
+        }
+    }
+
+    #[test]
+    fn gap_absent_or_zero_stake_neuron_blocks_before_transfer() {
+        let absent = recipient(false, 0, false, false);
+        let zero_stake = recipient(false, 0, false, false);
+        assert_eq!(recipient_step(&absent), RecipientStep::ObserveStake);
+        assert_eq!(recipient_step(&zero_stake), RecipientStep::ObserveStake);
+    }
+
+    #[test]
+    fn gap_successful_transfer_waits_indefinitely_for_refresh_observation() {
+        let recipient = recipient(true, 100, true, true);
+        assert_eq!(recipient_step(&recipient), RecipientStep::ObserveRefresh);
+        assert!(matches!(
+            recipient.transfer.as_ref().unwrap().state,
+            TransferState::Succeeded { .. }
+        ));
+    }
 }

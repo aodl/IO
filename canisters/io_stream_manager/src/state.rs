@@ -951,4 +951,21 @@ mod tests {
         };
         assert!(encoded.len() <= max_size as usize);
     }
+
+    #[test]
+    fn gap_new_event_is_freezable_before_liquid_maturity_is_ready() {
+        let (_, state) = valid_state();
+        let canonical_minimum_disbursement_e8s = 100_000_000_u64;
+        let liquid_maturity_e8s = canonical_minimum_disbursement_e8s - 1;
+        assert!(
+            state.reward_entitlements.processed_event_count
+                != state.reward_entitlements.last_frozen_event_count,
+            "the current freeze gate sees new entitlement work"
+        );
+        assert!(
+            liquid_maturity_e8s < canonical_minimum_disbursement_e8s,
+            "the NNS liquid leg is not ready"
+        );
+        assert!(state.pending_entitlement_batch.is_none());
+    }
 }

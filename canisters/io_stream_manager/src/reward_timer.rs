@@ -3,6 +3,8 @@ use std::{cell::RefCell, time::Duration};
 
 use crate::state::{Lifecycle, RewardEventId};
 
+const OBSERVATION_MARGIN_SECONDS: u64 = 1;
+
 thread_local! {
     static ACTIVE_REWARD_TIMER: RefCell<Option<TimerId>> = const { RefCell::new(None) };
 }
@@ -23,7 +25,18 @@ pub(crate) fn install_for_ready_state() {
 }
 
 pub(crate) fn install_after(event: RewardEventId) {
-    install(event.end_timestamp_seconds.checked_add(86_401));
+    install(observation_deadline(event));
+}
+
+fn observation_deadline(event: RewardEventId) -> Option<u64> {
+    event
+        .end_timestamp_seconds
+        .checked_add(86_400)?
+        .checked_add(OBSERVATION_MARGIN_SECONDS)
+}
+
+fn retry_deadline(_error: &crate::api::ApiError, _now_seconds: u64) -> Option<u64> {
+    None
 }
 
 pub(crate) fn install(deadline_seconds: Option<u64>) {
@@ -52,8 +65,33 @@ pub(crate) fn install(deadline_seconds: Option<u64>) {
                 ic_cdk::api::debug_print(format!(
                     "daily reward-event work remains due after failure: {error:?}"
                 ));
+                if let Some(deadline) = retry_deadline(&error, ic_cdk::api::time() / 1_000_000_000)
+                {
+                    install(Some(deadline));
+                }
             }
         });
         *slot.borrow_mut() = Some(timer);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gap_one_second_margin_has_no_pending_replacement_timer() {
+        let event = RewardEventId {
+            end_timestamp_seconds: 1_000,
+            round: 1,
+        };
+        assert_eq!(observation_deadline(event), Some(87_401));
+        assert_eq!(
+            retry_deadline(
+                &crate::api::ApiError::Pending("event has not advanced".into()),
+                87_401,
+            ),
+            None
+        );
+    }
 }

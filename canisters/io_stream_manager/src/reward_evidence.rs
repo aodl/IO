@@ -620,4 +620,133 @@ mod tests {
         assert_eq!(accumulated[0].accumulated_weight, 1_300);
         assert_eq!(accumulated[1].accumulated_weight, 2_600);
     }
+
+    #[test]
+    fn gap_raw_cross_event_weights_distort_equal_daily_opportunities() {
+        let governance = principal(1);
+        let day_one = vec![
+            neuron(
+                1,
+                100,
+                io_core_model::TWO_WEEK_SECONDS,
+                Some((10, Some(Uint128 { high: 0, low: 100 }))),
+            ),
+            neuron(2, 100, io_core_model::TWO_WEEK_SECONDS, None),
+        ];
+        let day_two = vec![
+            neuron(
+                1,
+                100,
+                io_core_model::TWO_WEEK_SECONDS,
+                Some((
+                    20,
+                    Some(Uint128 {
+                        high: 0,
+                        low: 5_000,
+                    }),
+                )),
+            ),
+            neuron(
+                2,
+                100,
+                io_core_model::TWO_WEEK_SECONDS,
+                Some((
+                    20,
+                    Some(Uint128 {
+                        high: 0,
+                        low: 5_000,
+                    }),
+                )),
+            ),
+        ];
+        let (_, weights) = event_weights(governance, &[], &event(1, 10, 1), &day_one).unwrap();
+        let accumulated = merge_event_weights(&[], &weights).unwrap();
+        let (_, weights) = event_weights(governance, &[], &event(2, 20, 100), &day_two).unwrap();
+        let accumulated = merge_event_weights(&accumulated, &weights).unwrap();
+        assert_eq!(accumulated[0].accumulated_weight, 5_100);
+        assert_eq!(accumulated[1].accumulated_weight, 5_000);
+
+        let entitlements = accumulated
+            .iter()
+            .map(|entry| {
+                io_reward_policy::entitlement_from_bytes(
+                    entry.sns_neuron_id.clone(),
+                    entry.accumulated_weight,
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let allocation = io_reward_policy::allocate_rewards(10_100, &entitlements).unwrap();
+        assert_eq!(allocation.allocations[0].io_e8s, 5_100);
+        assert_eq!(allocation.allocations[1].io_e8s, 5_000);
+        assert_ne!(
+            allocation
+                .allocations
+                .iter()
+                .map(|allocation| allocation.io_e8s)
+                .collect::<Vec<_>>(),
+            vec![7_575, 2_525],
+            "equal-day accounting would preserve the 75%/25% cumulative split"
+        );
+    }
+
+    #[test]
+    fn gap_excluded_current_event_share_is_redistributed() {
+        let governance = principal(1);
+        let excluded = Account {
+            owner: governance,
+            subaccount: Some(vec![9; 32]),
+        };
+        let neurons = vec![
+            neuron(
+                1,
+                100,
+                io_core_model::TWO_WEEK_SECONDS,
+                Some((10, Some(Uint128 { high: 0, low: 50 }))),
+            ),
+            neuron(
+                9,
+                100,
+                io_core_model::TWO_WEEK_SECONDS,
+                Some((10, Some(Uint128 { high: 0, low: 50 }))),
+            ),
+        ];
+        let (_, weights) =
+            event_weights(governance, &[excluded], &event(1, 10, 1), &neurons).unwrap();
+        assert_eq!(weights.len(), 1);
+        assert_eq!(weights[0].event_weight, 50);
+        let allocation = io_reward_policy::allocate_rewards(
+            1_000,
+            &[io_reward_policy::entitlement_from_bytes(
+                weights[0].sns_neuron_id.clone(),
+                weights[0].event_weight,
+            )
+            .unwrap()],
+        )
+        .unwrap();
+        assert_eq!(allocation.allocations[0].io_e8s, 1_000);
+        assert_eq!(allocation.rounding_dust_e8s, 0);
+    }
+
+    #[test]
+    fn gap_first_observed_event_is_credit_bearing() {
+        let current = event(7, 70, 1);
+        assert_eq!(
+            classify_sequence(None, &current).unwrap(),
+            EventSequence::First
+        );
+        let (_, weights) = event_weights(
+            principal(1),
+            &[],
+            &current,
+            &[neuron(
+                1,
+                100,
+                io_core_model::TWO_WEEK_SECONDS,
+                Some((70, Some(Uint128 { high: 0, low: 100 }))),
+            )],
+        )
+        .unwrap();
+        assert_eq!(weights[0].event_weight, 100);
+    }
 }

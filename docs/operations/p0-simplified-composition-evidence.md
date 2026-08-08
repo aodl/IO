@@ -65,6 +65,22 @@ actual-receipt-backed allocation, excluded-neuron omission, zero-share
 proposal behavior, reserve/dust reconciliation, and upgrade-safe serialized
 fan-out.
 
+## Normalized daily-credit correction reproductions
+
+These deterministic regressions record the reviewed `55907f6` behavior before
+the normalized-credit correction. They are evidence of the gap, not the target
+policy.
+
+| Item | Baseline reproduction | Required correction |
+| --- | --- | --- |
+| A | One 100-share proposal day followed by a 10,000-share many-proposal day accumulates 5,100 for A and 5,000 for B. Raw proposal volume makes the two-day result approximately equal instead of the equal-day 75%/25% result. | Give every successfully observed day one fixed policy credit and normalize current-event shares within that day. |
+| B | A proposal event with eligible share 50 and excluded protocol share 50 removes the excluded neuron before allocation. The eligible neuron becomes the only denominator entry and receives the full backed pool. | Keep every current-event canonical share in the event denominator and forfeit excluded/ineligible credit. |
+| C | The freeze gate checks only `processed_event_count != last_frozen_event_count`. One observed event is therefore separable even when the 60% NNS liquid leg is below the canonical minimum. | Query no-effect NNS backing readiness before the accumulator can be frozen. |
+| D | `classify_event_sequence(None, event)` returns `First`, and the current observation path computes and merges that event's weights. | Seed the current canonical event as a zero-credit activation baseline during first successful unpause. |
+| E | An absent or zero-stake neuron remains in mandatory pre-transfer stake observation. After an exact successful transfer, persisted `refresh_submitted` still requires a later stake-increase observation; rejection or transport failure leaves the recipient index unchanged and the monetary slot occupied. | Make the exact transfer the completion condition and bound refresh to one best-effort attempt. |
+| F | The reader accepts ten 100-neuron pages and rejects any nonempty eleventh page: exactly 1,000 total neurons fit, while 1,001 fails. Governance readiness does not expose or pin this product bound. | Require the reviewed Governance `max_number_of_neurons` parameter to be at most 1,000 before pagination. |
+| G | The next observation is scheduled only one second after the nominal event boundary. If Governance has not advanced, `Pending` leaves work due but installs no replacement timer. | Use a documented safety margin and one bounded replacement one-shot timer for retryable latest-event reads. |
+
 ## Remaining vertical work
 
 The safety and topology invariants above are implemented. The NNS manager has a
