@@ -16,18 +16,20 @@ Prove one exact Jupiter Faucet raw-ICP block from the configured faucet default 
 
 ## Direct maturity
 
-For each protected neuron, call `StakeMaturity(40%)` and then `DisburseMaturity(100% of remaining)`. Record drift between the two responses. Two-year actual ICP goes directly to stream liquid and issues no IO. Two-week actual staging balance increase is transferred through the proof-bound two-week receipt and settles the pending cohort.
+For each protected neuron, call `StakeMaturity(40%)` and then `DisburseMaturity(100% of remaining)`. Record drift between the two responses. Two-year actual ICP goes directly to stream liquid and issues no IO. Two-week actual staging balance increase is transferred through the proof-bound two-week receipt and settles the pending entitlement batch.
 
-## Exact rewards
+## Daily entitlements and delayed backing
 
-Capture bounded eligible SNS neurons and a latest-event checkpoint into one
-active cohort. Close only after the actual 1,209,600-second interval and accept
-only the exact next single-round event. Proposal-bearing allocation uses
-canonical Governance reward shares; no-proposal allocation uses exact frozen
-eligible stake. The actual two-week liquid maturity drives settlement. Resume
-transfers one recipient, the next resume refreshes that exact SNS neuron, and
-upgrades preserve recipient progress. One IO fee is charged per recipient;
-dust remains in reserve.
+Observe consecutive 86,400-second Governance reward events around bounded
+neuron pagination. Proposal-bearing events use exact current-event canonical
+shares. Empty `settled_proposals` uses current exact eligible stake, while a
+proposal event with zero eligible shares adds zero. Accumulate daily weights,
+record ambiguous skipped spans without credits, and preserve redemption.
+
+Freeze at most one immutable batch for the two-week NNS maturity path. Continue
+daily accumulation while waiting for actual ICP. Resume transfers one recipient,
+the next resume refreshes that exact SNS neuron, and upgrades preserve recipient
+progress. One IO fee is charged per recipient; dust remains in reserve.
 
 ## One unwind child
 

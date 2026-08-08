@@ -1,14 +1,14 @@
 # io_stream_manager
 
 The launch monetary canister owns direct-reserve redemption, liquid ICP and IO
-reserve roles, proof-bound NNS receipts, exact reward cohorts, serialized reward
-settlement, and local lifecycle.
+reserve roles, proof-bound NNS receipts, daily entitlement accumulation, one
+pending backed batch, serialized reward settlement, and local lifecycle.
 
-Two-week entitlement uses canonical SNS Governance reward shares as the complete
-weight for a proposal-bearing latest event. When no proposal settled, exact
-eligible captured stake is the fallback; settled proposals with zero eligible
-shares issue no reward. Readiness verifies exact Root, Governance principal and
-module hash, the approved event duration, and zero current native reward rates.
+Each daily proposal-bearing event uses canonical SNS Governance reward shares as
+its complete weight. An empty `settled_proposals` list uses current exact
+eligible stake; settled proposals with zero eligible shares add no weight.
+Readiness verifies exact Root, Governance principal and module hash, the 86,400
+second duration, zero native reward rates, and approved zero bonus parameters.
 
 IO is not live. The production canister remains inert and this repository does
 not contain a production activation transition.
@@ -21,6 +21,8 @@ The production DID contains only:
 - `prepare_liquid_receipt`
 - `complete_liquid_receipt`
 - `resume`
+- `resume_reward_work`
+- `resume_reward_backing`
 - `prove_active_transfer`
 - `set_paused`
 - `get_status`
@@ -49,11 +51,11 @@ refund.
 Launch state is `StableCell<StreamStateV1>` plus
 `StableBTreeMap<Principal, CallerRedemptionState>`. Only V1 is supported.
 Prelaunch migration chains are research history, not runtime code.
-One `StreamOperation` slot serializes redemption, liquid receipt, cohort capture,
-and cohort close. Capture has Prepared and TargetSubmitted phases; close has only
-Prepared. Once a closed cohort contains its immutable reward snapshot, the
-pending cohort is the exact NNS maturity request intent and does not occupy the
-monetary operation slot.
+One `StreamOperation` slot serializes monetary effects. Reward observation has
+no external value effect and does not occupy that slot. A bounded live
+accumulator persists across upgrades; at most one immutable pending entitlement
+batch binds the NNS maturity request and recipient progress while later daily
+events continue accumulating live.
 
 ## Unsupported activity
 

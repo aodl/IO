@@ -18,7 +18,7 @@ Use this before every release-oriented commit or artifact proposal.
 - [ ] `cargo run -p xtask -- sns_config_validate`
 - [ ] `cargo run -p xtask -- sns_official_testing_check`
 - [ ] `cargo run -p xtask -- sns_launch_readiness_check`
-- [ ] `cargo run -p xtask -- sns_governance_read_tests`
+- [ ] `cargo test -p io-sns-reward-boundary`
 - [ ] `cargo run -p xtask -- sns_ledger_index_tests`
 - [ ] `cargo run -p xtask -- sns_root_lifecycle_tests`
 - [ ] `cargo run -p xtask -- sns_pocketic_smoke`

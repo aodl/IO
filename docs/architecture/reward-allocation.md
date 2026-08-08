@@ -1,29 +1,41 @@
-# Reward Allocation
+# Reward allocation
 
-## Preserved launch semantics
+SNS Governance runs one canonical reward event every 86,400 seconds with both
+native reward rates set to zero. IO observes each event once and adds raw,
+non-overlapping entitlement weight to a bounded per-neuron accumulator.
 
-The earning window is exactly 1,209,600 seconds; eligible stake is frozen; late
-stake and top-ups are excluded; forfeiture remains dust without redistribution;
-and the full backing target is preserved. Delayed maturity payout does not
-change eligibility. Settlement is sequential under the single stream operation.
+For a proposal-bearing event, a neuron receives only the canonical
+`latest_reward_event_participation.reward_shares` whose event timestamp exactly
+matches the current `RewardEvent`. Absent, stale, zero, or malformed shares add
+no weight. Settled proposals with zero eligible shares remain a zero-weight
+event; IO never substitutes a participation or maturity fallback.
 
-Two-week maturity may issue backed IO to eligible active IO SNS stakers.
-Eligibility requires an exact 14-day non-dissolving neuron. Proposal-bearing
-events use canonical SNS Governance reward shares as the complete weight,
-including the SNS's approved native voting-power policy. IO does not reconstruct
-ballots, age bonus, dissolve-delay bonus, or voting-power multiplier arithmetic.
+For a no-proposal event, and only when `settled_proposals` is empty, every
+currently eligible neuron receives its canonical eligible stake as event
+weight. Old or absent participation fields are ignored. This is one virtual
+unanimous proposal, not a rolling average.
 
-```text
-recipient_weight = canonical_latest_reward_event_reward_shares
-```
+Eligibility remains an exact staking-product rule: positive stake,
+non-dissolving, and exactly 1,209,600 seconds of dissolve delay. Protocol and
+Jupiter neurons are excluded. The two-week duration is not an accounting epoch.
 
-If no proposal settled in the event, the fallback weight is exact eligible stake
-frozen at capture. If proposals settled but eligible canonical shares total
-zero, IO issues no reward and does not fall back to full participation.
+When the NNS liquid maturity leg is ready and no batch is pending, IO freezes
+the live accumulator into one immutable entitlement batch. Daily observations
+continue in a fresh live accumulator while IO waits for actual modulated ICP.
+Only received ICP determines the backed IO pool. A zero-weight batch completes
+without recipient transfers and leaves the whole backed pool in reserve.
 
-Rounding is conservative. Dust is reported and remains unissued. Excluded Jupiter governance and protocol-owned neurons cannot receive allocations.
+Allocations use checked integer arithmetic. Deterministic rounding dust remains
+in reserve, and recipient transfers progress sequentially with upgrade-safe
+postcondition checks. Redemption remains independent and available during
+observation, backing waits, and payout delays.
 
-The economics remain unchanged:
+The historian may derive trailing participation or APY displays, but those
+windows are observations and never monetary inputs. Missing events are recorded
+as bounded availability failures and never interpreted as zero or fabricated
+participation.
+
+The economics remain:
 
 ```text
 redeemable_io_supply =
@@ -36,19 +48,3 @@ redemption_rate =
 ```
 
 Only liquid ICP counts as redemption NAV.
-
-Read-only SNS governance evidence captures a frozen cohort of exact eligible
-14-day, non-dissolving user neurons and the latest reward-event checkpoint.
-Protocol-owned and Jupiter-governance staking Accounts are excluded by exact
-effective Account. Close accepts only the exact next single-round event. A
-missed or multi-round event allocates nothing and leaves the backed pool in
-reserve. Every destination is rechecked immediately before payout; a member
-that has become ineligible forfeits its calculated share to reserve dust.
-
-Readiness binds the reviewed Governance module to an exact native reward-event
-duration of 1,209,600 seconds and requires both native reward rates to be zero.
-The Governance event field is latest-event-only: IO does not reconstruct a
-missed event. Proposal-bearing events with zero eligible canonical shares issue
-no reward; no-proposal events use exact eligible stake frozen at capture.
-
-The launch settlement persists exact allocations, recipient progress, rounding dust, forfeiture, and total dust in the active two-week receipt. One `resume` performs at most one recipient transition. The immutable transfer precedes a separately persisted refresh submission, and a later canonical observation must show the expected stake increase before progress advances. Each actual recipient consumes one explicit IO fee; every dust component remains in reserve and is never redistributed.

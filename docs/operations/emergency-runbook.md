@@ -31,7 +31,7 @@ No proof of absence exists. If the exact effect cannot be proved, retain Paused 
 
 Only Jupiter and two-week maturity receipts exist. The active receipt binds one sequence, kind-specific source, source-operation ID, amount, destination and memo. The sequence advances only after settlement completes. Exact completed replay uses `LastCompletedReceipt`; a conflicting replay is rejected.
 
-Jupiter settlement transfers backed IO from reserve only after the exact liquid ICP receipt is proved. Two-week settlement must preserve the pending cohort and recipient index across upgrades, transfer one recipient per resume, refresh the exact SNS neuron on the following resume and leave dust in reserve.
+Jupiter settlement transfers backed IO from reserve only after the exact liquid ICP receipt is proved. Two-week settlement must preserve the pending entitlement batch and recipient index across upgrades, transfer one recipient per resume, refresh the exact SNS neuron on the following resume and leave dust in reserve.
 
 ## NNS operations
 

@@ -18,7 +18,8 @@ What it proves:
 
 - IO account/subaccount conversion, fee representation, transfer error mapping and duplicate proof checks are modelled at the value-moving boundary. Index history is historian/test observation only.
 - IO scheduler and journal behavior can process SNS-shaped ledger/index pages.
-- SNS governance and root records can be decoded or mocked into IO policy types.
+- Canonical reward events, additive per-neuron reward shares and Governance
+  readiness records can be decoded at the narrow monetary boundary.
 
 What it does not prove:
 
@@ -33,7 +34,6 @@ This layer uses PocketIC where supported by the pinned dependency and IO mock ca
 
 Examples:
 
-- `POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server cargo run -p xtask -- sns_governance_read_required`
 - `POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server cargo run -p xtask -- sns_ledger_index_required`
 - `POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server cargo run -p xtask -- sns_root_lifecycle_required`
 - `POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server cargo run -p xtask -- sns_pocketic_required`
@@ -43,6 +43,8 @@ What it proves:
 - IO canisters accept local SNS-shaped principals through the reviewed simplified production DIDs.
 - Mock SNS governance/root/ledger/index canisters can exercise IO value-flow and upgrade-lifecycle paths under PocketIC.
 - NNS/SNS/application subnet topology assumptions can be smoke-tested locally.
+- Candidate Governance reward-event behavior is exercised by
+  `tools/scripts/test-sns-framework --source local --scope governance --require-capability latest_reward_event_participation --profile contract`.
 
 What it does not prove:
 

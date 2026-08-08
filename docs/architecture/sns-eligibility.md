@@ -23,8 +23,14 @@ exact-neuron reads, Root module-hash evidence, and reward parameters. The stream
 manager excludes protocol-owned and Jupiter-governance staking Accounts, zero
 stake, every delay other than exactly 1,209,600 seconds, and dissolving neurons.
 
-Stream-manager governance snapshot tests fetch local/mock SNS governance-shaped neuron pages through `SnsGovernanceClient`, apply this policy, and report excluded neurons alongside raw reward observations. Invalid or noncanonical SNS neuron IDs are treated as exclusions with conversion errors; they are not mapped to a fallback numeric ID. Ordinary reward cohorts require exact 32-byte canonical SNS neuron IDs.
+Stream-manager governance snapshot tests fetch local/mock SNS governance-shaped
+neuron pages through `SnsGovernanceClient`, apply this policy, and report
+excluded neurons alongside raw reward observations. Invalid or noncanonical SNS
+neuron IDs fail closed; they are not mapped to a fallback numeric ID. Entitlement
+entries require exact 32-byte canonical SNS neuron IDs.
 
 For a proposal-bearing event the boundary reads Governance's canonical reward
 shares; IO does not retain proposal DTOs or reconstruct direct/followed voting.
-When no proposal settled, exact frozen eligible stake is the fallback weight.
+When no proposal settled, current exact eligible stake is the fallback weight.
+That fallback is selected only by an empty canonical `settled_proposals` list;
+zero eligible proposal shares never trigger it.

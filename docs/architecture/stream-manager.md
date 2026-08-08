@@ -1,9 +1,30 @@
 # Stream manager
 
-The stream manager owns the IO reserve, liquid ICP Account, direct ICRC-2 redemption, proof-bound liquid receipts, exact reward cohorts and one typed active monetary operation. Before returning a receipt permit it reserves `ReceiptPreparation`, reads canonical supply/reserve/exclusions/liquid/fee facts, and freezes an immutable pre-receipt backing snapshot. Later donations cannot change Jupiter or reward issuance.
+The stream manager owns the IO reserve, liquid ICP Account, direct ICRC-2
+redemption, proof-bound liquid receipts, daily reward-entitlement observation,
+one immutable pending entitlement batch, and serialized recipient settlement.
 
-Reward coordination uses one active cohort and one pending closed cohort concurrently. Closing moves exact participation evidence to pending, binds the generation to NNS maturity, and permits immediate capture of the next interval. One one-shot deadline timer invokes the same permissionless close transition; no interval timer or monetary scheduler exists.
+Daily observation has no external value effect. It verifies the exact SNS Root,
+Governance principal, reviewed module hash, zero native reward rates, 86,400
+second round duration, and approved zero voting-power bonus parameters. It then
+reads one stable reward-event boundary around paginated neuron reads and merges
+the event's canonical weights atomically. A stale callback mutates nothing.
 
-Redemption pulls IO from the authenticated caller Account directly to reserve. A separate `resume` pays ICP with `icrc1_transfer`; another read-only progression verifies postconditions and commits. It never accepts a payout destination, scans an index, maintains replicated balances, or refunds unsupported direct transfers.
+One transient one-shot timer marks reward work due and calls the same idempotent
+method available to permissionless keepers. Failures leave work due. Successful
+processing schedules the next observation. There is no interval timer, retry
+scheduler, proposal timer, task queue, or event archive.
 
-The production service is limited to `redeem`, receipt preparation/completion, `resume`, exact proof, governance pause/readiness and local `get_status`.
+Backing is asynchronous. One live accumulator can continue receiving daily
+weights while one frozen batch moves through the protected two-week NNS 40/60
+maturity path, actual ICP receipt, and sequential IO transfers. A second pending
+batch is not created. Missing reward events add no credits, advance only through
+a typed skip record, and leave undistributed backing in reserve.
+
+Redemption pulls IO from the authenticated caller Account directly to reserve.
+A separate `resume` pays ICP and later verifies postconditions. Reward
+observation never occupies the redemption operation slot, so governance
+availability and payout delays do not block redemption.
+
+Install and post-upgrade state are Paused. Reviewed unpause is required before
+the one-shot observation timer is installed. IO remains inert and prelaunch.

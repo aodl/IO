@@ -6,7 +6,7 @@ The launch architecture follows [the simplicity constitution](docs/architecture/
 
 ## Monetary roles
 
-- `io_stream_manager`: direct ICRC-2 redemption, IO and liquid ICP reserves, proof-bound receipts, reward cohorts and one active operation.
+- `io_stream_manager`: direct ICRC-2 redemption, IO and liquid ICP reserves, proof-bound receipts, daily entitlement accumulation and one pending backed batch.
 - `io_nns_neuron_manager`: protected NNS neurons, Jupiter 40/60 execution, direct maturity and one unwind child. Production authority is intended to remain at existing neuron controller `oae4c-3iaaa-aaaar-qb5qq-cai`; no mainnet action is authorized here.
 - `io_historian`: ledger/index/archive histories, monitoring and public read models; never monetary authority.
 - `frontend`: advisory approval/redemption and historian views.
