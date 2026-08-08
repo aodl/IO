@@ -1372,6 +1372,39 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     .unwrap();
     assert_eq!(ready, Ok(()));
 
+    let baseline_status: Status = decode_one(
+        &pic.query_call(stream, controller, "get_status", encode_one(()).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        baseline_status
+            .latest_processed_reward_event
+            .map(|event| event.round),
+        Some(event_2.round)
+    );
+    assert_eq!(baseline_status.processed_reward_event_count, 0);
+    assert_eq!(baseline_status.accumulated_policy_credit, 0);
+    assert!(baseline_status.accumulated_entitlements.is_empty());
+    let pre_activation: Result<RewardEventObservation, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            Principal::anonymous(),
+            "resume_reward_work",
+            encode_one(()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        pre_activation,
+        Err(ApiError::Pending(
+            "SNS reward event has not advanced".into()
+        ))
+    );
+
+    let fallback_event = advance_until_reward_event(&fixture, 0, event_2.round);
+
     let observation: Result<RewardEventObservation, ApiError> = decode_one(
         &pic.update_call(
             stream,
@@ -1387,16 +1420,95 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         observation.classification,
         RewardEventClassification::NoProposalFallback
     );
-    assert_eq!(observation.event.round, event_2.round);
+    assert_eq!(observation.event.round, fallback_event.round);
     let observed_weights = observation
         .credits
         .iter()
         .map(|weight| (weight.sns_neuron_id.clone(), weight.event_credit))
         .collect::<std::collections::BTreeMap<_, _>>();
-    for (id, expected) in neuron_ids[..3].iter().zip(stakes[..3].iter()) {
-        assert_eq!(observed_weights[&id.id], u128::from(*expected));
+    let eligible_stake_total = stakes[..3].iter().map(|stake| u128::from(*stake)).sum();
+    for (id, stake) in neuron_ids[..3].iter().zip(stakes[..3].iter()) {
+        assert_eq!(
+            observed_weights[&id.id],
+            io_reward_policy::mul_div_floor(
+                io_reward_policy::DAILY_EVENT_CREDIT,
+                u128::from(*stake),
+                eligible_stake_total,
+            )
+            .unwrap()
+        );
     }
     assert!(!observed_weights.contains_key(&neuron_ids[3].id));
+
+    pic.update_call(
+        nns_manager,
+        controller,
+        "debug_set_backing_readiness",
+        encode_one(io_receipt_types::TwoWeekBackingReadiness::NotReady(
+            io_receipt_types::BackingNotReadyReason::BelowThreshold,
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let early_backing: Result<RewardBackingProgress, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            Principal::anonymous(),
+            "resume_reward_backing",
+            encode_one(()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        early_backing,
+        Ok(RewardBackingProgress::Pending {
+            reason: io_receipt_types::BackingNotReadyReason::BelowThreshold,
+        })
+    );
+    let early_status: Status = decode_one(
+        &pic.query_call(stream, controller, "get_status", encode_one(()).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        early_status.accumulated_policy_credit,
+        io_reward_policy::DAILY_EVENT_CREDIT
+    );
+    assert!(early_status
+        .pending_entitlement_batch_policy_credit
+        .is_none());
+
+    let ready_event = advance_until_reward_event(&fixture, 0, fallback_event.round);
+    let later_observation: Result<RewardEventObservation, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            Principal::anonymous(),
+            "resume_reward_work",
+            encode_one(()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        later_observation.unwrap().credits,
+        observation.credits,
+        "later readiness must freeze all intervening daily credit"
+    );
+    pic.update_call(
+        nns_manager,
+        controller,
+        "debug_set_backing_readiness",
+        encode_one(io_receipt_types::TwoWeekBackingReadiness::Ready {
+            target_status: io_receipt_types::BackingTargetStatus::AtTarget,
+            ordinary_maturity_e8s: 200_000_000,
+            retained_maturity_e8s: 80_000_000,
+            liquid_maturity_e8s: 120_000_000,
+            minimum_disbursement_e8s: 100_000_000,
+        })
+        .unwrap(),
+    )
+    .unwrap();
 
     let backing_step = |expected: RewardBackingProgress| {
         let progress: Result<RewardBackingProgress, ApiError> = decode_one(
@@ -1421,7 +1533,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     .unwrap();
     assert_eq!(
         status.pending_entitlement_batch_eligible_credit,
-        Some(600_000_000)
+        Some(observed_weights.values().copied().sum::<u128>() * 2)
     );
 
     let liquid_amount = 1_000_000_000_u64;
@@ -1571,14 +1683,43 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             u128::try_from(after.0.clone()).unwrap() - u128::try_from(before.0.clone()).unwrap()
         })
         .collect::<Vec<_>>();
-    let expected_deltas = stakes[..3]
+    let expected_allocation = io_reward_policy::allocate_rewards(
+        result.backed_io_pool_e8s,
+        io_reward_policy::DAILY_EVENT_CREDIT * 2,
+        &neuron_ids[..3]
+            .iter()
+            .map(|id| {
+                io_reward_policy::entitlement_credit_from_bytes(
+                    id.id.clone(),
+                    observed_weights[&id.id] * 2,
+                )
+            })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    let expected_deltas = neuron_ids[..3]
         .iter()
-        .map(|stake| result.backed_io_pool_e8s * u128::from(*stake) / 600_000_000)
+        .map(|id| {
+            expected_allocation
+                .allocations
+                .iter()
+                .find(|allocation| allocation.sns_neuron_id == id.id)
+                .unwrap()
+                .io_e8s
+        })
         .collect::<Vec<_>>();
     assert_eq!(deltas, expected_deltas);
     assert!(deltas.iter().all(|amount| *amount > 0));
     assert_eq!(
-        deltas.iter().sum::<u128>() + result.rounding_dust_io_e8s,
+        result.forfeited_io_e8s,
+        expected_allocation.forfeited_io_e8s
+    );
+    assert_eq!(
+        result.rounding_dust_io_e8s,
+        expected_allocation.rounding_dust_e8s
+    );
+    assert_eq!(
+        deltas.iter().sum::<u128>() + result.forfeited_io_e8s + result.rounding_dust_io_e8s,
         result.backed_io_pool_e8s
     );
     assert_eq!(after[3], before[3], "excluded neuron receives nothing");
@@ -1604,7 +1745,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         &neuron_ids[3],
         "excluded-only proposal has zero eligible current-event shares",
     );
-    let event_3 = advance_until_reward_event(&fixture, 1, event_2.round);
+    let event_3 = advance_until_reward_event(&fixture, 1, ready_event.round);
     assert_eq!(event_3.settled_proposals[0].id, zero_share_proposal);
     let zero_observation: Result<RewardEventObservation, ApiError> = decode_one(
         &pic.update_call(
@@ -1730,10 +1871,8 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     };
     assert!(zero_result.backed_io_pool_e8s > 0);
     assert_eq!(zero_result.distributed_io_e8s, 0);
-    assert_eq!(
-        zero_result.rounding_dust_io_e8s,
-        zero_result.backed_io_pool_e8s
-    );
+    assert_eq!(zero_result.forfeited_io_e8s, zero_result.backed_io_pool_e8s);
+    assert_eq!(zero_result.rounding_dust_io_e8s, 0);
     assert_eq!(
         icrc::icrc1_balance_of(&pic, io_ledger, reserve.clone()),
         reserve_before_zero,
@@ -1906,6 +2045,14 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                     .end_timestamp_seconds
                     .expect("proposal-bearing event has an end timestamp");
                 let listed = list_all_neurons_paged(&fixture, 2);
+                let canonical_share_total = listed
+                    .iter()
+                    .filter_map(|neuron| neuron.latest_reward_event_participation.as_ref())
+                    .filter(|participation| {
+                        participation.reward_event_end_timestamp_seconds == event_end
+                    })
+                    .map(|participation| participation.exact_reward_shares().unwrap())
+                    .sum::<u128>();
                 expected_weights
                     .into_iter()
                     .map(|(index, _)| {
@@ -1919,21 +2066,40 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                         );
                         (
                             neuron_ids[index].id.clone(),
-                            participation.exact_reward_shares().unwrap(),
+                            io_reward_policy::mul_div_floor(
+                                io_reward_policy::DAILY_EVENT_CREDIT,
+                                participation.exact_reward_shares().unwrap(),
+                                canonical_share_total,
+                            )
+                            .unwrap(),
                         )
                     })
                     .collect::<std::collections::BTreeMap<_, _>>()
             }
             RewardEventClassification::NoProposalFallback => {
                 let listed = list_all_neurons_paged(&fixture, 2);
+                let eligible_stake_total = expected_weights
+                    .iter()
+                    .map(|(index, _)| {
+                        u128::from(
+                            find_neuron(&listed, &neuron_ids[*index]).cached_neuron_stake_e8s,
+                        )
+                    })
+                    .sum::<u128>();
                 expected_weights
                     .into_iter()
                     .map(|(index, _)| {
                         (
                             neuron_ids[index].id.clone(),
-                            u128::from(
-                                find_neuron(&listed, &neuron_ids[index]).cached_neuron_stake_e8s,
-                            ),
+                            io_reward_policy::mul_div_floor(
+                                io_reward_policy::DAILY_EVENT_CREDIT,
+                                u128::from(
+                                    find_neuron(&listed, &neuron_ids[index])
+                                        .cached_neuron_stake_e8s,
+                                ),
+                                eligible_stake_total,
+                            )
+                            .unwrap(),
                         )
                     })
                     .collect::<std::collections::BTreeMap<_, _>>()
@@ -1982,8 +2148,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             Some(expected_classification)
         );
         assert_eq!(
-            status.processed_reward_event_count,
-            day - 1,
+            status.processed_reward_event_count, day,
             "stream must consume events 2 through {day} exactly once"
         );
         assert_eq!(entry_map(&status), expected_live);
@@ -2145,9 +2310,9 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         }
         previous_round = event.round;
     }
-    let after_fourteen = stream_status();
-    assert_eq!(after_fourteen.processed_reward_event_count, 14);
-    assert_eq!(entry_map(&after_fourteen), expected_live);
+    let after_fifteen = stream_status();
+    assert_eq!(after_fifteen.processed_reward_event_count, 15);
+    assert_eq!(entry_map(&after_fifteen), expected_live);
 
     set_stream_paused(true);
     let missed_one = advance_until_reward_event(&fixture, 0, previous_round);
@@ -2171,7 +2336,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     );
     assert!(skipped.credits.is_empty());
     let after_skip = stream_status();
-    assert_eq!(after_skip.processed_reward_event_count, 14);
+    assert_eq!(after_skip.processed_reward_event_count, 15);
     assert_eq!(after_skip.missed_reward_event_count, 2);
     assert_eq!(entry_map(&after_skip), expected_live);
     let replay: Result<RewardEventObservation, ApiError> = decode_one(

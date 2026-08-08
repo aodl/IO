@@ -37,10 +37,11 @@ struct GovernanceState {
     neurons: Vec<MockNeuron>,
     two_week_target: Option<SetTargetArgs>,
     maturity_preparation: Option<PrepareTwoWeekMaturityArgs>,
+    backing_readiness: Option<io_receipt_types::TwoWeekBackingReadiness>,
 }
 
 thread_local! {
-    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new(), two_week_target: None, maturity_preparation: None }) };
+    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new(), two_week_target: None, maturity_preparation: None, backing_readiness: None }) };
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -128,13 +129,22 @@ pub fn observe_two_week_backing_readiness(
     args: ObserveReadinessArgs,
 ) -> Result<io_receipt_types::TwoWeekBackingReadiness, NnsError> {
     let _ = args.target_e8s;
-    Ok(io_receipt_types::TwoWeekBackingReadiness::Ready {
-        target_status: io_receipt_types::BackingTargetStatus::AtTarget,
-        ordinary_maturity_e8s: 200_000_000,
-        retained_maturity_e8s: 80_000_000,
-        liquid_maturity_e8s: 120_000_000,
-        minimum_disbursement_e8s: 100_000_000,
-    })
+    Ok(STATE.with(|cell| {
+        cell.borrow().backing_readiness.clone().unwrap_or(
+            io_receipt_types::TwoWeekBackingReadiness::Ready {
+                target_status: io_receipt_types::BackingTargetStatus::AtTarget,
+                ordinary_maturity_e8s: 200_000_000,
+                retained_maturity_e8s: 80_000_000,
+                liquid_maturity_e8s: 120_000_000,
+                minimum_disbursement_e8s: 100_000_000,
+            },
+        )
+    }))
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_backing_readiness(readiness: io_receipt_types::TwoWeekBackingReadiness) {
+    STATE.with(|cell| cell.borrow_mut().backing_readiness = Some(readiness));
 }
 
 fn neuron_mut(state: &mut GovernanceState, id: u64) -> Result<&mut MockNeuron, String> {

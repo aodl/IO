@@ -960,6 +960,11 @@ mod tests {
         let Bound::Bounded { max_size, .. } = <StableStreamState as Storable>::BOUND else {
             panic!("stream state must remain bounded");
         };
+        eprintln!(
+            "maximum accumulator plus pending batch encodes to {} bytes of the {}-byte stable bound",
+            encoded.len(),
+            max_size
+        );
         assert!(encoded.len() <= max_size as usize);
     }
 
