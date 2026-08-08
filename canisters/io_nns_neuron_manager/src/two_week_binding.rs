@@ -62,11 +62,11 @@ pub async fn prepare(
     args: PrepareTwoWeekMaturityArgs,
 ) -> Result<MaturityProgress, ApiError> {
     let initial = state::read();
-    if initial.lifecycle != Lifecycle::Ready {
-        return Err(ApiError::Paused);
-    }
     if caller != initial.config.stream_manager {
         return Err(ApiError::Unauthorized);
+    }
+    if initial.lifecycle != Lifecycle::Ready {
+        return Err(ApiError::Paused);
     }
     let target_status = crate::api::accept_two_week_target(crate::api::SetTwoWeekTargetArgs {
         generation: args.entitlement_batch_generation,
