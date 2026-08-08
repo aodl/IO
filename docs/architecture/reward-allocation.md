@@ -1,19 +1,24 @@
 # Reward allocation
 
 SNS Governance runs one canonical reward event every 86,400 seconds with both
-native reward rates set to zero. IO observes each event once and adds raw,
-non-overlapping entitlement weight to a bounded per-neuron accumulator.
+native reward rates set to zero. Each successfully observed, non-skipped event
+adds one fixed `10^18` policy-credit opportunity to a bounded, non-overlapping
+per-neuron accumulator.
 
-For a proposal-bearing event, a neuron receives only the canonical
+For a proposal-bearing event, IO sums canonical current-event shares across all
+neurons, including excluded and ineligible neurons. An eligible neuron receives
+only the normalized fraction represented by its canonical
 `latest_reward_event_participation.reward_shares` whose event timestamp exactly
-matches the current `RewardEvent`. Absent, stale, zero, or malformed shares add
-no weight. Settled proposals with zero eligible shares remain a zero-weight
-event; IO never substitutes a participation or maturity fallback.
+matches the current `RewardEvent`. Absent, stale or zero shares add no credit;
+a malformed current-event value fails closed. A day with zero canonical shares
+forfeits its whole policy opportunity; IO never substitutes a participation or
+maturity fallback.
 
 For a no-proposal event, and only when `settled_proposals` is empty, every
 currently eligible neuron receives its canonical eligible stake as event
-weight. Old or absent participation fields are ignored. This is one virtual
-unanimous proposal, not a rolling average.
+weight within the fixed daily opportunity. Old or absent participation fields
+are ignored. This is one virtual unanimous proposal, not a rolling average. If
+there are no eligible neurons, the whole opportunity is forfeited.
 
 Eligibility remains an exact staking-product rule: positive stake,
 non-dissolving, and exactly 1,209,600 seconds of dissolve delay. Protocol and
@@ -22,13 +27,15 @@ Jupiter neurons are excluded. The two-week duration is not an accounting epoch.
 When the NNS liquid maturity leg is ready and no batch is pending, IO freezes
 the live accumulator into one immutable entitlement batch. Daily observations
 continue in a fresh live accumulator while IO waits for actual modulated ICP.
-Only received ICP determines the backed IO pool. A zero-weight batch completes
-without recipient transfers and leaves the whole backed pool in reserve.
+Only received ICP determines the backed IO pool. Before recipient allocation,
+the batch's eligible-credit fraction determines the eligible pool; excluded,
+ineligible and unassigned fractions remain in reserve. A zero-eligible-credit
+batch completes without recipient transfers and forfeits the whole backed pool.
 
 Allocations use checked integer arithmetic. Deterministic rounding dust remains
 in reserve, and recipient transfers progress sequentially with upgrade-safe
-postcondition checks. Redemption remains independent and available during
-observation, backing waits, and payout delays.
+postcondition checks. Observation and backing waits do not block redemption;
+the exact monetary fan-out is serialized with redemption.
 
 The historian may derive trailing participation or APY displays, but those
 windows are observations and never monetary inputs. Missing events are recorded

@@ -25,12 +25,15 @@ stake, every delay other than exactly 1,209,600 seconds, and dissolving neurons.
 
 Stream-manager governance snapshot tests fetch local/mock SNS governance-shaped
 neuron pages through `SnsGovernanceClient`, apply this policy, and report
-excluded neurons alongside raw reward observations. Invalid or noncanonical SNS
-neuron IDs fail closed; they are not mapped to a fallback numeric ID. Entitlement
-entries require exact 32-byte canonical SNS neuron IDs.
+excluded neurons alongside canonical reward observations. Invalid or
+noncanonical SNS neuron IDs fail closed; they are not mapped to a fallback
+numeric ID. Entitlement entries require exact 32-byte canonical SNS neuron IDs.
 
 For a proposal-bearing event the boundary reads Governance's canonical reward
 shares; IO does not retain proposal DTOs or reconstruct direct/followed voting.
-When no proposal settled, current exact eligible stake is the fallback weight.
-That fallback is selected only by an empty canonical `settled_proposals` list;
-zero eligible proposal shares never trigger it.
+When no proposal settled, current exact eligible stake determines each neuron's
+fraction of the fixed daily credit. That fallback is selected only by an empty
+canonical `settled_proposals` list; zero proposal shares never trigger it. For
+a proposal-bearing event, current-event shares from excluded and ineligible
+neurons remain in the canonical denominator, so their fractions are forfeited
+rather than redistributed.
