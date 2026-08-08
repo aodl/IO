@@ -2383,6 +2383,12 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         .map(|weight| (weight.sns_neuron_id.clone(), weight.event_credit))
         .collect::<std::collections::BTreeMap<_, _>>();
     let recovered_neurons = list_all_neurons_paged(&fixture, 2);
+    let recovered_stake_total = [0_usize, 2, 4]
+        .into_iter()
+        .map(|index| {
+            u128::from(find_neuron(&recovered_neurons, &neuron_ids[index]).cached_neuron_stake_e8s)
+        })
+        .sum::<u128>();
     assert_eq!(
         recovered_weights,
         [0_usize, 2, 4]
@@ -2390,15 +2396,21 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             .map(|index| {
                 (
                     neuron_ids[index].id.clone(),
-                    u128::from(
-                        find_neuron(&recovered_neurons, &neuron_ids[index]).cached_neuron_stake_e8s,
-                    ),
+                    io_reward_policy::mul_div_floor(
+                        io_reward_policy::DAILY_EVENT_CREDIT,
+                        u128::from(
+                            find_neuron(&recovered_neurons, &neuron_ids[index])
+                                .cached_neuron_stake_e8s,
+                        ),
+                        recovered_stake_total,
+                    )
+                    .unwrap(),
                 )
             })
             .collect()
     );
     let recovered_status = stream_status();
-    assert_eq!(recovered_status.processed_reward_event_count, 15);
+    assert_eq!(recovered_status.processed_reward_event_count, 16);
     assert_eq!(recovered_status.missed_reward_event_count, 2);
     assert_eq!(
         recovered_status.pending_entitlement_batch_eligible_credit,
