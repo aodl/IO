@@ -9,8 +9,8 @@ use crate::{
         RewardRecipient, TwoWeekReceiptOperation, TwoWeekReceiptResult, TwoWeekSettlement,
     },
     reward_evidence::{
-        classify_sequence, eligible_stake_total, event_id, event_weights, exact_neuron,
-        installed_governance, latest_reward_event, list_all_neurons, merge_event_weights,
+        classify_sequence, eligible_stake_total, event_credits, event_id, exact_neuron,
+        installed_governance, latest_reward_event, list_all_neurons, merge_event_credits,
         require_consistent_event,
     },
     reward_nns::{self as reward_nns, CallError, TargetStatus},
@@ -117,16 +117,16 @@ pub async fn observe(now_nanos: u64) -> Result<RewardEventObservation, ApiError>
     let proposal_count = before.settled_proposal_count().map_err(|error| {
         ApiError::Invalid(format!("SNS reward event proposal count failed: {error:?}"))
     })?;
-    let (classification, weights, skipped) = match sequence {
+    let (classification, credits, skipped) = match sequence {
         io_sns_reward_boundary::EventSequence::First
         | io_sns_reward_boundary::EventSequence::Next => {
-            let (classification, weights) = event_weights(
+            let (classification, credits) = event_credits(
                 snapshot.config.sns_governance,
                 &snapshot.config.excluded_io_accounts,
                 &before,
                 &neurons,
             )?;
-            (classification, weights, None)
+            (classification, credits, None)
         }
         io_sns_reward_boundary::EventSequence::Skipped {
             previous,
@@ -146,11 +146,22 @@ pub async fn observe(now_nanos: u64) -> Result<RewardEventObservation, ApiError>
         ),
         io_sns_reward_boundary::EventSequence::Same => unreachable!(),
     };
+    let policy_credit = if skipped.is_some() {
+        0
+    } else {
+        io_reward_policy::DAILY_EVENT_CREDIT
+    };
+    let eligible_credit_total = credits
+        .iter()
+        .try_fold(0u128, |sum, credit| sum.checked_add(credit.event_credit))
+        .ok_or_else(|| ApiError::Invalid("event eligible-credit total overflow".into()))?;
     let observation = RewardEventObservation {
         event,
         proposal_count,
         classification,
-        weights,
+        credits,
+        policy_credit,
+        eligible_credit_total,
         observed_at_nanos: now_nanos,
     };
     commit_observation(&snapshot, observation.clone(), skipped)?;
@@ -227,7 +238,12 @@ fn commit_observation(
         latest.reward_entitlements.latest_skipped_event = Some(skipped);
     } else {
         latest.reward_entitlements.entries =
-            merge_event_weights(&latest.reward_entitlements.entries, &observation.weights)?;
+            merge_event_credits(&latest.reward_entitlements.entries, &observation.credits)?;
+        latest.reward_entitlements.accumulated_policy_credit = latest
+            .reward_entitlements
+            .accumulated_policy_credit
+            .checked_add(io_reward_policy::DAILY_EVENT_CREDIT)
+            .ok_or_else(|| ApiError::Invalid("accumulated policy credit overflow".into()))?;
         latest.reward_entitlements.processed_event_count = latest
             .reward_entitlements
             .processed_event_count
@@ -275,9 +291,7 @@ async fn freeze_batch(
     snapshot: crate::state::StreamStateV1,
     now_nanos: u64,
 ) -> Result<RewardBackingProgress, ApiError> {
-    if snapshot.reward_entitlements.processed_event_count
-        == snapshot.reward_entitlements.last_frozen_event_count
-    {
+    if snapshot.reward_entitlements.accumulated_policy_credit == 0 {
         return Err(ApiError::Pending(
             "no new entitlement event is available to freeze".into(),
         ));
@@ -311,12 +325,12 @@ async fn freeze_batch(
         .latest_entitlement_batch_generation
         .checked_add(1)
         .ok_or_else(|| ApiError::Invalid("entitlement batch generation exhausted".into()))?;
-    let total_weight = snapshot
+    let eligible_credit_total = snapshot
         .reward_entitlements
         .entries
         .iter()
         .try_fold(0u128, |sum, entry| {
-            sum.checked_add(entry.accumulated_weight)
+            sum.checked_add(entry.accumulated_eligible_credit)
         })
         .ok_or_else(|| ApiError::Invalid("pending entitlement total overflow".into()))?;
     let batch = PendingEntitlementBatch {
@@ -325,7 +339,8 @@ async fn freeze_batch(
         through_event,
         target_icp_e8s: target,
         entries: snapshot.reward_entitlements.entries.clone(),
-        total_weight,
+        eligible_credit_total,
+        policy_credit_total: snapshot.reward_entitlements.accumulated_policy_credit,
         processed_event_count: snapshot.reward_entitlements.processed_event_count,
     };
     batch
@@ -341,8 +356,7 @@ async fn freeze_batch(
         return Err(ApiError::Busy);
     }
     latest.reward_entitlements.entries.clear();
-    latest.reward_entitlements.last_frozen_event_count =
-        latest.reward_entitlements.processed_event_count;
+    latest.reward_entitlements.accumulated_policy_credit = 0;
     latest.pending_entitlement_batch = Some(batch);
     latest.pending_entitlement_status = PendingEntitlementStatus::Frozen;
     latest.latest_entitlement_batch_generation = generation;
@@ -489,15 +503,16 @@ async fn prepare_settlement(
         .entries
         .iter()
         .map(|entry| {
-            io_reward_policy::entitlement_from_bytes(
+            io_reward_policy::entitlement_credit_from_bytes(
                 entry.sns_neuron_id.clone(),
-                entry.accumulated_weight,
+                entry.accumulated_eligible_credit,
             )
             .map_err(|error| ApiError::Invalid(format!("reward participant failed: {error:?}")))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let allocation = io_reward_policy::allocate_rewards(pool, &participants)
-        .map_err(|error| ApiError::Invalid(format!("reward allocation failed: {error:?}")))?;
+    let allocation =
+        io_reward_policy::allocate_rewards(pool, batch.policy_credit_total, &participants)
+            .map_err(|error| ApiError::Invalid(format!("reward allocation failed: {error:?}")))?;
     let recipients = allocation
         .allocations
         .iter()
@@ -547,6 +562,7 @@ async fn prepare_settlement(
         recipients,
         recipient_index: 0,
         distributed_io_e8s: 0,
+        forfeited_io_e8s: allocation.forfeited_io_e8s,
         rounding_dust_io_e8s: allocation.rounding_dust_e8s,
     });
     crate::receipt::persist_exact(
@@ -850,7 +866,8 @@ fn complete_settlement(
         .ok_or_else(|| ApiError::Invalid("two-week receipt block is missing".into()))?;
     if settlement
         .distributed_io_e8s
-        .checked_add(settlement.rounding_dust_io_e8s)
+        .checked_add(settlement.forfeited_io_e8s)
+        .and_then(|value| value.checked_add(settlement.rounding_dust_io_e8s))
         .ok_or_else(|| ApiError::Invalid("two-week settlement total overflow".into()))?
         != settlement.backed_io_pool_e8s
     {
@@ -863,6 +880,7 @@ fn complete_settlement(
         receipt_block,
         backed_io_pool_e8s: settlement.backed_io_pool_e8s,
         distributed_io_e8s: settlement.distributed_io_e8s,
+        forfeited_io_e8s: settlement.forfeited_io_e8s,
         rounding_dust_io_e8s: settlement.rounding_dust_io_e8s,
         completed_at_nanos: now,
     });

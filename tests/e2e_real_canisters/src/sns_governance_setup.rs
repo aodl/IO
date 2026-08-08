@@ -1389,9 +1389,9 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     );
     assert_eq!(observation.event.round, event_2.round);
     let observed_weights = observation
-        .weights
+        .credits
         .iter()
-        .map(|weight| (weight.sns_neuron_id.clone(), weight.event_weight))
+        .map(|weight| (weight.sns_neuron_id.clone(), weight.event_credit))
         .collect::<std::collections::BTreeMap<_, _>>();
     for (id, expected) in neuron_ids[..3].iter().zip(stakes[..3].iter()) {
         assert_eq!(observed_weights[&id.id], u128::from(*expected));
@@ -1421,7 +1421,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     )
     .unwrap();
     assert_eq!(
-        status.pending_entitlement_batch_total_weight,
+        status.pending_entitlement_batch_eligible_credit,
         Some(600_000_000)
     );
 
@@ -1623,7 +1623,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                 observation.classification,
                 RewardEventClassification::ZeroEligibleParticipation
             );
-            assert!(observation.weights.is_empty());
+            assert!(observation.credits.is_empty());
         }
         Err(ApiError::Pending(message)) if message == "SNS reward event has not advanced" => {
             // The one-shot timer is deliberately allowed to win the race with a
@@ -1644,7 +1644,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                 status.latest_reward_event_classification,
                 Some(RewardEventClassification::ZeroEligibleParticipation)
             );
-            assert_eq!(status.accumulated_entitlement_weight, 0);
+            assert_eq!(status.accumulated_eligible_credit, 0);
         }
         other => panic!("zero-share proposal event is not consumed: {other:?}"),
     }
@@ -1777,7 +1777,12 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         status
             .accumulated_entitlements
             .iter()
-            .map(|entry| (entry.sns_neuron_id.clone(), entry.accumulated_weight))
+            .map(|entry| {
+                (
+                    entry.sns_neuron_id.clone(),
+                    entry.accumulated_eligible_credit,
+                )
+            })
             .collect::<std::collections::BTreeMap<_, _>>()
     };
 
@@ -1897,7 +1902,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             .unwrap(),
         )
         .unwrap();
-        let expected_event_weights = match expected_classification {
+        let expected_event_credits = match expected_classification {
             RewardEventClassification::ProposalBearing => {
                 let event_end = event
                     .end_timestamp_seconds
@@ -1947,13 +1952,13 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             Ok(observation) => {
                 assert_eq!(observation.event.round, event.round);
                 assert_eq!(observation.classification, expected_classification);
-                let actual_event_weights = observation
-                    .weights
+                let actual_event_credits = observation
+                    .credits
                     .iter()
-                    .map(|weight| (weight.sns_neuron_id.clone(), weight.event_weight))
+                    .map(|weight| (weight.sns_neuron_id.clone(), weight.event_credit))
                     .collect::<std::collections::BTreeMap<_, _>>();
                 assert_eq!(
-                    actual_event_weights, expected_event_weights,
+                    actual_event_credits, expected_event_credits,
                     "unexpected canonical candidate event weights on installed day {day}"
                 );
             }
@@ -1964,7 +1969,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             }
             other => panic!("installed daily event {day} was not consumed: {other:?}"),
         }
-        for (id, weight) in expected_event_weights {
+        for (id, weight) in expected_event_credits {
             *expected_live.entry(id).or_default() += weight;
         }
         let status = stream_status();
@@ -1985,7 +1990,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         );
         assert_eq!(entry_map(&status), expected_live);
         assert_eq!(
-            status.pending_entitlement_batch_total_weight,
+            status.pending_entitlement_batch_eligible_credit,
             if day > 4 { frozen_batch_total } else { None }
         );
 
@@ -1997,7 +2002,10 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             frozen_batch_total = Some(total);
             expected_live.clear();
             let frozen = stream_status();
-            assert_eq!(frozen.pending_entitlement_batch_total_weight, Some(total));
+            assert_eq!(
+                frozen.pending_entitlement_batch_eligible_credit,
+                Some(total)
+            );
             assert!(frozen.accumulated_entitlements.is_empty());
         }
         if day == 8 {
@@ -2015,8 +2023,8 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                 before_upgrade.accumulated_entitlements
             );
             assert_eq!(
-                after_upgrade.pending_entitlement_batch_total_weight,
-                before_upgrade.pending_entitlement_batch_total_weight
+                after_upgrade.pending_entitlement_batch_eligible_credit,
+                before_upgrade.pending_entitlement_batch_eligible_credit
             );
             set_stream_paused(false);
         }
@@ -2134,7 +2142,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                 redemption_icp_before.as_ref().unwrap().clone() + Nat::from(quote.net_icp_e8s)
             );
             assert_eq!(
-                stream_status().pending_entitlement_batch_total_weight,
+                stream_status().pending_entitlement_batch_eligible_credit,
                 frozen_batch_total
             );
         }
@@ -2165,7 +2173,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         skipped.classification,
         RewardEventClassification::MissedSkipped
     );
-    assert!(skipped.weights.is_empty());
+    assert!(skipped.credits.is_empty());
     let after_skip = stream_status();
     assert_eq!(after_skip.processed_reward_event_count, 14);
     assert_eq!(after_skip.missed_reward_event_count, 2);
@@ -2208,9 +2216,9 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         RewardEventClassification::NoProposalFallback
     );
     let recovered_weights = recovered_observation
-        .weights
+        .credits
         .iter()
-        .map(|weight| (weight.sns_neuron_id.clone(), weight.event_weight))
+        .map(|weight| (weight.sns_neuron_id.clone(), weight.event_credit))
         .collect::<std::collections::BTreeMap<_, _>>();
     let recovered_neurons = list_all_neurons_paged(&fixture, 2);
     assert_eq!(
@@ -2231,7 +2239,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     assert_eq!(recovered_status.processed_reward_event_count, 15);
     assert_eq!(recovered_status.missed_reward_event_count, 2);
     assert_eq!(
-        recovered_status.pending_entitlement_batch_total_weight,
+        recovered_status.pending_entitlement_batch_eligible_credit,
         frozen_batch_total
     );
     for neuron in list_all_neurons_paged(&fixture, 2) {

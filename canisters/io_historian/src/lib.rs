@@ -382,6 +382,7 @@ pub struct SimplifiedExecutionProjection {
     pub entitlement_batch_generation: Option<u64>,
     pub reward_recipient_index: Option<u32>,
     pub reward_recipient_count: Option<u32>,
+    pub distributed_io_e8s: Option<u128>,
     pub forfeited_io_e8s: Option<u128>,
     pub rounding_dust_io_e8s: Option<u128>,
     pub total_dust_io_e8s: Option<u128>,
@@ -431,8 +432,8 @@ pub struct GovernanceNeuronParticipation {
     pub currently_destination_eligible: bool,
     pub reward_event_end_timestamp_seconds: Option<u64>,
     pub reward_shares: Option<u128>,
-    pub event_weight: Option<u128>,
-    pub accumulated_entitlement_weight: Option<u128>,
+    pub event_credit: Option<u128>,
+    pub accumulated_eligible_credit: Option<u128>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -459,14 +460,20 @@ pub struct GovernanceParticipationSnapshot {
     pub reward_event_round: Option<u64>,
     pub reward_event_end_timestamp_seconds: Option<u64>,
     pub settled_proposal_count: Option<u64>,
-    pub total_eligible_reward_shares: Option<u128>,
+    pub total_canonical_reward_shares: Option<u128>,
     pub reward_event_missed: Option<bool>,
     pub expected_governance_module_hash: Option<String>,
     pub observed_governance_module_hash: Option<String>,
     pub reward_event_classification: Option<GovernanceRewardEventClassification>,
-    pub current_accumulator_total_weight: Option<u128>,
-    pub pending_batch_total_weight: Option<u128>,
+    pub daily_policy_credit: Option<u128>,
+    pub event_eligible_credit: Option<u128>,
+    pub event_forfeited_credit: Option<u128>,
+    pub current_accumulator_eligible_credit: Option<u128>,
+    pub current_accumulator_policy_credit: Option<u128>,
+    pub pending_batch_eligible_credit: Option<u128>,
+    pub pending_batch_policy_credit: Option<u128>,
     pub pending_backing_status: Option<String>,
+    pub nns_backing_readiness: Option<String>,
     pub missed_event_count: Option<u64>,
     pub governance_parameters_fresh: Option<bool>,
 }
@@ -487,9 +494,15 @@ pub struct GovernanceObservation {
     pub expected_governance_module_hash: Option<String>,
     pub observed_governance_module_hash: Option<String>,
     pub reward_event_classification: Option<GovernanceRewardEventClassification>,
-    pub current_accumulator_total_weight: Option<u128>,
-    pub pending_batch_total_weight: Option<u128>,
+    pub daily_policy_credit: Option<u128>,
+    pub event_eligible_credit: Option<u128>,
+    pub event_forfeited_credit: Option<u128>,
+    pub current_accumulator_eligible_credit: Option<u128>,
+    pub current_accumulator_policy_credit: Option<u128>,
+    pub pending_batch_eligible_credit: Option<u128>,
+    pub pending_batch_policy_credit: Option<u128>,
     pub pending_backing_status: Option<String>,
+    pub nns_backing_readiness: Option<String>,
     pub missed_event_count: Option<u64>,
     pub governance_parameters_fresh: Option<bool>,
 }
@@ -503,8 +516,8 @@ pub struct GovernanceNeuronObservation {
     pub currently_destination_eligible: bool,
     pub reward_event_end_timestamp_seconds: Option<u64>,
     pub reward_shares: Option<u128>,
-    pub event_weight: Option<u128>,
-    pub accumulated_entitlement_weight: Option<u128>,
+    pub event_credit: Option<u128>,
+    pub accumulated_eligible_credit: Option<u128>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -1503,8 +1516,8 @@ pub fn governance_snapshot_from_observation(
                 currently_destination_eligible: neuron.currently_destination_eligible,
                 reward_event_end_timestamp_seconds: neuron.reward_event_end_timestamp_seconds,
                 reward_shares: neuron.reward_shares,
-                event_weight: neuron.event_weight,
-                accumulated_entitlement_weight: neuron.accumulated_entitlement_weight,
+                event_credit: neuron.event_credit,
+                accumulated_eligible_credit: neuron.accumulated_eligible_credit,
             });
         }
         if neuron.frozen_stake_e8s == 0 || !neuron.currently_destination_eligible {
@@ -1536,14 +1549,20 @@ pub fn governance_snapshot_from_observation(
         reward_event_round: observation.reward_event_round,
         reward_event_end_timestamp_seconds: observation.reward_event_end_timestamp_seconds,
         settled_proposal_count: observation.settled_proposal_count,
-        total_eligible_reward_shares: total_reward_shares,
+        total_canonical_reward_shares: total_reward_shares,
         reward_event_missed: observation.reward_event_missed,
         expected_governance_module_hash: observation.expected_governance_module_hash,
         observed_governance_module_hash: observation.observed_governance_module_hash,
         reward_event_classification: observation.reward_event_classification,
-        current_accumulator_total_weight: observation.current_accumulator_total_weight,
-        pending_batch_total_weight: observation.pending_batch_total_weight,
+        daily_policy_credit: observation.daily_policy_credit,
+        event_eligible_credit: observation.event_eligible_credit,
+        event_forfeited_credit: observation.event_forfeited_credit,
+        current_accumulator_eligible_credit: observation.current_accumulator_eligible_credit,
+        current_accumulator_policy_credit: observation.current_accumulator_policy_credit,
+        pending_batch_eligible_credit: observation.pending_batch_eligible_credit,
+        pending_batch_policy_credit: observation.pending_batch_policy_credit,
         pending_backing_status: observation.pending_backing_status,
+        nns_backing_readiness: observation.nns_backing_readiness,
         missed_event_count: observation.missed_event_count,
         governance_parameters_fresh: observation.governance_parameters_fresh,
     }
@@ -2500,8 +2519,8 @@ mod tests {
                     currently_destination_eligible: true,
                     reward_event_end_timestamp_seconds: Some(2),
                     reward_shares: Some(50),
-                    event_weight: Some(50),
-                    accumulated_entitlement_weight: Some(150),
+                    event_credit: Some(50),
+                    accumulated_eligible_credit: Some(150),
                 },
                 GovernanceNeuronObservation {
                     neuron_id: 2,
@@ -2511,8 +2530,8 @@ mod tests {
                     currently_destination_eligible: false,
                     reward_event_end_timestamp_seconds: Some(2),
                     reward_shares: Some(100),
-                    event_weight: None,
-                    accumulated_entitlement_weight: None,
+                    event_credit: None,
+                    accumulated_eligible_credit: None,
                 },
             ],
             proposal_epoch_start: Some(1),
@@ -2528,9 +2547,15 @@ mod tests {
             expected_governance_module_hash: Some("expected".into()),
             observed_governance_module_hash: Some("expected".into()),
             reward_event_classification: Some(GovernanceRewardEventClassification::ProposalBearing),
-            current_accumulator_total_weight: Some(150),
-            pending_batch_total_weight: Some(600),
+            daily_policy_credit: Some(1_000_000_000_000_000_000),
+            event_eligible_credit: Some(500_000_000_000_000_000),
+            event_forfeited_credit: Some(500_000_000_000_000_000),
+            current_accumulator_eligible_credit: Some(150),
+            current_accumulator_policy_credit: Some(200),
+            pending_batch_eligible_credit: Some(600),
+            pending_batch_policy_credit: Some(800),
             pending_backing_status: Some("awaiting_receipt".into()),
+            nns_backing_readiness: Some("ready".into()),
             missed_event_count: Some(2),
             governance_parameters_fresh: Some(true),
         });
@@ -2540,10 +2565,10 @@ mod tests {
         assert_eq!(summary.neuron_participation.len(), 2);
         assert_eq!(summary.neuron_participation[0].participation_numerator, 50);
         assert_eq!(summary.neuron_participation[1].participation_numerator, 100);
-        assert_eq!(summary.total_eligible_reward_shares, Some(150));
-        assert_eq!(summary.neuron_participation[0].event_weight, Some(50));
-        assert_eq!(summary.current_accumulator_total_weight, Some(150));
-        assert_eq!(summary.pending_batch_total_weight, Some(600));
+        assert_eq!(summary.total_canonical_reward_shares, Some(150));
+        assert_eq!(summary.neuron_participation[0].event_credit, Some(50));
+        assert_eq!(summary.current_accumulator_eligible_credit, Some(150));
+        assert_eq!(summary.pending_batch_eligible_credit, Some(600));
         assert_eq!(summary.missed_event_count, Some(2));
         assert!(!summary.neuron_participation[1].currently_destination_eligible);
         assert_eq!(
@@ -2905,8 +2930,8 @@ mod tests {
                 currently_destination_eligible: true,
                 reward_event_end_timestamp_seconds: Some(20),
                 reward_shares: Some(50),
-                event_weight: Some(50),
-                accumulated_entitlement_weight: Some(50),
+                event_credit: Some(50),
+                accumulated_eligible_credit: Some(50),
             }],
             proposal_epoch_start: Some(10),
             proposal_epoch_end: Some(20),
@@ -2921,9 +2946,15 @@ mod tests {
             expected_governance_module_hash: Some("expected".into()),
             observed_governance_module_hash: Some("expected".into()),
             reward_event_classification: Some(GovernanceRewardEventClassification::ProposalBearing),
-            current_accumulator_total_weight: Some(50),
-            pending_batch_total_weight: None,
+            daily_policy_credit: Some(1_000_000_000_000_000_000),
+            event_eligible_credit: Some(500_000_000_000_000_000),
+            event_forfeited_credit: Some(500_000_000_000_000_000),
+            current_accumulator_eligible_credit: Some(50),
+            current_accumulator_policy_credit: Some(100),
+            pending_batch_eligible_credit: None,
+            pending_batch_policy_credit: None,
             pending_backing_status: None,
+            nns_backing_readiness: Some("below_threshold".into()),
             missed_event_count: Some(0),
             governance_parameters_fresh: Some(true),
         });

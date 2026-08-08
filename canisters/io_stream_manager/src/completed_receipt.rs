@@ -35,7 +35,8 @@ impl LastCompletedReceipt {
                     && result.backed_io_pool_e8s
                         == result
                             .distributed_io_e8s
-                            .checked_add(result.rounding_dust_io_e8s)
+                            .checked_add(result.forfeited_io_e8s)
+                            .and_then(|value| value.checked_add(result.rounding_dust_io_e8s))
                             .ok_or("completed two-week result overflow")?
                     && result.completed_at_nanos > 0 =>
             {

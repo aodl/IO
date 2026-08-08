@@ -28,7 +28,7 @@ type GovernanceNeuronObservation = record {
   currently_destination_eligible : bool; eligible_closed_proposals : nat64;
   frozen_stake_e8s : nat; neuron_id : nat64; voted_closed_proposals : nat64;
   reward_event_end_timestamp_seconds : opt nat64; reward_shares : opt nat;
-  event_weight : opt nat; accumulated_entitlement_weight : opt nat;
+  event_credit : opt nat; accumulated_eligible_credit : opt nat;
 };
 type GovernanceObservation = record {
   counted_proposals : nat64; neurons : vec GovernanceNeuronObservation;
@@ -39,8 +39,11 @@ type GovernanceObservation = record {
   settled_proposal_count : opt nat64; reward_event_missed : opt bool;
   expected_governance_module_hash : opt text; observed_governance_module_hash : opt text;
   reward_event_classification : opt GovernanceRewardEventClassification;
-  current_accumulator_total_weight : opt nat; pending_batch_total_weight : opt nat;
-  pending_backing_status : opt text; missed_event_count : opt nat64;
+  daily_policy_credit : opt nat; event_eligible_credit : opt nat;
+  event_forfeited_credit : opt nat; current_accumulator_eligible_credit : opt nat;
+  current_accumulator_policy_credit : opt nat; pending_batch_eligible_credit : opt nat;
+  pending_batch_policy_credit : opt nat; pending_backing_status : opt text;
+  nns_backing_readiness : opt text; missed_event_count : opt nat64;
   governance_parameters_fresh : opt bool;
 };
 type IndexHealthSummary = record {
@@ -68,7 +71,8 @@ type SimplifiedExecutionProjection = record {
   two_week_receipt_sequence : opt nat64; cohort_generation : opt nat64;
   cohort_closes_at_timestamp_seconds : opt nat64; reward_recipient_index : opt nat32;
   entitlement_batch_generation : opt nat64;
-  reward_recipient_count : opt nat32; forfeited_io_e8s : opt nat;
+  reward_recipient_count : opt nat32; distributed_io_e8s : opt nat;
+  forfeited_io_e8s : opt nat;
   rounding_dust_io_e8s : opt nat; total_dust_io_e8s : opt nat; under_target : bool;
   active_parent_principal_e8s : opt nat; unwinding_child_principal_e8s : opt nat;
   pending_unwind_child : opt nat64;

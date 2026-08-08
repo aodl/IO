@@ -26,8 +26,8 @@ pub use rewards::RewardBackingProgress;
 pub use state::CallerRedemptionState;
 pub use state::{
     Account, Lifecycle, PendingEntitlementBatch, RewardEntitlementAccumulator,
-    RewardEntitlementEntry, RewardEventClassification, RewardEventId, RewardEventObservation,
-    RewardEventWeight, SkippedRewardEvent, StreamConfig, StreamStateV1,
+    RewardEntitlementEntry, RewardEventClassification, RewardEventCredit, RewardEventId,
+    RewardEventObservation, SkippedRewardEvent, StreamConfig, StreamStateV1,
 };
 
 #[derive(Clone, Debug, CandidType, Deserialize)]

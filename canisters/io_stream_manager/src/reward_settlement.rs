@@ -30,7 +30,8 @@ pub(crate) fn validate(
         .ok_or("two-week recipient total overflow")?;
     if settlement.backed_io_pool_e8s
         != recipients
-            .checked_add(settlement.rounding_dust_io_e8s)
+            .checked_add(settlement.forfeited_io_e8s)
+            .and_then(|value| value.checked_add(settlement.rounding_dust_io_e8s))
             .ok_or("two-week settlement total overflow")?
         || settlement.recipient_index as usize > settlement.recipients.len()
     {

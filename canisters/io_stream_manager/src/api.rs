@@ -62,13 +62,15 @@ pub struct Status {
     pub latest_processed_reward_event: Option<crate::state::RewardEventId>,
     pub latest_reward_event_classification: Option<crate::state::RewardEventClassification>,
     pub accumulated_entitlements: Vec<crate::state::RewardEntitlementEntry>,
-    pub accumulated_entitlement_weight: u128,
+    pub accumulated_eligible_credit: u128,
+    pub accumulated_policy_credit: u128,
     pub processed_reward_event_count: u64,
     pub missed_reward_event_count: u64,
     pub reward_work_due: bool,
     pub reward_processing_paused: bool,
     pub governance_parameters_fresh: bool,
-    pub pending_entitlement_batch_total_weight: Option<u128>,
+    pub pending_entitlement_batch_eligible_credit: Option<u128>,
+    pub pending_entitlement_batch_policy_credit: Option<u128>,
     pub pending_entitlement_status: Option<crate::state::PendingEntitlementStatus>,
 }
 
@@ -95,12 +97,12 @@ pub fn get_status() -> Status {
         },
         None => (None, None),
     };
-    let accumulated_entitlement_weight = state
+    let accumulated_eligible_credit = state
         .reward_entitlements
         .entries
         .iter()
         .try_fold(0u128, |sum, entry| {
-            sum.checked_add(entry.accumulated_weight)
+            sum.checked_add(entry.accumulated_eligible_credit)
         })
         .expect("validated entitlement accumulator total");
     Status {
@@ -116,16 +118,21 @@ pub fn get_status() -> Status {
             .as_ref()
             .map(|observation| observation.classification),
         accumulated_entitlements: state.reward_entitlements.entries,
-        accumulated_entitlement_weight,
+        accumulated_eligible_credit,
+        accumulated_policy_credit: state.reward_entitlements.accumulated_policy_credit,
         processed_reward_event_count: state.reward_entitlements.processed_event_count,
         missed_reward_event_count: state.reward_entitlements.missed_event_count,
         reward_work_due: state.reward_entitlements.reward_work_due,
         reward_processing_paused: state.reward_entitlements.reward_processing_paused,
         governance_parameters_fresh: state.reward_entitlements.governance_parameters_fresh,
-        pending_entitlement_batch_total_weight: state
+        pending_entitlement_batch_eligible_credit: state
             .pending_entitlement_batch
             .as_ref()
-            .map(|batch| batch.total_weight),
+            .map(|batch| batch.eligible_credit_total),
+        pending_entitlement_batch_policy_credit: state
+            .pending_entitlement_batch
+            .as_ref()
+            .map(|batch| batch.policy_credit_total),
         pending_entitlement_status: state
             .pending_entitlement_batch
             .as_ref()

@@ -77,21 +77,23 @@ type RewardEventClassification = variant {
   ZeroEligibleParticipation;
   MissedSkipped;
 };
-type RewardEventWeight = record {
+type RewardEventCredit = record {
   sns_neuron_id : blob;
   destination : Account;
-  event_weight : nat;
+  event_credit : nat;
 };
 type RewardEntitlementEntry = record {
   sns_neuron_id : blob;
   destination : Account;
-  accumulated_weight : nat;
+  accumulated_eligible_credit : nat;
 };
 type RewardEventObservation = record {
   event : RewardEventId;
   proposal_count : nat64;
   classification : RewardEventClassification;
-  weights : vec RewardEventWeight;
+  credits : vec RewardEventCredit;
+  policy_credit : nat;
+  eligible_credit_total : nat;
   observed_at_nanos : nat64;
 };
 type PendingEntitlementStatus = variant {
@@ -118,6 +120,7 @@ type TwoWeekReceiptResult = record {
   receipt_block : nat;
   backed_io_pool_e8s : nat;
   distributed_io_e8s : nat;
+  forfeited_io_e8s : nat;
   rounding_dust_io_e8s : nat;
   completed_at_nanos : nat64;
 };
@@ -158,13 +161,15 @@ type Status = record {
   latest_processed_reward_event : opt RewardEventId;
   latest_reward_event_classification : opt RewardEventClassification;
   accumulated_entitlements : vec RewardEntitlementEntry;
-  accumulated_entitlement_weight : nat;
+  accumulated_eligible_credit : nat;
+  accumulated_policy_credit : nat;
   processed_reward_event_count : nat64;
   missed_reward_event_count : nat64;
   reward_work_due : bool;
   reward_processing_paused : bool;
   governance_parameters_fresh : bool;
-  pending_entitlement_batch_total_weight : opt nat;
+  pending_entitlement_batch_eligible_credit : opt nat;
+  pending_entitlement_batch_policy_credit : opt nat;
   pending_entitlement_status : opt PendingEntitlementStatus;
 };
 service : (InitArgs) -> {

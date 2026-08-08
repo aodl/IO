@@ -41,8 +41,8 @@ type GovernanceNeuronParticipation = record {
   voted_closed_proposals : nat64;
   reward_event_end_timestamp_seconds : opt nat64;
   reward_shares : opt nat;
-  event_weight : opt nat;
-  accumulated_entitlement_weight : opt nat;
+  event_credit : opt nat;
+  accumulated_eligible_credit : opt nat;
 };
 type GovernanceParticipationSnapshot = record {
   counted_proposals : nat64;
@@ -58,14 +58,20 @@ type GovernanceParticipationSnapshot = record {
   reward_event_round : opt nat64;
   reward_event_end_timestamp_seconds : opt nat64;
   settled_proposal_count : opt nat64;
-  total_eligible_reward_shares : opt nat;
+  total_canonical_reward_shares : opt nat;
   reward_event_missed : opt bool;
   expected_governance_module_hash : opt text;
   observed_governance_module_hash : opt text;
   reward_event_classification : opt GovernanceRewardEventClassification;
-  current_accumulator_total_weight : opt nat;
-  pending_batch_total_weight : opt nat;
+  daily_policy_credit : opt nat;
+  event_eligible_credit : opt nat;
+  event_forfeited_credit : opt nat;
+  current_accumulator_eligible_credit : opt nat;
+  current_accumulator_policy_credit : opt nat;
+  pending_batch_eligible_credit : opt nat;
+  pending_batch_policy_credit : opt nat;
   pending_backing_status : opt text;
+  nns_backing_readiness : opt text;
   missed_event_count : opt nat64;
   governance_parameters_fresh : opt bool;
 };
@@ -188,6 +194,7 @@ type SimplifiedExecutionProjection = record {
   entitlement_batch_generation : opt nat64;
   reward_recipient_index : opt nat32;
   reward_recipient_count : opt nat32;
+  distributed_io_e8s : opt nat;
   forfeited_io_e8s : opt nat;
   rounding_dust_io_e8s : opt nat;
   total_dust_io_e8s : opt nat;

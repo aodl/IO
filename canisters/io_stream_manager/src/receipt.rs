@@ -44,6 +44,7 @@ pub struct TwoWeekSettlement {
     pub recipients: Vec<RewardRecipient>,
     pub recipient_index: u32,
     pub distributed_io_e8s: u128,
+    pub forfeited_io_e8s: u128,
     pub rounding_dust_io_e8s: u128,
 }
 
@@ -1026,6 +1027,7 @@ mod tests {
                 receipt_block: 1,
                 backed_io_pool_e8s: 2,
                 distributed_io_e8s: 2,
+                forfeited_io_e8s: 0,
                 rounding_dust_io_e8s: 0,
                 completed_at_nanos: 4,
             }))

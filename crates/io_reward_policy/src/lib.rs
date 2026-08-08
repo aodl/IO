@@ -1,4 +1,6 @@
-//! Pure allocation of one actually backed IO pool over cumulative entitlement weights.
+//! Pure allocation of one actually backed IO pool over cumulative entitlement credits.
+
+pub const DAILY_EVENT_CREDIT: u128 = 1_000_000_000_000_000_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnsNeuronId(pub Vec<u8>);
@@ -36,22 +38,22 @@ pub fn compatibility_sns_neuron_id_from_u64(id: u64) -> SnsNeuronId {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EntitlementWeight {
+pub struct EntitlementCredit {
     pub sns_neuron_id: SnsNeuronId,
     pub neuron_id: u64,
-    pub accumulated_weight: u128,
+    pub accumulated_eligible_credit: u128,
 }
 
-pub fn entitlement_from_bytes(
+pub fn entitlement_credit_from_bytes(
     sns_neuron_id: Vec<u8>,
-    accumulated_weight: u128,
-) -> Result<EntitlementWeight, SnsNeuronIdConversionError> {
+    accumulated_eligible_credit: u128,
+) -> Result<EntitlementCredit, SnsNeuronIdConversionError> {
     let sns_neuron_id = SnsNeuronId(sns_neuron_id);
     let neuron_id = sns_neuron_id_to_u64(&sns_neuron_id)?;
-    Ok(EntitlementWeight {
+    Ok(EntitlementCredit {
         sns_neuron_id,
         neuron_id,
-        accumulated_weight,
+        accumulated_eligible_credit,
     })
 }
 
@@ -65,8 +67,11 @@ pub struct RewardAllocation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AllocationOutcome {
     pub allocations: Vec<RewardAllocation>,
+    pub eligible_pool_e8s: u128,
+    pub forfeited_io_e8s: u128,
     pub rounding_dust_e8s: u128,
-    pub total_weight: u128,
+    pub eligible_credit_total: u128,
+    pub policy_credit_total: u128,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,7 +115,7 @@ fn doubled_remainder_minus_denominator(
     }
 }
 
-fn mul_div_floor(
+pub fn mul_div_floor(
     value: u128,
     numerator: u128,
     denominator: u128,
@@ -148,30 +153,48 @@ fn mul_div_floor(
 
 pub fn allocate_rewards(
     reward_pool_io_e8s: u128,
-    entitlements: &[EntitlementWeight],
+    policy_credit_total: u128,
+    entitlements: &[EntitlementCredit],
 ) -> Result<AllocationOutcome, RewardPolicyError> {
-    let total_weight = entitlements
+    if policy_credit_total == 0 {
+        return Err(RewardPolicyError::InvalidDenominator);
+    }
+    let eligible_credit_total = entitlements
         .iter()
-        .map(|entry| entry.accumulated_weight)
-        .try_fold(0u128, |sum, weight| sum.checked_add(weight))
+        .map(|entry| entry.accumulated_eligible_credit)
+        .try_fold(0u128, |sum, credit| sum.checked_add(credit))
         .ok_or(RewardPolicyError::ArithmeticOverflow)?;
-    if reward_pool_io_e8s == 0 || total_weight == 0 {
+    if eligible_credit_total > policy_credit_total {
+        return Err(RewardPolicyError::InvalidDenominator);
+    }
+    let eligible_pool_e8s = mul_div_floor(
+        reward_pool_io_e8s,
+        eligible_credit_total,
+        policy_credit_total,
+    )?;
+    let forfeited_io_e8s = reward_pool_io_e8s
+        .checked_sub(eligible_pool_e8s)
+        .ok_or(RewardPolicyError::ArithmeticOverflow)?;
+    if eligible_pool_e8s == 0 || eligible_credit_total == 0 {
         return Ok(AllocationOutcome {
             allocations: Vec::new(),
-            rounding_dust_e8s: reward_pool_io_e8s,
-            total_weight,
+            eligible_pool_e8s,
+            forfeited_io_e8s,
+            rounding_dust_e8s: eligible_pool_e8s,
+            eligible_credit_total,
+            policy_credit_total,
         });
     }
     let mut issued = 0u128;
     let mut allocations = Vec::new();
     for entitlement in entitlements {
-        if entitlement.accumulated_weight == 0 {
+        if entitlement.accumulated_eligible_credit == 0 {
             continue;
         }
         let amount = mul_div_floor(
-            reward_pool_io_e8s,
-            entitlement.accumulated_weight,
-            total_weight,
+            eligible_pool_e8s,
+            entitlement.accumulated_eligible_credit,
+            eligible_credit_total,
         )?;
         issued = issued
             .checked_add(amount)
@@ -186,10 +209,13 @@ pub fn allocate_rewards(
     }
     Ok(AllocationOutcome {
         allocations,
-        rounding_dust_e8s: reward_pool_io_e8s
+        eligible_pool_e8s,
+        forfeited_io_e8s,
+        rounding_dust_e8s: eligible_pool_e8s
             .checked_sub(issued)
             .ok_or(RewardPolicyError::ArithmeticOverflow)?,
-        total_weight,
+        eligible_credit_total,
+        policy_credit_total,
     })
 }
 
@@ -197,11 +223,11 @@ pub fn allocate_rewards(
 mod tests {
     use super::*;
 
-    fn weight(id: u64, accumulated_weight: u128) -> EntitlementWeight {
-        EntitlementWeight {
+    fn credit(id: u64, accumulated_eligible_credit: u128) -> EntitlementCredit {
+        EntitlementCredit {
             sns_neuron_id: SnsNeuronId(id.to_be_bytes().to_vec()),
             neuron_id: id,
-            accumulated_weight,
+            accumulated_eligible_credit,
         }
     }
 
@@ -214,9 +240,13 @@ mod tests {
     }
 
     #[test]
-    fn unequal_weights_allocate_a_large_pool_one_to_two_to_three() {
-        let outcome =
-            allocate_rewards(600_000, &[weight(1, 100), weight(2, 200), weight(3, 300)]).unwrap();
+    fn unequal_credits_allocate_a_large_pool_one_to_two_to_three() {
+        let outcome = allocate_rewards(
+            600_000,
+            600,
+            &[credit(1, 100), credit(2, 200), credit(3, 300)],
+        )
+        .unwrap();
         assert_eq!(
             outcome
                 .allocations
@@ -225,29 +255,32 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![100_000, 200_000, 300_000]
         );
+        assert_eq!(outcome.forfeited_io_e8s, 0);
         assert_eq!(outcome.rounding_dust_e8s, 0);
     }
 
     #[test]
     fn tiny_pool_has_deterministic_dust_and_conserves_the_pool() {
-        let outcome = allocate_rewards(2, &[weight(1, 1), weight(2, 1), weight(3, 1)]).unwrap();
+        let outcome = allocate_rewards(2, 3, &[credit(1, 1), credit(2, 1), credit(3, 1)]).unwrap();
         assert!(outcome.allocations.is_empty());
         assert_eq!(outcome.rounding_dust_e8s, 2);
+        assert_eq!(outcome.forfeited_io_e8s, 0);
         assert_eq!(sum_allocations(&outcome) + outcome.rounding_dust_e8s, 2);
     }
 
     #[test]
-    fn zero_weight_batch_keeps_the_full_pool_as_dust() {
-        let outcome = allocate_rewards(100, &[]).unwrap();
+    fn zero_eligible_credit_forfeits_the_full_pool() {
+        let outcome = allocate_rewards(100, DAILY_EVENT_CREDIT, &[]).unwrap();
         assert!(outcome.allocations.is_empty());
-        assert_eq!(outcome.total_weight, 0);
-        assert_eq!(outcome.rounding_dust_e8s, 100);
+        assert_eq!(outcome.eligible_credit_total, 0);
+        assert_eq!(outcome.forfeited_io_e8s, 100);
+        assert_eq!(outcome.rounding_dust_e8s, 0);
     }
 
     #[test]
     fn deterministic_order_preserves_canonical_input_order() {
         let outcome =
-            allocate_rewards(30, &[weight(7, 10), weight(42, 10), weight(99, 10)]).unwrap();
+            allocate_rewards(30, 30, &[credit(7, 10), credit(42, 10), credit(99, 10)]).unwrap();
         assert_eq!(
             outcome
                 .allocations
@@ -260,12 +293,35 @@ mod tests {
 
     #[test]
     fn max_value_allocation_is_exact_and_overflowing_total_fails_closed() {
-        let exact = allocate_rewards(u128::MAX, &[weight(1, u128::MAX)]).unwrap();
+        let exact = allocate_rewards(u128::MAX, u128::MAX, &[credit(1, u128::MAX)]).unwrap();
         assert_eq!(exact.allocations[0].io_e8s, u128::MAX);
         assert_eq!(exact.rounding_dust_e8s, 0);
         assert_eq!(
-            allocate_rewards(100, &[weight(1, u128::MAX), weight(2, 1)]),
+            allocate_rewards(100, u128::MAX, &[credit(1, u128::MAX), credit(2, 1)]),
             Err(RewardPolicyError::ArithmeticOverflow)
         );
+    }
+
+    #[test]
+    fn excluded_half_is_forfeited_without_redistribution() {
+        let outcome = allocate_rewards(
+            1_000,
+            DAILY_EVENT_CREDIT,
+            &[credit(1, DAILY_EVENT_CREDIT / 2)],
+        )
+        .unwrap();
+        assert_eq!(sum_allocations(&outcome), 500);
+        assert_eq!(outcome.forfeited_io_e8s, 500);
+        assert_eq!(outcome.rounding_dust_e8s, 0);
+    }
+
+    #[test]
+    fn distributed_forfeited_and_dust_conserve_the_backed_pool() {
+        let outcome = allocate_rewards(101, 6, &[credit(1, 1), credit(2, 2)]).unwrap();
+        assert_eq!(outcome.eligible_pool_e8s, 50);
+        assert_eq!(outcome.forfeited_io_e8s, 51);
+        assert_eq!(outcome.rounding_dust_e8s, 1);
+        assert_eq!(sum_allocations(&outcome), 49);
+        assert_eq!(49 + 51 + 1, 101);
     }
 }

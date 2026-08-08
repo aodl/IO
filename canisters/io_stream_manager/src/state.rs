@@ -188,7 +188,7 @@ pub enum LiquidReceiptStreamOperation {
 pub struct RewardEntitlementEntry {
     pub sns_neuron_id: Vec<u8>,
     pub destination: Account,
-    pub accumulated_weight: u128,
+    pub accumulated_eligible_credit: u128,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -200,10 +200,10 @@ pub enum RewardEventClassification {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct RewardEventWeight {
+pub struct RewardEventCredit {
     pub sns_neuron_id: Vec<u8>,
     pub destination: Account,
-    pub event_weight: u128,
+    pub event_credit: u128,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -211,7 +211,9 @@ pub struct RewardEventObservation {
     pub event: RewardEventId,
     pub proposal_count: u64,
     pub classification: RewardEventClassification,
-    pub weights: Vec<RewardEventWeight>,
+    pub credits: Vec<RewardEventCredit>,
+    pub policy_credit: u128,
+    pub eligible_credit_total: u128,
     pub observed_at_nanos: u64,
 }
 
@@ -228,8 +230,9 @@ pub struct SkippedRewardEvent {
 pub struct RewardEntitlementAccumulator {
     pub last_processed_event: Option<RewardEventId>,
     pub entries: Vec<RewardEntitlementEntry>,
+    #[serde(default)]
+    pub accumulated_policy_credit: u128,
     pub processed_event_count: u64,
-    pub last_frozen_event_count: u64,
     pub missed_event_count: u64,
     pub reward_work_due: bool,
     pub reward_processing_paused: bool,
@@ -243,8 +246,8 @@ impl Default for RewardEntitlementAccumulator {
         Self {
             last_processed_event: None,
             entries: Vec::new(),
+            accumulated_policy_credit: 0,
             processed_event_count: 0,
-            last_frozen_event_count: 0,
             missed_event_count: 0,
             reward_work_due: true,
             reward_processing_paused: false,
@@ -262,7 +265,8 @@ pub struct PendingEntitlementBatch {
     pub through_event: RewardEventId,
     pub target_icp_e8s: u128,
     pub entries: Vec<RewardEntitlementEntry>,
-    pub total_weight: u128,
+    pub eligible_credit_total: u128,
+    pub policy_credit_total: u128,
     pub processed_event_count: u64,
 }
 
@@ -419,14 +423,15 @@ impl RewardEntitlementAccumulator {
 
     pub fn validate(&self, config: &StreamConfig) -> Result<(), String> {
         validate_entitlement_entries(&self.entries, config)?;
-        self.entries
+        let eligible_credit_total = self
+            .entries
             .iter()
             .try_fold(0u128, |sum, entry| {
-                sum.checked_add(entry.accumulated_weight)
+                sum.checked_add(entry.accumulated_eligible_credit)
             })
             .ok_or("entitlement accumulator total overflow")?;
-        if self.last_frozen_event_count > self.processed_event_count {
-            return Err("frozen entitlement count exceeds processed events".into());
+        if eligible_credit_total > self.accumulated_policy_credit {
+            return Err("eligible entitlement credit exceeds policy credit".into());
         }
         if self
             .last_processed_event
@@ -463,15 +468,28 @@ impl RewardEventObservation {
             return Err("latest reward observation is invalid".into());
         }
         let entries = self
-            .weights
+            .credits
             .iter()
             .map(|weight| RewardEntitlementEntry {
                 sns_neuron_id: weight.sns_neuron_id.clone(),
                 destination: weight.destination.clone(),
-                accumulated_weight: weight.event_weight,
+                accumulated_eligible_credit: weight.event_credit,
             })
             .collect::<Vec<_>>();
-        validate_entitlement_entries(&entries, config)
+        validate_entitlement_entries(&entries, config)?;
+        let eligible_credit_total = entries.iter().try_fold(0u128, |sum, entry| {
+            sum.checked_add(entry.accumulated_eligible_credit)
+        });
+        if eligible_credit_total != Some(self.eligible_credit_total)
+            || self.eligible_credit_total > self.policy_credit
+            || (self.classification == RewardEventClassification::MissedSkipped
+                && (self.policy_credit != 0 || self.eligible_credit_total != 0))
+            || (self.classification != RewardEventClassification::MissedSkipped
+                && self.policy_credit != io_reward_policy::DAILY_EVENT_CREDIT)
+        {
+            return Err("latest reward observation credit totals are inconsistent".into());
+        }
+        Ok(())
     }
 }
 
@@ -487,9 +505,12 @@ impl PendingEntitlementBatch {
         }
         validate_entitlement_entries(&self.entries, config)?;
         let total = self.entries.iter().try_fold(0u128, |sum, entry| {
-            sum.checked_add(entry.accumulated_weight)
+            sum.checked_add(entry.accumulated_eligible_credit)
         });
-        if total != Some(self.total_weight) {
+        if total != Some(self.eligible_credit_total)
+            || self.eligible_credit_total > self.policy_credit_total
+            || self.policy_credit_total == 0
+        {
             return Err("pending entitlement batch total is inconsistent".into());
         }
         Ok(())
@@ -512,7 +533,7 @@ fn validate_entitlement_entries(
             || !accounts.insert(account)
             || account.owner != config.sns_governance
             || account.subaccount.as_slice() != entry.sns_neuron_id
-            || entry.accumulated_weight == 0
+            || entry.accumulated_eligible_credit == 0
             || config
                 .excluded_io_accounts
                 .iter()
@@ -721,7 +742,7 @@ mod tests {
         let entry = RewardEntitlementEntry {
             sns_neuron_id: vec![1; 32],
             destination: account(governance, 1),
-            accumulated_weight: 100,
+            accumulated_eligible_credit: 100,
         };
         let event = RewardEventId {
             end_timestamp_seconds: 86_400,
@@ -756,8 +777,8 @@ mod tests {
                 reward_entitlements: RewardEntitlementAccumulator {
                     last_processed_event: Some(event),
                     entries: vec![entry.clone()],
+                    accumulated_policy_credit: io_reward_policy::DAILY_EVENT_CREDIT,
                     processed_event_count: 1,
-                    last_frozen_event_count: 0,
                     missed_event_count: 0,
                     reward_work_due: false,
                     reward_processing_paused: false,
@@ -765,11 +786,13 @@ mod tests {
                         event,
                         proposal_count: 1,
                         classification: RewardEventClassification::ProposalBearing,
-                        weights: vec![RewardEventWeight {
+                        credits: vec![RewardEventCredit {
                             sns_neuron_id: entry.sns_neuron_id,
                             destination: entry.destination,
-                            event_weight: 100,
+                            event_credit: 100,
                         }],
+                        policy_credit: io_reward_policy::DAILY_EVENT_CREDIT,
+                        eligible_credit_total: 100,
                         observed_at_nanos: 1,
                     }),
                     latest_skipped_event: None,
@@ -810,12 +833,12 @@ mod tests {
             RewardEntitlementEntry {
                 sns_neuron_id: vec![2; 32],
                 destination: account(governance, 2),
-                accumulated_weight: 1,
+                accumulated_eligible_credit: 1,
             },
             RewardEntitlementEntry {
                 sns_neuron_id: vec![1; 32],
                 destination: account(governance, 1),
-                accumulated_weight: 1,
+                accumulated_eligible_credit: 1,
             },
         ];
         assert!(state.validate(canister_self).is_err());
@@ -825,14 +848,15 @@ mod tests {
     fn one_zero_weight_pending_batch_is_valid_and_status_is_typed() {
         let (canister_self, mut state) = valid_state();
         state.reward_entitlements.entries.clear();
-        state.reward_entitlements.last_frozen_event_count = 1;
+        state.reward_entitlements.accumulated_policy_credit = 0;
         state.pending_entitlement_batch = Some(PendingEntitlementBatch {
             generation: 1,
             frozen_at_timestamp_seconds: 1,
             through_event: state.reward_entitlements.last_processed_event.unwrap(),
             target_icp_e8s: 0,
             entries: Vec::new(),
-            total_weight: 0,
+            eligible_credit_total: 0,
+            policy_credit_total: io_reward_policy::DAILY_EVENT_CREDIT,
             processed_event_count: 1,
         });
         state.pending_entitlement_status = PendingEntitlementStatus::MaturityPrepared;
@@ -854,12 +878,12 @@ mod tests {
             through_event: first_event,
             target_icp_e8s: 1,
             entries: vec![frozen_entry],
-            total_weight: 100,
+            eligible_credit_total: 100,
+            policy_credit_total: io_reward_policy::DAILY_EVENT_CREDIT,
             processed_event_count: 1,
         });
         state.pending_entitlement_status = PendingEntitlementStatus::MaturityPrepared;
         state.latest_entitlement_batch_generation = 1;
-        state.reward_entitlements.last_frozen_event_count = 1;
         state.reward_entitlements.processed_event_count = 2;
         state.reward_entitlements.last_processed_event = Some(RewardEventId {
             end_timestamp_seconds: 172_800,
@@ -868,7 +892,7 @@ mod tests {
         state.reward_entitlements.entries = vec![RewardEntitlementEntry {
             sns_neuron_id: vec![2; 32],
             destination: account(governance, 2),
-            accumulated_weight: 200,
+            accumulated_eligible_credit: 200,
         }];
         state.reward_entitlements.latest_observation = None;
         state.validate(canister_self).unwrap();
@@ -894,7 +918,9 @@ mod tests {
             event: skipped.observed_event,
             proposal_count: 0,
             classification: RewardEventClassification::MissedSkipped,
-            weights: Vec::new(),
+            credits: Vec::new(),
+            policy_credit: 0,
+            eligible_credit_total: 0,
             observed_at_nanos: 2,
         });
         state.validate(canister_self).unwrap();
@@ -926,20 +952,21 @@ mod tests {
                         owner: governance,
                         subaccount: Some(id.to_vec()),
                     },
-                    accumulated_weight: 1,
+                    accumulated_eligible_credit: 1,
                 }
             })
             .collect::<Vec<_>>();
         state.reward_entitlements.entries = entries.clone();
+        state.reward_entitlements.accumulated_policy_credit = io_reward_policy::DAILY_EVENT_CREDIT;
         state.reward_entitlements.latest_observation = None;
-        state.reward_entitlements.last_frozen_event_count = 0;
         state.pending_entitlement_batch = Some(PendingEntitlementBatch {
             generation: 1,
             frozen_at_timestamp_seconds: 1,
             through_event: state.reward_entitlements.last_processed_event.unwrap(),
             target_icp_e8s: 1,
             entries,
-            total_weight: RewardEntitlementAccumulator::MAX_ENTRIES as u128,
+            eligible_credit_total: RewardEntitlementAccumulator::MAX_ENTRIES as u128,
+            policy_credit_total: io_reward_policy::DAILY_EVENT_CREDIT,
             processed_event_count: 1,
         });
         state.latest_entitlement_batch_generation = 1;
@@ -958,8 +985,7 @@ mod tests {
         let canonical_minimum_disbursement_e8s = 100_000_000_u64;
         let liquid_maturity_e8s = canonical_minimum_disbursement_e8s - 1;
         assert!(
-            state.reward_entitlements.processed_event_count
-                != state.reward_entitlements.last_frozen_event_count,
+            state.reward_entitlements.accumulated_policy_credit > 0,
             "the current freeze gate sees new entitlement work"
         );
         assert!(
