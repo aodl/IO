@@ -113,23 +113,24 @@ contract. A capability-bearing bundle makes the exact candidate tests
 mandatory; exact-test discovery must find one test before execution begins.
 
 Runtime readiness independently verifies exact SNS Root, exact Governance
-principal, exact Governance module hash, the exact 1,209,600-second native
-reward-event duration,
-and that both current native Governance reward rates are zero. Canonical SNS
+principal, exact Governance module hash, the exact 86,400-second native
+reward-event duration, zero dissolve-delay and age voting-power bonuses, and
+that both native Governance reward rates are zero. Canonical SNS
 Governance reward shares are the complete weight for a proposal-bearing event,
 including the SNS's native voting-power policy. IO filters the exact eligible
 two-week non-dissolving neurons and excluded protocol/Jupiter accounts; it does
 not reconstruct age, dissolve-delay, or voting-power multiplier arithmetic.
 
-If no proposals settled, allocation may use exact eligible captured stake. If
+If no proposals settled, the event uses exact currently eligible stake. If
 proposals settled but eligible canonical shares total zero, IO issues no reward
 and does not fall back to full participation.
 
 IO accepts only the exact next reward event: round delta one and
 `rounds_since_last_distribution` one. A missed event or multi-round span is
-reported as `RewardEventMissed` or `RewardEventSpanUnsupported`; no allocation
-occurs and the backed pool remains in reserve. The field is latest-event-only;
-IO does not reconstruct skipped events.
+reported as one bounded typed skipped-event observation; no entitlement credit
+is added and undistributed backing remains in reserve. The field is
+latest-event-only; IO advances its observation checkpoint without reconstructing
+skipped events.
 
 ## Profiles and execution safety
 

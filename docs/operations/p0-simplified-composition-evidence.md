@@ -43,38 +43,35 @@ The same installed test prepares a Jupiter receipt, transfers ICP from the exact
 
 | Item | Reproduced defect | Durable correction |
 | --- | --- | --- |
-| A | A proposal decided in the capture second entered a new cohort. | Participation uses `captured_at < decided_at <= closes_at`; `same_second_proposal_is_not_counted_for_new_cohort` protects the exclusive lower bound. |
-| B | Synthetic ballot values 3 and 4 were treated as followed votes. | Only the pinned SNS `Yes = 1` and `No = 2` values count. Finalized-SNS following evidence observes the follower's resulting canonical Yes ballot. |
-| C | Protocol-owned and Jupiter-governance staking Accounts could enter membership and inflate the target. | The exact staking Account is SNS governance plus the 32-byte neuron ID subaccount; configured excluded Accounts are removed from membership, frozen stake, and target input. |
-| D | Close-time eligibility was sufficient for payout. | Each recipient is re-read through exact `get_neuron` before transfer. A missing, dissolving, wrong-delay, zero-stake, malformed, or newly excluded destination is advanced without transfer and its immutable allocation becomes forfeiture. |
-| E | Completed receipt evidence collapsed forfeiture and rounding. | Settlement and typed completion preserve `forfeited_io_e8s`, `rounding_dust_io_e8s`, and their checked `total_dust_io_e8s`; no component is redistributed. |
+| A | A separate two-week participation cohort duplicated SNS accounting and required exact alignment with one NNS receipt. | Each canonical daily SNS reward event contributes once to a non-overlapping entitlement accumulator. Actual NNS maturity receipt and distribution are asynchronous. |
+| B | Ballot reconstruction could diverge from Governance voting-power policy. | Proposal-bearing events consume only current-event candidate `reward_shares`; absent, stale, zero, or malformed current data fails closed without ballot or maturity fallback. |
+| C | Silence could be confused with zero eligible shares. | Only `settled_proposals.is_empty()` selects the no-proposal fallback. Every currently eligible neuron receives its exact stake as one virtual unanimous-proposal weight. A proposal-bearing zero-share event adds no credit. |
+| D | Protocol-owned and Jupiter-governance staking Accounts could enter membership and inflate the target. | The exact staking Account is SNS Governance plus the 32-byte neuron ID subaccount; configured excluded Accounts, dissolving neurons, wrong delays and zero stake are removed before event weighting and target input. |
+| E | Missing daily observations could be fabricated as no-proposal days. | Round gaps and catch-up spans produce one bounded typed skipped-event record, add no entitlement credit, advance the checkpoint, and preserve undistributed backing. |
 | F | A liquid donation after permit preparation changed issuance. | `ReceiptPreparation` captures one immutable canonical backing snapshot before returning the permit. Jupiter and reward pricing use that snapshot, while conservative postconditions permit only donations and extra fee burn. |
-| G | Backing could claim the wrong entitlement work. | Only the configured stream manager may prepare maturity, and the immutable entitlement batch generation, exact target, and NNS baseline must match. Daily entitlement observation remains independent of delayed backing receipt. |
+| G | Backing could claim the wrong entitlement work. | Only the configured stream manager may prepare maturity, and the immutable entitlement-batch generation, exact target, and NNS baseline must match. Later events continue in the live accumulator. |
 | H | A target generation could be started twice. | Stable latest-started and latest-completed generation counters plus exact active/passive plan matching make replay idempotent and conflicting reuse invalid. |
 | I | A dissolving unwind child inflated active capacity. | Capacity is the canonical non-dissolving parent stake only; child principal is exposed separately. |
 | J | Same-generation UnderTarget replay returned stale state. | Every exact replay queries the parent again and replaces the observed target status by full-state compare-and-swap. |
 | K | A target written while another NNS operation was active never created its later unwind. | An idle `resume` first reconciles the latest target and creates at most one direct child when the parent is materially OverTarget. |
-| L | Lifetime proposal count exhausted close capacity. | Capture stores the latest proposal anchor and bounded open IDs. Close pages only newer IDs, re-fetches carried opens, de-duplicates, and fails closed at per-cohort bounds. |
-| M | Two-week staging ambiguity had no exact-proof route. | NNS `prove_active_transfer` dispatches by typed operation. Only `AmbiguousPossibleEffect` accepts a single exact ICP block matching the immutable intent. |
-| N | A successful refresh response advanced a reward without stake evidence. | Refresh submission is persisted first; a later exact neuron observation must show at least the pre-transfer stake plus the full reward. |
-| O | Stable reward state accepted duplicate neuron IDs or mismatched destinations. | V1 validation requires unique 32-byte IDs and effective Accounts, exact SNS-governance ownership/subaccount derivation, exclusions, checked totals, and unique proposal IDs. |
+| L | Two-week staging ambiguity had no exact-proof route. | NNS `prove_active_transfer` dispatches by typed operation. Only `AmbiguousPossibleEffect` accepts a single exact ICP block matching the immutable intent. |
+| M | Stable reward state accepted duplicate neuron IDs or mismatched destinations. | V1 validation requires at most 1,000 sorted unique 32-byte IDs, unique canonical destinations, checked totals, exclusions, and exact SNS-Governance ownership/subaccount derivation. |
 
-Pinned finalized-SNS PocketIC evidence includes
-`real_sns_following_vote_counts_for_participation_if_policy_allows_after_finalization`,
-which observes a followed vote as canonical `Yes = 1`, and
-`real_sns_dissolving_neuron_is_excluded_if_policy_requires_after_finalization`,
-which freezes stake before `StartDissolving` and then proves the exact 50 e8
-forfeiture, 1 e8 rounding dust, 51 e8 total dust, and no redistribution for a
-101 e8 pool. These tests use the pinned real governance and ledger artifacts;
-they do not use mock-only vote values 3 or 4.
+Candidate-Governance PocketIC evidence observes direct Yes, direct No and
+followed votes through canonical event shares, unequal voting power, multiple
+proposal counts, stale participation tags, and empty settled-proposal events.
+The installed IO profile proves stake-proportional no-proposal entitlement,
+actual-receipt-backed allocation, excluded-neuron omission, zero-share
+proposal behavior, reserve/dust reconciliation, and upgrade-safe serialized
+fan-out.
 
 ## Remaining vertical work
 
 The safety and topology invariants above are implemented. The NNS manager has a
 typed proof-bound Jupiter 40/60 executor, direct maturity/Mint proof, exact
-cohort binding, two-week delivery recovery, and one direct unwind child. The
-stream manager has immutable receipt pricing and recipient-serialized reward
-fan-out with payout-time eligibility and observed refresh completion. The
+entitlement-batch binding, two-week delivery recovery, and one direct unwind
+child. The stream manager has immutable receipt pricing, daily canonical
+entitlement accumulation, and recipient-serialized backed reward fan-out. The
 browser keeps an explicit wallet boundary and historian reads remain
 observation-only. Controlled real-NNS execution and the complete upgrade/failure
 matrix remain incomplete, so NNS readiness deliberately returns
