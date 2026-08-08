@@ -84,12 +84,17 @@ pub fn prepare_two_week_maturity(
             generation: args.entitlement_batch_generation,
             target_e8s: args.target_e8s,
         };
-        if state
-            .two_week_target
-            .as_ref()
-            .is_some_and(|existing| existing != &target)
-        {
-            return Err(NnsError::Invalid("generation conflicts with target".into()));
+        if let Some(existing) = &state.two_week_target {
+            if existing.generation == target.generation && existing != &target {
+                return Err(NnsError::Invalid("generation conflicts with target".into()));
+            }
+            if existing.generation != target.generation
+                && existing.generation.checked_add(1) != Some(target.generation)
+            {
+                return Err(NnsError::Invalid(
+                    "target generation is not sequential".into(),
+                ));
+            }
         }
         state.two_week_target = Some(target);
         if state
