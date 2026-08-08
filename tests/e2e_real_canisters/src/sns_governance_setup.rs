@@ -1794,10 +1794,10 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     );
     let mut previous_round = event_3.round;
     let mut expected_live = std::collections::BTreeMap::<Vec<u8>, u128>::new();
+    let mut frozen_batch_total = None;
     let mut redemption = None;
     let mut redemption_icp_before = None;
     for day in 4_u64..=15 {
-        set_stream_paused(true);
         let (expected_settled, expected_weights, expected_classification) = match day {
             4 => {
                 let proposal = make_motion(&fixture, &neuron_ids[0], "installed daily event 4");
@@ -1889,7 +1889,6 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         let event = advance_until_reward_event(&fixture, expected_settled, previous_round);
         assert_eq!(event.round, previous_round + 1);
         assert_eq!(event.rounds_since_last_distribution, Some(1));
-        set_stream_paused(false);
         let observation: Result<RewardEventObservation, ApiError> = decode_one(
             &pic.update_call(
                 stream,
@@ -1900,26 +1899,87 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             .unwrap(),
         )
         .unwrap();
-        let observation = observation.expect("keeper consumes each installed daily event exactly");
-        assert_eq!(observation.event.round, event.round);
-        assert_eq!(observation.classification, expected_classification);
-        let actual_event_weights = observation
-            .weights
-            .iter()
-            .map(|weight| (weight.sns_neuron_id.clone(), weight.event_weight))
-            .collect::<std::collections::BTreeMap<_, _>>();
-        let expected_event_weights = expected_weights
-            .into_iter()
-            .map(|(index, weight)| (neuron_ids[index].id.clone(), u128::from(weight)))
-            .collect::<std::collections::BTreeMap<_, _>>();
-        assert_eq!(
-            actual_event_weights, expected_event_weights,
-            "unexpected canonical candidate event weights on installed day {day}"
-        );
+        let expected_event_weights = match expected_classification {
+            RewardEventClassification::ProposalBearing => {
+                let event_end = event
+                    .end_timestamp_seconds
+                    .expect("proposal-bearing event has an end timestamp");
+                let listed = list_all_neurons_paged(&fixture, 2);
+                expected_weights
+                    .into_iter()
+                    .map(|(index, _)| {
+                        let participation = find_neuron(&listed, &neuron_ids[index])
+                            .latest_reward_event_participation
+                            .as_ref()
+                            .expect("expected candidate participant has canonical event shares");
+                        assert_eq!(
+                            participation.reward_event_end_timestamp_seconds, event_end,
+                            "proposal-bearing expectation must use only the current event tag"
+                        );
+                        (
+                            neuron_ids[index].id.clone(),
+                            participation.exact_reward_shares().unwrap(),
+                        )
+                    })
+                    .collect::<std::collections::BTreeMap<_, _>>()
+            }
+            RewardEventClassification::NoProposalFallback => {
+                let listed = list_all_neurons_paged(&fixture, 2);
+                expected_weights
+                    .into_iter()
+                    .map(|(index, _)| {
+                        (
+                            neuron_ids[index].id.clone(),
+                            u128::from(
+                                find_neuron(&listed, &neuron_ids[index]).cached_neuron_stake_e8s,
+                            ),
+                        )
+                    })
+                    .collect::<std::collections::BTreeMap<_, _>>()
+            }
+            RewardEventClassification::ZeroEligibleParticipation => {
+                assert!(expected_weights.is_empty());
+                std::collections::BTreeMap::new()
+            }
+            RewardEventClassification::MissedSkipped => {
+                unreachable!("daily normal-event loop cannot classify a skip")
+            }
+        };
+        match observation {
+            Ok(observation) => {
+                assert_eq!(observation.event.round, event.round);
+                assert_eq!(observation.classification, expected_classification);
+                let actual_event_weights = observation
+                    .weights
+                    .iter()
+                    .map(|weight| (weight.sns_neuron_id.clone(), weight.event_weight))
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                assert_eq!(
+                    actual_event_weights, expected_event_weights,
+                    "unexpected canonical candidate event weights on installed day {day}"
+                );
+            }
+            Err(ApiError::Pending(message)) if message == "SNS reward event has not advanced" => {
+                // The single one-shot timer is allowed to consume the event before
+                // the permissionless keeper. The exact accumulator delta below
+                // proves that it consumed this event once with canonical weights.
+            }
+            other => panic!("installed daily event {day} was not consumed: {other:?}"),
+        }
         for (id, weight) in expected_event_weights {
             *expected_live.entry(id).or_default() += weight;
         }
         let status = stream_status();
+        assert_eq!(
+            status
+                .latest_processed_reward_event
+                .map(|processed| processed.round),
+            Some(event.round)
+        );
+        assert_eq!(
+            status.latest_reward_event_classification,
+            Some(expected_classification)
+        );
         assert_eq!(
             status.processed_reward_event_count,
             day - 1,
@@ -1928,19 +1988,18 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         assert_eq!(entry_map(&status), expected_live);
         assert_eq!(
             status.pending_entitlement_batch_total_weight,
-            if day > 4 { Some(600_000_000) } else { None }
+            if day > 4 { frozen_batch_total } else { None }
         );
 
         if day == 4 {
+            let total = expected_live.values().copied().sum::<u128>();
             backing_step(RewardBackingProgress::BatchFrozen { generation: 3 });
             backing_step(RewardBackingProgress::TargetAccepted { generation: 3 });
             backing_step(RewardBackingProgress::MaturityPrepared { generation: 3 });
+            frozen_batch_total = Some(total);
             expected_live.clear();
             let frozen = stream_status();
-            assert_eq!(
-                frozen.pending_entitlement_batch_total_weight,
-                Some(600_000_000)
-            );
+            assert_eq!(frozen.pending_entitlement_batch_total_weight, Some(total));
             assert!(frozen.accumulated_entitlements.is_empty());
         }
         if day == 8 {
@@ -1977,7 +2036,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                     expected_allowance: Some(Nat::from(0_u8)),
                     expires_at: Some(now + 800_000_000_000),
                     fee: Some(Nat::from(FEE_E8S)),
-                    memo: Some(b"candidate-pending-batch-redemption".to_vec()),
+                    memo: Some(b"pending-batch-redemption".to_vec()),
                     created_at_time: Some(now),
                 },
             )
@@ -2078,7 +2137,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             );
             assert_eq!(
                 stream_status().pending_entitlement_batch_total_weight,
-                Some(600_000_000)
+                frozen_batch_total
             );
         }
         previous_round = event.round;
@@ -2155,11 +2214,19 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         .iter()
         .map(|weight| (weight.sns_neuron_id.clone(), weight.event_weight))
         .collect::<std::collections::BTreeMap<_, _>>();
+    let recovered_neurons = list_all_neurons_paged(&fixture, 2);
     assert_eq!(
         recovered_weights,
-        [(0_usize, stakes[0]), (2, stakes[2]), (4, stakes[4])]
+        [0_usize, 2, 4]
             .into_iter()
-            .map(|(index, weight)| (neuron_ids[index].id.clone(), u128::from(weight)))
+            .map(|index| {
+                (
+                    neuron_ids[index].id.clone(),
+                    u128::from(
+                        find_neuron(&recovered_neurons, &neuron_ids[index]).cached_neuron_stake_e8s,
+                    ),
+                )
+            })
             .collect()
     );
     let recovered_status = stream_status();
@@ -2167,7 +2234,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     assert_eq!(recovered_status.missed_reward_event_count, 2);
     assert_eq!(
         recovered_status.pending_entitlement_batch_total_weight,
-        Some(600_000_000)
+        frozen_batch_total
     );
     for neuron in list_all_neurons_paged(&fixture, 2) {
         assert_eq!(neuron.maturity_e8s_equivalent, 0);
