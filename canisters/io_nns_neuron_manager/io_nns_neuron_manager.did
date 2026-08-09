@@ -59,7 +59,6 @@ type ApiError = variant {
   Pending : text;
   Stuck : text;
   BelowMaturityThreshold : record { remaining_e8s : nat64; minimum_e8s : nat64 };
-  ImplementationIncomplete : text;
 };
 type JupiterCompleted = record {
   deposit_block : nat;

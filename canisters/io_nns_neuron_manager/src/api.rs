@@ -22,7 +22,6 @@ pub enum ApiError {
         remaining_e8s: u64,
         minimum_e8s: u64,
     },
-    ImplementationIncomplete(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -124,7 +123,18 @@ pub async fn notify_jupiter_deposit(
 }
 
 pub async fn resume() -> Result<NnsProgress, ApiError> {
-    match state::read().active_operation {
+    let snapshot = state::read();
+    match snapshot.active_operation {
+        None if snapshot.pending_two_week_maturity.is_some() => {
+            crate::maturity_flow::resume_kind(MaturityKind::TwoWeek)
+                .await
+                .map(NnsProgress::Maturity)
+        }
+        None if snapshot.pending_two_year_maturity.is_some() => {
+            crate::maturity_flow::resume_kind(MaturityKind::TwoYear)
+                .await
+                .map(NnsProgress::Maturity)
+        }
         None => {
             reconcile_latest_target().await?;
             Ok(NnsProgress::Idle)

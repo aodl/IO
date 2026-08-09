@@ -457,7 +457,7 @@ async fn manage(
 ) -> Result<Option<CommandResponse>, ApiError> {
     Call::bounded_wait(config.nns_governance, "manage_neuron")
         .with_arg(ManageNeuron {
-            id: Some(NeuronId { id: neuron_id }),
+            id: None,
             neuron_id_or_subaccount: Some(NeuronIdOrSubaccount::NeuronId(NeuronId {
                 id: neuron_id,
             })),

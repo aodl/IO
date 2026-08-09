@@ -39,7 +39,6 @@ enum NnsError {
         remaining_e8s: u64,
         minimum_e8s: u64,
     },
-    ImplementationIncomplete(String),
 }
 
 pub async fn reconcile_readiness(
@@ -94,10 +93,7 @@ fn classify(context: &str, error: NnsError) -> CallError {
         NnsError::BelowMaturityThreshold { .. } => {
             CallError::Waiting(format!("{context}: {error:?}"))
         }
-        NnsError::Unauthorized
-        | NnsError::Invalid(_)
-        | NnsError::Stuck(_)
-        | NnsError::ImplementationIncomplete(_) => {
+        NnsError::Unauthorized | NnsError::Invalid(_) | NnsError::Stuck(_) => {
             CallError::Invalid(format!("{context}: {error:?}"))
         }
     }

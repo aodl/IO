@@ -798,7 +798,8 @@ fn finish_two_week(
         || stream.backed_io_pool_e8s
             != stream
                 .distributed_io_e8s
-                .checked_add(stream.rounding_dust_io_e8s)
+                .checked_add(stream.forfeited_io_e8s)
+                .and_then(|total| total.checked_add(stream.rounding_dust_io_e8s))
                 .ok_or_else(|| ApiError::Invalid("two-week receipt total overflow".into()))?
         || stream.completed_at_nanos == 0
     {

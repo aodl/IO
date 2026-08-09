@@ -729,7 +729,7 @@ pub fn nns_manage_neuron_request(
             id: neuron_id.0,
         })),
         command: Some(command),
-        id: Some(NnsNeuronIdRecord { id: neuron_id.0 }),
+        id: None,
     }
 }
 
@@ -2806,7 +2806,7 @@ mod tests {
                 id: 10
             }))
         );
-        assert_eq!(request.id, Some(NnsNeuronIdRecord { id: 10 }));
+        assert_eq!(request.id, None);
         assert_eq!(
             request.command,
             Some(NnsManageNeuronCommandRequest::Merge(NnsMerge {
