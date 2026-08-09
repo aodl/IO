@@ -51,4 +51,7 @@ jobs:
 
       - name: PocketIC not configured
         if: env.POCKET_IC_BIN == ''
-        run: echo "POCKET_IC_BIN is not set; live PocketIC required tests are skipped in this workflow."
+        run: |
+          echo "::error::POCKET_IC_BIN is not set. Required live PocketIC coverage did not run; this workflow is incomplete."
+          echo "A reviewed, hash-pinned PocketIC provisioning step is required; an unpinned download is forbidden."
+          exit 1
