@@ -299,7 +299,7 @@ fn stake_neuron(
     let subaccount = Subaccount(neuron_subaccount(controller, memo));
     let to = IcpAccount::new(governance, Some(subaccount)).icp_account_identifier_bytes();
     let transfer: Result<u64, IcpTransferError> = icrc::update_one(
-        &pic,
+        pic,
         ledger,
         Principal::anonymous(),
         "transfer",
@@ -314,7 +314,7 @@ fn stake_neuron(
     );
     transfer.unwrap();
     let response = manage(
-        &pic,
+        pic,
         governance,
         controller,
         NnsProductionManageNeuronRequest {
@@ -339,7 +339,7 @@ fn stake_neuron(
         other => panic!("controlled claim failed: {other:?}"),
     };
     let configured = manage(
-        &pic,
+        pic,
         governance,
         controller,
         NnsProductionManageNeuronRequest {
