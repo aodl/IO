@@ -14,7 +14,7 @@ token_logo_path = "assets/io-local-token-logo.svg"
 token_logo_sha256 = "61ce92c31189e825ce0f277c73bb09d8905d0ab161f60f2bebedae802bbb48d8"
 
 [expected_local_sns_config]
-token_symbol = "IO"
+token_symbol = "IOLO"
 transaction_fee_e8s = 10_000
 total_supply_e8s = 100_000_000_000_000
 treasury_initial_balance_e8s = 80_000_000_000_000

@@ -4,12 +4,12 @@
 
 name: "IO Local Rehearsal"
 description: "Local-only IO SNS rehearsal for proving real SNS ledger/index behavior."
-url: "http://127.0.0.1:4943"
+url: "https://example.invalid/io-local-rehearsal"
 logo: "{{logo_path}}"
 
 NnsProposal:
   title: "Local-only proposal to create the IO rehearsal SNS"
-  url: "http://127.0.0.1:4943/local-io-sns-proposal"
+  url: "https://forum.dfinity.org/t/local-only-io-rehearsal/0"
   summary: "Local-only IO SNS rehearsal for validating official SNS launch mechanics and standard SNS ledger fee-burn behavior."
 
 fallback_controller_principals:
@@ -23,24 +23,24 @@ dapp_canisters:
 
 Token:
   name: "IO Local Rehearsal"
-  symbol: "IO"
+  symbol: "IOLO"
   transaction_fee: "10_000 e8s"
   logo: "{{token_logo_path}}"
 
 Proposals:
   rejection_fee: "100 tokens"
   initial_voting_period: "1 days"
-  maximum_wait_for_quiet_deadline_extension: "1 days"
+  maximum_wait_for_quiet_deadline_extension: "12 hours"
 
 Neurons:
   minimum_creation_stake: "1 tokens"
 
 Voting:
-  minimum_dissolve_delay: "1 months"
+  minimum_dissolve_delay: "1209599 seconds"
   MaximumVotingPowerBonuses:
     DissolveDelay:
-      duration: "8 years"
-      bonus: "100%"
+      duration: "14 days"
+      bonus: "0%"
     Age:
       duration: "0 seconds"
       bonus: "0%"
@@ -54,7 +54,7 @@ Distribution:
     - principal: "{{developer_neuron_principal}}"
       stake: "100_000 tokens"
       memo: 0
-      dissolve_delay: "6 months"
+      dissolve_delay: "1209599 seconds"
       vesting_period: "0 seconds"
   InitialBalances:
     treasury: "800_000 tokens"
@@ -71,6 +71,6 @@ Swap:
   duration: "1 days"
   neurons_fund_participation: false
   VestingSchedule:
-    events: 1
-    interval: "1 months"
+    events: 2
+    interval: "1 seconds"
   confirmation_text: "Local-only IO SNS rehearsal."

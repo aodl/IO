@@ -29,7 +29,7 @@ network_alias = "sns-testing"
 locally_built_binary_sha256 = "TODO_SHA256_OR_EXACT_SOURCE_BUILD_PROVENANCE"
 
 [expected_local_sns_config]
-token_symbol = "IO"
+token_symbol = "IOLO"
 transaction_fee_e8s = 10_000
 total_supply_e8s = 100_000_000_000_000
 treasury_initial_balance_e8s = 80_000_000_000_000
@@ -58,7 +58,7 @@ range_start = "TODO_LOCAL_ARCHIVE_RANGE_START"
 range_end = "TODO_LOCAL_ARCHIVE_RANGE_END"
 
 [ledger_evidence]
-token_symbol = "IO"
+token_symbol = "IOLO"
 transaction_fee_e8s = 10_000
 total_supply_e8s = "TODO_LOCAL_FINAL_TOTAL_SUPPLY_AFTER_OBSERVED_TRANSFERS"
 protocol_reserve_account_owner = "TODO_LOCAL_IO_STREAM_MANAGER_CANISTER"
