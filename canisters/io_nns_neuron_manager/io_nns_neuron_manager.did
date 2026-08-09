@@ -113,11 +113,7 @@ type MaturityProgress = variant {
   Stuck : text;
 };
 type UnwindProgress = variant {
-  ChildCreated;
-  Dissolving;
-  MergeBack;
-  MergedBack;
-  ReadyToDisburse;
+  Waiting;
   AwaitingTransferProof;
   Completed : record { block_index : nat; liquid_e8s : nat };
   Stuck : text;
@@ -132,14 +128,9 @@ type Status = record {
   lifecycle : Lifecycle;
   active_operation : opt text;
   two_week_maturity_baseline_reconciled : bool;
-  latest_target_generation : nat64;
   latest_started_two_week_generation : nat64;
   latest_completed_two_week_generation : nat64;
-  active_parent_principal_e8s : nat;
   unwinding_child_principal_e8s : nat;
-  has_pending_two_year_maturity : bool;
-  has_pending_two_week_maturity : bool;
-  has_pending_unwind : bool;
 };
 service : (InitArgs) -> {
   notify_jupiter_deposit : (NotifyJupiterDepositArgs) -> (variant { Ok : JupiterProgress; Err : ApiError });
@@ -148,7 +139,6 @@ service : (InitArgs) -> {
   start_maturity : (MaturityKind) -> (variant { Ok : MaturityProgress; Err : ApiError });
   prepare_two_week_maturity : (PrepareTwoWeekMaturityArgs) -> (variant { Ok : MaturityProgress; Err : ApiError });
   reconcile_two_week_backing_readiness : (ReconcileTwoWeekBackingReadinessArgs) -> (variant { Ok : TwoWeekBackingReadiness; Err : ApiError });
-  resume_maturity : (MaturityKind) -> (variant { Ok : MaturityProgress; Err : ApiError });
   prove_maturity_mint : (MaturityKind, nat) -> (variant { Ok : MaturityProgress; Err : ApiError });
   set_paused : (bool) -> (variant { Ok; Err : ApiError });
   get_status : () -> (Status) query;

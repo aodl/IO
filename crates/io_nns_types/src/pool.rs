@@ -22,7 +22,6 @@ pub enum UnwindPhase {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct UnwindOperation {
     pub operation_sequence: u64,
-    pub generation: u64,
     pub target_e8s: u128,
     pub excess_e8s: u128,
     pub child_neuron_id: u64,
@@ -35,7 +34,6 @@ impl UnwindOperation {
     pub fn validate(&self, next_operation_sequence: u64) -> Result<(), String> {
         if self.operation_sequence == 0
             || self.operation_sequence >= next_operation_sequence
-            || self.generation == 0
             || self.excess_e8s == 0
         {
             return Err("direct unwind operation is inconsistent".into());
@@ -63,7 +61,6 @@ mod tests {
     fn operation(phase: UnwindPhase) -> UnwindOperation {
         UnwindOperation {
             operation_sequence: 1,
-            generation: 2,
             target_e8s: 1_000_000,
             excess_e8s: 300_000,
             child_neuron_id: 7,
@@ -94,7 +91,7 @@ mod tests {
     }
 
     #[test]
-    fn baseline_dissolving_child_remains_immediate_work() {
+    fn passive_child_has_only_the_canonical_dissolving_phase() {
         let child = operation(UnwindPhase::Dissolving);
         assert_eq!(child.validate(2), Ok(()));
         assert!(matches!(child.phase, UnwindPhase::Dissolving));

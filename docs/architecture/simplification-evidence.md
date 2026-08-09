@@ -86,7 +86,7 @@ after an upgrade returns the canister to Paused.
 
 NNS execution remains incomplete. The clean NNS V1 state,
 typed immediate operations, exact 40/60 arithmetic, direct maturity DTOs, fixed
-pending slots, target generation/coalescing, narrow DID, and lifecycle are
+pending slots, exact target coalescing, narrow DID, and lifecycle are
 implemented. Stream-side canonical Jupiter block decoding and settlement are
 installed and exercised. Real governance command execution, actual maturity
 receipt observation, NNS receipt delivery, reward fan-out, and unwind lifecycle

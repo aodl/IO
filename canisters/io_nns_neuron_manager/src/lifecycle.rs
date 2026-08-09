@@ -32,9 +32,11 @@ pub async fn readiness_preflight(
     captured_control_epoch: u64,
 ) -> Result<(), crate::api::ApiError> {
     let snapshot = state::read();
+    let baseline_proved = !snapshot.two_week_maturity_baseline_reconciled;
     if snapshot.active_operation.is_some()
         || snapshot.pending_two_year_maturity.is_some()
         || snapshot.pending_two_week_maturity.is_some()
+        || (baseline_proved && snapshot.pending_unwind.is_some())
     {
         return Err(crate::api::ApiError::Busy);
     }
@@ -99,7 +101,6 @@ pub async fn readiness_preflight(
             )));
         }
     }
-    let baseline_proved = !snapshot.two_week_maturity_baseline_reconciled;
     if baseline_proved {
         let observation = crate::execution::query_neuron_observation(
             &snapshot.config,
@@ -112,6 +113,7 @@ pub async fn readiness_preflight(
     if latest.active_operation.is_some()
         || latest.pending_two_year_maturity.is_some()
         || latest.pending_two_week_maturity.is_some()
+        || (baseline_proved && latest.pending_unwind.is_some())
         || latest.lifecycle != Lifecycle::Paused
         || latest.control_epoch != captured_control_epoch
         || latest.config != snapshot.config
@@ -155,7 +157,7 @@ mod tests {
             },
             maturity_e8s: 0,
             staked_maturity_e8s: 0,
-            auto_stake_maturity: Some(false),
+            auto_stake_maturity: false,
             maturity_disbursements: vec![],
             dissolve_state: Some(crate::execution::DissolveState::DissolveDelaySeconds(
                 crate::execution::APPROVED_REWARD_BACKING_DISSOLVE_DELAY_SECONDS,
@@ -182,7 +184,7 @@ mod tests {
         let mut pending = valid;
         pending
             .maturity_disbursements
-            .push(crate::execution::MaturityDisbursement::placeholder());
+            .push(crate::execution::placeholder_maturity_disbursement());
         assert!(matches!(
             validate_prelaunch_baseline(100, &pending),
             Err(crate::api::ApiError::Pending(message)) if message.contains("BaselineUnreconciled")
@@ -195,7 +197,7 @@ mod tests {
         staked.staked_maturity_e8s = 1;
         assert!(validate_prelaunch_baseline(100, &staked).is_err());
         let mut auto = observation();
-        auto.auto_stake_maturity = Some(true);
+        auto.auto_stake_maturity = true;
         assert!(validate_prelaunch_baseline(100, &auto).is_err());
         let mut dissolving = observation();
         dissolving.dissolve_state =

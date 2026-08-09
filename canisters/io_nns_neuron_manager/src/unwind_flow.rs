@@ -4,7 +4,7 @@ use crate::{
     api::{ApiError, UnwindProgress},
     execution::{self, DissolveState},
     pool::{UnwindOperation, UnwindPhase},
-    state::{self, Lifecycle, NnsOperation},
+    state::{self, Lifecycle, NnsConfig, NnsOperation},
 };
 
 pub async fn resume(operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
@@ -15,7 +15,10 @@ pub async fn resume(operation: UnwindOperation) -> Result<UnwindProgress, ApiErr
         )),
         UnwindPhase::ChildCreated => observe_child(operation).await,
         UnwindPhase::StartDissolvingSubmitted => recover_dissolving(operation, true).await,
-        UnwindPhase::Dissolving => observe_dissolving(operation).await,
+        UnwindPhase::Dissolving => {
+            let expected = operation.clone();
+            submit_dissolving(&expected, operation, false).await
+        }
         UnwindPhase::StopDissolvingSubmitted => recover_dissolving(operation, false).await,
         UnwindPhase::MergePrepared => merge(operation).await,
         UnwindPhase::MergeSubmitted => Ok(UnwindProgress::Stuck(
@@ -31,6 +34,40 @@ pub async fn resume(operation: UnwindOperation) -> Result<UnwindProgress, ApiErr
         },
         UnwindPhase::Stuck(reason) => Ok(UnwindProgress::Stuck(reason)),
     }
+}
+
+pub async fn resume_passive(operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
+    let current = state::read();
+    let observation =
+        execution::query_neuron_observation(&current.config, operation.child_neuron_id).await?;
+    ensure_passive(&operation)?;
+    let latest = state::read();
+    let Some(DissolveState::WhenDissolvedTimestampSeconds(timestamp)) = observation.dissolve_state
+    else {
+        let mut latest = state::read();
+        latest.lifecycle = Lifecycle::Paused;
+        state::write(latest);
+        return Ok(UnwindProgress::Stuck(
+            "passive child is not canonically dissolving".into(),
+        ));
+    };
+    if timestamp <= ic_cdk::api::time() / 1_000_000_000 {
+        promote(&operation, UnwindPhase::ReadyToDisburse)?;
+        let mut active = operation;
+        active.phase = UnwindPhase::ReadyToDisburse;
+        return disburse(active).await;
+    }
+    if latest
+        .latest_two_week_target
+        .as_ref()
+        .is_some_and(|target| target.status == state::TwoWeekTargetStatus::UnderTarget)
+        && latest.active_operation.is_none()
+    {
+        promote(&operation, UnwindPhase::Dissolving)?;
+        let expected = operation.clone();
+        return submit_dissolving(&expected, operation, false).await;
+    }
+    Ok(UnwindProgress::Waiting)
 }
 
 async fn split(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
@@ -64,7 +101,7 @@ async fn split(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiErro
     operation.child_neuron_id = child_neuron_id;
     operation.principal_e8s = principal_e8s;
     replace(&submitted, operation.clone())?;
-    Ok(UnwindProgress::ChildCreated)
+    Ok(UnwindProgress::Waiting)
 }
 
 async fn observe_child(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
@@ -108,14 +145,7 @@ async fn submit_dissolving(
             format!("{command} requires canonical review: {error:?}"),
         );
     }
-    let (phase, progress) = if start {
-        (UnwindPhase::Dissolving, UnwindProgress::Dissolving)
-    } else {
-        (UnwindPhase::MergePrepared, UnwindProgress::MergeBack)
-    };
-    let submitted = operation.clone();
-    advance(&submitted, operation, phase)?;
-    Ok(progress)
+    finish_dissolving(operation, start, &current.config).await
 }
 
 async fn recover_dissolving(
@@ -133,41 +163,29 @@ async fn recover_dissolving(
     if !succeeded {
         return pause(operation, "dissolve command remains ambiguous".into());
     }
-    let (phase, progress) = if start {
-        (UnwindPhase::Dissolving, UnwindProgress::Dissolving)
-    } else {
-        (UnwindPhase::MergePrepared, UnwindProgress::MergeBack)
-    };
-    let expected = operation.clone();
-    advance(&expected, operation, phase)?;
-    Ok(progress)
+    finish_dissolving(operation, start, &current.config).await
 }
 
-async fn observe_dissolving(operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
-    let expected = operation.clone();
-    let current = state::read();
-    let observation =
-        execution::query_neuron_observation(&current.config, operation.child_neuron_id).await?;
-    ensure(&expected)?;
-    if current
-        .latest_two_week_target
-        .as_ref()
-        .is_some_and(|target| {
-            target.generation > operation.generation && target.target_e8s > operation.target_e8s
-        })
-    {
-        return submit_dissolving(&expected, operation, false).await;
+async fn finish_dissolving(
+    operation: UnwindOperation,
+    start: bool,
+    config: &NnsConfig,
+) -> Result<UnwindProgress, ApiError> {
+    if !start {
+        let expected = operation.clone();
+        advance(&expected, operation, UnwindPhase::MergePrepared)?;
+        return Ok(UnwindProgress::Waiting);
     }
-    match observation.dissolve_state {
-        Some(DissolveState::WhenDissolvedTimestampSeconds(timestamp))
-            if timestamp <= ic_cdk::api::time() / 1_000_000_000 =>
-        {
-            advance(&expected, operation, UnwindPhase::ReadyToDisburse)?;
-            Ok(UnwindProgress::ReadyToDisburse)
-        }
-        Some(DissolveState::WhenDissolvedTimestampSeconds(_)) => Ok(UnwindProgress::Dissolving),
-        _ => pause(expected, "child is not canonically dissolving".into()),
+    let parent = execution::query_neuron_observation(config, config.two_week_neuron_id).await?;
+    ensure(&operation)?;
+    if parent.snapshot.cached_stake_e8s != operation.target_e8s {
+        return pause(
+            operation,
+            "parent principal does not equal the exact post-Split target".into(),
+        );
     }
+    move_to_passive(&operation)?;
+    Ok(UnwindProgress::Waiting)
 }
 
 async fn merge(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
@@ -202,8 +220,8 @@ async fn merge(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiErro
             "merged child principal is not canonically observable in the parent".into(),
         );
     }
-    clear(&operation, observation.snapshot.cached_stake_e8s)?;
-    Ok(UnwindProgress::MergedBack)
+    clear(&operation)?;
+    Ok(UnwindProgress::Waiting)
 }
 
 async fn disburse(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
@@ -286,11 +304,7 @@ pub async fn prove(
             "exact ICP block does not match direct child disbursement".into(),
         ));
     }
-    let parent =
-        execution::query_neuron_observation(&current.config, current.config.two_week_neuron_id)
-            .await?;
-    ensure(&operation)?;
-    clear(&operation, parent.snapshot.cached_stake_e8s)?;
+    clear(&operation)?;
     Ok(UnwindProgress::Completed {
         block_index,
         liquid_e8s: amount,
@@ -298,26 +312,23 @@ pub async fn prove(
 }
 
 fn ensure(expected: &UnwindOperation) -> Result<(), ApiError> {
-    if matches!(state::read().active_operation, Some(NnsOperation::Unwind(active)) if active == *expected)
-    {
-        Ok(())
-    } else {
-        Err(ApiError::Busy)
-    }
+    matches!(state::read().active_operation, Some(NnsOperation::Unwind(active)) if active == *expected)
+        .then_some(())
+        .ok_or(ApiError::Busy)
+}
+
+fn ensure_passive(expected: &UnwindOperation) -> Result<(), ApiError> {
+    (state::read().pending_unwind.as_ref() == Some(expected))
+        .then_some(())
+        .ok_or(ApiError::Busy)
 }
 
 fn replace(expected: &UnwindOperation, replacement: UnwindOperation) -> Result<(), ApiError> {
     let mut latest = state::read();
-    if !matches!(&latest.active_operation, Some(NnsOperation::Unwind(active)) if active == expected)
-    {
-        return Err(ApiError::Busy);
-    }
+    clear_active(&mut latest, expected)?;
     replacement
         .validate(latest.next_operation_sequence)
         .map_err(ApiError::Invalid)?;
-    if let Some(target) = latest.latest_two_week_target.as_mut() {
-        target.unwinding_child_principal_e8s = replacement.principal_e8s;
-    }
     latest.active_operation = Some(NnsOperation::Unwind(replacement));
     state::write(latest);
     Ok(())
@@ -332,6 +343,32 @@ fn advance(
     replace(expected, operation)
 }
 
+fn move_to_passive(expected: &UnwindOperation) -> Result<(), ApiError> {
+    let mut latest = state::read();
+    if latest.pending_unwind.is_some() {
+        return Err(ApiError::Busy);
+    }
+    clear_active(&mut latest, expected)?;
+    let mut passive = expected.clone();
+    passive.phase = UnwindPhase::Dissolving;
+    latest.pending_unwind = Some(passive);
+    state::write(latest);
+    Ok(())
+}
+
+fn promote(expected: &UnwindOperation, phase: UnwindPhase) -> Result<(), ApiError> {
+    let mut latest = state::read();
+    if latest.active_operation.is_some() || latest.pending_unwind.as_ref() != Some(expected) {
+        return Err(ApiError::Busy);
+    }
+    let mut active = expected.clone();
+    active.phase = phase;
+    latest.pending_unwind = None;
+    latest.active_operation = Some(NnsOperation::Unwind(active));
+    state::write(latest);
+    Ok(())
+}
+
 fn pause(mut operation: UnwindOperation, reason: String) -> Result<UnwindProgress, ApiError> {
     let expected = operation.clone();
     operation.phase = UnwindPhase::Stuck(reason.clone());
@@ -342,26 +379,21 @@ fn pause(mut operation: UnwindOperation, reason: String) -> Result<UnwindProgres
     Ok(UnwindProgress::Stuck(reason))
 }
 
-fn clear(expected: &UnwindOperation, actual_principal_e8s: u128) -> Result<(), ApiError> {
+fn clear(expected: &UnwindOperation) -> Result<(), ApiError> {
     let mut latest = state::read();
-    if !matches!(&latest.active_operation, Some(NnsOperation::Unwind(active)) if active == expected)
+    clear_active(&mut latest, expected)?;
+    state::write(latest);
+    Ok(())
+}
+
+fn clear_active(
+    state: &mut crate::state::NnsStateV1,
+    expected: &UnwindOperation,
+) -> Result<(), ApiError> {
+    if !matches!(&state.active_operation, Some(NnsOperation::Unwind(active)) if active == expected)
     {
         return Err(ApiError::Busy);
     }
-    latest.active_operation = None;
-    if let Some(target) = latest.latest_two_week_target.as_mut() {
-        target.active_parent_principal_e8s = actual_principal_e8s;
-        target.unwinding_child_principal_e8s = 0;
-        target.status = state::target_status(
-            actual_principal_e8s,
-            target.target_e8s,
-            latest
-                .config
-                .expected_icp_fee_e8s
-                .checked_mul(2)
-                .ok_or_else(|| ApiError::Invalid("unwind tolerance overflow".into()))?,
-        );
-    }
-    state::write(latest);
+    state.active_operation = None;
     Ok(())
 }

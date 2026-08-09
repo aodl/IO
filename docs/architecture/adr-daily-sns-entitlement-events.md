@@ -86,8 +86,8 @@ pre-activation events from becoming retroactive IO entitlement. An existing
 checkpoint survives pause/unpause and same-Wasm upgrade and is never reseeded.
 
 Before freezing, the stream manager revalidates reviewed SNS Governance and
-authentically reconciles the current NNS target. Target generation is distinct
-from entitlement-batch generation. `UnderTarget`, `OverTarget`,
+authentically reconciles the current NNS target. The exact target value is
+idempotent authority; only entitlement batches have generations. `UnderTarget`, `OverTarget`,
 `BelowThreshold`, `Busy`, `Paused`, or an unreconciled baseline leaves every
 live credit in place. OverTarget starts at most one direct unwind, while
 UnderTarget requires separately authorized principal growth. A ready result

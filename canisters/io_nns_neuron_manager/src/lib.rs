@@ -32,12 +32,12 @@ pub fn init(args: InitArgs) {
             lifecycle: Lifecycle::Paused,
             active_operation: None,
             latest_two_week_target: None,
-            latest_target_generation: 0,
             two_week_maturity_baseline_reconciled: false,
             latest_started_two_week_generation: 0,
             latest_completed_two_week_generation: 0,
             pending_two_year_maturity: None,
             pending_two_week_maturity: None,
+            pending_unwind: None,
             last_two_year_maturity: None,
             last_two_week_maturity: None,
             next_operation_sequence: 1,
@@ -87,11 +87,6 @@ pub async fn reconcile_two_week_backing_readiness(
     args: ReconcileTwoWeekBackingReadinessArgs,
 ) -> Result<TwoWeekBackingReadiness, ApiError> {
     api::reconcile_two_week_backing_readiness(ic_cdk::api::msg_caller(), args).await
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn resume_maturity(kind: MaturityKind) -> Result<MaturityProgress, ApiError> {
-    api::resume_maturity(kind).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]

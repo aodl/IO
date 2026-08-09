@@ -2,13 +2,14 @@
 
 use candid::{decode_one, encode_args, encode_one, CandidType, Principal, Reserved};
 use io_governance_types::{
-    nns_refresh_voting_power_request, EmptyRecord, NnsAccount, NnsClaimOrRefresh,
-    NnsClaimOrRefreshBy, NnsClaimOrRefreshNeuronFromAccount, NnsIncreaseDissolveDelay,
-    NnsManageNeuronCommandRequest, NnsManageNeuronResponseCommandRecord, NnsNeuronIdOrSubaccount,
-    NnsNeuronIdRecord, NnsProductionConfigure, NnsProductionConfigureOperation,
-    NnsProductionDisburseMaturity, NnsProductionListNeuronsRequest,
-    NnsProductionListNeuronsResponse, NnsProductionManageNeuronRequest,
-    NnsProductionManageNeuronResponse, NnsRegisterVote, NnsStakeMaturity,
+    nns_refresh_voting_power_request, EmptyRecord, NnsAccount, NnsChangeAutoStakeMaturity,
+    NnsClaimOrRefresh, NnsClaimOrRefreshBy, NnsClaimOrRefreshNeuronFromAccount,
+    NnsDissolveStateRecord, NnsIncreaseDissolveDelay, NnsManageNeuronCommandRequest,
+    NnsManageNeuronResponseCommandRecord, NnsNeuronIdOrSubaccount, NnsNeuronIdRecord,
+    NnsProductionConfigure, NnsProductionConfigureOperation, NnsProductionDisburseMaturity,
+    NnsProductionListNeuronsRequest, NnsProductionListNeuronsResponse,
+    NnsProductionManageNeuronRequest, NnsProductionManageNeuronResponse, NnsRegisterVote,
+    NnsStakeMaturity,
 };
 use io_ledger_types::{
     Account as IcpAccount, IcpTokens, IcpTransferArgs, IcpTransferError, Subaccount,
@@ -24,7 +25,7 @@ const ICP_FEE_E8S: u64 = 10_000;
 const PROTECTED_STAKE_E8S: u64 = 100_000_000 * 100_000_000;
 const PROTECTED_MEMO: u64 = 8_002;
 const PROPOSER_MEMO: u64 = 8_003;
-const EIGHT_YEARS_SECONDS: u32 = 8 * 365 * 24 * 60 * 60;
+const EIGHT_YEARS_SECONDS: u32 = 252_460_800;
 const ONE_YEAR_SECONDS: u32 = 365 * 24 * 60 * 60;
 const NNS_MINIMUM_DISSOLVE_DELAY_TO_VOTE_SECONDS: u64 = 6 * 30 * 24 * 60 * 60;
 const UNWIND_EXCESS_E8S: u64 = 10 * 100_000_000;
@@ -77,14 +78,9 @@ struct ManagerStatus {
     lifecycle: ManagerLifecycle,
     active_operation: Option<String>,
     two_week_maturity_baseline_reconciled: bool,
-    latest_target_generation: u64,
     latest_started_two_week_generation: u64,
     latest_completed_two_week_generation: u64,
-    active_parent_principal_e8s: u128,
     unwinding_child_principal_e8s: u128,
-    has_pending_two_year_maturity: bool,
-    has_pending_two_week_maturity: bool,
-    has_pending_unwind: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -117,11 +113,7 @@ enum ManagerNnsProgress {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 enum ManagerUnwindProgress {
-    ChildCreated,
-    Dissolving,
-    MergeBack,
-    MergedBack,
-    ReadyToDisburse,
+    Waiting,
     AwaitingTransferProof,
     Completed { block_index: u128, liquid_e8s: u128 },
     Stuck(String),
@@ -278,6 +270,13 @@ pub fn create_zero_maturity_protected_neuron() -> ControlledNnsNeuron {
     let neuron = neuron(&pic, governance, controller, neuron_id);
     assert_eq!(neuron.cached_neuron_stake_e8s, PROTECTED_STAKE_E8S);
     assert_eq!(neuron.maturity_e8s_equivalent, 0);
+    assert!(!neuron.auto_stake_maturity.unwrap_or(false));
+    assert_eq!(
+        neuron.dissolve_state,
+        Some(NnsDissolveStateRecord::DissolveDelaySeconds(
+            EIGHT_YEARS_SECONDS.into()
+        ))
+    );
     ControlledNnsNeuron {
         pic,
         governance,
@@ -361,6 +360,32 @@ fn stake_neuron(
     );
     assert!(matches!(
         configured.command,
+        Some(NnsManageNeuronResponseCommandRecord::Configure(
+            EmptyRecord {}
+        ))
+    ));
+    let auto_stake_disabled = manage(
+        pic,
+        governance,
+        controller,
+        NnsProductionManageNeuronRequest {
+            neuron_id_or_subaccount: Some(NnsNeuronIdOrSubaccount::NeuronId(NnsNeuronIdRecord {
+                id: neuron_id,
+            })),
+            command: Some(NnsManageNeuronCommandRequest::Configure(
+                NnsProductionConfigure {
+                    operation: Some(NnsProductionConfigureOperation::ChangeAutoStakeMaturity(
+                        NnsChangeAutoStakeMaturity {
+                            requested_setting_for_auto_stake_maturity: false,
+                        },
+                    )),
+                },
+            )),
+            id: None,
+        },
+    );
+    assert!(matches!(
+        auto_stake_disabled.command,
         Some(NnsManageNeuronResponseCommandRecord::Configure(
             EmptyRecord {}
         ))
@@ -948,7 +973,7 @@ mod tests {
 
     #[test]
     fn protected_nns_policy_contradiction_is_recorded_before_correction() {
-        assert_eq!(u64::from(EIGHT_YEARS_SECONDS), 252_288_000);
+        assert_eq!(u64::from(EIGHT_YEARS_SECONDS), 252_460_800);
         assert_eq!(NNS_MINIMUM_DISSOLVE_DELAY_TO_VOTE_SECONDS, 15_552_000);
         assert_eq!(io_core_model::TWO_WEEK_SECONDS, 1_209_600);
         assert!(io_core_model::TWO_WEEK_SECONDS < NNS_MINIMUM_DISSOLVE_DELAY_TO_VOTE_SECONDS);
@@ -1098,12 +1123,12 @@ mod tests {
             "get_status",
             (),
         );
-        assert_eq!(status.latest_target_generation, 3);
         assert_eq!(status.latest_started_two_week_generation, 0);
-        assert!(status.has_pending_unwind);
+        assert_eq!(status.active_operation.as_deref(), Some("Unwind"));
+        assert_eq!(status.unwinding_child_principal_e8s, 0);
 
         let mut unwind_phases = Vec::new();
-        for step in 0..5 {
+        for step in 0..2 {
             let progress: Result<ManagerNnsProgress, ManagerApiError> = super::update(
                 &fixture.pic,
                 fixture.controller,
@@ -1119,6 +1144,19 @@ mod tests {
                 (),
             );
             unwind_phases.push(format!("{progress:?}; {unwind_status:?}"));
+            if step == 0 {
+                assert_eq!(
+                    super::neuron(
+                        &fixture.pic,
+                        fixture.governance,
+                        fixture.controller,
+                        fixture.neuron_id,
+                    )
+                    .cached_neuron_stake_e8s,
+                    super::RECONCILED_TARGET_E8S,
+                    "{unwind_phases:?}"
+                );
+            }
             fixture
                 .pic
                 .upgrade_canister(
@@ -1128,14 +1166,6 @@ mod tests {
                     None,
                 )
                 .unwrap();
-            if step == 1 {
-                fixture.pic.advance_time(Duration::from_secs(
-                    u64::from(super::EIGHT_YEARS_SECONDS) + 30 * 24 * 60 * 60,
-                ));
-                for _ in 0..20 {
-                    fixture.pic.tick();
-                }
-            }
         }
         let status: ManagerStatus = super::query(
             &fixture.pic,
@@ -1144,13 +1174,22 @@ mod tests {
             "get_status",
             (),
         );
-        assert!(!status.has_pending_unwind, "{unwind_phases:?}");
-        assert_eq!(
-            status.active_parent_principal_e8s,
-            u128::from(super::RECONCILED_TARGET_E8S)
+        assert!(status.active_operation.is_none(), "{unwind_phases:?}");
+        assert!(
+            status.unwinding_child_principal_e8s > 0,
+            "{unwind_phases:?}"
         );
-        let unwind_liquid = super::UNWIND_EXCESS_E8S - 2 * super::ICP_FEE_E8S;
-        super::fund_stream_liquidity(&fixture, stream, unwind_liquid);
+        assert_eq!(
+            super::neuron(
+                &fixture.pic,
+                fixture.governance,
+                fixture.controller,
+                fixture.neuron_id,
+            )
+            .cached_neuron_stake_e8s,
+            super::RECONCILED_TARGET_E8S
+        );
+        super::fund_stream_liquidity(&fixture, stream, 0);
         let unpause: Result<(), ManagerApiError> = super::update(
             &fixture.pic,
             fixture.controller,
@@ -1159,6 +1198,31 @@ mod tests {
             false,
         );
         assert_eq!(unpause, Ok(()));
+        let lower_target: Result<io_receipt_types::TwoWeekBackingReadiness, ManagerApiError> =
+            super::update(
+                &fixture.pic,
+                fixture.controller,
+                stream,
+                "reconcile_two_week_backing_readiness",
+                ReconcileTwoWeekBackingReadinessArgs {
+                    target_e8s: u128::from(super::RECONCILED_TARGET_E8S - 100_000_000),
+                },
+            );
+        assert_eq!(
+            lower_target,
+            Ok(io_receipt_types::TwoWeekBackingReadiness::NotReady(
+                io_receipt_types::BackingNotReadyReason::OverTarget
+            ))
+        );
+        let status: ManagerStatus = super::query(
+            &fixture.pic,
+            fixture.controller,
+            Principal::anonymous(),
+            "get_status",
+            (),
+        );
+        assert!(status.active_operation.is_none());
+        assert!(status.unwinding_child_principal_e8s > 0);
         let readiness: Result<io_receipt_types::TwoWeekBackingReadiness, ManagerApiError> =
             super::update(
                 &fixture.pic,
@@ -1395,7 +1459,6 @@ mod tests {
             status.latest_completed_two_week_generation, 1,
             "{delivery:?}"
         );
-        assert_eq!(status.latest_target_generation, 3);
         assert_eq!(status.latest_started_two_week_generation, 1);
 
         let stream_unpause: Result<(), io_stream_manager::ApiError> = super::update(
@@ -1441,6 +1504,39 @@ mod tests {
         );
         assert!(next.pending_entitlement_batch_policy_credit.is_none());
         assert_eq!(next.next_nns_receipt_sequence, 1);
+
+        fixture.pic.advance_time(Duration::from_secs(
+            u64::from(super::EIGHT_YEARS_SECONDS) + 30 * 24 * 60 * 60,
+        ));
+        for _ in 0..20 {
+            fixture.pic.tick();
+        }
+        for _ in 0..3 {
+            let _: Result<ManagerNnsProgress, ManagerApiError> = super::update(
+                &fixture.pic,
+                fixture.controller,
+                Principal::anonymous(),
+                "resume",
+                (),
+            );
+            fixture
+                .pic
+                .upgrade_canister(
+                    fixture.controller,
+                    super::manager_wasm(),
+                    encode_one(()).unwrap(),
+                    None,
+                )
+                .unwrap();
+        }
+        let status: ManagerStatus = super::query(
+            &fixture.pic,
+            fixture.controller,
+            Principal::anonymous(),
+            "get_status",
+            (),
+        );
+        assert_eq!(status.unwinding_child_principal_e8s, 0);
         eprintln!(
             "controlled_unwind_phases={unwind_phases:?} controlled_manager_phases={seen:?} controlled_delivery={delivery:?} mint_block={mint_block} actual_minted_e8s={actual_minted_e8s}"
         );

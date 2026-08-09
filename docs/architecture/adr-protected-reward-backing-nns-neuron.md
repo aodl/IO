@@ -8,8 +8,12 @@ Accepted.
 
 The protected NNS parent that backs rewards for eligible two-week SNS stakers
 is an NNS-voting neuron. Its launch-approved dissolve delay is exactly
-252,288,000 seconds (eight years), matching the controlled pinned-NNS harness.
-The parent must be non-dissolving and have `auto_stake_maturity = false`.
+252,460,800 seconds (eight 365.25-day years), matching the controlled pinned-NNS
+Governance observation.
+The parent must be non-dissolving and have effective
+`auto_stake_maturity = false`. Pinned NNS Governance encodes disabled
+auto-stake as either `null` or `opt false`; the narrow observation normalizes
+both to false and preserves `opt true` as drift.
 
 The exact 1,209,600-second rule applies to ordinary SNS IO reward-neuron
 eligibility, the user withdrawal delay, and the beneficiary class. It does not

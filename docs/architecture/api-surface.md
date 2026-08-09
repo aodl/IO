@@ -10,7 +10,7 @@ authenticated two-week NNS path independently of later daily observations.
 
 The NNS manager exposes `notify_jupiter_deposit`,
 `reconcile_two_week_backing_readiness`, `prepare_two_week_maturity`,
-`start_maturity`, `resume_maturity`,
+`start_maturity`,
 `prove_maturity_mint`, `resume`, `prove_active_transfer`, `set_paused`, and
 `get_status`. Two-week maturity preparation authenticates only the configured
 stream manager and binds one frozen entitlement-batch generation and exact

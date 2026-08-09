@@ -3,7 +3,7 @@
 The launch NNS canister exclusively owns proof and commands for the protected
 two-year neuron, the two-week-staker reward-backing NNS neuron, Jupiter staging,
 reward-backing maturity staging, direct maturity policy, and one pending unwind
-child. The reward-backing parent is non-dissolving at the approved 252,288,000-
+child. The reward-backing parent is non-dissolving at the approved 252,460,800-
 second (eight-year) NNS delay; it is not a 14-day NNS position. Each sending
 staging Account has its own bounded fee float; there is no general fee Account.
 
@@ -19,7 +19,6 @@ The production DID contains only:
 - `resume`
 - `prove_active_transfer`
 - `start_maturity`
-- `resume_maturity`
 - `prove_maturity_mint`
 - `set_paused`
 - `get_status`
@@ -29,8 +28,8 @@ configured Jupiter Faucet default Account, the NNS-manager default destination,
 and the canonical transfer are the authority; no Jupiter callback exists.
 Processed Jupiter blocks have narrow permanent replay protection. The
 authenticated reconciliation persists the exact desired target and reports
-whether its liquid 60% maturity leg can start immediately. Target generations
-are independent of entitlement-batch generations. Only Ready permits the
+whether its liquid 60% maturity leg can start immediately. The target value is
+idempotent authority; only entitlement batches have generations. Only Ready permits the
 stream manager to freeze and immediately submit one batch generation and target
 to `prepare_two_week_maturity`. There is no target queue. See the pinned
 [Jupiter integration contract](../../docs/architecture/jupiter-integration-contract.md).
@@ -50,7 +49,7 @@ ledger Wasms and exact source behavior are recorded in
 does not depend on a generic governance-types crate.
 
 First readiness proves the exact configured parent, seeded stake, zero
-prelaunch ordinary and staked maturity, disabled auto-stake, exact
+prelaunch ordinary and staked maturity, effectively disabled auto-stake, exact
 non-dissolving approved delay, and absence of pending maturity or child
 ambiguity. The proof survives upgrade; post-upgrade remains Paused. Later
 retained staked maturity is expected, but auto-stake or dissolve-state drift

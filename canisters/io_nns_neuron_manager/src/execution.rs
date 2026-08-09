@@ -57,25 +57,24 @@ pub struct NeuronObservation {
     pub snapshot: NeuronSnapshot,
     pub maturity_e8s: u64,
     pub staked_maturity_e8s: u64,
-    pub auto_stake_maturity: Option<bool>,
+    pub auto_stake_maturity: bool,
     pub maturity_disbursements: Vec<MaturityDisbursement>,
     pub dissolve_state: Option<DissolveState>,
 }
 
-pub const APPROVED_REWARD_BACKING_DISSOLVE_DELAY_SECONDS: u64 = 8 * 365 * 24 * 60 * 60;
+pub const APPROVED_REWARD_BACKING_DISSOLVE_DELAY_SECONDS: u64 = 252_460_800;
 
 pub fn validate_maturity_configuration(observation: &NeuronObservation) -> Result<(), String> {
-    if observation.auto_stake_maturity != Some(false) {
-        return Err("protected NNS neuron must have auto-stake maturity disabled".into());
-    }
-    if observation.dissolve_state
-        != Some(DissolveState::DissolveDelaySeconds(
-            APPROVED_REWARD_BACKING_DISSOLVE_DELAY_SECONDS,
-        ))
+    if !observation.auto_stake_maturity
+        && observation.dissolve_state
+            == Some(DissolveState::DissolveDelaySeconds(
+                APPROVED_REWARD_BACKING_DISSOLVE_DELAY_SECONDS,
+            ))
     {
-        return Err("protected NNS neuron must be non-dissolving at the approved delay".into());
+        Ok(())
+    } else {
+        Err("protected NNS neuron auto-stake or approved dissolve configuration drifted".into())
     }
-    Ok(())
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -102,18 +101,6 @@ pub struct MaturityDisbursement {
     timestamp_of_disbursement_seconds: Option<u64>,
     finalize_disbursement_timestamp_seconds: Option<u64>,
     account_to_disburse_to: Option<NnsAccount>,
-}
-
-#[cfg(test)]
-impl MaturityDisbursement {
-    pub(crate) fn placeholder() -> Self {
-        Self {
-            amount_e8s: None,
-            timestamp_of_disbursement_seconds: None,
-            finalize_disbursement_timestamp_seconds: None,
-            account_to_disburse_to: None,
-        }
-    }
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -294,7 +281,7 @@ pub async fn query_neuron_observation(
         },
         maturity_e8s: neuron.maturity_e8s_equivalent,
         staked_maturity_e8s: neuron.staked_maturity_e8s_equivalent.unwrap_or(0),
-        auto_stake_maturity: neuron.auto_stake_maturity,
+        auto_stake_maturity: neuron.auto_stake_maturity.unwrap_or(false),
         maturity_disbursements: neuron
             .maturity_disbursements_in_progress
             .unwrap_or_default(),
@@ -817,7 +804,7 @@ mod tests {
             },
             maturity_e8s: 1,
             staked_maturity_e8s: u64::MAX,
-            auto_stake_maturity: Some(false),
+            auto_stake_maturity: false,
             maturity_disbursements: vec![],
             dissolve_state: Some(DissolveState::DissolveDelaySeconds(
                 APPROVED_REWARD_BACKING_DISSOLVE_DELAY_SECONDS,
@@ -852,10 +839,20 @@ mod tests {
         let valid = observation();
         assert_eq!(validate_maturity_configuration(&valid), Ok(()));
         let mut auto = valid.clone();
-        auto.auto_stake_maturity = Some(true);
+        auto.auto_stake_maturity = true;
         assert!(validate_maturity_configuration(&auto).is_err());
         let mut dissolving = valid;
         dissolving.dissolve_state = Some(DissolveState::WhenDissolvedTimestampSeconds(u64::MAX));
         assert!(validate_maturity_configuration(&dissolving).is_err());
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn placeholder_maturity_disbursement() -> MaturityDisbursement {
+    MaturityDisbursement {
+        amount_e8s: None,
+        timestamp_of_disbursement_seconds: None,
+        finalize_disbursement_timestamp_seconds: None,
+        account_to_disburse_to: None,
     }
 }

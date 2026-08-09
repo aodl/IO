@@ -50,7 +50,7 @@ The same installed test prepares a Jupiter receipt, transfers ICP from the exact
 | E | Missing daily observations could be fabricated as no-proposal days. | Round gaps and catch-up spans produce one bounded typed skipped-event record, add no entitlement credit, advance the checkpoint, and preserve undistributed backing. |
 | F | A liquid donation after permit preparation changed issuance. | `ReceiptPreparation` captures one immutable canonical backing snapshot before returning the permit. Jupiter and reward pricing use that snapshot, while conservative postconditions permit only donations and extra fee burn. |
 | G | Backing could claim the wrong entitlement work. | Only the configured stream manager may prepare maturity, and the immutable entitlement-batch generation, exact target, and NNS baseline must match. Later events continue in the live accumulator. |
-| H | A target generation could be started twice. | Stable latest-started and latest-completed generation counters plus exact active/passive plan matching make replay idempotent and conflicting reuse invalid. |
+| H | An entitlement batch could be started twice. | Stable latest-started and latest-completed batch generations plus exact active/passive plan matching make replay idempotent and conflicting reuse invalid. |
 | I | A dissolving unwind child inflated active capacity. | Capacity is the canonical non-dissolving parent stake only; child principal is exposed separately. |
 | J | Same-generation UnderTarget replay returned stale state. | Every exact replay queries the parent again and replaces the observed target status by full-state compare-and-swap. |
 | K | A target written while another NNS operation was active never created its later unwind. | An idle `resume` first reconciles the latest target and creates at most one direct child when the parent is materially OverTarget. |
@@ -115,7 +115,7 @@ entitlement economics.
 ## Controlled protected-NNS vertical result
 
 The controlled pinned-NNS PocketIC path proves the exact zero-maturity baseline,
-UnderTarget without implicit funding, three independent target generations, a
+UnderTarget without implicit funding, exact idempotent target changes, a
 single direct child unwind and exact disbursement block, entitlement generation
 one, StakeMaturity 40%, DisburseMaturity 100% of the remainder, delayed Mint,
 actual staging receipt, backed IO recipient settlement and fresh live credit for
@@ -133,7 +133,7 @@ entitlement economics.
 
 | Item | Baseline reproduction | Required correction |
 | --- | --- | --- |
-| A | The controlled pinned-NNS harness creates the protected reward-backing parent at 252,288,000 seconds (eight years). Pinned NNS Governance requires roughly six months of dissolve delay to vote, while a genuine 1,209,600-second neuron is below that boundary and therefore earns no voting maturity. Normative IO prose nevertheless calls the protected parent an exact-two-week NNS position. | Separate the ordinary SNS/user two-week product rule from the NNS-voting-eligible protected backing neuron and record the reviewed launch delay explicitly. |
+| A | The controlled pinned-NNS harness creates the protected reward-backing parent at the canonical 252,460,800-second maximum (eight 365.25-day years). Pinned NNS Governance requires roughly six months of dissolve delay to vote, while a genuine 1,209,600-second neuron is below that boundary and therefore earns no voting maturity. Normative IO prose nevertheless calls the protected parent an exact-two-week NNS position. | Separate the ordinary SNS/user two-week product rule from the NNS-voting-eligible protected backing neuron and record the reviewed launch delay explicitly. |
 | B | After an over-target split and `StartDissolving`, the child remains the immediate `active_operation` until its long dissolve timestamp. Readiness stays `Busy`/`OverTarget`; another maturity command cannot occupy the slot. Daily SNS credit remains able to accumulate in the stream manager, but the next batch cannot receive backing. | Retain one exact child as passive unwind evidence after canonical `StartDissolving`, clear the immediate slot, and permit maturity work on the reduced parent. |
 | C | First readiness checks the parent ID through its query, seeded cached principal, ordinary maturity and pending maturity disbursements. Its validation signature cannot distinguish nonzero staked maturity, `auto_stake_maturity = true`, a dissolving parent or the wrong dissolve delay. With auto-stake enabled, a real NNS reward event moves reward into staked maturity rather than the ordinary maturity consumed by IO's 40/60 pipeline. | Prove the complete launch baseline once, persist that proof, and recheck auto-stake plus exact non-dissolving delay before every later maturity start. |
 | D | A frozen entitlement batch retains its immutable target, but pending-batch resume invokes `prepare_two_week_maturity` directly. If the protected parent principal drifts before preparation, the NNS manager returns `Pending`; the stream retries preparation without reconciling the frozen target. | Reconcile the batch's exact stored target before every preparation replay, retaining the batch and all newer live credit in every waiting state. |

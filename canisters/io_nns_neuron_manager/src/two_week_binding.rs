@@ -84,7 +84,7 @@ pub async fn prepare(
         || !snapshot.two_week_maturity_baseline_reconciled
     {
         return Err(ApiError::Invalid(
-            "two-week maturity does not match one frozen entitlement target generation".into(),
+            "two-week maturity does not match one frozen entitlement batch and target".into(),
         ));
     }
     if args.entitlement_batch_generation == snapshot.latest_completed_two_week_generation {

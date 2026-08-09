@@ -20,7 +20,7 @@ use crate::{
 };
 
 pub async fn start(caller: Principal, kind: MaturityKind) -> Result<MaturityProgress, ApiError> {
-    let snapshot = ready()?;
+    let snapshot = crate::api::ready()?;
     if caller != snapshot.config.sns_governance {
         return Err(ApiError::Unauthorized);
     }
@@ -901,14 +901,6 @@ fn next_epoch(epoch: u64) -> Result<u64, ApiError> {
     epoch
         .checked_add(1)
         .ok_or_else(|| ApiError::Invalid("maturity dispatch epoch exhausted".into()))
-}
-
-fn ready() -> Result<crate::state::NnsStateV1, ApiError> {
-    let state = state::read();
-    match state.lifecycle {
-        Lifecycle::Ready => Ok(state),
-        Lifecycle::Paused => Err(ApiError::Paused),
-    }
 }
 
 fn identity(config: &crate::state::NnsConfig, kind: MaturityKind) -> (u64, crate::state::Account) {

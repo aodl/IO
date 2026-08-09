@@ -130,10 +130,7 @@ pub enum NnsOperation {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct TwoWeekTarget {
-    pub generation: u64,
     pub target_e8s: u128,
-    pub active_parent_principal_e8s: u128,
-    pub unwinding_child_principal_e8s: u128,
     pub status: TwoWeekTargetStatus,
 }
 
@@ -145,12 +142,12 @@ pub struct NnsStateV1 {
     pub lifecycle: Lifecycle,
     pub active_operation: Option<NnsOperation>,
     pub latest_two_week_target: Option<TwoWeekTarget>,
-    pub latest_target_generation: u64,
     pub two_week_maturity_baseline_reconciled: bool,
     pub latest_started_two_week_generation: u64,
     pub latest_completed_two_week_generation: u64,
     pub pending_two_year_maturity: Option<PendingMaturityDisbursement>,
     pub pending_two_week_maturity: Option<PendingMaturityDisbursement>,
+    pub pending_unwind: Option<UnwindOperation>,
     #[serde(default)]
     pub last_two_year_maturity: Option<CompletedMaturity>,
     #[serde(default)]
@@ -195,12 +192,12 @@ impl NnsStateV1 {
             lifecycle: Lifecycle::Paused,
             active_operation: None,
             latest_two_week_target: None,
-            latest_target_generation: 0,
             two_week_maturity_baseline_reconciled: false,
             latest_started_two_week_generation: 0,
             latest_completed_two_week_generation: 0,
             pending_two_year_maturity: None,
             pending_two_week_maturity: None,
+            pending_unwind: None,
             last_two_year_maturity: None,
             last_two_week_maturity: None,
             next_operation_sequence: 1,
@@ -217,28 +214,14 @@ impl NnsStateV1 {
 impl NnsStateV1 {
     pub fn validate(&self, canister_self: Principal) -> Result<(), String> {
         self.config.validate(canister_self)?;
-        if let Some(target) = &self.latest_two_week_target {
-            let tracked_child = match &self.active_operation {
-                Some(NnsOperation::Unwind(operation)) => operation.principal_e8s,
-                _ => 0,
-            };
-            if target.generation == 0
-                || target.generation != self.latest_target_generation
-                || target.unwinding_child_principal_e8s != tracked_child
-                || target.status
-                    != target_status(
-                        target.active_parent_principal_e8s,
-                        target.target_e8s,
-                        self.config
-                            .expected_icp_fee_e8s
-                            .checked_mul(2)
-                            .ok_or("unwind tolerance overflow")?,
-                    )
+        if let Some(operation) = &self.pending_unwind {
+            if self.latest_two_week_target.is_none()
+                || matches!(self.active_operation, Some(NnsOperation::Unwind(_)))
+                || operation.phase != crate::pool::UnwindPhase::Dissolving
             {
-                return Err("latest two-week target generation is inconsistent".into());
+                return Err("invalid passive unwind child".into());
             }
-        } else if self.latest_target_generation != 0 {
-            return Err("target generation exists without a target".into());
+            operation.validate(self.next_operation_sequence)?;
         }
         if self.latest_completed_two_week_generation > self.latest_started_two_week_generation
             || (self.latest_started_two_week_generation > 0
@@ -574,18 +557,30 @@ mod tests {
                 lifecycle: Lifecycle::Paused,
                 active_operation: None,
                 latest_two_week_target: None,
-                latest_target_generation: 0,
                 two_week_maturity_baseline_reconciled: false,
                 latest_started_two_week_generation: 0,
                 latest_completed_two_week_generation: 0,
                 pending_two_year_maturity: None,
                 pending_two_week_maturity: None,
+                pending_unwind: None,
                 last_two_year_maturity: None,
                 last_two_week_maturity: None,
                 next_operation_sequence: 1,
                 control_epoch: 0,
             },
         )
+    }
+
+    fn passive_unwind() -> UnwindOperation {
+        UnwindOperation {
+            operation_sequence: 1,
+            target_e8s: 1,
+            excess_e8s: 2,
+            child_neuron_id: 3,
+            principal_e8s: 1,
+            child_staking_subaccount: vec![3; 32],
+            phase: crate::pool::UnwindPhase::Dissolving,
+        }
     }
 
     #[test]
@@ -652,13 +647,6 @@ mod tests {
     }
 
     #[test]
-    fn semantic_validation_rejects_orphan_target_generation() {
-        let (canister_self, mut state) = valid_state();
-        state.latest_target_generation = 1;
-        assert!(state.validate(canister_self).is_err());
-    }
-
-    #[test]
     fn config_requires_default_jupiter_staging_and_two_fees() {
         let (canister_self, mut state) = valid_state();
         state.config.jupiter_fee_float_e8s = state.config.expected_icp_fee_e8s;
@@ -678,6 +666,24 @@ mod tests {
         let reopened = read();
         assert_eq!(reopened.lifecycle, Lifecycle::Paused);
         assert!(reopened.two_week_maturity_baseline_reconciled);
+    }
+
+    #[test]
+    fn passive_unwind_survives_upgrade_and_cannot_duplicate_active_child() {
+        let (canister_self, mut state) = valid_state();
+        state.latest_two_week_target = Some(TwoWeekTarget {
+            target_e8s: 1,
+            status: TwoWeekTargetStatus::AtTarget,
+        });
+        state.pending_unwind = Some(passive_unwind());
+        state.next_operation_sequence = 2;
+        initialize(state, canister_self).unwrap();
+        reopen(canister_self);
+        let reopened = read();
+        assert_eq!(reopened.pending_unwind, Some(passive_unwind()));
+        let mut duplicate = reopened;
+        duplicate.active_operation = Some(NnsOperation::Unwind(passive_unwind()));
+        assert!(duplicate.validate(canister_self).is_err());
     }
 
     #[test]
@@ -750,17 +756,18 @@ mod tests {
         });
         state.lifecycle = Lifecycle::Paused;
         state.latest_two_week_target = Some(TwoWeekTarget {
-            generation: 1,
             target_e8s: 1,
-            active_parent_principal_e8s: 1,
-            unwinding_child_principal_e8s: 0,
             status: TwoWeekTargetStatus::AtTarget,
         });
-        state.latest_target_generation = 1;
         state.two_week_maturity_baseline_reconciled = true;
         state.latest_started_two_week_generation = 1;
         state.pending_two_year_maturity = Some(two_year);
         state.pending_two_week_maturity = Some(two_week.clone());
+        state.pending_unwind = Some(UnwindOperation {
+            principal_e8s: u128::MAX,
+            excess_e8s: u128::MAX,
+            ..passive_unwind()
+        });
         state.last_two_year_maturity = Some(CompletedMaturity {
             kind: MaturityKind::TwoYear,
             neuron_id: state.config.two_year_neuron_id,
