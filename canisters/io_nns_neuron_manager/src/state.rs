@@ -78,10 +78,11 @@ impl NnsConfig {
                 return Err("NNS staging and fee accounts must be distinct".into());
             }
         }
-        self.jupiter_account.validate()?;
         self.stream_liquid_account.validate()?;
-        if self.jupiter_staging.canonical()?.subaccount != [0; 32] {
-            return Err("Jupiter raw-ICP staging must be the NNS manager default Account".into());
+        if self.jupiter_account.canonical()?.subaccount != [0; 32]
+            || self.jupiter_staging.canonical()?.subaccount != [0; 32]
+        {
+            return Err("Jupiter source and staging must be default Accounts".into());
         }
         if staging.iter().try_fold(false, |matched, account| {
             account
@@ -539,7 +540,10 @@ mod tests {
                     nns_governance: principal(6),
                     two_year_neuron_id: 1,
                     two_week_neuron_id: 2,
-                    jupiter_account: account(jupiter, 4),
+                    jupiter_account: Account {
+                        owner: jupiter,
+                        subaccount: None,
+                    },
                     jupiter_staging: Account {
                         owner: canister_self,
                         subaccount: None,
@@ -647,11 +651,14 @@ mod tests {
     }
 
     #[test]
-    fn config_requires_default_jupiter_staging_and_two_fees() {
+    fn config_requires_default_jupiter_accounts_and_two_fees() {
         let (canister_self, mut state) = valid_state();
         state.config.jupiter_fee_float_e8s = state.config.expected_icp_fee_e8s;
         assert!(state.validate(canister_self).is_err());
         state.config.jupiter_fee_float_e8s = state.config.expected_icp_fee_e8s * 2;
+        state.config.jupiter_account.subaccount = Some(vec![9; 32]);
+        assert!(state.validate(canister_self).is_err());
+        state.config.jupiter_account.subaccount = None;
         state.config.jupiter_staging.subaccount = Some(vec![9; 32]);
         assert!(state.validate(canister_self).is_err());
     }

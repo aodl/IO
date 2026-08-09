@@ -138,3 +138,15 @@ entitlement economics.
 | C | First readiness checks the parent ID through its query, seeded cached principal, ordinary maturity and pending maturity disbursements. Its validation signature cannot distinguish nonzero staked maturity, `auto_stake_maturity = true`, a dissolving parent or the wrong dissolve delay. With auto-stake enabled, a real NNS reward event moves reward into staked maturity rather than the ordinary maturity consumed by IO's 40/60 pipeline. | Prove the complete launch baseline once, persist that proof, and recheck auto-stake plus exact non-dissolving delay before every later maturity start. |
 | D | A frozen entitlement batch retains its immutable target, but pending-batch resume invokes `prepare_two_week_maturity` directly. If the protected parent principal drifts before preparation, the NNS manager returns `Pending`; the stream retries preparation without reconciling the frozen target. | Reconcile the batch's exact stored target before every preparation replay, retaining the batch and all newer live credit in every waiting state. |
 | E | The controlled real-NNS harness does not call `notify_jupiter_deposit`; the stream side uses mock SNS Governance; all-real two-year stream accounting and the real SNS trigger remain absent; and no real merge-back interruption fixture exists. | Add controlled production-API Jupiter and two-year verticals, the SNS-governed trigger, the combined real SNS/NNS lifecycle, and the remaining ambiguity matrix. |
+
+## Controlled production Jupiter result
+
+The pinned real-NNS PocketIC path invokes `notify_jupiter_deposit` against
+fresh release NNS-manager and stream-manager Wasms. It proves the exact Jupiter
+default-Account ICP block, permanent replay, checked 40/60 amounts, the exact
+staking transfer and real-Governance refresh, canonical protected-neuron stake
+growth, the exact liquid receipt, fixed Jupiter IO settlement and the standard
+SNS ledger fee burn. Same-Wasm upgrades cover every returned durable manager
+phase and the active stream receipt. For the controlled 10 ICP input, the
+proved result is 4 ICP staked, 6 ICP liquid, 3,600 e8s backed IO, and a 10,000
+e8s IO fee; no public recipient or amount is supplied.

@@ -25,6 +25,7 @@ const ICP_FEE_E8S: u64 = 10_000;
 const PROTECTED_STAKE_E8S: u64 = 100_000_000 * 100_000_000;
 const PROTECTED_MEMO: u64 = 8_002;
 const PROPOSER_MEMO: u64 = 8_003;
+const TWO_YEAR_MEMO: u64 = 8_004;
 const EIGHT_YEARS_SECONDS: u32 = 252_460_800;
 const ONE_YEAR_SECONDS: u32 = 365 * 24 * 60 * 60;
 const NNS_MINIMUM_DISSOLVE_DELAY_TO_VOTE_SECONDS: u64 = 6 * 30 * 24 * 60 * 60;
@@ -105,7 +106,7 @@ enum ManagerMaturityProgress {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 enum ManagerNnsProgress {
-    Jupiter(Reserved),
+    Jupiter(ManagerJupiterProgress),
     Maturity(ManagerMaturityProgress),
     Unwind(ManagerUnwindProgress),
     Idle,
@@ -155,6 +156,45 @@ struct ManagerInitArgs {
 #[derive(Clone, Debug, CandidType)]
 struct ReconcileTwoWeekBackingReadinessArgs {
     target_e8s: u128,
+}
+
+#[derive(Clone, Debug, CandidType)]
+struct NotifyJupiterDepositArgs {
+    block_index: u128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+struct ManagerJupiterCompleted {
+    deposit_block: u128,
+    gross_e8s: u128,
+    stake_e8s: u128,
+    liquid_e8s: u128,
+    stake_transfer_block: u128,
+    liquid_transfer_block: u128,
+    stream_receipt_sequence: u64,
+    backed_io_e8s: u128,
+    io_transfer_block: u128,
+    io_fee_e8s: u128,
+    stream_receipt_fingerprint: Vec<u8>,
+    completed_at_nanos: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+enum ManagerJupiterProgress {
+    DepositProved,
+    StakeTransferPrepared,
+    StakeTransferSubmitted,
+    StakeTransferSucceeded,
+    RefreshSubmitted,
+    StakeIncreaseProved,
+    ReceiptPermitPrepared,
+    LiquidTransferPrepared,
+    LiquidTransferSubmitted,
+    LiquidTransferSucceeded,
+    ReceiptCompletionSubmitted,
+    AwaitingStreamSettlement,
+    Completed(ManagerJupiterCompleted),
+    Stuck(String),
 }
 
 #[derive(Clone, Debug, CandidType)]
@@ -241,6 +281,7 @@ pub struct ControlledNnsNeuron {
     pub ledger: Principal,
     pub controller: Principal,
     pub neuron_id: u64,
+    pub two_year_neuron_id: u64,
     pub proposer_neuron_id: u64,
 }
 
@@ -267,6 +308,15 @@ pub fn create_zero_maturity_protected_neuron() -> ControlledNnsNeuron {
         30 * 100_000_000,
         ONE_YEAR_SECONDS,
     );
+    let two_year_neuron_id = stake_neuron(
+        &pic,
+        governance,
+        ledger,
+        controller,
+        TWO_YEAR_MEMO,
+        100 * 100_000_000,
+        EIGHT_YEARS_SECONDS,
+    );
     let neuron = neuron(&pic, governance, controller, neuron_id);
     assert_eq!(neuron.cached_neuron_stake_e8s, PROTECTED_STAKE_E8S);
     assert_eq!(neuron.maturity_e8s_equivalent, 0);
@@ -283,6 +333,7 @@ pub fn create_zero_maturity_protected_neuron() -> ControlledNnsNeuron {
         ledger,
         controller,
         neuron_id,
+        two_year_neuron_id,
         proposer_neuron_id,
     }
 }
@@ -754,7 +805,12 @@ fn manager_wasm() -> Vec<u8> {
     .expect("build the debug NNS manager Wasm before running controlled evidence")
 }
 
-fn install_manager(fixture: &ControlledNnsNeuron, stream: Principal, governance: Principal) {
+fn install_manager(
+    fixture: &ControlledNnsNeuron,
+    stream: Principal,
+    governance: Principal,
+    wasm: Vec<u8>,
+) -> Principal {
     let account = |owner, byte| ManagerAccount {
         owner,
         subaccount: Some(vec![byte; 32]),
@@ -762,7 +818,7 @@ fn install_manager(fixture: &ControlledNnsNeuron, stream: Principal, governance:
     let jupiter = pocketic_env::create_empty_application_canister(&fixture.pic);
     fixture.pic.install_canister(
         fixture.controller,
-        manager_wasm(),
+        wasm,
         encode_one(ManagerInitArgs {
             config: ManagerConfig {
                 sns_governance: governance,
@@ -770,9 +826,12 @@ fn install_manager(fixture: &ControlledNnsNeuron, stream: Principal, governance:
                 jupiter,
                 icp_ledger: fixture.ledger,
                 nns_governance: fixture.governance,
-                two_year_neuron_id: fixture.proposer_neuron_id,
+                two_year_neuron_id: fixture.two_year_neuron_id,
                 two_week_neuron_id: fixture.neuron_id,
-                jupiter_account: account(jupiter, 4),
+                jupiter_account: ManagerAccount {
+                    owner: jupiter,
+                    subaccount: None,
+                },
                 jupiter_staging: ManagerAccount {
                     owner: fixture.controller,
                     subaccount: None,
@@ -791,6 +850,7 @@ fn install_manager(fixture: &ControlledNnsNeuron, stream: Principal, governance:
         .unwrap(),
         None,
     );
+    jupiter
 }
 
 fn debug_wasm(name: &str) -> Vec<u8> {
@@ -800,6 +860,15 @@ fn debug_wasm(name: &str) -> Vec<u8> {
             .join(format!("{name}.wasm")),
     )
     .unwrap_or_else(|error| panic!("build {name} debug Wasm before controlled evidence: {error}"))
+}
+
+fn production_wasm(name: &str) -> Vec<u8> {
+    std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/wasm32-unknown-unknown/release")
+            .join(format!("{name}.wasm")),
+    )
+    .unwrap_or_else(|error| panic!("build {name} release Wasm before controlled evidence: {error}"))
 }
 
 fn sns_neuron_subaccount(neuron_id: u64) -> Vec<u8> {
@@ -813,9 +882,15 @@ struct ControlledStream {
     io_ledger: Principal,
     stream_wasm: Vec<u8>,
     neuron_destination: io_stream_manager::Account,
+    jupiter_destination: io_stream_manager::Account,
+    reserve: io_stream_manager::Account,
 }
 
-fn install_controlled_stream(fixture: &ControlledNnsNeuron, stream: Principal) -> ControlledStream {
+fn install_controlled_stream(
+    fixture: &ControlledNnsNeuron,
+    stream: Principal,
+    stream_wasm: Vec<u8>,
+) -> ControlledStream {
     use io_stream_manager::{Account, InitArgs, StreamConfig};
 
     let governance_wasm = debug_wasm("mock_sns_governance");
@@ -825,7 +900,6 @@ fn install_controlled_stream(fixture: &ControlledNnsNeuron, stream: Principal) -
         crate::artifacts::ArtifactStatus::Skipped(message) => panic!("{message}"),
     };
     let io_ledger_wasm = artifacts.load_required("sns_ledger").unwrap();
-    let stream_wasm = debug_wasm("io_stream_manager");
     let governance_hash = Sha256::digest(&governance_wasm).to_vec();
     let governance =
         pocketic_env::create_application_canister(&fixture.pic, governance_wasm, vec![]);
@@ -893,6 +967,14 @@ fn install_controlled_stream(fixture: &ControlledNnsNeuron, stream: Principal) -
             .unwrap(),
         )
         .unwrap();
+    let jupiter_destination = Account {
+        owner: governance,
+        subaccount: Some(vec![4; 32]),
+    };
+    let reserve = Account {
+        owner: stream,
+        subaccount: Some(reserve_subaccount.to_vec()),
+    };
     fixture.pic.install_canister(
         stream,
         stream_wasm.clone(),
@@ -909,18 +991,12 @@ fn install_controlled_stream(fixture: &ControlledNnsNeuron, stream: Principal) -
                     owner: fixture.controller,
                     subaccount: Some(vec![2; 32]),
                 },
-                jupiter_io_account: Account {
-                    owner: governance,
-                    subaccount: Some(vec![4; 32]),
-                },
+                jupiter_io_account: jupiter_destination.clone(),
                 sns_governance: governance,
                 sns_root: root,
                 expected_sns_governance_module_hash: governance_hash,
                 approved_reward_event_duration_seconds: 86_400,
-                io_reserve: Account {
-                    owner: stream,
-                    subaccount: Some(reserve_subaccount.to_vec()),
-                },
+                io_reserve: reserve.clone(),
                 liquid_icp: Account {
                     owner: stream,
                     subaccount: Some(vec![3; 32]),
@@ -942,6 +1018,8 @@ fn install_controlled_stream(fixture: &ControlledNnsNeuron, stream: Principal) -
         io_ledger,
         stream_wasm,
         neuron_destination,
+        jupiter_destination,
+        reserve,
     }
 }
 
@@ -1009,6 +1087,281 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires pinned real NNS Governance/ICP ledger, candidate SNS ledger, production IO Wasms, and POCKET_IC_BIN"]
+    fn controlled_jupiter_uses_real_nns_and_exact_production_receipts() {
+        let _guard = crate::lock_test_env();
+        let fixture = super::create_zero_maturity_protected_neuron();
+        let stream = crate::pocketic_env::create_empty_application_canister(&fixture.pic);
+        let manager_wasm = super::production_wasm("io_nns_neuron_manager");
+        let controlled_stream = super::install_controlled_stream(
+            &fixture,
+            stream,
+            super::production_wasm("io_stream_manager"),
+        );
+        super::fund_manager_staging(&fixture);
+        let jupiter = super::install_manager(
+            &fixture,
+            stream,
+            controlled_stream.governance,
+            manager_wasm.clone(),
+        );
+        super::fund_stream_liquidity(&fixture, stream, 0);
+
+        let stream_unpause: Result<(), io_stream_manager::ApiError> = super::update(
+            &fixture.pic,
+            stream,
+            controlled_stream.governance,
+            "set_paused",
+            false,
+        );
+        assert_eq!(stream_unpause, Ok(()));
+        let manager_unpause: Result<(), ManagerApiError> = super::update(
+            &fixture.pic,
+            fixture.controller,
+            controlled_stream.governance,
+            "set_paused",
+            false,
+        );
+        assert_eq!(manager_unpause, Ok(()));
+
+        let gross_e8s = 10 * 100_000_000_u64;
+        let transfer = |caller: Principal, to: Vec<u8>, amount_e8s: u64, memo: u64| -> u64 {
+            let result: Result<u64, IcpTransferError> = super::icrc::update_one(
+                &fixture.pic,
+                fixture.ledger,
+                caller,
+                "transfer",
+                IcpTransferArgs {
+                    memo,
+                    amount: IcpTokens { e8s: amount_e8s },
+                    fee: IcpTokens {
+                        e8s: super::ICP_FEE_E8S,
+                    },
+                    from_subaccount: None,
+                    to,
+                    created_at_time: None,
+                },
+            );
+            result.unwrap()
+        };
+        let jupiter_account = IcpAccount::new(jupiter, None).icp_account_identifier_bytes();
+        let funding_block = transfer(
+            Principal::anonymous(),
+            jupiter_account.to_vec(),
+            gross_e8s + super::ICP_FEE_E8S,
+            20,
+        );
+        let manager_account =
+            IcpAccount::new(fixture.controller, None).icp_account_identifier_bytes();
+        let deposit_block = transfer(jupiter, manager_account.to_vec(), gross_e8s, 21);
+
+        let wrong: Result<ManagerJupiterProgress, ManagerApiError> = super::update(
+            &fixture.pic,
+            fixture.controller,
+            Principal::anonymous(),
+            "notify_jupiter_deposit",
+            NotifyJupiterDepositArgs {
+                block_index: funding_block.into(),
+            },
+        );
+        assert!(matches!(wrong, Err(ManagerApiError::Invalid(_))));
+
+        let before_neuron = super::neuron(
+            &fixture.pic,
+            fixture.governance,
+            fixture.controller,
+            fixture.two_year_neuron_id,
+        );
+        let liquid_account = ManagerAccount {
+            owner: stream,
+            subaccount: Some(vec![3; 32]),
+        };
+        let liquid_before: candid::Nat = super::query(
+            &fixture.pic,
+            fixture.ledger,
+            Principal::anonymous(),
+            "icrc1_balance_of",
+            liquid_account.clone(),
+        );
+        let recipient_before: candid::Nat = super::query(
+            &fixture.pic,
+            controlled_stream.io_ledger,
+            Principal::anonymous(),
+            "icrc1_balance_of",
+            controlled_stream.jupiter_destination.clone(),
+        );
+        let reserve_before: candid::Nat = super::query(
+            &fixture.pic,
+            controlled_stream.io_ledger,
+            Principal::anonymous(),
+            "icrc1_balance_of",
+            controlled_stream.reserve.clone(),
+        );
+        let supply_before: candid::Nat = super::query(
+            &fixture.pic,
+            controlled_stream.io_ledger,
+            Principal::anonymous(),
+            "icrc1_total_supply",
+            (),
+        );
+
+        let notified: Result<ManagerJupiterProgress, ManagerApiError> = super::update(
+            &fixture.pic,
+            fixture.controller,
+            Principal::anonymous(),
+            "notify_jupiter_deposit",
+            NotifyJupiterDepositArgs {
+                block_index: deposit_block.into(),
+            },
+        );
+        assert_eq!(notified, Ok(ManagerJupiterProgress::DepositProved));
+        let duplicate: Result<ManagerJupiterProgress, ManagerApiError> = super::update(
+            &fixture.pic,
+            fixture.controller,
+            controlled_stream.governance,
+            "notify_jupiter_deposit",
+            NotifyJupiterDepositArgs {
+                block_index: deposit_block.into(),
+            },
+        );
+        assert_eq!(duplicate, notified);
+
+        fixture
+            .pic
+            .upgrade_canister(
+                fixture.controller,
+                manager_wasm.clone(),
+                encode_one(()).unwrap(),
+                None,
+            )
+            .unwrap();
+        let mut phases = Vec::new();
+        let mut stream_upgraded = false;
+        let completed = loop {
+            let progress: Result<ManagerNnsProgress, ManagerApiError> = super::update(
+                &fixture.pic,
+                fixture.controller,
+                Principal::anonymous(),
+                "resume",
+                (),
+            );
+            phases.push(format!("{progress:?}"));
+            let stream_status: io_stream_manager::Status = super::query(
+                &fixture.pic,
+                stream,
+                Principal::anonymous(),
+                "get_status",
+                (),
+            );
+            if !stream_upgraded && stream_status.operation_kind.is_some() {
+                fixture
+                    .pic
+                    .upgrade_canister(
+                        stream,
+                        controlled_stream.stream_wasm.clone(),
+                        encode_one(()).unwrap(),
+                        None,
+                    )
+                    .unwrap();
+                stream_upgraded = true;
+            }
+            fixture
+                .pic
+                .upgrade_canister(
+                    fixture.controller,
+                    manager_wasm.clone(),
+                    encode_one(()).unwrap(),
+                    None,
+                )
+                .unwrap();
+            if let Ok(ManagerNnsProgress::Jupiter(ManagerJupiterProgress::Completed(result))) =
+                progress
+            {
+                break result;
+            }
+            assert!(phases.len() < 24, "{phases:?}");
+        };
+        assert!(stream_upgraded, "{phases:?}");
+        assert_eq!(completed.deposit_block, u128::from(deposit_block));
+        assert_eq!(completed.gross_e8s, u128::from(gross_e8s));
+        assert_eq!(completed.stake_e8s, u128::from(gross_e8s * 40 / 100));
+        assert_eq!(completed.liquid_e8s, u128::from(gross_e8s * 60 / 100));
+        assert_ne!(
+            completed.stake_transfer_block,
+            completed.liquid_transfer_block
+        );
+        assert_eq!(completed.stream_receipt_sequence, 0);
+        assert_eq!(completed.io_fee_e8s, 10_000);
+
+        let after_neuron = super::neuron(
+            &fixture.pic,
+            fixture.governance,
+            fixture.controller,
+            fixture.two_year_neuron_id,
+        );
+        assert_eq!(
+            after_neuron.cached_neuron_stake_e8s - before_neuron.cached_neuron_stake_e8s,
+            u64::try_from(completed.stake_e8s).unwrap()
+        );
+        let liquid_after: candid::Nat = super::query(
+            &fixture.pic,
+            fixture.ledger,
+            Principal::anonymous(),
+            "icrc1_balance_of",
+            liquid_account,
+        );
+        assert_eq!(
+            liquid_after.0 - liquid_before.0,
+            completed.liquid_e8s.into()
+        );
+        let recipient_after: candid::Nat = super::query(
+            &fixture.pic,
+            controlled_stream.io_ledger,
+            Principal::anonymous(),
+            "icrc1_balance_of",
+            controlled_stream.jupiter_destination,
+        );
+        assert_eq!(
+            recipient_after.0 - recipient_before.0,
+            completed.backed_io_e8s.into()
+        );
+        let reserve_after: candid::Nat = super::query(
+            &fixture.pic,
+            controlled_stream.io_ledger,
+            Principal::anonymous(),
+            "icrc1_balance_of",
+            controlled_stream.reserve,
+        );
+        assert_eq!(
+            reserve_before.0 - reserve_after.0,
+            (completed.backed_io_e8s + completed.io_fee_e8s).into()
+        );
+        let supply_after: candid::Nat = super::query(
+            &fixture.pic,
+            controlled_stream.io_ledger,
+            Principal::anonymous(),
+            "icrc1_total_supply",
+            (),
+        );
+        assert_eq!(
+            supply_before.0 - supply_after.0,
+            completed.io_fee_e8s.into()
+        );
+
+        let replay: Result<ManagerJupiterProgress, ManagerApiError> = super::update(
+            &fixture.pic,
+            fixture.controller,
+            Principal::anonymous(),
+            "notify_jupiter_deposit",
+            NotifyJupiterDepositArgs {
+                block_index: deposit_block.into(),
+            },
+        );
+        assert_eq!(replay, Ok(ManagerJupiterProgress::Completed(completed)));
+        eprintln!("controlled_jupiter_phases={phases:?}");
+    }
+
+    #[test]
     #[ignore = "requires pinned real NNS Governance/ICP ledger, NNS manager Wasm, and POCKET_IC_BIN"]
     fn controlled_manager_proves_baseline_target_and_maturity_through_exact_mint() {
         use io_stream_manager::{
@@ -1018,9 +1371,18 @@ mod tests {
         let _guard = crate::lock_test_env();
         let fixture = super::create_zero_maturity_protected_neuron();
         let stream = crate::pocketic_env::create_empty_application_canister(&fixture.pic);
-        let controlled_stream = super::install_controlled_stream(&fixture, stream);
+        let controlled_stream = super::install_controlled_stream(
+            &fixture,
+            stream,
+            super::debug_wasm("io_stream_manager"),
+        );
         super::fund_manager_staging(&fixture);
-        super::install_manager(&fixture, stream, controlled_stream.governance);
+        let _ = super::install_manager(
+            &fixture,
+            stream,
+            controlled_stream.governance,
+            super::manager_wasm(),
+        );
 
         let unpause: Result<(), ManagerApiError> = super::update(
             &fixture.pic,
