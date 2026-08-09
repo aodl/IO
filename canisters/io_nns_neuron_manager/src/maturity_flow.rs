@@ -42,6 +42,15 @@ pub(crate) async fn start_observed(
     }
     let (neuron_id, destination) = identity(&snapshot.config, kind);
     let observation = execution::query_neuron_observation(&snapshot.config, neuron_id).await?;
+    if state::read() != snapshot {
+        return Err(ApiError::Busy);
+    }
+    if let Err(reason) = execution::validate_maturity_configuration(&observation) {
+        let mut latest = snapshot;
+        latest.lifecycle = Lifecycle::Paused;
+        state::write(latest);
+        return Err(ApiError::Invalid(reason));
+    }
     if let Some(batch) = &entitlement_batch {
         let tolerance = snapshot
             .config

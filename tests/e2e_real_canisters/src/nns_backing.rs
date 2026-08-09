@@ -953,8 +953,8 @@ mod tests {
         assert_eq!(io_core_model::TWO_WEEK_SECONDS, 1_209_600);
         assert!(io_core_model::TWO_WEEK_SECONDS < NNS_MINIMUM_DISSOLVE_DELAY_TO_VOTE_SECONDS);
 
-        let manager = include_str!("../../../canisters/io_nns_neuron_manager/src/lifecycle.rs");
-        assert!(manager.contains("protected two-week neuron"));
+        let manager = include_str!("../../../canisters/io_nns_neuron_manager/src/execution.rs");
+        assert!(manager.contains("APPROVED_REWARD_BACKING_DISSOLVE_DELAY_SECONDS"));
         let harness = include_str!("nns_backing.rs");
         assert!(harness.contains("EIGHT_YEARS_SECONDS"));
     }

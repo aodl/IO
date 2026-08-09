@@ -2,23 +2,25 @@ use crate::state::{self, Lifecycle};
 
 fn validate_prelaunch_baseline(
     seeded_principal_e8s: u128,
-    observed_principal_e8s: u128,
-    ordinary_maturity_e8s: u64,
-    has_pending_maturity: bool,
+    observation: &crate::execution::NeuronObservation,
 ) -> Result<(), crate::api::ApiError> {
+    crate::execution::validate_maturity_configuration(observation)
+        .map_err(crate::api::ApiError::Invalid)?;
+    let observed_principal_e8s = observation.snapshot.cached_stake_e8s;
     if observed_principal_e8s != seeded_principal_e8s {
         return Err(crate::api::ApiError::Invalid(format!(
-            "protected two-week principal {observed_principal_e8s} does not match seeded principal {seeded_principal_e8s}"
+            "protected reward-backing principal {observed_principal_e8s} does not match seeded principal {seeded_principal_e8s}"
         )));
     }
-    if ordinary_maturity_e8s != 0 {
+    if observation.maturity_e8s != 0 || observation.staked_maturity_e8s != 0 {
         return Err(crate::api::ApiError::Pending(format!(
-            "BaselineUnreconciled: protected two-week neuron has {ordinary_maturity_e8s} e8s of prelaunch ordinary maturity"
+            "BaselineUnreconciled: protected reward-backing neuron has ordinary/staked maturity {}/{} e8s",
+            observation.maturity_e8s, observation.staked_maturity_e8s
         )));
     }
-    if has_pending_maturity {
+    if !observation.maturity_disbursements.is_empty() {
         return Err(crate::api::ApiError::Pending(
-            "BaselineUnreconciled: protected two-week neuron has a pending maturity disbursement"
+            "BaselineUnreconciled: protected reward-backing neuron has a pending maturity disbursement"
                 .into(),
         ));
     }
@@ -104,12 +106,7 @@ pub async fn readiness_preflight(
             snapshot.config.two_week_neuron_id,
         )
         .await?;
-        validate_prelaunch_baseline(
-            snapshot.config.seeded_two_week_principal_e8s,
-            observation.snapshot.cached_stake_e8s,
-            observation.maturity_e8s,
-            !observation.maturity_disbursements.is_empty(),
-        )?;
+        validate_prelaunch_baseline(snapshot.config.seeded_two_week_principal_e8s, &observation)?;
     }
     let latest = state::read();
     if latest.active_operation.is_some()
@@ -149,33 +146,65 @@ pub fn set_paused() {
 mod tests {
     use super::*;
 
+    fn observation() -> crate::execution::NeuronObservation {
+        crate::execution::NeuronObservation {
+            snapshot: crate::jupiter::NeuronSnapshot {
+                neuron_id: 2,
+                staking_subaccount: [2; 32],
+                cached_stake_e8s: 100,
+            },
+            maturity_e8s: 0,
+            staked_maturity_e8s: 0,
+            auto_stake_maturity: Some(false),
+            maturity_disbursements: vec![],
+            dissolve_state: Some(crate::execution::DissolveState::DissolveDelaySeconds(
+                crate::execution::APPROVED_REWARD_BACKING_DISSOLVE_DELAY_SECONDS,
+            )),
+        }
+    }
+
     #[test]
-    fn zero_maturity_exact_seed_is_the_only_new_baseline() {
-        assert_eq!(validate_prelaunch_baseline(100, 100, 0, false), Ok(()));
+    fn complete_exact_baseline_is_required() {
+        let valid = observation();
+        assert_eq!(validate_prelaunch_baseline(100, &valid), Ok(()));
+        let mut wrong_principal = valid.clone();
+        wrong_principal.snapshot.cached_stake_e8s = 101;
         assert!(matches!(
-            validate_prelaunch_baseline(100, 101, 0, false),
+            validate_prelaunch_baseline(100, &wrong_principal),
             Err(crate::api::ApiError::Invalid(_))
         ));
+        let mut ordinary = valid.clone();
+        ordinary.maturity_e8s = 1;
         assert!(matches!(
-            validate_prelaunch_baseline(100, 100, 1, false),
+            validate_prelaunch_baseline(100, &ordinary),
             Err(crate::api::ApiError::Pending(message)) if message.contains("BaselineUnreconciled")
         ));
+        let mut pending = valid;
+        pending
+            .maturity_disbursements
+            .push(crate::execution::MaturityDisbursement::placeholder());
         assert!(matches!(
-            validate_prelaunch_baseline(100, 100, 0, true),
+            validate_prelaunch_baseline(100, &pending),
             Err(crate::api::ApiError::Pending(message)) if message.contains("BaselineUnreconciled")
         ));
     }
 
     #[test]
-    fn baseline_gap_cannot_distinguish_staked_auto_stake_or_dissolve_state() {
-        assert_eq!(validate_prelaunch_baseline(100, 100, 0, false), Ok(()));
-        let source = include_str!("lifecycle.rs");
-        let signature = &source[source.find("fn validate_prelaunch_baseline").unwrap()
-            ..source
-                .find(") -> Result<(), crate::api::ApiError>")
-                .unwrap()];
-        assert!(!signature.contains("staked_maturity"));
-        assert!(!signature.contains("auto_stake"));
-        assert!(!signature.contains("dissolve_state"));
+    fn staked_auto_stake_dissolving_and_wrong_delay_are_rejected() {
+        let mut staked = observation();
+        staked.staked_maturity_e8s = 1;
+        assert!(validate_prelaunch_baseline(100, &staked).is_err());
+        let mut auto = observation();
+        auto.auto_stake_maturity = Some(true);
+        assert!(validate_prelaunch_baseline(100, &auto).is_err());
+        let mut dissolving = observation();
+        dissolving.dissolve_state =
+            Some(crate::execution::DissolveState::WhenDissolvedTimestampSeconds(u64::MAX));
+        assert!(validate_prelaunch_baseline(100, &dissolving).is_err());
+        let mut wrong_delay = observation();
+        wrong_delay.dissolve_state = Some(crate::execution::DissolveState::DissolveDelaySeconds(
+            crate::execution::APPROVED_REWARD_BACKING_DISSOLVE_DELAY_SECONDS - 1,
+        ));
+        assert!(validate_prelaunch_baseline(100, &wrong_delay).is_err());
     }
 }
