@@ -1361,7 +1361,6 @@ mod tests {
         assert_eq!(u64::from(EIGHT_YEARS_SECONDS), 252_460_800);
         assert_eq!(NNS_MINIMUM_DISSOLVE_DELAY_TO_VOTE_SECONDS, 15_552_000);
         assert_eq!(io_core_model::TWO_WEEK_SECONDS, 1_209_600);
-        assert!(io_core_model::TWO_WEEK_SECONDS < NNS_MINIMUM_DISSOLVE_DELAY_TO_VOTE_SECONDS);
 
         let manager = include_str!("../../../canisters/io_nns_neuron_manager/src/execution.rs");
         assert!(manager.contains("APPROVED_REWARD_BACKING_DISSOLVE_DELAY_SECONDS"));

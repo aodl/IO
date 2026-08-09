@@ -1592,10 +1592,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             nns_manager,
             controller,
             "debug_set_backing_readiness",
-            encode_one(io_receipt_types::TwoWeekBackingReadiness::NotReady(
-                reason.clone(),
-            ))
-            .unwrap(),
+            encode_one(io_receipt_types::TwoWeekBackingReadiness::NotReady(reason)).unwrap(),
         )
         .unwrap();
         backing_step(RewardBackingProgress::Pending { reason });
