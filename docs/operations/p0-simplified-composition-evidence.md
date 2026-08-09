@@ -112,14 +112,15 @@ entitlement economics.
 | C | A Ready stream update with no pending batch invokes only `freeze_batch` and returns `BatchFrozen`; `prepare_two_week_maturity` is reachable only on a later update. Maturity and later daily credits can therefore advance while an older subset remains frozen. | Bind the exact freeze CAS and immediate maturity preparation in one normal stream update, retaining the immutable batch only for exact replay after ambiguity. |
 | D | Freeze checks the cached `governance_parameters_fresh` Boolean but does not call the reviewed Root/Governance verification boundary. A module or parameter change after the last daily observation is therefore not re-read before target calculation. | Reverify Root, Governance hash and reviewed parameters immediately before target calculation and again after any neuron pagination used by that calculation. |
 
-## Remaining vertical work
+## Controlled protected-NNS vertical result
 
-The safety and topology invariants above are implemented. The NNS manager has a
-typed proof-bound Jupiter 40/60 executor, direct maturity/Mint proof, exact
-entitlement-batch binding, two-week delivery recovery, and one direct unwind
-child. The stream manager has immutable receipt pricing, daily canonical
-entitlement accumulation, and recipient-serialized backed reward fan-out. The
-browser keeps an explicit wallet boundary and historian reads remain
-observation-only. Controlled real-NNS execution and the complete upgrade/failure
-matrix remain incomplete, so NNS readiness deliberately returns
-`ImplementationIncomplete` and IO remains Paused.
+The controlled pinned-NNS PocketIC path proves the exact zero-maturity baseline,
+UnderTarget without implicit funding, three independent target generations, a
+single direct child unwind and exact disbursement block, entitlement generation
+one, StakeMaturity 40%, DisburseMaturity 100% of the remainder, delayed Mint,
+actual staging receipt, backed IO recipient settlement and fresh live credit for
+the next generation. Same-Wasm upgrades force Paused after baseline, child
+creation, dissolution, disbursement, maturity phases, Mint proof, staging
+delivery and recipient transfer while immutable work resumes without duplicate
+effects. IO remains Paused, inert, prelaunch and not live; no mainnet execution
+is authorized.

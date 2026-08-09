@@ -8,7 +8,7 @@ Each daily proposal-bearing event normalizes canonical SNS Governance reward
 shares into one fixed policy credit. The denominator includes current-event
 shares from excluded and ineligible neurons, so their fraction is forfeited
 rather than redistributed. An empty `settled_proposals` list normalizes current
-exact eligible stake into the same daily credit; settled proposals with zero
+eligible cached IO stake into the same daily credit; settled proposals with zero
 canonical shares forfeit the complete opportunity.
 Readiness verifies exact Root, Governance principal and module hash, the 86,400
 It also requires Governance's configured maximum to be at most 1,000 total
@@ -60,6 +60,11 @@ no external value effect and does not occupy that slot. A bounded live
 accumulator persists across upgrades; at most one immutable pending entitlement
 batch binds the NNS maturity request and recipient progress while later daily
 events continue accumulating live.
+
+Before a freeze, the stream revalidates reviewed SNS Governance and calls the
+authenticated target-reconciliation boundary. UnderTarget and every unwind
+leave all credits live. Ready binds the exact freeze CAS to immediate maturity
+preparation; transport ambiguity retains that one immutable batch for replay.
 
 Observation and NNS backing waits do not occupy the monetary slot, so they do
 not block redemption. Actual reserve-to-recipient transfers share that slot

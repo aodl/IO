@@ -12,7 +12,7 @@ IO is not live. Production canisters remain inert.
 The production DID contains only:
 
 - `notify_jupiter_deposit`
-- `observe_two_week_backing_readiness`
+- `reconcile_two_week_backing_readiness`
 - `prepare_two_week_maturity`
 - `resume`
 - `prove_active_transfer`
@@ -26,10 +26,11 @@ Jupiter notification is permissionless and carries one exact ICP block. The
 configured Jupiter Faucet default Account, the NNS-manager default destination,
 and the canonical transfer are the authority; no Jupiter callback exists.
 Processed Jupiter blocks have narrow permanent replay protection. The
-authenticated readiness query is no-effect evidence that the exact two-week
-target and liquid 60% maturity leg can start immediately. Only then does the
-stream manager freeze one entitlement batch and submit its generation and
-target to `prepare_two_week_maturity`. There is no target queue. See the pinned
+authenticated reconciliation persists the exact desired target and reports
+whether its liquid 60% maturity leg can start immediately. Target generations
+are independent of entitlement-batch generations. Only Ready permits the
+stream manager to freeze and immediately submit one batch generation and target
+to `prepare_two_week_maturity`. There is no target queue. See the pinned
 [Jupiter integration contract](../../docs/architecture/jupiter-integration-contract.md).
 
 ## Direct maturity policy
@@ -45,6 +46,11 @@ stream receipt. Governance DTOs are local and pinned to `dfinity/ic` commit
 ledger Wasms and exact source behavior are recorded in
 [`nns-boundary-pin.md`](../../docs/testing/nns-boundary-pin.md). The canister
 does not depend on a generic governance-types crate.
+
+First readiness proves the exact configured parent, seeded stake, zero
+prelaunch ordinary maturity and absence of pending maturity or child ambiguity.
+The proof survives upgrade; post-upgrade remains Paused. Immutable active and
+passive delivery work can still resume while new preparation remains blocked.
 
 ## Direct two-week unwind
 

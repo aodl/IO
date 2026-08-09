@@ -37,7 +37,7 @@ Jupiter settlement transfers backed IO from reserve only after the exact liquid 
 
 The NNS manager owns governance proof. Jupiter and two-week sending staging accounts each have their own bounded pre-funded fee float. Two-year maturity and ready unwind principal go directly to the stream liquid account and issue no IO. Never add a general fee ledger, staging account for direct flows, ledger scanner, or stream-side governance proof.
 
-Until every governance continuation is executable, readiness returns `ImplementationIncomplete` and lifecycle remains Paused.
+New NNS work requires Ready after the zero-maturity baseline and exact target reconciliation. Post-upgrade remains Paused, while already immutable unwind, maturity, Mint and receipt work resumes through its typed evidence. Any unproved prelaunch maturity remains Paused for a separately reviewed reconciliation decision.
 
 ## Upgrade or stable-state failure
 

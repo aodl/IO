@@ -31,7 +31,7 @@ numeric ID. Entitlement entries require exact 32-byte canonical SNS neuron IDs.
 
 For a proposal-bearing event the boundary reads Governance's canonical reward
 shares; IO does not retain proposal DTOs or reconstruct direct/followed voting.
-When no proposal settled, current exact eligible stake determines each neuron's
+When no proposal settled, current eligible cached IO stake determines each neuron's
 fraction of the fixed daily credit. That fallback is selected only by an empty
 canonical `settled_proposals` list; zero proposal shares never trigger it. For
 a proposal-bearing event, current-event shares from excluded and ineligible

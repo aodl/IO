@@ -41,7 +41,7 @@ not use a stake fallback.
 For an event whose `settled_proposals` list is empty, Governance has no proposal
 ballots from which to populate current-event participation fields. IO therefore
 ignores every participation field and grants full participation credit to each
-currently eligible neuron, normalized by current canonical eligible stake:
+currently eligible neuron, normalized by current eligible cached IO stake:
 
 ```text
 credit_i = floor(DAILY_EVENT_CREDIT * eligible_stake_i
@@ -84,12 +84,15 @@ The first successful readiness transition seeds the latest canonical event as
 pre-activation events from becoming retroactive IO entitlement. An existing
 checkpoint survives pause/unpause and same-Wasm upgrade and is never reseeded.
 
-Before freezing, the stream manager obtains authenticated no-effect NNS
-readiness evidence for the current target. `UnderTarget`, `OverTarget`,
+Before freezing, the stream manager revalidates reviewed SNS Governance and
+authentically reconciles the current NNS target. Target generation is distinct
+from entitlement-batch generation. `UnderTarget`, `OverTarget`,
 `BelowThreshold`, `Busy`, `Paused`, or an unreconciled baseline leaves every
-live credit in place. A ready result permits one exact compare-and-swap freeze;
-later observations accumulate in the fresh live accumulator while that single
-batch is pending.
+live credit in place. OverTarget starts at most one direct unwind, while
+UnderTarget requires separately authorized principal growth. A ready result
+permits one exact compare-and-swap freeze and immediate maturity preparation in
+the same update; later observations accumulate in the fresh live accumulator
+while that single batch is pending.
 
 Governance readiness and every daily boundary require
 `max_number_of_neurons <= 1,000`. This is a bound on the complete SNS Governance

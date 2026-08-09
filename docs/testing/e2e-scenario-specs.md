@@ -16,13 +16,13 @@ Prove one exact Jupiter Faucet raw-ICP block from the configured faucet default 
 
 ## Direct maturity
 
-For each protected neuron, call `StakeMaturity(40%)` and then `DisburseMaturity(100% of remaining)`. Record drift between the two responses. Two-year actual ICP goes directly to stream liquid and issues no IO. Two-week actual staging balance increase is transferred through the proof-bound two-week receipt and settles the pending entitlement batch.
+For each protected neuron, call `StakeMaturity(40%)` and then `DisburseMaturity(100% of remaining)`. Record drift between the two responses. Two-year actual ICP goes directly to stream liquid and issues no IO. Two-week actual staging balance increase is transferred through the proof-bound two-week receipt and settles the pending entitlement batch. The controlled pinned-NNS vertical proves zero-maturity baseline, the two commands, seven-day Mint, exact staging transfer, recipient settlement and fresh live credit for the next generation through production canister interfaces.
 
 ## Exact rewards: daily entitlements and delayed backing
 
 Observe consecutive 86,400-second Governance reward events around bounded
 neuron pagination. Proposal-bearing events use exact current-event canonical
-shares. Empty `settled_proposals` uses current exact eligible stake, while a
+shares. Empty `settled_proposals` uses current eligible cached IO stake, while a
 proposal event with zero eligible shares adds zero. Accumulate daily weights,
 record ambiguous skipped spans without credits, and preserve redemption.
 
