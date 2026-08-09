@@ -91,6 +91,17 @@ enum ManagerMaturityKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+struct ManagerCompletedMaturity {
+    kind: ManagerMaturityKind,
+    neuron_id: u64,
+    mint_block: u128,
+    nominal_disbursed_maturity_e8s: u64,
+    actual_minted_icp_e8s: u128,
+    destination: ManagerAccount,
+    completed_at_nanos: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 enum ManagerMaturityProgress {
     Observed,
     StakeMaturitySubmitted,
@@ -100,7 +111,7 @@ enum ManagerMaturityProgress {
     AwaitingMintProof,
     MintProved,
     DeliveringTwoWeekReceipt,
-    Completed(Reserved),
+    Completed(ManagerCompletedMaturity),
     Stuck(String),
 }
 
@@ -120,7 +131,7 @@ enum ManagerUnwindProgress {
     Stuck(String),
 }
 
-#[derive(Clone, Debug, CandidType)]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 struct ManagerAccount {
     owner: Principal,
     subaccount: Option<Vec<u8>>,
@@ -305,7 +316,7 @@ pub fn create_zero_maturity_protected_neuron() -> ControlledNnsNeuron {
         ledger,
         Principal::anonymous(),
         PROPOSER_MEMO,
-        30 * 100_000_000,
+        1_000 * 100_000_000,
         ONE_YEAR_SECONDS,
     );
     let two_year_neuron_id = stake_neuron(
@@ -445,6 +456,10 @@ fn stake_neuron(
 }
 
 pub fn earn_maturity(fixture: &ControlledNnsNeuron) -> u64 {
+    earn_maturity_for(fixture, fixture.neuron_id)
+}
+
+pub fn earn_maturity_for(fixture: &ControlledNnsNeuron, neuron_id: u64) -> u64 {
     // The production spike guard intentionally uses a prior voting-power
     // snapshot. Age that bootstrapped snapshot out, then let the pinned timer
     // record this controlled population before creating the proposal.
@@ -454,7 +469,7 @@ pub fn earn_maturity(fixture: &ControlledNnsNeuron) -> u64 {
     }
     for (caller, neuron_id) in [
         (Principal::anonymous(), fixture.proposer_neuron_id),
-        (fixture.controller, fixture.neuron_id),
+        (fixture.controller, neuron_id),
     ] {
         let response = manage(
             &fixture.pic,
@@ -507,7 +522,7 @@ pub fn earn_maturity(fixture: &ControlledNnsNeuron) -> u64 {
         fixture.controller,
         NnsProductionManageNeuronRequest {
             neuron_id_or_subaccount: Some(NnsNeuronIdOrSubaccount::NeuronId(NnsNeuronIdRecord {
-                id: fixture.neuron_id,
+                id: neuron_id,
             })),
             command: Some(NnsManageNeuronCommandRequest::RegisterVote(
                 NnsRegisterVote {
@@ -539,7 +554,7 @@ pub fn earn_maturity(fixture: &ControlledNnsNeuron) -> u64 {
             &fixture.pic,
             fixture.governance,
             fixture.controller,
-            fixture.neuron_id,
+            neuron_id,
         )
         .maturity_e8s_equivalent;
         if maturity > 0 {
@@ -683,6 +698,7 @@ fn find_mint(fixture: &ControlledNnsNeuron, destination: &[u8]) -> (u64, u64) {
         .blocks
         .iter()
         .enumerate()
+        .rev()
         .find_map(|(index, block)| match &block.transaction.operation {
             Some(IcpOperation::Mint { to, amount }) if to == destination => {
                 Some((index as u64, amount.e8s))
@@ -1359,6 +1375,241 @@ mod tests {
         );
         assert_eq!(replay, Ok(ManagerJupiterProgress::Completed(completed)));
         eprintln!("controlled_jupiter_phases={phases:?}");
+    }
+
+    #[test]
+    #[ignore = "requires pinned real NNS Governance/ICP ledger, candidate SNS ledger, production IO Wasms, and POCKET_IC_BIN"]
+    fn controlled_two_year_compounds_real_maturity_without_io_issuance() {
+        let _guard = crate::lock_test_env();
+        let fixture = super::create_zero_maturity_protected_neuron();
+        let stream = crate::pocketic_env::create_empty_application_canister(&fixture.pic);
+        let manager_wasm = super::production_wasm("io_nns_neuron_manager");
+        let controlled_stream = super::install_controlled_stream(
+            &fixture,
+            stream,
+            super::production_wasm("io_stream_manager"),
+        );
+        super::fund_manager_staging(&fixture);
+        let _ = super::install_manager(
+            &fixture,
+            stream,
+            controlled_stream.governance,
+            manager_wasm.clone(),
+        );
+        super::fund_stream_liquidity(&fixture, stream, 0);
+
+        let mut prior_staked_maturity = 0;
+        let mut actual_mints = Vec::new();
+        for cycle in 0..2 {
+            let unpause: Result<(), ManagerApiError> = super::update(
+                &fixture.pic,
+                fixture.controller,
+                controlled_stream.governance,
+                "set_paused",
+                false,
+            );
+            assert_eq!(unpause, Ok(()));
+            let ordinary_maturity = super::earn_maturity_for(&fixture, fixture.two_year_neuron_id);
+            let expected_staked = ordinary_maturity.checked_mul(40).unwrap() / 100;
+            let expected_disbursed = ordinary_maturity - expected_staked;
+            let before = super::neuron(
+                &fixture.pic,
+                fixture.governance,
+                fixture.controller,
+                fixture.two_year_neuron_id,
+            );
+            assert_eq!(
+                before.staked_maturity_e8s_equivalent.unwrap_or(0),
+                prior_staked_maturity
+            );
+            let liquid_account = ManagerAccount {
+                owner: stream,
+                subaccount: Some(vec![3; 32]),
+            };
+            let liquid_before: candid::Nat = super::query(
+                &fixture.pic,
+                fixture.ledger,
+                Principal::anonymous(),
+                "icrc1_balance_of",
+                liquid_account.clone(),
+            );
+            let supply_before: candid::Nat = super::query(
+                &fixture.pic,
+                controlled_stream.io_ledger,
+                Principal::anonymous(),
+                "icrc1_total_supply",
+                (),
+            );
+            let reserve_before: candid::Nat = super::query(
+                &fixture.pic,
+                controlled_stream.io_ledger,
+                Principal::anonymous(),
+                "icrc1_balance_of",
+                controlled_stream.reserve.clone(),
+            );
+
+            let unauthorized: Result<ManagerMaturityProgress, ManagerApiError> = super::update(
+                &fixture.pic,
+                fixture.controller,
+                Principal::anonymous(),
+                "start_maturity",
+                ManagerMaturityKind::TwoYear,
+            );
+            assert_eq!(unauthorized, Err(ManagerApiError::Unauthorized));
+            let started: Result<ManagerMaturityProgress, ManagerApiError> = super::update(
+                &fixture.pic,
+                fixture.controller,
+                controlled_stream.governance,
+                "start_maturity",
+                ManagerMaturityKind::TwoYear,
+            );
+            assert_eq!(started, Ok(ManagerMaturityProgress::Observed));
+            let replay: Result<ManagerMaturityProgress, ManagerApiError> = super::update(
+                &fixture.pic,
+                fixture.controller,
+                controlled_stream.governance,
+                "start_maturity",
+                ManagerMaturityKind::TwoYear,
+            );
+            assert_eq!(replay, Err(ManagerApiError::Busy));
+            fixture
+                .pic
+                .upgrade_canister(
+                    fixture.controller,
+                    manager_wasm.clone(),
+                    encode_one(()).unwrap(),
+                    None,
+                )
+                .unwrap();
+
+            let mut phases = Vec::new();
+            loop {
+                let progress: Result<ManagerNnsProgress, ManagerApiError> = super::update(
+                    &fixture.pic,
+                    fixture.controller,
+                    Principal::anonymous(),
+                    "resume",
+                    (),
+                );
+                phases.push(format!("{progress:?}"));
+                fixture
+                    .pic
+                    .upgrade_canister(
+                        fixture.controller,
+                        manager_wasm.clone(),
+                        encode_one(()).unwrap(),
+                        None,
+                    )
+                    .unwrap();
+                if progress
+                    == Ok(ManagerNnsProgress::Maturity(
+                        ManagerMaturityProgress::AwaitingMintProof,
+                    ))
+                {
+                    break;
+                }
+                assert!(phases.len() < 12, "cycle={cycle} {phases:?}");
+            }
+            let pending = super::neuron(
+                &fixture.pic,
+                fixture.governance,
+                fixture.controller,
+                fixture.two_year_neuron_id,
+            );
+            let disbursements = pending.maturity_disbursements_in_progress.unwrap();
+            assert_eq!(disbursements.len(), 1);
+            let finalization = disbursements[0]
+                .finalize_disbursement_timestamp_seconds
+                .unwrap();
+            let now = fixture.pic.get_time().as_nanos_since_unix_epoch() / 1_000_000_000;
+            fixture
+                .pic
+                .advance_time(Duration::from_secs(finalization - now + 1));
+            for _ in 0..100 {
+                fixture.pic.tick();
+            }
+            let destination =
+                IcpAccount::new(stream, Some(Subaccount([3; 32]))).icp_account_identifier_bytes();
+            let (mint_block, actual_minted_e8s) = super::find_mint(&fixture, &destination);
+            let proved: Result<ManagerMaturityProgress, ManagerApiError> = decode_one(
+                &fixture
+                    .pic
+                    .update_call(
+                        fixture.controller,
+                        Principal::anonymous(),
+                        "prove_maturity_mint",
+                        encode_args((ManagerMaturityKind::TwoYear, u128::from(mint_block)))
+                            .unwrap(),
+                    )
+                    .unwrap(),
+            )
+            .unwrap();
+            let completed = match proved {
+                Ok(ManagerMaturityProgress::Completed(completed)) => completed,
+                other => panic!("cycle={cycle} unexpected two-year proof: {other:?}"),
+            };
+            assert_eq!(completed.neuron_id, fixture.two_year_neuron_id);
+            assert_eq!(completed.nominal_disbursed_maturity_e8s, expected_disbursed);
+            assert_eq!(
+                completed.actual_minted_icp_e8s,
+                u128::from(actual_minted_e8s)
+            );
+            assert!(completed.actual_minted_icp_e8s > 0);
+            assert!(completed.actual_minted_icp_e8s <= u128::from(expected_disbursed));
+            prior_staked_maturity = prior_staked_maturity.checked_add(expected_staked).unwrap();
+            let after = super::neuron(
+                &fixture.pic,
+                fixture.governance,
+                fixture.controller,
+                fixture.two_year_neuron_id,
+            );
+            assert_eq!(
+                after.staked_maturity_e8s_equivalent.unwrap_or(0),
+                prior_staked_maturity
+            );
+            let liquid_after: candid::Nat = super::query(
+                &fixture.pic,
+                fixture.ledger,
+                Principal::anonymous(),
+                "icrc1_balance_of",
+                liquid_account,
+            );
+            assert_eq!(
+                liquid_after.0 - liquid_before.0,
+                completed.actual_minted_icp_e8s.into()
+            );
+            let supply_after: candid::Nat = super::query(
+                &fixture.pic,
+                controlled_stream.io_ledger,
+                Principal::anonymous(),
+                "icrc1_total_supply",
+                (),
+            );
+            let reserve_after: candid::Nat = super::query(
+                &fixture.pic,
+                controlled_stream.io_ledger,
+                Principal::anonymous(),
+                "icrc1_balance_of",
+                controlled_stream.reserve.clone(),
+            );
+            assert_eq!(supply_after, supply_before);
+            assert_eq!(reserve_after, reserve_before);
+            actual_mints.push(completed.actual_minted_icp_e8s);
+            fixture
+                .pic
+                .upgrade_canister(
+                    fixture.controller,
+                    manager_wasm.clone(),
+                    encode_one(()).unwrap(),
+                    None,
+                )
+                .unwrap();
+            eprintln!(
+                "controlled_two_year_cycle={cycle} phases={phases:?} completed={completed:?}"
+            );
+        }
+        assert_eq!(actual_mints.len(), 2);
+        assert!(actual_mints.iter().all(|amount| *amount > 0));
     }
 
     #[test]

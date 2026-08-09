@@ -150,3 +150,17 @@ SNS ledger fee burn. Same-Wasm upgrades cover every returned durable manager
 phase and the active stream receipt. For the controlled 10 ICP input, the
 proved result is 4 ICP staked, 6 ICP liquid, 3,600 e8s backed IO, and a 10,000
 e8s IO fee; no public recipient or amount is supplied.
+
+## Controlled production two-year result
+
+The release NNS-manager Wasm runs two consecutive maturity cycles against the
+controller-owned canonical-eight-year neuron in pinned real NNS Governance.
+Each cycle earns ordinary maturity through a real proposal and explicit vote,
+stakes exactly 40%, disburses 100% of the remainder, proves the delayed ICP
+Mint directly into stream liquid ICP, and upgrades at every returned durable
+phase. The observed Mints were 6,031,272,089 e8s and 8,672,771,618 e8s under
+the fixture's 1.0 modulation. Retained staked maturity compounds canonically;
+SNS IO total supply and reserve remain unchanged while liquid ICP and the
+redemption rate increase. An ordinary caller is rejected and configured
+Governance replay during the active operation is Busy. Real SNS generic-
+function trigger evidence remains part of the combined topology gate.
