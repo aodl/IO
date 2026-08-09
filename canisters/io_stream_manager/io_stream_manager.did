@@ -106,7 +106,6 @@ type BackingNotReadyReason = variant {
 };
 type RewardBackingProgress = variant {
   Pending : record { reason : BackingNotReadyReason };
-  BatchFrozen : record { generation : nat64 };
   MaturityPrepared : record { generation : nat64 };
 };
 type JupiterReceiptResult = record {

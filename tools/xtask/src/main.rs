@@ -6586,7 +6586,7 @@ fn check_exact_two_week_policy_at(root: &Path) -> Result<(), String> {
     require_present(
         "stream-manager daily event and backing separation",
         &format!("{rewards}\n{reward_evidence}"),
-        &["event_credits", "merge_event_credits", "freeze_batch"],
+        &["event_credits", "merge_event_credits", "freeze_and_prepare"],
     )?;
     Ok(())
 }

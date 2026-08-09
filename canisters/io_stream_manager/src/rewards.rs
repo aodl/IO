@@ -53,9 +53,6 @@ pub enum RewardBackingProgress {
     Pending {
         reason: reward_nns::BackingNotReadyReason,
     },
-    BatchFrozen {
-        generation: u64,
-    },
     MaturityPrepared {
         generation: u64,
     },
@@ -239,11 +236,11 @@ pub async fn resume_backing(now_nanos: u64) -> Result<RewardBackingProgress, Api
     }
     match snapshot.pending_entitlement_batch.clone() {
         Some(batch) => submit_maturity(snapshot, batch).await,
-        None => freeze_batch(snapshot, now_nanos).await,
+        None => freeze_and_prepare(snapshot, now_nanos).await,
     }
 }
 
-async fn freeze_batch(
+async fn freeze_and_prepare(
     snapshot: crate::state::StreamStateV1,
     now_nanos: u64,
 ) -> Result<RewardBackingProgress, ApiError> {
@@ -263,7 +260,9 @@ async fn freeze_batch(
         .reward_entitlements
         .last_processed_event
         .ok_or_else(|| ApiError::Invalid("entitlement checkpoint is missing".into()))?;
+    verify_governance(&snapshot).await?;
     let neurons = list_all_neurons(snapshot.config.sns_governance).await?;
+    verify_governance(&snapshot).await?;
     let active_io = eligible_stake_total(
         snapshot.config.sns_governance,
         &snapshot.config.excluded_io_accounts,
@@ -293,6 +292,7 @@ async fn freeze_batch(
         }
         io_receipt_types::TwoWeekBackingReadiness::Ready { .. } => {}
     }
+    verify_governance(&snapshot).await?;
     let generation = snapshot
         .latest_entitlement_batch_generation
         .checked_add(1)
@@ -329,10 +329,10 @@ async fn freeze_batch(
     }
     latest.reward_entitlements.entries.clear();
     latest.reward_entitlements.accumulated_policy_credit = 0;
-    latest.pending_entitlement_batch = Some(batch);
+    latest.pending_entitlement_batch = Some(batch.clone());
     latest.latest_entitlement_batch_generation = generation;
-    state::write(latest);
-    Ok(RewardBackingProgress::BatchFrozen { generation })
+    state::write(latest.clone());
+    submit_maturity(latest, batch).await
 }
 
 async fn submit_maturity(
@@ -870,37 +870,34 @@ pub(crate) async fn prove_recipient_transfer(block_index: u128) -> Result<(), Ap
 }
 
 #[cfg(test)]
-mod composition_gap_tests {
+mod composition_tests {
     #[test]
-    fn gap_ready_backing_stops_after_freeze_until_a_second_update() {
+    fn ready_backing_freezes_and_prepares_in_one_update() {
         let source = include_str!("rewards.rs");
         let resume = &source[source.find("pub async fn resume_backing").unwrap()
-            ..source.find("async fn freeze_batch").unwrap()];
+            ..source.find("async fn freeze_and_prepare").unwrap()];
         assert!(resume.contains("Some(batch) => submit_maturity(snapshot, batch).await"));
-        assert!(resume.contains("None => freeze_batch(snapshot, now_nanos).await"));
+        assert!(resume.contains("None => freeze_and_prepare(snapshot, now_nanos).await"));
 
-        let freeze = &source[source.find("async fn freeze_batch").unwrap()
+        let freeze = &source[source.find("async fn freeze_and_prepare").unwrap()
             ..source.find("async fn submit_maturity").unwrap()];
-        assert!(freeze.contains("RewardBackingProgress::BatchFrozen"));
-        assert!(!freeze.contains("prepare_maturity"));
-
-        let daily = io_reward_policy::DAILY_EVENT_CREDIT;
-        let frozen_policy_credit = daily.checked_mul(2).unwrap();
-        let later_live_policy_credit = daily.checked_mul(3).unwrap();
-        assert_eq!(frozen_policy_credit, daily * 2);
-        assert_eq!(later_live_policy_credit, daily * 3);
-        assert_ne!(
-            frozen_policy_credit,
-            frozen_policy_credit + later_live_policy_credit
-        );
+        assert!(freeze.contains("submit_maturity(latest, batch).await"));
+        assert!(!source[..source.find("#[cfg(test)]").unwrap()]
+            .contains("RewardBackingProgress::BatchFrozen"));
     }
 
     #[test]
-    fn gap_freeze_uses_cached_governance_freshness_without_reverification() {
+    fn every_new_freeze_reverifies_governance_around_pagination_and_reconciliation() {
         let source = include_str!("rewards.rs");
-        let freeze = &source[source.find("async fn freeze_batch").unwrap()
+        let freeze = &source[source.find("async fn freeze_and_prepare").unwrap()
             ..source.find("async fn submit_maturity").unwrap()];
         assert!(freeze.contains("governance_parameters_fresh"));
-        assert!(!freeze.contains("verify_governance"));
+        assert_eq!(
+            freeze
+                .matches("verify_governance(&snapshot).await?")
+                .count(),
+            3
+        );
+        assert!(freeze.contains("reconcile_readiness"));
     }
 }

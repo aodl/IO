@@ -215,14 +215,24 @@ async fn reconcile_two_week_target(target_e8s: u128) -> Result<TwoWeekBackingRea
         .latest_two_week_target
         .as_ref()
         .is_none_or(|target| target.target_e8s != target_e8s);
-    let generation = target_generation(snapshot.latest_target_generation, changed)?;
+    let generation = if changed {
+        snapshot
+            .latest_target_generation
+            .checked_add(1)
+            .ok_or_else(|| ApiError::Invalid("target generation overflow".into()))?
+    } else {
+        snapshot.latest_target_generation
+    };
     let mut latest = snapshot;
     latest.latest_target_generation = generation;
     latest.latest_two_week_target = Some(TwoWeekTarget {
         generation,
         target_e8s,
         active_parent_principal_e8s: observation.snapshot.cached_stake_e8s,
-        unwinding_child_principal_e8s: active_unwind_principal(&latest),
+        unwinding_child_principal_e8s: match &latest.active_operation {
+            Some(NnsOperation::Unwind(operation)) => operation.principal_e8s,
+            _ => 0,
+        },
         status: target_status,
     });
     if latest.pending_two_week_maturity.is_none() {
@@ -292,23 +302,6 @@ pub fn get_status() -> Status {
     }
 }
 
-fn active_unwind_principal(state: &crate::state::NnsStateV1) -> u128 {
-    match &state.active_operation {
-        Some(NnsOperation::Unwind(operation)) => operation.principal_e8s,
-        _ => 0,
-    }
-}
-
-fn target_generation(latest: u64, changed: bool) -> Result<u64, ApiError> {
-    if changed {
-        latest
-            .checked_add(1)
-            .ok_or_else(|| ApiError::Invalid("target generation overflow".into()))
-    } else {
-        Ok(latest)
-    }
-}
-
 fn reconcile_unwind(
     state: &mut crate::state::NnsStateV1,
     generation: u64,
@@ -362,16 +355,6 @@ async fn reconcile_latest_target() -> Result<(), ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn target_generations_are_independent_and_exact_replay_is_no_effect() {
-        assert_eq!(target_generation(7, false), Ok(7));
-        assert_eq!(target_generation(7, true), Ok(8));
-        assert!(matches!(
-            target_generation(u64::MAX, true),
-            Err(ApiError::Invalid(_))
-        ));
-    }
 
     #[test]
     fn one_unsubmitted_unwind_is_replayed_retargeted_or_cancelled() {

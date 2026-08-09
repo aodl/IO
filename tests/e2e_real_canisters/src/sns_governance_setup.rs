@@ -1523,7 +1523,6 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         .unwrap();
         assert_eq!(progress, Ok(expected));
     };
-    backing_step(RewardBackingProgress::BatchFrozen { generation: 1 });
     backing_step(RewardBackingProgress::MaturityPrepared { generation: 1 });
 
     let status: Status = decode_one(
@@ -1790,7 +1789,6 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         other => panic!("zero-share proposal event is not consumed: {other:?}"),
     }
 
-    backing_step(RewardBackingProgress::BatchFrozen { generation: 2 });
     backing_step(RewardBackingProgress::MaturityPrepared { generation: 2 });
     let zero_permit: Result<io_stream_manager::LiquidReceiptPermit, ApiError> = decode_one(
         &pic.update_call(
@@ -2160,7 +2158,6 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
 
         if day == 4 {
             let total = expected_live.values().copied().sum::<u128>();
-            backing_step(RewardBackingProgress::BatchFrozen { generation: 3 });
             backing_step(RewardBackingProgress::MaturityPrepared { generation: 3 });
             frozen_batch_total = Some(total);
             expected_live.clear();
