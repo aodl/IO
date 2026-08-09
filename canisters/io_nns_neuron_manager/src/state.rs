@@ -729,9 +729,12 @@ mod tests {
     fn reopen_always_repauses_valid_v1() {
         let (canister_self, mut state) = valid_state();
         state.lifecycle = Lifecycle::Ready;
+        state.two_week_maturity_baseline_reconciled = true;
         initialize(state, canister_self).unwrap();
         reopen(canister_self);
-        assert_eq!(read().lifecycle, Lifecycle::Paused);
+        let reopened = read();
+        assert_eq!(reopened.lifecycle, Lifecycle::Paused);
+        assert!(reopened.two_week_maturity_baseline_reconciled);
     }
 
     #[test]

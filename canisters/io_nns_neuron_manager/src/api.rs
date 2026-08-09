@@ -103,6 +103,7 @@ pub enum NnsProgress {
 pub struct Status {
     pub lifecycle: Lifecycle,
     pub active_operation: Option<String>,
+    pub two_week_maturity_baseline_reconciled: bool,
     pub latest_target_generation: u64,
     pub latest_started_two_week_generation: u64,
     pub latest_completed_two_week_generation: u64,
@@ -331,6 +332,7 @@ pub fn get_status() -> Status {
                 NnsOperation::Maturity(_) => "Maturity".into(),
                 NnsOperation::Unwind(_) => "Unwind".into(),
             }),
+        two_week_maturity_baseline_reconciled: current.two_week_maturity_baseline_reconciled,
         latest_target_generation: current.latest_target_generation,
         latest_started_two_week_generation: current.latest_started_two_week_generation,
         latest_completed_two_week_generation: current.latest_completed_two_week_generation,

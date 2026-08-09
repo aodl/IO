@@ -132,6 +132,7 @@ type NnsProgress = variant {
 type Status = record {
   lifecycle : Lifecycle;
   active_operation : opt text;
+  two_week_maturity_baseline_reconciled : bool;
   latest_target_generation : nat64;
   latest_started_two_week_generation : nat64;
   latest_completed_two_week_generation : nat64;
