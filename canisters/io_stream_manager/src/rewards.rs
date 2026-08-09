@@ -339,6 +339,13 @@ async fn submit_maturity(
     snapshot: crate::state::StreamStateV1,
     batch: PendingEntitlementBatch,
 ) -> Result<RewardBackingProgress, ApiError> {
+    if let io_receipt_types::TwoWeekBackingReadiness::NotReady(reason) =
+        reward_nns::reconcile_readiness(snapshot.config.nns_manager, batch.target_icp_e8s)
+            .await
+            .map_err(nns_call_error)?
+    {
+        return Ok(RewardBackingProgress::Pending { reason });
+    }
     reward_nns::prepare_maturity(
         snapshot.config.nns_manager,
         batch.generation,
@@ -902,11 +909,15 @@ mod composition_tests {
     }
 
     #[test]
-    fn baseline_pending_batch_retry_prepares_without_reconciliation() {
+    fn pending_batch_retry_reconciles_its_frozen_target_before_preparation() {
         let source = include_str!("rewards.rs");
         let submit = &source[source.find("async fn submit_maturity").unwrap()
             ..source.find("fn nns_call_error").unwrap()];
         assert!(submit.contains("prepare_maturity"));
-        assert!(!submit.contains("reconcile_readiness"));
+        assert!(submit.contains("reconcile_readiness"));
+        assert!(
+            submit.find("reconcile_readiness").unwrap() < submit.find("prepare_maturity").unwrap()
+        );
+        assert!(submit.contains("batch.target_icp_e8s"));
     }
 }

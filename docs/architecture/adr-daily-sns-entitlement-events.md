@@ -87,13 +87,14 @@ checkpoint survives pause/unpause and same-Wasm upgrade and is never reseeded.
 
 Before freezing, the stream manager revalidates reviewed SNS Governance and
 authentically reconciles the current NNS target. The exact target value is
-idempotent authority; only entitlement batches have generations. `UnderTarget`, `OverTarget`,
-`BelowThreshold`, `Busy`, `Paused`, or an unreconciled baseline leaves every
-live credit in place. OverTarget starts at most one direct unwind, while
-UnderTarget requires separately authorized principal growth. A ready result
-permits one exact compare-and-swap freeze and immediate maturity preparation in
-the same update; later observations accumulate in the fresh live accumulator
-while that single batch is pending.
+idempotent authority; only entitlement batches have generations. `UnderTarget`,
+`OverTarget`, `BelowThreshold`, `Busy`, `Paused`, or an unreconciled baseline
+leaves every live credit in place. OverTarget starts at most one direct unwind,
+while UnderTarget requires separately authorized principal growth. A ready
+result permits one exact compare-and-swap freeze and immediate maturity
+preparation in the same update. Every pending replay first reconciles the
+batch's immutable stored target and preserves that batch in every waiting
+state; later observations accumulate only in the fresh live accumulator.
 
 Governance readiness and every daily boundary require
 `max_number_of_neurons <= 1,000`. This is a bound on the complete SNS Governance

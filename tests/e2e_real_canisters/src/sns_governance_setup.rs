@@ -1509,6 +1509,16 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         .unwrap(),
     )
     .unwrap();
+    pic.update_call(
+        nns_manager,
+        controller,
+        "debug_set_backing_readiness_after_next_reconcile",
+        encode_one(io_receipt_types::TwoWeekBackingReadiness::NotReady(
+            io_receipt_types::BackingNotReadyReason::OverTarget,
+        ))
+        .unwrap(),
+    )
+    .unwrap();
 
     let backing_step = |expected: RewardBackingProgress| {
         let progress: Result<RewardBackingProgress, ApiError> = decode_one(
@@ -1523,6 +1533,50 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         .unwrap();
         assert_eq!(progress, Ok(expected));
     };
+    backing_step(RewardBackingProgress::Pending {
+        reason: io_receipt_types::BackingNotReadyReason::OverTarget,
+    });
+    let frozen: Status = decode_one(
+        &pic.query_call(stream, controller, "get_status", encode_one(()).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(frozen.latest_entitlement_batch_generation, 1);
+    assert_eq!(
+        frozen.pending_entitlement_batch_eligible_credit,
+        Some(observed_weights.values().copied().sum::<u128>() * 2)
+    );
+    assert_eq!(frozen.accumulated_policy_credit, 0);
+    for reason in [
+        io_receipt_types::BackingNotReadyReason::UnderTarget,
+        io_receipt_types::BackingNotReadyReason::Busy,
+    ] {
+        pic.update_call(
+            nns_manager,
+            controller,
+            "debug_set_backing_readiness",
+            encode_one(io_receipt_types::TwoWeekBackingReadiness::NotReady(
+                reason.clone(),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        backing_step(RewardBackingProgress::Pending { reason });
+    }
+    pic.update_call(
+        nns_manager,
+        controller,
+        "debug_set_backing_readiness",
+        encode_one(io_receipt_types::TwoWeekBackingReadiness::Ready {
+            target_status: io_receipt_types::BackingTargetStatus::AtTarget,
+            ordinary_maturity_e8s: 200_000_000,
+            retained_maturity_e8s: 80_000_000,
+            liquid_maturity_e8s: 120_000_000,
+            minimum_disbursement_e8s: 100_000_000,
+        })
+        .unwrap(),
+    )
+    .unwrap();
     backing_step(RewardBackingProgress::MaturityPrepared { generation: 1 });
 
     let status: Status = decode_one(

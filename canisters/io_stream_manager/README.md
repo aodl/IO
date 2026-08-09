@@ -64,7 +64,9 @@ events continue accumulating live.
 Before a freeze, the stream revalidates reviewed SNS Governance and calls the
 authenticated target-reconciliation boundary. UnderTarget and every unwind
 leave all credits live. Ready binds the exact freeze CAS to immediate maturity
-preparation; transport ambiguity retains that one immutable batch for replay.
+preparation. Every pending replay first reconciles the batch's stored target;
+target drift or transport ambiguity retains that one immutable batch while
+new daily credit remains live.
 
 Observation and NNS backing waits do not occupy the monetary slot, so they do
 not block redemption. Actual reserve-to-recipient transfers share that slot

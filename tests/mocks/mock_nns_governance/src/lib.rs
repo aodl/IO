@@ -38,10 +38,11 @@ struct GovernanceState {
     two_week_target: Option<SetTargetArgs>,
     maturity_preparation: Option<PrepareTwoWeekMaturityArgs>,
     backing_readiness: Option<io_receipt_types::TwoWeekBackingReadiness>,
+    backing_readiness_after_next_reconcile: Option<io_receipt_types::TwoWeekBackingReadiness>,
 }
 
 thread_local! {
-    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new(), two_week_target: None, maturity_preparation: None, backing_readiness: None }) };
+    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new(), two_week_target: None, maturity_preparation: None, backing_readiness: None, backing_readiness_after_next_reconcile: None }) };
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -125,7 +126,7 @@ pub fn reconcile_two_week_backing_readiness(
             target_e8s: args.target_e8s,
             generation,
         });
-        state.backing_readiness.clone().unwrap_or(
+        let readiness = state.backing_readiness.clone().unwrap_or(
             io_receipt_types::TwoWeekBackingReadiness::Ready {
                 target_status: io_receipt_types::BackingTargetStatus::AtTarget,
                 ordinary_maturity_e8s: 200_000_000,
@@ -133,13 +134,24 @@ pub fn reconcile_two_week_backing_readiness(
                 liquid_maturity_e8s: 120_000_000,
                 minimum_disbursement_e8s: 100_000_000,
             },
-        )
+        );
+        if let Some(next) = state.backing_readiness_after_next_reconcile.take() {
+            state.backing_readiness = Some(next);
+        }
+        readiness
     }))
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn debug_set_backing_readiness(readiness: io_receipt_types::TwoWeekBackingReadiness) {
     STATE.with(|cell| cell.borrow_mut().backing_readiness = Some(readiness));
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_backing_readiness_after_next_reconcile(
+    readiness: io_receipt_types::TwoWeekBackingReadiness,
+) {
+    STATE.with(|cell| cell.borrow_mut().backing_readiness_after_next_reconcile = Some(readiness));
 }
 
 fn neuron_mut(state: &mut GovernanceState, id: u64) -> Result<&mut MockNeuron, String> {
