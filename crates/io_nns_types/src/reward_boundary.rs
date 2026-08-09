@@ -18,7 +18,7 @@ struct PrepareMaturityArgs {
 }
 
 #[derive(CandidType)]
-struct ObserveReadinessArgs {
+struct ReconcileReadinessArgs {
     target_e8s: u128,
 }
 
@@ -42,14 +42,14 @@ enum NnsError {
     ImplementationIncomplete(String),
 }
 
-pub async fn observe_readiness(
+pub async fn reconcile_readiness(
     manager: Principal,
     target_e8s: u128,
 ) -> Result<BackingReadiness, CallError> {
     nns_call(
         manager,
-        "observe_two_week_backing_readiness",
-        ObserveReadinessArgs { target_e8s },
+        "reconcile_two_week_backing_readiness",
+        ReconcileReadinessArgs { target_e8s },
     )
     .await
 }

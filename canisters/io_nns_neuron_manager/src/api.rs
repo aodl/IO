@@ -31,19 +31,13 @@ pub struct NotifyJupiterDepositArgs {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct SetTwoWeekTargetArgs {
-    pub target_e8s: u128,
-    pub generation: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct PrepareTwoWeekMaturityArgs {
     pub entitlement_batch_generation: u64,
     pub target_e8s: u128,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct ObserveTwoWeekBackingReadinessArgs {
+pub struct ReconcileTwoWeekBackingReadinessArgs {
     pub target_e8s: u128,
 }
 
@@ -129,81 +123,6 @@ pub async fn notify_jupiter_deposit(
     crate::jupiter_flow::notify_jupiter_deposit(caller, args).await
 }
 
-pub(crate) async fn accept_two_week_target(
-    args: SetTwoWeekTargetArgs,
-) -> Result<TwoWeekTargetStatus, ApiError> {
-    let mut current = ready()?;
-    let expected = current
-        .latest_target_generation
-        .checked_add(1)
-        .ok_or_else(|| ApiError::Invalid("target generation overflow".into()))?;
-    if args.generation == current.latest_target_generation {
-        return match &current.latest_two_week_target {
-            Some(target) if target.target_e8s == args.target_e8s => Ok(target.status),
-            _ => Err(ApiError::Invalid(
-                "target generation conflicts with existing intent".into(),
-            )),
-        };
-    }
-    if args.generation != expected {
-        return Err(ApiError::Invalid(format!(
-            "expected target generation {expected}"
-        )));
-    }
-    let observation =
-        execution::query_neuron_observation(&current.config, current.config.two_week_neuron_id)
-            .await?;
-    if state::read() != current {
-        return Err(ApiError::Busy);
-    }
-    if args.generation == 1
-        && !current.two_week_maturity_baseline_reconciled
-        && observation.maturity_e8s != 0
-    {
-        return Err(ApiError::Pending(
-            "first cohort requires governance-reviewed reconciliation of pre-cohort maturity"
-                .into(),
-        ));
-    }
-    let actual = observation.snapshot.cached_stake_e8s;
-    let tolerance = current
-        .config
-        .expected_icp_fee_e8s
-        .checked_mul(2)
-        .ok_or_else(|| ApiError::Invalid("unwind tolerance overflow".into()))?;
-    let status = state::target_status(actual, args.target_e8s, tolerance);
-    if status == TwoWeekTargetStatus::UnderTarget {
-        return Ok(status);
-    }
-    current.two_week_maturity_baseline_reconciled |= args.generation == 1;
-    current.latest_two_week_target = Some(TwoWeekTarget {
-        generation: args.generation,
-        target_e8s: args.target_e8s,
-        active_parent_principal_e8s: actual,
-        unwinding_child_principal_e8s: active_unwind_principal(&current),
-        status,
-    });
-    current.latest_target_generation = args.generation;
-    if status == TwoWeekTargetStatus::OverTarget && current.active_operation.is_none() {
-        let operation_sequence = current.next_operation_sequence;
-        current.next_operation_sequence = operation_sequence
-            .checked_add(1)
-            .ok_or_else(|| ApiError::Invalid("operation sequence exhausted".into()))?;
-        current.active_operation = Some(NnsOperation::Unwind(UnwindOperation {
-            operation_sequence,
-            generation: args.generation,
-            target_e8s: args.target_e8s,
-            excess_e8s: actual - args.target_e8s,
-            child_neuron_id: 0,
-            principal_e8s: 0,
-            child_staking_subaccount: Vec::new(),
-            phase: UnwindPhase::SplitPrepared,
-        }));
-    }
-    state::write(current);
-    Ok(status)
-}
-
 pub async fn resume() -> Result<NnsProgress, ApiError> {
     match state::read().active_operation {
         None => {
@@ -253,14 +172,29 @@ pub async fn prepare_two_week_maturity(
     crate::two_week_binding::prepare(caller, args).await
 }
 
-pub async fn observe_two_week_backing_readiness(
+pub async fn reconcile_two_week_backing_readiness(
     caller: Principal,
-    args: ObserveTwoWeekBackingReadinessArgs,
+    args: ReconcileTwoWeekBackingReadinessArgs,
 ) -> Result<TwoWeekBackingReadiness, ApiError> {
     let snapshot = state::read();
     if caller != snapshot.config.stream_manager {
         return Err(ApiError::Unauthorized);
     }
+    if snapshot.lifecycle != Lifecycle::Ready {
+        return Ok(TwoWeekBackingReadiness::NotReady(
+            BackingNotReadyReason::Paused,
+        ));
+    }
+    if !snapshot.two_week_maturity_baseline_reconciled {
+        return Ok(TwoWeekBackingReadiness::NotReady(
+            BackingNotReadyReason::BaselineUnreconciled,
+        ));
+    }
+    reconcile_two_week_target(args.target_e8s).await
+}
+
+async fn reconcile_two_week_target(target_e8s: u128) -> Result<TwoWeekBackingReadiness, ApiError> {
+    let snapshot = ready()?;
     let observation =
         execution::query_neuron_observation(&snapshot.config, snapshot.config.two_week_neuron_id)
             .await?;
@@ -272,30 +206,38 @@ pub async fn observe_two_week_backing_readiness(
         .expected_icp_fee_e8s
         .checked_mul(2)
         .ok_or_else(|| ApiError::Invalid("unwind tolerance overflow".into()))?;
-    let target_status = state::target_status(
-        observation.snapshot.cached_stake_e8s,
-        args.target_e8s,
-        tolerance,
-    );
-    let baseline_reconciled = snapshot.two_week_maturity_baseline_reconciled
-        || (snapshot.latest_target_generation == 0 && maturity == 0);
-    let reason = if snapshot.lifecycle != Lifecycle::Ready {
-        Some(BackingNotReadyReason::Paused)
-    } else if state::read() != snapshot
-        || snapshot.active_operation.is_some()
-        || snapshot.pending_two_week_maturity.is_some()
-    {
-        Some(BackingNotReadyReason::Busy)
-    } else if !baseline_reconciled {
-        Some(BackingNotReadyReason::BaselineUnreconciled)
-    } else if target_status == TwoWeekTargetStatus::UnderTarget {
-        Some(BackingNotReadyReason::UnderTarget)
-    } else if target_status == TwoWeekTargetStatus::OverTarget {
-        Some(BackingNotReadyReason::OverTarget)
-    } else if liquid < crate::maturity::MINIMUM_DISBURSEMENT_E8S {
-        Some(BackingNotReadyReason::BelowThreshold)
-    } else {
-        None
+    let target_status =
+        state::target_status(observation.snapshot.cached_stake_e8s, target_e8s, tolerance);
+    if state::read() != snapshot {
+        return Err(ApiError::Busy);
+    }
+    let changed = snapshot
+        .latest_two_week_target
+        .as_ref()
+        .is_none_or(|target| target.target_e8s != target_e8s);
+    let generation = target_generation(snapshot.latest_target_generation, changed)?;
+    let mut latest = snapshot;
+    latest.latest_target_generation = generation;
+    latest.latest_two_week_target = Some(TwoWeekTarget {
+        generation,
+        target_e8s,
+        active_parent_principal_e8s: observation.snapshot.cached_stake_e8s,
+        unwinding_child_principal_e8s: active_unwind_principal(&latest),
+        status: target_status,
+    });
+    if latest.pending_two_week_maturity.is_none() {
+        reconcile_unwind(&mut latest, generation, target_e8s, target_status)?;
+    }
+    let busy = latest.active_operation.is_some() || latest.pending_two_week_maturity.is_some();
+    state::write(latest);
+    let reason = match target_status {
+        TwoWeekTargetStatus::UnderTarget => Some(BackingNotReadyReason::UnderTarget),
+        TwoWeekTargetStatus::OverTarget => Some(BackingNotReadyReason::OverTarget),
+        _ if busy => Some(BackingNotReadyReason::Busy),
+        _ if liquid < crate::maturity::MINIMUM_DISBURSEMENT_E8S => {
+            Some(BackingNotReadyReason::BelowThreshold)
+        }
+        _ => None,
     };
     if let Some(reason) = reason {
         return Ok(TwoWeekBackingReadiness::NotReady(reason));
@@ -357,47 +299,105 @@ fn active_unwind_principal(state: &crate::state::NnsStateV1) -> u128 {
     }
 }
 
+fn target_generation(latest: u64, changed: bool) -> Result<u64, ApiError> {
+    if changed {
+        latest
+            .checked_add(1)
+            .ok_or_else(|| ApiError::Invalid("target generation overflow".into()))
+    } else {
+        Ok(latest)
+    }
+}
+
+fn reconcile_unwind(
+    state: &mut crate::state::NnsStateV1,
+    generation: u64,
+    target_e8s: u128,
+    target_status: TwoWeekTargetStatus,
+) -> Result<(), ApiError> {
+    let actual = state
+        .latest_two_week_target
+        .as_ref()
+        .map_or(0, |target| target.active_parent_principal_e8s);
+    if let Some(NnsOperation::Unwind(operation)) = state.active_operation.as_mut() {
+        if operation.phase == UnwindPhase::SplitPrepared {
+            if target_status == TwoWeekTargetStatus::OverTarget {
+                operation.generation = generation;
+                operation.target_e8s = target_e8s;
+                operation.excess_e8s = actual - target_e8s;
+            } else {
+                state.active_operation = None;
+            }
+        }
+        return Ok(());
+    }
+    if target_status != TwoWeekTargetStatus::OverTarget || state.active_operation.is_some() {
+        return Ok(());
+    }
+    let operation_sequence = state.next_operation_sequence;
+    state.next_operation_sequence = operation_sequence
+        .checked_add(1)
+        .ok_or_else(|| ApiError::Invalid("operation sequence exhausted".into()))?;
+    state.active_operation = Some(NnsOperation::Unwind(UnwindOperation {
+        operation_sequence,
+        generation,
+        target_e8s,
+        excess_e8s: actual - target_e8s,
+        child_neuron_id: 0,
+        principal_e8s: 0,
+        child_staking_subaccount: Vec::new(),
+        phase: UnwindPhase::SplitPrepared,
+    }));
+    Ok(())
+}
+
 async fn reconcile_latest_target() -> Result<(), ApiError> {
-    let snapshot = ready()?;
-    let Some(target) = snapshot.latest_two_week_target.clone() else {
+    let Some(target) = ready()?.latest_two_week_target else {
         return Ok(());
     };
-    let observation =
-        execution::query_neuron_observation(&snapshot.config, snapshot.config.two_week_neuron_id)
-            .await?;
-    if state::read() != snapshot {
-        return Err(ApiError::Busy);
-    }
-    let mut latest = snapshot;
-    let actual = observation.snapshot.cached_stake_e8s;
-    let tolerance = latest
-        .config
-        .expected_icp_fee_e8s
-        .checked_mul(2)
-        .ok_or_else(|| ApiError::Invalid("unwind tolerance overflow".into()))?;
-    let status = state::target_status(actual, target.target_e8s, tolerance);
-    latest.latest_two_week_target = Some(TwoWeekTarget {
-        active_parent_principal_e8s: actual,
-        unwinding_child_principal_e8s: 0,
-        status,
-        ..target.clone()
-    });
-    if status == TwoWeekTargetStatus::OverTarget {
-        let sequence = latest.next_operation_sequence;
-        latest.next_operation_sequence = sequence
-            .checked_add(1)
-            .ok_or_else(|| ApiError::Invalid("operation sequence exhausted".into()))?;
-        latest.active_operation = Some(NnsOperation::Unwind(UnwindOperation {
-            operation_sequence: sequence,
-            generation: target.generation,
-            target_e8s: target.target_e8s,
-            excess_e8s: actual - target.target_e8s,
-            child_neuron_id: 0,
-            principal_e8s: 0,
-            child_staking_subaccount: Vec::new(),
-            phase: UnwindPhase::SplitPrepared,
-        }));
-    }
-    state::write(latest);
+    let _ = reconcile_two_week_target(target.target_e8s).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_generations_are_independent_and_exact_replay_is_no_effect() {
+        assert_eq!(target_generation(7, false), Ok(7));
+        assert_eq!(target_generation(7, true), Ok(8));
+        assert!(matches!(
+            target_generation(u64::MAX, true),
+            Err(ApiError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn one_unsubmitted_unwind_is_replayed_retargeted_or_cancelled() {
+        let mut state = crate::state::NnsStateV1::test_placeholder();
+        state.latest_two_week_target = Some(TwoWeekTarget {
+            generation: 1,
+            target_e8s: 900_000,
+            active_parent_principal_e8s: 1_000_000,
+            unwinding_child_principal_e8s: 0,
+            status: TwoWeekTargetStatus::OverTarget,
+        });
+        reconcile_unwind(&mut state, 1, 900_000, TwoWeekTargetStatus::OverTarget).unwrap();
+        let first = state.active_operation.clone();
+        reconcile_unwind(&mut state, 1, 900_000, TwoWeekTargetStatus::OverTarget).unwrap();
+        assert_eq!(state.active_operation, first);
+        assert_eq!(state.next_operation_sequence, 2);
+
+        reconcile_unwind(&mut state, 2, 800_000, TwoWeekTargetStatus::OverTarget).unwrap();
+        let Some(NnsOperation::Unwind(operation)) = &state.active_operation else {
+            panic!("one unwind must remain")
+        };
+        assert_eq!(operation.operation_sequence, 1);
+        assert_eq!(operation.generation, 2);
+        assert_eq!(operation.excess_e8s, 200_000);
+
+        reconcile_unwind(&mut state, 3, 1_000_000, TwoWeekTargetStatus::AtTarget).unwrap();
+        assert!(state.active_operation.is_none());
+    }
 }

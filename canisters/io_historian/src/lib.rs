@@ -3210,7 +3210,7 @@ mod tests {
         assert!(stream.contains(" redeem :"));
         assert!(stream.contains(" prepare_liquid_receipt :"));
         assert!(nns.contains(" notify_jupiter_deposit :"));
-        assert!(nns.contains(" observe_two_week_backing_readiness :"));
+        assert!(nns.contains(" reconcile_two_week_backing_readiness :"));
     }
 
     #[test]

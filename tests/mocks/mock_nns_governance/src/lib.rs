@@ -80,31 +80,14 @@ pub fn prepare_two_week_maturity(
 ) -> Result<PreparedMaturityProgress, NnsError> {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        let target = SetTargetArgs {
-            generation: args.entitlement_batch_generation,
-            target_e8s: args.target_e8s,
-        };
-        if let Some(existing) = &state.two_week_target {
-            if existing.generation == target.generation && existing != &target {
-                return Err(NnsError::Invalid("generation conflicts with target".into()));
-            }
-            if existing.generation != target.generation
-                && existing.generation.checked_add(1) != Some(target.generation)
-            {
-                return Err(NnsError::Invalid(
-                    "target generation is not sequential".into(),
-                ));
-            }
-        }
-        state.two_week_target = Some(target);
         if state
             .two_week_target
             .as_ref()
-            .map(|target| target.generation)
-            != Some(args.entitlement_batch_generation)
+            .map(|target| target.target_e8s)
+            != Some(args.target_e8s)
         {
             return Err(NnsError::Invalid(
-                "maturity preparation lacks the matching target generation".into(),
+                "maturity preparation lacks the matching reconciled target".into(),
             ));
         }
         if let Some(existing) = &state.maturity_preparation {
@@ -125,17 +108,24 @@ pub fn prepare_two_week_maturity(
 }
 
 #[derive(CandidType, Deserialize)]
-pub struct ObserveReadinessArgs {
+pub struct ReconcileReadinessArgs {
     target_e8s: u128,
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn observe_two_week_backing_readiness(
-    args: ObserveReadinessArgs,
+pub fn reconcile_two_week_backing_readiness(
+    args: ReconcileReadinessArgs,
 ) -> Result<io_receipt_types::TwoWeekBackingReadiness, NnsError> {
-    let _ = args.target_e8s;
     Ok(STATE.with(|cell| {
-        cell.borrow().backing_readiness.clone().unwrap_or(
+        let mut state = cell.borrow_mut();
+        let generation = state.two_week_target.as_ref().map_or(1, |target| {
+            target.generation + u64::from(target.target_e8s != args.target_e8s)
+        });
+        state.two_week_target = Some(SetTargetArgs {
+            target_e8s: args.target_e8s,
+            generation,
+        });
+        state.backing_readiness.clone().unwrap_or(
             io_receipt_types::TwoWeekBackingReadiness::Ready {
                 target_status: io_receipt_types::BackingTargetStatus::AtTarget,
                 ordinary_maturity_e8s: 200_000_000,

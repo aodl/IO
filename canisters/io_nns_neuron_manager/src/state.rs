@@ -207,6 +207,11 @@ impl NnsStateV1 {
             control_epoch: 0,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_placeholder() -> Self {
+        Self::decode_placeholder()
+    }
 }
 
 impl NnsStateV1 {
@@ -236,9 +241,10 @@ impl NnsStateV1 {
             return Err("target generation exists without a target".into());
         }
         if self.latest_completed_two_week_generation > self.latest_started_two_week_generation
-            || self.latest_started_two_week_generation > self.latest_target_generation
             || (self.latest_started_two_week_generation > 0
                 && !self.two_week_maturity_baseline_reconciled)
+            || (self.latest_started_two_week_generation > 0
+                && self.latest_two_week_target.is_none())
             || (self.latest_completed_two_week_generation > 0
                 && self.last_two_week_maturity.is_none())
         {
@@ -650,69 +656,6 @@ mod tests {
         let (canister_self, mut state) = valid_state();
         state.latest_target_generation = 1;
         assert!(state.validate(canister_self).is_err());
-    }
-
-    #[test]
-    fn under_target_is_no_effect_until_the_same_generation_is_accepted() {
-        let (_, state) = valid_state();
-        let original = state.clone();
-        assert_eq!(
-            target_status(100, 101, state.config.expected_icp_fee_e8s * 2),
-            TwoWeekTargetStatus::UnderTarget
-        );
-        assert_eq!(state, original);
-        assert_eq!(
-            target_status(101, 101, state.config.expected_icp_fee_e8s * 2),
-            TwoWeekTargetStatus::AtTarget
-        );
-    }
-
-    #[test]
-    fn gap_first_batch_zero_maturity_baseline_is_transient_only() {
-        let (_, state) = valid_state();
-        let zero_maturity_readiness_exception = state.two_week_maturity_baseline_reconciled
-            || (state.latest_target_generation == 0 && 0 == 0);
-        assert!(zero_maturity_readiness_exception);
-        assert!(!state.two_week_maturity_baseline_reconciled);
-
-        let later_maturity_e8s = crate::maturity::MINIMUM_DISBURSEMENT_E8S * 2;
-        let later_baseline = state.two_week_maturity_baseline_reconciled
-            || (state.latest_target_generation == 0 && later_maturity_e8s == 0);
-        assert!(!later_baseline);
-        assert_eq!(state.latest_started_two_week_generation, 0);
-        assert!(state.pending_two_week_maturity.is_none());
-        assert!(state.active_operation.is_none());
-    }
-
-    #[test]
-    fn gap_read_only_over_target_classification_cannot_retarget_or_start_unwind() {
-        let (_, mut state) = valid_state();
-        state.lifecycle = Lifecycle::Ready;
-        state.two_week_maturity_baseline_reconciled = true;
-        state.latest_target_generation = 1;
-        state.latest_two_week_target = Some(TwoWeekTarget {
-            generation: 1,
-            target_e8s: 1_000_000,
-            active_parent_principal_e8s: 1_000_000,
-            unwinding_child_principal_e8s: 0,
-            status: TwoWeekTargetStatus::AtTarget,
-        });
-        let before = state.clone();
-        let lower_target = 900_000;
-        assert_eq!(
-            target_status(
-                1_000_000,
-                lower_target,
-                state.config.expected_icp_fee_e8s * 2,
-            ),
-            TwoWeekTargetStatus::OverTarget
-        );
-        assert_eq!(state, before);
-        assert_eq!(
-            state.latest_two_week_target.as_ref().unwrap().target_e8s,
-            1_000_000
-        );
-        assert!(state.active_operation.is_none());
     }
 
     #[test]

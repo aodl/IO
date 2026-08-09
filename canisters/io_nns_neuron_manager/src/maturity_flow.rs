@@ -42,6 +42,26 @@ pub(crate) async fn start_observed(
     }
     let (neuron_id, destination) = identity(&snapshot.config, kind);
     let observation = execution::query_neuron_observation(&snapshot.config, neuron_id).await?;
+    if let Some(batch) = &entitlement_batch {
+        let tolerance = snapshot
+            .config
+            .expected_icp_fee_e8s
+            .checked_mul(2)
+            .ok_or_else(|| ApiError::Invalid("unwind tolerance overflow".into()))?;
+        if !matches!(
+            state::target_status(
+                observation.snapshot.cached_stake_e8s,
+                batch.target_e8s,
+                tolerance,
+            ),
+            state::TwoWeekTargetStatus::AtTarget
+                | state::TwoWeekTargetStatus::AtTargetWithinUnwindTolerance
+        ) {
+            return Err(ApiError::Pending(
+                "protected two-week principal moved away from the reconciled target".into(),
+            ));
+        }
+    }
     let (stake_maturity_e8s, remaining_maturity_e8s) =
         crate::maturity::split_maturity(observation.maturity_e8s)
             .ok_or_else(|| ApiError::Invalid("maturity split overflow".into()))?;

@@ -68,27 +68,19 @@ pub async fn prepare(
     if initial.lifecycle != Lifecycle::Ready {
         return Err(ApiError::Paused);
     }
-    let target_status = crate::api::accept_two_week_target(crate::api::SetTwoWeekTargetArgs {
-        generation: args.entitlement_batch_generation,
-        target_e8s: args.target_e8s,
-    })
-    .await?;
-    if !matches!(
-        target_status,
-        crate::state::TwoWeekTargetStatus::AtTarget
-            | crate::state::TwoWeekTargetStatus::AtTargetWithinUnwindTolerance
-    ) {
-        return Err(ApiError::Pending(format!(
-            "two-week target is {target_status:?}"
-        )));
-    }
     let snapshot = state::read();
     if args.entitlement_batch_generation == 0
-        || args.entitlement_batch_generation != snapshot.latest_target_generation
         || snapshot
             .latest_two_week_target
             .as_ref()
-            .is_none_or(|target| target.generation != args.entitlement_batch_generation)
+            .is_none_or(|target| {
+                target.target_e8s != args.target_e8s
+                    || !matches!(
+                        target.status,
+                        crate::state::TwoWeekTargetStatus::AtTarget
+                            | crate::state::TwoWeekTargetStatus::AtTargetWithinUnwindTolerance
+                    )
+            })
         || !snapshot.two_week_maturity_baseline_reconciled
     {
         return Err(ApiError::Invalid(

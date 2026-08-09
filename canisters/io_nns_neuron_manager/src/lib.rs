@@ -13,7 +13,7 @@ use serde::Deserialize;
 
 pub use api::{
     ApiError, BackingNotReadyReason, JupiterProgress, MaturityProgress, NnsProgress,
-    NotifyJupiterDepositArgs, ObserveTwoWeekBackingReadinessArgs, PrepareTwoWeekMaturityArgs,
+    NotifyJupiterDepositArgs, PrepareTwoWeekMaturityArgs, ReconcileTwoWeekBackingReadinessArgs,
     Status, TwoWeekBackingReadiness,
 };
 pub use maturity::MaturityKind;
@@ -83,10 +83,10 @@ pub async fn prepare_two_week_maturity(
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn observe_two_week_backing_readiness(
-    args: ObserveTwoWeekBackingReadinessArgs,
+pub async fn reconcile_two_week_backing_readiness(
+    args: ReconcileTwoWeekBackingReadinessArgs,
 ) -> Result<TwoWeekBackingReadiness, ApiError> {
-    api::observe_two_week_backing_readiness(ic_cdk::api::msg_caller(), args).await
+    api::reconcile_two_week_backing_readiness(ic_cdk::api::msg_caller(), args).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
