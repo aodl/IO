@@ -63,7 +63,7 @@ dapp_canisters:
   frontend: "TODO_FINAL_FRONTEND_CANISTER_PLACEHOLDER"
 
 io_constructor_arg_mapping:
-  note: "Derived from current IO constructor-only value-moving DIDs; final principals remain placeholders."
+  note: "Derived from the current reviewed IO production DIDs; final principals remain placeholders."
   io_stream_manager:
     icp_ledger_principal_text: "TODO_FINAL_ICP_LEDGER_PLACEHOLDER"
     icp_index_principal_text: "TODO_FINAL_ICP_INDEX_PLACEHOLDER"

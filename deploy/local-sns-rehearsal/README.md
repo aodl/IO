@@ -51,7 +51,7 @@ They reject mainnet-like arguments, protected IO asset IDs, and `--network ic`/`
 
 Follow the current official ICP/DFINITY SNS testing documentation as the source of truth for local NNS plus SNS-W setup. The historical standalone `dfinity/sns-testing` repository is deprecated; if the official docs reference successor tooling or a new repository/location, use that current official location.
 
-The package provides a renderable local `sns_init` candidate, local evidence capture helpers, no-network validators, and an operator runbook. Phases 12–17 are explicit placeholders, not implemented automation. It does not itself prove IO against a real SNS ledger until an operator completes the local rehearsal, records the complete evidence package, and validates that evidence.
+The package provides a renderable local `sns_init` candidate, local evidence capture helpers, no-network validators, and an operator runbook. The maintained source flow has proved local SNS-W deployment, swap finalization, reserve funding, ledger/index behavior and controller handoff. Phases 12–17 remain explicit guarded placeholders because the approved candidate Governance is not wire-compatible with the official-base Root for dapp upgrades, and the maintained local chunk-store path lacks application-subnet authorization. A completed package must not be emitted until those blockers are resolved and all canonical evidence exists.
 
 Manual sequence:
 
@@ -95,7 +95,7 @@ cargo run -p xtask -- validate_local_sns_scripts
 
 Both package forms reject unexpected or uncovered files, duplicate checksum entries, path traversal, symlinks, non-regular files, secret/private-key markers, and mainnet endpoint or network arguments.
 
-Until `canister-ids.local.toml` is produced from a completed local rehearsal, no local SNS canister IDs are recorded and no real SNS ledger/index/governance/root behavior has been observed.
+Until `canister-ids.local.toml` is produced from a completed local rehearsal, no sanitized committed canister IDs are authoritative evidence. Restart-safe external logs contain partial local observations, but they do not satisfy the committed-evidence contract.
 
 ## Issuance Model Under Test
 

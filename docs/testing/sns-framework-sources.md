@@ -142,6 +142,12 @@ skipped events.
 - `upgrade` runs the exact official-to-candidate Governance upgrade test.
 - `lifecycle` always returns `ProfileNotImplemented` in this tranche.
 
+The official local rehearsal is not folded into `lifecycle`: it uses the
+maintained source bootstrap and SNS-W launch driver, and duplicating that
+machinery inside the variant runner would create a second lifecycle harness.
+Delete `ProfileNotImplemented` only when the completed rehearsal driver can be
+invoked as a thin provenance-preserving adapter.
+
 Test enumeration is the only captured child output. Actual `--nocapture` test
 output is inherited and streamed. Each profile run creates one
 `IO_POCKETIC_RUN_ID`; cleanup targets only descendant processes carrying that

@@ -49,7 +49,7 @@ dapp_canisters:
   frontend: "TODO_TESTFLIGHT_FRONTEND_CANISTER_PLACEHOLDER"
 
 io_constructor_arg_mapping:
-  note: "Derived from current IO constructor-only value-moving DIDs; final production/testflight principals remain placeholders."
+  note: "Derived from the current reviewed IO production DIDs; final production/testflight principals remain placeholders."
   io_stream_manager:
     icp_ledger_principal_text: "TODO_TESTFLIGHT_ICP_LEDGER_PLACEHOLDER"
     icp_index_principal_text: "TODO_TESTFLIGHT_ICP_INDEX_PLACEHOLDER"

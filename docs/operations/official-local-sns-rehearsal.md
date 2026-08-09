@@ -36,12 +36,14 @@ published GitHub release artifact `bazelisk-linux-amd64`. Its published and
 observed SHA-256 is
 `5a408715e932c0250d28bd84555f12edbf70117de42f9181691c736eacc4a992`.
 It is installed as `/home/codexdev/.local/bin/bazelisk` with a local `bazel`
-symlink. No system package or elevated privilege is used. The official source
-bootstrap remains incomplete until an isolated clean `dfinity/ic` checkout at
-`2d7f90fb23672cc3b81c216a33d04c75672dd308` is supplied through
-`IO_LOCAL_SNS_IC_CHECKOUT`.
+symlink. No system package or elevated privilege is used. The maintained source
+flow was reproduced from the clean sibling checkout at
+`4320fdf2e613844eabae1927b1a23b98da3a7bc6`: NNS bootstrap, SNS-W candidate
+publication, CreateServiceNervousSystem, swap participation/finalization,
+canister discovery, Governance treasury funding, ledger/index evidence and
+controller handoff all succeeded locally.
 
-The committed package includes a renderable local `sns_init` candidate, a local variables template, evidence capture helpers, no-network validators, and this manual runbook. Runbook phases 12–17 are guarded placeholders, not implemented deployment or evidence automation. It does not prove IO against a real SNS ledger until an operator completes the local rehearsal, records the complete evidence package, and validates that evidence.
+The committed package includes a renderable local `sns_init` candidate, a local variables template, evidence capture helpers, no-network validators, and this manual runbook. Runbook phases 12–17 remain guarded rather than claiming automation that cannot complete. The reviewed one-component candidate override is not wire-compatible with the official-base Root for dapp upgrade: Root rejects candidate Governance's `ChangeCanisterRequest` with `Subtyping error: unit_variant`. The maintained upgrade CLI also cannot create its local chunk store because the bootstrapped cycles ledger is not authorized on the target application subnet. No completed evidence package is claimed until those upstream/component blockers are resolved and the validators pass.
 
 ## Manual Flow
 
@@ -100,7 +102,7 @@ The local rehearsal must prove:
 
 ## What Remains Unproven
 
-Until a local evidence file is produced from a completed local rehearsal, this package also does not prove local SNS ledger behavior, local SNS index behavior, local SNS governance/root behavior, or SNS-W-created canister IDs.
+The restart-safe local logs prove the partial rehearsal behavior described above, but they are not the sanitized committed evidence package. The SNS-controlled IO dapp upgrade, Governance-authorized IO activation, IO monetary execution inside this SNS-W-created topology, and a completed evidence-package validation remain unproved.
 
 This rehearsal does not prove final SNS launch readiness, mainnet NNS proposal acceptance, final tokenomics, final fallback controllers, production adapter activation, archive traversal completeness, or external audit readiness.
 

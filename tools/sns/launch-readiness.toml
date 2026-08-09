@@ -15,7 +15,7 @@ evidence = "tools/sns/sns_init.io.template.yaml exists; official dfx sns validat
 
 [local_sns_testing_rehearsal]
 status = "incomplete"
-evidence = "deploy/local-sns-rehearsal/ provides official local SNS rehearsal scaffolding and no-network evidence validation. Follow current official ICP/DFINITY SNS testing docs; the historical standalone dfinity/sns-testing repo is deprecated. TODO: complete optional local rehearsal and record canister-ids.local.toml evidence."
+evidence = "Maintained source tooling at IC 4320fdf2e613844eabae1927b1a23b98da3a7bc6 proved local NNS/SNS-W launch, swap finalization, reserve funding, ledger/index behavior and controller handoff. Completion is blocked by candidate-Governance/official-Root ChangeCanisterRequest incompatibility and the local chunk-store subnet authorization gap; no completed committed evidence package is claimed."
 
 [mainnet_testflight]
 status = "incomplete"
@@ -43,7 +43,7 @@ evidence = "Template lists io_stream_manager, io_nns_neuron_manager, io_historia
 
 [all_upgrades_tested_via_sns_proposal]
 status = "incomplete"
-evidence = "Mock/PocketIC root lifecycle exists; official SNS proposal upgrades not complete."
+evidence = "Candidate Governance accepted the real local upgrade proposal, but official-base Root trapped decoding ChangeCanisterRequest with Subtyping error: unit_variant. A reviewed mutually compatible SNS release/bundle is required."
 
 [frontend_sns_integration_tested]
 status = "incomplete"
