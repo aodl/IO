@@ -276,7 +276,7 @@ pub fn get_status() -> Status {
         unwinding_child_principal_e8s: current
             .pending_unwind
             .as_ref()
-            .or_else(|| match &current.active_operation {
+            .or(match &current.active_operation {
                 Some(NnsOperation::Unwind(operation)) => Some(operation),
                 _ => None,
             })
