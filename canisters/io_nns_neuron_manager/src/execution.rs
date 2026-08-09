@@ -791,6 +791,16 @@ pub fn staking_account(config: &NnsConfig, neuron: &NeuronSnapshot) -> Account {
 }
 
 #[cfg(test)]
+pub(crate) fn placeholder_maturity_disbursement() -> MaturityDisbursement {
+    MaturityDisbursement {
+        amount_e8s: None,
+        timestamp_of_disbursement_seconds: None,
+        finalize_disbursement_timestamp_seconds: None,
+        account_to_disburse_to: None,
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -843,15 +853,5 @@ mod tests {
         let mut dissolving = valid;
         dissolving.dissolve_state = Some(DissolveState::WhenDissolvedTimestampSeconds(u64::MAX));
         assert!(validate_maturity_configuration(&dissolving).is_err());
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn placeholder_maturity_disbursement() -> MaturityDisbursement {
-    MaturityDisbursement {
-        amount_e8s: None,
-        timestamp_of_disbursement_seconds: None,
-        finalize_disbursement_timestamp_seconds: None,
-        account_to_disburse_to: None,
     }
 }
