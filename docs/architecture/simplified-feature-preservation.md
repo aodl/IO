@@ -7,7 +7,7 @@ IO remains not live and its reserved production canisters remain inert.
 | Jupiter 40/60 economics | NNS manager applies checked exact split to the proved deposit |
 | Permanent two-year NNS capital | NNS manager owns and verifies the protected neuron |
 | Two-year maturity | Stake 40%; disburse all remaining maturity directly to liquid ICP |
-| Pooled two-week staking | NNS manager owns one pooled position and latest desired target |
+| Two-week-staker reward backing | NNS manager owns one eight-year, non-dissolving NNS parent and latest desired target |
 | Rebalance and unwind | One immediate operation and one pending unwind child |
 | Exact two-week eligibility | `io-sns-reward-boundary`; evaluated at each daily event |
 | Daily entitlement accounting | Canonical event shares or empty-event stake fallback in one bounded accumulator |
@@ -38,3 +38,8 @@ intent. Below-threshold, paused, pending, or ambiguous NNS work leaves it visibl
 while later daily events accumulate separately. Observation and backing waits
 leave redemption available; exact reserve-transfer fan-out is serialized with
 redemption, and best-effort refresh cannot prolong that serialization.
+
+The exact two-week rule classifies ordinary SNS reward neurons, withdrawals and
+beneficiaries. The protected NNS parent itself uses the reviewed eight-year
+dissolve delay. A single long-lived dissolving child is passive and cannot block
+new maturity work on the reduced parent.

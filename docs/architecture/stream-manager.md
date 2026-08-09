@@ -16,8 +16,8 @@ processing schedules the next observation. There is no interval timer, retry
 scheduler, proposal timer, task queue, or event archive.
 
 Backing is asynchronous. One live accumulator can continue receiving daily
-weights while one frozen batch moves through the protected two-week NNS 40/60
-maturity path, actual ICP receipt, and sequential IO transfers. A second pending
+weights while one frozen batch moves through the two-week-staker reward-backing
+NNS 40/60 maturity path, actual ICP receipt, and sequential IO transfers. A second pending
 batch is not created. Missing reward events add no credits, advance only through
 a typed skip record, and leave undistributed backing in reserve.
 

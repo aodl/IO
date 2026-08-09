@@ -72,8 +72,9 @@ archive or a moving accounting window.
 
 Governance entitlement time and ICP-backing receipt time are intentionally
 asynchronous. Daily observations continue while one frozen entitlement batch
-awaits the protected NNS position's actual modulated ICP receipt and sequential
-IO payout. Only actually received ICP determines the backed IO pool. At payout,
+awaits the two-week-staker reward-backing NNS neuron's actual modulated ICP
+receipt and sequential IO payout. Only actually received ICP determines the
+backed IO pool. At payout,
 the backed pool is first reduced by the frozen batch's forfeited policy
 fraction; the eligible pool is then allocated over eligible credits. A frozen
 zero-eligible-credit batch completes without recipient transfers and leaves
@@ -114,9 +115,13 @@ block redemption. Reserve-transfer fan-out is serialized with redemption, but
 refresh availability cannot prolong that serialization indefinitely.
 
 The exact 1,209,600-second duration remains authoritative for ordinary IO
-reward-neuron eligibility, user withdrawal delay and the protected two-week NNS
-position. It is a staking-product rule, not the SNS reward-event duration or an
-independent accounting cohort.
+reward-neuron eligibility, the user withdrawal delay and the beneficiary
+class. It does not describe the protected NNS parent's dissolve delay. The
+two-week-staker reward-backing NNS neuron uses the reviewed non-dissolving delay
+defined by
+[`adr-protected-reward-backing-nns-neuron.md`](adr-protected-reward-backing-nns-neuron.md).
+The two-week duration is a staking-product rule, not the SNS reward-event
+duration or an independent accounting cohort.
 
 ## Availability and skips
 

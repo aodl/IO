@@ -1,8 +1,10 @@
 # io_nns_neuron_manager
 
 The launch NNS canister exclusively owns proof and commands for the protected
-two-year neuron, pooled two-week position, Jupiter staging, two-week maturity
-staging, direct maturity policy, and one pending unwind child. Each sending
+two-year neuron, the two-week-staker reward-backing NNS neuron, Jupiter staging,
+reward-backing maturity staging, direct maturity policy, and one pending unwind
+child. The reward-backing parent is non-dissolving at the approved 252,288,000-
+second (eight-year) NNS delay; it is not a 14-day NNS position. Each sending
 staging Account has its own bounded fee float; there is no general fee Account.
 
 IO is not live. Production canisters remain inert.
@@ -48,23 +50,27 @@ ledger Wasms and exact source behavior are recorded in
 does not depend on a generic governance-types crate.
 
 First readiness proves the exact configured parent, seeded stake, zero
-prelaunch ordinary maturity and absence of pending maturity or child ambiguity.
-The proof survives upgrade; post-upgrade remains Paused. Immutable active and
-passive delivery work can still resume while new preparation remains blocked.
+prelaunch ordinary and staked maturity, disabled auto-stake, exact
+non-dissolving approved delay, and absence of pending maturity or child
+ambiguity. The proof survives upgrade; post-upgrade remains Paused. Later
+retained staked maturity is expected, but auto-stake or dissolve-state drift
+blocks new preparation. Immutable active and passive delivery work can still
+resume while new preparation remains blocked.
 
 ## Direct two-week unwind
 
-An over-target canonical two-week stake creates one immediate typed unwind
-operation. It splits exactly the excess, starts the one child dissolving,
-merges it back if a newer target rises before readiness, or disburses the ready
-child directly to the stream liquid Account. Completion requires the exact ICP
-Transfer block returned by NNS Governance (or an explicitly supplied block for
-an ambiguous callback); no staging Account, stream receipt, IO issuance, queue,
-or second child exists.
+An over-target canonical parent creates one immediate typed unwind operation.
+It splits exactly the excess and canonically starts the one child dissolving.
+The child then becomes passive so the eight-year wait cannot block maturity on
+the reduced parent. A newer target may promote that exact child for merge-back;
+a ready child may be promoted for direct disbursement. Completion requires the
+exact ICP Transfer block returned by NNS Governance (or an explicitly supplied
+block for an ambiguous callback); no staging Account, stream receipt, IO
+issuance, queue, ladder, or second child exists.
 
 ## Stable state
 
-Launch state is one `StableCell<NnsStateV1>` with one typed immediate operation
-whose unwind variant owns its one child, plus fixed passive slots for two-year
-and two-week maturity. Only V1 is supported; no prelaunch migration chain is
+Launch state is one `StableCell<NnsStateV1>` with one typed immediate operation,
+one optional passive unwind child, and fixed passive slots for two-year and
+reward-backing maturity. Only V1 is supported; no prelaunch migration chain is
 compiled.

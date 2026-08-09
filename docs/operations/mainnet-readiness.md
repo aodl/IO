@@ -6,7 +6,15 @@ The NNS manager design belongs at existing neuron controller `oae4c-3iaaa-aaaar-
 
 Launch readiness requires all simplified execution, installed real-ledger, NNS authority, upgrade/failure, official SNS evidence and GitHub CI gates to pass. Unsupported transfers remain unsupported by design.
 
-Controlled PocketIC evidence reaches the protected two-week path through a zero-maturity baseline, independent target reconciliation, one direct unwind, StakeMaturity, DisburseMaturity, delayed exact Mint, proof-bound stream receipt and recipient settlement using pinned official NNS Governance and ICP ledger Wasms. This is local evidence only and grants no mainnet authority. Production installation remains Paused and requires a separate reviewed launch decision.
+Controlled PocketIC evidence reaches the two-week-staker reward-backing path
+through an eight-year, non-dissolving NNS parent, a complete zero-maturity
+launch baseline, independent target reconciliation, one direct/passive unwind,
+StakeMaturity, DisburseMaturity, delayed exact Mint, proof-bound stream receipt
+and recipient settlement using pinned official NNS Governance and ICP ledger
+Wasms. The exact two-week rule belongs to the SNS beneficiary product, not the
+protected NNS parent's dissolve delay. This is local evidence only and grants no
+mainnet authority. Production installation remains Paused and requires a
+separate reviewed launch decision.
 
 Local rehearsal evidence concerns a real SNS-created stack installed through SNS-W with the test symbol IO_TEST. It is non-canonical evidence for a local protocol reserve; IO is not launched on mainnet.
 
