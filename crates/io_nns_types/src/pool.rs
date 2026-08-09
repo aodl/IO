@@ -92,4 +92,11 @@ mod tests {
         wrong_account.child_staking_subaccount.pop();
         assert!(wrong_account.validate(2).is_err());
     }
+
+    #[test]
+    fn baseline_dissolving_child_remains_immediate_work() {
+        let child = operation(UnwindPhase::Dissolving);
+        assert_eq!(child.validate(2), Ok(()));
+        assert!(matches!(child.phase, UnwindPhase::Dissolving));
+    }
 }

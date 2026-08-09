@@ -165,4 +165,17 @@ mod tests {
             Err(crate::api::ApiError::Pending(message)) if message.contains("BaselineUnreconciled")
         ));
     }
+
+    #[test]
+    fn baseline_gap_cannot_distinguish_staked_auto_stake_or_dissolve_state() {
+        assert_eq!(validate_prelaunch_baseline(100, 100, 0, false), Ok(()));
+        let source = include_str!("lifecycle.rs");
+        let signature = &source[source.find("fn validate_prelaunch_baseline").unwrap()
+            ..source
+                .find(") -> Result<(), crate::api::ApiError>")
+                .unwrap()];
+        assert!(!signature.contains("staked_maturity"));
+        assert!(!signature.contains("auto_stake"));
+        assert!(!signature.contains("dissolve_state"));
+    }
 }

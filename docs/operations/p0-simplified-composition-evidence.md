@@ -124,3 +124,17 @@ creation, dissolution, disbursement, maturity phases, Mint proof, staging
 delivery and recipient transfer while immutable work resumes without duplicate
 effects. IO remains Paused, inert, prelaunch and not live; no mainnet execution
 is authorized.
+
+## Protected-NNS policy and liveness gaps at `6266557`
+
+These deterministic reproductions describe the reviewed starting behavior
+before the final protected-NNS correction. They do not change daily SNS
+entitlement economics.
+
+| Item | Baseline reproduction | Required correction |
+| --- | --- | --- |
+| A | The controlled pinned-NNS harness creates the protected reward-backing parent at 252,288,000 seconds (eight years). Pinned NNS Governance requires roughly six months of dissolve delay to vote, while a genuine 1,209,600-second neuron is below that boundary and therefore earns no voting maturity. Normative IO prose nevertheless calls the protected parent an exact-two-week NNS position. | Separate the ordinary SNS/user two-week product rule from the NNS-voting-eligible protected backing neuron and record the reviewed launch delay explicitly. |
+| B | After an over-target split and `StartDissolving`, the child remains the immediate `active_operation` until its long dissolve timestamp. Readiness stays `Busy`/`OverTarget`; another maturity command cannot occupy the slot. Daily SNS credit remains able to accumulate in the stream manager, but the next batch cannot receive backing. | Retain one exact child as passive unwind evidence after canonical `StartDissolving`, clear the immediate slot, and permit maturity work on the reduced parent. |
+| C | First readiness checks the parent ID through its query, seeded cached principal, ordinary maturity and pending maturity disbursements. Its validation signature cannot distinguish nonzero staked maturity, `auto_stake_maturity = true`, a dissolving parent or the wrong dissolve delay. With auto-stake enabled, a real NNS reward event moves reward into staked maturity rather than the ordinary maturity consumed by IO's 40/60 pipeline. | Prove the complete launch baseline once, persist that proof, and recheck auto-stake plus exact non-dissolving delay before every later maturity start. |
+| D | A frozen entitlement batch retains its immutable target, but pending-batch resume invokes `prepare_two_week_maturity` directly. If the protected parent principal drifts before preparation, the NNS manager returns `Pending`; the stream retries preparation without reconciling the frozen target. | Reconcile the batch's exact stored target before every preparation replay, retaining the batch and all newer live credit in every waiting state. |
+| E | The controlled real-NNS harness does not call `notify_jupiter_deposit`; the stream side uses mock SNS Governance; all-real two-year stream accounting and the real SNS trigger remain absent; and no real merge-back interruption fixture exists. | Add controlled production-API Jupiter and two-year verticals, the SNS-governed trigger, the combined real SNS/NNS lifecycle, and the remaining ambiguity matrix. |

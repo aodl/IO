@@ -900,4 +900,13 @@ mod composition_tests {
         );
         assert!(freeze.contains("reconcile_readiness"));
     }
+
+    #[test]
+    fn baseline_pending_batch_retry_prepares_without_reconciliation() {
+        let source = include_str!("rewards.rs");
+        let submit = &source[source.find("async fn submit_maturity").unwrap()
+            ..source.find("fn nns_call_error").unwrap()];
+        assert!(submit.contains("prepare_maturity"));
+        assert!(!submit.contains("reconcile_readiness"));
+    }
 }

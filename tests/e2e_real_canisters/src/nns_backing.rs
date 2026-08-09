@@ -26,6 +26,7 @@ const PROTECTED_MEMO: u64 = 8_002;
 const PROPOSER_MEMO: u64 = 8_003;
 const EIGHT_YEARS_SECONDS: u32 = 8 * 365 * 24 * 60 * 60;
 const ONE_YEAR_SECONDS: u32 = 365 * 24 * 60 * 60;
+const NNS_MINIMUM_DISSOLVE_DELAY_TO_VOTE_SECONDS: u64 = 6 * 30 * 24 * 60 * 60;
 const UNWIND_EXCESS_E8S: u64 = 10 * 100_000_000;
 const RECONCILED_TARGET_E8S: u64 = PROTECTED_STAKE_E8S - UNWIND_EXCESS_E8S;
 const ACTIVE_IO_E8S: u128 = 600 * 100_000_000;
@@ -944,6 +945,29 @@ fn fund_stream_liquidity(fixture: &ControlledNnsNeuron, stream: Principal, curre
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protected_nns_policy_contradiction_is_recorded_before_correction() {
+        assert_eq!(u64::from(EIGHT_YEARS_SECONDS), 252_288_000);
+        assert_eq!(NNS_MINIMUM_DISSOLVE_DELAY_TO_VOTE_SECONDS, 15_552_000);
+        assert_eq!(io_core_model::TWO_WEEK_SECONDS, 1_209_600);
+        assert!(io_core_model::TWO_WEEK_SECONDS < NNS_MINIMUM_DISSOLVE_DELAY_TO_VOTE_SECONDS);
+
+        let manager = include_str!("../../../canisters/io_nns_neuron_manager/src/lifecycle.rs");
+        assert!(manager.contains("protected two-week neuron"));
+        let harness = include_str!("nns_backing.rs");
+        assert!(harness.contains("EIGHT_YEARS_SECONDS"));
+    }
+
+    #[test]
+    fn remaining_real_vertical_gaps_are_recorded_before_correction() {
+        let all = include_str!("nns_backing.rs");
+        let harness = &all[..all.find("\nmod tests").unwrap()];
+        assert!(!harness.contains("\"notify_jupiter_deposit\""));
+        assert!(all.contains("debug_set_latest_reward_event"));
+        assert!(!harness.contains("real SNS Governance generic function"));
+        assert!(!harness.contains("merge-back interruption"));
+    }
 
     #[test]
     #[ignore = "requires pinned real NNS Governance/ICP ledger and POCKET_IC_BIN"]
