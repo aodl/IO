@@ -137,6 +137,7 @@ service : (InitArgs) -> {
   resume : () -> (variant { Ok : NnsProgress; Err : ApiError });
   prove_active_transfer : (nat) -> (variant { Ok : NnsProgress; Err : ApiError });
   start_maturity : (MaturityKind) -> (variant { Ok : MaturityProgress; Err : ApiError });
+  validate_start_maturity : (MaturityKind) -> (variant { Ok : text; Err : text }) query;
   prepare_two_week_maturity : (PrepareTwoWeekMaturityArgs) -> (variant { Ok : MaturityProgress; Err : ApiError });
   reconcile_two_week_backing_readiness : (ReconcileTwoWeekBackingReadinessArgs) -> (variant { Ok : TwoWeekBackingReadiness; Err : ApiError });
   prove_maturity_mint : (MaturityKind, nat) -> (variant { Ok : MaturityProgress; Err : ApiError });

@@ -1,6 +1,6 @@
 pub mod api;
 mod execution;
-pub use io_nns_types::{jupiter, maturity, pool, transfer};
+pub use io_nns_types::{jupiter, maturity, maturity::MaturityKind, pool, transfer};
 mod jupiter_flow;
 pub mod lifecycle;
 mod maturity_flow;
@@ -8,15 +8,13 @@ pub mod state;
 mod two_week_binding;
 mod unwind_flow;
 
-use candid::CandidType;
-use serde::Deserialize;
+use {candid::CandidType, serde::Deserialize};
 
 pub use api::{
     ApiError, BackingNotReadyReason, JupiterProgress, MaturityProgress, NnsProgress,
     NotifyJupiterDepositArgs, PrepareTwoWeekMaturityArgs, ReconcileTwoWeekBackingReadinessArgs,
     Status, TwoWeekBackingReadiness,
 };
-pub use maturity::MaturityKind;
 pub use state::{Lifecycle, NnsConfig, NnsStateV1, TwoWeekTargetStatus};
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -75,6 +73,13 @@ pub async fn start_maturity(kind: MaturityKind) -> Result<MaturityProgress, ApiE
     api::start_maturity(ic_cdk::api::msg_caller(), kind).await
 }
 
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn validate_start_maturity(kind: MaturityKind) -> Result<String, String> {
+    (kind == MaturityKind::TwoYear)
+        .then(|| "Start reviewed two-year NNS maturity".into())
+        .ok_or_else(|| "two-week maturity requires a frozen stream batch".into())
+}
+
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub async fn prepare_two_week_maturity(
     args: PrepareTwoWeekMaturityArgs,
@@ -122,3 +127,14 @@ pub fn version() -> &'static str {
 }
 
 ic_cdk::export_candid!();
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sns_generic_function_validator_accepts_only_two_year_maturity() {
+        assert!(validate_start_maturity(MaturityKind::TwoYear).is_ok());
+        assert!(validate_start_maturity(MaturityKind::TwoWeek).is_err());
+    }
+}

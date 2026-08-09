@@ -1,17 +1,9 @@
-use candid::{CandidType, Principal};
-use ic_stable_structures::{
-    memory_manager::{MemoryId, MemoryManager, VirtualMemory},
-    storable::Bound,
-    DefaultMemoryImpl, StableBTreeMap, StableCell, Storable,
-};
-use serde::Deserialize;
-use std::{borrow::Cow, cell::RefCell};
-
-use crate::{
-    jupiter::{JupiterCompleted, JupiterOperation},
-    maturity::{CompletedMaturity, MaturityCommandOperation, PendingMaturityDisbursement},
-    pool::UnwindOperation,
-};
+#[rustfmt::skip]
+use {candid::{CandidType, Principal}, serde::Deserialize, std::{borrow::Cow, cell::RefCell}};
+#[rustfmt::skip]
+use crate::{jupiter::{JupiterCompleted, JupiterOperation}, maturity::{CompletedMaturity, MaturityCommandOperation, PendingMaturityDisbursement}, pool::UnwindOperation};
+#[rustfmt::skip]
+use ic_stable_structures::{memory_manager::{MemoryId, MemoryManager, VirtualMemory}, storable::Bound, DefaultMemoryImpl, StableBTreeMap, StableCell, Storable};
 pub use io_accounts::Account;
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
@@ -743,12 +735,25 @@ mod tests {
                 mint_proof: MintProofState::Awaiting,
             }
         };
-        let two_year = pending(
+        let mut two_year = pending(
             MaturityKind::TwoYear,
             state.config.two_year_neuron_id,
             state.config.stream_liquid_account.clone(),
             None,
         );
+        two_year.mint_proof = MintProofState::Proved(MintEvidence {
+            mint_block: 7,
+            actual_minted_icp_e8s: 500_000_000,
+            native_memo_u64: 604_801,
+            created_at_time_nanos: 604_801_000_000_000,
+        });
+        two_year
+            .validate(
+                MaturityKind::TwoYear,
+                state.config.two_year_neuron_id,
+                &state.config.stream_liquid_account,
+            )
+            .expect("valid adverse modulation may Mint less than nominal maturity");
         let mut two_week = pending(
             MaturityKind::TwoWeek,
             state.config.two_week_neuron_id,

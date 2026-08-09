@@ -1,5 +1,4 @@
-use candid::CandidType;
-use serde::Deserialize;
+use {candid::CandidType, serde::Deserialize};
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum UnwindPhase {
     SplitPrepared,

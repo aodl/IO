@@ -1,11 +1,6 @@
-use candid::CandidType;
-use serde::Deserialize;
-
-use crate::{
-    jupiter::{NeuronSnapshot, StreamReceiptPermit},
-    transfer::NnsTransferAttempt,
-};
-use io_accounts::Account;
+use {candid::CandidType, io_accounts::Account, serde::Deserialize};
+#[rustfmt::skip]
+use crate::{jupiter::{NeuronSnapshot, StreamReceiptPermit}, transfer::NnsTransferAttempt};
 
 pub const MINIMUM_DISBURSEMENT_E8S: u64 = 100_000_000;
 pub const DISBURSEMENT_DELAY_SECONDS: u64 = 7 * 24 * 60 * 60;

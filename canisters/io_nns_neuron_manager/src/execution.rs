@@ -1,10 +1,3 @@
-use candid::{CandidType, Nat, Principal, Reserved};
-use ic_cdk::call::Call;
-use io_ledger_boundary::{IcrcTransferArg, IcrcTransferError, IcrcTransferResult};
-use io_receipt_types::{CompleteLiquidReceiptArgs, PrepareLiquidReceiptArgs, ReceiptKind};
-pub use io_receipt_types::{CompletedReceiptResult, LiquidReceiptProgress as StreamLiquidProgress};
-use serde::Deserialize;
-
 use crate::{
     api::ApiError,
     jupiter::{NeuronSnapshot, StreamReceiptPermit},
@@ -14,6 +7,12 @@ use crate::{
     state::{Account, NnsConfig},
     transfer::{NnsTransferIntent, TransferOutcomeClassification},
 };
+use candid::{CandidType, Nat, Principal, Reserved};
+use ic_cdk::call::Call;
+use io_ledger_boundary::{IcrcTransferArg, IcrcTransferError, IcrcTransferResult};
+use io_receipt_types::{CompleteLiquidReceiptArgs, PrepareLiquidReceiptArgs, ReceiptKind};
+pub use io_receipt_types::{CompletedReceiptResult, LiquidReceiptProgress as StreamLiquidProgress};
+use serde::Deserialize;
 
 pub enum ExactTransferOutcome {
     Succeeded(u128),

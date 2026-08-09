@@ -42,7 +42,22 @@ pub struct NervousSystemFunction {
     pub id: u64,
     pub name: String,
     pub description: Option<String>,
-    pub function_type: Option<EmptyRecord>,
+    pub function_type: Option<FunctionType>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub enum FunctionType {
+    NativeNervousSystemFunction(EmptyRecord),
+    GenericNervousSystemFunction(GenericNervousSystemFunction),
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct GenericNervousSystemFunction {
+    pub validator_canister_id: Option<Principal>,
+    pub target_canister_id: Option<Principal>,
+    pub validator_method_name: Option<String>,
+    pub target_method_name: Option<String>,
+    pub topic: Option<Topic>,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
@@ -313,8 +328,16 @@ pub struct Proposal {
 
 #[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
 pub enum Action {
+    AddGenericNervousSystemFunction(NervousSystemFunction),
+    ExecuteGenericNervousSystemFunction(ExecuteGenericNervousSystemFunction),
     Motion(Motion),
     UpgradeSnsControlledCanister(UpgradeSnsControlledCanister),
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct ExecuteGenericNervousSystemFunction {
+    pub function_id: u64,
+    pub payload: Vec<u8>,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
@@ -445,11 +468,11 @@ pub enum SnsGovernanceSetupError {
     PocketIcMissing,
 }
 
-struct GovernanceLedgerFixture {
-    pic: std::rc::Rc<PocketIc>,
-    governance: Principal,
-    ledger: Principal,
-    controller: Principal,
+pub(crate) struct GovernanceLedgerFixture {
+    pub(crate) pic: std::rc::Rc<PocketIc>,
+    pub(crate) governance: Principal,
+    pub(crate) ledger: Principal,
+    pub(crate) controller: Principal,
 }
 
 pub fn install_real_sns_governance_empty_state(
@@ -1021,7 +1044,12 @@ fn expect_manage_success(
     }
 }
 
-fn make_motion(fixture: &GovernanceLedgerFixture, neuron_id: &NeuronId, title: &str) -> u64 {
+pub(crate) fn make_action(
+    fixture: &GovernanceLedgerFixture,
+    neuron_id: &NeuronId,
+    title: &str,
+    action: Action,
+) -> u64 {
     let response = expect_manage_success(
         fixture,
         neuron_id,
@@ -1029,9 +1057,7 @@ fn make_motion(fixture: &GovernanceLedgerFixture, neuron_id: &NeuronId, title: &
             url: String::new(),
             title: title.to_string(),
             summary: title.to_string(),
-            action: Some(Action::Motion(Motion {
-                motion_text: title.to_string(),
-            })),
+            action: Some(action),
         }),
         "make proposal",
     );
@@ -1044,6 +1070,17 @@ fn make_motion(fixture: &GovernanceLedgerFixture, neuron_id: &NeuronId, title: &
         }
         other => panic!("unexpected make proposal response: {other:?}"),
     }
+}
+
+fn make_motion(fixture: &GovernanceLedgerFixture, neuron_id: &NeuronId, title: &str) -> u64 {
+    make_action(
+        fixture,
+        neuron_id,
+        title,
+        Action::Motion(Motion {
+            motion_text: title.to_string(),
+        }),
+    )
 }
 
 fn register_vote(
@@ -1072,7 +1109,7 @@ fn latest_reward_event(fixture: &GovernanceLedgerFixture) -> SnsRewardEvent {
     )
 }
 
-fn advance_until_reward_event(
+pub(crate) fn advance_until_reward_event(
     fixture: &GovernanceLedgerFixture,
     expected_settled: usize,
     after_round: u64,
@@ -2600,6 +2637,18 @@ fn setup_real_sns_governance_with_ledger(
     required: bool,
     initial_user_balance_e8s: u64,
 ) -> Result<GovernanceLedgerFixture, SnsGovernanceSetupError> {
+    setup_real_sns_governance_with_ledger_on_pic(
+        required,
+        initial_user_balance_e8s,
+        std::rc::Rc::new(pocketic_env::new_sns_pic()),
+    )
+}
+
+pub(crate) fn setup_real_sns_governance_with_ledger_on_pic(
+    required: bool,
+    initial_user_balance_e8s: u64,
+    pic: std::rc::Rc<PocketIc>,
+) -> Result<GovernanceLedgerFixture, SnsGovernanceSetupError> {
     let artifacts = match resolve_from_env(required) {
         Ok(ArtifactStatus::Ready(set)) => set,
         Ok(ArtifactStatus::Skipped(message)) => {
@@ -2617,7 +2666,6 @@ fn setup_real_sns_governance_with_ledger(
     let governance_wasm = artifacts
         .load_required("sns_governance")
         .map_err(SnsGovernanceSetupError::Artifact)?;
-    let pic = pocketic_env::new_sns_pic();
     let sns_subnet = pic.topology().get_sns().expect("SNS subnet should exist");
     let governance = pic.create_canister_on_subnet(None, None, sns_subnet);
     pic.add_cycles(governance, 2_000_000_000_000);
@@ -2643,14 +2691,14 @@ fn setup_real_sns_governance_with_ledger(
         pic.tick();
     }
     Ok(GovernanceLedgerFixture {
-        pic: std::rc::Rc::new(pic),
+        pic,
         governance,
         ledger,
         controller,
     })
 }
 
-fn stake_and_claim_neuron(
+pub(crate) fn stake_and_claim_neuron(
     fixture: &GovernanceLedgerFixture,
     stake_e8s: u64,
     memo: u64,
@@ -2715,7 +2763,7 @@ fn listed_neuron(fixture: &GovernanceLedgerFixture, neuron_id: &NeuronId) -> Sns
         .expect("claimed neuron should be listed")
 }
 
-fn configure_increase_dissolve_delay(
+pub(crate) fn configure_increase_dissolve_delay(
     fixture: &GovernanceLedgerFixture,
     neuron_id: &NeuronId,
     additional_seconds: u32,

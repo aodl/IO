@@ -162,5 +162,53 @@ phase. The observed Mints were 6,031,272,089 e8s and 8,672,771,618 e8s under
 the fixture's 1.0 modulation. Retained staked maturity compounds canonically;
 SNS IO total supply and reserve remain unchanged while liquid ICP and the
 redemption rate increase. An ordinary caller is rejected and configured
-Governance replay during the active operation is Busy. Real SNS generic-
-function trigger evidence remains part of the combined topology gate.
+Governance replay during the active operation is Busy. Pinned real SNS
+Governance registers the production manager's `validate_start_maturity` query
+and `start_maturity` update as one generic function, executes the TwoYear
+payload by proposal, and cannot create a second operation by a replay proposal.
+
+## Combined candidate-SNS, pinned-NNS, and IO lifecycle result
+
+`combined_real_sns_nns_io_lifecycle_reconciles_maturity_and_redemption` uses
+one PocketIC topology containing the capability-bearing candidate SNS
+Governance, pinned real SNS Root and ledger, pinned real NNS Governance and ICP
+ledger, and release stream/NNS-manager Wasms. Skipped catch-up rounds remain
+zero-credit checkpoints; the next real no-proposal round supplies three
+stake-normalized entitlement entries, including the one-unit fixed-point
+remainder.
+
+The exact launch model in the fixture has 600,000,000 e8s active IO,
+700,000,000 e8s redeemable IO, and 7,000,000,000 e8s liquid ICP, yielding the
+6,000,000,000-e8s protected-parent target. Pinned NNS voting produced
+832,043,220,504,814 e8s ordinary maturity; the production 40/60 path proved an
+actual 499,225,932,302,889-e8s ICP Mint. The stream allocated the exact backed
+IO pool to all three real SNS neuron Accounts, reconciled the excluded reserve
+and three standard fees, then redeemed 20,000,000 e8s IO for 199,990,000 e8s
+net ICP. Release same-Wasm upgrades preserve manager phases, the stream's
+pre-transfer receipt checkpoint, and redemption after `IoInReserve`; both IO
+canisters finish Paused.
+
+## Protected-NNS failure and recovery matrix
+
+The controlled target-rise test creates one real pinned-NNS passive child,
+promotes that exact child into `StopDissolving`/merge work, upgrades the release
+manager at `MergePrepared`, and proves the parent increase after the canonical
+merge fee. The passive child clears once; no second child or target queue is
+created. The longer controlled manager test also upgrades both manager and
+stream while the original child remains passive, starts maturity immediately
+on the reduced parent, and proves its eventual direct-disbursement block once.
+
+The two-year test rejects a wrong-destination block and an out-of-range block,
+then accepts the exact Mint and replays only that exact completed block. Real
+Governance changes to auto-stake and to dissolving state each pause preparation
+without installing an operation or discarding maturity. Stable-state validation
+also accepts a positive actual Mint below its nominal maturity amount, preserving
+adverse but valid modulation as canonical monetary truth.
+
+Split, merge, direct-disbursement, and Jupiter transfer submissions retain an
+immutable intent and submitted phase before the external call. Canonical proof
+or observation is required afterward; ambiguous effects cannot be completed by
+an operator assertion. The real tests upgrade at these durable boundaries and
+exercise exact proof and replay, but the pinned Governance transport is not
+fault-injected. A transport-faulting pinned-Governance fixture remains an
+external harness enhancement rather than a launch-policy or state-machine gap.

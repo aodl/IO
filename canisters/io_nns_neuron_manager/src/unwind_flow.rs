@@ -1,11 +1,7 @@
 use io_ledger_boundary::{exact_icp_transfer, icp_account_identifier};
 
-use crate::{
-    api::{ApiError, UnwindProgress},
-    execution::{self, DissolveState},
-    pool::{UnwindOperation, UnwindPhase},
-    state::{self, Lifecycle, NnsConfig, NnsOperation},
-};
+#[rustfmt::skip]
+use crate::{api::{ApiError, UnwindProgress}, execution::{self, DissolveState}, pool::{UnwindOperation, UnwindPhase}, state::{self, Lifecycle, NnsConfig, NnsOperation}};
 
 pub async fn resume(operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
     match operation.phase.clone() {
@@ -213,6 +209,7 @@ async fn merge(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiErro
     let minimum_parent = operation
         .target_e8s
         .checked_add(operation.principal_e8s)
+        .and_then(|value| value.checked_sub(current.config.expected_icp_fee_e8s))
         .ok_or_else(|| ApiError::Invalid("merged parent expectation overflow".into()))?;
     if observation.snapshot.cached_stake_e8s < minimum_parent {
         return pause(

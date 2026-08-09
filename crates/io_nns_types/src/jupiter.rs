@@ -1,7 +1,6 @@
-use candid::{CandidType, Principal};
+#[rustfmt::skip]
+use {candid::{CandidType, Principal}, serde::Deserialize, std::borrow::Cow};
 use ic_stable_structures::{storable::Bound, Storable};
-use serde::Deserialize;
-use std::borrow::Cow;
 
 use crate::transfer::NnsTransferAttempt;
 pub use io_receipt_types::LiquidReceiptPermit as StreamReceiptPermit;

@@ -1,8 +1,6 @@
 use candid::Principal;
-use io_ledger_boundary::{
-    exact_icp_block, exact_icp_transfer, icp_account_identifier, ExpectedQueryBlockTransfer,
-    IcpExactResult,
-};
+#[rustfmt::skip]
+use io_ledger_boundary::{exact_icp_block, exact_icp_transfer, icp_account_identifier, ExpectedQueryBlockTransfer, IcpExactResult};
 
 use crate::{
     api::{ApiError, MaturityProgress, PrepareTwoWeekMaturityArgs},
@@ -420,8 +418,21 @@ pub async fn prove_mint(
     kind: MaturityKind,
     block_index: u128,
 ) -> Result<MaturityProgress, ApiError> {
-    let expected = pending_from(&state::read(), kind)
-        .ok_or_else(|| ApiError::Invalid("no pending maturity proof slot".into()))?;
+    let snapshot = state::read();
+    let expected = match pending_from(&snapshot, kind) {
+        Some(pending) => pending,
+        None => {
+            let completed = match kind {
+                MaturityKind::TwoYear => snapshot.last_two_year_maturity.as_ref(),
+                MaturityKind::TwoWeek => snapshot.last_two_week_maturity.as_ref(),
+            };
+            return completed
+                .filter(|completed| completed.mint_block == block_index)
+                .cloned()
+                .map(MaturityProgress::Completed)
+                .ok_or_else(|| ApiError::Invalid("no pending matching maturity Mint".into()));
+        }
+    };
     if !matches!(expected.mint_proof, MintProofState::Awaiting) {
         return replay_proved(&expected, block_index);
     }

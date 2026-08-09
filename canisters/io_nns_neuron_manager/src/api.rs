@@ -100,9 +100,8 @@ pub struct Status {
 
 pub(crate) fn ready() -> Result<crate::state::NnsStateV1, ApiError> {
     let state = state::read();
-    (state.lifecycle == Lifecycle::Ready)
-        .then_some(state)
-        .ok_or(ApiError::Paused)
+    let is_ready = state.lifecycle == Lifecycle::Ready;
+    is_ready.then_some(state).ok_or(ApiError::Paused)
 }
 
 pub async fn notify_jupiter_deposit(

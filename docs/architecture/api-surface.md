@@ -10,12 +10,14 @@ authenticated two-week NNS path independently of later daily observations.
 
 The NNS manager exposes `notify_jupiter_deposit`,
 `reconcile_two_week_backing_readiness`, `prepare_two_week_maturity`,
-`start_maturity`,
+`start_maturity`, `validate_start_maturity`,
 `prove_maturity_mint`, `resume`, `prove_active_transfer`, `set_paused`, and
 `get_status`. Two-week maturity preparation authenticates only the configured
 stream manager and binds one frozen entitlement-batch generation and exact
 target. Reconciliation is authenticated and idempotently persists target
 changes; its generation is independent of entitlement-batch generation. The
 generic maturity start is limited to two-year work.
+The validator is a query that renders only the reviewed two-year payload for an
+SNS generic-function proposal; it does not execute or authorize maturity.
 
 Commands authenticate authority or carry an exact canonical proof. No caller chooses a payout destination or asserts completion. Production DIDs exclude ticks, event processors, state dumps, forced success and debug methods.

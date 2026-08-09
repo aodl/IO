@@ -19,6 +19,7 @@ The production DID contains only:
 - `resume`
 - `prove_active_transfer`
 - `start_maturity`
+- `validate_start_maturity`
 - `prove_maturity_mint`
 - `set_paused`
 - `get_status`
@@ -47,6 +48,11 @@ stream receipt. Governance DTOs are local and pinned to `dfinity/ic` commit
 ledger Wasms and exact source behavior are recorded in
 [`nns-boundary-pin.md`](../../docs/testing/nns-boundary-pin.md). The canister
 does not depend on a generic governance-types crate.
+
+`validate_start_maturity` is the read-only payload renderer for the reviewed
+SNS generic function. It accepts only `TwoYear`; `start_maturity` retains the
+SNS-Governance caller check, and the stream-bound two-week path cannot use the
+generic function.
 
 First readiness proves the exact configured parent, seeded stake, zero
 prelaunch ordinary and staked maturity, effectively disabled auto-stake, exact
