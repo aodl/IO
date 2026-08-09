@@ -681,6 +681,131 @@ mod tests {
     }
 
     #[test]
+    fn maximum_fixed_nns_v1_slots_fit_the_stable_cell_bound() {
+        use crate::maturity::{
+            CompletedMaturity, DisburseMaturitySubmission, DisburseMaturitySucceeded,
+            MaturityCommandOperation, MaturityCommandPhase, MaturityEvidenceSource, MaturityKind,
+            MaturityPlan, MintEvidence, MintProofState, PendingMaturityDisbursement,
+            StakeMaturitySucceeded, TwoWeekDeliveryOperation,
+        };
+
+        let (canister_self, mut state) = valid_state();
+        let pending = |kind: MaturityKind, neuron_id: u64, destination: Account, generation| {
+            let plan = MaturityPlan {
+                neuron: crate::jupiter::NeuronSnapshot {
+                    neuron_id,
+                    staking_subaccount: [7; 32],
+                    cached_stake_e8s: u128::MAX,
+                },
+                original_maturity_e8s: 1_000_000_000,
+                original_staked_maturity_e8s: u64::MAX,
+                stake_maturity_e8s: 400_000_000,
+                remaining_maturity_e8s: 600_000_000,
+                destination: destination.clone(),
+                requested_at_seconds: 1,
+                entitlement_batch_generation: generation,
+            };
+            let stake = StakeMaturitySucceeded {
+                plan,
+                remaining_maturity_e8s: 600_000_000,
+                staked_maturity_e8s: u64::MAX,
+                evidence_source: MaturityEvidenceSource::CanonicalNeuronObservation,
+            };
+            PendingMaturityDisbursement {
+                kind,
+                neuron_id,
+                nominal_disbursed_maturity_e8s: 600_000_000,
+                destination,
+                initiation_timestamp_seconds: 1,
+                scheduled_finalization_timestamp_seconds: 604_801,
+                stake_evidence: stake.clone(),
+                disburse_evidence: DisburseMaturitySucceeded {
+                    submission: DisburseMaturitySubmission {
+                        stake,
+                        submitted_at_seconds: 1,
+                    },
+                    amount_disbursed_e8s: 600_000_000,
+                    evidence_source: MaturityEvidenceSource::CanonicalNeuronObservation,
+                },
+                mint_proof: MintProofState::Awaiting,
+            }
+        };
+        let two_year = pending(
+            MaturityKind::TwoYear,
+            state.config.two_year_neuron_id,
+            state.config.stream_liquid_account.clone(),
+            None,
+        );
+        let mut two_week = pending(
+            MaturityKind::TwoWeek,
+            state.config.two_week_neuron_id,
+            state.config.two_week_maturity_staging.clone(),
+            Some(1),
+        );
+        two_week.mint_proof = MintProofState::Delivering(MintEvidence {
+            mint_block: u128::MAX,
+            actual_minted_icp_e8s: u128::MAX,
+            native_memo_u64: 604_801,
+            created_at_time_nanos: 604_801_000_000_000,
+        });
+        state.lifecycle = Lifecycle::Paused;
+        state.latest_two_week_target = Some(TwoWeekTarget {
+            generation: 1,
+            target_e8s: 1,
+            active_parent_principal_e8s: 1,
+            unwinding_child_principal_e8s: 0,
+            status: TwoWeekTargetStatus::AtTarget,
+        });
+        state.latest_target_generation = 1;
+        state.two_week_maturity_baseline_reconciled = true;
+        state.latest_started_two_week_generation = 1;
+        state.pending_two_year_maturity = Some(two_year);
+        state.pending_two_week_maturity = Some(two_week.clone());
+        state.last_two_year_maturity = Some(CompletedMaturity {
+            kind: MaturityKind::TwoYear,
+            neuron_id: state.config.two_year_neuron_id,
+            mint_block: u128::MAX,
+            nominal_disbursed_maturity_e8s: u64::MAX,
+            actual_minted_icp_e8s: u128::MAX,
+            destination: state.config.stream_liquid_account.clone(),
+            completed_at_nanos: u64::MAX,
+        });
+        state.last_two_week_maturity = Some(CompletedMaturity {
+            kind: MaturityKind::TwoWeek,
+            neuron_id: state.config.two_week_neuron_id,
+            mint_block: u128::MAX,
+            nominal_disbursed_maturity_e8s: u64::MAX,
+            actual_minted_icp_e8s: u128::MAX,
+            destination: state.config.two_week_maturity_staging.clone(),
+            completed_at_nanos: u64::MAX,
+        });
+        state.active_operation = Some(NnsOperation::Maturity(Box::new(MaturityCommandOperation {
+            operation_sequence: 1,
+            dispatch_epoch: u64::MAX,
+            kind: MaturityKind::TwoWeek,
+            phase: MaturityCommandPhase::TwoWeekDelivery(TwoWeekDeliveryOperation {
+                pending: two_week,
+                permit: None,
+                transfer: None,
+                receipt_completed: false,
+            }),
+        })));
+        state.next_operation_sequence = 2;
+        state.validate(canister_self).unwrap();
+        let stable = StableNnsState::V1(state);
+        let encoded = stable.to_bytes();
+        let Bound::Bounded { max_size, .. } = <StableNnsState as Storable>::BOUND else {
+            panic!("NNS state must remain bounded");
+        };
+        eprintln!(
+            "maximum fixed NNS V1 slots encode to {} bytes of the {}-byte stable bound",
+            encoded.len(),
+            max_size
+        );
+        assert!(encoded.len() <= max_size as usize);
+    }
+
+    #[test]
     fn processed_jupiter_block_replays_exact_typed_result() {
         let (canister_self, state) = valid_state();
         initialize(state, canister_self).unwrap();
