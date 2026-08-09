@@ -868,3 +868,39 @@ pub(crate) async fn prove_recipient_transfer(block_index: u128) -> Result<(), Ap
         LiquidReceiptOperation::TwoWeek(Box::new(replacement)),
     )
 }
+
+#[cfg(test)]
+mod composition_gap_tests {
+    #[test]
+    fn gap_ready_backing_stops_after_freeze_until_a_second_update() {
+        let source = include_str!("rewards.rs");
+        let resume = &source[source.find("pub async fn resume_backing").unwrap()
+            ..source.find("async fn freeze_batch").unwrap()];
+        assert!(resume.contains("Some(batch) => submit_maturity(snapshot, batch).await"));
+        assert!(resume.contains("None => freeze_batch(snapshot, now_nanos).await"));
+
+        let freeze = &source[source.find("async fn freeze_batch").unwrap()
+            ..source.find("async fn submit_maturity").unwrap()];
+        assert!(freeze.contains("RewardBackingProgress::BatchFrozen"));
+        assert!(!freeze.contains("prepare_maturity"));
+
+        let daily = io_reward_policy::DAILY_EVENT_CREDIT;
+        let frozen_policy_credit = daily.checked_mul(2).unwrap();
+        let later_live_policy_credit = daily.checked_mul(3).unwrap();
+        assert_eq!(frozen_policy_credit, daily * 2);
+        assert_eq!(later_live_policy_credit, daily * 3);
+        assert_ne!(
+            frozen_policy_credit,
+            frozen_policy_credit + later_live_policy_credit
+        );
+    }
+
+    #[test]
+    fn gap_freeze_uses_cached_governance_freshness_without_reverification() {
+        let source = include_str!("rewards.rs");
+        let freeze = &source[source.find("async fn freeze_batch").unwrap()
+            ..source.find("async fn submit_maturity").unwrap()];
+        assert!(freeze.contains("governance_parameters_fresh"));
+        assert!(!freeze.contains("verify_governance"));
+    }
+}

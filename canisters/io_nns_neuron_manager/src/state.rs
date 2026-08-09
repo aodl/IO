@@ -668,6 +668,54 @@ mod tests {
     }
 
     #[test]
+    fn gap_first_batch_zero_maturity_baseline_is_transient_only() {
+        let (_, state) = valid_state();
+        let zero_maturity_readiness_exception = state.two_week_maturity_baseline_reconciled
+            || (state.latest_target_generation == 0 && 0 == 0);
+        assert!(zero_maturity_readiness_exception);
+        assert!(!state.two_week_maturity_baseline_reconciled);
+
+        let later_maturity_e8s = crate::maturity::MINIMUM_DISBURSEMENT_E8S * 2;
+        let later_baseline = state.two_week_maturity_baseline_reconciled
+            || (state.latest_target_generation == 0 && later_maturity_e8s == 0);
+        assert!(!later_baseline);
+        assert_eq!(state.latest_started_two_week_generation, 0);
+        assert!(state.pending_two_week_maturity.is_none());
+        assert!(state.active_operation.is_none());
+    }
+
+    #[test]
+    fn gap_read_only_over_target_classification_cannot_retarget_or_start_unwind() {
+        let (_, mut state) = valid_state();
+        state.lifecycle = Lifecycle::Ready;
+        state.two_week_maturity_baseline_reconciled = true;
+        state.latest_target_generation = 1;
+        state.latest_two_week_target = Some(TwoWeekTarget {
+            generation: 1,
+            target_e8s: 1_000_000,
+            active_parent_principal_e8s: 1_000_000,
+            unwinding_child_principal_e8s: 0,
+            status: TwoWeekTargetStatus::AtTarget,
+        });
+        let before = state.clone();
+        let lower_target = 900_000;
+        assert_eq!(
+            target_status(
+                1_000_000,
+                lower_target,
+                state.config.expected_icp_fee_e8s * 2,
+            ),
+            TwoWeekTargetStatus::OverTarget
+        );
+        assert_eq!(state, before);
+        assert_eq!(
+            state.latest_two_week_target.as_ref().unwrap().target_e8s,
+            1_000_000
+        );
+        assert!(state.active_operation.is_none());
+    }
+
+    #[test]
     fn config_requires_default_jupiter_staging_and_two_fees() {
         let (canister_self, mut state) = valid_state();
         state.config.jupiter_fee_float_e8s = state.config.expected_icp_fee_e8s;

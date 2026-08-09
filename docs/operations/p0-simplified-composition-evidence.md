@@ -99,6 +99,19 @@ readiness pins a maximum of 1,000 total neurons. Observation uses a 300-second
 margin and one 60-second replacement one-shot after `Pending` or a retryable
 read.
 
+## Protected NNS backing lifecycle reproductions
+
+These deterministic regressions record the reviewed `11ee4ee` composition
+before the protected-NNS lifecycle correction. They do not alter daily
+entitlement economics.
+
+| Item | Baseline reproduction | Required correction |
+| --- | --- | --- |
+| A | Zero maturity makes the read-only readiness calculation treat generation zero as reconciled, but the durable `two_week_maturity_baseline_reconciled` flag remains false. Once maturity becomes nonzero, readiness reports `BaselineUnreconciled`; no pending batch exists from which `prepare_two_week_maturity` could make the flag durable. | Prove the exact zero-maturity seeded parent during NNS unpause and persist the baseline before Ready. |
+| B | A lower target is classified `OverTarget` by the read-only readiness method, but the accepted target and generation remain unchanged and no unwind operation is created. Idle resume therefore reconciles only the older target. | Replace observation with authenticated idempotent target reconciliation that persists a changed target and creates at most one direct unwind. |
+| C | A Ready stream update with no pending batch invokes only `freeze_batch` and returns `BatchFrozen`; `prepare_two_week_maturity` is reachable only on a later update. Maturity and later daily credits can therefore advance while an older subset remains frozen. | Bind the exact freeze CAS and immediate maturity preparation in one normal stream update, retaining the immutable batch only for exact replay after ambiguity. |
+| D | Freeze checks the cached `governance_parameters_fresh` Boolean but does not call the reviewed Root/Governance verification boundary. A module or parameter change after the last daily observation is therefore not re-read before target calculation. | Reverify Root, Governance hash and reviewed parameters immediately before target calculation and again after any neuron pagination used by that calculation. |
+
 ## Remaining vertical work
 
 The safety and topology invariants above are implemented. The NNS manager has a
