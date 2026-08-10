@@ -8993,6 +8993,71 @@ Template SNS principal values are planned wiring placeholders only.
     }
 
     #[test]
+    fn pocket_ic_provisioning_rejects_forged_download() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!(
+                "xtask-pocket-ic-provision-forged-{}",
+                std::process::id()
+            ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let fake_bin = root.join("fake-bin");
+        fs::create_dir_all(&fake_bin).unwrap();
+        write(
+            &root,
+            "fake-bin/curl",
+            "#!/bin/sh\noutput=\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = --output ]; then shift; output=$1; fi\n  shift\ndone\nprintf forged-archive > \"$output\"\n",
+        );
+        write(
+            &root,
+            "fake-bin/gzip",
+            "#!/bin/sh\nprintf forged-pocket-ic-binary\n",
+        );
+        for executable in [fake_bin.join("curl"), fake_bin.join("gzip")] {
+            let mut permissions = fs::metadata(&executable).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(executable, permissions).unwrap();
+        }
+
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tools/scripts/provision-pocket-ic");
+        let script_text = fs::read_to_string(&script).unwrap();
+        for required in [
+            "version=\"14.0.0\"",
+            "f5009e61bcbff297435a67a8ef9fc02178ebb9ab3ee1ec3ac81f4fc3d49319c4",
+            "https://github.com/dfinity/pocketic/releases/download/${version}/pocket-ic-x86_64-linux.gz",
+            "--proto '=https'",
+            "--tlsv1.2",
+        ] {
+            assert!(script_text.contains(required), "missing pin: {required}");
+        }
+
+        let output_path = root.join("pocket-ic-server");
+        let output = Command::new("bash")
+            .arg(&script)
+            .arg(&output_path)
+            .env("PATH", format!("{}:/usr/bin:/bin", fake_bin.display()))
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("SHA-256 mismatch"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!output_path.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn local_sns_ledger_check_skips_without_completed_evidence() {
         let root = temp_root("local-sns-ledger-skip");
         write_local_sns_rehearsal_fixture(&root);
