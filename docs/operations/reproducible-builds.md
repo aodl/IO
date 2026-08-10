@@ -18,7 +18,10 @@ The artifact-recording commit must have the exact same tree as the recorded
 source commit outside `release-artifacts/`. Reachable ancestry is insufficient.
 Verification also rejects dirty tracked or untracked source files. A direct
 `build_canisters` invocation requires `HEAD` to equal `IO_RELEASE_SOURCE_COMMIT`;
-normal release work should use the detached-worktree script.
+normal release work should use the detached-worktree script. The builder checks
+the exact tree again after frontend setup and after compilation, before copying
+artifacts, so a generated tracked-asset rewrite cannot be attributed to the
+recorded commit.
 
 ## Commands
 

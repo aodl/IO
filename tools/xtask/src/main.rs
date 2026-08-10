@@ -6742,6 +6742,15 @@ fn main() -> ExitCode {
             if ok {
                 ok &= run_subcommand("frontend_setup");
             }
+            if ok {
+                match release_source_commit(&root) {
+                    Ok(_) => eprintln!("✓ build_canisters source unchanged after frontend setup"),
+                    Err(err) => {
+                        eprintln!("✗ build_canisters post-frontend source: {err}");
+                        ok = false;
+                    }
+                }
+            }
             for canister in RELEASE_CANISTERS {
                 if ok {
                     ok &= run(

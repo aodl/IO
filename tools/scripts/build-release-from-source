@@ -36,6 +36,14 @@ git -C "${io_root}" worktree add --detach "${source_tree}" "${source_commit}"
     CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${io_root}/target}" \
     cargo run -p xtask -- build_canisters
 )
+if ! git -C "${source_tree}" diff --quiet "${source_commit}" HEAD -- . ':(exclude)release-artifacts'; then
+  echo "release build changed tracked source files outside release-artifacts" >&2
+  exit 1
+fi
+if [[ -n "$(git -C "${source_tree}" status --porcelain=v1 --untracked-files=all -- . ':(exclude)release-artifacts')" ]]; then
+  echo "release build produced dirty source files outside release-artifacts" >&2
+  exit 1
+fi
 
 rm -rf "${io_root}/release-artifacts"
 cp -a "${source_tree}/release-artifacts" "${io_root}/release-artifacts"
