@@ -9,8 +9,9 @@ Release provenance uses two commits:
 1. A source-finalization commit contains every build input and no newly generated
    release artifacts.
 2. `tools/scripts/build-release-from-source <source-finalization-sha>` creates a
-   detached worktree at that exact commit, builds there, verifies the raw and
-   deterministic `gzip -n` Wasms, and copies the result back.
+   detached worktree at that exact commit, builds in that worktree's isolated
+   Cargo target directory, verifies the raw and deterministic `gzip -n` Wasms,
+   and copies the result back.
 3. A following artifact-recording commit contains only `release-artifacts/`
    changes and records the source-finalization SHA in every manifest entry.
 

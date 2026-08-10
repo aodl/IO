@@ -33,7 +33,6 @@ git -C "${io_root}" worktree add --detach "${source_tree}" "${source_commit}"
 (
   cd "${source_tree}"
   IO_RELEASE_SOURCE_COMMIT="${source_commit}" \
-    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${io_root}/target}" \
     cargo run -p xtask -- build_canisters
 )
 if ! git -C "${source_tree}" diff --quiet "${source_commit}" HEAD -- . ':(exclude)release-artifacts'; then
