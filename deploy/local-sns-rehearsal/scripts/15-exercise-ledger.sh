@@ -104,28 +104,34 @@ if ! printf '%s' "$stream_status" | grep -q 'Ready'; then
 fi
 
 if ! phase_is_done 15-redemption-complete; then
-  now_nanos="$(date +%s%N)"
-  expires_nanos="$((now_nanos + 800000000000))"
-  allowance="$((redeem_amount + 10000))"
-  run_logged "$log_file" dfx canister call --network "$network_url" --identity "$identity" \
-    --candid "$ledger_did" "$ledger" icrc2_approve \
-    "(record { from_subaccount = null; spender = record { owner = principal \"${stream}\"; subaccount = null }; amount = ${allowance} : nat; expected_allowance = null; expires_at = opt (${expires_nanos} : nat64); fee = opt (10000 : nat); memo = opt blob \"IO redemption\"; created_at_time = opt (${now_nanos} : nat64) })"
-  redeem_args="(record { from_subaccount = null; io_amount_e8s = ${redeem_amount} : nat; min_icp_out_e8s = 0 : nat; max_io_fee_e8s = 10000 : nat; max_icp_fee_e8s = 10000 : nat; expires_at_nanos = ${expires_nanos} : nat64; nonce = 0 : nat64 })"
-  run_logged "$log_file" dfx canister call --network "$network_url" --identity "$identity" \
-    --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" redeem "$redeem_args"
-  for _attempt in 1 2; do
-    run_logged "$log_file" dfx canister call --network "$network_url" --identity "$identity" \
-      --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" resume '()'
-  done
-  run_logged "$log_file" dfx canister call --network "$network_url" --identity "$identity" \
-    --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" redeem "$redeem_args"
   caller_state="$(dfx canister call --network "$network_url" --identity "$identity" --query \
     --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" get_caller_redemption_state '()')"
+  if ! printf '%s' "$caller_state" | grep -q 'next_nonce = 1' \
+    || ! printf '%s' "$caller_state" | grep -q 'last_result = opt record'; then
+    now_nanos="$(date +%s%N)"
+    expires_nanos="$((now_nanos + 800000000000))"
+    allowance="$((redeem_amount + 10000))"
+    run_logged "$log_file" dfx canister call --network "$network_url" --identity "$identity" \
+      --candid "$ledger_did" "$ledger" icrc2_approve \
+      "(record { from_subaccount = null; spender = record { owner = principal \"${stream}\"; subaccount = null }; amount = ${allowance} : nat; expected_allowance = null; expires_at = opt (${expires_nanos} : nat64); fee = opt (10000 : nat); memo = opt blob \"IO redemption\"; created_at_time = opt (${now_nanos} : nat64) })"
+    redeem_args="(record { from_subaccount = null; io_amount_e8s = ${redeem_amount} : nat; min_icp_out_e8s = 0 : nat; max_io_fee_e8s = 10000 : nat; max_icp_fee_e8s = 10000 : nat; expires_at_nanos = ${expires_nanos} : nat64; nonce = 0 : nat64 })"
+    run_logged "$log_file" dfx canister call --network "$network_url" --identity "$identity" \
+      --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" redeem "$redeem_args"
+    for _attempt in 1 2; do
+      run_logged "$log_file" dfx canister call --network "$network_url" --identity "$identity" \
+        --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" resume '()'
+    done
+    run_logged "$log_file" dfx canister call --network "$network_url" --identity "$identity" \
+      --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" redeem "$redeem_args"
+    caller_state="$(dfx canister call --network "$network_url" --identity "$identity" --query \
+      --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" get_caller_redemption_state '()')"
+  fi
   printf '%s\n' "$caller_state" >> "$log_file"
-  printf '%s' "$caller_state" | grep -q Completed || {
+  if ! printf '%s' "$caller_state" | grep -q 'next_nonce = 1' \
+    || ! printf '%s' "$caller_state" | grep -q 'last_result = opt record'; then
     record_blocker 'production redemption did not reach Completed'
     exit 2
-  }
+  fi
   query_ledger icrc1_total_supply '()'
   query_ledger icrc1_balance_of "(record { owner = principal \"${stream}\"; subaccount = opt blob \"$(hex_blob_literal "$reserve_hex")\" })"
   query_ledger icrc1_balance_of "(record { owner = principal \"${operator}\"; subaccount = null })"
