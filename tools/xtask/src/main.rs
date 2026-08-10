@@ -982,6 +982,7 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
             "  resume :",
             "  prove_active_transfer :",
             "  set_paused :",
+            "  validate_set_paused :",
             "  get_status :",
         ],
     )?;
@@ -995,6 +996,7 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
             "  resume :",
             "  prove_active_transfer :",
             "  set_paused :",
+            "  validate_set_paused :",
             "  get_status :",
         ],
     )?;

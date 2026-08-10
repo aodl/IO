@@ -12,7 +12,7 @@ pub mod rewards;
 pub mod state;
 pub mod transfer;
 
-use candid::{CandidType, Principal};
+use candid::CandidType;
 use serde::Deserialize;
 
 pub use api::{ApiError, LiquidReceiptProgress, RedemptionProgress, Status, StreamProgress};
@@ -98,6 +98,11 @@ pub async fn resume_reward_backing() -> Result<RewardBackingProgress, ApiError> 
     rewards::resume_backing(ic_cdk::api::time()).await
 }
 
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn validate_set_paused(paused: bool) -> Result<String, String> {
+    Ok(format!("Set IO stream paused: {paused}"))
+}
+
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub async fn set_paused(paused: bool) -> Result<(), ApiError> {
     let state = state::read();
@@ -132,11 +137,21 @@ pub fn get_caller_redemption_state() -> Result<CallerRedemptionState, ApiError> 
     Ok(state)
 }
 
-pub fn version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
-}
-
-#[allow(dead_code)]
-fn _principal_type(_: Principal) {}
-
 ic_cdk::export_candid!();
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lifecycle_validator_renders_both_exact_payloads() {
+        assert_eq!(
+            validate_set_paused(true).unwrap(),
+            "Set IO stream paused: true"
+        );
+        assert_eq!(
+            validate_set_paused(false).unwrap(),
+            "Set IO stream paused: false"
+        );
+    }
+}

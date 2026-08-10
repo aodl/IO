@@ -22,6 +22,7 @@ The production DID contains only:
 - `validate_start_maturity`
 - `prove_maturity_mint`
 - `set_paused`
+- `validate_set_paused`
 - `get_status`
 
 Jupiter notification is permissionless and carries one exact ICP block. The
@@ -53,6 +54,10 @@ does not depend on a generic governance-types crate.
 SNS generic function. It accepts only `TwoYear`; `start_maturity` retains the
 SNS-Governance caller check, and the stream-bound two-week path cannot use the
 generic function.
+
+`validate_set_paused` renders the exact Boolean lifecycle payload without
+changing state. The matching `set_paused` update retains the SNS-Governance
+caller check.
 
 First readiness proves the exact configured parent, seeded stake, zero
 prelaunch ordinary and staked maturity, effectively disabled auto-stake, exact

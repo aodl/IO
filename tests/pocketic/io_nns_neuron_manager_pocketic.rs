@@ -78,6 +78,25 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
     )
     .unwrap();
     assert_eq!(status.lifecycle, Lifecycle::Paused);
+    let rendered: Result<String, String> = decode_one(
+        &pic.query_call(
+            canister,
+            Principal::anonymous(),
+            "validate_set_paused",
+            encode_one(true).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(rendered.unwrap(), "Set IO NNS manager paused: true");
+    assert!(pic
+        .query_call(
+            canister,
+            Principal::anonymous(),
+            "validate_set_paused",
+            encode_one(()).unwrap(),
+        )
+        .is_err());
     pic.upgrade_canister(canister, wasm, encode_one(()).unwrap(), None)
         .unwrap();
     let upgraded: Status = decode_one(
@@ -91,6 +110,20 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
     )
     .unwrap();
     assert_eq!(upgraded.lifecycle, Lifecycle::Paused);
+    let rendered_after_upgrade: Result<String, String> = decode_one(
+        &pic.query_call(
+            canister,
+            Principal::anonymous(),
+            "validate_set_paused",
+            encode_one(false).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        rendered_after_upgrade.unwrap(),
+        "Set IO NNS manager paused: false"
+    );
     let result: Result<MaturityProgress, ApiError> = decode_one(
         &pic.update_call(
             canister,

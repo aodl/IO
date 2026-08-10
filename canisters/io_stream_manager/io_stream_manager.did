@@ -181,6 +181,7 @@ service : (InitArgs) -> {
   resume_reward_work : () -> (variant { Ok : RewardEventObservation; Err : ApiError });
   resume_reward_backing : () -> (variant { Ok : RewardBackingProgress; Err : ApiError });
   set_paused : (bool) -> (variant { Ok; Err : ApiError });
+  validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;
   get_status : () -> (Status) query;
   get_caller_redemption_state : () -> (variant { Ok : CallerRedemptionState; Err : ApiError }) query;
 }

@@ -142,5 +142,6 @@ service : (InitArgs) -> {
   reconcile_two_week_backing_readiness : (ReconcileTwoWeekBackingReadinessArgs) -> (variant { Ok : TwoWeekBackingReadiness; Err : ApiError });
   prove_maturity_mint : (MaturityKind, nat) -> (variant { Ok : MaturityProgress; Err : ApiError });
   set_paused : (bool) -> (variant { Ok; Err : ApiError });
+  validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;
   get_status : () -> (Status) query;
 }

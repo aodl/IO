@@ -102,6 +102,11 @@ pub async fn prove_maturity_mint(
     api::prove_maturity_mint(kind, block_index).await
 }
 
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn validate_set_paused(paused: bool) -> Result<String, String> {
+    Ok(format!("Set IO NNS manager paused: {paused}"))
+}
+
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub async fn set_paused(paused: bool) -> Result<(), ApiError> {
     let state = state::read();
@@ -122,10 +127,6 @@ pub fn get_status() -> Status {
     api::get_status()
 }
 
-pub fn version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
-}
-
 ic_cdk::export_candid!();
 
 #[cfg(test)]
@@ -136,5 +137,17 @@ mod tests {
     fn sns_generic_function_validator_accepts_only_two_year_maturity() {
         assert!(validate_start_maturity(MaturityKind::TwoYear).is_ok());
         assert!(validate_start_maturity(MaturityKind::TwoWeek).is_err());
+    }
+
+    #[test]
+    fn lifecycle_validator_renders_both_exact_payloads() {
+        assert_eq!(
+            validate_set_paused(true).unwrap(),
+            "Set IO NNS manager paused: true"
+        );
+        assert_eq!(
+            validate_set_paused(false).unwrap(),
+            "Set IO NNS manager paused: false"
+        );
     }
 }

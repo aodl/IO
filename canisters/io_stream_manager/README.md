@@ -29,12 +29,17 @@ The production DID contains only:
 - `resume_reward_backing`
 - `prove_active_transfer`
 - `set_paused`
+- `validate_set_paused`
 - `get_status`
 
 Every update checks authority in the method. Redemption rejects anonymous
 callers, binds both token source and ICP payout to the caller's exact
 `Account`, enforces the per-caller nonce, and rejects `Busy` before moving
 funds. There is no caller-selected destination.
+
+`validate_set_paused` is the read-only payload renderer for the SNS generic
+function. The matching `set_paused` update remains callable only by the
+configured SNS Governance canister.
 
 ## Redemption
 
