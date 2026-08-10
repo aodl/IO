@@ -306,6 +306,11 @@ extract_proposal_id() {
   tr '\n' ' ' | sed -n 's/.*proposal_id = opt record { id = \([0-9][0-9]*\) : nat64 }.*/\1/p'
 }
 
+e8s_to_decimal_tokens() {
+  require_nat "e8s amount" "$1"
+  printf '%s.%08d\n' "$(($1 / 100000000))" "$(($1 % 100000000))"
+}
+
 sns_canister_id() {
   local role="$1"
   local discovery="${REHEARSAL_DIR}/generated/sns-canisters.json"

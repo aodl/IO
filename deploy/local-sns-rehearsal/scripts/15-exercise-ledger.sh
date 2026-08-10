@@ -78,7 +78,8 @@ fi
 
 if ! phase_is_done 15-liquid-icp-funded; then
   sns_testing="$(sns_testing_cli)"
-  run_logged "$log_file" "$sns_testing" --network "$network_url" transfer-icp --amount "$liquid_amount" \
+  liquid_tokens="$(e8s_to_decimal_tokens "$liquid_amount")"
+  run_logged "$log_file" "$sns_testing" --network "$network_url" transfer-icp --amount "$liquid_tokens" \
     --to-principal "$stream" "$liquid_hex"
   mark_phase_done 15-liquid-icp-funded "amount_e8s=${liquid_amount}"
 fi
