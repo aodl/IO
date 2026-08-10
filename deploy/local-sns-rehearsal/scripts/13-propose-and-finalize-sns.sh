@@ -62,7 +62,7 @@ governance_did="$(official_checkout)/rs/sns/governance/canister/governance.did"
 metadata_ready=0
 for _attempt in 1 2 3 4 5 6 7 8 9 10; do
   metadata="$(dfx canister call --network "$network_url" --identity "$identity" --query \
-    --candid "$governance_did" "$(runtime_value sns governance)" get_metadata '(record {})' 2>&1)" || true
+    --candid "$governance_did" "$(runtime_value planned_sns governance)" get_metadata '(record {})' 2>&1)" || true
   printf '%s\n' "$metadata" >> "$log_file"
   if printf '%s' "$metadata" | grep -Fq 'name = opt "IO Local Rehearsal"'; then
     metadata_ready=1
