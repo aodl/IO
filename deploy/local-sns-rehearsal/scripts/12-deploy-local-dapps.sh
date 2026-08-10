@@ -38,11 +38,12 @@ require_file "${bundle_dir}/manifest.toml"
 governance_hash="$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_governance_source_sha256)"
 require_lower_sha256 "SNS-W Governance compressed/source hash" "$governance_hash"
 governance_blob="$(hex_blob_literal "$governance_hash")"
+governance_sed_blob="$(printf '%s' "$governance_blob" | sed 's/\\/\\\\/g; s/&/\\\&/g')"
 if ! grep -q 'expected_sns_governance_module_hash = blob' "$stream_args"; then
   record_blocker "stream install args omit expected_sns_governance_module_hash"
   exit 2
 fi
-sed -i "s|    expected_sns_governance_module_hash = blob .*;|    expected_sns_governance_module_hash = blob \"${governance_blob}\";|" "$stream_args"
+sed -i "s|    expected_sns_governance_module_hash = blob .*;|    expected_sns_governance_module_hash = blob \"${governance_sed_blob}\";|" "$stream_args"
 grep -Fq "expected_sns_governance_module_hash = blob \"${governance_blob}\";" "$stream_args" || {
   record_blocker "stream install args do not contain exact SNS-W Governance source hash"
   exit 2
