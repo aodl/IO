@@ -19,5 +19,5 @@ token_symbol = "IOLO"
 transaction_fee_e8s = 10_000
 total_supply_e8s = 100_000_000_000_000
 treasury_initial_balance_e8s = 80_000_000_000_000
-protocol_reserve_funding_amount_e8s = 60_000_000_000_000
-minimum_remaining_treasury_e8s = 19_999_999_990_000
+protocol_reserve_funding_amount_e8s = 10_000_000_000
+minimum_remaining_treasury_e8s = 79_989_999_990_000

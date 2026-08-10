@@ -29,6 +29,24 @@ stream_args="${REHEARSAL_DIR}/install-args.local/io_stream_manager.did"
 nns_args="${REHEARSAL_DIR}/install-args.local/io_nns_neuron_manager.did"
 require_file "$stream_args"
 require_file "$nns_args"
+bundle_dir="${IO_LOCAL_SNS_BUNDLE_DIR:-}"
+if [ -z "$bundle_dir" ]; then
+  record_blocker "set IO_LOCAL_SNS_BUNDLE_DIR to the reviewed same-source Governance/Root bundle"
+  exit 2
+fi
+require_file "${bundle_dir}/manifest.toml"
+governance_hash="$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_governance_source_sha256)"
+require_lower_sha256 "SNS-W Governance compressed/source hash" "$governance_hash"
+governance_blob="$(hex_blob_literal "$governance_hash")"
+if ! grep -q 'expected_sns_governance_module_hash = blob' "$stream_args"; then
+  record_blocker "stream install args omit expected_sns_governance_module_hash"
+  exit 2
+fi
+sed -i "s|    expected_sns_governance_module_hash = blob .*;|    expected_sns_governance_module_hash = blob \"${governance_blob}\";|" "$stream_args"
+grep -Fq "expected_sns_governance_module_hash = blob \"${governance_blob}\";" "$stream_args" || {
+  record_blocker "stream install args do not contain exact SNS-W Governance source hash"
+  exit 2
+}
 
 work_dir="${REHEARSAL_DIR}/generated/dfx"
 mkdir -p "$work_dir"

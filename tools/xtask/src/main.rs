@@ -2182,7 +2182,11 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
     require_present(
         "deploy/local-sns-rehearsal/scripts/12-deploy-local-dapps.sh",
         &deployment_phase,
-        &["dfx canister id", "does not match planned"],
+        &[
+            "dfx canister id",
+            "does not match planned",
+            "sns_governance_source_sha256",
+        ],
     )?;
     require_absent(
         "deploy/local-sns-rehearsal/scripts/12-deploy-local-dapps.sh",
@@ -8206,7 +8210,7 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "deploy/local-sns-rehearsal/scripts/12-deploy-local-dapps.sh",
-            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# dfx canister id; allocated ID does not match planned\n",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# dfx canister id; allocated ID does not match planned; sns_governance_source_sha256\n",
         );
         write(
             root,
