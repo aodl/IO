@@ -2211,6 +2211,7 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "get_latest_sns_version_pretty",
             "executed_timestamp_seconds",
             "extract_proposal_id",
+            "already-published",
         ],
     )?;
     require_present(
@@ -8213,7 +8214,7 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "deploy/local-sns-rehearsal/scripts/lib-local-sns.sh",
-            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# nns_function = 30 manage_neuron get_proposal_info get_latest_sns_version_pretty executed_timestamp_seconds extract_proposal_id https://forum.dfinity.org/t/io-local-rehearsal/0\n",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# nns_function = 30 manage_neuron get_proposal_info get_latest_sns_version_pretty executed_timestamp_seconds extract_proposal_id already-published https://forum.dfinity.org/t/io-local-rehearsal/0\n",
         );
         write(
             root,

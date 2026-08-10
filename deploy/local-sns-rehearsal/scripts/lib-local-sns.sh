@@ -423,7 +423,19 @@ publish_sns_wasm_via_nns() {
   network_url="$(local_network_url)"
   identity="$(local_identity_name)"
 
-  local add_request encoded_payload manage_request response proposal_id
+  local latest add_request encoded_payload manage_request response proposal_id
+  latest="$(dfx canister call --network "$network_url" --identity "$identity" --query \
+    --candid "$sns_wasm_did" "$(runtime_value nns sns_wasm)" get_latest_sns_version_pretty '(null)' 2>&1)" || {
+      printf '%s\n' "$latest" >> "$log_file"
+      record_blocker "SNS-W latest-version query failed before ${component} publication"
+      return 2
+    }
+  printf '%s\n' "$latest" >> "$log_file"
+  if printf '%s' "$latest" | grep -qi "$expected_hash"; then
+    printf 'already-published\n'
+    return 0
+  fi
+
   add_request="$(mktemp "${REHEARSAL_DIR}/generated/add-sns-wasm.XXXXXX.did")"
   encoded_payload="$(mktemp "${REHEARSAL_DIR}/generated/add-sns-wasm.XXXXXX.blob")"
   manage_request="$(mktemp "${REHEARSAL_DIR}/generated/add-sns-wasm-proposal.XXXXXX.did")"
@@ -478,7 +490,6 @@ publish_sns_wasm_via_nns() {
     return 2
   fi
 
-  local latest
   latest="$(dfx canister call --network "$network_url" --identity "$identity" --query \
     --candid "$sns_wasm_did" "$(runtime_value nns sns_wasm)" get_latest_sns_version_pretty '(null)' 2>&1)" || {
       printf '%s\n' "$latest" >> "$log_file"
