@@ -38,18 +38,26 @@ for role in root governance ledger index swap; do
   fi
 done
 if ! phase_is_done 14-neuron-cap-set; then
-  action='variant { ManageNervousSystemParameters = record { max_number_of_neurons = opt (1_000 : nat64) } }'
-  proposal_id="$(submit_sns_proposal "$log_file" 'Cap local SNS neurons' 'Set the reviewed IO launch bound of at most 1,000 SNS neurons.' "$action")"
-  wait_sns_proposal "$log_file" "$proposal_id"
   governance="$(sns_canister_id governance)"
   parameters="$(dfx canister call --network "$network_url" --identity "$identity" --query \
     --candid "$(official_checkout)/rs/sns/governance/canister/governance.did" \
-    "$governance" get_nervous_system_parameters '()')"
+    "$governance" get_nervous_system_parameters '(null)')"
   printf '%s\n' "$parameters" >> "$log_file"
-  printf '%s' "$parameters" | grep -Eq 'max_number_of_neurons = opt \(?1_000' || {
-    record_blocker 'SNS Governance max_number_of_neurons is not the reviewed 1,000 bound'
-    exit 2
-  }
+  if printf '%s' "$parameters" | grep -Eq 'max_number_of_neurons = opt \(?1_000'; then
+    proposal_id=already-set
+  else
+    action='variant { ManageNervousSystemParameters = record { max_number_of_neurons = opt (1_000 : nat64) } }'
+    proposal_id="$(submit_sns_proposal "$log_file" 'Cap local SNS neurons' 'Set the reviewed IO launch bound of at most 1,000 SNS neurons.' "$action")"
+    wait_sns_proposal "$log_file" "$proposal_id"
+    parameters="$(dfx canister call --network "$network_url" --identity "$identity" --query \
+      --candid "$(official_checkout)/rs/sns/governance/canister/governance.did" \
+      "$governance" get_nervous_system_parameters '(null)')"
+    printf '%s\n' "$parameters" >> "$log_file"
+    printf '%s' "$parameters" | grep -Eq 'max_number_of_neurons = opt \(?1_000' || {
+      record_blocker 'SNS Governance max_number_of_neurons is not the reviewed 1,000 bound'
+      exit 2
+    }
+  fi
   mark_phase_done 14-neuron-cap-set "proposal_id=${proposal_id} max_number_of_neurons=1000"
 fi
 mark_phase_done 14-discover-sns-canisters "canonical discovery=${selected_json}"

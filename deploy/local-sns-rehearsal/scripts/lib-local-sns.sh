@@ -377,7 +377,7 @@ submit_inline_sns_upgrade() {
 wait_sns_proposal() {
   local log_file="$1"
   local proposal_id="$2"
-  local network_url sns_testing
+  local network_url sns_testing governance_did proposal executed
   network_url="$(local_network_url)"
   sns_testing="$(sns_testing_cli)"
   if ! run_logged "$log_file" "$sns_testing" --network "$network_url" sns-proposal-upvote \
@@ -386,6 +386,27 @@ wait_sns_proposal() {
       record_blocker "SNS proposal ${proposal_id} did not execute"
       return 2
     fi
+  fi
+  governance_did="$(official_checkout)/rs/sns/governance/canister/governance.did"
+  executed=0
+  for _attempt in 1 2 3 4 5; do
+    proposal="$(dfx canister call --network "$network_url" --identity "$(local_identity_name)" --query \
+      --candid "$governance_did" "$(sns_canister_id governance)" get_proposal \
+      "(record { proposal_id = opt record { id = ${proposal_id} : nat64 } })" 2>&1)" || true
+    printf '%s\n' "$proposal" >> "$log_file"
+    if printf '%s' "$proposal" | grep -Eq 'executed_timestamp_seconds = [1-9][0-9_]* : nat64'; then
+      executed=1
+      break
+    fi
+    if printf '%s' "$proposal" | grep -Eq 'failed_timestamp_seconds = [1-9][0-9_]* : nat64|failure_reason = opt'; then
+      record_blocker "SNS proposal ${proposal_id} failed"
+      return 2
+    fi
+    sleep 1
+  done
+  if [ "$executed" -ne 1 ]; then
+    record_blocker "SNS proposal ${proposal_id} was not canonically observed as executed"
+    return 2
   fi
 }
 

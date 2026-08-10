@@ -2213,6 +2213,7 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "executed_timestamp_seconds",
             "extract_proposal_id",
             "already-published",
+            "get_proposal",
         ],
     )?;
     require_present(
