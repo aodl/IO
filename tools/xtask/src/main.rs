@@ -2167,6 +2167,7 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "sns_root_source_sha256",
             "Governance",
             "Root",
+            "get_metadata",
         ],
     )?;
     require_absent(
@@ -8199,7 +8200,7 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "deploy/local-sns-rehearsal/scripts/13-propose-and-finalize-sns.sh",
-            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# publish_sns_wasm_via_nns sns_governance_source_sha256 sns_root_source_sha256 Governance Root\n",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# publish_sns_wasm_via_nns sns_governance_source_sha256 sns_root_source_sha256 Governance Root get_metadata\n",
         );
         write(
             root,
