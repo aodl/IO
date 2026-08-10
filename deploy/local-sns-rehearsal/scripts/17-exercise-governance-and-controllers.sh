@@ -39,7 +39,7 @@ if ! phase_is_done 17-upgrade-attempted; then
   run_logged "$log_file" "$sns" --identity "$identity" --network "$network_url" \
     upgrade-sns-controlled-canister --sns-neuron-id "$(runtime_value governance sns_neuron_subaccount_hex)" \
     --target-canister-id "$stream" --wasm-path "${REPO_ROOT}/release-artifacts/io_stream_manager.wasm.gz" \
-    --proposal-url 'https://example.invalid/io-local-rehearsal/stream-upgrade' \
+    --proposal-url 'https://forum.dfinity.org/t/io-local-rehearsal/0' \
     --summary 'Local-only exact release stream-manager upgrade through SNS Governance and Root.'
   upgrade_status=$?
   set -e

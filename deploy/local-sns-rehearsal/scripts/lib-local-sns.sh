@@ -345,7 +345,7 @@ submit_sns_proposal() {
   neuron_hex="$(runtime_value governance sns_neuron_subaccount_hex)"
   require_hex_32_bytes "SNS neuron subaccount" "$neuron_hex"
   args_file="$(mktemp "${REHEARSAL_DIR}/generated/manage-neuron.XXXXXX.did")"
-  printf '(record { subaccount = blob "%s"; command = opt variant { MakeProposal = record { url = "https://example.invalid/io-local-rehearsal"; title = "%s"; summary = "%s"; action = opt %s } } })\n' \
+  printf '(record { subaccount = blob "%s"; command = opt variant { MakeProposal = record { url = "https://forum.dfinity.org/t/io-local-rehearsal/0"; title = "%s"; summary = "%s"; action = opt %s } } })\n' \
     "$(hex_blob_literal "$neuron_hex")" "$title" "$summary" "$action" > "$args_file"
   submit_sns_manage_neuron_file "$log_file" "$title" "$args_file"
 }
@@ -362,7 +362,7 @@ submit_inline_sns_upgrade() {
   require_hex_32_bytes "SNS neuron subaccount" "$neuron_hex"
   args_file="$(mktemp "${REHEARSAL_DIR}/generated/manage-neuron-inline-upgrade.XXXXXX.did")"
   {
-    printf '(record { subaccount = blob "%s"; command = opt variant { MakeProposal = record { url = "https://example.invalid/io-local-rehearsal"; title = "%s"; summary = "%s"; action = opt variant { UpgradeSnsControlledCanister = record { new_canister_wasm = blob "' \
+    printf '(record { subaccount = blob "%s"; command = opt variant { MakeProposal = record { url = "https://forum.dfinity.org/t/io-local-rehearsal/0"; title = "%s"; summary = "%s"; action = opt variant { UpgradeSnsControlledCanister = record { new_canister_wasm = blob "' \
       "$(hex_blob_literal "$neuron_hex")" "$title" "$summary"
     LC_ALL=C od -An -v -tx1 "$wasm" | awk '{ for (i = 1; i <= NF; i++) printf "\\%s", $i }'
     printf '"; chunked_canister_wasm = null; mode = null; canister_id = opt principal "%s"; canister_upgrade_arg = opt blob "" } } } } })\n' "$target"
@@ -430,7 +430,7 @@ publish_sns_wasm_via_nns() {
   } > "$add_request"
   didc encode -d "$sns_wasm_did" -t '(AddWasmRequest)' -f blob < "$add_request" > "$encoded_payload"
   {
-    printf '(record { neuron_id_or_subaccount = opt variant { NeuronId = record { id = %s : nat64 } }; id = null; command = opt variant { MakeProposal = record { url = "https://example.invalid/io-local-rehearsal"; title = opt "Publish local candidate SNS %s"; summary = "Local-only exact %s publication through NNS Governance into SNS-W."; action = opt variant { ExecuteNnsFunction = record { nns_function = 30 : int32; payload = ' "$nns_neuron_id" "$canister_type" "$canister_type"
+    printf '(record { neuron_id_or_subaccount = opt variant { NeuronId = record { id = %s : nat64 } }; id = null; command = opt variant { MakeProposal = record { url = "https://forum.dfinity.org/t/io-local-rehearsal/0"; title = opt "Publish local candidate SNS %s"; summary = "Local-only exact %s publication through NNS Governance into SNS-W."; action = opt variant { ExecuteNnsFunction = record { nns_function = 30 : int32; payload = ' "$nns_neuron_id" "$canister_type" "$canister_type"
     tr -d '\n' < "$encoded_payload"
     printf ' } } } } })\n'
   } > "$manage_request"
