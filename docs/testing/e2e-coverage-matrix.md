@@ -2,7 +2,7 @@
 
 | Behavior | Current gate | Remaining |
 |---|---|---|
-| Paused install and narrow APIs | Stream/NNS PocketIC smoke | Readiness negative matrix |
+| Paused install and narrow APIs | Stream/NNS PocketIC smoke, query-only lifecycle validator rendering, invalid-payload rejection, same-Wasm Paused upgrade preservation, authenticated execution rejection | Real SNS-W Governance activation evidence |
 | Real SNS ICRC-2 primitives | Pinned real SNS ledger test | Official source rehearsal evidence |
 | Installed direct-reserve redemption | Pinned real IO ledger + canonical local ICP ledger | Upgrade, stale callback and exact-proof cases |
 | Exact reward allocation | All 18 `io_reward_policy` tests | Installed serialized fan-out |

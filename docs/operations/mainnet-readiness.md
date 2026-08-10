@@ -16,7 +16,7 @@ protected NNS parent's dissolve delay. This is local evidence only and grants no
 mainnet authority. Production installation remains Paused and requires a
 separate reviewed launch decision.
 
-Local rehearsal evidence concerns a real SNS-created stack installed through SNS-W with the test symbol IO_TEST. It is non-canonical evidence for a local protocol reserve; IO is not launched on mainnet.
+Local rehearsal evidence concerns a real SNS-created stack installed through SNS-W with the local-only test symbol `IOLO`. It is non-canonical evidence for a local protocol reserve; IO is not launched on mainnet. The pinned SNS implementation requires a 3–10 character symbol, so final production naming remains a product/upstream decision.
 
 Reserved mapping record: `io_stream_manager` `thset-pqaaa-aaaar-qb7wa-cai`; `io_nns_neuron_manager` `tatch-ciaaa-aaaar-qb7wq-cai`; `io_historian` `tjqj3-uaaaa-aaaar-qb7xa-cai`; `frontend` `torpp-zyaaa-aaaar-qb7xq-cai`. This inventory does not grant authority to `tatch`.
 

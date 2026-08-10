@@ -3,12 +3,12 @@
 Use this before every release-oriented commit or artifact proposal.
 
 - [ ] `cargo fmt --all -- --check`
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings`
+- [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - [ ] `cargo check --workspace --all-targets`
 - [ ] `cargo test --workspace`
 - [ ] `cargo check -p io-stream-manager -p io-nns-neuron-manager --target wasm32-unknown-unknown`
 - [ ] `cargo run -p xtask -- did_surface`
-- [ ] `cargo run -p xtask -- build_canisters`
+- [ ] Finalize and commit the exact source tree, then run `tools/scripts/build-release-from-source <SOURCE_COMMIT>` from the artifact-recording checkout.
 - [ ] `cargo run -p xtask -- verify_artifacts`
 - [ ] `cargo run -p xtask -- validate_install_args`
 - [ ] `cargo run -p xtask -- frontend_required`
@@ -37,4 +37,6 @@ Use this before every release-oriented commit or artifact proposal.
 - [ ] Confirm official SNS local/testflight package remains optional and outside required CI.
 - [ ] Confirm the current mock/PocketIC SNS-shaped harness is not described as official SNS launch readiness.
 - [ ] Confirm upgrade proposal hashes match `release-artifacts/manifest.json`.
+- [ ] Confirm the manifest source commit exactly matches the compiled source tree outside `release-artifacts/`; ancestry alone is insufficient.
+- [ ] Confirm `validate_set_paused` is query-only, payload-compatible with `set_paused`, and paired with SNS-Governance-only execution authority on both managers.
 - [ ] Confirm no deployment/mainnet calls were made.
