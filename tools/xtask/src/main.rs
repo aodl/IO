@@ -8139,12 +8139,12 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "canisters/io_stream_manager/io_stream_manager.did",
-            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  redeem : () -> ();\n  prepare_liquid_receipt : () -> ();\n  complete_liquid_receipt : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  get_status : () -> () query;\n}\n",
+            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  redeem : () -> ();\n  prepare_liquid_receipt : () -> ();\n  complete_liquid_receipt : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;\n  get_status : () -> () query;\n}\n",
         );
         write(
             root,
             "canisters/io_nns_neuron_manager/io_nns_neuron_manager.did",
-            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  notify_jupiter_deposit : () -> ();\n  reconcile_two_week_backing_readiness : () -> ();\n  prepare_two_week_maturity : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  get_status : () -> () query;\n}\n",
+            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  notify_jupiter_deposit : () -> ();\n  reconcile_two_week_backing_readiness : () -> ();\n  prepare_two_week_maturity : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;\n  get_status : () -> () query;\n}\n",
         );
         write(
             root,
