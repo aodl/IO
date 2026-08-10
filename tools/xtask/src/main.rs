@@ -2148,6 +2148,26 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             ". scripts/env.sh",
         ],
     )?;
+    let governance_phase = require_file(
+        root,
+        "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
+    )?;
+    require_present(
+        "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
+        &governance_phase,
+        &[
+            "upgrade-sns-controlled-canister",
+            "submit_inline_sns_upgrade",
+            "AddGenericNervousSystemFunction",
+            "validate_set_paused",
+            "ExecuteGenericNervousSystemFunction",
+        ],
+    )?;
+    require_absent(
+        "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
+        &governance_phase,
+        &["dfx canister install"],
+    )?;
     validate_loopback_url_guardrails()?;
 
     let commands = require_file(root, "deploy/local-sns-rehearsal/commands.local.example.md")?;
@@ -8090,6 +8110,11 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
                 "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# . scripts/env.sh //rs/sns/testing:sns-testing-init //rs/sns/testing:sns-testing //rs/sns/cli:sns sns init-config-file --init-config-file-path\n",
             );
         }
+        write(
+            root,
+            "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# upgrade-sns-controlled-canister submit_inline_sns_upgrade AddGenericNervousSystemFunction validate_set_paused ExecuteGenericNervousSystemFunction\n",
+        );
         write(
             root,
             "deploy/local-sns-rehearsal/commands.local.example.md",
