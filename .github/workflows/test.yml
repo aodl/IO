@@ -11,12 +11,18 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          # Release artifact provenance verifies that the manifest source commit
-          # is a reachable ancestor; shallow checkout can hide valid ancestors.
+          # Exact release verification materializes the recorded source commit.
           fetch-depth: 0
       - uses: Swatinem/rust-cache@v2
       - name: Add Wasm target
         run: rustup target add wasm32-unknown-unknown
+
+      - name: Provision pinned PocketIC
+        shell: bash
+        run: |
+          pocket_ic_bin="${RUNNER_TEMP}/pocket-ic-server-14.0.0"
+          tools/scripts/provision-pocket-ic "${pocket_ic_bin}"
+          echo "POCKET_IC_BIN=${pocket_ic_bin}" >> "${GITHUB_ENV}"
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -36,8 +42,8 @@ jobs:
       - name: DID surface
         run: cargo run -p xtask -- did_surface
 
-      - name: Build canisters
-        run: cargo run -p xtask -- build_canisters
+      - name: Build exact recorded release source
+        run: tools/scripts/build-release-from-source "$(jq -er '.git_commit' release-artifacts/manifest.json)"
 
       - name: Verify artifacts
         run: cargo run -p xtask -- verify_artifacts
@@ -46,12 +52,4 @@ jobs:
         run: cargo run -p xtask -- validate_install_args
 
       - name: PocketIC required tests
-        if: env.POCKET_IC_BIN != ''
         run: cargo run -p xtask -- test_pocketic_required
-
-      - name: PocketIC not configured
-        if: env.POCKET_IC_BIN == ''
-        run: |
-          echo "::error::POCKET_IC_BIN is not set. Required live PocketIC coverage did not run; this workflow is incomplete."
-          echo "A reviewed, hash-pinned PocketIC provisioning step is required; an unpinned download is forbidden."
-          exit 1

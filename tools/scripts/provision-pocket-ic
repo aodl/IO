@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+version="14.0.0"
+expected_sha256="f5009e61bcbff297435a67a8ef9fc02178ebb9ab3ee1ec3ac81f4fc3d49319c4"
+url="https://github.com/dfinity/pocketic/releases/download/${version}/pocket-ic-x86_64-linux.gz"
+output="${1:?usage: tools/scripts/provision-pocket-ic OUTPUT_FILE}"
+
+case "$output" in
+  ""|/|*/.|*/..) printf 'unsafe PocketIC output path: %s\n' "$output" >&2; exit 2 ;;
+esac
+if [ -d "$output" ]; then
+  printf 'PocketIC output is a directory: %s\n' "$output" >&2
+  exit 2
+fi
+if [ -f "$output" ] && [ "$(sha256sum "$output" | awk '{print $1}')" = "$expected_sha256" ]; then
+  chmod 0755 "$output"
+  "$output" --version
+  exit 0
+fi
+
+parent="$(dirname "$output")"
+mkdir -p "$parent"
+temp_dir="$(mktemp -d "${parent}/.pocket-ic-${version}.XXXXXX")"
+trap 'rm -rf "$temp_dir"' EXIT
+archive="${temp_dir}/pocket-ic.gz"
+binary="${temp_dir}/pocket-ic-server"
+
+curl --fail --location --proto '=https' --tlsv1.2 --output "$archive" "$url"
+gzip -dc "$archive" > "$binary"
+actual_sha256="$(sha256sum "$binary" | awk '{print $1}')"
+if [ "$actual_sha256" != "$expected_sha256" ]; then
+  printf 'PocketIC %s SHA-256 mismatch: expected %s, got %s\n' \
+    "$version" "$expected_sha256" "$actual_sha256" >&2
+  exit 2
+fi
+chmod 0755 "$binary"
+"$binary" --version | grep -F "${version}"
+mv "$binary" "$output"
+printf 'provisioned PocketIC %s at %s (SHA-256 %s)\n' "$version" "$output" "$expected_sha256"

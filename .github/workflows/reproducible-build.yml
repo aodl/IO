@@ -11,8 +11,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          # Artifact provenance requires the recorded source commit to be
-          # locally available and reachable from the PR merge HEAD.
+          # Artifact provenance requires the exact recorded source commit to be
+          # locally available for detached-worktree builds.
           fetch-depth: 0
       - uses: Swatinem/rust-cache@v2
       - name: Add Wasm target
