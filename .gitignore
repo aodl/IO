@@ -17,6 +17,7 @@ utils/canister_call_pipeline/
 
 # rust
 target/
+debug-artifacts/
 
 # frontend code
 node_modules/
