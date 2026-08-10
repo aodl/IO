@@ -96,7 +96,10 @@ if ! phase_is_done 17-nns-activated; then
   status="$(dfx canister call --network "$network_url" --identity "$identity" --query --candid \
     "${REPO_ROOT}/canisters/io_nns_neuron_manager/io_nns_neuron_manager.did" "$nns_manager" get_status '()')"
   printf '%s\n' "$status" >> "$log_file"
-  printf '%s' "$status" | grep -q Ready || { record_blocker 'NNS manager did not enter Ready through SNS Governance'; exit 2; }
+  printf '%s' "$status" | grep -q Ready || {
+    record_blocker 'NNS manager activation proposal executed through SNS Governance but readiness remained Paused: the local fixture does not provision the configured staging fee floats and real protected NNS neurons 1/2 required by readiness_preflight'
+    exit 2
+  }
   mark_phase_done 17-nns-activated "function_id=${function_id} proposal_id=${proposal_id}"
 fi
 

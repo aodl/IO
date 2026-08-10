@@ -102,7 +102,7 @@ The local rehearsal must prove:
 
 ## What Remains Unproven
 
-The restart-safe local logs prove the partial rehearsal behavior described above, but they are not the sanitized committed evidence package. The SNS-controlled IO dapp upgrade, Governance-authorized IO activation, IO monetary execution inside this SNS-W-created topology, and a completed evidence-package validation remain unproved.
+Restart-safe local logs prove same-source candidate Governance/Root compatibility, authentic inline SNS-controlled dapp upgrade execution, Governance-authorized stream activation, production ICRC-2 redemption, canonical ledger/index histories, and one exact proposal-bearing daily reward event. They are not yet a completed sanitized committed package. NNS-manager activation remains Paused because the local fixture lacks its staging fee floats and real protected NNS neurons; the clean same-Wasm upgrade also has no module-hash delta even though Root execution succeeded.
 
 This rehearsal does not prove final SNS launch readiness, mainnet NNS proposal acceptance, final tokenomics, final fallback controllers, production adapter activation, archive traversal completeness, or external audit readiness.
 

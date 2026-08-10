@@ -1,12 +1,12 @@
 # Official SNS Testing
 
-We currently run SNS-shaped mock/PocketIC tests.
+IO runs SNS-shaped mock/PocketIC tests, pinned real-canister profiles, and an optional maintained source-built local SNS-W rehearsal.
 
 We do not currently run the official SNS launch locally in required CI.
 
 Official SNS testing is optional and heavier. The current official ICP/DFINITY SNS testing documentation is the source of truth. The historical standalone `dfinity/sns-testing` repository is deprecated; if the official docs reference successor tooling or a new repository/location, use that current official location.
 
-The maintained official local SNS flow uses the source-built `sns` CLI; this is optional/manual, local-only for the local rehearsal layer, and not part of required IO workflows. SNS testflight is a future manual/mainnet rehearsal.
+The maintained official local SNS flow uses the source-built `sns` CLI; this is optional/manual, local-only for the local rehearsal layer, and not part of required IO workflows. It has proved candidate Governance/Root launch compatibility, stream activation, direct redemption and one exact reward event. SNS testflight remains a separately authorized mainnet rehearsal.
 
 IO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical.
 
@@ -32,7 +32,7 @@ This layer is not required CI, not part of `verify_release`, not run by `test_ci
 
 The local package lives in `deploy/local-sns-rehearsal/`. It renders a local SNS init file from ignored inputs and implements restartable phases 12–17 for exact release dapp installation, NNS Root preparation, same-source Governance/Root publication, SNS-W creation and finalization, canonical discovery, treasury funding, ledger/index/archive evidence, controller and upgrade checks, lifecycle registration/activation, and production redemption. The upgrade phase can fall back from the maintained chunk-store CLI to an inline exact-Wasm SNS Governance proposal; Root still performs the upgrade and no direct management-canister substitution is used. Every phase remains guarded, loopback-only and evidence-producing; the automation itself is not proof of successful execution.
 
-The repository validator `cargo run -p xtask -- validate_local_sns_rehearsal` is no-network and may run in normal checks. The completed-ledger evidence validator `cargo run -p xtask -- validate_local_sns_ledger` is optional and skips until `deploy/local-sns-rehearsal/canister-ids.local.toml` exists. Until that evidence file exists, no local SNS canister IDs are recorded and no real SNS ledger/index/governance/root behavior has been observed.
+The repository validator `cargo run -p xtask -- validate_local_sns_rehearsal` is no-network and may run in normal checks. The completed-ledger evidence validator `cargo run -p xtask -- validate_local_sns_ledger` skips until `deploy/local-sns-rehearsal/canister-ids.local.toml` exists. External restart-safe logs contain real observations, but only a filled, validated file is authoritative committed ledger evidence.
 
 The issuance model under this layer is protocol reserve transfer. The standalone rehearsal proves reserve-to-user and direct user-to-reserve ledger mechanics. The launch stream manager separately uses an authenticated ICRC-2 pull from the caller Account directly into reserve. IO does not assume arbitrary post-launch minting or constant supply unless the final ledger fee mode proves it.
 

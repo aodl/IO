@@ -29,8 +29,8 @@ Do not use `--network ic`. Do not call mainnet. Do not touch `oae4c-3iaaa-aaaar-
 - `scripts/14-discover-sns-canisters.sh`: discovers the real SNS canonically and rejects any mismatch with the per-run plan.
 - `scripts/15-exercise-ledger.sh`: submits signed treasury proposals, records duplicate/negative ledger behavior, funds liquid ICP, and runs the production ICRC-2 redemption after activation.
 - `scripts/16-exercise-index-and-archives.sh`: captures index synchronization, exact Account histories and canonical ledger/Root archive discovery.
-- `scripts/17-exercise-governance-and-controllers.sh`: records controller and upgrade evidence, registers lifecycle functions, and activates both managers through signed SNS Governance proposals.
-- `scripts/18-package-evidence.sh`: packages the incomplete blocker form; completed-evidence collection remains manual.
+- `scripts/17-exercise-governance-and-controllers.sh`: records controller and upgrade evidence, registers lifecycle functions, activates the stream through signed SNS Governance proposals, and fails precisely if NNS-manager readiness fixtures are absent.
+- `scripts/18-package-evidence.sh`: packages the exact incomplete blocker form; completed-evidence collection remains manual until every required canonical observation exists.
 - `scripts/19-cleanup-official-network.sh`: scoped cleanup reminder for local-only processes.
 
 `canister-ids.local.toml` is the operator-filled local evidence file and should not be treated as production config.
@@ -63,7 +63,7 @@ Manual sequence:
 4. Run `runbook.sh bootstrap-official-network` against an isolated pinned clean `dfinity/ic` checkout and loopback endpoint.
 5. Write ignored `install-args.local/io_stream_manager.did` and `install-args.local/io_nns_neuron_manager.did` for the planned local SNS principals and Accounts. Phase 12 renders the reviewed bundle's compressed/source Governance hash—the module hash SNS-W installs—into the stream args. Run `runbook.sh build-local-io-canisters` to verify the exact release provenance and hashes.
 6. Set `IO_LOCAL_SNS_BUNDLE_DIR` to the reviewed same-source Governance/Root resolver output, then run the restartable `deploy-local-dapps`, `propose-and-finalize-sns`, and `discover-sns-canisters` phases.
-7. Run `exercise-ledger`, `exercise-index-and-archives`, and `exercise-governance-and-controllers` after their canonical prerequisites exist. The governance phase tries the maintained chunk-store CLI route first and, if that route fails before execution, submits the exact release Wasm inline through the same signed SNS Governance proposal and Root execution path. It records proposal and before/after module hashes without treating a same-Wasm result as a hash-change proof.
+7. Run `exercise-ledger`, `exercise-index-and-archives`, and `exercise-governance-and-controllers` after their canonical prerequisites exist. The governance phase tries the maintained chunk-store CLI route first and, if that route fails before execution, submits the exact release Wasm inline through the same signed SNS Governance proposal and Root execution path. It records proposal and before/after module hashes without treating a same-Wasm result as a hash-change proof. The real run proved that same-source Root accepts candidate Governance's request; the preserved earlier topology changed the hash, while the clean restart used the same module and therefore proved execution without a hash delta.
 8. Run `runbook.sh record-ids` and record the canonically discovered IDs in ignored `canister-ids.local.toml`.
 9. Run `runbook.sh capture-evidence` and the command templates in `commands.local.example.md`.
 10. Observe the treasury-transfer fee burn and capture the canonical activation baseline after the real SNS-governance reserve-funding proposal.
@@ -72,6 +72,18 @@ Manual sequence:
 13. Test an SNS-governance-controlled dapp upgrade proposal and lifecycle proposal without direct management-canister substitution.
 14. Run `runbook.sh validate` and `cargo run -p xtask -- validate_local_sns_ledger`.
 15. Run `runbook.sh package-evidence` to create sanitized committed evidence or a blocker report.
+
+After advancing PocketIC beyond signed-ingress time, use the repository observer instead of weakening ingress validation:
+
+```bash
+IO_POCKET_IC_SERVER_URL=http://127.0.0.1:8888 \
+IO_POCKET_IC_INSTANCE_ID=0 \
+IO_LOCAL_SNS_GOVERNANCE_ID=<local-governance> \
+IO_LOCAL_STREAM_MANAGER_ID=<local-stream> \
+cargo run -p e2e-real-canisters --bin observe_existing_reward
+```
+
+The observer attaches to the existing local instance, performs canonical anonymous queries, and optionally calls the permissionless production `resume_reward_work` when `IO_LOCAL_REWARD_RESUME=1`; it has no debug or state-mutation bypass.
 
 ## Repository Validators
 

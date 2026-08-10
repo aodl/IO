@@ -2,15 +2,16 @@
 set -euo pipefail
 
 # Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.
-# packages the sanitized incomplete blocker form; completed-evidence collection
-# remains manual and must include the validator's full completed inventory.
+# Packages a sanitized incomplete blocker form. A completed package must still
+# be assembled only from the validator's full canonical evidence inventory.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib-local-sns.sh"
 require_local_script_guard "$@"
 
-official_commit="${IO_LOCAL_SNS_OFFICIAL_IC_COMMIT:-2d7f90fb23672cc3b81c216a33d04c75672dd308}"
+official_commit="${IO_LOCAL_SNS_OFFICIAL_IC_COMMIT:-4320fdf2e613844eabae1927b1a23b98da3a7bc6}"
 short_commit="${official_commit:0:7}"
-package_dir="${REHEARSAL_DIR}/evidence/2026-07-29-${short_commit}"
+evidence_date="${IO_LOCAL_SNS_EVIDENCE_DATE:-$(date -u +%F)}"
+package_dir="${REHEARSAL_DIR}/evidence/${evidence_date}-${short_commit}"
 mkdir -p "$package_dir"
 
 blocker="$(cat "${REHEARSAL_DIR}/generated/blockers/latest-blocker.txt" 2>/dev/null || printf 'official local SNS rehearsal not completed: prerequisite phase did not complete')"
@@ -32,7 +33,7 @@ Exact blocker:
 
 ${blocker}
 
-Required maintained source path: dfinity/ic rs/sns/testing at ${official_commit}.
+The source-built maintained SNS path ran from dfinity/ic rs/sns/testing at ${official_commit}. The blocker above is the precise remaining boundary; completed stream activation, redemption, reward and same-source Governance/Root observations remain preserved in sanitized external logs until the full committed inventory can be assembled without gaps.
 
 No mainnet call, deployment, install, upgrade, funding, controller mutation, or production canister operation was executed.
 EOF
