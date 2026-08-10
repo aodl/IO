@@ -12,7 +12,7 @@ contacts an IC mainnet endpoint.
 | --- | --- | --- |
 | `--source` | `IO_SNS_SOURCE` | `official`, `local`, `bundle`; default `official` |
 | `--ic-repo` | `IO_IC_REPO` | local IC checkout; default `<IO>/../ic` |
-| `--scope` | `IO_SNS_SCOPE` | `governance` only |
+| `--scope` | `IO_SNS_SCOPE` | `governance`, `governance-root` |
 | `--profile` | `IO_SNS_PROFILE` | `contract`, `io`, `upgrade`; default `contract` |
 | `--bundle` | `IO_SNS_BUNDLE` | absolute bundle path for bundle mode |
 | `--cache-dir` | `IO_SNS_CACHE_DIR` | external content-addressed cache root |
@@ -29,7 +29,7 @@ tools/scripts/test-sns-framework --source official --profile contract
 
 tools/scripts/test-sns-framework \
   --source local \
-  --scope governance \
+  --scope governance-root \
   --require-capability latest_reward_event_participation \
   --profile io
 
@@ -56,19 +56,22 @@ allowlisted, hash-verifying fetch script. `--official-manifest` can test a
 separately prepared proposed lock without editing the repository; the runner
 does not create or bless that proposal.
 
-## Local Governance overlay
+## Local component overlay
 
 Local mode treats `<IO>/../ic` as read/build input. The runner does not switch,
 clean, reset, pull, rebase, commit, or otherwise modify that checkout. It builds
-only the production Governance target:
+the production Governance target and, for `governance-root`, Root from the same
+source commit:
 
 ```text
 //rs/sns/governance:sns-governance-canister
+//rs/sns/root:sns-root-canister
 ```
 
-The candidate Governance Wasm and DID replace Governance in the official base;
-all other artifacts remain byte-for-byte official. A requested local build is
-never silently replaced with official Governance.
+The candidate Governance Wasm and DID replace Governance in the official base.
+The `governance-root` scope also replaces Root and hash-binds its DID; all other
+artifacts remain byte-for-byte official. A requested local component build is
+never silently replaced with its official baseline.
 
 The runner records the IC commit, branch, merge base, clean/dirty state, tracked
 diff SHA-256, Bazel version, exact target, candidate DID hash, artifact hashes,

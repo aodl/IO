@@ -11,6 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const OFFICIAL_LOCK: &str = "tests/e2e_real_canisters/wasms.example.toml";
 const GOVERNANCE_DID: &str = "rs/sns/governance/canister/governance.did";
+const ROOT_DID: &str = "rs/sns/root/canister/root.did";
 const CAPABILITY_FIELD: &str = "latest_reward_event_participation";
 
 const ALL_ARTIFACTS: &[&str] = &[
@@ -32,6 +33,7 @@ const ALL_ARTIFACTS: &[&str] = &[
 ];
 
 const GOVERNANCE_TARGET: &str = "//rs/sns/governance:sns-governance-canister";
+const ROOT_TARGET: &str = "//rs/sns/root:sns-root-canister";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Source {
@@ -64,14 +66,16 @@ impl Source {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Scope {
     Governance,
+    GovernanceRoot,
 }
 
 impl Scope {
     fn parse(value: &str) -> Result<Self, String> {
         match value {
             "governance" => Ok(Self::Governance),
+            "governance-root" => Ok(Self::GovernanceRoot),
             _ => Err(format!(
-                "unsupported SNS scope {value:?}; expected governance"
+                "unsupported SNS scope {value:?}; expected governance or governance-root"
             )),
         }
     }
@@ -79,6 +83,7 @@ impl Scope {
     fn as_str(self) -> &'static str {
         match self {
             Self::Governance => "governance",
+            Self::GovernanceRoot => "governance-root",
         }
     }
 }
@@ -186,7 +191,8 @@ SOURCE (flag overrides environment)
   --require-capability NAME      require latest_reward_event_participation
 
 BUILD AND TEST
-  --scope governance             IO_SNS_SCOPE; only local overlay implemented
+  --scope governance|governance-root
+                                 IO_SNS_SCOPE; same-source component overlay
   --profile contract|io|upgrade  implemented profiles
                                  IO_SNS_PROFILE; default: contract
   --cache-dir PATH               IO_SNS_CACHE_DIR; default:
@@ -202,8 +208,9 @@ EXAMPLES
   tools/scripts/test-sns-framework --source bundle --bundle /abs/bundle --profile upgrade
 
 Every mode resolves to one manifest and uses the existing real-canister loader.
-Local Governance scope overlays only Governance onto the checked-in official
-baseline. The lifecycle profile is accepted only to return ProfileNotImplemented.
+Local scope overlays Governance, or Governance and Root from the same IC commit,
+onto the checked-in official baseline. The lifecycle profile is accepted only
+to return ProfileNotImplemented.
 No command in this workflow contacts an IC mainnet endpoint."#
     );
 }
@@ -520,7 +527,10 @@ fn resolve_local_overlay(
     )
     .map_err(|err| format!("failed to retain official Governance baseline: {err}"))?;
 
-    let targets = vec![("sns_governance", GOVERNANCE_TARGET)];
+    let mut targets = vec![("sns_governance", GOVERNANCE_TARGET)];
+    if options.scope == Scope::GovernanceRoot {
+        targets.push(("sns_root", ROOT_TARGET));
+    }
     let outputs = build_local_targets(
         &ic_root,
         &bazel_rc,
@@ -537,6 +547,14 @@ fn resolve_local_overlay(
         let raw = wasms.join(&filename);
         decompress_gzip(gz, &raw)?;
         let gz_name = format!("{component}.wasm.gz");
+        if *component != "sns_governance" {
+            let official_source = lock.source_artifact_name(component)?;
+            if official_source != gz_name {
+                fs::remove_file(wasms.join(official_source)).map_err(|err| {
+                    format!("failed to remove overridden {component} source artifact: {err}")
+                })?;
+            }
+        }
         fs::copy(gz, wasms.join(&gz_name))
             .map_err(|err| format!("failed to copy {}: {err}", gz.display()))?;
         let raw_hash = sha256_file(&raw)?;
@@ -576,6 +594,13 @@ fn resolve_local_overlay(
         "governance_did_sha256",
         sha256(did_text.as_bytes()),
     )?;
+    if options.scope == Scope::GovernanceRoot {
+        let root_did = fs::read_to_string(ic_root.join(ROOT_DID))
+            .map_err(|err| format!("failed to read candidate Root DID: {err}"))?;
+        fs::write(staging.join("root.did"), &root_did)
+            .map_err(|err| format!("failed to write candidate Root DID: {err}"))?;
+        resolved.set_value("contract", "root_did_sha256", sha256(root_did.as_bytes()))?;
+    }
     resolved.set_value(
         "baseline",
         "sns_governance_wasm",
@@ -792,7 +817,13 @@ fn inspect_local_ic(
     bazel_rc: &Path,
     bazel_version_override: Option<&str>,
 ) -> Result<LocalProvenance, String> {
-    for expected in [".git", GOVERNANCE_DID, "rs/sns/governance/BUILD.bazel"] {
+    for expected in [
+        ".git",
+        GOVERNANCE_DID,
+        "rs/sns/governance/BUILD.bazel",
+        ROOT_DID,
+        "rs/sns/root/BUILD.bazel",
+    ] {
         if !path.join(expected).exists() {
             return Err(format!(
                 "IC checkout {} is missing expected {}",
@@ -1421,6 +1452,19 @@ fn print_summary(bundle: &ResolvedBundle) {
     if !bundle.governance_did_hash.is_empty() {
         println!("Governance DID SHA-256: {}", bundle.governance_did_hash);
     }
+    if let Ok(manifest) = SnsManifest::read(&bundle.manifest) {
+        for component in ALL_ARTIFACTS {
+            if let (Some(raw), Some(source)) = (
+                manifest.artifact(component, "sha256"),
+                manifest.artifact(component, "source_sha256"),
+            ) {
+                println!("{component} raw/source SHA-256: {raw} / {source}");
+            }
+        }
+        if let Some(root_did) = manifest.value("contract", "root_did_sha256") {
+            println!("Root DID SHA-256: {root_did}");
+        }
+    }
     println!("Capability {}: {}", CAPABILITY_FIELD, bundle.capability);
     println!("Resolved manifest: {}", bundle.manifest.display());
     println!("Profile: {}", bundle.profile.as_str());
@@ -1471,6 +1515,7 @@ fn validate_bundle(root: &Path) -> Result<(), String> {
         "governance.did",
         "manifest.toml",
         "provenance.toml",
+        "root.did",
         "wasms",
     ]);
     for entry in fs::read_dir(root)
@@ -1517,6 +1562,11 @@ fn validate_bundle(root: &Path) -> Result<(), String> {
         }
     }
     let manifest = SnsManifest::read(&root.join("manifest.toml"))?;
+    if let Some(expected) = manifest.value("contract", "root_did_sha256") {
+        verify_hash(&root.join("root.did"), expected)?;
+    } else if root.join("root.did").is_file() {
+        return Err("root.did is not hash-bound by the manifest".into());
+    }
     if manifest.value("variant", "ic_repository").is_some()
         || manifest.value("variant", "ic_remotes").is_some()
     {
@@ -1984,6 +2034,10 @@ mod tests {
     #[test]
     fn only_implemented_scope_and_profiles_are_advertised() {
         assert!(Scope::parse("sns-suite").is_err());
+        assert_eq!(
+            Scope::parse("governance-root").unwrap(),
+            Scope::GovernanceRoot
+        );
         assert!(Profile::parse("all").is_err());
         assert!(matches!(
             shared_profile_plan(Profile::Lifecycle, true),
