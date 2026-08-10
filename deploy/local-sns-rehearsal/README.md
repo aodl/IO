@@ -63,7 +63,7 @@ Manual sequence:
 4. Run `runbook.sh bootstrap-official-network` against an isolated pinned clean `dfinity/ic` checkout and loopback endpoint.
 5. Write ignored `install-args.local/io_stream_manager.did` and `install-args.local/io_nns_neuron_manager.did` for the planned local SNS principals, Accounts and module hash. Run `runbook.sh build-local-io-canisters` to verify the exact release provenance and hashes.
 6. Set `IO_LOCAL_SNS_BUNDLE_DIR` to the reviewed same-source Governance/Root resolver output, then run the restartable `deploy-local-dapps`, `propose-and-finalize-sns`, and `discover-sns-canisters` phases.
-7. Run `exercise-ledger`, `exercise-index-and-archives`, and `exercise-governance-and-controllers` after their canonical prerequisites exist. These phases fail with a precise blocker until their remaining automation is completed.
+7. Run `exercise-ledger`, `exercise-index-and-archives`, and `exercise-governance-and-controllers` after their canonical prerequisites exist. The governance phase tries the maintained chunk-store CLI route first and, if that route fails before execution, submits the exact release Wasm inline through the same signed SNS Governance proposal and Root execution path. It records proposal and before/after module hashes without treating a same-Wasm result as a hash-change proof.
 8. Run `runbook.sh record-ids` and record the canonically discovered IDs in ignored `canister-ids.local.toml`.
 9. Run `runbook.sh capture-evidence` and the command templates in `commands.local.example.md`.
 10. Observe the treasury-transfer fee burn and capture the canonical activation baseline after the real SNS-governance reserve-funding proposal.

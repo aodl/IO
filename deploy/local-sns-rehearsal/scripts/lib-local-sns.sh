@@ -309,23 +309,17 @@ sns_canister_id() {
   jq -er --arg role "$role" '.[$role].canister_id' "$discovery"
 }
 
-submit_sns_proposal() {
+submit_sns_manage_neuron_file() {
   local log_file="$1"
   local title="$2"
-  local summary="$3"
-  local action="$4"
-  local governance neuron_hex network_url identity checkout governance_did args_file response proposal_id
+  local args_file="$3"
+  local governance network_url identity checkout governance_did response proposal_id
   governance="$(sns_canister_id governance)"
-  neuron_hex="$(runtime_value governance sns_neuron_subaccount_hex)"
-  require_hex_32_bytes "SNS neuron subaccount" "$neuron_hex"
   network_url="$(local_network_url)"
   identity="$(local_identity_name)"
   checkout="$(official_checkout)"
   governance_did="${checkout}/rs/sns/governance/canister/governance.did"
   require_file "$governance_did"
-  args_file="$(mktemp "${REHEARSAL_DIR}/generated/manage-neuron.XXXXXX.did")"
-  printf '(record { subaccount = blob "%s"; command = opt variant { MakeProposal = record { url = "https://example.invalid/io-local-rehearsal"; title = "%s"; summary = "%s"; action = opt %s } } })\n' \
-    "$(hex_blob_literal "$neuron_hex")" "$title" "$summary" "$action" > "$args_file"
   response="$(dfx canister call --network "$network_url" --identity "$identity" \
     --candid "$governance_did" --argument-file "$args_file" \
     "$governance" manage_neuron 2>&1)" || {
@@ -340,6 +334,40 @@ submit_sns_proposal() {
     return 2
   fi
   printf '%s\n' "$proposal_id"
+}
+
+submit_sns_proposal() {
+  local log_file="$1"
+  local title="$2"
+  local summary="$3"
+  local action="$4"
+  local neuron_hex args_file
+  neuron_hex="$(runtime_value governance sns_neuron_subaccount_hex)"
+  require_hex_32_bytes "SNS neuron subaccount" "$neuron_hex"
+  args_file="$(mktemp "${REHEARSAL_DIR}/generated/manage-neuron.XXXXXX.did")"
+  printf '(record { subaccount = blob "%s"; command = opt variant { MakeProposal = record { url = "https://example.invalid/io-local-rehearsal"; title = "%s"; summary = "%s"; action = opt %s } } })\n' \
+    "$(hex_blob_literal "$neuron_hex")" "$title" "$summary" "$action" > "$args_file"
+  submit_sns_manage_neuron_file "$log_file" "$title" "$args_file"
+}
+
+submit_inline_sns_upgrade() {
+  local log_file="$1"
+  local title="$2"
+  local summary="$3"
+  local target="$4"
+  local wasm="$5"
+  local neuron_hex args_file
+  require_file "$wasm"
+  neuron_hex="$(runtime_value governance sns_neuron_subaccount_hex)"
+  require_hex_32_bytes "SNS neuron subaccount" "$neuron_hex"
+  args_file="$(mktemp "${REHEARSAL_DIR}/generated/manage-neuron-inline-upgrade.XXXXXX.did")"
+  {
+    printf '(record { subaccount = blob "%s"; command = opt variant { MakeProposal = record { url = "https://example.invalid/io-local-rehearsal"; title = "%s"; summary = "%s"; action = opt variant { UpgradeSnsControlledCanister = record { new_canister_wasm = blob "' \
+      "$(hex_blob_literal "$neuron_hex")" "$title" "$summary"
+    LC_ALL=C od -An -v -tx1 "$wasm" | awk '{ for (i = 1; i <= NF; i++) printf "\\%s", $i }'
+    printf '"; chunked_canister_wasm = null; mode = null; canister_id = opt principal "%s"; canister_upgrade_arg = opt blob "" } } } } })\n' "$target"
+  } > "$args_file"
+  submit_sns_manage_neuron_file "$log_file" "$title" "$args_file"
 }
 
 wait_sns_proposal() {

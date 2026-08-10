@@ -16,6 +16,7 @@ fi
 network_url="$(local_network_url)"
 identity="$(local_identity_name)"
 sns="$(sns_cli)"
+require_command_available od
 root="$(sns_canister_id root)"
 stream="$(toml_string "${REHEARSAL_DIR}/local-vars.toml" local io_stream_manager_canister)"
 nns_manager="$(toml_string "${REHEARSAL_DIR}/local-vars.toml" local io_nns_neuron_manager_canister)"
@@ -43,7 +44,21 @@ if ! phase_is_done 17-upgrade-attempted; then
   upgrade_status=$?
   set -e
   after_hash="$(dfx canister status --network "$network_url" --identity "$identity" "$stream" 2>&1 | sed -n 's/^Module hash: 0x//p')"
-  mark_phase_done 17-upgrade-attempted "exit_status=${upgrade_status} before=${before_hash} after=${after_hash}; see ${log_file}"
+  inline_proposal_id="none"
+  if [ "$upgrade_status" -ne 0 ]; then
+    inline_proposal_id="$(submit_inline_sns_upgrade "$log_file" \
+      'Upgrade IO stream inline' \
+      'Local-only inline exact release Wasm proposal through SNS Governance and Root; this bypasses only the unavailable upload store, not governance.' \
+      "$stream" "${REPO_ROOT}/release-artifacts/io_stream_manager.wasm")"
+    wait_sns_proposal "$log_file" "$inline_proposal_id"
+    after_hash="$(dfx canister status --network "$network_url" --identity "$identity" "$stream" 2>&1 | sed -n 's/^Module hash: 0x//p')"
+  fi
+  final_controllers="$(dfx canister info --network "$network_url" --identity "$identity" "$stream" 2>&1 | sed -n 's/^Controllers: //p' | xargs)"
+  if [ "$final_controllers" != "$root" ]; then
+    record_blocker "stream controllers changed during SNS-governed upgrade: ${final_controllers}"
+    exit 2
+  fi
+  mark_phase_done 17-upgrade-attempted "cli_exit_status=${upgrade_status} inline_proposal_id=${inline_proposal_id} before=${before_hash} after=${after_hash} controllers=${final_controllers}; see ${log_file}"
 fi
 
 # The Candid paths cannot be derived from principals, so register each manager explicitly.
