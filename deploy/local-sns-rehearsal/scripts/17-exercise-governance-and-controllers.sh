@@ -48,8 +48,8 @@ if ! phase_is_done 17-upgrade-attempted; then
   if [ "$upgrade_status" -ne 0 ]; then
     inline_proposal_id="$(submit_inline_sns_upgrade "$log_file" \
       'Upgrade IO stream inline' \
-      'Local-only inline exact release Wasm proposal through SNS Governance and Root; this bypasses only the unavailable upload store, not governance.' \
-      "$stream" "${REPO_ROOT}/release-artifacts/io_stream_manager.wasm")"
+      'Local-only inline exact gzip release Wasm proposal through SNS Governance and Root; this bypasses only the unavailable upload store, not governance.' \
+      "$stream" "${REPO_ROOT}/release-artifacts/io_stream_manager.wasm.gz")"
     wait_sns_proposal "$log_file" "$inline_proposal_id"
     after_hash="$(dfx canister info --network "$network_url" --identity "$identity" "$stream" 2>&1 | sed -n 's/^Module hash: 0x//p')"
   fi
