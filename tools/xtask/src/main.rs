@@ -2174,6 +2174,32 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
         &publication_phase,
         &["add-sns-wasm-for-tests"],
     )?;
+    let deployment_phase = require_file(
+        root,
+        "deploy/local-sns-rehearsal/scripts/12-deploy-local-dapps.sh",
+    )?;
+    require_present(
+        "deploy/local-sns-rehearsal/scripts/12-deploy-local-dapps.sh",
+        &deployment_phase,
+        &["dfx canister id", "does not match planned"],
+    )?;
+    require_absent(
+        "deploy/local-sns-rehearsal/scripts/12-deploy-local-dapps.sh",
+        &deployment_phase,
+        &["--specified-id"],
+    )?;
+    require_present(
+        "deploy/local-sns-rehearsal/scripts/14-discover-sns-canisters.sh",
+        &require_file(
+            root,
+            "deploy/local-sns-rehearsal/scripts/14-discover-sns-canisters.sh",
+        )?,
+        &[
+            "ManageNervousSystemParameters",
+            "max_number_of_neurons",
+            "1_000",
+        ],
+    )?;
     let local_library = require_file(root, "deploy/local-sns-rehearsal/scripts/lib-local-sns.sh")?;
     require_present(
         "deploy/local-sns-rehearsal/scripts/lib-local-sns.sh",
@@ -8162,6 +8188,16 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
             root,
             "deploy/local-sns-rehearsal/scripts/13-propose-and-finalize-sns.sh",
             "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# publish_sns_wasm_via_nns sns_governance_source_sha256 sns_root_source_sha256 Governance Root\n",
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/scripts/12-deploy-local-dapps.sh",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# dfx canister id; allocated ID does not match planned\n",
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/scripts/14-discover-sns-canisters.sh",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# ManageNervousSystemParameters max_number_of_neurons 1_000\n",
         );
         write(
             root,

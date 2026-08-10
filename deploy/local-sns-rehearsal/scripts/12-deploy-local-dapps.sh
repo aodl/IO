@@ -46,7 +46,12 @@ for canister in io_stream_manager io_nns_neuron_manager io_historian frontend; d
   canister_id="${ids[$canister]}"
   case "$canister_id" in TODO*|"") record_blocker "local dapp ID is unresolved: ${canister}"; exit 2 ;; esac
   if ! (cd "$work_dir" && dfx canister status --network "$network_url" --identity "$identity" "$canister_id") >> "$log_file" 2>&1; then
-    (cd "$work_dir" && run_logged "$log_file" dfx canister create --network "$network_url" --identity "$identity" --no-wallet --specified-id "$canister_id" "$canister") || exit $?
+    (cd "$work_dir" && run_logged "$log_file" dfx canister create --network "$network_url" --identity "$identity" --no-wallet "$canister") || exit $?
+    allocated_id="$(cd "$work_dir" && dfx canister id --network "$network_url" "$canister")"
+    if [ "$allocated_id" != "$canister_id" ]; then
+      record_blocker "${canister} allocated ID ${allocated_id} does not match planned ${canister_id}"
+      exit 2
+    fi
   fi
   raw_path="${REPO_ROOT}/$(manifest_artifact_value "$canister" raw_wasm_path)"
   expected_hash="$(manifest_artifact_value "$canister" raw_wasm_sha256)"
