@@ -38,6 +38,7 @@ deploy/local-sns-rehearsal/local-vars.toml
 deploy/local-sns-rehearsal/runtime.local.toml
 deploy/local-sns-rehearsal/install-args.local/
 deploy/local-sns-rehearsal/generated/
+deploy/local-sns-rehearsal/sns_init.local.yaml
 deploy/local-sns-rehearsal/*.log
 # python cache
 __pycache__/

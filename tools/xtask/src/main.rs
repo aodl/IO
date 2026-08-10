@@ -1943,6 +1943,12 @@ fn check_sns_launch_readiness_at(root: &Path, strict: bool) -> Result<usize, Str
 }
 
 fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
+    let gitignore = require_file(root, ".gitignore")?;
+    require_present(
+        ".gitignore",
+        &gitignore,
+        &["deploy/local-sns-rehearsal/sns_init.local.yaml"],
+    )?;
     let readme = require_file(root, "deploy/local-sns-rehearsal/README.md")?;
     require_present(
         "deploy/local-sns-rehearsal/README.md",
@@ -8081,6 +8087,11 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
     }
 
     fn write_local_sns_rehearsal_fixture(root: &Path) {
+        write(
+            root,
+            ".gitignore",
+            "deploy/local-sns-rehearsal/sns_init.local.yaml\n",
+        );
         write(
             root,
             "deploy/local-sns-rehearsal/README.md",
