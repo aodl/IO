@@ -21,6 +21,10 @@ liquid_icp_subaccount_hex = "TODO_LOCAL_64_HEX_LIQUID_ICP_SUBACCOUNT"
 [nns]
 # This is the standard NNS ledger principal on the isolated loopback topology.
 icp_ledger = "ryjl3-tyaaa-aaaaa-aaaba-cai"
+# These are the standard NNS Governance and SNS-W principals on that same
+# isolated topology. They are never called without the loopback URL guard.
+governance = "rrkah-fqaaa-aaaaa-aaaaq-cai"
+sns_wasm = "qaa6y-5yaaa-aaaaa-aaafa-cai"
 
 [amounts]
 reserve_funding_e8s = "60000000000000"

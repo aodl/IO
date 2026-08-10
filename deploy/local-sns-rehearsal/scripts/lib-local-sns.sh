@@ -384,3 +384,107 @@ wait_sns_proposal() {
     fi
   fi
 }
+
+publish_sns_wasm_via_nns() {
+  local log_file="$1"
+  local component="$2"
+  local canister_type="$3"
+  local wasm="$4"
+  local expected_hash="$5"
+  local nns_neuron_id="$6"
+  local type_id
+  case "$canister_type" in
+    Root) type_id=1 ;;
+    Governance) type_id=2 ;;
+    *) record_blocker "unsupported SNS-W publication type: ${canister_type}"; return 2 ;;
+  esac
+
+  require_command_available dfx
+  require_command_available didc
+  require_file "$wasm"
+  require_lower_sha256 "${component} compressed/source hash" "$expected_hash"
+  local actual_hash
+  actual_hash="$(sha256sum "$wasm" | awk '{print $1}')"
+  if [ "$actual_hash" != "$expected_hash" ]; then
+    record_blocker "${component} compressed/source hash ${actual_hash} does not match manifest ${expected_hash}"
+    return 2
+  fi
+
+  local checkout sns_wasm_did nns_governance_did network_url identity
+  checkout="$(official_checkout)"
+  sns_wasm_did="${checkout}/rs/nns/sns-wasm/canister/sns-wasm.did"
+  nns_governance_did="${checkout}/rs/nns/governance/canister/governance.did"
+  require_file "$sns_wasm_did"
+  require_file "$nns_governance_did"
+  network_url="$(local_network_url)"
+  identity="$(local_identity_name)"
+
+  local add_request encoded_payload manage_request response proposal_id
+  add_request="$(mktemp "${REHEARSAL_DIR}/generated/add-sns-wasm.XXXXXX.did")"
+  encoded_payload="$(mktemp "${REHEARSAL_DIR}/generated/add-sns-wasm.XXXXXX.blob")"
+  manage_request="$(mktemp "${REHEARSAL_DIR}/generated/add-sns-wasm-proposal.XXXXXX.did")"
+  {
+    printf '(record { hash = blob "%s"; wasm = opt record { wasm = blob "' "$(hex_blob_literal "$expected_hash")"
+    LC_ALL=C od -An -v -tx1 "$wasm" | awk '{ for (i = 1; i <= NF; i++) printf "\\%s", $i }'
+    printf '"; proposal_id = null; canister_type = %s : int32 }; skip_update_latest_version = opt false })\n' "$type_id"
+  } > "$add_request"
+  didc encode -d "$sns_wasm_did" -t '(AddWasmRequest)' -f blob < "$add_request" > "$encoded_payload"
+  {
+    printf '(record { neuron_id_or_subaccount = opt variant { NeuronId = record { id = %s : nat64 } }; id = null; command = opt variant { MakeProposal = record { url = "https://example.invalid/io-local-rehearsal"; title = opt "Publish local candidate SNS %s"; summary = "Local-only exact %s publication through NNS Governance into SNS-W."; action = opt variant { ExecuteNnsFunction = record { nns_function = 30 : int32; payload = ' "$nns_neuron_id" "$canister_type" "$canister_type"
+    tr -d '\n' < "$encoded_payload"
+    printf ' } } } } })\n'
+  } > "$manage_request"
+
+  response="$(dfx canister call --network "$network_url" --identity "$identity" \
+    --candid "$nns_governance_did" --argument-file "$manage_request" \
+    "$(runtime_value nns governance)" manage_neuron 2>&1)" || {
+      printf '%s\n' "$response" >> "$log_file"
+      record_blocker "NNS Governance rejected ${component} publication"
+      return 2
+    }
+  printf '%s\n' "$response" >> "$log_file"
+  if printf '%s' "$response" | grep -q 'Error = record'; then
+    record_blocker "NNS Governance returned an error for ${component} publication"
+    return 2
+  fi
+  proposal_id="$(printf '%s' "$response" | tr '\n' ' ' | sed -n 's/.*MakeProposal = record { proposal_id = opt record { id = \([0-9][0-9]*\) : nat64 }.*/\1/p')"
+  if [ -z "$proposal_id" ]; then
+    record_blocker "could not extract NNS proposal ID for ${component} publication"
+    return 2
+  fi
+
+  local proposal_info executed=0
+  for _attempt in 1 2 3 4 5; do
+    proposal_info="$(dfx canister call --network "$network_url" --identity "$identity" --query \
+      --candid "$nns_governance_did" "$(runtime_value nns governance)" get_proposal_info \
+      "(${proposal_id} : nat64)" 2>&1)" || true
+    printf '%s\n' "$proposal_info" >> "$log_file"
+    if printf '%s' "$proposal_info" | grep -Eq 'executed_timestamp_seconds = [1-9][0-9_]* : nat64'; then
+      executed=1
+      break
+    fi
+    if printf '%s' "$proposal_info" | grep -q 'failure_reason = opt'; then
+      record_blocker "NNS proposal ${proposal_id} failed while publishing ${component}"
+      return 2
+    fi
+    sleep 1
+  done
+  if [ "$executed" -ne 1 ]; then
+    record_blocker "NNS proposal ${proposal_id} did not execute while publishing ${component}"
+    return 2
+  fi
+
+  local latest
+  latest="$(dfx canister call --network "$network_url" --identity "$identity" --query \
+    --candid "$sns_wasm_did" "$(runtime_value nns sns_wasm)" get_latest_sns_version_pretty '(null)' 2>&1)" || {
+      printf '%s\n' "$latest" >> "$log_file"
+      record_blocker "SNS-W latest-version query failed after ${component} publication"
+      return 2
+    }
+  printf '%s\n' "$latest" >> "$log_file"
+  if ! printf '%s' "$latest" | grep -qi "$expected_hash"; then
+    record_blocker "SNS-W latest version does not contain ${component} hash ${expected_hash}"
+    return 2
+  fi
+  printf '%s\n' "$proposal_id"
+}

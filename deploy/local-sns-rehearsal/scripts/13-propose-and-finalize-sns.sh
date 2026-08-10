@@ -39,9 +39,14 @@ if [ "$governance_source" != "$PINNED_IC_COMMIT" ] || [ "$root_source" != "$PINN
   exit 2
 fi
 if ! phase_is_done 13-candidate-published; then
-  run_logged "$log_file" "$sns" --identity "$identity" --network "$network_url" add-sns-wasm-for-tests --wasm-file "${bundle_dir}/wasms/sns_governance.wasm.gz" governance
-  run_logged "$log_file" "$sns" --identity "$identity" --network "$network_url" add-sns-wasm-for-tests --wasm-file "${bundle_dir}/wasms/sns_root.wasm.gz" root
-  mark_phase_done 13-candidate-published "source=${PINNED_IC_COMMIT} governance+root published through SNS-W"
+  nns_neuron_id="${IO_LOCAL_SNS_NNS_NEURON_ID:-11129307823670308035}"
+  governance_hash="$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_governance_source_sha256)"
+  root_hash="$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_root_source_sha256)"
+  governance_proposal="$(publish_sns_wasm_via_nns "$log_file" sns_governance Governance \
+    "${bundle_dir}/wasms/sns_governance.wasm.gz" "$governance_hash" "$nns_neuron_id")"
+  root_proposal="$(publish_sns_wasm_via_nns "$log_file" sns_root Root \
+    "${bundle_dir}/wasms/sns_root.wasm.gz" "$root_hash" "$nns_neuron_id")"
+  mark_phase_done 13-candidate-published "source=${PINNED_IC_COMMIT} governance_proposal=${governance_proposal} root_proposal=${root_proposal} exact compressed hashes verified in SNS-W"
 fi
 
 proposal_file="${REHEARSAL_DIR}/generated/create-sns-proposal.json"
