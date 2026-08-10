@@ -302,6 +302,10 @@ hex_blob_literal() {
   printf '%s' "$1" | sed 's/../\\&/g'
 }
 
+extract_proposal_id() {
+  tr '\n' ' ' | sed -n 's/.*proposal_id = opt record { id = \([0-9][0-9]*\) : nat64 }.*/\1/p'
+}
+
 sns_canister_id() {
   local role="$1"
   local discovery="${REHEARSAL_DIR}/generated/sns-canisters.json"
@@ -328,7 +332,7 @@ submit_sns_manage_neuron_file() {
       return 2
     }
   printf '%s\n' "$response" >> "$log_file"
-  proposal_id="$(printf '%s' "$response" | tr '\n' ' ' | sed -n 's/.*MakeProposal = record { proposal_id = opt record { id = \([0-9][0-9]*\) : nat64 }.*/\1/p')"
+  proposal_id="$(printf '%s' "$response" | extract_proposal_id)"
   if [ -z "$proposal_id" ]; then
     record_blocker "could not extract proposal ID for: ${title}"
     return 2
@@ -447,7 +451,7 @@ publish_sns_wasm_via_nns() {
     record_blocker "NNS Governance returned an error for ${component} publication"
     return 2
   fi
-  proposal_id="$(printf '%s' "$response" | tr '\n' ' ' | sed -n 's/.*MakeProposal = record { proposal_id = opt record { id = \([0-9][0-9]*\) : nat64 }.*/\1/p')"
+  proposal_id="$(printf '%s' "$response" | extract_proposal_id)"
   if [ -z "$proposal_id" ]; then
     record_blocker "could not extract NNS proposal ID for ${component} publication"
     return 2
