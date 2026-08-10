@@ -34,7 +34,7 @@ for canister in "$stream" "$nns_manager" \
 done
 
 if ! phase_is_done 17-upgrade-attempted; then
-  before_hash="$(dfx canister status --network "$network_url" --identity "$identity" "$stream" 2>&1 | sed -n 's/^Module hash: 0x//p')"
+  before_hash="$(dfx canister info --network "$network_url" --identity "$identity" "$stream" 2>&1 | sed -n 's/^Module hash: 0x//p')"
   set +e
   run_logged "$log_file" "$sns" --identity "$identity" --network "$network_url" \
     upgrade-sns-controlled-canister --sns-neuron-id "$(runtime_value governance sns_neuron_subaccount_hex)" \
@@ -43,7 +43,7 @@ if ! phase_is_done 17-upgrade-attempted; then
     --summary 'Local-only exact release stream-manager upgrade through SNS Governance and Root.'
   upgrade_status=$?
   set -e
-  after_hash="$(dfx canister status --network "$network_url" --identity "$identity" "$stream" 2>&1 | sed -n 's/^Module hash: 0x//p')"
+  after_hash="$(dfx canister info --network "$network_url" --identity "$identity" "$stream" 2>&1 | sed -n 's/^Module hash: 0x//p')"
   inline_proposal_id="none"
   if [ "$upgrade_status" -ne 0 ]; then
     inline_proposal_id="$(submit_inline_sns_upgrade "$log_file" \
@@ -51,7 +51,7 @@ if ! phase_is_done 17-upgrade-attempted; then
       'Local-only inline exact release Wasm proposal through SNS Governance and Root; this bypasses only the unavailable upload store, not governance.' \
       "$stream" "${REPO_ROOT}/release-artifacts/io_stream_manager.wasm")"
     wait_sns_proposal "$log_file" "$inline_proposal_id"
-    after_hash="$(dfx canister status --network "$network_url" --identity "$identity" "$stream" 2>&1 | sed -n 's/^Module hash: 0x//p')"
+    after_hash="$(dfx canister info --network "$network_url" --identity "$identity" "$stream" 2>&1 | sed -n 's/^Module hash: 0x//p')"
   fi
   final_controllers="$(dfx canister info --network "$network_url" --identity "$identity" "$stream" 2>&1 | sed -n 's/^Controllers: //p' | xargs)"
   if [ "$final_controllers" != "$root" ]; then
