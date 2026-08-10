@@ -1235,8 +1235,9 @@ struct ArtifactManifestEntry {
 
 const RELEASE_SOURCE_COMMIT_ENV: &str = "IO_RELEASE_SOURCE_COMMIT";
 
-fn current_git_commit() -> Result<String, String> {
+fn current_git_commit(root: &Path) -> Result<String, String> {
     let output = Command::new("git")
+        .current_dir(root)
         .args(["rev-parse", "HEAD"])
         .output()
         .map_err(|err| format!("git rev-parse HEAD: {err}"))?;
@@ -1256,7 +1257,7 @@ fn is_full_lowercase_hex_sha(value: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
-fn validate_release_source_commit(git_commit: &str) -> Result<(), String> {
+fn validate_release_source_commit(root: &Path, git_commit: &str) -> Result<(), String> {
     if !is_full_lowercase_hex_sha(git_commit) {
         return Err(format!(
             "release source commit must be a full 40-character lowercase hexadecimal SHA, got {git_commit:?}"
@@ -1264,6 +1265,7 @@ fn validate_release_source_commit(git_commit: &str) -> Result<(), String> {
     }
 
     let cat_file = Command::new("git")
+        .current_dir(root)
         .args(["cat-file", "-e", &format!("{git_commit}^{{commit}}")])
         .output()
         .map_err(|err| format!("git cat-file {git_commit}: {err}"))?;
@@ -1276,9 +1278,10 @@ fn validate_release_source_commit(git_commit: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_release_source_tree(git_commit: &str) -> Result<(), String> {
-    validate_release_source_commit(git_commit)?;
+fn validate_release_source_tree(root: &Path, git_commit: &str) -> Result<(), String> {
+    validate_release_source_commit(root, git_commit)?;
     let tree_diff = Command::new("git")
+        .current_dir(root)
         .args([
             "diff",
             "--quiet",
@@ -1297,6 +1300,7 @@ fn validate_release_source_tree(git_commit: &str) -> Result<(), String> {
     }
 
     let dirty = Command::new("git")
+        .current_dir(root)
         .args([
             "status",
             "--porcelain=v1",
@@ -1316,9 +1320,9 @@ fn validate_release_source_tree(git_commit: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_release_build_checkout(git_commit: &str) -> Result<(), String> {
-    validate_release_source_tree(git_commit)?;
-    let head = current_git_commit()?;
+fn validate_release_build_checkout(root: &Path, git_commit: &str) -> Result<(), String> {
+    validate_release_source_tree(root, git_commit)?;
+    let head = current_git_commit(root)?;
     if head != git_commit {
         return Err(format!(
             "release build must run at exact source commit {git_commit}, not {head}; use tools/scripts/build-release-from-source"
@@ -1335,7 +1339,8 @@ fn manifest_source_commit(root: &Path) -> Result<Option<String>, String> {
     let git_commit = manifest
         .git_commit
         .ok_or_else(|| format!("{MANIFEST_PATH}: git_commit is required"))?;
-    validate_release_source_commit(&git_commit).map_err(|err| format!("{MANIFEST_PATH}: {err}"))?;
+    validate_release_source_commit(root, &git_commit)
+        .map_err(|err| format!("{MANIFEST_PATH}: {err}"))?;
     Ok(Some(git_commit))
 }
 
@@ -1344,11 +1349,11 @@ fn release_source_commit(root: &Path) -> Result<String, String> {
         Ok(value) => value,
         Err(env::VarError::NotPresent) => match manifest_source_commit(root)? {
             Some(value) => value,
-            None => current_git_commit()?,
+            None => current_git_commit(root)?,
         },
         Err(err) => return Err(format!("{RELEASE_SOURCE_COMMIT_ENV}: {err}")),
     };
-    validate_release_build_checkout(&git_commit)?;
+    validate_release_build_checkout(root, &git_commit)?;
     Ok(git_commit)
 }
 
@@ -1414,7 +1419,7 @@ fn verify_manifest(root: &Path) -> Result<(), String> {
         .git_commit
         .clone()
         .ok_or_else(|| format!("{MANIFEST_PATH}: git_commit is required"))?;
-    validate_release_source_tree(&source_commit)
+    validate_release_source_tree(root, &source_commit)
         .map_err(|err| format!("{MANIFEST_PATH}: {err}"))?;
     for entry in &actual.artifacts {
         if entry.git_commit.as_deref() != Some(source_commit.as_str()) {
@@ -6682,7 +6687,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, simplicity_check, validate_nns_boundary_pin, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_committed_evidence, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, simplicity_check, validate_nns_boundary_pin, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_committed_evidence, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, build_recorded_source, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -6762,6 +6767,22 @@ fn main() -> ExitCode {
                 }
             }
         }
+        "build_recorded_source" => match manifest_source_commit(&root) {
+            Ok(Some(source_commit)) => {
+                ok &= run(
+                    "build exact recorded release source",
+                    script("tools/scripts/build-release-from-source", &[&source_commit]),
+                );
+            }
+            Ok(None) => {
+                eprintln!("✗ build_recorded_source: {MANIFEST_PATH} is missing");
+                ok = false;
+            }
+            Err(err) => {
+                eprintln!("✗ build_recorded_source: {err}");
+                ok = false;
+            }
+        },
         "verify_artifacts" => match verify_artifacts_at(&root) {
             Ok(()) => eprintln!("✓ verify_artifacts"),
             Err(err) => {
@@ -7372,7 +7393,7 @@ fn main() -> ExitCode {
             for sub in [
                 "did_surface",
                 "validate_nns_boundary_pin",
-                "build_canisters",
+                "build_recorded_source",
                 "verify_artifacts",
                 "validate_install_args",
                 "validate_production_wiring",
@@ -7521,7 +7542,7 @@ fn main() -> ExitCode {
             }
         }
         "test_local_integration" => {
-            ok &= run_subcommand("build_canisters");
+            ok &= run_subcommand("build_recorded_source");
             ok &= run_subcommand("did_surface");
             ok &= run_subcommand("validate_install_args");
             ok &= run("local-cli: icp project show", icp(&["project", "show"]));
@@ -7604,7 +7625,7 @@ fn main() -> ExitCode {
                 "check",
                 "did_surface",
                 "validate_nns_boundary_pin",
-                "build_canisters",
+                "build_recorded_source",
                 "verify_artifacts",
                 "validate_install_args",
                 "validate_production_wiring",
@@ -7673,6 +7694,55 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("release-artifacts")).unwrap();
+        assert!(Command::new("git")
+            .current_dir(&root)
+            .args(["init", "--quiet"])
+            .status()
+            .unwrap()
+            .success());
+        write(&root, "source.txt", "first source tree\n");
+        for args in [
+            vec!["add", "source.txt"],
+            vec![
+                "-c",
+                "user.name=IO xtask test",
+                "-c",
+                "user.email=io-xtask@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "first source",
+            ],
+        ] {
+            assert!(Command::new("git")
+                .current_dir(&root)
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
+        }
+        write(&root, "source.txt", "second source tree\n");
+        assert!(Command::new("git")
+            .current_dir(&root)
+            .args(["add", "source.txt"])
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .current_dir(&root)
+            .args([
+                "-c",
+                "user.name=IO xtask test",
+                "-c",
+                "user.email=io-xtask@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "second source",
+            ])
+            .status()
+            .unwrap()
+            .success());
         root
     }
 
@@ -7788,8 +7858,9 @@ mod tests {
         read_manifest(root).unwrap()
     }
 
-    fn parent_git_commit() -> String {
+    fn parent_git_commit(root: &Path) -> String {
         let output = Command::new("git")
+            .current_dir(root)
             .args(["rev-parse", "HEAD^"])
             .output()
             .unwrap();
@@ -7797,8 +7868,9 @@ mod tests {
         String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 
-    fn create_unreachable_commit() -> String {
+    fn create_unreachable_commit(root: &Path) -> String {
         let tree = Command::new("git")
+            .current_dir(root)
             .args(["mktree"])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -7812,6 +7884,7 @@ mod tests {
         let tree = String::from_utf8_lossy(&tree.stdout).trim().to_string();
 
         let commit = Command::new("git")
+            .current_dir(root)
             .args(["commit-tree", &tree, "-m", "xtask non-ancestor test commit"])
             .env("GIT_AUTHOR_NAME", "IO xtask test")
             .env("GIT_AUTHOR_EMAIL", "io-xtask@example.invalid")
@@ -8339,7 +8412,7 @@ Template SNS principal values are planned wiring placeholders only.
     fn artifact_manifest_rejects_reachable_ancestor_with_different_source_tree() {
         let root = temp_root("manifest-ancestor-source");
         write_artifact_set(&root);
-        let source_commit = parent_git_commit();
+        let source_commit = parent_git_commit(&root);
         let manifest = build_manifest_for_commit(&root, source_commit).unwrap();
         write_artifact_manifest(&root, &manifest);
         assert!(verify_artifacts_at(&root)
@@ -8369,7 +8442,7 @@ Template SNS principal values are planned wiring placeholders only.
     fn artifact_manifest_rejects_non_ancestor_source_commit() {
         let root = temp_root("manifest-non-ancestor-source");
         write_artifact_set(&root);
-        let non_ancestor = create_unreachable_commit();
+        let non_ancestor = create_unreachable_commit(&root);
         let mut manifest = read_artifact_manifest(&root);
         manifest.git_commit = Some(non_ancestor.clone());
         for entry in &mut manifest.artifacts {

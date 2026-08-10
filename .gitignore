@@ -35,6 +35,8 @@ canisters/frontend/public/generated/
 # local-only SNS rehearsal operator files
 deploy/local-sns-rehearsal/canister-ids.local.toml
 deploy/local-sns-rehearsal/local-vars.toml
+deploy/local-sns-rehearsal/runtime.local.toml
+deploy/local-sns-rehearsal/install-args.local/
 deploy/local-sns-rehearsal/generated/
 deploy/local-sns-rehearsal/*.log
 # python cache

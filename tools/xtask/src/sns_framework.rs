@@ -193,7 +193,8 @@ SOURCE (flag overrides environment)
 BUILD AND TEST
   --scope governance|governance-root
                                  IO_SNS_SCOPE; same-source component overlay
-  --profile contract|io|upgrade  implemented profiles
+  --profile contract|io|upgrade|lifecycle
+                                 implemented profiles
                                  IO_SNS_PROFILE; default: contract
   --cache-dir PATH               IO_SNS_CACHE_DIR; default:
                                  ${{XDG_CACHE_HOME:-$HOME/.cache}}/io/sns-framework
@@ -209,8 +210,8 @@ EXAMPLES
 
 Every mode resolves to one manifest and uses the existing real-canister loader.
 Local scope overlays Governance, or Governance and Root from the same IC commit,
-onto the checked-in official baseline. The lifecycle profile is accepted only
-to return ProfileNotImplemented.
+onto the checked-in official baseline. The lifecycle profile is a thin adapter
+to the guarded official local rehearsal and requires its loopback runtime inputs.
 No command in this workflow contacts an IC mainnet endpoint."#
     );
 }
@@ -594,13 +595,17 @@ fn resolve_local_overlay(
         "governance_did_sha256",
         sha256(did_text.as_bytes()),
     )?;
-    if options.scope == Scope::GovernanceRoot {
+    let root_did_hash = if options.scope == Scope::GovernanceRoot {
         let root_did = fs::read_to_string(ic_root.join(ROOT_DID))
             .map_err(|err| format!("failed to read candidate Root DID: {err}"))?;
         fs::write(staging.join("root.did"), &root_did)
             .map_err(|err| format!("failed to write candidate Root DID: {err}"))?;
-        resolved.set_value("contract", "root_did_sha256", sha256(root_did.as_bytes()))?;
-    }
+        let hash = sha256(root_did.as_bytes());
+        resolved.set_value("contract", "root_did_sha256", &hash)?;
+        Some(hash)
+    } else {
+        None
+    };
     resolved.set_value(
         "baseline",
         "sns_governance_wasm",
@@ -654,9 +659,7 @@ fn resolve_local_overlay(
     let resolved_text = resolved.to_toml()?;
     fs::write(staging.join("manifest.toml"), &resolved_text)
         .map_err(|err| format!("failed to write resolved manifest: {err}"))?;
-    fs::write(
-        staging.join("provenance.toml"),
-        format!(
+    let mut provenance_text = format!(
             "[variant]\nsource = \"local\"\nscope = \"{}\"\nofficial_baseline = \"{}\"\nic_commit = \"{}\"\nic_branch = \"{}\"\nic_merge_base = \"{}\"\nsource_tree_clean = {}\nsource_diff_sha256 = \"{}\"\nbazel_version = \"{}\"\ngovernance_did_sha256 = \"{}\"\nlocal_only = {}\nexportable = {}\n",
             options.scope.as_str(),
             escape_toml(&baseline),
@@ -669,9 +672,12 @@ fn resolve_local_overlay(
             sha256(did_text.as_bytes()),
             !provenance.clean,
             provenance.clean,
-        ),
-    )
-    .map_err(|err| format!("failed to write provenance: {err}"))?;
+        );
+    if let Some(hash) = root_did_hash {
+        provenance_text.push_str(&format!("root_did_sha256 = \"{hash}\"\n"));
+    }
+    fs::write(staging.join("provenance.toml"), provenance_text)
+        .map_err(|err| format!("failed to write provenance: {err}"))?;
     write_sha256sums(&staging)?;
     let manifest_hash = sha256_file(&staging.join("manifest.toml"))?;
     let dirty_id = if provenance.clean {
@@ -1136,6 +1142,7 @@ enum ProfileStep {
     CandidateContract,
     IoIntegration,
     Upgrade,
+    Lifecycle,
 }
 
 fn shared_profile_plan(profile: Profile, capability: bool) -> Result<Vec<ProfileStep>, String> {
@@ -1166,10 +1173,7 @@ fn shared_profile_plan(profile: Profile, capability: bool) -> Result<Vec<Profile
             }
             Ok(vec![ProfileStep::Upgrade])
         }
-        Profile::Lifecycle => Err(
-            "ProfileNotImplemented: lifecycle has no exact SNS-W lifecycle test in this tranche"
-                .into(),
-        ),
+        Profile::Lifecycle => Ok(vec![ProfileStep::Lifecycle]),
     }
 }
 
@@ -1224,10 +1228,43 @@ fn dispatch_profile(
                     "official_to_candidate_reward_participation_upgrade",
                 )?
             }
+            ProfileStep::Lifecycle => run_lifecycle_profile(io_root, bundle)?,
         }
     }
     if !bundle.capability && bundle.profile == Profile::Contract {
         eprintln!("Compatibility-only contract completed; the resolved Governance DID has no {CAPABILITY_FIELD} field");
+    }
+    Ok(())
+}
+
+fn run_lifecycle_profile(io_root: &Path, bundle: &ResolvedBundle) -> Result<(), String> {
+    let bundle_dir = bundle
+        .manifest
+        .parent()
+        .ok_or_else(|| "resolved SNS bundle has no parent directory".to_string())?;
+    let runbook = io_root.join("deploy/local-sns-rehearsal/runbook.sh");
+    for phase in [
+        "build-local-io-canisters",
+        "deploy-local-dapps",
+        "propose-and-finalize-sns",
+        "discover-sns-canisters",
+        "exercise-ledger",
+        "exercise-index-and-archives",
+        "exercise-governance-and-controllers",
+        "exercise-ledger",
+        "exercise-index-and-archives",
+    ] {
+        let status = Command::new(&runbook)
+            .current_dir(io_root)
+            .arg(phase)
+            .env("IO_LOCAL_SNS_BUNDLE_DIR", bundle_dir)
+            .status()
+            .map_err(|err| format!("failed to run lifecycle phase {phase}: {err}"))?;
+        if !status.success() {
+            return Err(format!(
+                "official local rehearsal lifecycle phase {phase} failed with {status}"
+            ));
+        }
     }
     Ok(())
 }
@@ -2039,10 +2076,10 @@ mod tests {
             Scope::GovernanceRoot
         );
         assert!(Profile::parse("all").is_err());
-        assert!(matches!(
-            shared_profile_plan(Profile::Lifecycle, true),
-            Err(message) if message.contains("ProfileNotImplemented")
-        ));
+        assert_eq!(
+            shared_profile_plan(Profile::Lifecycle, true).unwrap(),
+            vec![ProfileStep::Lifecycle]
+        );
     }
 
     #[test]

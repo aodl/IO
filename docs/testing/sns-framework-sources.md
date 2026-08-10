@@ -13,14 +13,15 @@ contacts an IC mainnet endpoint.
 | `--source` | `IO_SNS_SOURCE` | `official`, `local`, `bundle`; default `official` |
 | `--ic-repo` | `IO_IC_REPO` | local IC checkout; default `<IO>/../ic` |
 | `--scope` | `IO_SNS_SCOPE` | `governance`, `governance-root` |
-| `--profile` | `IO_SNS_PROFILE` | `contract`, `io`, `upgrade`; default `contract` |
+| `--profile` | `IO_SNS_PROFILE` | `contract`, `io`, `upgrade`, `lifecycle`; default `contract` |
 | `--bundle` | `IO_SNS_BUNDLE` | absolute bundle path for bundle mode |
 | `--cache-dir` | `IO_SNS_CACHE_DIR` | external content-addressed cache root |
 | `--require-capability` | — | `latest_reward_event_participation` |
 
-`lifecycle` is recognized only so the runner can fail explicitly with
-`ProfileNotImplemented`; no lifecycle test is implemented in this tranche.
-There is no `all` profile or local full-SNS-suite overlay.
+`lifecycle` is a thin adapter to the existing guarded official local rehearsal.
+It requires the ignored loopback runtime/install inputs and a running maintained
+SNS testing topology; it does not duplicate SNS-W lifecycle machinery. There is
+no `all` profile or local full-SNS-suite overlay.
 
 Examples:
 
@@ -143,13 +144,12 @@ skipped events.
   present.
 - `io` runs contract coverage plus the installed IO reward path.
 - `upgrade` runs the exact official-to-candidate Governance upgrade test.
-- `lifecycle` always returns `ProfileNotImplemented` in this tranche.
+- `lifecycle` invokes the existing rehearsal phases 11–17, reruns the ledger and
+  index phases after Governance activation, and preserves their restart markers.
 
-The official local rehearsal is not folded into `lifecycle`: it uses the
-maintained source bootstrap and SNS-W launch driver, and duplicating that
-machinery inside the variant runner would create a second lifecycle harness.
-Delete `ProfileNotImplemented` only when the completed rehearsal driver can be
-invoked as a thin provenance-preserving adapter.
+The variant runner does not copy SNS-W lifecycle code. Its `lifecycle` profile
+passes the resolved bundle directory to `deploy/local-sns-rehearsal/runbook.sh`
+and invokes the existing phases as a thin provenance-preserving adapter.
 
 Test enumeration is the only captured child output. Actual `--nocapture` test
 output is inherited and streamed. Each profile run creates one

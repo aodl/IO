@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "canisters": {
+    "io_stream_manager": {
+      "type": "custom",
+      "candid": "../../../../canisters/io_stream_manager/io_stream_manager.did",
+      "wasm": "../../../../release-artifacts/io_stream_manager.wasm"
+    },
+    "io_nns_neuron_manager": {
+      "type": "custom",
+      "candid": "../../../../canisters/io_nns_neuron_manager/io_nns_neuron_manager.did",
+      "wasm": "../../../../release-artifacts/io_nns_neuron_manager.wasm"
+    },
+    "io_historian": {
+      "type": "custom",
+      "candid": "../../../../canisters/io_historian/io_historian.did",
+      "wasm": "../../../../release-artifacts/io_historian.wasm"
+    },
+    "frontend": {
+      "type": "custom",
+      "candid": "../../../../canisters/frontend/frontend.did",
+      "wasm": "../../../../release-artifacts/io_frontend.wasm"
+    }
+  }
+}

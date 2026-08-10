@@ -12,7 +12,7 @@ require_local_script_guard "$@"
 log_file="$(phase_log_file 10-bootstrap-official-network)"
 : > "$log_file"
 
-official_commit="${IO_LOCAL_SNS_OFFICIAL_IC_COMMIT:-2d7f90fb23672cc3b81c216a33d04c75672dd308}"
+official_commit="${IO_LOCAL_SNS_OFFICIAL_IC_COMMIT:-${PINNED_IC_COMMIT}}"
 case "$official_commit" in
   [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) ;;
   *) record_blocker "official IC source commit must be an exact 40-hex value"; exit 2 ;;

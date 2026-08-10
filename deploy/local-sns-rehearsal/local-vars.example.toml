@@ -1,5 +1,6 @@
 # Copy to local-vars.toml and fill only local rehearsal values.
-# Local-only. Do not use mainnet canister IDs or protected IO assets.
+# Local-only. The dapp IDs are a fresh deterministic per-run plan, not prior
+# ephemeral IDs. Do not use mainnet canister IDs or protected IO assets.
 
 [local]
 fallback_controller_principal = "TODO_LOCAL_FALLBACK_CONTROLLER_PRINCIPAL"
