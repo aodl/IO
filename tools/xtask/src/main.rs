@@ -1271,16 +1271,57 @@ fn validate_release_source_commit(git_commit: &str) -> Result<(), String> {
         ));
     }
 
-    let ancestor = Command::new("git")
-        .args(["merge-base", "--is-ancestor", git_commit, "HEAD"])
+    Ok(())
+}
+
+fn validate_release_source_tree(git_commit: &str) -> Result<(), String> {
+    validate_release_source_commit(git_commit)?;
+    let tree_diff = Command::new("git")
+        .args([
+            "diff",
+            "--quiet",
+            git_commit,
+            "HEAD",
+            "--",
+            ".",
+            ":(exclude)release-artifacts",
+        ])
         .output()
-        .map_err(|err| format!("git merge-base --is-ancestor {git_commit} HEAD: {err}"))?;
-    if !ancestor.status.success() {
+        .map_err(|err| format!("git diff {git_commit} HEAD: {err}"))?;
+    if !tree_diff.status.success() {
         return Err(format!(
-            "release source commit {git_commit} is not an ancestor of HEAD"
+            "release source commit {git_commit} does not match the exact source tree at HEAD"
         ));
     }
 
+    let dirty = Command::new("git")
+        .args([
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--",
+            ".",
+            ":(exclude)release-artifacts",
+        ])
+        .output()
+        .map_err(|err| format!("git status for release source: {err}"))?;
+    if !dirty.status.success() {
+        return Err("git status for release source failed".into());
+    }
+    if !dirty.stdout.is_empty() {
+        return Err("release source checkout has dirty files outside release-artifacts".into());
+    }
+    Ok(())
+}
+
+fn validate_release_build_checkout(git_commit: &str) -> Result<(), String> {
+    validate_release_source_tree(git_commit)?;
+    let head = current_git_commit()?;
+    if head != git_commit {
+        return Err(format!(
+            "release build must run at exact source commit {git_commit}, not {head}; use tools/scripts/build-release-from-source"
+        ));
+    }
     Ok(())
 }
 
@@ -1305,7 +1346,7 @@ fn release_source_commit(root: &Path) -> Result<String, String> {
         },
         Err(err) => return Err(format!("{RELEASE_SOURCE_COMMIT_ENV}: {err}")),
     };
-    validate_release_source_commit(&git_commit)?;
+    validate_release_build_checkout(&git_commit)?;
     Ok(git_commit)
 }
 
@@ -1371,7 +1412,7 @@ fn verify_manifest(root: &Path) -> Result<(), String> {
         .git_commit
         .clone()
         .ok_or_else(|| format!("{MANIFEST_PATH}: git_commit is required"))?;
-    validate_release_source_commit(&source_commit)
+    validate_release_source_tree(&source_commit)
         .map_err(|err| format!("{MANIFEST_PATH}: {err}"))?;
     for entry in &actual.artifacts {
         if entry.git_commit.as_deref() != Some(source_commit.as_str()) {
@@ -6686,12 +6727,21 @@ fn main() -> ExitCode {
             }
         },
         "build_canisters" => {
-            ok &= run_subcommand("frontend_setup");
+            let source_commit = release_source_commit(&root);
+            if let Err(err) = &source_commit {
+                eprintln!("✗ build_canisters source: {err}");
+                ok = false;
+            }
+            if ok {
+                ok &= run_subcommand("frontend_setup");
+            }
             for canister in RELEASE_CANISTERS {
-                ok &= run(
-                    &format!("build canister: {}", canister.package),
-                    build_canister(canister.package, RELEASE_PROFILE),
-                );
+                if ok {
+                    ok &= run(
+                        &format!("build canister: {}", canister.package),
+                        build_canister(canister.package, RELEASE_PROFILE),
+                    );
+                }
             }
             if ok {
                 match write_manifest(&root) {
@@ -8284,13 +8334,15 @@ Template SNS principal values are planned wiring placeholders only.
     }
 
     #[test]
-    fn artifact_manifest_accepts_reachable_ancestor_source_commit() {
+    fn artifact_manifest_rejects_reachable_ancestor_with_different_source_tree() {
         let root = temp_root("manifest-ancestor-source");
         write_artifact_set(&root);
         let source_commit = parent_git_commit();
         let manifest = build_manifest_for_commit(&root, source_commit).unwrap();
         write_artifact_manifest(&root, &manifest);
-        verify_artifacts_at(&root).unwrap();
+        assert!(verify_artifacts_at(&root)
+            .unwrap_err()
+            .contains("does not match the exact source tree at HEAD"));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -8324,7 +8376,7 @@ Template SNS principal values are planned wiring placeholders only.
         write_artifact_manifest(&root, &manifest);
         assert!(verify_artifacts_at(&root)
             .unwrap_err()
-            .contains("is not an ancestor of HEAD"));
+            .contains("does not match the exact source tree at HEAD"));
         let _ = fs::remove_dir_all(root);
     }
 

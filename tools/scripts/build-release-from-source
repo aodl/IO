@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source_commit="${1:?usage: build-release-from-source <exact-source-commit>}"
+io_root="$(git rev-parse --show-toplevel)"
+cd "${io_root}"
+resolved="$(git rev-parse --verify "${source_commit}^{commit}")"
+if [[ "${source_commit}" != "${resolved}" ]]; then
+  echo "source commit must be the exact full commit SHA: ${resolved}" >&2
+  exit 2
+fi
+
+if ! git diff --quiet "${source_commit}" HEAD -- . ':(exclude)release-artifacts'; then
+  echo "HEAD differs from source commit outside release-artifacts" >&2
+  exit 1
+fi
+if [[ -n "$(git status --porcelain=v1 --untracked-files=all -- . ':(exclude)release-artifacts')" ]]; then
+  echo "source files are dirty outside release-artifacts" >&2
+  exit 1
+fi
+
+worktree_root="$(mktemp -d)"
+source_tree="${worktree_root}/source"
+cleanup() {
+  if [[ -d "${source_tree}" ]]; then
+    git -C "${io_root}" worktree remove --force "${source_tree}"
+  fi
+  rm -rf "${worktree_root}"
+}
+trap cleanup EXIT
+
+git -C "${io_root}" worktree add --detach "${source_tree}" "${source_commit}"
+(
+  cd "${source_tree}"
+  IO_RELEASE_SOURCE_COMMIT="${source_commit}" \
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${io_root}/target}" \
+    cargo run -p xtask -- build_canisters
+)
+
+rm -rf "${io_root}/release-artifacts"
+cp -a "${source_tree}/release-artifacts" "${io_root}/release-artifacts"
+cd "${io_root}"
+cargo run -p xtask -- verify_artifacts

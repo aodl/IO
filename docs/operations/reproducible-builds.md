@@ -2,85 +2,56 @@
 
 IO artifacts are reproducibility-improved but not fully hermetic.
 
+## Exact-source release model
+
+Release provenance uses two commits:
+
+1. A source-finalization commit contains every build input and no newly generated
+   release artifacts.
+2. `tools/scripts/build-release-from-source <source-finalization-sha>` creates a
+   detached worktree at that exact commit, builds there, verifies the raw and
+   deterministic `gzip -n` Wasms, and copies the result back.
+3. A following artifact-recording commit contains only `release-artifacts/`
+   changes and records the source-finalization SHA in every manifest entry.
+
+The artifact-recording commit must have the exact same tree as the recorded
+source commit outside `release-artifacts/`. Reachable ancestry is insufficient.
+Verification also rejects dirty tracked or untracked source files. A direct
+`build_canisters` invocation requires `HEAD` to equal `IO_RELEASE_SOURCE_COMMIT`;
+normal release work should use the detached-worktree script.
+
 ## Commands
 
 ```bash
-cargo run -p xtask -- build_canisters
+source_commit="$(git rev-parse HEAD)"
+tools/scripts/build-release-from-source "${source_commit}"
 cargo run -p xtask -- verify_artifacts
 ```
 
-Artifacts:
+`release-artifacts/manifest.json` records each canister's raw and gzip path,
+SHA-256, byte size, build profile, target, and the one exact source commit. It
+intentionally omits timestamps. Each Wasm also has a `.sha256` sidecar.
+
+The checked-in artifacts are:
 
 ```text
-release-artifacts/io_stream_manager.wasm
-release-artifacts/io_stream_manager.wasm.gz
-release-artifacts/io_nns_neuron_manager.wasm
-release-artifacts/io_nns_neuron_manager.wasm.gz
-release-artifacts/io_historian.wasm
-release-artifacts/io_historian.wasm.gz
-release-artifacts/io_frontend.wasm
-release-artifacts/io_frontend.wasm.gz
+release-artifacts/io_stream_manager.wasm{,.gz}
+release-artifacts/io_nns_neuron_manager.wasm{,.gz}
+release-artifacts/io_historian.wasm{,.gz}
+release-artifacts/io_frontend.wasm{,.gz}
 release-artifacts/manifest.json
 ```
 
-Each raw/gz artifact has a `.sha256` sidecar. Gzip output is produced with `gzip -n -c` so filename and timestamp metadata are omitted.
+## Independent comparison
 
-## Manifest
+Two builders must check out the artifact-recording commit with full history and
+run the exact-source script twice using the manifest SHA. Compare the complete
+manifest, all SHA sidecars, and both raw and gzip Wasm hashes. The CI workflow
+performs this repeated build and fails if either result differs.
 
-`release-artifacts/manifest.json` records:
-
-- canister name;
-- raw and gz path;
-- raw and gz SHA-256;
-- raw and gz byte size;
-- build profile;
-- target;
-- source git commit.
-
-It intentionally omits build timestamps.
-
-The manifest source commit is the commit whose tree contains the build inputs
-for the release artifacts. Verification requires that commit to be available
-locally and reachable from `HEAD`. Branches carrying checked-in release
-artifacts whose manifest records an implementation source commit must be merged
-with GitHub's **Create a merge commit** option so the recorded source SHA
-remains an ancestor of the destination branch.
-
-Do not use **Squash and merge** or **Rebase and merge** for these branches.
-Squash merging discards the recorded source commit, and GitHub rebase merging
-creates new commit SHAs. Both invalidate the manifest's exact source-commit
-ancestry check.
-
-After merging this release-artifact branch to `master`, run:
-
-```bash
-git merge-base --is-ancestor \
-  e1f1e1e69c19fe08161706c4fc6345e7e63bf88c \
-  master
-
-cargo run -p xtask -- verify_artifacts
-```
-
-Both commands must pass on `master`.
-
-## Multi-Builder Comparison
-
-On two builders:
-
-```bash
-cargo run -p xtask -- build_canisters
-cargo run -p xtask -- verify_artifacts
-sha256sum release-artifacts/*.wasm release-artifacts/*.wasm.gz
-```
-
-Compare `manifest.json` and all SHA sidecars. If the source git commit differs,
-compare only artifact hashes and byte sizes.
-
-## Current Limitations
+## Current limitations
 
 - Builds are not executed inside a pinned Docker/Nix image.
-- Rust/cargo cache contents may differ between hosts.
+- Rust/Cargo cache contents may differ between hosts.
 - Wasm metadata policy is minimal.
-- Real production client dependencies are not yet integrated.
-
-Future work should add a pinned container or Nix build and independent builder attestation.
+- Independent builder attestations remain external release evidence.

@@ -23,20 +23,19 @@ jobs:
         run: |
           source_commit="$(jq -er '.git_commit' release-artifacts/manifest.json)"
           git cat-file -e "${source_commit}^{commit}"
-          git merge-base --is-ancestor "${source_commit}" HEAD
           echo "IO_RELEASE_SOURCE_COMMIT=${source_commit}" >> "${GITHUB_ENV}"
 
       - name: First build
-        run: cargo run -p xtask -- build_canisters
+        run: tools/scripts/build-release-from-source "${IO_RELEASE_SOURCE_COMMIT}"
 
       - name: First manifest
         run: cp release-artifacts/manifest.json /tmp/io-manifest-first.json
 
       - name: Clean build outputs
-        run: rm -rf target release-artifacts
+        run: rm -rf release-artifacts
 
       - name: Second build
-        run: cargo run -p xtask -- build_canisters
+        run: tools/scripts/build-release-from-source "${IO_RELEASE_SOURCE_COMMIT}"
 
       - name: Compare manifests
         run: cmp /tmp/io-manifest-first.json release-artifacts/manifest.json
