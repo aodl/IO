@@ -29,5 +29,5 @@ sns_wasm = "qaa6y-5yaaa-aaaaa-aaafa-cai"
 [amounts]
 reserve_funding_e8s = "10000000000"
 user_funding_e8s = "100000000"
-liquid_icp_funding_e8s = "100000000"
+liquid_icp_funding_e8s = "100000000000000"
 redemption_io_e8s = "20000000"

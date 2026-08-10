@@ -76,13 +76,19 @@ if ! phase_is_done 15-ledger-negatives; then
   mark_phase_done 15-ledger-negatives "successful transfer, exact duplicate, bad fee and overspend captured"
 fi
 
-if ! phase_is_done 15-liquid-icp-funded; then
+liquid_balance="$(dfx canister call --network "$network_url" --identity "$identity" --query \
+  --candid "$ledger_did" "$icp_ledger" icrc1_balance_of \
+  "(record { owner = principal \"${stream}\"; subaccount = opt blob \"$(hex_blob_literal "$liquid_hex")\" })" \
+  | tr -d '()_ :nat[:space:]')"
+require_nat "observed liquid ICP balance" "$liquid_balance"
+if [ "$liquid_balance" -lt "$liquid_amount" ]; then
   sns_testing="$(sns_testing_cli)"
-  liquid_tokens="$(e8s_to_decimal_tokens "$liquid_amount")"
+  liquid_delta="$((liquid_amount - liquid_balance))"
+  liquid_tokens="$(e8s_to_decimal_tokens "$liquid_delta")"
   run_logged "$log_file" "$sns_testing" --network "$network_url" transfer-icp --amount "$liquid_tokens" \
     --to-principal "$stream" "$liquid_hex"
-  mark_phase_done 15-liquid-icp-funded "amount_e8s=${liquid_amount}"
 fi
+mark_phase_done 15-liquid-icp-funded "target_e8s=${liquid_amount} observed_before_e8s=${liquid_balance}"
 
 query_ledger icrc1_total_supply '()'
 query_ledger icrc1_balance_of "(record { owner = principal \"${stream}\"; subaccount = opt blob \"$(hex_blob_literal "$reserve_hex")\" })"
@@ -103,7 +109,7 @@ if ! phase_is_done 15-redemption-complete; then
   allowance="$((redeem_amount + 10000))"
   run_logged "$log_file" dfx canister call --network "$network_url" --identity "$identity" \
     --candid "$ledger_did" "$ledger" icrc2_approve \
-    "(record { from_subaccount = null; spender = record { owner = principal \"${stream}\"; subaccount = null }; amount = ${allowance} : nat; expected_allowance = opt (0 : nat); expires_at = opt (${expires_nanos} : nat64); fee = opt (10000 : nat); memo = opt blob \"IO redemption\"; created_at_time = opt (${now_nanos} : nat64) })"
+    "(record { from_subaccount = null; spender = record { owner = principal \"${stream}\"; subaccount = null }; amount = ${allowance} : nat; expected_allowance = null; expires_at = opt (${expires_nanos} : nat64); fee = opt (10000 : nat); memo = opt blob \"IO redemption\"; created_at_time = opt (${now_nanos} : nat64) })"
   redeem_args="(record { from_subaccount = null; io_amount_e8s = ${redeem_amount} : nat; min_icp_out_e8s = 0 : nat; max_io_fee_e8s = 10000 : nat; max_icp_fee_e8s = 10000 : nat; expires_at_nanos = ${expires_nanos} : nat64; nonce = 0 : nat64 })"
   run_logged "$log_file" dfx canister call --network "$network_url" --identity "$identity" \
     --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" redeem "$redeem_args"
