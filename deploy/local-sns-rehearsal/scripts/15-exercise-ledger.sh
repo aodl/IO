@@ -76,19 +76,29 @@ if ! phase_is_done 15-ledger-negatives; then
   mark_phase_done 15-ledger-negatives "successful transfer, exact duplicate, bad fee and overspend captured"
 fi
 
-liquid_balance="$(dfx canister call --network "$network_url" --identity "$identity" --query \
-  --candid "$ledger_did" "$icp_ledger" icrc1_balance_of \
-  "(record { owner = principal \"${stream}\"; subaccount = opt blob \"$(hex_blob_literal "$liquid_hex")\" })" \
-  | tr -d '()_ :nat[:space:]')"
-require_nat "observed liquid ICP balance" "$liquid_balance"
-if [ "$liquid_balance" -lt "$liquid_amount" ]; then
-  sns_testing="$(sns_testing_cli)"
-  liquid_delta="$((liquid_amount - liquid_balance))"
-  liquid_tokens="$(e8s_to_decimal_tokens "$liquid_delta")"
-  run_logged "$log_file" "$sns_testing" --network "$network_url" transfer-icp --amount "$liquid_tokens" \
-    --to-principal "$stream" "$liquid_hex"
+durable_redemption_complete=0
+caller_checkpoint="$(dfx canister call --network "$network_url" --identity "$identity" --query \
+  --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" get_caller_redemption_state '()')"
+if phase_is_done 15-redemption-complete \
+  || { printf '%s' "$caller_checkpoint" | grep -q 'next_nonce = 1' \
+    && printf '%s' "$caller_checkpoint" | grep -q 'last_result = opt record'; }; then
+  durable_redemption_complete=1
 fi
-mark_phase_done 15-liquid-icp-funded "target_e8s=${liquid_amount} observed_before_e8s=${liquid_balance}"
+if [ "$durable_redemption_complete" -ne 1 ]; then
+  liquid_balance="$(dfx canister call --network "$network_url" --identity "$identity" --query \
+    --candid "$ledger_did" "$icp_ledger" icrc1_balance_of \
+    "(record { owner = principal \"${stream}\"; subaccount = opt blob \"$(hex_blob_literal "$liquid_hex")\" })" \
+    | tr -d '()_ :nat[:space:]')"
+  require_nat "observed liquid ICP balance" "$liquid_balance"
+  if [ "$liquid_balance" -lt "$liquid_amount" ]; then
+    sns_testing="$(sns_testing_cli)"
+    liquid_delta="$((liquid_amount - liquid_balance))"
+    liquid_tokens="$(e8s_to_decimal_tokens "$liquid_delta")"
+    run_logged "$log_file" "$sns_testing" --network "$network_url" transfer-icp --amount "$liquid_tokens" \
+      --to-principal "$stream" "$liquid_hex"
+  fi
+  mark_phase_done 15-liquid-icp-funded "target_e8s=${liquid_amount} observed_before_e8s=${liquid_balance}"
+fi
 
 query_ledger icrc1_total_supply '()'
 query_ledger icrc1_balance_of "(record { owner = principal \"${stream}\"; subaccount = opt blob \"$(hex_blob_literal "$reserve_hex")\" })"
