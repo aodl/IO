@@ -1840,14 +1840,14 @@ fn check_sns_official_testing_at(root: &Path) -> Result<(), String> {
         "docs/operations/official-sns-testing.md",
         &doc,
         &[
-            "We currently run SNS-shaped mock/PocketIC tests.",
+            "IO runs SNS-shaped mock/PocketIC tests, pinned real-canister profiles, and an optional maintained source-built local SNS-W rehearsal.",
             "We do not currently run the official SNS launch locally in required CI.",
             "Official SNS testing is optional and heavier.",
             "current official ICP/DFINITY SNS testing documentation is the source of truth",
             "historical standalone `dfinity/sns-testing` repository is deprecated",
             "The maintained official local SNS flow uses the source-built `sns` CLI",
             "not part of required IO workflows",
-            "SNS testflight is a future manual/mainnet rehearsal.",
+            "SNS testflight remains a separately authorized mainnet rehearsal.",
             "IO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical.",
             "The existing canister that owns IO NNS neuron 6345890886899317159 is not touched by these tests.",
             "Layer 1",
@@ -8088,7 +8088,7 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "docs/operations/official-sns-testing.md",
-            "We currently run SNS-shaped mock/PocketIC tests.\nWe do not currently run the official SNS launch locally in required CI.\nOfficial SNS testing is optional and heavier.\nThe current official ICP/DFINITY SNS testing documentation is the source of truth.\nThe historical standalone `dfinity/sns-testing` repository is deprecated.\nThe maintained official local SNS flow uses the source-built `sns` CLI; this is not part of required IO workflows.\nSNS testflight is a future manual/mainnet rehearsal.\nIO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical.\nThe existing canister that owns IO NNS neuron 6345890886899317159 is not touched by these tests.\nLayer 1\nLayer 2\nLayer 3\nLayer 4\n",
+            "IO runs SNS-shaped mock/PocketIC tests, pinned real-canister profiles, and an optional maintained source-built local SNS-W rehearsal.\nWe do not currently run the official SNS launch locally in required CI.\nOfficial SNS testing is optional and heavier.\nThe current official ICP/DFINITY SNS testing documentation is the source of truth.\nThe historical standalone `dfinity/sns-testing` repository is deprecated.\nThe maintained official local SNS flow uses the source-built `sns` CLI; this is not part of required IO workflows.\nSNS testflight remains a separately authorized mainnet rehearsal.\nIO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical.\nThe existing canister that owns IO NNS neuron 6345890886899317159 is not touched by these tests.\nLayer 1\nLayer 2\nLayer 3\nLayer 4\n",
         );
         write(
             root,
