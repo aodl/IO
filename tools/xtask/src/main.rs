@@ -2285,7 +2285,8 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
         &deployment_phase,
         &[
             "dfx canister id",
-            "does not match planned",
+            "differs from planned",
+            "isolated lifecycle inputs",
             "sns_governance_source_sha256",
             "governance_sed_blob",
         ],
@@ -2375,6 +2376,11 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "AddGenericNervousSystemFunction",
             "validate_set_paused",
             "ExecuteGenericNervousSystemFunction",
+            "sns_governance_source_sha256",
+            "sns_root_source_sha256",
+            "sns_ledger_source_sha256",
+            "sns_index_source_sha256",
+            "sns_swap_source_sha256",
         ],
     )?;
     require_absent(
@@ -8735,7 +8741,7 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
-            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# upgrade-sns-controlled-canister submit_inline_sns_upgrade AddGenericNervousSystemFunction validate_set_paused ExecuteGenericNervousSystemFunction\n",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# upgrade-sns-controlled-canister submit_inline_sns_upgrade AddGenericNervousSystemFunction validate_set_paused ExecuteGenericNervousSystemFunction sns_governance_source_sha256 sns_root_source_sha256 sns_ledger_source_sha256 sns_index_source_sha256 sns_swap_source_sha256\n",
         );
         write(
             root,
@@ -8750,7 +8756,7 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "deploy/local-sns-rehearsal/scripts/12-deploy-local-dapps.sh",
-            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# dfx canister id; allocated ID does not match planned; sns_governance_source_sha256 governance_sed_blob\n",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# dfx canister id; allocated ID differs from planned; isolated lifecycle inputs; sns_governance_source_sha256 governance_sed_blob\n",
         );
         write(
             root,

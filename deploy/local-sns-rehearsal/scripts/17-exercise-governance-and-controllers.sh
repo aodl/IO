@@ -76,18 +76,20 @@ if ! phase_is_done 17-upgrade-attempted; then
     record { name = "protocol-reserve"; account = record { owner = principal "${stream}"; subaccount = opt blob "$(hex_blob_literal "$reserve_subaccount")" } };
     record { name = "sns-governance"; account = record { owner = principal "${governance}"; subaccount = null } };
   };
+  // IO dapps are installed from raw release Wasm. SNS-W publishes and installs
+  // the compressed source payload, which is the module hash Root observes.
   expected_modules = vec {
     record { role = variant { StreamManager }; canister_id = principal "${stream}"; wasm_sha256 = blob "$(hex_blob_literal "$(manifest_artifact_value io_stream_manager raw_wasm_sha256)")" };
     record { role = variant { NnsManager }; canister_id = principal "${nns_manager}"; wasm_sha256 = blob "$(hex_blob_literal "$(manifest_artifact_value io_nns_neuron_manager raw_wasm_sha256)")" };
     record { role = variant { Historian }; canister_id = principal "${historian}"; wasm_sha256 = blob "$(hex_blob_literal "$raw_hash")" };
     record { role = variant { Frontend }; canister_id = principal "${frontend}"; wasm_sha256 = blob "$(hex_blob_literal "$(manifest_artifact_value frontend raw_wasm_sha256)")" };
-    record { role = variant { SnsGovernance }; canister_id = principal "${governance}"; wasm_sha256 = blob "$(hex_blob_literal "$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_governance_sha256)")" };
-    record { role = variant { SnsRoot }; canister_id = principal "${root}"; wasm_sha256 = blob "$(hex_blob_literal "$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_root_sha256)")" };
-    record { role = variant { SnsLedger }; canister_id = principal "${ledger}"; wasm_sha256 = blob "$(hex_blob_literal "$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_ledger_sha256)")" };
-    record { role = variant { SnsIndex }; canister_id = principal "${index}"; wasm_sha256 = blob "$(hex_blob_literal "$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_index_sha256)")" };
-    record { role = variant { SnsSwap }; canister_id = principal "${swap}"; wasm_sha256 = blob "$(hex_blob_literal "$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_swap_sha256)")" };
+    record { role = variant { SnsGovernance }; canister_id = principal "${governance}"; wasm_sha256 = blob "$(hex_blob_literal "$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_governance_source_sha256)")" };
+    record { role = variant { SnsRoot }; canister_id = principal "${root}"; wasm_sha256 = blob "$(hex_blob_literal "$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_root_source_sha256)")" };
+    record { role = variant { SnsLedger }; canister_id = principal "${ledger}"; wasm_sha256 = blob "$(hex_blob_literal "$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_ledger_source_sha256)")" };
+    record { role = variant { SnsIndex }; canister_id = principal "${index}"; wasm_sha256 = blob "$(hex_blob_literal "$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_index_source_sha256)")" };
+    record { role = variant { SnsSwap }; canister_id = principal "${swap}"; wasm_sha256 = blob "$(hex_blob_literal "$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_swap_source_sha256)")" };
   };
-  reward_share_capable_governance_sha256 = opt blob "$(hex_blob_literal "$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_governance_sha256)")";
+  reward_share_capable_governance_sha256 = opt blob "$(hex_blob_literal "$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_governance_source_sha256)")";
   refresh_interval_seconds = 60 : nat64;
 })
 EOF
