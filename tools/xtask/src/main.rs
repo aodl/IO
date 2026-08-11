@@ -2396,6 +2396,8 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
         )?,
         &[
             "IO_LOCAL_REWARD_ADVANCE_SECONDS=86400",
+            "IncreaseDissolveDelay",
+            "DissolveDelaySeconds = 1209600",
             "resume_reward_work",
             "ProposalBearing",
             "processed_reward_event_count: 1",
@@ -5508,7 +5510,7 @@ fn validate_monitoring_evidence(
             "redemption_rate: Some",
             "lifecycle: Ready",
             "two_week_maturity_baseline_reconciled: true",
-            "latest_two_week_target: Some",
+            "latest_two_week_target: None",
             "nns_governance: Some",
             "build_metadata:",
             "RewardBacking",
@@ -8746,7 +8748,7 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh",
-            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# IO_LOCAL_REWARD_ADVANCE_SECONDS=86400 resume_reward_work ProposalBearing processed_reward_event_count: 1 accumulated_policy_credit: 1000000000000000000\n",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# IO_LOCAL_REWARD_ADVANCE_SECONDS=86400 IncreaseDissolveDelay DissolveDelaySeconds = 1209600 resume_reward_work ProposalBearing processed_reward_event_count: 1 accumulated_policy_credit: 1000000000000000000\n",
         );
         write(
             root,

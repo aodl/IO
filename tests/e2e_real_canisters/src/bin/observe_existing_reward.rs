@@ -178,7 +178,7 @@ fn main() {
                 status.two_week_maturity_baseline_reconciled,
                 status.latest_two_week_target.is_some()
             )),
-            Some((io_historian::Lifecycle::Ready, true, true)),
+            Some((io_historian::Lifecycle::Ready, true, false)),
         );
         assert_eq!(
             dashboard
