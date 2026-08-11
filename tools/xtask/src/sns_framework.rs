@@ -1272,16 +1272,12 @@ fn run_lifecycle_profile(
                 .into(),
         );
     }
-    for required in [
-        "IO_LOCAL_POCKET_IC_SERVER_URL",
-        "IO_LOCAL_POCKET_IC_INSTANCE_ID",
-    ] {
-        if env::var_os(required).is_none() {
-            return Err(format!(
-                "lifecycle fresh-topology preflight requires {required}"
-            ));
-        }
-    }
+    let server_url = env::var("IO_LOCAL_POCKET_IC_SERVER_URL").map_err(|_| {
+        "lifecycle fresh-topology preflight requires IO_LOCAL_POCKET_IC_SERVER_URL".to_string()
+    })?;
+    let instance_id = env::var("IO_LOCAL_POCKET_IC_INSTANCE_ID").map_err(|_| {
+        "lifecycle fresh-topology preflight requires IO_LOCAL_POCKET_IC_INSTANCE_ID".to_string()
+    })?;
     let preflight = Command::new("cargo")
         .current_dir(io_root)
         .args([
@@ -1292,6 +1288,8 @@ fn run_lifecycle_profile(
             "observe_existing_reward",
         ])
         .env("IO_LOCAL_ASSERT_FRESH_HOST_TIME_ONLY", "1")
+        .env("IO_POCKET_IC_SERVER_URL", server_url)
+        .env("IO_POCKET_IC_INSTANCE_ID", instance_id)
         .status()
         .map_err(|err| format!("failed to inspect fresh lifecycle topology time: {err}"))?;
     if !preflight.success() {

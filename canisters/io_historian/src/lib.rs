@@ -383,6 +383,7 @@ pub async fn debug_refresh_now() {
     refresh_once().await;
 }
 
+#[cfg(target_family = "wasm")]
 ic_cdk::export_candid!();
 
 #[cfg(test)]
