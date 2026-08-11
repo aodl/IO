@@ -2,7 +2,7 @@
   "schema_version": 1,
   "build_profile": "release",
   "target": "wasm32-unknown-unknown",
-  "git_commit": "e806882d3e89fdfac45510a2bbb5a1a8b72b869d",
+  "git_commit": "95864b304682d392e841b6afd8e7426b922e69ef",
   "artifacts": [
     {
       "canister": "io_stream_manager",
@@ -14,43 +14,43 @@
       "gz_wasm_bytes": 687884,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "e806882d3e89fdfac45510a2bbb5a1a8b72b869d"
+      "git_commit": "95864b304682d392e841b6afd8e7426b922e69ef"
     },
     {
       "canister": "io_nns_neuron_manager",
       "raw_wasm_path": "release-artifacts/io_nns_neuron_manager.wasm",
-      "raw_wasm_sha256": "ecb8764f08aaa7e98f5e716bd3fdcae0146e14a1ea4c8b1d6dbce3482c5b07b3",
-      "raw_wasm_bytes": 2619843,
+      "raw_wasm_sha256": "9a23be162ff971b0937b2028fd20ec29ef5a46f5d8a23f47aa77607db4370988",
+      "raw_wasm_bytes": 2620199,
       "gz_wasm_path": "release-artifacts/io_nns_neuron_manager.wasm.gz",
-      "gz_wasm_sha256": "cceff0565cac1cffb4e9f31b7e5d66db98a01669bdf9b39ce63465e3dcca93c6",
-      "gz_wasm_bytes": 654128,
+      "gz_wasm_sha256": "ae50d013d8afa39bbea0ea74c009a234469a1e420845d42ce202f61486d829ff",
+      "gz_wasm_bytes": 655023,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "e806882d3e89fdfac45510a2bbb5a1a8b72b869d"
+      "git_commit": "95864b304682d392e841b6afd8e7426b922e69ef"
     },
     {
       "canister": "io_historian",
       "raw_wasm_path": "release-artifacts/io_historian.wasm",
-      "raw_wasm_sha256": "ebe13026507bc137f3bdf8865c598b4fdbf0da094bd444840ace7d6af72a8dca",
-      "raw_wasm_bytes": 1290583,
+      "raw_wasm_sha256": "a760d4294050513d18ca9ff54ff577c3f908421d88ffa2f1cf19200a7eb9509f",
+      "raw_wasm_bytes": 1832030,
       "gz_wasm_path": "release-artifacts/io_historian.wasm.gz",
-      "gz_wasm_sha256": "33bd822ede65a598cb8f14b989987e81a739decaacefa505400f2cc5187ec762",
-      "gz_wasm_bytes": 312732,
+      "gz_wasm_sha256": "07d85d797936216a3ad9f2bfd30f5e6f3f9c1d1897b1b5c92f57a0d942fa5378",
+      "gz_wasm_bytes": 453656,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "e806882d3e89fdfac45510a2bbb5a1a8b72b869d"
+      "git_commit": "95864b304682d392e841b6afd8e7426b922e69ef"
     },
     {
       "canister": "frontend",
       "raw_wasm_path": "release-artifacts/io_frontend.wasm",
-      "raw_wasm_sha256": "e55a8801cde91c02569163e9780b7d7a442190dfc12aaa7bd31ee5dd27bc6c88",
-      "raw_wasm_bytes": 14583851,
+      "raw_wasm_sha256": "a78e37ed75d5bd3f4d984f7aea7aa68225395ca254c52cca55c11f682a15181c",
+      "raw_wasm_bytes": 14577326,
       "gz_wasm_path": "release-artifacts/io_frontend.wasm.gz",
-      "gz_wasm_sha256": "539c87e7f9af887563f05d499b23fcf8ef9755c0aae32c33f3c9227d075251b6",
-      "gz_wasm_bytes": 12840558,
+      "gz_wasm_sha256": "cdcea84614a50b1b229895226c9256229270adb7a2829522c5d4f3f4681f4890",
+      "gz_wasm_bytes": 12838843,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "e806882d3e89fdfac45510a2bbb5a1a8b72b869d"
+      "git_commit": "95864b304682d392e841b6afd8e7426b922e69ef"
     }
   ]
 }
