@@ -7,10 +7,12 @@ Follow the current official ICP/DFINITY SNS testing documentation as the source 
 The maintained path uses the source-built `sns-testing-init`, `sns-testing` and `sns` binaries from `rs/sns/testing` and `rs/sns/cli`; it does not depend on the dfx SNS extension.
 
 The source flow has reached SNS-W deployment, swap finalization, reserve funding,
-ledger/index evidence and controller handoff. Dapp-upgrade completion remains
-blocked by the reviewed candidate-Governance/official-Root wire mismatch and
-the local chunk-store subnet authorization gap recorded in
-`docs/operations/remaining-work.md`.
+ledger/index evidence, controller handoff, and authentic same-source candidate
+Governance/Root upgrade execution. The one-component candidate-Governance with
+official-Root wire mismatch is historical. The local chunk-store authorization
+gap is an upstream CLI/bootstrap defect and does not block an inline SNS
+Governance proposal executed by Root. The source-shaped NNS readiness and
+hash-changing upgrade fixtures still require one clean completed evidence run.
 
 Expected manual order:
 

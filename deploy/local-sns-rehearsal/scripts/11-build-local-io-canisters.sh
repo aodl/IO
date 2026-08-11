@@ -10,7 +10,7 @@ require_local_script_guard "$@"
 cd "${REPO_ROOT}"
 log_file="$(phase_log_file 11-build-local-io-canisters)"
 : > "$log_file"
-run_logged "$log_file" cargo run -p xtask -- verify_artifacts
+run_logged "$log_file" cargo run -p xtask -- verify_recorded_source
 source_commit="$(jq -er '.git_commit' release-artifacts/manifest.json)"
 git cat-file -e "${source_commit}^{commit}"
 if ! git diff --quiet "$source_commit" HEAD -- . ':(exclude)release-artifacts'; then

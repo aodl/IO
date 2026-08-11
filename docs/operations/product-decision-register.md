@@ -19,7 +19,7 @@ No value in this register may be inferred from the deterministic local rehearsal
 | Final Account/subaccount mapping | NEEDS USER DECISION | Exact owners and 32-byte subaccounts for reserve, liquid ICP, maturity staging and Jupiter. |
 | Final Governance and module hashes | EXTERNAL | Official candidate adoption/release first, followed by reviewed pin updates. |
 | Final dapp and SNS canister IDs | MAINNET AUDIT REQUIRED | Allocated/observed only during separately authorized launch work. |
-| Candidate reward-share field | EXTERNAL | Official DFINITY review and mutually compatible SNS release. |
+| Candidate reward-share field | EXTERNAL | Local candidate Governance/Root compatibility and feature behavior are proved. Official DFINITY review and an official SNS Governance release containing the capability remain required, followed by exact official Wasm/DID pins and official-profile reruns. |
 | Production token symbol | NEEDS USER DECISION | The pinned DFINITY SNS implementation accepts symbols of 3–10 characters, so two-character `IO` is not valid. Choose a valid 3–10 character production symbol or obtain and adopt an upstream SNS validation change. `IOLO` is only a local fixture and does not decide the production symbol. |
 
 Decisions already fixed by architecture are not reopened here: native SNS reward rates are zero, reward rounds are 86,400 seconds, dissolve-delay and age bonuses are zero for the accepted IO reward policy, ordinary reward eligibility is exact 1,209,600-second non-dissolving, protected NNS delay is 252,460,800 seconds, two-year maturity issues no IO, and Jupiter is exact 40/60.

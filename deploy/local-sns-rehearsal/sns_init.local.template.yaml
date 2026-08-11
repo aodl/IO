@@ -4,7 +4,7 @@
 
 name: "IO Local Rehearsal"
 description: "Local-only IO SNS rehearsal for proving real SNS ledger/index behavior."
-url: "https://example.invalid/io-local-rehearsal"
+url: "https://forum.dfinity.org/t/io-local-rehearsal/0"
 logo: "{{logo_path}}"
 
 NnsProposal:

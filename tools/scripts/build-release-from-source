@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source_commit="${1:?usage: build-release-from-source <exact-source-commit>}"
+source_commit="${1:?usage: build-release-from-source <exact-source-commit> [output-directory]}"
+output_dir="${2:-}"
 io_root="$(git rev-parse --show-toplevel)"
 cd "${io_root}"
 resolved="$(git rev-parse --verify "${source_commit}^{commit}")"
@@ -19,7 +20,9 @@ if [[ -n "$(git status --porcelain=v1 --untracked-files=all -- . ':(exclude)rele
   exit 1
 fi
 
-worktree_root="$(mktemp -d)"
+temp_base="/home/codexdev/.codex-io/release-builds"
+mkdir -p "${temp_base}"
+worktree_root="$(mktemp -d "${temp_base}/build-release.XXXXXXXX")"
 source_tree="${worktree_root}/source"
 cleanup() {
   if [[ -d "${source_tree}" ]]; then
@@ -44,7 +47,19 @@ if [[ -n "$(git -C "${source_tree}" status --porcelain=v1 --untracked-files=all 
   exit 1
 fi
 
-rm -rf "${io_root}/release-artifacts"
-cp -a "${source_tree}/release-artifacts" "${io_root}/release-artifacts"
-cd "${io_root}"
-cargo run -p xtask -- verify_artifacts
+if [[ -n "${output_dir}" ]]; then
+  if [[ "${output_dir}" != /* ]]; then
+    echo "output directory must be an absolute path" >&2
+    exit 2
+  fi
+  if [[ -e "${output_dir}" ]]; then
+    echo "output directory already exists: ${output_dir}" >&2
+    exit 2
+  fi
+  cp -a "${source_tree}/release-artifacts" "${output_dir}"
+else
+  rm -rf "${io_root}/release-artifacts"
+  cp -a "${source_tree}/release-artifacts" "${io_root}/release-artifacts"
+  cd "${io_root}"
+  cargo run -p xtask -- verify_artifacts
+fi

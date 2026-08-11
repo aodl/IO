@@ -55,6 +55,9 @@ case "$subcommand" in
   exercise-governance-and-controllers)
     "${SCRIPT_DIR}/scripts/17-exercise-governance-and-controllers.sh" "$@"
     ;;
+  observe-one-day-reward)
+    "${SCRIPT_DIR}/scripts/17-observe-one-day-reward.sh" "$@"
+    ;;
   package-evidence)
     "${SCRIPT_DIR}/scripts/18-package-evidence.sh" "$@"
     ;;
@@ -79,7 +82,7 @@ EOF
     ;;
   *)
     printf 'unknown subcommand: %s\n' "$subcommand" >&2
-    printf 'known: check, render-sns-init, record-ids, capture-evidence, render-wiring, validate, bootstrap-official-network, build-local-io-canisters, deploy-local-dapps, propose-and-finalize-sns, discover-sns-canisters, exercise-ledger, exercise-index-and-archives, exercise-governance-and-controllers, package-evidence, cleanup-official-network, print-next-steps\n' >&2
+    printf 'known: check, render-sns-init, record-ids, capture-evidence, render-wiring, validate, bootstrap-official-network, build-local-io-canisters, deploy-local-dapps, propose-and-finalize-sns, discover-sns-canisters, exercise-ledger, exercise-index-and-archives, exercise-governance-and-controllers, observe-one-day-reward, package-evidence, cleanup-official-network, print-next-steps\n' >&2
     exit 2
     ;;
 esac

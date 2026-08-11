@@ -24,32 +24,5 @@ jobs:
           tools/scripts/provision-pocket-ic "${pocket_ic_bin}"
           echo "POCKET_IC_BIN=${pocket_ic_bin}" >> "${GITHUB_ENV}"
 
-      - name: Format
-        run: cargo fmt --all -- --check
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-      - name: Check
-        run: cargo check --workspace --all-targets
-
-      - name: Test
-        run: cargo test --workspace
-
-      - name: Wasm check
-        run: cargo check -p io-stream-manager -p io-nns-neuron-manager --target wasm32-unknown-unknown
-
-      - name: DID surface
-        run: cargo run -p xtask -- did_surface
-
-      - name: Build exact recorded release source
-        run: tools/scripts/build-release-from-source "$(jq -er '.git_commit' release-artifacts/manifest.json)"
-
-      - name: Verify artifacts
-        run: cargo run -p xtask -- verify_artifacts
-
-      - name: Validate install args
-        run: cargo run -p xtask -- validate_install_args
-
-      - name: PocketIC required tests
-        run: cargo run -p xtask -- test_pocketic_required
+      - name: Canonical repository CI
+        run: cargo run -p xtask -- test_ci

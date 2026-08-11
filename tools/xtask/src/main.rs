@@ -1181,10 +1181,99 @@ fn expected_release_artifacts() -> Vec<String> {
         .collect()
 }
 
+fn expected_release_artifact_names() -> BTreeSet<String> {
+    expected_release_artifacts()
+        .into_iter()
+        .map(|path| {
+            path.strip_prefix("release-artifacts/")
+                .expect("release artifact path prefix")
+                .to_string()
+        })
+        .collect()
+}
+
+fn release_artifact_directory_files(dir: &Path) -> Result<BTreeSet<String>, String> {
+    let mut files = BTreeSet::new();
+    for entry in fs::read_dir(dir).map_err(|err| format!("{}: {err}", dir.display()))? {
+        let entry = entry.map_err(|err| format!("{}: {err}", dir.display()))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|err| format!("{}: {err}", entry.path().display()))?;
+        if !file_type.is_file() {
+            return Err(format!(
+                "unexpected non-file release artifact {}",
+                entry.path().display()
+            ));
+        }
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| format!("non-UTF-8 release artifact in {}", dir.display()))?;
+        files.insert(name);
+    }
+    let expected = expected_release_artifact_names();
+    if files != expected {
+        let missing = expected.difference(&files).cloned().collect::<Vec<_>>();
+        let unexpected = files.difference(&expected).cloned().collect::<Vec<_>>();
+        return Err(format!(
+            "release artifact file set mismatch in {}: missing [{}], unexpected [{}]",
+            dir.display(),
+            missing.join(", "),
+            unexpected.join(", ")
+        ));
+    }
+    Ok(files)
+}
+
+fn compare_release_artifact_dirs(first: &Path, second: &Path) -> Result<(), String> {
+    let files = release_artifact_directory_files(first)?;
+    release_artifact_directory_files(second)?;
+    for name in files {
+        let first_path = first.join(&name);
+        let second_path = second.join(&name);
+        let first_size = fs::metadata(&first_path)
+            .map_err(|err| format!("{}: {err}", first_path.display()))?
+            .len();
+        let second_size = fs::metadata(&second_path)
+            .map_err(|err| format!("{}: {err}", second_path.display()))?
+            .len();
+        if first_size != second_size {
+            return Err(format!(
+                "release artifact size mismatch for {name}: {} has {first_size} bytes, {} has {second_size} bytes",
+                first.display(),
+                second.display()
+            ));
+        }
+        let first_bytes =
+            fs::read(&first_path).map_err(|err| format!("{}: {err}", first_path.display()))?;
+        let second_bytes =
+            fs::read(&second_path).map_err(|err| format!("{}: {err}", second_path.display()))?;
+        if first_bytes != second_bytes {
+            return Err(format!(
+                "release artifact byte mismatch for {name}: {} != {}",
+                first.display(),
+                second.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn sha256_hex(path: &Path) -> Result<String, String> {
     let bytes = fs::read(path).map_err(|err| format!("{}: {err}", path.display()))?;
     let digest = Sha256::digest(bytes);
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn nns_neuron_staking_subaccount(controller: Principal, nonce: u64) -> String {
+    let domain = b"neuron-stake";
+    let mut hasher = Sha256::new();
+    hasher.update([domain.len() as u8]);
+    hasher.update(domain);
+    hasher.update(controller.as_slice());
+    hasher.update(nonce.to_be_bytes());
+    let digest = hasher.finalize();
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn verify_artifact_hash(root: &Path, sidecar: &str) -> Result<(), String> {
@@ -1920,10 +2009,28 @@ fn check_sns_launch_readiness_at(root: &Path, strict: bool) -> Result<usize, Str
             "[fallback_controllers_defined]",
             "[dapp_canisters_listed]",
             "[all_upgrades_tested_via_sns_proposal]",
+            "[official_reward_share_release]",
             "[frontend_sns_integration_tested]",
             "[cycles_management_strategy]",
             "[custom_domain_frontend_plan]",
             "[audit_package]",
+        ],
+    )?;
+    require_present(
+        "tools/sns/launch-readiness.toml",
+        &checklist,
+        &[
+            "same-source candidate Governance/Root compatibility",
+            "official reviewed SNS Governance release containing the capability",
+            "upstream non-blocking tooling defect",
+        ],
+    )?;
+    require_absent(
+        "tools/sns/launch-readiness.toml",
+        &checklist,
+        &[
+            "Completion is blocked by candidate-Governance/official-Root ChangeCanisterRequest incompatibility",
+            "A reviewed mutually compatible SNS release/bundle is required.",
         ],
     )?;
 
@@ -2112,11 +2219,13 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
         "deploy/local-sns-rehearsal/scripts/10-bootstrap-official-network.sh",
         "deploy/local-sns-rehearsal/scripts/11-build-local-io-canisters.sh",
         "deploy/local-sns-rehearsal/scripts/12-deploy-local-dapps.sh",
+        "deploy/local-sns-rehearsal/scripts/12-provision-local-nns-readiness.sh",
         "deploy/local-sns-rehearsal/scripts/13-propose-and-finalize-sns.sh",
         "deploy/local-sns-rehearsal/scripts/14-discover-sns-canisters.sh",
         "deploy/local-sns-rehearsal/scripts/15-exercise-ledger.sh",
         "deploy/local-sns-rehearsal/scripts/16-exercise-index-and-archives.sh",
         "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
+        "deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh",
         "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
         "deploy/local-sns-rehearsal/scripts/19-cleanup-official-network.sh",
     ] {
@@ -2194,6 +2303,35 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
         &deployment_phase,
         &["--specified-id"],
     )?;
+    let provisioning_phase = require_file(
+        root,
+        "deploy/local-sns-rehearsal/scripts/12-provision-local-nns-readiness.sh",
+    )?;
+    require_present(
+        "deploy/local-sns-rehearsal/scripts/12-provision-local-nns-readiness.sh",
+        &provisioning_phase,
+        &[
+            "icrc1_transfer",
+            "claim_or_refresh_neuron_from_account",
+            "update_neuron",
+            "252460800",
+            "auto_stake_maturity = opt false",
+            "maturity_disbursements_in_progress = opt vec {}",
+            "two_year_neuron_id",
+            "two_week_neuron_id",
+        ],
+    )?;
+    require_absent(
+        "deploy/local-sns-rehearsal/scripts/12-provision-local-nns-readiness.sh",
+        &provisioning_phase,
+        &["6345890886899317159"],
+    )?;
+    let nns_test_did = require_file(root, "deploy/local-sns-rehearsal/nns-governance-test.did")?;
+    require_present(
+        "deploy/local-sns-rehearsal/nns-governance-test.did",
+        &nns_test_did,
+        &["Local sns-testing", "update_neuron", "service :"],
+    )?;
     require_present(
         "deploy/local-sns-rehearsal/scripts/14-discover-sns-canisters.sh",
         &require_file(
@@ -2251,6 +2389,20 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
         "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
         &governance_phase,
         &["dfx canister install"],
+    )?;
+    require_present(
+        "deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh",
+        &require_file(
+            root,
+            "deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh",
+        )?,
+        &[
+            "IO_LOCAL_REWARD_ADVANCE_SECONDS=86400",
+            "resume_reward_work",
+            "ProposalBearing",
+            "processed_reward_event_count: 1",
+            "accumulated_policy_credit: 1000000000000000000",
+        ],
     )?;
     validate_loopback_url_guardrails()?;
 
@@ -6791,7 +6943,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, simplicity_check, validate_nns_boundary_pin, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_committed_evidence, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, build_recorded_source, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, simplicity_check, validate_nns_boundary_pin, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_committed_evidence, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, build_recorded_source, verify_recorded_source, compare_release_artifact_dirs, nns_neuron_staking_subaccount, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -6896,6 +7048,61 @@ fn main() -> ExitCode {
                 ok = false;
             }
         },
+        "verify_recorded_source" => match manifest_source_commit(&root) {
+            Ok(Some(source_commit)) => {
+                ok &= run(
+                    "verify checked-in artifacts and repeated exact-source builds",
+                    script(
+                        "tools/scripts/verify-release-from-source",
+                        &[&source_commit],
+                    ),
+                );
+            }
+            Ok(None) => {
+                eprintln!("✗ verify_recorded_source: {MANIFEST_PATH} is missing");
+                ok = false;
+            }
+            Err(err) => {
+                eprintln!("✗ verify_recorded_source: {err}");
+                ok = false;
+            }
+        },
+        "compare_release_artifact_dirs" => {
+            if args.len() != 2 {
+                eprintln!("✗ compare_release_artifact_dirs: expected <first-directory> <second-directory>");
+                return ExitCode::from(2);
+            }
+            match compare_release_artifact_dirs(Path::new(&args[0]), Path::new(&args[1])) {
+                Ok(()) => eprintln!("✓ compare_release_artifact_dirs"),
+                Err(err) => {
+                    eprintln!("✗ compare_release_artifact_dirs: {err}");
+                    ok = false;
+                }
+            }
+        }
+        "nns_neuron_staking_subaccount" => {
+            if args.len() != 2 {
+                eprintln!(
+                    "✗ nns_neuron_staking_subaccount: expected <controller-principal> <nonce>"
+                );
+                return ExitCode::from(2);
+            }
+            let controller = match Principal::from_text(&args[0]) {
+                Ok(controller) => controller,
+                Err(err) => {
+                    eprintln!("✗ nns_neuron_staking_subaccount: invalid principal: {err}");
+                    return ExitCode::from(2);
+                }
+            };
+            let nonce = match args[1].parse::<u64>() {
+                Ok(nonce) => nonce,
+                Err(err) => {
+                    eprintln!("✗ nns_neuron_staking_subaccount: invalid nonce: {err}");
+                    return ExitCode::from(2);
+                }
+            };
+            println!("{}", nns_neuron_staking_subaccount(controller, nonce));
+        }
         "verify_artifacts" => match verify_artifacts_at(&root) {
             Ok(()) => eprintln!("✓ verify_artifacts"),
             Err(err) => {
@@ -7506,7 +7713,7 @@ fn main() -> ExitCode {
             for sub in [
                 "did_surface",
                 "validate_nns_boundary_pin",
-                "build_recorded_source",
+                "verify_recorded_source",
                 "verify_artifacts",
                 "validate_install_args",
                 "validate_production_wiring",
@@ -7655,7 +7862,7 @@ fn main() -> ExitCode {
             }
         }
         "test_local_integration" => {
-            ok &= run_subcommand("build_recorded_source");
+            ok &= run_subcommand("verify_artifacts");
             ok &= run_subcommand("did_surface");
             ok &= run_subcommand("validate_install_args");
             ok &= run("local-cli: icp project show", icp(&["project", "show"]));
@@ -7736,30 +7943,52 @@ fn main() -> ExitCode {
             for sub in [
                 "fmt_check",
                 "check",
+                "simplicity_check",
                 "did_surface",
                 "validate_nns_boundary_pin",
-                "build_recorded_source",
+                "verify_recorded_source",
                 "verify_artifacts",
                 "validate_install_args",
                 "validate_production_wiring",
                 "validate_historian_freshness",
                 "validate_stable_storage",
                 "validate_local_sns_rehearsal",
+                "validate_local_sns_ledger",
                 "validate_local_sns_committed_evidence",
                 "validate_local_sns_scripts",
                 "security_scan_required",
                 "test_unit",
                 "frontend_required",
                 "test_pocketic_required",
+                "sns_pocketic_required",
                 "sns_root_lifecycle_required",
                 "test_local_integration",
                 "test_e2e",
             ] {
                 ok &= run_subcommand(sub);
             }
+            ok &= run("test: workspace", cargo_test(&["--workspace"]));
+            ok &= run(
+                "check: value-moving canisters wasm32",
+                cargo_check(&[
+                    "-p",
+                    "io-stream-manager",
+                    "-p",
+                    "io-nns-neuron-manager",
+                    "--target",
+                    "wasm32-unknown-unknown",
+                ]),
+            );
             ok &= run(
                 "clippy: workspace all targets",
-                cargo_clippy(&["--workspace", "--all-targets", "--", "-D", "warnings"]),
+                cargo_clippy(&[
+                    "--workspace",
+                    "--all-targets",
+                    "--all-features",
+                    "--",
+                    "-D",
+                    "warnings",
+                ]),
             );
         }
         other => {
@@ -7962,6 +8191,17 @@ mod tests {
         write_manifest(root).unwrap();
     }
 
+    fn copy_release_artifact_set(from: &Path, to: &Path) {
+        fs::create_dir_all(to.join("release-artifacts")).unwrap();
+        for name in expected_release_artifact_names() {
+            fs::copy(
+                from.join("release-artifacts").join(&name),
+                to.join("release-artifacts").join(&name),
+            )
+            .unwrap();
+        }
+    }
+
     fn write_artifact_manifest(root: &Path, manifest: &ArtifactManifest) {
         let text = serde_json::to_string_pretty(manifest).unwrap();
         write(root, MANIFEST_PATH, &format!("{text}\n"));
@@ -8118,7 +8358,7 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "tools/sns/launch-readiness.toml",
-            "[source_open]\nstatus = \"incomplete\"\n[reproducible_builds]\nstatus = \"incomplete\"\n[security_review]\nstatus = \"incomplete\"\n[sns_config_validated]\nstatus = \"incomplete\"\n[local_sns_testing_rehearsal]\nstatus = \"incomplete\"\n[mainnet_testflight]\nstatus = \"incomplete\"\n[app_canisters_stable_on_mainnet]\nstatus = \"incomplete\"\n[nns_root_co_controller_step_planned]\nstatus = \"incomplete\"\n[fallback_controllers_defined]\nstatus = \"incomplete\"\n[dapp_canisters_listed]\nstatus = \"incomplete\"\n[all_upgrades_tested_via_sns_proposal]\nstatus = \"incomplete\"\n[frontend_sns_integration_tested]\nstatus = \"incomplete\"\n[cycles_management_strategy]\nstatus = \"incomplete\"\n[custom_domain_frontend_plan]\nstatus = \"incomplete\"\n[audit_package]\nstatus = \"incomplete\"\n",
+            "[source_open]\nstatus = \"incomplete\"\n[reproducible_builds]\nstatus = \"incomplete\"\n[security_review]\nstatus = \"incomplete\"\n[sns_config_validated]\nstatus = \"incomplete\"\n[local_sns_testing_rehearsal]\nstatus = \"incomplete\"\nevidence = \"same-source candidate Governance/Root compatibility; upstream non-blocking tooling defect\"\n[mainnet_testflight]\nstatus = \"incomplete\"\n[app_canisters_stable_on_mainnet]\nstatus = \"incomplete\"\n[nns_root_co_controller_step_planned]\nstatus = \"incomplete\"\n[fallback_controllers_defined]\nstatus = \"incomplete\"\n[dapp_canisters_listed]\nstatus = \"incomplete\"\n[all_upgrades_tested_via_sns_proposal]\nstatus = \"incomplete\"\n[official_reward_share_release]\nstatus = \"incomplete\"\nevidence = \"official reviewed SNS Governance release containing the capability\"\n[frontend_sns_integration_tested]\nstatus = \"incomplete\"\n[cycles_management_strategy]\nstatus = \"incomplete\"\n[custom_domain_frontend_plan]\nstatus = \"incomplete\"\n[audit_package]\nstatus = \"incomplete\"\n",
         );
         write(
             root,
@@ -8185,11 +8425,13 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
             "deploy/local-sns-rehearsal/scripts/10-bootstrap-official-network.sh",
             "deploy/local-sns-rehearsal/scripts/11-build-local-io-canisters.sh",
             "deploy/local-sns-rehearsal/scripts/12-deploy-local-dapps.sh",
+            "deploy/local-sns-rehearsal/scripts/12-provision-local-nns-readiness.sh",
             "deploy/local-sns-rehearsal/scripts/13-propose-and-finalize-sns.sh",
             "deploy/local-sns-rehearsal/scripts/14-discover-sns-canisters.sh",
             "deploy/local-sns-rehearsal/scripts/15-exercise-ledger.sh",
             "deploy/local-sns-rehearsal/scripts/16-exercise-index-and-archives.sh",
             "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
+            "deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh",
             "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
             "deploy/local-sns-rehearsal/scripts/19-cleanup-official-network.sh",
         ] {
@@ -8201,8 +8443,23 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         }
         write(
             root,
+            "deploy/local-sns-rehearsal/nns-governance-test.did",
+            "// Local sns-testing\nservice : { update_neuron : (record {}) -> (opt record { error_message : text; error_type : int32 }) };\n",
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/scripts/12-provision-local-nns-readiness.sh",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# icrc1_transfer claim_or_refresh_neuron_from_account update_neuron 252460800 auto_stake_maturity = opt false maturity_disbursements_in_progress = opt vec {} two_year_neuron_id two_week_neuron_id\n",
+        );
+        write(
+            root,
             "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
             "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# upgrade-sns-controlled-canister submit_inline_sns_upgrade AddGenericNervousSystemFunction validate_set_paused ExecuteGenericNervousSystemFunction\n",
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# IO_LOCAL_REWARD_ADVANCE_SECONDS=86400 resume_reward_work ProposalBearing processed_reward_event_count: 1 accumulated_policy_credit: 1000000000000000000\n",
         );
         write(
             root,
@@ -8549,6 +8806,82 @@ Template SNS principal values are planned wiring placeholders only.
         write_artifact_set(&root);
         verify_artifacts_at(&root).unwrap();
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn release_artifact_comparison_accepts_identical_complete_sets() {
+        let first = temp_root("artifact-compare-identical-first");
+        let second = temp_root("artifact-compare-identical-second");
+        write_artifact_set(&first);
+        copy_release_artifact_set(&first, &second);
+        compare_release_artifact_dirs(
+            &first.join("release-artifacts"),
+            &second.join("release-artifacts"),
+        )
+        .unwrap();
+        let _ = fs::remove_dir_all(first);
+        let _ = fs::remove_dir_all(second);
+    }
+
+    #[test]
+    fn release_artifact_comparison_rejects_modified_checked_in_wasm_gzip_sidecar_and_manifest() {
+        for (case, path) in [
+            ("wasm", "io_stream_manager.wasm"),
+            ("gzip", "io_stream_manager.wasm.gz"),
+            ("sidecar", "io_stream_manager.wasm.sha256"),
+            ("manifest", "manifest.json"),
+        ] {
+            let checked_in = temp_root(&format!("artifact-compare-{case}-checked-in"));
+            let rebuilt = temp_root(&format!("artifact-compare-{case}-rebuilt"));
+            write_artifact_set(&checked_in);
+            copy_release_artifact_set(&checked_in, &rebuilt);
+            write(
+                &checked_in,
+                &format!("release-artifacts/{path}"),
+                &format!("deliberately modified checked-in {case}\n"),
+            );
+            assert!(compare_release_artifact_dirs(
+                &checked_in.join("release-artifacts"),
+                &rebuilt.join("release-artifacts"),
+            )
+            .unwrap_err()
+            .contains("mismatch"));
+            let _ = fs::remove_dir_all(checked_in);
+            let _ = fs::remove_dir_all(rebuilt);
+        }
+    }
+
+    #[test]
+    fn release_artifact_comparison_rejects_missing_or_unexpected_files() {
+        let first = temp_root("artifact-compare-file-set-first");
+        let second = temp_root("artifact-compare-file-set-second");
+        write_artifact_set(&first);
+        copy_release_artifact_set(&first, &second);
+        write(&second, "release-artifacts/unexpected.wasm", "unexpected");
+        assert!(compare_release_artifact_dirs(
+            &first.join("release-artifacts"),
+            &second.join("release-artifacts"),
+        )
+        .unwrap_err()
+        .contains("file set mismatch"));
+        fs::remove_file(second.join("release-artifacts/unexpected.wasm")).unwrap();
+        fs::remove_file(second.join("release-artifacts/io_frontend.wasm.gz")).unwrap();
+        assert!(compare_release_artifact_dirs(
+            &first.join("release-artifacts"),
+            &second.join("release-artifacts"),
+        )
+        .unwrap_err()
+        .contains("file set mismatch"));
+        let _ = fs::remove_dir_all(first);
+        let _ = fs::remove_dir_all(second);
+    }
+
+    #[test]
+    fn nns_neuron_staking_subaccount_matches_canonical_domain_encoding() {
+        assert_eq!(
+            nns_neuron_staking_subaccount(Principal::anonymous(), 42),
+            "51f24fa3c2cda819352861ad22661f640f8be4be81e77304e77fe6c9cb87d2de"
+        );
     }
 
     #[test]
@@ -8921,7 +9254,7 @@ Template SNS principal values are planned wiring placeholders only.
     fn sns_launch_readiness_reports_incomplete_and_strict_fails() {
         let root = temp_root("sns-launch-readiness-strict");
         write_sns_harness_fixture(&root);
-        assert_eq!(check_sns_launch_readiness_at(&root, false).unwrap(), 15);
+        assert_eq!(check_sns_launch_readiness_at(&root, false).unwrap(), 16);
         assert!(check_sns_launch_readiness_at(&root, true)
             .unwrap_err()
             .contains("incomplete item"));

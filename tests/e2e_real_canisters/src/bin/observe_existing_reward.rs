@@ -3,6 +3,7 @@ use e2e_real_canisters::sns_governance_setup::{ListNeurons, ListNeuronsResponse}
 use io_governance_types::SnsRewardEvent;
 use io_stream_manager::{ApiError, RewardEventObservation, Status};
 use pocket_ic::PocketIc;
+use std::time::Duration;
 
 fn required(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("{name} must be set"))
@@ -25,6 +26,17 @@ fn main() {
     let governance = principal("IO_LOCAL_SNS_GOVERNANCE_ID");
     let stream = principal("IO_LOCAL_STREAM_MANAGER_ID");
     let caller = Principal::anonymous();
+
+    if let Ok(seconds) = std::env::var("IO_LOCAL_REWARD_ADVANCE_SECONDS") {
+        let seconds = seconds
+            .parse::<u64>()
+            .expect("invalid IO_LOCAL_REWARD_ADVANCE_SECONDS");
+        pic.advance_time(Duration::from_secs(seconds));
+        for _ in 0..20 {
+            pic.tick();
+        }
+        println!("advanced_pocketic_seconds={seconds}");
+    }
 
     let event: SnsRewardEvent = decode_one(
         &pic.query_call(

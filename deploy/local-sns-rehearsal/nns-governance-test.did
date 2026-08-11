@@ -1,0 +1,73 @@
+// Local sns-testing NNS Governance feature="test" surface used only to shape
+// claimed local neurons exactly like the maintained bootstrap does.
+type Account = record {
+  owner : opt principal;
+  subaccount : opt blob;
+};
+type AccountIdentifier = record { hash : blob };
+type BallotInfo = record {
+  vote : int32;
+  proposal_id : opt record { id : nat64 };
+};
+type DissolveState = variant {
+  DissolveDelaySeconds : nat64;
+  WhenDissolvedTimestampSeconds : nat64;
+};
+type Followees = record { followees : vec record { id : nat64 } };
+type KnownNeuronData = record {
+  name : text;
+  description : opt text;
+  links : opt vec text;
+};
+type MaturityDisbursement = record {
+  amount_e8s : opt nat64;
+  timestamp_of_disbursement_seconds : opt nat64;
+  finalize_disbursement_timestamp_seconds : opt nat64;
+  account_to_disburse_to : opt Account;
+  account_identifier_to_disburse_to : opt AccountIdentifier;
+};
+type NeuronStakeTransfer = record {
+  to_subaccount : blob;
+  neuron_stake_e8s : nat64;
+  from : opt principal;
+  memo : nat64;
+  from_subaccount : blob;
+  transfer_timestamp : nat64;
+  block_height : nat64;
+};
+type Neuron = record {
+  id : opt record { id : nat64 };
+  staked_maturity_e8s_equivalent : opt nat64;
+  controller : opt principal;
+  recent_ballots : vec BallotInfo;
+  kyc_verified : bool;
+  neuron_type : opt int32;
+  not_for_profit : bool;
+  maturity_e8s_equivalent : nat64;
+  cached_neuron_stake_e8s : nat64;
+  created_timestamp_seconds : nat64;
+  auto_stake_maturity : opt bool;
+  aging_since_timestamp_seconds : nat64;
+  hot_keys : vec principal;
+  account : blob;
+  joined_community_fund_timestamp_seconds : opt nat64;
+  dissolve_state : opt DissolveState;
+  followees : vec record { int32; Followees };
+  neuron_fees_e8s : nat64;
+  visibility : opt int32;
+  transfer : opt NeuronStakeTransfer;
+  known_neuron_data : opt KnownNeuronData;
+  spawn_at_timestamp_seconds : opt nat64;
+  voting_power_refreshed_timestamp_seconds : opt nat64;
+  deciding_voting_power : opt nat64;
+  potential_voting_power : opt nat64;
+  eight_year_gang_bonus_base_e8s : opt nat64;
+  maturity_disbursements_in_progress : opt vec MaturityDisbursement;
+};
+type GovernanceError = record {
+  error_message : text;
+  error_type : int32;
+};
+service : {
+  update_neuron : (Neuron) -> (opt GovernanceError);
+};

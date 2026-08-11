@@ -24,13 +24,43 @@ the exact tree again after frontend setup and after compilation, before copying
 artifacts, so a generated tracked-asset rewrite cannot be attributed to the
 recorded commit.
 
-## Commands
+## Generation, verification, and reproducibility
+
+Artifact generation is the only operation that replaces the caller's
+`release-artifacts/` directory:
 
 ```bash
 source_commit="$(git rev-parse HEAD)"
 tools/scripts/build-release-from-source "${source_commit}"
+```
+
+Artifact verification is non-generating and checks the checked-in file set,
+sidecars, manifest hashes and byte sizes against the exact current source tree:
+
+```bash
 cargo run -p xtask -- verify_artifacts
 ```
+
+Reproducibility verification preserves the complete checked-in directory before
+building. It builds the exact manifest source twice into temporary output
+directories and requires byte-for-byte equality, equal sizes, and the exact
+expected file set for both comparisons:
+
+```text
+checked-in artifacts == exact-source build A
+exact-source build A == exact-source build B
+```
+
+Run it with:
+
+```bash
+cargo run -p xtask -- verify_recorded_source
+```
+
+Neither `verify_recorded_source` nor `verify_release` replaces the caller's
+`release-artifacts/`. A bad checked-in Wasm, deterministic gzip, SHA sidecar, or
+manifest therefore fails verification even when the recorded source rebuilds
+correctly.
 
 `release-artifacts/manifest.json` records each canister's raw and gzip path,
 SHA-256, byte size, build profile, target, and the one exact source commit. It
@@ -49,9 +79,10 @@ release-artifacts/manifest.json
 ## Independent comparison
 
 Two builders must check out the artifact-recording commit with full history and
-run the exact-source script twice using the manifest SHA. Compare the complete
-manifest, all SHA sidecars, and both raw and gzip Wasm hashes. The CI workflow
-performs this repeated build and fails if either result differs.
+run `verify_recorded_source`. The CI workflow performs both exact-source builds,
+first compares the preserved checked-in set with build A, then compares build A
+with build B. Every raw Wasm, deterministic gzip, SHA sidecar, manifest byte,
+file size, and file-set entry participates in both comparisons.
 
 ## Current limitations
 

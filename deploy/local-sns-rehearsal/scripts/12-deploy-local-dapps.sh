@@ -28,7 +28,6 @@ require_file "$vars_file"
 stream_args="${REHEARSAL_DIR}/install-args.local/io_stream_manager.did"
 nns_args="${REHEARSAL_DIR}/install-args.local/io_nns_neuron_manager.did"
 require_file "$stream_args"
-require_file "$nns_args"
 bundle_dir="${IO_LOCAL_SNS_BUNDLE_DIR:-}"
 if [ -z "$bundle_dir" ]; then
   record_blocker "set IO_LOCAL_SNS_BUNDLE_DIR to the reviewed same-source Governance/Root bundle"
@@ -72,6 +71,27 @@ for canister in io_stream_manager io_nns_neuron_manager io_historian frontend; d
       exit 2
     fi
   fi
+done
+
+"${SCRIPT_DIR}/12-provision-local-nns-readiness.sh"
+require_file "$stream_args"
+require_file "$nns_args"
+
+prior_historian_artifact_commit="0d17a02ddfa8afa5c21f6f886f23fe14377ee0cb"
+prior_historian_source_commit="e1f1e1e69c19fe08161706c4fc6345e7e63bf88c"
+prior_historian_hash="c7b1d636271e56108a5d7db9be15637e2b9b2d5fda3a627ddf089eabf3707d6c"
+prior_historian_path="${REHEARSAL_DIR}/generated/prior/io_historian.wasm"
+mkdir -p "$(dirname "$prior_historian_path")"
+if [ ! -f "$prior_historian_path" ]; then
+  git -C "$REPO_ROOT" show "${prior_historian_artifact_commit}:release-artifacts/io_historian.wasm" > "$prior_historian_path"
+fi
+if [ "$(sha256sum "$prior_historian_path" | awk '{print $1}')" != "$prior_historian_hash" ]; then
+  record_blocker "prior provenance-correct historian artifact hash mismatch"
+  exit 2
+fi
+
+for canister in io_stream_manager io_nns_neuron_manager io_historian frontend; do
+  canister_id="${ids[$canister]}"
   raw_path="${REPO_ROOT}/$(manifest_artifact_value "$canister" raw_wasm_path)"
   expected_hash="$(manifest_artifact_value "$canister" raw_wasm_sha256)"
   status="$(cd "$work_dir" && dfx canister status --network "$network_url" --identity "$identity" "$canister_id" 2>&1)"
@@ -84,10 +104,15 @@ for canister in io_stream_manager io_nns_neuron_manager io_historian frontend; d
       io_nns_neuron_manager)
         (cd "$work_dir" && run_logged "$log_file" dfx canister install --network "$network_url" --identity "$identity" --wasm "$raw_path" --argument-file "$nns_args" "$canister_id") || exit $?
         ;;
+      io_historian)
+        (cd "$work_dir" && run_logged "$log_file" dfx canister install --network "$network_url" --identity "$identity" --wasm "$prior_historian_path" "$canister_id") || exit $?
+        ;;
       *)
         (cd "$work_dir" && run_logged "$log_file" dfx canister install --network "$network_url" --identity "$identity" --wasm "$raw_path" "$canister_id") || exit $?
         ;;
     esac
+  elif [ "$canister" = io_historian ] && [ "$observed_hash" = "$prior_historian_hash" ]; then
+    :
   elif [ "$observed_hash" != "$expected_hash" ]; then
     record_blocker "${canister} module hash ${observed_hash} does not match exact release ${expected_hash}"
     exit 2
@@ -105,4 +130,7 @@ done
 
 run_logged "$log_file" "$sns" --identity "$identity" --network "$network_url" prepare-canisters add-nns-root \
   "${ids[io_stream_manager]}" "${ids[io_nns_neuron_manager]}" "${ids[io_historian]}" "${ids[frontend]}"
-mark_phase_done 12-deploy-local-dapps "release dapps installed Paused and NNS Root added as co-controller"
+mark_phase_done 12-deploy-local-dapps "current value-moving/frontend dapps and provenance-correct prior historian installed; managers Paused; NNS Root added as co-controller"
+printf 'prior historian source=%s artifact_commit=%s raw_hash=%s; current target=%s\n' \
+  "$prior_historian_source_commit" "$prior_historian_artifact_commit" "$prior_historian_hash" \
+  "$(manifest_artifact_value io_historian raw_wasm_sha256)" >> "$log_file"

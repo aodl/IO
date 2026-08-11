@@ -60,6 +60,11 @@ manifest.json
 
 `cargo run -p xtask -- verify_artifacts` checks the SHA sidecars, manifest content, byte sizes, and stale release files. The manifest records the git commit if available but does not include a build timestamp.
 
+`cargo run -p xtask -- verify_recorded_source` is the non-destructive
+reproducibility gate. It preserves the checked-in artifact set, builds the exact
+manifest source twice in detached worktrees, and requires checked-in = build A =
+build B for the complete expected file set, sizes, and bytes.
+
 ## Build Host And Tool Assumptions
 
 The repository uses the Rust version from `rust-toolchain.toml`, the `wasm32-unknown-unknown` target, `gzip -n` for deterministic gzip metadata, `sha256sum`, and `icp-cli` configuration. It intentionally does not use `dfx`.

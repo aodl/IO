@@ -15,7 +15,7 @@ evidence = "tools/sns/sns_init.io.template.yaml exists; official dfx sns validat
 
 [local_sns_testing_rehearsal]
 status = "incomplete"
-evidence = "Maintained source tooling at IC 4320fdf2e613844eabae1927b1a23b98da3a7bc6 proved local NNS/SNS-W launch, swap finalization, reserve funding, ledger/index behavior and controller handoff. Completion is blocked by candidate-Governance/official-Root ChangeCanisterRequest incompatibility and the local chunk-store subnet authorization gap; no completed committed evidence package is claimed."
+evidence = "Maintained source tooling at IC 4320fdf2e613844eabae1927b1a23b98da3a7bc6 proved local NNS/SNS-W launch, swap finalization, reserve funding, ledger/index behavior, controller handoff and same-source candidate Governance/Root compatibility. The source-shaped NNS-manager fee-float and two-neuron fixture plus a prior-to-current historian upgrade path are implemented; completion awaits one fresh cross-consistent run and committed sanitized evidence package. The chunk-store CLI authorization failure is an upstream non-blocking tooling defect because inline Wasm remains an authentic SNS Governance proposal executed by Root."
 
 [mainnet_testflight]
 status = "incomplete"
@@ -43,7 +43,11 @@ evidence = "Template lists io_stream_manager, io_nns_neuron_manager, io_historia
 
 [all_upgrades_tested_via_sns_proposal]
 status = "incomplete"
-evidence = "Candidate Governance accepted the real local upgrade proposal, but official-base Root trapped decoding ChangeCanisterRequest with Subtyping error: unit_variant. A reviewed mutually compatible SNS release/bundle is required."
+evidence = "The historical one-component candidate-Governance/official-Root run trapped decoding ChangeCanisterRequest with Subtyping error: unit_variant. A same-source candidate Governance/Root bundle from IC 4320fdf2e613844eabae1927b1a23b98da3a7bc6 is locally compatible and Root executed the authentic inline proposal. The remaining local proof is a clean prior-to-current module-hash transition ending at the exact release manifest artifact."
+
+[official_reward_share_release]
+status = "incomplete"
+evidence = "Candidate Governance/Root compatibility and the reward-share capability are locally proved. Launch still requires an official reviewed SNS Governance release containing the capability, exact official Wasm/DID hash pins, and rerun official contract/io/upgrade/lifecycle evidence without substituting the local candidate."
 
 [frontend_sns_integration_tested]
 status = "incomplete"

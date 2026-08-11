@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source_commit="${1:?usage: verify-release-from-source <exact-source-commit>}"
+io_root="$(git rev-parse --show-toplevel)"
+cd "${io_root}"
+
+temp_base="/home/codexdev/.codex-io/release-builds"
+mkdir -p "${temp_base}"
+verification_root="$(mktemp -d "${temp_base}/verify-release.XXXXXXXX")"
+cleanup() {
+  rm -rf "${verification_root}"
+}
+trap cleanup EXIT
+
+checked_in="${verification_root}/checked-in"
+build_a="${verification_root}/build-a"
+build_b="${verification_root}/build-b"
+
+# Preserve the caller's complete artifact set before either exact-source build.
+cp -a "${io_root}/release-artifacts" "${checked_in}"
+cargo run -p xtask -- verify_artifacts
+
+tools/scripts/build-release-from-source "${source_commit}" "${build_a}"
+cargo run -p xtask -- compare_release_artifact_dirs "${checked_in}" "${build_a}"
+
+tools/scripts/build-release-from-source "${source_commit}" "${build_b}"
+cargo run -p xtask -- compare_release_artifact_dirs "${build_a}" "${build_b}"
+
+echo "verified checked-in artifacts == exact-source build A == exact-source build B"

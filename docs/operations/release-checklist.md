@@ -10,6 +10,7 @@ Use this before every release-oriented commit or artifact proposal.
 - [ ] `cargo run -p xtask -- did_surface`
 - [ ] Finalize and commit the exact source tree, then run `tools/scripts/build-release-from-source <SOURCE_COMMIT>` from the artifact-recording checkout.
 - [ ] `cargo run -p xtask -- verify_artifacts`
+- [ ] `cargo run -p xtask -- verify_recorded_source`
 - [ ] `cargo run -p xtask -- validate_install_args`
 - [ ] `cargo run -p xtask -- frontend_required`
 - [ ] `cargo run -p xtask -- historian_tests`
