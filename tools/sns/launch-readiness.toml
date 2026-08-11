@@ -14,16 +14,16 @@ status = "incomplete"
 evidence = "tools/sns/sns_init.io.template.yaml exists; official dfx sns validation is optional and not complete."
 
 [local_sns_testing_rehearsal]
-status = "incomplete"
-evidence = "Maintained source tooling at IC 4320fdf2e613844eabae1927b1a23b98da3a7bc6 proved local NNS/SNS-W launch, swap finalization, reserve funding, ledger/index behavior, controller handoff and same-source candidate Governance/Root compatibility. The source-shaped NNS-manager fee-float and two-neuron fixture plus a prior-to-current historian upgrade path are implemented; completion awaits one fresh cross-consistent run and committed sanitized evidence package. The chunk-store CLI authorization failure is an upstream non-blocking tooling defect because inline Wasm remains an authentic SNS Governance proposal executed by Root."
+status = "complete"
+evidence = "The committed 2026-08-11 package records one fresh cross-consistent run and same-source candidate Governance/Root compatibility from maintained source tooling at IC 4320fdf2e613844eabae1927b1a23b98da3a7bc6: NNS/SNS-W launch, swap finalization, reserve funding, ledger/index and explicit no-archive observations, SNS Root controller handoff, source-shaped NNS-manager staging and two-neuron readiness, a prior-to-current historian module-hash transition, production redemption/replay, and one proposal-bearing reward day. All four local rehearsal validators pass. The chunk-store CLI authorization failure is an upstream non-blocking tooling defect because inline Wasm remains an authentic SNS Governance proposal executed by Root."
 
 [mainnet_testflight]
 status = "incomplete"
 evidence = "TODO: complete manual mainnet SNS testflight."
 
 [reproducible_builds]
-status = "incomplete"
-evidence = "release-artifacts/manifest.json exists; final reproducible-build package is not complete. This remains important after official local SNS ledger rehearsal."
+status = "complete"
+evidence = "Non-destructive exact-source verification preserves the checked-in artifact set before rebuilding and proves checked-in artifacts equal build A and build A equals build B across the complete raw Wasm, gzip, sidecar and manifest inventory with exact sizes. Corruption regressions cover every artifact class."
 
 [app_canisters_stable_on_mainnet]
 status = "incomplete"
@@ -42,8 +42,8 @@ status = "incomplete"
 evidence = "Template lists io_stream_manager, io_nns_neuron_manager, io_historian, and frontend; final IDs are placeholders."
 
 [all_upgrades_tested_via_sns_proposal]
-status = "incomplete"
-evidence = "The historical one-component candidate-Governance/official-Root run trapped decoding ChangeCanisterRequest with Subtyping error: unit_variant. A same-source candidate Governance/Root bundle from IC 4320fdf2e613844eabae1927b1a23b98da3a7bc6 is locally compatible and Root executed the authentic inline proposal. The remaining local proof is a clean prior-to-current module-hash transition ending at the exact release manifest artifact."
+status = "complete"
+evidence = "The historical one-component candidate-Governance/official-Root run trapped decoding ChangeCanisterRequest with Subtyping error: unit_variant. A same-source candidate Governance/Root bundle from IC 4320fdf2e613844eabae1927b1a23b98da3a7bc6 is locally compatible. Proposal 4 changed the historian from provenance-correct prior module c7b1d636271e56108a5d7db9be15637e2b9b2d5fda3a627ddf089eabf3707d6c to the reviewed current gzip module 33bd822ede65a598cb8f14b989987e81a739decaacefa505400f2cc5187ec762 through SNS Governance and Root while preserving the sole Root controller."
 
 [official_reward_share_release]
 status = "incomplete"

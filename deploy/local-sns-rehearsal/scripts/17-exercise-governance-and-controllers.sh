@@ -35,8 +35,8 @@ for canister in "$stream" "$nns_manager" \
 done
 
 if ! phase_is_done 17-upgrade-attempted; then
-  target_hash="$(manifest_artifact_value io_historian raw_wasm_sha256)"
-  payload_hash="$(manifest_artifact_value io_historian gz_wasm_sha256)"
+  raw_hash="$(manifest_artifact_value io_historian raw_wasm_sha256)"
+  target_hash="$(manifest_artifact_value io_historian gz_wasm_sha256)"
   before_hash="$(dfx canister info --network "$network_url" --identity "$identity" "$historian" 2>&1 | sed -n 's/^Module hash: 0x//p')"
   set +e
   run_logged "$log_file" "$sns" --identity "$identity" --network "$network_url" \
@@ -65,7 +65,7 @@ if ! phase_is_done 17-upgrade-attempted; then
     record_blocker "historian controllers changed during SNS-governed upgrade: ${final_controllers}"
     exit 2
   fi
-  mark_phase_done 17-upgrade-attempted "target=${historian} cli_exit_status=${upgrade_status} proposal_id=${inline_proposal_id} before=${before_hash} payload_gzip_sha256=${payload_hash} after=${after_hash} release_manifest_raw_sha256=${target_hash} controllers=${final_controllers}; see ${log_file}"
+  mark_phase_done 17-upgrade-attempted "target=${historian} cli_exit_status=${upgrade_status} proposal_id=${inline_proposal_id} before=${before_hash} payload_gzip_sha256=${target_hash} after=${after_hash} release_manifest_raw_sha256=${raw_hash} controllers=${final_controllers}; see ${log_file}"
 fi
 
 # The Candid paths cannot be derived from principals, so register each manager explicitly.
@@ -135,11 +135,11 @@ if ! phase_is_done 17-nns-activated; then
     "(${two_week_neuron_id} : nat64)")"
   printf '%s\n' "$neuron_info" >> "$log_file"
   neuron_info_compact="$(printf '%s' "$neuron_info" | tr -d '_')"
-  printf '%s' "$neuron_info_compact" | grep -q "cached_neuron_stake_e8s = ${seeded_principal}" || {
+  printf '%s' "$neuron_info_compact" | grep -q "stakee8s = ${seeded_principal}" || {
     record_blocker 'reward-backing neuron observation no longer matches seeded principal'
     exit 2
   }
-  printf '%s' "$neuron_info_compact" | grep -q "dissolve_delay_seconds = ${approved_delay}" || {
+  printf '%s' "$neuron_info_compact" | grep -q "dissolvedelayseconds = ${approved_delay}" || {
     record_blocker 'reward-backing neuron observation no longer matches approved dissolve delay'
     exit 2
   }

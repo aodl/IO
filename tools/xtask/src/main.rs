@@ -2969,8 +2969,12 @@ fn validate_local_sns_scripts_at(root: &Path) -> Result<(), String> {
         ],
     )?;
 
-    run_rehearsal_script(&runbook, &["record-ids"], &xtask, true)?;
     let evidence_path = temp_rehearsal.join("canister-ids.local.toml");
+    if evidence_path.exists() {
+        fs::remove_file(&evidence_path)
+            .map_err(|err| format!("{}: {err}", evidence_path.display()))?;
+    }
+    run_rehearsal_script(&runbook, &["record-ids"], &xtask, true)?;
     write_text(&evidence_path, &completed_local_sns_evidence())?;
 
     let capture_output = run_rehearsal_script(&runbook, &["capture-evidence"], &xtask, true)?;
@@ -5091,8 +5095,134 @@ fn check_local_sns_ledger_at(root: &Path) -> Result<bool, String> {
         return Ok(false);
     }
     let text = require_file(root, path)?;
-    parse_local_sns_evidence(path, &text)?;
+    if text.contains("schema = \"production-redemption-v1\"") {
+        validate_production_redemption_evidence(path, &text)?;
+    } else {
+        parse_local_sns_evidence(path, &text)?;
+    }
     Ok(true)
+}
+
+fn validate_production_redemption_evidence(path: &str, text: &str) -> Result<(), String> {
+    let doc = parse_simple_toml_document(path, text)?;
+    if require_simple_string(path, &doc, "evidence", "schema")? != "production-redemption-v1"
+        || require_simple_string(path, &doc, "evidence", "network")? != "local"
+        || require_simple_string(path, &doc, "evidence", "source")?
+            != "official-local-sns-rehearsal"
+        || !require_simple_bool(path, &doc, "evidence", "complete")?
+        || require_simple_bool(path, &doc, "evidence", "io_protocol_live")?
+    {
+        return Err(format!(
+            "{path}: invalid completed local production-redemption evidence mode"
+        ));
+    }
+    let commit = require_simple_string(path, &doc, "provenance", "official_ic_source_commit")?;
+    if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!(
+            "{path}: official IC source commit must be exact 40-hex"
+        ));
+    }
+    for key in [
+        "sns_governance_raw_sha256",
+        "sns_root_raw_sha256",
+        "historian_before_module_sha256",
+        "historian_payload_gzip_sha256",
+        "historian_release_raw_sha256",
+    ] {
+        let value = require_simple_string(path, &doc, "provenance", key)?;
+        if value.len() != 64
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(format!(
+                "{path}: provenance.{key} must be exact lowercase SHA-256"
+            ));
+        }
+    }
+    let mut principals = BTreeSet::new();
+    for (section, key) in [
+        ("sns_canisters", "root"),
+        ("sns_canisters", "governance"),
+        ("sns_canisters", "ledger"),
+        ("sns_canisters", "index"),
+        ("sns_canisters", "swap"),
+        ("io_dapp_canisters", "io_stream_manager"),
+        ("io_dapp_canisters", "io_nns_neuron_manager"),
+        ("io_dapp_canisters", "io_historian"),
+        ("io_dapp_canisters", "frontend"),
+    ] {
+        let principal = parse_required_principal(path, &doc, section, key)?;
+        if !principals.insert(principal) {
+            return Err(format!(
+                "{path}: duplicate SNS/dapp principal in {section}.{key}"
+            ));
+        }
+    }
+    let fee = require_simple_u128(path, &doc, "ledger", "transaction_fee_e8s")?;
+    let funded = require_simple_u128(path, &doc, "ledger", "reserve_funding_e8s")?;
+    let redeemed = require_simple_u128(path, &doc, "ledger", "redemption_io_e8s")?;
+    let reserve = require_simple_u128(path, &doc, "ledger", "final_reserve_balance_e8s")?;
+    if fee != 10_000 || funded == 0 || redeemed == 0 || reserve != funded + redeemed {
+        return Err(format!(
+            "{path}: canonical fee/reserve/redemption identity failed"
+        ));
+    }
+    for key in [
+        "bad_fee_observed",
+        "insufficient_funds_observed",
+        "duplicate_observed",
+        "identical_redemption_replay_observed",
+        "index_histories_observed",
+    ] {
+        if !require_simple_bool(path, &doc, "ledger", key)? {
+            return Err(format!("{path}: ledger.{key} must be true"));
+        }
+    }
+    if require_simple_u64(path, &doc, "ledger", "approval_block")? == 0
+        || require_simple_u64(path, &doc, "ledger", "io_redemption_block")? == 0
+        || require_simple_u64(path, &doc, "ledger", "icp_payout_block")? == 0
+    {
+        return Err(format!(
+            "{path}: canonical redemption block indexes must be nonzero"
+        ));
+    }
+    for key in [
+        "create_sns",
+        "module_upgrade",
+        "stream_function_registration",
+        "stream_activation",
+        "nns_function_registration",
+        "nns_activation",
+        "reward_motion",
+    ] {
+        if require_simple_u64(path, &doc, "proposals", key)? == 0 {
+            return Err(format!("{path}: proposals.{key} must be nonzero"));
+        }
+    }
+    if !require_simple_bool(path, &doc, "readiness", "stream_ready")?
+        || !require_simple_bool(path, &doc, "readiness", "nns_manager_ready")?
+        || !require_simple_bool(path, &doc, "readiness", "two_week_baseline_reconciled")?
+        || require_simple_u128(path, &doc, "readiness", "jupiter_staging_e8s")? < 20_000
+        || require_simple_u128(path, &doc, "readiness", "two_week_staging_e8s")? < 10_000
+        || require_simple_u64(path, &doc, "readiness", "reward_backing_neuron_id")? == 0
+        || require_simple_u64(path, &doc, "readiness", "two_year_neuron_id")? == 0
+    {
+        return Err(format!(
+            "{path}: canonical local readiness evidence is incomplete"
+        ));
+    }
+    if require_simple_string(path, &doc, "archive", "ledger_observation")? != "none"
+        || require_simple_string(path, &doc, "archive", "root_observation")? != "none"
+        || require_simple_string(path, &doc, "reward", "classification")? != "ProposalBearing"
+        || require_simple_u64(path, &doc, "reward", "processed_count")? != 1
+        || require_simple_u128(path, &doc, "reward", "policy_credit")? != 1_000_000_000_000_000_000
+    {
+        return Err(format!("{path}: archive or daily reward evidence mismatch"));
+    }
+    validate_protected_reminders(path, &doc)?;
+    validate_no_forbidden_local_ids(path, text, &doc)?;
+    Ok(())
 }
 
 fn check_local_sns_committed_evidence_at(root: &Path) -> Result<(), String> {

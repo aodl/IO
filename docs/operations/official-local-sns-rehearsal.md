@@ -56,7 +56,7 @@ The committed package includes a renderable local `sns_init` candidate, per-run 
 7. Validate `deploy/local-sns-rehearsal/sns_init.local.yaml` with local SNS tooling.
 8. Submit the local SNS proposal through the local SNS testing flow.
 9. Let SNS-W deploy local SNS canisters.
-10. Run `runbook.sh record-ids` and record root, governance, ledger, index, swap, and archive IDs in ignored `deploy/local-sns-rehearsal/canister-ids.local.toml`.
+10. Run `runbook.sh record-ids` during a new rehearsal and record root, governance, ledger, index, swap, and archive observations. The completed sanitized result is committed at `deploy/local-sns-rehearsal/canister-ids.local.toml`.
 11. Run `runbook.sh capture-evidence` and the command templates to observe ledger/index/governance/root behavior.
 12. Run no-network repository validation:
 
@@ -67,7 +67,7 @@ cargo run -p xtask -- validate_local_sns_ledger
 
 The second command checks only the recorded local evidence file. It does not call canisters.
 
-If `deploy/local-sns-rehearsal/canister-ids.local.toml` is absent, `validate_local_sns_ledger` skips clearly. In that state no local SNS canister IDs are recorded and no real SNS ledger/index/governance/root behavior has been observed.
+`validate_local_sns_ledger` validates the committed completed local evidence. A future replacement must come from another complete canonical run and update the immutable package in the same reviewed change.
 
 ## Ledger Assumptions to Prove Manually
 

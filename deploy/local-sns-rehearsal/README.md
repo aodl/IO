@@ -99,7 +99,7 @@ cargo run -p xtask -- validate_local_sns_scripts
 
 `validate_local_sns_rehearsal` checks the package structure and local-only guardrails.
 
-`validate_local_sns_ledger` checks the optional local evidence file. If `canister-ids.local.toml` is absent, it skips clearly. If present, it parses the evidence schema, rejects placeholders, known mainnet/prior canister IDs in local SNS/app wiring, protected IO IDs outside explicit reminders, invalid principals, live-protocol claims, minting assumptions, fee/supply mismatches, zero reserve balance, missing duplicate proof, and missing governance upgrade gap.
+`validate_local_sns_ledger` checks the committed completed local evidence file. The `production-redemption-v1` schema binds the canonical SNS/dapp IDs, exact source and module hashes, reserve/redemption identities and blocks, ledger negative behavior, index histories, explicit no-archive observation, governance proposal IDs, two-neuron readiness fixture, lifecycle results and one-day reward observation. The older detailed transfer-cycle schema remains accepted for historical packages.
 
 `validate_local_sns_scripts` copies the operator scripts to a temp directory, writes fixture local variables and completed local evidence, runs the no-network executable paths, and checks positive and negative guardrails. It does not call canisters and does not require the dfx SNS extension.
 
@@ -107,7 +107,7 @@ cargo run -p xtask -- validate_local_sns_scripts
 
 Both package forms reject unexpected or uncovered files, duplicate checksum entries, path traversal, symlinks, non-regular files, secret/private-key markers, and mainnet endpoint or network arguments.
 
-Until `canister-ids.local.toml` is produced from a completed local rehearsal, no sanitized committed canister IDs are authoritative evidence. Restart-safe external logs contain partial local observations, but they do not satisfy the committed-evidence contract.
+The completed 2026-08-11 package is the authoritative sanitized local evidence. Restart-safe external logs remain supporting diagnostics rather than the committed-evidence contract.
 
 ## Issuance Model Under Test
 

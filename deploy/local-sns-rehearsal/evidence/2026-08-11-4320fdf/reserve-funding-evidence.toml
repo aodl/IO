@@ -1,0 +1,10 @@
+[reserve]
+proposal_id = 2
+proposal_adopted = true
+proposal_executed = true
+treasury_transfer_amount_e8s = 10000000000
+transfer_fee_e8s = 10000
+reserve_owner = "lxzze-o7777-77777-aaaaa-cai"
+reserve_subaccount_hex = "0101010101010101010101010101010101010101010101010101010101010101"
+final_balance_e8s = 10020000000
+final_total_supply_e8s = 99999999930000

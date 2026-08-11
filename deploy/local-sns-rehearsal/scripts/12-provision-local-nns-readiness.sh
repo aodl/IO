@@ -112,7 +112,7 @@ claim_and_shape_neuron() {
   neuron_id="$(printf '%s' "$claim_response" | tr '\n' ' ' \
     | sed -n 's/.*NeuronId = record { id = \([0-9_][0-9_]*\) : nat64 }.*/\1/p' | tr -d '_')"
   require_nat "${role} claimed neuron id" "$neuron_id"
-  if [ "$neuron_id" -eq 0 ]; then
+  if [ "$neuron_id" = 0 ]; then
     record_blocker "${role} claimed zero neuron ID"
     exit 2
   fi
@@ -157,11 +157,11 @@ claim_and_shape_neuron() {
     --candid "$governance_did" "$nns_governance" get_neuron_info "(${neuron_id} : nat64)")"
   printf '%s info=%s\n' "$role" "$info" >> "$log_file"
   info_compact="$(printf '%s' "$info" | tr -d '_')"
-  printf '%s' "$info_compact" | grep -q "cached_neuron_stake_e8s = ${stake}" || {
-    record_blocker "${role} public NNS neuron observation has the wrong principal"
+  printf '%s' "$info_compact" | grep -q "stakee8s = ${stake}" || {
+    record_blocker "${role} public NNS neuron observation has the wrong stake"
     exit 2
   }
-  printf '%s' "$info_compact" | grep -q "dissolve_delay_seconds = ${approved_delay}" || {
+  printf '%s' "$info_compact" | grep -q "dissolvedelayseconds = ${approved_delay}" || {
     record_blocker "${role} public NNS neuron observation has the wrong dissolve delay"
     exit 2
   }
