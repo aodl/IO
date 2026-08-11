@@ -1,20 +1,57 @@
-use candid::encode_one;
+use candid::{encode_one, CandidType, Principal};
 use pocket_ic::PocketIcBuilder;
+use serde::Deserialize;
+use std::path::PathBuf;
 
 const CYCLES: u128 = 2_000_000_000_000;
+
+#[derive(CandidType, Deserialize)]
+struct NnsInitArgs {
+    config: NnsConfig,
+}
+
+#[derive(CandidType, Deserialize)]
+struct NnsConfig {
+    sns_governance: Principal,
+    stream_manager: Principal,
+    jupiter: Principal,
+    icp_ledger: Principal,
+    nns_governance: Principal,
+    two_year_neuron_id: u64,
+    two_week_neuron_id: u64,
+    jupiter_account: io_stream_manager::Account,
+    jupiter_staging: io_stream_manager::Account,
+    two_week_maturity_staging: io_stream_manager::Account,
+    stream_liquid_account: io_stream_manager::Account,
+    expected_io_fee_e8s: u128,
+    expected_icp_fee_e8s: u128,
+    jupiter_fee_float_e8s: u128,
+    two_week_fee_float_e8s: u128,
+    seeded_two_week_principal_e8s: u128,
+    transfer_retry_delay_nanos: u64,
+    ledger_deduplication_window_nanos: u64,
+}
 
 fn pocketic_available() -> bool {
     std::env::var_os("POCKET_IC_BIN").is_some()
 }
 
 fn required_wasm(path: &str) -> Option<Vec<u8>> {
-    match std::fs::read(path) {
+    match std::fs::read(workspace_relative_path(path)) {
         Ok(bytes) => Some(bytes),
         Err(_) => {
             eprintln!("skipping SNS topology PocketIC test because {path} is missing");
             None
         }
     }
+}
+
+fn workspace_relative_path(path: &str) -> PathBuf {
+    let direct = PathBuf::from(path);
+    if direct.exists() {
+        return direct;
+    }
+    PathBuf::from("../../").join(path)
 }
 
 #[test]
@@ -50,30 +87,29 @@ fn pocketic_live_sns_topology_installs_io_canisters_with_local_principals() {
             None => return,
         };
 
-    let sns_init = std::fs::read_to_string("tools/sns/sns_init.io.local.yaml")
-        .expect("local SNS init fixture should be readable");
+    let sns_init =
+        std::fs::read_to_string(workspace_relative_path("tools/sns/sns_init.io.local.yaml"))
+            .expect("local SNS init fixture should be readable");
     assert!(sns_init.contains("name: \"IO\""));
     assert!(sns_init.contains("sns_governance_principal_text"));
     assert!(sns_init.contains("not production-ready"));
     assert!(!sns_init.contains("--network ic"));
 
-    let stream_did = std::fs::read_to_string("canisters/io_stream_manager/io_stream_manager.did")
-        .expect("stream production DID should be readable");
-    assert!(stream_did.contains("service : (InitArgs) -> {}"));
+    let stream_did = std::fs::read_to_string(workspace_relative_path(
+        "canisters/io_stream_manager/io_stream_manager.did",
+    ))
+    .expect("stream production DID should be readable");
+    assert!(stream_did.contains("service : (InitArgs) -> {"));
     assert!(!stream_did.contains("debug_"));
     assert!(!stream_did.contains(" get_state :"));
 
-    let nns_did =
-        std::fs::read_to_string("canisters/io_nns_neuron_manager/io_nns_neuron_manager.did")
-            .expect("nns production DID should be readable");
-    assert!(nns_did.contains("service : (InitArgs) -> {}"));
+    let nns_did = std::fs::read_to_string(workspace_relative_path(
+        "canisters/io_nns_neuron_manager/io_nns_neuron_manager.did",
+    ))
+    .expect("nns production DID should be readable");
+    assert!(nns_did.contains("service : (InitArgs) -> {"));
     assert!(!nns_did.contains("debug_"));
     assert!(!nns_did.contains(" get_state :"));
-
-    let stream_debug_did =
-        std::fs::read_to_string("canisters/io_stream_manager/io_stream_manager_debug.did")
-            .expect("stream debug DID should be readable");
-    assert!(stream_debug_did.contains("debug_get_state"));
 
     let pic = PocketIcBuilder::new()
         .with_nns_subnet()
@@ -129,16 +165,42 @@ fn pocketic_live_sns_topology_installs_io_canisters_with_local_principals() {
         stream,
         stream_wasm,
         encode_one(io_stream_manager::InitArgs {
-            jupiter_faucet_principal_text: Some(sns_root.to_text()),
-            io_nns_neuron_manager_principal_text: Some(nns_manager.to_text()),
-            icp_ledger_principal_text: Some(icp_ledger.to_text()),
-            icp_index_principal_text: Some(icp_index.to_text()),
-            io_ledger_principal_text: Some(io_ledger.to_text()),
-            io_index_principal_text: Some(io_index.to_text()),
-            io_sns_ledger_principal_text: Some(io_sns_ledger.to_text()),
-            io_sns_index_principal_text: Some(io_sns_index.to_text()),
-            sns_governance_principal_text: Some(sns_governance.to_text()),
-            ..Default::default()
+            config: io_stream_manager::StreamConfig {
+                io_ledger: io_sns_ledger,
+                icp_ledger,
+                nns_manager,
+                jupiter_receipt_source: io_stream_manager::Account {
+                    owner: nns_manager,
+                    subaccount: Some(vec![7; 32]),
+                },
+                two_week_receipt_source: io_stream_manager::Account {
+                    owner: nns_manager,
+                    subaccount: Some(vec![8; 32]),
+                },
+                jupiter_io_account: io_stream_manager::Account {
+                    owner: sns_root,
+                    subaccount: None,
+                },
+                sns_governance,
+                sns_root,
+                expected_sns_governance_module_hash: vec![0; 32],
+                approved_reward_event_duration_seconds: 86_400,
+                io_reserve: io_stream_manager::Account {
+                    owner: stream,
+                    subaccount: None,
+                },
+                liquid_icp: io_stream_manager::Account {
+                    owner: stream,
+                    subaccount: Some(vec![1; 32]),
+                },
+                excluded_io_accounts: Vec::new(),
+                minimum_redemption_io_e8s: 20_000,
+                expected_io_fee_e8s: 10_000,
+                expected_icp_fee_e8s: 10_000,
+                maximum_request_lifetime_nanos: 900_000_000_000,
+                retry_delay_nanos: 1_000_000_000,
+                ledger_deduplication_window_nanos: 86_400_000_000_000,
+            },
         })
         .expect("encode stream init args"),
         None,
@@ -147,14 +209,39 @@ fn pocketic_live_sns_topology_installs_io_canisters_with_local_principals() {
     pic.install_canister(
         nns_manager,
         nns_manager_wasm,
-        encode_one(io_nns_neuron_manager::InitArgs {
-            controller_canister_principal_text: sns_root.to_text(),
-            two_year_nns_neuron_id: 42,
-            io_stream_manager_principal_text: Some(stream.to_text()),
-            nns_governance_principal_text: Some(nns_governance.to_text()),
-            icp_ledger_principal_text: Some(icp_ledger.to_text()),
-            icp_index_principal_text: Some(icp_index.to_text()),
-            ..Default::default()
+        encode_one(NnsInitArgs {
+            config: NnsConfig {
+                sns_governance,
+                stream_manager: stream,
+                jupiter: sns_root,
+                icp_ledger,
+                nns_governance,
+                two_year_neuron_id: 42,
+                two_week_neuron_id: 43,
+                jupiter_account: io_stream_manager::Account {
+                    owner: sns_root,
+                    subaccount: None,
+                },
+                jupiter_staging: io_stream_manager::Account {
+                    owner: nns_manager,
+                    subaccount: None,
+                },
+                two_week_maturity_staging: io_stream_manager::Account {
+                    owner: nns_manager,
+                    subaccount: Some(vec![2; 32]),
+                },
+                stream_liquid_account: io_stream_manager::Account {
+                    owner: stream,
+                    subaccount: Some(vec![1; 32]),
+                },
+                expected_io_fee_e8s: 10_000,
+                expected_icp_fee_e8s: 10_000,
+                jupiter_fee_float_e8s: 20_000,
+                two_week_fee_float_e8s: 10_000,
+                seeded_two_week_principal_e8s: 1,
+                transfer_retry_delay_nanos: 1_000_000_000,
+                ledger_deduplication_window_nanos: 86_400_000_000_000,
+            },
         })
         .expect("encode nns manager init args"),
         None,

@@ -7829,6 +7829,8 @@ fn main() -> ExitCode {
                         "io-stream-manager",
                         "--test",
                         "io_sns_root_lifecycle_pocketic",
+                        "--",
+                        "--test-threads=1",
                     ]),
                 );
             }
@@ -7987,6 +7989,8 @@ fn main() -> ExitCode {
                         "io-stream-manager",
                         "--test",
                         "io_sns_root_lifecycle_pocketic",
+                        "--",
+                        "--test-threads=1",
                     ]),
                 );
             }
