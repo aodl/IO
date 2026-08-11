@@ -90,14 +90,14 @@ redemption intent.
 
 - Custom-domain certification setup is not implemented.
 - Production historian canister IDs are injected by build/runtime config and may be empty in local builds.
-- Historian production ingestion remains separate from this frontend.
+- Historian production ingestion is consumed only through its read-only production DID.
 - The frontend is a dashboard over historian observations, not a protocol authority.
 - The existing IO neuron-owner canister `oae4c-3iaaa-aaaar-qb5qq-cai` and IO neuron `6345890886899317159` are not touched by the DevMainnet frontend.
 
 ## Freshness Display
 
-The frontend renders historian source health from the production historian declarations only. It displays fresh, stale, missing, incomplete, observed-only, prelaunch/not-applicable, error/retryable, and unknown source states as public read model data.
+The frontend renders historian source health from the production historian declarations only. It displays fresh, stale, missing, prelaunch/not-configured, and retryable error source states as public read model data.
 
-Historian data is rebuildable, not canonical protocol truth, and not a value-moving authority. IO protocol is not live. SNS IO ledger remains not launched. The missing/stale/incomplete states are visible, and missing/stale/incomplete fields must not be interpreted as zero protocol value.
+Historian data is rebuildable, not canonical protocol truth, and not a value-moving authority. IO protocol is not live. SNS IO ledger remains not launched. Missing/stale/error states are visible; missing/stale/incomplete fields must not be interpreted as zero protocol value.
 
 The frontend does not call value-moving canisters. Index canisters remain the normal account-history abstraction for future account-history observations; index canisters are the default source for account-history observations. Raw ledger/archive traversal is not the default path.

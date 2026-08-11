@@ -1,14 +1,10 @@
 import { formatRatio, formatTimestampNanos, formatTokenE8s, variantLabel } from "../app/view-formatters.js";
 
-function isObserved(value) {
-  return value && typeof value === "object" && Object.hasOwn(value, "Observed");
-}
-
 function completenessWarnings(protocol) {
   const completeness = protocol?.completeness;
   if (!completeness) return ["Protocol snapshot is incomplete"];
   const missing = Object.entries(completeness)
-    .filter(([, value]) => !isObserved(value))
+    .filter(([, value]) => value !== true)
     .map(([key]) => key.replaceAll("_", " "));
   return missing.length ? [`Incomplete data: ${missing.join(", ")}`] : [];
 }
@@ -19,10 +15,10 @@ function hasVariant(value, key) {
 
 function sourceHealthWarnings(sourceHealth) {
   return (sourceHealth ?? [])
-    .filter((source) => !hasVariant(source.freshness, "Fresh") && !hasVariant(source.freshness, "ObservedOnly"))
+    .filter((source) => !hasVariant(source.freshness, "Fresh"))
     .map((source) => {
       const status = variantLabel(source.freshness).toLowerCase();
-      return `${source.source_id ?? "source"} ${status}: ${source.summary ?? "observation unavailable"}`;
+      return `${source.source ?? "source"} ${status}: ${opt(source.error) ?? "observation unavailable"}`;
     });
 }
 
@@ -45,57 +41,42 @@ export function transformDashboard(loadResult) {
 
   const dashboard = loadResult.dashboard;
   const protocol = dashboard?.protocol ?? {};
-  const redemptionRate = opt(dashboard?.redemption_rate) ?? opt(protocol.redemption_rate);
+  const redemptionRate = opt(protocol.redemption_rate);
   warnings.push(...completenessWarnings(protocol));
   warnings.push(...sourceHealthWarnings(dashboard?.source_health));
 
-  const indexHealth = dashboard?.index_health ?? [];
-  const broken = indexHealth.filter((entry) => entry.invariant_broken_count > 0n || entry.lag_suspected || entry.scan_incomplete);
+  const index = opt(dashboard?.index);
+  const indexAccounts = index?.accounts ?? [];
 
   return {
     statusLine: loadResult.status
       ? `Historian ${loadResult.status.version}; schema ${loadResult.status.schema_version}`
       : "Historian data unavailable",
-    lastUpdated: `Last updated: ${formatTimestampNanos(protocol.last_updated_timestamp_nanos)}`,
+    lastUpdated: `Last updated: ${formatTimestampNanos(opt(protocol.observed_at_timestamp_nanos))}`,
     metrics: {
       redemptionRate: formatRatio(redemptionRate),
       redemptionRateHint: "liquid ICP per IO",
       liquidReserve: formatTokenE8s(opt(protocol.liquid_icp_reserve_e8s), ""),
       redeemableSupply: formatTokenE8s(opt(protocol.redeemable_io_supply_e8s), ""),
-      indexHealth: broken.length ? `${broken.length} warning` : indexHealth.length ? "Observed" : "-",
-      indexHealthHint: indexHealth.length ? `${indexHealth.length} account scans` : "No scan records",
+      indexHealth: index ? "Observed" : "-",
+      indexHealthHint: index ? `${indexAccounts.length} bounded Account histories` : "Observation unavailable",
     },
     charts: {
-      rate: singlePointSeries("latest", redemptionRate?.liquid_icp_per_io_e8s_numerator),
+      rate: singlePointSeries("latest", redemptionRate?.liquid_icp_e8s),
       supply: singlePointSeries("latest", protocol.total_io_supply_e8s),
     },
     lists: {
-      streams: loadResult.optional?.streams?.records ?? [],
-      redemptions: loadResult.optional?.redemptions?.records ?? [],
-      rewards: loadResult.optional?.rewards?.records ?? [],
-      artifacts: dashboard?.release_artifacts ?? [],
+      artifacts: dashboard?.canisters ?? [],
       sourceHealth: dashboard?.source_health ?? [],
     },
     warnings,
   };
 }
 
-export function streamSummary(record) {
-  return `${record.record_id ?? "-"}: ${variantLabel(record.stream_kind)} ${formatTokenE8s(record.amount_e8s, "ICP")}`;
-}
-
-export function redemptionSummary(record) {
-  return `${record.record_id ?? "-"}: ${formatTokenE8s(record.io_amount_e8s, "IO")} ${variantLabel(record.phase)}`;
-}
-
-export function rewardSummary(record) {
-  return `${record.record_id ?? "-"}: ${formatTokenE8s(record.reward_amount_e8s, "IO")} ${variantLabel(record.status)}`;
-}
-
 export function artifactSummary(record) {
-  return `${record.canister_name ?? "-"}: ${variantLabel(record.status)}`;
+  return `${variantLabel(record.role)}: ${variantLabel(record.module_match)}`;
 }
 
 export function sourceHealthSummary(record) {
-  return `${record.source_id ?? "-"}: ${variantLabel(record.freshness)} - ${record.summary ?? ""}`;
+  return `${record.source ?? "-"}: ${variantLabel(record.freshness)} - ${opt(record.error) ?? ""}`;
 }

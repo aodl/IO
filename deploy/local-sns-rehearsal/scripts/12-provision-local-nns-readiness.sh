@@ -20,7 +20,7 @@ require_command_available cargo
 network_url="$(local_network_url)"
 identity="$(local_identity_name)"
 checkout="$(official_checkout)"
-vars_file="${REHEARSAL_DIR}/local-vars.toml"
+vars_file="$(local_vars_file)"
 runtime="$(runtime_file)"
 nns_manager="$(toml_string "$vars_file" local io_nns_neuron_manager_canister)"
 operator="$(runtime_value accounts operator_principal)"
@@ -29,7 +29,7 @@ nns_governance="$(runtime_value nns governance)"
 ledger_did="${checkout}/rs/ledger_suite/icrc1/ledger/ledger.did"
 governance_did="${checkout}/rs/nns/governance/canister/governance.did"
 governance_test_did="${REHEARSAL_DIR}/nns-governance-test.did"
-nns_args="${REHEARSAL_DIR}/install-args.local/io_nns_neuron_manager.did"
+nns_args="$(nns_install_args_file)"
 for file in "$vars_file" "$runtime" "$ledger_did" "$governance_did" "$governance_test_did" "$nns_args"; do
   require_file "$file"
 done
@@ -182,7 +182,7 @@ sed -i -E "s/(two_week_neuron_id = )[0-9_]+/\1${two_week_neuron_id}/" "$nns_args
 grep -Fq "two_year_neuron_id = ${two_year_neuron_id}" "$nns_args"
 grep -Fq "two_week_neuron_id = ${two_week_neuron_id}" "$nns_args"
 
-fixture="${REHEARSAL_DIR}/generated/nns-readiness-fixture.toml"
+fixture="${GENERATED_DIR}/nns-readiness-fixture.toml"
 cat > "$fixture" <<EOF
 [staging]
 canonical_icp_fee_e8s = ${expected_fee}

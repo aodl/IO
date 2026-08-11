@@ -959,7 +959,6 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
     let nns_production_path = "canisters/io_nns_neuron_manager/io_nns_neuron_manager.did";
     let nns_debug_path = "canisters/io_nns_neuron_manager/io_nns_neuron_manager_debug.did";
     let historian_production_path = "canisters/io_historian/io_historian.did";
-    let historian_debug_path = "canisters/io_historian/io_historian_debug.did";
 
     let stream_production = read_file(root, stream_production_path)?;
     let nns_production = read_file(root, nns_production_path)?;
@@ -967,7 +966,6 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
         return Err("value-moving debug DIDs must be deleted".into());
     }
     let historian_production = read_file(root, historian_production_path)?;
-    let historian_debug = read_file(root, historian_debug_path)?;
 
     check_minimal_value_moving_did(stream_production_path, &stream_production)?;
     check_minimal_value_moving_did(nns_production_path, &nns_production)?;
@@ -1032,29 +1030,8 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
             "get_dashboard_state",
             "get_protocol_snapshot",
             "get_redemption_rate",
-            "list_streams",
-            "list_redemptions",
-            "list_rewards",
-            "list_nns_lifecycle_events",
-            "get_index_health",
-            "get_governance_summary",
-            "get_release_artifacts",
-            "get_canister_status_summary",
-        ],
-    )?;
-
-    require_present(
-        historian_debug_path,
-        &historian_debug,
-        &[
-            "debug_clear",
-            "debug_ingest_ledger_flow",
-            "debug_ingest_stream_record",
-            "debug_ingest_redemption_record",
-            "debug_ingest_reward_record",
-            "debug_ingest_index_health",
-            "debug_ingest_governance_snapshot",
-            "debug_ingest_canister_artifact_status",
+            "ObservationConfig",
+            "service : (opt ObservationConfig)",
         ],
     )?;
     check_historian_js_declaration_at(root)?;
@@ -1367,6 +1344,21 @@ fn validate_release_source_commit(root: &Path, git_commit: &str) -> Result<(), S
     Ok(())
 }
 
+fn validate_release_source_ancestor(root: &Path, git_commit: &str) -> Result<(), String> {
+    validate_release_source_commit(root, git_commit)?;
+    let status = Command::new("git")
+        .current_dir(root)
+        .args(["merge-base", "--is-ancestor", git_commit, "HEAD"])
+        .status()
+        .map_err(|err| format!("git merge-base --is-ancestor {git_commit} HEAD: {err}"))?;
+    if !status.success() {
+        return Err(format!(
+            "release source commit {git_commit} is not an ancestor of HEAD"
+        ));
+    }
+    Ok(())
+}
+
 fn validate_release_source_tree(root: &Path, git_commit: &str) -> Result<(), String> {
     validate_release_source_commit(root, git_commit)?;
     let tree_diff = Command::new("git")
@@ -1508,7 +1500,7 @@ fn verify_manifest(root: &Path) -> Result<(), String> {
         .git_commit
         .clone()
         .ok_or_else(|| format!("{MANIFEST_PATH}: git_commit is required"))?;
-    validate_release_source_tree(root, &source_commit)
+    validate_release_source_ancestor(root, &source_commit)
         .map_err(|err| format!("{MANIFEST_PATH}: {err}"))?;
     for entry in &actual.artifacts {
         if entry.git_commit.as_deref() != Some(source_commit.as_str()) {
@@ -1800,7 +1792,7 @@ fn validate_install_args_at(root: &Path, mode: InstallArgsMode) -> Result<(), St
             }
         }
         validate_simplified_receipt_topology(&stream_args, &nns_args)?;
-        validate_no_install_args_did(root, "canisters/io_historian/io_historian.did")
+        validate_historian_install_args_did(root, "canisters/io_historian/io_historian.did")
             .map_err(|err| format!("io_historian install args: {err}"))?;
         validate_no_install_args_did(root, "canisters/frontend/frontend.did")
             .map_err(|err| format!("frontend install args: {err}"))?;
@@ -2008,7 +2000,7 @@ fn check_sns_launch_readiness_at(root: &Path, strict: bool) -> Result<usize, Str
             "[nns_root_co_controller_step_planned]",
             "[fallback_controllers_defined]",
             "[dapp_canisters_listed]",
-            "[all_upgrades_tested_via_sns_proposal]",
+            "[sns_controlled_dapp_upgrade_path_proved]",
             "[official_reward_share_release]",
             "[frontend_sns_integration_tested]",
             "[cycles_management_strategy]",
@@ -5266,6 +5258,10 @@ fn check_local_sns_committed_evidence_at(root: &Path) -> Result<(), String> {
             return Err(format!("{manifest_path}: invalid official SNS provenance"));
         }
         let complete = require_simple_bool(&manifest_path, &doc, "provenance", "complete")?;
+        let monitoring = doc
+            .get("provenance")
+            .and_then(|section| section.get("monitoring"))
+            == Some(&SimpleTomlValue::Bool(true));
         let commit = require_simple_string(
             &manifest_path,
             &doc,
@@ -5278,7 +5274,7 @@ fn check_local_sns_committed_evidence_at(root: &Path) -> Result<(), String> {
             ));
         }
         let expected_files: BTreeSet<String> = if complete {
-            [
+            let mut files = [
                 "manifest.toml",
                 "toolchain-provenance.toml",
                 "sns_init.local.yaml",
@@ -5293,7 +5289,12 @@ fn check_local_sns_committed_evidence_at(root: &Path) -> Result<(), String> {
             ]
             .into_iter()
             .map(str::to_string)
-            .collect()
+            .collect::<BTreeSet<_>>();
+            if monitoring {
+                files.insert("release-evidence.toml".into());
+                files.insert("historian-dashboard.log".into());
+            }
+            files
         } else {
             ["manifest.toml", "blocker-report.md", "SHA256SUMS"]
                 .into_iter()
@@ -5342,6 +5343,9 @@ fn check_local_sns_committed_evidence_at(root: &Path) -> Result<(), String> {
             let toolchain_path = format!("{rel}/toolchain-provenance.toml");
             let toolchain = require_file(root, &toolchain_path)?;
             validate_completed_toolchain_provenance(&toolchain_path, &toolchain)?;
+            if monitoring {
+                validate_monitoring_evidence(root, &rel, &doc)?;
+            }
         } else {
             let blocker_report =
                 require_simple_string(&manifest_path, &doc, "provenance", "blocker_report")?;
@@ -5364,6 +5368,146 @@ fn check_local_sns_committed_evidence_at(root: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn validate_monitoring_evidence(
+    root: &Path,
+    package: &str,
+    package_manifest: &SimpleTomlDocument,
+) -> Result<(), String> {
+    let source_commit = require_simple_string(
+        &format!("{package}/manifest.toml"),
+        package_manifest,
+        "provenance",
+        "io_release_source_commit",
+    )?;
+    let artifact_commit = require_simple_string(
+        &format!("{package}/manifest.toml"),
+        package_manifest,
+        "provenance",
+        "io_artifact_recording_commit",
+    )?;
+    validate_release_source_ancestor(root, &source_commit)?;
+    validate_release_source_ancestor(root, &artifact_commit)?;
+
+    let current_manifest_text = require_file(root, MANIFEST_PATH)?;
+    let current_manifest = read_manifest(root)?;
+    if current_manifest.git_commit.as_deref() != Some(&source_commit) {
+        return Err(format!(
+            "{package}: monitoring source commit does not match {MANIFEST_PATH}"
+        ));
+    }
+    let recorded_manifest = Command::new("git")
+        .current_dir(root)
+        .args(["show", &format!("{artifact_commit}:{MANIFEST_PATH}")])
+        .output()
+        .map_err(|err| format!("git show monitoring artifact manifest: {err}"))?;
+    if !recorded_manifest.status.success()
+        || recorded_manifest.stdout != current_manifest_text.as_bytes()
+    {
+        return Err(format!(
+            "{package}: artifact-recording commit does not contain the exact current release manifest"
+        ));
+    }
+
+    let release_path = format!("{package}/release-evidence.toml");
+    let release_text = require_file(root, &release_path)?;
+    let release = parse_simple_toml_document(&release_path, &release_text)?;
+    if require_simple_string(&release_path, &release, "release", "source_commit")? != source_commit
+        || require_simple_string(
+            &release_path,
+            &release,
+            "release",
+            "artifact_recording_commit",
+        )? != artifact_commit
+        || require_simple_string(&release_path, &release, "release", "manifest_sha256")?
+            != sha256_hex(&root.join(MANIFEST_PATH))?
+    {
+        return Err(format!("{release_path}: release identity mismatch"));
+    }
+    for (canister, section) in [
+        ("io_stream_manager", "io_stream_manager"),
+        ("io_nns_neuron_manager", "io_nns_neuron_manager"),
+        ("io_historian", "io_historian"),
+        ("frontend", "io_frontend"),
+    ] {
+        let expected = current_manifest
+            .artifacts
+            .iter()
+            .find(|entry| entry.canister == canister)
+            .ok_or_else(|| format!("{MANIFEST_PATH}: missing {canister}"))?;
+        if require_simple_string(&release_path, &release, section, "raw_wasm_sha256")?
+            != expected.raw_wasm_sha256
+            || require_simple_string(&release_path, &release, section, "gzip_wasm_sha256")?
+                != expected.gz_wasm_sha256
+        {
+            return Err(format!(
+                "{release_path}: {section} hashes do not match the current manifest"
+            ));
+        }
+    }
+
+    let ids_path = format!("{package}/canister-ids.local.toml");
+    let ids_text = require_file(root, &ids_path)?;
+    validate_production_redemption_evidence(&ids_path, &ids_text)?;
+    let ids = parse_simple_toml_document(&ids_path, &ids_text)?;
+    if require_simple_string(&ids_path, &ids, "provenance", "io_release_source_commit")?
+        != source_commit
+        || require_simple_string(
+            &ids_path,
+            &ids,
+            "provenance",
+            "io_artifact_recording_commit",
+        )? != artifact_commit
+        || require_simple_string(
+            &ids_path,
+            &ids,
+            "provenance",
+            "historian_release_raw_sha256",
+        )? != require_simple_string(&release_path, &release, "io_historian", "raw_wasm_sha256")?
+        || require_simple_string(
+            &ids_path,
+            &ids,
+            "provenance",
+            "historian_payload_gzip_sha256",
+        )? != require_simple_string(&release_path, &release, "io_historian", "gzip_wasm_sha256")?
+    {
+        return Err(format!(
+            "{ids_path}: monitoring release provenance is not cross-consistent"
+        ));
+    }
+
+    let dashboard_path = format!("{package}/historian-dashboard.log");
+    let dashboard = require_file(root, &dashboard_path)?;
+    require_present(
+        &dashboard_path,
+        &dashboard,
+        &[
+            "historian_dashboard=Dashboard",
+            "configured: true",
+            "freshness: Fresh",
+            "module_match: Matching",
+            "controllers: Some",
+            "total_io_supply_e8s: Some",
+            "protocol_reserve_io_e8s: Some",
+            "liquid_icp_reserve_e8s: Some",
+            "redemption_rate: Some",
+            "lifecycle: Ready",
+            "two_week_maturity_baseline_reconciled: true",
+            "latest_two_week_target: Some",
+            "nns_governance: Some",
+            "build_metadata:",
+            "RewardBacking",
+            "TwoYearProtected",
+            "staked_maturity_e8s:",
+            "max_number_of_neurons: Some(1000)",
+            "native_initial_reward_rate_basis_points: Some(0)",
+            "native_final_reward_rate_basis_points: Some(0)",
+            "archive_canisters: []",
+            "num_blocks_synced:",
+            "transactions:",
+        ],
+    )
 }
 
 fn validate_committed_evidence_text(path: &str, text: &str) -> Result<(), String> {
@@ -6650,41 +6794,42 @@ fn check_historian_freshness_at(root: &Path) -> Result<(), String> {
     check_did_surface_at(root, false)?;
     check_prelaunch_public_shell_at(root)?;
 
-    let historian_source = require_file(root, "canisters/io_historian/src/lib.rs")?;
+    let historian_source = [
+        "canisters/io_historian/src/lib.rs",
+        "canisters/io_historian/src/model.rs",
+        "canisters/io_historian/src/adapters.rs",
+    ]
+    .into_iter()
+    .map(|path| require_file(root, path))
+    .collect::<Result<Vec<_>, _>>()?
+    .join("\n");
     require_present(
         "canisters/io_historian/src/lib.rs",
         &historian_source,
         &[
-            "HistorianIngestionSource",
-            "HistorianObservation",
-            "IngestionBatch",
-            "IngestionSourceKind",
+            "ObservationConfig",
             "ObservationFreshness",
             "SourceHealth",
-            "IngestionCursor",
-            "IngestionWatermark",
-            "StalenessPolicy",
-            "ReleaseArtifacts",
-            "CanisterStatusModuleHash",
-            "IcpIndexHealth",
-            "FutureIoSnsIndexHealth",
-            "NnsGovernanceFreshness",
-            "SnsGovernanceFreshness",
             "ProtocolSnapshot",
-            "ReserveSnapshot",
-            "FrontendDashboardFreshness",
+            "CanisterObservation",
+            "StreamStatus",
+            "NnsManagerStatus",
+            "SnsStatus",
+            "IndexStatus",
             "Fresh",
             "Stale",
             "Missing",
-            "Incomplete",
-            "ObservedOnly",
-            "PrelaunchNotApplicable",
+            "PrelaunchNotConfigured",
             "ErrorRetryable",
             "Unknown",
-            "EXPECTED_RELEASE_ARTIFACT_CANISTERS",
-            "source_health_from_state",
-            "canonical SNS IO ledger is not launched",
-            "index canisters remain the normal account-history abstraction",
+            "coherent_protocol_snapshot",
+            "get_sns_canisters_summary",
+            "get_nervous_system_parameters",
+            "get_latest_reward_event",
+            "get_account_transactions",
+            "icrc1_total_supply",
+            "icrc1_balance_of",
+            "set_timer",
         ],
     )?;
     require_absent(
@@ -6696,7 +6841,17 @@ fn check_historian_freshness_at(root: &Path) -> Result<(), String> {
             "bounded_wait(canister, \"redeem\"",
         ],
     )?;
-    check_historian_current_time_path("canisters/io_historian/src/lib.rs", &historian_source)?;
+    require_absent(
+        "historian production sources",
+        &historian_source,
+        &[
+            "pub fn configure",
+            "pub fn ingest",
+            "frozen_cohort",
+            "participation_numerator",
+            "scan_blocks",
+        ],
+    )?;
 
     let historian_did = require_file(root, "canisters/io_historian/io_historian.did")?;
     require_present(
@@ -6708,16 +6863,6 @@ fn check_historian_freshness_at(root: &Path) -> Result<(), String> {
         "canisters/io_historian/io_historian.did",
         &historian_did,
         &["debug_", " ingest_", " update"],
-    )?;
-
-    let debug_did = require_file(root, "canisters/io_historian/io_historian_debug.did")?;
-    require_present(
-        "canisters/io_historian/io_historian_debug.did",
-        &debug_did,
-        &[
-            "debug_ingest_protocol_snapshot",
-            "debug_ingest_index_health",
-        ],
     )?;
 
     let frontend_transform = require_file(
@@ -6741,11 +6886,11 @@ fn check_historian_freshness_at(root: &Path) -> Result<(), String> {
         "canisters/frontend/web/test/dashboard-transforms.test.mjs",
         &frontend_transform_test,
         &[
-            "PrelaunchNotApplicable",
+            "PrelaunchNotConfigured",
             "Stale",
-            "Incomplete",
+            "ErrorRetryable",
             "Missing",
-            "not deployed/not allocated",
+            "never displayed as zero",
         ],
     )?;
     let frontend_renderer =
@@ -6864,7 +7009,7 @@ fn check_historian_freshness_at(root: &Path) -> Result<(), String> {
                 "not a value-moving authority",
                 "IO protocol is not live",
                 "SNS IO ledger remains not launched",
-                "missing/stale/incomplete",
+                "missing/stale/error",
                 "index canisters",
             ],
         )?;
@@ -6875,7 +7020,7 @@ fn check_historian_freshness_at(root: &Path) -> Result<(), String> {
         &freshness_doc,
         &[
             "current historian/canister time",
-            "source timestamps or source watermarks",
+            "timestamp of the coherent refresh generation",
             "no newer observations arrive",
         ],
     )?;
@@ -7034,25 +7179,6 @@ fn fixture_schema_version(fixture: &str, text: &str) -> Result<u32, String> {
         .map_err(|err| format!("{fixture}: invalid schema_version {raw}: {err}"))
 }
 
-fn check_historian_current_time_path(path: &str, text: &str) -> Result<(), String> {
-    require_present(
-        path,
-        text,
-        &[
-            "pub fn source_health_from_state_at",
-            "fn historian_now_timestamp_nanos() -> u64",
-            "ic_cdk::api::time()",
-            "source_health_from_state_at(state, historian_now_timestamp_nanos())",
-            "source_health_from_state_at(&state,",
-        ],
-    )?;
-    require_absent(
-        path,
-        text,
-        &["pub fn source_health_from_state(state: &StableState) -> Vec<SourceHealth> {\n    let now = latest_observation_timestamp(state);"],
-    )
-}
-
 fn validate_no_install_args_did(root: &Path, path: &str) -> Result<(), String> {
     let text = read_file(root, path)?;
     if text.contains("service : (") {
@@ -7062,6 +7188,19 @@ fn validate_no_install_args_did(root: &Path, path: &str) -> Result<(), String> {
     }
     require_present(path, &text, &["service : {"])?;
     Ok(())
+}
+
+fn validate_historian_install_args_did(root: &Path, path: &str) -> Result<(), String> {
+    let text = read_file(root, path)?;
+    require_present(
+        path,
+        &text,
+        &[
+            "type ObservationConfig",
+            "service : (opt ObservationConfig)",
+        ],
+    )?;
+    require_absent(path, &text, &[" configure :", " ingest :", " set_config :"])
 }
 
 fn run_security_scan(required: bool) -> bool {
@@ -8492,7 +8631,7 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "tools/sns/launch-readiness.toml",
-            "[source_open]\nstatus = \"incomplete\"\n[reproducible_builds]\nstatus = \"incomplete\"\n[security_review]\nstatus = \"incomplete\"\n[sns_config_validated]\nstatus = \"incomplete\"\n[local_sns_testing_rehearsal]\nstatus = \"incomplete\"\nevidence = \"same-source candidate Governance/Root compatibility; upstream non-blocking tooling defect\"\n[mainnet_testflight]\nstatus = \"incomplete\"\n[app_canisters_stable_on_mainnet]\nstatus = \"incomplete\"\n[nns_root_co_controller_step_planned]\nstatus = \"incomplete\"\n[fallback_controllers_defined]\nstatus = \"incomplete\"\n[dapp_canisters_listed]\nstatus = \"incomplete\"\n[all_upgrades_tested_via_sns_proposal]\nstatus = \"incomplete\"\n[official_reward_share_release]\nstatus = \"incomplete\"\nevidence = \"official reviewed SNS Governance release containing the capability\"\n[frontend_sns_integration_tested]\nstatus = \"incomplete\"\n[cycles_management_strategy]\nstatus = \"incomplete\"\n[custom_domain_frontend_plan]\nstatus = \"incomplete\"\n[audit_package]\nstatus = \"incomplete\"\n",
+            "[source_open]\nstatus = \"incomplete\"\n[reproducible_builds]\nstatus = \"incomplete\"\n[security_review]\nstatus = \"incomplete\"\n[sns_config_validated]\nstatus = \"incomplete\"\n[local_sns_testing_rehearsal]\nstatus = \"incomplete\"\nevidence = \"same-source candidate Governance/Root compatibility; upstream non-blocking tooling defect\"\n[mainnet_testflight]\nstatus = \"incomplete\"\n[app_canisters_stable_on_mainnet]\nstatus = \"incomplete\"\n[nns_root_co_controller_step_planned]\nstatus = \"incomplete\"\n[fallback_controllers_defined]\nstatus = \"incomplete\"\n[dapp_canisters_listed]\nstatus = \"incomplete\"\n[sns_controlled_dapp_upgrade_path_proved]\nstatus = \"incomplete\"\n[official_reward_share_release]\nstatus = \"incomplete\"\nevidence = \"official reviewed SNS Governance release containing the capability\"\n[frontend_sns_integration_tested]\nstatus = \"incomplete\"\n[cycles_management_strategy]\nstatus = \"incomplete\"\n[custom_domain_frontend_plan]\nstatus = \"incomplete\"\n[audit_package]\nstatus = \"incomplete\"\n",
         );
         write(
             root,
@@ -8674,17 +8813,12 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "canisters/io_historian/io_historian.did",
-            "service : {\n  get_dashboard_state : () -> (text) query;\n  get_protocol_snapshot : () -> (text) query;\n  get_redemption_rate : () -> (text) query;\n  list_streams : () -> (text) query;\n  list_redemptions : () -> (text) query;\n  list_rewards : () -> (text) query;\n  list_nns_lifecycle_events : () -> (text) query;\n  get_index_health : () -> (text) query;\n  get_governance_summary : () -> (text) query;\n  get_release_artifacts : () -> (text) query;\n  get_canister_status_summary : () -> (text) query;\n  get_public_status : () -> (text) query;\n  get_reserve_snapshot : () -> (text) query;\n  list_governance_participation : () -> (text) query;\n  version : () -> (text) query;\n}\n",
-        );
-        write(
-            root,
-            "canisters/io_historian/io_historian_debug.did",
-            "service : {\n  debug_clear : () -> ();\n  debug_ingest_ledger_flow : () -> ();\n  debug_ingest_stream_record : () -> ();\n  debug_ingest_redemption_record : () -> ();\n  debug_ingest_reward_record : () -> ();\n  debug_ingest_index_health : () -> ();\n  debug_ingest_governance_snapshot : () -> ();\n  debug_ingest_canister_artifact_status : () -> ();\n}\n",
+            "type ObservationConfig = record {};\nservice : (opt ObservationConfig) -> {\n  get_dashboard_state : () -> (text) query;\n  get_protocol_snapshot : () -> (text) query;\n  get_public_status : () -> (text) query;\n  get_redemption_rate : () -> (text) query;\n  version : () -> (text) query;\n}\n",
         );
         write(
             root,
             "canisters/frontend/web/declarations/io_historian/io_historian.did.js",
-            "export const idlFactory = ({ IDL }) => IDL.Service({\n  get_canister_status_summary: IDL.Func([], [], [\"query\"]),\n  get_dashboard_state: IDL.Func([], [], [\"query\"]),\n  get_governance_summary: IDL.Func([], [], [\"query\"]),\n  get_index_health: IDL.Func([], [], [\"query\"]),\n  get_protocol_snapshot: IDL.Func([], [], [\"query\"]),\n  get_public_status: IDL.Func([], [], [\"query\"]),\n  get_redemption_rate: IDL.Func([], [], [\"query\"]),\n  get_release_artifacts: IDL.Func([], [], [\"query\"]),\n  get_reserve_snapshot: IDL.Func([], [], [\"query\"]),\n  list_governance_participation: IDL.Func([], [], [\"query\"]),\n  list_nns_lifecycle_events: IDL.Func([], [], [\"query\"]),\n  list_redemptions: IDL.Func([], [], [\"query\"]),\n  list_rewards: IDL.Func([], [], [\"query\"]),\n  list_streams: IDL.Func([], [], [\"query\"]),\n  version: IDL.Func([], [], [\"query\"]),\n});\n",
+            "export const idlFactory = ({ IDL }) => IDL.Service({\n  get_dashboard_state: IDL.Func([], [], [\"query\"]),\n  get_protocol_snapshot: IDL.Func([], [], [\"query\"]),\n  get_public_status: IDL.Func([], [], [\"query\"]),\n  get_redemption_rate: IDL.Func([], [], [\"query\"]),\n  version: IDL.Func([], [], [\"query\"]),\n});\n",
         );
         write(
             root,
@@ -9011,6 +9145,47 @@ Template SNS principal values are planned wiring placeholders only.
     }
 
     #[test]
+    fn executable_release_and_ci_scripts_are_portable() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for path in [
+            "tools/scripts/build-release-from-source",
+            "tools/scripts/verify-release-from-source",
+            "tools/scripts/release-build-temp-root",
+            "tools/scripts/provision-security-tools",
+            ".github/workflows/test.yml",
+            ".github/workflows/security.yml",
+            ".github/workflows/reproducible-build.yml",
+        ] {
+            let contents = fs::read_to_string(root.join(path)).unwrap();
+            assert!(
+                !contents.contains("/home/codexdev"),
+                "developer-specific path returned in {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_open_package_keeps_the_canonical_apache_license() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        assert_eq!(
+            sha256_hex(&root.join("LICENSE")).unwrap(),
+            "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+        );
+        let review = fs::read_to_string(root.join("docs/security/source-open-package.md")).unwrap();
+        for required in [
+            "Apache-2.0",
+            "canonical Apache License 2.0",
+            "No vendored third-party source",
+            "not legal advice",
+        ] {
+            assert!(
+                review.contains(required),
+                "missing source-open review: {required}"
+            );
+        }
+    }
+
+    #[test]
     fn nns_neuron_staking_subaccount_matches_canonical_domain_encoding() {
         assert_eq!(
             nns_neuron_staking_subaccount(Principal::anonymous(), 42),
@@ -9019,15 +9194,13 @@ Template SNS principal values are planned wiring placeholders only.
     }
 
     #[test]
-    fn artifact_manifest_rejects_reachable_ancestor_with_different_source_tree() {
+    fn artifact_manifest_accepts_reachable_source_before_later_evidence_commits() {
         let root = temp_root("manifest-ancestor-source");
         write_artifact_set(&root);
         let source_commit = parent_git_commit(&root);
         let manifest = build_manifest_for_commit(&root, source_commit).unwrap();
         write_artifact_manifest(&root, &manifest);
-        assert!(verify_artifacts_at(&root)
-            .unwrap_err()
-            .contains("does not match the exact source tree at HEAD"));
+        verify_artifacts_at(&root).unwrap();
         let _ = fs::remove_dir_all(root);
     }
 
@@ -9061,7 +9234,7 @@ Template SNS principal values are planned wiring placeholders only.
         write_artifact_manifest(&root, &manifest);
         assert!(verify_artifacts_at(&root)
             .unwrap_err()
-            .contains("does not match the exact source tree at HEAD"));
+            .contains("is not an ancestor of HEAD"));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -10425,45 +10598,6 @@ Template SNS principal values are planned wiring placeholders only.
     fn production_did_and_release_surface_have_no_debug_fee_dependency() {
         assert!(STREAM_PRODUCTION_FORBIDDEN_DID.contains(&"debug_"));
         assert!(PRODUCTION_WASM_FORBIDDEN_METHOD_STRINGS.contains(&"debug_get_transactions"));
-    }
-
-    #[test]
-    fn historian_freshness_gate_requires_dashboard_current_time_path() {
-        let good = r#"
-pub fn source_health_from_state_at(
-    state: &StableState,
-    now_timestamp_nanos: u64,
-) -> Vec<SourceHealth> {
-    vec![]
-}
-
-#[cfg(target_family = "wasm")]
-fn historian_now_timestamp_nanos() -> u64 {
-    ic_cdk::api::time()
-}
-
-pub fn source_health_from_state(state: &StableState) -> Vec<SourceHealth> {
-    source_health_from_state_at(state, historian_now_timestamp_nanos())
-}
-
-pub fn get_dashboard_state() -> PublicDashboardState {
-    STATE.with(|cell| {
-        let state = cell.borrow();
-        PublicDashboardState {
-            source_health: source_health_from_state_at(&state, historian_now_timestamp_nanos()),
-        }
-    })
-}
-"#;
-        check_historian_current_time_path("lib.rs", good).unwrap();
-
-        let bad = r#"
-pub fn source_health_from_state(state: &StableState) -> Vec<SourceHealth> {
-    let now = latest_observation_timestamp(state);
-    source_health_from_state_at(state, now)
-}
-"#;
-        assert!(check_historian_current_time_path("lib.rs", bad).is_err());
     }
 
     fn historian_did() -> &'static str {

@@ -12,9 +12,11 @@ export function formatTokenE8s(value, symbol = "") {
 }
 
 export function formatRatio(rate) {
-  if (!rate || rate.liquid_icp_per_io_e8s_denominator === 0n) return MISSING;
-  const numerator = Number(rate.liquid_icp_per_io_e8s_numerator);
-  const denominator = Number(rate.liquid_icp_per_io_e8s_denominator);
+  const rawNumerator = rate?.liquid_icp_e8s ?? rate?.liquid_icp_per_io_e8s_numerator;
+  const rawDenominator = rate?.redeemable_io_e8s ?? rate?.liquid_icp_per_io_e8s_denominator;
+  if (rawNumerator === undefined || rawDenominator === undefined || rawDenominator === 0n) return MISSING;
+  const numerator = Number(rawNumerator);
+  const denominator = Number(rawDenominator);
   if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) return MISSING;
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 6 }).format(numerator / denominator);
 }

@@ -35,6 +35,12 @@ cargo run -p xtask -- security_scan_required
 
 Permissive mode reports missing optional tools. Required mode fails if `cargo-deny` or `cargo-audit` is missing, or if any configured check fails.
 
+Required CI provisions both scanners through
+`tools/scripts/provision-security-tools`, pinned to `cargo-deny 0.19.8` and
+`cargo-audit 0.22.2` with locked installer dependency graphs. The test and
+security workflows share that script so `test_ci` has no implicit tool
+prerequisite.
+
 ## cargo-deny Baseline
 
 `deny.toml` starts with:

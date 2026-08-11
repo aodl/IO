@@ -103,7 +103,17 @@ cargo run -p xtask -- validate_local_sns_scripts
 
 `validate_local_sns_scripts` copies the operator scripts to a temp directory, writes fixture local variables and completed local evidence, runs the no-network executable paths, and checks positive and negative guardrails. It does not call canisters and does not require the dfx SNS extension.
 
-`validate_local_sns_committed_evidence` accepts exactly two package shapes. An incomplete blocker package contains only `manifest.toml`, `blocker-report.md`, and `SHA256SUMS`. A completed package contains `manifest.toml`, `toolchain-provenance.toml`, `sns_init.local.yaml`, `canister-ids.local.toml`, `reserve-funding-evidence.toml`, `ledger-evidence.toml`, `governance-evidence.toml`, `controller-evidence.toml`, `archive-evidence.toml`, `commands.log`, and `SHA256SUMS`. Completed packages reject blocker/placeholder version text and require every recorded tool version to have a matching exact SHA-256.
+`validate_local_sns_committed_evidence` accepts an incomplete blocker package or
+a completed immutable package. The historical completed shape contains
+`manifest.toml`, toolchain/SNS/ledger/governance/controller/archive evidence,
+the local init, sanitized commands, and `SHA256SUMS`. A completed monitoring
+package additionally contains `release-evidence.toml` and the direct PocketIC
+`historian-dashboard.log`. The validator requires every recorded tool version
+to have a matching exact SHA-256 and byte-binds monitoring packages to the
+current release manifest, its source commit, and its artifact-recording commit.
+It also requires canonical historian supply/reserve/liquid/rate,
+module/controller, lifecycle, Governance, index and archive observations to be
+fresh and complete. No completed package may contain blocker/placeholder text.
 
 Both package forms reject unexpected or uncovered files, duplicate checksum entries, path traversal, symlinks, non-regular files, secret/private-key markers, and mainnet endpoint or network arguments.
 

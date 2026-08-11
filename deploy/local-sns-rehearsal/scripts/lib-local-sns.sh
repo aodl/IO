@@ -3,6 +3,11 @@ set -euo pipefail
 
 REHEARSAL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "${REHEARSAL_DIR}/../.." && pwd)"
+GENERATED_DIR="${IO_LOCAL_SNS_GENERATED_DIR:-${REHEARSAL_DIR}/generated}"
+if [[ "${GENERATED_DIR}" != /* ]]; then
+  printf 'IO_LOCAL_SNS_GENERATED_DIR must be absolute: %s\n' "${GENERATED_DIR}" >&2
+  exit 2
+fi
 PROTECTED_CANISTER="oae4c-3iaaa-aaaar-qb5qq-cai"
 PROTECTED_NEURON="6345890886899317159"
 PINNED_IC_COMMIT="4320fdf2e613844eabae1927b1a23b98da3a7bc6"
@@ -51,7 +56,7 @@ require_local_script_guard() {
 }
 
 phase_log_dir() {
-  local dir="${REHEARSAL_DIR}/generated/logs"
+  local dir="${GENERATED_DIR}/logs"
   mkdir -p "$dir"
   printf '%s\n' "$dir"
 }
@@ -62,7 +67,7 @@ phase_log_file() {
 }
 
 phase_state_dir() {
-  local dir="${REHEARSAL_DIR}/generated/state"
+  local dir="${GENERATED_DIR}/state"
   mkdir -p "$dir"
   printf '%s\n' "$dir"
 }
@@ -112,7 +117,7 @@ run_logged() {
 
 record_blocker() {
   local reason="$1"
-  local blocker_dir="${REHEARSAL_DIR}/generated/blockers"
+  local blocker_dir="${GENERATED_DIR}/blockers"
   mkdir -p "$blocker_dir"
   printf '%s\n' "$reason" > "${blocker_dir}/latest-blocker.txt"
   printf '%s\n' "$reason" >&2
@@ -255,6 +260,30 @@ runtime_file() {
   printf '%s\n' "$file"
 }
 
+local_vars_file() {
+  local file="${IO_LOCAL_SNS_LOCAL_VARS_FILE:-${REHEARSAL_DIR}/local-vars.toml}"
+  require_file "$file"
+  printf '%s\n' "$file"
+}
+
+sns_init_file() {
+  local file="${IO_LOCAL_SNS_INIT_FILE:-${REHEARSAL_DIR}/sns_init.local.yaml}"
+  require_file "$file"
+  printf '%s\n' "$file"
+}
+
+stream_install_args_file() {
+  local file="${IO_LOCAL_SNS_STREAM_ARGS_FILE:-${REHEARSAL_DIR}/install-args.local/io_stream_manager.did}"
+  require_file "$file"
+  printf '%s\n' "$file"
+}
+
+nns_install_args_file() {
+  local file="${IO_LOCAL_SNS_NNS_ARGS_FILE:-${REHEARSAL_DIR}/install-args.local/io_nns_neuron_manager.did}"
+  require_file "$file"
+  printf '%s\n' "$file"
+}
+
 runtime_value() {
   local section="$1"
   local key="$2"
@@ -313,7 +342,7 @@ e8s_to_decimal_tokens() {
 
 sns_canister_id() {
   local role="$1"
-  local discovery="${REHEARSAL_DIR}/generated/sns-canisters.json"
+  local discovery="${GENERATED_DIR}/sns-canisters.json"
   require_file "$discovery"
   jq -er --arg role "$role" '.[$role].canister_id' "$discovery"
 }
@@ -353,7 +382,7 @@ submit_sns_proposal() {
   local neuron_hex args_file
   neuron_hex="$(runtime_value governance sns_neuron_subaccount_hex)"
   require_hex_32_bytes "SNS neuron subaccount" "$neuron_hex"
-  args_file="$(mktemp "${REHEARSAL_DIR}/generated/manage-neuron.XXXXXX.did")"
+  args_file="$(mktemp "${GENERATED_DIR}/manage-neuron.XXXXXX.did")"
   printf '(record { subaccount = blob "%s"; command = opt variant { MakeProposal = record { url = "https://forum.dfinity.org/t/io-local-rehearsal/0"; title = "%s"; summary = "%s"; action = opt %s } } })\n' \
     "$(hex_blob_literal "$neuron_hex")" "$title" "$summary" "$action" > "$args_file"
   submit_sns_manage_neuron_file "$log_file" "$title" "$args_file"
@@ -365,16 +394,26 @@ submit_inline_sns_upgrade() {
   local summary="$3"
   local target="$4"
   local wasm="$5"
-  local neuron_hex args_file
+  local upgrade_arg_hex="${6:-}"
+  local neuron_hex args_file upgrade_arg
   require_file "$wasm"
   neuron_hex="$(runtime_value governance sns_neuron_subaccount_hex)"
   require_hex_32_bytes "SNS neuron subaccount" "$neuron_hex"
-  args_file="$(mktemp "${REHEARSAL_DIR}/generated/manage-neuron-inline-upgrade.XXXXXX.did")"
+  if [ -n "$upgrade_arg_hex" ]; then
+    if ! printf '%s' "$upgrade_arg_hex" | grep -Eq '^([0-9a-f][0-9a-f])+$'; then
+      record_blocker "inline SNS upgrade argument must be non-empty lowercase hex bytes"
+      return 2
+    fi
+    upgrade_arg="$(hex_blob_literal "$upgrade_arg_hex")"
+  else
+    upgrade_arg=""
+  fi
+  args_file="$(mktemp "${GENERATED_DIR}/manage-neuron-inline-upgrade.XXXXXX.did")"
   {
     printf '(record { subaccount = blob "%s"; command = opt variant { MakeProposal = record { url = "https://forum.dfinity.org/t/io-local-rehearsal/0"; title = "%s"; summary = "%s"; action = opt variant { UpgradeSnsControlledCanister = record { new_canister_wasm = blob "' \
       "$(hex_blob_literal "$neuron_hex")" "$title" "$summary"
     LC_ALL=C od -An -v -tx1 "$wasm" | awk '{ for (i = 1; i <= NF; i++) printf "\\%s", $i }'
-    printf '"; chunked_canister_wasm = null; mode = null; canister_id = opt principal "%s"; canister_upgrade_arg = opt blob "" } } } } })\n' "$target"
+    printf '"; chunked_canister_wasm = null; mode = null; canister_id = opt principal "%s"; canister_upgrade_arg = opt blob "%s" } } } } })\n' "$target" "$upgrade_arg"
   } > "$args_file"
   submit_sns_manage_neuron_file "$log_file" "$title" "$args_file"
 }
@@ -462,9 +501,9 @@ publish_sns_wasm_via_nns() {
     return 0
   fi
 
-  add_request="$(mktemp "${REHEARSAL_DIR}/generated/add-sns-wasm.XXXXXX.did")"
-  encoded_payload="$(mktemp "${REHEARSAL_DIR}/generated/add-sns-wasm.XXXXXX.blob")"
-  manage_request="$(mktemp "${REHEARSAL_DIR}/generated/add-sns-wasm-proposal.XXXXXX.did")"
+  add_request="$(mktemp "${GENERATED_DIR}/add-sns-wasm.XXXXXX.did")"
+  encoded_payload="$(mktemp "${GENERATED_DIR}/add-sns-wasm.XXXXXX.blob")"
+  manage_request="$(mktemp "${GENERATED_DIR}/add-sns-wasm-proposal.XXXXXX.did")"
   {
     printf '(record { hash = blob "%s"; wasm = opt record { wasm = blob "' "$(hex_blob_literal "$expected_hash")"
     LC_ALL=C od -An -v -tx1 "$wasm" | awk '{ for (i = 1; i <= NF; i++) printf "\\%s", $i }'

@@ -1,5 +1,8 @@
 name: test
 
+permissions:
+  contents: read
+
 on:
   pull_request:
   push:
@@ -9,11 +12,13 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      # actions/checkout v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           # Exact release verification materializes the recorded source commit.
           fetch-depth: 0
-      - uses: Swatinem/rust-cache@v2
+      # Swatinem/rust-cache v2.9.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: Add Wasm target
         run: rustup target add wasm32-unknown-unknown
 
@@ -23,6 +28,9 @@ jobs:
           pocket_ic_bin="${RUNNER_TEMP}/pocket-ic-server-14.0.0"
           tools/scripts/provision-pocket-ic "${pocket_ic_bin}"
           echo "POCKET_IC_BIN=${pocket_ic_bin}" >> "${GITHUB_ENV}"
+
+      - name: Provision pinned security tools
+        run: tools/scripts/provision-security-tools
 
       - name: Canonical repository CI
         run: cargo run -p xtask -- test_ci

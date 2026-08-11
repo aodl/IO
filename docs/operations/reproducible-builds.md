@@ -16,8 +16,8 @@ Release provenance uses two commits:
    changes and records the source-finalization SHA in every manifest entry.
 
 The artifact-recording commit must have the exact same tree as the recorded
-source commit outside `release-artifacts/`. Reachable ancestry is insufficient.
-Verification also rejects dirty tracked or untracked source files. A direct
+source commit outside `release-artifacts/`. Artifact generation rejects dirty
+tracked or untracked source files. A direct
 `build_canisters` invocation requires `HEAD` to equal `IO_RELEASE_SOURCE_COMMIT`;
 normal release work should use the detached-worktree script. The builder checks
 the exact tree again after frontend setup and after compilation, before copying
@@ -35,7 +35,8 @@ tools/scripts/build-release-from-source "${source_commit}"
 ```
 
 Artifact verification is non-generating and checks the checked-in file set,
-sidecars, manifest hashes and byte sizes against the exact current source tree:
+sidecars, manifest hashes and byte sizes, and requires the exact recorded source
+commit to be an ancestor of the checkout:
 
 ```bash
 cargo run -p xtask -- verify_artifacts
@@ -61,6 +62,18 @@ Neither `verify_recorded_source` nor `verify_release` replaces the caller's
 `release-artifacts/`. A bad checked-in Wasm, deterministic gzip, SHA sidecar, or
 manifest therefore fails verification even when the recorded source rebuilds
 correctly.
+
+Later immutable evidence-only commits may descend from the exact source/artifact
+pair. They do not change the build attribution: `verify_recorded_source` still
+checks the checked-in bytes against a detached rebuild of the manifest's exact
+source commit. Generation remains stricter and is only permitted while the
+working tree differs from that source under `release-artifacts/` alone.
+
+Detached worktrees live outside the repository under one portable temporary
+root selected in this order: `IO_RELEASE_BUILD_TMPDIR`, `RUNNER_TEMP`, `TMPDIR`,
+`XDG_CACHE_HOME/io/release-builds`, then `HOME/.cache/io/release-builds`. The
+selected root must be absolute. `mktemp` gives each build a unique directory,
+and the scripts remove their detached worktrees on every exit path.
 
 `release-artifacts/manifest.json` records each canister's raw and gzip path,
 SHA-256, byte size, build profile, target, and the one exact source commit. It

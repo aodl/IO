@@ -339,6 +339,7 @@ dependencies = [
  "hex",
  "io-core-model",
  "io-governance-types",
+ "io-historian",
  "io-ledger-types",
  "io-production-wiring",
  "io-receipt-types",
@@ -1077,6 +1078,7 @@ version = "0.1.0"
 dependencies = [
  "candid",
  "ic-cdk",
+ "ic-cdk-timers",
  "io-build-support",
  "io-core-model",
  "io-ledger-types",

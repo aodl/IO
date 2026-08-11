@@ -77,7 +77,7 @@ for binary in \
     "$(sha256sum "$binary" | awk '{print $1}')" >> "$log_file"
 done
 
-rendered_sns="${REHEARSAL_DIR}/sns_init.local.yaml"
+rendered_sns="$(sns_init_file)"
 if [ -f "$rendered_sns" ]; then
   run_logged "$log_file" "$checkout/bazel-bin/rs/sns/cli/sns" \
     init-config-file --init-config-file-path "$rendered_sns" validate || {

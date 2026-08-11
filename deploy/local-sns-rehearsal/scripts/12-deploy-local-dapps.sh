@@ -23,11 +23,9 @@ require_command_available jq
 network_url="$(local_network_url)"
 identity="$(local_identity_name)"
 sns="$(sns_cli)"
-vars_file="${REHEARSAL_DIR}/local-vars.toml"
-require_file "$vars_file"
-stream_args="${REHEARSAL_DIR}/install-args.local/io_stream_manager.did"
-nns_args="${REHEARSAL_DIR}/install-args.local/io_nns_neuron_manager.did"
-require_file "$stream_args"
+vars_file="$(local_vars_file)"
+stream_args="$(stream_install_args_file)"
+nns_args="$(nns_install_args_file)"
 bundle_dir="${IO_LOCAL_SNS_BUNDLE_DIR:-}"
 if [ -z "$bundle_dir" ]; then
   record_blocker "set IO_LOCAL_SNS_BUNDLE_DIR to the reviewed same-source Governance/Root bundle"
@@ -48,7 +46,7 @@ grep -Fq "expected_sns_governance_module_hash = blob \"${governance_blob}\";" "$
   exit 2
 }
 
-work_dir="${REHEARSAL_DIR}/generated/dfx"
+work_dir="${GENERATED_DIR}/dfx"
 mkdir -p "$work_dir"
 if [ ! -f "${work_dir}/dfx.json" ]; then
   cp "${REHEARSAL_DIR}/dfx.local.json" "${work_dir}/dfx.json"
@@ -80,7 +78,7 @@ require_file "$nns_args"
 prior_historian_artifact_commit="0d17a02ddfa8afa5c21f6f886f23fe14377ee0cb"
 prior_historian_source_commit="e1f1e1e69c19fe08161706c4fc6345e7e63bf88c"
 prior_historian_hash="c7b1d636271e56108a5d7db9be15637e2b9b2d5fda3a627ddf089eabf3707d6c"
-prior_historian_path="${REHEARSAL_DIR}/generated/prior/io_historian.wasm"
+prior_historian_path="${GENERATED_DIR}/prior/io_historian.wasm"
 mkdir -p "$(dirname "$prior_historian_path")"
 if [ ! -f "$prior_historian_path" ]; then
   git -C "$REPO_ROOT" show "${prior_historian_artifact_commit}:release-artifacts/io_historian.wasm" > "$prior_historian_path"

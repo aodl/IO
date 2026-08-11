@@ -95,6 +95,7 @@ pub struct Status {
     pub two_week_maturity_baseline_reconciled: bool,
     pub latest_started_two_week_generation: u64,
     pub latest_completed_two_week_generation: u64,
+    pub latest_two_week_target: Option<TwoWeekTarget>,
     pub unwinding_child_principal_e8s: u128,
 }
 
@@ -273,6 +274,7 @@ pub fn get_status() -> Status {
         two_week_maturity_baseline_reconciled: current.two_week_maturity_baseline_reconciled,
         latest_started_two_week_generation: current.latest_started_two_week_generation,
         latest_completed_two_week_generation: current.latest_completed_two_week_generation,
+        latest_two_week_target: current.latest_two_week_target.clone(),
         unwinding_child_principal_e8s: current
             .pending_unwind
             .as_ref()

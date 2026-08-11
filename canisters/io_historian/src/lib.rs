@@ -1,1706 +1,68 @@
-use candid::CandidType;
-use io_ledger_types::{
-    AccountHistoryPageOrder, AccountHistoryScanState, IndexTransaction, LedgerKind,
-};
+#[cfg(target_family = "wasm")]
+mod adapters;
+mod model;
+
+pub use model::*;
+
+use candid::{CandidType, Decode, Encode};
 use io_stable_schema::IO_HISTORIAN_SCHEMA_VERSION;
 use serde::Deserialize;
-use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::cell::{Cell, RefCell};
 
 pub const HISTORIAN_SCHEMA_VERSION: u32 = IO_HISTORIAN_SCHEMA_VERSION;
-pub const MAX_STREAM_HISTORY: usize = 256;
-pub const MAX_REDEMPTION_HISTORY: usize = 256;
-pub const MAX_REWARD_HISTORY: usize = 256;
-pub const MAX_NNS_LIFECYCLE_HISTORY: usize = 256;
-pub const MAX_INDEX_HEALTH: usize = 32;
-pub const MAX_CANISTER_STATUS: usize = 32;
-pub const MAX_ARTIFACT_STATUS: usize = 32;
-pub const MAX_GOVERNANCE_NEURON_SUMMARIES: usize = 512;
-pub const MAX_PAGE_LIMIT: usize = 100;
-pub const ONE_HOUR_NANOS: u64 = 60 * 60 * 1_000_000_000;
-pub const ONE_DAY_NANOS: u64 = 24 * ONE_HOUR_NANOS;
-pub const RELEASE_ARTIFACT_STALENESS_NANOS: u64 = 7 * ONE_DAY_NANOS;
-pub const CANISTER_STATUS_STALENESS_NANOS: u64 = ONE_DAY_NANOS;
-pub const INDEX_HEALTH_STALENESS_NANOS: u64 = 6 * ONE_HOUR_NANOS;
-pub const GOVERNANCE_FRESHNESS_STALENESS_NANOS: u64 = ONE_DAY_NANOS;
-pub const PROTOCOL_SNAPSHOT_STALENESS_NANOS: u64 = ONE_HOUR_NANOS;
-pub const DASHBOARD_FRESHNESS_STALENESS_NANOS: u64 = ONE_HOUR_NANOS;
-
-const EXPECTED_RELEASE_ARTIFACT_CANISTERS: &[&str] = &[
-    "io_stream_manager",
-    "io_nns_neuron_manager",
-    "io_historian",
-    "frontend",
+const SOURCE_NAMES: &[&str] = &[
+    "protocol",
+    "stream",
+    "nns-manager",
+    "nns-governance",
+    "sns-root",
+    "sns-governance",
+    "sns-index",
 ];
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum IngestionSourceKind {
-    ReleaseArtifacts,
-    CanisterStatusModuleHash,
-    IcpIndexHealth,
-    FutureIoSnsIndexHealth,
-    NnsGovernanceFreshness,
-    SnsGovernanceFreshness,
-    ProtocolSnapshot,
-    ReserveSnapshot,
-    FrontendDashboardFreshness,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum ObservationFreshness {
-    Fresh,
-    Stale,
-    Missing,
-    Incomplete,
-    ObservedOnly,
-    PrelaunchNotApplicable,
-    ErrorRetryable,
-    Unknown,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct StalenessPolicy {
-    pub max_age_nanos: Option<u64>,
-    pub required: bool,
-    pub prelaunch_expected_absent: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct IngestionWatermark {
-    pub source_block_height: Option<u64>,
-    pub source_index_height: Option<u64>,
-    pub oldest_source_cursor: Option<u64>,
-    pub governance_proposal_timestamp_nanos: Option<u64>,
-    pub governance_neuron_snapshot_timestamp_nanos: Option<u64>,
-    pub release_manifest_hash: Option<String>,
-    pub observed_module_hash: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct IngestionCursor {
-    pub source_id: String,
-    pub cursor_text: Option<String>,
-    pub latest_observed_height: Option<u64>,
-    pub oldest_observed_height: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct HistorianIngestionSource {
-    pub source_id: String,
-    pub kind: IngestionSourceKind,
-    pub policy: StalenessPolicy,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct HistorianObservation {
-    pub source_id: String,
-    pub kind: IngestionSourceKind,
-    pub observed_at_timestamp_nanos: Option<u64>,
-    pub freshness: ObservationFreshness,
-    pub watermark: IngestionWatermark,
-    pub summary: Option<String>,
-    pub error_summary: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct IngestionBatch {
-    pub source: HistorianIngestionSource,
-    pub observations: Vec<HistorianObservation>,
-    pub cursor: Option<IngestionCursor>,
-}
-
-pub trait HistorianObservationSource {
-    fn source(&self) -> HistorianIngestionSource;
-    fn observe(&self) -> IngestionBatch;
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct SourceHealth {
-    pub source_id: String,
-    pub kind: IngestionSourceKind,
-    pub freshness: ObservationFreshness,
-    pub last_success_timestamp_nanos: Option<u64>,
-    pub last_attempt_timestamp_nanos: Option<u64>,
-    pub watermark: IngestionWatermark,
-    pub policy: StalenessPolicy,
-    pub retryable: bool,
-    pub summary: String,
-    pub error_summary: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum CanisterRole {
-    Phase1Frontend,
-    Phase1Historian,
-    FutureStreamManager,
-    FutureNnsNeuronManager,
-    FutureSnsRoot,
-    FutureSnsGovernance,
-    FutureSnsLedger,
-    FutureSnsIndex,
-    IcpIndexObservation,
-    ProtectedReference,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum CanisterDeploymentState {
-    DeployedPublicShell,
-    NotAllocated,
-    NotDeployed,
-    ProtectedUntouchedReference,
-    FutureUnobserved,
-    Unknown,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct CanisterModuleObservation {
-    pub role: CanisterRole,
-    pub deployment_state: CanisterDeploymentState,
-    pub canister_principal_text: Option<String>,
-    pub expected_module_hash: Option<String>,
-    pub observed_module_hash: Option<String>,
-    pub status: ArtifactMatchStatus,
-    pub observed_at_timestamp_nanos: Option<u64>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum DataAvailability {
-    Observed,
-    Missing,
-    NotApplicable,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct DataCompleteness {
-    pub total_io_supply: DataAvailability,
-    pub protocol_reserve_io: DataAvailability,
-    pub non_redeemable_governance_io: DataAvailability,
-    pub redeemable_io_supply: DataAvailability,
-    pub liquid_icp_reserve: DataAvailability,
-    pub redemption_rate: DataAvailability,
-    pub two_year_nns_principal: DataAvailability,
-}
-
-impl Default for DataCompleteness {
-    fn default() -> Self {
-        Self {
-            total_io_supply: DataAvailability::Missing,
-            protocol_reserve_io: DataAvailability::Missing,
-            non_redeemable_governance_io: DataAvailability::Missing,
-            redeemable_io_supply: DataAvailability::Missing,
-            liquid_icp_reserve: DataAvailability::Missing,
-            redemption_rate: DataAvailability::Missing,
-            two_year_nns_principal: DataAvailability::Missing,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct ProtocolSnapshot {
-    pub total_io_supply_e8s: Option<u128>,
-    pub protocol_reserve_io_e8s: Option<u128>,
-    pub non_redeemable_governance_io_e8s: Option<u128>,
-    pub redeemable_io_supply_e8s: Option<u128>,
-    pub liquid_icp_reserve_e8s: Option<u128>,
-    pub two_year_nns_principal_e8s: Option<u128>,
-    pub redemption_rate: Option<RedemptionRateSnapshot>,
-    pub last_updated_timestamp_nanos: Option<u64>,
-    pub completeness: DataCompleteness,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct ReserveSnapshot {
-    pub liquid_icp_reserve_e8s: Option<u128>,
-    pub two_year_nns_principal_e8s: Option<u128>,
-    pub last_updated_timestamp_nanos: Option<u64>,
-    pub completeness: DataCompleteness,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct SupplySnapshot {
-    pub total_io_supply_e8s: Option<u128>,
-    pub protocol_reserve_io_e8s: Option<u128>,
-    pub non_redeemable_governance_io_e8s: Option<u128>,
-    pub redeemable_io_supply_e8s: Option<u128>,
-    pub last_updated_timestamp_nanos: Option<u64>,
-    pub completeness: DataCompleteness,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct RedemptionRateSnapshot {
-    pub liquid_icp_reserve_e8s: u128,
-    pub redeemable_io_supply_e8s: u128,
-    pub liquid_icp_per_io_e8s_numerator: u128,
-    pub liquid_icp_per_io_e8s_denominator: u128,
-    pub last_updated_timestamp_nanos: Option<u64>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
-pub struct ProtocolObservation {
-    pub total_io_supply_e8s: Option<u128>,
-    pub protocol_reserve_io_e8s: Option<u128>,
-    pub non_redeemable_governance_io_e8s: Option<u128>,
-    pub liquid_icp_reserve_e8s: Option<u128>,
-    pub two_year_nns_principal_e8s: Option<u128>,
-    pub observed_at_timestamp_nanos: Option<u64>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum PublicStreamKind {
-    JupiterFaucet,
-    TwoYearMaturity,
-    TwoWeekMaturity,
-    UnknownIcpDeposit,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum PublicRecipientPolicy {
-    JupiterFaucet,
-    EligibleIoSnsNeurons,
-    None,
-    Unknown,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum PublicOperationPhase {
-    Observed,
-    Previewed,
-    AwaitingIoIssuance,
-    AwaitingIcpPayout,
-    AwaitingIoReturn,
-    PartiallyDistributed,
-    Completed,
-    FailedRetryable,
-    FailedTerminal,
-    Unknown,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct ObservedLedgerFlow {
-    pub ledger_kind: LedgerKind,
-    pub ledger_principal_text: Option<String>,
-    pub block_index: u64,
-    pub amount_e8s: u128,
-    pub from_account: Option<String>,
-    pub to_account: Option<String>,
-    pub memo: Option<Vec<u8>>,
-    pub timestamp_nanos: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct StreamHistoryRecord {
-    pub record_id: String,
-    pub source_ledger: String,
-    pub source_block_index: Option<u64>,
-    pub stream_kind: PublicStreamKind,
-    pub amount_e8s: u128,
-    pub recipient_policy: PublicRecipientPolicy,
-    pub io_issued_e8s: Option<u128>,
-    pub phase: PublicOperationPhase,
-    pub timestamp_nanos: Option<u64>,
-    pub memo_label: Option<String>,
-    pub safe_subaccount_label: Option<String>,
-    pub terminal_rejection_reason: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct RedemptionHistoryRecord {
-    pub record_id: String,
-    pub io_burn_or_transfer_block: Option<u64>,
-    pub user_account: Option<String>,
-    pub io_amount_e8s: u128,
-    pub icp_payout_amount_e8s: Option<u128>,
-    pub gross_icp_payout_e8s: Option<u128>,
-    pub icp_payout_fee_e8s: Option<u128>,
-    pub net_user_icp_payout_e8s: Option<u128>,
-    pub io_return_fee_e8s: Option<u128>,
-    pub icp_payout_block: Option<u64>,
-    pub io_return_block: Option<u64>,
-    pub phase: PublicOperationPhase,
-    pub timestamp_nanos: Option<u64>,
-    pub retry_count: u32,
-    pub retry_status: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct RewardDistributionRecord {
-    pub record_id: String,
-    pub epoch_start_timestamp_nanos: Option<u64>,
-    pub epoch_end_timestamp_nanos: Option<u64>,
-    pub participation_summary_id: Option<String>,
-    pub recipient_neuron_id: Option<u64>,
-    pub recipient_account: Option<String>,
-    /// Historical compatibility field. Daily entitlement accounting does not use cohorts.
-    pub frozen_cohort_stake_e8s: Option<u128>,
-    pub entitlement_weight: Option<u128>,
-    pub entitlement_batch_generation: Option<u64>,
-    pub reward_amount_e8s: u128,
-    pub dust_unissued_e8s: Option<u128>,
-    pub payout_block: Option<u64>,
-    pub status: PublicOperationPhase,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum NnsLifecycleKind {
-    TwoYearMaturityDisbursement,
-    TwoWeekMaturityDisbursement,
-    TwoWeekPoolRestake,
-    TwoWeekPoolSplit,
-    TwoWeekPoolStartDissolving,
-    TwoWeekPoolStopDissolving,
-    TwoWeekPoolMergeBack,
-    TwoWeekUnwindPrincipalDisbursement,
-    Unknown,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct NnsLifecycleSummary {
-    pub record_id: String,
-    pub kind: NnsLifecycleKind,
-    pub neuron_id: Option<u64>,
-    pub amount_e8s: Option<u128>,
-    pub phase: PublicOperationPhase,
-    pub timestamp_nanos: Option<u64>,
-    pub retry_count: u32,
-    pub safe_error: Option<String>,
-    pub execution: Option<SimplifiedExecutionProjection>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct SimplifiedExecutionProjection {
-    pub jupiter_phase: Option<String>,
-    pub jupiter_backed_io_e8s: Option<u128>,
-    pub jupiter_io_transfer_block: Option<u128>,
-    pub stream_receipt_fingerprint: Option<Vec<u8>>,
-    pub pending_maturity_nominal_e8s: Option<u64>,
-    pub scheduled_finalization_timestamp_seconds: Option<u64>,
-    pub actual_minted_icp_e8s: Option<u128>,
-    pub two_week_receipt_sequence: Option<u64>,
-    /// Historical compatibility fields. New observations use entitlement_batch_generation.
-    pub cohort_generation: Option<u64>,
-    pub cohort_closes_at_timestamp_seconds: Option<u64>,
-    pub entitlement_batch_generation: Option<u64>,
-    pub reward_recipient_index: Option<u32>,
-    pub reward_recipient_count: Option<u32>,
-    pub distributed_io_e8s: Option<u128>,
-    pub forfeited_io_e8s: Option<u128>,
-    pub rounding_dust_io_e8s: Option<u128>,
-    pub total_dust_io_e8s: Option<u128>,
-    pub under_target: bool,
-    pub active_parent_principal_e8s: Option<u128>,
-    pub unwinding_child_principal_e8s: Option<u128>,
-    pub pending_unwind_child: Option<u64>,
-    pub paused_reason: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct IndexHealthSummary {
-    pub record_id: String,
-    pub ledger_kind: LedgerKind,
-    pub account_label: String,
-    pub latest_cursor: Option<u64>,
-    pub oldest_cursor: Option<u64>,
-    pub backfill_complete: bool,
-    pub page_order: Option<AccountHistoryPageOrder>,
-    pub last_success_timestamp_nanos: Option<u64>,
-    pub unreadable_count: u64,
-    pub invariant_broken_count: u64,
-    pub lag_suspected: bool,
-    pub page_cap_reached: bool,
-    pub scan_incomplete: bool,
-    pub last_observed_newest_tx_id: Option<u64>,
-    pub last_observed_balance_e8s: Option<u128>,
-    pub num_blocks_synced: Option<u64>,
-    pub last_error: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct GovernanceExcludedCount {
-    pub reason: String,
-    pub count: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct GovernanceNeuronParticipation {
-    pub neuron_id: u64,
-    pub frozen_stake_e8s: u128,
-    pub eligible_closed_proposals: u64,
-    pub voted_closed_proposals: u64,
-    /// Historical display-only ratio inputs. They are not monetary authority.
-    pub participation_numerator: u128,
-    pub participation_denominator: u128,
-    pub currently_destination_eligible: bool,
-    pub reward_event_end_timestamp_seconds: Option<u64>,
-    pub reward_shares: Option<u128>,
-    pub event_credit: Option<u128>,
-    pub accumulated_eligible_credit: Option<u128>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum GovernanceRewardEventClassification {
-    ProposalBearing,
-    NoProposalFallback,
-    ZeroEligibleParticipation,
-    MissedSkipped,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
-pub struct GovernanceParticipationSnapshot {
-    pub sns_eligible_neuron_count: u64,
-    pub sns_excluded_neuron_count_by_reason: Vec<GovernanceExcludedCount>,
-    /// Historical compatibility field. It is not the daily entitlement denominator.
-    pub total_frozen_cohort_stake_e8s: u128,
-    pub proposal_epoch_start: Option<u64>,
-    pub proposal_epoch_end: Option<u64>,
-    pub counted_proposals: u64,
-    pub pending_nns_operation_count: Option<u64>,
-    pub nns_lifecycle_status_summary: Option<String>,
-    pub last_governance_snapshot_timestamp_nanos: Option<u64>,
-    pub neuron_participation: Vec<GovernanceNeuronParticipation>,
-    pub reward_event_round: Option<u64>,
-    pub reward_event_end_timestamp_seconds: Option<u64>,
-    pub settled_proposal_count: Option<u64>,
-    pub total_canonical_reward_shares: Option<u128>,
-    pub reward_event_missed: Option<bool>,
-    pub expected_governance_module_hash: Option<String>,
-    pub observed_governance_module_hash: Option<String>,
-    pub reward_event_classification: Option<GovernanceRewardEventClassification>,
-    pub daily_policy_credit: Option<u128>,
-    pub event_eligible_credit: Option<u128>,
-    pub event_forfeited_credit: Option<u128>,
-    pub current_accumulator_eligible_credit: Option<u128>,
-    pub current_accumulator_policy_credit: Option<u128>,
-    pub pending_batch_eligible_credit: Option<u128>,
-    pub pending_batch_policy_credit: Option<u128>,
-    pub pending_backing_status: Option<String>,
-    pub nns_backing_readiness: Option<String>,
-    pub missed_event_count: Option<u64>,
-    pub governance_parameters_fresh: Option<bool>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct GovernanceObservation {
-    pub neurons: Vec<GovernanceNeuronObservation>,
-    pub proposal_epoch_start: Option<u64>,
-    pub proposal_epoch_end: Option<u64>,
-    pub counted_proposals: u64,
-    pub pending_nns_operation_count: Option<u64>,
-    pub nns_lifecycle_status_summary: Option<String>,
-    pub observed_at_timestamp_nanos: Option<u64>,
-    pub reward_event_round: Option<u64>,
-    pub reward_event_end_timestamp_seconds: Option<u64>,
-    pub settled_proposal_count: Option<u64>,
-    pub reward_event_missed: Option<bool>,
-    pub expected_governance_module_hash: Option<String>,
-    pub observed_governance_module_hash: Option<String>,
-    pub reward_event_classification: Option<GovernanceRewardEventClassification>,
-    pub daily_policy_credit: Option<u128>,
-    pub event_eligible_credit: Option<u128>,
-    pub event_forfeited_credit: Option<u128>,
-    pub current_accumulator_eligible_credit: Option<u128>,
-    pub current_accumulator_policy_credit: Option<u128>,
-    pub pending_batch_eligible_credit: Option<u128>,
-    pub pending_batch_policy_credit: Option<u128>,
-    pub pending_backing_status: Option<String>,
-    pub nns_backing_readiness: Option<String>,
-    pub missed_event_count: Option<u64>,
-    pub governance_parameters_fresh: Option<bool>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct GovernanceNeuronObservation {
-    pub neuron_id: u64,
-    pub frozen_stake_e8s: u128,
-    pub eligible_closed_proposals: u64,
-    pub voted_closed_proposals: u64,
-    pub currently_destination_eligible: bool,
-    pub reward_event_end_timestamp_seconds: Option<u64>,
-    pub reward_shares: Option<u128>,
-    pub event_credit: Option<u128>,
-    pub accumulated_eligible_credit: Option<u128>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct ReleaseManifestObservation {
-    pub schema_version: u32,
-    pub build_profile: String,
-    pub target: String,
-    pub git_commit: Option<String>,
-    pub artifacts: Vec<ReleaseManifestArtifact>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct ReleaseManifestArtifact {
-    pub canister: String,
-    pub raw_wasm_path: String,
-    pub raw_wasm_sha256: String,
-    pub raw_wasm_bytes: u64,
-    pub gz_wasm_path: String,
-    pub gz_wasm_sha256: String,
-    pub gz_wasm_bytes: u64,
-    pub build_profile: String,
-    pub target: String,
-    pub git_commit: Option<String>,
-}
-
-#[cfg(test)]
-impl From<&io_sns_lifecycle::ArtifactManifest> for ReleaseManifestObservation {
-    fn from(value: &io_sns_lifecycle::ArtifactManifest) -> Self {
-        Self {
-            schema_version: value.schema_version,
-            build_profile: value.build_profile.clone(),
-            target: value.target.clone(),
-            git_commit: value.git_commit.clone(),
-            artifacts: value
-                .artifacts
-                .iter()
-                .map(|entry| ReleaseManifestArtifact {
-                    canister: entry.canister.clone(),
-                    raw_wasm_path: entry.raw_wasm_path.clone(),
-                    raw_wasm_sha256: entry.raw_wasm_sha256.clone(),
-                    raw_wasm_bytes: entry.raw_wasm_bytes,
-                    gz_wasm_path: entry.gz_wasm_path.clone(),
-                    gz_wasm_sha256: entry.gz_wasm_sha256.clone(),
-                    gz_wasm_bytes: entry.gz_wasm_bytes,
-                    build_profile: entry.build_profile.clone(),
-                    target: entry.target.clone(),
-                    git_commit: entry.git_commit.clone(),
-                })
-                .collect(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum ArtifactMatchStatus {
-    Unknown,
-    Matching,
-    Mismatch,
-    Unobserved,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct CanisterArtifactStatus {
-    pub canister_name: String,
-    pub expected_canister_principal_text: Option<String>,
-    pub raw_wasm_sha256: Option<String>,
-    pub gz_wasm_sha256: Option<String>,
-    pub artifact_byte_size: Option<u64>,
-    pub gz_artifact_byte_size: Option<u64>,
-    pub build_profile: Option<String>,
-    pub target: Option<String>,
-    pub git_commit: Option<String>,
-    pub observed_module_hash: Option<String>,
-    pub status: ArtifactMatchStatus,
-    pub last_checked_timestamp_nanos: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct HistorianIngestionStatus {
-    pub schema_version: u32,
-    pub stream_record_count: u64,
-    pub redemption_record_count: u64,
-    pub reward_record_count: u64,
-    pub nns_lifecycle_record_count: u64,
-    pub index_health_record_count: u64,
-    pub artifact_status_count: u64,
-    pub canister_status_count: u64,
-    pub last_ingested_timestamp_nanos: Option<u64>,
-    pub retained_record_limits: RetentionLimits,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct RetentionLimits {
-    pub stream_history: u64,
-    pub redemption_history: u64,
-    pub reward_history: u64,
-    pub nns_lifecycle_history: u64,
-    pub index_health: u64,
-    pub artifact_status: u64,
-    pub canister_status: u64,
-    pub governance_neuron_summaries: u64,
-    pub max_page_limit: u64,
-}
-
-impl Default for RetentionLimits {
-    fn default() -> Self {
-        Self {
-            stream_history: MAX_STREAM_HISTORY as u64,
-            redemption_history: MAX_REDEMPTION_HISTORY as u64,
-            reward_history: MAX_REWARD_HISTORY as u64,
-            nns_lifecycle_history: MAX_NNS_LIFECYCLE_HISTORY as u64,
-            index_health: MAX_INDEX_HEALTH as u64,
-            artifact_status: MAX_ARTIFACT_STATUS as u64,
-            canister_status: MAX_CANISTER_STATUS as u64,
-            governance_neuron_summaries: MAX_GOVERNANCE_NEURON_SUMMARIES as u64,
-            max_page_limit: MAX_PAGE_LIMIT as u64,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct PublicStatus {
-    pub version: String,
-    pub model: String,
-    pub schema_version: u32,
-    pub ingestion: HistorianIngestionStatus,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct PublicDashboardState {
-    pub status: PublicStatus,
-    pub protocol: ProtocolSnapshot,
-    pub reserve: ReserveSnapshot,
-    pub supply: SupplySnapshot,
-    pub redemption_rate: Option<RedemptionRateSnapshot>,
-    pub source_health: Vec<SourceHealth>,
-    pub index_health: Vec<IndexHealthSummary>,
-    pub governance: GovernanceParticipationSnapshot,
-    pub release_artifacts: Vec<CanisterArtifactStatus>,
-    pub canister_status: Vec<CanisterArtifactStatus>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct ListStreamsRequest {
-    pub start_after: Option<String>,
-    pub limit: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct ListStreamsResponse {
-    pub records: Vec<StreamHistoryRecord>,
-    pub next_start_after: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct ListRedemptionsRequest {
-    pub start_after: Option<String>,
-    pub limit: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct ListRedemptionsResponse {
-    pub records: Vec<RedemptionHistoryRecord>,
-    pub next_start_after: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct ListRewardsRequest {
-    pub start_after: Option<String>,
-    pub limit: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct ListRewardsResponse {
-    pub records: Vec<RewardDistributionRecord>,
-    pub next_start_after: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct ListNnsLifecycleEventsRequest {
-    pub start_after: Option<String>,
-    pub limit: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct ListNnsLifecycleEventsResponse {
-    pub records: Vec<NnsLifecycleSummary>,
-    pub next_start_after: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct ListGovernanceParticipationRequest {
-    pub start_after_neuron_id: Option<u64>,
-    pub limit: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct ListGovernanceParticipationResponse {
-    pub records: Vec<GovernanceNeuronParticipation>,
-    pub next_start_after_neuron_id: Option<u64>,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct StableState {
     pub schema_version: u32,
+    pub config: Option<ObservationConfig>,
     pub protocol: ProtocolSnapshot,
-    pub streams: Vec<StreamHistoryRecord>,
-    pub redemptions: Vec<RedemptionHistoryRecord>,
-    pub rewards: Vec<RewardDistributionRecord>,
-    pub nns_lifecycle: Vec<NnsLifecycleSummary>,
-    pub index_health: Vec<IndexHealthSummary>,
-    pub governance: GovernanceParticipationSnapshot,
-    pub release_artifacts: Vec<CanisterArtifactStatus>,
-    pub canister_status: Vec<CanisterArtifactStatus>,
-    pub last_ingested_timestamp_nanos: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-struct LegacyV1RewardDistributionRecord {
-    pub record_id: String,
-    pub epoch_start_timestamp_nanos: Option<u64>,
-    pub epoch_end_timestamp_nanos: Option<u64>,
-    pub participation_summary_id: Option<String>,
-    pub recipient_neuron_id: Option<u64>,
-    pub recipient_account: Option<String>,
-    pub eligible_stake_e8s: Option<u128>,
-    pub reward_amount_e8s: u128,
-    pub dust_unissued_e8s: Option<u128>,
-    pub payout_block: Option<u64>,
-    pub status: PublicOperationPhase,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-struct LegacyV1GovernanceNeuronParticipation {
-    pub neuron_id: u64,
-    pub eligible_stake_e8s: u128,
-    pub eligible_seconds: u64,
-    pub eligible_closed_proposals: u64,
-    pub voted_closed_proposals: u64,
-    pub participation_numerator: u128,
-    pub participation_denominator: u128,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
-struct LegacyV1GovernanceParticipationSnapshot {
-    pub sns_eligible_neuron_count: u64,
-    pub sns_excluded_neuron_count_by_reason: Vec<GovernanceExcludedCount>,
-    pub total_eligible_stake_e8s: u128,
-    pub proposal_epoch_start: Option<u64>,
-    pub proposal_epoch_end: Option<u64>,
-    pub counted_proposals: u64,
-    pub pending_nns_operation_count: Option<u64>,
-    pub nns_lifecycle_status_summary: Option<String>,
-    pub last_governance_snapshot_timestamp_nanos: Option<u64>,
-    pub neuron_participation: Vec<LegacyV1GovernanceNeuronParticipation>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[allow(dead_code)]
-struct LegacyV1GovernanceNeuronObservation {
-    pub neuron_id: u64,
-    pub staked_io_e8s: u128,
-    pub eligible_seconds: u64,
-    pub eligible_closed_proposals: u64,
-    pub voted_closed_proposals: u64,
-    pub is_genesis_governance_neuron: bool,
-    pub is_protocol_owned: bool,
-    pub is_dissolving: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-struct LegacyV1StableState {
-    pub schema_version: u32,
-    pub protocol: ProtocolSnapshot,
-    pub streams: Vec<StreamHistoryRecord>,
-    pub redemptions: Vec<RedemptionHistoryRecord>,
-    pub rewards: Vec<LegacyV1RewardDistributionRecord>,
-    pub nns_lifecycle: Vec<NnsLifecycleSummary>,
-    pub index_health: Vec<IndexHealthSummary>,
-    pub governance: LegacyV1GovernanceParticipationSnapshot,
-    pub release_artifacts: Vec<CanisterArtifactStatus>,
-    pub canister_status: Vec<CanisterArtifactStatus>,
-    pub last_ingested_timestamp_nanos: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum StableMigrationError {
-    UnsupportedFutureVersion {
-        canister: &'static str,
-        version: u32,
-    },
-    UnsupportedOldVersion {
-        canister: &'static str,
-        version: u32,
-    },
-    CorruptSnapshot {
-        canister: &'static str,
-        message: String,
-    },
+    pub source_health: Vec<SourceHealth>,
+    pub canisters: Vec<CanisterObservation>,
+    pub stream: Option<StreamStatus>,
+    pub nns_manager: Option<NnsManagerStatus>,
+    pub nns_governance: Option<NnsGovernanceStatus>,
+    pub sns: Option<SnsStatus>,
+    pub index: Option<IndexStatus>,
+    pub refresh_generation: u64,
+    pub last_attempt_timestamp_nanos: Option<u64>,
+    pub last_success_timestamp_nanos: Option<u64>,
 }
 
 impl Default for StableState {
     fn default() -> Self {
         Self {
             schema_version: HISTORIAN_SCHEMA_VERSION,
-            protocol: protocol_snapshot_from_observation(ProtocolObservation::default()),
-            streams: Vec::new(),
-            redemptions: Vec::new(),
-            rewards: Vec::new(),
-            nns_lifecycle: Vec::new(),
-            index_health: Vec::new(),
-            governance: GovernanceParticipationSnapshot::default(),
-            release_artifacts: Vec::new(),
-            canister_status: Vec::new(),
-            last_ingested_timestamp_nanos: None,
+            config: None,
+            protocol: ProtocolSnapshot::default(),
+            source_health: SOURCE_NAMES
+                .iter()
+                .map(|name| SourceHealth::prelaunch(name))
+                .collect(),
+            canisters: Vec::new(),
+            stream: None,
+            nns_manager: None,
+            nns_governance: None,
+            sns: None,
+            index: None,
+            refresh_generation: 0,
+            last_attempt_timestamp_nanos: None,
+            last_success_timestamp_nanos: None,
         }
     }
 }
 
 thread_local! {
     static STATE: RefCell<StableState> = RefCell::new(StableState::default());
-}
-
-fn page_limit(limit: Option<u64>) -> usize {
-    limit
-        .unwrap_or(MAX_PAGE_LIMIT as u64)
-        .min(MAX_PAGE_LIMIT as u64)
-        .max(1) as usize
-}
-
-#[cfg_attr(not(any(test, debug_assertions)), allow(dead_code))]
-fn upsert_bounded<T, F>(records: &mut Vec<T>, key: F, max_len: usize, record: T)
-where
-    F: Fn(&T) -> &str,
-{
-    let record_key = key(&record).to_string();
-    if let Some(position) = records
-        .iter()
-        .position(|existing| key(existing) == record_key)
-    {
-        records[position] = record;
-    } else {
-        records.push(record);
-    }
-    records.sort_by(|a, b| key(a).cmp(key(b)));
-    while records.len() > max_len {
-        records.remove(0);
-    }
-}
-
-fn page_by_key<T, F>(
-    records: &[T],
-    start_after: Option<String>,
-    limit: Option<u64>,
-    key: F,
-) -> (Vec<T>, Option<String>)
-where
-    T: Clone,
-    F: Fn(&T) -> &str,
-{
-    let limit = page_limit(limit);
-    let start_after = start_after.as_deref();
-    let start = records
-        .iter()
-        .position(|record| {
-            start_after
-                .map(|cursor| key(record) > cursor)
-                .unwrap_or(true)
-        })
-        .unwrap_or(records.len());
-    let page = records
-        .iter()
-        .skip(start)
-        .take(limit)
-        .cloned()
-        .collect::<Vec<_>>();
-    let next = if start + page.len() < records.len() {
-        page.last().map(|record| key(record).to_string())
-    } else {
-        None
-    };
-    (page, next)
-}
-
-#[cfg_attr(not(any(test, debug_assertions)), allow(dead_code))]
-fn set_last_ingested(state: &mut StableState, timestamp: Option<u64>) {
-    state.last_ingested_timestamp_nanos = timestamp.or(state.last_ingested_timestamp_nanos);
-}
-
-pub fn protocol_snapshot_from_observation(observation: ProtocolObservation) -> ProtocolSnapshot {
-    let mut completeness = DataCompleteness {
-        total_io_supply: availability(observation.total_io_supply_e8s),
-        protocol_reserve_io: availability(observation.protocol_reserve_io_e8s),
-        non_redeemable_governance_io: availability(observation.non_redeemable_governance_io_e8s),
-        liquid_icp_reserve: availability(observation.liquid_icp_reserve_e8s),
-        two_year_nns_principal: availability(observation.two_year_nns_principal_e8s),
-        ..DataCompleteness::default()
-    };
-
-    let redeemable_io_supply_e8s = match (
-        observation.total_io_supply_e8s,
-        observation.protocol_reserve_io_e8s,
-        observation.non_redeemable_governance_io_e8s,
-    ) {
-        (Some(total), Some(reserve), Some(governance)) => reserve
-            .checked_add(governance)
-            .and_then(|excluded| total.checked_sub(excluded)),
-        _ => None,
-    };
-    completeness.redeemable_io_supply = availability(redeemable_io_supply_e8s);
-
-    let redemption_rate = match (observation.liquid_icp_reserve_e8s, redeemable_io_supply_e8s) {
-        (Some(liquid), Some(redeemable)) if redeemable > 0 => Some(RedemptionRateSnapshot {
-            liquid_icp_reserve_e8s: liquid,
-            redeemable_io_supply_e8s: redeemable,
-            liquid_icp_per_io_e8s_numerator: liquid,
-            liquid_icp_per_io_e8s_denominator: redeemable,
-            last_updated_timestamp_nanos: observation.observed_at_timestamp_nanos,
-        }),
-        _ => None,
-    };
-    completeness.redemption_rate = availability(redemption_rate.as_ref());
-
-    ProtocolSnapshot {
-        total_io_supply_e8s: observation.total_io_supply_e8s,
-        protocol_reserve_io_e8s: observation.protocol_reserve_io_e8s,
-        non_redeemable_governance_io_e8s: observation.non_redeemable_governance_io_e8s,
-        redeemable_io_supply_e8s,
-        liquid_icp_reserve_e8s: observation.liquid_icp_reserve_e8s,
-        two_year_nns_principal_e8s: observation.two_year_nns_principal_e8s,
-        redemption_rate,
-        last_updated_timestamp_nanos: observation.observed_at_timestamp_nanos,
-        completeness,
-    }
-}
-
-fn availability<T>(value: Option<T>) -> DataAvailability {
-    if value.is_some() {
-        DataAvailability::Observed
-    } else {
-        DataAvailability::Missing
-    }
-}
-
-fn empty_watermark() -> IngestionWatermark {
-    IngestionWatermark {
-        source_block_height: None,
-        source_index_height: None,
-        oldest_source_cursor: None,
-        governance_proposal_timestamp_nanos: None,
-        governance_neuron_snapshot_timestamp_nanos: None,
-        release_manifest_hash: None,
-        observed_module_hash: None,
-    }
-}
-
-fn staleness_policy(max_age_nanos: Option<u64>, required: bool) -> StalenessPolicy {
-    StalenessPolicy {
-        max_age_nanos,
-        required,
-        prelaunch_expected_absent: false,
-    }
-}
-
-fn prelaunch_policy() -> StalenessPolicy {
-    StalenessPolicy {
-        max_age_nanos: None,
-        required: false,
-        prelaunch_expected_absent: true,
-    }
-}
-
-struct SourceHealthInput {
-    source_id: String,
-    kind: IngestionSourceKind,
-    policy: StalenessPolicy,
-    now_timestamp_nanos: u64,
-    last_success_timestamp_nanos: Option<u64>,
-    last_attempt_timestamp_nanos: Option<u64>,
-    complete: bool,
-    retryable_error: bool,
-    watermark: IngestionWatermark,
-    summary: String,
-    error_summary: Option<String>,
-}
-
-pub fn classify_observation_freshness(
-    policy: &StalenessPolicy,
-    now_timestamp_nanos: u64,
-    last_success_timestamp_nanos: Option<u64>,
-    complete: bool,
-    retryable_error: bool,
-) -> ObservationFreshness {
-    if policy.prelaunch_expected_absent {
-        return ObservationFreshness::PrelaunchNotApplicable;
-    }
-    if retryable_error {
-        return ObservationFreshness::ErrorRetryable;
-    }
-    let Some(last_success) = last_success_timestamp_nanos else {
-        return ObservationFreshness::Missing;
-    };
-    if !complete {
-        return ObservationFreshness::Incomplete;
-    }
-    let Some(max_age) = policy.max_age_nanos else {
-        return ObservationFreshness::ObservedOnly;
-    };
-    if now_timestamp_nanos
-        .checked_sub(last_success)
-        .is_none_or(|age| age > max_age)
-    {
-        ObservationFreshness::Stale
-    } else {
-        ObservationFreshness::Fresh
-    }
-}
-
-fn source_health(input: SourceHealthInput) -> SourceHealth {
-    SourceHealth {
-        source_id: input.source_id,
-        kind: input.kind,
-        freshness: classify_observation_freshness(
-            &input.policy,
-            input.now_timestamp_nanos,
-            input.last_success_timestamp_nanos,
-            input.complete,
-            input.retryable_error,
-        ),
-        last_success_timestamp_nanos: input.last_success_timestamp_nanos,
-        last_attempt_timestamp_nanos: input.last_attempt_timestamp_nanos,
-        watermark: input.watermark,
-        policy: input.policy,
-        retryable: input.retryable_error,
-        summary: input.summary,
-        error_summary: input.error_summary,
-    }
-}
-
-#[cfg(not(target_family = "wasm"))]
-fn latest_observation_timestamp(state: &StableState) -> u64 {
-    let mut timestamps = Vec::new();
-    timestamps.push(state.last_ingested_timestamp_nanos);
-    timestamps.push(state.protocol.last_updated_timestamp_nanos);
-    timestamps.push(state.governance.last_governance_snapshot_timestamp_nanos);
-    timestamps.extend(
-        state
-            .index_health
-            .iter()
-            .map(|record| record.last_success_timestamp_nanos),
-    );
-    timestamps.extend(
-        state
-            .release_artifacts
-            .iter()
-            .map(|record| record.last_checked_timestamp_nanos),
-    );
-    timestamps.extend(
-        state
-            .canister_status
-            .iter()
-            .map(|record| record.last_checked_timestamp_nanos),
-    );
-    timestamps.into_iter().flatten().max().unwrap_or(0)
-}
-
-#[cfg(target_family = "wasm")]
-fn historian_now_timestamp_nanos() -> u64 {
-    ic_cdk::api::time()
-}
-
-#[cfg(not(target_family = "wasm"))]
-fn historian_now_timestamp_nanos() -> u64 {
-    STATE.with(|cell| latest_observation_timestamp(&cell.borrow()))
-}
-
-fn release_artifact_health(state: &StableState, now_timestamp_nanos: u64) -> SourceHealth {
-    let observed_names = state
-        .release_artifacts
-        .iter()
-        .map(|record| record.canister_name.as_str())
-        .collect::<BTreeSet<_>>();
-    let missing = EXPECTED_RELEASE_ARTIFACT_CANISTERS
-        .iter()
-        .filter(|expected| !observed_names.contains(**expected))
-        .count();
-    let last_success = state
-        .release_artifacts
-        .iter()
-        .filter_map(|record| record.last_checked_timestamp_nanos)
-        .max();
-    let retryable = state
-        .release_artifacts
-        .iter()
-        .any(|record| record.status == ArtifactMatchStatus::Mismatch);
-    let mut watermark = empty_watermark();
-    watermark.release_manifest_hash = state
-        .release_artifacts
-        .iter()
-        .find_map(|record| record.gz_wasm_sha256.clone());
-    source_health(SourceHealthInput {
-        source_id: "release-artifacts".to_string(),
-        kind: IngestionSourceKind::ReleaseArtifacts,
-        policy: staleness_policy(Some(RELEASE_ARTIFACT_STALENESS_NANOS), true),
-        now_timestamp_nanos,
-        last_success_timestamp_nanos: last_success,
-        last_attempt_timestamp_nanos: last_success,
-        complete: missing == 0 && !state.release_artifacts.is_empty(),
-        retryable_error: retryable,
-        watermark,
-        summary: if missing == 0 && !state.release_artifacts.is_empty() {
-            "observed artifact manifest; reproducible-build audit not implied".to_string()
-        } else {
-            format!("missing {missing} expected artifact observation(s)")
-        },
-        error_summary: retryable.then(|| "artifact/module hash mismatch observed".to_string()),
-    })
-}
-
-fn protocol_health(state: &StableState, now_timestamp_nanos: u64) -> SourceHealth {
-    let complete = [
-        state.protocol.completeness.total_io_supply,
-        state.protocol.completeness.protocol_reserve_io,
-        state.protocol.completeness.non_redeemable_governance_io,
-        state.protocol.completeness.redeemable_io_supply,
-        state.protocol.completeness.liquid_icp_reserve,
-        state.protocol.completeness.redemption_rate,
-    ]
-    .iter()
-    .all(|availability| *availability == DataAvailability::Observed);
-    source_health(SourceHealthInput {
-        source_id: "protocol-snapshot".to_string(),
-        kind: IngestionSourceKind::ProtocolSnapshot,
-        policy: staleness_policy(Some(PROTOCOL_SNAPSHOT_STALENESS_NANOS), false),
-        now_timestamp_nanos,
-        last_success_timestamp_nanos: state.protocol.last_updated_timestamp_nanos,
-        last_attempt_timestamp_nanos: state.protocol.last_updated_timestamp_nanos,
-        complete,
-        retryable_error: false,
-        watermark: empty_watermark(),
-        summary: if complete {
-            "observed protocol snapshot read model".to_string()
-        } else {
-            "protocol snapshot incomplete; missing values are not zero protocol value".to_string()
-        },
-        error_summary: None,
-    })
-}
-
-fn reserve_health(state: &StableState, now_timestamp_nanos: u64) -> SourceHealth {
-    let complete = state.protocol.completeness.liquid_icp_reserve == DataAvailability::Observed
-        && state.protocol.completeness.two_year_nns_principal == DataAvailability::Observed;
-    source_health(SourceHealthInput {
-        source_id: "reserve-snapshot".to_string(),
-        kind: IngestionSourceKind::ReserveSnapshot,
-        policy: staleness_policy(Some(PROTOCOL_SNAPSHOT_STALENESS_NANOS), false),
-        now_timestamp_nanos,
-        last_success_timestamp_nanos: state.protocol.last_updated_timestamp_nanos,
-        last_attempt_timestamp_nanos: state.protocol.last_updated_timestamp_nanos,
-        complete,
-        retryable_error: false,
-        watermark: empty_watermark(),
-        summary: if complete {
-            "observed reserve snapshot read model".to_string()
-        } else {
-            "reserve snapshot incomplete; missing values are not zero reserve".to_string()
-        },
-        error_summary: None,
-    })
-}
-
-fn index_health_source(state: &StableState, now_timestamp_nanos: u64) -> SourceHealth {
-    let last_success = state
-        .index_health
-        .iter()
-        .filter_map(|record| record.last_success_timestamp_nanos)
-        .max();
-    let latest_height = state
-        .index_health
-        .iter()
-        .filter_map(|record| record.last_observed_newest_tx_id.or(record.latest_cursor))
-        .max();
-    let oldest_height = state
-        .index_health
-        .iter()
-        .filter_map(|record| record.oldest_cursor)
-        .min();
-    let retryable = state.index_health.iter().any(|record| {
-        record.lag_suspected
-            || record.scan_incomplete
-            || record.page_cap_reached
-            || record.last_error.is_some()
-    });
-    source_health(SourceHealthInput {
-        source_id: "icp-index-health".to_string(),
-        kind: IngestionSourceKind::IcpIndexHealth,
-        policy: staleness_policy(Some(INDEX_HEALTH_STALENESS_NANOS), false),
-        now_timestamp_nanos,
-        last_success_timestamp_nanos: last_success,
-        last_attempt_timestamp_nanos: last_success,
-        complete: !state.index_health.is_empty() && !retryable,
-        retryable_error: retryable,
-        watermark: IngestionWatermark {
-            source_block_height: latest_height,
-            source_index_height: latest_height,
-            oldest_source_cursor: oldest_height,
-            ..empty_watermark()
-        },
-        summary: if state.index_health.is_empty() {
-            "ICP index health missing; index canisters remain the normal account-history abstraction"
-                .to_string()
-        } else {
-            "ICP index health observed through index-shaped account history".to_string()
-        },
-        error_summary: retryable
-            .then(|| "index lag, incomplete scan, cap, or safe error observed".to_string()),
-    })
-}
-
-fn governance_health(state: &StableState, now_timestamp_nanos: u64) -> SourceHealth {
-    let complete = state
-        .governance
-        .reward_event_end_timestamp_seconds
-        .is_some()
-        && state
-            .governance
-            .last_governance_snapshot_timestamp_nanos
-            .is_some()
-        && state.governance.reward_event_missed != Some(true);
-    source_health(SourceHealthInput {
-        source_id: "nns-governance-freshness".to_string(),
-        kind: IngestionSourceKind::NnsGovernanceFreshness,
-        policy: staleness_policy(Some(GOVERNANCE_FRESHNESS_STALENESS_NANOS), false),
-        now_timestamp_nanos,
-        last_success_timestamp_nanos: state.governance.last_governance_snapshot_timestamp_nanos,
-        last_attempt_timestamp_nanos: state.governance.last_governance_snapshot_timestamp_nanos,
-        complete,
-        retryable_error: false,
-        watermark: IngestionWatermark {
-            governance_proposal_timestamp_nanos: state.governance.proposal_epoch_end,
-            governance_neuron_snapshot_timestamp_nanos: state
-                .governance
-                .last_governance_snapshot_timestamp_nanos,
-            ..empty_watermark()
-        },
-        summary: if complete {
-            "NNS governance summary observed".to_string()
-        } else {
-            "NNS governance summary missing or incomplete".to_string()
-        },
-        error_summary: None,
-    })
-}
-
-fn prelaunch_source(source_id: &str, kind: IngestionSourceKind, summary: &str) -> SourceHealth {
-    source_health(SourceHealthInput {
-        source_id: source_id.to_string(),
-        kind,
-        policy: prelaunch_policy(),
-        now_timestamp_nanos: 0,
-        last_success_timestamp_nanos: None,
-        last_attempt_timestamp_nanos: None,
-        complete: true,
-        retryable_error: false,
-        watermark: empty_watermark(),
-        summary: summary.to_string(),
-        error_summary: None,
-    })
-}
-
-pub fn source_health_from_state_at(
-    state: &StableState,
-    now_timestamp_nanos: u64,
-) -> Vec<SourceHealth> {
-    let mut health = vec![
-        release_artifact_health(state, now_timestamp_nanos),
-        source_health(SourceHealthInput {
-            source_id: "production-fiduciary-reserved-canisters".to_string(),
-            kind: IngestionSourceKind::CanisterStatusModuleHash,
-            policy: staleness_policy(Some(CANISTER_STATUS_STALENESS_NANOS), false),
-            now_timestamp_nanos,
-            last_success_timestamp_nanos: state
-                .canister_status
-                .iter()
-                .filter_map(|record| record.last_checked_timestamp_nanos)
-                .max(),
-            last_attempt_timestamp_nanos: state
-                .canister_status
-                .iter()
-                .filter_map(|record| record.last_checked_timestamp_nanos)
-                .max(),
-            complete: !state.canister_status.is_empty(),
-            retryable_error: state
-                .canister_status
-                .iter()
-                .any(|record| record.status == ArtifactMatchStatus::Mismatch),
-            watermark: IngestionWatermark {
-                observed_module_hash: state
-                    .canister_status
-                    .iter()
-                    .find_map(|record| record.observed_module_hash.clone()),
-                ..empty_watermark()
-            },
-            summary: if state.canister_status.is_empty() {
-                "Production fiduciary canisters are reserved placeholders; module hashes not observed in this state".to_string()
-            } else {
-                "Production fiduciary canister module hash observation present".to_string()
-            },
-            error_summary: state
-                .canister_status
-                .iter()
-                .any(|record| record.status == ArtifactMatchStatus::Mismatch)
-                .then(|| "module hash mismatch observed".to_string()),
-        }),
-        index_health_source(state, now_timestamp_nanos),
-        prelaunch_source(
-            "future-io-sns-index-health",
-            IngestionSourceKind::FutureIoSnsIndexHealth,
-            "future IO/SNS index health is prelaunch; canonical SNS IO ledger is not launched",
-        ),
-        governance_health(state, now_timestamp_nanos),
-        prelaunch_source(
-            "sns-governance-freshness",
-            IngestionSourceKind::SnsGovernanceFreshness,
-            "SNS governance is not launched; missing SNS observations are not an error",
-        ),
-        protocol_health(state, now_timestamp_nanos),
-        reserve_health(state, now_timestamp_nanos),
-        source_health(SourceHealthInput {
-            source_id: "frontend-dashboard-freshness".to_string(),
-            kind: IngestionSourceKind::FrontendDashboardFreshness,
-            policy: staleness_policy(Some(DASHBOARD_FRESHNESS_STALENESS_NANOS), false),
-            now_timestamp_nanos,
-            last_success_timestamp_nanos: state.last_ingested_timestamp_nanos,
-            last_attempt_timestamp_nanos: state.last_ingested_timestamp_nanos,
-            complete: state.last_ingested_timestamp_nanos.is_some(),
-            retryable_error: false,
-            watermark: empty_watermark(),
-            summary: "frontend consumes production historian read declarations only".to_string(),
-            error_summary: None,
-        }),
-    ];
-    health.sort_by(|left, right| left.source_id.cmp(&right.source_id));
-    health
-}
-
-pub fn source_health_from_state(state: &StableState) -> Vec<SourceHealth> {
-    source_health_from_state_at(state, historian_now_timestamp_nanos())
-}
-
-pub fn reserve_snapshot_from_protocol(protocol: &ProtocolSnapshot) -> ReserveSnapshot {
-    ReserveSnapshot {
-        liquid_icp_reserve_e8s: protocol.liquid_icp_reserve_e8s,
-        two_year_nns_principal_e8s: protocol.two_year_nns_principal_e8s,
-        last_updated_timestamp_nanos: protocol.last_updated_timestamp_nanos,
-        completeness: protocol.completeness.clone(),
-    }
-}
-
-pub fn supply_snapshot_from_protocol(protocol: &ProtocolSnapshot) -> SupplySnapshot {
-    SupplySnapshot {
-        total_io_supply_e8s: protocol.total_io_supply_e8s,
-        protocol_reserve_io_e8s: protocol.protocol_reserve_io_e8s,
-        non_redeemable_governance_io_e8s: protocol.non_redeemable_governance_io_e8s,
-        redeemable_io_supply_e8s: protocol.redeemable_io_supply_e8s,
-        last_updated_timestamp_nanos: protocol.last_updated_timestamp_nanos,
-        completeness: protocol.completeness.clone(),
-    }
-}
-
-pub fn stream_record_from_ledger_flow(
-    flow: ObservedLedgerFlow,
-    stream_kind: PublicStreamKind,
-    recipient_policy: PublicRecipientPolicy,
-    io_issued_e8s: Option<u128>,
-    phase: PublicOperationPhase,
-    terminal_rejection_reason: Option<String>,
-) -> StreamHistoryRecord {
-    let source_ledger = ledger_label(flow.ledger_kind, flow.ledger_principal_text);
-    StreamHistoryRecord {
-        record_id: format!("stream:{source_ledger}:{}", flow.block_index),
-        source_ledger,
-        source_block_index: Some(flow.block_index),
-        stream_kind,
-        amount_e8s: flow.amount_e8s,
-        recipient_policy,
-        io_issued_e8s,
-        phase,
-        timestamp_nanos: flow.timestamp_nanos,
-        memo_label: flow.memo.as_ref().map(|memo| safe_memo_label(memo)),
-        safe_subaccount_label: flow.to_account,
-        terminal_rejection_reason,
-    }
-}
-
-pub fn redemption_record_from_ledger_flow(
-    flow: ObservedLedgerFlow,
-    icp_payout_amount_e8s: Option<u128>,
-    phase: PublicOperationPhase,
-) -> RedemptionHistoryRecord {
-    let source_ledger = ledger_label(flow.ledger_kind, flow.ledger_principal_text);
-    RedemptionHistoryRecord {
-        record_id: format!("redemption:{source_ledger}:{}", flow.block_index),
-        io_burn_or_transfer_block: Some(flow.block_index),
-        user_account: flow.from_account,
-        io_amount_e8s: flow.amount_e8s,
-        icp_payout_amount_e8s,
-        gross_icp_payout_e8s: None,
-        icp_payout_fee_e8s: None,
-        net_user_icp_payout_e8s: None,
-        io_return_fee_e8s: None,
-        icp_payout_block: None,
-        io_return_block: None,
-        phase,
-        timestamp_nanos: flow.timestamp_nanos,
-        retry_count: 0,
-        retry_status: None,
-    }
-}
-
-pub fn reward_record_from_observation(
-    record_id: String,
-    recipient_neuron_id: Option<u64>,
-    frozen_cohort_stake_e8s: Option<u128>,
-    reward_amount_e8s: u128,
-    dust_unissued_e8s: Option<u128>,
-    status: PublicOperationPhase,
-) -> RewardDistributionRecord {
-    RewardDistributionRecord {
-        record_id,
-        epoch_start_timestamp_nanos: None,
-        epoch_end_timestamp_nanos: None,
-        participation_summary_id: None,
-        recipient_neuron_id,
-        recipient_account: None,
-        frozen_cohort_stake_e8s,
-        entitlement_weight: None,
-        entitlement_batch_generation: None,
-        reward_amount_e8s,
-        dust_unissued_e8s,
-        payout_block: None,
-        status,
-    }
-}
-
-pub fn index_health_from_scan_state(
-    record_id: String,
-    ledger_kind: LedgerKind,
-    account_label: String,
-    scan: AccountHistoryScanState,
-) -> IndexHealthSummary {
-    IndexHealthSummary {
-        record_id,
-        ledger_kind,
-        account_label,
-        latest_cursor: scan.cursor.latest_cursor.map(|cursor| cursor.0),
-        oldest_cursor: scan.cursor.oldest_cursor.map(|cursor| cursor.0),
-        backfill_complete: scan.cursor.backfill_complete,
-        page_order: scan.cursor.order,
-        last_success_timestamp_nanos: scan.status.last_success_timestamp_nanos,
-        unreadable_count: scan.status.latest_page_unreadable_count,
-        invariant_broken_count: scan.status.invariant_broken_count,
-        lag_suspected: scan.status.lag_suspected,
-        page_cap_reached: scan.status.page_cap_reached,
-        scan_incomplete: scan.status.scan_incomplete,
-        last_observed_newest_tx_id: scan.status.last_observed_newest_tx_id.map(|block| block.0),
-        last_observed_balance_e8s: scan.status.last_observed_account_balance_e8s,
-        num_blocks_synced: scan.status.num_blocks_synced.map(|block| block.0),
-        last_error: scan.status.last_error,
-    }
-}
-
-pub fn governance_snapshot_from_observation(
-    observation: GovernanceObservation,
-) -> GovernanceParticipationSnapshot {
-    let mut excluded = BTreeMap::<String, u64>::new();
-    let mut participation = Vec::new();
-    let mut total_stake = 0_u128;
-    let total_reward_shares = observation.neurons.iter().try_fold(0u128, |sum, neuron| {
-        sum.checked_add(neuron.reward_shares.unwrap_or(0))
-    });
-    for neuron in observation.neurons {
-        if neuron.frozen_stake_e8s > 0 {
-            let num = neuron.reward_shares.unwrap_or(0);
-            let den = total_reward_shares.unwrap_or(0);
-            total_stake = total_stake
-                .checked_add(neuron.frozen_stake_e8s)
-                .expect("bounded Governance neuron stake total must fit u128");
-            participation.push(GovernanceNeuronParticipation {
-                neuron_id: neuron.neuron_id,
-                frozen_stake_e8s: neuron.frozen_stake_e8s,
-                eligible_closed_proposals: neuron.eligible_closed_proposals,
-                voted_closed_proposals: neuron.voted_closed_proposals,
-                participation_numerator: num,
-                participation_denominator: den,
-                currently_destination_eligible: neuron.currently_destination_eligible,
-                reward_event_end_timestamp_seconds: neuron.reward_event_end_timestamp_seconds,
-                reward_shares: neuron.reward_shares,
-                event_credit: neuron.event_credit,
-                accumulated_eligible_credit: neuron.accumulated_eligible_credit,
-            });
-        }
-        if neuron.frozen_stake_e8s == 0 || !neuron.currently_destination_eligible {
-            for reason in exclusion_reasons(
-                neuron.frozen_stake_e8s,
-                neuron.currently_destination_eligible,
-            ) {
-                *excluded.entry(reason).or_default() += 1;
-            }
-        }
-    }
-    participation.sort_by_key(|record| record.neuron_id);
-    participation.truncate(MAX_GOVERNANCE_NEURON_SUMMARIES);
-
-    GovernanceParticipationSnapshot {
-        sns_eligible_neuron_count: participation.len() as u64,
-        sns_excluded_neuron_count_by_reason: excluded
-            .into_iter()
-            .map(|(reason, count)| GovernanceExcludedCount { reason, count })
-            .collect(),
-        total_frozen_cohort_stake_e8s: total_stake,
-        proposal_epoch_start: observation.proposal_epoch_start,
-        proposal_epoch_end: observation.proposal_epoch_end,
-        counted_proposals: observation.counted_proposals,
-        pending_nns_operation_count: observation.pending_nns_operation_count,
-        nns_lifecycle_status_summary: observation.nns_lifecycle_status_summary,
-        last_governance_snapshot_timestamp_nanos: observation.observed_at_timestamp_nanos,
-        neuron_participation: participation,
-        reward_event_round: observation.reward_event_round,
-        reward_event_end_timestamp_seconds: observation.reward_event_end_timestamp_seconds,
-        settled_proposal_count: observation.settled_proposal_count,
-        total_canonical_reward_shares: total_reward_shares,
-        reward_event_missed: observation.reward_event_missed,
-        expected_governance_module_hash: observation.expected_governance_module_hash,
-        observed_governance_module_hash: observation.observed_governance_module_hash,
-        reward_event_classification: observation.reward_event_classification,
-        daily_policy_credit: observation.daily_policy_credit,
-        event_eligible_credit: observation.event_eligible_credit,
-        event_forfeited_credit: observation.event_forfeited_credit,
-        current_accumulator_eligible_credit: observation.current_accumulator_eligible_credit,
-        current_accumulator_policy_credit: observation.current_accumulator_policy_credit,
-        pending_batch_eligible_credit: observation.pending_batch_eligible_credit,
-        pending_batch_policy_credit: observation.pending_batch_policy_credit,
-        pending_backing_status: observation.pending_backing_status,
-        nns_backing_readiness: observation.nns_backing_readiness,
-        missed_event_count: observation.missed_event_count,
-        governance_parameters_fresh: observation.governance_parameters_fresh,
-    }
-}
-
-pub fn release_artifacts_from_manifest(
-    manifest: &ReleaseManifestObservation,
-    observed_at_timestamp_nanos: Option<u64>,
-) -> Vec<CanisterArtifactStatus> {
-    manifest
-        .artifacts
-        .iter()
-        .map(|entry| CanisterArtifactStatus {
-            canister_name: entry.canister.clone(),
-            expected_canister_principal_text: None,
-            raw_wasm_sha256: Some(entry.raw_wasm_sha256.clone()),
-            gz_wasm_sha256: Some(entry.gz_wasm_sha256.clone()),
-            artifact_byte_size: Some(entry.raw_wasm_bytes),
-            gz_artifact_byte_size: Some(entry.gz_wasm_bytes),
-            build_profile: Some(entry.build_profile.clone()),
-            target: Some(entry.target.clone()),
-            git_commit: entry
-                .git_commit
-                .clone()
-                .or_else(|| manifest.git_commit.clone()),
-            observed_module_hash: None,
-            status: ArtifactMatchStatus::Unobserved,
-            last_checked_timestamp_nanos: observed_at_timestamp_nanos,
-        })
-        .collect()
-}
-
-pub fn model_artifact_status_mismatch(
-    mut expected: CanisterArtifactStatus,
-    observed_module_hash: Option<String>,
-    observed_at_timestamp_nanos: Option<u64>,
-) -> CanisterArtifactStatus {
-    expected.status = match (&expected.raw_wasm_sha256, &observed_module_hash) {
-        (Some(expected_hash), Some(observed_hash)) if expected_hash == observed_hash => {
-            ArtifactMatchStatus::Matching
-        }
-        (Some(_), Some(_)) => ArtifactMatchStatus::Mismatch,
-        _ => ArtifactMatchStatus::Unknown,
-    };
-    expected.observed_module_hash = observed_module_hash;
-    expected.last_checked_timestamp_nanos = observed_at_timestamp_nanos;
-    expected
-}
-
-pub fn observed_index_transactions_to_stream_records(
-    transactions: Vec<IndexTransaction>,
-    ledger_kind: LedgerKind,
-) -> Vec<StreamHistoryRecord> {
-    transactions
-        .into_iter()
-        .map(|tx| {
-            stream_record_from_ledger_flow(
-                ObservedLedgerFlow {
-                    ledger_kind,
-                    ledger_principal_text: None,
-                    block_index: tx.block_index.0,
-                    amount_e8s: tx.transaction.amount_e8s,
-                    from_account: tx.transaction.from.map(|account| account.owner.to_text()),
-                    to_account: tx.transaction.to.map(|account| account.owner.to_text()),
-                    memo: tx.transaction.memo.map(|memo| memo.0),
-                    timestamp_nanos: Some(tx.transaction.timestamp_nanos),
-                },
-                PublicStreamKind::UnknownIcpDeposit,
-                PublicRecipientPolicy::Unknown,
-                None,
-                PublicOperationPhase::Observed,
-                Some("unclassified ledger/index observation".to_string()),
-            )
-        })
-        .collect()
-}
-
-fn exclusion_reasons(frozen_stake_e8s: u128, currently_destination_eligible: bool) -> Vec<String> {
-    let mut reasons = Vec::new();
-    if frozen_stake_e8s == 0 {
-        reasons.push("zero_stake".to_string());
-    }
-    if !currently_destination_eligible {
-        reasons.push("destination_ineligible".to_string());
-    }
-    if reasons.is_empty() {
-        reasons.push("policy_ineligible".to_string());
-    }
-    reasons
-}
-
-fn ledger_label(kind: LedgerKind, principal: Option<String>) -> String {
-    let kind = match kind {
-        LedgerKind::IcpLedger => "icp",
-        LedgerKind::IoLedger => "io",
-    };
-    principal.map_or_else(
-        || kind.to_string(),
-        |principal| format!("{kind}:{principal}"),
-    )
-}
-
-fn safe_memo_label(bytes: &[u8]) -> String {
-    if bytes.is_empty() {
-        return "empty".to_string();
-    }
-    if bytes
-        .iter()
-        .all(|byte| byte.is_ascii_graphic() || *byte == b' ')
-    {
-        String::from_utf8_lossy(bytes).to_string()
-    } else if bytes.len() == 8 {
-        let mut fixed = [0_u8; 8];
-        fixed.copy_from_slice(bytes);
-        format!("u64:{}", u64::from_le_bytes(fixed))
-    } else {
-        format!("{} bytes", bytes.len())
-    }
-}
-
-fn status_snapshot(state: &StableState) -> PublicStatus {
-    PublicStatus {
-        version: version().to_string(),
-        model: "public-observation-read-model".to_string(),
-        schema_version: state.schema_version,
-        ingestion: HistorianIngestionStatus {
-            schema_version: state.schema_version,
-            stream_record_count: state.streams.len() as u64,
-            redemption_record_count: state.redemptions.len() as u64,
-            reward_record_count: state.rewards.len() as u64,
-            nns_lifecycle_record_count: state.nns_lifecycle.len() as u64,
-            index_health_record_count: state.index_health.len() as u64,
-            artifact_status_count: state.release_artifacts.len() as u64,
-            canister_status_count: state.canister_status.len() as u64,
-            last_ingested_timestamp_nanos: state.last_ingested_timestamp_nanos,
-            retained_record_limits: RetentionLimits::default(),
-        },
-    }
+    static REFRESH_ACTIVE: Cell<bool> = const { Cell::new(false) };
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
@@ -1710,7 +72,61 @@ pub fn version() -> &'static str {
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn get_public_status() -> PublicStatus {
-    STATE.with(|cell| status_snapshot(&cell.borrow()))
+    STATE.with(|cell| {
+        let state = cell.borrow();
+        PublicStatus {
+            version: version().into(),
+            schema_version: state.schema_version,
+            configured: state.config.is_some(),
+            refresh_active: REFRESH_ACTIVE.with(Cell::get),
+            refresh_generation: state.refresh_generation,
+            last_attempt_timestamp_nanos: state.last_attempt_timestamp_nanos,
+            last_success_timestamp_nanos: state.last_success_timestamp_nanos,
+        }
+    })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn get_dashboard_state() -> Dashboard {
+    STATE.with(|cell| {
+        let state = cell.borrow();
+        #[cfg(target_family = "wasm")]
+        let now = ic_cdk::api::time();
+        #[cfg(not(target_family = "wasm"))]
+        let now = state.last_attempt_timestamp_nanos.unwrap_or_default();
+        Dashboard {
+            status: get_public_status(),
+            protocol: state.protocol.clone(),
+            source_health: visible_source_health(&state, now),
+            canisters: state.canisters.clone(),
+            stream: state.stream.clone(),
+            nns_manager: state.nns_manager.clone(),
+            nns_governance: state.nns_governance.clone(),
+            sns: state.sns.clone(),
+            index: state.index.clone(),
+        }
+    })
+}
+
+fn visible_source_health(state: &StableState, now: u64) -> Vec<SourceHealth> {
+    let mut health = state.source_health.clone();
+    let Some(config) = &state.config else {
+        return health;
+    };
+    let stale_after = config
+        .refresh_interval_seconds
+        .saturating_mul(2)
+        .saturating_mul(1_000_000_000);
+    health.iter_mut().for_each(|source| {
+        if source.freshness == ObservationFreshness::Fresh
+            && source
+                .last_success_timestamp_nanos
+                .is_none_or(|success| now.saturating_sub(success) > stale_after)
+        {
+            source.freshness = ObservationFreshness::Stale;
+        }
+    });
+    health
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
@@ -1719,1510 +135,394 @@ pub fn get_protocol_snapshot() -> ProtocolSnapshot {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
-pub fn get_reserve_snapshot() -> ReserveSnapshot {
-    STATE.with(|cell| reserve_snapshot_from_protocol(&cell.borrow().protocol))
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn get_redemption_rate() -> Option<RedemptionRateSnapshot> {
     STATE.with(|cell| cell.borrow().protocol.redemption_rate.clone())
 }
 
-#[cfg_attr(target_family = "wasm", ic_cdk::query)]
-pub fn list_streams(request: ListStreamsRequest) -> ListStreamsResponse {
+fn install_config(config: Option<ObservationConfig>) {
+    let Some(config) = config else { return };
+    #[cfg(target_family = "wasm")]
+    let self_id = Some(ic_cdk::api::canister_self());
+    #[cfg(not(target_family = "wasm"))]
+    let self_id = None;
+    validate_config(&config, self_id).expect("invalid historian observation configuration");
     STATE.with(|cell| {
-        let state = cell.borrow();
-        let (records, next_start_after) = page_by_key(
-            &state.streams,
-            request.start_after,
-            request.limit,
-            |record| &record.record_id,
-        );
-        ListStreamsResponse {
-            records,
-            next_start_after,
+        let mut state = cell.borrow_mut();
+        if state.config.as_ref() != Some(&config) {
+            *state = StableState {
+                config: Some(config),
+                source_health: SOURCE_NAMES
+                    .iter()
+                    .map(|name| SourceHealth {
+                        source: (*name).into(),
+                        freshness: ObservationFreshness::Missing,
+                        last_attempt_timestamp_nanos: None,
+                        last_success_timestamp_nanos: None,
+                        error: None,
+                    })
+                    .collect(),
+                ..StableState::default()
+            };
         }
-    })
+    });
 }
 
-#[cfg_attr(target_family = "wasm", ic_cdk::query)]
-pub fn list_redemptions(request: ListRedemptionsRequest) -> ListRedemptionsResponse {
-    STATE.with(|cell| {
-        let state = cell.borrow();
-        let (records, next_start_after) = page_by_key(
-            &state.redemptions,
-            request.start_after,
-            request.limit,
-            |record| &record.record_id,
-        );
-        ListRedemptionsResponse {
-            records,
-            next_start_after,
-        }
-    })
+#[cfg_attr(target_family = "wasm", ic_cdk::init)]
+pub fn init(config: Option<ObservationConfig>) {
+    install_config(config);
+    arm_refresh();
 }
 
-#[cfg_attr(target_family = "wasm", ic_cdk::query)]
-pub fn list_rewards(request: ListRewardsRequest) -> ListRewardsResponse {
-    STATE.with(|cell| {
-        let state = cell.borrow();
-        let (records, next_start_after) = page_by_key(
-            &state.rewards,
-            request.start_after,
-            request.limit,
-            |record| &record.record_id,
-        );
-        ListRewardsResponse {
-            records,
-            next_start_after,
-        }
-    })
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::query)]
-pub fn list_nns_lifecycle_events(
-    request: ListNnsLifecycleEventsRequest,
-) -> ListNnsLifecycleEventsResponse {
-    STATE.with(|cell| {
-        let state = cell.borrow();
-        let (records, next_start_after) = page_by_key(
-            &state.nns_lifecycle,
-            request.start_after,
-            request.limit,
-            |record| &record.record_id,
-        );
-        ListNnsLifecycleEventsResponse {
-            records,
-            next_start_after,
-        }
-    })
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::query)]
-pub fn get_index_health() -> Vec<IndexHealthSummary> {
-    STATE.with(|cell| cell.borrow().index_health.clone())
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::query)]
-pub fn get_governance_summary() -> GovernanceParticipationSnapshot {
-    STATE.with(|cell| cell.borrow().governance.clone())
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::query)]
-pub fn list_governance_participation(
-    request: ListGovernanceParticipationRequest,
-) -> ListGovernanceParticipationResponse {
-    STATE.with(|cell| {
-        let state = cell.borrow();
-        let limit = page_limit(request.limit);
-        let records = state
-            .governance
-            .neuron_participation
-            .iter()
-            .filter(|record| {
-                request
-                    .start_after_neuron_id
-                    .map(|cursor| record.neuron_id > cursor)
-                    .unwrap_or(true)
-            })
-            .take(limit)
-            .cloned()
-            .collect::<Vec<_>>();
-        let next_start_after_neuron_id = if records.len() == limit
-            && state.governance.neuron_participation.iter().any(|record| {
-                records
-                    .last()
-                    .is_some_and(|last| record.neuron_id > last.neuron_id)
-            }) {
-            records.last().map(|record| record.neuron_id)
-        } else {
-            None
-        };
-        ListGovernanceParticipationResponse {
-            records,
-            next_start_after_neuron_id,
-        }
-    })
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::query)]
-pub fn get_release_artifacts() -> Vec<CanisterArtifactStatus> {
-    STATE.with(|cell| cell.borrow().release_artifacts.clone())
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::query)]
-pub fn get_canister_status_summary() -> Vec<CanisterArtifactStatus> {
-    STATE.with(|cell| cell.borrow().canister_status.clone())
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::query)]
-pub fn get_dashboard_state() -> PublicDashboardState {
-    let now_timestamp_nanos = historian_now_timestamp_nanos();
-    STATE.with(|cell| {
-        let state = cell.borrow();
-        PublicDashboardState {
-            status: status_snapshot(&state),
-            protocol: state.protocol.clone(),
-            reserve: reserve_snapshot_from_protocol(&state.protocol),
-            supply: supply_snapshot_from_protocol(&state.protocol),
-            redemption_rate: state.protocol.redemption_rate.clone(),
-            source_health: source_health_from_state_at(&state, now_timestamp_nanos),
-            index_health: state.index_health.clone(),
-            governance: state.governance.clone(),
-            release_artifacts: state.release_artifacts.clone(),
-            canister_status: state.canister_status.clone(),
-        }
-    })
-}
-
-fn export_stable_state() -> StableState {
+fn export_state() -> StableState {
     STATE.with(|cell| cell.borrow().clone())
-}
-
-fn migrate_legacy_v1_stable_state(
-    state: LegacyV1StableState,
-) -> Result<StableState, StableMigrationError> {
-    if state.schema_version > 1 {
-        return Err(StableMigrationError::UnsupportedFutureVersion {
-            canister: "io_historian",
-            version: state.schema_version,
-        });
-    }
-    Ok(StableState {
-        schema_version: HISTORIAN_SCHEMA_VERSION,
-        protocol: state.protocol,
-        streams: state.streams,
-        redemptions: state.redemptions,
-        rewards: state
-            .rewards
-            .into_iter()
-            .map(|record| RewardDistributionRecord {
-                record_id: record.record_id,
-                epoch_start_timestamp_nanos: record.epoch_start_timestamp_nanos,
-                epoch_end_timestamp_nanos: record.epoch_end_timestamp_nanos,
-                participation_summary_id: record.participation_summary_id,
-                recipient_neuron_id: record.recipient_neuron_id,
-                recipient_account: record.recipient_account,
-                frozen_cohort_stake_e8s: None,
-                entitlement_weight: None,
-                entitlement_batch_generation: None,
-                reward_amount_e8s: record.reward_amount_e8s,
-                dust_unissued_e8s: record.dust_unissued_e8s,
-                payout_block: record.payout_block,
-                status: record.status,
-            })
-            .collect(),
-        nns_lifecycle: state.nns_lifecycle,
-        index_health: state.index_health,
-        governance: GovernanceParticipationSnapshot::default(),
-        release_artifacts: state.release_artifacts,
-        canister_status: state.canister_status,
-        last_ingested_timestamp_nanos: state.last_ingested_timestamp_nanos,
-    })
-}
-
-pub fn migrate_stable_state(mut state: StableState) -> Result<StableState, StableMigrationError> {
-    match state.schema_version {
-        0 => {
-            state.schema_version = HISTORIAN_SCHEMA_VERSION;
-            Ok(state)
-        }
-        HISTORIAN_SCHEMA_VERSION => Ok(state),
-        version if version > HISTORIAN_SCHEMA_VERSION => {
-            Err(StableMigrationError::UnsupportedFutureVersion {
-                canister: "io_historian",
-                version,
-            })
-        }
-        version => Err(StableMigrationError::UnsupportedOldVersion {
-            canister: "io_historian",
-            version,
-        }),
-    }
-}
-
-pub fn default_first_install_stable_state() -> StableState {
-    StableState::default()
-}
-
-fn import_stable_state(state: StableState) {
-    let state = migrate_stable_state(state).expect("io_historian stable schema migration failed");
-    STATE.with(|cell| *cell.borrow_mut() = state);
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::pre_upgrade)]
 pub fn pre_upgrade() {
-    ic_cdk::storage::stable_save((export_stable_state(),))
-        .expect("failed to save io_historian stable state");
+    let bytes = Encode!(&export_state()).expect("failed to encode historian stable state");
+    ic_cdk::storage::stable_save((bytes,)).expect("failed to save historian stable state");
+}
+
+#[derive(CandidType, Deserialize)]
+struct LegacyState {
+    schema_version: u32,
+    last_ingested_timestamp_nanos: Option<u64>,
+}
+
+fn restore_state(bytes: &[u8]) -> Result<StableState, String> {
+    if let Ok(state) = Decode!(bytes, StableState) {
+        if state.schema_version != HISTORIAN_SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported historian schema {}",
+                state.schema_version
+            ));
+        }
+        return Ok(state);
+    }
+    let legacy = Decode!(bytes, LegacyState)
+        .map_err(|err| format!("historian stable state is corrupt: {err}"))?;
+    if legacy.schema_version > 2 {
+        return Err(format!(
+            "unsupported historian schema {}",
+            legacy.schema_version
+        ));
+    }
+    Ok(StableState {
+        last_success_timestamp_nanos: legacy.last_ingested_timestamp_nanos,
+        ..StableState::default()
+    })
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::post_upgrade)]
-pub fn post_upgrade() {
-    match ic_cdk::storage::stable_restore::<(StableState,)>() {
-        Ok((state,)) => import_stable_state(state),
-        Err(current_err) => {
-            let (legacy,) = ic_cdk::storage::stable_restore::<(LegacyV1StableState,)>()
-                .unwrap_or_else(|legacy_err| {
+pub fn post_upgrade(config: Option<ObservationConfig>) {
+    let mut state = match ic_cdk::storage::stable_restore::<(Vec<u8>,)>() {
+        Ok((bytes,)) => restore_state(&bytes).expect("historian stable schema migration failed"),
+        Err(current_error) => {
+            let (legacy,) = ic_cdk::storage::stable_restore::<(LegacyState,)>().unwrap_or_else(
+                |legacy_error| {
                     panic!(
-                        "io_historian stable state is missing or corrupt during upgrade: current={current_err}; legacy_v1={legacy_err}"
+                        "historian stable state is missing or corrupt: current={current_error}; legacy={legacy_error}"
                     )
-                });
-            let migrated = migrate_legacy_v1_stable_state(legacy)
-                .expect("io_historian legacy v1 stable schema migration failed");
-            import_stable_state(migrated);
+                },
+            );
+            if legacy.schema_version > 2 {
+                panic!("unsupported historian schema {}", legacy.schema_version);
+            }
+            StableState {
+                last_success_timestamp_nanos: legacy.last_ingested_timestamp_nanos,
+                ..StableState::default()
+            }
         }
+    };
+    state.source_health.iter_mut().for_each(|health| {
+        if health.freshness == ObservationFreshness::Fresh {
+            health.freshness = ObservationFreshness::Stale;
+        }
+    });
+    STATE.with(|cell| *cell.borrow_mut() = state);
+    REFRESH_ACTIVE.with(|active| active.set(false));
+    install_config(config);
+    arm_refresh();
+}
+
+#[cfg(target_family = "wasm")]
+fn arm_refresh() {
+    use std::time::Duration;
+    let delay = STATE.with(|cell| {
+        cell.borrow()
+            .config
+            .as_ref()
+            .map(|config| config.refresh_interval_seconds)
+    });
+    if let Some(delay) = delay {
+        ic_cdk_timers::set_timer(Duration::from_secs(delay), refresh_once());
     }
 }
 
-#[cfg(any(test, debug_assertions))]
-pub fn export_stable_state_for_tests() -> StableState {
-    export_stable_state()
-}
+#[cfg(not(target_family = "wasm"))]
+fn arm_refresh() {}
 
-#[cfg(any(test, debug_assertions))]
-pub fn import_stable_state_for_tests(state: StableState) {
-    import_stable_state(state);
-}
-
-#[cfg(any(test, debug_assertions))]
-pub fn migrate_stable_state_for_tests(
-    state: StableState,
-) -> Result<StableState, StableMigrationError> {
-    migrate_stable_state(state)
-}
-
-#[cfg(any(test, debug_assertions))]
-#[cfg_attr(not(test), allow(dead_code))]
-fn migrate_legacy_v1_stable_state_for_tests(
-    state: LegacyV1StableState,
-) -> Result<StableState, StableMigrationError> {
-    migrate_legacy_v1_stable_state(state)
-}
-
-#[cfg(any(test, debug_assertions))]
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn debug_clear() {
-    STATE.with(|cell| *cell.borrow_mut() = StableState::default());
-}
-
-#[cfg(any(test, debug_assertions))]
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn debug_ingest_protocol_snapshot(observation: ProtocolObservation) {
+#[cfg(target_family = "wasm")]
+fn update_health(source: &str, now: u64, result: &Result<(), String>) {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        let timestamp = observation.observed_at_timestamp_nanos;
-        state.protocol = protocol_snapshot_from_observation(observation);
-        set_last_ingested(&mut state, timestamp);
-    });
-}
-
-#[cfg(any(test, debug_assertions))]
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn debug_ingest_ledger_flow(flow: ObservedLedgerFlow) {
-    let record = stream_record_from_ledger_flow(
-        flow,
-        PublicStreamKind::UnknownIcpDeposit,
-        PublicRecipientPolicy::Unknown,
-        None,
-        PublicOperationPhase::Observed,
-        Some("unclassified ledger/index observation".to_string()),
-    );
-    debug_ingest_stream_record(record);
-}
-
-#[cfg(any(test, debug_assertions))]
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn debug_ingest_stream_record(record: StreamHistoryRecord) {
-    STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
-        let timestamp = record.timestamp_nanos;
-        upsert_bounded(
-            &mut state.streams,
-            |record| &record.record_id,
-            MAX_STREAM_HISTORY,
-            record,
-        );
-        set_last_ingested(&mut state, timestamp);
-    });
-}
-
-#[cfg(any(test, debug_assertions))]
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn debug_ingest_redemption_record(record: RedemptionHistoryRecord) {
-    STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
-        let timestamp = record.timestamp_nanos;
-        upsert_bounded(
-            &mut state.redemptions,
-            |record| &record.record_id,
-            MAX_REDEMPTION_HISTORY,
-            record,
-        );
-        set_last_ingested(&mut state, timestamp);
-    });
-}
-
-#[cfg(any(test, debug_assertions))]
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn debug_ingest_reward_record(record: RewardDistributionRecord) {
-    STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
-        upsert_bounded(
-            &mut state.rewards,
-            |record| &record.record_id,
-            MAX_REWARD_HISTORY,
-            record,
-        );
-    });
-}
-
-#[cfg(any(test, debug_assertions))]
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn debug_ingest_nns_lifecycle(record: NnsLifecycleSummary) {
-    STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
-        let timestamp = record.timestamp_nanos;
-        upsert_bounded(
-            &mut state.nns_lifecycle,
-            |record| &record.record_id,
-            MAX_NNS_LIFECYCLE_HISTORY,
-            record,
-        );
-        set_last_ingested(&mut state, timestamp);
-    });
-}
-
-#[cfg(any(test, debug_assertions))]
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn debug_ingest_index_health(record: IndexHealthSummary) {
-    STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
-        let timestamp = record.last_success_timestamp_nanos;
-        upsert_bounded(
-            &mut state.index_health,
-            |record| &record.record_id,
-            MAX_INDEX_HEALTH,
-            record,
-        );
-        set_last_ingested(&mut state, timestamp);
-    });
-}
-
-#[cfg(any(test, debug_assertions))]
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn debug_ingest_governance_snapshot(observation: GovernanceObservation) {
-    STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
-        let timestamp = observation.observed_at_timestamp_nanos;
-        state.governance = governance_snapshot_from_observation(observation);
-        set_last_ingested(&mut state, timestamp);
-    });
-}
-
-#[cfg(any(test, debug_assertions))]
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn debug_ingest_canister_artifact_status(record: CanisterArtifactStatus) {
-    STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
-        let timestamp = record.last_checked_timestamp_nanos;
-        upsert_bounded(
-            &mut state.canister_status,
-            |record| &record.canister_name,
-            MAX_CANISTER_STATUS,
-            record,
-        );
-        set_last_ingested(&mut state, timestamp);
-    });
-}
-
-#[cfg(any(test, debug_assertions))]
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn debug_ingest_release_artifacts(records: Vec<CanisterArtifactStatus>) {
-    STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
-        for record in records {
-            upsert_bounded(
-                &mut state.release_artifacts,
-                |record| &record.canister_name,
-                MAX_ARTIFACT_STATUS,
-                record,
-            );
+        let health = state
+            .source_health
+            .iter_mut()
+            .find(|health| health.source == source)
+            .expect("known historian source");
+        health.last_attempt_timestamp_nanos = Some(now);
+        match result {
+            Ok(()) => {
+                health.freshness = ObservationFreshness::Fresh;
+                health.last_success_timestamp_nanos = Some(now);
+                health.error = None;
+            }
+            Err(error) => {
+                health.freshness = ObservationFreshness::ErrorRetryable;
+                health.error = Some(error.chars().take(512).collect());
+            }
         }
     });
 }
+
+#[cfg(target_family = "wasm")]
+async fn refresh_once() {
+    if REFRESH_ACTIVE.with(|active| active.replace(true)) {
+        return;
+    }
+    let Some(config) = STATE.with(|cell| cell.borrow().config.clone()) else {
+        REFRESH_ACTIVE.with(|active| active.set(false));
+        return;
+    };
+    let now = ic_cdk::api::time();
+    let generation = STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        state.last_attempt_timestamp_nanos = Some(now);
+        state.refresh_generation.saturating_add(1)
+    });
+
+    let protocol = adapters::protocol(&config, generation, now).await;
+    let protocol_health = protocol.as_ref().map(|_| ()).map_err(Clone::clone);
+    if let Ok(value) = protocol {
+        STATE.with(|cell| cell.borrow_mut().protocol = value);
+    }
+    update_health("protocol", now, &protocol_health);
+
+    let stream = adapters::stream(&config, now).await;
+    let stream_health = stream.as_ref().map(|_| ()).map_err(Clone::clone);
+    if let Ok(value) = stream {
+        STATE.with(|cell| cell.borrow_mut().stream = Some(value));
+    }
+    update_health("stream", now, &stream_health);
+
+    let nns = adapters::nns(&config, now).await;
+    let nns_health = nns.as_ref().map(|_| ()).map_err(Clone::clone);
+    if let Ok(value) = nns {
+        STATE.with(|cell| cell.borrow_mut().nns_manager = Some(value));
+    }
+    update_health("nns-manager", now, &nns_health);
+
+    let nns_governance = adapters::nns_governance(&config, now).await;
+    let nns_governance_health = nns_governance.as_ref().map(|_| ()).map_err(Clone::clone);
+    if let Ok(value) = nns_governance {
+        STATE.with(|cell| cell.borrow_mut().nns_governance = Some(value));
+    }
+    update_health("nns-governance", now, &nns_governance_health);
+
+    let topology = adapters::topology(&config, now).await;
+    let topology_health = topology.as_ref().map(|_| ()).map_err(Clone::clone);
+    if let Ok(value) = &topology {
+        STATE.with(|cell| cell.borrow_mut().canisters = value.canisters.clone());
+    }
+    update_health("sns-root", now, &topology_health);
+
+    let sns = adapters::sns(&config, topology.as_ref().ok(), now).await;
+    let sns_health = sns.as_ref().map(|_| ()).map_err(Clone::clone);
+    if let Ok(value) = sns {
+        STATE.with(|cell| cell.borrow_mut().sns = Some(value));
+    }
+    update_health("sns-governance", now, &sns_health);
+
+    let index = adapters::index(&config, now).await;
+    let index_health = index.as_ref().map(|_| ()).map_err(Clone::clone);
+    if let Ok(value) = index {
+        STATE.with(|cell| cell.borrow_mut().index = Some(value));
+    }
+    update_health("sns-index", now, &index_health);
+
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        state.refresh_generation = generation;
+        if state
+            .source_health
+            .iter()
+            .all(|health| health.freshness == ObservationFreshness::Fresh)
+        {
+            state.last_success_timestamp_nanos = Some(now);
+        }
+    });
+    REFRESH_ACTIVE.with(|active| active.set(false));
+    arm_refresh();
+}
+
+#[cfg(any(test, debug_assertions))]
+pub fn import_state_for_tests(state: StableState) {
+    STATE.with(|cell| *cell.borrow_mut() = state);
+}
+
+#[cfg(any(test, debug_assertions))]
+pub fn export_state_for_tests() -> StableState {
+    export_state()
+}
+
+#[cfg(any(test, debug_assertions))]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn debug_refresh_now() {
+    #[cfg(target_family = "wasm")]
+    refresh_once().await;
+}
+
+ic_cdk::export_candid!();
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use candid::{decode_one, encode_one};
-    use io_ledger_types::{AccountHistoryCursor, AccountHistoryScanStatus, BlockIndex};
-    use std::path::PathBuf;
+    use candid::Principal;
+    use io_ledger_types::Subaccount;
 
-    fn repo_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(|path| path.parent())
-            .expect("historian manifest lives under canisters/io_historian")
-            .to_path_buf()
+    fn account(seed: u8) -> io_ledger_types::Account {
+        io_ledger_types::Account::new(Principal::from_slice(&[seed]), Some(Subaccount([seed; 32])))
     }
 
-    fn read_repo(path: &str) -> String {
-        std::fs::read_to_string(repo_root().join(path)).unwrap()
-    }
-
-    fn protocol_observation() -> ProtocolObservation {
-        ProtocolObservation {
-            total_io_supply_e8s: Some(1_000),
-            protocol_reserve_io_e8s: Some(100),
-            non_redeemable_governance_io_e8s: Some(200),
-            liquid_icp_reserve_e8s: Some(350),
-            two_year_nns_principal_e8s: Some(9_999),
-            observed_at_timestamp_nanos: Some(42),
-        }
-    }
-
-    fn stream(id: u64) -> StreamHistoryRecord {
-        StreamHistoryRecord {
-            record_id: format!("stream:{id:04}"),
-            source_ledger: "icp".to_string(),
-            source_block_index: Some(id),
-            stream_kind: PublicStreamKind::JupiterFaucet,
-            amount_e8s: u128::from(id),
-            recipient_policy: PublicRecipientPolicy::JupiterFaucet,
-            io_issued_e8s: Some(u128::from(id)),
-            phase: PublicOperationPhase::Completed,
-            timestamp_nanos: Some(id),
-            memo_label: None,
-            safe_subaccount_label: None,
-            terminal_rejection_reason: None,
-        }
-    }
-
-    fn redemption(id: u64) -> RedemptionHistoryRecord {
-        RedemptionHistoryRecord {
-            record_id: format!("redemption:{id:04}"),
-            io_burn_or_transfer_block: Some(id),
-            user_account: Some("user".to_string()),
-            io_amount_e8s: u128::from(id),
-            icp_payout_amount_e8s: Some(u128::from(id)),
-            gross_icp_payout_e8s: Some(u128::from(id)),
-            icp_payout_fee_e8s: Some(0),
-            net_user_icp_payout_e8s: Some(u128::from(id)),
-            io_return_fee_e8s: Some(0),
-            icp_payout_block: Some(id + 1),
-            io_return_block: Some(id + 2),
-            phase: PublicOperationPhase::Completed,
-            timestamp_nanos: Some(id),
-            retry_count: 0,
-            retry_status: None,
-        }
-    }
-
-    fn reward(id: u64) -> RewardDistributionRecord {
-        reward_record_from_observation(
-            format!("reward:{id:04}"),
-            Some(id),
-            Some(100),
-            u128::from(id),
-            Some(0),
-            PublicOperationPhase::Completed,
-        )
-    }
-
-    #[test]
-    fn redemption_flow_observed_payout_does_not_infer_gross_net_or_fee() {
-        let record = redemption_record_from_ledger_flow(
-            ObservedLedgerFlow {
-                ledger_kind: LedgerKind::IoLedger,
-                ledger_principal_text: Some("ryjl3-tyaaa-aaaaa-aaaba-cai".to_string()),
-                block_index: 42,
-                amount_e8s: 1_000,
-                from_account: Some("user".to_string()),
-                to_account: Some("redemption".to_string()),
-                memo: Some(b"redeem".to_vec()),
-                timestamp_nanos: Some(99),
-            },
-            Some(700),
-            PublicOperationPhase::Observed,
-        );
-
-        assert_eq!(record.icp_payout_amount_e8s, Some(700));
-        assert_eq!(record.gross_icp_payout_e8s, None);
-        assert_eq!(record.icp_payout_fee_e8s, None);
-        assert_eq!(record.net_user_icp_payout_e8s, None);
-        assert_eq!(record.io_return_fee_e8s, None);
-    }
-
-    fn lifecycle(id: u64) -> NnsLifecycleSummary {
-        NnsLifecycleSummary {
-            record_id: format!("nns:{id:04}"),
-            kind: NnsLifecycleKind::TwoYearMaturityDisbursement,
-            neuron_id: Some(id),
-            amount_e8s: Some(u128::from(id)),
-            phase: PublicOperationPhase::Completed,
-            timestamp_nanos: Some(id),
-            retry_count: 0,
-            safe_error: None,
-            execution: None,
-        }
-    }
-
-    #[test]
-    fn public_dtos_candid_round_trip() {
-        let dashboard = PublicDashboardState {
-            status: get_public_status(),
-            protocol: protocol_snapshot_from_observation(protocol_observation()),
-            reserve: reserve_snapshot_from_protocol(&protocol_snapshot_from_observation(
-                protocol_observation(),
-            )),
-            supply: supply_snapshot_from_protocol(&protocol_snapshot_from_observation(
-                protocol_observation(),
-            )),
-            redemption_rate: protocol_snapshot_from_observation(protocol_observation())
-                .redemption_rate,
-            source_health: source_health_from_state(&StableState::default()),
-            index_health: vec![],
-            governance: GovernanceParticipationSnapshot::default(),
-            release_artifacts: vec![],
-            canister_status: vec![],
-        };
-        let encoded = encode_one(dashboard.clone()).unwrap();
-        let decoded: PublicDashboardState = decode_one(&encoded).unwrap();
-        assert_eq!(decoded, dashboard);
-    }
-
-    #[test]
-    fn public_status_reports_observation_model() {
-        debug_clear();
-        let status = get_public_status();
-        assert_eq!(status.schema_version, HISTORIAN_SCHEMA_VERSION);
-        assert_eq!(status.model, "public-observation-read-model");
-    }
-
-    #[test]
-    fn protocol_snapshot_complete_calculates_redeemable_supply_and_rate() {
-        let snapshot = protocol_snapshot_from_observation(protocol_observation());
-        assert_eq!(snapshot.redeemable_io_supply_e8s, Some(700));
-        assert_eq!(
-            snapshot.redemption_rate,
-            Some(RedemptionRateSnapshot {
-                liquid_icp_reserve_e8s: 350,
-                redeemable_io_supply_e8s: 700,
-                liquid_icp_per_io_e8s_numerator: 350,
-                liquid_icp_per_io_e8s_denominator: 700,
-                last_updated_timestamp_nanos: Some(42),
-            })
-        );
-    }
-
-    #[test]
-    fn protocol_snapshot_missing_total_supply_is_incomplete() {
-        let mut obs = protocol_observation();
-        obs.total_io_supply_e8s = None;
-        let snapshot = protocol_snapshot_from_observation(obs);
-        assert_eq!(snapshot.redeemable_io_supply_e8s, None);
-        assert_eq!(snapshot.redemption_rate, None);
-        assert_eq!(
-            snapshot.completeness.total_io_supply,
-            DataAvailability::Missing
-        );
-    }
-
-    #[test]
-    fn protocol_snapshot_missing_liquid_reserve_is_incomplete() {
-        let mut obs = protocol_observation();
-        obs.liquid_icp_reserve_e8s = None;
-        let snapshot = protocol_snapshot_from_observation(obs);
-        assert_eq!(snapshot.redeemable_io_supply_e8s, Some(700));
-        assert_eq!(snapshot.redemption_rate, None);
-        assert_eq!(
-            snapshot.completeness.liquid_icp_reserve,
-            DataAvailability::Missing
-        );
-    }
-
-    #[test]
-    fn zero_redeemable_supply_has_no_fake_rate() {
-        let mut obs = protocol_observation();
-        obs.total_io_supply_e8s = Some(300);
-        let snapshot = protocol_snapshot_from_observation(obs);
-        assert_eq!(snapshot.redeemable_io_supply_e8s, Some(0));
-        assert_eq!(snapshot.redemption_rate, None);
-    }
-
-    #[test]
-    fn two_year_principal_is_excluded_from_liquid_nav() {
-        let mut obs = protocol_observation();
-        obs.two_year_nns_principal_e8s = Some(1_000_000);
-        let snapshot = protocol_snapshot_from_observation(obs);
-        assert_eq!(snapshot.liquid_icp_reserve_e8s, Some(350));
-        assert_eq!(
-            snapshot.redemption_rate.unwrap().liquid_icp_reserve_e8s,
-            350
-        );
-    }
-
-    #[test]
-    fn protocol_reserve_and_governance_io_are_excluded_from_redeemable_supply() {
-        let snapshot = protocol_snapshot_from_observation(protocol_observation());
-        assert_eq!(snapshot.total_io_supply_e8s, Some(1_000));
-        assert_eq!(snapshot.protocol_reserve_io_e8s, Some(100));
-        assert_eq!(snapshot.non_redeemable_governance_io_e8s, Some(200));
-        assert_eq!(snapshot.redeemable_io_supply_e8s, Some(700));
-    }
-
-    #[test]
-    fn no_fee_or_dust_policy_is_applied_to_redemption_rate() {
-        let snapshot = protocol_snapshot_from_observation(protocol_observation());
-        let rate = snapshot.redemption_rate.unwrap();
-        assert_eq!(rate.liquid_icp_per_io_e8s_numerator, 350);
-        assert_eq!(rate.liquid_icp_per_io_e8s_denominator, 700);
-        assert_eq!(io_core_model::BPS_DENOMINATOR, 10_000);
-    }
-
-    #[test]
-    fn stream_redemption_reward_and_nns_history_are_paginated() {
-        debug_clear();
-        for id in 0..3 {
-            debug_ingest_stream_record(stream(id));
-            debug_ingest_redemption_record(redemption(id));
-            debug_ingest_reward_record(reward(id));
-            debug_ingest_nns_lifecycle(lifecycle(id));
-        }
-        let streams = list_streams(ListStreamsRequest {
-            start_after: None,
-            limit: Some(2),
-        });
-        assert_eq!(streams.records.len(), 2);
-        assert_eq!(streams.next_start_after, Some("stream:0001".to_string()));
-        assert_eq!(
-            list_streams(ListStreamsRequest {
-                start_after: streams.next_start_after,
-                limit: Some(2),
-            })
-            .records
-            .len(),
-            1
-        );
-        assert_eq!(
-            list_redemptions(ListRedemptionsRequest {
-                start_after: None,
-                limit: Some(2)
-            })
-            .records
-            .len(),
-            2
-        );
-        assert_eq!(
-            list_rewards(ListRewardsRequest {
-                start_after: None,
-                limit: Some(2)
-            })
-            .records
-            .len(),
-            2
-        );
-        assert_eq!(
-            list_nns_lifecycle_events(ListNnsLifecycleEventsRequest {
-                start_after: None,
-                limit: Some(2)
-            })
-            .records
-            .len(),
-            2
-        );
-    }
-
-    #[test]
-    fn bounded_retention_keeps_newest_deterministic_records() {
-        debug_clear();
-        for id in 0..(MAX_STREAM_HISTORY as u64 + 5) {
-            debug_ingest_stream_record(stream(id));
-        }
-        let records = list_streams(ListStreamsRequest {
-            start_after: None,
-            limit: Some(MAX_PAGE_LIMIT as u64),
-        });
-        assert_eq!(
-            get_public_status().ingestion.stream_record_count,
-            MAX_STREAM_HISTORY as u64
-        );
-        assert_eq!(
-            records.records.first().unwrap().record_id,
-            "stream:0005".to_string()
-        );
-    }
-
-    #[test]
-    fn duplicate_observations_are_deduplicated_by_record_id() {
-        debug_clear();
-        let mut first = stream(1);
-        first.amount_e8s = 10;
-        debug_ingest_stream_record(first);
-        let mut second = stream(1);
-        second.amount_e8s = 20;
-        debug_ingest_stream_record(second);
-        let records = list_streams(ListStreamsRequest {
-            start_after: None,
-            limit: Some(10),
-        });
-        assert_eq!(records.records.len(), 1);
-        assert_eq!(records.records[0].amount_e8s, 20);
-    }
-
-    #[test]
-    fn index_health_status_ingestion_maps_scan_state() {
-        debug_clear();
-        let scan = AccountHistoryScanState {
-            cursor: AccountHistoryCursor {
-                order: Some(AccountHistoryPageOrder::Descending),
-                latest_cursor: Some(BlockIndex(10)),
-                oldest_cursor: Some(BlockIndex(2)),
-                backfill_complete: true,
-            },
-            status: AccountHistoryScanStatus {
-                last_success_timestamp_nanos: Some(99),
-                latest_page_unreadable_count: 1,
-                invariant_broken_count: 2,
-                last_observed_newest_tx_id: Some(BlockIndex(11)),
-                last_observed_account_balance_e8s: Some(123),
-                num_blocks_synced: Some(BlockIndex(12)),
-                page_cap_reached: true,
-                lag_suspected: true,
-                scan_incomplete: true,
-                last_error: Some("safe".to_string()),
-                safe_to_continue: true,
-            },
-        };
-        debug_ingest_index_health(index_health_from_scan_state(
-            "icp:deposit".to_string(),
-            LedgerKind::IcpLedger,
-            "deposit".to_string(),
-            scan,
-        ));
-        let health = get_index_health();
-        assert_eq!(health[0].latest_cursor, Some(10));
-        assert_eq!(health[0].unreadable_count, 1);
-        assert_eq!(health[0].last_error, Some("safe".to_string()));
-    }
-
-    #[test]
-    fn historian_outputs_daily_entitlement_observation_without_monetary_authority() {
-        debug_clear();
-        debug_ingest_governance_snapshot(GovernanceObservation {
-            neurons: vec![
-                GovernanceNeuronObservation {
-                    neuron_id: 1,
-                    frozen_stake_e8s: 100,
-                    eligible_closed_proposals: 4,
-                    voted_closed_proposals: 2,
-                    currently_destination_eligible: true,
-                    reward_event_end_timestamp_seconds: Some(2),
-                    reward_shares: Some(50),
-                    event_credit: Some(50),
-                    accumulated_eligible_credit: Some(150),
-                },
-                GovernanceNeuronObservation {
-                    neuron_id: 2,
-                    frozen_stake_e8s: 100,
-                    eligible_closed_proposals: 4,
-                    voted_closed_proposals: 4,
-                    currently_destination_eligible: false,
-                    reward_event_end_timestamp_seconds: Some(2),
-                    reward_shares: Some(100),
-                    event_credit: None,
-                    accumulated_eligible_credit: None,
-                },
-            ],
-            proposal_epoch_start: Some(1),
-            proposal_epoch_end: Some(2),
-            counted_proposals: 4,
-            pending_nns_operation_count: Some(3),
-            nns_lifecycle_status_summary: Some("observed".to_string()),
-            observed_at_timestamp_nanos: Some(100),
-            reward_event_round: Some(4),
-            reward_event_end_timestamp_seconds: Some(2),
-            settled_proposal_count: Some(4),
-            reward_event_missed: Some(false),
-            expected_governance_module_hash: Some("expected".into()),
-            observed_governance_module_hash: Some("expected".into()),
-            reward_event_classification: Some(GovernanceRewardEventClassification::ProposalBearing),
-            daily_policy_credit: Some(1_000_000_000_000_000_000),
-            event_eligible_credit: Some(500_000_000_000_000_000),
-            event_forfeited_credit: Some(500_000_000_000_000_000),
-            current_accumulator_eligible_credit: Some(150),
-            current_accumulator_policy_credit: Some(200),
-            pending_batch_eligible_credit: Some(600),
-            pending_batch_policy_credit: Some(800),
-            pending_backing_status: Some("awaiting_receipt".into()),
-            nns_backing_readiness: Some("ready".into()),
-            missed_event_count: Some(2),
-            governance_parameters_fresh: Some(true),
-        });
-        let summary = get_governance_summary();
-        assert_eq!(summary.sns_eligible_neuron_count, 2);
-        assert_eq!(summary.total_frozen_cohort_stake_e8s, 200);
-        assert_eq!(summary.neuron_participation.len(), 2);
-        assert_eq!(summary.neuron_participation[0].participation_numerator, 50);
-        assert_eq!(summary.neuron_participation[1].participation_numerator, 100);
-        assert_eq!(summary.total_canonical_reward_shares, Some(150));
-        assert_eq!(summary.neuron_participation[0].event_credit, Some(50));
-        assert_eq!(summary.current_accumulator_eligible_credit, Some(150));
-        assert_eq!(summary.pending_batch_eligible_credit, Some(600));
-        assert_eq!(summary.missed_event_count, Some(2));
-        assert!(!summary.neuron_participation[1].currently_destination_eligible);
-        assert_eq!(
-            summary.sns_excluded_neuron_count_by_reason[0].reason,
-            "destination_ineligible"
-        );
-    }
-
-    #[test]
-    fn release_manifest_parsing_models_artifact_status() {
-        let lifecycle_manifest = io_sns_lifecycle::ArtifactManifest {
-            schema_version: 1,
-            build_profile: "release".to_string(),
-            target: "wasm32-unknown-unknown".to_string(),
-            git_commit: Some("abc".to_string()),
-            artifacts: vec![io_sns_lifecycle::ArtifactManifestEntry {
-                canister: "io_historian".to_string(),
-                raw_wasm_path: "release-artifacts/io_historian.wasm".to_string(),
-                raw_wasm_sha256: "raw".to_string(),
-                raw_wasm_bytes: 10,
-                gz_wasm_path: "release-artifacts/io_historian.wasm.gz".to_string(),
-                gz_wasm_sha256: "gz".to_string(),
-                gz_wasm_bytes: 5,
-                build_profile: "release".to_string(),
-                target: "wasm32-unknown-unknown".to_string(),
-                git_commit: Some("abc".to_string()),
+    fn config() -> ObservationConfig {
+        let principals = (10..=17)
+            .map(|seed| Principal::from_slice(&[seed]))
+            .collect::<Vec<_>>();
+        let roles = [
+            CanisterRole::StreamManager,
+            CanisterRole::NnsManager,
+            CanisterRole::SnsRoot,
+            CanisterRole::SnsGovernance,
+            CanisterRole::SnsLedger,
+            CanisterRole::SnsIndex,
+            CanisterRole::Historian,
+        ];
+        ObservationConfig {
+            stream_manager: principals[0],
+            nns_manager: principals[1],
+            sns_root: principals[2],
+            sns_governance: principals[3],
+            sns_ledger: principals[4],
+            sns_index: principals[5],
+            icp_ledger: principals[6],
+            nns_governance: principals[7],
+            reward_backing_neuron_id: 1,
+            two_year_neuron_id: 2,
+            protocol_io_reserve: account(20),
+            liquid_icp_reserve: account(21),
+            excluded_io_accounts: vec![NamedAccount {
+                name: "governance".into(),
+                account: account(22),
             }],
-        };
-        let manifest = ReleaseManifestObservation::from(&lifecycle_manifest);
-        let statuses = release_artifacts_from_manifest(&manifest, Some(7));
-        assert_eq!(statuses[0].canister_name, "io_historian");
-        assert_eq!(statuses[0].status, ArtifactMatchStatus::Unobserved);
-        assert_eq!(statuses[0].raw_wasm_sha256, Some("raw".to_string()));
-    }
-
-    #[test]
-    fn artifact_status_mismatch_modeling_is_explicit() {
-        let status = CanisterArtifactStatus {
-            canister_name: "io_historian".to_string(),
-            expected_canister_principal_text: None,
-            raw_wasm_sha256: Some("expected".to_string()),
-            gz_wasm_sha256: None,
-            artifact_byte_size: Some(1),
-            gz_artifact_byte_size: None,
-            build_profile: Some("release".to_string()),
-            target: Some("wasm32-unknown-unknown".to_string()),
-            git_commit: None,
-            observed_module_hash: None,
-            status: ArtifactMatchStatus::Unobserved,
-            last_checked_timestamp_nanos: None,
-        };
-        let observed = model_artifact_status_mismatch(status, Some("actual".to_string()), Some(9));
-        assert_eq!(observed.status, ArtifactMatchStatus::Mismatch);
-        assert_eq!(observed.last_checked_timestamp_nanos, Some(9));
-    }
-
-    #[test]
-    fn freshness_policy_reports_fresh_stale_missing_and_incomplete() {
-        let policy = staleness_policy(Some(100), true);
-        assert_eq!(
-            classify_observation_freshness(&policy, 150, Some(100), true, false),
-            ObservationFreshness::Fresh
-        );
-        assert_eq!(
-            classify_observation_freshness(&policy, 250, Some(100), true, false),
-            ObservationFreshness::Stale
-        );
-        assert_eq!(
-            classify_observation_freshness(&policy, 250, None, true, false),
-            ObservationFreshness::Missing
-        );
-        assert_eq!(
-            classify_observation_freshness(&policy, 250, Some(240), false, false),
-            ObservationFreshness::Incomplete
-        );
-    }
-
-    #[test]
-    fn freshness_policy_reports_prelaunch_retryable_and_observed_only() {
-        assert_eq!(
-            classify_observation_freshness(&prelaunch_policy(), 250, None, true, false),
-            ObservationFreshness::PrelaunchNotApplicable
-        );
-        assert_eq!(
-            classify_observation_freshness(
-                &staleness_policy(Some(100), true),
-                250,
-                Some(240),
-                true,
-                true
-            ),
-            ObservationFreshness::ErrorRetryable
-        );
-        assert_eq!(
-            classify_observation_freshness(
-                &staleness_policy(None, false),
-                250,
-                Some(240),
-                true,
-                false
-            ),
-            ObservationFreshness::ObservedOnly
-        );
-    }
-
-    #[test]
-    fn default_dashboard_source_health_is_honest_prelaunch_state() {
-        debug_clear();
-        let dashboard = get_dashboard_state();
-        assert!(dashboard.source_health.iter().any(|source| {
-            source.kind == IngestionSourceKind::SnsGovernanceFreshness
-                && source.freshness == ObservationFreshness::PrelaunchNotApplicable
-                && source.summary.contains("not launched")
-        }));
-        assert!(dashboard.source_health.iter().any(|source| {
-            source.kind == IngestionSourceKind::FutureIoSnsIndexHealth
-                && source.freshness == ObservationFreshness::PrelaunchNotApplicable
-        }));
-        assert!(dashboard.source_health.iter().any(|source| {
-            source.kind == IngestionSourceKind::ProtocolSnapshot
-                && source.freshness == ObservationFreshness::Missing
-        }));
-    }
-
-    #[test]
-    fn release_artifact_source_health_preserves_expected_hash_fields() {
-        let state = StableState {
-            release_artifacts: release_artifacts_from_manifest(
-                &ReleaseManifestObservation {
-                    schema_version: 1,
-                    build_profile: "release".to_string(),
-                    target: "wasm32-unknown-unknown".to_string(),
-                    git_commit: Some("abc".to_string()),
-                    artifacts: EXPECTED_RELEASE_ARTIFACT_CANISTERS
-                        .iter()
-                        .map(|name| ReleaseManifestArtifact {
-                            canister: (*name).to_string(),
-                            raw_wasm_path: format!("release-artifacts/{name}.wasm"),
-                            raw_wasm_sha256: format!("raw-{name}"),
-                            raw_wasm_bytes: 10,
-                            gz_wasm_path: format!("release-artifacts/{name}.wasm.gz"),
-                            gz_wasm_sha256: format!("gz-{name}"),
-                            gz_wasm_bytes: 5,
-                            build_profile: "release".to_string(),
-                            target: "wasm32-unknown-unknown".to_string(),
-                            git_commit: Some("abc".to_string()),
-                        })
-                        .collect(),
-                },
-                Some(100),
-            ),
-            last_ingested_timestamp_nanos: Some(100),
-            ..StableState::default()
-        };
-        let health = source_health_from_state_at(&state, 100);
-        let artifacts = health
-            .iter()
-            .find(|source| source.kind == IngestionSourceKind::ReleaseArtifacts)
-            .unwrap();
-        assert_eq!(artifacts.freshness, ObservationFreshness::Fresh);
-        assert!(artifacts
-            .watermark
-            .release_manifest_hash
-            .as_ref()
-            .unwrap()
-            .starts_with("gz-"));
-        assert!(artifacts.summary.contains("observed artifact manifest"));
-    }
-
-    #[test]
-    fn source_health_staleness_ages_against_explicit_current_time() {
-        let state = StableState {
-            release_artifacts: release_artifacts_from_manifest(
-                &ReleaseManifestObservation {
-                    schema_version: 1,
-                    build_profile: "release".to_string(),
-                    target: "wasm32-unknown-unknown".to_string(),
-                    git_commit: Some("abc".to_string()),
-                    artifacts: EXPECTED_RELEASE_ARTIFACT_CANISTERS
-                        .iter()
-                        .map(|name| ReleaseManifestArtifact {
-                            canister: (*name).to_string(),
-                            raw_wasm_path: format!("release-artifacts/{name}.wasm"),
-                            raw_wasm_sha256: format!("raw-{name}"),
-                            raw_wasm_bytes: 10,
-                            gz_wasm_path: format!("release-artifacts/{name}.wasm.gz"),
-                            gz_wasm_sha256: format!("gz-{name}"),
-                            gz_wasm_bytes: 5,
-                            build_profile: "release".to_string(),
-                            target: "wasm32-unknown-unknown".to_string(),
-                            git_commit: Some("abc".to_string()),
-                        })
-                        .collect(),
-                },
-                Some(100),
-            ),
-            last_ingested_timestamp_nanos: Some(100),
-            ..StableState::default()
-        };
-        let fresh_now = 100 + RELEASE_ARTIFACT_STALENESS_NANOS - 1;
-        let stale_now = 100 + RELEASE_ARTIFACT_STALENESS_NANOS + 1;
-
-        let fresh_health = source_health_from_state_at(&state, fresh_now);
-        let fresh_artifacts = fresh_health
-            .iter()
-            .find(|source| source.kind == IngestionSourceKind::ReleaseArtifacts)
-            .unwrap();
-        assert_eq!(fresh_artifacts.freshness, ObservationFreshness::Fresh);
-
-        let stale_health = source_health_from_state_at(&state, stale_now);
-        let stale_artifacts = stale_health
-            .iter()
-            .find(|source| source.kind == IngestionSourceKind::ReleaseArtifacts)
-            .unwrap();
-        assert_eq!(stale_artifacts.freshness, ObservationFreshness::Stale);
-    }
-
-    #[test]
-    fn source_health_non_ageable_states_are_not_reclassified_as_stale() {
-        let missing_health = source_health_from_state_at(&StableState::default(), u64::MAX);
-        assert_eq!(
-            missing_health
-                .iter()
-                .find(|source| source.kind == IngestionSourceKind::ProtocolSnapshot)
-                .unwrap()
-                .freshness,
-            ObservationFreshness::Missing
-        );
-        assert_eq!(
-            missing_health
-                .iter()
-                .find(|source| source.kind == IngestionSourceKind::SnsGovernanceFreshness)
-                .unwrap()
-                .freshness,
-            ObservationFreshness::PrelaunchNotApplicable
-        );
-
-        let retryable_state = StableState {
-            index_health: vec![IndexHealthSummary {
-                record_id: "icp:deposit".to_string(),
-                ledger_kind: LedgerKind::IcpLedger,
-                account_label: "deposit".to_string(),
-                latest_cursor: Some(20),
-                oldest_cursor: Some(5),
-                backfill_complete: false,
-                page_order: Some(AccountHistoryPageOrder::Descending),
-                last_success_timestamp_nanos: Some(100),
-                unreadable_count: 0,
-                invariant_broken_count: 0,
-                lag_suspected: false,
-                page_cap_reached: false,
-                scan_incomplete: false,
-                last_observed_newest_tx_id: Some(21),
-                last_observed_balance_e8s: Some(1),
-                num_blocks_synced: Some(10),
-                last_error: Some("archive required".to_string()),
+            history_accounts: vec![NamedAccount {
+                name: "reserve".into(),
+                account: account(23),
             }],
+            expected_modules: roles
+                .into_iter()
+                .enumerate()
+                .map(|(index, role)| ExpectedModule {
+                    role,
+                    canister_id: if role == CanisterRole::Historian {
+                        Principal::from_slice(&[42])
+                    } else {
+                        principals[index]
+                    },
+                    wasm_sha256: vec![index as u8; 32],
+                })
+                .collect(),
+            reward_share_capable_governance_sha256: Some(vec![3; 32]),
+            refresh_interval_seconds: 60,
+        }
+    }
+
+    #[test]
+    fn coherent_snapshot_rejects_inverted_supply() {
+        let error = coherent_protocol_snapshot(1, 10, 8, &[3], 5, 99).unwrap_err();
+        assert!(error.contains("less than"));
+    }
+
+    #[test]
+    fn coherent_snapshot_never_mixes_missing_values_or_infers_zero_rate() {
+        let zero = coherent_protocol_snapshot(1, 10, 4, &[6], 5, 99).unwrap();
+        assert_eq!(zero.redeemable_io_supply_e8s, Some(0));
+        assert_eq!(zero.redemption_rate, None);
+        assert!(!zero.completeness.redemption_rate);
+    }
+
+    #[test]
+    fn configuration_is_bounded_and_rejects_duplicates() {
+        let mut value = config();
+        assert!(validate_config(&value, Some(Principal::from_slice(&[42]))).is_ok());
+        value
+            .history_accounts
+            .push(value.history_accounts[0].clone());
+        assert!(validate_config(&value, None)
+            .unwrap_err()
+            .contains("duplicate"));
+    }
+
+    #[test]
+    fn successful_observations_age_to_stale_without_erasing_last_success() {
+        let mut state = StableState {
+            config: Some(config()),
             ..StableState::default()
         };
-        let retryable_health = source_health_from_state_at(&retryable_state, u64::MAX);
-        assert_eq!(
-            retryable_health
-                .iter()
-                .find(|source| source.kind == IngestionSourceKind::IcpIndexHealth)
-                .unwrap()
-                .freshness,
-            ObservationFreshness::ErrorRetryable
-        );
+        state.source_health[0].freshness = ObservationFreshness::Fresh;
+        state.source_health[0].last_success_timestamp_nanos = Some(10);
+        let visible = visible_source_health(&state, 120_000_000_011);
+        assert_eq!(visible[0].freshness, ObservationFreshness::Stale);
+        assert_eq!(visible[0].last_success_timestamp_nanos, Some(10));
     }
 
     #[test]
-    fn module_hash_observation_represents_match_mismatch_missing_and_unknown() {
-        let base = CanisterArtifactStatus {
-            canister_name: "frontend".to_string(),
-            expected_canister_principal_text: Some("torpp-zyaaa-aaaar-qb7xq-cai".to_string()),
-            raw_wasm_sha256: Some("expected".to_string()),
-            gz_wasm_sha256: None,
-            artifact_byte_size: None,
-            gz_artifact_byte_size: None,
-            build_profile: None,
-            target: None,
-            git_commit: None,
-            observed_module_hash: None,
-            status: ArtifactMatchStatus::Unobserved,
-            last_checked_timestamp_nanos: None,
-        };
-        assert_eq!(
-            model_artifact_status_mismatch(base.clone(), Some("expected".to_string()), Some(1))
-                .status,
-            ArtifactMatchStatus::Matching
-        );
-        assert_eq!(
-            model_artifact_status_mismatch(base.clone(), Some("actual".to_string()), Some(1))
-                .status,
-            ArtifactMatchStatus::Mismatch
-        );
-        assert_eq!(base.status, ArtifactMatchStatus::Unobserved);
-        assert_eq!(
-            model_artifact_status_mismatch(
-                CanisterArtifactStatus {
-                    raw_wasm_sha256: None,
-                    ..base
-                },
-                Some("actual".to_string()),
-                Some(1),
-            )
-            .status,
-            ArtifactMatchStatus::Unknown
-        );
-    }
-
-    #[test]
-    fn index_health_source_represents_lag_missing_and_archive_required() {
-        debug_clear();
-        let missing = get_dashboard_state()
+    fn replacing_config_clears_old_observations() {
+        import_state_for_tests(StableState {
+            protocol: coherent_protocol_snapshot(9, 100, 10, &[20], 70, 1).unwrap(),
+            ..StableState::default()
+        });
+        install_config(Some(config()));
+        let state = export_state_for_tests();
+        assert!(state.config.is_some());
+        assert_eq!(state.protocol, ProtocolSnapshot::default());
+        assert!(state
             .source_health
-            .into_iter()
-            .find(|source| source.kind == IngestionSourceKind::IcpIndexHealth)
-            .unwrap();
-        assert_eq!(missing.freshness, ObservationFreshness::Missing);
-        debug_ingest_index_health(IndexHealthSummary {
-            record_id: "icp:deposit".to_string(),
-            ledger_kind: LedgerKind::IcpLedger,
-            account_label: "deposit".to_string(),
-            latest_cursor: Some(20),
-            oldest_cursor: Some(5),
-            backfill_complete: false,
-            page_order: Some(AccountHistoryPageOrder::Descending),
-            last_success_timestamp_nanos: Some(100),
-            unreadable_count: 0,
-            invariant_broken_count: 0,
-            lag_suspected: true,
-            page_cap_reached: true,
-            scan_incomplete: true,
-            last_observed_newest_tx_id: Some(21),
-            last_observed_balance_e8s: Some(1),
-            num_blocks_synced: Some(10),
-            last_error: Some("archive required".to_string()),
-        });
-        let source = get_dashboard_state()
-            .source_health
-            .into_iter()
-            .find(|source| source.kind == IngestionSourceKind::IcpIndexHealth)
-            .unwrap();
-        assert_eq!(source.freshness, ObservationFreshness::ErrorRetryable);
-        assert_eq!(source.watermark.source_index_height, Some(21));
-        assert!(source.error_summary.unwrap().contains("index lag"));
-    }
-
-    #[test]
-    fn governance_freshness_represents_nns_observed_and_sns_not_launched() {
-        debug_clear();
-        debug_ingest_governance_snapshot(GovernanceObservation {
-            neurons: vec![GovernanceNeuronObservation {
-                neuron_id: 10,
-                frozen_stake_e8s: 100,
-                eligible_closed_proposals: 2,
-                voted_closed_proposals: 1,
-                currently_destination_eligible: true,
-                reward_event_end_timestamp_seconds: Some(20),
-                reward_shares: Some(50),
-                event_credit: Some(50),
-                accumulated_eligible_credit: Some(50),
-            }],
-            proposal_epoch_start: Some(10),
-            proposal_epoch_end: Some(20),
-            counted_proposals: 2,
-            pending_nns_operation_count: Some(0),
-            nns_lifecycle_status_summary: Some("observed".to_string()),
-            observed_at_timestamp_nanos: Some(100),
-            reward_event_round: Some(2),
-            reward_event_end_timestamp_seconds: Some(20),
-            settled_proposal_count: Some(2),
-            reward_event_missed: Some(false),
-            expected_governance_module_hash: Some("expected".into()),
-            observed_governance_module_hash: Some("expected".into()),
-            reward_event_classification: Some(GovernanceRewardEventClassification::ProposalBearing),
-            daily_policy_credit: Some(1_000_000_000_000_000_000),
-            event_eligible_credit: Some(500_000_000_000_000_000),
-            event_forfeited_credit: Some(500_000_000_000_000_000),
-            current_accumulator_eligible_credit: Some(50),
-            current_accumulator_policy_credit: Some(100),
-            pending_batch_eligible_credit: None,
-            pending_batch_policy_credit: None,
-            pending_backing_status: None,
-            nns_backing_readiness: Some("below_threshold".into()),
-            missed_event_count: Some(0),
-            governance_parameters_fresh: Some(true),
-        });
-        let health = get_dashboard_state().source_health;
-        assert_eq!(
-            health
-                .iter()
-                .find(|source| source.kind == IngestionSourceKind::NnsGovernanceFreshness)
-                .unwrap()
-                .freshness,
-            ObservationFreshness::Fresh
-        );
-        assert_eq!(
-            health
-                .iter()
-                .find(|source| source.kind == IngestionSourceKind::SnsGovernanceFreshness)
-                .unwrap()
-                .freshness,
-            ObservationFreshness::PrelaunchNotApplicable
-        );
-    }
-
-    #[test]
-    fn stable_export_import_preserves_public_state() {
-        debug_clear();
-        debug_ingest_protocol_snapshot(protocol_observation());
-        debug_ingest_stream_record(stream(1));
-        let stable = export_stable_state_for_tests();
-        debug_clear();
-        assert_eq!(get_public_status().ingestion.stream_record_count, 0);
-        import_stable_state_for_tests(stable);
-        assert_eq!(get_protocol_snapshot().redeemable_io_supply_e8s, Some(700));
-        assert_eq!(get_public_status().ingestion.stream_record_count, 1);
-    }
-
-    #[test]
-    fn upgrade_persistence_uses_stable_import_export() {
-        debug_clear();
-        debug_ingest_stream_record(stream(44));
-        let stable = export_stable_state_for_tests();
-        import_stable_state_for_tests(stable);
-        assert_eq!(
-            list_streams(ListStreamsRequest {
-                start_after: None,
-                limit: Some(10)
-            })
-            .records[0]
-                .record_id,
-            "stream:0044"
-        );
-    }
-
-    fn historian_fixture() -> StableState {
-        debug_clear();
-        debug_ingest_protocol_snapshot(protocol_observation());
-        debug_ingest_stream_record(stream(1));
-        debug_ingest_redemption_record(redemption(1));
-        debug_ingest_reward_record(reward(1));
-        debug_ingest_nns_lifecycle(lifecycle(1));
-        debug_ingest_index_health(IndexHealthSummary {
-            record_id: "icp:deposit".to_string(),
-            ledger_kind: LedgerKind::IcpLedger,
-            account_label: "deposit".to_string(),
-            latest_cursor: Some(20),
-            oldest_cursor: Some(5),
-            backfill_complete: false,
-            page_order: Some(AccountHistoryPageOrder::Descending),
-            last_success_timestamp_nanos: Some(100),
-            unreadable_count: 0,
-            invariant_broken_count: 0,
-            lag_suspected: false,
-            page_cap_reached: false,
-            scan_incomplete: false,
-            last_observed_newest_tx_id: Some(21),
-            last_observed_balance_e8s: Some(1),
-            num_blocks_synced: Some(10),
-            last_error: None,
-        });
-        export_stable_state_for_tests()
-    }
-
-    #[test]
-    fn historian_migrates_previous_stable_fixture() {
-        let mut fixture = historian_fixture();
-        fixture.schema_version = 0;
-
-        let migrated = migrate_stable_state_for_tests(fixture).unwrap();
-
-        assert_eq!(migrated.schema_version, HISTORIAN_SCHEMA_VERSION);
-        assert_eq!(migrated.streams.len(), 1);
-        assert_eq!(migrated.redemptions.len(), 1);
-        assert_eq!(migrated.rewards.len(), 1);
-        assert_eq!(migrated.nns_lifecycle.len(), 1);
-        assert_eq!(migrated.index_health.len(), 1);
-    }
-
-    #[test]
-    fn historian_v1_nonempty_governance_migrates_without_fabricated_cohort() {
-        let fixture = historian_fixture();
-        let legacy = LegacyV1StableState {
-            schema_version: 1,
-            protocol: fixture.protocol.clone(),
-            streams: fixture.streams.clone(),
-            redemptions: fixture.redemptions.clone(),
-            rewards: vec![LegacyV1RewardDistributionRecord {
-                record_id: "reward:legacy".to_string(),
-                epoch_start_timestamp_nanos: Some(10),
-                epoch_end_timestamp_nanos: Some(20),
-                participation_summary_id: Some("governance:legacy".to_string()),
-                recipient_neuron_id: Some(42),
-                recipient_account: Some("recipient".to_string()),
-                eligible_stake_e8s: Some(123),
-                reward_amount_e8s: 456,
-                dust_unissued_e8s: Some(7),
-                payout_block: Some(8),
-                status: PublicOperationPhase::Completed,
-            }],
-            nns_lifecycle: fixture.nns_lifecycle.clone(),
-            index_health: fixture.index_health.clone(),
-            governance: LegacyV1GovernanceParticipationSnapshot {
-                sns_eligible_neuron_count: 1,
-                sns_excluded_neuron_count_by_reason: Vec::new(),
-                total_eligible_stake_e8s: 123,
-                proposal_epoch_start: Some(1),
-                proposal_epoch_end: Some(2),
-                counted_proposals: 1,
-                pending_nns_operation_count: Some(3),
-                nns_lifecycle_status_summary: Some("legacy".to_string()),
-                last_governance_snapshot_timestamp_nanos: Some(4),
-                neuron_participation: vec![LegacyV1GovernanceNeuronParticipation {
-                    neuron_id: 42,
-                    eligible_stake_e8s: 123,
-                    eligible_seconds: 1_209_600,
-                    eligible_closed_proposals: 1,
-                    voted_closed_proposals: 1,
-                    participation_numerator: 123 * 1_209_600,
-                    participation_denominator: 1,
-                }],
-            },
-            release_artifacts: fixture.release_artifacts.clone(),
-            canister_status: fixture.canister_status.clone(),
-            last_ingested_timestamp_nanos: fixture.last_ingested_timestamp_nanos,
-        };
-
-        let migrated = migrate_legacy_v1_stable_state_for_tests(legacy).unwrap();
-
-        assert_eq!(migrated.schema_version, HISTORIAN_SCHEMA_VERSION);
-        assert_eq!(migrated.streams.len(), fixture.streams.len());
-        assert_eq!(migrated.redemptions.len(), fixture.redemptions.len());
-        assert_eq!(migrated.nns_lifecycle.len(), fixture.nns_lifecycle.len());
-        assert_eq!(migrated.index_health.len(), fixture.index_health.len());
-        assert_eq!(migrated.rewards.len(), 1);
-        assert_eq!(migrated.rewards[0].reward_amount_e8s, 456);
-        assert_eq!(migrated.rewards[0].dust_unissued_e8s, Some(7));
-        assert_eq!(migrated.rewards[0].payout_block, Some(8));
-        assert_eq!(migrated.rewards[0].frozen_cohort_stake_e8s, None);
-        assert!(migrated.governance.neuron_participation.is_empty());
-        assert_eq!(migrated.governance.total_frozen_cohort_stake_e8s, 0);
-    }
-
-    #[test]
-    fn historian_current_fixture_round_trips_unchanged() {
-        let fixture = historian_fixture();
-
-        assert_eq!(
-            migrate_stable_state_for_tests(fixture.clone()).unwrap(),
-            fixture
-        );
-    }
-
-    #[test]
-    fn historian_rejects_future_schema_version() {
-        let err = migrate_stable_state_for_tests(StableState {
-            schema_version: HISTORIAN_SCHEMA_VERSION + 1,
-            ..StableState::default()
-        })
-        .unwrap_err();
-
-        assert!(matches!(
-            err,
-            StableMigrationError::UnsupportedFutureVersion {
-                canister: "io_historian",
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn historian_rejects_corrupt_stable_fixture() {
-        let decoded = candid::decode_one::<StableState>(b"not candid stable state");
-
-        assert!(decoded.is_err());
-    }
-
-    #[test]
-    fn historian_missing_source_health_defaults_to_prelaunch_honest_state() {
-        let migrated = migrate_stable_state_for_tests(StableState {
-            schema_version: 0,
-            ..StableState::default()
-        })
-        .unwrap();
-        let health = source_health_from_state_at(&migrated, u64::MAX);
-
-        assert!(health.iter().any(|source| {
-            source.kind == IngestionSourceKind::SnsGovernanceFreshness
-                && source.freshness == ObservationFreshness::PrelaunchNotApplicable
-        }));
-        assert!(health.iter().any(|source| {
-            source.kind == IngestionSourceKind::ProtocolSnapshot
-                && source.freshness == ObservationFreshness::Missing
-        }));
-    }
-
-    #[test]
-    fn historian_preserves_source_health_and_bounded_histories() {
-        let fixture = historian_fixture();
-        let migrated = migrate_stable_state_for_tests(fixture).unwrap();
-        let health = source_health_from_state_at(&migrated, 100);
-
-        assert!(migrated.streams.len() <= MAX_STREAM_HISTORY);
-        assert!(migrated.redemptions.len() <= MAX_REDEMPTION_HISTORY);
-        assert!(migrated.rewards.len() <= MAX_REWARD_HISTORY);
-        assert!(migrated.nns_lifecycle.len() <= MAX_NNS_LIFECYCLE_HISTORY);
-        assert!(migrated.index_health.len() <= MAX_INDEX_HEALTH);
-        assert!(health
             .iter()
-            .any(|source| source.kind == IngestionSourceKind::IcpIndexHealth));
+            .all(|item| item.freshness == ObservationFreshness::Missing));
     }
 
     #[test]
-    fn public_did_has_no_debug_ingestion_or_unbounded_history_methods() {
-        let did = read_repo("canisters/io_historian/io_historian.did");
-        assert!(!did.contains("debug_"));
-        assert!(!did.contains("get_all"));
-        assert!(did.contains("list_streams"));
-        assert!(did.contains("ListStreamsRequest"));
+    fn same_config_preserves_observations() {
+        let config = config();
+        install_config(Some(config.clone()));
+        let protocol = coherent_protocol_snapshot(2, 100, 10, &[20], 70, 1).unwrap();
+        STATE.with(|cell| cell.borrow_mut().protocol = protocol.clone());
+        install_config(Some(config));
+        assert_eq!(export_state_for_tests().protocol, protocol);
     }
 
     #[test]
-    fn value_moving_production_dids_are_narrow_and_status_only_for_reads() {
-        let stream = read_repo("canisters/io_stream_manager/io_stream_manager.did");
-        let nns = read_repo("canisters/io_nns_neuron_manager/io_nns_neuron_manager.did");
-        for did in [&stream, &nns] {
-            assert!(did.contains("service : (InitArgs) -> {"));
-            assert!(did.contains(" get_status :"));
-            assert!(!did.contains("debug_"));
-            assert!(!did.contains(" get_state :"));
-            assert!(!did.contains(" get_events :"));
-            assert!(!did.contains(" tick :"));
-            assert!(!did.contains(" process_stream"));
-            assert!(!did.contains(" mark_complete"));
-        }
-        assert!(stream.contains(" redeem :"));
-        assert!(stream.contains(" prepare_liquid_receipt :"));
-        assert!(nns.contains(" notify_jupiter_deposit :"));
-        assert!(nns.contains(" reconcile_two_week_backing_readiness :"));
-    }
-
-    #[test]
-    fn historian_does_not_depend_on_value_moving_broad_query_apis() {
-        let source = read_repo("canisters/io_historian/src/lib.rs");
-        for forbidden in [
-            "debug_get_state",
-            "debug_get_redemption_rate",
-            "process_stream_event",
-            "get_events",
-        ] {
-            assert!(!source.contains(&format!("bounded_wait(canister, \"{forbidden}\"")));
-        }
+    fn upgrade_encoding_preserves_error_and_does_not_preserve_active_refresh() {
+        let mut state = StableState::default();
+        state.source_health[0].freshness = ObservationFreshness::ErrorRetryable;
+        state.source_health[0].error = Some("transport".into());
+        let bytes = Encode!(&state).unwrap();
+        let restored = restore_state(&bytes).unwrap();
+        assert_eq!(
+            restored.source_health[0].error.as_deref(),
+            Some("transport")
+        );
+        assert!(!get_public_status().refresh_active);
     }
 }

@@ -1,374 +1,272 @@
-import { IDL } from "@dfinity/candid";
-
 export const idlFactory = ({ IDL }) => {
-  const AccountHistoryPageOrder = IDL.Variant({ Ascending: IDL.Null, Descending: IDL.Null });
-  const ArtifactMatchStatus = IDL.Variant({ Matching: IDL.Null, Mismatch: IDL.Null, Unknown: IDL.Null, Unobserved: IDL.Null });
-  const DataAvailability = IDL.Variant({ Missing: IDL.Null, NotApplicable: IDL.Null, Observed: IDL.Null });
-  const DataCompleteness = IDL.Record({
-    liquid_icp_reserve: DataAvailability,
-    non_redeemable_governance_io: DataAvailability,
-    protocol_reserve_io: DataAvailability,
-    redeemable_io_supply: DataAvailability,
-    redemption_rate: DataAvailability,
-    total_io_supply: DataAvailability,
-    two_year_nns_principal: DataAvailability,
+  const Account = IDL.Record({
+    'owner' : IDL.Principal,
+    'subaccount' : IDL.Opt(IDL.Vec(IDL.Nat8)),
   });
-  const GovernanceExcludedCount = IDL.Record({ count: IDL.Nat64, reason: IDL.Text });
-  const GovernanceRewardEventClassification = IDL.Variant({
-    ProposalBearing: IDL.Null,
-    NoProposalFallback: IDL.Null,
-    ZeroEligibleParticipation: IDL.Null,
-    MissedSkipped: IDL.Null,
+  const CanisterRole = IDL.Variant({
+    'Historian' : IDL.Null,
+    'Frontend' : IDL.Null,
+    'SnsLedger' : IDL.Null,
+    'SnsGovernance' : IDL.Null,
+    'SnsIndex' : IDL.Null,
+    'NnsManager' : IDL.Null,
+    'StreamManager' : IDL.Null,
+    'SnsRoot' : IDL.Null,
+    'SnsSwap' : IDL.Null,
   });
-  const GovernanceNeuronParticipation = IDL.Record({
-    currently_destination_eligible: IDL.Bool,
-    eligible_closed_proposals: IDL.Nat64,
-    frozen_stake_e8s: IDL.Nat,
-    neuron_id: IDL.Nat64,
-    participation_denominator: IDL.Nat,
-    participation_numerator: IDL.Nat,
-    voted_closed_proposals: IDL.Nat64,
-    reward_event_end_timestamp_seconds: IDL.Opt(IDL.Nat64),
-    reward_shares: IDL.Opt(IDL.Nat),
-    event_credit: IDL.Opt(IDL.Nat),
-    accumulated_eligible_credit: IDL.Opt(IDL.Nat),
+  const ExpectedModule = IDL.Record({
+    'role' : CanisterRole,
+    'canister_id' : IDL.Principal,
+    'wasm_sha256' : IDL.Vec(IDL.Nat8),
   });
-  const PublicOperationPhase = IDL.Variant({
-    AwaitingIcpPayout: IDL.Null,
-    AwaitingIoIssuance: IDL.Null,
-    AwaitingIoReturn: IDL.Null,
-    Completed: IDL.Null,
-    FailedRetryable: IDL.Null,
-    FailedTerminal: IDL.Null,
-    Observed: IDL.Null,
-    PartiallyDistributed: IDL.Null,
-    Previewed: IDL.Null,
-    Unknown: IDL.Null,
+  const NamedAccount = IDL.Record({ 'name' : IDL.Text, 'account' : Account });
+  const ObservationConfig = IDL.Record({
+    'two_year_neuron_id' : IDL.Nat64,
+    'protocol_io_reserve' : Account,
+    'nns_manager' : IDL.Principal,
+    'liquid_icp_reserve' : Account,
+    'stream_manager' : IDL.Principal,
+    'reward_share_capable_governance_sha256' : IDL.Opt(IDL.Vec(IDL.Nat8)),
+    'expected_modules' : IDL.Vec(ExpectedModule),
+    'icp_ledger' : IDL.Principal,
+    'sns_root' : IDL.Principal,
+    'sns_governance' : IDL.Principal,
+    'history_accounts' : IDL.Vec(NamedAccount),
+    'sns_ledger' : IDL.Principal,
+    'sns_index' : IDL.Principal,
+    'nns_governance' : IDL.Principal,
+    'excluded_io_accounts' : IDL.Vec(NamedAccount),
+    'reward_backing_neuron_id' : IDL.Nat64,
+    'refresh_interval_seconds' : IDL.Nat64,
   });
-  const GovernanceParticipationSnapshot = IDL.Record({
-    counted_proposals: IDL.Nat64,
-    last_governance_snapshot_timestamp_nanos: IDL.Opt(IDL.Nat64),
-    neuron_participation: IDL.Vec(GovernanceNeuronParticipation),
-    nns_lifecycle_status_summary: IDL.Opt(IDL.Text),
-    pending_nns_operation_count: IDL.Opt(IDL.Nat64),
-    proposal_epoch_end: IDL.Opt(IDL.Nat64),
-    proposal_epoch_start: IDL.Opt(IDL.Nat64),
-    sns_eligible_neuron_count: IDL.Nat64,
-    sns_excluded_neuron_count_by_reason: IDL.Vec(GovernanceExcludedCount),
-    total_frozen_cohort_stake_e8s: IDL.Nat,
-    reward_event_round: IDL.Opt(IDL.Nat64),
-    reward_event_end_timestamp_seconds: IDL.Opt(IDL.Nat64),
-    settled_proposal_count: IDL.Opt(IDL.Nat64),
-    total_canonical_reward_shares: IDL.Opt(IDL.Nat),
-    reward_event_missed: IDL.Opt(IDL.Bool),
-    expected_governance_module_hash: IDL.Opt(IDL.Text),
-    observed_governance_module_hash: IDL.Opt(IDL.Text),
-    reward_event_classification: IDL.Opt(GovernanceRewardEventClassification),
-    daily_policy_credit: IDL.Opt(IDL.Nat),
-    event_eligible_credit: IDL.Opt(IDL.Nat),
-    event_forfeited_credit: IDL.Opt(IDL.Nat),
-    current_accumulator_eligible_credit: IDL.Opt(IDL.Nat),
-    current_accumulator_policy_credit: IDL.Opt(IDL.Nat),
-    pending_batch_eligible_credit: IDL.Opt(IDL.Nat),
-    pending_batch_policy_credit: IDL.Opt(IDL.Nat),
-    pending_backing_status: IDL.Opt(IDL.Text),
-    nns_backing_readiness: IDL.Opt(IDL.Text),
-    missed_event_count: IDL.Opt(IDL.Nat64),
-    governance_parameters_fresh: IDL.Opt(IDL.Bool),
+  const CapabilityState = IDL.Variant({
+    'ExpectedGovernanceModuleMatching' : IDL.Null,
+    'Unavailable' : IDL.Null,
+    'ModuleMismatch' : IDL.Null,
   });
-  const RetentionLimits = IDL.Record({
-    artifact_status: IDL.Nat64,
-    canister_status: IDL.Nat64,
-    governance_neuron_summaries: IDL.Nat64,
-    index_health: IDL.Nat64,
-    max_page_limit: IDL.Nat64,
-    nns_lifecycle_history: IDL.Nat64,
-    redemption_history: IDL.Nat64,
-    reward_history: IDL.Nat64,
-    stream_history: IDL.Nat64,
+  const SnsStatus = IDL.Record({
+    'native_initial_reward_rate_basis_points' : IDL.Opt(IDL.Nat64),
+    'settled_proposal_count' : IDL.Opt(IDL.Nat64),
+    'native_final_reward_rate_basis_points' : IDL.Opt(IDL.Nat64),
+    'reward_share_capability' : CapabilityState,
+    'max_number_of_neurons' : IDL.Opt(IDL.Nat64),
+    'observed_at_timestamp_nanos' : IDL.Nat64,
+    'latest_reward_event_end_timestamp_seconds' : IDL.Opt(IDL.Nat64),
+    'archive_canisters' : IDL.Vec(IDL.Principal),
+    'latest_reward_event_round' : IDL.Opt(IDL.Nat64),
   });
-  const HistorianIngestionStatus = IDL.Record({
-    artifact_status_count: IDL.Nat64,
-    canister_status_count: IDL.Nat64,
-    index_health_record_count: IDL.Nat64,
-    last_ingested_timestamp_nanos: IDL.Opt(IDL.Nat64),
-    nns_lifecycle_record_count: IDL.Nat64,
-    redemption_record_count: IDL.Nat64,
-    retained_record_limits: RetentionLimits,
-    reward_record_count: IDL.Nat64,
-    schema_version: IDL.Nat32,
-    stream_record_count: IDL.Nat64,
-  });
-  const LedgerKind = IDL.Variant({ IcpLedger: IDL.Null, IoLedger: IDL.Null });
-  const IndexHealthSummary = IDL.Record({
-    account_label: IDL.Text,
-    backfill_complete: IDL.Bool,
-    invariant_broken_count: IDL.Nat64,
-    lag_suspected: IDL.Bool,
-    last_error: IDL.Opt(IDL.Text),
-    last_observed_balance_e8s: IDL.Opt(IDL.Nat),
-    last_observed_newest_tx_id: IDL.Opt(IDL.Nat64),
-    last_success_timestamp_nanos: IDL.Opt(IDL.Nat64),
-    latest_cursor: IDL.Opt(IDL.Nat64),
-    ledger_kind: LedgerKind,
-    num_blocks_synced: IDL.Opt(IDL.Nat64),
-    oldest_cursor: IDL.Opt(IDL.Nat64),
-    page_cap_reached: IDL.Bool,
-    page_order: IDL.Opt(AccountHistoryPageOrder),
-    record_id: IDL.Text,
-    scan_incomplete: IDL.Bool,
-    unreadable_count: IDL.Nat64,
-  });
-  const IngestionSourceKind = IDL.Variant({
-    CanisterStatusModuleHash: IDL.Null,
-    FrontendDashboardFreshness: IDL.Null,
-    FutureIoSnsIndexHealth: IDL.Null,
-    IcpIndexHealth: IDL.Null,
-    NnsGovernanceFreshness: IDL.Null,
-    ProtocolSnapshot: IDL.Null,
-    ReleaseArtifacts: IDL.Null,
-    ReserveSnapshot: IDL.Null,
-    SnsGovernanceFreshness: IDL.Null,
-  });
-  const IngestionWatermark = IDL.Record({
-    governance_neuron_snapshot_timestamp_nanos: IDL.Opt(IDL.Nat64),
-    governance_proposal_timestamp_nanos: IDL.Opt(IDL.Nat64),
-    observed_module_hash: IDL.Opt(IDL.Text),
-    oldest_source_cursor: IDL.Opt(IDL.Nat64),
-    release_manifest_hash: IDL.Opt(IDL.Text),
-    source_block_height: IDL.Opt(IDL.Nat64),
-    source_index_height: IDL.Opt(IDL.Nat64),
-  });
-  const ListGovernanceParticipationRequest = IDL.Record({
-    limit: IDL.Opt(IDL.Nat64),
-    start_after_neuron_id: IDL.Opt(IDL.Nat64),
-  });
-  const ListGovernanceParticipationResponse = IDL.Record({
-    next_start_after_neuron_id: IDL.Opt(IDL.Nat64),
-    records: IDL.Vec(GovernanceNeuronParticipation),
-  });
-  const ListNnsLifecycleEventsRequest = IDL.Record({ limit: IDL.Opt(IDL.Nat64), start_after: IDL.Opt(IDL.Text) });
-  const NnsLifecycleKind = IDL.Variant({
-    TwoWeekPoolMergeBack: IDL.Null,
-    TwoWeekPoolRestake: IDL.Null,
-    TwoWeekPoolSplit: IDL.Null,
-    TwoWeekPoolStartDissolving: IDL.Null,
-    TwoWeekPoolStopDissolving: IDL.Null,
-    TwoWeekMaturityDisbursement: IDL.Null,
-    TwoWeekUnwindPrincipalDisbursement: IDL.Null,
-    TwoYearMaturityDisbursement: IDL.Null,
-    Unknown: IDL.Null,
-  });
-  const SimplifiedExecutionProjection = IDL.Record({
-    jupiter_phase: IDL.Opt(IDL.Text),
-    jupiter_backed_io_e8s: IDL.Opt(IDL.Nat),
-    jupiter_io_transfer_block: IDL.Opt(IDL.Nat),
-    stream_receipt_fingerprint: IDL.Opt(IDL.Vec(IDL.Nat8)),
-    pending_maturity_nominal_e8s: IDL.Opt(IDL.Nat64),
-    scheduled_finalization_timestamp_seconds: IDL.Opt(IDL.Nat64),
-    actual_minted_icp_e8s: IDL.Opt(IDL.Nat),
-    two_week_receipt_sequence: IDL.Opt(IDL.Nat64),
-    cohort_generation: IDL.Opt(IDL.Nat64),
-    cohort_closes_at_timestamp_seconds: IDL.Opt(IDL.Nat64),
-    entitlement_batch_generation: IDL.Opt(IDL.Nat64),
-    reward_recipient_index: IDL.Opt(IDL.Nat32),
-    reward_recipient_count: IDL.Opt(IDL.Nat32),
-    distributed_io_e8s: IDL.Opt(IDL.Nat),
-    forfeited_io_e8s: IDL.Opt(IDL.Nat),
-    rounding_dust_io_e8s: IDL.Opt(IDL.Nat),
-    total_dust_io_e8s: IDL.Opt(IDL.Nat),
-    under_target: IDL.Bool,
-    active_parent_principal_e8s: IDL.Opt(IDL.Nat),
-    unwinding_child_principal_e8s: IDL.Opt(IDL.Nat),
-    pending_unwind_child: IDL.Opt(IDL.Nat64),
-    paused_reason: IDL.Opt(IDL.Text),
-  });
-  const NnsLifecycleSummary = IDL.Record({
-    amount_e8s: IDL.Opt(IDL.Nat),
-    kind: NnsLifecycleKind,
-    neuron_id: IDL.Opt(IDL.Nat64),
-    phase: PublicOperationPhase,
-    record_id: IDL.Text,
-    retry_count: IDL.Nat32,
-    safe_error: IDL.Opt(IDL.Text),
-    execution: IDL.Opt(SimplifiedExecutionProjection),
-    timestamp_nanos: IDL.Opt(IDL.Nat64),
-  });
-  const ListNnsLifecycleEventsResponse = IDL.Record({
-    next_start_after: IDL.Opt(IDL.Text),
-    records: IDL.Vec(NnsLifecycleSummary),
-  });
-  const ListRedemptionsRequest = IDL.Record({ limit: IDL.Opt(IDL.Nat64), start_after: IDL.Opt(IDL.Text) });
-  const ListRewardsRequest = IDL.Record({ limit: IDL.Opt(IDL.Nat64), start_after: IDL.Opt(IDL.Text) });
-  const ListStreamsRequest = IDL.Record({ limit: IDL.Opt(IDL.Nat64), start_after: IDL.Opt(IDL.Text) });
   const RedemptionRateSnapshot = IDL.Record({
-    last_updated_timestamp_nanos: IDL.Opt(IDL.Nat64),
-    liquid_icp_per_io_e8s_denominator: IDL.Nat,
-    liquid_icp_per_io_e8s_numerator: IDL.Nat,
-    liquid_icp_reserve_e8s: IDL.Nat,
-    redeemable_io_supply_e8s: IDL.Nat,
+    'liquid_icp_e8s' : IDL.Nat,
+    'observed_at_timestamp_nanos' : IDL.Nat64,
+    'redeemable_io_e8s' : IDL.Nat,
+  });
+  const DataCompleteness = IDL.Record({
+    'liquid_icp_reserve' : IDL.Bool,
+    'excluded_io' : IDL.Bool,
+    'redeemable_io_supply' : IDL.Bool,
+    'redemption_rate' : IDL.Bool,
+    'total_io_supply' : IDL.Bool,
+    'protocol_reserve_io' : IDL.Bool,
   });
   const ProtocolSnapshot = IDL.Record({
-    completeness: DataCompleteness,
-    last_updated_timestamp_nanos: IDL.Opt(IDL.Nat64),
-    liquid_icp_reserve_e8s: IDL.Opt(IDL.Nat),
-    non_redeemable_governance_io_e8s: IDL.Opt(IDL.Nat),
-    protocol_reserve_io_e8s: IDL.Opt(IDL.Nat),
-    redeemable_io_supply_e8s: IDL.Opt(IDL.Nat),
-    redemption_rate: IDL.Opt(RedemptionRateSnapshot),
-    total_io_supply_e8s: IDL.Opt(IDL.Nat),
-    two_year_nns_principal_e8s: IDL.Opt(IDL.Nat),
+    'total_io_supply_e8s' : IDL.Opt(IDL.Nat),
+    'liquid_icp_reserve_e8s' : IDL.Opt(IDL.Nat),
+    'redeemable_io_supply_e8s' : IDL.Opt(IDL.Nat),
+    'generation' : IDL.Nat64,
+    'redemption_rate' : IDL.Opt(RedemptionRateSnapshot),
+    'protocol_reserve_io_e8s' : IDL.Opt(IDL.Nat),
+    'observed_at_timestamp_nanos' : IDL.Opt(IDL.Nat64),
+    'completeness' : DataCompleteness,
+    'excluded_io_e8s' : IDL.Opt(IDL.Nat),
   });
   const PublicStatus = IDL.Record({
-    ingestion: HistorianIngestionStatus,
-    model: IDL.Text,
-    schema_version: IDL.Nat32,
-    version: IDL.Text,
+    'last_success_timestamp_nanos' : IDL.Opt(IDL.Nat64),
+    'refresh_active' : IDL.Bool,
+    'last_attempt_timestamp_nanos' : IDL.Opt(IDL.Nat64),
+    'version' : IDL.Text,
+    'schema_version' : IDL.Nat32,
+    'refresh_generation' : IDL.Nat64,
+    'configured' : IDL.Bool,
   });
-  const PublicRecipientPolicy = IDL.Variant({ EligibleIoSnsNeurons: IDL.Null, JupiterFaucet: IDL.Null, None: IDL.Null, Unknown: IDL.Null });
-  const PublicStreamKind = IDL.Variant({ JupiterFaucet: IDL.Null, TwoWeekMaturity: IDL.Null, TwoYearMaturity: IDL.Null, UnknownIcpDeposit: IDL.Null });
-  const RedemptionHistoryRecord = IDL.Record({
-    gross_icp_payout_e8s: IDL.Opt(IDL.Nat),
-    icp_payout_amount_e8s: IDL.Opt(IDL.Nat),
-    icp_payout_block: IDL.Opt(IDL.Nat64),
-    icp_payout_fee_e8s: IDL.Opt(IDL.Nat),
-    io_amount_e8s: IDL.Nat,
-    io_burn_or_transfer_block: IDL.Opt(IDL.Nat64),
-    io_return_fee_e8s: IDL.Opt(IDL.Nat),
-    io_return_block: IDL.Opt(IDL.Nat64),
-    net_user_icp_payout_e8s: IDL.Opt(IDL.Nat),
-    phase: PublicOperationPhase,
-    record_id: IDL.Text,
-    retry_count: IDL.Nat32,
-    retry_status: IDL.Opt(IDL.Text),
-    timestamp_nanos: IDL.Opt(IDL.Nat64),
-    user_account: IDL.Opt(IDL.Text),
+  const TwoWeekTargetStatus = IDL.Variant({
+    'AtTarget' : IDL.Null,
+    'OverTarget' : IDL.Null,
+    'UnderTarget' : IDL.Null,
+    'AtTargetWithinUnwindTolerance' : IDL.Null,
   });
-  const ListRedemptionsResponse = IDL.Record({
-    next_start_after: IDL.Opt(IDL.Text),
-    records: IDL.Vec(RedemptionHistoryRecord),
+  const TwoWeekTargetObservation = IDL.Record({
+    'status' : TwoWeekTargetStatus,
+    'target_e8s' : IDL.Nat,
   });
-  const ReserveSnapshot = IDL.Record({
-    completeness: DataCompleteness,
-    last_updated_timestamp_nanos: IDL.Opt(IDL.Nat64),
-    liquid_icp_reserve_e8s: IDL.Opt(IDL.Nat),
-    two_year_nns_principal_e8s: IDL.Opt(IDL.Nat),
+  const Lifecycle = IDL.Variant({ 'Paused' : IDL.Null, 'Ready' : IDL.Null });
+  const NnsManagerStatus = IDL.Record({
+    'active_operation' : IDL.Opt(IDL.Text),
+    'latest_two_week_target' : IDL.Opt(TwoWeekTargetObservation),
+    'latest_started_two_week_generation' : IDL.Nat64,
+    'unwinding_child_principal_e8s' : IDL.Nat,
+    'latest_completed_two_week_generation' : IDL.Nat64,
+    'observed_at_timestamp_nanos' : IDL.Nat64,
+    'lifecycle' : Lifecycle,
+    'two_week_maturity_baseline_reconciled' : IDL.Bool,
   });
-  const RewardDistributionRecord = IDL.Record({
-    dust_unissued_e8s: IDL.Opt(IDL.Nat),
-    frozen_cohort_stake_e8s: IDL.Opt(IDL.Nat),
-    entitlement_weight: IDL.Opt(IDL.Nat),
-    entitlement_batch_generation: IDL.Opt(IDL.Nat64),
-    epoch_end_timestamp_nanos: IDL.Opt(IDL.Nat64),
-    epoch_start_timestamp_nanos: IDL.Opt(IDL.Nat64),
-    participation_summary_id: IDL.Opt(IDL.Text),
-    payout_block: IDL.Opt(IDL.Nat64),
-    recipient_account: IDL.Opt(IDL.Text),
-    recipient_neuron_id: IDL.Opt(IDL.Nat64),
-    record_id: IDL.Text,
-    reward_amount_e8s: IDL.Nat,
-    status: PublicOperationPhase,
+  const RewardEventId = IDL.Record({
+    'end_timestamp_seconds' : IDL.Nat64,
+    'round' : IDL.Nat64,
   });
-  const ListRewardsResponse = IDL.Record({
-    next_start_after: IDL.Opt(IDL.Text),
-    records: IDL.Vec(RewardDistributionRecord),
+  const RewardEventClassification = IDL.Variant({
+    'NoProposalFallback' : IDL.Null,
+    'ZeroEligibleParticipation' : IDL.Null,
+    'MissedSkipped' : IDL.Null,
+    'ProposalBearing' : IDL.Null,
   });
-  const StreamHistoryRecord = IDL.Record({
-    amount_e8s: IDL.Nat,
-    io_issued_e8s: IDL.Opt(IDL.Nat),
-    memo_label: IDL.Opt(IDL.Text),
-    phase: PublicOperationPhase,
-    recipient_policy: PublicRecipientPolicy,
-    record_id: IDL.Text,
-    safe_subaccount_label: IDL.Opt(IDL.Text),
-    source_block_index: IDL.Opt(IDL.Nat64),
-    source_ledger: IDL.Text,
-    stream_kind: PublicStreamKind,
-    terminal_rejection_reason: IDL.Opt(IDL.Text),
-    timestamp_nanos: IDL.Opt(IDL.Nat64),
+  const StreamStatus = IDL.Record({
+    'accumulated_policy_credit' : IDL.Nat,
+    'operation_kind' : IDL.Opt(IDL.Text),
+    'processed_reward_event_count' : IDL.Nat64,
+    'pending_entitlement_batch_policy_credit' : IDL.Opt(IDL.Nat),
+    'reward_work_due' : IDL.Bool,
+    'operation_phase' : IDL.Opt(IDL.Text),
+    'governance_parameters_fresh' : IDL.Bool,
+    'observed_at_timestamp_nanos' : IDL.Nat64,
+    'latest_processed_reward_event' : IDL.Opt(RewardEventId),
+    'lifecycle' : Lifecycle,
+    'accumulated_eligible_credit' : IDL.Nat,
+    'pending_entitlement_batch_eligible_credit' : IDL.Opt(IDL.Nat),
+    'latest_reward_event_classification' : IDL.Opt(RewardEventClassification),
+    'missed_reward_event_count' : IDL.Nat64,
+    'latest_entitlement_batch_generation' : IDL.Nat64,
+    'reward_processing_paused' : IDL.Bool,
   });
-  const ListStreamsResponse = IDL.Record({
-    next_start_after: IDL.Opt(IDL.Text),
-    records: IDL.Vec(StreamHistoryRecord),
+  const ModuleMatch = IDL.Variant({
+    'Mismatch' : IDL.Null,
+    'Matching' : IDL.Null,
+    'Unknown' : IDL.Null,
+    'Unavailable' : IDL.Null,
   });
-  const SupplySnapshot = IDL.Record({
-    completeness: DataCompleteness,
-    last_updated_timestamp_nanos: IDL.Opt(IDL.Nat64),
-    non_redeemable_governance_io_e8s: IDL.Opt(IDL.Nat),
-    protocol_reserve_io_e8s: IDL.Opt(IDL.Nat),
-    redeemable_io_supply_e8s: IDL.Opt(IDL.Nat),
-    total_io_supply_e8s: IDL.Opt(IDL.Nat),
+  const CanisterObservation = IDL.Record({
+    'controllers' : IDL.Opt(IDL.Vec(IDL.Principal)),
+    'expected_module_hash' : IDL.Vec(IDL.Nat8),
+    'role' : CanisterRole,
+    'canister_id' : IDL.Principal,
+    'observed_at_timestamp_nanos' : IDL.Nat64,
+    'observed_module_hash' : IDL.Opt(IDL.Vec(IDL.Nat8)),
+    'module_match' : ModuleMatch,
   });
-  const CanisterArtifactStatus = IDL.Record({
-    artifact_byte_size: IDL.Opt(IDL.Nat64),
-    build_profile: IDL.Opt(IDL.Text),
-    canister_name: IDL.Text,
-    expected_canister_principal_text: IDL.Opt(IDL.Text),
-    git_commit: IDL.Opt(IDL.Text),
-    gz_artifact_byte_size: IDL.Opt(IDL.Nat64),
-    gz_wasm_sha256: IDL.Opt(IDL.Text),
-    last_checked_timestamp_nanos: IDL.Opt(IDL.Nat64),
-    observed_module_hash: IDL.Opt(IDL.Text),
-    raw_wasm_sha256: IDL.Opt(IDL.Text),
-    status: ArtifactMatchStatus,
-    target: IDL.Opt(IDL.Text),
+  const RecentTransaction = IDL.Record({
+    'to' : IDL.Opt(Account),
+    'timestamp_nanos' : IDL.Nat64,
+    'block_index' : IDL.Nat,
+    'from' : IDL.Opt(Account),
+    'kind' : IDL.Text,
+    'amount_e8s' : IDL.Opt(IDL.Nat),
+  });
+  const AccountHistoryObservation = IDL.Record({
+    'index_balance_e8s' : IDL.Nat,
+    'name' : IDL.Text,
+    'oldest_transaction_id' : IDL.Opt(IDL.Nat),
+    'account' : Account,
+    'newest_transaction_id' : IDL.Opt(IDL.Nat),
+    'transactions' : IDL.Vec(RecentTransaction),
+  });
+  const IndexStatus = IDL.Record({
+    'accounts' : IDL.Vec(AccountHistoryObservation),
+    'observed_at_timestamp_nanos' : IDL.Nat64,
+    'num_blocks_synced' : IDL.Nat,
+  });
+  const NnsNeuronRole = IDL.Variant({
+    'RewardBacking' : IDL.Null,
+    'TwoYearProtected' : IDL.Null,
+  });
+  const NnsNeuronObservation = IDL.Record({
+    'dissolve_delay_seconds' : IDL.Nat64,
+    'role' : NnsNeuronRole,
+    'staked_maturity_e8s' : IDL.Opt(IDL.Nat64),
+    'state' : IDL.Int32,
+    'stake_e8s' : IDL.Nat64,
+    'neuron_id' : IDL.Nat64,
+  });
+  const NnsGovernanceStatus = IDL.Record({
+    'build_metadata' : IDL.Text,
+    'observed_at_timestamp_nanos' : IDL.Nat64,
+    'neurons' : IDL.Vec(NnsNeuronObservation),
   });
   const ObservationFreshness = IDL.Variant({
-    ErrorRetryable: IDL.Null,
-    Fresh: IDL.Null,
-    Incomplete: IDL.Null,
-    Missing: IDL.Null,
-    ObservedOnly: IDL.Null,
-    PrelaunchNotApplicable: IDL.Null,
-    Stale: IDL.Null,
-    Unknown: IDL.Null,
-  });
-  const StalenessPolicy = IDL.Record({
-    max_age_nanos: IDL.Opt(IDL.Nat64),
-    prelaunch_expected_absent: IDL.Bool,
-    required: IDL.Bool,
+    'Missing' : IDL.Null,
+    'Stale' : IDL.Null,
+    'Fresh' : IDL.Null,
+    'PrelaunchNotConfigured' : IDL.Null,
+    'ErrorRetryable' : IDL.Null,
   });
   const SourceHealth = IDL.Record({
-    error_summary: IDL.Opt(IDL.Text),
-    freshness: ObservationFreshness,
-    kind: IngestionSourceKind,
-    last_attempt_timestamp_nanos: IDL.Opt(IDL.Nat64),
-    last_success_timestamp_nanos: IDL.Opt(IDL.Nat64),
-    policy: StalenessPolicy,
-    retryable: IDL.Bool,
-    source_id: IDL.Text,
-    summary: IDL.Text,
-    watermark: IngestionWatermark,
+    'last_success_timestamp_nanos' : IDL.Opt(IDL.Nat64),
+    'freshness' : ObservationFreshness,
+    'source' : IDL.Text,
+    'last_attempt_timestamp_nanos' : IDL.Opt(IDL.Nat64),
+    'error' : IDL.Opt(IDL.Text),
   });
-  const PublicDashboardState = IDL.Record({
-    canister_status: IDL.Vec(CanisterArtifactStatus),
-    governance: GovernanceParticipationSnapshot,
-    index_health: IDL.Vec(IndexHealthSummary),
-    protocol: ProtocolSnapshot,
-    redemption_rate: IDL.Opt(RedemptionRateSnapshot),
-    release_artifacts: IDL.Vec(CanisterArtifactStatus),
-    reserve: ReserveSnapshot,
-    source_health: IDL.Vec(SourceHealth),
-    status: PublicStatus,
-    supply: SupplySnapshot,
+  const Dashboard = IDL.Record({
+    'sns' : IDL.Opt(SnsStatus),
+    'protocol' : ProtocolSnapshot,
+    'status' : PublicStatus,
+    'nns_manager' : IDL.Opt(NnsManagerStatus),
+    'stream' : IDL.Opt(StreamStatus),
+    'canisters' : IDL.Vec(CanisterObservation),
+    'index' : IDL.Opt(IndexStatus),
+    'nns_governance' : IDL.Opt(NnsGovernanceStatus),
+    'source_health' : IDL.Vec(SourceHealth),
   });
   return IDL.Service({
-    get_canister_status_summary: IDL.Func([], [IDL.Vec(CanisterArtifactStatus)], ["query"]),
-    get_dashboard_state: IDL.Func([], [PublicDashboardState], ["query"]),
-    get_governance_summary: IDL.Func([], [GovernanceParticipationSnapshot], ["query"]),
-    get_index_health: IDL.Func([], [IDL.Vec(IndexHealthSummary)], ["query"]),
-    get_protocol_snapshot: IDL.Func([], [ProtocolSnapshot], ["query"]),
-    get_public_status: IDL.Func([], [PublicStatus], ["query"]),
-    get_redemption_rate: IDL.Func([], [IDL.Opt(RedemptionRateSnapshot)], ["query"]),
-    get_release_artifacts: IDL.Func([], [IDL.Vec(CanisterArtifactStatus)], ["query"]),
-    get_reserve_snapshot: IDL.Func([], [ReserveSnapshot], ["query"]),
-    list_governance_participation: IDL.Func([ListGovernanceParticipationRequest], [ListGovernanceParticipationResponse], ["query"]),
-    list_nns_lifecycle_events: IDL.Func([ListNnsLifecycleEventsRequest], [ListNnsLifecycleEventsResponse], ["query"]),
-    list_redemptions: IDL.Func([ListRedemptionsRequest], [ListRedemptionsResponse], ["query"]),
-    list_rewards: IDL.Func([ListRewardsRequest], [ListRewardsResponse], ["query"]),
-    list_streams: IDL.Func([ListStreamsRequest], [ListStreamsResponse], ["query"]),
-    version: IDL.Func([], [IDL.Text], ["query"]),
+    'get_dashboard_state' : IDL.Func([], [Dashboard], ['query']),
+    'get_protocol_snapshot' : IDL.Func([], [ProtocolSnapshot], ['query']),
+    'get_public_status' : IDL.Func([], [PublicStatus], ['query']),
+    'get_redemption_rate' : IDL.Func(
+        [],
+        [IDL.Opt(RedemptionRateSnapshot)],
+        ['query'],
+      ),
+    'version' : IDL.Func([], [IDL.Text], ['query']),
   });
 };
-
-export const init = () => [];
+export const init = ({ IDL }) => {
+  const Account = IDL.Record({
+    'owner' : IDL.Principal,
+    'subaccount' : IDL.Opt(IDL.Vec(IDL.Nat8)),
+  });
+  const CanisterRole = IDL.Variant({
+    'Historian' : IDL.Null,
+    'Frontend' : IDL.Null,
+    'SnsLedger' : IDL.Null,
+    'SnsGovernance' : IDL.Null,
+    'SnsIndex' : IDL.Null,
+    'NnsManager' : IDL.Null,
+    'StreamManager' : IDL.Null,
+    'SnsRoot' : IDL.Null,
+    'SnsSwap' : IDL.Null,
+  });
+  const ExpectedModule = IDL.Record({
+    'role' : CanisterRole,
+    'canister_id' : IDL.Principal,
+    'wasm_sha256' : IDL.Vec(IDL.Nat8),
+  });
+  const NamedAccount = IDL.Record({ 'name' : IDL.Text, 'account' : Account });
+  const ObservationConfig = IDL.Record({
+    'two_year_neuron_id' : IDL.Nat64,
+    'protocol_io_reserve' : Account,
+    'nns_manager' : IDL.Principal,
+    'liquid_icp_reserve' : Account,
+    'stream_manager' : IDL.Principal,
+    'reward_share_capable_governance_sha256' : IDL.Opt(IDL.Vec(IDL.Nat8)),
+    'expected_modules' : IDL.Vec(ExpectedModule),
+    'icp_ledger' : IDL.Principal,
+    'sns_root' : IDL.Principal,
+    'sns_governance' : IDL.Principal,
+    'history_accounts' : IDL.Vec(NamedAccount),
+    'sns_ledger' : IDL.Principal,
+    'sns_index' : IDL.Principal,
+    'nns_governance' : IDL.Principal,
+    'excluded_io_accounts' : IDL.Vec(NamedAccount),
+    'reward_backing_neuron_id' : IDL.Nat64,
+    'refresh_interval_seconds' : IDL.Nat64,
+  });
+  return [IDL.Opt(ObservationConfig)];
+};

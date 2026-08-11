@@ -3,6 +3,9 @@ set -euo pipefail
 
 # Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.
 # signed Governance lifecycle activation and controller/upgrade proof.
+# The maintained `sns upgrade-sns-controlled-canister` command remains recorded
+# as blocked only by local chunk-store authorization; the inline proposal below
+# still follows the authentic SNS Governance -> Root execution path.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib-local-sns.sh"
 require_local_script_guard "$@"
@@ -15,16 +18,18 @@ if ! phase_is_done 14-discover-sns-canisters; then
 fi
 network_url="$(local_network_url)"
 identity="$(local_identity_name)"
-sns="$(sns_cli)"
 require_command_available od
+require_command_available didc
 root="$(sns_canister_id root)"
-stream="$(toml_string "${REHEARSAL_DIR}/local-vars.toml" local io_stream_manager_canister)"
-nns_manager="$(toml_string "${REHEARSAL_DIR}/local-vars.toml" local io_nns_neuron_manager_canister)"
-historian="$(toml_string "${REHEARSAL_DIR}/local-vars.toml" local io_historian_canister)"
+vars_file="$(local_vars_file)"
+stream="$(toml_string "$vars_file" local io_stream_manager_canister)"
+nns_manager="$(toml_string "$vars_file" local io_nns_neuron_manager_canister)"
+historian="$(toml_string "$vars_file" local io_historian_canister)"
+frontend="$(toml_string "$vars_file" local frontend_canister)"
 
 for canister in "$stream" "$nns_manager" \
   "$historian" \
-  "$(toml_string "${REHEARSAL_DIR}/local-vars.toml" local frontend_canister)"; do
+  "$frontend"; do
   info="$(dfx canister info --network "$network_url" --identity "$identity" "$canister" 2>&1)"
   printf '%s\n' "$info" >> "$log_file"
   controllers="$(printf '%s\n' "$info" | sed -n 's/^Controllers: //p' | xargs)"
@@ -36,28 +41,65 @@ done
 
 if ! phase_is_done 17-upgrade-attempted; then
   raw_hash="$(manifest_artifact_value io_historian raw_wasm_sha256)"
-  target_hash="$(manifest_artifact_value io_historian gz_wasm_sha256)"
+  payload_hash="$(manifest_artifact_value io_historian gz_wasm_sha256)"
   before_hash="$(dfx canister info --network "$network_url" --identity "$identity" "$historian" 2>&1 | sed -n 's/^Module hash: 0x//p')"
-  set +e
-  run_logged "$log_file" "$sns" --identity "$identity" --network "$network_url" \
-    upgrade-sns-controlled-canister --sns-neuron-id "$(runtime_value governance sns_neuron_subaccount_hex)" \
-    --target-canister-id "$historian" --wasm-path "${REPO_ROOT}/release-artifacts/io_historian.wasm.gz" \
-    --proposal-url 'https://forum.dfinity.org/t/io-local-rehearsal/0' \
-    --summary 'Local-only prior-to-current exact release historian upgrade through SNS Governance and Root.'
-  upgrade_status=$?
-  set -e
+  bundle_dir="${IO_LOCAL_SNS_BUNDLE_DIR:-}"
+  require_file "${bundle_dir}/manifest.toml"
+  root="$(sns_canister_id root)"
+  governance="$(sns_canister_id governance)"
+  ledger="$(sns_canister_id ledger)"
+  index="$(sns_canister_id index)"
+  swap="$(sns_canister_id swap)"
+  reserve_subaccount="$(runtime_value accounts reserve_subaccount_hex)"
+  liquid_subaccount="$(runtime_value accounts liquid_icp_subaccount_hex)"
+  fixture="${GENERATED_DIR}/nns-readiness-fixture.toml"
+  require_file "$fixture"
+  reward_backing_neuron_id="$(toml_number "$fixture" reward_backing_neuron id)"
+  two_year_neuron_id="$(toml_number "$fixture" two_year_protected_neuron id)"
+  config_file="$(mktemp "${GENERATED_DIR}/historian-observation-config.XXXXXX.did")"
+  cat > "$config_file" <<EOF
+(opt record {
+  stream_manager = principal "${stream}";
+  nns_manager = principal "${nns_manager}";
+  sns_root = principal "${root}";
+  sns_governance = principal "${governance}";
+  sns_ledger = principal "${ledger}";
+  sns_index = principal "${index}";
+  icp_ledger = principal "$(runtime_value nns icp_ledger)";
+  nns_governance = principal "$(runtime_value nns governance)";
+  reward_backing_neuron_id = ${reward_backing_neuron_id} : nat64;
+  two_year_neuron_id = ${two_year_neuron_id} : nat64;
+  protocol_io_reserve = record { owner = principal "${stream}"; subaccount = opt blob "$(hex_blob_literal "$reserve_subaccount")" };
+  liquid_icp_reserve = record { owner = principal "${stream}"; subaccount = opt blob "$(hex_blob_literal "$liquid_subaccount")" };
+  excluded_io_accounts = vec { record { name = "sns-governance"; account = record { owner = principal "${governance}"; subaccount = null } } };
+  history_accounts = vec {
+    record { name = "protocol-reserve"; account = record { owner = principal "${stream}"; subaccount = opt blob "$(hex_blob_literal "$reserve_subaccount")" } };
+    record { name = "sns-governance"; account = record { owner = principal "${governance}"; subaccount = null } };
+  };
+  expected_modules = vec {
+    record { role = variant { StreamManager }; canister_id = principal "${stream}"; wasm_sha256 = blob "$(hex_blob_literal "$(manifest_artifact_value io_stream_manager raw_wasm_sha256)")" };
+    record { role = variant { NnsManager }; canister_id = principal "${nns_manager}"; wasm_sha256 = blob "$(hex_blob_literal "$(manifest_artifact_value io_nns_neuron_manager raw_wasm_sha256)")" };
+    record { role = variant { Historian }; canister_id = principal "${historian}"; wasm_sha256 = blob "$(hex_blob_literal "$raw_hash")" };
+    record { role = variant { Frontend }; canister_id = principal "${frontend}"; wasm_sha256 = blob "$(hex_blob_literal "$(manifest_artifact_value frontend raw_wasm_sha256)")" };
+    record { role = variant { SnsGovernance }; canister_id = principal "${governance}"; wasm_sha256 = blob "$(hex_blob_literal "$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_governance_sha256)")" };
+    record { role = variant { SnsRoot }; canister_id = principal "${root}"; wasm_sha256 = blob "$(hex_blob_literal "$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_root_sha256)")" };
+    record { role = variant { SnsLedger }; canister_id = principal "${ledger}"; wasm_sha256 = blob "$(hex_blob_literal "$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_ledger_sha256)")" };
+    record { role = variant { SnsIndex }; canister_id = principal "${index}"; wasm_sha256 = blob "$(hex_blob_literal "$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_index_sha256)")" };
+    record { role = variant { SnsSwap }; canister_id = principal "${swap}"; wasm_sha256 = blob "$(hex_blob_literal "$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_swap_sha256)")" };
+  };
+  reward_share_capable_governance_sha256 = opt blob "$(hex_blob_literal "$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_governance_sha256)")";
+  refresh_interval_seconds = 60 : nat64;
+})
+EOF
+  upgrade_arg_hex="$(didc encode --defs "${REPO_ROOT}/canisters/io_historian/io_historian.did" --types '(opt ObservationConfig)' < "$config_file")"
+  inline_proposal_id="$(submit_inline_sns_upgrade "$log_file" \
+    'Upgrade and configure IO historian' \
+    'Local-only exact gzip release Wasm plus typed observation configuration through SNS Governance and Root. Inline payload avoids only the unavailable chunk-store bootstrap and remains an authentic governance proposal.' \
+    "$historian" "${REPO_ROOT}/release-artifacts/io_historian.wasm.gz" "$upgrade_arg_hex")"
+  wait_sns_proposal "$log_file" "$inline_proposal_id"
   after_hash="$(dfx canister info --network "$network_url" --identity "$identity" "$historian" 2>&1 | sed -n 's/^Module hash: 0x//p')"
-  inline_proposal_id="none"
-  if [ "$upgrade_status" -ne 0 ]; then
-    inline_proposal_id="$(submit_inline_sns_upgrade "$log_file" \
-      'Upgrade IO historian inline' \
-      'Local-only inline exact gzip release Wasm proposal through SNS Governance and Root; the inline payload avoids only the unavailable upload store and remains an authentic governance proposal.' \
-      "$historian" "${REPO_ROOT}/release-artifacts/io_historian.wasm.gz")"
-    wait_sns_proposal "$log_file" "$inline_proposal_id"
-    after_hash="$(dfx canister info --network "$network_url" --identity "$identity" "$historian" 2>&1 | sed -n 's/^Module hash: 0x//p')"
-  fi
-  if [ "$before_hash" = "$after_hash" ] || [ "$after_hash" != "$target_hash" ]; then
-    record_blocker "SNS-controlled historian upgrade did not change to the exact current release module: before=${before_hash} after=${after_hash} expected=${target_hash}"
+  if [ "$before_hash" = "$after_hash" ] || [ "$after_hash" != "$raw_hash" ]; then
+    record_blocker "SNS-controlled historian upgrade did not change to the exact current release module: before=${before_hash} after=${after_hash} expected=${raw_hash}"
     exit 2
   fi
   final_controllers="$(dfx canister info --network "$network_url" --identity "$identity" "$historian" 2>&1 | sed -n 's/^Controllers: //p' | xargs)"
@@ -65,7 +107,7 @@ if ! phase_is_done 17-upgrade-attempted; then
     record_blocker "historian controllers changed during SNS-governed upgrade: ${final_controllers}"
     exit 2
   fi
-  mark_phase_done 17-upgrade-attempted "target=${historian} cli_exit_status=${upgrade_status} proposal_id=${inline_proposal_id} before=${before_hash} payload_gzip_sha256=${target_hash} after=${after_hash} release_manifest_raw_sha256=${raw_hash} controllers=${final_controllers}; see ${log_file}"
+  mark_phase_done 17-upgrade-attempted "target=${historian} path=inline-governance-root proposal_id=${inline_proposal_id} before=${before_hash} payload_gzip_sha256=${payload_hash} after=${after_hash} release_manifest_raw_sha256=${raw_hash} typed_observation_config=true controllers=${final_controllers}; see ${log_file}"
 fi
 
 # The Candid paths cannot be derived from principals, so register each manager explicitly.
@@ -111,7 +153,7 @@ if ! phase_is_done 17-nns-activated; then
     record_blocker 'NNS manager entered Ready without the required recorded reward-backing baseline'
     exit 2
   }
-  fixture="${REHEARSAL_DIR}/generated/nns-readiness-fixture.toml"
+  fixture="${GENERATED_DIR}/nns-readiness-fixture.toml"
   require_file "$fixture"
   two_week_neuron_id="$(toml_number "$fixture" reward_backing_neuron id)"
   seeded_principal="$(toml_number "$fixture" reward_backing_neuron seeded_principal_e8s)"

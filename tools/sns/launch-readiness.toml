@@ -2,8 +2,8 @@
 # status values are "complete" or "incomplete".
 
 [source_open]
-status = "incomplete"
-evidence = "TODO: confirm final source-open package."
+status = "complete"
+evidence = "The accepted Apache-2.0 declaration is paired with the canonical LICENSE text and source-open packaging review. No inherited third-party NOTICE attribution was found; an optional project copyright-holder notice remains an explicit legal/product choice."
 
 [security_review]
 status = "incomplete"
@@ -41,13 +41,13 @@ evidence = "TODO: final fallback controller principals."
 status = "incomplete"
 evidence = "Template lists io_stream_manager, io_nns_neuron_manager, io_historian, and frontend; final IDs are placeholders."
 
-[all_upgrades_tested_via_sns_proposal]
+[sns_controlled_dapp_upgrade_path_proved]
 status = "complete"
-evidence = "The historical one-component candidate-Governance/official-Root run trapped decoding ChangeCanisterRequest with Subtyping error: unit_variant. A same-source candidate Governance/Root bundle from IC 4320fdf2e613844eabae1927b1a23b98da3a7bc6 is locally compatible. Proposal 4 changed the historian from provenance-correct prior module c7b1d636271e56108a5d7db9be15637e2b9b2d5fda3a627ddf089eabf3707d6c to the reviewed current gzip module 33bd822ede65a598cb8f14b989987e81a739decaacefa505400f2cc5187ec762 through SNS Governance and Root while preserving the sole Root controller."
+evidence = "The historical one-component candidate-Governance/official-Root unit_variant incompatibility is superseded by locally proved same-source candidate Governance/Root compatibility. Proposal 4 proved one authentic hash-changing historian upgrade through SNS Governance and Root while preserving the sole Root controller. Same-Wasm monetary-canister upgrade coverage is separate; this field does not claim every dapp revision pair was proposed."
 
 [official_reward_share_release]
 status = "incomplete"
-evidence = "Candidate Governance/Root compatibility and the reward-share capability are locally proved. Launch still requires an official reviewed SNS Governance release containing the capability, exact official Wasm/DID hash pins, and rerun official contract/io/upgrade/lifecycle evidence without substituting the local candidate."
+evidence = "Candidate Governance/Root compatibility and the reward-share capability are locally proved. The official lock rechecked on 2026-08-11 still resolves Governance revision b904c9dd1bdef8841bd12f03efbc71180a015e25, whose protobuf and DID lack latest_reward_event_participation. Launch requires a reviewed official release containing the capability, exact official Wasm/DID hash pins, and rerun official contract/io/upgrade/lifecycle evidence without substituting the local candidate."
 
 [frontend_sns_integration_tested]
 status = "incomplete"
@@ -62,5 +62,5 @@ status = "incomplete"
 evidence = "TODO: final frontend custom domain and asset strategy."
 
 [audit_package]
-status = "incomplete"
-evidence = "TODO: collect final audit and launch proposal package."
+status = "complete"
+evidence = "docs/security/audit-readiness.md indexes release identity, DIDs, schemas, ADRs, monetary invariants, ambiguity/idempotency, upgrades/timers, SNS authority, historian non-authority, local/candidate evidence, external gaps, product assumptions, and mainnet-only work. External audit remains incomplete under security_review."

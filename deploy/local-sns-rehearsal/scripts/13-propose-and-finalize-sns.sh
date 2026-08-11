@@ -30,7 +30,7 @@ fi
 require_file "${bundle_dir}/manifest.toml"
 require_file "${bundle_dir}/wasms/sns_governance.wasm.gz"
 require_file "${bundle_dir}/wasms/sns_root.wasm.gz"
-require_file "${REHEARSAL_DIR}/sns_init.local.yaml"
+sns_init="$(sns_init_file)"
 
 governance_source="$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_governance_source_commit)"
 root_source="$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_root_source_commit)"
@@ -49,12 +49,12 @@ if ! phase_is_done 13-candidate-published; then
   mark_phase_done 13-candidate-published "source=${PINNED_IC_COMMIT} governance_proposal=${governance_proposal} root_proposal=${root_proposal} exact compressed hashes verified in SNS-W"
 fi
 
-proposal_file="${REHEARSAL_DIR}/generated/create-sns-proposal.json"
+proposal_file="${GENERATED_DIR}/create-sns-proposal.json"
 nns_neuron_id="${IO_LOCAL_SNS_NNS_NEURON_ID:-11129307823670308035}"
 if ! phase_is_done 13-create-sns-proposed; then
   run_logged "$log_file" "$sns" --identity "$identity" --network "$network_url" propose \
     --neuron-id "$nns_neuron_id" --skip-confirmation --save-to "$proposal_file" \
-    "${REHEARSAL_DIR}/sns_init.local.yaml"
+    "$sns_init"
   mark_phase_done 13-create-sns-proposed "nns_neuron_id=${nns_neuron_id} proposal=${proposal_file}"
 fi
 
@@ -75,7 +75,7 @@ if [ "$metadata_ready" -ne 1 ]; then
   exit 2
 fi
 
-developer_principal="$(toml_string "${REHEARSAL_DIR}/local-vars.toml" local developer_neuron_principal)"
+developer_principal="$(toml_string "$(local_vars_file)" local developer_neuron_principal)"
 run_logged "$log_file" "$sns_testing" --network "$network_url" swap-complete \
   --sns-name 'IO Local Rehearsal' --follow-principal-neurons "$developer_principal"
 mark_phase_done 13-propose-and-finalize-sns "candidate Governance/Root SNS created and swap finalized"

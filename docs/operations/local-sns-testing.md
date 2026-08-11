@@ -1,6 +1,6 @@
 # Local SNS Testing
 
-Required CI uses SNS-shaped mock/PocketIC tests. The maintained official SNS launch rehearsal is an optional local operator layer and is not complete evidence until its committed-evidence validator passes.
+Required CI uses SNS-shaped mock/PocketIC tests. The maintained official SNS launch rehearsal is an optional local operator layer. Its immutable 2026-08-11 package is completed local evidence because all committed-evidence validators pass; it is not official release adoption or mainnet evidence.
 
 IO uses local SNS compatibility testing as an additional safety layer. It does not replace typed-operation, retry, artifact, DID, stable-state or release guardrails.
 
@@ -30,15 +30,14 @@ The official local SNS rehearsal package lives under `deploy/local-sns-rehearsal
 cargo run -p xtask -- validate_local_sns_rehearsal
 ```
 
-The optional completed-ledger evidence validator is:
+The completed-ledger evidence validator is:
 
 ```bash
 cargo run -p xtask -- validate_local_sns_ledger
 ```
 
-It skips clearly until a local rehearsal operator creates `deploy/local-sns-rehearsal/canister-ids.local.toml`.
-
-Until that evidence file is produced from a completed local rehearsal, no local SNS canister IDs are recorded and no real SNS ledger/index/governance/root behavior has been observed.
+It validates the checked-in completed inventory; absence is a failure, not a
+completion skip. New runs belong in new immutable evidence packages.
 
 Layer 4: SNS testflight.
 

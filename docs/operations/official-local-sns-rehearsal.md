@@ -41,9 +41,10 @@ flow was reproduced from the clean sibling checkout at
 `4320fdf2e613844eabae1927b1a23b98da3a7bc6`: NNS bootstrap, SNS-W candidate
 publication, CreateServiceNervousSystem, swap participation/finalization,
 canister discovery, Governance treasury funding, ledger/index evidence and
-controller handoff all succeeded locally.
+controller handoff all succeeded locally. The immutable completed sanitized
+package is `deploy/local-sns-rehearsal/evidence/2026-08-11-4320fdf/`.
 
-The committed package includes a renderable local `sns_init` candidate, per-run runtime inputs, evidence capture helpers, no-network validators, and restartable phases 12–17. Those phases verify exact IO release provenance, install Paused dapps, provision canonical staging fee floats and two source-shaped local NNS neurons, publish a reviewed Governance/Root bundle through executed local NNS Governance proposals into SNS-W, verify its exact compressed hashes, finalize and discover the SNS, submit real treasury and lifecycle proposals, exercise production redemption, and capture index/archive/controller evidence. The prior one-component candidate-Governance/official-Root `unit_variant` incompatibility is historical; same-source candidate Governance/Root compatibility is proved. If the maintained chunk-store CLI route fails before execution, phase 17 submits the exact release Wasm inline through a signed SNS Governance proposal and Root. The inline payload avoids only the unavailable upload store; it does not bypass Governance. The phase upgrades a provenance-correct prior historian to the current exact manifest artifact and requires different before/after module hashes. The phases fail closed and persist checkpoints; implemented automation is not a claim that a fresh run passed.
+The committed package includes a renderable local `sns_init` candidate, per-run runtime inputs, evidence capture helpers, no-network validators, and restartable phases 12–17. Those phases verify exact IO release provenance, install Paused dapps, provision canonical staging fee floats and two source-shaped local NNS neurons, publish a reviewed Governance/Root bundle through executed local NNS Governance proposals into SNS-W, verify its exact compressed hashes, finalize and discover the SNS, submit real treasury and lifecycle proposals, exercise production redemption, and capture index/archive/controller evidence. The prior one-component candidate-Governance/official-Root `unit_variant` incompatibility is historical; same-source candidate Governance/Root compatibility is proved. If the maintained chunk-store CLI route fails before execution, phase 17 submits the exact release Wasm inline through a signed SNS Governance proposal and Root. The inline payload avoids only the unavailable upload store; it does not bypass Governance. The phase upgrades a provenance-correct prior historian to the current exact manifest artifact and requires different before/after module hashes. The phases fail closed and persist checkpoints. The completed historical package records one clean run; the thin lifecycle source profile is separate runner coverage and does not retroactively qualify or invalidate that package.
 
 ## Manual Flow
 
@@ -67,7 +68,9 @@ cargo run -p xtask -- validate_local_sns_ledger
 
 The second command checks only the recorded local evidence file. It does not call canisters.
 
-`validate_local_sns_ledger` validates the committed completed local evidence. A future replacement must come from another complete canonical run and update the immutable package in the same reviewed change.
+`validate_local_sns_ledger` validates the committed completed local evidence. A
+later run must create a new immutable evidence directory; it must not overwrite
+the 2026-08-11 package or relabel it as evidence for later source commits.
 
 ## Ledger Assumptions to Prove Manually
 
@@ -102,7 +105,14 @@ The local rehearsal must prove:
 
 ## What Remains Unproven
 
-Restart-safe local logs prove same-source candidate Governance/Root compatibility, authentic inline SNS-controlled dapp upgrade execution, Governance-authorized stream activation, production ICRC-2 redemption, canonical ledger/index histories, and one exact proposal-bearing daily reward event. They are not yet a completed sanitized committed package. The implemented source-shaped NNS fixture and hash-changing historian path require one fresh clean run before their observations can replace the earlier Paused/same-Wasm evidence.
+The completed package proves same-source candidate Governance/Root compatibility,
+authentic inline SNS-controlled hash-changing historian upgrade,
+Governance-authorized stream and NNS-manager activation using the source-shaped
+local NNS fixture, production ICRC-2 redemption, canonical ledger/index
+histories, and one exact proposal-bearing daily reward event. Production
+historian canonical-source convergence belongs in a new immutable monitoring
+package because it changes the historian release bytes; it must not rewrite the
+completed package.
 
 This rehearsal does not prove final SNS launch readiness, mainnet NNS proposal acceptance, final tokenomics, final fallback controllers, production adapter activation, archive traversal completeness, or external audit readiness.
 

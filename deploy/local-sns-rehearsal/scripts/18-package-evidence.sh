@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.
-# Packages the immutable completed evidence inventory from successful canonical phases.
+# Packages only completed canonical phase output. It performs no canister call.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib-local-sns.sh"
 require_local_script_guard "$@"
@@ -16,13 +16,125 @@ for phase in 13-propose-and-finalize-sns 14-discover-sns-canisters \
   fi
 done
 
-official_commit="${IO_LOCAL_SNS_OFFICIAL_IC_COMMIT:-4320fdf2e613844eabae1927b1a23b98da3a7bc6}"
+require_command_available jq
+require_command_available sha256sum
+release_manifest="${REPO_ROOT}/release-artifacts/manifest.json"
+bundle_dir="${IO_LOCAL_SNS_BUNDLE_DIR:?IO_LOCAL_SNS_BUNDLE_DIR is required}"
+bundle_manifest="${bundle_dir}/manifest.toml"
+source_evidence="${IO_LOCAL_SNS_CANISTER_EVIDENCE_FILE:-${REHEARSAL_DIR}/canister-ids.local.toml}"
+reward_log="$(phase_log_file 17-observe-one-day-reward)"
+for required in "$release_manifest" "$bundle_manifest" "$source_evidence" "$reward_log"; do
+  require_file "$required"
+done
+
+official_commit="${IO_LOCAL_SNS_OFFICIAL_IC_COMMIT:-${PINNED_IC_COMMIT}}"
+source_commit="$(jq -er '.git_commit' "$release_manifest")"
+artifact_commit="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 short_commit="${official_commit:0:7}"
 evidence_date="${IO_LOCAL_SNS_EVIDENCE_DATE:-$(date -u +%F)}"
-package_dir="${REHEARSAL_DIR}/evidence/${evidence_date}-${short_commit}"
+output_root="${IO_LOCAL_SNS_EVIDENCE_OUTPUT_ROOT:-${REHEARSAL_DIR}/evidence}"
+package_dir="${output_root}/${evidence_date}-${short_commit}-monitoring"
+if [ -e "$package_dir" ]; then
+  record_blocker "refusing to overwrite immutable evidence package ${package_dir}"
+  exit 2
+fi
 mkdir -p "$package_dir"
-cp "${REHEARSAL_DIR}/canister-ids.local.toml" "${package_dir}/canister-ids.local.toml"
-cp "${REHEARSAL_DIR}/sns_init.local.yaml" "${package_dir}/sns_init.local.yaml"
+cp "$source_evidence" "${package_dir}/canister-ids.local.toml"
+cp "$(sns_init_file)" "${package_dir}/sns_init.local.yaml"
+cp "$reward_log" "${package_dir}/historian-dashboard.log"
+
+manifest_value() {
+  local canister="$1"
+  local key="$2"
+  jq -er --arg canister "$canister" --arg key "$key" \
+    '.artifacts[] | select(.canister == $canister) | .[$key]' "$release_manifest"
+}
+
+phase_value() {
+  local phase="$1"
+  local key="$2"
+  sed -n "s/.*${key}=\([^ ;]*\).*/\1/p" "$(phase_done_file "$phase")" | head -1
+}
+
+governance_raw="$(toml_string "$bundle_manifest" artifacts sns_governance_sha256)"
+governance_gzip="$(toml_string "$bundle_manifest" artifacts sns_governance_source_sha256)"
+governance_did="$(toml_string "$bundle_manifest" contract governance_did_sha256)"
+root_raw="$(toml_string "$bundle_manifest" artifacts sns_root_sha256)"
+root_gzip="$(toml_string "$bundle_manifest" artifacts sns_root_source_sha256)"
+root_did="$(toml_string "$bundle_manifest" contract root_did_sha256)"
+historian_raw="$(manifest_value io_historian raw_wasm_sha256)"
+historian_gzip="$(manifest_value io_historian gz_wasm_sha256)"
+historian_before="$(phase_value 17-upgrade-attempted before)"
+upgrade_proposal="$(phase_value 17-upgrade-attempted proposal_id)"
+
+update_toml_value() {
+  local file="$1" section="$2" key="$3" value="$4" kind="$5"
+  local temporary="${file}.tmp"
+  awk -v wanted="[${section}]" -v key="$key" -v value="$value" -v kind="$kind" '
+    $0 == wanted { active = 1; print; next }
+    /^\[/ { active = 0 }
+    active && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+      if (kind == "string") print key " = \"" value "\"";
+      else print key " = " value;
+      found = 1;
+      next
+    }
+    { print }
+    END { if (!found) exit 2 }
+  ' "$file" > "$temporary" || {
+    rm -f "$temporary"
+    record_blocker "cannot update evidence field [${section}].${key}"
+    exit 2
+  }
+  mv "$temporary" "$file"
+}
+
+packaged_ids="${package_dir}/canister-ids.local.toml"
+for entry in \
+  "io_release_source_commit:${source_commit}" \
+  "io_artifact_recording_commit:${artifact_commit}" \
+  "sns_governance_raw_sha256:${governance_raw}" \
+  "sns_root_raw_sha256:${root_raw}" \
+  "historian_before_module_sha256:${historian_before}" \
+  "historian_payload_gzip_sha256:${historian_gzip}" \
+  "historian_release_raw_sha256:${historian_raw}"; do
+  update_toml_value "$packaged_ids" provenance "${entry%%:*}" "${entry#*:}" string
+done
+for entry in \
+  "module_upgrade:${upgrade_proposal}" \
+  "stream_function_registration:$(phase_value 17-stream-function-registered proposal_id)" \
+  "stream_activation:$(phase_value 17-stream-activated proposal_id)" \
+  "nns_function_registration:$(phase_value 17-nns-function-registered proposal_id)" \
+  "nns_activation:$(phase_value 17-nns-activated proposal_id)" \
+  "reward_motion:$(phase_value 17-one-day-reward-observed proposal_id)"; do
+  update_toml_value "$packaged_ids" proposals "${entry%%:*}" "${entry#*:}" number
+done
+update_toml_value "$packaged_ids" reward event_round \
+  "$(phase_value 17-one-day-reward-observed event_round)" number
+update_toml_value "$packaged_ids" readiness reward_backing_neuron_id \
+  "$(toml_number "${GENERATED_DIR}/nns-readiness-fixture.toml" reward_backing_neuron id)" number
+update_toml_value "$packaged_ids" readiness two_year_neuron_id \
+  "$(toml_number "${GENERATED_DIR}/nns-readiness-fixture.toml" two_year_protected_neuron id)" number
+
+discovery="${GENERATED_DIR}/sns-canisters.json"
+require_file "$discovery"
+for role in root governance ledger index swap; do
+  observed="$(jq -er --arg role "$role" '.[$role].canister_id' "$discovery")"
+  recorded="$(toml_string "$packaged_ids" sns_canisters "$role")"
+  [ "$recorded" = "$observed" ] || {
+    record_blocker "packaged SNS ${role} ${recorded} differs from canonical run ${observed}"
+    exit 2
+  }
+done
+for role in io_stream_manager io_nns_neuron_manager io_historian frontend; do
+  recorded="$(toml_string "$packaged_ids" io_dapp_canisters "$role")"
+  local_key="${role}_canister"
+  observed="$(toml_string "$(local_vars_file)" local "$local_key")"
+  [ "$recorded" = "$observed" ] || {
+    record_blocker "packaged dapp ${role} ${recorded} differs from canonical run ${observed}"
+    exit 2
+  }
+done
 
 cat > "${package_dir}/manifest.toml" <<EOF
 [provenance]
@@ -30,114 +142,147 @@ official_ic_repository = "dfinity/ic"
 official_ic_source_commit = "${official_commit}"
 sns_testing_source_path = "rs/sns/testing"
 complete = true
-io_release_source_commit = "e34edb67abe7aa5b7df723c6dec476f05c79d887"
-io_artifact_recording_commit = "09300ac1b8bba7b56bcc023de034efca4d3054cf"
+monitoring = true
+io_release_source_commit = "${source_commit}"
+io_artifact_recording_commit = "${artifact_commit}"
 EOF
 
+cat > "${package_dir}/release-evidence.toml" <<EOF
+[release]
+source_commit = "${source_commit}"
+artifact_recording_commit = "${artifact_commit}"
+manifest_sha256 = "$(sha256sum "$release_manifest" | awk '{print $1}')"
+
+[io_stream_manager]
+raw_wasm_sha256 = "$(manifest_value io_stream_manager raw_wasm_sha256)"
+gzip_wasm_sha256 = "$(manifest_value io_stream_manager gz_wasm_sha256)"
+
+[io_nns_neuron_manager]
+raw_wasm_sha256 = "$(manifest_value io_nns_neuron_manager raw_wasm_sha256)"
+gzip_wasm_sha256 = "$(manifest_value io_nns_neuron_manager gz_wasm_sha256)"
+
+[io_historian]
+raw_wasm_sha256 = "${historian_raw}"
+gzip_wasm_sha256 = "${historian_gzip}"
+
+[io_frontend]
+raw_wasm_sha256 = "$(manifest_value frontend raw_wasm_sha256)"
+gzip_wasm_sha256 = "$(manifest_value frontend gz_wasm_sha256)"
+EOF
+
+dfx_bin="$(command -v dfx)"
+pocket_ic_bin="${POCKET_IC_BIN:?POCKET_IC_BIN is required for completed evidence}"
+sns_bin="$(sns_cli)"
+sns_testing_bin="$(sns_testing_cli)"
+sns_testing_init_bin="$(official_checkout)/bazel-bin/rs/sns/testing/sns-testing-init"
 cat > "${package_dir}/toolchain-provenance.toml" <<EOF
 [tools]
-dfx_version = "dfx 0.31.0"
-dfx_sha256 = "99728285e3672be4fba71f8d81a6c9484d3e5dc08b973c36ddd577e92ab6caf9"
+dfx_version = "$(dfx --version)"
+dfx_sha256 = "$(sha256sum "$dfx_bin" | awk '{print $1}')"
 pocket_ic_version = "pocket-ic-server 14.0.0"
-pocket_ic_sha256 = "f5009e61bcbff297435a67a8ef9fc02178ebb9ab3ee1ec3ac81f4fc3d49319c4"
-sns_cli_version = "source-built 4320fdf2e613"
-sns_cli_sha256 = "2f4777ba3fe90e46cbfecafc285d178833ceed5966fe1ede1b58db2aa71b5ed6"
-sns_testing_init_version = "source-built 4320fdf2e613"
-sns_testing_init_sha256 = "95bb2fee0f291759c2dd21dd7763562ac7a17b39693b838d34db9fc71203dc6f"
-sns_testing_version = "source-built 4320fdf2e613"
-sns_testing_sha256 = "5c0736bb1b90e57ebaeee609adae65d770e87dd75206ed00450cbc950150876e"
+pocket_ic_sha256 = "$(sha256sum "$pocket_ic_bin" | awk '{print $1}')"
+sns_cli_version = "source-built ${short_commit}"
+sns_cli_sha256 = "$(sha256sum "$sns_bin" | awk '{print $1}')"
+sns_testing_init_version = "source-built ${short_commit}"
+sns_testing_init_sha256 = "$(sha256sum "$sns_testing_init_bin" | awk '{print $1}')"
+sns_testing_version = "source-built ${short_commit}"
+sns_testing_sha256 = "$(sha256sum "$sns_testing_bin" | awk '{print $1}')"
 EOF
 
-cat > "${package_dir}/reserve-funding-evidence.toml" <<'EOF'
+reserve_proposal="$(phase_value 15-reserve-funded proposal_id)"
+cat > "${package_dir}/reserve-funding-evidence.toml" <<EOF
 [reserve]
-proposal_id = 2
+proposal_id = ${reserve_proposal}
 proposal_adopted = true
 proposal_executed = true
-treasury_transfer_amount_e8s = 10000000000
-transfer_fee_e8s = 10000
-reserve_owner = "lxzze-o7777-77777-aaaaa-cai"
-reserve_subaccount_hex = "0101010101010101010101010101010101010101010101010101010101010101"
-final_balance_e8s = 10020000000
-final_total_supply_e8s = 99999999930000
+treasury_transfer_amount_e8s = $(toml_number "$source_evidence" ledger reserve_funding_e8s)
+transfer_fee_e8s = $(toml_number "$source_evidence" ledger transaction_fee_e8s)
+reserve_owner = "$(toml_string "$source_evidence" io_dapp_canisters io_stream_manager)"
+reserve_subaccount_hex = "$(runtime_value accounts reserve_subaccount_hex)"
+final_balance_e8s = $(toml_number "$source_evidence" ledger final_reserve_balance_e8s)
+final_total_supply_e8s = $(toml_number "$source_evidence" ledger final_total_supply_e8s)
 EOF
 
-cat > "${package_dir}/ledger-evidence.toml" <<'EOF'
+cat > "${package_dir}/ledger-evidence.toml" <<EOF
 [ledger]
-ledger_canister = "75lp5-u7777-77776-qaaba-cai"
-index_canister = "7pnye-yp777-77776-qaaca-cai"
-token_symbol = "IOLO"
-fee_e8s = 10000
-duplicate_block = 8
-approval_block = 9
-redemption_io_block = 10
-redemption_icp_block = 14
-io_amount_e8s = 20000000
-gross_icp_e8s = 20002000
-net_icp_e8s = 19992000
+ledger_canister = "$(toml_string "$source_evidence" sns_canisters ledger)"
+index_canister = "$(toml_string "$source_evidence" sns_canisters index)"
+token_symbol = "$(toml_string "$source_evidence" ledger token_symbol)"
+fee_e8s = $(toml_number "$source_evidence" ledger transaction_fee_e8s)
+duplicate_block = $(toml_number "$source_evidence" ledger duplicate_transfer_block)
+approval_block = $(toml_number "$source_evidence" ledger approval_block)
+redemption_io_block = $(toml_number "$source_evidence" ledger io_redemption_block)
+redemption_icp_block = $(toml_number "$source_evidence" ledger icp_payout_block)
+io_amount_e8s = $(toml_number "$source_evidence" ledger redemption_io_e8s)
+gross_icp_e8s = $(toml_number "$source_evidence" ledger gross_icp_e8s)
+net_icp_e8s = $(toml_number "$source_evidence" ledger net_icp_e8s)
 identical_replay = true
 bad_fee = true
 insufficient_funds = true
-index_synced_blocks = 11
+index_synced_blocks = $(toml_number "$source_evidence" ledger io_redemption_block)
 reserve_history = true
 operator_history = true
 EOF
 
-cat > "${package_dir}/governance-evidence.toml" <<'EOF'
+fixture="${GENERATED_DIR}/nns-readiness-fixture.toml"
+require_file "$fixture"
+cat > "${package_dir}/governance-evidence.toml" <<EOF
 [candidate]
-ic_commit = "4320fdf2e613844eabae1927b1a23b98da3a7bc6"
-governance_raw_sha256 = "49596e00f70089e4913b346e393505cbc551aa649a6c60a5cc2a1a8a3b9d55ad"
-governance_source_gzip_sha256 = "e63bfd476bd57849fd0c8c1012bade227264ab079e9ebc61795b969e16df0aa4"
-governance_did_sha256 = "9bfda07d26967c79770e42a074c7909899a32472cdde7e7f3f9b075e7b07f335"
-root_raw_sha256 = "478f40f75040e32b6c330f5ea1ecdd44becc3013584c65cf47e14735d1cb1dab"
-root_source_gzip_sha256 = "5ac775af7485e8cb20bd49dd368a2a21f86e174a6bbab8c1e7278babeae06f83"
-root_did_sha256 = "9867bfe913aa17d42d891c22187273e643eedb3ec8e4b3af4b894e74945d5806"
-nns_governance_publication_proposal = 1
-nns_root_publication_proposal = 2
-create_sns_proposal = 3
+ic_commit = "${official_commit}"
+governance_raw_sha256 = "${governance_raw}"
+governance_source_gzip_sha256 = "${governance_gzip}"
+governance_did_sha256 = "${governance_did}"
+root_raw_sha256 = "${root_raw}"
+root_source_gzip_sha256 = "${root_gzip}"
+root_did_sha256 = "${root_did}"
+nns_governance_publication_proposal = $(phase_value 13-candidate-published governance_proposal)
+nns_root_publication_proposal = $(phase_value 13-candidate-published root_proposal)
+create_sns_proposal = $(toml_number "$source_evidence" proposals create_sns)
 
 [upgrade]
-target = "lz3um-vp777-77777-aaaba-cai"
-proposal_id = 4
-before_module_sha256 = "c7b1d636271e56108a5d7db9be15637e2b9b2d5fda3a627ddf089eabf3707d6c"
-payload_gzip_sha256 = "33bd822ede65a598cb8f14b989987e81a739decaacefa505400f2cc5187ec762"
-release_raw_sha256 = "ebe13026507bc137f3bdf8865c598b4fdbf0da094bd444840ace7d6af72a8dca"
+target = "$(toml_string "$(local_vars_file)" local io_historian_canister)"
+proposal_id = ${upgrade_proposal}
+before_module_sha256 = "${historian_before}"
+payload_gzip_sha256 = "${historian_gzip}"
+release_raw_sha256 = "${historian_raw}"
 executed = true
 
 [lifecycle]
-stream_function_id = 1000
-stream_registration_proposal = 5
-stream_activation_proposal = 6
-nns_function_id = 1001
-nns_registration_proposal = 7
-nns_activation_proposal = 8
+stream_function_id = $(phase_value 17-stream-function-registered function_id)
+stream_registration_proposal = $(phase_value 17-stream-function-registered proposal_id)
+stream_activation_proposal = $(phase_value 17-stream-activated proposal_id)
+nns_function_id = $(phase_value 17-nns-function-registered function_id)
+nns_registration_proposal = $(phase_value 17-nns-function-registered proposal_id)
+nns_activation_proposal = $(phase_value 17-nns-activated proposal_id)
 stream_ready = true
 nns_manager_ready = true
 two_week_baseline_reconciled = true
-reward_backing_neuron_id = 15433193351402456744
-two_year_neuron_id = 18261782480786375607
-seeded_principal_e8s = 100000000
-dissolve_delay_seconds = 252460800
-jupiter_staging_e8s = 20000
-two_week_staging_e8s = 10000
+reward_backing_neuron_id = $(toml_number "$fixture" reward_backing_neuron id)
+two_year_neuron_id = $(toml_number "$fixture" two_year_protected_neuron id)
+seeded_principal_e8s = $(toml_number "$fixture" reward_backing_neuron seeded_principal_e8s)
+dissolve_delay_seconds = $(toml_number "$fixture" reward_backing_neuron dissolve_delay_seconds)
+jupiter_staging_e8s = $(phase_value 17-nns-activated jupiter_staging_e8s)
+two_week_staging_e8s = $(phase_value 17-nns-activated two_week_staging_e8s)
 
 [reward]
-proposal_id = 9
-event_round = 1
+proposal_id = $(phase_value 17-one-day-reward-observed proposal_id)
+event_round = $(phase_value 17-one-day-reward-observed event_round)
 classification = "ProposalBearing"
 reward_shares_observed = true
 processed_count = 1
-eligible_credit = 333333332888888888
+eligible_credit = $(toml_number "$source_evidence" reward eligible_credit)
 policy_credit = 1000000000000000000
 EOF
 
-cat > "${package_dir}/controller-evidence.toml" <<'EOF'
+root="$(toml_string "$source_evidence" sns_canisters root)"
+cat > "${package_dir}/controller-evidence.toml" <<EOF
 [controllers]
-sns_root = "7tjcv-pp777-77776-qaaaa-cai"
-io_stream_manager = "7tjcv-pp777-77776-qaaaa-cai"
-io_nns_neuron_manager = "7tjcv-pp777-77776-qaaaa-cai"
-io_historian_before = "7tjcv-pp777-77776-qaaaa-cai"
-io_historian_after = "7tjcv-pp777-77776-qaaaa-cai"
-frontend = "7tjcv-pp777-77776-qaaaa-cai"
+sns_root = "${root}"
+io_stream_manager = "${root}"
+io_nns_neuron_manager = "${root}"
+io_historian_before = "${root}"
+io_historian_after = "${root}"
+frontend = "${root}"
 EOF
 
 cat > "${package_dir}/archive-evidence.toml" <<'EOF'
@@ -150,13 +295,14 @@ observation_consistent = true
 EOF
 
 : > "${package_dir}/commands.log"
-for log in "${REHEARSAL_DIR}"/generated/logs/*.log; do
+for log in "${GENERATED_DIR}"/logs/*.log; do
   printf 'log=%s\n' "$(basename "$log")" >> "${package_dir}/commands.log"
   grep -E '^(command:|exit_status=)' "$log" >> "${package_dir}/commands.log" || true
 done
 
-(cd "$package_dir" && sha256sum manifest.toml toolchain-provenance.toml sns_init.local.yaml \
-  canister-ids.local.toml reserve-funding-evidence.toml ledger-evidence.toml \
-  governance-evidence.toml controller-evidence.toml archive-evidence.toml commands.log \
+(cd "$package_dir" && sha256sum manifest.toml release-evidence.toml \
+  toolchain-provenance.toml sns_init.local.yaml canister-ids.local.toml \
+  reserve-funding-evidence.toml ledger-evidence.toml governance-evidence.toml \
+  controller-evidence.toml archive-evidence.toml historian-dashboard.log commands.log \
   > SHA256SUMS)
-printf 'wrote completed sanitized evidence package: %s\n' "$package_dir"
+printf 'wrote completed sanitized monitoring evidence package: %s\n' "$package_dir"

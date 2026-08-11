@@ -4,9 +4,9 @@ set -euo pipefail
 source_commit="${1:?usage: verify-release-from-source <exact-source-commit>}"
 io_root="$(git rev-parse --show-toplevel)"
 cd "${io_root}"
+source "${io_root}/tools/scripts/release-build-temp-root"
 
-temp_base="/home/codexdev/.codex-io/release-builds"
-mkdir -p "${temp_base}"
+temp_base="$(release_build_temp_root)"
 verification_root="$(mktemp -d "${temp_base}/verify-release.XXXXXXXX")"
 cleanup() {
   rm -rf "${verification_root}"

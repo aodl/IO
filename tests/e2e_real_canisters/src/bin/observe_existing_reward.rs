@@ -3,7 +3,7 @@ use e2e_real_canisters::sns_governance_setup::{ListNeurons, ListNeuronsResponse}
 use io_governance_types::SnsRewardEvent;
 use io_stream_manager::{ApiError, RewardEventObservation, Status};
 use pocket_ic::PocketIc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn required(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("{name} must be set"))
@@ -23,6 +23,20 @@ fn main() {
             .expect("invalid IO_POCKET_IC_INSTANCE_ID"),
         Some(300_000),
     );
+    if std::env::var_os("IO_LOCAL_ASSERT_FRESH_HOST_TIME_ONLY").is_some() {
+        let pocket_nanos = pic.get_time().as_nanos_since_unix_epoch();
+        let host_nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("host time predates the Unix epoch")
+            .as_nanos() as u64;
+        let drift = pocket_nanos.abs_diff(host_nanos);
+        assert!(
+            drift <= 300_000_000_000,
+            "fresh lifecycle topology time differs from host time by more than 300 seconds: pocket={pocket_nanos} host={host_nanos}"
+        );
+        println!("fresh_topology_time_drift_nanos={drift}");
+        return;
+    }
     let governance = principal("IO_LOCAL_SNS_GOVERNANCE_ID");
     let stream = principal("IO_LOCAL_STREAM_MANAGER_ID");
     let caller = Principal::anonymous();
@@ -116,4 +130,69 @@ fn main() {
     )
     .expect("decode stream status");
     println!("stream_status_after={after:#?}");
+
+    if let Ok(historian) = std::env::var("IO_LOCAL_HISTORIAN_ID") {
+        let historian = Principal::from_text(historian).expect("invalid IO_LOCAL_HISTORIAN_ID");
+        let settle_seconds = std::env::var("IO_LOCAL_HISTORIAN_SETTLE_SECONDS")
+            .unwrap_or_else(|_| "60".into())
+            .parse::<u64>()
+            .expect("invalid IO_LOCAL_HISTORIAN_SETTLE_SECONDS");
+        pic.advance_time(Duration::from_secs(settle_seconds));
+        for _ in 0..200 {
+            pic.tick();
+        }
+        let dashboard: io_historian::Dashboard = decode_one(
+            &pic.query_call(
+                historian,
+                caller,
+                "get_dashboard_state",
+                encode_one(()).expect("encode historian dashboard request"),
+            )
+            .expect("query historian dashboard"),
+        )
+        .expect("decode historian dashboard");
+        assert!(dashboard.status.configured, "historian must be configured");
+        assert!(
+            dashboard
+                .source_health
+                .iter()
+                .all(|health| { health.freshness == io_historian::ObservationFreshness::Fresh }),
+            "historian sources are not all fresh: {:#?}",
+            dashboard.source_health
+        );
+        assert!(
+            dashboard.canisters.iter().all(|canister| {
+                canister.module_match == io_historian::ModuleMatch::Matching
+                    && canister.controllers.is_some()
+            }),
+            "historian module/controller observations are incomplete: {:#?}",
+            dashboard.canisters
+        );
+        assert_eq!(
+            dashboard.stream.as_ref().map(|status| status.lifecycle),
+            Some(io_historian::Lifecycle::Ready),
+        );
+        assert_eq!(
+            dashboard.nns_manager.as_ref().map(|status| (
+                status.lifecycle,
+                status.two_week_maturity_baseline_reconciled,
+                status.latest_two_week_target.is_some()
+            )),
+            Some((io_historian::Lifecycle::Ready, true, true)),
+        );
+        assert_eq!(
+            dashboard
+                .nns_governance
+                .as_ref()
+                .map(|status| status.neurons.len()),
+            Some(2),
+        );
+        assert!(dashboard.protocol.redemption_rate.is_some());
+        assert!(dashboard
+            .index
+            .as_ref()
+            .is_some_and(|status| !status.accounts.is_empty()));
+        println!("historian_settle_seconds={settle_seconds}");
+        println!("historian_dashboard={dashboard:#?}");
+    }
 }

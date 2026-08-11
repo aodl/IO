@@ -19,9 +19,13 @@ contacts an IC mainnet endpoint.
 | `--require-capability` | — | `latest_reward_event_participation` |
 
 `lifecycle` is a thin adapter to the existing guarded official local rehearsal.
-It requires the ignored loopback runtime/install inputs and a running maintained
-SNS testing topology; it does not duplicate SNS-W lifecycle machinery. There is
-no `all` profile or local full-SNS-suite overlay.
+It requires the reviewed ignored loopback install inputs and one running,
+uniquely owned fresh SNS testing topology. The adapter refuses a reused run
+directory. It does not duplicate SNS-W lifecycle machinery. There is no `all`
+profile or local full-SNS-suite overlay.
+Before phase execution it attaches read-only to the declared PocketIC instance
+and requires its clock to be within 300 seconds of host time. A previously
+day-advanced topology therefore fails before any signed ingress.
 
 Examples:
 
@@ -144,12 +148,21 @@ skipped events.
   present.
 - `io` runs contract coverage plus the installed IO reward path.
 - `upgrade` runs the exact official-to-candidate Governance upgrade test.
-- `lifecycle` invokes the existing rehearsal phases 11–17, reruns the ledger and
-  index phases after Governance activation, and preserves their restart markers.
+- `lifecycle` invokes the existing rehearsal phases 10–17 in a unique external
+  run directory, reruns the ledger and index phases after Governance activation,
+  and preserves their restart markers. Bootstrap, build, deployment, every
+  `dfx`/`sns`/Quill/agent proposal and observation, redemption, and reward-proposal
+  submission all precede the exact 86,400-second PocketIC advance. After that
+  boundary the adapter uses only the existing direct PocketIC reward observer,
+  offline immutable evidence packaging, and scoped cleanup; it performs no
+  host-clock-signed ingress or rediscovery. The monitoring package is created
+  only after the direct observer has proved canonical historian convergence.
 
 The variant runner does not copy SNS-W lifecycle code. Its `lifecycle` profile
 passes the resolved bundle directory to `deploy/local-sns-rehearsal/runbook.sh`
 and invokes the existing phases as a thin provenance-preserving adapter.
+Official lifecycle mode fails closed until the reviewed official bundle carries
+the required reward-share capability.
 
 Test enumeration is the only captured child output. Actual `--nocapture` test
 output is inherited and streamed. Each profile run creates one

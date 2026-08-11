@@ -17,10 +17,10 @@ require_command_available jq
 network_url="$(local_network_url)"
 identity="$(local_identity_name)"
 sns="$(sns_cli)"
-discovery_json="${REHEARSAL_DIR}/generated/sns-list.json"
+discovery_json="${GENERATED_DIR}/sns-list.json"
 "$sns" --identity "$identity" --network "$network_url" list --json > "$discovery_json" 2>> "$log_file"
 
-selected_json="${REHEARSAL_DIR}/generated/sns-canisters.json"
+selected_json="${GENERATED_DIR}/sns-canisters.json"
 jq -e '[.[] | select(.name == "IO Local Rehearsal")] | if length == 1 then .[0].sns else error("expected exactly one IO Local Rehearsal SNS") end' \
   "$discovery_json" > "$selected_json"
 for role in root governance ledger index swap; do

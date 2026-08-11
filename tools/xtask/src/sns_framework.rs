@@ -1029,6 +1029,7 @@ fn positive_env_or_default(name: &str, default: usize) -> Result<usize, String> 
 
 struct ProfileRun {
     id: String,
+    lifecycle_root: PathBuf,
     pocket_ic_bin: Option<PathBuf>,
     pocket_ic_pid: Option<PathBuf>,
 }
@@ -1074,6 +1075,7 @@ impl ProfileRun {
             .transpose()?;
         Ok(Self {
             id: id.to_string(),
+            lifecycle_root: run_root.join(format!("lifecycle-{id}")),
             pocket_ic_bin,
             pocket_ic_pid,
         })
@@ -1173,7 +1175,14 @@ fn shared_profile_plan(profile: Profile, capability: bool) -> Result<Vec<Profile
             }
             Ok(vec![ProfileStep::Upgrade])
         }
-        Profile::Lifecycle => Ok(vec![ProfileStep::Lifecycle]),
+        Profile::Lifecycle => {
+            if !capability {
+                return Err(format!(
+                    "profile lifecycle requires capability {CAPABILITY_FIELD}"
+                ));
+            }
+            Ok(vec![ProfileStep::Lifecycle])
+        }
     }
 }
 
@@ -1228,7 +1237,7 @@ fn dispatch_profile(
                     "official_to_candidate_reward_participation_upgrade",
                 )?
             }
-            ProfileStep::Lifecycle => run_lifecycle_profile(io_root, bundle)?,
+            ProfileStep::Lifecycle => run_lifecycle_profile(io_root, bundle, profile_run)?,
         }
     }
     if !bundle.capability && bundle.profile == Profile::Contract {
@@ -1237,27 +1246,142 @@ fn dispatch_profile(
     Ok(())
 }
 
-fn run_lifecycle_profile(io_root: &Path, bundle: &ResolvedBundle) -> Result<(), String> {
+const LIFECYCLE_PHASES: &[&str] = &[
+    "bootstrap-official-network",
+    "build-local-io-canisters",
+    "deploy-local-dapps",
+    "propose-and-finalize-sns",
+    "discover-sns-canisters",
+    "exercise-ledger",
+    "exercise-index-and-archives",
+    "exercise-governance-and-controllers",
+    "exercise-ledger",
+    "exercise-index-and-archives",
+    "observe-one-day-reward",
+    "package-evidence",
+];
+
+fn run_lifecycle_profile(
+    io_root: &Path,
+    bundle: &ResolvedBundle,
+    profile_run: &ProfileRun,
+) -> Result<(), String> {
+    if env::var("IO_LOCAL_SNS_FRESH_TOPOLOGY_ACK").as_deref() != Ok("fresh-owned") {
+        return Err(
+            "lifecycle requires IO_LOCAL_SNS_FRESH_TOPOLOGY_ACK=fresh-owned and a newly started, uniquely owned loopback topology"
+                .into(),
+        );
+    }
+    for required in [
+        "IO_LOCAL_POCKET_IC_SERVER_URL",
+        "IO_LOCAL_POCKET_IC_INSTANCE_ID",
+    ] {
+        if env::var_os(required).is_none() {
+            return Err(format!(
+                "lifecycle fresh-topology preflight requires {required}"
+            ));
+        }
+    }
+    let preflight = Command::new("cargo")
+        .current_dir(io_root)
+        .args([
+            "run",
+            "-p",
+            "e2e-real-canisters",
+            "--bin",
+            "observe_existing_reward",
+        ])
+        .env("IO_LOCAL_ASSERT_FRESH_HOST_TIME_ONLY", "1")
+        .status()
+        .map_err(|err| format!("failed to inspect fresh lifecycle topology time: {err}"))?;
+    if !preflight.success() {
+        return Err(format!(
+            "lifecycle fresh-topology time preflight failed with {preflight}"
+        ));
+    }
     let bundle_dir = bundle
         .manifest
         .parent()
         .ok_or_else(|| "resolved SNS bundle has no parent directory".to_string())?;
     let runbook = io_root.join("deploy/local-sns-rehearsal/runbook.sh");
-    for phase in [
-        "build-local-io-canisters",
-        "deploy-local-dapps",
-        "propose-and-finalize-sns",
-        "discover-sns-canisters",
-        "exercise-ledger",
-        "exercise-index-and-archives",
-        "exercise-governance-and-controllers",
-        "exercise-ledger",
-        "exercise-index-and-archives",
-    ] {
+    if profile_run.lifecycle_root.exists() {
+        return Err(format!(
+            "lifecycle run root already exists; refusing a reused topology state: {}",
+            profile_run.lifecycle_root.display()
+        ));
+    }
+    let inputs = profile_run.lifecycle_root.join("inputs");
+    let generated = profile_run.lifecycle_root.join("generated");
+    fs::create_dir_all(&inputs).map_err(|error| {
+        format!(
+            "failed to create fresh lifecycle inputs {}: {error}",
+            inputs.display()
+        )
+    })?;
+    fs::create_dir_all(&generated).map_err(|error| {
+        format!(
+            "failed to create fresh lifecycle output {}: {error}",
+            generated.display()
+        )
+    })?;
+    let rehearsal = io_root.join("deploy/local-sns-rehearsal");
+    let copied_inputs = [
+        ("local-vars.toml", "local-vars.toml"),
+        ("runtime.local.toml", "runtime.local.toml"),
+        ("sns_init.local.yaml", "sns_init.local.yaml"),
+        (
+            "install-args.local/io_stream_manager.did",
+            "io_stream_manager.did",
+        ),
+        (
+            "install-args.local/io_nns_neuron_manager.did",
+            "io_nns_neuron_manager.did",
+        ),
+        ("canister-ids.local.toml", "canister-ids.local.toml"),
+    ];
+    for (source, destination) in copied_inputs {
+        let source = rehearsal.join(source);
+        let destination = inputs.join(destination);
+        fs::copy(&source, &destination).map_err(|error| {
+            format!(
+                "fresh lifecycle requires reviewed local input {}: {error}",
+                source.display()
+            )
+        })?;
+    }
+    eprintln!(
+        "Fresh lifecycle run directory: {}",
+        profile_run.lifecycle_root.display()
+    );
+    for phase in LIFECYCLE_PHASES {
         let status = Command::new(&runbook)
             .current_dir(io_root)
             .arg(phase)
+            .env("IO_LOCAL_SNS_REHEARSAL_ACK", "local-only")
             .env("IO_LOCAL_SNS_BUNDLE_DIR", bundle_dir)
+            .env("IO_LOCAL_SNS_GENERATED_DIR", &generated)
+            .env(
+                "IO_LOCAL_SNS_LOCAL_VARS_FILE",
+                inputs.join("local-vars.toml"),
+            )
+            .env(
+                "IO_LOCAL_SNS_RUNTIME_FILE",
+                inputs.join("runtime.local.toml"),
+            )
+            .env("IO_LOCAL_SNS_INIT_FILE", inputs.join("sns_init.local.yaml"))
+            .env(
+                "IO_LOCAL_SNS_STREAM_ARGS_FILE",
+                inputs.join("io_stream_manager.did"),
+            )
+            .env(
+                "IO_LOCAL_SNS_NNS_ARGS_FILE",
+                inputs.join("io_nns_neuron_manager.did"),
+            )
+            .env(
+                "IO_LOCAL_SNS_CANISTER_EVIDENCE_FILE",
+                inputs.join("canister-ids.local.toml"),
+            )
+            .env("IO_LOCAL_SNS_IC_CHECKOUT", io_root.join("../ic"))
             .status()
             .map_err(|err| format!("failed to run lifecycle phase {phase}: {err}"))?;
         if !status.success() {
@@ -2080,6 +2204,34 @@ mod tests {
             shared_profile_plan(Profile::Lifecycle, true).unwrap(),
             vec![ProfileStep::Lifecycle]
         );
+        assert!(shared_profile_plan(Profile::Lifecycle, false).is_err());
+    }
+
+    #[test]
+    fn lifecycle_orders_every_host_signed_phase_before_reward_time_advance() {
+        assert_eq!(LIFECYCLE_PHASES.last(), Some(&"package-evidence"));
+        assert_eq!(
+            &LIFECYCLE_PHASES[LIFECYCLE_PHASES.len() - 2..],
+            &["observe-one-day-reward", "package-evidence"]
+        );
+        for phase in [
+            "bootstrap-official-network",
+            "deploy-local-dapps",
+            "propose-and-finalize-sns",
+            "discover-sns-canisters",
+            "exercise-ledger",
+            "exercise-index-and-archives",
+            "exercise-governance-and-controllers",
+        ] {
+            assert!(
+                LIFECYCLE_PHASES
+                    .iter()
+                    .position(|candidate| candidate == &phase)
+                    < LIFECYCLE_PHASES
+                        .iter()
+                        .position(|candidate| candidate == &"observe-one-day-reward")
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cargo_deny_version="0.19.8"
+cargo_audit_version="0.22.2"
+
+if [[ "$(cargo deny --version 2>/dev/null || true)" != "cargo-deny ${cargo_deny_version}" ]]; then
+  cargo install cargo-deny --version "${cargo_deny_version}" --locked
+fi
+if ! cargo audit --version 2>/dev/null | grep -Eq "(^| )${cargo_audit_version}$"; then
+  cargo install cargo-audit --version "${cargo_audit_version}" --locked
+fi
+
+[[ "$(cargo deny --version)" == "cargo-deny ${cargo_deny_version}" ]]
+cargo audit --version | grep -Eq "(^| )${cargo_audit_version}$"

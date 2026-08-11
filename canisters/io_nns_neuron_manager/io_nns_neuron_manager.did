@@ -130,6 +130,7 @@ type Status = record {
   two_week_maturity_baseline_reconciled : bool;
   latest_started_two_week_generation : nat64;
   latest_completed_two_week_generation : nat64;
+  latest_two_week_target : opt record { target_e8s : nat; status : TwoWeekTargetStatus };
   unwinding_child_principal_e8s : nat;
 };
 service : (InitArgs) -> {

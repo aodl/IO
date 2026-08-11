@@ -1,5 +1,8 @@
 name: reproducible-build
 
+permissions:
+  contents: read
+
 on:
   pull_request:
   push:
@@ -9,12 +12,14 @@ jobs:
   artifacts:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      # actions/checkout v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           # Artifact provenance requires the exact recorded source commit to be
           # locally available for detached-worktree builds.
           fetch-depth: 0
-      - uses: Swatinem/rust-cache@v2
+      # Swatinem/rust-cache v2.9.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: Add Wasm target
         run: rustup target add wasm32-unknown-unknown
 

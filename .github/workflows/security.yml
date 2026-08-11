@@ -1,5 +1,8 @@
 name: security
 
+permissions:
+  contents: read
+
 on:
   pull_request:
   push:
@@ -9,14 +12,13 @@ jobs:
   security:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: Swatinem/rust-cache@v2
+      # actions/checkout v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      # Swatinem/rust-cache v2.9.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
 
-      - name: Install cargo-deny
-        uses: taiki-e/install-action@cargo-deny
-
-      - name: Install cargo-audit
-        uses: taiki-e/install-action@cargo-audit
+      - name: Provision pinned security tools
+        run: tools/scripts/provision-security-tools
 
       - name: Security scan
         run: cargo run -p xtask -- security_scan_required

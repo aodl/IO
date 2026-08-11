@@ -20,4 +20,4 @@ Local rehearsal evidence concerns a real SNS-created stack installed through SNS
 
 Reserved mapping record: `io_stream_manager` `thset-pqaaa-aaaar-qb7wa-cai`; `io_nns_neuron_manager` `tatch-ciaaa-aaaar-qb7wq-cai`; `io_historian` `tjqj3-uaaaa-aaaar-qb7xa-cai`; `frontend` `torpp-zyaaa-aaaar-qb7xq-cai`. This inventory does not grant authority to `tatch`.
 
-Historian remains a public read model: rebuildable, not canonical protocol truth, and not a value-moving authority. IO protocol is not live; SNS IO ledger remains not launched. `missing/stale/incomplete` observations remain explicit, and index canisters are historian inputs only.
+Historian remains a public read model: rebuildable, not canonical protocol truth, and not a value-moving authority. IO protocol is not live; SNS IO ledger remains not launched. `missing/stale/error` observations remain explicit, and index canisters are historian inputs only.
