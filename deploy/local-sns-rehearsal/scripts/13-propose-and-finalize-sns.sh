@@ -76,6 +76,17 @@ if [ "$metadata_ready" -ne 1 ]; then
 fi
 
 developer_principal="$(toml_string "$(local_vars_file)" local developer_neuron_principal)"
-run_logged "$log_file" "$sns_testing" --network "$network_url" swap-complete \
-  --sns-name 'IO Local Rehearsal' --follow-principal-neurons "$developer_principal"
+swap_completed=0
+for _attempt in 1 2 3 4 5; do
+  if run_logged "$log_file" "$sns_testing" --network "$network_url" swap-complete \
+    --sns-name 'IO Local Rehearsal' --follow-principal-neurons "$developer_principal"; then
+    swap_completed=1
+    break
+  fi
+  sleep 2
+done
+if [ "$swap_completed" -ne 1 ]; then
+  record_blocker "created SNS did not become ready for swap completion"
+  exit 2
+fi
 mark_phase_done 13-propose-and-finalize-sns "candidate Governance/Root SNS created and swap finalized"

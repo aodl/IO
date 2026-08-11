@@ -97,7 +97,14 @@ EOF
     'Local-only exact raw release Wasm plus typed observation configuration through SNS Governance and Root. Inline payload avoids only the unavailable chunk-store bootstrap and remains an authentic governance proposal.' \
     "$historian" "${REPO_ROOT}/release-artifacts/io_historian.wasm" "$upgrade_arg_hex")"
   wait_sns_proposal "$log_file" "$inline_proposal_id"
-  after_hash="$(dfx canister info --network "$network_url" --identity "$identity" "$historian" 2>&1 | sed -n 's/^Module hash: 0x//p')"
+  after_hash=""
+  for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+    after_hash="$(dfx canister info --network "$network_url" --identity "$identity" "$historian" 2>&1 | sed -n 's/^Module hash: 0x//p')"
+    if [ "$after_hash" = "$raw_hash" ]; then
+      break
+    fi
+    sleep 1
+  done
   if [ "$before_hash" = "$after_hash" ] || [ "$after_hash" != "$raw_hash" ]; then
     record_blocker "SNS-controlled historian upgrade did not change to the exact current release module: before=${before_hash} after=${after_hash} expected=${raw_hash}"
     exit 2
