@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# optional local-only maintained official SNS testing bootstrap phase
+# optional local-only maintained official SNS testing bootstrap phase.
+# Equivalent targets are documented by `. scripts/env.sh`; this rehearsal uses
+# their bazel-bin outputs directly so it never writes into the sibling checkout.
+# The canonical validation surface is `sns init-config-file --init-config-file-path`.
 # Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,8 +24,8 @@ esac
 network_url="${IO_LOCAL_SNS_NETWORK_URL:-http://127.0.0.1:8080}"
 require_loopback_url "$network_url"
 
-require_command_available bazel
 require_command_available git
+require_command_available sha256sum
 
 checkout="${IO_LOCAL_SNS_IC_CHECKOUT:-}"
 if [ -z "$checkout" ] || [ ! -d "$checkout/.git" ]; then
@@ -56,26 +59,28 @@ for required_path in \
   fi
 done
 
-for target in \
-  "//rs/sns/testing:sns-testing-init" \
-  "//rs/sns/testing:sns-testing" \
-  "//rs/sns/cli:sns"; do
-  if ! run_logged "$log_file" bazel query "$target"; then
-    record_blocker "pinned official checkout does not expose required Bazel target ${target}"
-    exit 2
-  fi
-done
+# The exact source targets are //rs/sns/testing:sns-testing-init,
+# //rs/sns/testing:sns-testing, and //rs/sns/cli:sns. Their filtered-Bazel
+# build is monitored separately; this phase consumes and hashes those outputs.
 
-if [ ! -x "$checkout/rs/sns/testing/bin/sns" ] \
-  || [ ! -x "$checkout/rs/sns/testing/bin/sns-testing" ] \
-  || [ ! -x "$checkout/rs/sns/testing/bin/sns-testing-init" ]; then
-  record_blocker "source-built SNS binaries are unavailable; run '. scripts/env.sh' from rs/sns/testing in the pinned checkout"
+if [ ! -x "$checkout/bazel-bin/rs/sns/cli/sns" ] \
+  || [ ! -x "$checkout/bazel-bin/rs/sns/testing/sns-testing" ] \
+  || [ ! -x "$checkout/bazel-bin/rs/sns/testing/sns-testing-init" ]; then
+  record_blocker "source-built SNS binaries are unavailable from the pinned filtered-Bazel output tree"
   exit 2
 fi
+for binary in \
+  "$checkout/bazel-bin/rs/sns/cli/sns" \
+  "$checkout/bazel-bin/rs/sns/testing/sns-testing" \
+  "$checkout/bazel-bin/rs/sns/testing/sns-testing-init"; do
+  printf 'source_binary=%s sha256=%s\n' "${binary#$checkout/}" \
+    "$(sha256sum "$binary" | awk '{print $1}')" >> "$log_file"
+done
 
 rendered_sns="${REHEARSAL_DIR}/sns_init.local.yaml"
 if [ -f "$rendered_sns" ]; then
-  (cd "$checkout/rs/sns/testing" && run_logged "$log_file" ./bin/sns init-config-file --init-config-file-path "$rendered_sns" validate) || {
+  run_logged "$log_file" "$checkout/bazel-bin/rs/sns/cli/sns" \
+    init-config-file --init-config-file-path "$rendered_sns" validate || {
     record_blocker "rendered SNS init failed the pinned source-built SNS CLI parser"
     exit 2
   }
