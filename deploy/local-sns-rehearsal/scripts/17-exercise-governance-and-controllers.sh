@@ -41,7 +41,7 @@ done
 
 if ! phase_is_done 17-upgrade-attempted; then
   raw_hash="$(manifest_artifact_value io_historian raw_wasm_sha256)"
-  payload_hash="$(manifest_artifact_value io_historian gz_wasm_sha256)"
+  payload_hash="$raw_hash"
   before_hash="$(dfx canister info --network "$network_url" --identity "$identity" "$historian" 2>&1 | sed -n 's/^Module hash: 0x//p')"
   bundle_dir="${IO_LOCAL_SNS_BUNDLE_DIR:-}"
   require_file "${bundle_dir}/manifest.toml"
@@ -55,7 +55,7 @@ if ! phase_is_done 17-upgrade-attempted; then
   fixture="${GENERATED_DIR}/nns-readiness-fixture.toml"
   require_file "$fixture"
   reward_backing_neuron_id="$(toml_number "$fixture" reward_backing_neuron id)"
-  two_year_neuron_id="$(toml_number "$fixture" two_year_protected_neuron id)"
+  two_year_neuron_id="$(toml_number "$fixture" two_year_neuron id)"
   config_file="$(mktemp "${GENERATED_DIR}/historian-observation-config.XXXXXX.did")"
   cat > "$config_file" <<EOF
 (opt record {
@@ -94,8 +94,8 @@ EOF
   upgrade_arg_hex="$(didc encode --defs "${REPO_ROOT}/canisters/io_historian/io_historian.did" --types '(opt ObservationConfig)' < "$config_file")"
   inline_proposal_id="$(submit_inline_sns_upgrade "$log_file" \
     'Upgrade and configure IO historian' \
-    'Local-only exact gzip release Wasm plus typed observation configuration through SNS Governance and Root. Inline payload avoids only the unavailable chunk-store bootstrap and remains an authentic governance proposal.' \
-    "$historian" "${REPO_ROOT}/release-artifacts/io_historian.wasm.gz" "$upgrade_arg_hex")"
+    'Local-only exact raw release Wasm plus typed observation configuration through SNS Governance and Root. Inline payload avoids only the unavailable chunk-store bootstrap and remains an authentic governance proposal.' \
+    "$historian" "${REPO_ROOT}/release-artifacts/io_historian.wasm" "$upgrade_arg_hex")"
   wait_sns_proposal "$log_file" "$inline_proposal_id"
   after_hash="$(dfx canister info --network "$network_url" --identity "$identity" "$historian" 2>&1 | sed -n 's/^Module hash: 0x//p')"
   if [ "$before_hash" = "$after_hash" ] || [ "$after_hash" != "$raw_hash" ]; then
@@ -107,7 +107,7 @@ EOF
     record_blocker "historian controllers changed during SNS-governed upgrade: ${final_controllers}"
     exit 2
   fi
-  mark_phase_done 17-upgrade-attempted "target=${historian} path=inline-governance-root proposal_id=${inline_proposal_id} before=${before_hash} payload_gzip_sha256=${payload_hash} after=${after_hash} release_manifest_raw_sha256=${raw_hash} typed_observation_config=true controllers=${final_controllers}; see ${log_file}"
+  mark_phase_done 17-upgrade-attempted "target=${historian} path=inline-governance-root proposal_id=${inline_proposal_id} before=${before_hash} payload_wasm_sha256=${payload_hash} after=${after_hash} release_manifest_raw_sha256=${raw_hash} typed_observation_config=true controllers=${final_controllers}; see ${log_file}"
 fi
 
 # The Candid paths cannot be derived from principals, so register each manager explicitly.

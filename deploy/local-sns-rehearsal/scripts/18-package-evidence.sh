@@ -65,7 +65,12 @@ root_did="$(toml_string "$bundle_manifest" contract root_did_sha256)"
 historian_raw="$(manifest_value io_historian raw_wasm_sha256)"
 historian_gzip="$(manifest_value io_historian gz_wasm_sha256)"
 historian_before="$(phase_value 17-upgrade-attempted before)"
+historian_payload="$(phase_value 17-upgrade-attempted payload_wasm_sha256)"
 upgrade_proposal="$(phase_value 17-upgrade-attempted proposal_id)"
+if [ "$historian_payload" != "$historian_raw" ]; then
+  record_blocker "historian Governance payload ${historian_payload} does not match current raw release ${historian_raw}"
+  exit 2
+fi
 
 update_toml_value() {
   local file="$1" section="$2" key="$3" value="$4" kind="$5"
@@ -90,13 +95,14 @@ update_toml_value() {
 }
 
 packaged_ids="${package_dir}/canister-ids.local.toml"
+sed -i 's/historian_payload_gzip_sha256/historian_payload_wasm_sha256/' "$packaged_ids"
 for entry in \
   "io_release_source_commit:${source_commit}" \
   "io_artifact_recording_commit:${artifact_commit}" \
   "sns_governance_raw_sha256:${governance_raw}" \
   "sns_root_raw_sha256:${root_raw}" \
   "historian_before_module_sha256:${historian_before}" \
-  "historian_payload_gzip_sha256:${historian_gzip}" \
+  "historian_payload_wasm_sha256:${historian_payload}" \
   "historian_release_raw_sha256:${historian_raw}"; do
   update_toml_value "$packaged_ids" provenance "${entry%%:*}" "${entry#*:}" string
 done
@@ -114,7 +120,7 @@ update_toml_value "$packaged_ids" reward event_round \
 update_toml_value "$packaged_ids" readiness reward_backing_neuron_id \
   "$(toml_number "${GENERATED_DIR}/nns-readiness-fixture.toml" reward_backing_neuron id)" number
 update_toml_value "$packaged_ids" readiness two_year_neuron_id \
-  "$(toml_number "${GENERATED_DIR}/nns-readiness-fixture.toml" two_year_protected_neuron id)" number
+  "$(toml_number "${GENERATED_DIR}/nns-readiness-fixture.toml" two_year_neuron id)" number
 
 discovery="${GENERATED_DIR}/sns-canisters.json"
 require_file "$discovery"
@@ -243,7 +249,7 @@ create_sns_proposal = $(toml_number "$source_evidence" proposals create_sns)
 target = "$(toml_string "$(local_vars_file)" local io_historian_canister)"
 proposal_id = ${upgrade_proposal}
 before_module_sha256 = "${historian_before}"
-payload_gzip_sha256 = "${historian_gzip}"
+payload_wasm_sha256 = "${historian_payload}"
 release_raw_sha256 = "${historian_raw}"
 executed = true
 
@@ -258,7 +264,7 @@ stream_ready = true
 nns_manager_ready = true
 two_week_baseline_reconciled = true
 reward_backing_neuron_id = $(toml_number "$fixture" reward_backing_neuron id)
-two_year_neuron_id = $(toml_number "$fixture" two_year_protected_neuron id)
+two_year_neuron_id = $(toml_number "$fixture" two_year_neuron id)
 seeded_principal_e8s = $(toml_number "$fixture" reward_backing_neuron seeded_principal_e8s)
 dissolve_delay_seconds = $(toml_number "$fixture" reward_backing_neuron dissolve_delay_seconds)
 jupiter_staging_e8s = $(phase_value 17-nns-activated jupiter_staging_e8s)

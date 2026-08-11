@@ -1,3 +1,4 @@
+use candid::Principal;
 use io_sns_manifest::SnsManifest;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1261,6 +1262,144 @@ const LIFECYCLE_PHASES: &[&str] = &[
     "package-evidence",
 ];
 
+fn topology_allocation_ids(
+    topology: &serde_json::Value,
+    subnet_kind: &str,
+    count: usize,
+) -> Result<Vec<String>, String> {
+    let configs = topology
+        .get("subnet_configs")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "fresh lifecycle topology omits subnet_configs".to_string())?;
+    let matching = configs
+        .iter()
+        .filter(|config| {
+            config
+                .get("subnet_kind")
+                .and_then(serde_json::Value::as_str)
+                == Some(subnet_kind)
+        })
+        .collect::<Vec<_>>();
+    if matching.len() != 1 {
+        return Err(format!(
+            "fresh lifecycle topology has {} {subnet_kind} subnets; expected exactly one",
+            matching.len()
+        ));
+    }
+    let start = matching[0]
+        .pointer("/alloc_range/start")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("fresh lifecycle {subnet_kind} subnet omits alloc_range.start"))?;
+    let principal = Principal::from_text(start)
+        .map_err(|error| format!("invalid {subnet_kind} allocation start {start}: {error}"))?;
+    let mut bytes = principal.as_slice().to_vec();
+    if bytes.len() < 4 || bytes[bytes.len() - 2..] != [1, 1] {
+        return Err(format!(
+            "unsupported {subnet_kind} allocation principal shape: {start}"
+        ));
+    }
+    let counter_index = bytes.len() - 4;
+    let initial = u16::from_be_bytes([bytes[counter_index], bytes[counter_index + 1]]);
+    (0..count)
+        .map(|offset| {
+            let offset = u16::try_from(offset)
+                .map_err(|_| "lifecycle allocation offset exceeds u16".to_string())?;
+            let counter = initial
+                .checked_add(offset)
+                .ok_or_else(|| "lifecycle allocation range overflow".to_string())?;
+            let encoded = counter.to_be_bytes();
+            bytes[counter_index] = encoded[0];
+            bytes[counter_index + 1] = encoded[1];
+            Ok(Principal::from_slice(&bytes).to_text())
+        })
+        .collect()
+}
+
+fn quoted_assignment(text: &str, key: &str) -> Result<String, String> {
+    let prefix = format!("{key} = \"");
+    text.lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix(&prefix)
+                .and_then(|value| value.strip_suffix('"'))
+                .map(str::to_string)
+        })
+        .ok_or_else(|| format!("fresh lifecycle input omits {key}"))
+}
+
+fn rewrite_lifecycle_allocations(inputs: &Path, topology_path: &Path) -> Result<(), String> {
+    if !topology_path.is_absolute() {
+        return Err("IO_LOCAL_SNS_TOPOLOGY_FILE must be absolute".to_string());
+    }
+    let topology_text = fs::read_to_string(topology_path).map_err(|error| {
+        format!(
+            "failed to read fresh lifecycle topology {}: {error}",
+            topology_path.display()
+        )
+    })?;
+    let topology: serde_json::Value = serde_json::from_str(&topology_text).map_err(|error| {
+        format!(
+            "failed to parse fresh lifecycle topology {}: {error}",
+            topology_path.display()
+        )
+    })?;
+    let dapp_ids = topology_allocation_ids(&topology, "NNS", 4)?;
+    let sns_ids = topology_allocation_ids(&topology, "SNS", 5)?;
+    let local_vars = fs::read_to_string(inputs.join("local-vars.toml"))
+        .map_err(|error| format!("failed to read lifecycle local-vars.toml: {error}"))?;
+    let runtime = fs::read_to_string(inputs.join("runtime.local.toml"))
+        .map_err(|error| format!("failed to read lifecycle runtime.local.toml: {error}"))?;
+    let replacements = [
+        (
+            quoted_assignment(&local_vars, "io_stream_manager_canister")?,
+            dapp_ids[0].clone(),
+        ),
+        (
+            quoted_assignment(&local_vars, "io_nns_neuron_manager_canister")?,
+            dapp_ids[1].clone(),
+        ),
+        (
+            quoted_assignment(&local_vars, "io_historian_canister")?,
+            dapp_ids[2].clone(),
+        ),
+        (
+            quoted_assignment(&local_vars, "frontend_canister")?,
+            dapp_ids[3].clone(),
+        ),
+        (quoted_assignment(&runtime, "root")?, sns_ids[0].clone()),
+        (
+            quoted_assignment(&runtime, "governance")?,
+            sns_ids[1].clone(),
+        ),
+        (quoted_assignment(&runtime, "ledger")?, sns_ids[2].clone()),
+        (quoted_assignment(&runtime, "swap")?, sns_ids[3].clone()),
+        (quoted_assignment(&runtime, "index")?, sns_ids[4].clone()),
+    ];
+    for relative in [
+        "local-vars.toml",
+        "runtime.local.toml",
+        "sns_init.local.yaml",
+        "io_stream_manager.did",
+        "io_nns_neuron_manager.did",
+        "canister-ids.local.toml",
+    ] {
+        let path = inputs.join(relative);
+        let mut text = fs::read_to_string(&path).map_err(|error| {
+            format!("failed to read lifecycle input {}: {error}", path.display())
+        })?;
+        for (planned, allocated) in &replacements {
+            text = text.replace(planned, allocated);
+        }
+        fs::write(&path, text).map_err(|error| {
+            format!(
+                "failed to rewrite lifecycle input {}: {error}",
+                path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
 fn run_lifecycle_profile(
     io_root: &Path,
     bundle: &ResolvedBundle,
@@ -1277,6 +1416,10 @@ fn run_lifecycle_profile(
     })?;
     let instance_id = env::var("IO_LOCAL_POCKET_IC_INSTANCE_ID").map_err(|_| {
         "lifecycle fresh-topology preflight requires IO_LOCAL_POCKET_IC_INSTANCE_ID".to_string()
+    })?;
+    let topology_path = env::var("IO_LOCAL_SNS_TOPOLOGY_FILE").map(PathBuf::from).map_err(|_| {
+        "lifecycle requires IO_LOCAL_SNS_TOPOLOGY_FILE from the uniquely owned sns-testing-init state"
+            .to_string()
     })?;
     let preflight = Command::new("cargo")
         .current_dir(io_root)
@@ -1310,7 +1453,7 @@ fn run_lifecycle_profile(
     }
     let inputs = profile_run.lifecycle_root.join("inputs");
     let generated = profile_run.lifecycle_root.join("generated");
-    fs::create_dir_all(&inputs).map_err(|error| {
+    fs::create_dir_all(inputs.join("assets")).map_err(|error| {
         format!(
             "failed to create fresh lifecycle inputs {}: {error}",
             inputs.display()
@@ -1327,6 +1470,11 @@ fn run_lifecycle_profile(
         ("local-vars.toml", "local-vars.toml"),
         ("runtime.local.toml", "runtime.local.toml"),
         ("sns_init.local.yaml", "sns_init.local.yaml"),
+        ("assets/io-local-logo.svg", "assets/io-local-logo.svg"),
+        (
+            "assets/io-local-token-logo.svg",
+            "assets/io-local-token-logo.svg",
+        ),
         (
             "install-args.local/io_stream_manager.did",
             "io_stream_manager.did",
@@ -1347,6 +1495,7 @@ fn run_lifecycle_profile(
             )
         })?;
     }
+    rewrite_lifecycle_allocations(&inputs, &topology_path)?;
     eprintln!(
         "Fresh lifecycle run directory: {}",
         profile_run.lifecycle_root.display()
@@ -2230,6 +2379,24 @@ mod tests {
                         .position(|candidate| candidate == &"observe-one-day-reward")
             );
         }
+    }
+
+    #[test]
+    fn lifecycle_derives_fresh_sns_ids_from_the_owned_topology() {
+        let topology: serde_json::Value = serde_json::from_str(
+            r#"{"subnet_configs":[{"subnet_kind":"SNS","alloc_range":{"start":"dllsh-pd777-77776-qaaaa-cai"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            topology_allocation_ids(&topology, "SNS", 5).unwrap(),
+            [
+                "dllsh-pd777-77776-qaaaa-cai",
+                "dmkut-c3777-77776-qaaaq-cai",
+                "dfj7p-ut777-77776-qaaba-cai",
+                "dciz3-zl777-77776-qaabq-cai",
+                "dxpiw-yd777-77776-qaaca-cai",
+            ]
+        );
     }
 
     #[test]

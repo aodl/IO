@@ -21,8 +21,11 @@ contacts an IC mainnet endpoint.
 `lifecycle` is a thin adapter to the existing guarded official local rehearsal.
 It requires the reviewed ignored loopback install inputs and one running,
 uniquely owned fresh SNS testing topology. The adapter refuses a reused run
-directory. It does not duplicate SNS-W lifecycle machinery. There is no `all`
-profile or local full-SNS-suite overlay.
+directory and requires `IO_LOCAL_SNS_TOPOLOGY_FILE` to name the absolute
+`topology.json` written by that run's `sns-testing-init`. It derives the fresh
+NNS/SNS allocation IDs from that file before installation and later requires
+canonical SNS-W discovery to match. It does not duplicate SNS-W lifecycle
+machinery. There is no `all` profile or local full-SNS-suite overlay.
 Before phase execution it attaches read-only to the declared PocketIC instance
 and requires its clock to be within 300 seconds of host time. A previously
 day-advanced topology therefore fails before any signed ingress.
@@ -157,6 +160,9 @@ skipped events.
   offline immutable evidence packaging, and scoped cleanup; it performs no
   host-clock-signed ingress or rediscovery. The monitoring package is created
   only after the direct observer has proved canonical historian convergence.
+  The SNS-controlled historian upgrade carries the raw reviewed Wasm so its
+  installed module hash equals the release manifest's raw Wasm hash; gzip
+  remains a separately verified release transport artifact.
 
 The variant runner does not copy SNS-W lifecycle code. Its `lifecycle` profile
 passes the resolved bundle directory to `deploy/local-sns-rehearsal/runbook.sh`

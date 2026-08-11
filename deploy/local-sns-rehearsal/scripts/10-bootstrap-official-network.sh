@@ -80,7 +80,7 @@ done
 rendered_sns="$(sns_init_file)"
 if [ -f "$rendered_sns" ]; then
   run_logged "$log_file" "$checkout/bazel-bin/rs/sns/cli/sns" \
-    init-config-file --init-config-file-path "$rendered_sns" validate || {
+    --network "$network_url" init-config-file --init-config-file-path "$rendered_sns" validate || {
     record_blocker "rendered SNS init failed the pinned source-built SNS CLI parser"
     exit 2
   }

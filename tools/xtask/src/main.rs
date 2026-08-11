@@ -5114,11 +5114,19 @@ fn validate_production_redemption_evidence(path: &str, text: &str) -> Result<(),
             "{path}: official IC source commit must be exact 40-hex"
         ));
     }
+    let payload_key = if doc
+        .get("provenance")
+        .is_some_and(|section| section.contains_key("historian_payload_wasm_sha256"))
+    {
+        "historian_payload_wasm_sha256"
+    } else {
+        "historian_payload_gzip_sha256"
+    };
     for key in [
         "sns_governance_raw_sha256",
         "sns_root_raw_sha256",
         "historian_before_module_sha256",
-        "historian_payload_gzip_sha256",
+        payload_key,
         "historian_release_raw_sha256",
     ] {
         let value = require_simple_string(path, &doc, "provenance", key)?;
@@ -5469,8 +5477,8 @@ fn validate_monitoring_evidence(
             &ids_path,
             &ids,
             "provenance",
-            "historian_payload_gzip_sha256",
-        )? != require_simple_string(&release_path, &release, "io_historian", "gzip_wasm_sha256")?
+            "historian_payload_wasm_sha256",
+        )? != require_simple_string(&release_path, &release, "io_historian", "raw_wasm_sha256")?
     {
         return Err(format!(
             "{ids_path}: monitoring release provenance is not cross-consistent"

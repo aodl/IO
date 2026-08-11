@@ -14,7 +14,9 @@ gap is an upstream CLI/bootstrap defect and does not block an inline SNS
 Governance proposal executed by Root. The source-shaped NNS readiness and
 hash-changing upgrade fixtures are recorded in the completed 2026-08-11
 package. The thin lifecycle profile is a restart-safe tooling proof and does
-not invalidate that canonical rehearsal.
+not invalidate that canonical rehearsal. It requires the absolute
+`sns-testing-init` `topology.json` and derives fresh allocation IDs instead of
+reusing historical ephemeral principals.
 
 Expected manual order:
 

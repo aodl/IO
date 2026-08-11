@@ -53,22 +53,51 @@ if [ ! -f "${work_dir}/dfx.json" ]; then
 fi
 
 declare -A ids
+declare -A planned_ids
 ids[io_stream_manager]="$(toml_string "$vars_file" local io_stream_manager_canister)"
 ids[io_nns_neuron_manager]="$(toml_string "$vars_file" local io_nns_neuron_manager_canister)"
 ids[io_historian]="$(toml_string "$vars_file" local io_historian_canister)"
 ids[frontend]="$(toml_string "$vars_file" local frontend_canister)"
 
 for canister in io_stream_manager io_nns_neuron_manager io_historian frontend; do
+  planned_ids[$canister]="${ids[$canister]}"
+done
+
+for canister in io_stream_manager io_nns_neuron_manager io_historian frontend; do
   canister_id="${ids[$canister]}"
   case "$canister_id" in TODO*|"") record_blocker "local dapp ID is unresolved: ${canister}"; exit 2 ;; esac
   if ! (cd "$work_dir" && dfx canister status --network "$network_url" --identity "$identity" "$canister_id") >> "$log_file" 2>&1; then
-    (cd "$work_dir" && run_logged "$log_file" dfx canister create --network "$network_url" --identity "$identity" --no-wallet "$canister") || exit $?
-    allocated_id="$(cd "$work_dir" && dfx canister id --network "$network_url" "$canister")"
-    if [ "$allocated_id" != "$canister_id" ]; then
-      record_blocker "${canister} allocated ID ${allocated_id} does not match planned ${canister_id}"
-      exit 2
+    allocated_id="$(cd "$work_dir" && dfx canister id --network "$network_url" "$canister" 2>/dev/null || true)"
+    if [ -z "$allocated_id" ] \
+      || ! (cd "$work_dir" && dfx canister status --network "$network_url" --identity "$identity" "$allocated_id") >> "$log_file" 2>&1; then
+      (cd "$work_dir" && run_logged "$log_file" dfx canister create --network "$network_url" --identity "$identity" --no-wallet "$canister") || exit $?
+      allocated_id="$(cd "$work_dir" && dfx canister id --network "$network_url" "$canister")"
     fi
+    ids[$canister]="$allocated_id"
   fi
+done
+
+if [ -n "${IO_LOCAL_SNS_CANISTER_EVIDENCE_FILE:-}" ]; then
+  evidence_file="$IO_LOCAL_SNS_CANISTER_EVIDENCE_FILE"
+else
+  evidence_file=""
+fi
+for canister in io_stream_manager io_nns_neuron_manager io_historian frontend; do
+  planned_id="${planned_ids[$canister]}"
+  allocated_id="${ids[$canister]}"
+  if [ "$allocated_id" = "$planned_id" ]; then
+    continue
+  fi
+  if [ -z "$evidence_file" ]; then
+    record_blocker "${canister} allocated ID ${allocated_id} differs from planned ${planned_id}; use isolated lifecycle inputs so allocated IDs can be recorded safely"
+    exit 2
+  fi
+  for input in "$vars_file" "$(sns_init_file)" "$stream_args" "$nns_args" "$evidence_file"; do
+    require_file "$input"
+    sed -i "s/${planned_id}/${allocated_id}/g" "$input"
+  done
+  printf 'allocated_dapp role=%s planned=%s canonical=%s\n' \
+    "$canister" "$planned_id" "$allocated_id" >> "$log_file"
 done
 
 "${SCRIPT_DIR}/12-provision-local-nns-readiness.sh"
