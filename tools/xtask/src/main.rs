@@ -1266,15 +1266,179 @@ fn sha256_hex(path: &Path) -> Result<String, String> {
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn nns_neuron_staking_subaccount(controller: Principal, nonce: u64) -> String {
-    let domain = b"neuron-stake";
+fn nervous_system_domain_subaccount(controller: Principal, domain: &[u8], nonce: u64) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update([domain.len() as u8]);
     hasher.update(domain);
     hasher.update(controller.as_slice());
     hasher.update(nonce.to_be_bytes());
-    let digest = hasher.finalize();
-    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    hasher.finalize().into()
+}
+
+fn nns_neuron_staking_subaccount(controller: Principal, nonce: u64) -> String {
+    hex::encode(nervous_system_domain_subaccount(
+        controller,
+        b"neuron-stake",
+        nonce,
+    ))
+}
+
+pub(crate) fn sns_distribution_subaccount(controller: Principal, nonce: u64) -> String {
+    hex::encode(nervous_system_domain_subaccount(
+        controller,
+        b"token-distribution",
+        nonce,
+    ))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RedemptionEconomics {
+    excluded_total_e8s: u128,
+    redeemable_supply_e8s: u128,
+    gross_icp_e8s: u128,
+    net_icp_e8s: u128,
+}
+
+fn calculate_redemption_economics(
+    total_supply_e8s: u128,
+    protocol_reserve_e8s: u128,
+    excluded_balances_e8s: &[u128],
+    liquid_icp_e8s: u128,
+    redeemed_io_e8s: u128,
+    icp_fee_e8s: u128,
+) -> Result<RedemptionEconomics, String> {
+    let excluded_total_e8s = excluded_balances_e8s
+        .iter()
+        .try_fold(0_u128, |sum, balance| {
+            sum.checked_add(*balance)
+                .ok_or_else(|| "excluded IO balance sum overflow".to_string())
+        })?;
+    let non_redeemable = protocol_reserve_e8s
+        .checked_add(excluded_total_e8s)
+        .ok_or_else(|| "protocol reserve plus excluded IO overflow".to_string())?;
+    let redeemable_supply_e8s = total_supply_e8s
+        .checked_sub(non_redeemable)
+        .ok_or_else(|| "total IO supply is less than reserve plus excluded IO".to_string())?;
+    if redeemable_supply_e8s == 0 && redeemed_io_e8s != 0 {
+        return Err("redeemable IO supply is zero for a claimed redemption".into());
+    }
+    let gross_icp_e8s = redeemed_io_e8s
+        .checked_mul(liquid_icp_e8s)
+        .ok_or_else(|| "redemption numerator overflow".to_string())?
+        .checked_div(redeemable_supply_e8s)
+        .ok_or_else(|| "redeemable IO supply is zero".to_string())?;
+    let net_icp_e8s = gross_icp_e8s
+        .checked_sub(icp_fee_e8s)
+        .ok_or_else(|| "quoted gross ICP is below the ICP fee".to_string())?;
+    Ok(RedemptionEconomics {
+        excluded_total_e8s,
+        redeemable_supply_e8s,
+        gross_icp_e8s,
+        net_icp_e8s,
+    })
+}
+
+fn candid_blob_literal_from_hex(value: &str) -> Result<String, String> {
+    if !value.len().is_multiple_of(2)
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err("blob hex must be even-length lowercase hexadecimal".into());
+    }
+    Ok(value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| format!("\\{}", std::str::from_utf8(pair).expect("hex is ASCII")))
+        .collect())
+}
+
+fn candid_nat_field(text: &str, key: &str) -> Result<u128, String> {
+    let marker = format!("{key} = ");
+    let start = text
+        .find(&marker)
+        .ok_or_else(|| format!("missing Candid field {key}"))?
+        + marker.len();
+    let digits = text[start..]
+        .chars()
+        .take_while(|character| character.is_ascii_digit() || *character == '_')
+        .filter(|character| *character != '_')
+        .collect::<String>();
+    if digits.is_empty() {
+        return Err(format!("Candid field {key} is not an unsigned integer"));
+    }
+    digits
+        .parse::<u128>()
+        .map_err(|error| format!("invalid Candid field {key}: {error}"))
+}
+
+fn candid_index_transaction_records(text: &str) -> Result<Vec<&str>, String> {
+    let marker = "transactions = vec {";
+    let transactions = text
+        .find(marker)
+        .ok_or_else(|| "index response omits transactions vector".to_string())?
+        + marker.len();
+    let bytes = text.as_bytes();
+    let mut depth = 1_i32;
+    let mut cursor = transactions;
+    let mut record_start = None;
+    let mut records = Vec::new();
+    while cursor < bytes.len() && depth > 0 {
+        if bytes[cursor..].starts_with(b"record {") && depth == 1 {
+            record_start = Some(cursor);
+        }
+        match bytes[cursor] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 1 {
+                    if let Some(start) = record_start.take() {
+                        records.push(&text[start..=cursor]);
+                    }
+                }
+            }
+            _ => {}
+        }
+        cursor += 1;
+    }
+    if depth != 0 {
+        return Err("unterminated index transactions vector".into());
+    }
+    Ok(records)
+}
+
+fn unique_index_transfer_record<'a>(
+    text: &'a str,
+    amount_e8s: u128,
+    memo_hex: &str,
+) -> Result<&'a str, String> {
+    let memo = format!(
+        "memo = opt blob \"{}\"",
+        candid_blob_literal_from_hex(memo_hex)?
+    );
+    let matching = candid_index_transaction_records(text)?
+        .into_iter()
+        .filter(|record| {
+            record.contains("kind = \"transfer\"")
+                && record.contains(&memo)
+                && candid_nat_field(record, "amount") == Ok(amount_e8s)
+        })
+        .collect::<Vec<_>>();
+    if matching.len() != 1 {
+        return Err(format!(
+            "expected one index transfer for amount {amount_e8s} and memo {memo_hex}, found {}",
+            matching.len()
+        ));
+    }
+    Ok(matching[0])
+}
+
+fn index_transfer_block(text: &str, amount_e8s: u128, memo_hex: &str) -> Result<u64, String> {
+    let id = candid_nat_field(
+        unique_index_transfer_record(text, amount_e8s, memo_hex)?,
+        "id",
+    )?;
+    u64::try_from(id).map_err(|_| "index transaction id exceeds u64".to_string())
 }
 
 fn verify_artifact_hash(root: &Path, sidecar: &str) -> Result<(), String> {
@@ -1379,6 +1543,109 @@ fn validate_release_source_ancestor(root: &Path, git_commit: &str) -> Result<(),
         return Err(format!(
             "release source commit {git_commit} is not an ancestor of HEAD"
         ));
+    }
+    Ok(())
+}
+
+fn release_tail_evidence_path_allowed(path: &str) -> bool {
+    path.starts_with("deploy/local-sns-rehearsal/evidence/")
+        || path.starts_with("docs/")
+        || path.starts_with(".github/workflows/")
+        || path == "tools/sns/launch-readiness.toml"
+}
+
+fn validate_release_commit_paths(
+    commit_label: &str,
+    paths: &[String],
+    artifact_recording: bool,
+) -> Result<(), String> {
+    if paths.is_empty() {
+        return Err(format!(
+            "release-tail commit {commit_label} changes no paths"
+        ));
+    }
+    for path in paths {
+        let allowed = if artifact_recording {
+            path.starts_with("release-artifacts/")
+        } else {
+            release_tail_evidence_path_allowed(path)
+        };
+        if !allowed {
+            let phase = if artifact_recording {
+                "artifact-recording"
+            } else {
+                "evidence/documentation"
+            };
+            return Err(format!(
+                "release-tail {phase} commit {commit_label} changes forbidden path {path}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn git_output(root: &Path, args: &[&str], label: &str) -> Result<String, String> {
+    let output = Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .map_err(|error| format!("{label}: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "{label} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn validate_release_tail(root: &Path, source_commit: &str) -> Result<(), String> {
+    validate_release_source_ancestor(root, source_commit)?;
+    let head = current_git_commit(root)?;
+    if head == source_commit {
+        return Ok(());
+    }
+    let commits = git_output(
+        root,
+        &[
+            "rev-list",
+            "--reverse",
+            "--ancestry-path",
+            &format!("{source_commit}..HEAD"),
+        ],
+        "git rev-list release tail",
+    )?;
+    let commits = commits.lines().collect::<Vec<_>>();
+    let artifact_commit = commits
+        .first()
+        .ok_or_else(|| "release tail unexpectedly contains no commits".to_string())?;
+    let artifact_parent = git_output(
+        root,
+        &["rev-parse", &format!("{artifact_commit}^1")],
+        "git rev-parse artifact-recording parent",
+    )?;
+    if artifact_parent != source_commit {
+        return Err(format!(
+            "artifact-recording commit {artifact_commit} must directly follow source-finalization commit {source_commit}"
+        ));
+    }
+    for (index, commit) in commits.iter().enumerate() {
+        let paths = git_output(
+            root,
+            &[
+                "diff-tree",
+                "--no-commit-id",
+                "--name-only",
+                "--no-renames",
+                "-r",
+                commit,
+            ],
+            "git diff-tree release-tail commit",
+        )?
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        validate_release_commit_paths(commit, &paths, index == 0)?;
     }
     Ok(())
 }
@@ -1524,8 +1791,7 @@ fn verify_manifest(root: &Path) -> Result<(), String> {
         .git_commit
         .clone()
         .ok_or_else(|| format!("{MANIFEST_PATH}: git_commit is required"))?;
-    validate_release_source_ancestor(root, &source_commit)
-        .map_err(|err| format!("{MANIFEST_PATH}: {err}"))?;
+    validate_release_tail(root, &source_commit).map_err(|err| format!("{MANIFEST_PATH}: {err}"))?;
     for entry in &actual.artifacts {
         if entry.git_commit.as_deref() != Some(source_commit.as_str()) {
             return Err(format!(
@@ -5262,6 +5528,7 @@ fn check_local_sns_committed_evidence_at(root: &Path) -> Result<(), String> {
     if !evidence_root.exists() {
         return Ok(());
     }
+    let mut canonical_economics_found = false;
     for entry in
         fs::read_dir(&evidence_root).map_err(|err| format!("{}: {err}", evidence_root.display()))?
     {
@@ -5302,6 +5569,10 @@ fn check_local_sns_committed_evidence_at(root: &Path) -> Result<(), String> {
             .get("provenance")
             .and_then(|section| section.get("monitoring"))
             == Some(&SimpleTomlValue::Bool(true));
+        let canonical_economics = doc
+            .get("provenance")
+            .and_then(|section| section.get("canonical_redemption_economics"))
+            == Some(&SimpleTomlValue::Bool(true));
         let commit = require_simple_string(
             &manifest_path,
             &doc,
@@ -5333,6 +5604,19 @@ fn check_local_sns_committed_evidence_at(root: &Path) -> Result<(), String> {
             if monitoring {
                 files.insert("release-evidence.toml".into());
                 files.insert("historian-dashboard.log".into());
+            }
+            if canonical_economics {
+                for file in [
+                    "stream-install-args.did",
+                    "nns-manager-install-args.did",
+                    "historian-observation-config.did",
+                    "account-map.toml",
+                    "redemption-economics.toml",
+                    "treasury-account-history.log",
+                    "archive-observation.log",
+                ] {
+                    files.insert(file.into());
+                }
             }
             files
         } else {
@@ -5386,6 +5670,15 @@ fn check_local_sns_committed_evidence_at(root: &Path) -> Result<(), String> {
             if monitoring {
                 validate_monitoring_evidence(root, &rel, &doc)?;
             }
+            if canonical_economics {
+                if !monitoring {
+                    return Err(format!(
+                        "{manifest_path}: canonical redemption economics must be release-bound monitoring evidence"
+                    ));
+                }
+                validate_canonical_redemption_evidence(root, &rel)?;
+                canonical_economics_found = true;
+            }
         } else {
             let blocker_report =
                 require_simple_string(&manifest_path, &doc, "provenance", "blocker_report")?;
@@ -5407,6 +5700,489 @@ fn check_local_sns_committed_evidence_at(root: &Path) -> Result<(), String> {
             )?;
         }
     }
+    if !canonical_economics_found {
+        return Err(
+            "current launch readiness requires one complete canonical-redemption-economics evidence package"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn debug_some_u128(path: &str, text: &str, field: &str) -> Result<u128, String> {
+    let marker = format!("{field}: Some(");
+    let start = text
+        .find(&marker)
+        .ok_or_else(|| format!("{path}: missing {marker}"))?
+        + marker.len();
+    let value = text[start..]
+        .chars()
+        .skip_while(|character| character.is_ascii_whitespace())
+        .take_while(|character| character.is_ascii_digit() || *character == '_')
+        .filter(|character| *character != '_')
+        .collect::<String>();
+    if value.is_empty() {
+        return Err(format!(
+            "{path}: {field} does not contain a numeric Some value"
+        ));
+    }
+    value
+        .parse::<u128>()
+        .map_err(|error| format!("{path}: invalid {field}: {error}"))
+}
+
+fn checked_add(path: &str, left: u128, right: u128, identity: &str) -> Result<u128, String> {
+    left.checked_add(right)
+        .ok_or_else(|| format!("{path}: overflow checking {identity}"))
+}
+
+fn checked_sub(path: &str, left: u128, right: u128, identity: &str) -> Result<u128, String> {
+    left.checked_sub(right)
+        .ok_or_else(|| format!("{path}: underflow checking {identity}"))
+}
+
+fn validate_canonical_redemption_evidence(root: &Path, package: &str) -> Result<(), String> {
+    let ids_path = format!("{package}/canister-ids.local.toml");
+    let ids_text = require_file(root, &ids_path)?;
+    let ids = parse_simple_toml_document(&ids_path, &ids_text)?;
+    let governance = require_simple_string(&ids_path, &ids, "sns_canisters", "governance")?;
+
+    let map_path = format!("{package}/account-map.toml");
+    let map_text = require_file(root, &map_path)?;
+    let map = parse_simple_toml_document(&map_path, &map_text)?;
+    let excluded_sections = map
+        .keys()
+        .filter(|section| section.starts_with("excluded_"))
+        .collect::<Vec<_>>();
+    if excluded_sections.len() != 1 || excluded_sections[0].as_str() != "excluded_sns_treasury" {
+        return Err(format!(
+            "{map_path}: exact fixture excluded set must contain only excluded_sns_treasury"
+        ));
+    }
+    if require_simple_string(&map_path, &map, "excluded_sns_treasury", "name")? != "sns-treasury"
+        || require_simple_string(&map_path, &map, "excluded_sns_treasury", "owner")? != governance
+        || require_simple_u64(
+            &map_path,
+            &map,
+            "excluded_sns_treasury",
+            "distribution_nonce",
+        )? != 0
+        || require_simple_string(&map_path, &map, "excluded_sns_treasury", "domain")?
+            != "token-distribution"
+        || !require_simple_bool(&map_path, &map, "excluded_sns_treasury", "expected_nonzero")?
+    {
+        return Err(format!(
+            "{map_path}: canonical SNS treasury metadata mismatch"
+        ));
+    }
+    let governance_principal = Principal::from_text(&governance)
+        .map_err(|error| format!("{map_path}: invalid Governance principal: {error}"))?;
+    let treasury_subaccount =
+        require_simple_string(&map_path, &map, "excluded_sns_treasury", "subaccount_hex")?;
+    let derived = sns_distribution_subaccount(governance_principal, 0);
+    if treasury_subaccount != derived {
+        return Err(format!(
+            "{map_path}: SNS treasury subaccount {treasury_subaccount} does not match canonical derivation {derived}"
+        ));
+    }
+    let treasury_blob = candid_blob_literal_from_hex(&treasury_subaccount)?;
+    let exact_account =
+        format!("owner = principal \"{governance}\"; subaccount = opt blob \"{treasury_blob}\"");
+
+    let stream_path = format!("{package}/stream-install-args.did");
+    let stream = require_file(root, &stream_path)?;
+    if stream.matches("excluded_io_accounts =").count() != 1
+        || stream.matches(&exact_account).count() != 1
+        || stream.contains(&format!(
+            "excluded_io_accounts = vec {{ record {{ owner = principal \"{governance}\"; subaccount = null"
+        ))
+    {
+        return Err(format!(
+            "{stream_path}: Stream excluded set is not the one exact canonical SNS treasury Account"
+        ));
+    }
+    let historian_path = format!("{package}/historian-observation-config.did");
+    let historian_config = require_file(root, &historian_path)?;
+    if historian_config.matches("name = \"sns-treasury\"").count() != 2
+        || historian_config.matches(&exact_account).count() != 2
+        || historian_config.contains("name = \"sns-governance\"")
+    {
+        return Err(format!(
+            "{historian_path}: historian excluded/history Accounts do not equal Stream canonical excluded Account"
+        ));
+    }
+
+    let nns_path = format!("{package}/nns-manager-install-args.did");
+    let nns = require_file(root, &nns_path)?;
+    for (section, config_path, config) in [
+        ("jupiter_io", stream_path.as_str(), stream.as_str()),
+        ("jupiter_icp_staging", nns_path.as_str(), nns.as_str()),
+        ("two_week_maturity_staging", nns_path.as_str(), nns.as_str()),
+        ("liquid_icp_reserve", nns_path.as_str(), nns.as_str()),
+    ] {
+        let owner = require_simple_string(&map_path, &map, section, "owner")?;
+        if !config.contains(&format!("owner = principal \"{owner}\"")) {
+            return Err(format!(
+                "{config_path}: missing Account-map owner for {section}"
+            ));
+        }
+        if let Ok(subaccount) = require_simple_string(&map_path, &map, section, "subaccount_hex") {
+            let blob = candid_blob_literal_from_hex(&subaccount)?;
+            if !config.contains(&format!("subaccount = opt blob \"{blob}\"")) {
+                return Err(format!(
+                    "{config_path}: missing Account-map subaccount for {section}"
+                ));
+            }
+        }
+    }
+
+    let economics_path = format!("{package}/redemption-economics.toml");
+    let economics_text = require_file(root, &economics_path)?;
+    let economics = parse_simple_toml_document(&economics_path, &economics_text)?;
+    let total = require_simple_u128(
+        &economics_path,
+        &economics,
+        "snapshot",
+        "total_io_supply_e8s",
+    )?;
+    let reserve = require_simple_u128(
+        &economics_path,
+        &economics,
+        "snapshot",
+        "protocol_reserve_io_e8s",
+    )?;
+    let excluded = require_simple_u128(
+        &economics_path,
+        &economics,
+        "excluded_sns_treasury",
+        "balance_e8s",
+    )?;
+    if excluded == 0
+        || require_simple_string(&economics_path, &economics, "excluded_sns_treasury", "name")?
+            != "sns-treasury"
+        || require_simple_string(
+            &economics_path,
+            &economics,
+            "excluded_sns_treasury",
+            "owner",
+        )? != governance
+        || require_simple_string(
+            &economics_path,
+            &economics,
+            "excluded_sns_treasury",
+            "subaccount_hex",
+        )? != treasury_subaccount
+        || !require_simple_bool(
+            &economics_path,
+            &economics,
+            "excluded_sns_treasury",
+            "expected_nonzero",
+        )?
+    {
+        return Err(format!(
+            "{economics_path}: missing, zero, or mismatched excluded Account evidence"
+        ));
+    }
+    let liquid = require_simple_u128(
+        &economics_path,
+        &economics,
+        "snapshot",
+        "liquid_icp_reserve_e8s",
+    )?;
+    let redeemed = require_simple_u128(
+        &economics_path,
+        &economics,
+        "snapshot",
+        "redemption_io_amount_e8s",
+    )?;
+    let io_fee = require_simple_u128(&economics_path, &economics, "snapshot", "io_fee_e8s")?;
+    let icp_fee = require_simple_u128(&economics_path, &economics, "snapshot", "icp_fee_e8s")?;
+    let calculated =
+        calculate_redemption_economics(total, reserve, &[excluded], liquid, redeemed, icp_fee)?;
+    for (field, observed, expected) in [
+        (
+            "excluded_io_total_e8s",
+            require_simple_u128(
+                &economics_path,
+                &economics,
+                "snapshot",
+                "excluded_io_total_e8s",
+            )?,
+            calculated.excluded_total_e8s,
+        ),
+        (
+            "redeemable_io_supply_e8s",
+            require_simple_u128(
+                &economics_path,
+                &economics,
+                "snapshot",
+                "redeemable_io_supply_e8s",
+            )?,
+            calculated.redeemable_supply_e8s,
+        ),
+        (
+            "quoted_gross_icp_e8s",
+            require_simple_u128(
+                &economics_path,
+                &economics,
+                "snapshot",
+                "quoted_gross_icp_e8s",
+            )?,
+            calculated.gross_icp_e8s,
+        ),
+        (
+            "quoted_net_icp_e8s",
+            require_simple_u128(
+                &economics_path,
+                &economics,
+                "snapshot",
+                "quoted_net_icp_e8s",
+            )?,
+            calculated.net_icp_e8s,
+        ),
+    ] {
+        if observed != expected {
+            return Err(format!(
+                "{economics_path}: {field}={observed} does not equal checked calculation {expected}"
+            ));
+        }
+    }
+    if require_simple_u128(
+        &economics_path,
+        &economics,
+        "stream_result",
+        "gross_icp_e8s",
+    )? != calculated.gross_icp_e8s
+        || require_simple_u128(&economics_path, &economics, "stream_result", "net_icp_e8s")?
+            != calculated.net_icp_e8s
+        || !require_simple_bool(
+            &economics_path,
+            &economics,
+            "stream_result",
+            "identical_replay",
+        )?
+    {
+        return Err(format!(
+            "{economics_path}: Stream result or identical replay does not match checked quote"
+        ));
+    }
+
+    let balances = |key| require_simple_u128(&economics_path, &economics, "ledger_balances", key);
+    let post_total = balances("io_total_after_e8s")?;
+    let post_reserve = balances("protocol_reserve_after_e8s")?;
+    let post_excluded = balances("excluded_after_e8s")?;
+    let post_liquid = balances("liquid_icp_after_e8s")?;
+    if balances("io_total_before_e8s")? != total
+        || balances("protocol_reserve_before_e8s")? != reserve
+        || balances("excluded_before_e8s")? != excluded
+        || balances("liquid_icp_before_e8s")? != liquid
+        || post_total != checked_sub(&economics_path, total, io_fee, "IO supply fee burn")?
+        || post_reserve != checked_add(&economics_path, reserve, redeemed, "reserve IO pull")?
+        || post_excluded != excluded
+        || post_liquid
+            != checked_sub(
+                &economics_path,
+                liquid,
+                calculated.gross_icp_e8s,
+                "liquid ICP payout",
+            )?
+        || balances("user_io_after_e8s")?
+            != checked_sub(
+                &economics_path,
+                checked_sub(
+                    &economics_path,
+                    balances("user_io_before_e8s")?,
+                    redeemed,
+                    "user redeemed IO",
+                )?,
+                io_fee,
+                "user IO fee",
+            )?
+        || balances("user_icp_after_e8s")?
+            != checked_add(
+                &economics_path,
+                balances("user_icp_before_e8s")?,
+                calculated.net_icp_e8s,
+                "user ICP receipt",
+            )?
+    {
+        return Err(format!(
+            "{economics_path}: ledger balance changes do not match redemption and fee identities"
+        ));
+    }
+
+    let reserve_path = format!("{package}/reserve-funding-evidence.toml");
+    let reserve_text = require_file(root, &reserve_path)?;
+    let reserve_doc = parse_simple_toml_document(&reserve_path, &reserve_text)?;
+    let funding = require_simple_u128(
+        &reserve_path,
+        &reserve_doc,
+        "reserve",
+        "treasury_transfer_amount_e8s",
+    )?;
+    let fee = require_simple_u128(&reserve_path, &reserve_doc, "reserve", "transfer_fee_e8s")?;
+    let before = require_simple_u128(
+        &reserve_path,
+        &reserve_doc,
+        "reserve",
+        "treasury_balance_before_e8s",
+    )?;
+    let after_reserve = require_simple_u128(
+        &reserve_path,
+        &reserve_doc,
+        "reserve",
+        "treasury_balance_after_reserve_e8s",
+    )?;
+    let after_user = require_simple_u128(
+        &reserve_path,
+        &reserve_doc,
+        "reserve",
+        "treasury_balance_after_user_e8s",
+    )?;
+    let user_funding = require_simple_u128(&ids_path, &ids, "ledger", "user_funding_e8s")?;
+    if before == 0
+        || after_reserve
+            != checked_sub(
+                &reserve_path,
+                checked_sub(&reserve_path, before, funding, "treasury reserve funding")?,
+                fee,
+                "treasury reserve-funding fee",
+            )?
+        || after_user
+            != checked_sub(
+                &reserve_path,
+                checked_sub(
+                    &reserve_path,
+                    after_reserve,
+                    user_funding,
+                    "treasury user funding",
+                )?,
+                fee,
+                "treasury user-funding fee",
+            )?
+        || require_simple_string(&reserve_path, &reserve_doc, "reserve", "treasury_name")?
+            != "sns-treasury"
+        || require_simple_string(&reserve_path, &reserve_doc, "reserve", "treasury_owner")?
+            != governance
+        || require_simple_string(
+            &reserve_path,
+            &reserve_doc,
+            "reserve",
+            "treasury_subaccount_hex",
+        )? != treasury_subaccount
+    {
+        return Err(format!(
+            "{reserve_path}: treasury funding balances or canonical Account mismatch"
+        ));
+    }
+
+    let history_path = format!("{package}/treasury-account-history.log");
+    let history = require_file(root, &history_path)?;
+    let reserve_record = unique_index_transfer_record(&history, funding, "00000000000005dd")?;
+    let user_record = unique_index_transfer_record(&history, user_funding, "00000000000005de")?;
+    for (label, record, block_key) in [
+        ("reserve", reserve_record, "transfer_block"),
+        ("user", user_record, "user_funding_transfer_block"),
+    ] {
+        if !record.contains(&format!("owner = principal \"{governance}\""))
+            || !record.contains(&format!("subaccount = opt blob \"{treasury_blob}\""))
+        {
+            return Err(format!(
+                "{history_path}: {label} treasury transfer source is not the canonical SNS treasury Account"
+            ));
+        }
+        let block = candid_nat_field(record, "id")?;
+        if block != require_simple_u128(&reserve_path, &reserve_doc, "reserve", block_key)? {
+            return Err(format!(
+                "{reserve_path}: {label} treasury transfer block does not match account history"
+            ));
+        }
+    }
+
+    let ledger_path = format!("{package}/ledger-evidence.toml");
+    let ledger_text = require_file(root, &ledger_path)?;
+    let ledger = parse_simple_toml_document(&ledger_path, &ledger_text)?;
+    for (key, expected) in [
+        ("io_amount_e8s", redeemed),
+        ("gross_icp_e8s", calculated.gross_icp_e8s),
+        ("net_icp_e8s", calculated.net_icp_e8s),
+        ("excluded_io_total_e8s", excluded),
+        ("redeemable_io_supply_e8s", calculated.redeemable_supply_e8s),
+    ] {
+        if require_simple_u128(&ledger_path, &ledger, "ledger", key)? != expected {
+            return Err(format!("{ledger_path}: ledger.{key} mismatch"));
+        }
+    }
+    let index_synced = require_simple_u128(&ledger_path, &ledger, "ledger", "index_synced_blocks")?;
+    let redemption_block =
+        require_simple_u128(&ledger_path, &ledger, "ledger", "redemption_io_block")?;
+    if index_synced <= redemption_block {
+        return Err(format!(
+            "{ledger_path}: index has not synchronized through the redemption block"
+        ));
+    }
+
+    let archive_path = format!("{package}/archive-evidence.toml");
+    let archive_text = require_file(root, &archive_path)?;
+    let archive = parse_simple_toml_document(&archive_path, &archive_text)?;
+    if require_simple_u128(&archive_path, &archive, "archive", "ledger_archive_count")? != 0
+        || require_simple_u128(&archive_path, &archive, "archive", "root_archive_count")? != 0
+        || require_simple_string(&archive_path, &archive, "archive", "ledger_observation")?
+            != "none"
+        || require_simple_string(&archive_path, &archive, "archive", "root_observation")? != "none"
+        || !require_simple_bool(&archive_path, &archive, "archive", "observation_consistent")?
+    {
+        return Err(format!("{archive_path}: explicit archive result mismatch"));
+    }
+    let archive_log_path = format!("{package}/archive-observation.log");
+    let archive_log = require_file(root, &archive_log_path)?;
+    for required in [
+        "icrc3_get_archives",
+        "(vec {})",
+        "list_sns_canisters",
+        "archives = vec {};",
+    ] {
+        if !archive_log.contains(required) {
+            return Err(format!(
+                "{archive_log_path}: missing exact archive observation {required:?}"
+            ));
+        }
+    }
+
+    let dashboard_path = format!("{package}/historian-dashboard.log");
+    let dashboard = require_file(root, &dashboard_path)?;
+    let historian_total = debug_some_u128(&dashboard_path, &dashboard, "total_io_supply_e8s")?;
+    let historian_reserve =
+        debug_some_u128(&dashboard_path, &dashboard, "protocol_reserve_io_e8s")?;
+    let historian_excluded = debug_some_u128(&dashboard_path, &dashboard, "excluded_io_e8s")?;
+    let historian_redeemable =
+        debug_some_u128(&dashboard_path, &dashboard, "redeemable_io_supply_e8s")?;
+    let historian_liquid = debug_some_u128(&dashboard_path, &dashboard, "liquid_icp_reserve_e8s")?;
+    if historian_total != post_total
+        || historian_reserve != post_reserve
+        || historian_excluded != post_excluded
+        || historian_liquid != post_liquid
+    {
+        return Err(format!(
+            "{dashboard_path}: historian monetary snapshot does not match post-redemption ledgers"
+        ));
+    }
+    let historian_calculated = calculate_redemption_economics(
+        historian_total,
+        historian_reserve,
+        &[historian_excluded],
+        historian_liquid,
+        redeemed,
+        icp_fee,
+    )?;
+    if historian_redeemable != historian_calculated.redeemable_supply_e8s
+        || historian_calculated.gross_icp_e8s != calculated.gross_icp_e8s
+        || historian_calculated.net_icp_e8s != calculated.net_icp_e8s
+    {
+        return Err(format!(
+            "{dashboard_path}: historian rate is inconsistent with the Stream quote snapshot"
+        ));
+    }
     Ok(())
 }
 
@@ -5415,6 +6191,10 @@ fn validate_monitoring_evidence(
     package: &str,
     package_manifest: &SimpleTomlDocument,
 ) -> Result<(), String> {
+    let canonical_economics = package_manifest
+        .get("provenance")
+        .and_then(|section| section.get("canonical_redemption_economics"))
+        == Some(&SimpleTomlValue::Bool(true));
     let source_commit = require_simple_string(
         &format!("{package}/manifest.toml"),
         package_manifest,
@@ -5430,24 +6210,30 @@ fn validate_monitoring_evidence(
     validate_release_source_ancestor(root, &source_commit)?;
     validate_release_source_ancestor(root, &artifact_commit)?;
 
-    let current_manifest_text = require_file(root, MANIFEST_PATH)?;
-    let current_manifest = read_manifest(root)?;
-    if current_manifest.git_commit.as_deref() != Some(&source_commit) {
-        return Err(format!(
-            "{package}: monitoring source commit does not match {MANIFEST_PATH}"
-        ));
-    }
     let recorded_manifest = Command::new("git")
         .current_dir(root)
         .args(["show", &format!("{artifact_commit}:{MANIFEST_PATH}")])
         .output()
         .map_err(|err| format!("git show monitoring artifact manifest: {err}"))?;
-    if !recorded_manifest.status.success()
-        || recorded_manifest.stdout != current_manifest_text.as_bytes()
-    {
+    if !recorded_manifest.status.success() {
         return Err(format!(
-            "{package}: artifact-recording commit does not contain the exact current release manifest"
+            "{package}: artifact-recording commit does not contain a release manifest"
         ));
+    }
+    let evidence_manifest: ArtifactManifest = serde_json::from_slice(&recorded_manifest.stdout)
+        .map_err(|error| format!("{package}: recorded release manifest is invalid: {error}"))?;
+    if evidence_manifest.git_commit.as_deref() != Some(&source_commit) {
+        return Err(format!(
+            "{package}: artifact-recording manifest source does not match package source commit"
+        ));
+    }
+    if canonical_economics {
+        let current_manifest_text = require_file(root, MANIFEST_PATH)?;
+        if recorded_manifest.stdout != current_manifest_text.as_bytes() {
+            return Err(format!(
+                "{package}: current canonical package artifact commit does not contain the exact current release manifest"
+            ));
+        }
     }
 
     let release_path = format!("{package}/release-evidence.toml");
@@ -5461,7 +6247,7 @@ fn validate_monitoring_evidence(
             "artifact_recording_commit",
         )? != artifact_commit
         || require_simple_string(&release_path, &release, "release", "manifest_sha256")?
-            != sha256_hex(&root.join(MANIFEST_PATH))?
+            != hex_sha256(&recorded_manifest.stdout)
     {
         return Err(format!("{release_path}: release identity mismatch"));
     }
@@ -5471,7 +6257,7 @@ fn validate_monitoring_evidence(
         ("io_historian", "io_historian"),
         ("frontend", "io_frontend"),
     ] {
-        let expected = current_manifest
+        let expected = evidence_manifest
             .artifacts
             .iter()
             .find(|entry| entry.canister == canister)
@@ -7276,7 +8062,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, simplicity_check, validate_nns_boundary_pin, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_committed_evidence, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, build_recorded_source, verify_recorded_source, compare_release_artifact_dirs, nns_neuron_staking_subaccount, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, simplicity_check, validate_nns_boundary_pin, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_committed_evidence, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, build_recorded_source, verify_recorded_source, compare_release_artifact_dirs, nns_neuron_staking_subaccount, sns_distribution_subaccount, calculate_redemption_economics, index_transfer_block, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -7435,6 +8221,92 @@ fn main() -> ExitCode {
                 }
             };
             println!("{}", nns_neuron_staking_subaccount(controller, nonce));
+        }
+        "sns_distribution_subaccount" => {
+            if args.len() != 2 {
+                eprintln!("✗ sns_distribution_subaccount: expected <governance-principal> <nonce>");
+                return ExitCode::from(2);
+            }
+            let controller = match Principal::from_text(&args[0]) {
+                Ok(value) => value,
+                Err(err) => {
+                    eprintln!("✗ sns_distribution_subaccount: invalid principal: {err}");
+                    return ExitCode::from(2);
+                }
+            };
+            let nonce = match args[1].parse::<u64>() {
+                Ok(value) => value,
+                Err(err) => {
+                    eprintln!("✗ sns_distribution_subaccount: invalid nonce: {err}");
+                    return ExitCode::from(2);
+                }
+            };
+            println!("{}", sns_distribution_subaccount(controller, nonce));
+        }
+        "calculate_redemption_economics" => {
+            if args.len() != 6 {
+                eprintln!("✗ calculate_redemption_economics: expected <total> <reserve> <excluded> <liquid> <redeemed> <icp-fee>");
+                return ExitCode::from(2);
+            }
+            let parsed = args
+                .iter()
+                .map(|value| value.parse::<u128>())
+                .collect::<Result<Vec<_>, _>>();
+            let values = match parsed {
+                Ok(values) => values,
+                Err(err) => {
+                    eprintln!("✗ calculate_redemption_economics: invalid integer: {err}");
+                    return ExitCode::from(2);
+                }
+            };
+            match calculate_redemption_economics(
+                values[0],
+                values[1],
+                &[values[2]],
+                values[3],
+                values[4],
+                values[5],
+            ) {
+                Ok(result) => {
+                    println!("excluded_total_e8s={}", result.excluded_total_e8s);
+                    println!("redeemable_supply_e8s={}", result.redeemable_supply_e8s);
+                    println!("gross_icp_e8s={}", result.gross_icp_e8s);
+                    println!("net_icp_e8s={}", result.net_icp_e8s);
+                }
+                Err(err) => {
+                    eprintln!("✗ calculate_redemption_economics: {err}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        "index_transfer_block" => {
+            if args.len() != 3 {
+                eprintln!(
+                    "✗ index_transfer_block: expected <history-file> <amount-e8s> <memo-hex>"
+                );
+                return ExitCode::from(2);
+            }
+            let amount = match args[1].parse::<u128>() {
+                Ok(value) => value,
+                Err(err) => {
+                    eprintln!("✗ index_transfer_block: invalid amount: {err}");
+                    return ExitCode::from(2);
+                }
+            };
+            let text = match fs::read_to_string(&args[0]) {
+                Ok(value) => value,
+                Err(err) => {
+                    eprintln!("✗ index_transfer_block: {}: {err}", args[0]);
+                    return ExitCode::from(2);
+                }
+            };
+            match index_transfer_block(&text, amount, &args[2]) {
+                Ok(block) => println!("{block}"),
+                Err(err) => {
+                    eprintln!("✗ index_transfer_block: {err}");
+                    return ExitCode::FAILURE;
+                }
+            }
         }
         "verify_artifacts" => match verify_artifacts_at(&root) {
             Ok(()) => eprintln!("✓ verify_artifacts"),
@@ -8548,16 +9420,6 @@ mod tests {
         read_manifest(root).unwrap()
     }
 
-    fn parent_git_commit(root: &Path) -> String {
-        let output = Command::new("git")
-            .current_dir(root)
-            .args(["rev-parse", "HEAD^"])
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
-    }
-
     fn create_unreachable_commit(root: &Path) -> String {
         let tree = Command::new("git")
             .current_dir(root)
@@ -9258,14 +10120,152 @@ Template SNS principal values are planned wiring placeholders only.
     }
 
     #[test]
-    fn artifact_manifest_accepts_reachable_source_before_later_evidence_commits() {
+    fn sns_treasury_subaccount_matches_pinned_dfinity_fixture() {
+        let governance =
+            Principal::from_text("dmkut-c3777-77776-qaaaq-cai").expect("valid fixture principal");
+        assert_eq!(
+            sns_distribution_subaccount(governance, 0),
+            "1205b30afec9d6b8da3bf45dbfebc286fa341246b9878ca63229d2b9ed49dd6f"
+        );
+    }
+
+    #[test]
+    fn corrected_fixture_redemption_economics_matches_independent_sanity_check() {
+        let result = calculate_redemption_economics(
+            99_999_999_940_000,
+            10_000_000_000,
+            &[79_989_899_980_000],
+            100_000_000_000_000,
+            20_000_000,
+            10_000,
+        )
+        .unwrap();
+        assert_eq!(result.redeemable_supply_e8s, 20_000_099_960_000);
+        assert_eq!(result.gross_icp_e8s, 99_999_500);
+        assert_eq!(result.net_icp_e8s, 99_989_500);
+    }
+
+    #[test]
+    fn index_transfer_block_finds_unique_memo_bound_treasury_transfer() {
+        let history = r#"(variant { Ok = record { transactions = vec {
+          record { id = 7 : nat; transaction = record { kind = "transfer";
+            transfer = opt record { memo = opt blob "\00\00\00\00\00\00\05\de";
+              amount = 100_000_000 : nat; from = record { owner = principal "aaaaa-aa"; subaccount = opt blob "\01"; }; }; }; };
+          record { id = 6 : nat; transaction = record { kind = "transfer";
+            transfer = opt record { memo = opt blob "\00\00\00\00\00\00\05\dd";
+              amount = 10_000_000_000 : nat; from = record { owner = principal "aaaaa-aa"; subaccount = opt blob "\01"; }; }; }; };
+        }; }; })"#;
+        assert_eq!(
+            index_transfer_block(history, 10_000_000_000, "00000000000005dd").unwrap(),
+            6
+        );
+        assert_eq!(
+            index_transfer_block(history, 100_000_000, "00000000000005de").unwrap(),
+            7
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_accepts_artifact_commit_then_evidence_tail() {
         let root = temp_root("manifest-ancestor-source");
+        let source_commit = current_git_commit(&root).unwrap();
         write_artifact_set(&root);
-        let source_commit = parent_git_commit(&root);
         let manifest = build_manifest_for_commit(&root, source_commit).unwrap();
         write_artifact_manifest(&root, &manifest);
+        assert!(Command::new("git")
+            .current_dir(&root)
+            .args(["add", "release-artifacts"])
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .current_dir(&root)
+            .args([
+                "-c",
+                "user.name=IO xtask test",
+                "-c",
+                "user.email=io-xtask@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "record artifacts",
+            ])
+            .status()
+            .unwrap()
+            .success());
+        write(&root, "docs/evidence.md", "evidence\n");
+        assert!(Command::new("git")
+            .current_dir(&root)
+            .args(["add", "docs/evidence.md"])
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .current_dir(&root)
+            .args([
+                "-c",
+                "user.name=IO xtask test",
+                "-c",
+                "user.email=io-xtask@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "record evidence",
+            ])
+            .status()
+            .unwrap()
+            .success());
         verify_artifacts_at(&root).unwrap();
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn release_tail_rejects_simulated_post_source_canister_and_build_inputs() {
+        for path in [
+            "Cargo.toml",
+            "Cargo.lock",
+            "rust-toolchain.toml",
+            "canisters/io_stream_manager/src/lib.rs",
+            "canisters/frontend/public/index.html",
+            "crates/io_build_support/src/lib.rs",
+            "tools/scripts/build-canister",
+            "tools/xtask/src/main.rs",
+        ] {
+            let error = validate_release_commit_paths(
+                "simulated-evidence-tail",
+                &[path.to_string()],
+                false,
+            )
+            .unwrap_err();
+            assert!(error.contains(path), "unexpected error: {error}");
+        }
+    }
+
+    #[test]
+    fn release_tail_allows_only_artifacts_then_narrow_evidence_paths() {
+        validate_release_commit_paths(
+            "simulated-artifact-recording",
+            &[
+                "release-artifacts/manifest.json".into(),
+                "release-artifacts/io_stream_manager.wasm".into(),
+            ],
+            true,
+        )
+        .unwrap();
+        for path in [
+            "deploy/local-sns-rehearsal/evidence/2026-08-12-example/manifest.toml",
+            "docs/operations/release-checklist.md",
+            ".github/workflows/ci.yml",
+            "tools/sns/launch-readiness.toml",
+        ] {
+            validate_release_commit_paths("simulated-tail", &[path.into()], false).unwrap();
+        }
+        assert!(validate_release_commit_paths(
+            "simulated-artifact-recording",
+            &["docs/operations/release-checklist.md".into()],
+            true,
+        )
+        .is_err());
     }
 
     #[test]
@@ -9687,18 +10687,22 @@ Template SNS principal values are planned wiring placeholders only.
     }
 
     #[test]
-    fn local_sns_committed_evidence_accepts_exact_incomplete_inventory() {
+    fn exact_incomplete_inventory_is_valid_but_not_current_launch_ready() {
         let root = temp_root("local-sns-evidence-incomplete");
         write_incomplete_evidence_package(&root);
-        check_local_sns_committed_evidence_at(&root).unwrap();
+        assert!(check_local_sns_committed_evidence_at(&root)
+            .unwrap_err()
+            .contains("requires one complete canonical-redemption-economics"));
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn local_sns_committed_evidence_accepts_exact_completed_inventory() {
+    fn exact_historical_inventory_is_valid_but_not_current_launch_ready() {
         let root = temp_root("local-sns-evidence-completed");
         write_completed_evidence_package(&root);
-        check_local_sns_committed_evidence_at(&root).unwrap();
+        assert!(check_local_sns_committed_evidence_at(&root)
+            .unwrap_err()
+            .contains("requires one complete canonical-redemption-economics"));
         let _ = fs::remove_dir_all(root);
     }
 

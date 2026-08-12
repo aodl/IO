@@ -1327,6 +1327,32 @@ fn quoted_assignment(text: &str, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("fresh lifecycle input omits {key}"))
 }
 
+fn replace_single_assignment_line(
+    text: &str,
+    key: &str,
+    replacement: &str,
+) -> Result<String, String> {
+    let mut matches = 0_usize;
+    let mut rendered = String::with_capacity(text.len() + replacement.len());
+    for line in text.lines() {
+        if line.trim_start().starts_with(&format!("{key} =")) {
+            matches += 1;
+            let indentation = &line[..line.len() - line.trim_start().len()];
+            rendered.push_str(indentation);
+            rendered.push_str(replacement);
+        } else {
+            rendered.push_str(line);
+        }
+        rendered.push('\n');
+    }
+    if matches != 1 {
+        return Err(format!(
+            "fresh lifecycle input must contain exactly one {key} assignment, found {matches}"
+        ));
+    }
+    Ok(rendered)
+}
+
 fn rewrite_lifecycle_allocations(inputs: &Path, topology_path: &Path) -> Result<(), String> {
     if !topology_path.is_absolute() {
         return Err("IO_LOCAL_SNS_TOPOLOGY_FILE must be absolute".to_string());
@@ -1375,6 +1401,9 @@ fn rewrite_lifecycle_allocations(inputs: &Path, topology_path: &Path) -> Result<
         (quoted_assignment(&runtime, "swap")?, sns_ids[3].clone()),
         (quoted_assignment(&runtime, "index")?, sns_ids[4].clone()),
     ];
+    let governance = Principal::from_text(&sns_ids[1])
+        .map_err(|error| format!("invalid allocated SNS Governance principal: {error}"))?;
+    let treasury_subaccount = crate::sns_distribution_subaccount(governance, 0);
     for relative in [
         "local-vars.toml",
         "runtime.local.toml",
@@ -1389,6 +1418,21 @@ fn rewrite_lifecycle_allocations(inputs: &Path, topology_path: &Path) -> Result<
         })?;
         for (planned, allocated) in &replacements {
             text = text.replace(planned, allocated);
+        }
+        if relative == "io_stream_manager.did" {
+            text = replace_single_assignment_line(
+                &text,
+                "excluded_io_accounts",
+                &format!(
+                    "excluded_io_accounts = vec {{ record {{ owner = principal \"{}\"; subaccount = opt blob \"{}\" }} }};",
+                    sns_ids[1],
+                    treasury_subaccount
+                        .as_bytes()
+                        .chunks_exact(2)
+                        .map(|pair| format!("\\{}", std::str::from_utf8(pair).expect("hex is ASCII")))
+                        .collect::<String>()
+                ),
+            )?;
         }
         fs::write(&path, text).map_err(|error| {
             format!(

@@ -86,6 +86,15 @@ mark_phase_done() {
   printf '%s\n' "$detail" > "$(phase_done_file "$phase")"
 }
 
+phase_detail_value() {
+  local phase="$1"
+  local key="$2"
+  local file
+  file="$(phase_done_file "$phase")"
+  require_file "$file"
+  sed -n "s/.*${key}=\([^ ;]*\).*/\1/p" "$file" | head -1
+}
+
 log_command_status() {
   local log_file="$1"
   local status="$2"
@@ -329,6 +338,50 @@ require_nat() {
 
 hex_blob_literal() {
   printf '%s' "$1" | sed 's/../\\&/g'
+}
+
+sns_distribution_subaccount_hex() {
+  local governance="$1"
+  local nonce="$2"
+  require_nat "SNS distribution subaccount nonce" "$nonce"
+  local value
+  value="$(cargo run --quiet -p xtask --manifest-path "${REPO_ROOT}/Cargo.toml" -- \
+    sns_distribution_subaccount "$governance" "$nonce")" || {
+      record_blocker "could not derive SNS distribution subaccount for ${governance} nonce ${nonce}"
+      return 2
+    }
+  require_hex_32_bytes "SNS distribution subaccount" "$value"
+  printf '%s\n' "$value"
+}
+
+sns_treasury_subaccount_hex() {
+  sns_distribution_subaccount_hex "$1" 0
+}
+
+render_local_account_map() {
+  local output="$1"
+  local governance="$2"
+  local stream nns_manager jupiter treasury reserve liquid jupiter_io two_week
+  stream="$(toml_string "$(local_vars_file)" local io_stream_manager_canister)"
+  nns_manager="$(toml_string "$(local_vars_file)" local io_nns_neuron_manager_canister)"
+  jupiter="$(runtime_value accounts operator_principal)"
+  reserve="$(runtime_value accounts reserve_subaccount_hex)"
+  liquid="$(runtime_value accounts liquid_icp_subaccount_hex)"
+  jupiter_io="$(runtime_value accounts jupiter_io_subaccount_hex)"
+  two_week="$(runtime_value accounts two_week_staging_subaccount_hex)"
+  treasury="$(sns_treasury_subaccount_hex "$governance")"
+  for entry in "$reserve" "$liquid" "$jupiter_io" "$two_week" "$treasury"; do
+    require_hex_32_bytes "local Account subaccount" "$entry"
+  done
+  {
+    printf '[protocol_reserve_io]\nowner = "%s"\nsubaccount_hex = "%s"\nledger = "sns"\n\n' "$stream" "$reserve"
+    printf '[liquid_icp_reserve]\nowner = "%s"\nsubaccount_hex = "%s"\nledger = "icp"\n\n' "$stream" "$liquid"
+    printf '[redemption_spender]\nowner = "%s"\nsubaccount = "none"\nledger = "sns"\n\n' "$stream"
+    printf '[jupiter_io]\nowner = "%s"\nsubaccount_hex = "%s"\nledger = "sns"\n\n' "$jupiter" "$jupiter_io"
+    printf '[jupiter_icp_staging]\nowner = "%s"\nsubaccount = "none"\nledger = "icp"\n\n' "$nns_manager"
+    printf '[two_week_maturity_staging]\nowner = "%s"\nsubaccount_hex = "%s"\nledger = "icp"\n\n' "$nns_manager" "$two_week"
+    printf '[excluded_sns_treasury]\nname = "sns-treasury"\nowner = "%s"\nsubaccount_hex = "%s"\ndistribution_nonce = 0\ndomain = "token-distribution"\nexpected_nonzero = true\n' "$governance" "$treasury"
+  } > "$output"
 }
 
 extract_proposal_id() {

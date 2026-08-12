@@ -25,7 +25,7 @@ This is the handoff index for an independent auditor. It is not a self-audit and
 
 | Classification | Evidence |
 | --- | --- |
-| Proved locally | `docs/testing/e2e-coverage-matrix.md`; exact-source release verification; completed historical package `deploy/local-sns-rehearsal/evidence/2026-08-11-4320fdf/`; byte-bound final package `deploy/local-sns-rehearsal/evidence/2026-08-12-4320fdf-monitoring/`. |
+| Proved locally | `docs/testing/e2e-coverage-matrix.md`; exact-source release verification; historical mechanics/connectivity packages `2026-08-11-4320fdf` and `2026-08-12-4320fdf-monitoring`. Their redemption economics are superseded under `docs/operations/local-sns-evidence-disposition.md`; current audit handoff requires the corrected canonical-economics package. |
 | Candidate-only | Same-source SNS Governance/Root at IC `4320fdf2e613844eabae1927b1a23b98da3a7bc6`, including reward-share capability and Governance → Root compatibility. |
 | Officially available | Pinned official baseline artifacts/tooling in `tests/e2e_real_canisters/official-sns-release.lock.toml`; these do not imply official reward-share adoption. |
 | External fixture gaps | Real transport-fault injection and non-1.0 maturity modulation, classified in `docs/operations/remaining-work.md`. |

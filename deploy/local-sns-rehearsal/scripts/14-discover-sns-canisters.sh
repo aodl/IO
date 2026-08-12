@@ -37,6 +37,9 @@ for role in root governance ledger index swap; do
     exit 2
   fi
 done
+account_map="${GENERATED_DIR}/account-map.toml"
+render_local_account_map "$account_map" "$(sns_canister_id governance)"
+printf 'account_map=%s\n' "$account_map" | tee -a "$log_file"
 if ! phase_is_done 14-neuron-cap-set; then
   governance="$(sns_canister_id governance)"
   parameters="$(dfx canister call --network "$network_url" --identity "$identity" --query \

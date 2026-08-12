@@ -52,11 +52,12 @@ if ! phase_is_done 17-upgrade-attempted; then
   swap="$(sns_canister_id swap)"
   reserve_subaccount="$(runtime_value accounts reserve_subaccount_hex)"
   liquid_subaccount="$(runtime_value accounts liquid_icp_subaccount_hex)"
+  treasury_subaccount="$(sns_treasury_subaccount_hex "$governance")"
   fixture="${GENERATED_DIR}/nns-readiness-fixture.toml"
   require_file "$fixture"
   reward_backing_neuron_id="$(toml_number "$fixture" reward_backing_neuron id)"
   two_year_neuron_id="$(toml_number "$fixture" two_year_neuron id)"
-  config_file="$(mktemp "${GENERATED_DIR}/historian-observation-config.XXXXXX.did")"
+  config_file="${GENERATED_DIR}/historian-observation-config.did"
   cat > "$config_file" <<EOF
 (opt record {
   stream_manager = principal "${stream}";
@@ -71,10 +72,10 @@ if ! phase_is_done 17-upgrade-attempted; then
   two_year_neuron_id = ${two_year_neuron_id} : nat64;
   protocol_io_reserve = record { owner = principal "${stream}"; subaccount = opt blob "$(hex_blob_literal "$reserve_subaccount")" };
   liquid_icp_reserve = record { owner = principal "${stream}"; subaccount = opt blob "$(hex_blob_literal "$liquid_subaccount")" };
-  excluded_io_accounts = vec { record { name = "sns-governance"; account = record { owner = principal "${governance}"; subaccount = null } } };
+  excluded_io_accounts = vec { record { name = "sns-treasury"; account = record { owner = principal "${governance}"; subaccount = opt blob "$(hex_blob_literal "$treasury_subaccount")" } } };
   history_accounts = vec {
     record { name = "protocol-reserve"; account = record { owner = principal "${stream}"; subaccount = opt blob "$(hex_blob_literal "$reserve_subaccount")" } };
-    record { name = "sns-governance"; account = record { owner = principal "${governance}"; subaccount = null } };
+    record { name = "sns-treasury"; account = record { owner = principal "${governance}"; subaccount = opt blob "$(hex_blob_literal "$treasury_subaccount")" } };
   };
   // IO dapps are installed from raw release Wasm. SNS-W publishes and installs
   // the compressed source payload, which is the module hash Root observes.
@@ -126,6 +127,25 @@ if ! phase_is_done 17-stream-function-registered; then
   proposal_id="$(submit_sns_proposal "$log_file" 'Register IO stream lifecycle' 'Local-only registration of the exact stream validator and execution methods.' "$action")"
   wait_sns_proposal "$log_file" "$proposal_id"
   mark_phase_done 17-stream-function-registered "function_id=${function_id} proposal_id=${proposal_id}"
+fi
+if ! phase_is_done 17-excluded-account-preflight; then
+  governance="$(sns_canister_id governance)"
+  ledger="$(sns_canister_id ledger)"
+  treasury_subaccount="$(sns_treasury_subaccount_hex "$governance")"
+  ledger_did="$(official_checkout)/rs/ledger_suite/icrc1/ledger/ledger.did"
+  treasury_balance="$(dfx canister call --network "$network_url" --identity "$identity" --query \
+    --candid "$ledger_did" "$ledger" icrc1_balance_of \
+    "(record { owner = principal \"${governance}\"; subaccount = opt blob \"$(hex_blob_literal "$treasury_subaccount")\" })" \
+    | tr -d '()_ :nat[:space:]')"
+  require_nat "SNS treasury preflight balance" "$treasury_balance"
+  if [ "$treasury_balance" -eq 0 ]; then
+    record_blocker "named excluded Account sns-treasury unexpectedly has zero balance before Stream activation"
+    exit 2
+  fi
+  printf 'excluded_account name=sns-treasury owner=%s subaccount_hex=%s balance_e8s=%s\n' \
+    "$governance" "$treasury_subaccount" "$treasury_balance" | tee -a "$log_file"
+  mark_phase_done 17-excluded-account-preflight \
+    "name=sns-treasury owner=${governance} subaccount_hex=${treasury_subaccount} balance_e8s=${treasury_balance}"
 fi
 if ! phase_is_done 17-stream-activated; then
   function_id="$(runtime_value governance stream_lifecycle_function_id)"

@@ -26,6 +26,32 @@ sns="$(sns_cli)"
 vars_file="$(local_vars_file)"
 stream_args="$(stream_install_args_file)"
 nns_args="$(nns_install_args_file)"
+planned_governance="$(runtime_value planned_sns governance)"
+treasury_subaccount="$(sns_treasury_subaccount_hex "$planned_governance")"
+treasury_blob="$(hex_blob_literal "$treasury_subaccount")"
+stream_args_tmp="${stream_args}.tmp"
+excluded_assignment_count=0
+: > "$stream_args_tmp"
+while IFS= read -r line || [ -n "$line" ]; do
+  case "$line" in
+    *excluded_io_accounts*=*)
+      excluded_assignment_count=$((excluded_assignment_count + 1))
+      printf '    excluded_io_accounts = vec { record { owner = principal "%s"; subaccount = opt blob "%s" } };\n' \
+        "$planned_governance" "$treasury_blob" >> "$stream_args_tmp"
+      ;;
+    *) printf '%s\n' "$line" >> "$stream_args_tmp" ;;
+  esac
+done < "$stream_args"
+if [ "$excluded_assignment_count" -ne 1 ]; then
+  rm -f "$stream_args_tmp"
+  record_blocker "stream install args must contain exactly one excluded_io_accounts assignment"
+  exit 2
+fi
+mv "$stream_args_tmp" "$stream_args"
+grep -Fq "excluded_io_accounts = vec { record { owner = principal \"${planned_governance}\"; subaccount = opt blob \"${treasury_blob}\" } };" "$stream_args" || {
+  record_blocker "stream install args do not contain the canonical SNS treasury Account"
+  exit 2
+}
 bundle_dir="${IO_LOCAL_SNS_BUNDLE_DIR:-}"
 if [ -z "$bundle_dir" ]; then
   record_blocker "set IO_LOCAL_SNS_BUNDLE_DIR to the reviewed same-source Governance/Root bundle"

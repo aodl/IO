@@ -32,7 +32,7 @@ Do not use `--network ic`. Do not call mainnet. Do not touch `oae4c-3iaaa-aaaar-
 - `scripts/16-exercise-index-and-archives.sh`: captures index synchronization, exact Account histories and canonical ledger/Root archive discovery.
 - `scripts/17-exercise-governance-and-controllers.sh`: records controller and hash-changing upgrade evidence, registers lifecycle functions, and requires both managers to activate through signed SNS Governance proposals.
 - `scripts/17-observe-one-day-reward.sh`: advances only the attached local PocketIC instance by exactly one day and records the proposal-bearing production reward observation and permissionless keeper result.
-- `scripts/18-package-evidence.sh`: packages the exact incomplete blocker form; completed-evidence collection remains manual until every required canonical observation exists.
+- `scripts/18-package-evidence.sh`: packages only a completed, release-bound canonical-economics run, including the exact rendered install/config inputs and Account histories.
 - `scripts/19-cleanup-official-network.sh`: scoped cleanup reminder for local-only processes.
 
 `canister-ids.local.toml` is the operator-filled local evidence file and should not be treated as production config.
@@ -63,7 +63,7 @@ Manual sequence:
 2. Copy `local-vars.example.toml` and `runtime.local.example.toml` to their ignored `.local.toml` forms. Fill only fresh per-run local values; never reuse prior ephemeral IDs.
 3. Run `runbook.sh render-sns-init` to produce ignored `sns_init.local.yaml`.
 4. Run `runbook.sh bootstrap-official-network` against an isolated pinned clean `dfinity/ic` checkout and loopback endpoint.
-5. Write ignored `install-args.local/io_stream_manager.did` and `install-args.local/io_nns_neuron_manager.did` for the reviewed local Accounts. The thin lifecycle adapter reads the uniquely owned `sns-testing-init` `topology.json` and rewrites only its isolated input copies with that topology's NNS/SNS allocation IDs before installation; manual runs must record their canonically allocated IDs explicitly. Phase 12 renders the reviewed bundle's compressed/source Governance hash—the module hash SNS-W installs—into the stream args. Run `runbook.sh build-local-io-canisters` to verify the exact release provenance and hashes.
+5. Write ignored `install-args.local/io_stream_manager.did` and `install-args.local/io_nns_neuron_manager.did` for the reviewed local Accounts. The thin lifecycle adapter reads the uniquely owned `sns-testing-init` `topology.json`, rewrites only its isolated input copies with that topology's NNS/SNS allocation IDs, and derives the canonical Governance-owned treasury distribution subaccount for nonce `0`. Phase 12 re-derives and renders that one exact excluded Account plus the reviewed bundle's compressed/source Governance hash before installation. Manual runs use the same helper and fail if the excluded assignment is missing or duplicated. Run `runbook.sh build-local-io-canisters` to verify the exact release provenance and hashes.
 6. Set `IO_LOCAL_SNS_BUNDLE_DIR` to the reviewed same-source Governance/Root resolver output, then run the restartable `deploy-local-dapps`, `propose-and-finalize-sns`, and `discover-sns-canisters` phases.
 7. Run `exercise-ledger`, `exercise-index-and-archives`, `exercise-governance-and-controllers`, and `observe-one-day-reward` after their canonical prerequisites exist. The governance phase submits the current exact raw historian Wasm inline through the signed SNS Governance proposal and Root execution path. The inline payload avoids only the unavailable chunk-store upload path and does not bypass Governance. The phase requires a transition from a provenance-correct prior historian hash to the current release-manifest raw hash.
 8. Run `runbook.sh record-ids` and record the canonically discovered IDs in ignored `canister-ids.local.toml`.
@@ -103,21 +103,20 @@ cargo run -p xtask -- validate_local_sns_scripts
 
 `validate_local_sns_scripts` copies the operator scripts to a temp directory, writes fixture local variables and completed local evidence, runs the no-network executable paths, and checks positive and negative guardrails. It does not call canisters and does not require the dfx SNS extension.
 
-`validate_local_sns_committed_evidence` accepts an incomplete blocker package or
-a completed immutable package. The historical completed shape contains
+`validate_local_sns_committed_evidence` validates historical immutable packages and requires one completed current canonical-economics package for launch readiness. The historical completed shape contains
 `manifest.toml`, toolchain/SNS/ledger/governance/controller/archive evidence,
 the local init, sanitized commands, and `SHA256SUMS`. A completed monitoring
 package additionally contains `release-evidence.toml` and the direct PocketIC
 `historian-dashboard.log`. The validator requires every recorded tool version
 to have a matching exact SHA-256 and byte-binds monitoring packages to the
 current release manifest, its source commit, and its artifact-recording commit.
-It also requires canonical historian supply/reserve/liquid/rate,
+The current canonical shape additionally preserves exact Stream/NNS/historian Candid inputs, the typed Account map, checked redemption economics and the treasury Account history. It independently calculates excluded total, redeemable supply, gross and net, verifies ledger balance identities and requires the historian rate to agree. It also requires canonical historian supply/reserve/liquid/rate,
 module/controller, lifecycle, Governance, index and archive observations to be
 fresh and complete. No completed package may contain blocker/placeholder text.
 
 Both package forms reject unexpected or uncovered files, duplicate checksum entries, path traversal, symlinks, non-regular files, secret/private-key markers, and mainnet endpoint or network arguments.
 
-The completed 2026-08-11 package is the authoritative sanitized local evidence. Restart-safe external logs remain supporting diagnostics rather than the committed-evidence contract.
+The disposition of both older completed packages is recorded in `docs/operations/local-sns-evidence-disposition.md`. Their mechanics and connectivity observations remain valid, but their redemption-rate/excluded-Account claims are historical and superseded. Restart-safe external logs remain supporting diagnostics rather than the committed-evidence contract.
 
 ## Issuance Model Under Test
 

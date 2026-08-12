@@ -42,7 +42,7 @@ flow was reproduced from the clean sibling checkout at
 publication, CreateServiceNervousSystem, swap participation/finalization,
 canister discovery, Governance treasury funding, ledger/index evidence and
 controller handoff all succeeded locally. The immutable completed sanitized
-package is `deploy/local-sns-rehearsal/evidence/2026-08-11-4320fdf/`.
+historical package is `deploy/local-sns-rehearsal/evidence/2026-08-11-4320fdf/`. Its mechanics observations remain valid; its redemption-rate/excluded-Account evidence is superseded as described in `local-sns-evidence-disposition.md`.
 
 The committed package includes a renderable local `sns_init` candidate, per-run runtime inputs, evidence capture helpers, no-network validators, and restartable phases 12–17. Those phases verify exact IO release provenance, install Paused dapps, provision canonical staging fee floats and two source-shaped local NNS neurons, publish a reviewed Governance/Root bundle through executed local NNS Governance proposals into SNS-W, verify its exact compressed hashes, finalize and discover the SNS, submit real treasury and lifecycle proposals, exercise production redemption, and capture index/archive/controller evidence. The prior one-component candidate-Governance/official-Root `unit_variant` incompatibility is historical; same-source candidate Governance/Root compatibility is proved. If the maintained chunk-store CLI route fails before execution, phase 17 submits the exact release Wasm inline through a signed SNS Governance proposal and Root. The inline payload avoids only the unavailable upload store; it does not bypass Governance. The phase upgrades a provenance-correct prior historian to the current exact manifest artifact and requires different before/after module hashes. The phases fail closed and persist checkpoints. The completed historical package records one clean run; the thin lifecycle source profile is separate runner coverage and does not retroactively qualify or invalidate that package.
 
@@ -105,14 +105,12 @@ The local rehearsal must prove:
 
 ## What Remains Unproven
 
-The historical package proves same-source candidate Governance/Root compatibility,
+The historical packages prove same-source candidate Governance/Root compatibility,
 authentic inline SNS-controlled hash-changing historian upgrade,
 Governance-authorized stream and NNS-manager activation using the source-shaped
 local NNS fixture, production ICRC-2 redemption, canonical ledger/index
 histories, and one exact proposal-bearing daily reward event. The separate
-`2026-08-12-4320fdf-monitoring` package preserves that history while proving
-the final typed historian configuration and canonical-source convergence from
-a fresh lifecycle-profile topology.
+`2026-08-12-4320fdf-monitoring` package preserves that history and historian connectivity from a fresh lifecycle-profile topology. It is not current canonical redemption-economics proof because its historian configuration used the Governance default Account.
 
 This rehearsal does not prove final SNS launch readiness, mainnet NNS proposal acceptance, final tokenomics, final fallback controllers, production adapter activation, archive traversal completeness, or external audit readiness.
 
