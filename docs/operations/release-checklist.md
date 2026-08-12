@@ -11,6 +11,9 @@ Use this before every release-oriented commit or artifact proposal.
 - [ ] Finalize and commit the exact source tree, then run `tools/scripts/build-release-from-source <SOURCE_COMMIT>` from the artifact-recording checkout.
 - [ ] Commit the generated artifact set in the commit immediately after source finalization. That artifact-recording commit may change only `release-artifacts/**`.
 - [ ] Keep every later release-tail commit limited to immutable local evidence under `deploy/local-sns-rehearsal/evidence/**`, `docs/**`, `.github/workflows/**`, or `tools/sns/launch-readiness.toml`. Validator, lifecycle-tool, release-generation, dependency, Rust/toolchain, canister, crate, and frontend build-input changes require a new source-finalization/artifact pair.
+- [ ] Preserve source-finalization commit `e1c739e5658869edb3ab507d4164a9f6b02127bd` and artifact-recording commit `c335a005ecf108b10cf24683767da5580cfb4f50` exactly throughout review and integration.
+- [ ] Before integration, prove the pull-request head is the checked-out `HEAD` and the current PR base commit is an ancestor of it. Do not merge the base into the branch or rebase the branch to repair a failed ancestry check.
+- [ ] Integrate this release lineage by fast-forward only. Squash merge, rebase merge, and an added merge commit are forbidden because each changes or violates the recorded commit lineage. If branch protection makes fast-forward integration impossible, do not merge and do not weaken provenance; return for an explicit decision. If resolving an advanced base requires build-input changes, create a new source-finalization/artifact-recording pair and rerun release validation.
 - [ ] `cargo run -p xtask -- verify_artifacts`
 - [ ] `cargo run -p xtask -- verify_recorded_source`
 - [ ] `cargo run -p xtask -- validate_install_args`

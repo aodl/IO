@@ -69,6 +69,17 @@ checks the checked-in bytes against a detached rebuild of the manifest's exact
 source commit. Generation remains stricter and is only permitted while the
 working tree differs from that source under `release-artifacts/` alone.
 
+For the release lineage whose source-finalization commit is
+`e1c739e5658869edb3ab507d4164a9f6b02127bd` and artifact-recording commit is
+`c335a005ecf108b10cf24683767da5580cfb4f50`, integration must preserve both
+commit identities. Pull-request jobs check out the PR head directly and require
+the PR base commit to be an ancestor of that head. While that condition holds,
+integration must be fast-forward-only. Squash and rebase merges are forbidden,
+and an added merge commit is incompatible with this release-tail rule. If
+branch protection prevents a fast-forward, do not merge or weaken provenance;
+return for an explicit integration decision and, if build inputs must change,
+create and validate a new source-finalization/artifact-recording pair.
+
 Detached worktrees live outside the repository under one portable temporary
 root selected in this order: `IO_RELEASE_BUILD_TMPDIR`, `RUNNER_TEMP`, `TMPDIR`,
 `XDG_CACHE_HOME/io/release-builds`, then `HOME/.cache/io/release-builds`. The

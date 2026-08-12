@@ -15,8 +15,25 @@ jobs:
       # actions/checkout v5
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           # Exact release verification materializes the recorded source commit.
           fetch-depth: 0
+      - name: Verify pull-request fast-forward lineage
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          actual_head="$(git rev-parse HEAD)"
+          if [[ "${actual_head}" != "${PR_HEAD_SHA}" ]]; then
+            echo "checked-out HEAD ${actual_head} does not equal PR head ${PR_HEAD_SHA}" >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${PR_BASE_SHA}" HEAD; then
+            echo "PR base ${PR_BASE_SHA} is not an ancestor of HEAD ${actual_head}" >&2
+            exit 1
+          fi
       # Swatinem/rust-cache v2.9.2
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: Add Wasm target
