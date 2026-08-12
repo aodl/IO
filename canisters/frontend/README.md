@@ -98,6 +98,6 @@ redemption intent.
 
 The frontend renders historian source health from the production historian declarations only. It displays fresh, stale, missing, prelaunch/not-configured, and retryable error source states as public read model data.
 
-Historian data is rebuildable, not canonical protocol truth, and not a value-moving authority. IO protocol is not live. SNS IO ledger remains not launched. Missing/stale/error states are visible; missing/stale/incomplete fields must not be interpreted as zero protocol value.
+Historian data is rebuildable, not canonical protocol truth, and not a value-moving authority. IO protocol is not live. SNS IO ledger remains not launched. The missing/stale/error states are visible; missing/stale/incomplete fields must not be interpreted as zero protocol value.
 
 The frontend does not call value-moving canisters. Index canisters remain the normal account-history abstraction for future account-history observations; index canisters are the default source for account-history observations. Raw ledger/archive traversal is not the default path.
