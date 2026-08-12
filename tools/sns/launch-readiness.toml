@@ -11,7 +11,7 @@ evidence = "TODO: external audit/security review."
 
 [sns_config_validated]
 status = "incomplete"
-evidence = "tools/sns/sns_init.io.template.yaml exists; official dfx sns validation is optional and not complete."
+evidence = "tools/sns/sns_init.io.template.yaml exists and the maintained source-built SNS flow validates and consumes the local init. The absent optional dfx sns extension remains an upstream non-blocking tooling defect for this evidence path; final production SNS configuration review is incomplete."
 
 [local_sns_testing_rehearsal]
 status = "complete"
