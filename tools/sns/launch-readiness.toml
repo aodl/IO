@@ -51,7 +51,7 @@ evidence = "The historical one-component candidate-Governance/official-Root unit
 
 [official_reward_share_release]
 status = "incomplete"
-evidence = "Candidate Governance/Root compatibility and the reward-share capability are locally proved. The reviewed official lock resolves Governance revision b904c9dd1bdef8841bd12f03efbc71180a015e25, whose protobuf and DID lack latest_reward_event_participation. Launch requires a reviewed official release containing the capability, exact official Wasm/DID hash pins, and rerun official contract/io/upgrade/lifecycle evidence without substituting the local candidate."
+evidence = "Candidate Governance/Root compatibility and the reward-share capability are locally proved. The reviewed official lock resolves Governance revision b904c9dd1bdef8841bd12f03efbc71180a015e25, whose protobuf and DID lack latest_reward_event_participation. Launch requires an official reviewed SNS Governance release containing the capability, exact official Wasm/DID hash pins, and rerun official contract/io/upgrade/lifecycle evidence without substituting the local candidate."
 
 [frontend_sns_integration_tested]
 status = "incomplete"
