@@ -14,4 +14,4 @@ Implemented canonical adapters, in refresh order:
 
 Frozen-cohort, proposal-ratio, generic ingestion and scanner presentation fields are deleted from the current model. Mainnet configuration/activation remains separate authorized work.
 
-Completion evidence is: source-shaped adapter unit tests, PocketIC observations against final compatible SNS/NNS topology, same-Wasm historian upgrade, production DID/debug separation, `did_surface`, `validate_historian_freshness`, and `validate_stable_storage` passing.
+Completion evidence is the immutable `deploy/local-sns-rehearsal/evidence/2026-08-12-4320fdf-monitoring/` package: source-shaped adapter tests; an authentic prior-to-current, hash-changing SNS Governance → Root historian upgrade carrying typed configuration; fresh observations against compatible SNS/NNS topology; production DID/debug separation; and passing `did_surface`, `validate_historian_freshness`, `validate_stable_storage`, and all four local evidence validators.

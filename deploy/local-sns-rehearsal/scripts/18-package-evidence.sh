@@ -26,6 +26,8 @@ reward_log="$(phase_log_file 17-observe-one-day-reward)"
 for required in "$release_manifest" "$bundle_manifest" "$source_evidence" "$reward_log"; do
   require_file "$required"
 done
+reward_eligible_credit="$(sed -n 's/^[[:space:]]*eligible_credit_total: \([0-9][0-9]*\),/\1/p' "$reward_log" | head -1)"
+require_nat "reward eligible credit total" "$reward_eligible_credit"
 
 official_commit="${IO_LOCAL_SNS_OFFICIAL_IC_COMMIT:-${PINNED_IC_COMMIT}}"
 source_commit="$(jq -er '.git_commit' "$release_manifest")"
@@ -117,6 +119,8 @@ for entry in \
 done
 update_toml_value "$packaged_ids" reward event_round \
   "$(phase_value 17-one-day-reward-observed event_round)" number
+update_toml_value "$packaged_ids" reward eligible_credit \
+  "$reward_eligible_credit" number
 update_toml_value "$packaged_ids" readiness reward_backing_neuron_id \
   "$(toml_number "${GENERATED_DIR}/nns-readiness-fixture.toml" reward_backing_neuron id)" number
 update_toml_value "$packaged_ids" readiness two_year_neuron_id \
@@ -276,7 +280,7 @@ event_round = $(phase_value 17-one-day-reward-observed event_round)
 classification = "ProposalBearing"
 reward_shares_observed = true
 processed_count = 1
-eligible_credit = $(toml_number "$source_evidence" reward eligible_credit)
+eligible_credit = ${reward_eligible_credit}
 policy_credit = 1000000000000000000
 EOF
 

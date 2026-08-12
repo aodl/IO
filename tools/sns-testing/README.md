@@ -1,6 +1,6 @@
 # Optional Local SNS Testing
 
-This directory contains optional local-only helpers for the maintained official local SNS rehearsal. These scripts are not required CI and are not used by `verify_release`. The immutable completed 2026-08-11 sanitized package is historical local evidence; it is not proof that an official capability-bearing SNS release exists or that IO is ready for mainnet.
+This directory contains optional local-only helpers for the maintained official local SNS rehearsal. These scripts are not required CI and are not used by `verify_release`. The immutable completed 2026-08-11 package remains historical local evidence; the separate 2026-08-12 monitoring package records the current release and canonical historian convergence. Neither proves that an official capability-bearing SNS release exists or that IO is ready for mainnet.
 
 Follow the current official ICP/DFINITY SNS testing documentation as the source of truth. The historical standalone `dfinity/sns-testing` repository is deprecated; if the official docs reference successor tooling or a new repository/location, use that current official location.
 
@@ -12,9 +12,10 @@ Governance/Root upgrade execution. The one-component candidate-Governance with
 official-Root wire mismatch is historical. The local chunk-store authorization
 gap is an upstream CLI/bootstrap defect and does not block an inline SNS
 Governance proposal executed by Root. The source-shaped NNS readiness and
-hash-changing upgrade fixtures are recorded in the completed 2026-08-11
-package. The thin lifecycle profile is a restart-safe tooling proof and does
-not invalidate that canonical rehearsal. It requires the absolute
+hash-changing upgrade fixtures are recorded in the completed packages. The
+thin lifecycle profile completed from a fresh topology and produced the
+2026-08-12 monitoring package without invalidating the historical rehearsal.
+It requires the absolute
 `sns-testing-init` `topology.json` and derives fresh allocation IDs instead of
 reusing historical ephemeral principals.
 

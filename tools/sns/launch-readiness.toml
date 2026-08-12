@@ -15,7 +15,7 @@ evidence = "tools/sns/sns_init.io.template.yaml exists; official dfx sns validat
 
 [local_sns_testing_rehearsal]
 status = "complete"
-evidence = "The committed 2026-08-11 package records one fresh cross-consistent run and same-source candidate Governance/Root compatibility from maintained source tooling at IC 4320fdf2e613844eabae1927b1a23b98da3a7bc6: NNS/SNS-W launch, swap finalization, reserve funding, ledger/index and explicit no-archive observations, SNS Root controller handoff, source-shaped NNS-manager staging and two-neuron readiness, a prior-to-current historian module-hash transition, production redemption/replay, and one proposal-bearing reward day. All four local rehearsal validators pass. The chunk-store CLI authorization failure is an upstream non-blocking tooling defect because inline Wasm remains an authentic SNS Governance proposal executed by Root."
+evidence = "The immutable 2026-08-11 package remains the historical canonical rehearsal. The completed 2026-08-12 monitoring package adds a clean fresh-topology lifecycle-profile run bound to current release bytes: source-shaped two-neuron NNS readiness, SNS-W creation/finalization, proposal 4 hash-changing historian configuration upgrade, functions 1000/1001 and activations, production redemption/replay, exact one-day proposal-bearing reward, and fresh canonical historian convergence. All four local rehearsal validators pass. The chunk-store CLI authorization failure is an upstream non-blocking tooling defect because inline Wasm remains an authentic SNS Governance proposal executed by Root."
 
 [mainnet_testflight]
 status = "incomplete"
@@ -24,6 +24,10 @@ evidence = "TODO: complete manual mainnet SNS testflight."
 [reproducible_builds]
 status = "complete"
 evidence = "Non-destructive exact-source verification preserves the checked-in artifact set before rebuilding and proves checked-in artifacts equal build A and build A equals build B across the complete raw Wasm, gzip, sidecar and manifest inventory with exact sizes. Corruption regressions cover every artifact class."
+
+[hosted_github_ci]
+status = "incomplete"
+evidence = "Workflow implementation and local workflow-equivalent validation are complete. Formal hosted evidence remains incomplete until a GitHub pull request executes every required workflow successfully."
 
 [app_canisters_stable_on_mainnet]
 status = "incomplete"
@@ -47,7 +51,7 @@ evidence = "The historical one-component candidate-Governance/official-Root unit
 
 [official_reward_share_release]
 status = "incomplete"
-evidence = "Candidate Governance/Root compatibility and the reward-share capability are locally proved. The official lock rechecked on 2026-08-11 still resolves Governance revision b904c9dd1bdef8841bd12f03efbc71180a015e25, whose protobuf and DID lack latest_reward_event_participation. Launch requires a reviewed official release containing the capability, exact official Wasm/DID hash pins, and rerun official contract/io/upgrade/lifecycle evidence without substituting the local candidate."
+evidence = "Candidate Governance/Root compatibility and the reward-share capability are locally proved. The reviewed official lock resolves Governance revision b904c9dd1bdef8841bd12f03efbc71180a015e25, whose protobuf and DID lack latest_reward_event_participation. Launch requires a reviewed official release containing the capability, exact official Wasm/DID hash pins, and rerun official contract/io/upgrade/lifecycle evidence without substituting the local candidate."
 
 [frontend_sns_integration_tested]
 status = "incomplete"

@@ -231,6 +231,30 @@ fn require_present(path: &str, text: &str, needles: &[&str]) -> Result<(), Strin
     Ok(())
 }
 
+fn require_debug_some_value(
+    path: &str,
+    text: &str,
+    field: &str,
+    expected: &str,
+) -> Result<(), String> {
+    let marker = format!("{field}: Some(");
+    let remainder = text
+        .split_once(&marker)
+        .map(|(_, remainder)| remainder)
+        .ok_or_else(|| format!("{path} must contain {marker:?}"))?;
+    let actual = remainder
+        .trim_start()
+        .split_once(',')
+        .map(|(value, _)| value.trim())
+        .ok_or_else(|| format!("{path} has malformed debug value for {field}"))?;
+    if actual != expected {
+        return Err(format!(
+            "{path} must record {field}=Some({expected}), observed Some({actual})"
+        ));
+    }
+    Ok(())
+}
+
 fn quoted_rust_const(text: &str, name: &str) -> Result<String, String> {
     let prefix = format!("pub const {name}:");
     let line = text
@@ -5492,6 +5516,20 @@ fn validate_monitoring_evidence(
             "{ids_path}: monitoring release provenance is not cross-consistent"
         ));
     }
+    let governance_path = format!("{package}/governance-evidence.toml");
+    let governance_text = require_file(root, &governance_path)?;
+    let governance = parse_simple_toml_document(&governance_path, &governance_text)?;
+    let eligible_credit = require_simple_u128(&ids_path, &ids, "reward", "eligible_credit")?;
+    if eligible_credit == 0
+        || require_simple_u128(&governance_path, &governance, "reward", "eligible_credit")?
+            != eligible_credit
+        || require_simple_u128(&governance_path, &governance, "reward", "policy_credit")?
+            != require_simple_u128(&ids_path, &ids, "reward", "policy_credit")?
+    {
+        return Err(format!(
+            "{governance_path}: reward totals are not cross-consistent with {ids_path}"
+        ));
+    }
 
     let dashboard_path = format!("{package}/historian-dashboard.log");
     let dashboard = require_file(root, &dashboard_path)?;
@@ -5516,13 +5554,23 @@ fn validate_monitoring_evidence(
             "RewardBacking",
             "TwoYearProtected",
             "staked_maturity_e8s:",
-            "max_number_of_neurons: Some(1000)",
-            "native_initial_reward_rate_basis_points: Some(0)",
-            "native_final_reward_rate_basis_points: Some(0)",
             "archive_canisters: []",
             "num_blocks_synced:",
             "transactions:",
         ],
+    )?;
+    require_debug_some_value(&dashboard_path, &dashboard, "max_number_of_neurons", "1000")?;
+    require_debug_some_value(
+        &dashboard_path,
+        &dashboard,
+        "native_initial_reward_rate_basis_points",
+        "0",
+    )?;
+    require_debug_some_value(
+        &dashboard_path,
+        &dashboard,
+        "native_final_reward_rate_basis_points",
+        "0",
     )
 }
 

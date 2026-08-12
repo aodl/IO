@@ -105,14 +105,14 @@ The local rehearsal must prove:
 
 ## What Remains Unproven
 
-The completed package proves same-source candidate Governance/Root compatibility,
+The historical package proves same-source candidate Governance/Root compatibility,
 authentic inline SNS-controlled hash-changing historian upgrade,
 Governance-authorized stream and NNS-manager activation using the source-shaped
 local NNS fixture, production ICRC-2 redemption, canonical ledger/index
-histories, and one exact proposal-bearing daily reward event. Production
-historian canonical-source convergence belongs in a new immutable monitoring
-package because it changes the historian release bytes; it must not rewrite the
-completed package.
+histories, and one exact proposal-bearing daily reward event. The separate
+`2026-08-12-4320fdf-monitoring` package preserves that history while proving
+the final typed historian configuration and canonical-source convergence from
+a fresh lifecycle-profile topology.
 
 This rehearsal does not prove final SNS launch readiness, mainnet NNS proposal acceptance, final tokenomics, final fallback controllers, production adapter activation, archive traversal completeness, or external audit readiness.
 
