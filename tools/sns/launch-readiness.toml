@@ -14,8 +14,8 @@ status = "incomplete"
 evidence = "tools/sns/sns_init.io.template.yaml exists; official dfx sns validation is optional and not complete."
 
 [local_sns_testing_rehearsal]
-status = "incomplete"
-evidence = "The immutable 2026-08-11 and 2026-08-12 packages retain valid SNS-W, authority, transfer, upgrade, replay, reward and historian-connectivity evidence, but their redemption-rate/excluded-Account evidence is superseded because they used the Governance default Account. Completion requires a fresh release-bound package using the canonical treasury distribution subaccount with checked Stream, ledger and historian economics."
+status = "complete"
+evidence = "The immutable 2026-08-12-4320fdf-canonical-economics package is bound to source e1c739e5658869edb3ab507d4164a9f6b02127bd and artifact commit c335a005ecf108b10cf24683767da5580cfb4f50. It preserves exact rendered Stream/NNS/historian/SNS-init/Account inputs, derives and observes the canonical nonzero SNS treasury Account, proves the Stream quote and ledger identities with checked arithmetic, and records Fresh historian convergence. The two older packages retain valid historical mechanics/connectivity evidence but their redemption economics are superseded."
 
 [mainnet_testflight]
 status = "incomplete"

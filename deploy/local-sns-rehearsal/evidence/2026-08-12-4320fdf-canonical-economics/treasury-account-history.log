@@ -1,0 +1,89 @@
+(
+  variant {
+    Ok = record {
+      balance = 79_989_899_980_000 : nat;
+      transactions = vec {
+        record {
+          id = 7 : nat;
+          transaction = record {
+            burn = null;
+            kind = "transfer";
+            mint = null;
+            approve = null;
+            authorized_burn = null;
+            authorized_mint = null;
+            fee_collector = null;
+            timestamp = 1_786_558_839_416_328_830 : nat64;
+            transfer = opt record {
+              to = record {
+                owner = principal "amzih-bssz4-twanl-zf6nr-bqsnn-d7rlt-eerbc-oe7vv-uggn5-3naqo-3ae";
+                subaccount = null;
+              };
+              fee = opt (10_000 : nat);
+              from = record {
+                owner = principal "7uieb-cx777-77776-qaaaq-cai";
+                subaccount = opt blob "\f6\e6\61\a6\92\e3\37\ba\89\9c\f0\b9\a3\61\08\69\cf\8a\72\8e\b5\98\9f\ce\f7\bb\7e\eb\8a\00\40\a1";
+              };
+              memo = opt blob "\00\00\00\00\00\00\05\de";
+              created_at_time = null;
+              amount = 100_000_000 : nat;
+              spender = null;
+            };
+          };
+        };
+        record {
+          id = 6 : nat;
+          transaction = record {
+            burn = null;
+            kind = "transfer";
+            mint = null;
+            approve = null;
+            authorized_burn = null;
+            authorized_mint = null;
+            fee_collector = null;
+            timestamp = 1_786_558_838_690_824_870 : nat64;
+            transfer = opt record {
+              to = record {
+                owner = principal "lxzze-o7777-77777-aaaaa-cai";
+                subaccount = opt blob "\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01";
+              };
+              fee = opt (10_000 : nat);
+              from = record {
+                owner = principal "7uieb-cx777-77776-qaaaq-cai";
+                subaccount = opt blob "\f6\e6\61\a6\92\e3\37\ba\89\9c\f0\b9\a3\61\08\69\cf\8a\72\8e\b5\98\9f\ce\f7\bb\7e\eb\8a\00\40\a1";
+              };
+              memo = opt blob "\00\00\00\00\00\00\05\dd";
+              created_at_time = null;
+              amount = 10_000_000_000 : nat;
+              spender = null;
+            };
+          };
+        };
+        record {
+          id = 2 : nat;
+          transaction = record {
+            burn = null;
+            kind = "mint";
+            mint = opt record {
+              to = record {
+                owner = principal "7uieb-cx777-77776-qaaaq-cai";
+                subaccount = opt blob "\f6\e6\61\a6\92\e3\37\ba\89\9c\f0\b9\a3\61\08\69\cf\8a\72\8e\b5\98\9f\ce\f7\bb\7e\eb\8a\00\40\a1";
+              };
+              fee = null;
+              memo = null;
+              created_at_time = opt (1_786_558_650_398_386_272 : nat64);
+              amount = 80_000_000_000_000 : nat;
+            };
+            approve = null;
+            authorized_burn = null;
+            authorized_mint = null;
+            fee_collector = null;
+            timestamp = 1_786_558_650_398_386_272 : nat64;
+            transfer = null;
+          };
+        };
+      };
+      oldest_tx_id = opt (2 : nat);
+    }
+  },
+)

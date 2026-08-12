@@ -1,6 +1,6 @@
 # Local SNS Testing
 
-Required CI uses SNS-shaped mock/PocketIC tests. The maintained official SNS launch rehearsal is an optional local operator layer. The immutable 2026-08-11 and 2026-08-12 packages remain historical mechanics/connectivity evidence, but their redemption-rate evidence is superseded because they queried the Governance default Account instead of the canonical treasury distribution subaccount. Current readiness requires a later canonical-economics package; none of these packages is official release adoption or mainnet evidence.
+Required CI uses SNS-shaped mock/PocketIC tests. The maintained official SNS launch rehearsal is an optional local operator layer. The immutable 2026-08-11 and `2026-08-12-4320fdf-monitoring` packages remain historical mechanics/connectivity evidence, but their redemption-rate evidence is superseded because they queried the Governance default Account instead of the canonical treasury distribution subaccount. `2026-08-12-4320fdf-canonical-economics` is the accepted corrected package; none of these packages is official release adoption or mainnet evidence.
 
 IO uses local SNS compatibility testing as an additional safety layer. It does not replace typed-operation, retry, artifact, DID, stable-state or release guardrails.
 

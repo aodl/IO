@@ -105,12 +105,12 @@ The local rehearsal must prove:
 
 ## What Remains Unproven
 
-The historical packages prove same-source candidate Governance/Root compatibility,
+The accepted `2026-08-12-4320fdf-canonical-economics` package proves same-source candidate Governance/Root compatibility,
 authentic inline SNS-controlled hash-changing historian upgrade,
 Governance-authorized stream and NNS-manager activation using the source-shaped
 local NNS fixture, production ICRC-2 redemption, canonical ledger/index
 histories, and one exact proposal-bearing daily reward event. The separate
-`2026-08-12-4320fdf-monitoring` package preserves that history and historian connectivity from a fresh lifecycle-profile topology. It is not current canonical redemption-economics proof because its historian configuration used the Governance default Account.
+`2026-08-12-4320fdf-monitoring` package preserves historical mechanics and historian connectivity. The corrected package uses the derived Governance treasury distribution Account in both Stream and historian configuration and passes the independent checked-arithmetic evidence validator.
 
 This rehearsal does not prove final SNS launch readiness, mainnet NNS proposal acceptance, final tokenomics, final fallback controllers, production adapter activation, archive traversal completeness, or external audit readiness.
 

@@ -1,0 +1,34 @@
+(opt record {
+  stream_manager = principal "lxzze-o7777-77777-aaaaa-cai";
+  nns_manager = principal "lqy7q-dh777-77777-aaaaq-cai";
+  sns_root = principal "7tjcv-pp777-77776-qaaaa-cai";
+  sns_governance = principal "7uieb-cx777-77776-qaaaq-cai";
+  sns_ledger = principal "75lp5-u7777-77776-qaaba-cai";
+  sns_index = principal "7pnye-yp777-77776-qaaca-cai";
+  icp_ledger = principal "ryjl3-tyaaa-aaaaa-aaaba-cai";
+  nns_governance = principal "rrkah-fqaaa-aaaaa-aaaaq-cai";
+  reward_backing_neuron_id = 15433193351402456744 : nat64;
+  two_year_neuron_id = 18261782480786375607 : nat64;
+  protocol_io_reserve = record { owner = principal "lxzze-o7777-77777-aaaaa-cai"; subaccount = opt blob "\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01" };
+  liquid_icp_reserve = record { owner = principal "lxzze-o7777-77777-aaaaa-cai"; subaccount = opt blob "\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02" };
+  excluded_io_accounts = vec { record { name = "sns-treasury"; account = record { owner = principal "7uieb-cx777-77776-qaaaq-cai"; subaccount = opt blob "\f6\e6\61\a6\92\e3\37\ba\89\9c\f0\b9\a3\61\08\69\cf\8a\72\8e\b5\98\9f\ce\f7\bb\7e\eb\8a\00\40\a1" } } };
+  history_accounts = vec {
+    record { name = "protocol-reserve"; account = record { owner = principal "lxzze-o7777-77777-aaaaa-cai"; subaccount = opt blob "\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01" } };
+    record { name = "sns-treasury"; account = record { owner = principal "7uieb-cx777-77776-qaaaq-cai"; subaccount = opt blob "\f6\e6\61\a6\92\e3\37\ba\89\9c\f0\b9\a3\61\08\69\cf\8a\72\8e\b5\98\9f\ce\f7\bb\7e\eb\8a\00\40\a1" } };
+  };
+  // IO dapps are installed from raw release Wasm. SNS-W publishes and installs
+  // the compressed source payload, which is the module hash Root observes.
+  expected_modules = vec {
+    record { role = variant { StreamManager }; canister_id = principal "lxzze-o7777-77777-aaaaa-cai"; wasm_sha256 = blob "\86\a7\13\f9\56\d0\04\39\7c\3b\0d\c8\db\10\09\f3\f9\75\ce\d0\4c\1e\f3\d4\c3\50\ba\9d\5c\81\06\03" };
+    record { role = variant { NnsManager }; canister_id = principal "lqy7q-dh777-77777-aaaaq-cai"; wasm_sha256 = blob "\9a\23\be\16\2f\f9\71\b0\93\7b\20\28\fd\20\ec\29\ef\5a\46\f5\d8\a2\3f\47\aa\77\60\7d\b4\37\09\88" };
+    record { role = variant { Historian }; canister_id = principal "lz3um-vp777-77777-aaaba-cai"; wasm_sha256 = blob "\c0\6a\05\59\c9\99\b2\78\2d\41\b3\bd\8a\13\a5\19\d7\c9\c8\d9\0c\42\9d\45\fe\0e\2e\b9\18\61\1a\3b" };
+    record { role = variant { Frontend }; canister_id = principal "l62sy-yx777-77777-aaabq-cai"; wasm_sha256 = blob "\a7\8e\37\ed\75\d5\bd\3f\4d\98\4f\7a\ea\7a\a6\82\25\39\5c\a2\54\c5\2c\ca\55\c1\1f\68\2a\15\18\1c" };
+    record { role = variant { SnsGovernance }; canister_id = principal "7uieb-cx777-77776-qaaaq-cai"; wasm_sha256 = blob "\e6\3b\fd\47\6b\d5\78\49\fd\0c\8c\10\12\ba\de\22\72\64\ab\07\9e\9e\bc\61\79\5b\96\9e\16\df\0a\a4" };
+    record { role = variant { SnsRoot }; canister_id = principal "7tjcv-pp777-77776-qaaaa-cai"; wasm_sha256 = blob "\5a\c7\75\af\74\85\e8\cb\20\bd\49\dd\36\8a\2a\21\f8\6e\17\4a\6b\ba\b8\c1\e7\27\8b\ab\ea\e0\6f\83" };
+    record { role = variant { SnsLedger }; canister_id = principal "75lp5-u7777-77776-qaaba-cai"; wasm_sha256 = blob "\35\4d\d6\ec\fd\c7\2b\54\09\80\5b\31\de\a2\2c\9d\b1\1d\f6\e1\40\95\a5\a6\89\24\eb\63\53\5e\6d\8a" };
+    record { role = variant { SnsIndex }; canister_id = principal "7pnye-yp777-77776-qaaca-cai"; wasm_sha256 = blob "\da\b6\80\8d\0d\fc\06\e5\e8\83\36\d0\c3\d3\e4\5e\54\48\c6\e3\6c\2a\78\1f\3e\9e\09\bd\45\0f\52\8c" };
+    record { role = variant { SnsSwap }; canister_id = principal "72kjj-zh777-77776-qaabq-cai"; wasm_sha256 = blob "\da\d7\d7\04\71\96\15\f9\dc\51\65\ce\19\5b\57\ab\fa\75\a7\12\03\4d\70\3c\5d\46\a6\ae\c2\67\bd\d0" };
+  };
+  reward_share_capable_governance_sha256 = opt blob "\e6\3b\fd\47\6b\d5\78\49\fd\0c\8c\10\12\ba\de\22\72\64\ab\07\9e\9e\bc\61\79\5b\96\9e\16\df\0a\a4";
+  refresh_interval_seconds = 60 : nat64;
+})
