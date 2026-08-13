@@ -5,5 +5,5 @@ sns_testing_source_path = "rs/sns/testing"
 complete = true
 monitoring = true
 canonical_redemption_economics = true
-io_release_source_commit = "e1c739e5658869edb3ab507d4164a9f6b02127bd"
-io_artifact_recording_commit = "c335a005ecf108b10cf24683767da5580cfb4f50"
+io_release_source_commit = "45bf8f42fbcb71242074e8682a955d21cb1f7ba5"
+io_artifact_recording_commit = "fe0601f3385e87703849bf42d265145109ddf9e6"

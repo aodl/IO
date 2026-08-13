@@ -1,7 +1,7 @@
 [release]
-source_commit = "e1c739e5658869edb3ab507d4164a9f6b02127bd"
-artifact_recording_commit = "c335a005ecf108b10cf24683767da5580cfb4f50"
-manifest_sha256 = "652f8d50be6eca6788741a8d6f32efcb7c313cdfc105cac47b97ef5715e7b483"
+source_commit = "45bf8f42fbcb71242074e8682a955d21cb1f7ba5"
+artifact_recording_commit = "fe0601f3385e87703849bf42d265145109ddf9e6"
+manifest_sha256 = "35d5b2f4d99cff3a8aa943160eb0ea8c03dd5472fc1781a189727cfad5f29242"
 
 [io_stream_manager]
 raw_wasm_sha256 = "86a713f956d004397c3b0dc8db1009f3f975ced04c1ef3d4c350ba9d5c810603"
