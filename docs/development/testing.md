@@ -9,6 +9,11 @@ the executable basename `pocket-ic-server`. It provisions the required `icp`
 0.2.7 executable with `tools/scripts/provision-icp-cli`; the local integration
 gate requires both `icp project show` and `icp build` to succeed.
 
+`cargo run -p xtask -- verify_recorded_source` is also the unequal-path release
+regression: its two clean builds use deliberately different source-root and
+Cargo-home lengths. The frontend setup empties `public/generated/` before npm
+setup and bundling, so a stale `app.<hash>.js` cannot enter the release Wasm.
+
 Use [SNS framework sources](../testing/sns-framework-sources.md) for the single
 official/local/bundle artifact workflow. Unless a task explicitly names the
 sibling IC checkout or a prepared bundle, run

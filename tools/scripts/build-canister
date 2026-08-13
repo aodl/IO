@@ -6,6 +6,16 @@ profile="${2:-release}"
 
 case "$profile" in
   release)
+    release_cargo_home="${CARGO_HOME:-${HOME:?HOME is required when CARGO_HOME is unset}/.cargo}"
+    if [[ "${release_cargo_home}" != /* ]]; then
+      echo "release CARGO_HOME must be absolute: ${release_cargo_home}" >&2
+      exit 2
+    fi
+    # rustc otherwise embeds the builder-specific Cargo registry root in panic
+    # locations and Wasm name metadata. Own the complete release flag input and
+    # map that root to one stable virtual path on every builder.
+    unset RUSTFLAGS
+    export CARGO_ENCODED_RUSTFLAGS="--remap-path-prefix=${release_cargo_home}=/io/cargo-home"
     if [[ "$package" == "io-frontend" ]]; then
       npm run build:frontend
     fi

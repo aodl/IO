@@ -16,15 +16,37 @@ trap cleanup EXIT
 checked_in="${verification_root}/checked-in"
 build_a="${verification_root}/build-a"
 build_b="${verification_root}/build-b"
+short_source_root="${verification_root}/s"
+long_source_root="${verification_root}/release-source-root-with-intentionally-different-absolute-path-length"
+original_cargo_home="${CARGO_HOME:-${HOME:?HOME is required when CARGO_HOME is unset}/.cargo}"
+alternate_cargo_home="${verification_root}/cargo-home-with-intentionally-different-absolute-path-length"
+
+if [[ "${original_cargo_home}" != /* ]]; then
+  echo "verification CARGO_HOME must be absolute: ${original_cargo_home}" >&2
+  exit 2
+fi
+if [[ ! -d "${original_cargo_home}/registry" ]]; then
+  echo "verification requires the populated Cargo registry at ${original_cargo_home}/registry" >&2
+  exit 1
+fi
+mkdir -p "${short_source_root}" "${long_source_root}" "${alternate_cargo_home}"
+ln -s "${original_cargo_home}/registry" "${alternate_cargo_home}/registry"
 
 # Preserve the caller's complete artifact set before either exact-source build.
 cp -a "${io_root}/release-artifacts" "${checked_in}"
 cargo run -p xtask -- verify_artifacts
 
-tools/scripts/build-release-from-source "${source_commit}" "${build_a}"
+echo "release reproducibility build A source root: ${short_source_root}"
+echo "release reproducibility build A Cargo home: ${original_cargo_home}"
+IO_RELEASE_BUILD_TMPDIR="${short_source_root}" \
+  tools/scripts/build-release-from-source "${source_commit}" "${build_a}"
 cargo run -p xtask -- compare_release_artifact_dirs "${checked_in}" "${build_a}"
 
-tools/scripts/build-release-from-source "${source_commit}" "${build_b}"
+echo "release reproducibility build B source root: ${long_source_root}"
+echo "release reproducibility build B Cargo home: ${alternate_cargo_home}"
+CARGO_HOME="${alternate_cargo_home}" \
+IO_RELEASE_BUILD_TMPDIR="${long_source_root}" \
+  tools/scripts/build-release-from-source "${source_commit}" "${build_b}"
 cargo run -p xtask -- compare_release_artifact_dirs "${build_a}" "${build_b}"
 
 echo "verified checked-in artifacts == exact-source build A == exact-source build B"

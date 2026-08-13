@@ -10093,6 +10093,61 @@ Template SNS principal values are planned wiring placeholders only.
     }
 
     #[test]
+    fn release_reproducibility_varies_paths_and_remaps_cargo_home() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let builder = fs::read_to_string(root.join("tools/scripts/build-canister")).unwrap();
+        for required in [
+            "CARGO_ENCODED_RUSTFLAGS",
+            "--remap-path-prefix=${release_cargo_home}=/io/cargo-home",
+            "unset RUSTFLAGS",
+        ] {
+            assert!(
+                builder.contains(required),
+                "release builder is missing path-remapping guardrail: {required}"
+            );
+        }
+
+        let verifier =
+            fs::read_to_string(root.join("tools/scripts/verify-release-from-source")).unwrap();
+        for required in [
+            "release-source-root-with-intentionally-different-absolute-path-length",
+            "cargo-home-with-intentionally-different-absolute-path-length",
+            "CARGO_HOME=\"${alternate_cargo_home}\"",
+            "IO_RELEASE_BUILD_TMPDIR=\"${long_source_root}\"",
+        ] {
+            assert!(
+                verifier.contains(required),
+                "release verifier is missing unequal-path guardrail: {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn frontend_generation_starts_from_an_empty_generated_directory() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let package = fs::read_to_string(root.join("package.json")).unwrap();
+        assert!(
+            package.contains("\"setup:frontend\": \"npm run clean:frontend-generated && npm ci\"")
+        );
+
+        let cleaner =
+            fs::read_to_string(root.join("canisters/frontend/web/clean-generated.mjs")).unwrap();
+        for required in [
+            "rmSync(directory, { recursive: true, force: true })",
+            "cleanGeneratedDirectory();",
+        ] {
+            assert!(
+                cleaner.contains(required),
+                "frontend cleaner is missing stale-asset guardrail: {required}"
+            );
+        }
+
+        let builder =
+            fs::read_to_string(root.join("canisters/frontend/web/build-frontend.mjs")).unwrap();
+        assert!(builder.contains("cleanGeneratedDirectory();"));
+    }
+
+    #[test]
     fn test_workflow_provisions_pinned_runtime_tools_at_valid_basenames() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let workflow = fs::read_to_string(root.join(".github/workflows/test.yml")).unwrap();

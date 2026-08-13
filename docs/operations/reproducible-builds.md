@@ -6,6 +6,13 @@ Release compilation uses the exact Rust 1.96.0 toolchain pinned by
 `rust-toolchain.toml`. A floating Rust channel is not a valid release build
 input because compiler drift changes the raw Wasm bytes.
 
+Release Cargo invocations remap the builder's absolute Cargo home to the stable
+virtual prefix `/io/cargo-home`. Rust dependencies otherwise embed absolute
+registry source paths in runtime diagnostics and Wasm name metadata, changing
+raw Wasm bytes between builders such as `/home/runner/.cargo` and a developer's
+Cargo home. Ambient `RUSTFLAGS` and `CARGO_ENCODED_RUSTFLAGS` are not release
+inputs; the release canister builder owns the exact remapping flag.
+
 ## Exact-source release model
 
 Release provenance uses two commits:
@@ -55,6 +62,16 @@ expected file set for both comparisons:
 checked-in artifacts == exact-source build A
 exact-source build A == exact-source build B
 ```
+
+Build A and build B intentionally use different absolute source-root lengths and
+different logical Cargo-home lengths. Build B links only the already-populated
+public Cargo registry cache into its isolated Cargo home. This makes absolute
+path leakage a required reproducibility failure rather than a host coincidence.
+
+Frontend setup removes the complete generated-asset directory before `npm ci`,
+and the browser bundler repeats that cleanup before writing exactly one
+content-addressed `app.<hash>.js` plus its private manifest. Obsolete bundles are
+therefore never embedded by `include_dir!`.
 
 Run it with:
 
