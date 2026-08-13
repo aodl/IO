@@ -9,6 +9,7 @@
 - `e2e-real-canisters`: pinned real SNS ledger primitives and installed serialized redemption.
 - `tools/scripts/run-io-stream-manager-live-pocketic`: focused live PocketIC driver for stream-manager recovery checks.
 - `tools/scripts/provision-pocket-ic`: immutable PocketIC 14.0.0 HTTPS provisioning with executable SHA-256 verification, used by ordinary PR CI before required live tests.
+- `tools/scripts/provision-icp-cli`: immutable official `icp` 0.2.7 HTTPS provisioning with archive and executable SHA-256 verification, used by ordinary PR CI before required `icp project show` and `icp build` checks.
 - `observe_existing_reward`: attaches to an existing local PocketIC instance after a deliberate time advance and records canonical Governance reward events, neuron participation and stream consumption without debug calls.
 - `cargo run -p xtask -- live_stream_manager_pocketic_gate_check`: static guard for that focused driver.
 - `xtask simplicity_check`: source, DID, documentation, schema and complexity guardrails.

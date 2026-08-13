@@ -10077,6 +10077,8 @@ Template SNS principal values are planned wiring placeholders only.
             "tools/scripts/build-release-from-source",
             "tools/scripts/verify-release-from-source",
             "tools/scripts/release-build-temp-root",
+            "tools/scripts/provision-pocket-ic",
+            "tools/scripts/provision-icp-cli",
             "tools/scripts/provision-security-tools",
             ".github/workflows/test.yml",
             ".github/workflows/security.yml",
@@ -10088,6 +10090,28 @@ Template SNS principal values are planned wiring placeholders only.
                 "developer-specific path returned in {path}"
             );
         }
+    }
+
+    #[test]
+    fn test_workflow_provisions_pinned_runtime_tools_at_valid_basenames() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let workflow = fs::read_to_string(root.join(".github/workflows/test.yml")).unwrap();
+        for required in [
+            "${RUNNER_TEMP}/pocket-ic-14.0.0",
+            "${pocket_ic_dir}/pocket-ic-server",
+            "tools/scripts/provision-pocket-ic",
+            "POCKET_IC_BIN=${pocket_ic_bin}",
+            "${RUNNER_TEMP}/icp-cli-0.2.7",
+            "${icp_dir}/icp",
+            "tools/scripts/provision-icp-cli",
+            "${GITHUB_PATH}",
+        ] {
+            assert!(
+                workflow.contains(required),
+                "missing CI guardrail: {required}"
+            );
+        }
+        assert!(!workflow.contains("pocket-ic-server-14.0.0"));
     }
 
     #[test]
@@ -10871,6 +10895,120 @@ Template SNS principal values are planned wiring placeholders only.
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(!output_path.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pocket_ic_provisioning_rejects_invalid_output_basename() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!(
+                "xtask-pocket-ic-provision-invalid-basename-{}",
+                std::process::id()
+            ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tools/scripts/provision-pocket-ic");
+        let output = Command::new("bash")
+            .arg(&script)
+            .arg(root.join("pocket-ic-server-14.0.0"))
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("output basename must be pocket-ic or pocket-ic-server"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn icp_cli_provisioning_rejects_forged_download() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!(
+                "xtask-icp-cli-provision-forged-{}",
+                std::process::id()
+            ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let fake_bin = root.join("fake-bin");
+        fs::create_dir_all(&fake_bin).unwrap();
+        write(
+            &root,
+            "fake-bin/curl",
+            "#!/bin/sh\noutput=\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = --output ]; then shift; output=$1; fi\n  shift\ndone\nprintf forged-archive > \"$output\"\n",
+        );
+        let curl = fake_bin.join("curl");
+        let mut permissions = fs::metadata(&curl).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&curl, permissions).unwrap();
+
+        let script =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/scripts/provision-icp-cli");
+        let script_text = fs::read_to_string(&script).unwrap();
+        for required in [
+            "version=\"0.2.7\"",
+            "90eb2fc76267422a8ed20681453f1c52b93fea01",
+            "bc6272fc0004d17538c650cfc8bacedd464ae86527efe172ed3b499a3e0f7798",
+            "99aaef26bd765ce197c1de525ddb437ad1d3e933e5d3ca2d720ed189c23b7667",
+            "https://github.com/dfinity/icp-cli/releases/download/v${version}/${archive_name}",
+            "--proto '=https'",
+            "--tlsv1.2",
+        ] {
+            assert!(script_text.contains(required), "missing pin: {required}");
+        }
+
+        let output_path = root.join("icp");
+        let output = Command::new("bash")
+            .arg(&script)
+            .arg(&output_path)
+            .env("PATH", format!("{}:/usr/bin:/bin", fake_bin.display()))
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("archive SHA-256 mismatch"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!output_path.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn icp_cli_provisioning_rejects_invalid_output_basename() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!(
+                "xtask-icp-cli-provision-invalid-basename-{}",
+                std::process::id()
+            ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let script =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/scripts/provision-icp-cli");
+        let output = Command::new("bash")
+            .arg(&script)
+            .arg(root.join("icp-0.2.7"))
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("output basename must be icp"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let _ = fs::remove_dir_all(root);
     }
 

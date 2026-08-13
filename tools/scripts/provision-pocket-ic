@@ -9,6 +9,17 @@ output="${1:?usage: tools/scripts/provision-pocket-ic OUTPUT_FILE}"
 case "$output" in
   ""|/|*/.|*/..) printf 'unsafe PocketIC output path: %s\n' "$output" >&2; exit 2 ;;
 esac
+case "$(basename -- "$output")" in
+  pocket-ic|pocket-ic-server) ;;
+  *)
+    printf 'PocketIC output basename must be pocket-ic or pocket-ic-server: %s\n' "$output" >&2
+    exit 2
+    ;;
+esac
+if [ -L "$output" ]; then
+  printf 'PocketIC output must not be a symlink: %s\n' "$output" >&2
+  exit 2
+fi
 if [ -d "$output" ]; then
   printf 'PocketIC output is a directory: %s\n' "$output" >&2
   exit 2
@@ -37,4 +48,5 @@ fi
 chmod 0755 "$binary"
 "$binary" --version | grep -F "${version}"
 mv "$binary" "$output"
+"$output" --version | grep -F "${version}"
 printf 'provisioned PocketIC %s at %s (SHA-256 %s)\n' "$version" "$output" "$expected_sha256"

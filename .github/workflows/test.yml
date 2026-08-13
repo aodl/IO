@@ -42,9 +42,25 @@ jobs:
       - name: Provision pinned PocketIC
         shell: bash
         run: |
-          pocket_ic_bin="${RUNNER_TEMP}/pocket-ic-server-14.0.0"
+          pocket_ic_dir="${RUNNER_TEMP}/pocket-ic-14.0.0"
+          mkdir -p "${pocket_ic_dir}"
+          pocket_ic_bin="${pocket_ic_dir}/pocket-ic-server"
           tools/scripts/provision-pocket-ic "${pocket_ic_bin}"
+          test "$(basename "${pocket_ic_bin}")" = "pocket-ic-server" \
+            || test "$(basename "${pocket_ic_bin}")" = "pocket-ic"
+          "${pocket_ic_bin}" --version
           echo "POCKET_IC_BIN=${pocket_ic_bin}" >> "${GITHUB_ENV}"
+
+      - name: Provision pinned icp CLI
+        shell: bash
+        run: |
+          icp_dir="${RUNNER_TEMP}/icp-cli-0.2.7"
+          mkdir -p "${icp_dir}"
+          icp_bin="${icp_dir}/icp"
+          tools/scripts/provision-icp-cli "${icp_bin}"
+          test "$(basename "${icp_bin}")" = "icp"
+          "${icp_bin}" --version
+          echo "${icp_dir}" >> "${GITHUB_PATH}"
 
       - name: Provision pinned security tools
         run: tools/scripts/provision-security-tools

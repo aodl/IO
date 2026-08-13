@@ -2,6 +2,10 @@
 
 IO artifacts are reproducibility-improved but not fully hermetic.
 
+Release compilation uses the exact Rust 1.96.0 toolchain pinned by
+`rust-toolchain.toml`. A floating Rust channel is not a valid release build
+input because compiler drift changes the raw Wasm bytes.
+
 ## Exact-source release model
 
 Release provenance uses two commits:

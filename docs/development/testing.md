@@ -4,6 +4,11 @@ Run focused crate tests before workspace gates. `io-core-model` covers stateless
 
 `cargo run -p xtask -- test_all` is the broad local suite. `verify_release` rebuilds validation artifacts, which must be restored rather than committed. Set `POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server` for required local canister tests. Do not run value-moving PocketIC suites concurrently.
 
+Ordinary CI installs PocketIC under a versioned parent directory while keeping
+the executable basename `pocket-ic-server`. It provisions the required `icp`
+0.2.7 executable with `tools/scripts/provision-icp-cli`; the local integration
+gate requires both `icp project show` and `icp build` to succeed.
+
 Use [SNS framework sources](../testing/sns-framework-sources.md) for the single
 official/local/bundle artifact workflow. Unless a task explicitly names the
 sibling IC checkout or a prepared bundle, run
