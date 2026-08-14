@@ -10,7 +10,6 @@ io_redemption_live = false
 
 [canisters]
 io_stream_manager = "thset-pqaaa-aaaar-qb7wa-cai"
-io_nns_neuron_manager = "tatch-ciaaa-aaaar-qb7wq-cai"
 io_historian = "tjqj3-uaaaa-aaaar-qb7xa-cai"
 frontend = "torpp-zyaaa-aaaar-qb7xq-cai"
 

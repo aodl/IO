@@ -19,7 +19,8 @@ Native maturity is disabled by the zero rates. IO observes canonical voting
 participation without using native SNS maturity as monetary authority.
 
 For an event whose `settled_proposals` list is nonempty, each currently
-eligible IO neuron receives a fraction of one fixed daily policy opportunity.
+eligible ordinary IO SNS neuron receives a fraction of one fixed daily policy
+opportunity.
 IO first sums the canonical `reward_shares` tagged with that event's exact end
 timestamp across every neuron, including excluded or currently ineligible
 neurons. An absent or stale field contributes zero. A current-event

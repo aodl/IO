@@ -1,0 +1,37 @@
+[protocol_reserve_io]
+owner = "xp3jw-ot777-77777-aaaaa-cai"
+subaccount_hex = "0101010101010101010101010101010101010101010101010101010101010101"
+ledger = "sns"
+
+[liquid_icp_reserve]
+owner = "xp3jw-ot777-77777-aaaaa-cai"
+subaccount_hex = "0202020202020202020202020202020202020202020202020202020202020202"
+ledger = "icp"
+
+[redemption_spender]
+owner = "xp3jw-ot777-77777-aaaaa-cai"
+subaccount = "none"
+ledger = "sns"
+
+[jupiter_io]
+owner = "amzih-bssz4-twanl-zf6nr-bqsnn-d7rlt-eerbc-oe7vv-uggn5-3naqo-3ae"
+subaccount_hex = "0404040404040404040404040404040404040404040404040404040404040404"
+ledger = "sns"
+
+[jupiter_icp_staging]
+owner = "xi2pc-dl777-77777-aaaaq-cai"
+subaccount = "none"
+ledger = "icp"
+
+[two_week_maturity_staging]
+owner = "xi2pc-dl777-77777-aaaaq-cai"
+subaccount_hex = "0303030303030303030303030303030303030303030303030303030303030303"
+ledger = "icp"
+
+[excluded_sns_treasury]
+name = "sns-treasury"
+owner = "dmkut-c3777-77776-qaaaq-cai"
+subaccount_hex = "1205b30afec9d6b8da3bf45dbfebc286fa341246b9878ca63229d2b9ed49dd6f"
+distribution_nonce = 0
+domain = "token-distribution"
+expected_nonzero = true

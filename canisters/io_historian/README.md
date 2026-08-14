@@ -1,40 +1,76 @@
-# io_historian
+# IO Historian
 
-`io_historian` is IO's public read model. It is rebuildable from canonical observations, is not canonical protocol truth, and is not a value-moving authority. It cannot authorize issuance, redemption, reserve movement, NNS commands, SNS lifecycle, or launch state.
+## Role in IO
 
-IO protocol is not live. The SNS IO ledger remains not launched on mainnet. Production reservations remain empty/inert. The missing/stale/error observations are never treated as zero.
+`io_historian` is IO's bounded public read model. It observes canonical
+services, retains last-known values and health, and presents a dashboard-shaped
+snapshot. It is rebuildable and is not canonical protocol truth.
+It is not a value-moving authority. It cannot authorize issuance, redemption,
+reserve movement, NNS commands, SNS lifecycle, or launch state.
 
-## Configuration authority
+IO protocol is not live; the SNS IO ledger remains not launched. Production
+reservations are inert, and missing/stale/error observations are never
+treated as zero.
 
-The production service has no public configuration or ingestion update method. Its typed `ObservationConfig` is accepted only as an install/upgrade argument, so configuration authority is controller/SNS Root upgrade authority:
-
-- `null` on a prelaunch install leaves every source `PrelaunchNotConfigured` and performs no calls;
-- `opt config` on the SNS-governed historian upgrade validates and activates canonical observation;
-- `null` on a later same-Wasm upgrade preserves the existing configuration;
-- `opt replacement` validates the complete replacement and clears observations from the previous topology.
-
-Configuration is bounded and rejects anonymous/duplicate source topology, duplicate Accounts, malformed expected SHA-256 values, missing required module identities, and unbounded refresh intervals. The optional reward-share capability hash must equal the expected Governance module hash: it is present for the reviewed local candidate and absent for an official bundle that lacks the field, so generic module freshness cannot fabricate capability availability. Mainnet values remain absent pending separately authorized launch configuration.
-
-## Canonical observations
+## Dependencies and observation authority
 
 One non-overlapping, one-shot timer generation observes:
 
-- SNS ledger total supply, protocol-reserve balance, and configured excluded IO balances;
-- ICP ledger liquid-reserve balance;
-- a checked coherent redeemable-supply/redemption-rate snapshot, committed only when every monetary query succeeds;
-- Stream manager `get_status`;
-- NNS manager `get_status`, including the exact latest target/status and passive-unwind principal;
-- public NNS Governance build metadata and bounded neuron-info queries for the distinct configured reward-backing and two-year neuron IDs;
-- SNS Root `get_sns_canisters_summary` module hashes, controllers, topology, and archives;
-- SNS Governance parameters and latest reward event;
-- SNS Index status plus bounded recent histories for configured Accounts; index canisters remain the normal history abstraction.
+- the SNS Ledger's total supply, protocol-reserve balance, and configured
+  excluded IO balances;
+- the ICP Ledger's liquid-reserve balance;
+- Stream Manager and NNS Manager `get_status`;
+- public NNS Governance build metadata and bounded public neuron-info queries
+  for the distinct configured reward-backing parent and protected IO NNS neuron
+  IDs;
+- SNS Root topology, controllers, module hashes, and discovered archives;
+- SNS Governance parameters and latest reward event; and
+- SNS Index status and bounded recent histories for configured Accounts.
 
-Root-mediated canister summaries distinguish `Matching`, `Mismatch`, `Unavailable`, and `Unknown`. Index canisters are the normal account-history abstraction; ledgers remain canonical for current balances. Archive canisters are discovered and represented without unbounded archive traversal or a monetary scanner.
-Public NNS neuron info supplies stake, staked maturity, dissolve delay and state.
-It does not expose ordinary maturity, so the historian does not invent it or
-impersonate a neuron controller.
+Ledgers remain canonical for current balances. The index canisters are the
+normal account-history abstraction; archives are discovered and represented
+without an unbounded traversal or monetary scanner. Root is canonical for SNS
+topology, controllers, and module observations. Public NNS neuron information
+supplies stake, staked maturity, dissolve delay, and state, but not ordinary
+maturity; the Historian does not invent that value or impersonate a
+controller.
 
-The public production surface is read-only:
+Only a completely successful set of monetary reads commits a coherent checked
+redeemable-supply/redemption-rate snapshot. Root observations distinguish
+`Matching`, `Mismatch`, `Unavailable`, and `Unknown`.
+
+## Configuration and bounded collections
+
+Production has no public configuration or ingestion update method.
+`ObservationConfig` is accepted only as an install/upgrade argument, so
+configuration authority belongs to controller/SNS Root upgrade authority:
+
+- `null` on first install leaves all sources `PrelaunchNotConfigured` and makes
+  no observation calls;
+- `opt config` validates and activates observation;
+- `null` on a later same-Wasm upgrade preserves existing configuration; and
+- `opt replacement` validates the complete replacement and clears observations
+  belonging to the former topology.
+
+Configuration enforces these collection/timing limits:
+
+| Limit | Value |
+| --- | ---: |
+| Excluded Accounts | 16 |
+| History Accounts | 8 |
+| Expected modules | 12 |
+| Recent transactions requested per history | 16 |
+| Refresh interval | 60..=86,400 seconds |
+
+It also rejects anonymous or duplicate source principals, duplicate Accounts or
+names, malformed expected SHA-256 values, missing required module identities,
+and invalid reserve/exclusion relationships. The optional reward-share
+capability hash must equal the expected Governance module hash; generic module
+freshness therefore cannot fabricate capability availability.
+
+## Production API
+
+The checked-in [production Candid](io_historian.did) is read-only:
 
 - `version`
 - `get_public_status`
@@ -42,12 +78,69 @@ The public production surface is read-only:
 - `get_protocol_snapshot`
 - `get_redemption_rate`
 
-Debug ingestion and the frozen-cohort/proposal-ratio/scanner-era presentation surface were deleted. A debug build retains only a permissionless local refresh trigger; completed monitoring evidence must use autonomous canonical refresh, not debug ingestion.
+There are no production list, configuration, ingestion, refresh, or debug
+methods. A debug build retains only a permissionless local refresh trigger;
+completed monitoring evidence must use autonomous canonical refresh.
 
-## Stable state and freshness
+## Lifecycle, stable state, and freshness
 
-Configuration, last-known successful observations, timestamps, per-source errors, and the bounded read model survive upgrades. A transient refresh-active flag does not survive, so an interrupted refresh cannot wedge the canister. Upgrade marks previously fresh sources stale until the re-armed timer completes. Retryable errors preserve the original successful observation timestamp and values.
+Configuration, last-known successful observations, timestamps, per-source
+errors, and the bounded read model survive upgrade. The transient
+refresh-in-progress flag does not survive, so interruption cannot wedge future
+refresh. Upgrade presents former `Fresh` records as `Stale` until the re-armed
+timer succeeds.
 
-The historical v1/v2 stable record is decoded through a narrow legacy compatibility shape. Historical scanner/cohort records do not re-enter the current public model.
+For public queries, a source stored as `Fresh` is presented as `Stale` when its
+last successful observation is older than two times the configured refresh
+interval. The comparison uses nanosecond timestamps and a strict “older than”
+boundary. A retryable failure changes health to `ErrorRetryable` and records the
+attempt/error while retaining the last successful values and success timestamp.
 
-The protected canister `oae4c-3iaaa-aaaar-qb5qq-cai` and neuron `6345890886899317159` are not observation sources or deployment targets.
+One refresh attempt has a single generation number, but unrelated source
+sections commit independently when their own call succeeds. The dashboard does
+not claim that last-known values from different sources form one globally
+atomic generation: callers must inspect each section's freshness and success
+timestamp. The monetary protocol snapshot is stricter—total supply, reserve,
+excluded balances, liquid ICP, denominator, and rate are computed and committed
+together from one successful set of ledger reads, so it never combines partial
+monetary generations. The global last-success timestamp advances only when all
+sources are `Fresh` after the attempt.
+
+The historical v1/v2 stable record is decoded through a narrow compatibility
+shape. Historical scanner/cohort records do not re-enter the current public
+model.
+
+## Failure and consistency semantics
+
+Only one refresh generation runs at a time. Individual source failures stay
+scoped and visible; last-known observations are not zeroed. Monetary snapshots
+are atomic across their required ledger reads, while other source sections can
+retain independently successful data. Bounded reads, capped errors, and one-
+shot timer rearming prevent overlapping or unbounded background work.
+
+Historian output is evidence for operators and clients, not permission to
+complete a monetary operation. Exact transfer/governance proofs remain with the
+value-moving managers.
+
+## Commands and verification
+
+```bash
+cargo test -p io-historian
+cargo run -p xtask -- historian_tests
+POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server \
+  cargo run -p xtask -- historian_required
+cargo run -p xtask -- validate_historian_freshness
+cargo run -p xtask -- did_surface
+```
+
+Run PocketIC targets serially. See the repository [xtask guide](../../tools/xtask/README.md)
+for aggregate gates.
+
+## Non-goals and protected production state
+
+The Historian is not a transfer scanner, ledger replacement, controller,
+arithmetic oracle for value-moving canisters, or source of launch readiness.
+It performs no caller impersonation and exposes no production ingestion method.
+Protected NNS Manager execution canister `oae4c-3iaaa-aaaar-qb5qq-cai` and
+protected IO NNS neuron `10292412127977304661` are not Historian observation
+sources and are not touched by its validation or local tests.

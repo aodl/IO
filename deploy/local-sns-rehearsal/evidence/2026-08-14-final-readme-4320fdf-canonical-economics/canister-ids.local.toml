@@ -1,0 +1,97 @@
+[evidence]
+schema = "production-redemption-v1"
+network = "local"
+source = "official-local-sns-rehearsal"
+complete = true
+io_protocol_live = false
+
+[provenance]
+official_ic_source_commit = "4320fdf2e613844eabae1927b1a23b98da3a7bc6"
+io_release_source_commit = "8abdd9572e43a0240c21411950e361217b679b13"
+io_artifact_recording_commit = "a8f668ae52f46a3602c9faebcab52998e13006dd"
+sns_governance_raw_sha256 = "49596e00f70089e4913b346e393505cbc551aa649a6c60a5cc2a1a8a3b9d55ad"
+sns_root_raw_sha256 = "478f40f75040e32b6c330f5ea1ecdd44becc3013584c65cf47e14735d1cb1dab"
+historian_before_module_sha256 = "c7b1d636271e56108a5d7db9be15637e2b9b2d5fda3a627ddf089eabf3707d6c"
+historian_payload_wasm_sha256 = "10a49a78dc9893fa49982ab283325a83bcd763100d03b75e08416d75f031c8ae"
+historian_release_raw_sha256 = "10a49a78dc9893fa49982ab283325a83bcd763100d03b75e08416d75f031c8ae"
+
+[sns_canisters]
+root = "dllsh-pd777-77776-qaaaa-cai"
+governance = "dmkut-c3777-77776-qaaaq-cai"
+ledger = "dfj7p-ut777-77776-qaaba-cai"
+index = "dxpiw-yd777-77776-qaaca-cai"
+swap = "dciz3-zl777-77776-qaabq-cai"
+
+[io_dapp_canisters]
+io_stream_manager = "xp3jw-ot777-77777-aaaaa-cai"
+io_nns_neuron_manager = "xi2pc-dl777-77777-aaaaq-cai"
+io_historian = "xbze6-vd777-77777-aaaba-cai"
+frontend = "xgyck-y3777-77777-aaabq-cai"
+
+[ledger]
+token_symbol = "IOLO"
+transaction_fee_e8s = 10000
+initial_observed_supply_e8s = 99999999980000
+final_total_supply_e8s = 99999999930000
+reserve_funding_e8s = 10000000000
+final_reserve_balance_e8s = 10020000000
+user_funding_e8s = 100000000
+approval_block = 9
+io_redemption_block = 10
+icp_payout_block = 14
+redemption_io_e8s = 20000000
+gross_icp_e8s = 99999500
+net_icp_e8s = 99989500
+io_fee_e8s = 10000
+icp_fee_e8s = 10000
+duplicate_transfer_block = 8
+bad_fee_observed = true
+insufficient_funds_observed = true
+duplicate_observed = true
+identical_redemption_replay_observed = true
+index_histories_observed = true
+
+[proposals]
+nns_publish_governance = 1
+nns_publish_root = 2
+create_sns = 3
+neuron_cap = 1
+reserve_funding = 2
+user_funding = 3
+module_upgrade = 4
+stream_function_registration = 5
+stream_activation = 6
+nns_function_registration = 7
+nns_activation = 8
+reward_motion = 9
+
+[readiness]
+stream_ready = true
+nns_manager_ready = true
+two_week_baseline_reconciled = true
+jupiter_staging_e8s = 20000
+two_week_staging_e8s = 10000
+reward_backing_neuron_id = 15433193351402456744
+two_year_neuron_id = 18261782480786375607
+seeded_principal_e8s = 100000000
+dissolve_delay_seconds = 252460800
+auto_stake_maturity = false
+ordinary_maturity_e8s = 0
+staked_maturity_e8s = 0
+maturity_disbursement_pending = false
+
+[archive]
+ledger_observation = "none"
+root_observation = "none"
+
+[reward]
+proposal_id = 9
+event_round = 1
+classification = "ProposalBearing"
+processed_count = 1
+eligible_credit = 666666667111111111
+policy_credit = 1000000000000000000
+
+[protected]
+must_not_touch_neuron_owner_canister = "oae4c-3iaaa-aaaar-qb5qq-cai"
+must_not_touch_io_nns_neuron_id = "10292412127977304661"

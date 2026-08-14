@@ -1,0 +1,6 @@
+[archive]
+ledger_archive_count = 0
+root_archive_count = 0
+ledger_observation = "none"
+root_observation = "none"
+observation_consistent = true

@@ -1,0 +1,23 @@
+(record {
+  config = record {
+    io_ledger = principal "dfj7p-ut777-77776-qaaba-cai";
+    icp_ledger = principal "ryjl3-tyaaa-aaaaa-aaaba-cai";
+    nns_manager = principal "xi2pc-dl777-77777-aaaaq-cai";
+    jupiter_receipt_source = record { owner = principal "xi2pc-dl777-77777-aaaaq-cai"; subaccount = null };
+    two_week_receipt_source = record { owner = principal "xi2pc-dl777-77777-aaaaq-cai"; subaccount = opt blob "\03\03\03\03\03\03\03\03\03\03\03\03\03\03\03\03\03\03\03\03\03\03\03\03\03\03\03\03\03\03\03\03" };
+    jupiter_io_account = record { owner = principal "amzih-bssz4-twanl-zf6nr-bqsnn-d7rlt-eerbc-oe7vv-uggn5-3naqo-3ae"; subaccount = opt blob "\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04" };
+    sns_governance = principal "dmkut-c3777-77776-qaaaq-cai";
+    sns_root = principal "dllsh-pd777-77776-qaaaa-cai";
+    expected_sns_governance_module_hash = blob "\e6\3b\fd\47\6b\d5\78\49\fd\0c\8c\10\12\ba\de\22\72\64\ab\07\9e\9e\bc\61\79\5b\96\9e\16\df\0a\a4";
+    approved_reward_event_duration_seconds = 86_400 : nat64;
+    io_reserve = record { owner = principal "xp3jw-ot777-77777-aaaaa-cai"; subaccount = opt blob "\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01" };
+    liquid_icp = record { owner = principal "xp3jw-ot777-77777-aaaaa-cai"; subaccount = opt blob "\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02" };
+    excluded_io_accounts = vec { record { owner = principal "dmkut-c3777-77776-qaaaq-cai"; subaccount = opt blob "\12\05\b3\0a\fe\c9\d6\b8\da\3b\f4\5d\bf\eb\c2\86\fa\34\12\46\b9\87\8c\a6\32\29\d2\b9\ed\49\dd\6f" } };
+    minimum_redemption_io_e8s = 20_000 : nat;
+    expected_io_fee_e8s = 10_000 : nat;
+    expected_icp_fee_e8s = 10_000 : nat;
+    maximum_request_lifetime_nanos = 900_000_000_000 : nat64;
+    retry_delay_nanos = 1_000_000_000 : nat64;
+    ledger_deduplication_window_nanos = 86_400_000_000_000 : nat64;
+  };
+})

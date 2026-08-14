@@ -1,103 +1,157 @@
-# frontend
+# IO Frontend
 
-Certified asset canister for the IO browser dashboard.
+## Role in IO
 
-Production frontend canister `torpp-zyaaa-aaaar-qb7xq-cai` is a fiduciary-subnet reservation with status `ReservedNotLive`. It is empty/inert and not live.
+`io-frontend` is a certified asset canister for IO's browser dashboard and
+authenticated redemption client. It is advisory and non-authoritative:
+canonical monetary facts remain in ledgers, indexes, Governance/Root, release
+artifacts, and reviewed manager state transitions, and the value-moving
+canisters recompute every amount and fee.
 
-The previous frontend canister `6h2pa-qiaaa-aaaao-qp4fa-cai` is `DevMainnet` only: superseded as a production target, retained only as a dev/test canister, not on the fiduciary subnet, and not a production IO protocol canister.
+The index canisters remain the normal source for bounded account-history
+observation; the frontend does not scan raw ledgers or archives.
 
-- Gateway URL: `https://6h2pa-qiaaa-aaaao-qp4fa-cai.icp0.io/`
-- Raw URL: `https://6h2pa-qiaaa-aaaao-qp4fa-cai.raw.icp0.io/`
-- Historian canister consumed by the DevMainnet build: `yo47z-piaaa-aaaac-qg3xa-cai`
+IO remains pre-launch. IO protocol is not live.
+The SNS IO ledger remains not launched. The production frontend reservation
+`torpp-zyaaa-aaaar-qb7xq-cai` is `ReservedNotLive`, empty/inert, and not live.
 
-IO remains pre-launch. The canonical SNS IO ledger is not launched, no value-moving protocol canister is live, IO issuance is not live, and IO redemption is not live.
+## Dependencies and data flow
 
-## Role
+The browser has two deliberately separate paths:
 
-- Serves the IO landing/dashboard shell as certified static assets.
-- Consumes `io_historian` production read APIs from the browser.
-- Does not call `io_stream_manager` or `io_nns_neuron_manager`.
-- Does not expose custom metrics or dashboard JSON routes.
-- Is not protocol truth. Canonical value-moving facts remain in ledgers, indexes, governance canisters, release artifacts, and reviewed canister state transitions.
+- The unauthenticated dashboard/read-model path creates only an Historian actor
+  and calls `get_dashboard_state` and `get_public_status`.
+- The authenticated redemption path creates an IO Ledger actor and an
+  `io_stream_manager` actor using the wallet-supplied identity. It does not
+  directly call `io_nns_neuron_manager`.
+
+The Historian production Candid has no recent-stream, redemption, or reward
+list methods, and the loader does not call any. It preserves partial success:
+if one of its two queries fails, successful sections still render with a scoped
+warning. Missing values render as `-`; no production path fills gaps with mock
+metrics or treats missing/stale/error data as zero.
+
+## Wallet integration contract
+
+Production code prefers `window.ioWalletAdapter`. Its asynchronous `connect()`
+result must provide:
+
+- an authenticated `identity` with `getPrincipal()`;
+- exactly one canonical 32-byte `Uint8Array` `selectedSubaccount`;
+- a `network` string exactly equal to the configured frontend network; and
+- a `requestApprovalConsent` function.
+
+The frontend does not derive an Account from user-entered text and does not
+silently select another subaccount. It asks the wallet for explicit approval
+consent before constructing the allowance.
+
+`window.ioRedemptionSession` is an injected local-testing fallback. The wrapper
+labels it `injected-local-testing`; it is not the production wallet interface.
+
+## Production API
+
+The checked-in [production Candid](frontend.did) exposes only `http_request`
+and the `version` query. Browser actors for Historian, the IO Ledger, and the
+Stream Manager are outbound client dependencies; they are not frontend
+canister methods. There is no frontend monetary, configuration, or ingestion
+API.
+
+## Authenticated redemption path
+
+For the connected principal and selected subaccount, the client queries in
+parallel:
+
+- IO Ledger `icrc1_fee`;
+- IO Ledger `icrc2_allowance` for the Stream Manager spender; and
+- Stream Manager `get_caller_redemption_state` for the next nonce, last request
+  fingerprint, and last completed result.
+
+It requests an allowance of `io_amount + current transfer_from fee`, supplies
+the exact observed allowance as `expected_allowance`, includes a deterministic
+nonce-bound memo/timestamp, and uses a five-minute approval expiry. The approval
+itself burns its own IO fee. The subsequent `redeem` request uses the same
+canonical subaccount, a two-minute request expiry, minimum ICP output, and IO
+and ICP fee maxima.
+
+The UI renders preparation, IO-pull, IO-in-reserve, payout, completion, and
+`Stuck` progress. Anyone may call the canister's permissionless `resume`; the
+connected UI exposes that operation. For a `Stuck` own transfer, the user may
+submit the exact canonical ledger block to `prove_active_transfer`, then resume.
+The canister exact-matches the active persisted intent. Direct IO transfer is
+unsupported and cannot create a redemption intent.
+
+## Certified assets, initialization, and cache policy
+
+The build writes one content-hashed browser bundle to
+`public/generated/app.<hash>.js`, stamps `public/index.html` from
+`web/index.template.html`, and writes a private
+`public/generated/frontend-bundle.json` build manifest. The Rust canister
+recursively embeds `public/`, excludes the private manifest from routing, and
+rebuilds/certifies the asset router on install and post-upgrade. It has no
+monetary stable state.
+
+The canister serves certified GET and HEAD responses. `/` aliases to
+`index.html`; unknown paths return certified `404.html`.
+
+- `index.html`, `404.html`, and `.well-known/ic-domains` use
+  `public, no-cache, no-store`.
+- Content-addressed generated bundles and assets use
+  `public, max-age=31536000, immutable`.
+- CSP forbids inline scripts and styles.
+- The page loads no Google Fonts or third-party runtime dependencies.
+- Standard headers include HSTS, `X-Content-Type-Options`, `Referrer-Policy`,
+  `Permissions-Policy`, COEP, COOP, CORP, and a restrictive CSP.
 
 ## Layout
 
-- Rust canister: `src/lib.rs`
-- Public certified assets: `public/`
+- Rust asset canister: `src/lib.rs`
+- Embedded public assets: `public/`
 - Browser source: `web/src/`
-- Historian declarations: `web/declarations/io_historian/`
-- Build script: `web/build-frontend.mjs`
-- Frontend tests: `web/test/`
+- Production declarations: `web/declarations/`
+- Browser build: `web/build-frontend.mjs`
+- Browser tests: `web/test/`
 
-The build writes a content-hashed browser bundle to `public/generated/app.<hash>.js`, stamps `public/index.html` from `web/index.template.html`, and writes a private `public/generated/frontend-bundle.json` build manifest. The Rust router embeds `public/` at compile time and excludes that private manifest from routing.
+## Commands and verification
 
-## Data Path
-
-The browser creates an actor from the production `io_historian.did` declarations and queries:
-
-- `get_dashboard_state`
-- `get_public_status`
-- bounded list methods for recent streams, redemptions, and rewards
-
-The loader preserves partial success. If one optional query fails, the dashboard renders the successful sections and shows a scoped warning. Missing values render as `-`; no production path fills gaps with mock metrics.
-
-## Security And Cache Policy
-
-The canister serves certified GET and HEAD responses. `/` aliases to `index.html`; unknown paths return certified `404.html`.
-
-- `index.html`, `404.html`, and `.well-known/ic-domains`: `public, no-cache, no-store`
-- generated bundles and assets: `public, max-age=31536000, immutable`
-- CSP disallows inline scripts and inline styles
-- no Google Fonts or third-party runtime network dependencies are loaded by the page
-
-Standard response headers include HSTS, `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`, COEP, COOP, CORP, and a restrictive CSP.
-
-## Commands
+The command names below are defined in the repository `package.json`:
 
 ```bash
 npm run setup:frontend
 npm run build:frontend
 npm run test:frontend-unit
+npm run test:frontend-all
 cargo test -p io-frontend
 cargo run -p xtask -- frontend_required
 ```
 
-`tools/scripts/build-canister io-frontend release` runs the browser build before compiling the frontend Wasm so release artifacts embed the stamped bundle.
+`setup:frontend` runs `npm ci` and therefore uses the locked dependency graph
+but may require network access. `tools/scripts/build-canister io-frontend
+release` builds the browser bundle before compiling Wasm so the recorded asset
+canister embeds the stamped files. See the [xtask guide](../../tools/xtask/README.md)
+for aggregate frontend/release gates.
 
-For the DevMainnet public shell, the browser bundle was built with `CANISTER_ID_IO_HISTORIAN=yo47z-piaaa-aaaac-qg3xa-cai` so it reads from the dev/test historian public read model. The release artifact manifest reference is `release-artifacts/manifest.json`.
+## Deployment status and legacy shell
 
-## Visual Provenance
+The earlier frontend `6h2pa-qiaaa-aaaao-qp4fa-cai` and Historian
+`yo47z-piaaa-aaaac-qg3xa-cai` are `DevMainnet` only: historical public-shell
+canisters. They are superseded as production targets, are not on the fiduciary
+subnet, and do not activate IO issuance or redemption. A DevMainnet shell is
+not a production IO protocol canister. The historical record, including its
+public URLs and release reference, is in
+[legacy Phase 1](../../deploy/mainnet-dev/legacy-phase1/README.md).
 
-The visual direction comes from `io-frontend-mock.zip`: dark Io sphere hero, corner links, primary nav, IO/REAL LIQUID STAKING copy, coming-soon tagline, and glassy metric cards. The production implementation self-hosts the image assets and omits the mock's base64 `texture-data.js` payload.
+## Non-goals and limitations
 
-## Redemption
-
-The production bundle includes the simplified redemption flow. A wallet
-integration supplies the authenticated identity and one selected canonical
-32-byte subaccount through `window.ioRedemptionSession`; the page does not
-derive an Account from user-entered text. The flow queries the IO fee, exact
-allowance and caller nonce, approves `amount + transfer_from fee` with expected
-allowance, deterministic memo/timestamp and short expiry, then submits minimum
-ICP output and both fee maxima. The canister recomputes every monetary fact.
-
-The page renders preparation, IO pull, IO-in-reserve, payout, completion and
-Stuck guidance. Resume is permissionless at the canister boundary, while the
-connected UI may invoke it. Exact block proof is available for a Stuck own
-transfer. Direct IO transfer is explicitly unsupported and cannot create a
-redemption intent.
-
-## Limitations
-
-- Custom-domain certification setup is not implemented.
-- Production historian canister IDs are injected by build/runtime config and may be empty in local builds.
-- Historian production ingestion is consumed only through its read-only production DID.
-- The frontend is a dashboard over historian observations, not a protocol authority.
-- The existing IO neuron-owner canister `oae4c-3iaaa-aaaar-qb5qq-cai` and IO neuron `6345890886899317159` are not touched by the DevMainnet frontend.
-
-## Freshness Display
-
-The frontend renders historian source health from the production historian declarations only. It displays fresh, stale, missing, prelaunch/not-configured, and retryable error source states as public read model data.
-
-Historian data is rebuildable, not canonical protocol truth, and not a value-moving authority. IO protocol is not live. SNS IO ledger remains not launched. The missing/stale/error states are visible; missing/stale/incomplete fields must not be interpreted as zero protocol value.
-
-The frontend does not call value-moving canisters. Index canisters remain the normal account-history abstraction for future account-history observations; index canisters are the default source for account-history observations. Raw ledger/archive traversal is not the default path.
+- The frontend never directly calls the NNS Manager.
+- Historian data is rebuildable, not canonical protocol truth.
+- The public read model is not protocol truth and is not a value-moving authority.
+- missing/stale/incomplete fields must not be interpreted as zero.
+- Custom-domain certification setup and final SNS/testflight wallet integration
+  remain incomplete.
+- Production canister IDs are build/runtime inputs and may be empty in local
+  builds.
+- The frontend has no custom metrics/dashboard JSON endpoint and cannot
+  authorize monetary or Governance effects.
+- Local/frontend validation does not inspect or mutate protected canister
+  `oae4c-3iaaa-aaaar-qb5qq-cai` or protected IO NNS neuron
+  `10292412127977304661`.

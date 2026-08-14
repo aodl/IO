@@ -1,0 +1,76 @@
+# IO local official-SNS rehearsal config.
+# Local-only. Not final tokenomics. Not a mainnet SNS proposal.
+# Used only to create a real local SNS ledger stack for integration testing.
+
+name: "IO Local Rehearsal"
+description: "Local-only IO SNS rehearsal for proving real SNS ledger/index behavior."
+url: "https://forum.dfinity.org/t/io-local-rehearsal/0"
+logo: "assets/io-local-logo.svg"
+
+NnsProposal:
+  title: "Local-only proposal to create the IO rehearsal SNS"
+  url: "https://forum.dfinity.org/t/local-only-io-rehearsal/0"
+  summary: "Local-only IO SNS rehearsal for validating official SNS launch mechanics and standard SNS ledger fee-burn behavior."
+
+fallback_controller_principals:
+  - "amzih-bssz4-twanl-zf6nr-bqsnn-d7rlt-eerbc-oe7vv-uggn5-3naqo-3ae"
+
+dapp_canisters:
+  - "xp3jw-ot777-77777-aaaaa-cai"
+  - "xi2pc-dl777-77777-aaaaq-cai"
+  - "xbze6-vd777-77777-aaaba-cai"
+  - "xgyck-y3777-77777-aaabq-cai"
+
+Token:
+  name: "IO Local Rehearsal"
+  symbol: "IOLO"
+  transaction_fee: "10_000 e8s"
+  logo: "assets/io-local-token-logo.svg"
+
+Proposals:
+  rejection_fee: "100 tokens"
+  initial_voting_period: "1 days"
+  maximum_wait_for_quiet_deadline_extension: "12 hours"
+
+Neurons:
+  minimum_creation_stake: "1 tokens"
+
+Voting:
+  minimum_dissolve_delay: "1209599 seconds"
+  MaximumVotingPowerBonuses:
+    DissolveDelay:
+      duration: "14 days"
+      bonus: "0%"
+    Age:
+      duration: "0 seconds"
+      bonus: "0%"
+  RewardRate:
+    initial: "0%"
+    final: "0%"
+    transition_duration: "0 seconds"
+
+Distribution:
+  Neurons:
+    - principal: "amzih-bssz4-twanl-zf6nr-bqsnn-d7rlt-eerbc-oe7vv-uggn5-3naqo-3ae"
+      stake: "100_000 tokens"
+      memo: 0
+      dissolve_delay: "1209599 seconds"
+      vesting_period: "0 seconds"
+  InitialBalances:
+    treasury: "800_000 tokens"
+    swap: "100_000 tokens"
+  total: "1_000_000 tokens"
+
+Swap:
+  minimum_participants: 1
+  minimum_direct_participation_icp: "1 tokens"
+  maximum_direct_participation_icp: "10 tokens"
+  minimum_participant_icp: "1 tokens"
+  maximum_participant_icp: "10 tokens"
+  start_time: null
+  duration: "1 days"
+  neurons_fund_participation: false
+  VestingSchedule:
+    events: 2
+    interval: "1 seconds"
+  confirmation_text: "Local-only IO SNS rehearsal."

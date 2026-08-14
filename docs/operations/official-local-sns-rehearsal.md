@@ -4,7 +4,9 @@ This runbook describes how to prove IO assumptions against a real SNS-created le
 
 For a lighter local real-framework path that does not use official SNS launch tooling, use `tests/e2e_real_canisters` with pinned local SNS ledger/index Wasms. That path installs the real framework Wasms directly in PocketIC and records evidence with `deploy/local-sns-rehearsal/real-canister-e2e-evidence.example.toml`; it is not a substitute for an official SNS launch rehearsal because it does not prove SNS-W, swap, root/governance launch wiring, or final SNS tokenomics.
 
-It must not use `--network ic`, must not call mainnet, must not touch `oae4c-3iaaa-aaaar-qb5qq-cai`, and must not touch IO neuron `6345890886899317159`.
+It must not use `--network ic`, must not call mainnet, must not touch NNS
+Manager execution canister `oae4c-3iaaa-aaaar-qb5qq-cai`, and must not touch
+protected IO NNS neuron `10292412127977304661`.
 
 ## Package
 
@@ -112,12 +114,14 @@ local NNS fixture, production ICRC-2 redemption, canonical ledger/index
 histories, and one exact proposal-bearing daily reward event. The separate
 `2026-08-12-4320fdf-monitoring` package preserves historical mechanics and historian connectivity. The corrected historical package uses the derived Governance treasury distribution Account in both Stream and historian configuration and passes the independent checked-arithmetic evidence validator.
 
-`current-canonical.toml` selects the separate immutable current package
-`2026-08-14-4320fdf-canonical-economics`, bound to source S4
-`55b2099a555799c4a032308eb8a39049c7946193` and artifact A4
-`09b115f708ec784766327539f9cf4e5e21668d84`. The selector binds that package's
-release manifest, package manifest, and checksum inventory. The 2026-08-12
-canonical package remains historical evidence and was not rebound.
+The immutable 2026-08-12 and 2026-08-14 packages remain bound to their recorded
+releases and were not rebound. This includes the authority, final-readme, and
+final-validator packages produced on the diverged historical `misc` lineage.
+The explicit `current-canonical.toml` selector must name a newly generated
+package and bind its release manifest, package manifest, checksum inventory,
+source-finalization commit, and immediate artifact-recording child to the exact
+master-descended release. Until that new package exists, the current local
+rehearsal item remains incomplete.
 
 Completed local proof does not prove official SNS reward-share release adoption,
 final SNS configuration/tokenomics/controllers, external audit, or mainnet

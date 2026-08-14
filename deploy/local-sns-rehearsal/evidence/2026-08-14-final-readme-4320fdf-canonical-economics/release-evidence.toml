@@ -1,0 +1,20 @@
+[release]
+source_commit = "8abdd9572e43a0240c21411950e361217b679b13"
+artifact_recording_commit = "a8f668ae52f46a3602c9faebcab52998e13006dd"
+manifest_sha256 = "68a61fdcdca854acf5c90d42e4f5eee2b95759667cebefe50bf68c34eb9512c8"
+
+[io_stream_manager]
+raw_wasm_sha256 = "b6362b7725ed863313fa49337e00c0ab8ff7afcd4d6e54643985bbf50aa25477"
+gzip_wasm_sha256 = "199b8dd7910c774b0c928c21dcb1971aa94f4a34fa5ac2e0b201a29da7fb7750"
+
+[io_nns_neuron_manager]
+raw_wasm_sha256 = "dafef09c5cb574b8db10a14a0dbde48eaa93de1118f7437ad847f7ee884a3b82"
+gzip_wasm_sha256 = "1cb0ce301f0baf968561747f3f3bb68c8368d190322373d172b29c17964832cf"
+
+[io_historian]
+raw_wasm_sha256 = "10a49a78dc9893fa49982ab283325a83bcd763100d03b75e08416d75f031c8ae"
+gzip_wasm_sha256 = "e6005aedd8da2e8d6f35b8d6c1ffff917e7bf691b6d9677744261e0a9827f53d"
+
+[io_frontend]
+raw_wasm_sha256 = "f82031ac43b541979ad6de0c23214c20ea061984c34c7a9673706b1771c0fd50"
+gzip_wasm_sha256 = "5d3626baa966e46e1a3b7f576fe19d0fc9a600ca55561072c5433e25afb5a93a"

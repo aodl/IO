@@ -8,7 +8,7 @@ They are superseded as current redemption-rate and excluded-Account evidence. Bo
 
 `canonical_redemption_economics = true` identifies the complete canonical proof shape; it does not mean that every such historical package must match the repository's checked-in release. Current launch readiness instead requires the closed `deploy/local-sns-rehearsal/evidence/current-canonical.toml` selector to name exactly one later immutable package and bind its source, artifact commit, release manifest, package manifest and checksum inventory. The selected package must preserve the exact Stream, NNS-manager, historian, SNS-init and Account-map inputs; prove the derived treasury Account and nonzero observed balance; and pass checked cross-consistency for the Stream quote, both ledgers and the historian snapshot against the selected current release. Historical package integrity remains independently verifiable against its recorded release pair and is not described as corruption.
 
-The established current selection is:
+The preceding selection, which remains an immutable historical record, is:
 
 - package: `2026-08-14-4320fdf-canonical-economics`
 - source: `55b2099a555799c4a032308eb8a39049c7946193`
@@ -20,3 +20,23 @@ The established current selection is:
 
 The immutable `2026-08-12-4320fdf-canonical-economics` package remains
 historical corrected evidence for its own recorded release and was not rebound.
+The preceding 2026-08-14 package likewise remains immutable. Both recorded the
+obsolete protected-neuron guard and are historical rather than current.
+
+The following corrected-target package is immutable historical evidence from
+the diverged `misc` lineage; it is not current evidence for a newly finalized
+master-descended release:
+
+- package: `2026-08-14-final-validator-4320fdf-canonical-economics`
+- source: `45b87d6459a1fc7652cc1f63b75dfddcc4c6b98f`
+- artifact: `22c6cfb06c354061b75d40ec45b668ff0b3ef12c`
+- selector SHA-256: `5434ad90719c1c0621537c56969264297280bb9f700cbf1302e61993eeae131f`
+- release-manifest SHA-256: `f77238236520e0c42c0c8d2d1cd834ce8d49510697388a607e12d476fb7e2328`
+- package-manifest SHA-256: `4e86bdaae6e2b6af39e8d16c44607e82881697dea64a69a94d18b01be70699ef`
+- package `SHA256SUMS` SHA-256: `eee2cf8708c61ddf5e93d2b11a749c248c8d8502c38c02d344b7b1f617bac5de`
+
+The selector is the machine-readable source of currentness. The three
+authority, final-readme, and final-validator packages from `misc` remain bound
+to their recorded commits and must not be rebound. Package names and
+local fixture values are not production configuration, candidate upstream is
+not an official release, and no local package is mainnet evidence.

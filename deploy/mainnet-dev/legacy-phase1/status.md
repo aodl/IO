@@ -19,8 +19,9 @@ Not deployed in this dev/test shell:
 
 Not touched in this dev/test shell:
 
-- Existing IO neuron-owner canister: `oae4c-3iaaa-aaaar-qb5qq-cai`
-- IO neuron: `6345890886899317159`
+- Protected-neuron controller and intended NNS Manager execution canister:
+  `oae4c-3iaaa-aaaar-qb5qq-cai`
+- Protected IO NNS neuron: `10292412127977304661`
 
 Pre-launch status:
 

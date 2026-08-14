@@ -32,8 +32,9 @@ IO remains pre-launch. The legacy dev/test public shell does not activate protoc
 - The canonical SNS IO ledger is not launched.
 - IO issuance is not live.
 - IO redemption is not live.
-- The existing IO neuron-owner canister `oae4c-3iaaa-aaaar-qb5qq-cai` is not touched.
-- IO neuron `6345890886899317159` is not touched.
+- The protected-neuron controller and NNS Manager execution canister
+  `oae4c-3iaaa-aaaar-qb5qq-cai` is not touched.
+- Protected IO NNS neuron `10292412127977304661` is not touched.
 
 Historian is a public read model and dashboard source, not protocol truth. Frontend text and historian observations must not be treated as authority for IO issuance, redemption, reserves, neuron management, or SNS launch state.
 

@@ -33,10 +33,10 @@ allow_zero_fees_for_mock_or_local = false
 
 [protected]
 neuron_owner_canister = "oae4c-3iaaa-aaaar-qb5qq-cai"
-io_nns_neuron_id = 6_345_890_886_899_317_159
+io_nns_neuron_id = 10_292_412_127_977_304_661
 
 [deployment_targets]
 io_stream_manager = "thset-pqaaa-aaaar-qb7wa-cai"
-io_nns_neuron_manager = "tatch-ciaaa-aaaar-qb7wq-cai"
+io_nns_neuron_manager = "oae4c-3iaaa-aaaar-qb5qq-cai"
 mutation_target_principals = []
 mutation_target_nns_neuron_ids = []

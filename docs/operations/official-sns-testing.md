@@ -10,7 +10,8 @@ The maintained official local SNS flow uses the source-built `sns` CLI; this is 
 
 IO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical.
 
-The existing canister that owns IO NNS neuron 6345890886899317159 is not touched by these tests.
+NNS Manager execution canister `oae4c-3iaaa-aaaar-qb5qq-cai` and the
+protected IO NNS neuron `10292412127977304661` are not touched by these tests.
 
 ## Layer 1: IO Mock/PocketIC SNS-Shaped Harness
 

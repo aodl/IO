@@ -4,7 +4,9 @@ This package is local-only. It provides rehearsal scaffolding and evidence valid
 
 It is not production launch configuration, not final tokenomics, not a mainnet SNS proposal, not required CI, and not proof that IO is live.
 
-Do not use `--network ic`. Do not call mainnet. Do not touch `oae4c-3iaaa-aaaar-qb5qq-cai` or IO neuron `6345890886899317159`.
+Do not use `--network ic`. Do not call mainnet. Do not touch NNS Manager
+execution canister `oae4c-3iaaa-aaaar-qb5qq-cai` or protected IO NNS neuron
+`10292412127977304661`.
 
 ## Files
 
@@ -118,7 +120,17 @@ fresh and complete. No completed package may contain blocker/placeholder text.
 
 Both package forms reject unexpected or uncovered files, duplicate checksum entries, path traversal, symlinks, non-regular files, secret/private-key markers, and mainnet endpoint or network arguments.
 
-The disposition of both older completed packages is recorded in `docs/operations/local-sns-evidence-disposition.md`. Their mechanics and connectivity observations remain valid, but their redemption-rate/excluded-Account claims are historical and superseded. Restart-safe external logs remain supporting diagnostics rather than the committed-evidence contract.
+Package lineage and disposition are recorded in
+[`docs/operations/local-sns-evidence-disposition.md`](../../docs/operations/local-sns-evidence-disposition.md).
+A historical package is immutable evidence of what happened in its own run and
+remains bound to that run's recorded source/artifact pair. It must never be
+edited or rebound when the release changes. Having the complete canonical proof
+shape and being selected for current-release comparison are separate facts;
+`evidence/current-canonical.toml` explicitly selects one immutable package and
+binds its release/package/checksum manifests. The selector itself is the source
+of truth for the current identity. Candidate and local fixture evidence is not
+mainnet evidence. Restart-safe external logs remain supporting diagnostics
+rather than the committed-evidence contract.
 
 ## Issuance Model Under Test
 

@@ -2196,6 +2196,31 @@ fn validate_simplified_receipt_topology(stream: &str, nns: &str) -> Result<(), S
             return Err(format!("{field} must use the NNS manager default Account"));
         }
     }
+    for (text, field, token) in [
+        (
+            stream,
+            "nns_manager",
+            "TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL",
+        ),
+        (
+            stream,
+            "jupiter_receipt_source",
+            "TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL",
+        ),
+        (
+            stream,
+            "two_week_receipt_source",
+            "TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL",
+        ),
+        (nns, "jupiter_staging", "TODO_EXISTING_NNS_CONTROLLER_SELF"),
+        (
+            nns,
+            "two_week_maturity_staging",
+            "TODO_EXISTING_NNS_CONTROLLER_SELF",
+        ),
+    ] {
+        require_field_token(text, field, token)?;
+    }
     for (stream_field, nns_field, token) in [
         (
             "two_week_receipt_source",
@@ -2385,6 +2410,7 @@ fn check_sns_config_at(root: &Path) -> Result<(), String> {
 
 fn check_sns_official_testing_at(root: &Path) -> Result<(), String> {
     let doc = require_file(root, "docs/operations/official-sns-testing.md")?;
+    let protected_neuron_id = PROTECTED_IO_NNS_NEURON_ID.to_string();
     require_present(
         "docs/operations/official-sns-testing.md",
         &doc,
@@ -2398,7 +2424,11 @@ fn check_sns_official_testing_at(root: &Path) -> Result<(), String> {
             "not part of required IO workflows",
             "SNS testflight remains a separately authorized mainnet rehearsal.",
             "IO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical.",
-            "The existing canister that owns IO NNS neuron 6345890886899317159 is not touched by these tests.",
+            "NNS Manager execution canister",
+            PROTECTED_IO_NEURON_OWNER_CANISTER,
+            "protected IO NNS neuron",
+            &protected_neuron_id,
+            "are not touched by these tests.",
             "Layer 1",
             "Layer 2",
             "Layer 3",
@@ -2785,7 +2815,7 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
     require_absent(
         "deploy/local-sns-rehearsal/scripts/12-provision-local-nns-readiness.sh",
         &provisioning_phase,
-        &["6345890886899317159"],
+        &["10292412127977304661"],
     )?;
     let nns_test_did = require_file(root, "deploy/local-sns-rehearsal/nns-governance-test.did")?;
     require_present(
@@ -3424,7 +3454,7 @@ total_supply_changes_explained = true
 
 [protected]
 must_not_touch_neuron_owner_canister = "oae4c-3iaaa-aaaar-qb5qq-cai"
-must_not_touch_io_nns_neuron_id = "6345890886899317159"
+must_not_touch_io_nns_neuron_id = "10292412127977304661"
 "#
     .to_string()
 }
@@ -4577,8 +4607,13 @@ fn validate_local_sns_evidence(
         ));
     }
     validate_local_sns_toolchain(path, &evidence.toolchain)?;
-    validate_protected_reminders(path, doc)?;
-    validate_no_forbidden_local_ids(path, text, doc)?;
+    validate_protected_reminders(
+        path,
+        doc,
+        PROTECTED_IO_NEURON_OWNER_CANISTER,
+        PROTECTED_IO_NNS_NEURON_ID,
+    )?;
+    validate_no_forbidden_local_ids(path, text, doc, PROTECTED_IO_NNS_NEURON_ID)?;
     let principals = [
         evidence.sns_canisters.root,
         evidence.sns_canisters.governance,
@@ -5518,23 +5553,28 @@ fn validate_observed_account_delta(
     Ok(())
 }
 
-fn validate_protected_reminders(path: &str, doc: &SimpleTomlDocument) -> Result<(), String> {
+fn validate_protected_reminders(
+    path: &str,
+    doc: &SimpleTomlDocument,
+    expected_owner: &str,
+    expected_neuron_id: u64,
+) -> Result<(), String> {
     let canister = require_simple_string(
         path,
         doc,
         "protected",
         "must_not_touch_neuron_owner_canister",
     )?;
-    if canister != PROTECTED_IO_NEURON_OWNER_CANISTER {
+    if canister != expected_owner {
         return Err(format!(
-            "{path}: protected.must_not_touch_neuron_owner_canister must remain {PROTECTED_IO_NEURON_OWNER_CANISTER}"
+            "{path}: protected.must_not_touch_neuron_owner_canister must remain {expected_owner}"
         ));
     }
     let neuron = require_simple_string(path, doc, "protected", "must_not_touch_io_nns_neuron_id")?;
-    if neuron != PROTECTED_IO_NNS_NEURON_ID.to_string() {
+    if neuron != expected_neuron_id.to_string() {
         return Err(format!(
             "{path}: protected.must_not_touch_io_nns_neuron_id must remain {}",
-            PROTECTED_IO_NNS_NEURON_ID
+            expected_neuron_id
         ));
     }
     Ok(())
@@ -5544,6 +5584,7 @@ fn validate_no_forbidden_local_ids(
     path: &str,
     text: &str,
     doc: &SimpleTomlDocument,
+    recorded_protected_neuron_id: u64,
 ) -> Result<(), String> {
     for (section, values) in doc {
         for (key, value) in values {
@@ -5554,10 +5595,12 @@ fn validate_no_forbidden_local_ids(
                 continue;
             }
             validate_local_principal_value(path, &format!("{section}.{key}"), value)?;
-            if value == &PROTECTED_IO_NNS_NEURON_ID.to_string() {
+            if value == &recorded_protected_neuron_id.to_string()
+                || value == &PROTECTED_IO_NNS_NEURON_ID.to_string()
+            {
                 return Err(format!(
                     "{path}: {section}.{key} must not reference protected IO neuron {}",
-                    PROTECTED_IO_NNS_NEURON_ID
+                    value
                 ));
             }
         }
@@ -5596,14 +5639,24 @@ fn check_local_sns_ledger_at(root: &Path) -> Result<bool, String> {
     }
     let text = require_file(root, path)?;
     if text.contains("schema = \"production-redemption-v1\"") {
-        validate_production_redemption_evidence(path, &text)?;
+        validate_production_redemption_evidence(
+            path,
+            &text,
+            PROTECTED_IO_NEURON_OWNER_CANISTER,
+            PROTECTED_IO_NNS_NEURON_ID,
+        )?;
     } else {
         parse_local_sns_evidence(path, &text)?;
     }
     Ok(true)
 }
 
-fn validate_production_redemption_evidence(path: &str, text: &str) -> Result<(), String> {
+fn validate_production_redemption_evidence(
+    path: &str,
+    text: &str,
+    expected_protected_owner: &str,
+    expected_protected_neuron_id: u64,
+) -> Result<(), String> {
     let doc = parse_simple_toml_document(path, text)?;
     if require_simple_string(path, &doc, "evidence", "schema")? != "production-redemption-v1"
         || require_simple_string(path, &doc, "evidence", "network")? != "local"
@@ -5728,8 +5781,13 @@ fn validate_production_redemption_evidence(path: &str, text: &str) -> Result<(),
     {
         return Err(format!("{path}: archive or daily reward evidence mismatch"));
     }
-    validate_protected_reminders(path, &doc)?;
-    validate_no_forbidden_local_ids(path, text, &doc)?;
+    validate_protected_reminders(
+        path,
+        &doc,
+        expected_protected_owner,
+        expected_protected_neuron_id,
+    )?;
+    validate_no_forbidden_local_ids(path, text, &doc, expected_protected_neuron_id)?;
     Ok(())
 }
 
@@ -6520,6 +6578,51 @@ fn validate_canonical_redemption_evidence(root: &Path, package: &str) -> Result<
     Ok(())
 }
 
+fn protected_identity_at_source(root: &Path, source_commit: &str) -> Result<(String, u64), String> {
+    const SOURCE_PATH: &str = "crates/io_production_wiring/src/lib.rs";
+    let output = Command::new("git")
+        .current_dir(root)
+        .args(["show", &format!("{source_commit}:{SOURCE_PATH}")])
+        .output()
+        .map_err(|err| format!("git show {source_commit}:{SOURCE_PATH}: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "{source_commit}:{SOURCE_PATH}: protected-identity source is unavailable"
+        ));
+    }
+    let source = String::from_utf8(output.stdout)
+        .map_err(|err| format!("{source_commit}:{SOURCE_PATH}: non-UTF-8 source: {err}"))?;
+    let owner_prefix = "pub const PROTECTED_IO_NEURON_OWNER_CANISTER: &str = \"";
+    let owner = source
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix(owner_prefix)
+                .and_then(|value| value.strip_suffix("\";"))
+        })
+        .ok_or_else(|| {
+            format!("{source_commit}:{SOURCE_PATH}: protected owner constant is missing")
+        })?
+        .to_string();
+    let neuron_prefix = "pub const PROTECTED_IO_NNS_NEURON_ID: u64 = ";
+    let neuron = source
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix(neuron_prefix)
+                .and_then(|value| value.strip_suffix(';'))
+        })
+        .ok_or_else(|| {
+            format!("{source_commit}:{SOURCE_PATH}: protected neuron constant is missing")
+        })?
+        .replace('_', "")
+        .parse::<u64>()
+        .map_err(|err| {
+            format!("{source_commit}:{SOURCE_PATH}: invalid protected neuron constant: {err}")
+        })?;
+    Ok((owner, neuron))
+}
+
 fn validate_monitoring_evidence(
     root: &Path,
     package: &str,
@@ -6606,8 +6709,23 @@ fn validate_monitoring_evidence(
 
     let ids_path = format!("{package}/canister-ids.local.toml");
     let ids_text = require_file(root, &ids_path)?;
-    validate_production_redemption_evidence(&ids_path, &ids_text)?;
+    let (recorded_protected_owner, recorded_protected_neuron_id) =
+        protected_identity_at_source(root, &source_commit)?;
+    validate_production_redemption_evidence(
+        &ids_path,
+        &ids_text,
+        &recorded_protected_owner,
+        recorded_protected_neuron_id,
+    )?;
     let ids = parse_simple_toml_document(&ids_path, &ids_text)?;
+    if selected_current {
+        validate_protected_reminders(
+            &ids_path,
+            &ids,
+            PROTECTED_IO_NEURON_OWNER_CANISTER,
+            PROTECTED_IO_NNS_NEURON_ID,
+        )?;
+    }
     if require_simple_string(&ids_path, &ids, "provenance", "io_release_source_commit")?
         != source_commit
         || require_simple_string(
@@ -7221,7 +7339,7 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
                 "download",
                 "dfx ",
                 "oae4c-3iaaa-aaaar-qb5qq-cai",
-                "6345890886899317159",
+                "10292412127977304661",
             ],
         )?;
     }
@@ -7232,7 +7350,7 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
             "--network ic",
             "dfx ",
             "oae4c-3iaaa-aaaar-qb5qq-cai",
-            "6345890886899317159",
+            "10292412127977304661",
         ],
     )?;
     let root_cargo = require_file(root, "Cargo.toml")?;
@@ -7702,7 +7820,7 @@ fn check_prelaunch_public_shell_at(root: &Path) -> Result<(), String> {
             "not deployed",
             "not touched",
             KNOWN_CONTROLLER_CANISTER_PRINCIPAL,
-            "6345890886899317159",
+            "10292412127977304661",
             "IO protocol is not live",
             "canonical SNS IO ledger is not launched",
             "IO issuance is not live",
@@ -7768,10 +7886,6 @@ fn check_production_canister_ids_at(root: &Path) -> Result<(), String> {
             "io_stream_manager",
             PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID,
         ),
-        (
-            "io_nns_neuron_manager",
-            PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID,
-        ),
         ("io_historian", PRODUCTION_IO_HISTORIAN_CANISTER_ID),
         ("frontend", PRODUCTION_FRONTEND_CANISTER_ID),
     ] {
@@ -7795,21 +7909,18 @@ fn check_production_canister_ids_at(root: &Path) -> Result<(), String> {
         PRODUCTION_CANISTER_IDS_PATH,
         &text,
         &[
+            "io_nns_neuron_manager",
             DEV_MAINNET_FRONTEND_CANISTER_ID,
             DEV_MAINNET_HISTORIAN_CANISTER_ID,
         ],
     )
 }
 
-fn canonical_production_mapping() -> [(&'static str, &'static str); 4] {
+fn canonical_reserved_mapping() -> [(&'static str, &'static str); 3] {
     [
         (
             "io_stream_manager",
             PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID,
-        ),
-        (
-            "io_nns_neuron_manager",
-            PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID,
         ),
         ("io_historian", PRODUCTION_IO_HISTORIAN_CANISTER_ID),
         ("frontend", PRODUCTION_FRONTEND_CANISTER_ID),
@@ -7822,13 +7933,13 @@ fn line_markdown_heading_canister(line: &str) -> Option<&'static str> {
         return None;
     }
     let title = heading.trim_start_matches('#').trim();
-    canonical_production_mapping()
+    canonical_reserved_mapping()
         .iter()
         .find_map(|(name, _)| (title == *name).then_some(*name))
 }
 
 fn check_production_mapping_text(path: &str, text: &str) -> Result<(), String> {
-    let mapping = canonical_production_mapping();
+    let mapping = canonical_reserved_mapping();
     let mut required = Vec::with_capacity(mapping.len() * 2);
     for (name, id) in mapping {
         required.push(name);
@@ -7887,6 +7998,16 @@ fn check_production_mapping_docs_at(root: &Path) -> Result<(), String> {
     for path in PRODUCTION_MAPPING_PATHS {
         let text = require_file(root, path)?;
         check_production_mapping_text(path, &text)?;
+        if *path != PRODUCTION_CANISTER_IDS_PATH {
+            require_present(
+                path,
+                &text,
+                &[
+                    "io_nns_neuron_manager",
+                    PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID,
+                ],
+            )?;
+        }
     }
     Ok(())
 }
@@ -7950,7 +8071,7 @@ fn check_production_wiring_at(root: &Path) -> Result<(), String> {
             "SNS IO ledger is not launched",
             "production activation is a later audited milestone",
             PROTECTED_IO_NEURON_OWNER_CANISTER,
-            "6345890886899317159",
+            "10292412127977304661",
             "use `icp-cli` convention",
             "required workflows do not use `dfx`",
             "IO_TEST ledger is non-canonical",
@@ -9632,15 +9753,24 @@ mod tests {
 
     #[test]
     fn simplified_receipt_topology_requires_shared_account_tokens() {
-        let stream = "jupiter_receipt_source = record { subaccount = null }\n\
-                      two_week_receipt_source = TODO_TWO_WEEK_STAGING\n\
+        let stream = "nns_manager = TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL\n\
+                      jupiter_receipt_source = record { owner = TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL; subaccount = null }\n\
+                      two_week_receipt_source = record { owner = TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL; subaccount = opt TODO_TWO_WEEK_STAGING }\n\
                       liquid_icp = TODO_STREAM_LIQUID_SUBACCOUNT";
-        let nns = "jupiter_staging = record { subaccount = null }\n\
-                   two_week_maturity_staging = TODO_TWO_WEEK_STAGING\n\
+        let nns = "jupiter_staging = record { owner = TODO_EXISTING_NNS_CONTROLLER_SELF; subaccount = null }\n\
+                   two_week_maturity_staging = record { owner = TODO_EXISTING_NNS_CONTROLLER_SELF; subaccount = opt TODO_TWO_WEEK_STAGING }\n\
                    stream_liquid_account = TODO_STREAM_LIQUID_SUBACCOUNT";
         validate_simplified_receipt_topology(stream, nns).unwrap();
         assert!(validate_simplified_receipt_topology(
             &stream.replace("subaccount = null", "subaccount = opt TODO_WRONG",),
+            nns,
+        )
+        .is_err());
+        assert!(validate_simplified_receipt_topology(
+            &stream.replace(
+                "nns_manager = TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL",
+                "nns_manager = TODO_OBSOLETE_MANAGER",
+            ),
             nns,
         )
         .is_err());
@@ -9968,7 +10098,7 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "docs/operations/official-sns-testing.md",
-            "IO runs SNS-shaped mock/PocketIC tests, pinned real-canister profiles, and an optional maintained source-built local SNS-W rehearsal.\nWe do not currently run the official SNS launch locally in required CI.\nOfficial SNS testing is optional and heavier.\nThe current official ICP/DFINITY SNS testing documentation is the source of truth.\nThe historical standalone `dfinity/sns-testing` repository is deprecated.\nThe maintained official local SNS flow uses the source-built `sns` CLI; this is not part of required IO workflows.\nSNS testflight remains a separately authorized mainnet rehearsal.\nIO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical.\nThe existing canister that owns IO NNS neuron 6345890886899317159 is not touched by these tests.\nLayer 1\nLayer 2\nLayer 3\nLayer 4\n",
+            "IO runs SNS-shaped mock/PocketIC tests, pinned real-canister profiles, and an optional maintained source-built local SNS-W rehearsal.\nWe do not currently run the official SNS launch locally in required CI.\nOfficial SNS testing is optional and heavier.\nThe current official ICP/DFINITY SNS testing documentation is the source of truth.\nThe historical standalone `dfinity/sns-testing` repository is deprecated.\nThe maintained official local SNS flow uses the source-built `sns` CLI; this is not part of required IO workflows.\nSNS testflight remains a separately authorized mainnet rehearsal.\nIO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical.\nNNS Manager execution canister oae4c-3iaaa-aaaar-qb5qq-cai and protected IO NNS neuron 10292412127977304661 are not touched by these tests.\nLayer 1\nLayer 2\nLayer 3\nLayer 4\n",
         );
         write(
             root,
@@ -10233,7 +10363,7 @@ io_nns_neuron_manager = true
 
 [not_touched]
 existing_io_neuron_owner_canister = "oae4c-3iaaa-aaaar-qb5qq-cai"
-io_neuron_id = "6345890886899317159"
+io_neuron_id = "10292412127977304661"
 
 [status]
 io_protocol_live = false
@@ -10264,7 +10394,7 @@ No value-moving protocol canister is live.
 io_stream_manager is not deployed.
 io_nns_neuron_manager is not deployed.
 The existing IO neuron-owner canister oae4c-3iaaa-aaaar-qb5qq-cai is not touched.
-IO neuron 6345890886899317159 is not touched.
+Protected IO NNS neuron 10292412127977304661 is not touched.
 IO protocol is not live.
 The canonical SNS IO ledger is not launched.
 IO issuance is not live.
@@ -10325,11 +10455,11 @@ allow_zero_fees_for_mock_or_local = false
 
 [protected]
 neuron_owner_canister = "oae4c-3iaaa-aaaar-qb5qq-cai"
-io_nns_neuron_id = 6_345_890_886_899_317_159
+io_nns_neuron_id = 10_292_412_127_977_304_661
 
 [deployment_targets]
 io_stream_manager = "thset-pqaaa-aaaar-qb7wa-cai"
-io_nns_neuron_manager = "tatch-ciaaa-aaaar-qb7wq-cai"
+io_nns_neuron_manager = "oae4c-3iaaa-aaaar-qb5qq-cai"
 mutation_target_principals = []
 mutation_target_nns_neuron_ids = []
 "#
@@ -10349,7 +10479,6 @@ io_redemption_live = false
 
 [canisters]
 io_stream_manager = "thset-pqaaa-aaaar-qb7wa-cai"
-io_nns_neuron_manager = "tatch-ciaaa-aaaar-qb7wq-cai"
 io_historian = "tjqj3-uaaaa-aaaar-qb7xa-cai"
 frontend = "torpp-zyaaa-aaaar-qb7xq-cai"
 
@@ -10361,7 +10490,7 @@ description = "Production fiduciary-subnet canisters are reserved placeholders o
     fn production_mapping_doc() -> &'static str {
         r#"
 io_stream_manager thset-pqaaa-aaaar-qb7wa-cai
-io_nns_neuron_manager tatch-ciaaa-aaaar-qb7wq-cai
+io_nns_neuron_manager oae4c-3iaaa-aaaar-qb5qq-cai
 io_historian tjqj3-uaaaa-aaaar-qb7xa-cai
 frontend torpp-zyaaa-aaaar-qb7xq-cai
 "#
@@ -10370,7 +10499,7 @@ frontend torpp-zyaaa-aaaar-qb7xq-cai
     fn production_canister_roles_doc() -> &'static str {
         r#"
 ## io_nns_neuron_manager
-Production fiduciary status: reserved as `tatch-ciaaa-aaaar-qb7wq-cai`, `ReservedNotLive`.
+Production execution identity: existing protected controller `oae4c-3iaaa-aaaar-qb5qq-cai`.
 
 ## io_stream_manager
 Production fiduciary status: reserved as `thset-pqaaa-aaaar-qb7wa-cai`, `ReservedNotLive`.
@@ -10407,7 +10536,7 @@ IO protocol remains not live
 SNS IO ledger is not launched
 production activation is a later audited milestone
 oae4c-3iaaa-aaaar-qb5qq-cai
-6345890886899317159
+10292412127977304661
 use `icp-cli` convention
 required workflows do not use `dfx`
 IO_TEST ledger is non-canonical
@@ -10420,11 +10549,10 @@ no value-moving Wasm installed
 no production activation has happened
 no IO issuance/redemption is enabled
 io_stream_manager thset-pqaaa-aaaar-qb7wa-cai
-io_nns_neuron_manager tatch-ciaaa-aaaar-qb7wq-cai
+io_nns_neuron_manager oae4c-3iaaa-aaaar-qb5qq-cai
 io_historian tjqj3-uaaaa-aaaar-qb7xa-cai
 frontend torpp-zyaaa-aaaar-qb7xq-cai
 thset-pqaaa-aaaar-qb7wa-cai
-tatch-ciaaa-aaaar-qb7wq-cai
 tjqj3-uaaaa-aaaar-qb7xa-cai
 torpp-zyaaa-aaaar-qb7xq-cai
 Template SNS principal values are planned wiring placeholders only.
@@ -11025,7 +11153,7 @@ Template SNS principal values are planned wiring placeholders only.
         validate_nns_install_args_text(
             r#"(record {
               controller_canister_principal_text = "oae4c-3iaaa-aaaar-qb5qq-cai";
-              two_year_nns_neuron_id = 6_345_890_886_899_317_159 : nat64;
+              two_year_nns_neuron_id = 10_292_412_127_977_304_661 : nat64;
               io_stream_manager_principal_text = null : opt text;
               nns_governance_principal_text = null : opt text;
               icp_ledger_principal_text = null : opt text;
@@ -11033,6 +11161,22 @@ Template SNS principal values are planned wiring placeholders only.
             InstallArgsMode::Mainnet,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn install_args_validation_rejects_obsolete_protected_neuron() {
+        let obsolete_neuron = 6_345_890_886_899_317_000_u64 + 159;
+        let args = format!(
+            r#"(record {{
+              controller_canister_principal_text = "oae4c-3iaaa-aaaar-qb5qq-cai";
+              two_year_nns_neuron_id = {obsolete_neuron} : nat64;
+              io_stream_manager_principal_text = null : opt text;
+              nns_governance_principal_text = null : opt text;
+              icp_ledger_principal_text = null : opt text;
+            }})"#
+        );
+        let err = validate_nns_install_args_text(&args, InstallArgsMode::Mainnet).unwrap_err();
+        assert!(err.contains(&KNOWN_TWO_YEAR_NNS_NEURON_ID.to_string()));
     }
 
     #[test]
@@ -11328,6 +11472,22 @@ Template SNS principal values are planned wiring placeholders only.
         assert!(validated.complete);
         assert!(validated.monitoring);
         assert!(validated.canonical_economics);
+    }
+
+    #[test]
+    fn obsolete_guard_package_remains_intrinsic_history_but_not_current() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let package = "deploy/local-sns-rehearsal/evidence/2026-08-14-4320fdf-canonical-economics";
+        let historical_ids =
+            fs::read_to_string(root.join(package).join("canister-ids.local.toml")).unwrap();
+        assert!(historical_ids.contains("6345890886899317159"));
+        assert!(!historical_ids.contains(&PROTECTED_IO_NNS_NEURON_ID.to_string()));
+        validate_local_sns_evidence_package_at(&root, package, false).unwrap();
+        let err = validate_local_sns_evidence_package_at(&root, package, true).unwrap_err();
+        assert!(
+            err.contains("selected current package artifact commit"),
+            "expected stale-release selection error, got {err:?}"
+        );
     }
 
     #[test]
@@ -11801,7 +11961,7 @@ Template SNS principal values are planned wiring placeholders only.
             |text| {
                 text.replace(
                     "index_history_order = \"descending\"",
-                    "index_history_order = \"6345890886899317159\"",
+                    "index_history_order = \"10292412127977304661\"",
                 )
             },
             "protected IO neuron",
@@ -12327,7 +12487,7 @@ Template SNS principal values are planned wiring placeholders only.
                 DEV_MAINNET_HISTORIAN_CANISTER_ID,
                 "not touched",
                 KNOWN_CONTROLLER_CANISTER_PRINCIPAL,
-                "6345890886899317159",
+                "10292412127977304661",
             ],
         )
         .unwrap();
@@ -12351,27 +12511,23 @@ Template SNS principal values are planned wiring placeholders only.
     }
 
     #[test]
-    fn production_wiring_validation_rejects_swapped_doc_mapping() {
-        let root = temp_root("production-wiring-swapped-doc-mapping");
+    fn production_wiring_validation_rejects_wrong_reserved_doc_mapping() {
+        let root = temp_root("production-wiring-wrong-reserved-doc-mapping");
         write_production_wiring_fixture(&root);
         write(
             &root,
             "docs/architecture/canister-roles.md",
-            &production_canister_roles_doc()
-                .replace(
-                    "io_nns_neuron_manager\nProduction fiduciary status: reserved as `tatch-ciaaa-aaaar-qb7wq-cai`",
-                    "io_nns_neuron_manager\nProduction fiduciary status: reserved as `thset-pqaaa-aaaar-qb7wa-cai`",
-                )
-                .replace(
-                    "io_stream_manager\nProduction fiduciary status: reserved as `thset-pqaaa-aaaar-qb7wa-cai`",
-                    "io_stream_manager\nProduction fiduciary status: reserved as `tatch-ciaaa-aaaar-qb7wq-cai`",
-                ),
+            &production_canister_roles_doc().replace(
+                "io_stream_manager\nProduction fiduciary status: reserved as `thset-pqaaa-aaaar-qb7wa-cai`",
+                "io_stream_manager\nProduction fiduciary status: reserved as `tjqj3-uaaaa-aaaar-qb7xa-cai`",
+            ),
         );
 
         let err = check_production_wiring_at(&root).unwrap_err();
         assert!(
-            err.contains("io_nns_neuron_manager") || err.contains("io_stream_manager"),
-            "expected swapped mapping error, got {err:?}"
+            err.contains("io_stream_manager")
+                || err.contains(PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID),
+            "expected wrong mapping error, got {err:?}"
         );
         let _ = fs::remove_dir_all(root);
     }

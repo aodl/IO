@@ -1,0 +1,125 @@
+log=10-bootstrap-official-network.log
+command: /home/codexdev/src/IO/../ic/bazel-bin/rs/sns/cli/sns --network http://127.0.0.1:8082 init-config-file --init-config-file-path /home/codexdev/.cache/io/sns-framework/runs/lifecycle-sns-1786726061503508351-567401/inputs/sns_init.local.yaml validate
+exit_status=0
+log=11-build-local-io-canisters.log
+command: cargo run -p xtask -- verify_recorded_source
+exit_status=0
+log=12-deploy-local-dapps.log
+command: dfx canister create --network http://127.0.0.1:8082 --identity codex_local --no-wallet io_stream_manager
+exit_status=0
+command: dfx canister create --network http://127.0.0.1:8082 --identity codex_local --no-wallet io_nns_neuron_manager
+exit_status=0
+command: dfx canister create --network http://127.0.0.1:8082 --identity codex_local --no-wallet io_historian
+exit_status=0
+command: dfx canister create --network http://127.0.0.1:8082 --identity codex_local --no-wallet frontend
+exit_status=0
+command: dfx canister install --network http://127.0.0.1:8082 --identity codex_local --wasm /home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm --argument-file /home/codexdev/.cache/io/sns-framework/runs/lifecycle-sns-1786726061503508351-567401/inputs/io_stream_manager.did xp3jw-ot777-77777-aaaaa-cai
+exit_status=0
+command: dfx canister install --network http://127.0.0.1:8082 --identity codex_local --wasm /home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm --argument-file /home/codexdev/.cache/io/sns-framework/runs/lifecycle-sns-1786726061503508351-567401/inputs/io_nns_neuron_manager.did xi2pc-dl777-77777-aaaaq-cai
+exit_status=0
+command: dfx canister install --network http://127.0.0.1:8082 --identity codex_local --wasm /home/codexdev/.cache/io/sns-framework/runs/lifecycle-sns-1786726061503508351-567401/generated/prior/io_historian.wasm xbze6-vd777-77777-aaaba-cai
+exit_status=0
+command: dfx canister install --network http://127.0.0.1:8082 --identity codex_local --wasm /home/codexdev/src/IO/release-artifacts/io_frontend.wasm xgyck-y3777-77777-aaabq-cai
+exit_status=0
+command: /home/codexdev/src/IO/../ic/bazel-bin/rs/sns/cli/sns --identity codex_local --network http://127.0.0.1:8082 prepare-canisters add-nns-root xp3jw-ot777-77777-aaaaa-cai xi2pc-dl777-77777-aaaaq-cai xbze6-vd777-77777-aaaba-cai xgyck-y3777-77777-aaabq-cai
+exit_status=0
+log=12-provision-local-nns-readiness.log
+log=13-propose-and-finalize-sns.log
+command: /home/codexdev/src/IO/../ic/bazel-bin/rs/sns/cli/sns --identity codex_local --network http://127.0.0.1:8082 propose --neuron-id 11129307823670308035 --skip-confirmation --save-to /home/codexdev/.cache/io/sns-framework/runs/lifecycle-sns-1786726061503508351-567401/generated/create-sns-proposal.json /home/codexdev/.cache/io/sns-framework/runs/lifecycle-sns-1786726061503508351-567401/inputs/sns_init.local.yaml
+exit_status=0
+command: /home/codexdev/src/IO/../ic/bazel-bin/rs/sns/testing/sns-testing --network http://127.0.0.1:8082 swap-complete --sns-name IO\ Local\ Rehearsal --follow-principal-neurons amzih-bssz4-twanl-zf6nr-bqsnn-d7rlt-eerbc-oe7vv-uggn5-3naqo-3ae
+exit_status=0
+log=14-discover-sns-canisters.log
+command: /home/codexdev/src/IO/../ic/bazel-bin/rs/sns/testing/sns-testing --network http://127.0.0.1:8082 sns-proposal-upvote --sns-name IO\ Local\ Rehearsal --proposal-id 1 --wait true
+exit_status=1
+log=15-exercise-ledger.log
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did dfj7p-ut777-77776-qaaba-cai icrc1_total_supply \(\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did dfj7p-ut777-77776-qaaba-cai icrc1_fee \(\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did dfj7p-ut777-77776-qaaba-cai icrc1_balance_of \(record\ \{\ owner\ =\ principal\ \"xp3jw-ot777-77777-aaaaa-cai\"\;\ subaccount\ =\ opt\ blob\ \"\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\"\ \}\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did dfj7p-ut777-77776-qaaba-cai icrc1_balance_of \(record\ \{\ owner\ =\ principal\ \"amzih-bssz4-twanl-zf6nr-bqsnn-d7rlt-eerbc-oe7vv-uggn5-3naqo-3ae\"\;\ subaccount\ =\ null\ \}\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did ryjl3-tyaaa-aaaaa-aaaba-cai icrc1_balance_of \(record\ \{\ owner\ =\ principal\ \"xp3jw-ot777-77777-aaaaa-cai\"\;\ subaccount\ =\ opt\ blob\ \"\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\"\ \}\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did ryjl3-tyaaa-aaaaa-aaaba-cai icrc1_balance_of \(record\ \{\ owner\ =\ principal\ \"amzih-bssz4-twanl-zf6nr-bqsnn-d7rlt-eerbc-oe7vv-uggn5-3naqo-3ae\"\;\ subaccount\ =\ null\ \}\)
+exit_status=0
+command: /home/codexdev/src/IO/../ic/bazel-bin/rs/sns/testing/sns-testing --network http://127.0.0.1:8082 sns-proposal-upvote --sns-name IO\ Local\ Rehearsal --proposal-id 2 --wait true
+exit_status=1
+command: /home/codexdev/src/IO/../ic/bazel-bin/rs/sns/testing/sns-testing --network http://127.0.0.1:8082 sns-proposal-upvote --sns-name IO\ Local\ Rehearsal --proposal-id 3 --wait true
+exit_status=1
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did dfj7p-ut777-77776-qaaba-cai icrc1_transfer \(record\ \{\ from_subaccount\ =\ null\;\ to\ =\ record\ \{\ owner\ =\ principal\ \"amzih-bssz4-twanl-zf6nr-bqsnn-d7rlt-eerbc-oe7vv-uggn5-3naqo-3ae\"\;\ subaccount\ =\ null\ \}\;\ amount\ =\ 1\ :\ nat\;\ fee\ =\ opt\ \(1\ :\ nat\)\;\ memo\ =\ null\;\ created_at_time\ =\ null\ \}\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did dfj7p-ut777-77776-qaaba-cai icrc1_transfer \(record\ \{\ from_subaccount\ =\ null\;\ to\ =\ record\ \{\ owner\ =\ principal\ \"amzih-bssz4-twanl-zf6nr-bqsnn-d7rlt-eerbc-oe7vv-uggn5-3naqo-3ae\"\;\ subaccount\ =\ null\ \}\;\ amount\ =\ 999999999999999999999\ :\ nat\;\ fee\ =\ opt\ \(10000\ :\ nat\)\;\ memo\ =\ null\;\ created_at_time\ =\ null\ \}\)
+exit_status=0
+command: /home/codexdev/src/IO/../ic/bazel-bin/rs/sns/testing/sns-testing --network http://127.0.0.1:8082 transfer-icp --amount 1000000.00000000 --to-principal xp3jw-ot777-77777-aaaaa-cai 0202020202020202020202020202020202020202020202020202020202020202
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did dfj7p-ut777-77776-qaaba-cai icrc1_total_supply \(\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did dfj7p-ut777-77776-qaaba-cai icrc1_balance_of \(record\ \{\ owner\ =\ principal\ \"xp3jw-ot777-77777-aaaaa-cai\"\;\ subaccount\ =\ opt\ blob\ \"\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\"\ \}\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did dfj7p-ut777-77776-qaaba-cai icrc1_balance_of \(record\ \{\ owner\ =\ principal\ \"amzih-bssz4-twanl-zf6nr-bqsnn-d7rlt-eerbc-oe7vv-uggn5-3naqo-3ae\"\;\ subaccount\ =\ null\ \}\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did dfj7p-ut777-77776-qaaba-cai icrc1_total_supply \(\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did dfj7p-ut777-77776-qaaba-cai icrc1_fee \(\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did dfj7p-ut777-77776-qaaba-cai icrc1_balance_of \(record\ \{\ owner\ =\ principal\ \"xp3jw-ot777-77777-aaaaa-cai\"\;\ subaccount\ =\ opt\ blob\ \"\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\"\ \}\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did dfj7p-ut777-77776-qaaba-cai icrc1_balance_of \(record\ \{\ owner\ =\ principal\ \"amzih-bssz4-twanl-zf6nr-bqsnn-d7rlt-eerbc-oe7vv-uggn5-3naqo-3ae\"\;\ subaccount\ =\ null\ \}\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did ryjl3-tyaaa-aaaaa-aaaba-cai icrc1_balance_of \(record\ \{\ owner\ =\ principal\ \"xp3jw-ot777-77777-aaaaa-cai\"\;\ subaccount\ =\ opt\ blob\ \"\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\"\ \}\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did ryjl3-tyaaa-aaaaa-aaaba-cai icrc1_balance_of \(record\ \{\ owner\ =\ principal\ \"amzih-bssz4-twanl-zf6nr-bqsnn-d7rlt-eerbc-oe7vv-uggn5-3naqo-3ae\"\;\ subaccount\ =\ null\ \}\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did dfj7p-ut777-77776-qaaba-cai icrc1_total_supply \(\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did dfj7p-ut777-77776-qaaba-cai icrc1_balance_of \(record\ \{\ owner\ =\ principal\ \"xp3jw-ot777-77777-aaaaa-cai\"\;\ subaccount\ =\ opt\ blob\ \"\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\"\ \}\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did dfj7p-ut777-77776-qaaba-cai icrc1_balance_of \(record\ \{\ owner\ =\ principal\ \"amzih-bssz4-twanl-zf6nr-bqsnn-d7rlt-eerbc-oe7vv-uggn5-3naqo-3ae\"\;\ subaccount\ =\ null\ \}\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --candid /home/codexdev/src/IO/canisters/io_stream_manager/io_stream_manager.did xp3jw-ot777-77777-aaaaa-cai resume \(\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --candid /home/codexdev/src/IO/canisters/io_stream_manager/io_stream_manager.did xp3jw-ot777-77777-aaaaa-cai resume \(\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did dfj7p-ut777-77776-qaaba-cai icrc1_total_supply \(\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did dfj7p-ut777-77776-qaaba-cai icrc1_balance_of \(record\ \{\ owner\ =\ principal\ \"xp3jw-ot777-77777-aaaaa-cai\"\;\ subaccount\ =\ opt\ blob\ \"\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\"\ \}\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did dfj7p-ut777-77776-qaaba-cai icrc1_balance_of \(record\ \{\ owner\ =\ principal\ \"amzih-bssz4-twanl-zf6nr-bqsnn-d7rlt-eerbc-oe7vv-uggn5-3naqo-3ae\"\;\ subaccount\ =\ null\ \}\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did ryjl3-tyaaa-aaaaa-aaaba-cai icrc1_balance_of \(record\ \{\ owner\ =\ principal\ \"xp3jw-ot777-77777-aaaaa-cai\"\;\ subaccount\ =\ opt\ blob\ \"\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\\02\"\ \}\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did ryjl3-tyaaa-aaaaa-aaaba-cai icrc1_balance_of \(record\ \{\ owner\ =\ principal\ \"amzih-bssz4-twanl-zf6nr-bqsnn-d7rlt-eerbc-oe7vv-uggn5-3naqo-3ae\"\;\ subaccount\ =\ null\ \}\)
+exit_status=0
+log=16-exercise-index-and-archives.log
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/index-ng/index-ng.did dxpiw-yd777-77776-qaaca-cai ledger_id \(\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/index-ng/index-ng.did dxpiw-yd777-77776-qaaca-cai get_account_transactions \(record\ \{\ account\ =\ record\ \{\ owner\ =\ principal\ \"xp3jw-ot777-77777-aaaaa-cai\"\;\ subaccount\ =\ opt\ blob\ \"\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\\01\"\ \}\;\ start\ =\ null\;\ max_results\ =\ 100\ :\ nat\ \}\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/index-ng/index-ng.did dxpiw-yd777-77776-qaaca-cai get_account_transactions \(record\ \{\ account\ =\ record\ \{\ owner\ =\ principal\ \"amzih-bssz4-twanl-zf6nr-bqsnn-d7rlt-eerbc-oe7vv-uggn5-3naqo-3ae\"\;\ subaccount\ =\ null\ \}\;\ start\ =\ null\;\ max_results\ =\ 100\ :\ nat\ \}\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/ledger_suite/icrc1/ledger/ledger.did dfj7p-ut777-77776-qaaba-cai icrc3_get_archives \(record\ \{\ from\ =\ null\ \}\)
+exit_status=0
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --query --candid /home/codexdev/src/IO/../ic/rs/sns/root/canister/root.did dllsh-pd777-77776-qaaaa-cai list_sns_canisters \(record\ \{\}\)
+exit_status=0
+log=17-exercise-governance-and-controllers.log
+command: /home/codexdev/src/IO/../ic/bazel-bin/rs/sns/testing/sns-testing --network http://127.0.0.1:8082 sns-proposal-upvote --sns-name IO\ Local\ Rehearsal --proposal-id 4 --wait true
+exit_status=1
+command: /home/codexdev/src/IO/../ic/bazel-bin/rs/sns/testing/sns-testing --network http://127.0.0.1:8082 sns-proposal-upvote --sns-name IO\ Local\ Rehearsal --proposal-id 5 --wait true
+exit_status=1
+command: /home/codexdev/src/IO/../ic/bazel-bin/rs/sns/testing/sns-testing --network http://127.0.0.1:8082 sns-proposal-upvote --sns-name IO\ Local\ Rehearsal --proposal-id 6 --wait true
+exit_status=1
+command: /home/codexdev/src/IO/../ic/bazel-bin/rs/sns/testing/sns-testing --network http://127.0.0.1:8082 sns-proposal-upvote --sns-name IO\ Local\ Rehearsal --proposal-id 7 --wait true
+exit_status=1
+command: /home/codexdev/src/IO/../ic/bazel-bin/rs/sns/testing/sns-testing --network http://127.0.0.1:8082 sns-proposal-upvote --sns-name IO\ Local\ Rehearsal --proposal-id 8 --wait true
+exit_status=1
+log=17-observe-one-day-reward.log
+command: env IO_POCKET_IC_SERVER_URL=http://127.0.0.1:8891 IO_POCKET_IC_INSTANCE_ID=0 IO_LOCAL_SNS_GOVERNANCE_ID=dmkut-c3777-77776-qaaaq-cai IO_LOCAL_STREAM_MANAGER_ID=xp3jw-ot777-77777-aaaaa-cai IO_LOCAL_HISTORIAN_ID=xbze6-vd777-77777-aaaba-cai IO_LOCAL_HISTORIAN_SETTLE_SECONDS=60 IO_LOCAL_REWARD_ADVANCE_SECONDS=86400 IO_LOCAL_REWARD_RESUME=1 cargo run -p e2e-real-canisters --bin observe_existing_reward
+exit_status=0
+log=17-reward-event-setup.log
+command: dfx canister call --network http://127.0.0.1:8082 --identity codex_local --candid /home/codexdev/src/IO/../ic/rs/sns/governance/canister/governance.did dmkut-c3777-77776-qaaaq-cai manage_neuron --argument-file /home/codexdev/.cache/io/sns-framework/runs/lifecycle-sns-1786726061503508351-567401/generated/reward-neuron-eligibility.qfgG2G.did
+exit_status=0
+command: /home/codexdev/src/IO/../ic/bazel-bin/rs/sns/testing/sns-testing --network http://127.0.0.1:8082 sns-proposal-upvote --sns-name IO\ Local\ Rehearsal --proposal-id 9 --wait true
+exit_status=1
