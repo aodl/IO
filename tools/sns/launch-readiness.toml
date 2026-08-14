@@ -14,8 +14,8 @@ status = "incomplete"
 evidence = "tools/sns/sns_init.io.template.yaml exists and the maintained source-built SNS flow validates and consumes the local init. The absent optional dfx sns extension remains an upstream non-blocking tooling defect for this evidence path; final production SNS configuration review is incomplete."
 
 [local_sns_testing_rehearsal]
-status = "incomplete"
-evidence = "Earlier fresh isolated same-source candidate Governance/Root compatibility rehearsals remain immutable historical evidence for their recorded release lineages. The corrected master-descended source requires a new package bound to its exact source-finalization and artifact-recording commits before this item can be complete; no historical package may be rebound."
+status = "complete"
+evidence = "A fresh isolated same-source candidate Governance/Root compatibility rehearsal completed on the master-descended release. current-canonical.toml selects immutable package 2026-08-14-master-descended-4320fdf-canonical-economics and binds it to source 23fbc4f62863f421803cc49c34aa8c5c576b4d89 and immediate artifact commit 2d28f84a4d36e8e9fd17d019478a0ae432d55838. Earlier packages, including those retained only on the diverged misc branch, remain immutable historical evidence and were not rebound."
 
 [mainnet_testflight]
 status = "incomplete"

@@ -120,8 +120,10 @@ final-validator packages produced on the diverged historical `misc` lineage.
 The explicit `current-canonical.toml` selector must name a newly generated
 package and bind its release manifest, package manifest, checksum inventory,
 source-finalization commit, and immediate artifact-recording child to the exact
-master-descended release. Until that new package exists, the current local
-rehearsal item remains incomplete.
+master-descended release. It names
+`2026-08-14-master-descended-4320fdf-canonical-economics`, whose fresh isolated
+run closes the current local rehearsal item without changing any historical
+package.
 
 Completed local proof does not prove official SNS reward-share release adoption,
 final SNS configuration/tokenomics/controllers, external audit, or mainnet

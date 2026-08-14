@@ -2,9 +2,9 @@
 version = 1
 
 [current]
-package = "2026-08-14-4320fdf-canonical-economics"
-io_release_source_commit = "55b2099a555799c4a032308eb8a39049c7946193"
-io_artifact_recording_commit = "09b115f708ec784766327539f9cf4e5e21668d84"
-release_manifest_sha256 = "9c477bf415621762a42454ee89864da034a996ef36c5637dac111c7f4f2adae1"
-package_manifest_sha256 = "e8de7445e79838b555168807f93fc8a3b87e1bb1746bd6eb4af9083ae8eed5c9"
-package_sha256s_sha256 = "868356c51676388b580f2222f00129cadb30c73677d9ca578489dd3c02d3700f"
+package = "2026-08-14-master-descended-4320fdf-canonical-economics"
+io_release_source_commit = "23fbc4f62863f421803cc49c34aa8c5c576b4d89"
+io_artifact_recording_commit = "2d28f84a4d36e8e9fd17d019478a0ae432d55838"
+release_manifest_sha256 = "144bd505bab85b05ac5f3e89c11276d21c55260b39b7076cd227a9143f1c1fc3"
+package_manifest_sha256 = "8e99919a6ed0c93c5db328b07182c07182faba947709192406ccee6d172ae7bb"
+package_sha256s_sha256 = "11f92f48bcbfab56be360f67da74f975917e242c2ad29c404b0c841ec925c292"

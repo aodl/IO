@@ -11,8 +11,11 @@ historical evidence for their recorded releases. The three packages named
 `2026-08-14-final-readme-4320fdf-canonical-economics`, and
 `2026-08-14-final-validator-4320fdf-canonical-economics` belong to the diverged
 historical `misc` lineage and cannot be selected for a different release pair.
-The explicit selector is the sole machine-readable source of currentness. No
-local package is official release adoption or mainnet evidence.
+They remain available on that untouched branch rather than being copied into
+the master-descended history. The explicit selector is the sole
+machine-readable source of currentness and names
+`2026-08-14-master-descended-4320fdf-canonical-economics` for the reconciled
+release. No local package is official release adoption or mainnet evidence.
 
 IO uses local SNS compatibility testing as an additional safety layer. It does not replace typed-operation, retry, artifact, DID, stable-state or release guardrails.
 

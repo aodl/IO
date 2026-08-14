@@ -37,6 +37,19 @@ master-descended release:
 
 The selector is the machine-readable source of currentness. The three
 authority, final-readme, and final-validator packages from `misc` remain bound
-to their recorded commits and must not be rebound. Package names and
-local fixture values are not production configuration, candidate upstream is
-not an official release, and no local package is mainnet evidence.
+to their recorded commits and must not be rebound. They are retained on the
+untouched `misc` branch, not copied into the master-descended history.
+
+The selected master-descended evidence is:
+
+- package: `2026-08-14-master-descended-4320fdf-canonical-economics`
+- source: `23fbc4f62863f421803cc49c34aa8c5c576b4d89`
+- artifact: `2d28f84a4d36e8e9fd17d019478a0ae432d55838`
+- selector SHA-256: `85cf63364014e8dbb3ef1da9a0efc4d87fe46744abf5e450741ad3f6656df992`
+- release-manifest SHA-256: `144bd505bab85b05ac5f3e89c11276d21c55260b39b7076cd227a9143f1c1fc3`
+- package-manifest SHA-256: `8e99919a6ed0c93c5db328b07182c07182faba947709192406ccee6d172ae7bb`
+- package `SHA256SUMS` SHA-256: `11f92f48bcbfab56be360f67da74f975917e242c2ad29c404b0c841ec925c292`
+
+Package names and local fixture values are not production configuration,
+candidate upstream is not an official release, and no local package is mainnet
+evidence.
