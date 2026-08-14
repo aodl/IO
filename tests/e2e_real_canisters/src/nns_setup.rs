@@ -4,8 +4,7 @@ use crate::pocketic_env;
 use candid::{CandidType, Principal};
 use io_production_wiring::{
     PRODUCTION_FRONTEND_CANISTER_ID, PRODUCTION_IO_HISTORIAN_CANISTER_ID,
-    PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID, PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID,
-    PROTECTED_IO_NEURON_OWNER_CANISTER,
+    PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID, PROTECTED_IO_NEURON_OWNER_CANISTER,
 };
 use pocket_ic::PocketIc;
 use serde::Deserialize;
@@ -145,7 +144,6 @@ fn maybe_artifacts(required: bool) -> Result<ArtifactSet, NnsSetupError> {
 pub fn assert_nns_plan_avoids_protected_ids() -> Result<(), NnsSetupError> {
     let protected_ids = [
         PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID,
-        PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID,
         PRODUCTION_IO_HISTORIAN_CANISTER_ID,
         PRODUCTION_FRONTEND_CANISTER_ID,
         PROTECTED_IO_NEURON_OWNER_CANISTER,

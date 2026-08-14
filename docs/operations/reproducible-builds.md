@@ -90,11 +90,11 @@ checks the checked-in bytes against a detached rebuild of the manifest's exact
 source commit. Generation remains stricter and is only permitted while the
 working tree differs from that source under `release-artifacts/` alone.
 
-For the release lineage whose source-finalization commit is
-S4 `55b2099a555799c4a032308eb8a39049c7946193` and artifact-recording commit is
-A4 `09b115f708ec784766327539f9cf4e5e21668d84`, integration must preserve both
-commit identities. T4 `6d3ece1a2e84c049003c540609415187727290f2`
-selects the current evidence and is not the artifact-recording commit.
+For every release lineage, obtain the source-finalization identity from the
+machine-readable manifest and prove the artifact-recording commit is its
+immediate artifact-only child. Integration must preserve both commit identities.
+Later evidence/documentation-tail commits select current evidence and record
+readiness; they are not artifact-recording commits.
 Pull-request jobs check out the PR head directly and require the PR base commit
 to be an ancestor of that head. After every required workflow passes on the
 exact final release-tail head and explicit authorization is given, integration

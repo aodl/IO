@@ -4,21 +4,34 @@ This directory contains the official SNS compatibility package for IO. It is sep
 
 ## Four Layers
 
-Layer 1: IO mock/PocketIC SNS-shaped harness.
+Layer 1: Local fixture IO mock/PocketIC SNS-shaped harness.
 
 This is the fast internal safety layer. It uses mock governance/root/ledger/index canisters plus PocketIC where useful. It tests IO-specific ledger/index, governance-read, root/controller, stable-state, and DID assumptions. It does not run official SNS launch, SNS-W, decentralization swap, or mainnet testflight.
 
-Layer 2: PocketIC NNS/SNS/application subnet topology.
+Layer 2: Local fixture PocketIC NNS/SNS/application subnet topology.
 
-This checks canister placement and constructor wiring against NNS, SNS, and application subnet shapes. It is closer to production topology, but still not official SNS launch unless real SNS canisters are installed.
+This checks canister placement and constructor wiring against NNS, SNS, and
+application subnet shapes. It remains local fixture evidence unless the
+specific profile supplies checksum-pinned real canisters.
 
-Layer 3: Official local SNS launch rehearsal.
+Layer 3: Candidate-upstream local SNS launch rehearsal.
 
-This is optional and heavier. It follows the current official ICP/DFINITY SNS testing documentation as the source of truth and may use `dfx sns` to rehearse the official launch mechanics locally. The historical standalone `dfinity/sns-testing` repository is deprecated; if the official docs reference successor tooling or a new repository/location, use that current official location. This layer is outside required CI and requires developer-local tooling.
+This is optional and heavier. It follows the current official ICP/DFINITY SNS
+testing documentation and uses the maintained source-built `sns-testing-init`,
+`sns-testing`, and `sns` flow. The historical standalone
+`dfinity/sns-testing` repository is deprecated. This layer is outside required
+CI and requires developer-local tooling.
 
-The concrete IO package for this layer lives under `deploy/local-sns-rehearsal/`. It is local-only and provides scaffolding and evidence validation for creating a real SNS-created IO ledger/index/governance/root stack without claiming mainnet readiness. The completed 2026-08-11 package records the sanitized local IDs and canonical observations; it is local launch evidence, not an official capability-bearing SNS release or mainnet readiness claim.
+The concrete IO package for this layer lives under
+`deploy/local-sns-rehearsal/`. It is local-only and provides scaffolding and
+evidence validation for creating an SNS-created IO
+ledger/index/governance/root stack without claiming mainnet readiness.
+Historical packages remain bound to their own releases; the explicit
+`current-canonical.toml` selector is the source of truth for the selected
+release/package identity. A source-built candidate proves compatibility but is
+not an official capability-bearing SNS release or production configuration.
 
-Layer 4: Mainnet SNS testflight.
+Layer 4: Production-configuration mainnet SNS testflight.
 
 This is a future manual/mainnet rehearsal using a mock SNS. It tests governance and upgrade operations after handoff, but it is not the real SNS launch and has no real swap.
 
@@ -34,7 +47,9 @@ The templates intentionally contain placeholder principals because final control
 
 IO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical and only useful for local/mock compatibility tests.
 
-The existing canister that owns IO NNS neuron 6345890886899317159 is not touched by these templates, scripts, or tests.
+NNS Manager execution canister `oae4c-3iaaa-aaaar-qb5qq-cai` and protected IO
+NNS neuron `10292412127977304661` are not touched by these templates, scripts,
+or tests.
 
 Validate the package without `dfx`:
 
@@ -48,6 +63,6 @@ cargo run -p xtask -- validate_local_sns_rehearsal
 Optional official validation is opt-in and skips by default:
 
 ```bash
-IO_RUN_DFX_SNS_VALIDATE=1 cargo run -p xtask -- sns_config_validate_official
+IO_RUN_SOURCE_BUILT_SNS_VALIDATE=1 cargo run -p xtask -- sns_config_validate_official
 cargo run -p xtask -- validate_local_sns_ledger
 ```

@@ -7,7 +7,7 @@
     jupiter = TODO_JUPITER_PRINCIPAL;
     icp_ledger = TODO_ICP_LEDGER_PRINCIPAL;
     nns_governance = TODO_NNS_GOVERNANCE_PRINCIPAL;
-    two_year_neuron_id = 6_345_890_886_899_317_159 : nat64;
+    two_year_neuron_id = 10_292_412_127_977_304_661 : nat64;
     two_week_neuron_id = TODO_TWO_WEEK_NEURON_ID : nat64;
     jupiter_account = record { owner = TODO_JUPITER_PRINCIPAL; subaccount = opt TODO_JUPITER_SOURCE_SUBACCOUNT };
     jupiter_staging = record { owner = TODO_EXISTING_NNS_CONTROLLER_SELF; subaccount = null };

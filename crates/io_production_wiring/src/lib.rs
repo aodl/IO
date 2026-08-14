@@ -6,9 +6,9 @@ pub const ICP_LEDGER_PRINCIPAL: &str = "ryjl3-tyaaa-aaaaa-aaaba-cai";
 pub const ICP_INDEX_PRINCIPAL: &str = "qhbym-qaaaa-aaaaa-aaafq-cai";
 pub const NNS_GOVERNANCE_PRINCIPAL: &str = "rrkah-fqaaa-aaaaa-aaaaq-cai";
 pub const PROTECTED_IO_NEURON_OWNER_CANISTER: &str = "oae4c-3iaaa-aaaar-qb5qq-cai";
-pub const PROTECTED_IO_NNS_NEURON_ID: u64 = 6_345_890_886_899_317_159;
+pub const PROTECTED_IO_NNS_NEURON_ID: u64 = 10_292_412_127_977_304_661;
 pub const PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID: &str = "thset-pqaaa-aaaar-qb7wa-cai";
-pub const PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID: &str = "tatch-ciaaa-aaaar-qb7wq-cai";
+pub const PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID: &str = PROTECTED_IO_NEURON_OWNER_CANISTER;
 pub const PRODUCTION_IO_HISTORIAN_CANISTER_ID: &str = "tjqj3-uaaaa-aaaar-qb7xa-cai";
 pub const PRODUCTION_FRONTEND_CANISTER_ID: &str = "torpp-zyaaa-aaaar-qb7xq-cai";
 pub const DEV_MAINNET_FRONTEND_CANISTER_ID: &str = concat!("6h2pa-", "qiaaa-aaaao-qp4fa-cai");
@@ -570,7 +570,9 @@ fn validate_protected_references(
     let targets = deployment_target_fields(&config.deployment_targets);
     for (field, value) in targets {
         validate_principal_text(&field, &value)?;
-        if value == PROTECTED_IO_NEURON_OWNER_CANISTER {
+        let is_nns_manager_authority = field == "deployment_targets.io_nns_neuron_manager"
+            && value == PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID;
+        if value == PROTECTED_IO_NEURON_OWNER_CANISTER && !is_nns_manager_authority {
             return Err(WiringValidationError::ProtectedCanisterAsTarget { field });
         }
         if is_dev_mainnet_canister(&value) {
@@ -706,7 +708,6 @@ fn is_known_production_principal(value: &str) -> bool {
             | NNS_GOVERNANCE_PRINCIPAL
             | PROTECTED_IO_NEURON_OWNER_CANISTER
             | PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID
-            | PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID
             | PRODUCTION_IO_HISTORIAN_CANISTER_ID
             | PRODUCTION_FRONTEND_CANISTER_ID
     )
@@ -1040,7 +1041,7 @@ mod tests {
     }
 
     #[test]
-    fn checked_in_template_requires_fiduciary_deployment_targets() {
+    fn checked_in_template_uses_protected_controller_as_nns_authority() {
         let text = include_str!("../../../deploy/production-wiring/template.toml");
         let config = validate_template_text(text).unwrap();
         assert_eq!(config.mode, WiringMode::ProductionPlanned);
@@ -1053,6 +1054,14 @@ mod tests {
                 .deployment_targets
                 .io_nns_neuron_manager_principal_text,
             Some(PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID.to_string())
+        );
+        assert_eq!(
+            PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID,
+            PROTECTED_IO_NEURON_OWNER_CANISTER
+        );
+        assert_eq!(
+            config.protected.io_nns_neuron_id,
+            Some(PROTECTED_IO_NNS_NEURON_ID)
         );
     }
 
@@ -1184,9 +1193,27 @@ mod tests {
 
     #[test]
     fn protected_canister_and_neuron_cannot_be_mutation_targets() {
+        assert_eq!(PROTECTED_IO_NNS_NEURON_ID, 10_292_412_127_977_304_661);
+        let obsolete_neuron = 6_345_890_886_899_317_000_u64 + 159;
+        let mut config = valid_production_config();
+        config.protected.io_nns_neuron_id = Some(obsolete_neuron);
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            WiringValidationError::ProtectedNeuronAsTarget { .. }
+        ));
+
         let mut config = valid_production_config();
         config.deployment_targets.io_stream_manager_principal_text =
             Some(PROTECTED_IO_NEURON_OWNER_CANISTER.into());
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            WiringValidationError::ProtectedCanisterAsTarget { .. }
+        ));
+        let mut config = valid_production_config();
+        config
+            .deployment_targets
+            .mutation_target_principal_texts
+            .push(PROTECTED_IO_NEURON_OWNER_CANISTER.into());
         assert!(matches!(
             config.validate().unwrap_err(),
             WiringValidationError::ProtectedCanisterAsTarget { .. }
@@ -1219,6 +1246,16 @@ mod tests {
             config.validate().unwrap_err(),
             WiringValidationError::ManagementCanisterPrincipal { .. }
                 | WiringValidationError::ProductionIoCanisterIdMismatch { .. }
+        ));
+
+        let mut config = valid_production_config();
+        config
+            .deployment_targets
+            .io_nns_neuron_manager_principal_text =
+            Some(["tatch", "ciaaa-aaaar-qb7wq-cai"].join("-"));
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            WiringValidationError::ProductionIoCanisterIdMismatch { .. }
         ));
 
         let mut config = valid_production_config();

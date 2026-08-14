@@ -9,7 +9,7 @@ if [[ "${GENERATED_DIR}" != /* ]]; then
   exit 2
 fi
 PROTECTED_CANISTER="oae4c-3iaaa-aaaar-qb5qq-cai"
-PROTECTED_NEURON="6345890886899317159"
+PROTECTED_NEURON="10292412127977304661"
 PINNED_IC_COMMIT="4320fdf2e613844eabae1927b1a23b98da3a7bc6"
 
 require_local_ack() {

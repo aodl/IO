@@ -1,6 +1,21 @@
 # Local SNS Testing
 
-Required CI uses SNS-shaped mock/PocketIC tests. The maintained official SNS launch rehearsal is an optional local operator layer. The immutable 2026-08-11 and `2026-08-12-4320fdf-monitoring` packages remain historical mechanics/connectivity evidence, but their redemption-rate evidence is superseded because they queried the Governance default Account instead of the canonical treasury distribution subaccount. The immutable `2026-08-12-4320fdf-canonical-economics` package is corrected historical evidence for its own recorded release. `current-canonical.toml` selects the separate immutable `2026-08-14-4320fdf-canonical-economics` package as current evidence for S4 `55b2099a555799c4a032308eb8a39049c7946193` and A4 `09b115f708ec784766327539f9cf4e5e21668d84`. None of these packages is official release adoption or mainnet evidence.
+Required CI uses SNS-shaped mock/PocketIC tests. The maintained official SNS
+launch rehearsal is an optional local operator layer. The immutable 2026-08-11
+and 2026-08-12-monitoring packages remain historical mechanics/connectivity
+evidence, but their redemption-rate evidence is superseded because they queried
+the Governance default Account instead of the canonical treasury distribution
+subaccount. The immutable 2026-08-12 and 2026-08-14 canonical packages remain
+historical evidence for their recorded releases. The three packages named
+`2026-08-14-authority-4320fdf-canonical-economics`,
+`2026-08-14-final-readme-4320fdf-canonical-economics`, and
+`2026-08-14-final-validator-4320fdf-canonical-economics` belong to the diverged
+historical `misc` lineage and cannot be selected for a different release pair.
+They remain available on that untouched branch rather than being copied into
+the master-descended history. The explicit selector is the sole
+machine-readable source of currentness and names
+`2026-08-14-master-descended-4320fdf-canonical-economics` for the reconciled
+release. No local package is official release adoption or mainnet evidence.
 
 IO uses local SNS compatibility testing as an additional safety layer. It does not replace typed-operation, retry, artifact, DID, stable-state or release guardrails.
 
@@ -63,7 +78,9 @@ The SNS root/controller lifecycle path is mock/PocketIC only: mock governance/ro
 
 IO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical and only useful for local/mock compatibility.
 
-The existing canister that owns IO NNS neuron 6345890886899317159 is not touched by these tests.
+The existing NNS Manager execution canister
+`oae4c-3iaaa-aaaar-qb5qq-cai` and protected IO NNS neuron
+`10292412127977304661` are not touched by these tests.
 
 ## Commands
 

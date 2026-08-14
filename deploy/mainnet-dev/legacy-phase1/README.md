@@ -24,7 +24,9 @@ The dev/test public shell consists only of `io_historian` and `frontend`.
 | `io_stream_manager` | none | not deployed |
 | `io_nns_neuron_manager` | none | not deployed |
 
-The existing IO neuron-owner canister `oae4c-3iaaa-aaaar-qb5qq-cai` was not touched. IO neuron `6345890886899317159` was not touched.
+The existing protected-neuron controller
+`oae4c-3iaaa-aaaar-qb5qq-cai` was not touched. Protected IO NNS neuron
+`10292412127977304661` was not touched.
 
 ## Frontend URLs
 

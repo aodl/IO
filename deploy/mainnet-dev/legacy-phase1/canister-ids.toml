@@ -25,7 +25,7 @@ io_nns_neuron_manager = true
 
 [not_touched]
 existing_io_neuron_owner_canister = "oae4c-3iaaa-aaaar-qb5qq-cai"
-io_neuron_id = "6345890886899317159"
+io_neuron_id = "10292412127977304661"
 
 [status]
 io_protocol_live = false

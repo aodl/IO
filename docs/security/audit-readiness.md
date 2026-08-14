@@ -25,7 +25,7 @@ This is the handoff index for an independent auditor. It is not a self-audit and
 
 | Classification | Evidence |
 | --- | --- |
-| Proved locally | `docs/testing/e2e-coverage-matrix.md`; exact-source release verification; immutable historical corrected package `deploy/local-sns-rehearsal/evidence/2026-08-12-4320fdf-canonical-economics/` for its recorded release; immutable current package `2026-08-14-4320fdf-canonical-economics` selected for S4 `55b2099a555799c4a032308eb8a39049c7946193` and A4 `09b115f708ec784766327539f9cf4e5e21668d84`; historical mechanics/connectivity packages `2026-08-11-4320fdf` and `2026-08-12-4320fdf-monitoring`, whose redemption economics are superseded under `docs/operations/local-sns-evidence-disposition.md`. |
+| Proved locally | `docs/testing/e2e-coverage-matrix.md`; exact-source release verification for each recorded lineage; immutable 2026-08-12 and 2026-08-14 canonical packages as historical evidence for their own releases; selector-bound `2026-08-14-master-descended-4320fdf-canonical-economics` as current corrected-target evidence; and historical mechanics/connectivity packages 2026-08-11 and 2026-08-12-monitoring, whose redemption economics are superseded under `docs/operations/local-sns-evidence-disposition.md`. |
 | Candidate-only | Same-source SNS Governance/Root at IC `4320fdf2e613844eabae1927b1a23b98da3a7bc6`, including reward-share capability and Governance → Root compatibility. |
 | Officially available | Pinned official baseline artifacts/tooling in `tests/e2e_real_canisters/wasms.example.toml`; these do not imply official reward-share adoption. |
 | External fixture gaps | Real transport-fault injection and non-1.0 maturity modulation, classified in `docs/operations/remaining-work.md`. |

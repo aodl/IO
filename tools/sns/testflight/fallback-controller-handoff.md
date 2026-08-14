@@ -18,5 +18,7 @@ Checks:
 - Verify every dapp canister lists the expected fallback or recovery principal before testflight.
 - Verify SNS root is added as co-controller before registration proposals.
 - Verify SNS root controls the intended dapp canisters after registration.
-- Verify no procedure mutates the existing canister that owns IO NNS neuron 6345890886899317159.
+- Verify no procedure mutates NNS Manager execution canister
+  `oae4c-3iaaa-aaaar-qb5qq-cai` or protected IO NNS neuron
+  `10292412127977304661`.
 - Verify no required script executes mainnet commands.

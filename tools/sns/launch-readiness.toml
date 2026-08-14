@@ -15,7 +15,7 @@ evidence = "tools/sns/sns_init.io.template.yaml exists and the maintained source
 
 [local_sns_testing_rehearsal]
 status = "complete"
-evidence = "The fresh isolated same-source candidate Governance/Root compatibility rehearsal completed. current-canonical.toml selects immutable package 2026-08-14-4320fdf-canonical-economics, bound to source-finalization commit 55b2099a555799c4a032308eb8a39049c7946193 (S4) and artifact-recording commit 09b115f708ec784766327539f9cf4e5e21668d84 (A4). The immutable 2026-08-12-4320fdf-canonical-economics package remains valid historical evidence for its own recorded release and was not rebound."
+evidence = "A fresh isolated same-source candidate Governance/Root compatibility rehearsal completed on the master-descended release. current-canonical.toml selects immutable package 2026-08-14-master-descended-4320fdf-canonical-economics and binds it to source 23fbc4f62863f421803cc49c34aa8c5c576b4d89 and immediate artifact commit 2d28f84a4d36e8e9fd17d019478a0ae432d55838. Earlier packages, including those retained only on the diverged misc branch, remain immutable historical evidence and were not rebound."
 
 [mainnet_testflight]
 status = "incomplete"
@@ -26,8 +26,8 @@ status = "complete"
 evidence = "Non-destructive exact-source verification preserves the checked-in artifact set before rebuilding and proves checked-in artifacts equal build A and build A equals build B across the complete raw Wasm, gzip, sidecar and manifest inventory with exact sizes. Corruption regressions cover every artifact class."
 
 [hosted_github_ci]
-status = "complete"
-evidence = "All required GitHub workflows passed on common T4 head 6d3ece1a2e84c049003c540609415187727290f2: test run 31788342244, security run 31788342277, and reproducible-build run 31788342340. Any later release-tail-only commit must rerun all required workflows successfully on its exact head before fast-forward integration."
+status = "incomplete"
+evidence = "The required workflows passed on the preceding published lineage. This final corrected source/artifact/evidence/documentation head must be published and rerun test, security, and reproducible-build successfully on one exact head before fast-forward integration."
 
 [app_canisters_stable_on_mainnet]
 status = "incomplete"

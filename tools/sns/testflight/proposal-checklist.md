@@ -13,4 +13,5 @@ Manual/mainnet only. Not CI. Not a real launch. No real swap.
 - [ ] Historian read model checked after testflight upgrade proposal.
 - [ ] SNS root controls intended dapp canisters after registration.
 - [ ] Upgrade proposal tested through SNS governance.
-- [ ] The existing canister that owns IO NNS neuron 6345890886899317159 remains untouched.
+- [ ] NNS Manager execution canister `oae4c-3iaaa-aaaar-qb5qq-cai` and
+      protected IO NNS neuron `10292412127977304661` remain untouched.
