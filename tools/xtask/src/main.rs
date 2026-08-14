@@ -14,10 +14,16 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
+
+mod sns_framework;
 
 const RELEASE_PROFILE: &str = "release";
 const WASM_TARGET: &str = "wasm32-unknown-unknown";
 const MANIFEST_PATH: &str = "release-artifacts/manifest.json";
+const CURRENT_CANONICAL_SELECTOR: &str =
+    "deploy/local-sns-rehearsal/evidence/current-canonical.toml";
 const KNOWN_TWO_YEAR_NNS_NEURON_ID: u64 = PROTECTED_IO_NNS_NEURON_ID;
 const KNOWN_CONTROLLER_CANISTER_PRINCIPAL: &str = PROTECTED_IO_NEURON_OWNER_CANISTER;
 const DEV_MAINNET_MODE: &str = "LegacyPhase1DevPublicShell";
@@ -25,6 +31,15 @@ const DEV_MAINNET_CONFIG_PATH: &str = "deploy/mainnet-dev/legacy-phase1/canister
 const DEV_MAINNET_README_PATH: &str = "deploy/mainnet-dev/legacy-phase1/README.md";
 const DEV_MAINNET_STATUS_PATH: &str = "deploy/mainnet-dev/legacy-phase1/status.md";
 const PRODUCTION_CANISTER_IDS_PATH: &str = "deploy/production-wiring/canister-ids.toml";
+const NNS_BOUNDARY_SOURCE_COMMIT: &str = "021bf342f66296d5605b355a61b2430406a83783";
+const NNS_GOVERNANCE_SOURCE_SHA256: &str =
+    "c66ff7d948ff79a826e61eab9e11714082d93a45e42f3b7deec1c2377341285f";
+const NNS_GOVERNANCE_WASM_SHA256: &str =
+    "0a341fd53eba8cdfdd2330f968758bab2858fe7a26bbe1bc6a55320c23ba0ec5";
+const ICP_LEDGER_SOURCE_SHA256: &str =
+    "5d69ec2e26e5546fe7e94bab721d6c4ed840106f9e2e69d11a8f3ee6e7721df0";
+const ICP_LEDGER_WASM_SHA256: &str =
+    "9c1ff658635daabb7a3e9dcc5dca337eee5008bc2033d0e929c3fae53814f91c";
 const PRODUCTION_MAPPING_PATHS: &[&str] = &[
     PRODUCTION_CANISTER_IDS_PATH,
     "deploy/production-wiring/README.md",
@@ -74,7 +89,10 @@ const STREAM_PRODUCTION_FORBIDDEN_DID: &[&str] = &[
     " get_config :",
     " get_redemption_rate :",
     " process_stream_event :",
-    " redeem :",
+    " redeem_to :",
+    " mark_complete :",
+    " force_retry :",
+    " force_success :",
     " tick :",
     " debug_tick :",
     " plan_rebalance :",
@@ -88,7 +106,7 @@ const NNS_PRODUCTION_FORBIDDEN_DID: &[&str] = &[
     " get_config :",
     " get_redemption_rate :",
     " process_stream_event :",
-    " redeem :",
+    " redeem_to :",
     " tick :",
     " debug_tick :",
     " plan_rebalance :",
@@ -186,12 +204,6 @@ fn npm(args: &[&str]) -> Command {
     c
 }
 
-fn dfx(args: &[&str]) -> Command {
-    let mut c = Command::new("dfx");
-    c.args(args);
-    c
-}
-
 fn run_subcommand(sub: &str) -> bool {
     let exe = env::current_exe().expect("current exe");
     let mut c = Command::new(exe);
@@ -219,6 +231,128 @@ fn require_present(path: &str, text: &str, needles: &[&str]) -> Result<(), Strin
         }
     }
     Ok(())
+}
+
+fn require_debug_some_value(
+    path: &str,
+    text: &str,
+    field: &str,
+    expected: &str,
+) -> Result<(), String> {
+    let marker = format!("{field}: Some(");
+    let remainder = text
+        .split_once(&marker)
+        .map(|(_, remainder)| remainder)
+        .ok_or_else(|| format!("{path} must contain {marker:?}"))?;
+    let actual = remainder
+        .trim_start()
+        .split_once(',')
+        .map(|(value, _)| value.trim())
+        .ok_or_else(|| format!("{path} has malformed debug value for {field}"))?;
+    if actual != expected {
+        return Err(format!(
+            "{path} must record {field}=Some({expected}), observed Some({actual})"
+        ));
+    }
+    Ok(())
+}
+
+fn quoted_rust_const(text: &str, name: &str) -> Result<String, String> {
+    let prefix = format!("pub const {name}:");
+    let line = text
+        .lines()
+        .find(|line| line.trim_start().starts_with(&prefix))
+        .ok_or_else(|| format!("missing Rust constant {name}"))?;
+    let value = line
+        .split_once('=')
+        .map(|(_, value)| value.trim().trim_end_matches(';'))
+        .ok_or_else(|| format!("malformed Rust constant {name}"))?;
+    if value.len() < 2 || !value.starts_with('"') || !value.ends_with('"') {
+        return Err(format!("Rust constant {name} must be one quoted string"));
+    }
+    Ok(value[1..value.len() - 1].to_string())
+}
+
+fn check_nns_boundary_pin_at(root: &Path) -> Result<(), String> {
+    let implementation_path = "crates/io_nns_types/src/jupiter.rs";
+    let manifest_path = "tests/e2e_real_canisters/wasms.example.toml";
+    let evidence_path = "docs/testing/nns-boundary-pin.md";
+    let implementation = require_file(root, implementation_path)?;
+    let implementation_pin = quoted_rust_const(&implementation, "PINNED_DFINITY_IC_COMMIT")?;
+    if implementation_pin != NNS_BOUNDARY_SOURCE_COMMIT {
+        return Err(format!(
+            "{implementation_path}: implementation pin {implementation_pin} does not equal approved boundary {NNS_BOUNDARY_SOURCE_COMMIT}"
+        ));
+    }
+
+    let manifest = require_file(root, manifest_path)?;
+    for artifact in ["nns_governance", "nns_ledger", "icp_ledger"] {
+        require_toml_string(
+            manifest_path,
+            &manifest,
+            "artifacts",
+            &format!("{artifact}_upstream_rev"),
+            &implementation_pin,
+        )?;
+        let source_url =
+            parse_toml_string(&manifest, "artifacts", &format!("{artifact}_source_url"))?;
+        if !source_url.contains(&format!("/ic/{implementation_pin}/")) {
+            return Err(format!(
+                "{manifest_path}: {artifact} source URL does not contain implementation revision"
+            ));
+        }
+    }
+    for (artifact, source_hash, wasm_hash) in [
+        (
+            "nns_governance",
+            NNS_GOVERNANCE_SOURCE_SHA256,
+            NNS_GOVERNANCE_WASM_SHA256,
+        ),
+        (
+            "nns_ledger",
+            ICP_LEDGER_SOURCE_SHA256,
+            ICP_LEDGER_WASM_SHA256,
+        ),
+        (
+            "icp_ledger",
+            ICP_LEDGER_SOURCE_SHA256,
+            ICP_LEDGER_WASM_SHA256,
+        ),
+    ] {
+        require_toml_string(
+            manifest_path,
+            &manifest,
+            "artifacts",
+            &format!("{artifact}_source_sha256"),
+            source_hash,
+        )?;
+        require_toml_string(
+            manifest_path,
+            &manifest,
+            "artifacts",
+            &format!("{artifact}_sha256"),
+            wasm_hash,
+        )?;
+    }
+
+    let evidence = require_file(root, evidence_path)?;
+    require_present(
+        evidence_path,
+        &evidence,
+        &[
+            NNS_BOUNDARY_SOURCE_COMMIT,
+            NNS_GOVERNANCE_SOURCE_SHA256,
+            NNS_GOVERNANCE_WASM_SHA256,
+            ICP_LEDGER_SOURCE_SHA256,
+            ICP_LEDGER_WASM_SHA256,
+            "edbbc660d8a819ac4c400296d444f3caf01b21fed3680d0defc099bac3d02c84",
+            "45a6f13779ead0f7247b728f7a8953d649173863fea1f01fbf7c04f30589aad7",
+            "100_000_000",
+            "604_800",
+            "native memo",
+            "no ICRC memo",
+        ],
+    )
 }
 
 fn require_file(root: &Path, path: &str) -> Result<String, String> {
@@ -294,6 +428,25 @@ enum SimpleTomlValue {
 }
 
 type SimpleTomlDocument = BTreeMap<String, BTreeMap<String, SimpleTomlValue>>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CurrentCanonicalSelector {
+    package: String,
+    io_release_source_commit: String,
+    io_artifact_recording_commit: String,
+    release_manifest_sha256: String,
+    package_manifest_sha256: String,
+    package_sha256s_sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ValidatedEvidencePackage {
+    complete: bool,
+    monitoring: bool,
+    canonical_economics: bool,
+    io_release_source_commit: Option<String>,
+    io_artifact_recording_commit: Option<String>,
+}
 
 fn parse_simple_toml_document(path: &str, text: &str) -> Result<SimpleTomlDocument, String> {
     let mut doc = SimpleTomlDocument::new();
@@ -445,6 +598,163 @@ fn require_simple_u64(
     }
 }
 
+fn validate_lower_hex(path: &str, field: &str, value: &str, length: usize) -> Result<(), String> {
+    if value.len() == length
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "{path}: {field} must be exact lowercase {length}-hex"
+        ))
+    }
+}
+
+fn parse_current_canonical_selector(
+    path: &str,
+    text: &str,
+) -> Result<CurrentCanonicalSelector, String> {
+    let mut schema_sections = 0_usize;
+    let mut current_sections = 0_usize;
+    for raw_line in text.lines() {
+        match raw_line.split('#').next().unwrap_or("").trim() {
+            "[schema]" => schema_sections += 1,
+            "[current]" => current_sections += 1,
+            _ => {}
+        }
+    }
+    if schema_sections != 1 || current_sections != 1 {
+        return Err(format!(
+            "{path}: selector must contain exactly one [schema] and one [current] section"
+        ));
+    }
+    let doc = parse_simple_toml_document(path, text)?;
+    let expected_sections = ["current".to_string(), "schema".to_string()]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let actual_sections = doc.keys().cloned().collect::<BTreeSet<_>>();
+    if actual_sections != expected_sections {
+        return Err(format!(
+            "{path}: selector sections must be exactly [schema] and [current]"
+        ));
+    }
+    let schema = require_simple_section(path, &doc, "schema")?;
+    if schema.keys().map(String::as_str).collect::<Vec<_>>() != ["version"] {
+        return Err(format!("{path}: [schema] fields must be exactly version"));
+    }
+    if require_simple_u64(path, &doc, "schema", "version")? != 1 {
+        return Err(format!("{path}: unsupported selector schema version"));
+    }
+    let expected_current_fields = [
+        "io_artifact_recording_commit",
+        "io_release_source_commit",
+        "package",
+        "package_manifest_sha256",
+        "package_sha256s_sha256",
+        "release_manifest_sha256",
+    ];
+    let current = require_simple_section(path, &doc, "current")?;
+    if current.keys().map(String::as_str).collect::<Vec<_>>() != expected_current_fields {
+        return Err(format!(
+            "{path}: [current] contains missing or unexpected fields"
+        ));
+    }
+    let selector = CurrentCanonicalSelector {
+        package: require_simple_string(path, &doc, "current", "package")?,
+        io_release_source_commit: require_simple_string(
+            path,
+            &doc,
+            "current",
+            "io_release_source_commit",
+        )?,
+        io_artifact_recording_commit: require_simple_string(
+            path,
+            &doc,
+            "current",
+            "io_artifact_recording_commit",
+        )?,
+        release_manifest_sha256: require_simple_string(
+            path,
+            &doc,
+            "current",
+            "release_manifest_sha256",
+        )?,
+        package_manifest_sha256: require_simple_string(
+            path,
+            &doc,
+            "current",
+            "package_manifest_sha256",
+        )?,
+        package_sha256s_sha256: require_simple_string(
+            path,
+            &doc,
+            "current",
+            "package_sha256s_sha256",
+        )?,
+    };
+    let package_path = Path::new(&selector.package);
+    let components = package_path.components().collect::<Vec<_>>();
+    if selector.package.is_empty()
+        || selector.package.contains('/')
+        || selector.package.contains('\\')
+        || package_path.is_absolute()
+        || components.len() != 1
+        || !matches!(components[0], std::path::Component::Normal(_))
+        || selector.package == "."
+        || selector.package == ".."
+    {
+        return Err(format!(
+            "{path}: current.package must be one traversal-free leaf directory name"
+        ));
+    }
+    validate_lower_hex(
+        path,
+        "current.io_release_source_commit",
+        &selector.io_release_source_commit,
+        40,
+    )?;
+    validate_lower_hex(
+        path,
+        "current.io_artifact_recording_commit",
+        &selector.io_artifact_recording_commit,
+        40,
+    )?;
+    for (field, value) in [
+        (
+            "current.release_manifest_sha256",
+            selector.release_manifest_sha256.as_str(),
+        ),
+        (
+            "current.package_manifest_sha256",
+            selector.package_manifest_sha256.as_str(),
+        ),
+        (
+            "current.package_sha256s_sha256",
+            selector.package_sha256s_sha256.as_str(),
+        ),
+    ] {
+        validate_lower_hex(path, field, value, 64)?;
+    }
+    Ok(selector)
+}
+
+fn read_current_canonical_selector(root: &Path) -> Result<CurrentCanonicalSelector, String> {
+    let path = root.join(CURRENT_CANONICAL_SELECTOR);
+    let metadata = fs::symlink_metadata(&path).map_err(|err| {
+        format!("{CURRENT_CANONICAL_SELECTOR}: required selector is missing: {err}")
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "{CURRENT_CANONICAL_SELECTOR}: selector must be a regular non-symlink file"
+        ));
+    }
+    let text =
+        fs::read_to_string(&path).map_err(|err| format!("{CURRENT_CANONICAL_SELECTOR}: {err}"))?;
+    parse_current_canonical_selector(CURRENT_CANONICAL_SELECTOR, &text)
+}
+
 fn require_toml_string(
     path: &str,
     text: &str,
@@ -492,10 +802,8 @@ fn check_minimal_value_moving_did(path: &str, text: &str) -> Result<(), String> 
         .filter(|line| !line.is_empty() && !line.starts_with("//"))
         .collect::<Vec<_>>()
         .join("\n");
-    if !stripped.contains("service : (InitArgs) -> {}") {
-        return Err(format!(
-            "{path} must keep value-moving production service install-args-only"
-        ));
+    if !stripped.contains("service : (InitArgs) -> {") {
+        return Err(format!("{path} must declare the launch InitArgs service"));
     }
     Ok(())
 }
@@ -519,23 +827,379 @@ fn check_wasm_forbidden_methods(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn rust_files_below(root: &Path, relative: &str) -> Result<Vec<PathBuf>, String> {
+    fn walk(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+        for entry in
+            fs::read_dir(directory).map_err(|error| format!("{}: {error}", directory.display()))?
+        {
+            let path = entry.map_err(|error| error.to_string())?.path();
+            if path.is_dir() {
+                walk(&path, files)?;
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                files.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    walk(&root.join(relative), &mut files)?;
+    Ok(files)
+}
+
+fn normative_markdown_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    fn walk(root: &Path, directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+        for entry in
+            fs::read_dir(directory).map_err(|error| format!("{}: {error}", directory.display()))?
+        {
+            let path = entry.map_err(|error| error.to_string())?.path();
+            let relative = path.strip_prefix(root).map_err(|error| error.to_string())?;
+            if path.is_dir() {
+                if matches!(
+                    relative
+                        .components()
+                        .next()
+                        .and_then(|value| value.as_os_str().to_str()),
+                    Some(
+                        ".git"
+                            | "target"
+                            | "node_modules"
+                            | "release-artifacts"
+                            | "debug-artifacts"
+                            | ".real-canister-wasms"
+                    )
+                ) || relative.starts_with("docs/research")
+                {
+                    continue;
+                }
+                walk(root, &path, files)?;
+            } else if path.extension().is_some_and(|extension| extension == "md") {
+                files.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    walk(root, root, &mut files)?;
+    Ok(files)
+}
+
+fn check_simplicity_at(root: &Path) -> Result<(), String> {
+    fn production_line_count(text: &str) -> usize {
+        text.split("\n#[cfg(test)]")
+            .next()
+            .unwrap_or(text)
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count()
+    }
+
+    const VALUE_MOVING_DIRS: &[&str] = &[
+        "canisters/io_stream_manager/src",
+        "canisters/io_nns_neuron_manager/src",
+    ];
+    const FORBIDDEN: &[&str] = &[
+        "AccountHistoryScanState",
+        "LedgerIndexClient",
+        "CompleteRangeEvidence",
+        "CanonicalRangeJob",
+        "StableLiability",
+        "MockLedgerCanisterClient",
+        "debug_get_transactions",
+        "redemption_intake",
+        "redemption intake",
+        "redemption_return",
+        "redemption IO return",
+        "rejected_refund",
+        "automatic rejected-transfer refund",
+        "generic operation journal",
+        "automatic proof of absence",
+        "process_stream_event",
+        "pub fn process_event",
+        "pub async fn process_event",
+        "process_stream",
+        "pub fn tick",
+        "pub async fn tick",
+        "native ICP transfer submission",
+        "parallel old/new execution",
+        "IcpTransfer",
+        "Legacy",
+        "SchemaV2",
+        "SchemaV3",
+        "SchemaV4",
+        "SchemaV5",
+        "SchemaV6",
+        "set_timer_interval",
+    ];
+
+    let mut combined_lines = 0usize;
+    let mut stream_lines = 0usize;
+    for directory in VALUE_MOVING_DIRS {
+        for path in rust_files_below(root, directory)? {
+            let text = fs::read_to_string(&path)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            let lines = production_line_count(&text);
+            if lines > 1_000 {
+                return Err(format!(
+                    "{} has {lines} production lines; the per-file limit is 1000",
+                    path.display()
+                ));
+            }
+            for needle in FORBIDDEN {
+                if text.contains(needle) {
+                    return Err(format!("{} contains forbidden {needle:?}", path.display()));
+                }
+            }
+            combined_lines += lines;
+            if directory.contains("io_stream_manager") {
+                stream_lines += lines;
+            }
+        }
+    }
+    let economics_lines = rust_files_below(root, "crates/io_core_model/src")?
+        .into_iter()
+        .try_fold(0usize, |sum, path| {
+            fs::read_to_string(&path)
+                .map(|text| sum + production_line_count(&text))
+                .map_err(|error| format!("{}: {error}", path.display()))
+        })?;
+    if economics_lines > 220 {
+        return Err(format!("pure economics module has {economics_lines} lines"));
+    }
+    let boundary_files = rust_files_below(root, "crates/io_ledger_boundary/src")?;
+    let boundary_lines = boundary_files.iter().try_fold(0usize, |sum, path| {
+        fs::read_to_string(path)
+            .map(|text| sum + production_line_count(&text))
+            .map_err(|error| format!("{}: {error}", path.display()))
+    })?;
+    if boundary_lines > 650 {
+        return Err(format!(
+            "io-ledger-boundary has {boundary_lines} production lines"
+        ));
+    }
+    for path in &boundary_files {
+        let text =
+            fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
+        let lines = production_line_count(&text);
+        if lines > 500 {
+            return Err(format!(
+                "{} has {lines} production lines; the boundary file limit is 500",
+                path.display()
+            ));
+        }
+        for needle in [
+            "LedgerIndexClient",
+            "AccountHistoryScanState",
+            "CompleteRangeEvidence",
+            "CanonicalRangeJob",
+            "StableLiability",
+            "MockLedgerCanisterClient",
+        ] {
+            if text.contains(needle) {
+                return Err(format!("{} contains forbidden {needle:?}", path.display()));
+            }
+        }
+    }
+    for manifest in [
+        "canisters/io_stream_manager/Cargo.toml",
+        "canisters/io_nns_neuron_manager/Cargo.toml",
+    ] {
+        let text = require_file(root, manifest)?;
+        for dependency in ["io-ledger-types", "io-governance-types"] {
+            if text.contains(dependency) {
+                return Err(format!(
+                    "{manifest} contains forbidden production dependency {dependency}"
+                ));
+            }
+        }
+    }
+    let reward_policy_lines = rust_files_below(root, "crates/io_reward_policy/src")?
+        .into_iter()
+        .try_fold(0usize, |sum, path| {
+            fs::read_to_string(&path)
+                .map(|text| sum + production_line_count(&text))
+                .map_err(|error| format!("{}: {error}", path.display()))
+        })?;
+    if reward_policy_lines > 450 {
+        return Err(format!(
+            "io-reward-policy has {reward_policy_lines} production lines"
+        ));
+    }
+    let reward_boundary_lines = rust_files_below(root, "crates/io_sns_reward_boundary/src")?
+        .into_iter()
+        .try_fold(0usize, |sum, path| {
+            fs::read_to_string(&path)
+                .map(|text| sum + production_line_count(&text))
+                .map_err(|error| format!("{}: {error}", path.display()))
+        })?;
+    if reward_boundary_lines > 500 {
+        return Err(format!(
+            "SNS reward-event boundary has {reward_boundary_lines} production lines"
+        ));
+    }
+    let account_lines = rust_files_below(root, "crates/io_accounts/src")?
+        .into_iter()
+        .try_fold(0usize, |sum, path| {
+            fs::read_to_string(&path)
+                .map(|text| sum + production_line_count(&text))
+                .map_err(|error| format!("{}: {error}", path.display()))
+        })?;
+    combined_lines = combined_lines
+        .checked_add(reward_boundary_lines)
+        .and_then(|lines| lines.checked_add(account_lines))
+        .ok_or_else(|| "combined production line count overflow".to_string())?;
+    for directory in [
+        "crates/io_core_model/src",
+        "crates/io_ledger_boundary/src",
+        "crates/io_reward_policy/src",
+    ] {
+        for path in rust_files_below(root, directory)? {
+            let text = fs::read_to_string(&path)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            combined_lines += production_line_count(&text);
+        }
+    }
+    for directory in ["crates/io_nns_types/src", "crates/io_receipt_types/src"] {
+        for path in rust_files_below(root, directory)? {
+            let text = fs::read_to_string(&path)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            let lines = production_line_count(&text);
+            if lines > 500 {
+                return Err(format!("{} has {lines} production lines", path.display()));
+            }
+            combined_lines += lines;
+        }
+    }
+    if stream_lines > 5_200 {
+        return Err(format!(
+            "stream-manager production Rust has {stream_lines} lines"
+        ));
+    }
+    if combined_lines > 11_100 {
+        return Err(format!(
+            "combined production Rust has {combined_lines} lines; simplified limit not met"
+        ));
+    }
+    let nns_lines = rust_files_below(root, "canisters/io_nns_neuron_manager/src")?
+        .into_iter()
+        .try_fold(0usize, |sum, path| {
+            fs::read_to_string(&path)
+                .map(|text| sum + production_line_count(&text))
+                .map_err(|error| format!("{}: {error}", path.display()))
+        })?;
+    if nns_lines > 4_300 {
+        return Err(format!("NNS-manager production Rust has {nns_lines} lines"));
+    }
+    let tree = Command::new("cargo")
+        .args([
+            "tree",
+            "-p",
+            "io-stream-manager",
+            "-e",
+            "normal",
+            "--prefix",
+            "none",
+        ])
+        .current_dir(root)
+        .output()
+        .map_err(|error| format!("cargo tree for io-stream-manager failed: {error}"))?;
+    if !tree.status.success() {
+        return Err(format!(
+            "cargo tree for io-stream-manager failed: {}",
+            String::from_utf8_lossy(&tree.stderr)
+        ));
+    }
+    if String::from_utf8_lossy(&tree.stdout)
+        .lines()
+        .any(|line| line.split_whitespace().next() == Some("io-governance-types"))
+    {
+        return Err(
+            "io-stream-manager has forbidden transitive production dependency io-governance-types"
+                .into(),
+        );
+    }
+    for path in normative_markdown_files(root)? {
+        let text =
+            fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        let lower = text.to_ascii_lowercase();
+        for needle in [
+            "production DIDs remain constructor-only",
+            "constructor-only monetary DIDs",
+            "ledger/index-driven monetary intent",
+            "redemption intake Account",
+            "redemption return leg",
+            "automatic rejected-redemption refund",
+            "scanner-driven settlement",
+            "scanner-driven intent",
+            "automatic proof of absence",
+            "cursor recovery",
+            "timer-driven monetary execution",
+        ] {
+            if lower.contains(&needle.to_ascii_lowercase()) {
+                return Err(format!(
+                    "{} contains stale normative phrase {needle:?}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    for path in [
+        "canisters/io_stream_manager/mainnet-install-args.did",
+        "canisters/io_nns_neuron_manager/mainnet-install-args.did",
+    ] {
+        let text = require_file(root, path)?;
+        require_present(path, &text, &["NON-RUNNABLE TEMPLATE", "TODO_"])?;
+    }
+    eprintln!(
+        "simplicity metrics: stream_manager={stream_lines} nns_manager={nns_lines} accounts={account_lines} ledger_boundary={boundary_lines} economics={economics_lines} reward_policy={reward_policy_lines} sns_reward_boundary={reward_boundary_lines} combined={combined_lines}"
+    );
+    Ok(())
+}
+
 fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
     let stream_production_path = "canisters/io_stream_manager/io_stream_manager.did";
     let stream_debug_path = "canisters/io_stream_manager/io_stream_manager_debug.did";
     let nns_production_path = "canisters/io_nns_neuron_manager/io_nns_neuron_manager.did";
     let nns_debug_path = "canisters/io_nns_neuron_manager/io_nns_neuron_manager_debug.did";
     let historian_production_path = "canisters/io_historian/io_historian.did";
-    let historian_debug_path = "canisters/io_historian/io_historian_debug.did";
 
     let stream_production = read_file(root, stream_production_path)?;
-    let stream_debug = read_file(root, stream_debug_path)?;
     let nns_production = read_file(root, nns_production_path)?;
-    let nns_debug = read_file(root, nns_debug_path)?;
+    if root.join(stream_debug_path).exists() || root.join(nns_debug_path).exists() {
+        return Err("value-moving debug DIDs must be deleted".into());
+    }
     let historian_production = read_file(root, historian_production_path)?;
-    let historian_debug = read_file(root, historian_debug_path)?;
 
     check_minimal_value_moving_did(stream_production_path, &stream_production)?;
     check_minimal_value_moving_did(nns_production_path, &nns_production)?;
+
+    require_present(
+        stream_production_path,
+        &stream_production,
+        &[
+            "  redeem :",
+            "  prepare_liquid_receipt :",
+            "  complete_liquid_receipt :",
+            "  resume :",
+            "  prove_active_transfer :",
+            "  set_paused :",
+            "  validate_set_paused :",
+            "  get_status :",
+        ],
+    )?;
+    require_present(
+        nns_production_path,
+        &nns_production,
+        &[
+            "  notify_jupiter_deposit :",
+            "  reconcile_two_week_backing_readiness :",
+            "  prepare_two_week_maturity :",
+            "  resume :",
+            "  prove_active_transfer :",
+            "  set_paused :",
+            "  validate_set_paused :",
+            "  get_status :",
+        ],
+    )?;
 
     let stream_forbidden =
         forbidden_did_methods(&stream_production, STREAM_PRODUCTION_FORBIDDEN_DID);
@@ -568,72 +1232,8 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
             "get_dashboard_state",
             "get_protocol_snapshot",
             "get_redemption_rate",
-            "list_streams",
-            "list_redemptions",
-            "list_rewards",
-            "list_nns_lifecycle_events",
-            "get_index_health",
-            "get_governance_summary",
-            "get_release_artifacts",
-            "get_canister_status_summary",
-        ],
-    )?;
-
-    require_present(
-        stream_debug_path,
-        &stream_debug,
-        &[
-            "debug_get_state",
-            "debug_get_redemption_rate",
-            "debug_process_stream_event",
-            "debug_redeem",
-            "debug_tick",
-        ],
-    )?;
-    require_present(
-        nns_debug_path,
-        &nns_debug,
-        &[
-            "debug_get_config",
-            "debug_get_state",
-            "debug_plan_rebalance",
-            "debug_advance_model_time",
-            "debug_tick",
-        ],
-    )?;
-
-    require_absent(
-        stream_debug_path,
-        &stream_debug,
-        &[
-            "  get_state :",
-            "  get_redemption_rate :",
-            "  process_stream_event :",
-            "  redeem :",
-        ],
-    )?;
-    require_absent(
-        nns_debug_path,
-        &nns_debug,
-        &[
-            "  get_config :",
-            "  get_state :",
-            "  plan_rebalance :",
-            "  advance_model_time :",
-        ],
-    )?;
-    require_present(
-        historian_debug_path,
-        &historian_debug,
-        &[
-            "debug_clear",
-            "debug_ingest_ledger_flow",
-            "debug_ingest_stream_record",
-            "debug_ingest_redemption_record",
-            "debug_ingest_reward_record",
-            "debug_ingest_index_health",
-            "debug_ingest_governance_snapshot",
-            "debug_ingest_canister_artifact_status",
+            "ObservationConfig",
+            "service : (opt ObservationConfig)",
         ],
     )?;
     check_historian_js_declaration_at(root)?;
@@ -760,10 +1360,263 @@ fn expected_release_artifacts() -> Vec<String> {
         .collect()
 }
 
+fn expected_release_artifact_names() -> BTreeSet<String> {
+    expected_release_artifacts()
+        .into_iter()
+        .map(|path| {
+            path.strip_prefix("release-artifacts/")
+                .expect("release artifact path prefix")
+                .to_string()
+        })
+        .collect()
+}
+
+fn release_artifact_directory_files(dir: &Path) -> Result<BTreeSet<String>, String> {
+    let mut files = BTreeSet::new();
+    for entry in fs::read_dir(dir).map_err(|err| format!("{}: {err}", dir.display()))? {
+        let entry = entry.map_err(|err| format!("{}: {err}", dir.display()))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|err| format!("{}: {err}", entry.path().display()))?;
+        if !file_type.is_file() {
+            return Err(format!(
+                "unexpected non-file release artifact {}",
+                entry.path().display()
+            ));
+        }
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| format!("non-UTF-8 release artifact in {}", dir.display()))?;
+        files.insert(name);
+    }
+    let expected = expected_release_artifact_names();
+    if files != expected {
+        let missing = expected.difference(&files).cloned().collect::<Vec<_>>();
+        let unexpected = files.difference(&expected).cloned().collect::<Vec<_>>();
+        return Err(format!(
+            "release artifact file set mismatch in {}: missing [{}], unexpected [{}]",
+            dir.display(),
+            missing.join(", "),
+            unexpected.join(", ")
+        ));
+    }
+    Ok(files)
+}
+
+fn compare_release_artifact_dirs(first: &Path, second: &Path) -> Result<(), String> {
+    let files = release_artifact_directory_files(first)?;
+    release_artifact_directory_files(second)?;
+    for name in files {
+        let first_path = first.join(&name);
+        let second_path = second.join(&name);
+        let first_size = fs::metadata(&first_path)
+            .map_err(|err| format!("{}: {err}", first_path.display()))?
+            .len();
+        let second_size = fs::metadata(&second_path)
+            .map_err(|err| format!("{}: {err}", second_path.display()))?
+            .len();
+        if first_size != second_size {
+            return Err(format!(
+                "release artifact size mismatch for {name}: {} has {first_size} bytes, {} has {second_size} bytes",
+                first.display(),
+                second.display()
+            ));
+        }
+        let first_bytes =
+            fs::read(&first_path).map_err(|err| format!("{}: {err}", first_path.display()))?;
+        let second_bytes =
+            fs::read(&second_path).map_err(|err| format!("{}: {err}", second_path.display()))?;
+        if first_bytes != second_bytes {
+            return Err(format!(
+                "release artifact byte mismatch for {name}: {} != {}",
+                first.display(),
+                second.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn sha256_hex(path: &Path) -> Result<String, String> {
     let bytes = fs::read(path).map_err(|err| format!("{}: {err}", path.display()))?;
     let digest = Sha256::digest(bytes);
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn nervous_system_domain_subaccount(controller: Principal, domain: &[u8], nonce: u64) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update([domain.len() as u8]);
+    hasher.update(domain);
+    hasher.update(controller.as_slice());
+    hasher.update(nonce.to_be_bytes());
+    hasher.finalize().into()
+}
+
+fn nns_neuron_staking_subaccount(controller: Principal, nonce: u64) -> String {
+    hex::encode(nervous_system_domain_subaccount(
+        controller,
+        b"neuron-stake",
+        nonce,
+    ))
+}
+
+pub(crate) fn sns_distribution_subaccount(controller: Principal, nonce: u64) -> String {
+    hex::encode(nervous_system_domain_subaccount(
+        controller,
+        b"token-distribution",
+        nonce,
+    ))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RedemptionEconomics {
+    excluded_total_e8s: u128,
+    redeemable_supply_e8s: u128,
+    gross_icp_e8s: u128,
+    net_icp_e8s: u128,
+}
+
+fn calculate_redemption_economics(
+    total_supply_e8s: u128,
+    protocol_reserve_e8s: u128,
+    excluded_balances_e8s: &[u128],
+    liquid_icp_e8s: u128,
+    redeemed_io_e8s: u128,
+    icp_fee_e8s: u128,
+) -> Result<RedemptionEconomics, String> {
+    let excluded_total_e8s = excluded_balances_e8s
+        .iter()
+        .try_fold(0_u128, |sum, balance| {
+            sum.checked_add(*balance)
+                .ok_or_else(|| "excluded IO balance sum overflow".to_string())
+        })?;
+    let non_redeemable = protocol_reserve_e8s
+        .checked_add(excluded_total_e8s)
+        .ok_or_else(|| "protocol reserve plus excluded IO overflow".to_string())?;
+    let redeemable_supply_e8s = total_supply_e8s
+        .checked_sub(non_redeemable)
+        .ok_or_else(|| "total IO supply is less than reserve plus excluded IO".to_string())?;
+    if redeemable_supply_e8s == 0 && redeemed_io_e8s != 0 {
+        return Err("redeemable IO supply is zero for a claimed redemption".into());
+    }
+    let gross_icp_e8s = redeemed_io_e8s
+        .checked_mul(liquid_icp_e8s)
+        .ok_or_else(|| "redemption numerator overflow".to_string())?
+        .checked_div(redeemable_supply_e8s)
+        .ok_or_else(|| "redeemable IO supply is zero".to_string())?;
+    let net_icp_e8s = gross_icp_e8s
+        .checked_sub(icp_fee_e8s)
+        .ok_or_else(|| "quoted gross ICP is below the ICP fee".to_string())?;
+    Ok(RedemptionEconomics {
+        excluded_total_e8s,
+        redeemable_supply_e8s,
+        gross_icp_e8s,
+        net_icp_e8s,
+    })
+}
+
+fn candid_blob_literal_from_hex(value: &str) -> Result<String, String> {
+    if !value.len().is_multiple_of(2)
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err("blob hex must be even-length lowercase hexadecimal".into());
+    }
+    Ok(value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| format!("\\{}", std::str::from_utf8(pair).expect("hex is ASCII")))
+        .collect())
+}
+
+fn candid_nat_field(text: &str, key: &str) -> Result<u128, String> {
+    let marker = format!("{key} = ");
+    let start = text
+        .find(&marker)
+        .ok_or_else(|| format!("missing Candid field {key}"))?
+        + marker.len();
+    let digits = text[start..]
+        .chars()
+        .take_while(|character| character.is_ascii_digit() || *character == '_')
+        .filter(|character| *character != '_')
+        .collect::<String>();
+    if digits.is_empty() {
+        return Err(format!("Candid field {key} is not an unsigned integer"));
+    }
+    digits
+        .parse::<u128>()
+        .map_err(|error| format!("invalid Candid field {key}: {error}"))
+}
+
+fn candid_index_transaction_records(text: &str) -> Result<Vec<&str>, String> {
+    let marker = "transactions = vec {";
+    let transactions = text
+        .find(marker)
+        .ok_or_else(|| "index response omits transactions vector".to_string())?
+        + marker.len();
+    let bytes = text.as_bytes();
+    let mut depth = 1_i32;
+    let mut cursor = transactions;
+    let mut record_start = None;
+    let mut records = Vec::new();
+    while cursor < bytes.len() && depth > 0 {
+        if bytes[cursor..].starts_with(b"record {") && depth == 1 {
+            record_start = Some(cursor);
+        }
+        match bytes[cursor] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 1 {
+                    if let Some(start) = record_start.take() {
+                        records.push(&text[start..=cursor]);
+                    }
+                }
+            }
+            _ => {}
+        }
+        cursor += 1;
+    }
+    if depth != 0 {
+        return Err("unterminated index transactions vector".into());
+    }
+    Ok(records)
+}
+
+fn unique_index_transfer_record<'a>(
+    text: &'a str,
+    amount_e8s: u128,
+    memo_hex: &str,
+) -> Result<&'a str, String> {
+    let memo = format!(
+        "memo = opt blob \"{}\"",
+        candid_blob_literal_from_hex(memo_hex)?
+    );
+    let matching = candid_index_transaction_records(text)?
+        .into_iter()
+        .filter(|record| {
+            record.contains("kind = \"transfer\"")
+                && record.contains(&memo)
+                && candid_nat_field(record, "amount") == Ok(amount_e8s)
+        })
+        .collect::<Vec<_>>();
+    if matching.len() != 1 {
+        return Err(format!(
+            "expected one index transfer for amount {amount_e8s} and memo {memo_hex}, found {}",
+            matching.len()
+        ));
+    }
+    Ok(matching[0])
+}
+
+fn index_transfer_block(text: &str, amount_e8s: u128, memo_hex: &str) -> Result<u64, String> {
+    let id = candid_nat_field(
+        unique_index_transfer_record(text, amount_e8s, memo_hex)?,
+        "id",
+    )?;
+    u64::try_from(id).map_err(|_| "index transaction id exceeds u64".to_string())
 }
 
 fn verify_artifact_hash(root: &Path, sidecar: &str) -> Result<(), String> {
@@ -814,8 +1667,9 @@ struct ArtifactManifestEntry {
 
 const RELEASE_SOURCE_COMMIT_ENV: &str = "IO_RELEASE_SOURCE_COMMIT";
 
-fn current_git_commit() -> Result<String, String> {
+fn current_git_commit(root: &Path) -> Result<String, String> {
     let output = Command::new("git")
+        .current_dir(root)
         .args(["rev-parse", "HEAD"])
         .output()
         .map_err(|err| format!("git rev-parse HEAD: {err}"))?;
@@ -835,7 +1689,7 @@ fn is_full_lowercase_hex_sha(value: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
-fn validate_release_source_commit(git_commit: &str) -> Result<(), String> {
+fn validate_release_source_commit(root: &Path, git_commit: &str) -> Result<(), String> {
     if !is_full_lowercase_hex_sha(git_commit) {
         return Err(format!(
             "release source commit must be a full 40-character lowercase hexadecimal SHA, got {git_commit:?}"
@@ -843,6 +1697,7 @@ fn validate_release_source_commit(git_commit: &str) -> Result<(), String> {
     }
 
     let cat_file = Command::new("git")
+        .current_dir(root)
         .args(["cat-file", "-e", &format!("{git_commit}^{{commit}}")])
         .output()
         .map_err(|err| format!("git cat-file {git_commit}: {err}"))?;
@@ -852,16 +1707,177 @@ fn validate_release_source_commit(git_commit: &str) -> Result<(), String> {
         ));
     }
 
-    let ancestor = Command::new("git")
+    Ok(())
+}
+
+fn validate_release_source_ancestor(root: &Path, git_commit: &str) -> Result<(), String> {
+    validate_release_source_commit(root, git_commit)?;
+    let status = Command::new("git")
+        .current_dir(root)
         .args(["merge-base", "--is-ancestor", git_commit, "HEAD"])
-        .output()
+        .status()
         .map_err(|err| format!("git merge-base --is-ancestor {git_commit} HEAD: {err}"))?;
-    if !ancestor.status.success() {
+    if !status.success() {
         return Err(format!(
             "release source commit {git_commit} is not an ancestor of HEAD"
         ));
     }
+    Ok(())
+}
 
+fn release_tail_evidence_path_allowed(path: &str) -> bool {
+    path.starts_with("deploy/local-sns-rehearsal/evidence/")
+        || path.starts_with("docs/")
+        || path.starts_with(".github/workflows/")
+        || path == "tools/sns/launch-readiness.toml"
+}
+
+fn validate_release_commit_paths(
+    commit_label: &str,
+    paths: &[String],
+    artifact_recording: bool,
+) -> Result<(), String> {
+    if paths.is_empty() {
+        return Err(format!(
+            "release-tail commit {commit_label} changes no paths"
+        ));
+    }
+    for path in paths {
+        let allowed = if artifact_recording {
+            path.starts_with("release-artifacts/")
+        } else {
+            release_tail_evidence_path_allowed(path)
+        };
+        if !allowed {
+            let phase = if artifact_recording {
+                "artifact-recording"
+            } else {
+                "evidence/documentation"
+            };
+            return Err(format!(
+                "release-tail {phase} commit {commit_label} changes forbidden path {path}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn git_output(root: &Path, args: &[&str], label: &str) -> Result<String, String> {
+    let output = Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .map_err(|error| format!("{label}: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "{label} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn validate_release_tail(root: &Path, source_commit: &str) -> Result<(), String> {
+    validate_release_source_ancestor(root, source_commit)?;
+    let head = current_git_commit(root)?;
+    if head == source_commit {
+        return Ok(());
+    }
+    let commits = git_output(
+        root,
+        &[
+            "rev-list",
+            "--reverse",
+            "--ancestry-path",
+            &format!("{source_commit}..HEAD"),
+        ],
+        "git rev-list release tail",
+    )?;
+    let commits = commits.lines().collect::<Vec<_>>();
+    let artifact_commit = commits
+        .first()
+        .ok_or_else(|| "release tail unexpectedly contains no commits".to_string())?;
+    let artifact_parent = git_output(
+        root,
+        &["rev-parse", &format!("{artifact_commit}^1")],
+        "git rev-parse artifact-recording parent",
+    )?;
+    if artifact_parent != source_commit {
+        return Err(format!(
+            "artifact-recording commit {artifact_commit} must directly follow source-finalization commit {source_commit}"
+        ));
+    }
+    for (index, commit) in commits.iter().enumerate() {
+        let paths = git_output(
+            root,
+            &[
+                "diff-tree",
+                "--no-commit-id",
+                "--name-only",
+                "--no-renames",
+                "-r",
+                commit,
+            ],
+            "git diff-tree release-tail commit",
+        )?
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        validate_release_commit_paths(commit, &paths, index == 0)?;
+    }
+    Ok(())
+}
+
+fn validate_release_source_tree(root: &Path, git_commit: &str) -> Result<(), String> {
+    validate_release_source_commit(root, git_commit)?;
+    let tree_diff = Command::new("git")
+        .current_dir(root)
+        .args([
+            "diff",
+            "--quiet",
+            git_commit,
+            "HEAD",
+            "--",
+            ".",
+            ":(exclude)release-artifacts",
+        ])
+        .output()
+        .map_err(|err| format!("git diff {git_commit} HEAD: {err}"))?;
+    if !tree_diff.status.success() {
+        return Err(format!(
+            "release source commit {git_commit} does not match the exact source tree at HEAD"
+        ));
+    }
+
+    let dirty = Command::new("git")
+        .current_dir(root)
+        .args([
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--",
+            ".",
+            ":(exclude)release-artifacts",
+        ])
+        .output()
+        .map_err(|err| format!("git status for release source: {err}"))?;
+    if !dirty.status.success() {
+        return Err("git status for release source failed".into());
+    }
+    if !dirty.stdout.is_empty() {
+        return Err("release source checkout has dirty files outside release-artifacts".into());
+    }
+    Ok(())
+}
+
+fn validate_release_build_checkout(root: &Path, git_commit: &str) -> Result<(), String> {
+    validate_release_source_tree(root, git_commit)?;
+    let head = current_git_commit(root)?;
+    if head != git_commit {
+        return Err(format!(
+            "release build must run at exact source commit {git_commit}, not {head}; use tools/scripts/build-release-from-source"
+        ));
+    }
     Ok(())
 }
 
@@ -873,7 +1889,8 @@ fn manifest_source_commit(root: &Path) -> Result<Option<String>, String> {
     let git_commit = manifest
         .git_commit
         .ok_or_else(|| format!("{MANIFEST_PATH}: git_commit is required"))?;
-    validate_release_source_commit(&git_commit).map_err(|err| format!("{MANIFEST_PATH}: {err}"))?;
+    validate_release_source_commit(root, &git_commit)
+        .map_err(|err| format!("{MANIFEST_PATH}: {err}"))?;
     Ok(Some(git_commit))
 }
 
@@ -882,11 +1899,11 @@ fn release_source_commit(root: &Path) -> Result<String, String> {
         Ok(value) => value,
         Err(env::VarError::NotPresent) => match manifest_source_commit(root)? {
             Some(value) => value,
-            None => current_git_commit()?,
+            None => current_git_commit(root)?,
         },
         Err(err) => return Err(format!("{RELEASE_SOURCE_COMMIT_ENV}: {err}")),
     };
-    validate_release_source_commit(&git_commit)?;
+    validate_release_build_checkout(root, &git_commit)?;
     Ok(git_commit)
 }
 
@@ -952,8 +1969,7 @@ fn verify_manifest(root: &Path) -> Result<(), String> {
         .git_commit
         .clone()
         .ok_or_else(|| format!("{MANIFEST_PATH}: git_commit is required"))?;
-    validate_release_source_commit(&source_commit)
-        .map_err(|err| format!("{MANIFEST_PATH}: {err}"))?;
+    validate_release_tail(root, &source_commit).map_err(|err| format!("{MANIFEST_PATH}: {err}"))?;
     for entry in &actual.artifacts {
         if entry.git_commit.as_deref() != Some(source_commit.as_str()) {
             return Err(format!(
@@ -1160,6 +2176,44 @@ fn validate_stream_install_args_text(text: &str, mode: InstallArgsMode) -> Resul
     Ok(())
 }
 
+fn validate_simplified_receipt_topology(stream: &str, nns: &str) -> Result<(), String> {
+    fn require_field_token(text: &str, field: &str, token: &str) -> Result<(), String> {
+        let line = text
+            .lines()
+            .find(|line| line.contains(field))
+            .ok_or_else(|| format!("missing topology field {field}"))?;
+        if !line.contains(token) {
+            return Err(format!("{field} must use shared topology token {token}"));
+        }
+        Ok(())
+    }
+    for (text, field) in [(stream, "jupiter_receipt_source"), (nns, "jupiter_staging")] {
+        let line = text
+            .lines()
+            .find(|line| line.contains(field))
+            .ok_or_else(|| format!("missing topology field {field}"))?;
+        if !line.contains("subaccount = null") {
+            return Err(format!("{field} must use the NNS manager default Account"));
+        }
+    }
+    for (stream_field, nns_field, token) in [
+        (
+            "two_week_receipt_source",
+            "two_week_maturity_staging",
+            "TODO_TWO_WEEK_STAGING",
+        ),
+        (
+            "liquid_icp",
+            "stream_liquid_account",
+            "TODO_STREAM_LIQUID_SUBACCOUNT",
+        ),
+    ] {
+        require_field_token(stream, stream_field, token)?;
+        require_field_token(nns, nns_field, token)?;
+    }
+    Ok(())
+}
+
 fn validate_install_args_at(root: &Path, mode: InstallArgsMode) -> Result<(), String> {
     if matches!(mode, InstallArgsMode::Local | InstallArgsMode::All) {
         validate_stream_install_args_text(
@@ -1195,11 +2249,18 @@ fn validate_install_args_at(root: &Path, mode: InstallArgsMode) -> Result<(), St
             root,
             "canisters/io_nns_neuron_manager/mainnet-install-args.did",
         )?;
-        validate_stream_install_args_text(&stream_args, InstallArgsMode::Mainnet)
-            .map_err(|err| format!("io_stream_manager mainnet install args: {err}"))?;
-        validate_nns_install_args_text(&nns_args, InstallArgsMode::Mainnet)
-            .map_err(|err| format!("io_nns_neuron_manager mainnet install args: {err}"))?;
-        validate_no_install_args_did(root, "canisters/io_historian/io_historian.did")
+        for (name, args) in [
+            ("io_stream_manager", stream_args.as_str()),
+            ("io_nns_neuron_manager", nns_args.as_str()),
+        ] {
+            if !args.contains("NON-RUNNABLE TEMPLATE") || !args.contains("TODO_") {
+                return Err(format!(
+                    "{name} mainnet install args must remain an explicit non-runnable TODO template"
+                ));
+            }
+        }
+        validate_simplified_receipt_topology(&stream_args, &nns_args)?;
+        validate_historian_install_args_did(root, "canisters/io_historian/io_historian.did")
             .map_err(|err| format!("io_historian install args: {err}"))?;
         validate_no_install_args_did(root, "canisters/frontend/frontend.did")
             .map_err(|err| format!("frontend install args: {err}"))?;
@@ -1328,14 +2389,14 @@ fn check_sns_official_testing_at(root: &Path) -> Result<(), String> {
         "docs/operations/official-sns-testing.md",
         &doc,
         &[
-            "We currently run SNS-shaped mock/PocketIC tests.",
+            "IO runs SNS-shaped mock/PocketIC tests, pinned real-canister profiles, and an optional maintained source-built local SNS-W rehearsal.",
             "We do not currently run the official SNS launch locally in required CI.",
             "Official SNS testing is optional and heavier.",
             "current official ICP/DFINITY SNS testing documentation is the source of truth",
             "historical standalone `dfinity/sns-testing` repository is deprecated",
-            "The official SNS launch path may require `dfx sns`",
+            "The maintained official local SNS flow uses the source-built `sns` CLI",
             "not part of required IO workflows",
-            "SNS testflight is a future manual/mainnet rehearsal.",
+            "SNS testflight remains a separately authorized mainnet rehearsal.",
             "IO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical.",
             "The existing canister that owns IO NNS neuron 6345890886899317159 is not touched by these tests.",
             "Layer 1",
@@ -1350,7 +2411,7 @@ fn check_sns_official_testing_at(root: &Path) -> Result<(), String> {
         "docs/operations/local-sns-testing.md",
         &local_doc,
         &[
-            "We currently run SNS-shaped mock/PocketIC tests.",
+            "Required CI uses SNS-shaped mock/PocketIC tests.",
             "not official SNS launch tests",
             "not SNS-W",
             "not decentralization swap",
@@ -1407,11 +2468,29 @@ fn check_sns_launch_readiness_at(root: &Path, strict: bool) -> Result<usize, Str
             "[nns_root_co_controller_step_planned]",
             "[fallback_controllers_defined]",
             "[dapp_canisters_listed]",
-            "[all_upgrades_tested_via_sns_proposal]",
+            "[sns_controlled_dapp_upgrade_path_proved]",
+            "[official_reward_share_release]",
             "[frontend_sns_integration_tested]",
             "[cycles_management_strategy]",
             "[custom_domain_frontend_plan]",
             "[audit_package]",
+        ],
+    )?;
+    require_present(
+        "tools/sns/launch-readiness.toml",
+        &checklist,
+        &[
+            "same-source candidate Governance/Root compatibility",
+            "official reviewed SNS Governance release containing the capability",
+            "upstream non-blocking tooling defect",
+        ],
+    )?;
+    require_absent(
+        "tools/sns/launch-readiness.toml",
+        &checklist,
+        &[
+            "Completion is blocked by candidate-Governance/official-Root ChangeCanisterRequest incompatibility",
+            "A reviewed mutually compatible SNS release/bundle is required.",
         ],
     )?;
 
@@ -1431,6 +2510,12 @@ fn check_sns_launch_readiness_at(root: &Path, strict: bool) -> Result<usize, Str
 }
 
 fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
+    let gitignore = require_file(root, ".gitignore")?;
+    require_present(
+        ".gitignore",
+        &gitignore,
+        &["deploy/local-sns-rehearsal/sns_init.local.yaml"],
+    )?;
     let readme = require_file(root, "deploy/local-sns-rehearsal/README.md")?;
     require_present(
         "deploy/local-sns-rehearsal/README.md",
@@ -1444,7 +2529,8 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "Do not use `--network ic`",
             "protocol reserve",
             "reserve-to-user transfer",
-            "user-to-reserve transfer",
+            "user-to-redemption transfer",
+            "redemption-to-reserve transfer",
             "validate_local_sns_rehearsal",
             "validate_local_sns_ledger",
             "validate_local_sns_scripts",
@@ -1468,18 +2554,31 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "fallback_controller_principals",
             "dapp_canisters",
             "Token:",
-            "symbol: \"IO\"",
+            "symbol: \"IOLO\"",
             "transaction_fee",
             "Distribution:",
-            "protocol_reserve",
+            "treasury: \"800_000 tokens\"",
+            "swap: \"100_000 tokens\"",
             "Swap:",
-            "archive_options",
-            "issuance_model: \"protocol reserve transfer\"",
-            "redemption_model: \"user transfer back to protocol reserve\"",
-            "io_test_ledger_role: \"non-canonical staging only\"",
+            "start_time:",
+            "NnsProposal:",
             "{{",
         ],
     )?;
+    require_absent(
+        "deploy/local-sns-rehearsal/sns_init.local.template.yaml",
+        &sns_init,
+        &[
+            "protocol_reserve:",
+            "archive_options:",
+            "io_rehearsal_notes:",
+        ],
+    )?;
+    validate_local_sns_yaml_structure(
+        "deploy/local-sns-rehearsal/sns_init.local.template.yaml",
+        &sns_init,
+    )?;
+    validate_local_sns_logo_files(root)?;
     require_absent(
         "deploy/local-sns-rehearsal/sns_init.local.template.yaml",
         &sns_init,
@@ -1508,9 +2607,19 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "index",
             "swap",
             "archive",
+            "[toolchain_provenance]",
+            "official_ic_source_commit",
+            "sns_testing_source_path",
+            "operator_identity_principal",
+            "local_network_url",
+            "official_tooling = \"manual-local-only\"",
+            "sns_cli_sha256",
+            "sns_testing_init_sha256",
+            "sns_testing_cli_sha256",
             "[expected_local_sns_config]",
             "transaction_fee_e8s",
             "total_supply_e8s",
+            "protocol_reserve_funding_amount_e8s",
             "[ledger_evidence]",
             "transaction_fee_e8s",
             "total_supply_e8s",
@@ -1519,13 +2628,37 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "redemption_return_amount_e8s",
             "bad_fee_error_observed = true",
             "insufficient_funds_error_observed = true",
-            "duplicate_transfer_observed = true",
-            "duplicate_block_verified = true",
+            "duplicate_tested_transfer",
             "index_account_history_observed = true",
+            "[reserve_funding_transfer]",
+            "sns_proposal_id",
+            "proposal_adopted = true",
+            "proposal_executed = true",
+            "created_at_time_nanos",
+            "memo_hex",
+            "[transfer_reserve_to_user]",
+            "[transfer_user_to_redemption]",
+            "[transfer_redemption_to_reserve]",
+            "from_owner",
+            "from_subaccount_hex",
+            "to_owner",
+            "to_subaccount_hex",
+            "fee_disposition",
+            "sender_balance_before_e8s",
+            "recipient_balance_after_e8s",
+            "total_supply_before_e8s",
+            "total_supply_after_e8s",
+            "proof_source_canister",
+            "proof_source",
+            "proof_method",
+            "archive_canister",
+            "[duplicate_test]",
             "[issuance_model]",
             "resolved_as = \"protocol_reserve_transfer\"",
             "minting_assumed = false",
-            "total_supply_constant_across_issuance_redemption = true",
+            "treasury_transfer_assumed = true",
+            "fee_disposition_mode",
+            "total_supply_changes_explained = true",
         ],
     )?;
     require_absent(
@@ -1537,11 +2670,24 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
     for path in [
         "deploy/local-sns-rehearsal/runbook.sh",
         "deploy/local-sns-rehearsal/scripts/00-check-prereqs.sh",
+        "deploy/local-sns-rehearsal/scripts/lib-local-sns.sh",
         "deploy/local-sns-rehearsal/scripts/01-render-sns-init.sh",
         "deploy/local-sns-rehearsal/scripts/02-record-canister-ids.sh",
         "deploy/local-sns-rehearsal/scripts/03-capture-ledger-evidence.sh",
         "deploy/local-sns-rehearsal/scripts/04-render-local-wiring.sh",
         "deploy/local-sns-rehearsal/scripts/05-validate-evidence.sh",
+        "deploy/local-sns-rehearsal/scripts/10-bootstrap-official-network.sh",
+        "deploy/local-sns-rehearsal/scripts/11-build-local-io-canisters.sh",
+        "deploy/local-sns-rehearsal/scripts/12-deploy-local-dapps.sh",
+        "deploy/local-sns-rehearsal/scripts/12-provision-local-nns-readiness.sh",
+        "deploy/local-sns-rehearsal/scripts/13-propose-and-finalize-sns.sh",
+        "deploy/local-sns-rehearsal/scripts/14-discover-sns-canisters.sh",
+        "deploy/local-sns-rehearsal/scripts/15-exercise-ledger.sh",
+        "deploy/local-sns-rehearsal/scripts/16-exercise-index-and-archives.sh",
+        "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
+        "deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh",
+        "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
+        "deploy/local-sns-rehearsal/scripts/19-cleanup-official-network.sh",
     ] {
         let text = require_file(root, path)?;
         require_present(
@@ -1555,6 +2701,210 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
         )?;
         require_absent(path, &text, &["dfx start"])?;
     }
+    require_absent(
+        "deploy/local-sns-rehearsal/scripts/00-check-prereqs.sh",
+        &require_file(
+            root,
+            "deploy/local-sns-rehearsal/scripts/00-check-prereqs.sh",
+        )?,
+        &["source-built sns"],
+    )?;
+    require_present(
+        "deploy/local-sns-rehearsal/scripts/10-bootstrap-official-network.sh",
+        &require_file(
+            root,
+            "deploy/local-sns-rehearsal/scripts/10-bootstrap-official-network.sh",
+        )?,
+        &[
+            "//rs/sns/testing:sns-testing-init",
+            "//rs/sns/testing:sns-testing",
+            "//rs/sns/cli:sns",
+            "sns init-config-file --init-config-file-path",
+            ". scripts/env.sh",
+        ],
+    )?;
+    let publication_phase = require_file(
+        root,
+        "deploy/local-sns-rehearsal/scripts/13-propose-and-finalize-sns.sh",
+    )?;
+    require_present(
+        "deploy/local-sns-rehearsal/scripts/13-propose-and-finalize-sns.sh",
+        &publication_phase,
+        &[
+            "publish_sns_wasm_via_nns",
+            "sns_governance_source_sha256",
+            "sns_root_source_sha256",
+            "Governance",
+            "Root",
+            "get_metadata",
+        ],
+    )?;
+    require_absent(
+        "deploy/local-sns-rehearsal/scripts/13-propose-and-finalize-sns.sh",
+        &publication_phase,
+        &["add-sns-wasm-for-tests"],
+    )?;
+    let deployment_phase = require_file(
+        root,
+        "deploy/local-sns-rehearsal/scripts/12-deploy-local-dapps.sh",
+    )?;
+    require_present(
+        "deploy/local-sns-rehearsal/scripts/12-deploy-local-dapps.sh",
+        &deployment_phase,
+        &[
+            "dfx canister id",
+            "differs from planned",
+            "isolated lifecycle inputs",
+            "sns_governance_source_sha256",
+            "governance_sed_blob",
+        ],
+    )?;
+    require_absent(
+        "deploy/local-sns-rehearsal/scripts/12-deploy-local-dapps.sh",
+        &deployment_phase,
+        &["--specified-id"],
+    )?;
+    let provisioning_phase = require_file(
+        root,
+        "deploy/local-sns-rehearsal/scripts/12-provision-local-nns-readiness.sh",
+    )?;
+    require_present(
+        "deploy/local-sns-rehearsal/scripts/12-provision-local-nns-readiness.sh",
+        &provisioning_phase,
+        &[
+            "icrc1_transfer",
+            "claim_or_refresh_neuron_from_account",
+            "update_neuron",
+            "252460800",
+            "auto_stake_maturity = opt false",
+            "maturity_disbursements_in_progress = opt vec {}",
+            "two_year_neuron_id",
+            "two_week_neuron_id",
+        ],
+    )?;
+    require_absent(
+        "deploy/local-sns-rehearsal/scripts/12-provision-local-nns-readiness.sh",
+        &provisioning_phase,
+        &["6345890886899317159"],
+    )?;
+    let nns_test_did = require_file(root, "deploy/local-sns-rehearsal/nns-governance-test.did")?;
+    require_present(
+        "deploy/local-sns-rehearsal/nns-governance-test.did",
+        &nns_test_did,
+        &["Local sns-testing", "update_neuron", "service :"],
+    )?;
+    require_present(
+        "deploy/local-sns-rehearsal/scripts/14-discover-sns-canisters.sh",
+        &require_file(
+            root,
+            "deploy/local-sns-rehearsal/scripts/14-discover-sns-canisters.sh",
+        )?,
+        &[
+            "ManageNervousSystemParameters",
+            "max_number_of_neurons",
+            "1_000",
+        ],
+    )?;
+    let local_library = require_file(root, "deploy/local-sns-rehearsal/scripts/lib-local-sns.sh")?;
+    require_present(
+        "deploy/local-sns-rehearsal/scripts/lib-local-sns.sh",
+        &local_library,
+        &[
+            "nns_function = 30",
+            "manage_neuron",
+            "get_proposal_info",
+            "get_latest_sns_version_pretty",
+            "executed_timestamp_seconds",
+            "extract_proposal_id",
+            "already-published",
+            "get_proposal",
+            "e8s_to_decimal_tokens",
+        ],
+    )?;
+    require_present(
+        "deploy/local-sns-rehearsal/scripts/lib-local-sns.sh",
+        &local_library,
+        &["https://forum.dfinity.org/t/io-local-rehearsal/0"],
+    )?;
+    require_absent(
+        "deploy/local-sns-rehearsal/scripts/lib-local-sns.sh",
+        &local_library,
+        &["https://example.invalid"],
+    )?;
+    let governance_phase = require_file(
+        root,
+        "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
+    )?;
+    require_present(
+        "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
+        &governance_phase,
+        &[
+            "upgrade-sns-controlled-canister",
+            "submit_inline_sns_upgrade",
+            "AddGenericNervousSystemFunction",
+            "validate_set_paused",
+            "ExecuteGenericNervousSystemFunction",
+            "sns_governance_source_sha256",
+            "sns_root_source_sha256",
+            "sns_ledger_source_sha256",
+            "sns_index_source_sha256",
+            "sns_swap_source_sha256",
+        ],
+    )?;
+    require_absent(
+        "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
+        &governance_phase,
+        &["dfx canister install"],
+    )?;
+    let exact_release_phase = require_file(
+        root,
+        "deploy/local-sns-rehearsal/scripts/11-build-local-io-canisters.sh",
+    )?;
+    require_present(
+        "deploy/local-sns-rehearsal/scripts/11-build-local-io-canisters.sh",
+        &exact_release_phase,
+        &[
+            "git -C \"$REPO_ROOT\" diff --quiet",
+            "artifact_commit=",
+            "git -C \"$REPO_ROOT\" show",
+            "tracked_clean=true",
+        ],
+    )?;
+    let packaging_phase = require_file(
+        root,
+        "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
+    )?;
+    require_present(
+        "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
+        &packaging_phase,
+        &[
+            "mktemp -d",
+            "validate_local_sns_evidence_package",
+            "current-canonical.toml",
+            "mv \"$selector_temporary\" \"$selector_path\"",
+            "preceding selector restored and candidate removed",
+            "after_module_sha256",
+            "proposal_adopted = true",
+            "proposal_executed = true",
+        ],
+    )?;
+    require_present(
+        "deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh",
+        &require_file(
+            root,
+            "deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh",
+        )?,
+        &[
+            "IO_LOCAL_REWARD_ADVANCE_SECONDS=86400",
+            "IncreaseDissolveDelay",
+            "DissolveDelaySeconds = 1209600",
+            "resume_reward_work",
+            "ProposalBearing",
+            "processed_reward_event_count: 1",
+            "accumulated_policy_credit: 1000000000000000000",
+        ],
+    )?;
+    validate_loopback_url_guardrails()?;
 
     let commands = require_file(root, "deploy/local-sns-rehearsal/commands.local.example.md")?;
     require_present(
@@ -1602,6 +2952,116 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
         )?;
     }
 
+    Ok(())
+}
+
+fn validate_local_sns_yaml_structure(path: &str, text: &str) -> Result<(), String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut in_swap = false;
+    let mut start_time_count = 0_u8;
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if line
+            .chars()
+            .next()
+            .is_some_and(|character| !character.is_whitespace())
+        {
+            in_swap = trimmed == "Swap:";
+            continue;
+        }
+        if !in_swap {
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("start_time:") {
+            start_time_count += 1;
+            if value.trim() != "null" {
+                return Err(format!(
+                    "{path}: Swap.start_time must be the YAML null value for local rehearsal"
+                ));
+            }
+        }
+        if let Some(value) = trimmed.strip_prefix("restricted_countries:") {
+            let inline = value.trim();
+            if inline == "[]" {
+                return Err(format!(
+                    "{path}: Swap.restricted_countries must be omitted or non-empty"
+                ));
+            }
+            if inline.is_empty() {
+                let indent = line.len() - line.trim_start().len();
+                let has_item = lines[index + 1..]
+                    .iter()
+                    .take_while(|candidate| {
+                        candidate.trim().is_empty()
+                            || candidate.len() - candidate.trim_start().len() > indent
+                    })
+                    .any(|candidate| candidate.trim_start().starts_with("- "));
+                if !has_item {
+                    return Err(format!(
+                        "{path}: Swap.restricted_countries must be omitted or non-empty"
+                    ));
+                }
+            }
+        }
+    }
+    if start_time_count != 1 {
+        return Err(format!(
+            "{path}: Swap.start_time must appear exactly once and be null"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_local_sns_logo_files(root: &Path) -> Result<(), String> {
+    let vars_path = "deploy/local-sns-rehearsal/local-vars.example.toml";
+    let text = require_file(root, vars_path)?;
+    let doc = parse_simple_toml_document(vars_path, &text)?;
+    let rehearsal_dir = root.join("deploy/local-sns-rehearsal");
+    for (path_key, hash_key) in [
+        ("logo_path", "logo_sha256"),
+        ("token_logo_path", "token_logo_sha256"),
+    ] {
+        let relative = require_simple_string(vars_path, &doc, "local", path_key)?;
+        let hash = require_simple_string(vars_path, &doc, "local", hash_key)?;
+        let relative_path = Path::new(&relative);
+        if relative_path.is_absolute()
+            || relative.contains("://")
+            || relative.contains('\\')
+            || relative_path
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(format!(
+                "{vars_path}: local.{path_key} must be a traversal-free relative local path"
+            ));
+        }
+        if hash.len() != 64
+            || !hash
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(format!(
+                "{vars_path}: local.{hash_key} must be an exact lowercase SHA-256"
+            ));
+        }
+        let full_path = rehearsal_dir.join(relative_path);
+        let metadata = fs::symlink_metadata(&full_path)
+            .map_err(|err| format!("{}: {err}", full_path.display()))?;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            return Err(format!(
+                "{}: local logo must be a regular non-symlink file",
+                full_path.display()
+            ));
+        }
+        let bytes =
+            fs::read(&full_path).map_err(|err| format!("{}: {err}", full_path.display()))?;
+        if hex_sha256(&bytes) != hash {
+            return Err(format!(
+                "{}: local logo SHA-256 does not match {vars_path}",
+                full_path.display()
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -1704,16 +3164,18 @@ io_nns_neuron_manager_canister = "{io_nns_neuron_manager}"
 io_historian_canister = "{io_historian}"
 frontend_canister = "{frontend}"
 developer_neuron_principal = "bkyz2-fmaaa-aaaaa-qaaaq-cai"
-protocol_reserve_principal = "bd3sg-teaaa-aaaaa-qaaba-cai"
-archive_controller_principal = "br5f7-7uaaa-aaaaa-qaaca-cai"
-logo_url = "http://127.0.0.1:4943/local-io-logo.png"
-token_logo_url = "http://127.0.0.1:4943/local-io-token-logo.png"
+logo_path = "assets/io-local-logo.svg"
+logo_sha256 = "241b04223fe83bfe8dfc6f5ef3de168cc4ef8b24107402773166566bf6ed962e"
+token_logo_path = "assets/io-local-token-logo.svg"
+token_logo_sha256 = "61ce92c31189e825ce0f277c73bb09d8905d0ab161f60f2bebedae802bbb48d8"
 
 [expected_local_sns_config]
-token_symbol = "IO"
+token_symbol = "IOLO"
 transaction_fee_e8s = 10_000
 total_supply_e8s = 100_000_000_000_000
-protocol_reserve_initial_balance_e8s = 60_000_000_000_000
+treasury_initial_balance_e8s = 80_000_000_000_000
+protocol_reserve_funding_amount_e8s = 60_000_000_000_000
+minimum_remaining_treasury_e8s = 19_999_999_990_000
 "#
     )
 }
@@ -1722,14 +3184,37 @@ fn completed_local_sns_evidence() -> String {
     r#"[mode]
 network = "local"
 source = "official-local-sns-rehearsal"
-dfx_sns = "manual-local-only"
+official_tooling = "manual-local-only"
 io_protocol_live = false
 sns_io_ledger_mainnet_launched = false
 
+[toolchain_provenance]
+official_ic_repository = "dfinity/ic"
+official_ic_source_commit = "2d7f90fb23672cc3b81c216a33d04c75672dd308"
+sns_testing_source_path = "rs/sns/testing"
+dfx_version = "dfx 0.27.0"
+bazel_version = "bazel 7.4.1"
+pocket_ic_version = "pocket-ic-server 14.0.0"
+sns_cli_version = "source-built sns 1.0.0"
+sns_cli_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+sns_testing_init_sha256 = "1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+sns_testing_cli_version = "source-built sns-testing"
+sns_testing_cli_sha256 = "2123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+quill_version = "quill 0.4.4"
+rustc_version = "rustc repository-toolchain"
+cargo_version = "cargo repository-toolchain"
+operator_identity_principal = "bd3sg-teaaa-aaaaa-qaaba-cai"
+local_network_url = "http://127.0.0.1:8080"
+network_alias = "sns-testing"
+locally_built_binary_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
 [expected_local_sns_config]
-token_symbol = "IO"
+token_symbol = "IOLO"
 transaction_fee_e8s = 10000
 total_supply_e8s = 100000000000000
+treasury_initial_balance_e8s = 80000000000000
+protocol_reserve_funding_amount_e8s = 60000000000000
+minimum_remaining_treasury_e8s = 19999999990000
 
 [sns_canisters]
 root = "bkyz2-fmaaa-aaaaa-qaaaq-cai"
@@ -1745,25 +3230,182 @@ io_nns_neuron_manager = "aax3a-h4aaa-aaaaa-qaahq-cai"
 io_historian = "ajuq4-ruaaa-aaaaa-qaaga-cai"
 frontend = "b77ix-eeaaa-aaaaa-qaada-cai"
 
+[archive_evidence]
+archive_canister = "by6od-j4aaa-aaaaa-qaadq-cai"
+discovered_from_ledger = true
+discovered_from_root = true
+range_start = 0
+range_end = 100
+
 [ledger_evidence]
-token_symbol = "IO"
+token_symbol = "IOLO"
 transaction_fee_e8s = 10000
-total_supply_e8s = 100000000000000
-protocol_reserve_account_owner = "a3shf-5eaaa-aaaaa-qaafa-cai"
-protocol_reserve_subaccount_hex = "none"
-protocol_reserve_balance_e8s = 60000000000000
-reserve_transfer_block_index = 1
-redemption_return_block_index = 2
+total_supply_e8s = 99999999960000
+protocol_reserve_account_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
+protocol_reserve_subaccount_hex = "3333333333333333333333333333333333333333333333333333333333333333"
+protocol_reserve_balance_e8s = 59999999970000
+reserve_transfer_block_index = 11
+redemption_return_block_index = 13
 reserve_transfer_amount_e8s = 100000000
-redemption_return_amount_e8s = 100000000
+redemption_return_amount_e8s = 99980000
 bad_fee_error_observed = true
 insufficient_funds_error_observed = true
-duplicate_transfer_observed = true
-duplicate_block_verified = true
-duplicate_of_block_index = 1
+duplicate_of_block_index = 11
+duplicate_tested_transfer = "transfer_reserve_to_user"
 index_account_history_observed = true
 index_history_order = "descending"
 index_lag_or_archive_required_observed = "not-observed"
+
+[reserve_funding_transfer]
+sns_proposal_id = 1
+proposal_adopted = true
+proposal_executed = true
+created_at_time_nanos = 1785196799000000000
+memo_hex = "494f5f524553455256455f46554e44494e475f5631"
+block_index = 10
+from_owner = "bd3sg-teaaa-aaaaa-qaaba-cai"
+from_subaccount_hex = "none"
+to_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
+to_subaccount_hex = "3333333333333333333333333333333333333333333333333333333333333333"
+requested_amount_e8s = 60000000000000
+observed_fee_e8s = 10000
+fee_disposition = "burned"
+sender_balance_before_e8s = 80000000000000
+sender_balance_after_e8s = 19999999990000
+recipient_balance_before_e8s = 0
+recipient_balance_after_e8s = 60000000000000
+fee_collector_owner = "none"
+fee_collector_subaccount_hex = "none"
+fee_collector_balance_before_e8s = "none"
+fee_collector_balance_after_e8s = "none"
+total_supply_before_e8s = 100000000000000
+total_supply_after_e8s = 99999999990000
+reserve_balance_before_e8s = 0
+reserve_balance_after_e8s = 60000000000000
+ledger_tip_block_index = 10
+index_synced_through_block_index = 10
+proof_source = "SnsLedgerBlock"
+proof_source_canister = "br5f7-7uaaa-aaaaa-qaaca-cai"
+proof_method = "Icrc3GetBlocks"
+proof_account_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
+proof_account_subaccount_hex = "3333333333333333333333333333333333333333333333333333333333333333"
+archive_canister = "none"
+archive_range_start = "none"
+archive_range_end = "none"
+archive_involvement = "none"
+observation_timestamp = "2026-07-27T23:59:59Z"
+
+[transfer_reserve_to_user]
+block_index = 11
+from_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
+from_subaccount_hex = "3333333333333333333333333333333333333333333333333333333333333333"
+to_owner = "bd3sg-teaaa-aaaaa-qaaba-cai"
+to_subaccount_hex = "1111111111111111111111111111111111111111111111111111111111111111"
+requested_amount_e8s = 100000000
+observed_fee_e8s = 10000
+fee_disposition = "burned"
+sender_balance_before_e8s = 60000000000000
+sender_balance_after_e8s = 59999899990000
+recipient_balance_before_e8s = 0
+recipient_balance_after_e8s = 100000000
+fee_collector_owner = "none"
+fee_collector_subaccount_hex = "none"
+fee_collector_balance_before_e8s = "none"
+fee_collector_balance_after_e8s = "none"
+total_supply_before_e8s = 99999999990000
+total_supply_after_e8s = 99999999980000
+reserve_balance_before_e8s = 60000000000000
+reserve_balance_after_e8s = 59999899990000
+ledger_tip_block_index = 11
+index_synced_through_block_index = 11
+proof_source = "SnsIndexAccountHistory"
+proof_source_canister = "be2us-64aaa-aaaaa-qaabq-cai"
+proof_method = "IcrcIndexGetAccountTransactions"
+proof_account_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
+proof_account_subaccount_hex = "3333333333333333333333333333333333333333333333333333333333333333"
+archive_canister = "none"
+archive_range_start = "none"
+archive_range_end = "none"
+archive_involvement = "none"
+observation_timestamp = "2026-07-28T00:00:00Z"
+
+[transfer_user_to_redemption]
+block_index = 12
+from_owner = "bd3sg-teaaa-aaaaa-qaaba-cai"
+from_subaccount_hex = "1111111111111111111111111111111111111111111111111111111111111111"
+to_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
+to_subaccount_hex = "2222222222222222222222222222222222222222222222222222222222222222"
+requested_amount_e8s = 99990000
+observed_fee_e8s = 10000
+fee_disposition = "burned"
+sender_balance_before_e8s = 100000000
+sender_balance_after_e8s = 0
+recipient_balance_before_e8s = 0
+recipient_balance_after_e8s = 99990000
+fee_collector_owner = "none"
+fee_collector_subaccount_hex = "none"
+fee_collector_balance_before_e8s = "none"
+fee_collector_balance_after_e8s = "none"
+total_supply_before_e8s = 99999999980000
+total_supply_after_e8s = 99999999970000
+reserve_balance_before_e8s = 59999899990000
+reserve_balance_after_e8s = 59999899990000
+ledger_tip_block_index = 12
+index_synced_through_block_index = 12
+proof_source = "SnsIndexAccountHistory"
+proof_source_canister = "be2us-64aaa-aaaaa-qaabq-cai"
+proof_method = "IcrcIndexGetAccountTransactions"
+proof_account_owner = "bd3sg-teaaa-aaaaa-qaaba-cai"
+proof_account_subaccount_hex = "1111111111111111111111111111111111111111111111111111111111111111"
+archive_canister = "none"
+archive_range_start = "none"
+archive_range_end = "none"
+archive_involvement = "none"
+observation_timestamp = "2026-07-28T00:00:01Z"
+
+[transfer_redemption_to_reserve]
+block_index = 13
+from_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
+from_subaccount_hex = "2222222222222222222222222222222222222222222222222222222222222222"
+to_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
+to_subaccount_hex = "3333333333333333333333333333333333333333333333333333333333333333"
+requested_amount_e8s = 99980000
+observed_fee_e8s = 10000
+fee_disposition = "burned"
+sender_balance_before_e8s = 99990000
+sender_balance_after_e8s = 0
+recipient_balance_before_e8s = 59999899990000
+recipient_balance_after_e8s = 59999999970000
+fee_collector_owner = "none"
+fee_collector_subaccount_hex = "none"
+fee_collector_balance_before_e8s = "none"
+fee_collector_balance_after_e8s = "none"
+total_supply_before_e8s = 99999999970000
+total_supply_after_e8s = 99999999960000
+reserve_balance_before_e8s = 59999899990000
+reserve_balance_after_e8s = 59999999970000
+ledger_tip_block_index = 13
+index_synced_through_block_index = 13
+proof_source = "SnsIndexAccountHistory"
+proof_source_canister = "be2us-64aaa-aaaaa-qaabq-cai"
+proof_method = "IcrcIndexGetAccountTransactions"
+proof_account_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
+proof_account_subaccount_hex = "2222222222222222222222222222222222222222222222222222222222222222"
+archive_canister = "none"
+archive_range_start = "none"
+archive_range_end = "none"
+archive_involvement = "none"
+observation_timestamp = "2026-07-28T00:00:02Z"
+
+[duplicate_test]
+original_transfer = "transfer_reserve_to_user"
+duplicate_of_block_index = 11
+proof_source = "SnsIndexAccountHistory"
+proof_method = "IcrcIndexGetAccountTransactions"
+proof_source_canister = "be2us-64aaa-aaaaa-qaabq-cai"
+proof_account_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
+proof_account_subaccount_hex = "3333333333333333333333333333333333333333333333333333333333333333"
+observation_timestamp = "2026-07-28T00:00:03Z"
 
 [governance_evidence]
 governance_available = true
@@ -1776,8 +3418,9 @@ governance_upgrade_gap = "local tooling did not support upgrade proposal in this
 [issuance_model]
 resolved_as = "protocol_reserve_transfer"
 minting_assumed = false
-treasury_transfer_assumed = false
-total_supply_constant_across_issuance_redemption = true
+treasury_transfer_assumed = true
+fee_disposition_mode = "burned"
+total_supply_changes_explained = true
 
 [protected]
 must_not_touch_neuron_owner_canister = "oae4c-3iaaa-aaaar-qb5qq-cai"
@@ -1805,7 +3448,7 @@ fn validate_local_sns_scripts_at(root: &Path) -> Result<(), String> {
     )?;
 
     run_rehearsal_script(&runbook, &["render-sns-init"], &xtask, true)?;
-    let rendered_sns_path = temp_rehearsal.join("generated/sns_init.local.yaml");
+    let rendered_sns_path = temp_rehearsal.join("sns_init.local.yaml");
     let rendered_sns = fs::read_to_string(&rendered_sns_path)
         .map_err(|err| format!("{}: {err}", rendered_sns_path.display()))?;
     require_absent(
@@ -1826,8 +3469,12 @@ fn validate_local_sns_scripts_at(root: &Path) -> Result<(), String> {
         ],
     )?;
 
-    run_rehearsal_script(&runbook, &["record-ids"], &xtask, true)?;
     let evidence_path = temp_rehearsal.join("canister-ids.local.toml");
+    if evidence_path.exists() {
+        fs::remove_file(&evidence_path)
+            .map_err(|err| format!("{}: {err}", evidence_path.display()))?;
+    }
+    run_rehearsal_script(&runbook, &["record-ids"], &xtask, true)?;
     write_text(&evidence_path, &completed_local_sns_evidence())?;
 
     let capture_output = run_rehearsal_script(&runbook, &["capture-evidence"], &xtask, true)?;
@@ -1938,10 +3585,17 @@ fn validate_local_sns_scripts_at(root: &Path) -> Result<(), String> {
 #[derive(Clone, Debug)]
 struct LocalSnsEvidence {
     mode: LocalSnsModeEvidence,
+    toolchain: LocalSnsToolchainProvenance,
     expected: LocalSnsExpectedConfig,
     sns_canisters: LocalSnsCanisters,
     io_dapp_canisters: LocalSnsIoDappCanisters,
+    archive: LocalSnsArchiveEvidence,
     ledger: LocalSnsLedgerEvidence,
+    reserve_funding_transfer: LocalSnsReserveFundingEvidence,
+    reserve_to_user_transfer: LocalSnsTransferEvidence,
+    user_to_redemption_transfer: LocalSnsTransferEvidence,
+    redemption_to_reserve_transfer: LocalSnsTransferEvidence,
+    duplicate_test: LocalSnsDuplicateTestEvidence,
     governance: LocalSnsGovernanceEvidence,
     issuance: LocalSnsIssuanceModel,
 }
@@ -1950,9 +3604,37 @@ struct LocalSnsEvidence {
 struct LocalSnsModeEvidence {
     network: String,
     source: String,
-    dfx_sns: String,
+    official_tooling: String,
     io_protocol_live: bool,
     sns_io_ledger_mainnet_launched: bool,
+}
+
+#[derive(Clone, Debug)]
+struct LocalSnsToolchainProvenance {
+    official_ic_repository: String,
+    official_ic_source_commit: String,
+    sns_testing_source_path: String,
+    dfx_version: String,
+    bazel_version: String,
+    pocket_ic_version: String,
+    sns_cli_version: String,
+    sns_cli_sha256: String,
+    sns_testing_init_sha256: String,
+    sns_testing_cli_version: String,
+    sns_testing_cli_sha256: String,
+    quill_version: String,
+    rustc_version: String,
+    cargo_version: String,
+    operator_identity_principal: Principal,
+    local_network_url: String,
+    network_alias: String,
+    locally_built_binary_sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct LocalSnsAccountEvidence {
+    owner: Principal,
+    subaccount_hex: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -1960,6 +3642,9 @@ struct LocalSnsExpectedConfig {
     token_symbol: String,
     transaction_fee_e8s: u128,
     total_supply_e8s: u128,
+    treasury_initial_balance_e8s: u128,
+    protocol_reserve_funding_amount_e8s: u128,
+    minimum_remaining_treasury_e8s: u128,
 }
 
 #[derive(Clone, Debug)]
@@ -1981,6 +3666,15 @@ struct LocalSnsIoDappCanisters {
 }
 
 #[derive(Clone, Debug)]
+struct LocalSnsArchiveEvidence {
+    archive_canister: Option<Principal>,
+    discovered_from_ledger: bool,
+    discovered_from_root: bool,
+    range_start: Option<u64>,
+    range_end: Option<u64>,
+}
+
+#[derive(Clone, Debug)]
 struct LocalSnsLedgerEvidence {
     token_symbol: String,
     transaction_fee_e8s: u128,
@@ -1994,12 +3688,78 @@ struct LocalSnsLedgerEvidence {
     redemption_return_amount_e8s: u128,
     bad_fee_error_observed: bool,
     insufficient_funds_error_observed: bool,
-    duplicate_transfer_observed: bool,
-    duplicate_block_verified: bool,
     duplicate_of_block_index: Option<u64>,
+    duplicate_tested_transfer: String,
     index_account_history_observed: bool,
     index_history_order: String,
     index_lag_or_archive_required_observed: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LocalSnsProofSource {
+    LedgerBlock,
+    IndexAccountHistory,
+    LedgerArchive,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LocalSnsProofMethod {
+    Icrc3GetBlocks,
+    IcrcIndexGetAccountTransactions,
+    ArchiveGetBlocks,
+}
+
+#[derive(Clone, Debug)]
+struct LocalSnsTransferEvidence {
+    block_index: u64,
+    from_account: LocalSnsAccountEvidence,
+    to_account: LocalSnsAccountEvidence,
+    requested_amount_e8s: u128,
+    observed_fee_e8s: u128,
+    fee_disposition: String,
+    sender_balance_before_e8s: u128,
+    sender_balance_after_e8s: u128,
+    recipient_balance_before_e8s: u128,
+    recipient_balance_after_e8s: u128,
+    fee_collector_account: Option<LocalSnsAccountEvidence>,
+    fee_collector_balance_before_e8s: Option<u128>,
+    fee_collector_balance_after_e8s: Option<u128>,
+    total_supply_before_e8s: u128,
+    total_supply_after_e8s: u128,
+    reserve_balance_before_e8s: u128,
+    reserve_balance_after_e8s: u128,
+    ledger_tip_block_index: u64,
+    index_synced_through_block_index: u64,
+    proof_source: LocalSnsProofSource,
+    proof_source_canister: Principal,
+    proof_method: LocalSnsProofMethod,
+    proof_account: LocalSnsAccountEvidence,
+    archive_canister: Option<Principal>,
+    archive_range_start: Option<u64>,
+    archive_range_end: Option<u64>,
+    archive_involvement: String,
+    observation_timestamp: String,
+}
+
+#[derive(Clone, Debug)]
+struct LocalSnsReserveFundingEvidence {
+    sns_proposal_id: u64,
+    proposal_adopted: bool,
+    proposal_executed: bool,
+    created_at_time_nanos: Option<u64>,
+    memo_hex: Option<String>,
+    transfer: LocalSnsTransferEvidence,
+}
+
+#[derive(Clone, Debug)]
+struct LocalSnsDuplicateTestEvidence {
+    original_transfer: String,
+    duplicate_of_block_index: u64,
+    proof_source: LocalSnsProofSource,
+    proof_method: LocalSnsProofMethod,
+    proof_source_canister: Principal,
+    proof_account: LocalSnsAccountEvidence,
+    observation_timestamp: String,
 }
 
 #[derive(Clone, Debug)]
@@ -2017,7 +3777,8 @@ struct LocalSnsIssuanceModel {
     resolved_as: String,
     minting_assumed: bool,
     treasury_transfer_assumed: bool,
-    total_supply_constant_across_issuance_redemption: bool,
+    fee_disposition_mode: String,
+    total_supply_changes_explained: bool,
 }
 
 const LOCAL_SNS_MAINNET_CANISTER_IDS: &[&str] = &[
@@ -2042,10 +3803,17 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
     for section in doc.keys() {
         match section.as_str() {
             "mode"
+            | "toolchain_provenance"
             | "expected_local_sns_config"
             | "sns_canisters"
             | "io_dapp_canisters"
+            | "archive_evidence"
             | "ledger_evidence"
+            | "reserve_funding_transfer"
+            | "transfer_reserve_to_user"
+            | "transfer_user_to_redemption"
+            | "transfer_redemption_to_reserve"
+            | "duplicate_test"
             | "governance_evidence"
             | "issuance_model"
             | "protected" => {}
@@ -2056,13 +3824,118 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
         mode: LocalSnsModeEvidence {
             network: require_simple_string(path, &doc, "mode", "network")?,
             source: require_simple_string(path, &doc, "mode", "source")?,
-            dfx_sns: require_simple_string(path, &doc, "mode", "dfx_sns")?,
+            official_tooling: require_simple_string(path, &doc, "mode", "official_tooling")?,
             io_protocol_live: require_simple_bool(path, &doc, "mode", "io_protocol_live")?,
             sns_io_ledger_mainnet_launched: require_simple_bool(
                 path,
                 &doc,
                 "mode",
                 "sns_io_ledger_mainnet_launched",
+            )?,
+        },
+        toolchain: LocalSnsToolchainProvenance {
+            official_ic_repository: require_simple_string(
+                path,
+                &doc,
+                "toolchain_provenance",
+                "official_ic_repository",
+            )?,
+            official_ic_source_commit: require_simple_string(
+                path,
+                &doc,
+                "toolchain_provenance",
+                "official_ic_source_commit",
+            )?,
+            sns_testing_source_path: require_simple_string(
+                path,
+                &doc,
+                "toolchain_provenance",
+                "sns_testing_source_path",
+            )?,
+            dfx_version: require_simple_string(path, &doc, "toolchain_provenance", "dfx_version")?,
+            bazel_version: require_simple_string(
+                path,
+                &doc,
+                "toolchain_provenance",
+                "bazel_version",
+            )?,
+            pocket_ic_version: require_simple_string(
+                path,
+                &doc,
+                "toolchain_provenance",
+                "pocket_ic_version",
+            )?,
+            sns_cli_version: require_simple_string(
+                path,
+                &doc,
+                "toolchain_provenance",
+                "sns_cli_version",
+            )?,
+            sns_cli_sha256: require_simple_string(
+                path,
+                &doc,
+                "toolchain_provenance",
+                "sns_cli_sha256",
+            )?,
+            sns_testing_init_sha256: require_simple_string(
+                path,
+                &doc,
+                "toolchain_provenance",
+                "sns_testing_init_sha256",
+            )?,
+            sns_testing_cli_version: require_simple_string(
+                path,
+                &doc,
+                "toolchain_provenance",
+                "sns_testing_cli_version",
+            )?,
+            sns_testing_cli_sha256: require_simple_string(
+                path,
+                &doc,
+                "toolchain_provenance",
+                "sns_testing_cli_sha256",
+            )?,
+            quill_version: require_simple_string(
+                path,
+                &doc,
+                "toolchain_provenance",
+                "quill_version",
+            )?,
+            rustc_version: require_simple_string(
+                path,
+                &doc,
+                "toolchain_provenance",
+                "rustc_version",
+            )?,
+            cargo_version: require_simple_string(
+                path,
+                &doc,
+                "toolchain_provenance",
+                "cargo_version",
+            )?,
+            operator_identity_principal: parse_required_principal(
+                path,
+                &doc,
+                "toolchain_provenance",
+                "operator_identity_principal",
+            )?,
+            local_network_url: require_simple_string(
+                path,
+                &doc,
+                "toolchain_provenance",
+                "local_network_url",
+            )?,
+            network_alias: require_simple_string(
+                path,
+                &doc,
+                "toolchain_provenance",
+                "network_alias",
+            )?,
+            locally_built_binary_sha256: require_simple_string(
+                path,
+                &doc,
+                "toolchain_provenance",
+                "locally_built_binary_sha256",
             )?,
         },
         expected: LocalSnsExpectedConfig {
@@ -2083,6 +3956,24 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
                 &doc,
                 "expected_local_sns_config",
                 "total_supply_e8s",
+            )?,
+            treasury_initial_balance_e8s: require_simple_u128(
+                path,
+                &doc,
+                "expected_local_sns_config",
+                "treasury_initial_balance_e8s",
+            )?,
+            protocol_reserve_funding_amount_e8s: require_simple_u128(
+                path,
+                &doc,
+                "expected_local_sns_config",
+                "protocol_reserve_funding_amount_e8s",
+            )?,
+            minimum_remaining_treasury_e8s: require_simple_u128(
+                path,
+                &doc,
+                "expected_local_sns_config",
+                "minimum_remaining_treasury_e8s",
             )?,
         },
         sns_canisters: LocalSnsCanisters {
@@ -2113,6 +4004,28 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
                 "io_historian",
             )?,
             frontend: parse_required_principal(path, &doc, "io_dapp_canisters", "frontend")?,
+        },
+        archive: LocalSnsArchiveEvidence {
+            archive_canister: parse_optional_principal_string(
+                path,
+                &doc,
+                "archive_evidence",
+                "archive_canister",
+            )?,
+            discovered_from_ledger: require_simple_bool(
+                path,
+                &doc,
+                "archive_evidence",
+                "discovered_from_ledger",
+            )?,
+            discovered_from_root: require_simple_bool(
+                path,
+                &doc,
+                "archive_evidence",
+                "discovered_from_root",
+            )?,
+            range_start: parse_optional_u64(path, &doc, "archive_evidence", "range_start")?,
+            range_end: parse_optional_u64(path, &doc, "archive_evidence", "range_end")?,
         },
         ledger: LocalSnsLedgerEvidence {
             token_symbol: require_simple_string(path, &doc, "ledger_evidence", "token_symbol")?,
@@ -2182,23 +4095,17 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
                 "ledger_evidence",
                 "insufficient_funds_error_observed",
             )?,
-            duplicate_transfer_observed: require_simple_bool(
-                path,
-                &doc,
-                "ledger_evidence",
-                "duplicate_transfer_observed",
-            )?,
-            duplicate_block_verified: require_simple_bool(
-                path,
-                &doc,
-                "ledger_evidence",
-                "duplicate_block_verified",
-            )?,
             duplicate_of_block_index: parse_optional_u64(
                 path,
                 &doc,
                 "ledger_evidence",
                 "duplicate_of_block_index",
+            )?,
+            duplicate_tested_transfer: require_simple_string(
+                path,
+                &doc,
+                "ledger_evidence",
+                "duplicate_tested_transfer",
             )?,
             index_account_history_observed: require_simple_bool(
                 path,
@@ -2217,6 +4124,88 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
                 &doc,
                 "ledger_evidence",
                 "index_lag_or_archive_required_observed",
+            )?,
+        },
+        reserve_funding_transfer: LocalSnsReserveFundingEvidence {
+            sns_proposal_id: require_simple_u64(
+                path,
+                &doc,
+                "reserve_funding_transfer",
+                "sns_proposal_id",
+            )?,
+            proposal_adopted: require_simple_bool(
+                path,
+                &doc,
+                "reserve_funding_transfer",
+                "proposal_adopted",
+            )?,
+            proposal_executed: require_simple_bool(
+                path,
+                &doc,
+                "reserve_funding_transfer",
+                "proposal_executed",
+            )?,
+            created_at_time_nanos: parse_optional_u64(
+                path,
+                &doc,
+                "reserve_funding_transfer",
+                "created_at_time_nanos",
+            )?,
+            memo_hex: parse_optional_hex(path, &doc, "reserve_funding_transfer", "memo_hex")?,
+            transfer: parse_local_sns_transfer_evidence(path, &doc, "reserve_funding_transfer")?,
+        },
+        reserve_to_user_transfer: parse_local_sns_transfer_evidence(
+            path,
+            &doc,
+            "transfer_reserve_to_user",
+        )?,
+        user_to_redemption_transfer: parse_local_sns_transfer_evidence(
+            path,
+            &doc,
+            "transfer_user_to_redemption",
+        )?,
+        redemption_to_reserve_transfer: parse_local_sns_transfer_evidence(
+            path,
+            &doc,
+            "transfer_redemption_to_reserve",
+        )?,
+        duplicate_test: LocalSnsDuplicateTestEvidence {
+            original_transfer: require_simple_string(
+                path,
+                &doc,
+                "duplicate_test",
+                "original_transfer",
+            )?,
+            duplicate_of_block_index: require_simple_u64(
+                path,
+                &doc,
+                "duplicate_test",
+                "duplicate_of_block_index",
+            )?,
+            proof_source: parse_local_sns_proof_source(
+                path,
+                &doc,
+                "duplicate_test",
+                "proof_source",
+            )?,
+            proof_method: parse_local_sns_proof_method(
+                path,
+                &doc,
+                "duplicate_test",
+                "proof_method",
+            )?,
+            proof_source_canister: parse_required_principal(
+                path,
+                &doc,
+                "duplicate_test",
+                "proof_source_canister",
+            )?,
+            proof_account: parse_local_sns_account(path, &doc, "duplicate_test", "proof_account")?,
+            observation_timestamp: require_simple_string(
+                path,
+                &doc,
+                "duplicate_test",
+                "observation_timestamp",
             )?,
         },
         governance: LocalSnsGovernanceEvidence {
@@ -2266,16 +4255,236 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
                 "issuance_model",
                 "treasury_transfer_assumed",
             )?,
-            total_supply_constant_across_issuance_redemption: require_simple_bool(
+            fee_disposition_mode: require_simple_string(
                 path,
                 &doc,
                 "issuance_model",
-                "total_supply_constant_across_issuance_redemption",
+                "fee_disposition_mode",
+            )?,
+            total_supply_changes_explained: require_simple_bool(
+                path,
+                &doc,
+                "issuance_model",
+                "total_supply_changes_explained",
             )?,
         },
     };
     validate_local_sns_evidence(path, text, &doc, &evidence)?;
     Ok(evidence)
+}
+
+fn parse_local_sns_transfer_evidence(
+    path: &str,
+    doc: &SimpleTomlDocument,
+    section: &str,
+) -> Result<LocalSnsTransferEvidence, String> {
+    Ok(LocalSnsTransferEvidence {
+        block_index: require_simple_u64(path, doc, section, "block_index")?,
+        from_account: parse_local_sns_account(path, doc, section, "from")?,
+        to_account: parse_local_sns_account(path, doc, section, "to")?,
+        requested_amount_e8s: require_simple_u128(path, doc, section, "requested_amount_e8s")?,
+        observed_fee_e8s: require_simple_u128(path, doc, section, "observed_fee_e8s")?,
+        fee_disposition: require_simple_string(path, doc, section, "fee_disposition")?,
+        sender_balance_before_e8s: require_simple_u128(
+            path,
+            doc,
+            section,
+            "sender_balance_before_e8s",
+        )?,
+        sender_balance_after_e8s: require_simple_u128(
+            path,
+            doc,
+            section,
+            "sender_balance_after_e8s",
+        )?,
+        recipient_balance_before_e8s: require_simple_u128(
+            path,
+            doc,
+            section,
+            "recipient_balance_before_e8s",
+        )?,
+        recipient_balance_after_e8s: require_simple_u128(
+            path,
+            doc,
+            section,
+            "recipient_balance_after_e8s",
+        )?,
+        fee_collector_account: parse_optional_local_sns_account(
+            path,
+            doc,
+            section,
+            "fee_collector",
+        )?,
+        fee_collector_balance_before_e8s: parse_optional_u128(
+            path,
+            doc,
+            section,
+            "fee_collector_balance_before_e8s",
+        )?,
+        fee_collector_balance_after_e8s: parse_optional_u128(
+            path,
+            doc,
+            section,
+            "fee_collector_balance_after_e8s",
+        )?,
+        total_supply_before_e8s: require_simple_u128(
+            path,
+            doc,
+            section,
+            "total_supply_before_e8s",
+        )?,
+        total_supply_after_e8s: require_simple_u128(path, doc, section, "total_supply_after_e8s")?,
+        reserve_balance_before_e8s: require_simple_u128(
+            path,
+            doc,
+            section,
+            "reserve_balance_before_e8s",
+        )?,
+        reserve_balance_after_e8s: require_simple_u128(
+            path,
+            doc,
+            section,
+            "reserve_balance_after_e8s",
+        )?,
+        ledger_tip_block_index: require_simple_u64(path, doc, section, "ledger_tip_block_index")?,
+        index_synced_through_block_index: require_simple_u64(
+            path,
+            doc,
+            section,
+            "index_synced_through_block_index",
+        )?,
+        proof_source: parse_local_sns_proof_source(path, doc, section, "proof_source")?,
+        proof_source_canister: parse_required_principal(
+            path,
+            doc,
+            section,
+            "proof_source_canister",
+        )?,
+        proof_method: parse_local_sns_proof_method(path, doc, section, "proof_method")?,
+        proof_account: parse_local_sns_account(path, doc, section, "proof_account")?,
+        archive_canister: parse_optional_principal_string(path, doc, section, "archive_canister")?,
+        archive_range_start: parse_optional_u64(path, doc, section, "archive_range_start")?,
+        archive_range_end: parse_optional_u64(path, doc, section, "archive_range_end")?,
+        archive_involvement: require_simple_string(path, doc, section, "archive_involvement")?,
+        observation_timestamp: require_simple_string(path, doc, section, "observation_timestamp")?,
+    })
+}
+
+fn parse_local_sns_proof_source(
+    path: &str,
+    doc: &SimpleTomlDocument,
+    section: &str,
+    key: &str,
+) -> Result<LocalSnsProofSource, String> {
+    match require_simple_string(path, doc, section, key)?.as_str() {
+        "SnsLedgerBlock" => Ok(LocalSnsProofSource::LedgerBlock),
+        "SnsIndexAccountHistory" => Ok(LocalSnsProofSource::IndexAccountHistory),
+        "SnsLedgerArchive" => Ok(LocalSnsProofSource::LedgerArchive),
+        other => Err(format!(
+            "{path}: {section}.{key} must be SnsLedgerBlock, SnsIndexAccountHistory, or SnsLedgerArchive, got {other}"
+        )),
+    }
+}
+
+fn parse_local_sns_proof_method(
+    path: &str,
+    doc: &SimpleTomlDocument,
+    section: &str,
+    key: &str,
+) -> Result<LocalSnsProofMethod, String> {
+    match require_simple_string(path, doc, section, key)?.as_str() {
+        "Icrc3GetBlocks" => Ok(LocalSnsProofMethod::Icrc3GetBlocks),
+        "IcrcIndexGetAccountTransactions" => {
+            Ok(LocalSnsProofMethod::IcrcIndexGetAccountTransactions)
+        }
+        "ArchiveGetBlocks" => Ok(LocalSnsProofMethod::ArchiveGetBlocks),
+        other => Err(format!(
+            "{path}: {section}.{key} must be Icrc3GetBlocks, IcrcIndexGetAccountTransactions, or ArchiveGetBlocks, got {other}"
+        )),
+    }
+}
+
+fn parse_optional_hex(
+    path: &str,
+    doc: &SimpleTomlDocument,
+    section: &str,
+    key: &str,
+) -> Result<Option<String>, String> {
+    let value = require_simple_string(path, doc, section, key)?;
+    if value == "none" {
+        return Ok(None);
+    }
+    if !value.is_empty()
+        && value.len() % 2 == 0
+        && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Ok(Some(value.to_ascii_lowercase()));
+    }
+    Err(format!(
+        "{path}: {section}.{key} must be even-length hex or none"
+    ))
+}
+
+fn parse_local_sns_account(
+    path: &str,
+    doc: &SimpleTomlDocument,
+    section: &str,
+    prefix: &str,
+) -> Result<LocalSnsAccountEvidence, String> {
+    let owner_key = format!("{prefix}_owner");
+    let subaccount_key = format!("{prefix}_subaccount_hex");
+    let owner = parse_required_principal(path, doc, section, &owner_key)?;
+    if owner == Principal::anonymous() || owner == Principal::management_canister() {
+        return Err(format!(
+            "{path}: {section}.{owner_key} must not be anonymous or management canister"
+        ));
+    }
+    let subaccount_hex = parse_subaccount_hex(path, doc, section, &subaccount_key)?;
+    Ok(LocalSnsAccountEvidence {
+        owner,
+        subaccount_hex,
+    })
+}
+
+fn parse_optional_local_sns_account(
+    path: &str,
+    doc: &SimpleTomlDocument,
+    section: &str,
+    prefix: &str,
+) -> Result<Option<LocalSnsAccountEvidence>, String> {
+    let owner_key = format!("{prefix}_owner");
+    let subaccount_key = format!("{prefix}_subaccount_hex");
+    let owner_value = require_simple_string(path, doc, section, &owner_key)?;
+    let subaccount_value = require_simple_string(path, doc, section, &subaccount_key)?;
+    if owner_value == "none" && subaccount_value == "none" {
+        return Ok(None);
+    }
+    if owner_value == "none" || subaccount_value == "none" {
+        return Err(format!(
+            "{path}: {section}.{prefix} owner/subaccount must both be none or both exact"
+        ));
+    }
+    parse_local_sns_account(path, doc, section, prefix).map(Some)
+}
+
+fn parse_optional_u128(
+    path: &str,
+    doc: &SimpleTomlDocument,
+    section: &str,
+    key: &str,
+) -> Result<Option<u128>, String> {
+    match doc.get(section).and_then(|section| section.get(key)) {
+        Some(SimpleTomlValue::String(value)) if value == "none" => Ok(None),
+        Some(SimpleTomlValue::Integer(value)) => Ok(Some(*value)),
+        Some(SimpleTomlValue::String(value)) => value
+            .parse::<u128>()
+            .map(Some)
+            .map_err(|_| format!("{path}: {section}.{key} must be an integer or \"none\"")),
+        Some(SimpleTomlValue::Bool(_)) => Err(format!(
+            "{path}: {section}.{key} must be an integer or \"none\""
+        )),
+        None => Err(format!("{path}: missing {section}.{key}")),
+    }
 }
 
 fn parse_required_principal(
@@ -2353,7 +4562,7 @@ fn validate_local_sns_evidence(
 ) -> Result<(), String> {
     if evidence.mode.network != "local"
         || evidence.mode.source != "official-local-sns-rehearsal"
-        || evidence.mode.dfx_sns != "manual-local-only"
+        || evidence.mode.official_tooling != "manual-local-only"
     {
         return Err(format!(
             "{path}: mode must describe official manual local-only SNS evidence"
@@ -2367,6 +4576,7 @@ fn validate_local_sns_evidence(
             "{path}: mode.sns_io_ledger_mainnet_launched must remain false"
         ));
     }
+    validate_local_sns_toolchain(path, &evidence.toolchain)?;
     validate_protected_reminders(path, doc)?;
     validate_no_forbidden_local_ids(path, text, doc)?;
     let principals = [
@@ -2379,7 +4589,6 @@ fn validate_local_sns_evidence(
         evidence.io_dapp_canisters.io_nns_neuron_manager,
         evidence.io_dapp_canisters.io_historian,
         evidence.io_dapp_canisters.frontend,
-        evidence.ledger.protocol_reserve_account_owner,
     ];
     let mut unique = BTreeSet::new();
     for principal in principals {
@@ -2392,9 +4601,10 @@ fn validate_local_sns_evidence(
     if let Some(archive) = evidence.sns_canisters.archive {
         validate_local_principal_value(path, "sns_canisters.archive", &archive.to_text())?;
     }
-    if evidence.expected.token_symbol != "IO" || evidence.ledger.token_symbol != "IO" {
+    validate_local_sns_archive_evidence(path, evidence)?;
+    if evidence.expected.token_symbol != "IOLO" || evidence.ledger.token_symbol != "IOLO" {
         return Err(format!(
-            "{path}: local SNS rehearsal token symbol must be IO"
+            "{path}: local SNS rehearsal token symbol must be IOLO"
         ));
     }
     if evidence.ledger.transaction_fee_e8s != evidence.expected.transaction_fee_e8s {
@@ -2403,10 +4613,132 @@ fn validate_local_sns_evidence(
             evidence.ledger.transaction_fee_e8s, evidence.expected.transaction_fee_e8s
         ));
     }
-    if evidence.ledger.total_supply_e8s != evidence.expected.total_supply_e8s {
+    let required_treasury = evidence
+        .expected
+        .protocol_reserve_funding_amount_e8s
+        .checked_add(evidence.expected.minimum_remaining_treasury_e8s)
+        .and_then(|value| {
+            value.checked_add(evidence.reserve_funding_transfer.transfer.observed_fee_e8s)
+        })
+        .ok_or_else(|| format!("{path}: reserve funding treasury requirement overflow"))?;
+    if evidence.expected.treasury_initial_balance_e8s < required_treasury {
         return Err(format!(
-            "{path}: observed total_supply_e8s {} does not match expected {}",
-            evidence.ledger.total_supply_e8s, evidence.expected.total_supply_e8s
+            "{path}: expected treasury must cover desired reserve plus remaining treasury plus one transfer fee"
+        ));
+    }
+    let reserve_account = LocalSnsAccountEvidence {
+        owner: evidence.ledger.protocol_reserve_account_owner,
+        subaccount_hex: evidence.ledger.protocol_reserve_subaccount_hex.clone(),
+    };
+    if reserve_account.owner != evidence.io_dapp_canisters.io_stream_manager {
+        return Err(format!(
+            "{path}: protocol reserve owner must equal io_dapp_canisters.io_stream_manager"
+        ));
+    }
+    if reserve_account.subaccount_hex.is_none() {
+        return Err(format!(
+            "{path}: protocol reserve account requires an exact configured subaccount"
+        ));
+    }
+    let redemption_account = &evidence.user_to_redemption_transfer.to_account;
+    if redemption_account == &reserve_account {
+        return Err(format!(
+            "{path}: protocol reserve Account must not collide with redemption Account"
+        ));
+    }
+    validate_local_sns_transfer(
+        path,
+        "reserve_funding_transfer",
+        &evidence.reserve_funding_transfer.transfer,
+        &reserve_account,
+    )?;
+    validate_local_sns_reserve_funding(path, evidence, &reserve_account)?;
+    validate_local_sns_transfer(
+        path,
+        "transfer_reserve_to_user",
+        &evidence.reserve_to_user_transfer,
+        &reserve_account,
+    )?;
+    validate_local_sns_transfer(
+        path,
+        "transfer_user_to_redemption",
+        &evidence.user_to_redemption_transfer,
+        &reserve_account,
+    )?;
+    validate_local_sns_transfer(
+        path,
+        "transfer_redemption_to_reserve",
+        &evidence.redemption_to_reserve_transfer,
+        &reserve_account,
+    )?;
+    for (section, transfer) in [
+        (
+            "reserve_funding_transfer",
+            &evidence.reserve_funding_transfer.transfer,
+        ),
+        (
+            "transfer_reserve_to_user",
+            &evidence.reserve_to_user_transfer,
+        ),
+        (
+            "transfer_user_to_redemption",
+            &evidence.user_to_redemption_transfer,
+        ),
+        (
+            "transfer_redemption_to_reserve",
+            &evidence.redemption_to_reserve_transfer,
+        ),
+    ] {
+        validate_local_sns_transfer_proof(path, section, transfer, evidence)?;
+    }
+    validate_local_sns_transfer_sequence(path, evidence, &reserve_account)?;
+    validate_local_sns_duplicate_test(path, evidence)?;
+    if evidence.ledger.total_supply_e8s
+        != evidence
+            .redemption_to_reserve_transfer
+            .total_supply_after_e8s
+    {
+        return Err(format!(
+            "{path}: ledger_evidence.total_supply_e8s must match the final observed transfer supply"
+        ));
+    }
+    if evidence.ledger.protocol_reserve_balance_e8s
+        != evidence
+            .redemption_to_reserve_transfer
+            .reserve_balance_after_e8s
+    {
+        return Err(format!(
+            "{path}: ledger_evidence.protocol_reserve_balance_e8s must match final observed reserve balance"
+        ));
+    }
+    if evidence.issuance.fee_disposition_mode == "unknown" {
+        return Err(format!(
+            "{path}: issuance_model.fee_disposition_mode must not be unknown in completed evidence"
+        ));
+    }
+    for (section, transfer) in [
+        (
+            "transfer_reserve_to_user",
+            &evidence.reserve_to_user_transfer,
+        ),
+        (
+            "transfer_user_to_redemption",
+            &evidence.user_to_redemption_transfer,
+        ),
+        (
+            "transfer_redemption_to_reserve",
+            &evidence.redemption_to_reserve_transfer,
+        ),
+    ] {
+        if transfer.fee_disposition != evidence.issuance.fee_disposition_mode {
+            return Err(format!(
+                "{path}: {section}.fee_disposition must match issuance_model.fee_disposition_mode"
+            ));
+        }
+    }
+    if !evidence.issuance.total_supply_changes_explained {
+        return Err(format!(
+            "{path}: issuance_model.total_supply_changes_explained must be true"
         ));
     }
     if evidence.ledger.protocol_reserve_balance_e8s == 0 {
@@ -2425,17 +4757,10 @@ fn validate_local_sns_evidence(
     if !evidence.ledger.insufficient_funds_error_observed {
         return Err(format!("{path}: insufficient funds error must be observed"));
     }
-    if evidence.ledger.duplicate_transfer_observed {
-        if !evidence.ledger.duplicate_block_verified {
-            return Err(format!(
-                "{path}: duplicate transfer observation requires duplicate_block_verified = true"
-            ));
-        }
-        if evidence.ledger.duplicate_of_block_index.is_none() {
-            return Err(format!(
-                "{path}: duplicate transfer observation requires duplicate_of_block_index"
-            ));
-        }
+    if evidence.ledger.duplicate_of_block_index.is_none() {
+        return Err(format!(
+            "{path}: top-level ledger evidence must reference the detailed duplicate test"
+        ));
     }
     if !evidence.ledger.index_account_history_observed {
         return Err(format!("{path}: index account history must be observed"));
@@ -2475,20 +4800,721 @@ fn validate_local_sns_evidence(
     if evidence.issuance.minting_assumed {
         return Err(format!("{path}: minting_assumed must be false"));
     }
-    if evidence.issuance.treasury_transfer_assumed {
-        return Err(format!("{path}: treasury_transfer_assumed must be false"));
-    }
-    if !evidence
-        .issuance
-        .total_supply_constant_across_issuance_redemption
-    {
+    if !evidence.issuance.treasury_transfer_assumed {
         return Err(format!(
-            "{path}: total supply must be constant across issuance/redemption"
+            "{path}: treasury_transfer_assumed must be true for post-finalisation reserve funding evidence"
         ));
     }
-    let _ = evidence.ledger.protocol_reserve_subaccount_hex.as_deref();
     let _ = evidence.ledger.reserve_transfer_block_index;
     let _ = evidence.ledger.redemption_return_block_index;
+    Ok(())
+}
+
+fn validate_local_sns_archive_evidence(
+    path: &str,
+    evidence: &LocalSnsEvidence,
+) -> Result<(), String> {
+    if evidence.archive.archive_canister != evidence.sns_canisters.archive {
+        return Err(format!(
+            "{path}: archive_evidence.archive_canister must match sns_canisters.archive"
+        ));
+    }
+    match evidence.archive.archive_canister {
+        None => {
+            if evidence.archive.discovered_from_ledger
+                || evidence.archive.discovered_from_root
+                || evidence.archive.range_start.is_some()
+                || evidence.archive.range_end.is_some()
+            {
+                return Err(format!(
+                    "{path}: absent archive must not claim discovery or a served range"
+                ));
+            }
+        }
+        Some(_) => {
+            if !evidence.archive.discovered_from_ledger || !evidence.archive.discovered_from_root {
+                return Err(format!(
+                    "{path}: archive canister must be present in ledger and root discovery evidence"
+                ));
+            }
+            let start = evidence
+                .archive
+                .range_start
+                .ok_or_else(|| format!("{path}: discovered archive requires exact range_start"))?;
+            let end = evidence
+                .archive
+                .range_end
+                .ok_or_else(|| format!("{path}: discovered archive requires exact range_end"))?;
+            if start > end {
+                return Err(format!("{path}: archive discovery range is inverted"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_local_sns_reserve_funding(
+    path: &str,
+    evidence: &LocalSnsEvidence,
+    reserve_account: &LocalSnsAccountEvidence,
+) -> Result<(), String> {
+    let funding = &evidence.reserve_funding_transfer;
+    let transfer = &funding.transfer;
+    if funding.sns_proposal_id == 0 || !funding.proposal_adopted || !funding.proposal_executed {
+        return Err(format!(
+            "{path}: reserve funding requires a nonzero adopted and executed SNS proposal"
+        ));
+    }
+    let _dedup_metadata = (funding.created_at_time_nanos, funding.memo_hex.as_deref());
+    if transfer.to_account != *reserve_account
+        || transfer.requested_amount_e8s != evidence.expected.protocol_reserve_funding_amount_e8s
+        || transfer.observed_fee_e8s != evidence.ledger.transaction_fee_e8s
+        || transfer.block_index >= evidence.reserve_to_user_transfer.block_index
+    {
+        return Err(format!(
+            "{path}: reserve funding transfer must fund the exact reserve before activation"
+        ));
+    }
+    if transfer.sender_balance_before_e8s != evidence.expected.treasury_initial_balance_e8s {
+        return Err(format!(
+            "{path}: reserve funding treasury-before must match configured genesis treasury"
+        ));
+    }
+    let treasury_decrease = transfer
+        .sender_balance_before_e8s
+        .checked_sub(transfer.sender_balance_after_e8s)
+        .ok_or_else(|| format!("{path}: reserve funding treasury balance increased"))?;
+    let expected_treasury_decrease = transfer
+        .requested_amount_e8s
+        .checked_add(transfer.observed_fee_e8s)
+        .ok_or_else(|| format!("{path}: reserve funding amount plus fee overflow"))?;
+    if treasury_decrease != expected_treasury_decrease {
+        return Err(format!(
+            "{path}: reserve funding treasury decrease must equal amount plus fee"
+        ));
+    }
+    let reserve_increase = transfer
+        .recipient_balance_after_e8s
+        .checked_sub(transfer.recipient_balance_before_e8s)
+        .ok_or_else(|| format!("{path}: reserve funding reserve balance decreased"))?;
+    if reserve_increase != transfer.requested_amount_e8s {
+        return Err(format!(
+            "{path}: reserve funding reserve increase must equal funded amount"
+        ));
+    }
+    if transfer.total_supply_before_e8s != evidence.expected.total_supply_e8s
+        || transfer
+            .total_supply_before_e8s
+            .checked_sub(transfer.total_supply_after_e8s)
+            != Some(transfer.observed_fee_e8s)
+    {
+        return Err(format!(
+            "{path}: reserve funding total-supply decrease must equal the burned fee"
+        ));
+    }
+    if evidence.reserve_to_user_transfer.total_supply_before_e8s != transfer.total_supply_after_e8s
+    {
+        return Err(format!(
+            "{path}: first reserve-to-user supply before must equal reserve-funding supply after"
+        ));
+    }
+    if evidence.reserve_to_user_transfer.reserve_balance_before_e8s
+        != transfer.reserve_balance_after_e8s
+    {
+        return Err(format!(
+            "{path}: first reserve balance before must equal reserve-funding reserve balance after"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_local_sns_toolchain(
+    path: &str,
+    toolchain: &LocalSnsToolchainProvenance,
+) -> Result<(), String> {
+    if toolchain.official_ic_repository != "dfinity/ic" {
+        return Err(format!(
+            "{path}: toolchain_provenance.official_ic_repository must be dfinity/ic"
+        ));
+    }
+    if toolchain.sns_testing_source_path != "rs/sns/testing" {
+        return Err(format!(
+            "{path}: toolchain_provenance.sns_testing_source_path must be rs/sns/testing"
+        ));
+    }
+    if toolchain.official_ic_source_commit.len() != 40
+        || !toolchain
+            .official_ic_source_commit
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(format!(
+            "{path}: toolchain_provenance.official_ic_source_commit must be exact 40-hex commit"
+        ));
+    }
+    if ["main", "master", "HEAD"].contains(&toolchain.official_ic_source_commit.as_str()) {
+        return Err(format!(
+            "{path}: toolchain_provenance must not use a moving branch"
+        ));
+    }
+    for (name, value) in [
+        ("dfx_version", &toolchain.dfx_version),
+        ("bazel_version", &toolchain.bazel_version),
+        ("pocket_ic_version", &toolchain.pocket_ic_version),
+        ("sns_cli_version", &toolchain.sns_cli_version),
+        (
+            "sns_testing_cli_version",
+            &toolchain.sns_testing_cli_version,
+        ),
+        ("quill_version", &toolchain.quill_version),
+        ("rustc_version", &toolchain.rustc_version),
+        ("cargo_version", &toolchain.cargo_version),
+        ("network_alias", &toolchain.network_alias),
+        (
+            "locally_built_binary_sha256",
+            &toolchain.locally_built_binary_sha256,
+        ),
+    ] {
+        let normalized = value.to_ascii_lowercase();
+        if value.trim().is_empty()
+            || [
+                "blocked",
+                "unavailable",
+                "not-installed",
+                "unknown",
+                "placeholder",
+                "todo",
+            ]
+            .iter()
+            .any(|marker| normalized.contains(marker))
+            || matches!(value.as_str(), "main" | "master" | "HEAD")
+        {
+            return Err(format!(
+                "{path}: toolchain_provenance.{name} must be exact and non-placeholder"
+            ));
+        }
+    }
+    for (name, value) in [
+        ("sns_cli_sha256", &toolchain.sns_cli_sha256),
+        (
+            "sns_testing_init_sha256",
+            &toolchain.sns_testing_init_sha256,
+        ),
+        ("sns_testing_cli_sha256", &toolchain.sns_testing_cli_sha256),
+        (
+            "locally_built_binary_sha256",
+            &toolchain.locally_built_binary_sha256,
+        ),
+    ] {
+        if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(format!(
+                "{path}: toolchain_provenance.{name} must be exact 64-hex SHA-256"
+            ));
+        }
+    }
+    if !is_strict_loopback_http_url(&toolchain.local_network_url) {
+        return Err(format!(
+            "{path}: toolchain_provenance.local_network_url must be loopback-only"
+        ));
+    }
+    if toolchain.operator_identity_principal == Principal::anonymous()
+        || toolchain.operator_identity_principal == Principal::management_canister()
+    {
+        return Err(format!(
+            "{path}: toolchain_provenance.operator_identity_principal must be local non-anonymous principal"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_local_sns_transfer_sequence(
+    path: &str,
+    evidence: &LocalSnsEvidence,
+    reserve_account: &LocalSnsAccountEvidence,
+) -> Result<(), String> {
+    let t1 = &evidence.reserve_to_user_transfer;
+    let t2 = &evidence.user_to_redemption_transfer;
+    let t3 = &evidence.redemption_to_reserve_transfer;
+    if t1.block_index >= t2.block_index || t2.block_index >= t3.block_index {
+        return Err(format!(
+            "{path}: transfer block indexes must strictly increase"
+        ));
+    }
+    if !timestamp_leq(&t1.observation_timestamp, &t2.observation_timestamp)
+        || !timestamp_leq(&t2.observation_timestamp, &t3.observation_timestamp)
+    {
+        return Err(format!(
+            "{path}: transfer observation timestamps must be parseable RFC3339 UTC and non-decreasing"
+        ));
+    }
+    if t1.to_account != t2.from_account {
+        return Err(format!(
+            "{path}: reserve-to-user.to must equal user-to-redemption.from"
+        ));
+    }
+    if t2.to_account != t3.from_account {
+        return Err(format!(
+            "{path}: user-to-redemption.to must equal redemption-to-reserve.from"
+        ));
+    }
+    if &t1.from_account != reserve_account || &t3.to_account != reserve_account {
+        return Err(format!(
+            "{path}: reserve transfer endpoints must match configured protocol reserve account"
+        ));
+    }
+    let redemption_account = &t2.to_account;
+    if redemption_account != &t3.from_account {
+        return Err(format!(
+            "{path}: exact redemption account must be stable across intake and return"
+        ));
+    }
+    if redemption_account.owner != evidence.io_dapp_canisters.io_stream_manager {
+        return Err(format!(
+            "{path}: redemption account owner must equal io_dapp_canisters.io_stream_manager"
+        ));
+    }
+    if redemption_account == reserve_account {
+        return Err(format!(
+            "{path}: protocol reserve Account must not collide with redemption Account"
+        ));
+    }
+    if t1.total_supply_after_e8s != t2.total_supply_before_e8s
+        || t2.total_supply_after_e8s != t3.total_supply_before_e8s
+    {
+        return Err(format!("{path}: transfer total supply continuity failed"));
+    }
+    if t1.reserve_balance_after_e8s != t2.reserve_balance_before_e8s
+        || t2.reserve_balance_after_e8s != t3.reserve_balance_before_e8s
+    {
+        return Err(format!(
+            "{path}: transfer reserve balance continuity failed"
+        ));
+    }
+    if t1.recipient_balance_after_e8s != t2.sender_balance_before_e8s {
+        return Err(format!("{path}: user account balance continuity failed"));
+    }
+    if t2.recipient_balance_after_e8s != t3.sender_balance_before_e8s {
+        return Err(format!(
+            "{path}: redemption account balance continuity failed"
+        ));
+    }
+    if evidence.ledger.reserve_transfer_block_index != t1.block_index
+        || evidence.ledger.redemption_return_block_index != t3.block_index
+        || evidence.ledger.reserve_transfer_amount_e8s != t1.requested_amount_e8s
+        || evidence.ledger.redemption_return_amount_e8s != t3.requested_amount_e8s
+    {
+        return Err(format!(
+            "{path}: top-level ledger evidence must match detailed transfer records"
+        ));
+    }
+    let expected_final_supply = evidence
+        .expected
+        .total_supply_e8s
+        .checked_sub(evidence.reserve_funding_transfer.transfer.observed_fee_e8s)
+        .and_then(|value| value.checked_sub(t1.observed_fee_e8s))
+        .and_then(|value| value.checked_sub(t2.observed_fee_e8s))
+        .and_then(|value| value.checked_sub(t3.observed_fee_e8s))
+        .ok_or_else(|| format!("{path}: total-supply fee-burn equation underflow"))?;
+    if t3.total_supply_after_e8s != expected_final_supply {
+        return Err(format!(
+            "{path}: final supply must equal genesis supply minus reserve-funding and subsequent transfer fees"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_local_sns_transfer_proof(
+    path: &str,
+    section: &str,
+    transfer: &LocalSnsTransferEvidence,
+    evidence: &LocalSnsEvidence,
+) -> Result<(), String> {
+    let (expected_canister, expected_method) = match transfer.proof_source {
+        LocalSnsProofSource::LedgerBlock => (
+            evidence.sns_canisters.ledger,
+            LocalSnsProofMethod::Icrc3GetBlocks,
+        ),
+        LocalSnsProofSource::IndexAccountHistory => (
+            evidence.sns_canisters.index,
+            LocalSnsProofMethod::IcrcIndexGetAccountTransactions,
+        ),
+        LocalSnsProofSource::LedgerArchive => (
+            evidence
+                .archive
+                .archive_canister
+                .ok_or_else(|| format!("{path}: {section} archive proof lacks discovery"))?,
+            LocalSnsProofMethod::ArchiveGetBlocks,
+        ),
+    };
+    if transfer.proof_source_canister != expected_canister
+        || transfer.proof_method != expected_method
+    {
+        return Err(format!(
+            "{path}: {section} proof source/method is not bound to the recorded SNS canister role"
+        ));
+    }
+    if transfer.proof_source == LocalSnsProofSource::LedgerArchive {
+        if transfer.archive_canister != Some(expected_canister) {
+            return Err(format!(
+                "{path}: {section} archive proof canister must match discovered archive"
+            ));
+        }
+        let start = transfer
+            .archive_range_start
+            .ok_or_else(|| format!("{path}: {section} archive proof requires exact range start"))?;
+        let end = transfer
+            .archive_range_end
+            .ok_or_else(|| format!("{path}: {section} archive proof requires exact range end"))?;
+        if start > transfer.block_index || transfer.block_index > end {
+            return Err(format!(
+                "{path}: {section} archive range must contain the relevant block"
+            ));
+        }
+        if evidence.archive.range_start > Some(start) || evidence.archive.range_end < Some(end) {
+            return Err(format!(
+                "{path}: {section} archive proof range exceeds discovered archive range"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn detailed_transfer_by_name<'a>(
+    evidence: &'a LocalSnsEvidence,
+    name: &str,
+) -> Option<&'a LocalSnsTransferEvidence> {
+    match name {
+        "reserve_funding_transfer" => Some(&evidence.reserve_funding_transfer.transfer),
+        "transfer_reserve_to_user" => Some(&evidence.reserve_to_user_transfer),
+        "transfer_user_to_redemption" => Some(&evidence.user_to_redemption_transfer),
+        "transfer_redemption_to_reserve" => Some(&evidence.redemption_to_reserve_transfer),
+        _ => None,
+    }
+}
+
+fn validate_local_sns_duplicate_test(
+    path: &str,
+    evidence: &LocalSnsEvidence,
+) -> Result<(), String> {
+    let duplicate = &evidence.duplicate_test;
+    let original =
+        detailed_transfer_by_name(evidence, &duplicate.original_transfer).ok_or_else(|| {
+            format!("{path}: duplicate_test.original_transfer is not a detailed transfer")
+        })?;
+    if evidence.ledger.duplicate_tested_transfer != duplicate.original_transfer
+        || evidence.ledger.duplicate_of_block_index != Some(duplicate.duplicate_of_block_index)
+        || duplicate.duplicate_of_block_index != original.block_index
+    {
+        return Err(format!(
+            "{path}: top-level duplicate evidence must reference one exact detailed transfer and its successful block"
+        ));
+    }
+    if duplicate.proof_account != original.from_account
+        && duplicate.proof_account != original.to_account
+    {
+        return Err(format!(
+            "{path}: duplicate proof Account must match the exact queried transfer Account"
+        ));
+    }
+    if parse_rfc3339_utc(&duplicate.observation_timestamp).is_none() {
+        return Err(format!(
+            "{path}: duplicate_test.observation_timestamp must be RFC3339 UTC seconds"
+        ));
+    }
+    let proof_transfer = LocalSnsTransferEvidence {
+        proof_source: duplicate.proof_source,
+        proof_method: duplicate.proof_method,
+        proof_source_canister: duplicate.proof_source_canister,
+        proof_account: duplicate.proof_account.clone(),
+        ..original.clone()
+    };
+    validate_local_sns_transfer_proof(path, "duplicate_test", &proof_transfer, evidence)
+}
+
+fn timestamp_leq(left: &str, right: &str) -> bool {
+    parse_rfc3339_utc(left)
+        .zip(parse_rfc3339_utc(right))
+        .map(|(left, right)| left <= right)
+        .unwrap_or(false)
+}
+
+fn parse_rfc3339_utc(value: &str) -> Option<OffsetDateTime> {
+    OffsetDateTime::parse(value, &Rfc3339).ok()
+}
+
+fn is_strict_loopback_http_url(value: &str) -> bool {
+    if value.trim() != value || !value.starts_with("http://") || value.contains('#') {
+        return false;
+    }
+    let rest = &value["http://".len()..];
+    let authority_end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    if authority.is_empty() || authority.contains('@') || authority.contains('%') {
+        return false;
+    }
+    let (host, port) = if let Some(remainder) = authority.strip_prefix("[::1]:") {
+        ("::1", remainder)
+    } else if authority.contains('[')
+        || authority.contains(']')
+        || authority.matches(':').count() != 1
+    {
+        return false;
+    } else {
+        let (host, port) = authority.split_once(':').unwrap_or(("", ""));
+        (host, port)
+    };
+    if !matches!(host, "localhost" | "127.0.0.1" | "::1") {
+        return false;
+    }
+    matches!(port.parse::<u16>(), Ok(1..=u16::MAX))
+}
+
+fn validate_loopback_url_guardrails() -> Result<(), String> {
+    for url in [
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
+        "http://[::1]:8080",
+        "http://localhost:8080/path?x=1",
+    ] {
+        if !is_strict_loopback_http_url(url) {
+            return Err(format!("loopback URL guard rejected valid local URL {url}"));
+        }
+    }
+    for url in [
+        "http://localhost:8080@evil.example",
+        "http://127.0.0.1:8080.evil.example",
+        "http://localhost.evil.example:8080",
+        "http://127.0.0.1.evil:8080",
+        "http://[::1]@evil.example",
+        "http://LOCALHOST:8080",
+        "http://%6cocalhost:8080",
+        " http://localhost:8080",
+        "http://localhost:8080 ",
+        "https://icp-api.io",
+        "https://localhost:8080",
+        "http://localhost",
+        "http://localhost:0",
+        "http://localhost:65536",
+        "http://localhost:8080#fragment",
+    ] {
+        if is_strict_loopback_http_url(url) {
+            return Err(format!("loopback URL guard accepted unsafe URL {url}"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_local_sns_transfer(
+    path: &str,
+    section: &str,
+    transfer: &LocalSnsTransferEvidence,
+    reserve_account: &LocalSnsAccountEvidence,
+) -> Result<(), String> {
+    if transfer.observation_timestamp.trim().is_empty() {
+        return Err(format!(
+            "{path}: {section} must record exact accounts and observation timestamp"
+        ));
+    }
+    if transfer.requested_amount_e8s == 0 {
+        return Err(format!(
+            "{path}: {section}.requested_amount_e8s must be nonzero"
+        ));
+    }
+    if transfer.index_synced_through_block_index < transfer.block_index {
+        return Err(format!(
+            "{path}: {section} index evidence is stale or incomplete"
+        ));
+    }
+    if transfer.ledger_tip_block_index < transfer.block_index {
+        return Err(format!(
+            "{path}: {section} ledger tip evidence is stale or incomplete"
+        ));
+    }
+    if transfer.proof_account != transfer.from_account
+        && transfer.proof_account != transfer.to_account
+    {
+        return Err(format!(
+            "{path}: {section}.proof_account must match a transfer participant"
+        ));
+    }
+    validate_local_principal_value(
+        path,
+        &format!("{section}.proof_source_canister"),
+        &transfer.proof_source_canister.to_text(),
+    )?;
+    match transfer.archive_involvement.as_str() {
+        "none" => {
+            if transfer.archive_canister.is_some()
+                || transfer.archive_range_start.is_some()
+                || transfer.archive_range_end.is_some()
+            {
+                return Err(format!(
+                    "{path}: {section} archive none must not include archive range evidence"
+                ));
+            }
+        }
+        "ledger_archived_range" | "index_followed_archive" => {
+            if transfer.archive_canister.is_none()
+                || transfer.archive_range_start.is_none()
+                || transfer.archive_range_end.is_none()
+            {
+                return Err(format!(
+                    "{path}: {section} complete archive proof requires canister and range"
+                ));
+            }
+        }
+        "incomplete" => {
+            return Err(format!(
+                "{path}: {section} incomplete archive proof cannot be completed evidence"
+            ));
+        }
+        _ => {
+            return Err(format!(
+                "{path}: {section}.archive_involvement must be none, ledger_archived_range, index_followed_archive, or incomplete"
+            ));
+        }
+    }
+    if parse_rfc3339_utc(&transfer.observation_timestamp).is_none() {
+        return Err(format!(
+            "{path}: {section}.observation_timestamp must be RFC3339 UTC seconds"
+        ));
+    }
+    let expected_sender_decrease = checked_i128(path, section, transfer.requested_amount_e8s)?
+        .checked_add(checked_i128(path, section, transfer.observed_fee_e8s)?)
+        .ok_or_else(|| format!("{path}: {section} amount plus fee overflow"))?;
+    let mut deltas = BTreeMap::<LocalSnsAccountEvidence, i128>::new();
+    add_delta(
+        &mut deltas,
+        transfer.from_account.clone(),
+        -expected_sender_decrease,
+    )?;
+    add_delta(
+        &mut deltas,
+        transfer.to_account.clone(),
+        checked_i128(path, section, transfer.requested_amount_e8s)?,
+    )?;
+
+    match transfer.fee_disposition.as_str() {
+        "burned" => {
+            if transfer.fee_collector_account.is_some()
+                || transfer.fee_collector_balance_before_e8s.is_some()
+                || transfer.fee_collector_balance_after_e8s.is_some()
+            {
+                return Err(format!(
+                    "{path}: {section} burned fee mode must not claim fee collector evidence"
+                ));
+            }
+            let supply_decrease = transfer
+                .total_supply_before_e8s
+                .checked_sub(transfer.total_supply_after_e8s)
+                .ok_or_else(|| format!("{path}: {section} total supply increased unexpectedly"))?;
+            if supply_decrease != transfer.observed_fee_e8s {
+                return Err(format!(
+                    "{path}: {section} burned fee supply decrease must equal fee"
+                ));
+            }
+        }
+        "unknown" => {
+            return Err(format!(
+                "{path}: {section}.fee_disposition must not be unknown in completed evidence"
+            ));
+        }
+        other => {
+            return Err(format!(
+                "{path}: {section}.fee_disposition must be burned under standard SNS fee policy, got {other}"
+            ));
+        }
+    }
+
+    let mut observations = BTreeMap::new();
+    validate_observed_account_delta(
+        path,
+        section,
+        &mut observations,
+        transfer.from_account.clone(),
+        transfer.sender_balance_before_e8s,
+        transfer.sender_balance_after_e8s,
+    )?;
+    validate_observed_account_delta(
+        path,
+        section,
+        &mut observations,
+        transfer.to_account.clone(),
+        transfer.recipient_balance_before_e8s,
+        transfer.recipient_balance_after_e8s,
+    )?;
+    if let Some(collector) = &transfer.fee_collector_account {
+        validate_observed_account_delta(
+            path,
+            section,
+            &mut observations,
+            collector.clone(),
+            transfer.fee_collector_balance_before_e8s.unwrap(),
+            transfer.fee_collector_balance_after_e8s.unwrap(),
+        )?;
+    }
+    for (account, expected_delta) in &deltas {
+        let (before, after) = observations
+            .get(account)
+            .ok_or_else(|| format!("{path}: {section} missing observed balance for account"))?;
+        let observed_delta = checked_i128(path, section, *after)?
+            .checked_sub(checked_i128(path, section, *before)?)
+            .ok_or_else(|| format!("{path}: {section} observed account delta overflow"))?;
+        if observed_delta != *expected_delta {
+            return Err(format!(
+                "{path}: {section} unexplained balance movement for account"
+            ));
+        }
+    }
+    let reserve_expected_delta = *deltas.get(reserve_account).unwrap_or(&0);
+    let reserve_observed_delta = checked_i128(path, section, transfer.reserve_balance_after_e8s)?
+        .checked_sub(checked_i128(
+            path,
+            section,
+            transfer.reserve_balance_before_e8s,
+        )?)
+        .ok_or_else(|| format!("{path}: {section} reserve delta overflow"))?;
+    if reserve_observed_delta != reserve_expected_delta {
+        return Err(format!(
+            "{path}: {section} reserve change does not match reserve account net delta"
+        ));
+    }
+    Ok(())
+}
+
+fn checked_i128(path: &str, section: &str, value: u128) -> Result<i128, String> {
+    value
+        .try_into()
+        .map_err(|_| format!("{path}: {section} value does not fit signed validation range"))
+}
+
+fn add_delta(
+    deltas: &mut BTreeMap<LocalSnsAccountEvidence, i128>,
+    account: LocalSnsAccountEvidence,
+    delta: i128,
+) -> Result<(), String> {
+    let entry = deltas.entry(account).or_insert(0);
+    *entry = entry
+        .checked_add(delta)
+        .ok_or_else(|| "local SNS transfer delta overflow".to_string())?;
+    Ok(())
+}
+
+fn validate_observed_account_delta(
+    path: &str,
+    section: &str,
+    observations: &mut BTreeMap<LocalSnsAccountEvidence, (u128, u128)>,
+    account: LocalSnsAccountEvidence,
+    before: u128,
+    after: u128,
+) -> Result<(), String> {
+    if let Some(existing) = observations.insert(account, (before, after)) {
+        if existing != (before, after) {
+            return Err(format!(
+                "{path}: {section} overlapping account observations disagree"
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -2569,8 +5595,1335 @@ fn check_local_sns_ledger_at(root: &Path) -> Result<bool, String> {
         return Ok(false);
     }
     let text = require_file(root, path)?;
-    parse_local_sns_evidence(path, &text)?;
+    if text.contains("schema = \"production-redemption-v1\"") {
+        validate_production_redemption_evidence(path, &text)?;
+    } else {
+        parse_local_sns_evidence(path, &text)?;
+    }
     Ok(true)
+}
+
+fn validate_production_redemption_evidence(path: &str, text: &str) -> Result<(), String> {
+    let doc = parse_simple_toml_document(path, text)?;
+    if require_simple_string(path, &doc, "evidence", "schema")? != "production-redemption-v1"
+        || require_simple_string(path, &doc, "evidence", "network")? != "local"
+        || require_simple_string(path, &doc, "evidence", "source")?
+            != "official-local-sns-rehearsal"
+        || !require_simple_bool(path, &doc, "evidence", "complete")?
+        || require_simple_bool(path, &doc, "evidence", "io_protocol_live")?
+    {
+        return Err(format!(
+            "{path}: invalid completed local production-redemption evidence mode"
+        ));
+    }
+    let commit = require_simple_string(path, &doc, "provenance", "official_ic_source_commit")?;
+    if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!(
+            "{path}: official IC source commit must be exact 40-hex"
+        ));
+    }
+    let payload_key = if doc
+        .get("provenance")
+        .is_some_and(|section| section.contains_key("historian_payload_wasm_sha256"))
+    {
+        "historian_payload_wasm_sha256"
+    } else {
+        "historian_payload_gzip_sha256"
+    };
+    for key in [
+        "sns_governance_raw_sha256",
+        "sns_root_raw_sha256",
+        "historian_before_module_sha256",
+        payload_key,
+        "historian_release_raw_sha256",
+    ] {
+        let value = require_simple_string(path, &doc, "provenance", key)?;
+        if value.len() != 64
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(format!(
+                "{path}: provenance.{key} must be exact lowercase SHA-256"
+            ));
+        }
+    }
+    let mut principals = BTreeSet::new();
+    for (section, key) in [
+        ("sns_canisters", "root"),
+        ("sns_canisters", "governance"),
+        ("sns_canisters", "ledger"),
+        ("sns_canisters", "index"),
+        ("sns_canisters", "swap"),
+        ("io_dapp_canisters", "io_stream_manager"),
+        ("io_dapp_canisters", "io_nns_neuron_manager"),
+        ("io_dapp_canisters", "io_historian"),
+        ("io_dapp_canisters", "frontend"),
+    ] {
+        let principal = parse_required_principal(path, &doc, section, key)?;
+        if !principals.insert(principal) {
+            return Err(format!(
+                "{path}: duplicate SNS/dapp principal in {section}.{key}"
+            ));
+        }
+    }
+    let fee = require_simple_u128(path, &doc, "ledger", "transaction_fee_e8s")?;
+    let funded = require_simple_u128(path, &doc, "ledger", "reserve_funding_e8s")?;
+    let redeemed = require_simple_u128(path, &doc, "ledger", "redemption_io_e8s")?;
+    let reserve = require_simple_u128(path, &doc, "ledger", "final_reserve_balance_e8s")?;
+    if fee != 10_000 || funded == 0 || redeemed == 0 || reserve != funded + redeemed {
+        return Err(format!(
+            "{path}: canonical fee/reserve/redemption identity failed"
+        ));
+    }
+    for key in [
+        "bad_fee_observed",
+        "insufficient_funds_observed",
+        "duplicate_observed",
+        "identical_redemption_replay_observed",
+        "index_histories_observed",
+    ] {
+        if !require_simple_bool(path, &doc, "ledger", key)? {
+            return Err(format!("{path}: ledger.{key} must be true"));
+        }
+    }
+    if require_simple_u64(path, &doc, "ledger", "approval_block")? == 0
+        || require_simple_u64(path, &doc, "ledger", "io_redemption_block")? == 0
+        || require_simple_u64(path, &doc, "ledger", "icp_payout_block")? == 0
+    {
+        return Err(format!(
+            "{path}: canonical redemption block indexes must be nonzero"
+        ));
+    }
+    for key in [
+        "create_sns",
+        "module_upgrade",
+        "stream_function_registration",
+        "stream_activation",
+        "nns_function_registration",
+        "nns_activation",
+        "reward_motion",
+    ] {
+        if require_simple_u64(path, &doc, "proposals", key)? == 0 {
+            return Err(format!("{path}: proposals.{key} must be nonzero"));
+        }
+    }
+    if !require_simple_bool(path, &doc, "readiness", "stream_ready")?
+        || !require_simple_bool(path, &doc, "readiness", "nns_manager_ready")?
+        || !require_simple_bool(path, &doc, "readiness", "two_week_baseline_reconciled")?
+        || require_simple_u128(path, &doc, "readiness", "jupiter_staging_e8s")? < 20_000
+        || require_simple_u128(path, &doc, "readiness", "two_week_staging_e8s")? < 10_000
+        || require_simple_u64(path, &doc, "readiness", "reward_backing_neuron_id")? == 0
+        || require_simple_u64(path, &doc, "readiness", "two_year_neuron_id")? == 0
+    {
+        return Err(format!(
+            "{path}: canonical local readiness evidence is incomplete"
+        ));
+    }
+    if require_simple_string(path, &doc, "archive", "ledger_observation")? != "none"
+        || require_simple_string(path, &doc, "archive", "root_observation")? != "none"
+        || require_simple_string(path, &doc, "reward", "classification")? != "ProposalBearing"
+        || require_simple_u64(path, &doc, "reward", "processed_count")? != 1
+        || require_simple_u128(path, &doc, "reward", "policy_credit")? != 1_000_000_000_000_000_000
+    {
+        return Err(format!("{path}: archive or daily reward evidence mismatch"));
+    }
+    validate_protected_reminders(path, &doc)?;
+    validate_no_forbidden_local_ids(path, text, &doc)?;
+    Ok(())
+}
+
+fn check_local_sns_committed_evidence_at(root: &Path) -> Result<(), String> {
+    let evidence_root = root.join("deploy/local-sns-rehearsal/evidence");
+    if !evidence_root.exists() {
+        return Err(format!(
+            "{CURRENT_CANONICAL_SELECTOR}: required selector is missing"
+        ));
+    }
+    let selector = read_current_canonical_selector(root)?;
+    let mut entries = fs::read_dir(&evidence_root)
+        .map_err(|err| format!("{}: {err}", evidence_root.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("{}: {err}", evidence_root.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in &entries {
+        let entry_type = entry
+            .file_type()
+            .map_err(|err| format!("{}: {err}", entry.path().display()))?;
+        if entry.file_name() == "current-canonical.toml" {
+            if entry_type.is_symlink() || !entry_type.is_file() {
+                return Err(format!(
+                    "{}: selector must be a regular non-symlink file",
+                    entry.path().display()
+                ));
+            }
+        } else if !entry_type.is_dir() {
+            return Err(format!(
+                "{}: evidence root entries must be the exact selector or regular package directories",
+                entry.path().display()
+            ));
+        }
+    }
+    let mut selected_found = 0_usize;
+    for entry in entries {
+        if entry.file_name() == "current-canonical.toml" {
+            continue;
+        }
+        let rel = entry
+            .path()
+            .strip_prefix(root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let selected_current = entry.file_name().to_string_lossy() == selector.package;
+        let validated = validate_local_sns_evidence_package_at(root, &rel, selected_current)?;
+        if selected_current {
+            selected_found += 1;
+            validate_current_selector_binding(root, &rel, &validated, &selector)?;
+        }
+    }
+    if selected_found != 1 {
+        return Err(format!(
+            "{CURRENT_CANONICAL_SELECTOR}: selected package {:?} was not encountered exactly once",
+            selector.package
+        ));
+    }
+    Ok(())
+}
+
+fn validate_local_sns_evidence_package_at(
+    root: &Path,
+    rel: &str,
+    selected_current: bool,
+) -> Result<ValidatedEvidencePackage, String> {
+    let package_dir = if Path::new(rel).is_absolute() {
+        PathBuf::from(rel)
+    } else {
+        root.join(rel)
+    };
+    let metadata = fs::symlink_metadata(&package_dir)
+        .map_err(|err| format!("{}: {err}", package_dir.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(format!(
+            "{}: evidence package must be a regular non-symlink directory",
+            package_dir.display()
+        ));
+    }
+    let package_files = list_regular_files_relative(&package_dir)?;
+    let manifest_path = format!("{rel}/manifest.toml");
+    let manifest = require_file(root, &manifest_path)?;
+    validate_committed_evidence_text(&manifest_path, &manifest)?;
+    let doc = parse_simple_toml_document(&manifest_path, &manifest)?;
+    if require_simple_string(&manifest_path, &doc, "provenance", "official_ic_repository")?
+        != "dfinity/ic"
+        || require_simple_string(
+            &manifest_path,
+            &doc,
+            "provenance",
+            "sns_testing_source_path",
+        )? != "rs/sns/testing"
+    {
+        return Err(format!("{manifest_path}: invalid official SNS provenance"));
+    }
+    let complete = require_simple_bool(&manifest_path, &doc, "provenance", "complete")?;
+    let monitoring = doc
+        .get("provenance")
+        .and_then(|section| section.get("monitoring"))
+        == Some(&SimpleTomlValue::Bool(true));
+    let canonical_economics = doc
+        .get("provenance")
+        .and_then(|section| section.get("canonical_redemption_economics"))
+        == Some(&SimpleTomlValue::Bool(true));
+    if selected_current && (!complete || !monitoring || !canonical_economics) {
+        return Err(format!(
+                "{manifest_path}: selected current package must be complete, monitoring, and canonical-redemption-economics evidence"
+            ));
+    }
+    let commit = require_simple_string(
+        &manifest_path,
+        &doc,
+        "provenance",
+        "official_ic_source_commit",
+    )?;
+    if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!(
+            "{manifest_path}: official_ic_source_commit must be exact 40-hex commit"
+        ));
+    }
+    let expected_files: BTreeSet<String> = if complete {
+        let mut files = [
+            "manifest.toml",
+            "toolchain-provenance.toml",
+            "sns_init.local.yaml",
+            "canister-ids.local.toml",
+            "reserve-funding-evidence.toml",
+            "ledger-evidence.toml",
+            "governance-evidence.toml",
+            "controller-evidence.toml",
+            "archive-evidence.toml",
+            "commands.log",
+            "SHA256SUMS",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+        if monitoring {
+            files.insert("release-evidence.toml".into());
+            files.insert("historian-dashboard.log".into());
+        }
+        if canonical_economics {
+            for file in [
+                "stream-install-args.did",
+                "nns-manager-install-args.did",
+                "historian-observation-config.did",
+                "account-map.toml",
+                "redemption-economics.toml",
+                "treasury-account-history.log",
+                "archive-observation.log",
+            ] {
+                files.insert(file.into());
+            }
+        }
+        files
+    } else {
+        ["manifest.toml", "blocker-report.md", "SHA256SUMS"]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    };
+    if package_files != expected_files {
+        let unexpected = package_files
+            .difference(&expected_files)
+            .cloned()
+            .collect::<Vec<_>>();
+        let missing = expected_files
+            .difference(&package_files)
+            .cloned()
+            .collect::<Vec<_>>();
+        return Err(format!(
+                "{rel}: evidence package inventory mismatch; unexpected={unexpected:?}, missing={missing:?}"
+            ));
+    }
+    validate_evidence_package_sha256s(root, rel, &package_files)?;
+    for file in &package_files {
+        if file == "SHA256SUMS" {
+            continue;
+        }
+        let file_path = format!("{rel}/{file}");
+        let text = require_file(root, &file_path)?;
+        validate_committed_evidence_text(&file_path, &text)?;
+    }
+    if complete {
+        if doc
+            .get("provenance")
+            .is_some_and(|section| section.contains_key("blocker_report"))
+        {
+            return Err(format!(
+                "{manifest_path}: completed evidence must not contain blocker_report"
+            ));
+        }
+        for file in &package_files {
+            if file == "SHA256SUMS" {
+                continue;
+            }
+            let file_path = format!("{rel}/{file}");
+            let text = require_file(root, &file_path)?;
+            reject_completed_evidence_placeholders(&file_path, &text)?;
+        }
+        let toolchain_path = format!("{rel}/toolchain-provenance.toml");
+        let toolchain = require_file(root, &toolchain_path)?;
+        validate_completed_toolchain_provenance(&toolchain_path, &toolchain)?;
+        if monitoring {
+            validate_monitoring_evidence(root, rel, &doc, selected_current)?;
+        }
+        if canonical_economics {
+            if !monitoring {
+                return Err(format!(
+                        "{manifest_path}: canonical redemption economics must be release-bound monitoring evidence"
+                    ));
+            }
+            validate_canonical_redemption_evidence(root, rel)?;
+        }
+    } else {
+        let blocker_report =
+            require_simple_string(&manifest_path, &doc, "provenance", "blocker_report")?;
+        if blocker_report != "blocker-report.md" {
+            return Err(format!(
+                "{manifest_path}: incomplete package must reference blocker-report.md"
+            ));
+        }
+        let blocker_path = format!("{rel}/blocker-report.md");
+        let blocker = require_file(root, &blocker_path)?;
+        require_present(
+            &blocker_path,
+            &blocker,
+            &[
+                "official local SNS rehearsal not completed",
+                "source-built",
+                "No mainnet call",
+            ],
+        )?;
+    }
+    Ok(ValidatedEvidencePackage {
+        complete,
+        monitoring,
+        canonical_economics,
+        io_release_source_commit: if monitoring {
+            Some(require_simple_string(
+                &manifest_path,
+                &doc,
+                "provenance",
+                "io_release_source_commit",
+            )?)
+        } else {
+            None
+        },
+        io_artifact_recording_commit: if monitoring {
+            Some(require_simple_string(
+                &manifest_path,
+                &doc,
+                "provenance",
+                "io_artifact_recording_commit",
+            )?)
+        } else {
+            None
+        },
+    })
+}
+
+fn validate_current_selector_binding(
+    root: &Path,
+    package: &str,
+    validated: &ValidatedEvidencePackage,
+    selector: &CurrentCanonicalSelector,
+) -> Result<(), String> {
+    if !validated.complete || !validated.monitoring || !validated.canonical_economics {
+        return Err(format!(
+            "{package}: selected current package is not complete monitoring canonical evidence"
+        ));
+    }
+    if validated.io_release_source_commit.as_deref()
+        != Some(selector.io_release_source_commit.as_str())
+    {
+        return Err(format!(
+            "{CURRENT_CANONICAL_SELECTOR}: selected package release source commit mismatch"
+        ));
+    }
+    if validated.io_artifact_recording_commit.as_deref()
+        != Some(selector.io_artifact_recording_commit.as_str())
+    {
+        return Err(format!(
+            "{CURRENT_CANONICAL_SELECTOR}: selected package artifact-recording commit mismatch"
+        ));
+    }
+    for (field, path, expected) in [
+        (
+            "release_manifest_sha256",
+            MANIFEST_PATH.to_string(),
+            selector.release_manifest_sha256.as_str(),
+        ),
+        (
+            "package_manifest_sha256",
+            format!("{package}/manifest.toml"),
+            selector.package_manifest_sha256.as_str(),
+        ),
+        (
+            "package_sha256s_sha256",
+            format!("{package}/SHA256SUMS"),
+            selector.package_sha256s_sha256.as_str(),
+        ),
+    ] {
+        let bytes = fs::read(root.join(&path)).map_err(|err| format!("{path}: {err}"))?;
+        if hex_sha256(&bytes) != expected {
+            return Err(format!(
+                "{CURRENT_CANONICAL_SELECTOR}: current.{field} does not match {path}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn debug_some_u128(path: &str, text: &str, field: &str) -> Result<u128, String> {
+    let marker = format!("{field}: Some(");
+    let start = text
+        .find(&marker)
+        .ok_or_else(|| format!("{path}: missing {marker}"))?
+        + marker.len();
+    let value = text[start..]
+        .chars()
+        .skip_while(|character| character.is_ascii_whitespace())
+        .take_while(|character| character.is_ascii_digit() || *character == '_')
+        .filter(|character| *character != '_')
+        .collect::<String>();
+    if value.is_empty() {
+        return Err(format!(
+            "{path}: {field} does not contain a numeric Some value"
+        ));
+    }
+    value
+        .parse::<u128>()
+        .map_err(|error| format!("{path}: invalid {field}: {error}"))
+}
+
+fn checked_add(path: &str, left: u128, right: u128, identity: &str) -> Result<u128, String> {
+    left.checked_add(right)
+        .ok_or_else(|| format!("{path}: overflow checking {identity}"))
+}
+
+fn checked_sub(path: &str, left: u128, right: u128, identity: &str) -> Result<u128, String> {
+    left.checked_sub(right)
+        .ok_or_else(|| format!("{path}: underflow checking {identity}"))
+}
+
+fn validate_canonical_redemption_evidence(root: &Path, package: &str) -> Result<(), String> {
+    let ids_path = format!("{package}/canister-ids.local.toml");
+    let ids_text = require_file(root, &ids_path)?;
+    let ids = parse_simple_toml_document(&ids_path, &ids_text)?;
+    let governance = require_simple_string(&ids_path, &ids, "sns_canisters", "governance")?;
+
+    let map_path = format!("{package}/account-map.toml");
+    let map_text = require_file(root, &map_path)?;
+    let map = parse_simple_toml_document(&map_path, &map_text)?;
+    let excluded_sections = map
+        .keys()
+        .filter(|section| section.starts_with("excluded_"))
+        .collect::<Vec<_>>();
+    if excluded_sections.len() != 1 || excluded_sections[0].as_str() != "excluded_sns_treasury" {
+        return Err(format!(
+            "{map_path}: exact fixture excluded set must contain only excluded_sns_treasury"
+        ));
+    }
+    if require_simple_string(&map_path, &map, "excluded_sns_treasury", "name")? != "sns-treasury"
+        || require_simple_string(&map_path, &map, "excluded_sns_treasury", "owner")? != governance
+        || require_simple_u64(
+            &map_path,
+            &map,
+            "excluded_sns_treasury",
+            "distribution_nonce",
+        )? != 0
+        || require_simple_string(&map_path, &map, "excluded_sns_treasury", "domain")?
+            != "token-distribution"
+        || !require_simple_bool(&map_path, &map, "excluded_sns_treasury", "expected_nonzero")?
+    {
+        return Err(format!(
+            "{map_path}: canonical SNS treasury metadata mismatch"
+        ));
+    }
+    let governance_principal = Principal::from_text(&governance)
+        .map_err(|error| format!("{map_path}: invalid Governance principal: {error}"))?;
+    let treasury_subaccount =
+        require_simple_string(&map_path, &map, "excluded_sns_treasury", "subaccount_hex")?;
+    let derived = sns_distribution_subaccount(governance_principal, 0);
+    if treasury_subaccount != derived {
+        return Err(format!(
+            "{map_path}: SNS treasury subaccount {treasury_subaccount} does not match canonical derivation {derived}"
+        ));
+    }
+    let treasury_blob = candid_blob_literal_from_hex(&treasury_subaccount)?;
+    let exact_account =
+        format!("owner = principal \"{governance}\"; subaccount = opt blob \"{treasury_blob}\"");
+
+    let stream_path = format!("{package}/stream-install-args.did");
+    let stream = require_file(root, &stream_path)?;
+    if stream.matches("excluded_io_accounts =").count() != 1
+        || stream.matches(&exact_account).count() != 1
+        || stream.contains(&format!(
+            "excluded_io_accounts = vec {{ record {{ owner = principal \"{governance}\"; subaccount = null"
+        ))
+    {
+        return Err(format!(
+            "{stream_path}: Stream excluded set is not the one exact canonical SNS treasury Account"
+        ));
+    }
+    let historian_path = format!("{package}/historian-observation-config.did");
+    let historian_config = require_file(root, &historian_path)?;
+    if historian_config.matches("name = \"sns-treasury\"").count() != 2
+        || historian_config.matches(&exact_account).count() != 2
+        || historian_config.contains("name = \"sns-governance\"")
+    {
+        return Err(format!(
+            "{historian_path}: historian excluded/history Accounts do not equal Stream canonical excluded Account"
+        ));
+    }
+
+    let nns_path = format!("{package}/nns-manager-install-args.did");
+    let nns = require_file(root, &nns_path)?;
+    for (section, config_path, config) in [
+        ("jupiter_io", stream_path.as_str(), stream.as_str()),
+        ("jupiter_icp_staging", nns_path.as_str(), nns.as_str()),
+        ("two_week_maturity_staging", nns_path.as_str(), nns.as_str()),
+        ("liquid_icp_reserve", nns_path.as_str(), nns.as_str()),
+    ] {
+        let owner = require_simple_string(&map_path, &map, section, "owner")?;
+        if !config.contains(&format!("owner = principal \"{owner}\"")) {
+            return Err(format!(
+                "{config_path}: missing Account-map owner for {section}"
+            ));
+        }
+        if let Ok(subaccount) = require_simple_string(&map_path, &map, section, "subaccount_hex") {
+            let blob = candid_blob_literal_from_hex(&subaccount)?;
+            if !config.contains(&format!("subaccount = opt blob \"{blob}\"")) {
+                return Err(format!(
+                    "{config_path}: missing Account-map subaccount for {section}"
+                ));
+            }
+        }
+    }
+
+    let economics_path = format!("{package}/redemption-economics.toml");
+    let economics_text = require_file(root, &economics_path)?;
+    let economics = parse_simple_toml_document(&economics_path, &economics_text)?;
+    let total = require_simple_u128(
+        &economics_path,
+        &economics,
+        "snapshot",
+        "total_io_supply_e8s",
+    )?;
+    let reserve = require_simple_u128(
+        &economics_path,
+        &economics,
+        "snapshot",
+        "protocol_reserve_io_e8s",
+    )?;
+    let excluded = require_simple_u128(
+        &economics_path,
+        &economics,
+        "excluded_sns_treasury",
+        "balance_e8s",
+    )?;
+    if excluded == 0
+        || require_simple_string(&economics_path, &economics, "excluded_sns_treasury", "name")?
+            != "sns-treasury"
+        || require_simple_string(
+            &economics_path,
+            &economics,
+            "excluded_sns_treasury",
+            "owner",
+        )? != governance
+        || require_simple_string(
+            &economics_path,
+            &economics,
+            "excluded_sns_treasury",
+            "subaccount_hex",
+        )? != treasury_subaccount
+        || !require_simple_bool(
+            &economics_path,
+            &economics,
+            "excluded_sns_treasury",
+            "expected_nonzero",
+        )?
+    {
+        return Err(format!(
+            "{economics_path}: missing, zero, or mismatched excluded Account evidence"
+        ));
+    }
+    let liquid = require_simple_u128(
+        &economics_path,
+        &economics,
+        "snapshot",
+        "liquid_icp_reserve_e8s",
+    )?;
+    let redeemed = require_simple_u128(
+        &economics_path,
+        &economics,
+        "snapshot",
+        "redemption_io_amount_e8s",
+    )?;
+    let io_fee = require_simple_u128(&economics_path, &economics, "snapshot", "io_fee_e8s")?;
+    let icp_fee = require_simple_u128(&economics_path, &economics, "snapshot", "icp_fee_e8s")?;
+    let calculated =
+        calculate_redemption_economics(total, reserve, &[excluded], liquid, redeemed, icp_fee)?;
+    for (field, observed, expected) in [
+        (
+            "excluded_io_total_e8s",
+            require_simple_u128(
+                &economics_path,
+                &economics,
+                "snapshot",
+                "excluded_io_total_e8s",
+            )?,
+            calculated.excluded_total_e8s,
+        ),
+        (
+            "redeemable_io_supply_e8s",
+            require_simple_u128(
+                &economics_path,
+                &economics,
+                "snapshot",
+                "redeemable_io_supply_e8s",
+            )?,
+            calculated.redeemable_supply_e8s,
+        ),
+        (
+            "quoted_gross_icp_e8s",
+            require_simple_u128(
+                &economics_path,
+                &economics,
+                "snapshot",
+                "quoted_gross_icp_e8s",
+            )?,
+            calculated.gross_icp_e8s,
+        ),
+        (
+            "quoted_net_icp_e8s",
+            require_simple_u128(
+                &economics_path,
+                &economics,
+                "snapshot",
+                "quoted_net_icp_e8s",
+            )?,
+            calculated.net_icp_e8s,
+        ),
+    ] {
+        if observed != expected {
+            return Err(format!(
+                "{economics_path}: {field}={observed} does not equal checked calculation {expected}"
+            ));
+        }
+    }
+    if require_simple_u128(
+        &economics_path,
+        &economics,
+        "stream_result",
+        "gross_icp_e8s",
+    )? != calculated.gross_icp_e8s
+        || require_simple_u128(&economics_path, &economics, "stream_result", "net_icp_e8s")?
+            != calculated.net_icp_e8s
+        || !require_simple_bool(
+            &economics_path,
+            &economics,
+            "stream_result",
+            "identical_replay",
+        )?
+    {
+        return Err(format!(
+            "{economics_path}: Stream result or identical replay does not match checked quote"
+        ));
+    }
+
+    let balances = |key| require_simple_u128(&economics_path, &economics, "ledger_balances", key);
+    let post_total = balances("io_total_after_e8s")?;
+    let post_reserve = balances("protocol_reserve_after_e8s")?;
+    let post_excluded = balances("excluded_after_e8s")?;
+    let post_liquid = balances("liquid_icp_after_e8s")?;
+    if balances("io_total_before_e8s")? != total
+        || balances("protocol_reserve_before_e8s")? != reserve
+        || balances("excluded_before_e8s")? != excluded
+        || balances("liquid_icp_before_e8s")? != liquid
+        || post_total != checked_sub(&economics_path, total, io_fee, "IO supply fee burn")?
+        || post_reserve != checked_add(&economics_path, reserve, redeemed, "reserve IO pull")?
+        || post_excluded != excluded
+        || post_liquid
+            != checked_sub(
+                &economics_path,
+                liquid,
+                calculated.gross_icp_e8s,
+                "liquid ICP payout",
+            )?
+        || balances("user_io_after_e8s")?
+            != checked_sub(
+                &economics_path,
+                checked_sub(
+                    &economics_path,
+                    balances("user_io_before_e8s")?,
+                    redeemed,
+                    "user redeemed IO",
+                )?,
+                io_fee,
+                "user IO fee",
+            )?
+        || balances("user_icp_after_e8s")?
+            != checked_add(
+                &economics_path,
+                balances("user_icp_before_e8s")?,
+                calculated.net_icp_e8s,
+                "user ICP receipt",
+            )?
+    {
+        return Err(format!(
+            "{economics_path}: ledger balance changes do not match redemption and fee identities"
+        ));
+    }
+
+    let reserve_path = format!("{package}/reserve-funding-evidence.toml");
+    let reserve_text = require_file(root, &reserve_path)?;
+    let reserve_doc = parse_simple_toml_document(&reserve_path, &reserve_text)?;
+    let funding = require_simple_u128(
+        &reserve_path,
+        &reserve_doc,
+        "reserve",
+        "treasury_transfer_amount_e8s",
+    )?;
+    let fee = require_simple_u128(&reserve_path, &reserve_doc, "reserve", "transfer_fee_e8s")?;
+    let before = require_simple_u128(
+        &reserve_path,
+        &reserve_doc,
+        "reserve",
+        "treasury_balance_before_e8s",
+    )?;
+    let after_reserve = require_simple_u128(
+        &reserve_path,
+        &reserve_doc,
+        "reserve",
+        "treasury_balance_after_reserve_e8s",
+    )?;
+    let after_user = require_simple_u128(
+        &reserve_path,
+        &reserve_doc,
+        "reserve",
+        "treasury_balance_after_user_e8s",
+    )?;
+    let user_funding = require_simple_u128(&ids_path, &ids, "ledger", "user_funding_e8s")?;
+    if before == 0
+        || after_reserve
+            != checked_sub(
+                &reserve_path,
+                checked_sub(&reserve_path, before, funding, "treasury reserve funding")?,
+                fee,
+                "treasury reserve-funding fee",
+            )?
+        || after_user
+            != checked_sub(
+                &reserve_path,
+                checked_sub(
+                    &reserve_path,
+                    after_reserve,
+                    user_funding,
+                    "treasury user funding",
+                )?,
+                fee,
+                "treasury user-funding fee",
+            )?
+        || require_simple_string(&reserve_path, &reserve_doc, "reserve", "treasury_name")?
+            != "sns-treasury"
+        || require_simple_string(&reserve_path, &reserve_doc, "reserve", "treasury_owner")?
+            != governance
+        || require_simple_string(
+            &reserve_path,
+            &reserve_doc,
+            "reserve",
+            "treasury_subaccount_hex",
+        )? != treasury_subaccount
+    {
+        return Err(format!(
+            "{reserve_path}: treasury funding balances or canonical Account mismatch"
+        ));
+    }
+
+    let history_path = format!("{package}/treasury-account-history.log");
+    let history = require_file(root, &history_path)?;
+    let reserve_record = unique_index_transfer_record(&history, funding, "00000000000005dd")?;
+    let user_record = unique_index_transfer_record(&history, user_funding, "00000000000005de")?;
+    for (label, record, block_key) in [
+        ("reserve", reserve_record, "transfer_block"),
+        ("user", user_record, "user_funding_transfer_block"),
+    ] {
+        if !record.contains(&format!("owner = principal \"{governance}\""))
+            || !record.contains(&format!("subaccount = opt blob \"{treasury_blob}\""))
+        {
+            return Err(format!(
+                "{history_path}: {label} treasury transfer source is not the canonical SNS treasury Account"
+            ));
+        }
+        let block = candid_nat_field(record, "id")?;
+        if block != require_simple_u128(&reserve_path, &reserve_doc, "reserve", block_key)? {
+            return Err(format!(
+                "{reserve_path}: {label} treasury transfer block does not match account history"
+            ));
+        }
+    }
+
+    let ledger_path = format!("{package}/ledger-evidence.toml");
+    let ledger_text = require_file(root, &ledger_path)?;
+    let ledger = parse_simple_toml_document(&ledger_path, &ledger_text)?;
+    for (key, expected) in [
+        ("io_amount_e8s", redeemed),
+        ("gross_icp_e8s", calculated.gross_icp_e8s),
+        ("net_icp_e8s", calculated.net_icp_e8s),
+        ("excluded_io_total_e8s", excluded),
+        ("redeemable_io_supply_e8s", calculated.redeemable_supply_e8s),
+    ] {
+        if require_simple_u128(&ledger_path, &ledger, "ledger", key)? != expected {
+            return Err(format!("{ledger_path}: ledger.{key} mismatch"));
+        }
+    }
+    let index_synced = require_simple_u128(&ledger_path, &ledger, "ledger", "index_synced_blocks")?;
+    let redemption_block =
+        require_simple_u128(&ledger_path, &ledger, "ledger", "redemption_io_block")?;
+    if index_synced <= redemption_block {
+        return Err(format!(
+            "{ledger_path}: index has not synchronized through the redemption block"
+        ));
+    }
+
+    let archive_path = format!("{package}/archive-evidence.toml");
+    let archive_text = require_file(root, &archive_path)?;
+    let archive = parse_simple_toml_document(&archive_path, &archive_text)?;
+    if require_simple_u128(&archive_path, &archive, "archive", "ledger_archive_count")? != 0
+        || require_simple_u128(&archive_path, &archive, "archive", "root_archive_count")? != 0
+        || require_simple_string(&archive_path, &archive, "archive", "ledger_observation")?
+            != "none"
+        || require_simple_string(&archive_path, &archive, "archive", "root_observation")? != "none"
+        || !require_simple_bool(&archive_path, &archive, "archive", "observation_consistent")?
+    {
+        return Err(format!("{archive_path}: explicit archive result mismatch"));
+    }
+    let archive_log_path = format!("{package}/archive-observation.log");
+    let archive_log = require_file(root, &archive_log_path)?;
+    for required in [
+        "icrc3_get_archives",
+        "(vec {})",
+        "list_sns_canisters",
+        "archives = vec {};",
+    ] {
+        if !archive_log.contains(required) {
+            return Err(format!(
+                "{archive_log_path}: missing exact archive observation {required:?}"
+            ));
+        }
+    }
+
+    let dashboard_path = format!("{package}/historian-dashboard.log");
+    let dashboard = require_file(root, &dashboard_path)?;
+    let historian_total = debug_some_u128(&dashboard_path, &dashboard, "total_io_supply_e8s")?;
+    let historian_reserve =
+        debug_some_u128(&dashboard_path, &dashboard, "protocol_reserve_io_e8s")?;
+    let historian_excluded = debug_some_u128(&dashboard_path, &dashboard, "excluded_io_e8s")?;
+    let historian_redeemable =
+        debug_some_u128(&dashboard_path, &dashboard, "redeemable_io_supply_e8s")?;
+    let historian_liquid = debug_some_u128(&dashboard_path, &dashboard, "liquid_icp_reserve_e8s")?;
+    if historian_total != post_total
+        || historian_reserve != post_reserve
+        || historian_excluded != post_excluded
+        || historian_liquid != post_liquid
+    {
+        return Err(format!(
+            "{dashboard_path}: historian monetary snapshot does not match post-redemption ledgers"
+        ));
+    }
+    let historian_calculated = calculate_redemption_economics(
+        historian_total,
+        historian_reserve,
+        &[historian_excluded],
+        historian_liquid,
+        redeemed,
+        icp_fee,
+    )?;
+    if historian_redeemable != historian_calculated.redeemable_supply_e8s
+        || historian_calculated.gross_icp_e8s != calculated.gross_icp_e8s
+        || historian_calculated.net_icp_e8s != calculated.net_icp_e8s
+    {
+        return Err(format!(
+            "{dashboard_path}: historian rate is inconsistent with the Stream quote snapshot"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_monitoring_evidence(
+    root: &Path,
+    package: &str,
+    package_manifest: &SimpleTomlDocument,
+    selected_current: bool,
+) -> Result<(), String> {
+    let source_commit = require_simple_string(
+        &format!("{package}/manifest.toml"),
+        package_manifest,
+        "provenance",
+        "io_release_source_commit",
+    )?;
+    let artifact_commit = require_simple_string(
+        &format!("{package}/manifest.toml"),
+        package_manifest,
+        "provenance",
+        "io_artifact_recording_commit",
+    )?;
+    validate_release_source_ancestor(root, &source_commit)?;
+    validate_release_source_ancestor(root, &artifact_commit)?;
+
+    let recorded_manifest = Command::new("git")
+        .current_dir(root)
+        .args(["show", &format!("{artifact_commit}:{MANIFEST_PATH}")])
+        .output()
+        .map_err(|err| format!("git show monitoring artifact manifest: {err}"))?;
+    if !recorded_manifest.status.success() {
+        return Err(format!(
+            "{package}: artifact-recording commit does not contain a release manifest"
+        ));
+    }
+    let evidence_manifest: ArtifactManifest = serde_json::from_slice(&recorded_manifest.stdout)
+        .map_err(|error| format!("{package}: recorded release manifest is invalid: {error}"))?;
+    if evidence_manifest.git_commit.as_deref() != Some(&source_commit) {
+        return Err(format!(
+            "{package}: artifact-recording manifest source does not match package source commit"
+        ));
+    }
+    if selected_current {
+        let current_manifest_text = require_file(root, MANIFEST_PATH)?;
+        if recorded_manifest.stdout != current_manifest_text.as_bytes() {
+            return Err(format!(
+                "{package}: selected current package artifact commit does not contain the exact current release manifest"
+            ));
+        }
+    }
+
+    let release_path = format!("{package}/release-evidence.toml");
+    let release_text = require_file(root, &release_path)?;
+    let release = parse_simple_toml_document(&release_path, &release_text)?;
+    if require_simple_string(&release_path, &release, "release", "source_commit")? != source_commit
+        || require_simple_string(
+            &release_path,
+            &release,
+            "release",
+            "artifact_recording_commit",
+        )? != artifact_commit
+        || require_simple_string(&release_path, &release, "release", "manifest_sha256")?
+            != hex_sha256(&recorded_manifest.stdout)
+    {
+        return Err(format!("{release_path}: release identity mismatch"));
+    }
+    for (canister, section) in [
+        ("io_stream_manager", "io_stream_manager"),
+        ("io_nns_neuron_manager", "io_nns_neuron_manager"),
+        ("io_historian", "io_historian"),
+        ("frontend", "io_frontend"),
+    ] {
+        let expected = evidence_manifest
+            .artifacts
+            .iter()
+            .find(|entry| entry.canister == canister)
+            .ok_or_else(|| format!("{MANIFEST_PATH}: missing {canister}"))?;
+        if require_simple_string(&release_path, &release, section, "raw_wasm_sha256")?
+            != expected.raw_wasm_sha256
+            || require_simple_string(&release_path, &release, section, "gzip_wasm_sha256")?
+                != expected.gz_wasm_sha256
+        {
+            return Err(format!(
+                "{release_path}: {section} hashes do not match the current manifest"
+            ));
+        }
+    }
+
+    let ids_path = format!("{package}/canister-ids.local.toml");
+    let ids_text = require_file(root, &ids_path)?;
+    validate_production_redemption_evidence(&ids_path, &ids_text)?;
+    let ids = parse_simple_toml_document(&ids_path, &ids_text)?;
+    if require_simple_string(&ids_path, &ids, "provenance", "io_release_source_commit")?
+        != source_commit
+        || require_simple_string(
+            &ids_path,
+            &ids,
+            "provenance",
+            "io_artifact_recording_commit",
+        )? != artifact_commit
+        || require_simple_string(
+            &ids_path,
+            &ids,
+            "provenance",
+            "historian_release_raw_sha256",
+        )? != require_simple_string(&release_path, &release, "io_historian", "raw_wasm_sha256")?
+        || require_simple_string(
+            &ids_path,
+            &ids,
+            "provenance",
+            "historian_payload_wasm_sha256",
+        )? != require_simple_string(&release_path, &release, "io_historian", "raw_wasm_sha256")?
+    {
+        return Err(format!(
+            "{ids_path}: monitoring release provenance is not cross-consistent"
+        ));
+    }
+    let governance_path = format!("{package}/governance-evidence.toml");
+    let governance_text = require_file(root, &governance_path)?;
+    let governance = parse_simple_toml_document(&governance_path, &governance_text)?;
+    let historian_release_raw =
+        require_simple_string(&release_path, &release, "io_historian", "raw_wasm_sha256")?;
+    let has_complete_upgrade_transition = governance
+        .get("upgrade")
+        .is_some_and(|section| section.contains_key("after_module_sha256"));
+    if selected_current && !has_complete_upgrade_transition {
+        return Err(format!(
+            "{governance_path}: selected current package must record the complete historian module transition"
+        ));
+    }
+    if has_complete_upgrade_transition {
+        let before = require_simple_string(
+            &governance_path,
+            &governance,
+            "upgrade",
+            "before_module_sha256",
+        )?;
+        let payload = require_simple_string(
+            &governance_path,
+            &governance,
+            "upgrade",
+            "payload_wasm_sha256",
+        )?;
+        let after = require_simple_string(
+            &governance_path,
+            &governance,
+            "upgrade",
+            "after_module_sha256",
+        )?;
+        let recorded_release = require_simple_string(
+            &governance_path,
+            &governance,
+            "upgrade",
+            "release_raw_sha256",
+        )?;
+        if before == after
+            || payload != historian_release_raw
+            || after != historian_release_raw
+            || recorded_release != historian_release_raw
+            || !require_simple_bool(&governance_path, &governance, "upgrade", "proposal_adopted")?
+            || !require_simple_bool(
+                &governance_path,
+                &governance,
+                "upgrade",
+                "proposal_executed",
+            )?
+            || !require_simple_bool(&governance_path, &governance, "upgrade", "executed")?
+        {
+            return Err(format!(
+                "{governance_path}: historian Governance upgrade does not prove an adopted, executed, hash-changing transition to the recorded release"
+            ));
+        }
+    }
+    let eligible_credit = require_simple_u128(&ids_path, &ids, "reward", "eligible_credit")?;
+    if eligible_credit == 0
+        || require_simple_u128(&governance_path, &governance, "reward", "eligible_credit")?
+            != eligible_credit
+        || require_simple_u128(&governance_path, &governance, "reward", "policy_credit")?
+            != require_simple_u128(&ids_path, &ids, "reward", "policy_credit")?
+    {
+        return Err(format!(
+            "{governance_path}: reward totals are not cross-consistent with {ids_path}"
+        ));
+    }
+
+    let dashboard_path = format!("{package}/historian-dashboard.log");
+    let dashboard = require_file(root, &dashboard_path)?;
+    require_present(
+        &dashboard_path,
+        &dashboard,
+        &[
+            "historian_dashboard=Dashboard",
+            "configured: true",
+            "freshness: Fresh",
+            "module_match: Matching",
+            "controllers: Some",
+            "total_io_supply_e8s: Some",
+            "protocol_reserve_io_e8s: Some",
+            "liquid_icp_reserve_e8s: Some",
+            "redemption_rate: Some",
+            "lifecycle: Ready",
+            "two_week_maturity_baseline_reconciled: true",
+            "latest_two_week_target: None",
+            "nns_governance: Some",
+            "build_metadata:",
+            "RewardBacking",
+            "TwoYearProtected",
+            "staked_maturity_e8s:",
+            "archive_canisters: []",
+            "num_blocks_synced:",
+            "transactions:",
+        ],
+    )?;
+    require_debug_some_value(&dashboard_path, &dashboard, "max_number_of_neurons", "1000")?;
+    require_debug_some_value(
+        &dashboard_path,
+        &dashboard,
+        "native_initial_reward_rate_basis_points",
+        "0",
+    )?;
+    require_debug_some_value(
+        &dashboard_path,
+        &dashboard,
+        "native_final_reward_rate_basis_points",
+        "0",
+    )
+}
+
+fn validate_committed_evidence_text(path: &str, text: &str) -> Result<(), String> {
+    let normalized = text.to_ascii_lowercase();
+    for marker in [
+        "-----begin private key-----",
+        "-----begin rsa private key-----",
+        "-----begin ec private key-----",
+        "-----begin openssh private key-----",
+        "identity.pem",
+        ".pem",
+        "seed phrase",
+        "mnemonic phrase",
+        "private_key",
+        "private-key",
+        "auth_token",
+        "access_token",
+        "--network ic",
+        "-n ic",
+        "icp-api.io",
+        "icp0.io",
+        "ic0.app",
+    ] {
+        if normalized.contains(marker) {
+            return Err(format!(
+                "{path}: committed evidence contains forbidden secret/private-key or mainnet material {marker:?}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn reject_completed_evidence_placeholders(path: &str, text: &str) -> Result<(), String> {
+    let normalized = text.to_ascii_lowercase();
+    for marker in [
+        "blocked",
+        "unavailable",
+        "not-installed",
+        "unknown",
+        "placeholder",
+        "todo",
+    ] {
+        if normalized.contains(marker) {
+            return Err(format!(
+                "{path}: completed evidence contains forbidden placeholder marker {marker:?}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_completed_toolchain_provenance(path: &str, text: &str) -> Result<(), String> {
+    let doc = parse_simple_toml_document(path, text)?;
+    let mut version_count = 0_usize;
+    for (section_name, section) in &doc {
+        for (key, value) in section {
+            if !key.ends_with("_version") {
+                continue;
+            }
+            let SimpleTomlValue::String(version) = value else {
+                return Err(format!("{path}: {section_name}.{key} must be a string"));
+            };
+            reject_completed_evidence_placeholders(path, version)?;
+            if version.trim().is_empty() {
+                return Err(format!(
+                    "{path}: {section_name}.{key} must contain an exact version"
+                ));
+            }
+            let hash_key = format!("{}_sha256", key.trim_end_matches("_version"));
+            let Some(SimpleTomlValue::String(hash)) = section.get(&hash_key) else {
+                return Err(format!(
+                    "{path}: {section_name}.{key} requires matching {hash_key}"
+                ));
+            };
+            if hash.len() != 64
+                || !hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            {
+                return Err(format!(
+                    "{path}: {section_name}.{hash_key} must be an exact lowercase SHA-256"
+                ));
+            }
+            version_count += 1;
+        }
+    }
+    if version_count == 0 {
+        return Err(format!(
+            "{path}: completed evidence must record at least one exact tool version and matching SHA-256"
+        ));
+    }
+    Ok(())
+}
+
+fn list_regular_files_relative(dir: &Path) -> Result<BTreeSet<String>, String> {
+    fn walk(base: &Path, current: &Path, out: &mut BTreeSet<String>) -> Result<(), String> {
+        for entry in fs::read_dir(current).map_err(|err| format!("{}: {err}", current.display()))? {
+            let entry = entry.map_err(|err| format!("{}: {err}", current.display()))?;
+            let path = entry.path();
+            let ty = entry
+                .file_type()
+                .map_err(|err| format!("{}: {err}", path.display()))?;
+            if ty.is_dir() {
+                walk(base, &path, out)?;
+            } else if ty.is_file() {
+                let rel = path
+                    .strip_prefix(base)
+                    .map_err(|err| format!("{}: {err}", path.display()))?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if Path::new(&rel)
+                    .components()
+                    .any(|component| !matches!(component, std::path::Component::Normal(_)))
+                {
+                    return Err(format!(
+                        "{}: evidence package path must be traversal-free",
+                        path.display()
+                    ));
+                }
+                if !out.insert(rel) {
+                    return Err(format!(
+                        "{}: duplicate evidence package path",
+                        path.display()
+                    ));
+                }
+            } else {
+                return Err(format!(
+                    "{}: evidence packages reject symlinks and non-regular files",
+                    path.display()
+                ));
+            }
+        }
+        Ok(())
+    }
+    let mut out = BTreeSet::new();
+    walk(dir, dir, &mut out)?;
+    Ok(out)
+}
+
+fn validate_evidence_package_sha256s(
+    root: &Path,
+    rel: &str,
+    package_files: &BTreeSet<String>,
+) -> Result<(), String> {
+    let sha_path = format!("{rel}/SHA256SUMS");
+    let sha_text = require_file(root, &sha_path)?;
+    let mut covered = BTreeSet::new();
+    for line in sha_text.lines().filter(|line| !line.trim().is_empty()) {
+        let (hash, file) = line
+            .split_once("  ")
+            .ok_or_else(|| format!("{sha_path}: invalid sha256sum line {line:?}"))?;
+        if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(format!("{sha_path}: invalid SHA-256 hash for {file}"));
+        }
+        if file == "SHA256SUMS"
+            || Path::new(file)
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(format!("{sha_path}: invalid covered path {file}"));
+        }
+        let bytes =
+            fs::read(root.join(rel).join(file)).map_err(|err| format!("{rel}/{file}: {err}"))?;
+        let actual = hex_sha256(&bytes);
+        if actual != hash.to_ascii_lowercase() {
+            return Err(format!("{rel}/{file}: SHA-256 mismatch"));
+        }
+        if !covered.insert(file.to_string()) {
+            return Err(format!("{sha_path}: duplicate SHA256SUMS entry for {file}"));
+        }
+    }
+    let expected: BTreeSet<String> = package_files
+        .iter()
+        .filter(|file| file.as_str() != "SHA256SUMS")
+        .cloned()
+        .collect();
+    if covered != expected {
+        return Err(format!(
+            "{sha_path}: SHA256SUMS must cover every package file except itself"
+        ));
+    }
+    Ok(())
 }
 
 fn check_e2e_coverage_matrix_at(root: &Path) -> Result<(), String> {
@@ -2583,17 +6936,10 @@ fn check_e2e_coverage_matrix_at(root: &Path) -> Result<(), String> {
         &matrix,
         &[
             "real SNS ledger",
-            "real SNS index",
-            "real SNS governance",
-            "SNS neuron staking",
-            "APY increase",
-            "reserve transfer",
-            "duplicate proof",
-            "index lag",
-            "archive-required",
-            "mid-flight upgrade",
-            "historian/frontend honesty",
-            "No current all-real-canister PocketIC E2E test exists",
+            "Installed direct-reserve redemption",
+            "Exact reward allocation",
+            "Historian separation",
+            "Scanner-era tests are historical",
         ],
     )?;
     let inventory = require_file(root, inventory_path)?;
@@ -2601,12 +6947,10 @@ fn check_e2e_coverage_matrix_at(root: &Path) -> Result<(), String> {
         inventory_path,
         &inventory,
         &[
-            "real SNS neuron staking",
-            "real SNS governance maturity/rewards",
-            "real SNS index account history",
-            "IO APY increase from real SNS staked IO",
-            "full ICP -> IO -> stake -> APY -> redemption E2E",
-            "not proved",
+            "io-core-model",
+            "io-reward-policy",
+            "installed serialized redemption",
+            "Historical scanner/journal coverage",
         ],
     )?;
     let scenarios = require_file(root, scenarios_path)?;
@@ -2614,14 +6958,14 @@ fn check_e2e_coverage_matrix_at(root: &Path) -> Result<(), String> {
         scenarios_path,
         &scenarios,
         &[
-            "ICP deposit -> IO reserve issuance",
-            "User stakes IO into SNS neuron",
-            "User increases IO neuron stake",
-            "SNS governance unavailable",
-            "SNS index lag",
-            "Archive-required account history",
-            "Mid-flight upgrade",
-            "Frontend never calls value-moving canisters",
+            "Serialized redemption",
+            "Jupiter 40/60",
+            "Direct maturity",
+            "Exact rewards",
+            "One unwind child",
+            "Historian and frontend",
+            "Transport ambiguity",
+            "Every upgrade returns Paused",
         ],
     )?;
     Ok(())
@@ -2631,32 +6975,19 @@ fn check_live_stream_manager_pocketic_gate_at(root: &Path) -> Result<(), String>
     let script_path = "tools/scripts/run-io-stream-manager-live-pocketic";
     let docs_path = "docs/testing/current-test-inventory.md";
     let script = require_file(root, script_path)?;
-    let required_tests = [
-        "live::proof_found_after_submitted_upgrade_completes_once",
-        "live::pending_fee_repreflight_survives_actual_same_wasm_upgrade",
-        "live::submitted_attempt_without_callback_recovers_after_actual_same_wasm_upgrade",
-        "live::proof_required_without_cursor_recovers_after_actual_same_wasm_upgrade",
-        "live::spent_uncommitted_reservation_survives_actual_same_wasm_upgrade",
-        "live::partial_distribution_fee_change_never_retransfers_prior_recipient",
-        "live::zero_recipient_reward_creates_no_io_ledger_transfer",
-        "live::pocketic_live_two_week_partial_allocation_failure_does_not_double_pay_retry",
-        "live::governance_outage_cannot_skip_blocked_reward_via_newer_transaction",
-        "live::governance_snapshot_unavailable_does_not_convert_reward_to_dust",
-        "live::pocketic_live_index_lag_blocks_scan_then_resolves_once",
-        "live::pocketic_live_second_two_week_reward_after_completed_reward_succeeds",
-    ];
+    let required_tests = ["installed_stream_real_sns_icrc2_redemption"];
     require_present(
         script_path,
         &script,
         &[
             "POCKET_IC_BIN=${POCKET_IC_BIN}",
             "\"${POCKET_IC_BIN}\" --version",
-            "-- --exact --list",
-            "-- --exact --nocapture",
+            "-- --ignored --exact --list",
+            "-- --ignored --exact --nocapture",
             "required test was not discovered exactly once",
             "required test did not report an explicit pass",
             "required test output looks like a skip instead of proof",
-            "cargo test -p io-stream-manager --test io_stream_manager_pocketic",
+            "cargo test -p e2e-real-canisters",
             "live PocketIC tests genuinely ran:",
         ],
     )?;
@@ -2736,9 +7067,10 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
         &[
             "real_sns_ledger_index_smoke",
             "real_sns_ledger_index_same_wasm_upgrade_preserves_balances_history_and_duplicates",
+            "real_sns_icrc2_direct_reserve_pull",
+            "installed_stream_real_sns_icrc2_redemption",
             "real_sns_governance_staking_smoke",
             "real_canister_e2e_icp_to_io_stake_reward_redemption",
-            "exact_economics",
             "framework",
             "nns_setup",
             "sns_governance_setup",
@@ -2841,52 +7173,6 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
             "local_network_launches_with_nns_sns_features",
         ],
     )?;
-    let io_protocol_real_stack = require_file(
-        root,
-        "tests/e2e_real_canisters/src/io_protocol_real_stack.rs",
-    )?;
-    require_present(
-        "tests/e2e_real_canisters/src/io_protocol_real_stack.rs",
-        &io_protocol_real_stack,
-        &[
-            "io_stream_manager_real_jupiter_deposit_scanned_from_real_icp_index",
-            "io_stream_manager_real_two_week_maturity_5_icp_issues_exact_backed_reward_pool",
-            "io_stream_manager_real_two_week_maturity_rewards_only_eligible_stakers",
-            "io_stream_manager_real_sns_topup_increases_active_staked_io",
-            "io_stream_manager_real_redemption_pays_icp_on_real_local_ledger",
-            "io_stream_manager_real_redemption_rounding_fee_dust_accounted",
-            "io_stream_manager_real_redemption_reads_actual_sns_ledger_fee",
-            "io_stream_manager_real_redemption_fee_change_is_observed_on_next_operation",
-            "io_stream_manager_real_redemption_below_io_return_fee_fails_closed",
-            "io_stream_manager_real_redemption_rejects_insufficient_redeemable_supply",
-            "io_stream_manager_real_redemption_after_index_lag_waits_or_fails_closed",
-            "real_stack_rejected_refund_too_old_waits_for_index_proof_no_double_refund",
-            "real_finalized_sns_four_role_reward_reconciles_exactly_once",
-            "real_finalized_sns_frozen_cohort_blocks_late_stake_and_duration_bonus",
-            "real_finalized_sns_zero_recipient_reward_retains_full_pool_as_dust",
-            "io_stream_manager_real_redemption_after_holder_yield_is_higher_than_genesis",
-            "io_stream_manager_real_redemption_after_staker_rewards_preserves_rate",
-            "real_stack_same_wasm_upgrade_preserves_operation_journal",
-            "real_stack_same_wasm_upgrade_preserves_scheduler_cursors",
-            "real_stack_same_wasm_upgrade_preserves_processed_tx_set",
-            "JUPITER_EXPECTED_IO_E8S",
-            "fund_real_jupiter_deposit",
-        ],
-    )?;
-    let exact_economics = require_file(root, "tests/e2e_real_canisters/src/exact_economics.rs")?;
-    require_present(
-        "tests/e2e_real_canisters/src/exact_economics.rs",
-        &exact_economics,
-        &[
-            "run_exact_economics",
-            "StreamKind::JupiterFaucet",
-            "StreamKind::TwoYearMaturity",
-            "StreamKind::TwoWeekMaturity",
-            "allocate_rewards",
-            "advance_time",
-            "redeem_io",
-        ],
-    )?;
     let framework = require_file(root, "tests/e2e_real_canisters/src/framework.rs")?;
     require_present(
         "tests/e2e_real_canisters/src/framework.rs",
@@ -2903,20 +7189,17 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
     require_present(
         "tests/e2e_real_canisters/src/sns_ledger_index.rs",
         &ledger_index,
-        &["create_sns_canister"],
-    )?;
-    let live_stream_manager = require_file(root, "tests/pocketic/io_stream_manager_pocketic.rs")?;
-    require_present(
-        "tests/pocketic/io_stream_manager_pocketic.rs",
-        &live_stream_manager,
-        &["partial_distribution_fee_change_never_retransfers_prior_recipient"],
+        &[
+            "create_sns_canister",
+            "run_icrc2_direct_reserve_pull",
+            "run_installed_stream_redemption",
+        ],
     )?;
     require_absent(harness_path, &harness, &["--network ic", "dfx "])?;
     for path in [
         cargo_path,
         "tests/e2e_real_canisters/src/artifacts.rs",
         "tests/e2e_real_canisters/src/brief_blockers.rs",
-        "tests/e2e_real_canisters/src/exact_economics.rs",
         "tests/e2e_real_canisters/src/icrc.rs",
         "tests/e2e_real_canisters/src/pocketic_env.rs",
         "tests/e2e_real_canisters/src/framework.rs",
@@ -3083,8 +7366,8 @@ fn check_sns_harness_at(root: &Path) -> Result<(), String> {
         &local_sns_doc,
         &[
             "Pure model tests remain the main accounting guardrail",
-            "Mock and PocketIC tests remain the main journal, retry, and upgrade guardrail",
-            "We currently run SNS-shaped mock/PocketIC tests.",
+            "Mock and PocketIC tests exercise bounded failures, retry and upgrade behavior",
+            "Required CI uses SNS-shaped mock/PocketIC tests.",
             "Four-Layer Compatibility Model",
             "Official SNS Local Launch Rehearsal",
             "optional, local-only, and not part of `test_ci` or `verify_release`",
@@ -3163,7 +7446,7 @@ fn check_sns_harness_at(root: &Path) -> Result<(), String> {
             "not part of `test_ci`",
             "not used by `verify_release`",
             "must not call mainnet",
-            "dfx sns",
+            "source-built sns",
             "Do not use --network ic",
         ],
     )?;
@@ -3745,41 +8028,42 @@ fn check_historian_freshness_at(root: &Path) -> Result<(), String> {
     check_did_surface_at(root, false)?;
     check_prelaunch_public_shell_at(root)?;
 
-    let historian_source = require_file(root, "canisters/io_historian/src/lib.rs")?;
+    let historian_source = [
+        "canisters/io_historian/src/lib.rs",
+        "canisters/io_historian/src/model.rs",
+        "canisters/io_historian/src/adapters.rs",
+    ]
+    .into_iter()
+    .map(|path| require_file(root, path))
+    .collect::<Result<Vec<_>, _>>()?
+    .join("\n");
     require_present(
         "canisters/io_historian/src/lib.rs",
         &historian_source,
         &[
-            "HistorianIngestionSource",
-            "HistorianObservation",
-            "IngestionBatch",
-            "IngestionSourceKind",
+            "ObservationConfig",
             "ObservationFreshness",
             "SourceHealth",
-            "IngestionCursor",
-            "IngestionWatermark",
-            "StalenessPolicy",
-            "ReleaseArtifacts",
-            "CanisterStatusModuleHash",
-            "IcpIndexHealth",
-            "FutureIoSnsIndexHealth",
-            "NnsGovernanceFreshness",
-            "SnsGovernanceFreshness",
             "ProtocolSnapshot",
-            "ReserveSnapshot",
-            "FrontendDashboardFreshness",
+            "CanisterObservation",
+            "StreamStatus",
+            "NnsManagerStatus",
+            "SnsStatus",
+            "IndexStatus",
             "Fresh",
             "Stale",
             "Missing",
-            "Incomplete",
-            "ObservedOnly",
-            "PrelaunchNotApplicable",
+            "PrelaunchNotConfigured",
             "ErrorRetryable",
             "Unknown",
-            "EXPECTED_RELEASE_ARTIFACT_CANISTERS",
-            "source_health_from_state",
-            "canonical SNS IO ledger is not launched",
-            "index canisters remain the normal account-history abstraction",
+            "coherent_protocol_snapshot",
+            "get_sns_canisters_summary",
+            "get_nervous_system_parameters",
+            "get_latest_reward_event",
+            "get_account_transactions",
+            "icrc1_total_supply",
+            "icrc1_balance_of",
+            "set_timer",
         ],
     )?;
     require_absent(
@@ -3791,7 +8075,17 @@ fn check_historian_freshness_at(root: &Path) -> Result<(), String> {
             "bounded_wait(canister, \"redeem\"",
         ],
     )?;
-    check_historian_current_time_path("canisters/io_historian/src/lib.rs", &historian_source)?;
+    require_absent(
+        "historian production sources",
+        &historian_source,
+        &[
+            "pub fn configure",
+            "pub fn ingest",
+            "frozen_cohort",
+            "participation_numerator",
+            "scan_blocks",
+        ],
+    )?;
 
     let historian_did = require_file(root, "canisters/io_historian/io_historian.did")?;
     require_present(
@@ -3803,16 +8097,6 @@ fn check_historian_freshness_at(root: &Path) -> Result<(), String> {
         "canisters/io_historian/io_historian.did",
         &historian_did,
         &["debug_", " ingest_", " update"],
-    )?;
-
-    let debug_did = require_file(root, "canisters/io_historian/io_historian_debug.did")?;
-    require_present(
-        "canisters/io_historian/io_historian_debug.did",
-        &debug_did,
-        &[
-            "debug_ingest_protocol_snapshot",
-            "debug_ingest_index_health",
-        ],
     )?;
 
     let frontend_transform = require_file(
@@ -3836,11 +8120,11 @@ fn check_historian_freshness_at(root: &Path) -> Result<(), String> {
         "canisters/frontend/web/test/dashboard-transforms.test.mjs",
         &frontend_transform_test,
         &[
-            "PrelaunchNotApplicable",
+            "PrelaunchNotConfigured",
             "Stale",
-            "Incomplete",
+            "ErrorRetryable",
             "Missing",
-            "not deployed/not allocated",
+            "never displayed as zero",
         ],
     )?;
     let frontend_renderer =
@@ -3858,7 +8142,6 @@ fn check_historian_freshness_at(root: &Path) -> Result<(), String> {
     )?;
 
     for path in [
-        "canisters/frontend/web/src/app/agent.js",
         "canisters/frontend/web/src/data/historian-loaders.js",
         "canisters/frontend/web/src/data/dashboard-transforms.js",
         "canisters/frontend/web/src/ui/dashboard-renderer.js",
@@ -3879,6 +8162,28 @@ fn check_historian_freshness_at(root: &Path) -> Result<(), String> {
             ],
         )?;
     }
+    let frontend_agent = require_file(root, "canisters/frontend/web/src/app/agent.js")?;
+    require_present(
+        "canisters/frontend/web/src/app/agent.js",
+        &frontend_agent,
+        &[
+            "io_historian/io_historian.did.js",
+            "io_stream_manager/io_stream_manager.did.js",
+            "io_ledger/io_ledger.did.js",
+            "createRedemptionActors",
+        ],
+    )?;
+    require_absent(
+        "canisters/frontend/web/src/app/agent.js",
+        &frontend_agent,
+        &[
+            ".dfx",
+            "src/declarations",
+            "io_historian_debug",
+            "io_nns_neuron_manager",
+            "debug_",
+        ],
+    )?;
     check_historian_js_declaration_at(root)?;
 
     let phase1 = require_file(root, DEV_MAINNET_CONFIG_PATH)?;
@@ -3938,7 +8243,7 @@ fn check_historian_freshness_at(root: &Path) -> Result<(), String> {
                 "not a value-moving authority",
                 "IO protocol is not live",
                 "SNS IO ledger remains not launched",
-                "missing/stale/incomplete",
+                "missing/stale/error",
                 "index canisters",
             ],
         )?;
@@ -3949,7 +8254,7 @@ fn check_historian_freshness_at(root: &Path) -> Result<(), String> {
         &freshness_doc,
         &[
             "current historian/canister time",
-            "source timestamps or source watermarks",
+            "timestamp of the coherent refresh generation",
             "no newer observations arrive",
         ],
     )?;
@@ -4025,16 +8330,19 @@ fn check_stable_storage_at(root: &Path) -> Result<(), String> {
                 }
             }
         }
-        if entry.canister_name == "io_stream_manager"
-            && !entry
-                .fixture_files
-                .iter()
-                .any(|fixture| fixture.ends_with("v1-scalar-reward-reservation.fixture"))
+        if matches!(
+            entry.canister_name,
+            "io_stream_manager" | "io_nns_neuron_manager"
+        ) && (entry.current_version != 1
+            || !entry.previous_supported_versions.is_empty()
+            || !entry.migration_paths.is_empty()
+            || entry.fixture_files.len() != 1
+            || !entry.fixture_files[0].ends_with("launch-v1.fixture"))
         {
-            return Err(
-                "io_stream_manager: v1 scalar reward reservation fixture must be registered"
-                    .to_string(),
-            );
+            return Err(format!(
+                "{} must register launch V1 only",
+                entry.canister_name
+            ));
         }
     }
 
@@ -4045,211 +8353,55 @@ fn check_stable_storage_at(root: &Path) -> Result<(), String> {
         &[
             "io_stream_manager",
             "io_nns_neuron_manager",
-            "io_historian",
-            "corrupt value-moving state must fail closed",
-            "missing first-install state",
-            "stable-state fixtures are local/test fixtures, not live snapshots",
-            "IO protocol remains not live",
-            "SNS IO ledger remains not launched",
+            "only `V1",
+            "Install always writes Paused",
+            "No stream/NNS V0",
         ],
     )?;
-
-    let compaction_doc = require_file(root, "docs/architecture/journal-compaction.md")?;
+    let stream_source = require_file(root, "canisters/io_stream_manager/src/state.rs")?;
+    let nns_source = require_file(root, "canisters/io_nns_neuron_manager/src/state.rs")?;
     require_present(
-        "docs/architecture/journal-compaction.md",
-        &compaction_doc,
+        "launch V1 stable envelopes",
+        &format!("{stream_source}\n{nns_source}"),
         &[
-            "pending operation journals",
-            "processed transaction IDs",
-            "must never be compacted before audit/activation",
-            "duplicate retry/idempotency",
-            "historian read model",
-        ],
-    )?;
-
-    let stable_structures_doc =
-        require_file(root, "docs/architecture/stable-structures-evaluation.md")?;
-    require_present(
-        "docs/architecture/stable-structures-evaluation.md",
-        &stable_structures_doc,
-        &[
-            "serialized whole-state snapshots",
-            "ic-stable-structures",
-            "defer",
-            "schema evolution",
-            "test requirements",
-        ],
-    )?;
-
-    let readiness = require_file(root, "docs/operations/mainnet-readiness.md")?;
-    let production_wiring = require_file(root, "docs/operations/production-wiring.md")?;
-    let combined_ops = format!("{readiness}\n{production_wiring}");
-    require_present(
-        "stable storage operations docs",
-        &combined_ops,
-        &[
-            "No value-moving IO canister is deployed to production",
-            "production adapters are not active",
-            "historian is a rebuildable read model",
-            "protected canister/neuron remain untouched",
-            PROTECTED_IO_NEURON_OWNER_CANISTER,
-            "6345890886899317159",
-        ],
-    )?;
-    require_absent(
-        "stable storage operations docs",
-        &combined_ops,
-        &["--network ic", "dfx canister", "dfx deploy"],
-    )?;
-
-    let stream_source = require_file(root, "canisters/io_stream_manager/src/lib.rs")?;
-    let nns_source = require_file(root, "canisters/io_nns_neuron_manager/src/lib.rs")?;
-    let historian_source = require_file(root, "canisters/io_historian/src/lib.rs")?;
-    require_present(
-        "stable migration source",
-        &format!("{stream_source}\n{nns_source}\n{historian_source}"),
-        &[
-            "migrate_stable_state",
-            "UnsupportedFutureVersion",
-            "default_first_install_stable_state",
-            "stable state is missing or corrupt during upgrade",
+            "enum StableStreamState",
+            "enum StableNnsState",
+            "invalid stable stream V1 state",
+            "invalid stable NNS V1 state",
         ],
     )?;
     Ok(())
 }
 
 fn check_exact_two_week_policy_at(root: &Path) -> Result<(), String> {
-    let scanned_paths = [
-        "crates/io_core_model/src/lib.rs",
-        "crates/io_governance_types/src/lib.rs",
-        "crates/io_reward_policy/src/lib.rs",
-        "canisters/io_stream_manager/src/lib.rs",
-        "canisters/io_stream_manager/src/scheduler/mod.rs",
-        "canisters/io_stream_manager/src/governance_snapshot.rs",
-        "canisters/io_stream_manager/src/state.rs",
-        "canisters/io_stream_manager/src/logic.rs",
-        "canisters/io_nns_neuron_manager/src/lib.rs",
-        "canisters/io_historian/src/lib.rs",
-    ];
-    let forbidden = [
-        "eligible_seconds",
-        "eligible_since_overrides",
-        "stake_time",
-        "stake-time",
-        "minimum_dissolve_delay_seconds",
-    ];
-    for path in scanned_paths {
-        let text = require_file(root, path)?;
-        let lines = text.lines().collect::<Vec<_>>();
-        for (line_index, line) in lines.iter().enumerate() {
-            for needle in forbidden {
-                if line.contains(needle)
-                    && !legacy_historian_policy_remnant_allowed(path, &lines, line_index, needle)
-                {
-                    return Err(format!(
-                        "{path}:{} contains forbidden reward policy remnant {needle}",
-                        line_index + 1
-                    ));
-                }
-            }
-            if line.contains("two_week_pool_backing_bps")
-                && path != "canisters/io_stream_manager/src/lib.rs"
-            {
-                return Err(format!(
-                    "{path}:{} contains runtime backing-bps remnant",
-                    line_index + 1
-                ));
-            }
-            if line.contains("two_week_dissolve_seconds")
-                && path != "canisters/io_nns_neuron_manager/src/lib.rs"
-            {
-                return Err(format!(
-                    "{path}:{} contains runtime two-week duration-config remnant",
-                    line_index + 1
-                ));
-            }
-        }
-    }
-
-    let core = require_file(root, "crates/io_core_model/src/lib.rs")?;
+    let reward_policy = require_file(root, "crates/io_reward_policy/src/lib.rs")?;
     require_present(
-        "exact two-week core policy",
-        &core,
+        "daily entitlement allocation policy",
+        &reward_policy,
         &[
-            "pub const TWO_WEEK_SECONDS",
-            "preview_stream",
-            "StreamKind::TwoWeekMaturity",
+            "unequal_credits_allocate_a_large_pool_one_to_two_to_three",
+            "tiny_pool_has_deterministic_dust_and_conserves_the_pool",
+            "zero_eligible_credit_forfeits_the_full_pool",
         ],
     )?;
-    let governance = require_file(root, "crates/io_governance_types/src/lib.rs")?;
+    let stream_state = require_file(root, "canisters/io_stream_manager/src/state.rs")?;
     require_present(
-        "exact SNS eligibility policy",
-        &governance,
+        "stream-manager bounded entitlement slots",
+        &stream_state,
         &[
-            "required_dissolve_delay_seconds",
-            "neuron.dissolve_delay_seconds < policy.required_dissolve_delay_seconds",
-            "neuron.dissolve_delay_seconds > policy.required_dissolve_delay_seconds",
-            "dissolve delay below two weeks",
-            "dissolve delay above two weeks",
+            "RewardEntitlementAccumulator",
+            "PendingEntitlementBatch",
+            "MAX_ENTRIES",
         ],
     )?;
-    let scheduler = require_file(root, "canisters/io_stream_manager/src/scheduler/mod.rs")?;
+    let rewards = require_file(root, "canisters/io_stream_manager/src/rewards.rs")?;
+    let reward_evidence = require_file(root, "canisters/io_stream_manager/src/reward_evidence.rs")?;
     require_present(
-        "stream-manager reward cohort policy",
-        &scheduler,
-        &[
-            "capture_reward_cohort_from_snapshot",
-            "cohort_reward_participants",
-            "event_timestamp_seconds <= cohort.captured_at_timestamp_seconds",
-            "two-week maturity event does not postdate reward cohort capture",
-            "two-week maturity event is beyond reward cohort expiry",
-            "TWO_WEEK_SECONDS",
-        ],
-    )?;
-    let stream_pocketic = require_file(root, "tests/pocketic/io_stream_manager_pocketic.rs")?;
-    require_present(
-        "stream-manager live reward cohort tests",
-        &stream_pocketic,
-        &["consumed_reward_cohort_survives_actual_same_wasm_upgrade"],
-    )?;
-    let stream = require_file(root, "canisters/io_stream_manager/src/lib.rs")?;
-    require_present(
-        "stream-manager legacy backing migration",
-        &stream,
-        &[
-            "LegacyPreV3StableState",
-            "LegacyPreV3VersionedStableState",
-            "two_week_pool_backing_bps",
-            "legacy two_week_pool_backing_bps must be 10_000",
-        ],
-    )?;
-    let nns = require_file(root, "canisters/io_nns_neuron_manager/src/lib.rs")?;
-    require_present(
-        "NNS-manager legacy duration migration",
-        &nns,
-        &[
-            "LegacyPreV2NnsNeuronManagerConfig",
-            "LegacyPreV2VersionedStableState",
-            "two_week_dissolve_seconds",
-            "legacy two_week_dissolve_seconds must be 1_209_600",
-        ],
+        "stream-manager daily event and backing separation",
+        &format!("{rewards}\n{reward_evidence}"),
+        &["event_credits", "merge_event_credits", "freeze_and_prepare"],
     )?;
     Ok(())
-}
-
-fn legacy_historian_policy_remnant_allowed(
-    path: &str,
-    lines: &[&str],
-    line_index: usize,
-    needle: &str,
-) -> bool {
-    if path != "canisters/io_historian/src/lib.rs" || needle != "eligible_seconds" {
-        return false;
-    }
-    let start = line_index.saturating_sub(24);
-    lines[start..=line_index]
-        .iter()
-        .any(|line| line.contains("LegacyV1"))
 }
 
 fn fixture_schema_version(fixture: &str, text: &str) -> Result<u32, String> {
@@ -4259,25 +8411,6 @@ fn fixture_schema_version(fixture: &str, text: &str) -> Result<u32, String> {
         .ok_or_else(|| format!("{fixture}: missing schema_version line"))?;
     raw.parse::<u32>()
         .map_err(|err| format!("{fixture}: invalid schema_version {raw}: {err}"))
-}
-
-fn check_historian_current_time_path(path: &str, text: &str) -> Result<(), String> {
-    require_present(
-        path,
-        text,
-        &[
-            "pub fn source_health_from_state_at",
-            "fn historian_now_timestamp_nanos() -> u64",
-            "ic_cdk::api::time()",
-            "source_health_from_state_at(state, historian_now_timestamp_nanos())",
-            "source_health_from_state_at(&state,",
-        ],
-    )?;
-    require_absent(
-        path,
-        text,
-        &["pub fn source_health_from_state(state: &StableState) -> Vec<SourceHealth> {\n    let now = latest_observation_timestamp(state);"],
-    )
 }
 
 fn validate_no_install_args_did(root: &Path, path: &str) -> Result<(), String> {
@@ -4291,6 +8424,19 @@ fn validate_no_install_args_did(root: &Path, path: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_historian_install_args_did(root: &Path, path: &str) -> Result<(), String> {
+    let text = read_file(root, path)?;
+    require_present(
+        path,
+        &text,
+        &[
+            "type ObservationConfig",
+            "service : (opt ObservationConfig)",
+        ],
+    )?;
+    require_absent(path, &text, &[" configure :", " ingest :", " set_config :"])
+}
+
 fn run_security_scan(required: bool) -> bool {
     let mode = if required { "required" } else { "permissive" };
     run(
@@ -4300,7 +8446,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, simplicity_check, validate_nns_boundary_pin, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_evidence_package, validate_local_sns_committed_evidence, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, build_recorded_source, verify_recorded_source, compare_release_artifact_dirs, nns_neuron_staking_subaccount, sns_distribution_subaccount, calculate_redemption_economics, index_transfer_block, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -4310,6 +8456,9 @@ fn main() -> ExitCode {
     } else {
         args.remove(0)
     };
+    if cmd == "sns_framework" {
+        return sns_framework::run(&args);
+    }
     let root = PathBuf::from(".");
     let mut ok = true;
     match cmd.as_str() {
@@ -4329,13 +8478,45 @@ fn main() -> ExitCode {
                 ok = false;
             }
         },
+        "simplicity_check" => match check_simplicity_at(&root) {
+            Ok(()) => eprintln!("✓ simplicity_check"),
+            Err(err) => {
+                eprintln!("✗ simplicity_check: {err}");
+                ok = false;
+            }
+        },
+        "validate_nns_boundary_pin" => match check_nns_boundary_pin_at(&root) {
+            Ok(()) => eprintln!("✓ validate_nns_boundary_pin"),
+            Err(err) => {
+                eprintln!("✗ validate_nns_boundary_pin: {err}");
+                ok = false;
+            }
+        },
         "build_canisters" => {
-            ok &= run_subcommand("frontend_setup");
+            let source_commit = release_source_commit(&root);
+            if let Err(err) = &source_commit {
+                eprintln!("✗ build_canisters source: {err}");
+                ok = false;
+            }
+            if ok {
+                ok &= run_subcommand("frontend_setup");
+            }
+            if ok {
+                match release_source_commit(&root) {
+                    Ok(_) => eprintln!("✓ build_canisters source unchanged after frontend setup"),
+                    Err(err) => {
+                        eprintln!("✗ build_canisters post-frontend source: {err}");
+                        ok = false;
+                    }
+                }
+            }
             for canister in RELEASE_CANISTERS {
-                ok &= run(
-                    &format!("build canister: {}", canister.package),
-                    build_canister(canister.package, RELEASE_PROFILE),
-                );
+                if ok {
+                    ok &= run(
+                        &format!("build canister: {}", canister.package),
+                        build_canister(canister.package, RELEASE_PROFILE),
+                    );
+                }
             }
             if ok {
                 match write_manifest(&root) {
@@ -4351,6 +8532,163 @@ fn main() -> ExitCode {
                 Err(err) => {
                     eprintln!("✗ build_canisters artifacts: {err}");
                     ok = false;
+                }
+            }
+        }
+        "build_recorded_source" => match manifest_source_commit(&root) {
+            Ok(Some(source_commit)) => {
+                ok &= run(
+                    "build exact recorded release source",
+                    script("tools/scripts/build-release-from-source", &[&source_commit]),
+                );
+            }
+            Ok(None) => {
+                eprintln!("✗ build_recorded_source: {MANIFEST_PATH} is missing");
+                ok = false;
+            }
+            Err(err) => {
+                eprintln!("✗ build_recorded_source: {err}");
+                ok = false;
+            }
+        },
+        "verify_recorded_source" => match manifest_source_commit(&root) {
+            Ok(Some(source_commit)) => {
+                ok &= run(
+                    "verify checked-in artifacts and repeated exact-source builds",
+                    script(
+                        "tools/scripts/verify-release-from-source",
+                        &[&source_commit],
+                    ),
+                );
+            }
+            Ok(None) => {
+                eprintln!("✗ verify_recorded_source: {MANIFEST_PATH} is missing");
+                ok = false;
+            }
+            Err(err) => {
+                eprintln!("✗ verify_recorded_source: {err}");
+                ok = false;
+            }
+        },
+        "compare_release_artifact_dirs" => {
+            if args.len() != 2 {
+                eprintln!("✗ compare_release_artifact_dirs: expected <first-directory> <second-directory>");
+                return ExitCode::from(2);
+            }
+            match compare_release_artifact_dirs(Path::new(&args[0]), Path::new(&args[1])) {
+                Ok(()) => eprintln!("✓ compare_release_artifact_dirs"),
+                Err(err) => {
+                    eprintln!("✗ compare_release_artifact_dirs: {err}");
+                    ok = false;
+                }
+            }
+        }
+        "nns_neuron_staking_subaccount" => {
+            if args.len() != 2 {
+                eprintln!(
+                    "✗ nns_neuron_staking_subaccount: expected <controller-principal> <nonce>"
+                );
+                return ExitCode::from(2);
+            }
+            let controller = match Principal::from_text(&args[0]) {
+                Ok(controller) => controller,
+                Err(err) => {
+                    eprintln!("✗ nns_neuron_staking_subaccount: invalid principal: {err}");
+                    return ExitCode::from(2);
+                }
+            };
+            let nonce = match args[1].parse::<u64>() {
+                Ok(nonce) => nonce,
+                Err(err) => {
+                    eprintln!("✗ nns_neuron_staking_subaccount: invalid nonce: {err}");
+                    return ExitCode::from(2);
+                }
+            };
+            println!("{}", nns_neuron_staking_subaccount(controller, nonce));
+        }
+        "sns_distribution_subaccount" => {
+            if args.len() != 2 {
+                eprintln!("✗ sns_distribution_subaccount: expected <governance-principal> <nonce>");
+                return ExitCode::from(2);
+            }
+            let controller = match Principal::from_text(&args[0]) {
+                Ok(value) => value,
+                Err(err) => {
+                    eprintln!("✗ sns_distribution_subaccount: invalid principal: {err}");
+                    return ExitCode::from(2);
+                }
+            };
+            let nonce = match args[1].parse::<u64>() {
+                Ok(value) => value,
+                Err(err) => {
+                    eprintln!("✗ sns_distribution_subaccount: invalid nonce: {err}");
+                    return ExitCode::from(2);
+                }
+            };
+            println!("{}", sns_distribution_subaccount(controller, nonce));
+        }
+        "calculate_redemption_economics" => {
+            if args.len() != 6 {
+                eprintln!("✗ calculate_redemption_economics: expected <total> <reserve> <excluded> <liquid> <redeemed> <icp-fee>");
+                return ExitCode::from(2);
+            }
+            let parsed = args
+                .iter()
+                .map(|value| value.parse::<u128>())
+                .collect::<Result<Vec<_>, _>>();
+            let values = match parsed {
+                Ok(values) => values,
+                Err(err) => {
+                    eprintln!("✗ calculate_redemption_economics: invalid integer: {err}");
+                    return ExitCode::from(2);
+                }
+            };
+            match calculate_redemption_economics(
+                values[0],
+                values[1],
+                &[values[2]],
+                values[3],
+                values[4],
+                values[5],
+            ) {
+                Ok(result) => {
+                    println!("excluded_total_e8s={}", result.excluded_total_e8s);
+                    println!("redeemable_supply_e8s={}", result.redeemable_supply_e8s);
+                    println!("gross_icp_e8s={}", result.gross_icp_e8s);
+                    println!("net_icp_e8s={}", result.net_icp_e8s);
+                }
+                Err(err) => {
+                    eprintln!("✗ calculate_redemption_economics: {err}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        "index_transfer_block" => {
+            if args.len() != 3 {
+                eprintln!(
+                    "✗ index_transfer_block: expected <history-file> <amount-e8s> <memo-hex>"
+                );
+                return ExitCode::from(2);
+            }
+            let amount = match args[1].parse::<u128>() {
+                Ok(value) => value,
+                Err(err) => {
+                    eprintln!("✗ index_transfer_block: invalid amount: {err}");
+                    return ExitCode::from(2);
+                }
+            };
+            let text = match fs::read_to_string(&args[0]) {
+                Ok(value) => value,
+                Err(err) => {
+                    eprintln!("✗ index_transfer_block: {}: {err}", args[0]);
+                    return ExitCode::from(2);
+                }
+            };
+            match index_transfer_block(&text, amount, &args[2]) {
+                Ok(block) => println!("{block}"),
+                Err(err) => {
+                    eprintln!("✗ index_transfer_block: {err}");
+                    return ExitCode::FAILURE;
                 }
             }
         }
@@ -4457,22 +8795,23 @@ fn main() -> ExitCode {
             }
         },
         "sns_config_validate_official" => {
-            if env::var_os("IO_RUN_DFX_SNS_VALIDATE").is_none() {
+            if env::var_os("IO_RUN_SOURCE_BUILT_SNS_VALIDATE").is_none() {
                 eprintln!(
-                    "skipping sns_config_validate_official: set IO_RUN_DFX_SNS_VALIDATE=1 to run optional dfx sns validation"
+                    "skipping sns_config_validate_official: set IO_RUN_SOURCE_BUILT_SNS_VALIDATE=1 to run optional source-built sns validation"
                 );
-            } else if Command::new("dfx").arg("--version").status().is_err() {
-                eprintln!("skipping sns_config_validate_official: dfx is unavailable");
+            } else if Command::new("sns").arg("--help").status().is_err() {
+                eprintln!(
+                    "skipping sns_config_validate_official: source-built sns CLI is unavailable"
+                );
             } else {
-                ok &= run(
-                    "optional dfx sns init-config-file validate",
-                    dfx(&[
-                        "sns",
-                        "init-config-file",
-                        "validate",
-                        "tools/sns/sns_init.io.local.yaml",
-                    ]),
-                );
+                let mut c = Command::new("sns");
+                c.args([
+                    "init-config-file",
+                    "--init-config-file-path",
+                    "tools/sns/sns_init.io.local.yaml",
+                    "validate",
+                ]);
+                ok &= run("optional source-built sns init-config-file validate", c);
             }
         }
         "sns_official_testing_check" => match check_sns_official_testing_at(&root) {
@@ -4515,6 +8854,40 @@ fn main() -> ExitCode {
                 ok = false;
             }
         },
+        "validate_local_sns_evidence_package" => {
+            if args.len() != 1 {
+                eprintln!("✗ validate_local_sns_evidence_package: expected <package-directory>");
+                return ExitCode::from(2);
+            }
+            match validate_local_sns_evidence_package_at(&root, &args[0], false) {
+                Ok(validated)
+                    if validated.complete
+                        && validated.monitoring
+                        && validated.canonical_economics =>
+                {
+                    eprintln!("✓ validate_local_sns_evidence_package")
+                }
+                Ok(_) => {
+                    eprintln!(
+                        "✗ validate_local_sns_evidence_package: candidate must be complete monitoring canonical evidence"
+                    );
+                    ok = false;
+                }
+                Err(err) => {
+                    eprintln!("✗ validate_local_sns_evidence_package: {err}");
+                    ok = false;
+                }
+            }
+        }
+        "validate_local_sns_committed_evidence" => {
+            match check_local_sns_committed_evidence_at(&root) {
+                Ok(()) => eprintln!("✓ validate_local_sns_committed_evidence"),
+                Err(err) => {
+                    eprintln!("✗ validate_local_sns_committed_evidence: {err}");
+                    ok = false;
+                }
+            }
+        }
         "validate_local_sns_scripts" => match validate_local_sns_scripts_at(&root) {
             Ok(()) => eprintln!("✓ validate_local_sns_scripts"),
             Err(err) => {
@@ -4741,17 +9114,6 @@ fn main() -> ExitCode {
                             ]),
                         );
                         ok &= run(
-                            "real-stack: finalized-SNS two-cohort frozen reward proof",
-                            cargo_test(&[
-                                "-p",
-                                "e2e-real-canisters",
-                                "real_finalized_sns_frozen_cohort_blocks_late_stake_and_duration_bonus",
-                                "--",
-                                "--ignored",
-                                "--nocapture",
-                            ]),
-                        );
-                        ok &= run(
                             "real-stack: finalized-SNS zero-recipient reward dust retention",
                             cargo_test(&[
                                 "-p",
@@ -4863,30 +9225,16 @@ fn main() -> ExitCode {
         }
         "sns_governance_read_tests" => {
             ok &= run(
-                "unit: mock-sns-governance",
-                cargo_test(&["-p", "mock-sns-governance"]),
+                "unit: canonical SNS reward boundary",
+                cargo_test(&["-p", "io-sns-reward-boundary"]),
             );
             ok &= run(
-                "unit: io-stream-manager governance snapshot",
-                cargo_test(&["-p", "io-stream-manager", "--lib", "governance_snapshot"]),
+                "unit: stream daily reward evidence",
+                cargo_test(&["-p", "io-stream-manager", "--lib", "reward_evidence"]),
             );
         }
         "sns_governance_read_required" => {
-            if env::var_os("POCKET_IC_BIN").is_none() {
-                eprintln!("✗ sns_governance_read_required: POCKET_IC_BIN is not set");
-                ok = false;
-            } else {
-                ok &= run_subcommand("build_debug_canisters");
-                ok &= run(
-                    "pocketic: io-sns-governance-read",
-                    cargo_test(&[
-                        "-p",
-                        "io-stream-manager",
-                        "--test",
-                        "io_sns_governance_read_pocketic",
-                    ]),
-                );
-            }
+            ok &= run_subcommand("sns_governance_read_tests");
         }
         "sns_ledger_index_tests" => {
             ok &= run(
@@ -4965,6 +9313,8 @@ fn main() -> ExitCode {
                         "io-stream-manager",
                         "--test",
                         "io_sns_root_lifecycle_pocketic",
+                        "--",
+                        "--test-threads=1",
                     ]),
                 );
             }
@@ -4978,13 +9328,15 @@ fn main() -> ExitCode {
         "verify_release" => {
             for sub in [
                 "did_surface",
-                "build_canisters",
+                "validate_nns_boundary_pin",
+                "verify_recorded_source",
                 "verify_artifacts",
                 "validate_install_args",
                 "validate_production_wiring",
                 "validate_historian_freshness",
                 "validate_stable_storage",
                 "validate_local_sns_rehearsal",
+                "validate_local_sns_committed_evidence",
                 "validate_local_sns_scripts",
                 "e2e_coverage_matrix_check",
                 "live_stream_manager_pocketic_gate_check",
@@ -5031,6 +9383,7 @@ fn main() -> ExitCode {
         "preflight" => {
             ok &= run_subcommand("check");
             ok &= run_subcommand("did_surface");
+            ok &= run_subcommand("validate_nns_boundary_pin");
             ok &= run_subcommand("validate_install_args");
         }
         "test_unit" => {
@@ -5114,49 +9467,42 @@ fn main() -> ExitCode {
                     ]),
                 );
                 ok &= run(
-                    "pocketic: io-sns-governance-read",
-                    cargo_test(&[
-                        "-p",
-                        "io-stream-manager",
-                        "--test",
-                        "io_sns_governance_read_pocketic",
-                    ]),
-                );
-                ok &= run(
                     "pocketic: io-sns-root-lifecycle",
                     cargo_test(&[
                         "-p",
                         "io-stream-manager",
                         "--test",
                         "io_sns_root_lifecycle_pocketic",
+                        "--",
+                        "--test-threads=1",
                     ]),
                 );
             }
         }
         "test_local_integration" => {
-            ok &= run_subcommand("build_canisters");
+            ok &= run_subcommand("verify_artifacts");
             ok &= run_subcommand("did_surface");
             ok &= run_subcommand("validate_install_args");
             ok &= run("local-cli: icp project show", icp(&["project", "show"]));
             ok &= run("local-cli: icp build", icp(&["build"]));
             ok &= run(
-                "local-cli: io-stream-manager",
-                cargo_test(&["-p", "io-stream-manager", "--test", "io_stream_manager_cli"]),
+                "local-cli: io-stream-manager API contract",
+                cargo_test(&["-p", "io-stream-manager", "--lib"]),
             );
             ok &= run(
-                "local-cli: io-nns-neuron-manager",
-                cargo_test(&[
-                    "-p",
-                    "io-nns-neuron-manager",
-                    "--test",
-                    "io_nns_neuron_manager_cli",
-                ]),
+                "local-cli: io-nns-neuron-manager API contract",
+                cargo_test(&["-p", "io-nns-neuron-manager", "--lib"]),
             );
         }
         "test_e2e" => {
             ok &= run(
-                "e2e: io suite model",
-                cargo_test(&["-p", "io-stream-manager", "--test", "io_e2e"]),
+                "e2e: simplified stream boundary",
+                cargo_test(&[
+                    "-p",
+                    "io-stream-manager",
+                    "--test",
+                    "io_stream_manager_pocketic",
+                ]),
             );
         }
         "stream_manager_unit" => {
@@ -5215,28 +9561,52 @@ fn main() -> ExitCode {
             for sub in [
                 "fmt_check",
                 "check",
+                "simplicity_check",
                 "did_surface",
-                "build_canisters",
+                "validate_nns_boundary_pin",
+                "verify_recorded_source",
                 "verify_artifacts",
                 "validate_install_args",
                 "validate_production_wiring",
                 "validate_historian_freshness",
                 "validate_stable_storage",
                 "validate_local_sns_rehearsal",
+                "validate_local_sns_ledger",
+                "validate_local_sns_committed_evidence",
                 "validate_local_sns_scripts",
                 "security_scan_required",
                 "test_unit",
                 "frontend_required",
                 "test_pocketic_required",
+                "sns_pocketic_required",
                 "sns_root_lifecycle_required",
                 "test_local_integration",
                 "test_e2e",
             ] {
                 ok &= run_subcommand(sub);
             }
+            ok &= run("test: workspace", cargo_test(&["--workspace"]));
+            ok &= run(
+                "check: value-moving canisters wasm32",
+                cargo_check(&[
+                    "-p",
+                    "io-stream-manager",
+                    "-p",
+                    "io-nns-neuron-manager",
+                    "--target",
+                    "wasm32-unknown-unknown",
+                ]),
+            );
             ok &= run(
                 "clippy: workspace all targets",
-                cargo_clippy(&["--workspace", "--all-targets", "--", "-D", "warnings"]),
+                cargo_clippy(&[
+                    "--workspace",
+                    "--all-targets",
+                    "--all-features",
+                    "--",
+                    "-D",
+                    "warnings",
+                ]),
             );
         }
         other => {
@@ -5260,6 +9630,22 @@ mod tests {
         UpgradeProposalRequest,
     };
 
+    #[test]
+    fn simplified_receipt_topology_requires_shared_account_tokens() {
+        let stream = "jupiter_receipt_source = record { subaccount = null }\n\
+                      two_week_receipt_source = TODO_TWO_WEEK_STAGING\n\
+                      liquid_icp = TODO_STREAM_LIQUID_SUBACCOUNT";
+        let nns = "jupiter_staging = record { subaccount = null }\n\
+                   two_week_maturity_staging = TODO_TWO_WEEK_STAGING\n\
+                   stream_liquid_account = TODO_STREAM_LIQUID_SUBACCOUNT";
+        validate_simplified_receipt_topology(stream, nns).unwrap();
+        assert!(validate_simplified_receipt_topology(
+            &stream.replace("subaccount = null", "subaccount = opt TODO_WRONG",),
+            nns,
+        )
+        .is_err());
+    }
+
     fn temp_root(name: &str) -> PathBuf {
         let root = env::temp_dir().join(format!(
             "io-xtask-{name}-{}-{}",
@@ -5268,6 +9654,55 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("release-artifacts")).unwrap();
+        assert!(Command::new("git")
+            .current_dir(&root)
+            .args(["init", "--quiet"])
+            .status()
+            .unwrap()
+            .success());
+        write(&root, "source.txt", "first source tree\n");
+        for args in [
+            vec!["add", "source.txt"],
+            vec![
+                "-c",
+                "user.name=IO xtask test",
+                "-c",
+                "user.email=io-xtask@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "first source",
+            ],
+        ] {
+            assert!(Command::new("git")
+                .current_dir(&root)
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
+        }
+        write(&root, "source.txt", "second source tree\n");
+        assert!(Command::new("git")
+            .current_dir(&root)
+            .args(["add", "source.txt"])
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .current_dir(&root)
+            .args([
+                "-c",
+                "user.name=IO xtask test",
+                "-c",
+                "user.email=io-xtask@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "second source",
+            ])
+            .status()
+            .unwrap()
+            .success());
         root
     }
 
@@ -5277,6 +9712,115 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, text).unwrap();
+    }
+
+    fn write_evidence_sha256s(root: &Path, package: &str, files: &[&str]) {
+        let mut lines = String::new();
+        for file in files {
+            let bytes = fs::read(root.join(package).join(file)).unwrap();
+            lines.push_str(&format!("{}  {file}\n", hex_sha256(&bytes)));
+        }
+        write(root, &format!("{package}/SHA256SUMS"), &lines);
+    }
+
+    fn selector_text(
+        package: &str,
+        source_commit: &str,
+        artifact_commit: &str,
+        release_manifest_sha256: &str,
+        package_manifest_sha256: &str,
+        package_sha256s_sha256: &str,
+    ) -> String {
+        format!(
+            "[schema]\nversion = 1\n\n[current]\npackage = \"{package}\"\nio_release_source_commit = \"{source_commit}\"\nio_artifact_recording_commit = \"{artifact_commit}\"\nrelease_manifest_sha256 = \"{release_manifest_sha256}\"\npackage_manifest_sha256 = \"{package_manifest_sha256}\"\npackage_sha256s_sha256 = \"{package_sha256s_sha256}\"\n"
+        )
+    }
+
+    fn dummy_selector_text(package: &str) -> String {
+        selector_text(
+            package,
+            &"1".repeat(40),
+            &"2".repeat(40),
+            &"3".repeat(64),
+            &"4".repeat(64),
+            &"5".repeat(64),
+        )
+    }
+
+    fn write_selector(root: &Path, package: &str) {
+        write(
+            root,
+            CURRENT_CANONICAL_SELECTOR,
+            &dummy_selector_text(package),
+        );
+    }
+
+    fn write_incomplete_evidence_package(root: &Path) -> String {
+        let package = "deploy/local-sns-rehearsal/evidence/2026-07-29-0123456".to_string();
+        write(
+            root,
+            &format!("{package}/manifest.toml"),
+            "[provenance]\nofficial_ic_repository = \"dfinity/ic\"\nofficial_ic_source_commit = \"0123456789abcdef0123456789abcdef01234567\"\nsns_testing_source_path = \"rs/sns/testing\"\ncomplete = false\nblocker_report = \"blocker-report.md\"\n",
+        );
+        write(
+            root,
+            &format!("{package}/blocker-report.md"),
+            "# Blocker\n\nThe official local SNS rehearsal not completed.\n\nsource-built SNS tools were not prepared.\n\nNo mainnet call was made.\n",
+        );
+        write_evidence_sha256s(root, &package, &["manifest.toml", "blocker-report.md"]);
+        package
+    }
+
+    fn write_completed_evidence_package(root: &Path) -> String {
+        let package = "deploy/local-sns-rehearsal/evidence/2026-07-29-fedcba9".to_string();
+        let manifest = "[provenance]\nofficial_ic_repository = \"dfinity/ic\"\nofficial_ic_source_commit = \"fedcba98765432100123456789abcdef01234567\"\nsns_testing_source_path = \"rs/sns/testing\"\ncomplete = true\n";
+        write(root, &format!("{package}/manifest.toml"), manifest);
+        write(
+            root,
+            &format!("{package}/toolchain-provenance.toml"),
+            "[tools]\nbazelisk_version = \"1.26.0\"\nbazelisk_sha256 = \"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"\nsns_version = \"source-2d7f90f\"\nsns_sha256 = \"1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"\n",
+        );
+        write(
+            root,
+            &format!("{package}/sns_init.local.yaml"),
+            "Swap:\n  start_time: null\n",
+        );
+        for file in [
+            "canister-ids.local.toml",
+            "reserve-funding-evidence.toml",
+            "ledger-evidence.toml",
+            "governance-evidence.toml",
+            "controller-evidence.toml",
+            "archive-evidence.toml",
+        ] {
+            write(
+                root,
+                &format!("{package}/{file}"),
+                "[evidence]\nobserved = true\n",
+            );
+        }
+        write(
+            root,
+            &format!("{package}/commands.log"),
+            "command: local-proof\nexit_status=0\n",
+        );
+        write_evidence_sha256s(
+            root,
+            &package,
+            &[
+                "manifest.toml",
+                "toolchain-provenance.toml",
+                "sns_init.local.yaml",
+                "canister-ids.local.toml",
+                "reserve-funding-evidence.toml",
+                "ledger-evidence.toml",
+                "governance-evidence.toml",
+                "controller-evidence.toml",
+                "archive-evidence.toml",
+                "commands.log",
+            ],
+        );
+        package
     }
 
     fn write_artifact_set(root: &Path) {
@@ -5297,6 +9841,17 @@ mod tests {
         write_manifest(root).unwrap();
     }
 
+    fn copy_release_artifact_set(from: &Path, to: &Path) {
+        fs::create_dir_all(to.join("release-artifacts")).unwrap();
+        for name in expected_release_artifact_names() {
+            fs::copy(
+                from.join("release-artifacts").join(&name),
+                to.join("release-artifacts").join(&name),
+            )
+            .unwrap();
+        }
+    }
+
     fn write_artifact_manifest(root: &Path, manifest: &ArtifactManifest) {
         let text = serde_json::to_string_pretty(manifest).unwrap();
         write(root, MANIFEST_PATH, &format!("{text}\n"));
@@ -5306,17 +9861,9 @@ mod tests {
         read_manifest(root).unwrap()
     }
 
-    fn parent_git_commit() -> String {
-        let output = Command::new("git")
-            .args(["rev-parse", "HEAD^"])
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
-    }
-
-    fn create_unreachable_commit() -> String {
+    fn create_unreachable_commit(root: &Path) -> String {
         let tree = Command::new("git")
+            .current_dir(root)
             .args(["mktree"])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -5330,6 +9877,7 @@ mod tests {
         let tree = String::from_utf8_lossy(&tree.stdout).trim().to_string();
 
         let commit = Command::new("git")
+            .current_dir(root)
             .args(["commit-tree", &tree, "-m", "xtask non-ancestor test commit"])
             .env("GIT_AUTHOR_NAME", "IO xtask test")
             .env("GIT_AUTHOR_EMAIL", "io-xtask@example.invalid")
@@ -5346,9 +9894,9 @@ mod tests {
             root,
             "docs/operations/local-sns-testing.md",
             r#"# Local SNS Testing
-We currently run SNS-shaped mock/PocketIC tests.
+Required CI uses SNS-shaped mock/PocketIC tests.
 Pure model tests remain the main accounting guardrail.
-Mock and PocketIC tests remain the main journal, retry, and upgrade guardrail.
+Mock and PocketIC tests exercise bounded failures, retry and upgrade behavior.
 ## Four-Layer Compatibility Model
 not official SNS launch tests not SNS-W not decentralization swap not mainnet testflight
 ## Official SNS Local Launch Rehearsal
@@ -5420,7 +9968,7 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "docs/operations/official-sns-testing.md",
-            "We currently run SNS-shaped mock/PocketIC tests.\nWe do not currently run the official SNS launch locally in required CI.\nOfficial SNS testing is optional and heavier.\nThe current official ICP/DFINITY SNS testing documentation is the source of truth.\nThe historical standalone `dfinity/sns-testing` repository is deprecated.\nThe official SNS launch path may require `dfx sns`; this is not part of required IO workflows.\nSNS testflight is a future manual/mainnet rehearsal.\nIO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical.\nThe existing canister that owns IO NNS neuron 6345890886899317159 is not touched by these tests.\nLayer 1\nLayer 2\nLayer 3\nLayer 4\n",
+            "IO runs SNS-shaped mock/PocketIC tests, pinned real-canister profiles, and an optional maintained source-built local SNS-W rehearsal.\nWe do not currently run the official SNS launch locally in required CI.\nOfficial SNS testing is optional and heavier.\nThe current official ICP/DFINITY SNS testing documentation is the source of truth.\nThe historical standalone `dfinity/sns-testing` repository is deprecated.\nThe maintained official local SNS flow uses the source-built `sns` CLI; this is not part of required IO workflows.\nSNS testflight remains a separately authorized mainnet rehearsal.\nIO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical.\nThe existing canister that owns IO NNS neuron 6345890886899317159 is not touched by these tests.\nLayer 1\nLayer 2\nLayer 3\nLayer 4\n",
         );
         write(
             root,
@@ -5450,12 +9998,12 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
         write(
             root,
             "tools/sns/launch-readiness.toml",
-            "[source_open]\nstatus = \"incomplete\"\n[reproducible_builds]\nstatus = \"incomplete\"\n[security_review]\nstatus = \"incomplete\"\n[sns_config_validated]\nstatus = \"incomplete\"\n[local_sns_testing_rehearsal]\nstatus = \"incomplete\"\n[mainnet_testflight]\nstatus = \"incomplete\"\n[app_canisters_stable_on_mainnet]\nstatus = \"incomplete\"\n[nns_root_co_controller_step_planned]\nstatus = \"incomplete\"\n[fallback_controllers_defined]\nstatus = \"incomplete\"\n[dapp_canisters_listed]\nstatus = \"incomplete\"\n[all_upgrades_tested_via_sns_proposal]\nstatus = \"incomplete\"\n[frontend_sns_integration_tested]\nstatus = \"incomplete\"\n[cycles_management_strategy]\nstatus = \"incomplete\"\n[custom_domain_frontend_plan]\nstatus = \"incomplete\"\n[audit_package]\nstatus = \"incomplete\"\n",
+            "[source_open]\nstatus = \"incomplete\"\n[reproducible_builds]\nstatus = \"incomplete\"\n[security_review]\nstatus = \"incomplete\"\n[sns_config_validated]\nstatus = \"incomplete\"\n[local_sns_testing_rehearsal]\nstatus = \"incomplete\"\nevidence = \"same-source candidate Governance/Root compatibility; upstream non-blocking tooling defect\"\n[mainnet_testflight]\nstatus = \"incomplete\"\n[app_canisters_stable_on_mainnet]\nstatus = \"incomplete\"\n[nns_root_co_controller_step_planned]\nstatus = \"incomplete\"\n[fallback_controllers_defined]\nstatus = \"incomplete\"\n[dapp_canisters_listed]\nstatus = \"incomplete\"\n[sns_controlled_dapp_upgrade_path_proved]\nstatus = \"incomplete\"\n[official_reward_share_release]\nstatus = \"incomplete\"\nevidence = \"official reviewed SNS Governance release containing the capability\"\n[frontend_sns_integration_tested]\nstatus = \"incomplete\"\n[cycles_management_strategy]\nstatus = \"incomplete\"\n[custom_domain_frontend_plan]\nstatus = \"incomplete\"\n[audit_package]\nstatus = \"incomplete\"\n",
         );
         write(
             root,
             "tools/sns/official-sns-testing-notes.md",
-            "optional local-only not part of `test_ci` not used by `verify_release` must not call mainnet dfx sns Do not use --network ic\n",
+            "optional local-only not part of `test_ci` not used by `verify_release` must not call mainnet source-built sns Do not use --network ic\n",
         );
         write(
             root,
@@ -5467,34 +10015,122 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
     fn write_local_sns_rehearsal_fixture(root: &Path) {
         write(
             root,
+            ".gitignore",
+            "deploy/local-sns-rehearsal/sns_init.local.yaml\n",
+        );
+        write(
+            root,
             "deploy/local-sns-rehearsal/README.md",
-            "local-only real SNS-created IO ledger/index/governance/root stack not final tokenomics not a mainnet SNS proposal not required CI Do not use `--network ic` protocol reserve reserve-to-user transfer user-to-reserve transfer validate_local_sns_rehearsal validate_local_sns_ledger validate_local_sns_scripts Human-readable local evidence-derived wiring Not accepted by production wiring validators Do not use as install args\n",
+            "local-only real SNS-created IO ledger/index/governance/root stack not final tokenomics not a mainnet SNS proposal not required CI Do not use `--network ic` protocol reserve reserve-to-user transfer user-to-redemption transfer redemption-to-reserve transfer validate_local_sns_rehearsal validate_local_sns_ledger validate_local_sns_scripts Human-readable local evidence-derived wiring Not accepted by production wiring validators Do not use as install args\n",
         );
         write(
             root,
             "deploy/local-sns-rehearsal/sns_init.local.template.yaml",
-            "Local-only\nNot final tokenomics\nNot a mainnet SNS proposal\nfallback_controller_principals\n{{fallback_controller_principal}}\ndapp_canisters\nToken:\nsymbol: \"IO\"\ntransaction_fee\nDistribution:\nprotocol_reserve\nSwap:\narchive_options\nissuance_model: \"protocol reserve transfer\"\nredemption_model: \"user transfer back to protocol reserve\"\nio_test_ledger_role: \"non-canonical staging only\"\nTODO_LOCAL\n",
+            "Local-only\nNot final tokenomics\nNot a mainnet SNS proposal\nfallback_controller_principals\n{{fallback_controller_principal}}\ndapp_canisters\nToken:\nsymbol: \"IOLO\"\ntransaction_fee\nDistribution:\ntreasury: \"800_000 tokens\"\nswap: \"100_000 tokens\"\nSwap:\n  start_time: null\nNnsProposal:\nTODO_LOCAL\n",
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/local-vars.example.toml",
+            &fixture_local_vars(
+                "avqkn-guaaa-aaaaa-qaaea-cai",
+                "aax3a-h4aaa-aaaaa-qaahq-cai",
+                "ajuq4-ruaaa-aaaaa-qaaga-cai",
+                "b77ix-eeaaa-aaaaa-qaada-cai",
+            ),
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/assets/io-local-logo.svg",
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\" role=\"img\" aria-label=\"IO local rehearsal\">\n  <rect width=\"512\" height=\"512\" rx=\"96\" fill=\"#111827\"/>\n  <circle cx=\"256\" cy=\"256\" r=\"154\" fill=\"none\" stroke=\"#22d3ee\" stroke-width=\"36\"/>\n  <path d=\"M192 160v192M304 160c64 0 64 192 0 192s-64-192 0-192Z\" fill=\"none\" stroke=\"#f8fafc\" stroke-linecap=\"round\" stroke-width=\"32\"/>\n</svg>\n",
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/assets/io-local-token-logo.svg",
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\" role=\"img\" aria-label=\"IO local rehearsal token\">\n  <circle cx=\"256\" cy=\"256\" r=\"240\" fill=\"#0f172a\"/>\n  <circle cx=\"256\" cy=\"256\" r=\"180\" fill=\"#0891b2\"/>\n  <path d=\"M180 150v212M302 150c76 0 76 212 0 212s-76-212 0-212Z\" fill=\"none\" stroke=\"#fff\" stroke-linecap=\"round\" stroke-width=\"36\"/>\n</svg>\n",
         );
         write(
             root,
             "deploy/local-sns-rehearsal/canister-ids.local.example.toml",
-            "network = \"local\"\nsource = \"official-local-sns-rehearsal\"\n[sns_canisters]\nroot = \"TODO\"\ngovernance = \"TODO\"\nledger = \"TODO\"\nindex = \"TODO\"\nswap = \"TODO\"\narchive = \"TODO\"\n[expected_local_sns_config]\ntoken_symbol = \"IO\"\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\n[ledger_evidence]\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\nprotocol_reserve_balance_e8s = 1\nreserve_transfer_amount_e8s = 1\nredemption_return_amount_e8s = 1\nbad_fee_error_observed = true\ninsufficient_funds_error_observed = true\nduplicate_transfer_observed = true\nduplicate_block_verified = true\nindex_account_history_observed = true\n[issuance_model]\nresolved_as = \"protocol_reserve_transfer\"\nminting_assumed = false\ntotal_supply_constant_across_issuance_redemption = true\n",
+            "network = \"local\"\nsource = \"official-local-sns-rehearsal\"\nofficial_tooling = \"manual-local-only\"\n[toolchain_provenance]\nofficial_ic_source_commit = \"0123456789abcdef0123456789abcdef01234567\"\nsns_testing_source_path = \"rs/sns/testing\"\noperator_identity_principal = \"bd3sg-teaaa-aaaaa-qaaba-cai\"\nlocal_network_url = \"http://127.0.0.1:8080\"\nsns_cli_sha256 = \"TODO\"\nsns_testing_init_sha256 = \"TODO\"\nsns_testing_cli_sha256 = \"TODO\"\n[sns_canisters]\nroot = \"TODO\"\ngovernance = \"TODO\"\nledger = \"TODO\"\nindex = \"TODO\"\nswap = \"TODO\"\narchive = \"TODO\"\n[expected_local_sns_config]\ntoken_symbol = \"IOLO\"\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\nprotocol_reserve_funding_amount_e8s = 1\n[ledger_evidence]\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\nprotocol_reserve_balance_e8s = 1\nreserve_transfer_amount_e8s = 1\nredemption_return_amount_e8s = 1\nbad_fee_error_observed = true\ninsufficient_funds_error_observed = true\nduplicate_tested_transfer = \"transfer_reserve_to_user\"\nindex_account_history_observed = true\n[reserve_funding_transfer]\nsns_proposal_id = 1\nproposal_adopted = true\nproposal_executed = true\ncreated_at_time_nanos = \"none\"\nmemo_hex = \"none\"\nproof_source = \"SnsLedgerBlock\"\nproof_source_canister = \"TODO\"\nproof_method = \"Icrc3GetBlocks\"\narchive_canister = \"none\"\n[transfer_reserve_to_user]\nfrom_owner = \"TODO\"\nfrom_subaccount_hex = \"none\"\nto_owner = \"TODO\"\nto_subaccount_hex = \"none\"\nfee_disposition = \"burned\"\nsender_balance_before_e8s = 1\nrecipient_balance_after_e8s = 1\ntotal_supply_before_e8s = 1\ntotal_supply_after_e8s = 1\nproof_source = \"SnsIndexAccountHistory\"\nproof_source_canister = \"TODO\"\nproof_method = \"IcrcIndexGetAccountTransactions\"\narchive_canister = \"none\"\n[transfer_user_to_redemption]\nfrom_owner = \"TODO\"\nfrom_subaccount_hex = \"none\"\nto_owner = \"TODO\"\nto_subaccount_hex = \"none\"\nfee_disposition = \"burned\"\nsender_balance_before_e8s = 1\nrecipient_balance_after_e8s = 1\ntotal_supply_before_e8s = 1\ntotal_supply_after_e8s = 1\nproof_source = \"SnsIndexAccountHistory\"\nproof_source_canister = \"TODO\"\nproof_method = \"IcrcIndexGetAccountTransactions\"\narchive_canister = \"none\"\n[transfer_redemption_to_reserve]\nfrom_owner = \"TODO\"\nfrom_subaccount_hex = \"none\"\nto_owner = \"TODO\"\nto_subaccount_hex = \"none\"\nfee_disposition = \"burned\"\nsender_balance_before_e8s = 1\nrecipient_balance_after_e8s = 1\ntotal_supply_before_e8s = 1\ntotal_supply_after_e8s = 1\nproof_source = \"SnsIndexAccountHistory\"\nproof_source_canister = \"TODO\"\nproof_method = \"IcrcIndexGetAccountTransactions\"\narchive_canister = \"none\"\n[duplicate_test]\n[issuance_model]\nresolved_as = \"protocol_reserve_transfer\"\nminting_assumed = false\ntreasury_transfer_assumed = true\nfee_disposition_mode = \"burned\"\ntotal_supply_changes_explained = true\n",
         );
         for path in [
             "deploy/local-sns-rehearsal/runbook.sh",
+            "deploy/local-sns-rehearsal/scripts/lib-local-sns.sh",
             "deploy/local-sns-rehearsal/scripts/00-check-prereqs.sh",
             "deploy/local-sns-rehearsal/scripts/01-render-sns-init.sh",
             "deploy/local-sns-rehearsal/scripts/02-record-canister-ids.sh",
             "deploy/local-sns-rehearsal/scripts/03-capture-ledger-evidence.sh",
             "deploy/local-sns-rehearsal/scripts/04-render-local-wiring.sh",
             "deploy/local-sns-rehearsal/scripts/05-validate-evidence.sh",
+            "deploy/local-sns-rehearsal/scripts/10-bootstrap-official-network.sh",
+            "deploy/local-sns-rehearsal/scripts/11-build-local-io-canisters.sh",
+            "deploy/local-sns-rehearsal/scripts/12-deploy-local-dapps.sh",
+            "deploy/local-sns-rehearsal/scripts/12-provision-local-nns-readiness.sh",
+            "deploy/local-sns-rehearsal/scripts/13-propose-and-finalize-sns.sh",
+            "deploy/local-sns-rehearsal/scripts/14-discover-sns-canisters.sh",
+            "deploy/local-sns-rehearsal/scripts/15-exercise-ledger.sh",
+            "deploy/local-sns-rehearsal/scripts/16-exercise-index-and-archives.sh",
+            "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
+            "deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh",
+            "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
+            "deploy/local-sns-rehearsal/scripts/19-cleanup-official-network.sh",
         ] {
             write(
                 root,
                 path,
-                "#!/usr/bin/env bash\n# local-only optional\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n",
+                "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# . scripts/env.sh //rs/sns/testing:sns-testing-init //rs/sns/testing:sns-testing //rs/sns/cli:sns sns init-config-file --init-config-file-path\n",
             );
         }
+        write(
+            root,
+            "deploy/local-sns-rehearsal/nns-governance-test.did",
+            "// Local sns-testing\nservice : { update_neuron : (record {}) -> (opt record { error_message : text; error_type : int32 }) };\n",
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/scripts/12-provision-local-nns-readiness.sh",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# icrc1_transfer claim_or_refresh_neuron_from_account update_neuron 252460800 auto_stake_maturity = opt false maturity_disbursements_in_progress = opt vec {} two_year_neuron_id two_week_neuron_id\n",
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# upgrade-sns-controlled-canister submit_inline_sns_upgrade AddGenericNervousSystemFunction validate_set_paused ExecuteGenericNervousSystemFunction sns_governance_source_sha256 sns_root_source_sha256 sns_ledger_source_sha256 sns_index_source_sha256 sns_swap_source_sha256\n",
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# IO_LOCAL_REWARD_ADVANCE_SECONDS=86400 IncreaseDissolveDelay DissolveDelaySeconds = 1209600 resume_reward_work ProposalBearing processed_reward_event_count: 1 accumulated_policy_credit: 1000000000000000000\n",
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/scripts/11-build-local-io-canisters.sh",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n# git -C \"$REPO_ROOT\" diff --quiet; artifact_commit=; git -C \"$REPO_ROOT\" show; tracked_clean=true\n",
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n# mktemp -d validate_local_sns_evidence_package current-canonical.toml mv \"$selector_temporary\" \"$selector_path\" preceding selector restored and candidate removed after_module_sha256 proposal_adopted = true proposal_executed = true\n",
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/scripts/13-propose-and-finalize-sns.sh",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# publish_sns_wasm_via_nns sns_governance_source_sha256 sns_root_source_sha256 Governance Root get_metadata\n",
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/scripts/12-deploy-local-dapps.sh",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# dfx canister id; allocated ID differs from planned; isolated lifecycle inputs; sns_governance_source_sha256 governance_sed_blob\n",
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/scripts/14-discover-sns-canisters.sh",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# ManageNervousSystemParameters max_number_of_neurons 1_000\n",
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/scripts/lib-local-sns.sh",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# nns_function = 30 manage_neuron get_proposal_info get_latest_sns_version_pretty executed_timestamp_seconds extract_proposal_id already-published get_proposal e8s_to_decimal_tokens https://forum.dfinity.org/t/io-local-rehearsal/0\n",
+        );
         write(
             root,
             "deploy/local-sns-rehearsal/commands.local.example.md",
@@ -5518,71 +10154,7 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
     }
 
     fn completed_local_sns_evidence() -> String {
-        r#"[mode]
-network = "local"
-source = "official-local-sns-rehearsal"
-dfx_sns = "manual-local-only"
-io_protocol_live = false
-sns_io_ledger_mainnet_launched = false
-
-[expected_local_sns_config]
-token_symbol = "IO"
-transaction_fee_e8s = 10000
-total_supply_e8s = 100000000000000
-
-[sns_canisters]
-root = "bkyz2-fmaaa-aaaaa-qaaaq-cai"
-governance = "bd3sg-teaaa-aaaaa-qaaba-cai"
-ledger = "br5f7-7uaaa-aaaaa-qaaca-cai"
-index = "be2us-64aaa-aaaaa-qaabq-cai"
-swap = "bw4dl-smaaa-aaaaa-qaacq-cai"
-archive = "by6od-j4aaa-aaaaa-qaadq-cai"
-
-[io_dapp_canisters]
-io_stream_manager = "avqkn-guaaa-aaaaa-qaaea-cai"
-io_nns_neuron_manager = "aax3a-h4aaa-aaaaa-qaahq-cai"
-io_historian = "ajuq4-ruaaa-aaaaa-qaaga-cai"
-frontend = "b77ix-eeaaa-aaaaa-qaada-cai"
-
-[ledger_evidence]
-token_symbol = "IO"
-transaction_fee_e8s = 10000
-total_supply_e8s = 100000000000000
-protocol_reserve_account_owner = "a3shf-5eaaa-aaaaa-qaafa-cai"
-protocol_reserve_subaccount_hex = "none"
-protocol_reserve_balance_e8s = 60000000000000
-reserve_transfer_block_index = 1
-redemption_return_block_index = 2
-reserve_transfer_amount_e8s = 100000000
-redemption_return_amount_e8s = 100000000
-bad_fee_error_observed = true
-insufficient_funds_error_observed = true
-duplicate_transfer_observed = true
-duplicate_block_verified = true
-duplicate_of_block_index = 1
-index_account_history_observed = true
-index_history_order = "descending"
-index_lag_or_archive_required_observed = "not-observed"
-
-[governance_evidence]
-governance_available = true
-root_available = true
-swap_available = true
-dapp_controller_state_checked = true
-governance_upgrade_proposal_tested = false
-governance_upgrade_gap = "local tooling did not support upgrade proposal in this run"
-
-[issuance_model]
-resolved_as = "protocol_reserve_transfer"
-minting_assumed = false
-treasury_transfer_assumed = false
-total_supply_constant_across_issuance_redemption = true
-
-[protected]
-must_not_touch_neuron_owner_canister = "oae4c-3iaaa-aaaar-qb5qq-cai"
-must_not_touch_io_nns_neuron_id = "6345890886899317159"
-"#
-        .to_string()
+        crate::completed_local_sns_evidence()
     }
 
     fn write_completed_local_sns_evidence(root: &Path) {
@@ -5608,37 +10180,22 @@ must_not_touch_io_nns_neuron_id = "6345890886899317159"
         write(
             root,
             "canisters/io_stream_manager/io_stream_manager.did",
-            "type InitArgs = record {};\nservice : (InitArgs) -> {}\n",
+            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  redeem : () -> ();\n  prepare_liquid_receipt : () -> ();\n  complete_liquid_receipt : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;\n  get_status : () -> () query;\n}\n",
         );
         write(
             root,
             "canisters/io_nns_neuron_manager/io_nns_neuron_manager.did",
-            "type InitArgs = record {};\nservice : (InitArgs) -> {}\n",
+            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  notify_jupiter_deposit : () -> ();\n  reconcile_two_week_backing_readiness : () -> ();\n  prepare_two_week_maturity : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;\n  get_status : () -> () query;\n}\n",
         );
         write(
             root,
             "canisters/io_historian/io_historian.did",
-            "service : {\n  get_dashboard_state : () -> (text) query;\n  get_protocol_snapshot : () -> (text) query;\n  get_redemption_rate : () -> (text) query;\n  list_streams : () -> (text) query;\n  list_redemptions : () -> (text) query;\n  list_rewards : () -> (text) query;\n  list_nns_lifecycle_events : () -> (text) query;\n  get_index_health : () -> (text) query;\n  get_governance_summary : () -> (text) query;\n  get_release_artifacts : () -> (text) query;\n  get_canister_status_summary : () -> (text) query;\n  get_public_status : () -> (text) query;\n  get_reserve_snapshot : () -> (text) query;\n  list_governance_participation : () -> (text) query;\n  version : () -> (text) query;\n}\n",
-        );
-        write(
-            root,
-            "canisters/io_stream_manager/io_stream_manager_debug.did",
-            "service : {\n  debug_get_state : () -> (text) query;\n  debug_get_redemption_rate : () -> (text) query;\n  debug_process_stream_event : () -> (text);\n  debug_redeem : () -> (text);\n  debug_tick : () -> (text);\n}\n",
-        );
-        write(
-            root,
-            "canisters/io_nns_neuron_manager/io_nns_neuron_manager_debug.did",
-            "service : {\n  debug_get_config : () -> (text) query;\n  debug_get_state : () -> (text) query;\n  debug_plan_rebalance : () -> (text);\n  debug_advance_model_time : () -> (text);\n  debug_tick : () -> (text);\n}\n",
-        );
-        write(
-            root,
-            "canisters/io_historian/io_historian_debug.did",
-            "service : {\n  debug_clear : () -> ();\n  debug_ingest_ledger_flow : () -> ();\n  debug_ingest_stream_record : () -> ();\n  debug_ingest_redemption_record : () -> ();\n  debug_ingest_reward_record : () -> ();\n  debug_ingest_index_health : () -> ();\n  debug_ingest_governance_snapshot : () -> ();\n  debug_ingest_canister_artifact_status : () -> ();\n}\n",
+            "type ObservationConfig = record {};\nservice : (opt ObservationConfig) -> {\n  get_dashboard_state : () -> (text) query;\n  get_protocol_snapshot : () -> (text) query;\n  get_public_status : () -> (text) query;\n  get_redemption_rate : () -> (text) query;\n  version : () -> (text) query;\n}\n",
         );
         write(
             root,
             "canisters/frontend/web/declarations/io_historian/io_historian.did.js",
-            "export const idlFactory = ({ IDL }) => IDL.Service({\n  get_canister_status_summary: IDL.Func([], [], [\"query\"]),\n  get_dashboard_state: IDL.Func([], [], [\"query\"]),\n  get_governance_summary: IDL.Func([], [], [\"query\"]),\n  get_index_health: IDL.Func([], [], [\"query\"]),\n  get_protocol_snapshot: IDL.Func([], [], [\"query\"]),\n  get_public_status: IDL.Func([], [], [\"query\"]),\n  get_redemption_rate: IDL.Func([], [], [\"query\"]),\n  get_release_artifacts: IDL.Func([], [], [\"query\"]),\n  get_reserve_snapshot: IDL.Func([], [], [\"query\"]),\n  list_governance_participation: IDL.Func([], [], [\"query\"]),\n  list_nns_lifecycle_events: IDL.Func([], [], [\"query\"]),\n  list_redemptions: IDL.Func([], [], [\"query\"]),\n  list_rewards: IDL.Func([], [], [\"query\"]),\n  list_streams: IDL.Func([], [], [\"query\"]),\n  version: IDL.Func([], [], [\"query\"]),\n});\n",
+            "export const idlFactory = ({ IDL }) => IDL.Service({\n  get_dashboard_state: IDL.Func([], [], [\"query\"]),\n  get_protocol_snapshot: IDL.Func([], [], [\"query\"]),\n  get_public_status: IDL.Func([], [], [\"query\"]),\n  get_redemption_rate: IDL.Func([], [], [\"query\"]),\n  version: IDL.Func([], [], [\"query\"]),\n});\n",
         );
         write(
             root,
@@ -5897,14 +10454,348 @@ Template SNS principal values are planned wiring placeholders only.
     }
 
     #[test]
-    fn artifact_manifest_accepts_reachable_ancestor_source_commit() {
+    fn release_artifact_comparison_accepts_identical_complete_sets() {
+        let first = temp_root("artifact-compare-identical-first");
+        let second = temp_root("artifact-compare-identical-second");
+        write_artifact_set(&first);
+        copy_release_artifact_set(&first, &second);
+        compare_release_artifact_dirs(
+            &first.join("release-artifacts"),
+            &second.join("release-artifacts"),
+        )
+        .unwrap();
+        let _ = fs::remove_dir_all(first);
+        let _ = fs::remove_dir_all(second);
+    }
+
+    #[test]
+    fn release_artifact_comparison_rejects_modified_checked_in_wasm_gzip_sidecar_and_manifest() {
+        for (case, path) in [
+            ("wasm", "io_stream_manager.wasm"),
+            ("gzip", "io_stream_manager.wasm.gz"),
+            ("sidecar", "io_stream_manager.wasm.sha256"),
+            ("manifest", "manifest.json"),
+        ] {
+            let checked_in = temp_root(&format!("artifact-compare-{case}-checked-in"));
+            let rebuilt = temp_root(&format!("artifact-compare-{case}-rebuilt"));
+            write_artifact_set(&checked_in);
+            copy_release_artifact_set(&checked_in, &rebuilt);
+            write(
+                &checked_in,
+                &format!("release-artifacts/{path}"),
+                &format!("deliberately modified checked-in {case}\n"),
+            );
+            assert!(compare_release_artifact_dirs(
+                &checked_in.join("release-artifacts"),
+                &rebuilt.join("release-artifacts"),
+            )
+            .unwrap_err()
+            .contains("mismatch"));
+            let _ = fs::remove_dir_all(checked_in);
+            let _ = fs::remove_dir_all(rebuilt);
+        }
+    }
+
+    #[test]
+    fn release_artifact_comparison_rejects_missing_or_unexpected_files() {
+        let first = temp_root("artifact-compare-file-set-first");
+        let second = temp_root("artifact-compare-file-set-second");
+        write_artifact_set(&first);
+        copy_release_artifact_set(&first, &second);
+        write(&second, "release-artifacts/unexpected.wasm", "unexpected");
+        assert!(compare_release_artifact_dirs(
+            &first.join("release-artifacts"),
+            &second.join("release-artifacts"),
+        )
+        .unwrap_err()
+        .contains("file set mismatch"));
+        fs::remove_file(second.join("release-artifacts/unexpected.wasm")).unwrap();
+        fs::remove_file(second.join("release-artifacts/io_frontend.wasm.gz")).unwrap();
+        assert!(compare_release_artifact_dirs(
+            &first.join("release-artifacts"),
+            &second.join("release-artifacts"),
+        )
+        .unwrap_err()
+        .contains("file set mismatch"));
+        let _ = fs::remove_dir_all(first);
+        let _ = fs::remove_dir_all(second);
+    }
+
+    #[test]
+    fn executable_release_and_ci_scripts_are_portable() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for path in [
+            "tools/scripts/build-release-from-source",
+            "tools/scripts/verify-release-from-source",
+            "tools/scripts/release-build-temp-root",
+            "tools/scripts/provision-pocket-ic",
+            "tools/scripts/provision-icp-cli",
+            "tools/scripts/provision-security-tools",
+            ".github/workflows/test.yml",
+            ".github/workflows/security.yml",
+            ".github/workflows/reproducible-build.yml",
+        ] {
+            let contents = fs::read_to_string(root.join(path)).unwrap();
+            assert!(
+                !contents.contains("/home/codexdev"),
+                "developer-specific path returned in {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn release_reproducibility_varies_paths_and_remaps_cargo_home() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let builder = fs::read_to_string(root.join("tools/scripts/build-canister")).unwrap();
+        for required in [
+            "CARGO_ENCODED_RUSTFLAGS",
+            "--remap-path-prefix=${release_cargo_home}=/io/cargo-home",
+            "unset RUSTFLAGS",
+        ] {
+            assert!(
+                builder.contains(required),
+                "release builder is missing path-remapping guardrail: {required}"
+            );
+        }
+
+        let verifier =
+            fs::read_to_string(root.join("tools/scripts/verify-release-from-source")).unwrap();
+        for required in [
+            "release-source-root-with-intentionally-different-absolute-path-length",
+            "cargo-home-with-intentionally-different-absolute-path-length",
+            "CARGO_HOME=\"${alternate_cargo_home}\"",
+            "IO_RELEASE_BUILD_TMPDIR=\"${long_source_root}\"",
+        ] {
+            assert!(
+                verifier.contains(required),
+                "release verifier is missing unequal-path guardrail: {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn frontend_generation_starts_from_an_empty_generated_directory() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let package = fs::read_to_string(root.join("package.json")).unwrap();
+        assert!(
+            package.contains("\"setup:frontend\": \"npm run clean:frontend-generated && npm ci\"")
+        );
+
+        let cleaner =
+            fs::read_to_string(root.join("canisters/frontend/web/clean-generated.mjs")).unwrap();
+        for required in [
+            "rmSync(directory, { recursive: true, force: true })",
+            "cleanGeneratedDirectory();",
+        ] {
+            assert!(
+                cleaner.contains(required),
+                "frontend cleaner is missing stale-asset guardrail: {required}"
+            );
+        }
+
+        let builder =
+            fs::read_to_string(root.join("canisters/frontend/web/build-frontend.mjs")).unwrap();
+        assert!(builder.contains("cleanGeneratedDirectory();"));
+    }
+
+    #[test]
+    fn test_workflow_provisions_pinned_runtime_tools_at_valid_basenames() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let workflow = fs::read_to_string(root.join(".github/workflows/test.yml")).unwrap();
+        for required in [
+            "${RUNNER_TEMP}/pocket-ic-14.0.0",
+            "${pocket_ic_dir}/pocket-ic-server",
+            "tools/scripts/provision-pocket-ic",
+            "POCKET_IC_BIN=${pocket_ic_bin}",
+            "${RUNNER_TEMP}/icp-cli-0.2.7",
+            "${icp_dir}/icp",
+            "tools/scripts/provision-icp-cli",
+            "${GITHUB_PATH}",
+        ] {
+            assert!(
+                workflow.contains(required),
+                "missing CI guardrail: {required}"
+            );
+        }
+        assert!(!workflow.contains("pocket-ic-server-14.0.0"));
+    }
+
+    #[test]
+    fn source_open_package_keeps_the_canonical_apache_license() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        assert_eq!(
+            sha256_hex(&root.join("LICENSE")).unwrap(),
+            "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+        );
+        let review = fs::read_to_string(root.join("docs/security/source-open-package.md")).unwrap();
+        for required in [
+            "Apache-2.0",
+            "canonical Apache License 2.0",
+            "No vendored third-party source",
+            "not legal advice",
+        ] {
+            assert!(
+                review.contains(required),
+                "missing source-open review: {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn nns_neuron_staking_subaccount_matches_canonical_domain_encoding() {
+        assert_eq!(
+            nns_neuron_staking_subaccount(Principal::anonymous(), 42),
+            "51f24fa3c2cda819352861ad22661f640f8be4be81e77304e77fe6c9cb87d2de"
+        );
+    }
+
+    #[test]
+    fn sns_treasury_subaccount_matches_pinned_dfinity_fixture() {
+        let governance =
+            Principal::from_text("dmkut-c3777-77776-qaaaq-cai").expect("valid fixture principal");
+        assert_eq!(
+            sns_distribution_subaccount(governance, 0),
+            "1205b30afec9d6b8da3bf45dbfebc286fa341246b9878ca63229d2b9ed49dd6f"
+        );
+    }
+
+    #[test]
+    fn corrected_fixture_redemption_economics_matches_independent_sanity_check() {
+        let result = calculate_redemption_economics(
+            99_999_999_940_000,
+            10_000_000_000,
+            &[79_989_899_980_000],
+            100_000_000_000_000,
+            20_000_000,
+            10_000,
+        )
+        .unwrap();
+        assert_eq!(result.redeemable_supply_e8s, 20_000_099_960_000);
+        assert_eq!(result.gross_icp_e8s, 99_999_500);
+        assert_eq!(result.net_icp_e8s, 99_989_500);
+    }
+
+    #[test]
+    fn index_transfer_block_finds_unique_memo_bound_treasury_transfer() {
+        let history = r#"(variant { Ok = record { transactions = vec {
+          record { id = 7 : nat; transaction = record { kind = "transfer";
+            transfer = opt record { memo = opt blob "\00\00\00\00\00\00\05\de";
+              amount = 100_000_000 : nat; from = record { owner = principal "aaaaa-aa"; subaccount = opt blob "\01"; }; }; }; };
+          record { id = 6 : nat; transaction = record { kind = "transfer";
+            transfer = opt record { memo = opt blob "\00\00\00\00\00\00\05\dd";
+              amount = 10_000_000_000 : nat; from = record { owner = principal "aaaaa-aa"; subaccount = opt blob "\01"; }; }; }; };
+        }; }; })"#;
+        assert_eq!(
+            index_transfer_block(history, 10_000_000_000, "00000000000005dd").unwrap(),
+            6
+        );
+        assert_eq!(
+            index_transfer_block(history, 100_000_000, "00000000000005de").unwrap(),
+            7
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_accepts_artifact_commit_then_evidence_tail() {
         let root = temp_root("manifest-ancestor-source");
+        let source_commit = current_git_commit(&root).unwrap();
         write_artifact_set(&root);
-        let source_commit = parent_git_commit();
         let manifest = build_manifest_for_commit(&root, source_commit).unwrap();
         write_artifact_manifest(&root, &manifest);
+        assert!(Command::new("git")
+            .current_dir(&root)
+            .args(["add", "release-artifacts"])
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .current_dir(&root)
+            .args([
+                "-c",
+                "user.name=IO xtask test",
+                "-c",
+                "user.email=io-xtask@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "record artifacts",
+            ])
+            .status()
+            .unwrap()
+            .success());
+        write(&root, "docs/evidence.md", "evidence\n");
+        assert!(Command::new("git")
+            .current_dir(&root)
+            .args(["add", "docs/evidence.md"])
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .current_dir(&root)
+            .args([
+                "-c",
+                "user.name=IO xtask test",
+                "-c",
+                "user.email=io-xtask@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "record evidence",
+            ])
+            .status()
+            .unwrap()
+            .success());
         verify_artifacts_at(&root).unwrap();
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn release_tail_rejects_simulated_post_source_canister_and_build_inputs() {
+        for path in [
+            "Cargo.toml",
+            "Cargo.lock",
+            "rust-toolchain.toml",
+            "canisters/io_stream_manager/src/lib.rs",
+            "canisters/frontend/public/index.html",
+            "crates/io_build_support/src/lib.rs",
+            "tools/scripts/build-canister",
+            "tools/xtask/src/main.rs",
+        ] {
+            let error = validate_release_commit_paths(
+                "simulated-evidence-tail",
+                &[path.to_string()],
+                false,
+            )
+            .unwrap_err();
+            assert!(error.contains(path), "unexpected error: {error}");
+        }
+    }
+
+    #[test]
+    fn release_tail_allows_only_artifacts_then_narrow_evidence_paths() {
+        validate_release_commit_paths(
+            "simulated-artifact-recording",
+            &[
+                "release-artifacts/manifest.json".into(),
+                "release-artifacts/io_stream_manager.wasm".into(),
+            ],
+            true,
+        )
+        .unwrap();
+        for path in [
+            "deploy/local-sns-rehearsal/evidence/2026-08-12-example/manifest.toml",
+            "docs/operations/release-checklist.md",
+            ".github/workflows/ci.yml",
+            "tools/sns/launch-readiness.toml",
+        ] {
+            validate_release_commit_paths("simulated-tail", &[path.into()], false).unwrap();
+        }
+        assert!(validate_release_commit_paths(
+            "simulated-artifact-recording",
+            &["docs/operations/release-checklist.md".into()],
+            true,
+        )
+        .is_err());
     }
 
     #[test]
@@ -5928,7 +10819,7 @@ Template SNS principal values are planned wiring placeholders only.
     fn artifact_manifest_rejects_non_ancestor_source_commit() {
         let root = temp_root("manifest-non-ancestor-source");
         write_artifact_set(&root);
-        let non_ancestor = create_unreachable_commit();
+        let non_ancestor = create_unreachable_commit(&root);
         let mut manifest = read_artifact_manifest(&root);
         manifest.git_commit = Some(non_ancestor.clone());
         for entry in &mut manifest.artifacts {
@@ -6264,7 +11155,7 @@ Template SNS principal values are planned wiring placeholders only.
     fn sns_launch_readiness_reports_incomplete_and_strict_fails() {
         let root = temp_root("sns-launch-readiness-strict");
         write_sns_harness_fixture(&root);
-        assert_eq!(check_sns_launch_readiness_at(&root, false).unwrap(), 15);
+        assert_eq!(check_sns_launch_readiness_at(&root, false).unwrap(), 16);
         assert!(check_sns_launch_readiness_at(&root, true)
             .unwrap_err()
             .contains("incomplete item"));
@@ -6276,6 +11167,577 @@ Template SNS principal values are planned wiring placeholders only.
         let root = temp_root("local-sns-rehearsal-good");
         write_local_sns_rehearsal_fixture(&root);
         check_local_sns_rehearsal_at(&root).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_sns_rehearsal_rejects_non_null_local_start_time() {
+        let root = temp_root("local-sns-rehearsal-start-time");
+        write_local_sns_rehearsal_fixture(&root);
+        let path = root.join("deploy/local-sns-rehearsal/sns_init.local.template.yaml");
+        let text = fs::read_to_string(&path)
+            .unwrap()
+            .replace("start_time: null", "start_time: \"2026-07-29 12:00:00Z\"");
+        fs::write(path, text).unwrap();
+        assert!(check_local_sns_rehearsal_at(&root)
+            .unwrap_err()
+            .contains("Swap.start_time"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_sns_rehearsal_rejects_empty_restricted_country_list() {
+        let root = temp_root("local-sns-rehearsal-empty-countries");
+        write_local_sns_rehearsal_fixture(&root);
+        let path = root.join("deploy/local-sns-rehearsal/sns_init.local.template.yaml");
+        let text = fs::read_to_string(&path).unwrap().replace(
+            "  start_time: null",
+            "  start_time: null\n  restricted_countries: []",
+        );
+        fs::write(path, text).unwrap();
+        assert!(check_local_sns_rehearsal_at(&root)
+            .unwrap_err()
+            .contains("restricted_countries"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_sns_rehearsal_rejects_logo_hash_mismatch() {
+        let root = temp_root("local-sns-rehearsal-logo-hash");
+        write_local_sns_rehearsal_fixture(&root);
+        write(
+            &root,
+            "deploy/local-sns-rehearsal/assets/io-local-logo.svg",
+            "<svg>changed</svg>\n",
+        );
+        assert!(check_local_sns_rehearsal_at(&root)
+            .unwrap_err()
+            .contains("SHA-256"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn current_canonical_selector_accepts_only_the_closed_v1_shape() {
+        let good = dummy_selector_text("2026-08-14-4320fdf-canonical-economics");
+        let parsed = parse_current_canonical_selector(CURRENT_CANONICAL_SELECTOR, &good).unwrap();
+        assert_eq!(parsed.package, "2026-08-14-4320fdf-canonical-economics");
+
+        for bad in [
+            good.replace("version = 1", "version = 2"),
+            format!("{good}\nunexpected = \"field\"\n"),
+            good.replace("[current]", "[current]\nunexpected = \"field\""),
+            format!("{good}\n[current]\n"),
+        ] {
+            assert!(parse_current_canonical_selector(CURRENT_CANONICAL_SELECTOR, &bad).is_err());
+        }
+    }
+
+    #[test]
+    fn current_canonical_selector_rejects_traversal_and_absolute_packages() {
+        for package in [
+            "../historical",
+            "nested/package",
+            "nested\\package",
+            "/absolute/package",
+            ".",
+            "..",
+        ] {
+            assert!(parse_current_canonical_selector(
+                CURRENT_CANONICAL_SELECTOR,
+                &dummy_selector_text(package),
+            )
+            .unwrap_err()
+            .contains("leaf directory"));
+        }
+    }
+
+    #[test]
+    fn current_selector_binding_checks_every_release_and_package_identity() {
+        let root = temp_root("current-selector-binding");
+        let package = "deploy/local-sns-rehearsal/evidence/current-package";
+        write(&root, MANIFEST_PATH, "current release manifest\n");
+        write(
+            &root,
+            &format!("{package}/manifest.toml"),
+            "package manifest\n",
+        );
+        write(&root, &format!("{package}/SHA256SUMS"), "package sums\n");
+        let source_commit = "1".repeat(40);
+        let artifact_commit = "2".repeat(40);
+        let validated = ValidatedEvidencePackage {
+            complete: true,
+            monitoring: true,
+            canonical_economics: true,
+            io_release_source_commit: Some(source_commit.clone()),
+            io_artifact_recording_commit: Some(artifact_commit.clone()),
+        };
+        let selector = CurrentCanonicalSelector {
+            package: "current-package".into(),
+            io_release_source_commit: source_commit,
+            io_artifact_recording_commit: artifact_commit,
+            release_manifest_sha256: hex_sha256(&fs::read(root.join(MANIFEST_PATH)).unwrap()),
+            package_manifest_sha256: hex_sha256(
+                &fs::read(root.join(package).join("manifest.toml")).unwrap(),
+            ),
+            package_sha256s_sha256: hex_sha256(
+                &fs::read(root.join(package).join("SHA256SUMS")).unwrap(),
+            ),
+        };
+        validate_current_selector_binding(&root, package, &validated, &selector).unwrap();
+
+        let mut wrong = selector.clone();
+        wrong.io_release_source_commit = "a".repeat(40);
+        assert!(
+            validate_current_selector_binding(&root, package, &validated, &wrong)
+                .unwrap_err()
+                .contains("release source")
+        );
+        let mut wrong = selector.clone();
+        wrong.io_artifact_recording_commit = "b".repeat(40);
+        assert!(
+            validate_current_selector_binding(&root, package, &validated, &wrong)
+                .unwrap_err()
+                .contains("artifact-recording")
+        );
+        for field in [
+            "release_manifest_sha256",
+            "package_manifest_sha256",
+            "package_sha256s_sha256",
+        ] {
+            let mut wrong = selector.clone();
+            match field {
+                "release_manifest_sha256" => wrong.release_manifest_sha256 = "0".repeat(64),
+                "package_manifest_sha256" => wrong.package_manifest_sha256 = "0".repeat(64),
+                "package_sha256s_sha256" => wrong.package_sha256s_sha256 = "0".repeat(64),
+                _ => unreachable!(),
+            }
+            assert!(
+                validate_current_selector_binding(&root, package, &validated, &wrong)
+                    .unwrap_err()
+                    .contains(field)
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn immutable_historical_canonical_package_validates_intrinsically() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let package = "deploy/local-sns-rehearsal/evidence/2026-08-12-4320fdf-canonical-economics";
+        let validated = validate_local_sns_evidence_package_at(&root, package, false).unwrap();
+        assert!(validated.complete);
+        assert!(validated.monitoring);
+        assert!(validated.canonical_economics);
+    }
+
+    #[test]
+    fn selecting_historical_canonical_after_release_change_fails() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let package = "deploy/local-sns-rehearsal/evidence/2026-08-12-4320fdf-canonical-economics";
+        assert!(validate_local_sns_evidence_package_at(&root, package, true)
+            .unwrap_err()
+            .contains("selected current package artifact commit"));
+    }
+
+    #[test]
+    fn current_selector_missing_or_unselected_package_fails_closed() {
+        let root = temp_root("current-selector-missing");
+        write_completed_evidence_package(&root);
+        assert!(check_local_sns_committed_evidence_at(&root)
+            .unwrap_err()
+            .contains("required selector is missing"));
+        write_selector(&root, "missing-package");
+        assert!(check_local_sns_committed_evidence_at(&root)
+            .unwrap_err()
+            .contains("was not encountered exactly once"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn current_selector_rejects_incomplete_or_noncanonical_selection() {
+        let root = temp_root("current-selector-shape");
+        let incomplete = write_incomplete_evidence_package(&root);
+        let incomplete_name = Path::new(&incomplete)
+            .file_name()
+            .unwrap()
+            .to_string_lossy();
+        write_selector(&root, &incomplete_name);
+        assert!(check_local_sns_committed_evidence_at(&root)
+            .unwrap_err()
+            .contains("must be complete, monitoring, and canonical"));
+
+        let completed = write_completed_evidence_package(&root);
+        let completed_name = Path::new(&completed).file_name().unwrap().to_string_lossy();
+        write_selector(&root, &completed_name);
+        assert!(check_local_sns_committed_evidence_at(&root)
+            .unwrap_err()
+            .contains("must be complete, monitoring, and canonical"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn current_selector_rejects_a_second_designation_file() {
+        let root = temp_root("current-selector-duplicate");
+        write_selector(&root, "missing-package");
+        write(
+            &root,
+            "deploy/local-sns-rehearsal/evidence/also-current.toml",
+            &dummy_selector_text("missing-package"),
+        );
+        assert!(check_local_sns_committed_evidence_at(&root)
+            .unwrap_err()
+            .contains("exact selector or regular package directories"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn current_selector_rejects_symlink_selector_and_package() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_root("current-selector-symlinks");
+        write(
+            &root,
+            "deploy/local-sns-rehearsal/evidence/selector-target.toml",
+            &dummy_selector_text("selected-package"),
+        );
+        symlink(
+            root.join("deploy/local-sns-rehearsal/evidence/selector-target.toml"),
+            root.join(CURRENT_CANONICAL_SELECTOR),
+        )
+        .unwrap();
+        assert!(check_local_sns_committed_evidence_at(&root)
+            .unwrap_err()
+            .contains("regular non-symlink file"));
+
+        fs::remove_file(root.join(CURRENT_CANONICAL_SELECTOR)).unwrap();
+        fs::remove_file(root.join("deploy/local-sns-rehearsal/evidence/selector-target.toml"))
+            .unwrap();
+        write_selector(&root, "selected-package");
+        fs::create_dir_all(root.join("outside-package")).unwrap();
+        symlink(
+            root.join("outside-package"),
+            root.join("deploy/local-sns-rehearsal/evidence/selected-package"),
+        )
+        .unwrap();
+        assert!(check_local_sns_committed_evidence_at(&root)
+            .unwrap_err()
+            .contains("exact selector or regular package directories"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn exact_incomplete_inventory_is_valid_but_not_current_launch_ready() {
+        let root = temp_root("local-sns-evidence-incomplete");
+        let package = write_incomplete_evidence_package(&root);
+        let validated = validate_local_sns_evidence_package_at(&root, &package, false).unwrap();
+        assert!(!validated.complete);
+        assert!(check_local_sns_committed_evidence_at(&root)
+            .unwrap_err()
+            .contains("required selector is missing"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn exact_historical_inventory_is_valid_but_not_current_launch_ready() {
+        let root = temp_root("local-sns-evidence-completed");
+        let package = write_completed_evidence_package(&root);
+        let validated = validate_local_sns_evidence_package_at(&root, &package, false).unwrap();
+        assert!(validated.complete);
+        assert!(!validated.monitoring);
+        assert!(check_local_sns_committed_evidence_at(&root)
+            .unwrap_err()
+            .contains("required selector is missing"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_sns_committed_evidence_rejects_duplicate_checksum_entry() {
+        let root = temp_root("local-sns-evidence-duplicate-sha");
+        let package = write_incomplete_evidence_package(&root);
+        let sha_path = root.join(&package).join("SHA256SUMS");
+        let first = fs::read_to_string(&sha_path)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap()
+            .to_string();
+        let mut text = fs::read_to_string(&sha_path).unwrap();
+        text.push_str(&format!("{first}\n"));
+        fs::write(sha_path, text).unwrap();
+        assert!(
+            validate_local_sns_evidence_package_at(&root, &package, false)
+                .unwrap_err()
+                .contains("duplicate SHA256SUMS")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_sns_committed_evidence_rejects_unexpected_file() {
+        let root = temp_root("local-sns-evidence-unexpected");
+        let package = write_incomplete_evidence_package(&root);
+        write(&root, &format!("{package}/extra.txt"), "extra\n");
+        assert!(
+            validate_local_sns_evidence_package_at(&root, &package, false)
+                .unwrap_err()
+                .contains("inventory mismatch")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_sns_committed_evidence_rejects_completed_placeholder_version() {
+        let root = temp_root("local-sns-evidence-version-placeholder");
+        let package = write_completed_evidence_package(&root);
+        let path = root.join(&package).join("toolchain-provenance.toml");
+        let text = fs::read_to_string(&path)
+            .unwrap()
+            .replace("1.26.0", "not-installed");
+        fs::write(&path, text).unwrap();
+        let files = [
+            "manifest.toml",
+            "toolchain-provenance.toml",
+            "sns_init.local.yaml",
+            "canister-ids.local.toml",
+            "reserve-funding-evidence.toml",
+            "ledger-evidence.toml",
+            "governance-evidence.toml",
+            "controller-evidence.toml",
+            "archive-evidence.toml",
+            "commands.log",
+        ];
+        write_evidence_sha256s(&root, &package, &files);
+        assert!(
+            validate_local_sns_evidence_package_at(&root, &package, false)
+                .unwrap_err()
+                .contains("placeholder marker")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_sns_committed_evidence_rejects_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_root("local-sns-evidence-symlink");
+        let package = write_incomplete_evidence_package(&root);
+        symlink(
+            root.join(&package).join("manifest.toml"),
+            root.join(&package).join("linked-manifest.toml"),
+        )
+        .unwrap();
+        assert!(
+            validate_local_sns_evidence_package_at(&root, &package, false)
+                .unwrap_err()
+                .contains("reject symlinks")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_sns_run_logged_records_failed_child_status_under_errexit() {
+        let root = temp_root("local-sns-run-logged");
+        let log = root.join("failed-command.log");
+        let library = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../deploy/local-sns-rehearsal/scripts/lib-local-sns.sh");
+        let output = Command::new("bash")
+            .args([
+                "-c",
+                "set -e; source \"$1\"; if run_logged \"$2\" sh -c 'exit 7'; then exit 90; fi",
+                "run-logged-test",
+            ])
+            .arg(&library)
+            .arg(&log)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let log = fs::read_to_string(log).unwrap();
+        assert!(log.contains("exit_status=7"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pocket_ic_provisioning_rejects_forged_download() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!(
+                "xtask-pocket-ic-provision-forged-{}",
+                std::process::id()
+            ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let fake_bin = root.join("fake-bin");
+        fs::create_dir_all(&fake_bin).unwrap();
+        write(
+            &root,
+            "fake-bin/curl",
+            "#!/bin/sh\noutput=\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = --output ]; then shift; output=$1; fi\n  shift\ndone\nprintf forged-archive > \"$output\"\n",
+        );
+        write(
+            &root,
+            "fake-bin/gzip",
+            "#!/bin/sh\nprintf forged-pocket-ic-binary\n",
+        );
+        for executable in [fake_bin.join("curl"), fake_bin.join("gzip")] {
+            let mut permissions = fs::metadata(&executable).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(executable, permissions).unwrap();
+        }
+
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tools/scripts/provision-pocket-ic");
+        let script_text = fs::read_to_string(&script).unwrap();
+        for required in [
+            "version=\"14.0.0\"",
+            "f5009e61bcbff297435a67a8ef9fc02178ebb9ab3ee1ec3ac81f4fc3d49319c4",
+            "https://github.com/dfinity/pocketic/releases/download/${version}/pocket-ic-x86_64-linux.gz",
+            "--proto '=https'",
+            "--tlsv1.2",
+        ] {
+            assert!(script_text.contains(required), "missing pin: {required}");
+        }
+
+        let output_path = root.join("pocket-ic-server");
+        let output = Command::new("bash")
+            .arg(&script)
+            .arg(&output_path)
+            .env("PATH", format!("{}:/usr/bin:/bin", fake_bin.display()))
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("SHA-256 mismatch"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!output_path.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pocket_ic_provisioning_rejects_invalid_output_basename() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!(
+                "xtask-pocket-ic-provision-invalid-basename-{}",
+                std::process::id()
+            ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tools/scripts/provision-pocket-ic");
+        let output = Command::new("bash")
+            .arg(&script)
+            .arg(root.join("pocket-ic-server-14.0.0"))
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("output basename must be pocket-ic or pocket-ic-server"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn icp_cli_provisioning_rejects_forged_download() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!(
+                "xtask-icp-cli-provision-forged-{}",
+                std::process::id()
+            ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let fake_bin = root.join("fake-bin");
+        fs::create_dir_all(&fake_bin).unwrap();
+        write(
+            &root,
+            "fake-bin/curl",
+            "#!/bin/sh\noutput=\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = --output ]; then shift; output=$1; fi\n  shift\ndone\nprintf forged-archive > \"$output\"\n",
+        );
+        let curl = fake_bin.join("curl");
+        let mut permissions = fs::metadata(&curl).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&curl, permissions).unwrap();
+
+        let script =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/scripts/provision-icp-cli");
+        let script_text = fs::read_to_string(&script).unwrap();
+        for required in [
+            "version=\"0.2.7\"",
+            "90eb2fc76267422a8ed20681453f1c52b93fea01",
+            "bc6272fc0004d17538c650cfc8bacedd464ae86527efe172ed3b499a3e0f7798",
+            "99aaef26bd765ce197c1de525ddb437ad1d3e933e5d3ca2d720ed189c23b7667",
+            "https://github.com/dfinity/icp-cli/releases/download/v${version}/${archive_name}",
+            "--proto '=https'",
+            "--tlsv1.2",
+        ] {
+            assert!(script_text.contains(required), "missing pin: {required}");
+        }
+
+        let output_path = root.join("icp");
+        let output = Command::new("bash")
+            .arg(&script)
+            .arg(&output_path)
+            .env("PATH", format!("{}:/usr/bin:/bin", fake_bin.display()))
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("archive SHA-256 mismatch"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!output_path.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn icp_cli_provisioning_rejects_invalid_output_basename() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!(
+                "xtask-icp-cli-provision-invalid-basename-{}",
+                std::process::id()
+            ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let script =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/scripts/provision-icp-cli");
+        let output = Command::new("bash")
+            .arg(&script)
+            .arg(root.join("icp-0.2.7"))
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("output basename must be icp"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -6376,12 +11838,12 @@ Template SNS principal values are planned wiring placeholders only.
     }
 
     #[test]
-    fn local_sns_ledger_check_rejects_treasury_transfer_assumption() {
+    fn local_sns_ledger_check_rejects_missing_treasury_transfer_assumption() {
         assert_local_sns_evidence_rejects(
             |text| {
                 text.replace(
-                    "treasury_transfer_assumed = false",
                     "treasury_transfer_assumed = true",
+                    "treasury_transfer_assumed = false",
                 )
             },
             "treasury_transfer_assumed",
@@ -6393,11 +11855,11 @@ Template SNS principal values are planned wiring placeholders only.
         assert_local_sns_evidence_rejects(
             |text| {
                 text.replace(
-                    "duplicate_of_block_index = 1",
-                    "duplicate_of_block_index = \"none\"",
+                    "duplicate_of_block_index = 11\nduplicate_tested_transfer",
+                    "duplicate_of_block_index = \"none\"\nduplicate_tested_transfer",
                 )
             },
-            "duplicate_of_block_index",
+            "top-level duplicate evidence",
         );
     }
 
@@ -6406,7 +11868,7 @@ Template SNS principal values are planned wiring placeholders only.
         assert_local_sns_evidence_rejects(
             |text| {
                 text.replace(
-                    "protocol_reserve_balance_e8s = 60000000000000",
+                    "protocol_reserve_balance_e8s = 59999999970000",
                     "protocol_reserve_balance_e8s = 0",
                 )
             },
@@ -6419,11 +11881,51 @@ Template SNS principal values are planned wiring placeholders only.
         assert_local_sns_evidence_rejects(
             |text| {
                 text.replace(
-                    "transaction_fee_e8s = 10000\ntotal_supply_e8s = 100000000000000\nprotocol_reserve_account_owner",
-                    "transaction_fee_e8s = 10001\ntotal_supply_e8s = 100000000000000\nprotocol_reserve_account_owner",
+                    "transaction_fee_e8s = 10000\ntotal_supply_e8s = 99999999960000\nprotocol_reserve_account_owner",
+                    "transaction_fee_e8s = 10001\ntotal_supply_e8s = 99999999960000\nprotocol_reserve_account_owner",
                 )
             },
             "transaction_fee_e8s",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_unknown_fee_disposition() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replace(
+                    "fee_disposition_mode = \"burned\"",
+                    "fee_disposition_mode = \"unknown\"",
+                )
+            },
+            "fee_disposition_mode",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_stale_index_evidence() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replacen(
+                    "index_synced_through_block_index = 13",
+                    "index_synced_through_block_index = 12",
+                    1,
+                )
+            },
+            "stale or incomplete",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_constant_supply_claim_with_burn() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replace(
+                    "total_supply_after_e8s = 99999999990000",
+                    "total_supply_after_e8s = 100000000000000",
+                )
+            },
+            "supply decrease",
         );
     }
 
@@ -6445,6 +11947,336 @@ Template SNS principal values are planned wiring placeholders only.
                 )
             },
             "governance upgrade gap",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_moving_official_source() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replace(
+                    "official_ic_source_commit = \"2d7f90fb23672cc3b81c216a33d04c75672dd308\"",
+                    "official_ic_source_commit = \"main\"",
+                )
+            },
+            "official_ic_source_commit",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_mainnet_network_url() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replace(
+                    "local_network_url = \"http://127.0.0.1:8080\"",
+                    "local_network_url = \"https://icp-api.io/\"",
+                )
+            },
+            "local_network_url",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_anonymous_account_owner() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replacen(
+                    "from_owner = \"bd3sg-teaaa-aaaaa-qaaba-cai\"",
+                    "from_owner = \"2vxsx-fae\"",
+                    1,
+                )
+            },
+            "anonymous",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_bad_subaccount_length() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replacen("to_subaccount_hex = \"1111111111111111111111111111111111111111111111111111111111111111\"", "to_subaccount_hex = \"abcd\"", 1)
+            },
+            "32-byte",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_account_sequence_break() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replacen("to_subaccount_hex = \"1111111111111111111111111111111111111111111111111111111111111111\"", "to_subaccount_hex = \"3333333333333333333333333333333333333333333333333333333333333333\"", 1)
+            },
+            "reserve-to-user.to",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_supply_continuity_break() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replacen(
+                    "total_supply_before_e8s = 99999999980000",
+                    "total_supply_before_e8s = 99999999985000",
+                    1,
+                )
+                .replacen(
+                    "total_supply_after_e8s = 99999999970000",
+                    "total_supply_after_e8s = 99999999975000",
+                    1,
+                )
+            },
+            "total supply continuity",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_top_level_amount_mismatch() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replace(
+                    "reserve_transfer_amount_e8s = 100000000",
+                    "reserve_transfer_amount_e8s = 99999999",
+                )
+            },
+            "top-level ledger evidence",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_non_monotonic_timestamp() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replace(
+                    "observation_timestamp = \"2026-07-28T00:00:01Z\"",
+                    "observation_timestamp = \"2026-07-27T23:59:59Z\"",
+                )
+            },
+            "observation timestamps",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_incomplete_archive_evidence() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replacen(
+                    "archive_involvement = \"none\"",
+                    "archive_involvement = \"incomplete\"",
+                    1,
+                )
+            },
+            "incomplete archive proof",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_reserve_owner_not_stream_manager() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replacen(
+                    "protocol_reserve_account_owner = \"avqkn-guaaa-aaaaa-qaaea-cai\"",
+                    "protocol_reserve_account_owner = \"a3shf-5eaaa-aaaaa-qaafa-cai\"",
+                    1,
+                )
+            },
+            "reserve owner",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_exact_reserve_redemption_collision() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replace(
+                    "2222222222222222222222222222222222222222222222222222222222222222",
+                    "3333333333333333333333333333333333333333333333333333333333333333",
+                )
+            },
+            "must not collide",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_accepts_same_owner_distinct_subaccounts() {
+        let evidence = completed_local_sns_evidence();
+        let parsed = parse_local_sns_evidence("fixture", &evidence).unwrap();
+        assert_eq!(
+            parsed.ledger.protocol_reserve_account_owner,
+            parsed.user_to_redemption_transfer.to_account.owner
+        );
+        assert_ne!(
+            parsed.ledger.protocol_reserve_subaccount_hex,
+            parsed.user_to_redemption_transfer.to_account.subaccount_hex
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_swapped_dapp_roles() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replace(
+                    "io_stream_manager = \"avqkn-guaaa-aaaaa-qaaea-cai\"",
+                    "io_stream_manager = \"TEMP_ROLE\"",
+                )
+                .replace(
+                    "io_nns_neuron_manager = \"aax3a-h4aaa-aaaaa-qaahq-cai\"",
+                    "io_nns_neuron_manager = \"avqkn-guaaa-aaaaa-qaaea-cai\"",
+                )
+                .replace(
+                    "io_stream_manager = \"TEMP_ROLE\"",
+                    "io_stream_manager = \"aax3a-h4aaa-aaaaa-qaahq-cai\"",
+                )
+            },
+            "reserve owner",
+        );
+    }
+
+    #[test]
+    fn local_sns_ledger_check_rejects_proof_canister_role_mismatch() {
+        assert_local_sns_evidence_rejects(
+            |text| {
+                text.replacen(
+                    "proof_source_canister = \"be2us-64aaa-aaaaa-qaabq-cai\"",
+                    "proof_source_canister = \"br5f7-7uaaa-aaaaa-qaaca-cai\"",
+                    1,
+                )
+            },
+            "not bound",
+        );
+    }
+
+    fn local_account(owner: &str, subaccount_hex: Option<&str>) -> LocalSnsAccountEvidence {
+        LocalSnsAccountEvidence {
+            owner: Principal::from_text(owner).unwrap(),
+            subaccount_hex: subaccount_hex.map(str::to_string),
+        }
+    }
+
+    fn collected_overlap_transfer(
+        sender: LocalSnsAccountEvidence,
+        recipient: LocalSnsAccountEvidence,
+        collector: LocalSnsAccountEvidence,
+        sender_balance: (u128, u128),
+        recipient_balance: (u128, u128),
+        collector_balance: (u128, u128),
+        reserve_balance: (u128, u128),
+    ) -> LocalSnsTransferEvidence {
+        LocalSnsTransferEvidence {
+            block_index: 42,
+            from_account: sender.clone(),
+            to_account: recipient.clone(),
+            requested_amount_e8s: 100,
+            observed_fee_e8s: 10,
+            fee_disposition: "collected".to_string(),
+            sender_balance_before_e8s: sender_balance.0,
+            sender_balance_after_e8s: sender_balance.1,
+            recipient_balance_before_e8s: recipient_balance.0,
+            recipient_balance_after_e8s: recipient_balance.1,
+            fee_collector_account: Some(collector.clone()),
+            fee_collector_balance_before_e8s: Some(collector_balance.0),
+            fee_collector_balance_after_e8s: Some(collector_balance.1),
+            total_supply_before_e8s: 1_000,
+            total_supply_after_e8s: 1_000,
+            reserve_balance_before_e8s: reserve_balance.0,
+            reserve_balance_after_e8s: reserve_balance.1,
+            ledger_tip_block_index: 42,
+            index_synced_through_block_index: 42,
+            proof_source: LocalSnsProofSource::IndexAccountHistory,
+            proof_source_canister: Principal::from_text("be2us-64aaa-aaaaa-qaabq-cai").unwrap(),
+            proof_method: LocalSnsProofMethod::IcrcIndexGetAccountTransactions,
+            proof_account: sender,
+            archive_canister: None,
+            archive_range_start: None,
+            archive_range_end: None,
+            archive_involvement: "none".to_string(),
+            observation_timestamp: "2026-07-28T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn local_sns_transfer_validator_rejects_fee_collector_mode() {
+        let sender = local_account(
+            "bd3sg-teaaa-aaaaa-qaaba-cai",
+            Some("1111111111111111111111111111111111111111111111111111111111111111"),
+        );
+        let recipient = local_account(
+            "avqkn-guaaa-aaaaa-qaaea-cai",
+            Some("2222222222222222222222222222222222222222222222222222222222222222"),
+        );
+        let collector = local_account("a3shf-5eaaa-aaaaa-qaafa-cai", None);
+        let reserve = collector.clone();
+        let err = validate_local_sns_transfer(
+            "fixture",
+            "transfer",
+            &collected_overlap_transfer(
+                sender.clone(),
+                recipient.clone(),
+                collector.clone(),
+                (1_000, 890),
+                (0, 100),
+                (10_000, 10_010),
+                (10_000, 10_010),
+            ),
+            &reserve,
+        )
+        .unwrap_err();
+        assert!(err.contains("standard SNS fee policy"));
+    }
+
+    #[test]
+    fn local_sns_transfer_validator_accepts_sender_equals_recipient_burn() {
+        let account = local_account(
+            "bd3sg-teaaa-aaaaa-qaaba-cai",
+            Some("1111111111111111111111111111111111111111111111111111111111111111"),
+        );
+        let reserve = local_account("a3shf-5eaaa-aaaaa-qaafa-cai", None);
+        let mut transfer = collected_overlap_transfer(
+            account.clone(),
+            account.clone(),
+            reserve.clone(),
+            (1_000, 990),
+            (1_000, 990),
+            (0, 0),
+            (0, 0),
+        );
+        transfer.fee_disposition = "burned".to_string();
+        transfer.fee_collector_account = None;
+        transfer.fee_collector_balance_before_e8s = None;
+        transfer.fee_collector_balance_after_e8s = None;
+        transfer.total_supply_after_e8s = 990;
+        validate_local_sns_transfer("fixture", "transfer", &transfer, &reserve).unwrap();
+    }
+
+    #[test]
+    fn local_sns_transfer_validator_rejects_unexplained_balance_movement() {
+        let sender = local_account(
+            "bd3sg-teaaa-aaaaa-qaaba-cai",
+            Some("1111111111111111111111111111111111111111111111111111111111111111"),
+        );
+        let recipient = local_account(
+            "avqkn-guaaa-aaaaa-qaaea-cai",
+            Some("2222222222222222222222222222222222222222222222222222222222222222"),
+        );
+        let collector = local_account("a3shf-5eaaa-aaaaa-qaafa-cai", None);
+        let transfer = collected_overlap_transfer(
+            sender,
+            recipient,
+            collector.clone(),
+            (1_000, 889),
+            (0, 100),
+            (10_000, 10_010),
+            (10_000, 10_010),
+        );
+        let mut transfer = transfer;
+        transfer.fee_disposition = "burned".to_string();
+        transfer.fee_collector_account = None;
+        transfer.fee_collector_balance_before_e8s = None;
+        transfer.fee_collector_balance_after_e8s = None;
+        transfer.total_supply_after_e8s = 990;
+        assert!(
+            validate_local_sns_transfer("fixture", "transfer", &transfer, &collector)
+                .unwrap_err()
+                .contains("unexplained balance movement")
         );
     }
 
@@ -6701,45 +12533,6 @@ Template SNS principal values are planned wiring placeholders only.
     fn production_did_and_release_surface_have_no_debug_fee_dependency() {
         assert!(STREAM_PRODUCTION_FORBIDDEN_DID.contains(&"debug_"));
         assert!(PRODUCTION_WASM_FORBIDDEN_METHOD_STRINGS.contains(&"debug_get_transactions"));
-    }
-
-    #[test]
-    fn historian_freshness_gate_requires_dashboard_current_time_path() {
-        let good = r#"
-pub fn source_health_from_state_at(
-    state: &StableState,
-    now_timestamp_nanos: u64,
-) -> Vec<SourceHealth> {
-    vec![]
-}
-
-#[cfg(target_family = "wasm")]
-fn historian_now_timestamp_nanos() -> u64 {
-    ic_cdk::api::time()
-}
-
-pub fn source_health_from_state(state: &StableState) -> Vec<SourceHealth> {
-    source_health_from_state_at(state, historian_now_timestamp_nanos())
-}
-
-pub fn get_dashboard_state() -> PublicDashboardState {
-    STATE.with(|cell| {
-        let state = cell.borrow();
-        PublicDashboardState {
-            source_health: source_health_from_state_at(&state, historian_now_timestamp_nanos()),
-        }
-    })
-}
-"#;
-        check_historian_current_time_path("lib.rs", good).unwrap();
-
-        let bad = r#"
-pub fn source_health_from_state(state: &StableState) -> Vec<SourceHealth> {
-    let now = latest_observation_timestamp(state);
-    source_health_from_state_at(state, now)
-}
-"#;
-        assert!(check_historian_current_time_path("lib.rs", bad).is_err());
     }
 
     fn historian_did() -> &'static str {

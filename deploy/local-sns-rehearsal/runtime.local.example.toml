@@ -1,0 +1,35 @@
+# Copy to runtime.local.toml. Values are local per-run plans/evidence only.
+# Never use production or previously launched canister IDs here.
+
+[planned_sns]
+root = "TODO_LOCAL_PLANNED_SNS_ROOT"
+governance = "TODO_LOCAL_PLANNED_SNS_GOVERNANCE"
+ledger = "TODO_LOCAL_PLANNED_SNS_LEDGER"
+index = "TODO_LOCAL_PLANNED_SNS_INDEX"
+swap = "TODO_LOCAL_PLANNED_SNS_SWAP"
+
+[governance]
+sns_neuron_subaccount_hex = "TODO_LOCAL_64_HEX_NEURON_SUBACCOUNT"
+stream_lifecycle_function_id = "1000"
+nns_lifecycle_function_id = "1001"
+
+[accounts]
+operator_principal = "TODO_LOCAL_OPERATOR_PRINCIPAL"
+reserve_subaccount_hex = "TODO_LOCAL_64_HEX_RESERVE_SUBACCOUNT"
+liquid_icp_subaccount_hex = "TODO_LOCAL_64_HEX_LIQUID_ICP_SUBACCOUNT"
+jupiter_io_subaccount_hex = "0404040404040404040404040404040404040404040404040404040404040404"
+two_week_staging_subaccount_hex = "0303030303030303030303030303030303030303030303030303030303030303"
+
+[nns]
+# This is the standard NNS ledger principal on the isolated loopback topology.
+icp_ledger = "ryjl3-tyaaa-aaaaa-aaaba-cai"
+# These are the standard NNS Governance and SNS-W principals on that same
+# isolated topology. They are never called without the loopback URL guard.
+governance = "rrkah-fqaaa-aaaaa-aaaaq-cai"
+sns_wasm = "qaa6y-5yaaa-aaaaa-aaafa-cai"
+
+[amounts]
+reserve_funding_e8s = "10000000000"
+user_funding_e8s = "100000000"
+liquid_icp_funding_e8s = "100000000000000"
+redemption_io_e8s = "20000000"

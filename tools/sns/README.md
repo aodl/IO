@@ -16,7 +16,7 @@ Layer 3: Official local SNS launch rehearsal.
 
 This is optional and heavier. It follows the current official ICP/DFINITY SNS testing documentation as the source of truth and may use `dfx sns` to rehearse the official launch mechanics locally. The historical standalone `dfinity/sns-testing` repository is deprecated; if the official docs reference successor tooling or a new repository/location, use that current official location. This layer is outside required CI and requires developer-local tooling.
 
-The concrete IO package for this layer lives under `deploy/local-sns-rehearsal/`. It is local-only and provides scaffolding and evidence validation for creating a real SNS-created IO ledger/index/governance/root stack without claiming mainnet readiness. Until `deploy/local-sns-rehearsal/canister-ids.local.toml` is produced from a completed local rehearsal, no local SNS canister IDs are recorded and no real SNS ledger/index/governance/root behavior has been observed.
+The concrete IO package for this layer lives under `deploy/local-sns-rehearsal/`. It is local-only and provides scaffolding and evidence validation for creating a real SNS-created IO ledger/index/governance/root stack without claiming mainnet readiness. The completed 2026-08-11 package records the sanitized local IDs and canonical observations; it is local launch evidence, not an official capability-bearing SNS release or mainnet readiness claim.
 
 Layer 4: Mainnet SNS testflight.
 

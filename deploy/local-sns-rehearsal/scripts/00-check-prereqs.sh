@@ -12,17 +12,14 @@ require_local_script_guard "$@"
 cd "${REPO_ROOT}"
 cargo run -p xtask -- validate_local_sns_rehearsal
 
+for required in bazel git; do
+  require_command_available "$required"
+done
+
 if command -v dfx >/dev/null 2>&1; then
   dfx --version
-  if dfx sns --help >/dev/null 2>&1; then
-    printf 'dfx sns is available for optional manual local-only rehearsal.\n'
-  else
-    printf 'dfx sns is not available; install the SNS extension before manual rehearsal.\n' >&2
-    exit 2
-  fi
 else
-  printf 'dfx is not available; optional official local SNS rehearsal cannot run yet.\n' >&2
-  exit 2
+  printf 'dfx is unavailable; maintained SNS tooling can still be built, but identity/local call phases requiring dfx will block later.\n' >&2
 fi
 
-printf 'No dfx sns command was run. Follow deploy/local-sns-rehearsal/README.md for local-only next steps.\n'
+printf 'No dfx SNS extension command was required or run. Follow deploy/local-sns-rehearsal/README.md for local-only next steps.\n'

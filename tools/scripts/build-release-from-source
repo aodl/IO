@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source_commit="${1:?usage: build-release-from-source <exact-source-commit> [output-directory]}"
+output_dir="${2:-}"
+io_root="$(git rev-parse --show-toplevel)"
+cd "${io_root}"
+source "${io_root}/tools/scripts/release-build-temp-root"
+resolved="$(git rev-parse --verify "${source_commit}^{commit}")"
+if [[ "${source_commit}" != "${resolved}" ]]; then
+  echo "source commit must be the exact full commit SHA: ${resolved}" >&2
+  exit 2
+fi
+
+if [[ -z "${output_dir}" ]]; then
+  if ! git diff --quiet "${source_commit}" HEAD -- . ':(exclude)release-artifacts'; then
+    echo "artifact generation requires HEAD to differ from the source commit only under release-artifacts" >&2
+    exit 1
+  fi
+  if [[ -n "$(git status --porcelain=v1 --untracked-files=all -- . ':(exclude)release-artifacts')" ]]; then
+    echo "artifact generation requires clean source files outside release-artifacts" >&2
+    exit 1
+  fi
+fi
+
+temp_base="$(release_build_temp_root)"
+worktree_root="$(mktemp -d "${temp_base}/build-release.XXXXXXXX")"
+source_tree="${worktree_root}/source"
+cleanup() {
+  if [[ -d "${source_tree}" ]]; then
+    git -C "${io_root}" worktree remove --force "${source_tree}"
+  fi
+  rm -rf "${worktree_root}"
+}
+trap cleanup EXIT
+
+git -C "${io_root}" worktree add --detach "${source_tree}" "${source_commit}"
+(
+  cd "${source_tree}"
+  IO_RELEASE_SOURCE_COMMIT="${source_commit}" \
+    cargo run -p xtask -- build_canisters
+)
+if ! git -C "${source_tree}" diff --quiet "${source_commit}" HEAD -- . ':(exclude)release-artifacts'; then
+  echo "release build changed tracked source files outside release-artifacts" >&2
+  exit 1
+fi
+if [[ -n "$(git -C "${source_tree}" status --porcelain=v1 --untracked-files=all -- . ':(exclude)release-artifacts')" ]]; then
+  echo "release build produced dirty source files outside release-artifacts" >&2
+  exit 1
+fi
+
+if [[ -n "${output_dir}" ]]; then
+  if [[ "${output_dir}" != /* ]]; then
+    echo "output directory must be an absolute path" >&2
+    exit 2
+  fi
+  if [[ -e "${output_dir}" ]]; then
+    echo "output directory already exists: ${output_dir}" >&2
+    exit 2
+  fi
+  cp -a "${source_tree}/release-artifacts" "${output_dir}"
+else
+  rm -rf "${io_root}/release-artifacts"
+  cp -a "${source_tree}/release-artifacts" "${io_root}/release-artifacts"
+  cd "${io_root}"
+  cargo run -p xtask -- verify_artifacts
+fi

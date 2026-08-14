@@ -1,5 +1,0 @@
-canister=io_nns_neuron_manager
-schema_version=3
-scenario=unsupported-future-version
-source=local-test-builder
-live_snapshot=false

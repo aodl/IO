@@ -16,9 +16,10 @@ Examples:
 
 What it proves:
 
-- IO account/subaccount conversion, fee representation, transfer error mapping, duplicate proof checks, and index cursor handling are modelled at the boundary.
+- IO account/subaccount conversion, fee representation, transfer error mapping and duplicate proof checks are modelled at the value-moving boundary. Index history is historian/test observation only.
 - IO scheduler and journal behavior can process SNS-shaped ledger/index pages.
-- SNS governance and root records can be decoded or mocked into IO policy types.
+- Canonical reward events, additive per-neuron reward shares and Governance
+  readiness records can be decoded at the narrow monetary boundary.
 
 What it does not prove:
 
@@ -33,27 +34,28 @@ This layer uses PocketIC where supported by the pinned dependency and IO mock ca
 
 Examples:
 
-- `POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server cargo run -p xtask -- sns_governance_read_required`
 - `POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server cargo run -p xtask -- sns_ledger_index_required`
 - `POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server cargo run -p xtask -- sns_root_lifecycle_required`
 - `POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server cargo run -p xtask -- sns_pocketic_required`
 
 What it proves:
 
-- IO canisters accept local SNS-shaped principals in constructor-only production DIDs.
+- IO canisters accept local SNS-shaped principals through the reviewed simplified production DIDs.
 - Mock SNS governance/root/ledger/index canisters can exercise IO value-flow and upgrade-lifecycle paths under PocketIC.
 - NNS/SNS/application subnet topology assumptions can be smoke-tested locally.
+- Candidate Governance reward-event behavior is exercised by
+  `tools/scripts/test-sns-framework --source local --scope governance --require-capability latest_reward_event_participation --profile contract`.
 
 What it does not prove:
 
-- It does not run `dfx sns`.
+- It does not run the dfx SNS extension.
 - It does not run SNS-W.
 - It does not create an official SNS ledger stack.
 - It does not prove actual SNS ledger/index behavior.
 
 ## Layer 3: Official Local SNS Rehearsal
 
-This layer is optional/manual and local-only. It follows the current official ICP/DFINITY SNS testing documentation as the source of truth and may use `dfx sns` to create a real local SNS root, governance, ledger, index, swap, and archive stack from a local `sns_init` candidate. The historical standalone `dfinity/sns-testing` repository is deprecated; if the official docs reference successor tooling or a new repository/location, use that current official location.
+This layer is optional/manual and local-only. It follows the current official ICP/DFINITY SNS testing documentation as the source of truth and must use the source-built `sns` CLI with `sns-testing` to create a real local SNS root, governance, ledger, index, swap, and archive stack from a local `sns_init` candidate. The historical standalone `dfinity/sns-testing` repository is deprecated; if the official docs reference successor tooling or a new repository/location, use that current official location.
 
 Package:
 
@@ -87,7 +89,7 @@ Current package status:
 - Package/scaffolding exists: renderable local `sns_init` template, local variables template, evidence capture helpers, local command templates, no-network validators, and operator runbook.
 - Real proof is not completed: no local SNS ledger evidence file is committed, no local SNS canister IDs are recorded, no real SNS ledger/index/governance/root behavior has been observed, and `validate_local_sns_ledger` skips until evidence exists.
 
-Done criteria for this layer are intentionally concrete: official local SNS tooling must run locally; local SNS root/governance/ledger/index/swap IDs must be recorded; ledger fee, total supply, reserve balance, reserve-to-user transfer, user-to-reserve transfer, bad fee, insufficient funds, duplicate proof, and index account history must be observed; governance/root/swap availability and dapp controller state must be checked; and `cargo run -p xtask -- validate_local_sns_ledger` must pass against the filled local evidence file.
+Done criteria for this layer are intentionally concrete: official local SNS tooling must run locally; local SNS root/governance/ledger/index/swap IDs must be recorded; ledger fee disposition, total-supply deltas, reserve balance, reserve-to-user transfer, user-to-redemption transfer, redemption-to-reserve transfer, bad fee, insufficient funds, duplicate proof, and index account history must be observed; governance/root/swap availability and dapp controller state must be checked; and `cargo run -p xtask -- validate_local_sns_ledger` must pass against the filled local evidence file.
 
 ## Layer 4: Mainnet SNS Testflight
 
@@ -106,6 +108,6 @@ What it does not prove:
 
 ## Current Gap Closed by the Local Rehearsal Package
 
-Before the official local rehearsal package, IO had strong mock/PocketIC coverage but no required artifact describing how to create and validate a real SNS-created local IO ledger/index/governance/root stack. The new package closes the scaffolding and evidence-validation gap while keeping `dfx sns` optional/manual and outside required CI.
+Before the official local rehearsal package, IO had strong mock/PocketIC coverage but no required artifact describing how to create and validate a real SNS-created local IO ledger/index/governance/root stack. The package closes the scaffolding and evidence-validation gap while keeping the dfx SNS extension outside required CI.
 
 IO_TEST ledgers remain non-canonical staging tools. The canonical IO ledger is intended to be the SNS ledger, and that ledger has not launched on mainnet.

@@ -59,7 +59,7 @@ dapp_canisters:
   frontend: "TODO_LOCAL_FRONTEND_CANISTER_PLACEHOLDER"
 
 io_constructor_arg_mapping:
-  note: "Derived from current IO constructor-only value-moving DIDs; local principals are placeholders until the local dapp deployment step runs."
+  note: "Derived from the current reviewed IO production DIDs; local principals are placeholders until the local dapp deployment step runs."
   io_stream_manager:
     icp_ledger_principal_text: "TODO_LOCAL_ICP_LEDGER_PLACEHOLDER"
     icp_index_principal_text: "TODO_LOCAL_ICP_INDEX_PLACEHOLDER"

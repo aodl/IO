@@ -1,0 +1,7 @@
+[controllers]
+sns_root = "7tjcv-pp777-77776-qaaaa-cai"
+io_stream_manager = "7tjcv-pp777-77776-qaaaa-cai"
+io_nns_neuron_manager = "7tjcv-pp777-77776-qaaaa-cai"
+io_historian_before = "7tjcv-pp777-77776-qaaaa-cai"
+io_historian_after = "7tjcv-pp777-77776-qaaaa-cai"
+frontend = "7tjcv-pp777-77776-qaaaa-cai"

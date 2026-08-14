@@ -23,6 +23,7 @@ pub fn new_pic_with_icp_sns_features() -> PocketIc {
         .with_application_subnet()
         .with_icp_features(IcpFeatures {
             registry: Some(IcpFeaturesConfig::DefaultConfig),
+            cycles_minting: Some(IcpFeaturesConfig::DefaultConfig),
             icp_token: Some(IcpFeaturesConfig::DefaultConfig),
             nns_governance: Some(IcpFeaturesConfig::DefaultConfig),
             sns: Some(IcpFeaturesConfig::DefaultConfig),
@@ -37,6 +38,7 @@ pub fn new_pic_with_nns_governance_features() -> PocketIc {
         .with_application_subnet()
         .with_icp_features(IcpFeatures {
             registry: Some(IcpFeaturesConfig::DefaultConfig),
+            cycles_minting: Some(IcpFeaturesConfig::DefaultConfig),
             icp_token: Some(IcpFeaturesConfig::DefaultConfig),
             nns_governance: Some(IcpFeaturesConfig::DefaultConfig),
             ..Default::default()

@@ -1,6 +1,6 @@
 # Official Local SNS Rehearsal
 
-This runbook describes how to prove IO assumptions against a real SNS-created ledger stack in a local environment. It is optional/manual, local-only, and outside required CI because the official SNS path may require `dfx sns`.
+This runbook describes how to prove IO assumptions against a real SNS-created ledger stack in a local environment. It is optional/manual, local-only, and outside required CI because the maintained local flow depends on heavyweight source-built tooling.
 
 For a lighter local real-framework path that does not use official SNS launch tooling, use `tests/e2e_real_canisters` with pinned local SNS ledger/index Wasms. That path installs the real framework Wasms directly in PocketIC and records evidence with `deploy/local-sns-rehearsal/real-canister-e2e-evidence.example.toml`; it is not a substitute for an official SNS launch rehearsal because it does not prove SNS-W, swap, root/governance launch wiring, or final SNS tokenomics.
 
@@ -21,7 +21,7 @@ It must not use `--network ic`, must not call mainnet, must not touch `oae4c-3ia
 - `deploy/local-sns-rehearsal/scripts/04-render-local-wiring.sh`
 - `deploy/local-sns-rehearsal/scripts/05-validate-evidence.sh`
 
-The rendered local `generated/sns_init.local.yaml` is not final tokenomics and is not a mainnet SNS proposal. It exists only to create a real local SNS ledger/index/governance/root stack for integration testing.
+The rendered local `sns_init.local.yaml` is not final tokenomics and is not a mainnet SNS proposal. It exists only to create a real local SNS ledger/index/governance/root stack for integration testing.
 
 IO_TEST remains a non-canonical staging ledger label and must not be confused with the real SNS-created local IO ledger created by this rehearsal.
 
@@ -29,22 +29,35 @@ IO_TEST remains a non-canonical staging ledger label and must not be confused wi
 
 Follow the current official ICP/DFINITY SNS testing documentation as the source of truth. The historical standalone `dfinity/sns-testing` repository is deprecated; if the official docs reference successor tooling or a new repository/location, use that current official location.
 
-Local SNS rehearsal may require `dfx sns`. That remains optional/manual, local-only, and outside required CI. Required repository workflows must not depend on `dfx`.
+Local SNS rehearsal uses Bazel, `. scripts/env.sh`, `sns-testing-init`, `sns-testing`, the source-built `sns` CLI, and Quill where governance proposals need it. Required repository workflows must not depend on the dfx SNS extension.
 
-The committed package is executable scaffolding and evidence validation: it includes a renderable local `sns_init` candidate, a local variables template, evidence capture helpers, no-network validators, and this manual runbook. It does not prove IO against a real SNS ledger until an operator completes the local rehearsal, records `deploy/local-sns-rehearsal/canister-ids.local.toml`, and validates that evidence.
+The user-local Bazel launcher is Bazelisk `v1.29.0`, downloaded from the
+published GitHub release artifact `bazelisk-linux-amd64`. Its published and
+observed SHA-256 is
+`5a408715e932c0250d28bd84555f12edbf70117de42f9181691c736eacc4a992`.
+It is installed as `/home/codexdev/.local/bin/bazelisk` with a local `bazel`
+symlink. No system package or elevated privilege is used. The maintained source
+flow was reproduced from the clean sibling checkout at
+`4320fdf2e613844eabae1927b1a23b98da3a7bc6`: NNS bootstrap, SNS-W candidate
+publication, CreateServiceNervousSystem, swap participation/finalization,
+canister discovery, Governance treasury funding, ledger/index evidence and
+controller handoff all succeeded locally. The immutable completed sanitized
+historical package is `deploy/local-sns-rehearsal/evidence/2026-08-11-4320fdf/`. Its mechanics observations remain valid; its redemption-rate/excluded-Account evidence is superseded as described in `local-sns-evidence-disposition.md`.
+
+The committed package includes a renderable local `sns_init` candidate, per-run runtime inputs, evidence capture helpers, no-network validators, and restartable phases 12–17. Those phases verify exact IO release provenance, install Paused dapps, provision canonical staging fee floats and two source-shaped local NNS neurons, publish a reviewed Governance/Root bundle through executed local NNS Governance proposals into SNS-W, verify its exact compressed hashes, finalize and discover the SNS, submit real treasury and lifecycle proposals, exercise production redemption, and capture index/archive/controller evidence. The prior one-component candidate-Governance/official-Root `unit_variant` incompatibility is historical; same-source candidate Governance/Root compatibility is proved. If the maintained chunk-store CLI route fails before execution, phase 17 submits the exact release Wasm inline through a signed SNS Governance proposal and Root. The inline payload avoids only the unavailable upload store; it does not bypass Governance. The phase upgrades a provenance-correct prior historian to the current exact manifest artifact and requires different before/after module hashes. The phases fail closed and persist checkpoints. The completed historical package records one clean run; the thin lifecycle source profile is separate runner coverage and does not retroactively qualify or invalidate that package.
 
 ## Manual Flow
 
 1. Prepare a clean local SNS testing environment using the current official ICP/DFINITY SNS testing documentation.
 2. Run `IO_LOCAL_SNS_REHEARSAL_ACK=local-only deploy/local-sns-rehearsal/runbook.sh check`.
 3. Copy `deploy/local-sns-rehearsal/local-vars.example.toml` to ignored `local-vars.toml` and fill only local principals.
-4. Run `runbook.sh render-sns-init` to write ignored `generated/sns_init.local.yaml`.
+4. Run `runbook.sh render-sns-init` to write ignored `sns_init.local.yaml`.
 5. Deploy IO app canisters locally.
 6. Add local NNS root as co-controller where the official SNS launch tooling requires it.
-7. Validate `deploy/local-sns-rehearsal/generated/sns_init.local.yaml` with local SNS tooling.
+7. Validate `deploy/local-sns-rehearsal/sns_init.local.yaml` with local SNS tooling.
 8. Submit the local SNS proposal through the local SNS testing flow.
 9. Let SNS-W deploy local SNS canisters.
-10. Run `runbook.sh record-ids` and record root, governance, ledger, index, swap, and archive IDs in ignored `deploy/local-sns-rehearsal/canister-ids.local.toml`.
+10. Run `runbook.sh record-ids` during a new rehearsal and record root, governance, ledger, index, swap, and archive observations. The completed sanitized result is committed at `deploy/local-sns-rehearsal/canister-ids.local.toml`.
 11. Run `runbook.sh capture-evidence` and the command templates to observe ledger/index/governance/root behavior.
 12. Run no-network repository validation:
 
@@ -55,7 +68,9 @@ cargo run -p xtask -- validate_local_sns_ledger
 
 The second command checks only the recorded local evidence file. It does not call canisters.
 
-If `deploy/local-sns-rehearsal/canister-ids.local.toml` is absent, `validate_local_sns_ledger` skips clearly. In that state no local SNS canister IDs are recorded and no real SNS ledger/index/governance/root behavior has been observed.
+`validate_local_sns_ledger` validates the committed completed local evidence. A
+later run must create a new immutable evidence directory; it must not overwrite
+the 2026-08-11 package or relabel it as evidence for later source commits.
 
 ## Ledger Assumptions to Prove Manually
 
@@ -68,7 +83,7 @@ Run local canister calls against the local SNS ledger/index principals recorded 
 - `icrc1_transfer` returns `BadFee` for an intentionally wrong fee.
 - `icrc1_transfer` returns `InsufficientFunds` for an unfunded source subaccount.
 - Repeating a transfer with the same created-at time/memo produces duplicate behavior that IO can prove against the duplicate block.
-- The SNS index `get_account_transactions` endpoint returns the expected reserve/user account history in a stable order for IO cursor handling.
+- The SNS index `get_account_transactions` endpoint returns the expected reserve/user account history in a stable order for historian observation evidence; it is not monetary command authority.
 - Index lag or archive-required behavior is either observed and recorded or explicitly marked as future work in the local evidence file.
 - SNS governance exposes nervous-system parameters.
 - SNS root is available and can report controlled dapp canisters or support the corresponding official local query.
@@ -76,28 +91,42 @@ Run local canister calls against the local SNS ledger/index principals recorded 
 
 ## Issuance Model
 
-IO issuance is resolved conservatively as a transfer from a protocol reserve account/subaccount funded at SNS genesis.
+IO issuance is resolved conservatively as a transfer from a protocol reserve account/subaccount funded after SNS finalization and before activation by an executed SNS-governance treasury-transfer proposal.
 
-Redemption returns IO to the protocol reserve. IO must not assume arbitrary post-launch minting unless final SNS ledger configuration and governance policy explicitly support it and a later audited milestone changes this model.
+Redemption uses an authenticated ICRC-2 pull directly into the protocol reserve. IO must not assume arbitrary post-launch minting unless final SNS ledger configuration and governance policy explicitly support it and a later audited milestone changes this model.
 
 The local rehearsal must prove:
 
 - the protocol reserve account exists on the SNS ledger;
-- the reserve balance is funded at genesis;
-- stream-manager local wiring can construct the reserve-to-user transfer intent;
-- redemption local wiring can construct the user-to-reserve return intent;
-- total supply remains constant across issuance/redemption rehearsal transfers.
+- the reserve balance is funded by the recorded post-finalization SNS-governance treasury transfer;
+- the standalone ledger fixture can execute a reserve-to-user transfer;
+- the standalone ledger fixture can execute a direct user-to-reserve transfer with the configured fee;
+- fee disposition and total-supply deltas are recorded for each transfer.
 
 ## What Remains Unproven
 
-Until a local evidence file is produced from a completed local rehearsal, this package also does not prove local SNS ledger behavior, local SNS index behavior, local SNS governance/root behavior, or SNS-W-created canister IDs.
+The immutable `2026-08-12-4320fdf-canonical-economics` package proves same-source candidate Governance/Root compatibility for its recorded historical release pair,
+authentic inline SNS-controlled hash-changing historian upgrade,
+Governance-authorized stream and NNS-manager activation using the source-shaped
+local NNS fixture, production ICRC-2 redemption, canonical ledger/index
+histories, and one exact proposal-bearing daily reward event. The separate
+`2026-08-12-4320fdf-monitoring` package preserves historical mechanics and historian connectivity. The corrected historical package uses the derived Governance treasury distribution Account in both Stream and historian configuration and passes the independent checked-arithmetic evidence validator.
 
-This rehearsal does not prove final SNS launch readiness, mainnet NNS proposal acceptance, final tokenomics, final fallback controllers, production adapter activation, archive traversal completeness, or external audit readiness.
+`current-canonical.toml` selects the separate immutable current package
+`2026-08-14-4320fdf-canonical-economics`, bound to source S4
+`55b2099a555799c4a032308eb8a39049c7946193` and artifact A4
+`09b115f708ec784766327539f9cf4e5e21668d84`. The selector binds that package's
+release manifest, package manifest, and checksum inventory. The 2026-08-12
+canonical package remains historical evidence and was not rebound.
+
+Completed local proof does not prove official SNS reward-share release adoption,
+final SNS configuration/tokenomics/controllers, external audit, or mainnet
+testflight and activation.
 
 IO protocol remains not live. The canonical SNS IO ledger remains not launched on mainnet.
 
 ## Completion Checklist
 
-The rehearsal is complete only when official local SNS tooling was run locally; local SNS root/governance/ledger/index/swap IDs were recorded; local SNS ledger fee, total supply, and reserve balance were observed; reserve-to-user and user-to-reserve transfers were observed; bad fee, insufficient funds, duplicate behavior, duplicate block proof, and index account history were observed; SNS governance/root/swap availability and dapp controller state were checked; and `cargo run -p xtask -- validate_local_sns_ledger` passes against the filled evidence file.
+The rehearsal is complete only when official local SNS tooling was run locally; local SNS root/governance/ledger/index/swap IDs were recorded; local SNS ledger fee disposition, total-supply deltas, and reserve balance were observed; reserve-to-user and direct user-to-reserve transfers were observed separately; bad fee, insufficient funds, duplicate behavior, duplicate block proof, and index account history were observed; SNS governance/root/swap availability and dapp controller state were checked; and `cargo run -p xtask -- validate_local_sns_ledger` passes against the filled evidence file.
 
 Passing this local evidence gate still does not prove mainnet SNS launch readiness, final tokenomics, final SNS config, mainnet testflight, audit readiness, or production adapter activation.

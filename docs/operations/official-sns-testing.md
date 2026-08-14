@@ -1,12 +1,12 @@
 # Official SNS Testing
 
-We currently run SNS-shaped mock/PocketIC tests.
+IO runs SNS-shaped mock/PocketIC tests, pinned real-canister profiles, and an optional maintained source-built local SNS-W rehearsal.
 
 We do not currently run the official SNS launch locally in required CI.
 
 Official SNS testing is optional and heavier. The current official ICP/DFINITY SNS testing documentation is the source of truth. The historical standalone `dfinity/sns-testing` repository is deprecated; if the official docs reference successor tooling or a new repository/location, use that current official location.
 
-The official SNS launch path may require `dfx sns`; this is optional/manual, local-only for the local rehearsal layer, and not part of required IO workflows. SNS testflight is a future manual/mainnet rehearsal.
+The maintained official local SNS flow uses the source-built `sns` CLI; this is optional/manual, local-only for the local rehearsal layer, and not part of required IO workflows. It has proved candidate Governance/Root launch compatibility, stream activation, direct redemption and one exact reward event. SNS testflight remains a separately authorized mainnet rehearsal.
 
 IO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical.
 
@@ -14,7 +14,7 @@ The existing canister that owns IO NNS neuron 6345890886899317159 is not touched
 
 ## Layer 1: IO Mock/PocketIC SNS-Shaped Harness
 
-This layer uses repo-owned mocks for SNS governance, SNS root, ledger, and index canisters. It tests IO-specific accounting, journal retry, governance-read mapping, root/controller upgrade intent, stable-state behavior, and constructor-only production DIDs.
+This layer uses repo-owned mocks for SNS governance, SNS root, ledger, and index canisters. It tests IO-specific accounting, typed-operation retry, governance-read mapping, root/controller upgrade intent, stable-state behavior, and the reviewed simplified production DIDs.
 
 It does not run official SNS launch, SNS-W, decentralization swap, or mainnet testflight.
 
@@ -26,15 +26,15 @@ It is useful for canister placement, principal ranges, constructor wiring, and c
 
 ## Layer 3: Official Local SNS Launch Rehearsal
 
-This optional layer follows the current official ICP/DFINITY SNS testing documentation and may use `dfx sns` to rehearse official local launch mechanics. It can validate whether a candidate `sns_init.yaml` can move through the local SNS launch process after a local operator completes the run.
+This optional layer follows the current official ICP/DFINITY SNS testing documentation and must use the source-built `sns` CLI to rehearse official local launch mechanics. It can validate whether a candidate `sns_init.yaml` can move through the local SNS launch process after a local operator completes the run.
 
 This layer is not required CI, not part of `verify_release`, not run by `test_ci`, and not a substitute for security review or tokenomics decisions.
 
-The local package lives in `deploy/local-sns-rehearsal/`. It documents rendering a local SNS init file from ignored local variables, deploying IO dapp canisters locally, adding local NNS root as co-controller where the launch tooling requires it, validating the rendered `generated/sns_init.local.yaml`, submitting the local SNS proposal, allowing SNS-W to deploy SNS root/governance/ledger/index/swap/archive canisters, and recording local canister IDs plus ledger evidence.
+The local package lives in `deploy/local-sns-rehearsal/`. It renders a local SNS init file from ignored inputs and implements restartable phases 12–17 for exact release dapp installation, NNS Root preparation, same-source Governance/Root publication, SNS-W creation and finalization, canonical discovery, treasury funding, ledger/index/archive evidence, controller and upgrade checks, lifecycle registration/activation, and production redemption. The upgrade phase can fall back from the maintained chunk-store CLI to an inline exact-Wasm SNS Governance proposal; Root still performs the upgrade and no direct management-canister substitution is used. Every phase remains guarded, loopback-only and evidence-producing; the automation itself is not proof of successful execution.
 
-The repository validator `cargo run -p xtask -- validate_local_sns_rehearsal` is no-network and may run in normal checks. The completed-ledger evidence validator `cargo run -p xtask -- validate_local_sns_ledger` is optional and skips until `deploy/local-sns-rehearsal/canister-ids.local.toml` exists. Until that evidence file exists, no local SNS canister IDs are recorded and no real SNS ledger/index/governance/root behavior has been observed.
+The repository validator `cargo run -p xtask -- validate_local_sns_rehearsal` is no-network and may run in normal checks. The completed-ledger evidence validator `cargo run -p xtask -- validate_local_sns_ledger` validates the checked-in `production-redemption-v1` evidence. External restart-safe logs support diagnosis, while the filled, validated file and immutable package are authoritative committed local evidence.
 
-The issuance model under this layer is protocol reserve transfer: reserve-to-user for issuance and user-to-reserve for redemption return. IO does not assume arbitrary post-launch minting.
+The issuance model under this layer is protocol reserve transfer. The standalone rehearsal proves reserve-to-user and direct user-to-reserve ledger mechanics. The launch stream manager separately uses an authenticated ICRC-2 pull from the caller Account directly into reserve. IO does not assume arbitrary post-launch minting or constant supply unless the final ledger fee mode proves it.
 
 ## Layer 4: Mainnet SNS Testflight
 
@@ -55,4 +55,4 @@ It does not perform the real SNS launch, does not run a real swap, and must not 
 - `tools/sns/testflight/README.md`
 - `tools/sns/launch-readiness.toml`
 
-Official reference points used for this package are the current Internet Computer SNS docs for `dfx sns`, SNS testing, local SNS rehearsal tooling, testflight, and PocketIC NNS/SNS subnet integration.
+Official reference points used for this package are the pinned Internet Computer `rs/sns/testing` and `rs/sns/cli` sources for SNS testing, local SNS rehearsal tooling, testflight, and PocketIC NNS/SNS subnet integration.

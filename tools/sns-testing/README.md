@@ -1,10 +1,23 @@
 # Optional Local SNS Testing
 
-This directory contains optional local-only helpers for a future official local SNS rehearsal. These scripts are not required CI, not used by `verify_release`, and not proof of official launch readiness until a full local SNS launch has completed.
+This directory contains optional local-only helpers for the maintained official local SNS rehearsal. These scripts are not required CI and are not used by `verify_release`. The immutable completed 2026-08-11 package remains historical local evidence; the separate 2026-08-12 monitoring package records the current release and canonical historian convergence. Neither proves that an official capability-bearing SNS release exists or that IO is ready for mainnet.
 
 Follow the current official ICP/DFINITY SNS testing documentation as the source of truth. The historical standalone `dfinity/sns-testing` repository is deprecated; if the official docs reference successor tooling or a new repository/location, use that current official location.
 
-The official SNS launch path may require `dfx sns`; this is optional/manual and local-only for this layer, not part of required IO workflows.
+The maintained path uses the source-built `sns-testing-init`, `sns-testing` and `sns` binaries from `rs/sns/testing` and `rs/sns/cli`; it does not depend on the dfx SNS extension.
+
+The source flow has reached SNS-W deployment, swap finalization, reserve funding,
+ledger/index evidence, controller handoff, and authentic same-source candidate
+Governance/Root upgrade execution. The one-component candidate-Governance with
+official-Root wire mismatch is historical. The local chunk-store authorization
+gap is an upstream CLI/bootstrap defect and does not block an inline SNS
+Governance proposal executed by Root. The source-shaped NNS readiness and
+hash-changing upgrade fixtures are recorded in the completed packages. The
+thin lifecycle profile completed from a fresh topology and produced the
+2026-08-12 monitoring package without invalidating the historical rehearsal.
+It requires the absolute
+`sns-testing-init` `topology.json` and derives fresh allocation IDs instead of
+reusing historical ephemeral principals.
 
 Expected manual order:
 

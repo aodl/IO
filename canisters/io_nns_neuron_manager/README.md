@@ -1,49 +1,86 @@
 # io_nns_neuron_manager
 
-NNS-only operational canister. Intended deployment target for the already-created canister principal `oae4c-3iaaa-aaaar-qb5qq-cai`, which controls IO's 2-year NNS neuron `6345890886899317159`.
+The launch NNS canister exclusively owns proof and commands for the protected
+two-year neuron, the two-week-staker reward-backing NNS neuron, Jupiter staging,
+reward-backing maturity staging, direct maturity policy, and one pending unwind
+child. The reward-backing parent is non-dissolving at the approved 252,460,800-
+second (eight-year) NNS delay; it is not a 14-day NNS position. Each sending
+staging Account has its own bounded fee float; there is no general fee Account.
 
-## Role
+IO is not live. Production canisters remain inert.
 
-- NNS neuron mechanics only.
-- Manages the 2-year protocol neuron.
-- Manages the pooled 2-week NNS neuron.
-- Manages temporary unwind child neurons.
-- Disburses maturity/principal to IO stream-manager accounts/subaccounts with distinguishable memos/subaccounts.
+## Production API
 
-This canister should not calculate IO issuance. This canister should not inspect IO SNS proposal participation. This canister should not expose broad production state APIs.
+The production DID contains only:
 
-## Production API and Init Args
+- `notify_jupiter_deposit`
+- `reconcile_two_week_backing_readiness`
+- `prepare_two_week_maturity`
+- `resume`
+- `prove_active_transfer`
+- `start_maturity`
+- `validate_start_maturity`
+- `prove_maturity_mint`
+- `set_paused`
+- `validate_set_paused`
+- `get_status`
 
-The production DID is install-args-only:
+Jupiter notification is permissionless and carries one exact ICP block. The
+configured Jupiter Faucet default Account, the NNS-manager default destination,
+and the canonical transfer are the authority; no Jupiter callback exists.
+Processed Jupiter blocks have narrow permanent replay protection. The
+authenticated reconciliation persists the exact desired target and reports
+whether its liquid 60% maturity leg can start immediately. The target value is
+idempotent authority; only entitlement batches have generations. Only Ready permits the
+stream manager to freeze and immediately submit one batch generation and target
+to `prepare_two_week_maturity`. There is no target queue. See the pinned
+[Jupiter integration contract](../../docs/architecture/jupiter-integration-contract.md).
 
-```did
-service : (InitArgs) -> {}
-```
+## Direct maturity policy
 
-`InitArgs` defines the controller canister principal, 2-year NNS neuron id, initial model principals, model annual bps, and optional placeholder stream-manager target config/memos. The two-week pool uses the shared exact 1,209,600-second dissolve-delay constant.
+For canonical ordinary maturity `M`, the manager calls
+`StakeMaturity(40%)`, validates returned remaining and staked maturity, then
+calls `DisburseMaturity(100% of remaining)`. The actual modulated ICP received
+is proved from one exact ICP Mint block and becomes liquid backing. Two-year
+Mint proof completes directly against the stream liquid account and issues no
+IO. Two-week Mint proof persists a typed delivery phase for the proof-bound
+stream receipt. Governance DTOs are local and pinned to `dfinity/ic` commit
+`021bf342f66296d5605b355a61b2430406a83783`; the matching Governance and ICP
+ledger Wasms and exact source behavior are recorded in
+[`nns-boundary-pin.md`](../../docs/testing/nns-boundary-pin.md). The canister
+does not depend on a generic governance-types crate.
 
-Defaults preserve the known live constants below. Validation rejects empty or malformed controller principal text, a zero 2-year neuron id, malformed optional stream-manager principal text, and model annual bps above the test/model ceiling.
+`validate_start_maturity` is the read-only payload renderer for the reviewed
+SNS generic function. It accepts only `TwoYear`; `start_maturity` retains the
+SNS-Governance caller check, and the stream-bound two-week path cannot use the
+generic function.
 
-## Stable State
+`validate_set_paused` renders the exact Boolean lifecycle payload without
+changing state. The matching `set_paused` update retains the SNS-Governance
+caller check.
 
-Upgrade persistence uses an explicit versioned stable snapshot saved with `ic_cdk::storage::stable_save` and restored with `stable_restore`. The snapshot preserves config, simulated NNS model state, unwind children, two-week pool state, lifecycle operation journal, retry status, and scheduler cursors. Host tests exercise export/import and migration round trips without exposing stable-state methods in the production DID.
+First readiness proves the exact configured parent, seeded stake, zero
+prelaunch ordinary and staked maturity, effectively disabled auto-stake, exact
+non-dissolving approved delay, and absence of pending maturity or child
+ambiguity. The proof survives upgrade; post-upgrade remains Paused. Later
+retained staked maturity is expected, but auto-stake or dissolve-state drift
+blocks new preparation. Immutable active and passive delivery work can still
+resume while new preparation remains blocked.
 
-Stable storage hardening does not make IO live. This value-moving canister is not deployed to production, production adapters are not active, and the SNS IO ledger does not exist yet. Corrupt value-moving state must fail closed on upgrade. Missing first-install state is handled by init/default state and is not the same as a corrupt upgrade snapshot. Local stable-state fixtures are test fixtures, not live snapshots.
+## Direct two-week unwind
 
-The existing neuron-owner canister `oae4c-3iaaa-aaaar-qb5qq-cai` and IO neuron `6345890886899317159` remain protected references only. Retry-critical lifecycle journal entries are not silently compacted or evicted.
+An over-target canonical parent creates one immediate typed unwind operation.
+It splits exactly the excess and canonically starts the one child dissolving.
+The child then becomes passive so the eight-year wait cannot block maturity on
+the reduced parent. A newer target may promote that exact child for merge-back;
+a ready child may be promoted for direct disbursement. Completion requires the
+exact ICP Transfer block returned by NNS Governance (or an explicitly supplied
+block for an ambiguous callback); no staging Account, stream receipt, IO
+issuance, queue, ladder, or second child exists.
 
-## Scheduler Skeleton
+## Stable state
 
-`src/scheduler/` contains a no-op `scheduler_tick_once()` for future timer-driven work. It currently records planned responsibilities only: checking/disbursing 2-year maturity, checking/disbursing 2-week maturity, rebalancing the pooled 2-week neuron, and disbursing ready unwind child neurons. It performs no NNS calls.
-
-`io-governance-types` contains production-shaped NNS governance DTOs and a Wasm-gated `NnsGovernanceCanisterClient` for future lifecycle reconciliation. Those adapters are fixture-tested only, not audited, and not wired into this canister's default execution path.
-
-## Known Constants
-
-```text
-2-year NNS neuron id:
-6345890886899317159
-
-Controller canister principal:
-oae4c-3iaaa-aaaar-qb5qq-cai
-```
+Launch state is one `StableCell<NnsStateV1>` with one typed immediate operation,
+one optional passive unwind child, and fixed passive slots for two-year and
+reward-backing maturity. Only V1 is supported; no prelaunch migration chain is
+compiled.

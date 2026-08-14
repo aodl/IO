@@ -288,3 +288,648 @@ pub fn run_ledger_index_same_wasm_upgrade(required: bool) {
     assert_index_has_transfer(&fixture, block, created_at_time);
     assert_error_paths(&fixture, block, created_at_time);
 }
+
+pub fn run_icrc2_direct_reserve_pull(required: bool) {
+    let Some(fixture) = setup(required) else {
+        return;
+    };
+    let standard_names = icrc::supported_standards(&fixture.pic, fixture.ledger)
+        .into_iter()
+        .map(|standard| standard.name)
+        .collect::<std::collections::BTreeSet<_>>();
+    for required_standard in ["ICRC-1", "ICRC-2", "ICRC-3"] {
+        assert!(standard_names.contains(required_standard));
+    }
+
+    let (_funding_block, funding_time) = transfer_reserve_to_user(&fixture);
+    let spender = Principal::from_slice(&[5; 29]);
+    let spender_account = icrc::account(spender, None);
+    let allowance_e8s = 20_000_000u64 + icrc::FEE_E8S;
+    let expires_at = funding_time + 1_000_000_000;
+    let approve_block = icrc::icrc2_approve(
+        &fixture.pic,
+        fixture.ledger,
+        fixture.user_owner,
+        icrc::ApproveArgs {
+            from_subaccount: None,
+            spender: spender_account.clone(),
+            amount: Nat::from(allowance_e8s),
+            expected_allowance: Some(Nat::from(0u8)),
+            expires_at: Some(expires_at),
+            fee: Some(Nat::from(icrc::FEE_E8S)),
+            memo: Some(b"exact-short-lived-allowance".to_vec()),
+            created_at_time: Some(funding_time + 1),
+        },
+    )
+    .expect("real SNS ledger approval should succeed");
+    let allowance = icrc::icrc2_allowance(
+        &fixture.pic,
+        fixture.ledger,
+        icrc::AllowanceArgs {
+            account: fixture.user.clone(),
+            spender: spender_account,
+        },
+    );
+    assert_eq!(allowance.allowance, Nat::from(allowance_e8s));
+    assert_eq!(allowance.expires_at, Some(expires_at));
+
+    let reserve_before =
+        icrc::icrc1_balance_of(&fixture.pic, fixture.ledger, fixture.reserve.clone());
+    let supply_before = icrc::icrc1_total_supply(&fixture.pic, fixture.ledger);
+    let pull_amount = 20_000_000u64;
+    let pull_block = icrc::icrc2_transfer_from(
+        &fixture.pic,
+        fixture.ledger,
+        spender,
+        icrc::TransferFromArgs {
+            spender_subaccount: None,
+            from: fixture.user.clone(),
+            to: fixture.reserve.clone(),
+            amount: Nat::from(pull_amount),
+            fee: Some(Nat::from(icrc::FEE_E8S)),
+            memo: Some(b"direct-reserve-redemption".to_vec()),
+            created_at_time: Some(funding_time + 2),
+        },
+    )
+    .expect("real SNS ledger transfer_from should succeed");
+    assert!(pull_block > approve_block);
+    assert_eq!(
+        icrc::icrc1_balance_of(&fixture.pic, fixture.ledger, fixture.reserve.clone()),
+        reserve_before + Nat::from(pull_amount)
+    );
+    assert_eq!(
+        icrc::icrc1_total_supply(&fixture.pic, fixture.ledger),
+        supply_before - Nat::from(icrc::FEE_E8S)
+    );
+
+    let changed = icrc::icrc2_approve(
+        &fixture.pic,
+        fixture.ledger,
+        fixture.user_owner,
+        icrc::ApproveArgs {
+            from_subaccount: None,
+            spender: icrc::account(spender, None),
+            amount: Nat::from(1u8),
+            expected_allowance: Some(Nat::from(1u8)),
+            expires_at: Some(expires_at),
+            fee: Some(Nat::from(icrc::FEE_E8S)),
+            memo: None,
+            created_at_time: Some(funding_time + 3),
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(
+        changed,
+        icrc::ApproveError::AllowanceChanged { .. }
+    ));
+}
+
+pub fn run_installed_stream_redemption(required: bool) {
+    use candid::{decode_one, encode_one};
+    use io_stream_manager::{
+        Account, ApiError, CompleteLiquidReceiptArgs, CompletedReceiptResult, InitArgs, Lifecycle,
+        LiquidReceiptProgress, PrepareLiquidReceiptArgs, ReceiptKind, RedeemArgs,
+        RedemptionProgress, Status, StreamConfig, StreamProgress,
+    };
+
+    let Some(artifacts) = maybe_artifacts(required) else {
+        return;
+    };
+    if !pocketic_env::pocketic_available() {
+        panic!("POCKET_IC_BIN is required for installed stream redemption");
+    }
+    let stream_wasm_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/wasm32-unknown-unknown/debug/io_stream_manager.wasm");
+    let stream_wasm = std::fs::read(&stream_wasm_path).unwrap_or_else(|error| {
+        panic!(
+            "build debug stream-manager Wasm before the installed real-ledger test ({}): {error}",
+            stream_wasm_path.display()
+        )
+    });
+    let ledger_wasm = artifacts.load_required("sns_ledger").unwrap();
+    let pic = pocketic_env::new_pic_with_icp_sns_features();
+    let stream = pocketic_env::create_empty_application_canister(&pic);
+    let user = Principal::from_slice(&[21; 29]);
+    let excluded_user = Principal::from_slice(&[25; 29]);
+    let governance = Principal::from_slice(&[22; 29]);
+    let nns_manager = Principal::from_slice(&[23; 29]);
+    let minting = icrc::account(Principal::from_slice(&[24; 29]), None);
+    let reserve_subaccount = icrc::subaccount("simplified-io-reserve");
+    let liquid_subaccount = icrc::subaccount("simplified-liquid-icp");
+    let reserve = icrc::account(stream, Some(reserve_subaccount));
+    let liquid = icrc::account(stream, Some(liquid_subaccount));
+    let user_account = icrc::account(user, None);
+    let excluded_account = icrc::account(excluded_user, None);
+    let io_reserve_e8s = 1_000_000_000_000u64;
+    let user_io_e8s = 100_000_000u64;
+    let liquid_icp_e8s = 1_000_000_000_000u64;
+    let io_ledger = pocketic_env::create_sns_canister(
+        &pic,
+        ledger_wasm.clone(),
+        icrc::ledger_init_arg(
+            Principal::anonymous(),
+            minting.clone(),
+            vec![
+                (reserve.clone(), io_reserve_e8s),
+                (user_account.clone(), user_io_e8s),
+                (excluded_account.clone(), user_io_e8s),
+            ],
+        ),
+    );
+    let icp_ledger = Principal::from_text(crate::nns_setup::install_nns_ledger().canister_id)
+        .expect("official ICP ledger ID should parse");
+    icrc::icrc1_transfer(
+        &pic,
+        icp_ledger,
+        Principal::anonymous(),
+        icrc::transfer_arg(
+            None,
+            liquid.clone(),
+            liquid_icp_e8s,
+            Some(icrc::FEE_E8S),
+            Some(b"fund-stream-liquid"),
+            None,
+        ),
+    )
+    .expect("default ICP ledger account should fund stream liquid backing");
+    let init = InitArgs {
+        config: StreamConfig {
+            io_ledger,
+            icp_ledger,
+            nns_manager,
+            jupiter_receipt_source: Account {
+                owner: nns_manager,
+                subaccount: None,
+            },
+            two_week_receipt_source: Account {
+                owner: nns_manager,
+                subaccount: Some(vec![9; 32]),
+            },
+            jupiter_io_account: Account {
+                owner: nns_manager,
+                subaccount: Some(vec![10; 32]),
+            },
+            sns_governance: governance,
+            sns_root: Principal::from_slice(&[6; 29]),
+            expected_sns_governance_module_hash: vec![0; 32],
+            approved_reward_event_duration_seconds: 86_400,
+            io_reserve: Account {
+                owner: stream,
+                subaccount: Some(reserve_subaccount.to_vec()),
+            },
+            liquid_icp: Account {
+                owner: stream,
+                subaccount: Some(liquid_subaccount.to_vec()),
+            },
+            excluded_io_accounts: vec![Account {
+                owner: excluded_user,
+                subaccount: None,
+            }],
+            minimum_redemption_io_e8s: 20_000,
+            expected_io_fee_e8s: icrc::FEE_E8S as u128,
+            expected_icp_fee_e8s: icrc::FEE_E8S as u128,
+            maximum_request_lifetime_nanos: 900_000_000_000,
+            retry_delay_nanos: 1_000_000_000,
+            ledger_deduplication_window_nanos: 86_400_000_000_000,
+        },
+    };
+    pic.install_canister(stream, stream_wasm.clone(), encode_one(init).unwrap(), None);
+    let status: Status = decode_one(
+        &pic.query_call(stream, user, "get_status", encode_one(()).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(status.lifecycle, Lifecycle::Paused);
+    let unpause: Result<(), ApiError> = decode_one(
+        &pic.update_call(stream, governance, "set_paused", encode_one(false).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(unpause, Ok(()));
+
+    let now = pic.get_time().as_nanos_since_unix_epoch();
+    let amount = 20_000_000u64;
+    let rejected_excluded: Result<RedemptionProgress, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            excluded_user,
+            "redeem",
+            encode_one(RedeemArgs {
+                from_subaccount: None,
+                io_amount_e8s: amount as u128,
+                min_icp_out_e8s: 0,
+                max_io_fee_e8s: icrc::FEE_E8S as u128,
+                max_icp_fee_e8s: icrc::FEE_E8S as u128,
+                expires_at_nanos: now + 800_000_000_000,
+                nonce: 0,
+            })
+            .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        rejected_excluded,
+        Err(ApiError::Invalid("excluded account cannot redeem".into()))
+    );
+    let rejected_reserve: Result<RedemptionProgress, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            stream,
+            "redeem",
+            encode_one(RedeemArgs {
+                from_subaccount: Some(reserve_subaccount.to_vec()),
+                io_amount_e8s: amount as u128,
+                min_icp_out_e8s: 0,
+                max_io_fee_e8s: icrc::FEE_E8S as u128,
+                max_icp_fee_e8s: icrc::FEE_E8S as u128,
+                expires_at_nanos: now + 800_000_000_000,
+                nonce: 0,
+            })
+            .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        rejected_reserve,
+        Err(ApiError::Invalid("reserve account cannot redeem".into()))
+    );
+    icrc::icrc2_approve(
+        &pic,
+        io_ledger,
+        user,
+        icrc::ApproveArgs {
+            from_subaccount: None,
+            spender: icrc::account(stream, None),
+            amount: Nat::from(amount + icrc::FEE_E8S),
+            expected_allowance: Some(Nat::from(0u8)),
+            expires_at: Some(now + 800_000_000_000),
+            fee: Some(Nat::from(icrc::FEE_E8S)),
+            memo: Some(b"stream-redemption-approval".to_vec()),
+            created_at_time: Some(now),
+        },
+    )
+    .expect("approval should succeed");
+    let supply_before = icrc::icrc1_total_supply(&pic, io_ledger)
+        .0
+        .try_into()
+        .unwrap();
+    let reserve_before = icrc::icrc1_balance_of(&pic, io_ledger, reserve.clone())
+        .0
+        .try_into()
+        .unwrap();
+    let liquid_before = icrc::icrc1_balance_of(&pic, icp_ledger, liquid.clone())
+        .0
+        .try_into()
+        .unwrap();
+    let quote = io_core_model::redemption_quote(
+        amount as u128,
+        icrc::FEE_E8S as u128,
+        supply_before,
+        reserve_before,
+        user_io_e8s as u128,
+        liquid_before,
+        icrc::FEE_E8S as u128,
+    )
+    .unwrap();
+    let args = RedeemArgs {
+        from_subaccount: None,
+        io_amount_e8s: amount as u128,
+        min_icp_out_e8s: quote.net_icp_e8s,
+        max_io_fee_e8s: icrc::FEE_E8S as u128,
+        max_icp_fee_e8s: icrc::FEE_E8S as u128,
+        expires_at_nanos: now + 800_000_000_000,
+        nonce: 0,
+    };
+    let pulled: Result<RedemptionProgress, ApiError> = decode_one(
+        &pic.update_call(stream, user, "redeem", encode_one(args.clone()).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(pulled, Ok(RedemptionProgress::IoInReserve));
+    assert_eq!(
+        icrc::icrc1_balance_of(&pic, io_ledger, reserve.clone()),
+        Nat::from(io_reserve_e8s + amount),
+    );
+    assert_eq!(
+        icrc::icrc1_total_supply(&pic, io_ledger),
+        Nat::from(supply_before - icrc::FEE_E8S as u128)
+    );
+    assert_eq!(
+        icrc::icrc1_balance_of(&pic, icp_ledger, user_account.clone()),
+        Nat::from(0u8)
+    );
+    pocketic_env::upgrade_canister(&pic, stream, stream_wasm.clone(), encode_one(()).unwrap());
+    let paused_after_pull_upgrade: Status = decode_one(
+        &pic.query_call(stream, user, "get_status", encode_one(()).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(paused_after_pull_upgrade.lifecycle, Lifecycle::Paused);
+    pic.advance_time(Duration::from_secs(2 * 60 * 60));
+    assert!(pic.get_time().as_nanos_since_unix_epoch() > args.expires_at_nanos);
+
+    let paid: Result<StreamProgress, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            Principal::anonymous(),
+            "resume",
+            encode_one(()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        paid,
+        Ok(StreamProgress::Redemption(
+            RedemptionProgress::PayoutSucceeded
+        ))
+    );
+    assert_eq!(
+        icrc::icrc1_balance_of(&pic, icp_ledger, user_account),
+        Nat::from(quote.net_icp_e8s)
+    );
+    assert_eq!(
+        icrc::icrc1_balance_of(&pic, icp_ledger, liquid.clone()),
+        Nat::from(liquid_before - quote.gross_icp_e8s)
+    );
+    pocketic_env::upgrade_canister(&pic, stream, stream_wasm.clone(), encode_one(()).unwrap());
+    let paused_after_payout_upgrade: Status = decode_one(
+        &pic.query_call(stream, user, "get_status", encode_one(()).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(paused_after_payout_upgrade.lifecycle, Lifecycle::Paused);
+    let completed: Result<StreamProgress, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            Principal::anonymous(),
+            "resume",
+            encode_one(()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let result = match completed {
+        Ok(StreamProgress::Redemption(RedemptionProgress::Completed(result))) => result,
+        other => panic!("expected completion, got {other:?}"),
+    };
+    assert_eq!(result.gross_icp_e8s, quote.gross_icp_e8s);
+    assert_eq!(result.net_icp_e8s, quote.net_icp_e8s);
+    let replay: Result<RedemptionProgress, ApiError> = decode_one(
+        &pic.update_call(stream, user, "redeem", encode_one(args.clone()).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(replay, Ok(RedemptionProgress::Completed(result)));
+    let zero_subaccount_replay: Result<RedemptionProgress, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            user,
+            "redeem",
+            encode_one(RedeemArgs {
+                from_subaccount: Some(vec![0; 32]),
+                ..args.clone()
+            })
+            .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(zero_subaccount_replay, replay);
+    let liquid_after_completion = icrc::icrc1_balance_of(&pic, icp_ledger, liquid.clone());
+    let idle: Result<StreamProgress, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            Principal::anonymous(),
+            "resume",
+            encode_one(()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(idle, Ok(StreamProgress::Idle));
+    assert_eq!(
+        icrc::icrc1_balance_of(
+            &pic,
+            icp_ledger,
+            icrc::account(stream, Some(liquid_subaccount))
+        ),
+        liquid_after_completion
+    );
+    let conflict: Result<RedemptionProgress, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            user,
+            "redeem",
+            encode_one(RedeemArgs {
+                min_icp_out_e8s: args.min_icp_out_e8s.saturating_sub(1),
+                ..args
+            })
+            .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(conflict, Err(ApiError::NonceAlreadyUsed));
+
+    let ready_for_receipt: Result<(), ApiError> = decode_one(
+        &pic.update_call(stream, governance, "set_paused", encode_one(false).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(ready_for_receipt, Ok(()));
+    let jupiter_liquid_e8s = 60_000_000u64;
+    let jupiter_source = icrc::account(nns_manager, None);
+    icrc::icrc1_transfer(
+        &pic,
+        icp_ledger,
+        Principal::anonymous(),
+        icrc::transfer_arg(
+            None,
+            jupiter_source.clone(),
+            jupiter_liquid_e8s + icrc::FEE_E8S,
+            Some(icrc::FEE_E8S),
+            Some(b"fund-jupiter-staging"),
+            None,
+        ),
+    )
+    .expect("default ICP account should fund Jupiter staging");
+    let receipt_args = PrepareLiquidReceiptArgs {
+        receipt_sequence: 0,
+        receipt_kind: ReceiptKind::Jupiter,
+        source_operation_id: b"installed-jupiter-0".to_vec(),
+        liquid_amount_e8s: jupiter_liquid_e8s as u128,
+        entitlement_batch_generation: None,
+    };
+    let permit: Result<io_stream_manager::LiquidReceiptPermit, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            nns_manager,
+            "prepare_liquid_receipt",
+            encode_one(receipt_args.clone()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let permit = permit.expect("Jupiter receipt permit should be prepared");
+    let jupiter_supply_before: u128 = icrc::icrc1_total_supply(&pic, io_ledger)
+        .0
+        .try_into()
+        .unwrap();
+    let jupiter_reserve_before: u128 = icrc::icrc1_balance_of(&pic, io_ledger, reserve.clone())
+        .0
+        .try_into()
+        .unwrap();
+    let excluded_before: u128 = icrc::icrc1_balance_of(&pic, io_ledger, excluded_account)
+        .0
+        .try_into()
+        .unwrap();
+    let jupiter_liquid_before: u128 = icrc::icrc1_balance_of(&pic, icp_ledger, liquid.clone())
+        .0
+        .try_into()
+        .unwrap();
+    let redeemable_before = jupiter_supply_before
+        .checked_sub(jupiter_reserve_before)
+        .and_then(|value| value.checked_sub(excluded_before))
+        .unwrap();
+    let expected_backed_io = io_core_model::backed_io(
+        jupiter_liquid_e8s as u128,
+        jupiter_liquid_before,
+        redeemable_before,
+    )
+    .unwrap();
+    let receipt_block = icrc::icrc1_transfer(
+        &pic,
+        icp_ledger,
+        nns_manager,
+        icrc::transfer_arg(
+            None,
+            IcrcAccount {
+                owner: permit.destination.owner,
+                subaccount: permit.destination.subaccount.clone(),
+            },
+            jupiter_liquid_e8s,
+            Some(icrc::FEE_E8S),
+            Some(&permit.memo),
+            Some(pic.get_time().as_nanos_since_unix_epoch()),
+        ),
+    )
+    .expect("Jupiter staging should deliver exact liquid backing");
+    let receipt_block_index = u128::try_from(receipt_block.0).unwrap();
+    let proved: Result<LiquidReceiptProgress, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            nns_manager,
+            "complete_liquid_receipt",
+            encode_one(CompleteLiquidReceiptArgs {
+                receipt_sequence: 0,
+                block_index: receipt_block_index,
+            })
+            .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(proved, Ok(LiquidReceiptProgress::ReceiptProved));
+    let settling: Result<StreamProgress, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            Principal::anonymous(),
+            "resume",
+            encode_one(()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        settling,
+        Ok(StreamProgress::LiquidReceipt(
+            LiquidReceiptProgress::Settling
+        ))
+    );
+    let settled: Result<StreamProgress, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            Principal::anonymous(),
+            "resume",
+            encode_one(()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let completed = match settled {
+        Ok(StreamProgress::LiquidReceipt(LiquidReceiptProgress::Completed(result))) => result,
+        other => panic!("expected completed Jupiter settlement, got {other:?}"),
+    };
+    let settlement = match &completed {
+        CompletedReceiptResult::Jupiter(result) => result.backed_io_e8s,
+        other => panic!("expected typed Jupiter result, got {other:?}"),
+    };
+    assert_eq!(settlement, expected_backed_io);
+    let jupiter_io = icrc::account(nns_manager, Some([10; 32]));
+    assert_eq!(
+        icrc::icrc1_balance_of(&pic, io_ledger, jupiter_io),
+        Nat::from(expected_backed_io)
+    );
+    assert_eq!(
+        icrc::icrc1_total_supply(&pic, io_ledger),
+        Nat::from(jupiter_supply_before - icrc::FEE_E8S as u128)
+    );
+    assert_eq!(
+        icrc::icrc1_balance_of(&pic, io_ledger, reserve),
+        Nat::from(jupiter_reserve_before - expected_backed_io - icrc::FEE_E8S as u128)
+    );
+    pocketic_env::upgrade_canister(&pic, stream, stream_wasm, encode_one(()).unwrap());
+    let paused_after_receipt_upgrade: Status = decode_one(
+        &pic.query_call(stream, user, "get_status", encode_one(()).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(paused_after_receipt_upgrade.lifecycle, Lifecycle::Paused);
+    let replayed_completion: Result<LiquidReceiptProgress, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            nns_manager,
+            "complete_liquid_receipt",
+            encode_one(CompleteLiquidReceiptArgs {
+                receipt_sequence: 0,
+                block_index: receipt_block_index,
+            })
+            .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        replayed_completion,
+        Ok(LiquidReceiptProgress::Completed(completed))
+    );
+    let conflicting_completion: Result<LiquidReceiptProgress, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            nns_manager,
+            "complete_liquid_receipt",
+            encode_one(CompleteLiquidReceiptArgs {
+                receipt_sequence: 0,
+                block_index: receipt_block_index + 1,
+            })
+            .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(conflicting_completion, Err(ApiError::Invalid(_))));
+    let replayed_permit: Result<io_stream_manager::LiquidReceiptPermit, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            nns_manager,
+            "prepare_liquid_receipt",
+            encode_one(receipt_args).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(replayed_permit, Ok(permit));
+}

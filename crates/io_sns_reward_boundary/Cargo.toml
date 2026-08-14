@@ -1,0 +1,10 @@
+[package]
+name = "io-sns-reward-boundary"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+candid.workspace = true
+ic-cdk.workspace = true
+serde.workspace = true

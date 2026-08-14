@@ -1,0 +1,9 @@
+[provenance]
+official_ic_repository = "dfinity/ic"
+official_ic_source_commit = "4320fdf2e613844eabae1927b1a23b98da3a7bc6"
+sns_testing_source_path = "rs/sns/testing"
+complete = true
+monitoring = true
+canonical_redemption_economics = true
+io_release_source_commit = "55b2099a555799c4a032308eb8a39049c7946193"
+io_artifact_recording_commit = "09b115f708ec784766327539f9cf4e5e21668d84"

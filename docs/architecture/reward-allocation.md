@@ -1,19 +1,48 @@
-# Reward Allocation
+# Reward allocation
 
-Two-week maturity may issue backed IO to eligible active IO SNS stakers. Ordinary IO reward eligibility requires exactly 14 days. Stock SNS parameters cap the maximum dissolve delay and can gate voting with a minimum delay, but they do not prevent a user from creating a shorter neuron. Longer-than-14-day reward positions are prevented by the SNS maximum; shorter neurons are technically creatable but receive no IO protocol rewards and do not contribute to the two-week NNS backing target. Rewards use frozen cohort stake multiplied only by closed-proposal participation; no duration or age multiplier exists.
+SNS Governance runs one canonical reward event every 86,400 seconds with both
+native reward rates set to zero. Each successfully observed, non-skipped event
+adds one fixed `10^18` policy-credit opportunity to a bounded, non-overlapping
+per-neuron accumulator.
 
-```text
-participation_factor =
-  eligible_closed_proposals_voted_on / eligible_closed_proposals_total
-```
+For a proposal-bearing event, IO sums canonical current-event shares across all
+neurons, including excluded and ineligible neurons. An eligible neuron receives
+only the normalized fraction represented by its canonical
+`latest_reward_event_participation.reward_shares` whose event timestamp exactly
+matches the current `RewardEvent`. Absent, stale or zero shares add no credit;
+a malformed current-event value fails closed. A day with zero canonical shares
+forfeits its whole policy opportunity; IO never substitutes a participation or
+maturity fallback.
 
-If no eligible proposals closed during the interval, participation is treated as 100%.
+For a no-proposal event, and only when `settled_proposals` is empty, every
+currently eligible neuron receives its canonical eligible stake as event
+weight within the fixed daily opportunity. Old or absent participation fields
+are ignored. This is one virtual unanimous proposal, not a rolling average. If
+there are no eligible neurons, the whole opportunity is forfeited.
 
-Votes through following count as participation in the model. Accepted and rejected closed reward-eligible proposals count. Open proposals, proposals outside the cohort period, and excluded topics do not count.
+Eligibility remains an exact staking-product rule: positive stake,
+non-dissolving, and exactly 1,209,600 seconds of dissolve delay. Protocol and
+Jupiter neurons are excluded. The two-week duration is not an accounting epoch.
 
-Rounding is conservative. Dust is reported and remains unissued. Excluded Jupiter governance and protocol-owned neurons cannot receive allocations.
+When the NNS liquid maturity leg is ready and no batch is pending, IO freezes
+the live accumulator into one immutable entitlement batch. Daily observations
+continue in a fresh live accumulator while IO waits for actual modulated ICP.
+Only received ICP determines the backed IO pool. Before recipient allocation,
+the batch's eligible-credit fraction determines the eligible pool; excluded,
+ineligible and unassigned fractions remain in reserve. A zero-eligible-credit
+batch completes without recipient transfers and forfeits the whole backed pool.
 
-The economics remain unchanged:
+Allocations use checked integer arithmetic. Deterministic rounding dust remains
+in reserve, and recipient transfers progress sequentially with upgrade-safe
+postcondition checks. Observation and backing waits do not block redemption;
+the exact monetary fan-out is serialized with redemption.
+
+The historian may derive trailing participation or APY displays, but those
+windows are observations and never monetary inputs. Missing events are recorded
+as bounded availability failures and never interpreted as zero or fabricated
+participation.
+
+The economics remain:
 
 ```text
 redeemable_io_supply =
@@ -26,7 +55,3 @@ redemption_rate =
 ```
 
 Only liquid ICP counts as redemption NAV.
-
-Read-only SNS governance snapshotting feeds this policy by capturing a frozen cohort of exact reward-eligible 14-day, non-dissolving user neurons and then summarizing closed-proposal participation for that cohort. New stake, top-ups, and shorter technically creatable SNS neurons join no current reward cohort unless they satisfy the exact eligibility policy at a later capture. A cohort member that is no longer an exact eligible destination at payout forfeits its calculated share to protocol-reserve dust.
-
-Local SNS ledger/index tests route TwoWeekMaturity reward transfers through the local SNS-ledger-shaped `LedgerTransferClient` path and assert recipient account balances. Partial recipient transfer failures retry only incomplete recipients, and rounding dust remains unissued. The local mock ledger exposes fees for interface correctness, but reward allocations are not silently reduced by hidden fee subtraction.

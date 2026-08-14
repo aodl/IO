@@ -17,6 +17,7 @@ utils/canister_call_pipeline/
 
 # rust
 target/
+debug-artifacts/
 
 # frontend code
 node_modules/
@@ -33,9 +34,11 @@ dist/
 canisters/frontend/public/generated/
 
 # local-only SNS rehearsal operator files
-deploy/local-sns-rehearsal/canister-ids.local.toml
 deploy/local-sns-rehearsal/local-vars.toml
+deploy/local-sns-rehearsal/runtime.local.toml
+deploy/local-sns-rehearsal/install-args.local/
 deploy/local-sns-rehearsal/generated/
+deploy/local-sns-rehearsal/sns_init.local.yaml
 deploy/local-sns-rehearsal/*.log
 # python cache
 __pycache__/

@@ -1,0 +1,12 @@
+[package]
+name = "io-ledger-boundary"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+candid.workspace = true
+ic-cdk.workspace = true
+io-accounts = { path = "../io_accounts" }
+serde.workspace = true
+sha2 = "0.10.9"

@@ -1,54 +1,22 @@
-# Historian Architecture
+# Historian architecture
 
-`io_historian` is IO's public observability read model. It is intentionally separate from the value-moving canisters.
+`io_historian` is IO's public read model. It is rebuildable, not canonical protocol truth, and not a value-moving authority. IO protocol is not live and the SNS IO ledger remains not launched on mainnet.
 
-Production fiduciary canisters are reserved placeholders only. The production historian is reserved as `tjqj3-uaaaa-aaaar-qb7xa-cai` and the production frontend is reserved as `torpp-zyaaa-aaaar-qb7xq-cai`; both are `ReservedNotLive`, empty/inert, and not live. The previous historian `yo47z-piaaa-aaaac-qg3xa-cai` and frontend `6h2pa-qiaaa-aaaao-qp4fa-cai` are `DevMainnet` only: superseded as production targets, retained only as dev/test canisters, not on the fiduciary subnet, and not production IO protocol canisters. IO remains pre-launch: no value-moving protocol canister is live, no canonical IO SNS ledger exists yet, IO issuance is not live, and IO redemption is not live.
+Its production DID is read-only. A typed optional install/upgrade argument is the only configuration path: no-config is inert; explicit SNS Root/controller upgrade installs or replaces the complete observation topology; a normal same-Wasm upgrade preserves it.
 
-## Responsibilities
+The autonomous one-shot refresh observes coherent ledger supply/reserve inputs, Stream and NNS manager status, SNS Root module/controller/archive topology, SNS Governance parameters/reward freshness, and bounded SNS Index Account histories. The index canisters are the normal history abstraction; current balances remain ledger-derived.
 
-- expose bounded public query APIs for dashboard/frontend consumption;
-- preserve durable read-model state across upgrades;
-- represent missing source observations explicitly;
-- reconstruct public records from observable ledger/index/governance/release data where possible;
-- summarize release artifact hashes and canister/module status observations;
-- publish scan/index health and governance participation summaries.
-
-Historian does not issue IO, redeem IO, move ICP, manage neurons, classify value-moving source events for execution, or decide protocol economics. It is a public read model, not protocol truth.
-
-## Public Surface
-
-The production DID exposes read-only queries including `get_dashboard_state`, `get_protocol_snapshot`, `get_redemption_rate`, `list_streams`, `list_redemptions`, `list_rewards`, `list_nns_lifecycle_events`, `get_index_health`, `get_governance_summary`, `get_release_artifacts`, and `get_canister_status_summary`.
-
-All history lists are bounded and paginated. There is no unbounded event dump.
-
-## Debug/Test Ingestion
-
-Debug Wasm exposes ingestion methods through `io_historian_debug.did`. These methods feed local observations into the read model for unit and PocketIC tests. They are not production APIs and must not be used as protocol authority.
-
-## Accounting Snapshot
-
-The historian snapshot uses the existing redemption-rate inputs without changing IO economics:
+The displayed rate is:
 
 ```text
-redeemable_io_supply =
-  total_io_supply
-  - protocol_reserve_io
-  - non_redeemable_governance_io
-
-redemption_rate =
-  liquid_icp_reserve / redeemable_io_supply
+redeemable IO = total IO - protocol reserve IO - configured excluded IO
+liquid ICP per IO = liquid ICP reserve / redeemable IO
 ```
 
-If total supply, excluded supply, liquid reserve, or redeemable supply is unavailable, the snapshot is incomplete. The two-year NNS principal is represented as non-liquid backing and is excluded from liquid redemption NAV.
+All arithmetic is checked. A partial generation, inverted supply identity, or missing response records an error and does not combine new values with an older generation. The missing/stale/error state is never zero, and the historian's rate never authorizes redemption.
 
-## Rebuildability
+Root-mediated observations distinguish module matching, mismatch, unavailable, and unknown, and retain observed controllers. Stream status supplies reward classification and live/pending credits; the historian does not reconstruct ballots or run another event scanner. NNS manager status is observed without issuing NNS commands.
 
-Historian state is useful for continuity and frontend responsiveness, but it is a read model. Full canonical history remains in ledger/index/governance sources and release artifacts. If historian state diverges, recovery should rebuild or correct historian observations rather than adding broad production query/control APIs to value-moving canisters.
+Stable state retains configuration, last-known observations, timestamps, and errors. Upgrade clears only the transient refresh marker, marks prior fresh data stale, and re-arms one timer. Legacy v1/v2 decoding is isolated from the current public model.
 
-Production source adapters remain future work. The frontend consumes the historian read surface through browser Candid calls, but historian observations remain a rebuildable read model rather than protocol truth. The DevMainnet frontend was built with `CANISTER_ID_IO_HISTORIAN=yo47z-piaaa-aaaac-qg3xa-cai`; this does not activate `io_stream_manager`, `io_nns_neuron_manager`, the existing IO neuron-owner canister `oae4c-3iaaa-aaaar-qb5qq-cai`, or IO neuron `6345890886899317159`.
-
-## Freshness Sources
-
-Historian source health is observation/freshness only. It is a public read model, rebuildable, not canonical protocol truth, and not a value-moving authority. Source health distinguishes fresh, stale, missing, incomplete, observed-only, prelaunch/not-applicable, error/retryable, and unknown observations. The missing/stale/incomplete states are visible.
-
-IO protocol is not live. SNS IO ledger remains not launched. Missing/stale/incomplete historian fields must not be interpreted as zero protocol value. Index canisters remain the normal account-history abstraction; index canisters are the default source for account-history observations. Raw ledger/archive traversal is not the default path.
+Production reservations remain empty/inert until separately authorized launch work. The protected canister and neuron are not configured sources or deployment targets.

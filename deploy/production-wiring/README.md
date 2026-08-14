@@ -29,7 +29,7 @@ use `icp-cli` convention for future manual mainnet operations. required workflow
 ## Production Wiring Checklist
 
 - Validate templates with `cargo run -p xtask -- validate_production_wiring`.
-- Keep `io_stream_manager` and `io_nns_neuron_manager` production DIDs constructor-only.
+- Keep the reviewed narrow production command surfaces for `io_stream_manager` and `io_nns_neuron_manager`; never expose debug completion methods.
 - Keep value-moving canister targets on the exact reserved fiduciary IDs while status remains `ReservedNotLive`.
 - Keep value-moving canister targets out of DevMainnet canister IDs and unrelated mainnet/system canister IDs.
 - Keep protected canister and neuron IDs listed only as protected references.

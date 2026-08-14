@@ -1,69 +1,34 @@
-//! Pure IO SNS staking entitlement policy.
-//!
-//! The policy rewards frozen exact-product cohort stake multiplied only by
-//! closed-proposal participation. Native SNS maturity is expected to be
-//! disabled; this crate allocates protocol-backed IO released by the stream
-//! manager.
+//! Pure allocation of one actually backed IO pool over cumulative entitlement credits.
 
-use io_governance_types::SnsNeuronId;
+pub const DAILY_EVENT_CREDIT: u128 = 1_000_000_000_000_000_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SnsNeuronIdConversionError {
-    Empty,
+pub struct EntitlementCredit {
+    pub sns_neuron_id: Vec<u8>,
+    pub accumulated_eligible_credit: u128,
 }
 
-pub fn sns_neuron_id_to_u64(id: &SnsNeuronId) -> Result<u64, SnsNeuronIdConversionError> {
-    if id.0.is_empty() {
-        return Err(SnsNeuronIdConversionError::Empty);
+pub fn entitlement_credit_from_bytes(
+    sns_neuron_id: Vec<u8>,
+    accumulated_eligible_credit: u128,
+) -> EntitlementCredit {
+    EntitlementCredit {
+        sns_neuron_id,
+        accumulated_eligible_credit,
     }
-    if let Ok(bytes) = <[u8; 8]>::try_from(id.0.as_slice()) {
-        return Ok(u64::from_be_bytes(bytes));
-    }
-
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in &id.0 {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    Ok(hash.max(1))
-}
-
-pub fn sns_neuron_id_is_valid(id: &SnsNeuronId) -> bool {
-    sns_neuron_id_to_u64(id).is_ok()
-}
-
-pub fn sns_neuron_id_is_canonical_staking_subaccount(id: &SnsNeuronId) -> bool {
-    id.0.len() == 32
-}
-
-pub fn compatibility_sns_neuron_id_from_u64(id: u64) -> SnsNeuronId {
-    SnsNeuronId(id.to_be_bytes().to_vec())
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RewardParticipant {
-    pub sns_neuron_id: SnsNeuronId,
-    pub neuron_id: u64,
-    pub frozen_stake_e8s: u128,
-    pub eligible_closed_proposals: u64,
-    pub voted_closed_proposals: u64,
-    pub destination_is_currently_eligible: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RewardAllocation {
-    pub sns_neuron_id: SnsNeuronId,
-    pub neuron_id: u64,
+    pub sns_neuron_id: Vec<u8>,
     pub io_e8s: u128,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AllocationOutcome {
     pub allocations: Vec<RewardAllocation>,
+    pub forfeited_io_e8s: u128,
     pub rounding_dust_e8s: u128,
-    pub forfeited_reward_e8s: u128,
-    pub dust_e8s: u128,
-    pub total_weight: u128,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,35 +37,16 @@ pub enum RewardPolicyError {
     InvalidDenominator,
 }
 
-pub fn eligible(n: &RewardParticipant) -> bool {
-    n.destination_is_currently_eligible && n.frozen_stake_e8s > 0
-}
-
-/// Returns a rational numerator/denominator for voting participation.
-/// If no eligible proposals closed for the cohort, participation is 1.
-pub fn participation_ratio(n: &RewardParticipant) -> (u128, u128) {
-    if n.eligible_closed_proposals == 0 {
-        (1, 1)
-    } else {
-        (
-            u128::from(n.voted_closed_proposals.min(n.eligible_closed_proposals)),
-            u128::from(n.eligible_closed_proposals),
-        )
-    }
-}
-
 fn mul_u128_wide(a: u128, b: u128) -> (u128, u128) {
     const MASK: u128 = u64::MAX as u128;
     let a0 = a & MASK;
     let a1 = a >> 64;
     let b0 = b & MASK;
     let b1 = b >> 64;
-
     let p0 = a0 * b0;
     let p1 = a0 * b1;
     let p2 = a1 * b0;
     let p3 = a1 * b1;
-
     let lo_low = p0 & MASK;
     let carry = p0 >> 64;
     let middle = (p1 & MASK) + (p2 & MASK) + carry;
@@ -126,7 +72,7 @@ fn doubled_remainder_minus_denominator(
     }
 }
 
-fn mul_div_floor(
+pub fn mul_div_floor(
     value: u128,
     numerator: u128,
     denominator: u128,
@@ -137,7 +83,6 @@ fn mul_div_floor(
     if numerator == 0 || value == 0 {
         return Ok(0);
     }
-
     let (hi, lo) = mul_u128_wide(value, numerator);
     let mut quotient = 0u128;
     let mut remainder = 0u128;
@@ -163,268 +108,167 @@ fn mul_div_floor(
     Ok(quotient)
 }
 
-pub fn reward_weight(n: &RewardParticipant) -> Result<u128, RewardPolicyError> {
-    // Weight is frozen stake times period participation. Current destination eligibility is
-    // enforced later during allocation so a frozen member that later becomes ineligible still
-    // contributes its calculated share as forfeited protocol dust.
-    if n.frozen_stake_e8s == 0 {
-        return Ok(0);
-    }
-    let (num, den) = participation_ratio(n);
-    mul_div_floor(n.frozen_stake_e8s, num, den)
-}
-
 pub fn allocate_rewards(
     reward_pool_io_e8s: u128,
-    participants: &[RewardParticipant],
+    policy_credit_total: u128,
+    entitlements: &[EntitlementCredit],
 ) -> Result<AllocationOutcome, RewardPolicyError> {
-    let weights: Vec<(SnsNeuronId, u64, bool, u128)> = participants
+    if policy_credit_total == 0 {
+        return Err(RewardPolicyError::InvalidDenominator);
+    }
+    let eligible_credit_total = entitlements
         .iter()
-        .map(|n| {
-            Ok((
-                n.sns_neuron_id.clone(),
-                n.neuron_id,
-                n.destination_is_currently_eligible,
-                reward_weight(n)?,
-            ))
-        })
-        .collect::<Result<_, RewardPolicyError>>()?;
-    let total_weight = weights
-        .iter()
-        .map(|(_, _, _, w)| *w)
-        .try_fold(0u128, |acc, w| acc.checked_add(w))
+        .map(|entry| entry.accumulated_eligible_credit)
+        .try_fold(0u128, |sum, credit| sum.checked_add(credit))
         .ok_or(RewardPolicyError::ArithmeticOverflow)?;
-    if reward_pool_io_e8s == 0 || total_weight == 0 {
+    if eligible_credit_total > policy_credit_total {
+        return Err(RewardPolicyError::InvalidDenominator);
+    }
+    let eligible_pool_e8s = mul_div_floor(
+        reward_pool_io_e8s,
+        eligible_credit_total,
+        policy_credit_total,
+    )?;
+    let forfeited_io_e8s = reward_pool_io_e8s
+        .checked_sub(eligible_pool_e8s)
+        .ok_or(RewardPolicyError::ArithmeticOverflow)?;
+    if eligible_pool_e8s == 0 || eligible_credit_total == 0 {
         return Ok(AllocationOutcome {
-            allocations: vec![],
-            rounding_dust_e8s: reward_pool_io_e8s,
-            forfeited_reward_e8s: 0,
-            dust_e8s: reward_pool_io_e8s,
-            total_weight,
+            allocations: Vec::new(),
+            forfeited_io_e8s,
+            rounding_dust_e8s: eligible_pool_e8s,
         });
     }
-
     let mut issued = 0u128;
-    let mut forfeited_reward_e8s = 0u128;
     let mut allocations = Vec::new();
-    for (sns_neuron_id, neuron_id, destination_is_currently_eligible, weight) in weights {
-        if weight == 0 {
+    for entitlement in entitlements {
+        if entitlement.accumulated_eligible_credit == 0 {
             continue;
         }
-        let amount = mul_div_floor(reward_pool_io_e8s, weight, total_weight)?;
-        if destination_is_currently_eligible {
-            issued = issued
-                .checked_add(amount)
-                .ok_or(RewardPolicyError::ArithmeticOverflow)?;
-            if amount > 0 {
-                allocations.push(RewardAllocation {
-                    sns_neuron_id,
-                    neuron_id,
-                    io_e8s: amount,
-                });
-            }
-        } else {
-            forfeited_reward_e8s = forfeited_reward_e8s
-                .checked_add(amount)
-                .ok_or(RewardPolicyError::ArithmeticOverflow)?;
+        let amount = mul_div_floor(
+            eligible_pool_e8s,
+            entitlement.accumulated_eligible_credit,
+            eligible_credit_total,
+        )?;
+        issued = issued
+            .checked_add(amount)
+            .ok_or(RewardPolicyError::ArithmeticOverflow)?;
+        if amount > 0 {
+            allocations.push(RewardAllocation {
+                sns_neuron_id: entitlement.sns_neuron_id.clone(),
+                io_e8s: amount,
+            });
         }
     }
-    let rounding_dust_e8s = reward_pool_io_e8s
-        .checked_sub(issued)
-        .and_then(|remaining| remaining.checked_sub(forfeited_reward_e8s))
-        .ok_or(RewardPolicyError::ArithmeticOverflow)?;
-    let dust_e8s = rounding_dust_e8s
-        .checked_add(forfeited_reward_e8s)
-        .ok_or(RewardPolicyError::ArithmeticOverflow)?;
     Ok(AllocationOutcome {
         allocations,
-        rounding_dust_e8s,
-        forfeited_reward_e8s,
-        dust_e8s,
-        total_weight,
+        forfeited_io_e8s,
+        rounding_dust_e8s: eligible_pool_e8s
+            .checked_sub(issued)
+            .ok_or(RewardPolicyError::ArithmeticOverflow)?,
     })
-}
-
-pub fn active_staked_io_e8s(participants: &[RewardParticipant]) -> u128 {
-    participants
-        .iter()
-        .filter(|n| eligible(n))
-        .map(|n| n.frozen_stake_e8s)
-        .sum()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn n(id: u64, stake: u128, voted: u64, total: u64) -> RewardParticipant {
-        RewardParticipant {
-            sns_neuron_id: SnsNeuronId(id.to_be_bytes().to_vec()),
-            neuron_id: id,
-            frozen_stake_e8s: stake,
-            eligible_closed_proposals: total,
-            voted_closed_proposals: voted,
-            destination_is_currently_eligible: true,
+    fn credit(id: u64, accumulated_eligible_credit: u128) -> EntitlementCredit {
+        EntitlementCredit {
+            sns_neuron_id: vec![id as u8; 32],
+            accumulated_eligible_credit,
         }
     }
 
-    fn sum_allocations(out: &AllocationOutcome) -> u128 {
-        out.allocations.iter().map(|a| a.io_e8s).sum()
+    fn sum_allocations(outcome: &AllocationOutcome) -> u128 {
+        outcome
+            .allocations
+            .iter()
+            .map(|allocation| allocation.io_e8s)
+            .sum()
     }
 
     #[test]
-    fn equal_stake_equal_participation_has_equal_weight_without_time() {
-        assert_eq!(reward_weight(&n(1, 1_000, 4, 4)).unwrap(), 1_000);
-        assert_eq!(reward_weight(&n(2, 1_000, 4, 4)).unwrap(), 1_000);
-        let out = allocate_rewards(200, &[n(1, 1_000, 4, 4), n(2, 1_000, 4, 4)]).unwrap();
-        assert_eq!(out.allocations[0].io_e8s, 100);
-        assert_eq!(out.allocations[1].io_e8s, 100);
-    }
-
-    #[test]
-    fn double_stake_has_double_weight_without_time() {
-        let out = allocate_rewards(300, &[n(1, 2_000, 1, 1), n(2, 1_000, 1, 1)]).unwrap();
-        assert_eq!(out.allocations[0].io_e8s, 200);
-        assert_eq!(out.allocations[1].io_e8s, 100);
-    }
-
-    #[test]
-    fn half_participation_has_half_weight() {
-        assert_eq!(reward_weight(&n(1, 1_000, 2, 4)).unwrap(), 500);
-    }
-
-    #[test]
-    fn no_closed_proposals_has_full_participation() {
-        assert_eq!(participation_ratio(&n(1, 1_000, 0, 0)), (1, 1));
-        assert_eq!(reward_weight(&n(1, 1_000, 0, 0)).unwrap(), 1_000);
-    }
-
-    #[test]
-    fn non_voter_has_zero_participation_weight() {
-        assert_eq!(reward_weight(&n(1, 1_000, 0, 4)).unwrap(), 0);
-    }
-
-    #[test]
-    fn over_voting_is_capped() {
-        assert_eq!(participation_ratio(&n(1, 1_000, 9, 4)), (4, 4));
-        assert_eq!(reward_weight(&n(1, 1_000, 9, 4)).unwrap(), 1_000);
-    }
-
-    #[test]
-    fn zero_current_destination_eligibility_means_no_transfer() {
-        let mut participant = n(1, 1_000, 1, 1);
-        participant.destination_is_currently_eligible = false;
-        assert!(!eligible(&participant));
-        let out = allocate_rewards(100, &[participant]).unwrap();
-        assert!(out.allocations.is_empty());
-        assert_eq!(out.forfeited_reward_e8s, 100);
-        assert_eq!(out.dust_e8s, 100);
-    }
-
-    #[test]
-    fn zero_stake_has_zero_weight() {
-        assert_eq!(reward_weight(&n(1, 0, 1, 1)).unwrap(), 0);
-    }
-
-    #[test]
-    fn forfeited_destination_share_becomes_dust_not_redistribution() {
-        let eligible = n(1, 1_000, 1, 1);
-        let mut forfeited = n(2, 1_000, 1, 1);
-        forfeited.destination_is_currently_eligible = false;
-        let out = allocate_rewards(101, &[eligible, forfeited]).unwrap();
-        assert_eq!(out.allocations[0].io_e8s, 50);
-        assert_eq!(out.forfeited_reward_e8s, 50);
-        assert_eq!(out.rounding_dust_e8s, 1);
-        assert_eq!(out.dust_e8s, 51);
-    }
-
-    #[test]
-    fn allocations_plus_all_dust_equal_backed_pool() {
-        let mut forfeited = n(3, 1, 1, 1);
-        forfeited.destination_is_currently_eligible = false;
-        let out = allocate_rewards(100, &[n(1, 1, 1, 1), n(2, 1, 1, 1), forfeited]).unwrap();
-        assert_eq!(sum_allocations(&out) + out.dust_e8s, 100);
-        assert_eq!(out.rounding_dust_e8s, 1);
-        assert_eq!(out.forfeited_reward_e8s, 33);
-    }
-
-    #[test]
-    fn deterministic_order_preserves_input_order() {
-        let out =
-            allocate_rewards(30, &[n(42, 10, 1, 1), n(7, 10, 1, 1), n(99, 10, 1, 1)]).unwrap();
+    fn unequal_credits_allocate_a_large_pool_one_to_two_to_three() {
+        let outcome = allocate_rewards(
+            600_000,
+            600,
+            &[credit(1, 100), credit(2, 200), credit(3, 300)],
+        )
+        .unwrap();
         assert_eq!(
-            out.allocations
+            outcome
+                .allocations
                 .iter()
-                .map(|a| a.neuron_id)
+                .map(|allocation| allocation.io_e8s)
                 .collect::<Vec<_>>(),
-            vec![42, 7, 99]
+            vec![100_000, 200_000, 300_000]
+        );
+        assert_eq!(outcome.forfeited_io_e8s, 0);
+        assert_eq!(outcome.rounding_dust_e8s, 0);
+    }
+
+    #[test]
+    fn tiny_pool_has_deterministic_dust_and_conserves_the_pool() {
+        let outcome = allocate_rewards(2, 3, &[credit(1, 1), credit(2, 1), credit(3, 1)]).unwrap();
+        assert!(outcome.allocations.is_empty());
+        assert_eq!(outcome.rounding_dust_e8s, 2);
+        assert_eq!(outcome.forfeited_io_e8s, 0);
+        assert_eq!(sum_allocations(&outcome) + outcome.rounding_dust_e8s, 2);
+    }
+
+    #[test]
+    fn zero_eligible_credit_forfeits_the_full_pool() {
+        let outcome = allocate_rewards(100, DAILY_EVENT_CREDIT, &[]).unwrap();
+        assert!(outcome.allocations.is_empty());
+        assert_eq!(outcome.forfeited_io_e8s, 100);
+        assert_eq!(outcome.rounding_dust_e8s, 0);
+    }
+
+    #[test]
+    fn deterministic_order_preserves_canonical_input_order() {
+        let outcome =
+            allocate_rewards(30, 30, &[credit(7, 10), credit(42, 10), credit(99, 10)]).unwrap();
+        assert_eq!(
+            outcome
+                .allocations
+                .iter()
+                .map(|allocation| allocation.sns_neuron_id[0])
+                .collect::<Vec<_>>(),
+            vec![7, 42, 99]
         );
     }
 
     #[test]
-    fn tiny_reward_pool_reports_rounding_dust() {
-        let out = allocate_rewards(2, &[n(1, 1, 1, 1), n(2, 1, 1, 1), n(3, 1, 1, 1)]).unwrap();
-        assert!(out.allocations.is_empty());
-        assert_eq!(out.rounding_dust_e8s, 2);
-        assert_eq!(out.dust_e8s, 2);
-    }
-
-    #[test]
-    fn max_value_weight_does_not_panic() {
-        let weight = reward_weight(&n(1, u128::MAX, 1, 2)).unwrap();
-        assert_eq!(weight, u128::MAX / 2);
-    }
-
-    #[test]
-    fn max_value_allocation_fails_closed_or_computes_exactly() {
-        let outcome = allocate_rewards(u128::MAX, &[n(1, u128::MAX, 1, 1)]).unwrap();
-        assert_eq!(outcome.allocations[0].io_e8s, u128::MAX);
-        assert_eq!(outcome.dust_e8s, 0);
-    }
-
-    #[test]
-    fn allocation_never_exceeds_pool() {
-        let outcome = allocate_rewards(
-            u128::MAX - 1,
-            &[
-                n(1, u128::MAX, 1, 3),
-                n(2, u128::MAX - 1, 2, 3),
-                n(3, u128::MAX - 2, 0, 3),
-            ],
-        )
-        .unwrap();
-        assert!(sum_allocations(&outcome) < u128::MAX);
-    }
-
-    #[test]
-    fn allocations_plus_dust_always_equal_pool() {
-        let mut forfeited = n(4, u128::MAX / 8, 1, 2);
-        forfeited.destination_is_currently_eligible = false;
-        let pool = u128::MAX - 9;
-        let outcome = allocate_rewards(
-            pool,
-            &[
-                n(1, u128::MAX / 8, 1, 1),
-                n(2, u128::MAX / 8 - 1, 1, 2),
-                n(3, 10_000_000_000, 1, 3),
-                forfeited,
-            ],
-        )
-        .unwrap();
-        assert_eq!(sum_allocations(&outcome) + outcome.dust_e8s, pool);
-    }
-
-    #[test]
-    fn overflowing_weight_total_fails_closed() {
+    fn max_value_allocation_is_exact_and_overflowing_total_fails_closed() {
+        let exact = allocate_rewards(u128::MAX, u128::MAX, &[credit(1, u128::MAX)]).unwrap();
+        assert_eq!(exact.allocations[0].io_e8s, u128::MAX);
+        assert_eq!(exact.rounding_dust_e8s, 0);
         assert_eq!(
-            allocate_rewards(100, &[n(1, u128::MAX, 1, 1), n(2, 1, 1, 1)]),
+            allocate_rewards(100, u128::MAX, &[credit(1, u128::MAX), credit(2, 1)]),
             Err(RewardPolicyError::ArithmeticOverflow)
         );
     }
 
     #[test]
-    fn active_staked_io_uses_current_destination_eligibility_not_participation() {
-        let active_non_voter = n(1, 1_000, 0, 10);
-        assert_eq!(active_staked_io_e8s(&[active_non_voter]), 1_000);
+    fn excluded_half_is_forfeited_without_redistribution() {
+        let outcome = allocate_rewards(
+            1_000,
+            DAILY_EVENT_CREDIT,
+            &[credit(1, DAILY_EVENT_CREDIT / 2)],
+        )
+        .unwrap();
+        assert_eq!(sum_allocations(&outcome), 500);
+        assert_eq!(outcome.forfeited_io_e8s, 500);
+        assert_eq!(outcome.rounding_dust_e8s, 0);
+    }
+
+    #[test]
+    fn distributed_forfeited_and_dust_conserve_the_backed_pool() {
+        let outcome = allocate_rewards(101, 6, &[credit(1, 1), credit(2, 2)]).unwrap();
+        assert_eq!(outcome.forfeited_io_e8s, 51);
+        assert_eq!(outcome.rounding_dust_e8s, 1);
+        assert_eq!(sum_allocations(&outcome), 49);
+        assert_eq!(49 + 51 + 1, 101);
     }
 }

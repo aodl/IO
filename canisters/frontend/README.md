@@ -70,18 +70,34 @@ For the DevMainnet public shell, the browser bundle was built with `CANISTER_ID_
 
 The visual direction comes from `io-frontend-mock.zip`: dark Io sphere hero, corner links, primary nav, IO/REAL LIQUID STAKING copy, coming-soon tagline, and glassy metric cards. The production implementation self-hosts the image assets and omits the mock's base64 `texture-data.js` payload.
 
+## Redemption
+
+The production bundle includes the simplified redemption flow. A wallet
+integration supplies the authenticated identity and one selected canonical
+32-byte subaccount through `window.ioRedemptionSession`; the page does not
+derive an Account from user-entered text. The flow queries the IO fee, exact
+allowance and caller nonce, approves `amount + transfer_from fee` with expected
+allowance, deterministic memo/timestamp and short expiry, then submits minimum
+ICP output and both fee maxima. The canister recomputes every monetary fact.
+
+The page renders preparation, IO pull, IO-in-reserve, payout, completion and
+Stuck guidance. Resume is permissionless at the canister boundary, while the
+connected UI may invoke it. Exact block proof is available for a Stuck own
+transfer. Direct IO transfer is explicitly unsupported and cannot create a
+redemption intent.
+
 ## Limitations
 
 - Custom-domain certification setup is not implemented.
 - Production historian canister IDs are injected by build/runtime config and may be empty in local builds.
-- Historian production ingestion remains separate from this frontend.
+- Historian production ingestion is consumed only through its read-only production DID.
 - The frontend is a dashboard over historian observations, not a protocol authority.
 - The existing IO neuron-owner canister `oae4c-3iaaa-aaaar-qb5qq-cai` and IO neuron `6345890886899317159` are not touched by the DevMainnet frontend.
 
 ## Freshness Display
 
-The frontend renders historian source health from the production historian declarations only. It displays fresh, stale, missing, incomplete, observed-only, prelaunch/not-applicable, error/retryable, and unknown source states as public read model data.
+The frontend renders historian source health from the production historian declarations only. It displays fresh, stale, missing, prelaunch/not-configured, and retryable error source states as public read model data.
 
-Historian data is rebuildable, not canonical protocol truth, and not a value-moving authority. IO protocol is not live. SNS IO ledger remains not launched. The missing/stale/incomplete states are visible, and missing/stale/incomplete fields must not be interpreted as zero protocol value.
+Historian data is rebuildable, not canonical protocol truth, and not a value-moving authority. IO protocol is not live. SNS IO ledger remains not launched. The missing/stale/error states are visible; missing/stale/incomplete fields must not be interpreted as zero protocol value.
 
 The frontend does not call value-moving canisters. Index canisters remain the normal account-history abstraction for future account-history observations; index canisters are the default source for account-history observations. Raw ledger/archive traversal is not the default path.

@@ -1,12 +1,12 @@
 # Local SNS Testing
 
-We currently run SNS-shaped mock/PocketIC tests. We do not currently run the official SNS launch locally in required CI.
+Required CI uses SNS-shaped mock/PocketIC tests. The maintained official SNS launch rehearsal is an optional local operator layer. The immutable 2026-08-11 and `2026-08-12-4320fdf-monitoring` packages remain historical mechanics/connectivity evidence, but their redemption-rate evidence is superseded because they queried the Governance default Account instead of the canonical treasury distribution subaccount. The immutable `2026-08-12-4320fdf-canonical-economics` package is corrected historical evidence for its own recorded release. `current-canonical.toml` selects the separate immutable `2026-08-14-4320fdf-canonical-economics` package as current evidence for S4 `55b2099a555799c4a032308eb8a39049c7946193` and A4 `09b115f708ec784766327539f9cf4e5e21668d84`. None of these packages is official release adoption or mainnet evidence.
 
-IO uses local SNS compatibility testing as an additional safety layer. It does not replace accounting, journal, retry, artifact, DID, or release guardrails.
+IO uses local SNS compatibility testing as an additional safety layer. It does not replace typed-operation, retry, artifact, DID, stable-state or release guardrails.
 
 Pure model tests remain the main accounting guardrail.
 
-Mock and PocketIC tests remain the main journal, retry, and upgrade guardrail.
+Mock and PocketIC tests exercise bounded failures, retry and upgrade behavior without becoming monetary truth.
 
 ## Four-Layer Compatibility Model
 
@@ -22,7 +22,7 @@ Layer 3: Official SNS Local Launch Rehearsal.
 
 Official SNS testing is optional and heavier. Follow the current official ICP/DFINITY SNS testing documentation as the source of truth. The historical standalone `dfinity/sns-testing` repository is deprecated; if the official docs reference successor tooling or a new repository/location, use that current official location.
 
-The official SNS launch path may require `dfx sns`; any `dfx`-based SNS testing for IO is optional, local-only, and not part of `test_ci` or `verify_release`. Required repository workflows must not depend on `dfx`.
+The maintained official local SNS flow uses the source-built `sns` CLI; any `dfx`-based SNS testing for IO is optional, local-only, and not part of `test_ci` or `verify_release`. Required repository workflows must not depend on `dfx`.
 
 The official local SNS rehearsal package lives under `deploy/local-sns-rehearsal/`. It provides a local `sns_init` candidate, local evidence template, no-network validators, and manual runbook for creating a real SNS-created local ledger/index/governance/root stack and recording local evidence in `canister-ids.local.toml`. The no-network package validator is:
 
@@ -30,15 +30,14 @@ The official local SNS rehearsal package lives under `deploy/local-sns-rehearsal
 cargo run -p xtask -- validate_local_sns_rehearsal
 ```
 
-The optional completed-ledger evidence validator is:
+The completed-ledger evidence validator is:
 
 ```bash
 cargo run -p xtask -- validate_local_sns_ledger
 ```
 
-It skips clearly until a local rehearsal operator creates `deploy/local-sns-rehearsal/canister-ids.local.toml`.
-
-Until that evidence file is produced from a completed local rehearsal, no local SNS canister IDs are recorded and no real SNS ledger/index/governance/root behavior has been observed.
+It validates the checked-in completed inventory; absence is a failure, not a
+completion skip. New runs belong in new immutable evidence packages.
 
 Layer 4: SNS testflight.
 
@@ -51,12 +50,12 @@ The IO-owned harness uses PocketIC where practical and stays inside the reposito
 The harness includes:
 
 - pure model tests as the main accounting guardrail;
-- mock and PocketIC tests as the main journal, retry, and upgrade guardrail;
+- mock and PocketIC tests for typed-operation retry and upgrade guardrails;
 - local SNS-like topology checks with NNS/SNS/application subnets where available;
-- mock SNS governance read tests through `SnsGovernanceClient`;
-- mock SNS ledger/index value-flow tests through `LedgerTransferClient` and `LedgerIndexClient`;
+- mock SNS governance observation and command-boundary tests;
+- standalone mock SNS ledger/index interface tests that are not launch monetary authority;
 - mock SNS root/controller lifecycle tests through proposal-shaped governance/root canisters;
-- production DID checks that keep `io_stream_manager` and `io_nns_neuron_manager` constructor-only.
+- production DID checks that keep `io_stream_manager` and `io_nns_neuron_manager` on the reviewed simplified command surfaces.
 
 The local SNS harness is not production launch configuration. It must not call mainnet, must not use `--network ic`, and must not deploy, install, upgrade, reinstall, or update settings on mainnet.
 

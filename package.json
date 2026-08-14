@@ -2,7 +2,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "setup:frontend": "npm ci",
+    "clean:frontend-generated": "node canisters/frontend/web/clean-generated.mjs",
+    "setup:frontend": "npm run clean:frontend-generated && npm ci",
     "build:frontend": "node canisters/frontend/web/build-frontend.mjs",
     "test:frontend-unit": "node --test canisters/frontend/web/test/*.test.mjs",
     "lint:frontend-exports": "node canisters/frontend/web/test/frontend-exports.test.mjs",

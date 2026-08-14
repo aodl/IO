@@ -1,14 +1,16 @@
-use candid::Principal;
+use candid::{CandidType, Principal};
 use io_sns_lifecycle::{
     DappCanisterRecord, ExpectedModuleHashRequest, RegisterDappCanisterRequest, RootUpgradeAttempt,
     RootUpgradeAttemptStatus, RootUpgradeIntent, RootUpgradeOutcomeRequest, RootUpgradeRequest,
 };
+use serde::Deserialize;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 #[derive(Default)]
 struct RootState {
     governance_principal: Option<Principal>,
+    governance_module_hash: Option<Vec<u8>>,
     dapp_canisters: BTreeMap<Principal, String>,
     expected_hashes: BTreeMap<Principal, String>,
     history: Vec<RootUpgradeAttempt>,
@@ -34,6 +36,55 @@ fn caller() -> Principal {
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn debug_set_governance_principal(governance: Principal) {
     STATE.with(|cell| cell.borrow_mut().governance_principal = Some(governance));
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_governance_module_hash(module_hash: Vec<u8>) -> Result<(), String> {
+    if module_hash.len() != 32 {
+        return Err("Governance module hash must contain 32 bytes".into());
+    }
+    STATE.with(|cell| cell.borrow_mut().governance_module_hash = Some(module_hash));
+    Ok(())
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct GetSnsCanistersSummaryRequest {
+    pub update_canister_list: Option<bool>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct GetSnsCanistersSummaryResponse {
+    pub governance: Option<CanisterSummary>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct CanisterSummary {
+    pub canister_id: Option<Principal>,
+    pub status: Option<CanisterStatus>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct CanisterStatus {
+    pub module_hash: Option<Vec<u8>>,
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn get_sns_canisters_summary(
+    _request: GetSnsCanistersSummaryRequest,
+) -> GetSnsCanistersSummaryResponse {
+    STATE.with(|cell| {
+        let state = cell.borrow();
+        GetSnsCanistersSummaryResponse {
+            governance: state
+                .governance_principal
+                .map(|canister_id| CanisterSummary {
+                    canister_id: Some(canister_id),
+                    status: Some(CanisterStatus {
+                        module_hash: state.governance_module_hash.clone(),
+                    }),
+                }),
+        }
+    })
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]

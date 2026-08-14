@@ -729,7 +729,7 @@ pub fn nns_manage_neuron_request(
             id: neuron_id.0,
         })),
         command: Some(command),
-        id: Some(NnsNeuronIdRecord { id: neuron_id.0 }),
+        id: None,
     }
 }
 
@@ -1141,6 +1141,47 @@ pub struct SnsNeuron {
     pub permissions: Vec<SnsNeuronPermission>,
     pub is_io_protocol_neuron: bool,
     pub is_jupiter_governance_neuron: bool,
+    pub latest_reward_event_participation: Option<SnsRewardEventParticipation>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SnsUint128 {
+    pub high: u64,
+    pub low: u64,
+}
+
+impl SnsUint128 {
+    pub fn exact(self) -> u128 {
+        (u128::from(self.high) << 64) | u128::from(self.low)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SnsRewardEventParticipation {
+    pub reward_event_end_timestamp_seconds: u64,
+    pub reward_shares: Option<SnsUint128>,
+}
+
+impl SnsRewardEventParticipation {
+    pub fn exact_reward_shares(self) -> Result<u128, SnsGovernanceError> {
+        self.reward_shares
+            .map(SnsUint128::exact)
+            .ok_or_else(|| SnsGovernanceError::DecodeError {
+                message: "latest_reward_event_participation is present without reward_shares"
+                    .to_string(),
+            })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SnsRewardEvent {
+    pub rounds_since_last_distribution: Option<u64>,
+    pub actual_timestamp_seconds: u64,
+    pub end_timestamp_seconds: Option<u64>,
+    pub total_available_e8s_equivalent: Option<u64>,
+    pub distributed_e8s_equivalent: u64,
+    pub round: u64,
+    pub settled_proposals: Vec<SnsProposalIdRecord>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -1224,14 +1265,6 @@ pub struct SnsNeuronEligibility {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct SnsParticipationSummary {
-    pub neuron_id: SnsNeuronId,
-    pub eligible_closed_proposals_total: u64,
-    pub voted_proposals: u64,
-    pub participation_bps: u16,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct SnsNeuronPageRequest {
     pub limit: u64,
     pub start_page_at: Option<SnsNeuronId>,
@@ -1283,6 +1316,10 @@ impl SnsGovernanceError {
 }
 
 pub trait SnsGovernanceClient {
+    fn get_latest_reward_event<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<SnsRewardEvent, SnsGovernanceError>> + 'a>>;
+
     fn list_neurons<'a>(
         &'a self,
         page: SnsNeuronPageRequest,
@@ -1394,82 +1431,6 @@ pub fn snapshot_sns_eligibility(
                 dissolve_delay_seconds: neuron.dissolve_delay_seconds,
                 is_non_dissolving,
                 excluded_reason,
-            }
-        })
-        .collect()
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SnsParticipationPolicy {
-    pub count_direct_votes: bool,
-    pub count_followed_votes: bool,
-    pub excluded_topics: BTreeSet<u64>,
-    pub epoch_start_seconds: u64,
-    pub epoch_end_seconds: u64,
-}
-
-pub fn summarize_sns_participation(
-    eligibilities: &[SnsNeuronEligibility],
-    proposals: &[SnsProposal],
-    policy: &SnsParticipationPolicy,
-) -> Vec<SnsParticipationSummary> {
-    let neuron_ids = eligibilities
-        .iter()
-        .filter(|e| e.excluded_reason.is_none())
-        .map(|e| e.neuron_id.clone())
-        .collect::<Vec<_>>();
-    summarize_sns_participation_for_neuron_ids(&neuron_ids, proposals, policy)
-}
-
-pub fn summarize_sns_participation_for_neuron_ids(
-    neuron_ids: &[SnsNeuronId],
-    proposals: &[SnsProposal],
-    policy: &SnsParticipationPolicy,
-) -> Vec<SnsParticipationSummary> {
-    neuron_ids
-        .iter()
-        .map(|neuron_id| {
-            let mut total = 0u64;
-            let mut voted = 0u64;
-            for proposal in proposals {
-                let Some(decided) = proposal.decided_timestamp_seconds else {
-                    continue;
-                };
-                if !proposal.status.is_closed()
-                    || decided < policy.epoch_start_seconds
-                    || decided > policy.epoch_end_seconds
-                    || proposal
-                        .topic
-                        .is_some_and(|topic| policy.excluded_topics.contains(&topic))
-                    || matches!(proposal.reward_status, SnsProposalRewardStatus::Ineligible)
-                {
-                    continue;
-                }
-                total = total.saturating_add(1);
-                let counted = proposal
-                    .ballots
-                    .iter()
-                    .find(|b| &b.neuron_id == neuron_id)
-                    .map(|b| match b.vote {
-                        SnsVote::Yes | SnsVote::No => policy.count_direct_votes,
-                        SnsVote::FollowedYes | SnsVote::FollowedNo => policy.count_followed_votes,
-                        SnsVote::Unspecified => false,
-                    })
-                    .unwrap_or(false);
-                if counted {
-                    voted = voted.saturating_add(1);
-                }
-            }
-            let participation_bps = voted
-                .saturating_mul(10_000)
-                .checked_div(total)
-                .map(|bps| bps.min(10_000) as u16)
-                .unwrap_or(10_000);
-            SnsParticipationSummary {
-                neuron_id: neuron_id.clone(),
-                eligible_closed_proposals_total: total,
-                voted_proposals: voted,
-                participation_bps,
             }
         })
         .collect()
@@ -1607,6 +1568,7 @@ pub struct SnsNeuronRecord {
     pub neuron_fees_e8s: u64,
     pub permissions: Vec<SnsNeuronPermissionRecord>,
     pub topic_followees: Option<SnsTopicFollowees>,
+    pub latest_reward_event_participation: Option<SnsRewardEventParticipation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -1792,6 +1754,7 @@ impl TryFrom<SnsNeuronRecord> for SnsNeuron {
                 .collect(),
             is_io_protocol_neuron: false,
             is_jupiter_governance_neuron: false,
+            latest_reward_event_participation: value.latest_reward_event_participation,
         })
     }
 }
@@ -2041,6 +2004,12 @@ pub struct SnsGovernanceCanisterClient {
 }
 
 impl SnsGovernanceClient for SnsGovernanceCanisterClient {
+    fn get_latest_reward_event<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<SnsRewardEvent, SnsGovernanceError>> + 'a>> {
+        Box::pin(async move { sns_canister_get_latest_reward_event(self.canister).await })
+    }
+
     fn list_neurons<'a>(
         &'a self,
         page: SnsNeuronPageRequest,
@@ -2074,6 +2043,30 @@ impl SnsGovernanceClient for SnsGovernanceCanisterClient {
         id: SnsNeuronId,
     ) -> Pin<Box<dyn Future<Output = Result<SnsNeuronId, SnsGovernanceError>> + 'a>> {
         Box::pin(async move { sns_canister_claim_or_refresh_neuron(self.canister, id).await })
+    }
+}
+
+async fn sns_canister_get_latest_reward_event(
+    canister: Principal,
+) -> Result<SnsRewardEvent, SnsGovernanceError> {
+    #[cfg(target_family = "wasm")]
+    {
+        ic_cdk::call::Call::bounded_wait(canister, "get_latest_reward_event")
+            .with_arg(())
+            .await
+            .map_err(|err| SnsGovernanceError::CanisterCallFailed {
+                method: "get_latest_reward_event".to_string(),
+                message: format!("{err:?}"),
+            })?
+            .candid::<SnsRewardEvent>()
+            .map_err(|err| SnsGovernanceError::DecodeError {
+                message: format!("{err:?}"),
+            })
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let _ = canister;
+        Err(SnsGovernanceError::Unsupported)
     }
 }
 
@@ -2304,6 +2297,7 @@ mod tests {
             }],
             is_io_protocol_neuron: false,
             is_jupiter_governance_neuron: false,
+            latest_reward_event_participation: None,
         }
     }
 
@@ -2368,7 +2362,85 @@ mod tests {
                 permission_type: vec![1],
             }],
             topic_followees: None,
+            latest_reward_event_participation: None,
         }
+    }
+
+    #[test]
+    fn sns_reward_shares_decode_additively_and_convert_exactly() {
+        #[derive(CandidType, Deserialize)]
+        struct LegacyNeuronRecord {
+            id: Option<SnsNeuronIdRecord>,
+            staked_maturity_e8s_equivalent: Option<u64>,
+            cached_neuron_stake_e8s: u64,
+            maturity_e8s_equivalent: u64,
+            created_timestamp_seconds: u64,
+            source_nns_neuron_id: Option<u64>,
+            auto_stake_maturity: Option<bool>,
+            aging_since_timestamp_seconds: u64,
+            dissolve_state: Option<SnsDissolveStateRecord>,
+            voting_power_percentage_multiplier: u64,
+            vesting_period_seconds: Option<u64>,
+            disburse_maturity_in_progress: Vec<SnsDisburseMaturityInProgress>,
+            followees: Vec<(u64, SnsFollowees)>,
+            neuron_fees_e8s: u64,
+            permissions: Vec<SnsNeuronPermissionRecord>,
+            topic_followees: Option<SnsTopicFollowees>,
+        }
+
+        let old = LegacyNeuronRecord {
+            id: Some(SnsNeuronIdRecord { id: vec![7; 32] }),
+            staked_maturity_e8s_equivalent: None,
+            cached_neuron_stake_e8s: 123,
+            maturity_e8s_equivalent: 0,
+            created_timestamp_seconds: 1,
+            source_nns_neuron_id: None,
+            auto_stake_maturity: None,
+            aging_since_timestamp_seconds: 1,
+            dissolve_state: Some(SnsDissolveStateRecord::DissolveDelaySeconds(
+                TWO_WEEK_SECONDS,
+            )),
+            voting_power_percentage_multiplier: 100,
+            vesting_period_seconds: None,
+            disburse_maturity_in_progress: Vec::new(),
+            followees: Vec::new(),
+            neuron_fees_e8s: 0,
+            permissions: Vec::new(),
+            topic_followees: None,
+        };
+        let old_bytes = Encode!(&old).unwrap();
+        let old_decoded = Decode!(&old_bytes, SnsNeuronRecord).unwrap();
+        assert_eq!(old_decoded.latest_reward_event_participation, None);
+
+        let mut candidate = sns_neuron_record(
+            vec![8; 32],
+            456,
+            SnsDissolveStateRecord::DissolveDelaySeconds(TWO_WEEK_SECONDS),
+        );
+        candidate.latest_reward_event_participation = Some(SnsRewardEventParticipation {
+            reward_event_end_timestamp_seconds: 1_209_600,
+            reward_shares: Some(SnsUint128 {
+                high: 0x0123_4567_89ab_cdef,
+                low: 0xfedc_ba98_7654_3210,
+            }),
+        });
+        let bytes = Encode!(&candidate).unwrap();
+        let decoded = Decode!(&bytes, SnsNeuronRecord).unwrap();
+        let participation = decoded.latest_reward_event_participation.unwrap();
+        assert_eq!(participation.reward_event_end_timestamp_seconds, 1_209_600);
+        assert_eq!(
+            participation.exact_reward_shares().unwrap(),
+            (u128::from(0x0123_4567_89ab_cdef_u64) << 64) | u128::from(0xfedc_ba98_7654_3210_u64)
+        );
+
+        let malformed = SnsRewardEventParticipation {
+            reward_event_end_timestamp_seconds: 1,
+            reward_shares: None,
+        };
+        assert!(matches!(
+            malformed.exact_reward_shares(),
+            Err(SnsGovernanceError::DecodeError { .. })
+        ));
     }
 
     struct SnsProposalFixture {
@@ -2734,7 +2806,7 @@ mod tests {
                 id: 10
             }))
         );
-        assert_eq!(request.id, Some(NnsNeuronIdRecord { id: 10 }));
+        assert_eq!(request.id, None);
         assert_eq!(
             request.command,
             Some(NnsManageNeuronCommandRequest::Merge(NnsMerge {
@@ -2960,28 +3032,6 @@ mod tests {
             page.proposals[1].reward_status,
             SnsProposalRewardStatus::Ineligible
         );
-
-        let eligibility = SnsNeuronEligibility {
-            neuron_id: SnsNeuronId("\u{1}".as_bytes().to_vec()),
-            owner: Some(principal()),
-            eligible_stake_e8s: 100,
-            dissolve_delay_seconds: TWO_WEEK_SECONDS,
-            is_non_dissolving: true,
-            excluded_reason: None,
-        };
-        let summary = summarize_sns_participation(
-            &[eligibility],
-            &page.proposals,
-            &SnsParticipationPolicy {
-                count_direct_votes: true,
-                count_followed_votes: true,
-                excluded_topics: BTreeSet::from([4]),
-                epoch_start_seconds: 1,
-                epoch_end_seconds: 100,
-            },
-        );
-        assert_eq!(summary[0].eligible_closed_proposals_total, 1);
-        assert_eq!(summary[0].voted_proposals, 1);
     }
 
     #[test]
@@ -3080,183 +3130,5 @@ mod tests {
             Some("dissolve delay below two weeks")
         );
         assert_eq!(out[5].excluded_reason.as_deref(), Some("zero stake"));
-    }
-
-    #[test]
-    fn sns_participation_counts_direct_followed_and_epoch_filters() {
-        let eligibility = SnsNeuronEligibility {
-            neuron_id: SnsNeuronId(vec![1]),
-            owner: Some(principal()),
-            eligible_stake_e8s: 100,
-            dissolve_delay_seconds: TWO_WEEK_SECONDS,
-            is_non_dissolving: true,
-            excluded_reason: None,
-        };
-        let proposals = vec![
-            proposal(1, 10, SnsProposalStatus::Open, SnsVote::Yes),
-            proposal(2, 60, SnsProposalStatus::Adopted, SnsVote::Yes),
-            proposal(3, 70, SnsProposalStatus::Rejected, SnsVote::FollowedNo),
-            proposal(4, 80, SnsProposalStatus::Rejected, SnsVote::Unspecified),
-            proposal(5, 101, SnsProposalStatus::Rejected, SnsVote::Yes),
-            proposal(6, 40, SnsProposalStatus::Rejected, SnsVote::Yes),
-        ];
-        let summary = summarize_sns_participation(
-            &[eligibility],
-            &proposals,
-            &SnsParticipationPolicy {
-                count_direct_votes: true,
-                count_followed_votes: true,
-                excluded_topics: BTreeSet::new(),
-                epoch_start_seconds: 0,
-                epoch_end_seconds: 100,
-            },
-        );
-        assert_eq!(summary[0].eligible_closed_proposals_total, 4);
-        assert_eq!(summary[0].voted_proposals, 3);
-        assert_eq!(summary[0].participation_bps, 7_500);
-    }
-
-    #[test]
-    fn sns_participation_defaults_to_full_when_no_proposals() {
-        let eligibility = SnsNeuronEligibility {
-            neuron_id: SnsNeuronId(vec![1]),
-            owner: Some(principal()),
-            eligible_stake_e8s: 100,
-            dissolve_delay_seconds: TWO_WEEK_SECONDS,
-            is_non_dissolving: true,
-            excluded_reason: None,
-        };
-        let summary = summarize_sns_participation(
-            &[eligibility],
-            &[],
-            &SnsParticipationPolicy {
-                count_direct_votes: true,
-                count_followed_votes: true,
-                excluded_topics: BTreeSet::new(),
-                epoch_start_seconds: 0,
-                epoch_end_seconds: 100,
-            },
-        );
-        assert_eq!(summary[0].participation_bps, 10_000);
-    }
-
-    #[test]
-    fn proposal_before_cohort_is_excluded() {
-        let policy = participation_policy(100, 200);
-        let summaries = summarize_sns_participation_for_neuron_ids(
-            &[SnsNeuronId(vec![1])],
-            &[
-                proposal(1, 99, SnsProposalStatus::Rejected, SnsVote::Yes),
-                proposal(2, 100, SnsProposalStatus::Rejected, SnsVote::Yes),
-            ],
-            &policy,
-        );
-
-        assert_eq!(summaries[0].eligible_closed_proposals_total, 1);
-        assert_eq!(summaries[0].voted_proposals, 1);
-    }
-
-    #[test]
-    fn proposal_after_source_event_is_excluded() {
-        let policy = participation_policy(100, 200);
-        let summaries = summarize_sns_participation_for_neuron_ids(
-            &[SnsNeuronId(vec![1])],
-            &[
-                proposal(1, 200, SnsProposalStatus::Rejected, SnsVote::Yes),
-                proposal(2, 201, SnsProposalStatus::Rejected, SnsVote::Yes),
-            ],
-            &policy,
-        );
-
-        assert_eq!(summaries[0].eligible_closed_proposals_total, 1);
-        assert_eq!(summaries[0].voted_proposals, 1);
-    }
-
-    #[test]
-    fn later_cohort_does_not_inherit_prior_proposal() {
-        let policy = participation_policy(300, 400);
-        let summaries = summarize_sns_participation_for_neuron_ids(
-            &[SnsNeuronId(vec![3])],
-            &[proposal_with_ballots(
-                1,
-                200,
-                SnsProposalStatus::Rejected,
-                vec![
-                    SnsBallot {
-                        neuron_id: SnsNeuronId(vec![1]),
-                        vote: SnsVote::Yes,
-                    },
-                    SnsBallot {
-                        neuron_id: SnsNeuronId(vec![2]),
-                        vote: SnsVote::Yes,
-                    },
-                ],
-            )],
-            &policy,
-        );
-
-        assert_eq!(summaries[0].eligible_closed_proposals_total, 0);
-        assert_eq!(summaries[0].voted_proposals, 0);
-        assert_eq!(summaries[0].participation_bps, 10_000);
-    }
-
-    #[test]
-    fn explicit_frozen_ids_are_not_filtered_by_current_eligibility() {
-        let summaries = summarize_sns_participation_for_neuron_ids(
-            &[SnsNeuronId(vec![1]), SnsNeuronId(vec![2])],
-            &[proposal_with_ballots(
-                1,
-                150,
-                SnsProposalStatus::Rejected,
-                vec![SnsBallot {
-                    neuron_id: SnsNeuronId(vec![1]),
-                    vote: SnsVote::FollowedYes,
-                }],
-            )],
-            &participation_policy(100, 200),
-        );
-
-        assert_eq!(summaries[0].eligible_closed_proposals_total, 1);
-        assert_eq!(summaries[0].voted_proposals, 1);
-        assert_eq!(summaries[1].eligible_closed_proposals_total, 1);
-        assert_eq!(summaries[1].voted_proposals, 0);
-    }
-
-    fn participation_policy(start: u64, end: u64) -> SnsParticipationPolicy {
-        SnsParticipationPolicy {
-            count_direct_votes: true,
-            count_followed_votes: true,
-            excluded_topics: BTreeSet::new(),
-            epoch_start_seconds: start,
-            epoch_end_seconds: end,
-        }
-    }
-
-    fn proposal(id: u64, decided: u64, status: SnsProposalStatus, vote: SnsVote) -> SnsProposal {
-        proposal_with_ballots(
-            id,
-            decided,
-            status,
-            vec![SnsBallot {
-                neuron_id: SnsNeuronId(vec![1]),
-                vote,
-            }],
-        )
-    }
-
-    fn proposal_with_ballots(
-        id: u64,
-        decided: u64,
-        status: SnsProposalStatus,
-        ballots: Vec<SnsBallot>,
-    ) -> SnsProposal {
-        SnsProposal {
-            id: SnsProposalId(id),
-            topic: Some(1),
-            status,
-            reward_status: SnsProposalRewardStatus::Settled,
-            decided_timestamp_seconds: Some(decided),
-            ballots,
-        }
     }
 }

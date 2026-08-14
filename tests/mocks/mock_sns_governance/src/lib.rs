@@ -6,8 +6,10 @@ use io_governance_types::{
     SnsGovernanceError, SnsManageNeuronCommand, SnsManageNeuronCommandResponse, SnsNeuron,
     SnsNeuronId, SnsNeuronIdRecord, SnsNeuronPage, SnsNeuronPageRequest, SnsNeuronPermissionRecord,
     SnsNeuronRecord, SnsProductionGetNeuronRequest, SnsProductionGetNeuronResponse,
+    SnsProductionListNeuronsRequest, SnsProductionListNeuronsResponse,
     SnsProductionManageNeuronRequest, SnsProductionManageNeuronResponse, SnsProposal,
-    SnsProposalId, SnsProposalPage, SnsProposalPageRequest, SnsTopicFollowees,
+    SnsProposalId, SnsProposalIdRecord, SnsProposalPage, SnsProposalPageRequest, SnsRewardEvent,
+    SnsRewardEventParticipation, SnsTopicFollowees, SnsUint128,
 };
 use io_ledger_types::{Account, IcrcAccount, Subaccount};
 use io_sns_lifecycle::{
@@ -17,6 +19,7 @@ use io_sns_lifecycle::{
 use serde::Deserialize;
 use std::cell::RefCell;
 use std::cmp::Reverse;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct MockSnsNeuron {
@@ -36,6 +39,31 @@ pub struct MockProposal {
     pub closed: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct LatestRewardEventFixture {
+    pub round: u64,
+    pub rounds_since_last_distribution: u64,
+    pub end_timestamp_seconds: u64,
+    pub settled_proposal_ids: Vec<u64>,
+    pub neuron_reward_shares: Vec<(u64, SnsUint128)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct VotingRewardsParameters {
+    pub final_reward_rate_basis_points: Option<u64>,
+    pub initial_reward_rate_basis_points: Option<u64>,
+    pub reward_rate_transition_duration_seconds: Option<u64>,
+    pub round_duration_seconds: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct NervousSystemParameters {
+    pub voting_rewards_parameters: Option<VotingRewardsParameters>,
+    pub max_number_of_neurons: Option<u64>,
+    pub max_dissolve_delay_bonus_percentage: Option<u64>,
+    pub max_age_bonus_percentage: Option<u64>,
+}
+
 #[derive(Default)]
 struct SnsState {
     neurons: Vec<MockSnsNeuron>,
@@ -48,18 +76,37 @@ struct SnsState {
     now: u64,
     io_ledger: Option<Principal>,
     available: bool,
+    latest_reward_event: SnsRewardEvent,
+    latest_reward_shares: BTreeMap<u64, SnsUint128>,
+    reward_round_duration_seconds: u64,
+    max_number_of_neurons: u64,
 }
 
 thread_local! {
     static STATE: RefCell<SnsState> = RefCell::new(SnsState {
         available: true,
+        latest_reward_event: SnsRewardEvent {
+            end_timestamp_seconds: Some(1),
+            actual_timestamp_seconds: 1,
+            round: 1,
+            ..SnsRewardEvent::default()
+        },
+        reward_round_duration_seconds: 86_400,
+        max_number_of_neurons: 1_000,
         ..SnsState::default()
     });
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn debug_add_neuron(neuron: MockSnsNeuron) {
-    let production: SnsNeuron = mock_to_production_neuron(&neuron)
+    let (reward_event, reward_shares) = STATE.with(|cell| {
+        let state = cell.borrow();
+        (
+            state.latest_reward_event.clone(),
+            state.latest_reward_shares.get(&neuron.neuron_id).copied(),
+        )
+    });
+    let production: SnsNeuron = mock_to_production_neuron(&neuron, &reward_event, reward_shares)
         .try_into()
         .expect("mock neuron should convert to production-shaped domain neuron");
     STATE.with(|cell| {
@@ -282,8 +329,104 @@ pub fn debug_close_proposal(proposal_id: u64) -> Result<(), String> {
         for neuron in &mut state.neurons {
             neuron.eligible_closed_proposals = neuron.eligible_closed_proposals.saturating_add(1);
         }
+        state.latest_reward_event.round = state.latest_reward_event.round.saturating_add(1);
+        let end = state
+            .latest_reward_event
+            .end_timestamp_seconds
+            .unwrap_or(1)
+            .saturating_add(io_core_model::TWO_WEEK_SECONDS);
+        state.latest_reward_event.end_timestamp_seconds = Some(end);
+        state.latest_reward_event.actual_timestamp_seconds = end;
+        state.latest_reward_event.settled_proposals = vec![SnsProposalIdRecord { id: proposal_id }];
+        state.latest_reward_event.rounds_since_last_distribution = Some(1);
+        state.latest_reward_shares.clear();
         Ok(())
     })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_advance_reward_event(settled_proposal_ids: Vec<u64>) {
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        state.latest_reward_event.round = state.latest_reward_event.round.saturating_add(1);
+        let end = state
+            .latest_reward_event
+            .end_timestamp_seconds
+            .unwrap_or(1)
+            .saturating_add(io_core_model::TWO_WEEK_SECONDS);
+        state.latest_reward_event.end_timestamp_seconds = Some(end);
+        state.latest_reward_event.actual_timestamp_seconds = end;
+        state.latest_reward_event.settled_proposals = settled_proposal_ids
+            .into_iter()
+            .map(|id| SnsProposalIdRecord { id })
+            .collect();
+        state.latest_reward_event.rounds_since_last_distribution = Some(1);
+        state.latest_reward_shares.clear();
+    });
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_latest_reward_event(fixture: LatestRewardEventFixture) -> Result<(), String> {
+    if fixture.round == 0
+        || fixture.rounds_since_last_distribution == 0
+        || fixture.end_timestamp_seconds == 0
+    {
+        return Err("reward-event fixture identifiers must be nonzero".into());
+    }
+    let mut shares = BTreeMap::new();
+    for (neuron_id, reward_shares) in fixture.neuron_reward_shares {
+        if shares.insert(neuron_id, reward_shares).is_some() {
+            return Err("reward-event fixture contains duplicate neuron shares".into());
+        }
+    }
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        state.latest_reward_event = SnsRewardEvent {
+            rounds_since_last_distribution: Some(fixture.rounds_since_last_distribution),
+            actual_timestamp_seconds: fixture.end_timestamp_seconds,
+            end_timestamp_seconds: Some(fixture.end_timestamp_seconds),
+            round: fixture.round,
+            settled_proposals: fixture
+                .settled_proposal_ids
+                .into_iter()
+                .map(|id| SnsProposalIdRecord { id })
+                .collect(),
+            ..SnsRewardEvent::default()
+        };
+        state.latest_reward_shares = shares;
+    });
+    Ok(())
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_reward_round_duration_seconds(duration: u64) -> Result<(), String> {
+    if duration == 0 {
+        return Err("reward round duration must be nonzero".into());
+    }
+    STATE.with(|cell| cell.borrow_mut().reward_round_duration_seconds = duration);
+    Ok(())
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_max_number_of_neurons(maximum: u64) {
+    STATE.with(|cell| cell.borrow_mut().max_number_of_neurons = maximum);
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn get_nervous_system_parameters() -> NervousSystemParameters {
+    NervousSystemParameters {
+        max_number_of_neurons: Some(STATE.with(|cell| cell.borrow().max_number_of_neurons)),
+        max_dissolve_delay_bonus_percentage: Some(0),
+        max_age_bonus_percentage: Some(0),
+        voting_rewards_parameters: Some(VotingRewardsParameters {
+            final_reward_rate_basis_points: Some(0),
+            initial_reward_rate_basis_points: Some(0),
+            reward_rate_transition_duration_seconds: Some(0),
+            round_duration_seconds: Some(
+                STATE.with(|cell| cell.borrow().reward_round_duration_seconds),
+            ),
+        }),
+    }
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
@@ -342,7 +485,11 @@ fn mock_neuron_id(id: u64) -> Vec<u8> {
     bytes.to_vec()
 }
 
-fn mock_to_production_neuron(neuron: &MockSnsNeuron) -> SnsNeuronRecord {
+fn mock_to_production_neuron(
+    neuron: &MockSnsNeuron,
+    latest_reward_event: &SnsRewardEvent,
+    reward_shares: Option<SnsUint128>,
+) -> SnsNeuronRecord {
     SnsNeuronRecord {
         id: Some(SnsNeuronIdRecord {
             id: mock_neuron_id(neuron.neuron_id),
@@ -366,18 +513,66 @@ fn mock_to_production_neuron(neuron: &MockSnsNeuron) -> SnsNeuronRecord {
         neuron_fees_e8s: 0,
         permissions: Vec::<SnsNeuronPermissionRecord>::new(),
         topic_followees: None::<SnsTopicFollowees>,
+        latest_reward_event_participation: reward_shares.map(|reward_shares| {
+            SnsRewardEventParticipation {
+                reward_event_end_timestamp_seconds: latest_reward_event
+                    .end_timestamp_seconds
+                    .unwrap_or_default(),
+                reward_shares: Some(reward_shares),
+            }
+        }),
     }
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn get_latest_reward_event() -> SnsRewardEvent {
+    STATE.with(|cell| cell.borrow().latest_reward_event.clone())
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn list_neurons(request: SnsProductionListNeuronsRequest) -> SnsProductionListNeuronsResponse {
+    STATE.with(|cell| {
+        let state = cell.borrow();
+        assert!(state.available, "mock SNS governance unavailable");
+        let mut neurons = state.neurons.iter().collect::<Vec<_>>();
+        neurons.sort_by_key(|neuron| mock_neuron_id(neuron.neuron_id));
+        let cursor = request.start_page_at.map(|id| id.id);
+        let neurons = neurons
+            .into_iter()
+            .filter(|neuron| {
+                cursor
+                    .as_ref()
+                    .is_none_or(|cursor| mock_neuron_id(neuron.neuron_id) > *cursor)
+            })
+            .take(request.limit as usize)
+            .map(|neuron| {
+                mock_to_production_neuron(
+                    neuron,
+                    &state.latest_reward_event,
+                    state.latest_reward_shares.get(&neuron.neuron_id).copied(),
+                )
+            })
+            .collect();
+        SnsProductionListNeuronsResponse { neurons }
+    })
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn get_neuron(request: SnsProductionGetNeuronRequest) -> SnsProductionGetNeuronResponse {
     let id = request.neuron_id.map(|id| id.id);
     let result = STATE.with(|cell| {
-        cell.borrow()
+        let state = cell.borrow();
+        state
             .neurons
             .iter()
             .find(|neuron| Some(mock_neuron_id(neuron.neuron_id)) == id)
-            .map(|neuron| SnsGetNeuronResult::Neuron(Box::new(mock_to_production_neuron(neuron))))
+            .map(|neuron| {
+                SnsGetNeuronResult::Neuron(Box::new(mock_to_production_neuron(
+                    neuron,
+                    &state.latest_reward_event,
+                    state.latest_reward_shares.get(&neuron.neuron_id).copied(),
+                )))
+            })
     });
     SnsProductionGetNeuronResponse { result }
 }
@@ -420,15 +615,21 @@ pub async fn manage_neuron(
         };
         STATE.with(|cell| {
             let mut state = cell.borrow_mut();
+            let reward_event = state.latest_reward_event.clone();
+            let reward_shares = state.latest_reward_shares.clone();
             let updated: Option<SnsNeuron> = state
                 .neurons
                 .iter_mut()
                 .find(|neuron| mock_neuron_id(neuron.neuron_id) == id)
                 .map(|neuron| {
                     neuron.staked_io_e8s = balance;
-                    mock_to_production_neuron(neuron)
-                        .try_into()
-                        .expect("mock neuron should convert to production-shaped domain neuron")
+                    mock_to_production_neuron(
+                        neuron,
+                        &reward_event,
+                        reward_shares.get(&neuron.neuron_id).copied(),
+                    )
+                    .try_into()
+                    .expect("mock neuron should convert to production-shaped domain neuron")
                 });
             if let Some(updated) = updated {
                 state
@@ -789,6 +990,7 @@ mod tests {
             permissions: Vec::new(),
             is_io_protocol_neuron: false,
             is_jupiter_governance_neuron: false,
+            latest_reward_event_participation: None,
         }
     }
 

@@ -1,0 +1,18 @@
+[ledger]
+ledger_canister = "75lp5-u7777-77776-qaaba-cai"
+index_canister = "7pnye-yp777-77776-qaaca-cai"
+token_symbol = "IOLO"
+fee_e8s = 10000
+duplicate_block = 8
+approval_block = 9
+redemption_io_block = 10
+redemption_icp_block = 14
+io_amount_e8s = 20000000
+gross_icp_e8s = 20002000
+net_icp_e8s = 19992000
+identical_replay = true
+bad_fee = true
+insufficient_funds = true
+index_synced_blocks = 11
+reserve_history = true
+operator_history = true

@@ -1605,6 +1605,7 @@ fn finalized_neuron_reward_eligibility(
             permissions: Vec::new(),
             is_io_protocol_neuron: false,
             is_jupiter_governance_neuron: false,
+            latest_reward_event_participation: None,
         }],
         &io_governance_types::SnsEligibilityPolicy {
             protocol_neuron_ids: BTreeSet::new(),
@@ -2351,6 +2352,8 @@ mod tests {
             1_209_600,
         )
         .expect("finalized governance should accept two-week dissolve delay");
+        let frozen = finalized_neuron_for_participant(&fixture, participant, &neuron_id)
+            .expect("eligible neuron should be observable before payout");
         start_finalized_neuron_dissolving_for_test(&fixture, participant, &neuron_id)
             .expect("finalized governance should accept start dissolving");
         for _ in 0..5 {
@@ -2368,6 +2371,7 @@ mod tests {
             Some("neuron is dissolving")
         );
         assert_eq!(eligibility.eligible_stake_e8s, 0);
+        assert!(frozen.cached_neuron_stake_e8s > 0);
     }
 
     #[test]
@@ -2468,19 +2472,17 @@ mod tests {
         );
 
         let neuron = finalized_neuron_for_participant(&fixture, participant, &neuron_id).unwrap();
-        let snapshot = io_reward_policy::RewardParticipant {
-            sns_neuron_id: io_governance_types::SnsNeuronId(neuron_id.id.clone()),
-            neuron_id: 1,
-            frozen_stake_e8s: u128::from(neuron.cached_neuron_stake_e8s),
-            eligible_closed_proposals: proposals.proposals.len() as u64,
-            voted_closed_proposals: 0,
-            destination_is_currently_eligible: true,
+        let snapshot = io_reward_policy::EntitlementCredit {
+            sns_neuron_id: neuron_id.id.clone(),
+            accumulated_eligible_credit: u128::from(neuron.cached_neuron_stake_e8s),
         };
-        assert_eq!(io_reward_policy::participation_ratio(&snapshot), (1, 1));
-        assert_eq!(
-            io_reward_policy::reward_weight(&snapshot).unwrap(),
-            snapshot.frozen_stake_e8s
-        );
+        let allocation = io_reward_policy::allocate_rewards(
+            100,
+            snapshot.accumulated_eligible_credit,
+            &[snapshot],
+        )
+        .expect("no-proposal stake allocation should be exact");
+        assert_eq!(allocation.allocations[0].io_e8s, 100);
     }
 
     #[test]
@@ -2708,35 +2710,8 @@ mod tests {
             non_voter_proposal.ballots
         );
 
-        let proposer_snapshot = io_reward_policy::RewardParticipant {
-            sns_neuron_id: io_governance_types::SnsNeuronId(proposer_neuron_id.id.clone()),
-            neuron_id: 3,
-            frozen_stake_e8s: u128::from(proposer_neuron.cached_neuron_stake_e8s),
-            eligible_closed_proposals: 1,
-            voted_closed_proposals: 1,
-            destination_is_currently_eligible: true,
-        };
-        let non_voter_snapshot = io_reward_policy::RewardParticipant {
-            sns_neuron_id: io_governance_types::SnsNeuronId(non_voter_neuron_id.id.clone()),
-            neuron_id: 4,
-            frozen_stake_e8s: u128::from(non_voter_neuron.cached_neuron_stake_e8s),
-            eligible_closed_proposals: 1,
-            voted_closed_proposals: 0,
-            destination_is_currently_eligible: true,
-        };
-        assert_eq!(
-            io_reward_policy::participation_ratio(&proposer_snapshot),
-            (1, 1)
-        );
-        assert_eq!(
-            io_reward_policy::participation_ratio(&non_voter_snapshot),
-            (0, 1)
-        );
-        assert!(io_reward_policy::reward_weight(&proposer_snapshot).unwrap() > 0);
-        assert_eq!(
-            io_reward_policy::reward_weight(&non_voter_snapshot).unwrap(),
-            0
-        );
+        assert!(proposer_neuron.cached_neuron_stake_e8s > 0);
+        assert!(non_voter_neuron.cached_neuron_stake_e8s > 0);
     }
 
     #[test]
@@ -2834,19 +2809,7 @@ mod tests {
             "follower-visible ballots should include a yes vote after leader vote propagation: {:?}",
             proposal.ballots
         );
-        let follower_snapshot = io_reward_policy::RewardParticipant {
-            sns_neuron_id: io_governance_types::SnsNeuronId(follower_neuron.id.clone()),
-            neuron_id: 5,
-            frozen_stake_e8s: u128::from(follower_neuron_record.cached_neuron_stake_e8s),
-            eligible_closed_proposals: 1,
-            voted_closed_proposals: 1,
-            destination_is_currently_eligible: true,
-        };
-        assert_eq!(
-            io_reward_policy::participation_ratio(&follower_snapshot),
-            (1, 1)
-        );
-        assert!(io_reward_policy::reward_weight(&follower_snapshot).unwrap() > 0);
+        assert!(follower_neuron_record.cached_neuron_stake_e8s > 0);
     }
 
     #[test]

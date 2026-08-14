@@ -1,15 +1,24 @@
-# Historian Ingestion Architecture
+# Historian ingestion architecture
 
-`io_historian` is a bounded public read model for production observations. It is rebuildable from source observations and is not canonical protocol truth. It is not a value-moving authority and must not become a control plane for issuance, redemption, reserves, neuron management, or SNS launch state.
+`io_historian` is a bounded public read model that is rebuildable, not canonical protocol truth, and not a value-moving authority. IO protocol is not live and the SNS IO ledger remains not launched on mainnet. The historian never authorizes issuance, redemption, reserve movement, neuron commands, lifecycle activation, or launch state.
 
-Production ingestion is observation/freshness only. The current architecture defines source-shaped DTOs and traits for release artifacts, canister status/module hashes, ICP index health, future IO/SNS index health, NNS governance freshness, SNS governance freshness, protocol snapshots, reserve snapshots, and frontend/dashboard freshness. These interfaces are deterministic and testable; this milestone does not activate live production adapters, call mainnet, deploy anything, or move value.
+Production adapters are activated only by a typed controller/SNS Root upgrade argument. There is no public configure or ingest method. An absent configuration performs no network observation. A same-Wasm upgrade preserves configuration unless an explicit complete replacement is supplied.
 
-The historian source model uses `HistorianIngestionSource`, `HistorianObservation`, `IngestionBatch`, `IngestionSourceKind`, `ObservationFreshness`, `SourceHealth`, `IngestionCursor`, `IngestionWatermark`, and `StalenessPolicy`. Freshness states explicitly represent fresh, stale, missing, incomplete, observed-only, prelaunch/not-applicable, error/retryable, and unknown observations. Missing/stale/incomplete states are visible, and missing/stale/incomplete fields must not be interpreted as zero protocol value.
+Each one-shot timer runs at most one generation. Ledger balances needed for the redemption display are fetched as one coherent batch. Any missing reply, overflow, zero denominator, or `total < reserve + excluded` leaves the last-known snapshot unchanged and records an explicit retryable error; missing/stale/error is never zero. The historian's rate is explanatory and never an input to `redeem`.
 
-Release artifact observations represent the observed artifact manifest, wasm/gzip hashes, byte sizes, git commit, module hash observations, match/mismatch/unavailable states, and freshness. They do not claim reproducible-build audit status.
+Canonical source adapters are deliberately direct:
 
-Canister status observations distinguish DevMainnet public shell canisters from reserved production fiduciary canisters and future framework canisters. The previous frontend and historian can be shown as dev/test public shell canisters only; they are superseded as production targets, not on the fiduciary subnet, and not production IO protocol canisters. Production `io_stream_manager`, `io_nns_neuron_manager`, `io_historian`, and `frontend` fiduciary IDs are reserved empty/inert placeholders with status `ReservedNotLive`. Future SNS root/governance/ledger/index and future IO/SNS index observations remain not deployed/not allocated until a later milestone observes and configures them. The protected canister/neuron are protected/untouched references, not IO deployment targets.
+- SNS and ICP ledgers for current supply/balances;
+- Stream and NNS manager narrow `get_status` methods, including the manager's exact latest target/status and passive-unwind principal;
+- public NNS Governance build metadata and two bounded configured neuron-info queries; ordinary maturity remains unavailable rather than reconstructed or obtained through controller impersonation;
+- SNS Root summaries for installed module hashes, controllers, SNS topology, dapps, and archives;
+- SNS Governance parameters and latest reward event;
+- SNS Index status and bounded recent Account histories.
 
-Index health uses index canisters as the normal account-history abstraction. Raw ledger/archive traversal is not the default path. Index health observations can represent latest/head height, oldest/backfill cursor, account-history cursor state, lag, stale observations, incomplete scans, and archive-required states surfaced by ledger/index DTOs.
+The index canisters are observation inputs only and never authorize monetary action.
 
-Governance freshness covers NNS and SNS-shaped observations without implying launch. IO protocol is not live. SNS IO ledger remains not launched. SNS governance missing because SNS has not launched is prelaunch/not-applicable, not an error.
+Index canisters are the normal account-history abstraction. Ledgers remain canonical for current balances. Archives are discovered, but raw archive traversal is not a default path and no event or monetary scanner exists.
+
+Expected release identities are typed `(role, canister, raw Wasm SHA-256)` entries. Observations distinguish matching, mismatch, unavailable, and unknown. Inability to observe is not a mismatch. Reward-share availability is an optional exact capability-bearing Governance hash that must equal the expected Governance hash. The reviewed local candidate supplies it; an official module without the reviewed field leaves it absent and is reported capability unavailable. Matching the candidate hash does not claim an official capability-bearing release exists.
+
+Frozen-cohort totals, proposal participation ratios, generic ingestion traits, generic cursors, and scanner-era histories were removed from the current model. A narrow legacy decoder exists only for stable upgrade compatibility.

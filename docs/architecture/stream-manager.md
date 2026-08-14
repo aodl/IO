@@ -1,25 +1,30 @@
-# Stream Manager Architecture
+# Stream manager
 
-The stream manager observes ledger/index flows and records durable operations before downstream value-moving work. Its production DID remains constructor-only; debug ticks and state inspection are debug/test APIs only.
+The stream manager owns the IO reserve, liquid ICP Account, direct ICRC-2
+redemption, proof-bound liquid receipts, daily reward-entitlement observation,
+one immutable pending entitlement batch, and serialized recipient settlement.
 
-The ledger/index boundary lives in `io-ledger-types`. The stream scheduler uses boundary-level cursor validation for future production-shaped index scans while current PocketIC scan sources continue to use mock ledger and index canisters.
+Daily observation has no external value effect. It verifies the exact SNS Root,
+Governance principal, reviewed module hash, zero native reward rates, 86,400
+second round duration, and approved zero voting-power bonus parameters. It then
+reads one stable reward-event boundary around paginated neuron reads and merges
+the event's canonical weights atomically. A stale callback mutates nothing.
 
-Current mock mode:
+One transient one-shot timer marks reward work due and calls the same idempotent
+method available to permissionless keepers. Failures leave work due. Successful
+processing schedules the next observation. There is no interval timer, retry
+scheduler, proposal timer, task queue, or event archive.
 
-- scans mock ICP index history for Jupiter Faucet and NNS maturity deposits through mock `debug_get_transactions`;
-- scans mock IO index history for redemption transfers through mock `debug_get_transactions`;
-- transfers IO from protocol reserve for issuance and rewards through `LedgerTransferClient` mock adapters;
-- transfers ICP for redemption payouts through a `LedgerTransferClient` mock adapter;
-- returns redeemed IO to protocol reserve through a `LedgerTransferClient` mock adapter.
+Backing is asynchronous. One live accumulator can continue receiving daily
+weights while one frozen batch moves through the two-week-staker reward-backing
+NNS 40/60 maturity path, actual ICP receipt, and sequential IO transfers. A second pending
+batch is not created. Missing reward events add no credits, advance only through
+a typed skip record, and leave undistributed backing in reserve.
 
-Future production mode must preserve the same journal semantics through real ICP/IO ledger and index adapters:
+Redemption pulls IO from the authenticated caller Account directly to reserve.
+A separate `resume` pays ICP and later verifies postconditions. Reward
+observation never occupies the redemption operation slot, so governance
+availability and payout delays do not block redemption.
 
-- observed source block creates or reuses one operation;
-- downstream transfer success records its block;
-- duplicate transfer results are accepted only after matching the expected operation;
-- transfer failures leave the operation retryable;
-- completed phases are not repeated.
-
-Fees are explicit at the boundary, but mock economics still ignore ledger fees. Production fee and dust handling must be finalized before mainnet.
-
-Production scan/index adapters and archive traversal are still future work.
+Install and post-upgrade state are Paused. Reviewed unpause is required before
+the one-shot observation timer is installed. IO remains inert and prelaunch.

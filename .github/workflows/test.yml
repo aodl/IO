@@ -1,5 +1,8 @@
 name: test
 
+permissions:
+  contents: read
+
 on:
   pull_request:
   push:
@@ -9,46 +12,58 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      # actions/checkout v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          # Release artifact provenance verifies that the manifest source commit
-          # is a reachable ancestor; shallow checkout can hide valid ancestors.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          # Exact release verification materializes the recorded source commit.
           fetch-depth: 0
-      - uses: Swatinem/rust-cache@v2
+      - name: Verify pull-request fast-forward lineage
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          actual_head="$(git rev-parse HEAD)"
+          if [[ "${actual_head}" != "${PR_HEAD_SHA}" ]]; then
+            echo "checked-out HEAD ${actual_head} does not equal PR head ${PR_HEAD_SHA}" >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${PR_BASE_SHA}" HEAD; then
+            echo "PR base ${PR_BASE_SHA} is not an ancestor of HEAD ${actual_head}" >&2
+            exit 1
+          fi
+      # Swatinem/rust-cache v2.9.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: Add Wasm target
         run: rustup target add wasm32-unknown-unknown
 
-      - name: Format
-        run: cargo fmt --all -- --check
+      - name: Provision pinned PocketIC
+        shell: bash
+        run: |
+          pocket_ic_dir="${RUNNER_TEMP}/pocket-ic-14.0.0"
+          mkdir -p "${pocket_ic_dir}"
+          pocket_ic_bin="${pocket_ic_dir}/pocket-ic-server"
+          tools/scripts/provision-pocket-ic "${pocket_ic_bin}"
+          test "$(basename "${pocket_ic_bin}")" = "pocket-ic-server" \
+            || test "$(basename "${pocket_ic_bin}")" = "pocket-ic"
+          "${pocket_ic_bin}" --version
+          echo "POCKET_IC_BIN=${pocket_ic_bin}" >> "${GITHUB_ENV}"
 
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Provision pinned icp CLI
+        shell: bash
+        run: |
+          icp_dir="${RUNNER_TEMP}/icp-cli-0.2.7"
+          mkdir -p "${icp_dir}"
+          icp_bin="${icp_dir}/icp"
+          tools/scripts/provision-icp-cli "${icp_bin}"
+          test "$(basename "${icp_bin}")" = "icp"
+          "${icp_bin}" --version
+          echo "${icp_dir}" >> "${GITHUB_PATH}"
 
-      - name: Check
-        run: cargo check --workspace --all-targets
+      - name: Provision pinned security tools
+        run: tools/scripts/provision-security-tools
 
-      - name: Test
-        run: cargo test --workspace
-
-      - name: Wasm check
-        run: cargo check -p io-stream-manager -p io-nns-neuron-manager --target wasm32-unknown-unknown
-
-      - name: DID surface
-        run: cargo run -p xtask -- did_surface
-
-      - name: Build canisters
-        run: cargo run -p xtask -- build_canisters
-
-      - name: Verify artifacts
-        run: cargo run -p xtask -- verify_artifacts
-
-      - name: Validate install args
-        run: cargo run -p xtask -- validate_install_args
-
-      - name: PocketIC required tests
-        if: env.POCKET_IC_BIN != ''
-        run: cargo run -p xtask -- test_pocketic_required
-
-      - name: PocketIC not configured
-        if: env.POCKET_IC_BIN == ''
-        run: echo "POCKET_IC_BIN is not set; live PocketIC required tests are skipped in this workflow."
+      - name: Canonical repository CI
+        run: cargo run -p xtask -- test_ci

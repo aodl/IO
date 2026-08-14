@@ -3,12 +3,6 @@ export const REQUIRED_HISTORIAN_METHODS = Object.freeze([
   "get_public_status",
 ]);
 
-const OPTIONAL_QUERIES = Object.freeze([
-  ["streams", "list_streams", { limit: [10n], start_after: [] }],
-  ["redemptions", "list_redemptions", { limit: [10n], start_after: [] }],
-  ["rewards", "list_rewards", { limit: [10n], start_after: [] }],
-]);
-
 export function missingRequiredMethods(actor) {
   return REQUIRED_HISTORIAN_METHODS.filter((method) => typeof actor?.[method] !== "function");
 }
@@ -52,21 +46,14 @@ export async function loadHistorianDashboard(actor, config) {
     callQuery(actor, "dashboard", "get_dashboard_state"),
     callQuery(actor, "status", "get_public_status"),
   ]);
-  const optionalResults = await Promise.all(
-    OPTIONAL_QUERIES.map(([label, method, request]) => callQuery(actor, label, method, [request])),
-  );
-
-  const failures = [...requiredResults, ...optionalResults].filter((result) => !result.ok);
-  const optional = Object.fromEntries(
-    optionalResults.filter((result) => result.ok).map((result) => [result.label, result.value]),
-  );
+  const failures = requiredResults.filter((result) => !result.ok);
 
   return {
     configured: true,
     outdated: missing.length > 0,
     dashboard: requiredResults.find((result) => result.label === "dashboard" && result.ok)?.value ?? null,
     status: requiredResults.find((result) => result.label === "status" && result.ok)?.value ?? null,
-    optional,
+    optional: {},
     failures,
   };
 }

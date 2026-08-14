@@ -1,5 +1,5 @@
 import { byData, replaceList, setText, setWarnings } from "../dom-helpers.js";
-import { artifactSummary, redemptionSummary, rewardSummary, sourceHealthSummary, streamSummary } from "../data/dashboard-transforms.js";
+import { artifactSummary, sourceHealthSummary } from "../data/dashboard-transforms.js";
 import { installRangeButtons, renderChart } from "./charts.js";
 
 export function renderDashboard(document, view) {
@@ -18,9 +18,6 @@ export function renderDashboard(document, view) {
     setText(card.querySelector("[data-role='delta-value']"), "Live history required");
   }
 
-  replaceList(document.querySelector("[data-list='streams']"), view.lists.streams, streamSummary);
-  replaceList(document.querySelector("[data-list='redemptions']"), view.lists.redemptions, redemptionSummary);
-  replaceList(document.querySelector("[data-list='rewards']"), view.lists.rewards, rewardSummary);
   replaceList(document.querySelector("[data-list='sourceHealth']"), view.lists.sourceHealth, sourceHealthSummary);
   replaceList(document.querySelector("[data-list='artifacts']"), view.lists.artifacts, artifactSummary);
 }

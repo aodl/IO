@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="IO local rehearsal">
+  <rect width="512" height="512" rx="96" fill="#111827"/>
+  <circle cx="256" cy="256" r="154" fill="none" stroke="#22d3ee" stroke-width="36"/>
+  <path d="M192 160v192M304 160c64 0 64 192 0 192s-64-192 0-192Z" fill="none" stroke="#f8fafc" stroke-linecap="round" stroke-width="32"/>
+</svg>

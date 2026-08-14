@@ -35,6 +35,18 @@ cargo run -p xtask -- security_scan_required
 
 Permissive mode reports missing optional tools. Required mode fails if `cargo-deny` or `cargo-audit` is missing, or if any configured check fails.
 
+Required CI provisions both scanners through
+`tools/scripts/provision-security-tools`, pinned to `cargo-deny 0.19.8` and
+`cargo-audit 0.22.2` with locked installer dependency graphs. The test and
+security workflows share that script so `test_ci` has no implicit tool
+prerequisite.
+
+The test workflow provisions `icp` 0.2.7 from DFINITY release revision
+`90eb2fc76267422a8ed20681453f1c52b93fea01` through
+`tools/scripts/provision-icp-cli`. The provisioner verifies the upstream
+Linux x86-64 archive SHA-256 and the extracted executable SHA-256 before it
+runs the basename-exact `icp` binary. It fails closed on a checksum mismatch.
+
 ## cargo-deny Baseline
 
 `deny.toml` starts with:
@@ -60,14 +72,26 @@ manifest.json
 
 `cargo run -p xtask -- verify_artifacts` checks the SHA sidecars, manifest content, byte sizes, and stale release files. The manifest records the git commit if available but does not include a build timestamp.
 
+`cargo run -p xtask -- verify_recorded_source` is the non-destructive
+reproducibility gate. It preserves the checked-in artifact set, builds the exact
+manifest source twice in detached worktrees, and requires checked-in = build A =
+build B for the complete expected file set, sizes, and bytes.
+
 ## Build Host And Tool Assumptions
 
-The repository uses the Rust version from `rust-toolchain.toml`, the `wasm32-unknown-unknown` target, `gzip -n` for deterministic gzip metadata, `sha256sum`, and `icp-cli` configuration. It intentionally does not use `dfx`.
+The repository pins Rust 1.96.0 in `rust-toolchain.toml`, uses the
+`wasm32-unknown-unknown` target, `gzip -n` for deterministic gzip metadata,
+`sha256sum`, and `icp-cli` configuration. It intentionally does not use `dfx`.
 
 Live PocketIC tests require `POCKET_IC_BIN`. The known local path used in development examples is:
 
 ```bash
 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server
 ```
+
+PocketIC 14.0.0 accepts only `pocket-ic` or `pocket-ic-server` as the
+executable basename. CI stores the version in the parent directory and the
+provisioner rejects other output basenames before downloading or executing a
+binary.
 
 No production deployment should depend on mock canisters or debug APIs.

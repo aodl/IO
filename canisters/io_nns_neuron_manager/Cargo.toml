@@ -8,26 +8,23 @@ license.workspace = true
 path = "src/lib.rs"
 crate-type = ["rlib", "cdylib"]
 
-[dependencies]
-candid.workspace = true
-ic-cdk.workspace = true
-io-core-model.workspace = true
-io-governance-types.workspace = true
-io-ledger-types.workspace = true
-io-production-wiring.workspace = true
-io-stable-schema.workspace = true
-serde.workspace = true
-
-[dev-dependencies]
-pocket-ic.workspace = true
-
 [[test]]
 name = "io_nns_neuron_manager_pocketic"
 path = "../../tests/pocketic/io_nns_neuron_manager_pocketic.rs"
 
-[[test]]
-name = "io_nns_neuron_manager_cli"
-path = "../../tests/cli/io_nns_neuron_manager_cli.rs"
+[dependencies]
+candid.workspace = true
+ic-cdk.workspace = true
+ic-stable-structures.workspace = true
+io-accounts = { path = "../../crates/io_accounts" }
+io-ledger-boundary.workspace = true
+io-nns-types.workspace = true
+io-receipt-types.workspace = true
+serde.workspace = true
+sha2 = "0.10.9"
 
 [build-dependencies]
 io-build-support.workspace = true
+
+[dev-dependencies]
+pocket-ic.workspace = true

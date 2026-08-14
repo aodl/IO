@@ -124,7 +124,7 @@ direct_participation_basket_dissolve_delay_seconds = []
 proposal_ids = []
 ballot_observations = []
 post_finalization_staking_funding_source = "zero-delay direct-participation neuron disburse, local-only"
-blocked_reason = "Stream-manager exact backed two-week reward-pool transfer and dissolving-neuron exclusion are covered; broader participation-weighted reward variants remain pending."
+blocked_reason = "This example contains no completed daily reward-event entitlement or backed-distribution observations."
 
 [sns_wasm_observations]
 nns_proposal_publication_observed = false

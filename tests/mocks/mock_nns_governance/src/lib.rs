@@ -35,10 +35,123 @@ struct GovernanceState {
     now_seconds: u64,
     next_neuron_id: u64,
     neurons: Vec<MockNeuron>,
+    two_week_target: Option<SetTargetArgs>,
+    maturity_preparation: Option<PrepareTwoWeekMaturityArgs>,
+    backing_readiness: Option<io_receipt_types::TwoWeekBackingReadiness>,
+    backing_readiness_after_next_reconcile: Option<io_receipt_types::TwoWeekBackingReadiness>,
 }
 
 thread_local! {
-    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new() }) };
+    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new(), two_week_target: None, maturity_preparation: None, backing_readiness: None, backing_readiness_after_next_reconcile: None }) };
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SetTargetArgs {
+    pub target_e8s: u128,
+    pub generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum TargetStatus {
+    UnderTarget,
+    AtTarget,
+    AtTargetWithinUnwindTolerance,
+    OverTarget,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct PrepareTwoWeekMaturityArgs {
+    pub entitlement_batch_generation: u64,
+    pub target_e8s: u128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum PreparedMaturityProgress {
+    Observed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum NnsError {
+    Invalid(String),
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn prepare_two_week_maturity(
+    args: PrepareTwoWeekMaturityArgs,
+) -> Result<PreparedMaturityProgress, NnsError> {
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        if state
+            .two_week_target
+            .as_ref()
+            .map(|target| target.target_e8s)
+            != Some(args.target_e8s)
+        {
+            return Err(NnsError::Invalid(
+                "maturity preparation lacks the matching reconciled target".into(),
+            ));
+        }
+        if let Some(existing) = &state.maturity_preparation {
+            if existing == &args {
+                return Ok(PreparedMaturityProgress::Observed);
+            }
+            if existing.entitlement_batch_generation.checked_add(1)
+                != Some(args.entitlement_batch_generation)
+            {
+                return Err(NnsError::Invalid(
+                    "maturity preparation generation is not sequential".into(),
+                ));
+            }
+        }
+        state.maturity_preparation = Some(args);
+        Ok(PreparedMaturityProgress::Observed)
+    })
+}
+
+#[derive(CandidType, Deserialize)]
+pub struct ReconcileReadinessArgs {
+    target_e8s: u128,
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn reconcile_two_week_backing_readiness(
+    args: ReconcileReadinessArgs,
+) -> Result<io_receipt_types::TwoWeekBackingReadiness, NnsError> {
+    Ok(STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let generation = state.two_week_target.as_ref().map_or(1, |target| {
+            target.generation + u64::from(target.target_e8s != args.target_e8s)
+        });
+        state.two_week_target = Some(SetTargetArgs {
+            target_e8s: args.target_e8s,
+            generation,
+        });
+        let readiness = state.backing_readiness.clone().unwrap_or(
+            io_receipt_types::TwoWeekBackingReadiness::Ready {
+                target_status: io_receipt_types::BackingTargetStatus::AtTarget,
+                ordinary_maturity_e8s: 200_000_000,
+                retained_maturity_e8s: 80_000_000,
+                liquid_maturity_e8s: 120_000_000,
+                minimum_disbursement_e8s: 100_000_000,
+            },
+        );
+        if let Some(next) = state.backing_readiness_after_next_reconcile.take() {
+            state.backing_readiness = Some(next);
+        }
+        readiness
+    }))
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_backing_readiness(readiness: io_receipt_types::TwoWeekBackingReadiness) {
+    STATE.with(|cell| cell.borrow_mut().backing_readiness = Some(readiness));
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_backing_readiness_after_next_reconcile(
+    readiness: io_receipt_types::TwoWeekBackingReadiness,
+) {
+    STATE.with(|cell| cell.borrow_mut().backing_readiness_after_next_reconcile = Some(readiness));
 }
 
 fn neuron_mut(state: &mut GovernanceState, id: u64) -> Result<&mut MockNeuron, String> {

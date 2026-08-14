@@ -3,13 +3,19 @@
 Use this before every release-oriented commit or artifact proposal.
 
 - [ ] `cargo fmt --all -- --check`
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings`
+- [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - [ ] `cargo check --workspace --all-targets`
 - [ ] `cargo test --workspace`
 - [ ] `cargo check -p io-stream-manager -p io-nns-neuron-manager --target wasm32-unknown-unknown`
 - [ ] `cargo run -p xtask -- did_surface`
-- [ ] `cargo run -p xtask -- build_canisters`
+- [ ] Finalize and commit the exact source tree, then run `tools/scripts/build-release-from-source <SOURCE_COMMIT>` from the artifact-recording checkout.
+- [ ] Commit the generated artifact set in the commit immediately after source finalization. That artifact-recording commit may change only `release-artifacts/**`.
+- [ ] Keep every later release-tail commit limited to immutable local evidence under `deploy/local-sns-rehearsal/evidence/**`, `docs/**`, `.github/workflows/**`, or `tools/sns/launch-readiness.toml`. Validator, lifecycle-tool, release-generation, dependency, Rust/toolchain, canister, crate, and frontend build-input changes require a new source-finalization/artifact pair.
+- [ ] Preserve source-finalization commit S4 `55b2099a555799c4a032308eb8a39049c7946193`, artifact-recording commit A4 `09b115f708ec784766327539f9cf4e5e21668d84`, and evidence-selection commit T4 `6d3ece1a2e84c049003c540609415187727290f2` exactly throughout review and integration. T4 and later release-tail commits are not artifact-recording commits.
+- [ ] Before integration, prove the pull-request head is the checked-out `HEAD` and the current PR base commit is an ancestor of it. Do not merge the base into the branch or rebase the branch to repair a failed ancestry check.
+- [ ] Integrate this release lineage only by a direct fast-forward of `master` after every required workflow passes on the exact release-tail head and explicit integration authorization is given. No squash merge, rebase merge, added merge commit, or ordinary GitHub merge-button integration is permitted. If branch protection makes direct fast-forward integration impossible, do not merge and do not weaken provenance; return for an explicit decision. If resolving an advanced base requires build-input changes, create a new source-finalization/artifact-recording pair and rerun release validation.
 - [ ] `cargo run -p xtask -- verify_artifacts`
+- [ ] `cargo run -p xtask -- verify_recorded_source`
 - [ ] `cargo run -p xtask -- validate_install_args`
 - [ ] `cargo run -p xtask -- frontend_required`
 - [ ] `cargo run -p xtask -- historian_tests`
@@ -18,7 +24,7 @@ Use this before every release-oriented commit or artifact proposal.
 - [ ] `cargo run -p xtask -- sns_config_validate`
 - [ ] `cargo run -p xtask -- sns_official_testing_check`
 - [ ] `cargo run -p xtask -- sns_launch_readiness_check`
-- [ ] `cargo run -p xtask -- sns_governance_read_tests`
+- [ ] `cargo test -p io-sns-reward-boundary`
 - [ ] `cargo run -p xtask -- sns_ledger_index_tests`
 - [ ] `cargo run -p xtask -- sns_root_lifecycle_tests`
 - [ ] `cargo run -p xtask -- sns_pocketic_smoke`
@@ -37,4 +43,6 @@ Use this before every release-oriented commit or artifact proposal.
 - [ ] Confirm official SNS local/testflight package remains optional and outside required CI.
 - [ ] Confirm the current mock/PocketIC SNS-shaped harness is not described as official SNS launch readiness.
 - [ ] Confirm upgrade proposal hashes match `release-artifacts/manifest.json`.
+- [ ] Confirm the machine-checked release tail has one artifact-only recording commit followed only by the narrow evidence/documentation/workflow/status allowlist; ancestry alone is insufficient.
+- [ ] Confirm `validate_set_paused` is query-only, payload-compatible with `set_paused`, and paired with SNS-Governance-only execution authority on both managers.
 - [ ] Confirm no deployment/mainnet calls were made.

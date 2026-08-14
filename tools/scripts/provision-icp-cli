@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+version="0.2.7"
+source_revision="90eb2fc76267422a8ed20681453f1c52b93fea01"
+archive_name="icp-cli-x86_64-unknown-linux-gnu.tar.xz"
+expected_archive_sha256="bc6272fc0004d17538c650cfc8bacedd464ae86527efe172ed3b499a3e0f7798"
+expected_binary_sha256="99aaef26bd765ce197c1de525ddb437ad1d3e933e5d3ca2d720ed189c23b7667"
+url="https://github.com/dfinity/icp-cli/releases/download/v${version}/${archive_name}"
+output="${1:?usage: tools/scripts/provision-icp-cli OUTPUT_FILE}"
+
+case "$output" in
+  ""|/|*/.|*/..) printf 'unsafe icp CLI output path: %s\n' "$output" >&2; exit 2 ;;
+esac
+if [ "$(basename -- "$output")" != "icp" ]; then
+  printf 'icp CLI output basename must be icp: %s\n' "$output" >&2
+  exit 2
+fi
+if [ -L "$output" ]; then
+  printf 'icp CLI output must not be a symlink: %s\n' "$output" >&2
+  exit 2
+fi
+if [ -d "$output" ]; then
+  printf 'icp CLI output is a directory: %s\n' "$output" >&2
+  exit 2
+fi
+if [ -f "$output" ] && [ "$(sha256sum "$output" | awk '{print $1}')" = "$expected_binary_sha256" ]; then
+  chmod 0755 "$output"
+  "$output" --version | grep -Fx "icp ${version}"
+  exit 0
+fi
+
+parent="$(dirname "$output")"
+mkdir -p "$parent"
+temp_dir="$(mktemp -d "${parent}/.icp-cli-${version}.XXXXXX")"
+trap 'rm -rf "$temp_dir"' EXIT
+archive="${temp_dir}/${archive_name}"
+
+curl --fail --location --proto '=https' --tlsv1.2 --output "$archive" "$url"
+actual_archive_sha256="$(sha256sum "$archive" | awk '{print $1}')"
+if [ "$actual_archive_sha256" != "$expected_archive_sha256" ]; then
+  printf 'icp CLI %s archive SHA-256 mismatch: expected %s, got %s\n' \
+    "$version" "$expected_archive_sha256" "$actual_archive_sha256" >&2
+  exit 2
+fi
+
+tar -xJf "$archive" -C "$temp_dir"
+binary="${temp_dir}/icp-cli-x86_64-unknown-linux-gnu/icp"
+if [ ! -f "$binary" ]; then
+  printf 'icp CLI %s archive did not contain the expected executable\n' "$version" >&2
+  exit 2
+fi
+actual_binary_sha256="$(sha256sum "$binary" | awk '{print $1}')"
+if [ "$actual_binary_sha256" != "$expected_binary_sha256" ]; then
+  printf 'icp CLI %s binary SHA-256 mismatch: expected %s, got %s\n' \
+    "$version" "$expected_binary_sha256" "$actual_binary_sha256" >&2
+  exit 2
+fi
+chmod 0755 "$binary"
+"$binary" --version | grep -Fx "icp ${version}"
+mv "$binary" "$output"
+"$output" --version | grep -Fx "icp ${version}"
+printf 'provisioned icp CLI %s from %s at %s (archive SHA-256 %s, binary SHA-256 %s)\n' \
+  "$version" "$source_revision" "$output" "$expected_archive_sha256" "$expected_binary_sha256"

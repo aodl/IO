@@ -100,6 +100,11 @@ pub struct GetAllowedPrincipalsResponse {
 #[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
 pub struct EmptyRecord {}
 
+#[derive(Clone, Debug, CandidType, Deserialize)]
+enum LedgerUpgradePayload {
+    Upgrade(Option<EmptyRecord>),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnsWasmBasicQueryFixture {
     pub sns_wasm: Principal,
@@ -284,6 +289,57 @@ pub fn bootstrap_sns_wasm_with_pocketic_icp_features(
     })
 }
 
+pub fn controlled_pinned_nns(required: bool) -> Result<PocketIc, NnsSetupError> {
+    let artifacts = maybe_artifacts(required)?;
+    let pic = pocketic_env::new_pic_with_nns_governance_features();
+    let root = principal(install_nns_root().canister_id);
+    for (plan, key) in [
+        (install_nns_governance(), "nns_governance"),
+        (install_nns_ledger(), "nns_ledger"),
+    ] {
+        let canister = principal(plan.canister_id);
+        let pinned = hex::decode(
+            artifacts
+                .manifest
+                .require_hash(key)
+                .map_err(NnsSetupError::Artifact)?,
+        )
+        .map_err(|error| NnsSetupError::Artifact(error.to_string()))?;
+        let observed = pic
+            .canister_status(canister, Some(root))
+            .map_err(|error| NnsSetupError::Artifact(error.to_string()))?
+            .module_hash
+            .ok_or_else(|| NnsSetupError::Artifact(format!("{key} has no module hash")))?;
+        if observed != pinned {
+            let arg = if key == "nns_ledger" {
+                candid::encode_one(Some(LedgerUpgradePayload::Upgrade(None)))
+                    .map_err(|error| NnsSetupError::Artifact(error.to_string()))?
+            } else {
+                Vec::new()
+            };
+            pic.upgrade_canister(
+                canister,
+                artifacts
+                    .load_required(key)
+                    .map_err(NnsSetupError::Artifact)?,
+                arg,
+                Some(root),
+            )
+            .map_err(|error| NnsSetupError::Artifact(error.to_string()))?;
+        }
+        let installed = pic
+            .canister_status(canister, Some(root))
+            .map_err(|error| NnsSetupError::Artifact(error.to_string()))?
+            .module_hash;
+        if installed.as_deref() != Some(pinned.as_slice()) {
+            return Err(NnsSetupError::Artifact(format!(
+                "controlled {key} does not match the reviewed pin"
+            )));
+        }
+    }
+    Ok(pic)
+}
+
 pub fn install_sns_wasm_on_existing_pic(
     pic: &PocketIc,
     artifacts: &ArtifactSet,
@@ -460,6 +516,13 @@ mod tests {
         assert!(fixture
             .latest_version_hash_keys
             .contains(&"Governance".to_string()));
+    }
+
+    #[test]
+    #[ignore = "requires pinned real NNS artifacts and POCKET_IC_BIN"]
+    fn controlled_feature_nns_reports_its_governance_and_ledger_hashes() {
+        let _guard = crate::lock_test_env();
+        controlled_pinned_nns(true).unwrap();
     }
 
     #[test]

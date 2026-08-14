@@ -1,326 +1,210 @@
-type AccountHistoryPageOrder = variant { Ascending; Descending };
-type ArtifactMatchStatus = variant { Matching; Mismatch; Unknown; Unobserved };
-type CanisterArtifactStatus = record {
-  artifact_byte_size : opt nat64;
-  build_profile : opt text;
-  canister_name : text;
-  expected_canister_principal_text : opt text;
-  git_commit : opt text;
-  gz_artifact_byte_size : opt nat64;
-  gz_wasm_sha256 : opt text;
-  last_checked_timestamp_nanos : opt nat64;
-  observed_module_hash : opt text;
-  raw_wasm_sha256 : opt text;
-  status : ArtifactMatchStatus;
-  target : opt text;
+type Account = record { owner : principal; subaccount : opt blob };
+type NamedAccount = record { name : text; account : Account };
+type CanisterRole = variant {
+  StreamManager;
+  NnsManager;
+  Historian;
+  Frontend;
+  SnsGovernance;
+  SnsRoot;
+  SnsLedger;
+  SnsIndex;
+  SnsSwap;
 };
-type DataAvailability = variant { Missing; NotApplicable; Observed };
-type DataCompleteness = record {
-  liquid_icp_reserve : DataAvailability;
-  non_redeemable_governance_io : DataAvailability;
-  protocol_reserve_io : DataAvailability;
-  redeemable_io_supply : DataAvailability;
-  redemption_rate : DataAvailability;
-  total_io_supply : DataAvailability;
-  two_year_nns_principal : DataAvailability;
+type ExpectedModule = record {
+  role : CanisterRole;
+  canister_id : principal;
+  wasm_sha256 : blob;
 };
-type GovernanceExcludedCount = record { count : nat64; reason : text };
-type GovernanceNeuronParticipation = record {
-  currently_destination_eligible : bool;
-  eligible_closed_proposals : nat64;
-  frozen_stake_e8s : nat;
-  neuron_id : nat64;
-  participation_denominator : nat;
-  participation_numerator : nat;
-  voted_closed_proposals : nat64;
-};
-type GovernanceParticipationSnapshot = record {
-  counted_proposals : nat64;
-  last_governance_snapshot_timestamp_nanos : opt nat64;
-  neuron_participation : vec GovernanceNeuronParticipation;
-  nns_lifecycle_status_summary : opt text;
-  pending_nns_operation_count : opt nat64;
-  proposal_epoch_end : opt nat64;
-  proposal_epoch_start : opt nat64;
-  sns_eligible_neuron_count : nat64;
-  sns_excluded_neuron_count_by_reason : vec GovernanceExcludedCount;
-  total_frozen_cohort_stake_e8s : nat;
-};
-type HistorianIngestionStatus = record {
-  artifact_status_count : nat64;
-  canister_status_count : nat64;
-  index_health_record_count : nat64;
-  last_ingested_timestamp_nanos : opt nat64;
-  nns_lifecycle_record_count : nat64;
-  redemption_record_count : nat64;
-  retained_record_limits : RetentionLimits;
-  reward_record_count : nat64;
-  schema_version : nat32;
-  stream_record_count : nat64;
-};
-type IndexHealthSummary = record {
-  account_label : text;
-  backfill_complete : bool;
-  invariant_broken_count : nat64;
-  lag_suspected : bool;
-  last_error : opt text;
-  last_observed_balance_e8s : opt nat;
-  last_observed_newest_tx_id : opt nat64;
-  last_success_timestamp_nanos : opt nat64;
-  latest_cursor : opt nat64;
-  ledger_kind : LedgerKind;
-  num_blocks_synced : opt nat64;
-  oldest_cursor : opt nat64;
-  page_cap_reached : bool;
-  page_order : opt AccountHistoryPageOrder;
-  record_id : text;
-  scan_incomplete : bool;
-  unreadable_count : nat64;
-};
-type IngestionSourceKind = variant {
-  CanisterStatusModuleHash;
-  FrontendDashboardFreshness;
-  FutureIoSnsIndexHealth;
-  IcpIndexHealth;
-  NnsGovernanceFreshness;
-  ProtocolSnapshot;
-  ReleaseArtifacts;
-  ReserveSnapshot;
-  SnsGovernanceFreshness;
-};
-type IngestionWatermark = record {
-  governance_neuron_snapshot_timestamp_nanos : opt nat64;
-  governance_proposal_timestamp_nanos : opt nat64;
-  observed_module_hash : opt text;
-  oldest_source_cursor : opt nat64;
-  release_manifest_hash : opt text;
-  source_block_height : opt nat64;
-  source_index_height : opt nat64;
-};
-type LedgerKind = variant { IcpLedger; IoLedger };
-type ListGovernanceParticipationRequest = record {
-  limit : opt nat64;
-  start_after_neuron_id : opt nat64;
-};
-type ListGovernanceParticipationResponse = record {
-  next_start_after_neuron_id : opt nat64;
-  records : vec GovernanceNeuronParticipation;
-};
-type ListNnsLifecycleEventsRequest = record {
-  limit : opt nat64;
-  start_after : opt text;
-};
-type ListNnsLifecycleEventsResponse = record {
-  next_start_after : opt text;
-  records : vec NnsLifecycleSummary;
-};
-type ListRedemptionsRequest = record { limit : opt nat64; start_after : opt text };
-type ListRedemptionsResponse = record {
-  next_start_after : opt text;
-  records : vec RedemptionHistoryRecord;
-};
-type ListRewardsRequest = record { limit : opt nat64; start_after : opt text };
-type ListRewardsResponse = record {
-  next_start_after : opt text;
-  records : vec RewardDistributionRecord;
-};
-type ListStreamsRequest = record { limit : opt nat64; start_after : opt text };
-type ListStreamsResponse = record {
-  next_start_after : opt text;
-  records : vec StreamHistoryRecord;
-};
-type NnsLifecycleKind = variant {
-  TwoWeekPoolMergeBack;
-  TwoWeekPoolRestake;
-  TwoWeekPoolSplit;
-  TwoWeekPoolStartDissolving;
-  TwoWeekPoolStopDissolving;
-  TwoWeekMaturityDisbursement;
-  TwoWeekUnwindPrincipalDisbursement;
-  TwoYearMaturityDisbursement;
-  Unknown;
-};
-type NnsLifecycleSummary = record {
-  amount_e8s : opt nat;
-  kind : NnsLifecycleKind;
-  neuron_id : opt nat64;
-  phase : PublicOperationPhase;
-  record_id : text;
-  retry_count : nat32;
-  safe_error : opt text;
-  timestamp_nanos : opt nat64;
-};
-type ProtocolSnapshot = record {
-  completeness : DataCompleteness;
-  last_updated_timestamp_nanos : opt nat64;
-  liquid_icp_reserve_e8s : opt nat;
-  non_redeemable_governance_io_e8s : opt nat;
-  protocol_reserve_io_e8s : opt nat;
-  redeemable_io_supply_e8s : opt nat;
-  redemption_rate : opt RedemptionRateSnapshot;
-  total_io_supply_e8s : opt nat;
-  two_year_nns_principal_e8s : opt nat;
-};
-type PublicDashboardState = record {
-  canister_status : vec CanisterArtifactStatus;
-  governance : GovernanceParticipationSnapshot;
-  index_health : vec IndexHealthSummary;
-  protocol : ProtocolSnapshot;
-  redemption_rate : opt RedemptionRateSnapshot;
-  release_artifacts : vec CanisterArtifactStatus;
-  reserve : ReserveSnapshot;
-  source_health : vec SourceHealth;
-  status : PublicStatus;
-  supply : SupplySnapshot;
+type ObservationConfig = record {
+  stream_manager : principal;
+  nns_manager : principal;
+  sns_root : principal;
+  sns_governance : principal;
+  sns_ledger : principal;
+  sns_index : principal;
+  icp_ledger : principal;
+  nns_governance : principal;
+  reward_backing_neuron_id : nat64;
+  two_year_neuron_id : nat64;
+  protocol_io_reserve : Account;
+  liquid_icp_reserve : Account;
+  excluded_io_accounts : vec NamedAccount;
+  history_accounts : vec NamedAccount;
+  expected_modules : vec ExpectedModule;
+  reward_share_capable_governance_sha256 : opt blob;
+  refresh_interval_seconds : nat64;
 };
 type ObservationFreshness = variant {
-  ErrorRetryable;
   Fresh;
-  Incomplete;
-  Missing;
-  ObservedOnly;
-  PrelaunchNotApplicable;
   Stale;
-  Unknown;
-};
-type PublicOperationPhase = variant {
-  AwaitingIcpPayout;
-  AwaitingIoIssuance;
-  AwaitingIoReturn;
-  Completed;
-  FailedRetryable;
-  FailedTerminal;
-  Observed;
-  PartiallyDistributed;
-  Previewed;
-  Unknown;
-};
-type PublicRecipientPolicy = variant {
-  EligibleIoSnsNeurons;
-  JupiterFaucet;
-  None;
-  Unknown;
-};
-type PublicStatus = record {
-  ingestion : HistorianIngestionStatus;
-  model : text;
-  schema_version : nat32;
-  version : text;
-};
-type PublicStreamKind = variant {
-  JupiterFaucet;
-  TwoWeekMaturity;
-  TwoYearMaturity;
-  UnknownIcpDeposit;
-};
-type RedemptionHistoryRecord = record {
-  gross_icp_payout_e8s : opt nat;
-  icp_payout_amount_e8s : opt nat;
-  icp_payout_block : opt nat64;
-  icp_payout_fee_e8s : opt nat;
-  io_amount_e8s : nat;
-  io_burn_or_transfer_block : opt nat64;
-  io_return_fee_e8s : opt nat;
-  io_return_block : opt nat64;
-  net_user_icp_payout_e8s : opt nat;
-  phase : PublicOperationPhase;
-  record_id : text;
-  retry_count : nat32;
-  retry_status : opt text;
-  timestamp_nanos : opt nat64;
-  user_account : opt text;
-};
-type RedemptionRateSnapshot = record {
-  last_updated_timestamp_nanos : opt nat64;
-  liquid_icp_per_io_e8s_denominator : nat;
-  liquid_icp_per_io_e8s_numerator : nat;
-  liquid_icp_reserve_e8s : nat;
-  redeemable_io_supply_e8s : nat;
-};
-type ReserveSnapshot = record {
-  completeness : DataCompleteness;
-  last_updated_timestamp_nanos : opt nat64;
-  liquid_icp_reserve_e8s : opt nat;
-  two_year_nns_principal_e8s : opt nat;
-};
-type RetentionLimits = record {
-  artifact_status : nat64;
-  canister_status : nat64;
-  governance_neuron_summaries : nat64;
-  index_health : nat64;
-  max_page_limit : nat64;
-  nns_lifecycle_history : nat64;
-  redemption_history : nat64;
-  reward_history : nat64;
-  stream_history : nat64;
+  Missing;
+  ErrorRetryable;
+  PrelaunchNotConfigured;
 };
 type SourceHealth = record {
-  error_summary : opt text;
+  source : text;
   freshness : ObservationFreshness;
-  kind : IngestionSourceKind;
   last_attempt_timestamp_nanos : opt nat64;
   last_success_timestamp_nanos : opt nat64;
-  policy : StalenessPolicy;
-  retryable : bool;
-  source_id : text;
-  summary : text;
-  watermark : IngestionWatermark;
+  error : opt text;
 };
-type StalenessPolicy = record {
-  max_age_nanos : opt nat64;
-  prelaunch_expected_absent : bool;
-  required : bool;
+type DataCompleteness = record {
+  total_io_supply : bool;
+  protocol_reserve_io : bool;
+  excluded_io : bool;
+  redeemable_io_supply : bool;
+  liquid_icp_reserve : bool;
+  redemption_rate : bool;
 };
-type RewardDistributionRecord = record {
-  dust_unissued_e8s : opt nat;
-  frozen_cohort_stake_e8s : opt nat;
-  epoch_end_timestamp_nanos : opt nat64;
-  epoch_start_timestamp_nanos : opt nat64;
-  participation_summary_id : opt text;
-  payout_block : opt nat64;
-  recipient_account : opt text;
-  recipient_neuron_id : opt nat64;
-  record_id : text;
-  reward_amount_e8s : nat;
-  status : PublicOperationPhase;
+type RedemptionRateSnapshot = record {
+  liquid_icp_e8s : nat;
+  redeemable_io_e8s : nat;
+  observed_at_timestamp_nanos : nat64;
 };
-type StreamHistoryRecord = record {
-  amount_e8s : nat;
-  io_issued_e8s : opt nat;
-  memo_label : opt text;
-  phase : PublicOperationPhase;
-  recipient_policy : PublicRecipientPolicy;
-  record_id : text;
-  safe_subaccount_label : opt text;
-  source_block_index : opt nat64;
-  source_ledger : text;
-  stream_kind : PublicStreamKind;
-  terminal_rejection_reason : opt text;
-  timestamp_nanos : opt nat64;
-};
-type SupplySnapshot = record {
-  completeness : DataCompleteness;
-  last_updated_timestamp_nanos : opt nat64;
-  non_redeemable_governance_io_e8s : opt nat;
-  protocol_reserve_io_e8s : opt nat;
-  redeemable_io_supply_e8s : opt nat;
+type ProtocolSnapshot = record {
+  generation : nat64;
   total_io_supply_e8s : opt nat;
+  protocol_reserve_io_e8s : opt nat;
+  excluded_io_e8s : opt nat;
+  redeemable_io_supply_e8s : opt nat;
+  liquid_icp_reserve_e8s : opt nat;
+  redemption_rate : opt RedemptionRateSnapshot;
+  observed_at_timestamp_nanos : opt nat64;
+  completeness : DataCompleteness;
+};
+type Lifecycle = variant { Paused; Ready };
+type RewardEventClassification = variant {
+  ProposalBearing;
+  NoProposalFallback;
+  ZeroEligibleParticipation;
+  MissedSkipped;
+};
+type RewardEventId = record { end_timestamp_seconds : nat64; round : nat64 };
+type StreamStatus = record {
+  lifecycle : Lifecycle;
+  operation_kind : opt text;
+  operation_phase : opt text;
+  latest_entitlement_batch_generation : nat64;
+  latest_processed_reward_event : opt RewardEventId;
+  latest_reward_event_classification : opt RewardEventClassification;
+  accumulated_eligible_credit : nat;
+  accumulated_policy_credit : nat;
+  processed_reward_event_count : nat64;
+  missed_reward_event_count : nat64;
+  reward_work_due : bool;
+  reward_processing_paused : bool;
+  governance_parameters_fresh : bool;
+  pending_entitlement_batch_eligible_credit : opt nat;
+  pending_entitlement_batch_policy_credit : opt nat;
+  observed_at_timestamp_nanos : nat64;
+};
+type NnsManagerStatus = record {
+  lifecycle : Lifecycle;
+  active_operation : opt text;
+  two_week_maturity_baseline_reconciled : bool;
+  latest_started_two_week_generation : nat64;
+  latest_completed_two_week_generation : nat64;
+  latest_two_week_target : opt TwoWeekTargetObservation;
+  unwinding_child_principal_e8s : nat;
+  observed_at_timestamp_nanos : nat64;
+};
+type TwoWeekTargetStatus = variant {
+  UnderTarget;
+  AtTarget;
+  AtTargetWithinUnwindTolerance;
+  OverTarget;
+};
+type TwoWeekTargetObservation = record {
+  target_e8s : nat;
+  status : TwoWeekTargetStatus;
+};
+type NnsNeuronRole = variant { RewardBacking; TwoYearProtected };
+type NnsNeuronObservation = record {
+  role : NnsNeuronRole;
+  neuron_id : nat64;
+  stake_e8s : nat64;
+  staked_maturity_e8s : opt nat64;
+  dissolve_delay_seconds : nat64;
+  state : int32;
+};
+type NnsGovernanceStatus = record {
+  build_metadata : text;
+  neurons : vec NnsNeuronObservation;
+  observed_at_timestamp_nanos : nat64;
+};
+type ModuleMatch = variant { Matching; Mismatch; Unavailable; Unknown };
+type CanisterObservation = record {
+  role : CanisterRole;
+  canister_id : principal;
+  expected_module_hash : blob;
+  observed_module_hash : opt blob;
+  module_match : ModuleMatch;
+  controllers : opt vec principal;
+  observed_at_timestamp_nanos : nat64;
+};
+type CapabilityState = variant {
+  ExpectedGovernanceModuleMatching;
+  ModuleMismatch;
+  Unavailable;
+};
+type SnsStatus = record {
+  max_number_of_neurons : opt nat64;
+  native_initial_reward_rate_basis_points : opt nat64;
+  native_final_reward_rate_basis_points : opt nat64;
+  latest_reward_event_round : opt nat64;
+  latest_reward_event_end_timestamp_seconds : opt nat64;
+  settled_proposal_count : opt nat64;
+  reward_share_capability : CapabilityState;
+  archive_canisters : vec principal;
+  observed_at_timestamp_nanos : nat64;
+};
+type RecentTransaction = record {
+  block_index : nat;
+  kind : text;
+  amount_e8s : opt nat;
+  from : opt Account;
+  to : opt Account;
+  timestamp_nanos : nat64;
+};
+type AccountHistoryObservation = record {
+  name : text;
+  account : Account;
+  index_balance_e8s : nat;
+  newest_transaction_id : opt nat;
+  oldest_transaction_id : opt nat;
+  transactions : vec RecentTransaction;
+};
+type IndexStatus = record {
+  num_blocks_synced : nat;
+  accounts : vec AccountHistoryObservation;
+  observed_at_timestamp_nanos : nat64;
+};
+type PublicStatus = record {
+  version : text;
+  schema_version : nat32;
+  configured : bool;
+  refresh_active : bool;
+  refresh_generation : nat64;
+  last_attempt_timestamp_nanos : opt nat64;
+  last_success_timestamp_nanos : opt nat64;
+};
+type Dashboard = record {
+  status : PublicStatus;
+  protocol : ProtocolSnapshot;
+  source_health : vec SourceHealth;
+  canisters : vec CanisterObservation;
+  stream : opt StreamStatus;
+  nns_manager : opt NnsManagerStatus;
+  nns_governance : opt NnsGovernanceStatus;
+  sns : opt SnsStatus;
+  index : opt IndexStatus;
 };
 
-service : {
-  get_canister_status_summary : () -> (vec CanisterArtifactStatus) query;
-  get_dashboard_state : () -> (PublicDashboardState) query;
-  get_governance_summary : () -> (GovernanceParticipationSnapshot) query;
-  get_index_health : () -> (vec IndexHealthSummary) query;
+service : (opt ObservationConfig) -> {
+  get_dashboard_state : () -> (Dashboard) query;
   get_protocol_snapshot : () -> (ProtocolSnapshot) query;
   get_public_status : () -> (PublicStatus) query;
   get_redemption_rate : () -> (opt RedemptionRateSnapshot) query;
-  get_release_artifacts : () -> (vec CanisterArtifactStatus) query;
-  get_reserve_snapshot : () -> (ReserveSnapshot) query;
-  list_governance_participation : (ListGovernanceParticipationRequest) -> (ListGovernanceParticipationResponse) query;
-  list_nns_lifecycle_events : (ListNnsLifecycleEventsRequest) -> (ListNnsLifecycleEventsResponse) query;
-  list_redemptions : (ListRedemptionsRequest) -> (ListRedemptionsResponse) query;
-  list_rewards : (ListRewardsRequest) -> (ListRewardsResponse) query;
-  list_streams : (ListStreamsRequest) -> (ListStreamsResponse) query;
   version : () -> (text) query;
 }

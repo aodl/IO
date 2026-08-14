@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+release_build_temp_root() {
+  local candidate
+  if [[ -n "${IO_RELEASE_BUILD_TMPDIR:-}" ]]; then
+    candidate="${IO_RELEASE_BUILD_TMPDIR}"
+  elif [[ -n "${RUNNER_TEMP:-}" ]]; then
+    candidate="${RUNNER_TEMP}/io/release-builds"
+  elif [[ -n "${TMPDIR:-}" ]]; then
+    candidate="${TMPDIR}/io/release-builds"
+  elif [[ -n "${XDG_CACHE_HOME:-}" ]]; then
+    candidate="${XDG_CACHE_HOME}/io/release-builds"
+  elif [[ -n "${HOME:-}" ]]; then
+    candidate="${HOME}/.cache/io/release-builds"
+  else
+    echo "no release-build temporary root is available" >&2
+    return 2
+  fi
+
+  if [[ "${candidate}" != /* ]]; then
+    echo "release-build temporary root must be absolute: ${candidate}" >&2
+    return 2
+  fi
+  mkdir -p "${candidate}"
+  (cd "${candidate}" && pwd -P)
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  release_build_temp_root
+fi
