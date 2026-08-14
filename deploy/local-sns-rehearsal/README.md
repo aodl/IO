@@ -103,13 +103,15 @@ cargo run -p xtask -- validate_local_sns_scripts
 
 `validate_local_sns_scripts` copies the operator scripts to a temp directory, writes fixture local variables and completed local evidence, runs the no-network executable paths, and checks positive and negative guardrails. It does not call canisters and does not require the dfx SNS extension.
 
-`validate_local_sns_committed_evidence` validates historical immutable packages and requires one completed current canonical-economics package for launch readiness. The historical completed shape contains
+`validate_local_sns_committed_evidence` validates historical immutable packages and requires `evidence/current-canonical.toml` to select exactly one completed current canonical-economics package for launch readiness. The selector has a closed versioned schema and binds the selected leaf directory, release source, artifact-recording commit, release manifest, package manifest and package checksum inventory. It rejects missing or extra selectors, unexpected fields and entries, non-leaf paths, traversal, and symlinks. The historical completed shape contains
 `manifest.toml`, toolchain/SNS/ledger/governance/controller/archive evidence,
 the local init, sanitized commands, and `SHA256SUMS`. A completed monitoring
 package additionally contains `release-evidence.toml` and the direct PocketIC
 `historian-dashboard.log`. The validator requires every recorded tool version
-to have a matching exact SHA-256 and byte-binds monitoring packages to the
-current release manifest, its source commit, and its artifact-recording commit.
+to have a matching exact SHA-256 and byte-binds each monitoring package to the
+release manifest stored at its own artifact-recording commit. Only the explicitly
+selected package is also required to match the checked-in release manifest and
+its current source/artifact lineage.
 The current canonical shape additionally preserves exact Stream/NNS/historian Candid inputs, the typed Account map, checked redemption economics and the treasury Account history. It independently calculates excluded total, redeemable supply, gross and net, verifies ledger balance identities and requires the historian rate to agree. It also requires canonical historian supply/reserve/liquid/rate,
 module/controller, lifecycle, Governance, index and archive observations to be
 fresh and complete. No completed package may contain blocker/placeholder text.

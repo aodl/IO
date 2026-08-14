@@ -40,15 +40,88 @@ require_nat "reward eligible credit total" "$reward_eligible_credit"
 official_commit="${IO_LOCAL_SNS_OFFICIAL_IC_COMMIT:-${PINNED_IC_COMMIT}}"
 source_commit="$(jq -er '.git_commit' "$release_manifest")"
 artifact_commit="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-short_commit="${official_commit:0:7}"
-evidence_date="${IO_LOCAL_SNS_EVIDENCE_DATE:-$(date -u +%F)}"
-output_root="${IO_LOCAL_SNS_EVIDENCE_OUTPUT_ROOT:-${REHEARSAL_DIR}/evidence}"
-package_dir="${output_root}/${evidence_date}-${short_commit}-canonical-economics"
-if [ -e "$package_dir" ]; then
-  record_blocker "refusing to overwrite immutable evidence package ${package_dir}"
+release_manifest_sha256="$(sha256sum "$release_manifest" | awk '{print $1}')"
+phase_source_commit="$(phase_detail_value 11-build-local-io-canisters source_commit)"
+phase_artifact_commit="$(phase_detail_value 11-build-local-io-canisters artifact_commit)"
+phase_manifest_sha256="$(phase_detail_value 11-build-local-io-canisters manifest_sha256)"
+phase_tracked_clean="$(phase_detail_value 11-build-local-io-canisters tracked_clean)"
+if [ "$phase_source_commit" != "$source_commit" ] \
+  || [ "$phase_artifact_commit" != "$artifact_commit" ] \
+  || [ "$phase_manifest_sha256" != "$release_manifest_sha256" ] \
+  || [ "$phase_tracked_clean" != true ]; then
+  record_blocker "release identity differs from the clean artifact tree recorded before the stateful run"
   exit 2
 fi
-mkdir -p "$package_dir"
+if ! git -C "$REPO_ROOT" diff --quiet -- \
+  || ! git -C "$REPO_ROOT" diff --cached --quiet --; then
+  record_blocker "evidence packaging requires the clean tracked artifact-recording tree"
+  exit 2
+fi
+if ! git -C "$REPO_ROOT" show \
+  "${artifact_commit}:release-artifacts/manifest.json" | cmp - "$release_manifest"; then
+  record_blocker "artifact-recording commit does not contain the exact current release manifest"
+  exit 2
+fi
+short_commit="${official_commit:0:7}"
+evidence_date="${IO_LOCAL_SNS_EVIDENCE_DATE:-$(date -u +%F)}"
+output_root="${REHEARSAL_DIR}/evidence"
+if [ -n "${IO_LOCAL_SNS_EVIDENCE_OUTPUT_ROOT:-}" ] \
+  && [ "${IO_LOCAL_SNS_EVIDENCE_OUTPUT_ROOT}" != "$output_root" ]; then
+  record_blocker "completed canonical evidence must use the committed evidence root ${output_root}"
+  exit 2
+fi
+package_name="${evidence_date}-${short_commit}-canonical-economics"
+final_package_dir="${output_root}/${package_name}"
+selector_path="${output_root}/current-canonical.toml"
+if [ -e "$final_package_dir" ]; then
+  record_blocker "refusing to overwrite immutable evidence package ${final_package_dir}"
+  exit 2
+fi
+mkdir -p "$GENERATED_DIR"
+staging_root="$(mktemp -d "${GENERATED_DIR}/evidence-package.XXXXXX")"
+package_dir="${staging_root}/${package_name}"
+selector_backup="${staging_root}/previous-current-canonical.toml"
+selector_previously_present=false
+candidate_published=false
+selector_replaced=false
+packaging_complete=false
+selector_temporary=""
+cleanup_staging() {
+  local status=$?
+  set +e
+  if [ "$packaging_complete" != true ]; then
+    if [ -n "$selector_temporary" ]; then
+      rm -f "$selector_temporary"
+    fi
+    if [ "$selector_replaced" = true ]; then
+      if [ "$selector_previously_present" = true ]; then
+        cp "$selector_backup" "${output_root}/.current-canonical.toml.rollback.$$"
+        mv "${output_root}/.current-canonical.toml.rollback.$$" "$selector_path"
+      else
+        rm -f "$selector_path"
+      fi
+    fi
+    if [ "$candidate_published" = true ] && [ -d "$final_package_dir" ] \
+      && [ ! -L "$final_package_dir" ]; then
+      mv "$final_package_dir" "${staging_root}/rejected-${package_name}"
+    fi
+  fi
+  rm -rf "$staging_root"
+  exit "$status"
+}
+trap cleanup_staging EXIT
+if [ -L "$selector_path" ]; then
+  record_blocker "current canonical selector must not be a symlink"
+  exit 2
+elif [ -e "$selector_path" ]; then
+  if [ ! -f "$selector_path" ]; then
+    record_blocker "current canonical selector must be a regular file"
+    exit 2
+  fi
+  cp "$selector_path" "$selector_backup"
+  selector_previously_present=true
+fi
+mkdir "$package_dir"
 cp "$source_evidence" "${package_dir}/canister-ids.local.toml"
 cp "$(sns_init_file)" "${package_dir}/sns_init.local.yaml"
 cp "$reward_log" "${package_dir}/historian-dashboard.log"
@@ -83,9 +156,14 @@ historian_raw="$(manifest_value io_historian raw_wasm_sha256)"
 historian_gzip="$(manifest_value io_historian gz_wasm_sha256)"
 historian_before="$(phase_value 17-upgrade-attempted before)"
 historian_payload="$(phase_value 17-upgrade-attempted payload_wasm_sha256)"
+historian_after="$(phase_value 17-upgrade-attempted after)"
 upgrade_proposal="$(phase_value 17-upgrade-attempted proposal_id)"
 if [ "$historian_payload" != "$historian_raw" ]; then
   record_blocker "historian Governance payload ${historian_payload} does not match current raw release ${historian_raw}"
+  exit 2
+fi
+if [ "$historian_after" != "$historian_raw" ] || [ "$historian_before" = "$historian_after" ]; then
+  record_blocker "historian Governance upgrade did not prove the required hash-changing transition to ${historian_raw}"
   exit 2
 fi
 
@@ -205,7 +283,7 @@ cat > "${package_dir}/release-evidence.toml" <<EOF
 [release]
 source_commit = "${source_commit}"
 artifact_recording_commit = "${artifact_commit}"
-manifest_sha256 = "$(sha256sum "$release_manifest" | awk '{print $1}')"
+manifest_sha256 = "${release_manifest_sha256}"
 
 [io_stream_manager]
 raw_wasm_sha256 = "$(manifest_value io_stream_manager raw_wasm_sha256)"
@@ -312,7 +390,10 @@ target = "$(toml_string "$(local_vars_file)" local io_historian_canister)"
 proposal_id = ${upgrade_proposal}
 before_module_sha256 = "${historian_before}"
 payload_wasm_sha256 = "${historian_payload}"
+after_module_sha256 = "${historian_after}"
 release_raw_sha256 = "${historian_raw}"
+proposal_adopted = true
+proposal_executed = true
 executed = true
 
 [lifecycle]
@@ -376,4 +457,39 @@ done
   reserve-funding-evidence.toml ledger-evidence.toml governance-evidence.toml \
   controller-evidence.toml archive-evidence.toml historian-dashboard.log commands.log \
   > SHA256SUMS)
-printf 'wrote completed sanitized monitoring evidence package: %s\n' "$package_dir"
+
+if ! (cd "$REPO_ROOT" && cargo run --quiet -p xtask -- \
+  validate_local_sns_evidence_package "$package_dir"); then
+  record_blocker "staged canonical evidence package failed intrinsic validation"
+  exit 2
+fi
+
+mv "$package_dir" "$final_package_dir"
+candidate_published=true
+package_manifest_sha256="$(sha256sum "${final_package_dir}/manifest.toml" | awk '{print $1}')"
+package_sha256s_sha256="$(sha256sum "${final_package_dir}/SHA256SUMS" | awk '{print $1}')"
+selector_temporary="${output_root}/.current-canonical.toml.tmp.$$"
+{
+  printf '[schema]\nversion = 1\n\n'
+  printf '[current]\n'
+  printf 'package = "%s"\n' "$package_name"
+  printf 'io_release_source_commit = "%s"\n' "$source_commit"
+  printf 'io_artifact_recording_commit = "%s"\n' "$artifact_commit"
+  printf 'release_manifest_sha256 = "%s"\n' "$release_manifest_sha256"
+  printf 'package_manifest_sha256 = "%s"\n' "$package_manifest_sha256"
+  printf 'package_sha256s_sha256 = "%s"\n' "$package_sha256s_sha256"
+} > "$selector_temporary"
+mv "$selector_temporary" "$selector_path"
+selector_replaced=true
+
+if ! (cd "$REPO_ROOT" && cargo run --quiet -p xtask -- \
+  validate_local_sns_committed_evidence); then
+  record_blocker "global committed-evidence validation failed; preceding selector restored and candidate removed"
+  exit 2
+fi
+
+packaging_complete=true
+trap - EXIT
+rm -rf "$staging_root"
+printf 'wrote completed sanitized monitoring evidence package: %s\n' "$final_package_dir"
+printf 'selected current canonical package: %s\n' "$selector_path"

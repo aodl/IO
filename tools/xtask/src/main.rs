@@ -22,6 +22,8 @@ mod sns_framework;
 const RELEASE_PROFILE: &str = "release";
 const WASM_TARGET: &str = "wasm32-unknown-unknown";
 const MANIFEST_PATH: &str = "release-artifacts/manifest.json";
+const CURRENT_CANONICAL_SELECTOR: &str =
+    "deploy/local-sns-rehearsal/evidence/current-canonical.toml";
 const KNOWN_TWO_YEAR_NNS_NEURON_ID: u64 = PROTECTED_IO_NNS_NEURON_ID;
 const KNOWN_CONTROLLER_CANISTER_PRINCIPAL: &str = PROTECTED_IO_NEURON_OWNER_CANISTER;
 const DEV_MAINNET_MODE: &str = "LegacyPhase1DevPublicShell";
@@ -427,6 +429,25 @@ enum SimpleTomlValue {
 
 type SimpleTomlDocument = BTreeMap<String, BTreeMap<String, SimpleTomlValue>>;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CurrentCanonicalSelector {
+    package: String,
+    io_release_source_commit: String,
+    io_artifact_recording_commit: String,
+    release_manifest_sha256: String,
+    package_manifest_sha256: String,
+    package_sha256s_sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ValidatedEvidencePackage {
+    complete: bool,
+    monitoring: bool,
+    canonical_economics: bool,
+    io_release_source_commit: Option<String>,
+    io_artifact_recording_commit: Option<String>,
+}
+
 fn parse_simple_toml_document(path: &str, text: &str) -> Result<SimpleTomlDocument, String> {
     let mut doc = SimpleTomlDocument::new();
     let mut current_section: Option<String> = None;
@@ -575,6 +596,163 @@ fn require_simple_u64(
             "{path}: expected {section}.{key} to be integer or numeric string, got {other:?}"
         )),
     }
+}
+
+fn validate_lower_hex(path: &str, field: &str, value: &str, length: usize) -> Result<(), String> {
+    if value.len() == length
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "{path}: {field} must be exact lowercase {length}-hex"
+        ))
+    }
+}
+
+fn parse_current_canonical_selector(
+    path: &str,
+    text: &str,
+) -> Result<CurrentCanonicalSelector, String> {
+    let mut schema_sections = 0_usize;
+    let mut current_sections = 0_usize;
+    for raw_line in text.lines() {
+        match raw_line.split('#').next().unwrap_or("").trim() {
+            "[schema]" => schema_sections += 1,
+            "[current]" => current_sections += 1,
+            _ => {}
+        }
+    }
+    if schema_sections != 1 || current_sections != 1 {
+        return Err(format!(
+            "{path}: selector must contain exactly one [schema] and one [current] section"
+        ));
+    }
+    let doc = parse_simple_toml_document(path, text)?;
+    let expected_sections = ["current".to_string(), "schema".to_string()]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let actual_sections = doc.keys().cloned().collect::<BTreeSet<_>>();
+    if actual_sections != expected_sections {
+        return Err(format!(
+            "{path}: selector sections must be exactly [schema] and [current]"
+        ));
+    }
+    let schema = require_simple_section(path, &doc, "schema")?;
+    if schema.keys().map(String::as_str).collect::<Vec<_>>() != ["version"] {
+        return Err(format!("{path}: [schema] fields must be exactly version"));
+    }
+    if require_simple_u64(path, &doc, "schema", "version")? != 1 {
+        return Err(format!("{path}: unsupported selector schema version"));
+    }
+    let expected_current_fields = [
+        "io_artifact_recording_commit",
+        "io_release_source_commit",
+        "package",
+        "package_manifest_sha256",
+        "package_sha256s_sha256",
+        "release_manifest_sha256",
+    ];
+    let current = require_simple_section(path, &doc, "current")?;
+    if current.keys().map(String::as_str).collect::<Vec<_>>() != expected_current_fields {
+        return Err(format!(
+            "{path}: [current] contains missing or unexpected fields"
+        ));
+    }
+    let selector = CurrentCanonicalSelector {
+        package: require_simple_string(path, &doc, "current", "package")?,
+        io_release_source_commit: require_simple_string(
+            path,
+            &doc,
+            "current",
+            "io_release_source_commit",
+        )?,
+        io_artifact_recording_commit: require_simple_string(
+            path,
+            &doc,
+            "current",
+            "io_artifact_recording_commit",
+        )?,
+        release_manifest_sha256: require_simple_string(
+            path,
+            &doc,
+            "current",
+            "release_manifest_sha256",
+        )?,
+        package_manifest_sha256: require_simple_string(
+            path,
+            &doc,
+            "current",
+            "package_manifest_sha256",
+        )?,
+        package_sha256s_sha256: require_simple_string(
+            path,
+            &doc,
+            "current",
+            "package_sha256s_sha256",
+        )?,
+    };
+    let package_path = Path::new(&selector.package);
+    let components = package_path.components().collect::<Vec<_>>();
+    if selector.package.is_empty()
+        || selector.package.contains('/')
+        || selector.package.contains('\\')
+        || package_path.is_absolute()
+        || components.len() != 1
+        || !matches!(components[0], std::path::Component::Normal(_))
+        || selector.package == "."
+        || selector.package == ".."
+    {
+        return Err(format!(
+            "{path}: current.package must be one traversal-free leaf directory name"
+        ));
+    }
+    validate_lower_hex(
+        path,
+        "current.io_release_source_commit",
+        &selector.io_release_source_commit,
+        40,
+    )?;
+    validate_lower_hex(
+        path,
+        "current.io_artifact_recording_commit",
+        &selector.io_artifact_recording_commit,
+        40,
+    )?;
+    for (field, value) in [
+        (
+            "current.release_manifest_sha256",
+            selector.release_manifest_sha256.as_str(),
+        ),
+        (
+            "current.package_manifest_sha256",
+            selector.package_manifest_sha256.as_str(),
+        ),
+        (
+            "current.package_sha256s_sha256",
+            selector.package_sha256s_sha256.as_str(),
+        ),
+    ] {
+        validate_lower_hex(path, field, value, 64)?;
+    }
+    Ok(selector)
+}
+
+fn read_current_canonical_selector(root: &Path) -> Result<CurrentCanonicalSelector, String> {
+    let path = root.join(CURRENT_CANONICAL_SELECTOR);
+    let metadata = fs::symlink_metadata(&path).map_err(|err| {
+        format!("{CURRENT_CANONICAL_SELECTOR}: required selector is missing: {err}")
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "{CURRENT_CANONICAL_SELECTOR}: selector must be a regular non-symlink file"
+        ));
+    }
+    let text =
+        fs::read_to_string(&path).map_err(|err| format!("{CURRENT_CANONICAL_SELECTOR}: {err}"))?;
+    parse_current_canonical_selector(CURRENT_CANONICAL_SELECTOR, &text)
 }
 
 fn require_toml_string(
@@ -2677,6 +2855,38 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
         "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
         &governance_phase,
         &["dfx canister install"],
+    )?;
+    let exact_release_phase = require_file(
+        root,
+        "deploy/local-sns-rehearsal/scripts/11-build-local-io-canisters.sh",
+    )?;
+    require_present(
+        "deploy/local-sns-rehearsal/scripts/11-build-local-io-canisters.sh",
+        &exact_release_phase,
+        &[
+            "git -C \"$REPO_ROOT\" diff --quiet",
+            "artifact_commit=",
+            "git -C \"$REPO_ROOT\" show",
+            "tracked_clean=true",
+        ],
+    )?;
+    let packaging_phase = require_file(
+        root,
+        "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
+    )?;
+    require_present(
+        "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
+        &packaging_phase,
+        &[
+            "mktemp -d",
+            "validate_local_sns_evidence_package",
+            "current-canonical.toml",
+            "mv \"$selector_temporary\" \"$selector_path\"",
+            "preceding selector restored and candidate removed",
+            "after_module_sha256",
+            "proposal_adopted = true",
+            "proposal_executed = true",
+        ],
     )?;
     require_present(
         "deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh",
@@ -5526,21 +5736,38 @@ fn validate_production_redemption_evidence(path: &str, text: &str) -> Result<(),
 fn check_local_sns_committed_evidence_at(root: &Path) -> Result<(), String> {
     let evidence_root = root.join("deploy/local-sns-rehearsal/evidence");
     if !evidence_root.exists() {
-        return Ok(());
+        return Err(format!(
+            "{CURRENT_CANONICAL_SELECTOR}: required selector is missing"
+        ));
     }
-    let mut canonical_economics_found = false;
-    for entry in
-        fs::read_dir(&evidence_root).map_err(|err| format!("{}: {err}", evidence_root.display()))?
-    {
-        let entry = entry.map_err(|err| format!("{}: {err}", evidence_root.display()))?;
+    let selector = read_current_canonical_selector(root)?;
+    let mut entries = fs::read_dir(&evidence_root)
+        .map_err(|err| format!("{}: {err}", evidence_root.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("{}: {err}", evidence_root.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in &entries {
         let entry_type = entry
             .file_type()
             .map_err(|err| format!("{}: {err}", entry.path().display()))?;
-        if !entry_type.is_dir() {
+        if entry.file_name() == "current-canonical.toml" {
+            if entry_type.is_symlink() || !entry_type.is_file() {
+                return Err(format!(
+                    "{}: selector must be a regular non-symlink file",
+                    entry.path().display()
+                ));
+            }
+        } else if !entry_type.is_dir() {
             return Err(format!(
-                "{}: evidence root entries must be regular directories",
+                "{}: evidence root entries must be the exact selector or regular package directories",
                 entry.path().display()
             ));
+        }
+    }
+    let mut selected_found = 0_usize;
+    for entry in entries {
+        if entry.file_name() == "current-canonical.toml" {
+            continue;
         }
         let rel = entry
             .path()
@@ -5548,163 +5775,270 @@ fn check_local_sns_committed_evidence_at(root: &Path) -> Result<(), String> {
             .unwrap()
             .to_string_lossy()
             .replace('\\', "/");
-        let package_files = list_regular_files_relative(&entry.path())?;
-        let manifest_path = format!("{rel}/manifest.toml");
-        let manifest = require_file(root, &manifest_path)?;
-        validate_committed_evidence_text(&manifest_path, &manifest)?;
-        let doc = parse_simple_toml_document(&manifest_path, &manifest)?;
-        if require_simple_string(&manifest_path, &doc, "provenance", "official_ic_repository")?
-            != "dfinity/ic"
-            || require_simple_string(
-                &manifest_path,
-                &doc,
-                "provenance",
-                "sns_testing_source_path",
-            )? != "rs/sns/testing"
-        {
-            return Err(format!("{manifest_path}: invalid official SNS provenance"));
+        let selected_current = entry.file_name().to_string_lossy() == selector.package;
+        let validated = validate_local_sns_evidence_package_at(root, &rel, selected_current)?;
+        if selected_current {
+            selected_found += 1;
+            validate_current_selector_binding(root, &rel, &validated, &selector)?;
         }
-        let complete = require_simple_bool(&manifest_path, &doc, "provenance", "complete")?;
-        let monitoring = doc
-            .get("provenance")
-            .and_then(|section| section.get("monitoring"))
-            == Some(&SimpleTomlValue::Bool(true));
-        let canonical_economics = doc
-            .get("provenance")
-            .and_then(|section| section.get("canonical_redemption_economics"))
-            == Some(&SimpleTomlValue::Bool(true));
-        let commit = require_simple_string(
+    }
+    if selected_found != 1 {
+        return Err(format!(
+            "{CURRENT_CANONICAL_SELECTOR}: selected package {:?} was not encountered exactly once",
+            selector.package
+        ));
+    }
+    Ok(())
+}
+
+fn validate_local_sns_evidence_package_at(
+    root: &Path,
+    rel: &str,
+    selected_current: bool,
+) -> Result<ValidatedEvidencePackage, String> {
+    let package_dir = if Path::new(rel).is_absolute() {
+        PathBuf::from(rel)
+    } else {
+        root.join(rel)
+    };
+    let metadata = fs::symlink_metadata(&package_dir)
+        .map_err(|err| format!("{}: {err}", package_dir.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(format!(
+            "{}: evidence package must be a regular non-symlink directory",
+            package_dir.display()
+        ));
+    }
+    let package_files = list_regular_files_relative(&package_dir)?;
+    let manifest_path = format!("{rel}/manifest.toml");
+    let manifest = require_file(root, &manifest_path)?;
+    validate_committed_evidence_text(&manifest_path, &manifest)?;
+    let doc = parse_simple_toml_document(&manifest_path, &manifest)?;
+    if require_simple_string(&manifest_path, &doc, "provenance", "official_ic_repository")?
+        != "dfinity/ic"
+        || require_simple_string(
             &manifest_path,
             &doc,
             "provenance",
-            "official_ic_source_commit",
-        )?;
-        if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(format!(
-                "{manifest_path}: official_ic_source_commit must be exact 40-hex commit"
+            "sns_testing_source_path",
+        )? != "rs/sns/testing"
+    {
+        return Err(format!("{manifest_path}: invalid official SNS provenance"));
+    }
+    let complete = require_simple_bool(&manifest_path, &doc, "provenance", "complete")?;
+    let monitoring = doc
+        .get("provenance")
+        .and_then(|section| section.get("monitoring"))
+        == Some(&SimpleTomlValue::Bool(true));
+    let canonical_economics = doc
+        .get("provenance")
+        .and_then(|section| section.get("canonical_redemption_economics"))
+        == Some(&SimpleTomlValue::Bool(true));
+    if selected_current && (!complete || !monitoring || !canonical_economics) {
+        return Err(format!(
+                "{manifest_path}: selected current package must be complete, monitoring, and canonical-redemption-economics evidence"
             ));
+    }
+    let commit = require_simple_string(
+        &manifest_path,
+        &doc,
+        "provenance",
+        "official_ic_source_commit",
+    )?;
+    if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!(
+            "{manifest_path}: official_ic_source_commit must be exact 40-hex commit"
+        ));
+    }
+    let expected_files: BTreeSet<String> = if complete {
+        let mut files = [
+            "manifest.toml",
+            "toolchain-provenance.toml",
+            "sns_init.local.yaml",
+            "canister-ids.local.toml",
+            "reserve-funding-evidence.toml",
+            "ledger-evidence.toml",
+            "governance-evidence.toml",
+            "controller-evidence.toml",
+            "archive-evidence.toml",
+            "commands.log",
+            "SHA256SUMS",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+        if monitoring {
+            files.insert("release-evidence.toml".into());
+            files.insert("historian-dashboard.log".into());
         }
-        let expected_files: BTreeSet<String> = if complete {
-            let mut files = [
-                "manifest.toml",
-                "toolchain-provenance.toml",
-                "sns_init.local.yaml",
-                "canister-ids.local.toml",
-                "reserve-funding-evidence.toml",
-                "ledger-evidence.toml",
-                "governance-evidence.toml",
-                "controller-evidence.toml",
-                "archive-evidence.toml",
-                "commands.log",
-                "SHA256SUMS",
-            ]
+        if canonical_economics {
+            for file in [
+                "stream-install-args.did",
+                "nns-manager-install-args.did",
+                "historian-observation-config.did",
+                "account-map.toml",
+                "redemption-economics.toml",
+                "treasury-account-history.log",
+                "archive-observation.log",
+            ] {
+                files.insert(file.into());
+            }
+        }
+        files
+    } else {
+        ["manifest.toml", "blocker-report.md", "SHA256SUMS"]
             .into_iter()
             .map(str::to_string)
-            .collect::<BTreeSet<_>>();
-            if monitoring {
-                files.insert("release-evidence.toml".into());
-                files.insert("historian-dashboard.log".into());
-            }
-            if canonical_economics {
-                for file in [
-                    "stream-install-args.did",
-                    "nns-manager-install-args.did",
-                    "historian-observation-config.did",
-                    "account-map.toml",
-                    "redemption-economics.toml",
-                    "treasury-account-history.log",
-                    "archive-observation.log",
-                ] {
-                    files.insert(file.into());
-                }
-            }
-            files
-        } else {
-            ["manifest.toml", "blocker-report.md", "SHA256SUMS"]
-                .into_iter()
-                .map(str::to_string)
-                .collect()
-        };
-        if package_files != expected_files {
-            let unexpected = package_files
-                .difference(&expected_files)
-                .cloned()
-                .collect::<Vec<_>>();
-            let missing = expected_files
-                .difference(&package_files)
-                .cloned()
-                .collect::<Vec<_>>();
-            return Err(format!(
+            .collect()
+    };
+    if package_files != expected_files {
+        let unexpected = package_files
+            .difference(&expected_files)
+            .cloned()
+            .collect::<Vec<_>>();
+        let missing = expected_files
+            .difference(&package_files)
+            .cloned()
+            .collect::<Vec<_>>();
+        return Err(format!(
                 "{rel}: evidence package inventory mismatch; unexpected={unexpected:?}, missing={missing:?}"
             ));
+    }
+    validate_evidence_package_sha256s(root, rel, &package_files)?;
+    for file in &package_files {
+        if file == "SHA256SUMS" {
+            continue;
         }
-        validate_evidence_package_sha256s(root, &rel, &package_files)?;
+        let file_path = format!("{rel}/{file}");
+        let text = require_file(root, &file_path)?;
+        validate_committed_evidence_text(&file_path, &text)?;
+    }
+    if complete {
+        if doc
+            .get("provenance")
+            .is_some_and(|section| section.contains_key("blocker_report"))
+        {
+            return Err(format!(
+                "{manifest_path}: completed evidence must not contain blocker_report"
+            ));
+        }
         for file in &package_files {
             if file == "SHA256SUMS" {
                 continue;
             }
             let file_path = format!("{rel}/{file}");
             let text = require_file(root, &file_path)?;
-            validate_committed_evidence_text(&file_path, &text)?;
+            reject_completed_evidence_placeholders(&file_path, &text)?;
         }
-        if complete {
-            if doc
-                .get("provenance")
-                .is_some_and(|section| section.contains_key("blocker_report"))
-            {
+        let toolchain_path = format!("{rel}/toolchain-provenance.toml");
+        let toolchain = require_file(root, &toolchain_path)?;
+        validate_completed_toolchain_provenance(&toolchain_path, &toolchain)?;
+        if monitoring {
+            validate_monitoring_evidence(root, rel, &doc, selected_current)?;
+        }
+        if canonical_economics {
+            if !monitoring {
                 return Err(format!(
-                    "{manifest_path}: completed evidence must not contain blocker_report"
-                ));
-            }
-            for file in &package_files {
-                if file == "SHA256SUMS" {
-                    continue;
-                }
-                let file_path = format!("{rel}/{file}");
-                let text = require_file(root, &file_path)?;
-                reject_completed_evidence_placeholders(&file_path, &text)?;
-            }
-            let toolchain_path = format!("{rel}/toolchain-provenance.toml");
-            let toolchain = require_file(root, &toolchain_path)?;
-            validate_completed_toolchain_provenance(&toolchain_path, &toolchain)?;
-            if monitoring {
-                validate_monitoring_evidence(root, &rel, &doc)?;
-            }
-            if canonical_economics {
-                if !monitoring {
-                    return Err(format!(
                         "{manifest_path}: canonical redemption economics must be release-bound monitoring evidence"
                     ));
-                }
-                validate_canonical_redemption_evidence(root, &rel)?;
-                canonical_economics_found = true;
             }
-        } else {
-            let blocker_report =
-                require_simple_string(&manifest_path, &doc, "provenance", "blocker_report")?;
-            if blocker_report != "blocker-report.md" {
-                return Err(format!(
-                    "{manifest_path}: incomplete package must reference blocker-report.md"
-                ));
-            }
-            let blocker_path = format!("{rel}/blocker-report.md");
-            let blocker = require_file(root, &blocker_path)?;
-            require_present(
-                &blocker_path,
-                &blocker,
-                &[
-                    "official local SNS rehearsal not completed",
-                    "source-built",
-                    "No mainnet call",
-                ],
-            )?;
+            validate_canonical_redemption_evidence(root, rel)?;
         }
+    } else {
+        let blocker_report =
+            require_simple_string(&manifest_path, &doc, "provenance", "blocker_report")?;
+        if blocker_report != "blocker-report.md" {
+            return Err(format!(
+                "{manifest_path}: incomplete package must reference blocker-report.md"
+            ));
+        }
+        let blocker_path = format!("{rel}/blocker-report.md");
+        let blocker = require_file(root, &blocker_path)?;
+        require_present(
+            &blocker_path,
+            &blocker,
+            &[
+                "official local SNS rehearsal not completed",
+                "source-built",
+                "No mainnet call",
+            ],
+        )?;
     }
-    if !canonical_economics_found {
-        return Err(
-            "current launch readiness requires one complete canonical-redemption-economics evidence package"
-                .into(),
-        );
+    Ok(ValidatedEvidencePackage {
+        complete,
+        monitoring,
+        canonical_economics,
+        io_release_source_commit: if monitoring {
+            Some(require_simple_string(
+                &manifest_path,
+                &doc,
+                "provenance",
+                "io_release_source_commit",
+            )?)
+        } else {
+            None
+        },
+        io_artifact_recording_commit: if monitoring {
+            Some(require_simple_string(
+                &manifest_path,
+                &doc,
+                "provenance",
+                "io_artifact_recording_commit",
+            )?)
+        } else {
+            None
+        },
+    })
+}
+
+fn validate_current_selector_binding(
+    root: &Path,
+    package: &str,
+    validated: &ValidatedEvidencePackage,
+    selector: &CurrentCanonicalSelector,
+) -> Result<(), String> {
+    if !validated.complete || !validated.monitoring || !validated.canonical_economics {
+        return Err(format!(
+            "{package}: selected current package is not complete monitoring canonical evidence"
+        ));
+    }
+    if validated.io_release_source_commit.as_deref()
+        != Some(selector.io_release_source_commit.as_str())
+    {
+        return Err(format!(
+            "{CURRENT_CANONICAL_SELECTOR}: selected package release source commit mismatch"
+        ));
+    }
+    if validated.io_artifact_recording_commit.as_deref()
+        != Some(selector.io_artifact_recording_commit.as_str())
+    {
+        return Err(format!(
+            "{CURRENT_CANONICAL_SELECTOR}: selected package artifact-recording commit mismatch"
+        ));
+    }
+    for (field, path, expected) in [
+        (
+            "release_manifest_sha256",
+            MANIFEST_PATH.to_string(),
+            selector.release_manifest_sha256.as_str(),
+        ),
+        (
+            "package_manifest_sha256",
+            format!("{package}/manifest.toml"),
+            selector.package_manifest_sha256.as_str(),
+        ),
+        (
+            "package_sha256s_sha256",
+            format!("{package}/SHA256SUMS"),
+            selector.package_sha256s_sha256.as_str(),
+        ),
+    ] {
+        let bytes = fs::read(root.join(&path)).map_err(|err| format!("{path}: {err}"))?;
+        if hex_sha256(&bytes) != expected {
+            return Err(format!(
+                "{CURRENT_CANONICAL_SELECTOR}: current.{field} does not match {path}"
+            ));
+        }
     }
     Ok(())
 }
@@ -6190,11 +6524,8 @@ fn validate_monitoring_evidence(
     root: &Path,
     package: &str,
     package_manifest: &SimpleTomlDocument,
+    selected_current: bool,
 ) -> Result<(), String> {
-    let canonical_economics = package_manifest
-        .get("provenance")
-        .and_then(|section| section.get("canonical_redemption_economics"))
-        == Some(&SimpleTomlValue::Bool(true));
     let source_commit = require_simple_string(
         &format!("{package}/manifest.toml"),
         package_manifest,
@@ -6227,11 +6558,11 @@ fn validate_monitoring_evidence(
             "{package}: artifact-recording manifest source does not match package source commit"
         ));
     }
-    if canonical_economics {
+    if selected_current {
         let current_manifest_text = require_file(root, MANIFEST_PATH)?;
         if recorded_manifest.stdout != current_manifest_text.as_bytes() {
             return Err(format!(
-                "{package}: current canonical package artifact commit does not contain the exact current release manifest"
+                "{package}: selected current package artifact commit does not contain the exact current release manifest"
             ));
         }
     }
@@ -6305,6 +6636,59 @@ fn validate_monitoring_evidence(
     let governance_path = format!("{package}/governance-evidence.toml");
     let governance_text = require_file(root, &governance_path)?;
     let governance = parse_simple_toml_document(&governance_path, &governance_text)?;
+    let historian_release_raw =
+        require_simple_string(&release_path, &release, "io_historian", "raw_wasm_sha256")?;
+    let has_complete_upgrade_transition = governance
+        .get("upgrade")
+        .is_some_and(|section| section.contains_key("after_module_sha256"));
+    if selected_current && !has_complete_upgrade_transition {
+        return Err(format!(
+            "{governance_path}: selected current package must record the complete historian module transition"
+        ));
+    }
+    if has_complete_upgrade_transition {
+        let before = require_simple_string(
+            &governance_path,
+            &governance,
+            "upgrade",
+            "before_module_sha256",
+        )?;
+        let payload = require_simple_string(
+            &governance_path,
+            &governance,
+            "upgrade",
+            "payload_wasm_sha256",
+        )?;
+        let after = require_simple_string(
+            &governance_path,
+            &governance,
+            "upgrade",
+            "after_module_sha256",
+        )?;
+        let recorded_release = require_simple_string(
+            &governance_path,
+            &governance,
+            "upgrade",
+            "release_raw_sha256",
+        )?;
+        if before == after
+            || payload != historian_release_raw
+            || after != historian_release_raw
+            || recorded_release != historian_release_raw
+            || !require_simple_bool(&governance_path, &governance, "upgrade", "proposal_adopted")?
+            || !require_simple_bool(
+                &governance_path,
+                &governance,
+                "upgrade",
+                "proposal_executed",
+            )?
+            || !require_simple_bool(&governance_path, &governance, "upgrade", "executed")?
+        {
+            return Err(format!(
+                "{governance_path}: historian Governance upgrade does not prove an adopted, executed, hash-changing transition to the recorded release"
+            ));
+        }
+    }
     let eligible_credit = require_simple_u128(&ids_path, &ids, "reward", "eligible_credit")?;
     if eligible_credit == 0
         || require_simple_u128(&governance_path, &governance, "reward", "eligible_credit")?
@@ -8062,7 +8446,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, simplicity_check, validate_nns_boundary_pin, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_committed_evidence, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, build_recorded_source, verify_recorded_source, compare_release_artifact_dirs, nns_neuron_staking_subaccount, sns_distribution_subaccount, calculate_redemption_economics, index_transfer_block, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, simplicity_check, validate_nns_boundary_pin, security_scan, security_scan_required, validate_install_args, validate_prelaunch_public_shell, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_evidence_package, validate_local_sns_committed_evidence, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_official_testing_check, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, build_recorded_source, verify_recorded_source, compare_release_artifact_dirs, nns_neuron_staking_subaccount, sns_distribution_subaccount, calculate_redemption_economics, index_transfer_block, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -8470,6 +8854,31 @@ fn main() -> ExitCode {
                 ok = false;
             }
         },
+        "validate_local_sns_evidence_package" => {
+            if args.len() != 1 {
+                eprintln!("✗ validate_local_sns_evidence_package: expected <package-directory>");
+                return ExitCode::from(2);
+            }
+            match validate_local_sns_evidence_package_at(&root, &args[0], false) {
+                Ok(validated)
+                    if validated.complete
+                        && validated.monitoring
+                        && validated.canonical_economics =>
+                {
+                    eprintln!("✓ validate_local_sns_evidence_package")
+                }
+                Ok(_) => {
+                    eprintln!(
+                        "✗ validate_local_sns_evidence_package: candidate must be complete monitoring canonical evidence"
+                    );
+                    ok = false;
+                }
+                Err(err) => {
+                    eprintln!("✗ validate_local_sns_evidence_package: {err}");
+                    ok = false;
+                }
+            }
+        }
         "validate_local_sns_committed_evidence" => {
             match check_local_sns_committed_evidence_at(&root) {
                 Ok(()) => eprintln!("✓ validate_local_sns_committed_evidence"),
@@ -9314,6 +9723,38 @@ mod tests {
         write(root, &format!("{package}/SHA256SUMS"), &lines);
     }
 
+    fn selector_text(
+        package: &str,
+        source_commit: &str,
+        artifact_commit: &str,
+        release_manifest_sha256: &str,
+        package_manifest_sha256: &str,
+        package_sha256s_sha256: &str,
+    ) -> String {
+        format!(
+            "[schema]\nversion = 1\n\n[current]\npackage = \"{package}\"\nio_release_source_commit = \"{source_commit}\"\nio_artifact_recording_commit = \"{artifact_commit}\"\nrelease_manifest_sha256 = \"{release_manifest_sha256}\"\npackage_manifest_sha256 = \"{package_manifest_sha256}\"\npackage_sha256s_sha256 = \"{package_sha256s_sha256}\"\n"
+        )
+    }
+
+    fn dummy_selector_text(package: &str) -> String {
+        selector_text(
+            package,
+            &"1".repeat(40),
+            &"2".repeat(40),
+            &"3".repeat(64),
+            &"4".repeat(64),
+            &"5".repeat(64),
+        )
+    }
+
+    fn write_selector(root: &Path, package: &str) {
+        write(
+            root,
+            CURRENT_CANONICAL_SELECTOR,
+            &dummy_selector_text(package),
+        );
+    }
+
     fn write_incomplete_evidence_package(root: &Path) -> String {
         let package = "deploy/local-sns-rehearsal/evidence/2026-07-29-0123456".to_string();
         write(
@@ -9659,6 +10100,16 @@ canonical_ledger_note: "IO_TEST ledger is non-canonical"
             root,
             "deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh",
             "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# IO_LOCAL_REWARD_ADVANCE_SECONDS=86400 IncreaseDissolveDelay DissolveDelaySeconds = 1209600 resume_reward_work ProposalBearing processed_reward_event_count: 1 accumulated_policy_credit: 1000000000000000000\n",
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/scripts/11-build-local-io-canisters.sh",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n# git -C \"$REPO_ROOT\" diff --quiet; artifact_commit=; git -C \"$REPO_ROOT\" show; tracked_clean=true\n",
+        );
+        write(
+            root,
+            "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n# mktemp -d validate_local_sns_evidence_package current-canonical.toml mv \"$selector_temporary\" \"$selector_path\" preceding selector restored and candidate removed after_module_sha256 proposal_adopted = true proposal_executed = true\n",
         );
         write(
             root,
@@ -10766,22 +11217,237 @@ Template SNS principal values are planned wiring placeholders only.
     }
 
     #[test]
-    fn exact_incomplete_inventory_is_valid_but_not_current_launch_ready() {
-        let root = temp_root("local-sns-evidence-incomplete");
-        write_incomplete_evidence_package(&root);
+    fn current_canonical_selector_accepts_only_the_closed_v1_shape() {
+        let good = dummy_selector_text("2026-08-14-4320fdf-canonical-economics");
+        let parsed = parse_current_canonical_selector(CURRENT_CANONICAL_SELECTOR, &good).unwrap();
+        assert_eq!(parsed.package, "2026-08-14-4320fdf-canonical-economics");
+
+        for bad in [
+            good.replace("version = 1", "version = 2"),
+            format!("{good}\nunexpected = \"field\"\n"),
+            good.replace("[current]", "[current]\nunexpected = \"field\""),
+            format!("{good}\n[current]\n"),
+        ] {
+            assert!(parse_current_canonical_selector(CURRENT_CANONICAL_SELECTOR, &bad).is_err());
+        }
+    }
+
+    #[test]
+    fn current_canonical_selector_rejects_traversal_and_absolute_packages() {
+        for package in [
+            "../historical",
+            "nested/package",
+            "nested\\package",
+            "/absolute/package",
+            ".",
+            "..",
+        ] {
+            assert!(parse_current_canonical_selector(
+                CURRENT_CANONICAL_SELECTOR,
+                &dummy_selector_text(package),
+            )
+            .unwrap_err()
+            .contains("leaf directory"));
+        }
+    }
+
+    #[test]
+    fn current_selector_binding_checks_every_release_and_package_identity() {
+        let root = temp_root("current-selector-binding");
+        let package = "deploy/local-sns-rehearsal/evidence/current-package";
+        write(&root, MANIFEST_PATH, "current release manifest\n");
+        write(
+            &root,
+            &format!("{package}/manifest.toml"),
+            "package manifest\n",
+        );
+        write(&root, &format!("{package}/SHA256SUMS"), "package sums\n");
+        let source_commit = "1".repeat(40);
+        let artifact_commit = "2".repeat(40);
+        let validated = ValidatedEvidencePackage {
+            complete: true,
+            monitoring: true,
+            canonical_economics: true,
+            io_release_source_commit: Some(source_commit.clone()),
+            io_artifact_recording_commit: Some(artifact_commit.clone()),
+        };
+        let selector = CurrentCanonicalSelector {
+            package: "current-package".into(),
+            io_release_source_commit: source_commit,
+            io_artifact_recording_commit: artifact_commit,
+            release_manifest_sha256: hex_sha256(&fs::read(root.join(MANIFEST_PATH)).unwrap()),
+            package_manifest_sha256: hex_sha256(
+                &fs::read(root.join(package).join("manifest.toml")).unwrap(),
+            ),
+            package_sha256s_sha256: hex_sha256(
+                &fs::read(root.join(package).join("SHA256SUMS")).unwrap(),
+            ),
+        };
+        validate_current_selector_binding(&root, package, &validated, &selector).unwrap();
+
+        let mut wrong = selector.clone();
+        wrong.io_release_source_commit = "a".repeat(40);
+        assert!(
+            validate_current_selector_binding(&root, package, &validated, &wrong)
+                .unwrap_err()
+                .contains("release source")
+        );
+        let mut wrong = selector.clone();
+        wrong.io_artifact_recording_commit = "b".repeat(40);
+        assert!(
+            validate_current_selector_binding(&root, package, &validated, &wrong)
+                .unwrap_err()
+                .contains("artifact-recording")
+        );
+        for field in [
+            "release_manifest_sha256",
+            "package_manifest_sha256",
+            "package_sha256s_sha256",
+        ] {
+            let mut wrong = selector.clone();
+            match field {
+                "release_manifest_sha256" => wrong.release_manifest_sha256 = "0".repeat(64),
+                "package_manifest_sha256" => wrong.package_manifest_sha256 = "0".repeat(64),
+                "package_sha256s_sha256" => wrong.package_sha256s_sha256 = "0".repeat(64),
+                _ => unreachable!(),
+            }
+            assert!(
+                validate_current_selector_binding(&root, package, &validated, &wrong)
+                    .unwrap_err()
+                    .contains(field)
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn immutable_historical_canonical_package_validates_intrinsically() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let package = "deploy/local-sns-rehearsal/evidence/2026-08-12-4320fdf-canonical-economics";
+        let validated = validate_local_sns_evidence_package_at(&root, package, false).unwrap();
+        assert!(validated.complete);
+        assert!(validated.monitoring);
+        assert!(validated.canonical_economics);
+    }
+
+    #[test]
+    fn selecting_historical_canonical_after_release_change_fails() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let package = "deploy/local-sns-rehearsal/evidence/2026-08-12-4320fdf-canonical-economics";
+        assert!(validate_local_sns_evidence_package_at(&root, package, true)
+            .unwrap_err()
+            .contains("selected current package artifact commit"));
+    }
+
+    #[test]
+    fn current_selector_missing_or_unselected_package_fails_closed() {
+        let root = temp_root("current-selector-missing");
+        write_completed_evidence_package(&root);
         assert!(check_local_sns_committed_evidence_at(&root)
             .unwrap_err()
-            .contains("requires one complete canonical-redemption-economics"));
+            .contains("required selector is missing"));
+        write_selector(&root, "missing-package");
+        assert!(check_local_sns_committed_evidence_at(&root)
+            .unwrap_err()
+            .contains("was not encountered exactly once"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn current_selector_rejects_incomplete_or_noncanonical_selection() {
+        let root = temp_root("current-selector-shape");
+        let incomplete = write_incomplete_evidence_package(&root);
+        let incomplete_name = Path::new(&incomplete)
+            .file_name()
+            .unwrap()
+            .to_string_lossy();
+        write_selector(&root, &incomplete_name);
+        assert!(check_local_sns_committed_evidence_at(&root)
+            .unwrap_err()
+            .contains("must be complete, monitoring, and canonical"));
+
+        let completed = write_completed_evidence_package(&root);
+        let completed_name = Path::new(&completed).file_name().unwrap().to_string_lossy();
+        write_selector(&root, &completed_name);
+        assert!(check_local_sns_committed_evidence_at(&root)
+            .unwrap_err()
+            .contains("must be complete, monitoring, and canonical"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn current_selector_rejects_a_second_designation_file() {
+        let root = temp_root("current-selector-duplicate");
+        write_selector(&root, "missing-package");
+        write(
+            &root,
+            "deploy/local-sns-rehearsal/evidence/also-current.toml",
+            &dummy_selector_text("missing-package"),
+        );
+        assert!(check_local_sns_committed_evidence_at(&root)
+            .unwrap_err()
+            .contains("exact selector or regular package directories"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn current_selector_rejects_symlink_selector_and_package() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_root("current-selector-symlinks");
+        write(
+            &root,
+            "deploy/local-sns-rehearsal/evidence/selector-target.toml",
+            &dummy_selector_text("selected-package"),
+        );
+        symlink(
+            root.join("deploy/local-sns-rehearsal/evidence/selector-target.toml"),
+            root.join(CURRENT_CANONICAL_SELECTOR),
+        )
+        .unwrap();
+        assert!(check_local_sns_committed_evidence_at(&root)
+            .unwrap_err()
+            .contains("regular non-symlink file"));
+
+        fs::remove_file(root.join(CURRENT_CANONICAL_SELECTOR)).unwrap();
+        fs::remove_file(root.join("deploy/local-sns-rehearsal/evidence/selector-target.toml"))
+            .unwrap();
+        write_selector(&root, "selected-package");
+        fs::create_dir_all(root.join("outside-package")).unwrap();
+        symlink(
+            root.join("outside-package"),
+            root.join("deploy/local-sns-rehearsal/evidence/selected-package"),
+        )
+        .unwrap();
+        assert!(check_local_sns_committed_evidence_at(&root)
+            .unwrap_err()
+            .contains("exact selector or regular package directories"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn exact_incomplete_inventory_is_valid_but_not_current_launch_ready() {
+        let root = temp_root("local-sns-evidence-incomplete");
+        let package = write_incomplete_evidence_package(&root);
+        let validated = validate_local_sns_evidence_package_at(&root, &package, false).unwrap();
+        assert!(!validated.complete);
+        assert!(check_local_sns_committed_evidence_at(&root)
+            .unwrap_err()
+            .contains("required selector is missing"));
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn exact_historical_inventory_is_valid_but_not_current_launch_ready() {
         let root = temp_root("local-sns-evidence-completed");
-        write_completed_evidence_package(&root);
+        let package = write_completed_evidence_package(&root);
+        let validated = validate_local_sns_evidence_package_at(&root, &package, false).unwrap();
+        assert!(validated.complete);
+        assert!(!validated.monitoring);
         assert!(check_local_sns_committed_evidence_at(&root)
             .unwrap_err()
-            .contains("requires one complete canonical-redemption-economics"));
+            .contains("required selector is missing"));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -10799,9 +11465,11 @@ Template SNS principal values are planned wiring placeholders only.
         let mut text = fs::read_to_string(&sha_path).unwrap();
         text.push_str(&format!("{first}\n"));
         fs::write(sha_path, text).unwrap();
-        assert!(check_local_sns_committed_evidence_at(&root)
-            .unwrap_err()
-            .contains("duplicate SHA256SUMS"));
+        assert!(
+            validate_local_sns_evidence_package_at(&root, &package, false)
+                .unwrap_err()
+                .contains("duplicate SHA256SUMS")
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -10810,9 +11478,11 @@ Template SNS principal values are planned wiring placeholders only.
         let root = temp_root("local-sns-evidence-unexpected");
         let package = write_incomplete_evidence_package(&root);
         write(&root, &format!("{package}/extra.txt"), "extra\n");
-        assert!(check_local_sns_committed_evidence_at(&root)
-            .unwrap_err()
-            .contains("inventory mismatch"));
+        assert!(
+            validate_local_sns_evidence_package_at(&root, &package, false)
+                .unwrap_err()
+                .contains("inventory mismatch")
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -10838,9 +11508,11 @@ Template SNS principal values are planned wiring placeholders only.
             "commands.log",
         ];
         write_evidence_sha256s(&root, &package, &files);
-        assert!(check_local_sns_committed_evidence_at(&root)
-            .unwrap_err()
-            .contains("placeholder marker"));
+        assert!(
+            validate_local_sns_evidence_package_at(&root, &package, false)
+                .unwrap_err()
+                .contains("placeholder marker")
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -10856,9 +11528,11 @@ Template SNS principal values are planned wiring placeholders only.
             root.join(&package).join("linked-manifest.toml"),
         )
         .unwrap();
-        assert!(check_local_sns_committed_evidence_at(&root)
-            .unwrap_err()
-            .contains("reject symlinks"));
+        assert!(
+            validate_local_sns_evidence_package_at(&root, &package, false)
+                .unwrap_err()
+                .contains("reject symlinks")
+        );
         let _ = fs::remove_dir_all(root);
     }
 

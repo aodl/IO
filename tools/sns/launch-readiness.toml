@@ -14,8 +14,8 @@ status = "incomplete"
 evidence = "tools/sns/sns_init.io.template.yaml exists and the maintained source-built SNS flow validates and consumes the local init. The absent optional dfx sns extension remains an upstream non-blocking tooling defect for this evidence path; final production SNS configuration review is incomplete."
 
 [local_sns_testing_rehearsal]
-status = "complete"
-evidence = "The immutable 2026-08-12-4320fdf-canonical-economics package is bound to source e1c739e5658869edb3ab507d4164a9f6b02127bd and artifact commit c335a005ecf108b10cf24683767da5580cfb4f50. It preserves exact rendered Stream/NNS/historian/SNS-init/Account inputs, derives and observes the canonical nonzero SNS treasury Account, proves the Stream quote and ledger identities with checked arithmetic, and records Fresh historian convergence. The two older packages retain valid historical mechanics/connectivity evidence but their redemption economics are superseded."
+status = "incomplete"
+evidence = "The immutable 2026-08-12-4320fdf-canonical-economics package remains valid historical evidence for source 45bf8f42fbcb71242074e8682a955d21cb1f7ba5 and artifact commit fe0601f3385e87703849bf42d265145109ddf9e6. Current completion requires a fresh isolated same-source candidate Governance/Root compatibility rehearsal against the final release pair and an atomic current-canonical.toml selection; historical evidence is never rebound to the checked-in release."
 
 [mainnet_testflight]
 status = "incomplete"
