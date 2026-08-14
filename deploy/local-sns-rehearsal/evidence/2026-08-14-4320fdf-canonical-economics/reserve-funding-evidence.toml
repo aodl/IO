@@ -1,0 +1,18 @@
+[reserve]
+proposal_id = 2
+proposal_adopted = true
+proposal_executed = true
+treasury_transfer_amount_e8s = 10000000000
+transfer_fee_e8s = 10000
+transfer_block = 6
+reserve_owner = "lxzze-o7777-77777-aaaaa-cai"
+reserve_subaccount_hex = "0101010101010101010101010101010101010101010101010101010101010101"
+treasury_name = "sns-treasury"
+treasury_owner = "7uieb-cx777-77776-qaaaq-cai"
+treasury_subaccount_hex = "f6e661a692e337ba899cf0b9a3610869cf8a728eb5989fcef7bb7eeb8a0040a1"
+treasury_balance_before_e8s = 80000000000000
+treasury_balance_after_reserve_e8s = 79989999990000
+treasury_balance_after_user_e8s = 79989899980000
+user_funding_transfer_block = 7
+final_balance_e8s = 10020000000
+final_total_supply_e8s = 99999999930000
