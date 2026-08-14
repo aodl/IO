@@ -91,15 +91,18 @@ source commit. Generation remains stricter and is only permitted while the
 working tree differs from that source under `release-artifacts/` alone.
 
 For the release lineage whose source-finalization commit is
-`e1c739e5658869edb3ab507d4164a9f6b02127bd` and artifact-recording commit is
-`c335a005ecf108b10cf24683767da5580cfb4f50`, integration must preserve both
-commit identities. Pull-request jobs check out the PR head directly and require
-the PR base commit to be an ancestor of that head. While that condition holds,
-integration must be fast-forward-only. Squash and rebase merges are forbidden,
-and an added merge commit is incompatible with this release-tail rule. If
-branch protection prevents a fast-forward, do not merge or weaken provenance;
-return for an explicit integration decision and, if build inputs must change,
-create and validate a new source-finalization/artifact-recording pair.
+S4 `55b2099a555799c4a032308eb8a39049c7946193` and artifact-recording commit is
+A4 `09b115f708ec784766327539f9cf4e5e21668d84`, integration must preserve both
+commit identities. T4 `6d3ece1a2e84c049003c540609415187727290f2`
+selects the current evidence and is not the artifact-recording commit.
+Pull-request jobs check out the PR head directly and require the PR base commit
+to be an ancestor of that head. After every required workflow passes on the
+exact final release-tail head and explicit authorization is given, integration
+may occur only by a direct fast-forward of `master`. Squash merge, rebase merge,
+an added merge commit, and ordinary GitHub merge-button integration are
+forbidden. If branch protection prevents a direct fast-forward, do not merge or
+weaken provenance; return for an explicit integration decision and, if build
+inputs must change, create and validate a new source-finalization/artifact-recording pair.
 
 Detached worktrees live outside the repository under one portable temporary
 root selected in this order: `IO_RELEASE_BUILD_TMPDIR`, `RUNNER_TEMP`, `TMPDIR`,

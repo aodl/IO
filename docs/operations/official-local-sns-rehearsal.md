@@ -110,9 +110,18 @@ authentic inline SNS-controlled hash-changing historian upgrade,
 Governance-authorized stream and NNS-manager activation using the source-shaped
 local NNS fixture, production ICRC-2 redemption, canonical ledger/index
 histories, and one exact proposal-bearing daily reward event. The separate
-`2026-08-12-4320fdf-monitoring` package preserves historical mechanics and historian connectivity. The corrected historical package uses the derived Governance treasury distribution Account in both Stream and historian configuration and passes the independent checked-arithmetic evidence validator. A fresh current-release package remains required until `current-canonical.toml` atomically selects a completed rehearsal bound to the final source/artifact pair.
+`2026-08-12-4320fdf-monitoring` package preserves historical mechanics and historian connectivity. The corrected historical package uses the derived Governance treasury distribution Account in both Stream and historian configuration and passes the independent checked-arithmetic evidence validator.
 
-This rehearsal does not prove final SNS launch readiness, mainnet NNS proposal acceptance, final tokenomics, final fallback controllers, production adapter activation, archive traversal completeness, or external audit readiness.
+`current-canonical.toml` selects the separate immutable current package
+`2026-08-14-4320fdf-canonical-economics`, bound to source S4
+`55b2099a555799c4a032308eb8a39049c7946193` and artifact A4
+`09b115f708ec784766327539f9cf4e5e21668d84`. The selector binds that package's
+release manifest, package manifest, and checksum inventory. The 2026-08-12
+canonical package remains historical evidence and was not rebound.
+
+Completed local proof does not prove official SNS reward-share release adoption,
+final SNS configuration/tokenomics/controllers, external audit, or mainnet
+testflight and activation.
 
 IO protocol remains not live. The canonical SNS IO ledger remains not launched on mainnet.
 
