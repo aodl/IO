@@ -1,7 +1,0 @@
-[controllers]
-sns_root = "dllsh-pd777-77776-qaaaa-cai"
-io_stream_manager = "dllsh-pd777-77776-qaaaa-cai"
-io_nns_neuron_manager = "dllsh-pd777-77776-qaaaa-cai"
-io_historian_before = "dllsh-pd777-77776-qaaaa-cai"
-io_historian_after = "dllsh-pd777-77776-qaaaa-cai"
-frontend = "dllsh-pd777-77776-qaaaa-cai"
