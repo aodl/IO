@@ -52,14 +52,8 @@ pub fn classify_transfer(
 }
 
 #[derive(Clone, Debug)]
-pub struct NeuronObservation {
-    pub snapshot: NeuronSnapshot,
-    pub maturity_e8s: u64,
-    pub staked_maturity_e8s: u64,
-    pub auto_stake_maturity: bool,
-    pub maturity_disbursements: Vec<MaturityDisbursement>,
-    pub dissolve_state: Option<DissolveState>,
-}
+#[rustfmt::skip]
+pub struct NeuronObservation { pub snapshot: NeuronSnapshot, pub maturity_e8s: u64, pub staked_maturity_e8s: u64, pub auto_stake_maturity: bool, pub maturity_disbursements: Vec<MaturityDisbursement>, pub dissolve_state: Option<DissolveState> }
 
 pub const APPROVED_REWARD_BACKING_DISSOLVE_DELAY_SECONDS: u64 = 252_460_800;
 
@@ -72,41 +66,25 @@ pub fn validate_maturity_configuration(observation: &NeuronObservation) -> Resul
     {
         Ok(())
     } else {
-        Err("protected NNS neuron auto-stake or approved dissolve configuration drifted".into())
+        Err("configured NNS neuron auto-stake or approved dissolve configuration drifted".into())
     }
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct GovernanceError {
-    error_type: i32,
-    error_message: String,
-}
+#[rustfmt::skip]
+struct GovernanceError { error_type: i32, error_message: String }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct Neuron {
-    id: Option<NeuronId>,
-    account: Vec<u8>,
-    cached_neuron_stake_e8s: u64,
-    maturity_e8s_equivalent: u64,
-    staked_maturity_e8s_equivalent: Option<u64>,
-    auto_stake_maturity: Option<bool>,
-    maturity_disbursements_in_progress: Option<Vec<MaturityDisbursement>>,
-    dissolve_state: Option<DissolveState>,
-}
+#[rustfmt::skip]
+struct Neuron { id: Option<NeuronId>, account: Vec<u8>, cached_neuron_stake_e8s: u64, maturity_e8s_equivalent: u64, staked_maturity_e8s_equivalent: Option<u64>, auto_stake_maturity: Option<bool>, maturity_disbursements_in_progress: Option<Vec<MaturityDisbursement>>, dissolve_state: Option<DissolveState> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-pub struct MaturityDisbursement {
-    amount_e8s: Option<u64>,
-    timestamp_of_disbursement_seconds: Option<u64>,
-    finalize_disbursement_timestamp_seconds: Option<u64>,
-    account_to_disburse_to: Option<NnsAccount>,
-}
+#[rustfmt::skip]
+pub struct MaturityDisbursement { amount_e8s: Option<u64>, timestamp_of_disbursement_seconds: Option<u64>, finalize_disbursement_timestamp_seconds: Option<u64>, account_to_disburse_to: Option<NnsAccount> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct NnsAccount {
-    owner: Option<Principal>,
-    subaccount: Option<Vec<u8>>,
-}
+#[rustfmt::skip]
+struct NnsAccount { owner: Option<Principal>, subaccount: Option<Vec<u8>> }
 
 #[derive(Clone, Copy, Debug, CandidType, Deserialize, PartialEq, Eq)]
 pub enum DissolveState {
@@ -115,9 +93,8 @@ pub enum DissolveState {
 }
 
 #[derive(Clone, Copy, Debug, CandidType, Deserialize)]
-struct NeuronId {
-    id: u64,
-}
+#[rustfmt::skip]
+struct NeuronId { id: u64 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 enum NeuronIdOrSubaccount {
@@ -125,9 +102,8 @@ enum NeuronIdOrSubaccount {
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct ClaimOrRefresh {
-    by: Option<ClaimBy>,
-}
+#[rustfmt::skip]
+struct ClaimOrRefresh { by: Option<ClaimBy> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 enum ClaimBy {
@@ -149,9 +125,8 @@ enum Command {
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct Configure {
-    operation: Option<ConfigureOperation>,
-}
+#[rustfmt::skip]
+struct Configure { operation: Option<ConfigureOperation> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 enum ConfigureOperation {
@@ -160,43 +135,32 @@ enum ConfigureOperation {
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct Split {
-    amount_e8s: u64,
-    memo: Option<u64>,
-}
+#[rustfmt::skip]
+struct Split { amount_e8s: u64, memo: Option<u64> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct Merge {
-    source_neuron_id: Option<NeuronId>,
-}
+#[rustfmt::skip]
+struct Merge { source_neuron_id: Option<NeuronId> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct Disburse {
-    to_account: Option<AccountIdentifier>,
-    amount: Option<Amount>,
-}
+#[rustfmt::skip]
+struct Disburse { to_account: Option<AccountIdentifier>, amount: Option<Amount> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct Amount {
-    e8s: u64,
-}
+#[rustfmt::skip]
+struct Amount { e8s: u64 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct AccountIdentifier {
-    hash: Vec<u8>,
-}
+#[rustfmt::skip]
+struct AccountIdentifier { hash: Vec<u8> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct StakeMaturity {
-    percentage_to_stake: Option<u32>,
-}
+#[rustfmt::skip]
+struct StakeMaturity { percentage_to_stake: Option<u32> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct DisburseMaturity {
-    percentage_to_disburse: u32,
-    to_account: Option<NnsAccount>,
-    to_account_identifier: Option<AccountIdentifier>,
-}
+#[rustfmt::skip]
+struct DisburseMaturity { percentage_to_disburse: u32, to_account: Option<NnsAccount>, to_account_identifier: Option<AccountIdentifier> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 enum CommandResponse {
@@ -211,37 +175,28 @@ enum CommandResponse {
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct SpawnResponse {
-    created_neuron_id: Option<NeuronId>,
-}
+#[rustfmt::skip]
+struct SpawnResponse { created_neuron_id: Option<NeuronId> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct DisburseResponse {
-    transfer_block_height: u64,
-}
+#[rustfmt::skip]
+struct DisburseResponse { transfer_block_height: u64 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct StakeMaturityResponse {
-    maturity_e8s: u64,
-    staked_maturity_e8s: u64,
-}
+#[rustfmt::skip]
+struct StakeMaturityResponse { maturity_e8s: u64, staked_maturity_e8s: u64 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct DisburseMaturityResponse {
-    amount_disbursed_e8s: Option<u64>,
-}
+#[rustfmt::skip]
+struct DisburseMaturityResponse { amount_disbursed_e8s: Option<u64> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct ManageNeuron {
-    id: Option<NeuronId>,
-    neuron_id_or_subaccount: Option<NeuronIdOrSubaccount>,
-    command: Option<Command>,
-}
+#[rustfmt::skip]
+struct ManageNeuron { id: Option<NeuronId>, neuron_id_or_subaccount: Option<NeuronIdOrSubaccount>, command: Option<Command> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct ManageNeuronResponse {
-    command: Option<CommandResponse>,
-}
+#[rustfmt::skip]
+struct ManageNeuronResponse { command: Option<CommandResponse> }
 
 pub async fn query_neuron(config: &NnsConfig, neuron_id: u64) -> Result<NeuronSnapshot, ApiError> {
     Ok(query_neuron_observation(config, neuron_id).await?.snapshot)

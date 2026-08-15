@@ -2,7 +2,9 @@
 
 Stream and NNS value-moving state each have one explicit stable envelope containing only `V1`. Install always starts Paused. Upgrade reopens and validates the complete V1 state against the running canister principal; corrupt or mismatched state traps.
 
-There is no prelaunch value-moving migration chain. Future post-launch migrations begin from V1. Historian retains its independent observation-state migration history.
+There is no prelaunch migration chain for any production canister. Future
+post-launch migrations, if ever required, begin from the strict launch V1
+schemas and require a separate reviewed design.
 
 An SNS Governance module upgrade requires a separate reviewed production
 follow-up: a same-Wasm stream-manager upgrade with reviewed `UpgradeArgs` will

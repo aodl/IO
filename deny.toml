@@ -2,13 +2,14 @@
 version = 2
 yanked = "warn"
 ignore = [
-  # Transitive through pocket-ic 14.0.0 in dev/test coverage; no safe upgrade is available yet.
+  # Dev/test only through pocket-ic 14.0.0; retire when PocketIC removes backoff 0.4.
   "RUSTSEC-2025-0012",
-  # Transitive through backoff/pocket-ic; no safe upgrade is available yet.
+  # Dev/test only through backoff 0.4/pocket-ic; retires with the backoff exception above.
   "RUSTSEC-2024-0384",
-  # Transitive through candid 0.10.x / IC crates; tracked as a known baseline warning.
+  # Production transitive through candid 0.10.x; retire when the pinned IC stack removes paste.
   "RUSTSEC-2024-0436",
-  # Transitive through pocket-ic / ic-transport-types; no direct production use in IO canisters.
+  # Production frontend transitively uses serde_cbor through ic-http-certification;
+  # tests also receive it through PocketIC. Retire when both upstream paths remove serde_cbor.
   "RUSTSEC-2021-0127",
 ]
 
@@ -19,7 +20,6 @@ allow = [
   "Apache-2.0",
   "Apache-2.0 WITH LLVM-exception",
   "BSD-3-Clause",
-  "CC0-1.0",
   "CDLA-Permissive-2.0",
   "ISC",
   "MIT",
@@ -30,7 +30,7 @@ allow = [
 
 [bans]
 multiple-versions = "warn"
-wildcards = "allow"
+wildcards = "deny"
 highlight = "all"
 deny = []
 skip = []

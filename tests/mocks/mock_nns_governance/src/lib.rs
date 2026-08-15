@@ -39,10 +39,12 @@ struct GovernanceState {
     maturity_preparation: Option<PrepareTwoWeekMaturityArgs>,
     backing_readiness: Option<io_receipt_types::TwoWeekBackingReadiness>,
     backing_readiness_after_next_reconcile: Option<io_receipt_types::TwoWeekBackingReadiness>,
+    reconcile_calls: u64,
+    get_full_neuron_calls: u64,
 }
 
 thread_local! {
-    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new(), two_week_target: None, maturity_preparation: None, backing_readiness: None, backing_readiness_after_next_reconcile: None }) };
+    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new(), two_week_target: None, maturity_preparation: None, backing_readiness: None, backing_readiness_after_next_reconcile: None, reconcile_calls: 0, get_full_neuron_calls: 0 }) };
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -119,6 +121,7 @@ pub fn reconcile_two_week_backing_readiness(
 ) -> Result<io_receipt_types::TwoWeekBackingReadiness, NnsError> {
     Ok(STATE.with(|cell| {
         let mut state = cell.borrow_mut();
+        state.reconcile_calls += 1;
         let generation = state.two_week_target.as_ref().map_or(1, |target| {
             target.generation + u64::from(target.target_e8s != args.target_e8s)
         });
@@ -140,6 +143,93 @@ pub fn reconcile_two_week_backing_readiness(
         }
         readiness
     }))
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn debug_get_reconcile_call_count() -> u64 {
+    STATE.with(|cell| cell.borrow().reconcile_calls)
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct GovernanceError {
+    pub error_type: i32,
+    pub error_message: String,
+}
+
+#[derive(Clone, Copy, Debug, CandidType, Deserialize)]
+pub struct NnsNeuronId {
+    pub id: u64,
+}
+
+#[derive(Clone, Copy, Debug, CandidType, Deserialize)]
+pub enum NnsDissolveState {
+    DissolveDelaySeconds(u64),
+    WhenDissolvedTimestampSeconds(u64),
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct NnsAccount {
+    pub owner: Option<candid::Principal>,
+    pub subaccount: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct MaturityDisbursement {
+    pub amount_e8s: Option<u64>,
+    pub timestamp_of_disbursement_seconds: Option<u64>,
+    pub finalize_disbursement_timestamp_seconds: Option<u64>,
+    pub account_to_disburse_to: Option<NnsAccount>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct FullNeuron {
+    pub id: Option<NnsNeuronId>,
+    pub account: Vec<u8>,
+    pub cached_neuron_stake_e8s: u64,
+    pub maturity_e8s_equivalent: u64,
+    pub staked_maturity_e8s_equivalent: Option<u64>,
+    pub auto_stake_maturity: Option<bool>,
+    pub maturity_disbursements_in_progress: Option<Vec<MaturityDisbursement>>,
+    pub dissolve_state: Option<NnsDissolveState>,
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn get_full_neuron(neuron_id: u64) -> Result<FullNeuron, GovernanceError> {
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        state.get_full_neuron_calls += 1;
+        let neuron = state
+            .neurons
+            .iter()
+            .find(|neuron| neuron.neuron_id == neuron_id)
+            .ok_or_else(|| GovernanceError {
+                error_type: 1,
+                error_message: "mock neuron not found".into(),
+            })?;
+        let mut account = [0_u8; 32];
+        account[24..].copy_from_slice(&neuron_id.to_be_bytes());
+        Ok(FullNeuron {
+            id: Some(NnsNeuronId { id: neuron_id }),
+            account: account.to_vec(),
+            cached_neuron_stake_e8s: neuron.principal_e8s.try_into().unwrap_or(u64::MAX),
+            maturity_e8s_equivalent: neuron.maturity_e8s.try_into().unwrap_or(u64::MAX),
+            staked_maturity_e8s_equivalent: Some(0),
+            auto_stake_maturity: Some(false),
+            maturity_disbursements_in_progress: Some(Vec::new()),
+            dissolve_state: Some(if neuron.is_dissolving {
+                NnsDissolveState::WhenDissolvedTimestampSeconds(
+                    neuron.dissolve_started_at_seconds.unwrap_or_default(),
+                )
+            } else {
+                NnsDissolveState::DissolveDelaySeconds(neuron.dissolve_delay_seconds)
+            }),
+        })
+    })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn debug_get_full_neuron_call_count() -> u64 {
+    STATE.with(|cell| cell.borrow().get_full_neuron_calls)
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]

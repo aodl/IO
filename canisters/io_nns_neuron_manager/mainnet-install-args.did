@@ -17,6 +17,8 @@
     expected_icp_fee_e8s = TODO_ICP_FEE : nat;
     jupiter_fee_float_e8s = TODO_JUPITER_FEE_FLOAT : nat;
     two_week_fee_float_e8s = TODO_TWO_WEEK_FEE_FLOAT : nat;
+    jupiter_activation_block_floor = TODO_JUPITER_ACTIVATION_BLOCK_FLOOR : nat;
+    seeded_two_year_principal_e8s = TODO_SEEDED_TWO_YEAR_PRINCIPAL_E8S : nat;
     seeded_two_week_principal_e8s = TODO_SEEDED_PRINCIPAL : nat;
     transfer_retry_delay_nanos = TODO_TRANSFER_RETRY_DELAY_NANOS : nat64;
     ledger_deduplication_window_nanos = TODO_LEDGER_DEDUPLICATION_WINDOW_NANOS : nat64;

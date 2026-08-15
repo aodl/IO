@@ -31,13 +31,8 @@ pub struct BackingSnapshot {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct ReceiptPreparation {
-    pub request: PrepareLiquidReceiptArgs,
-    pub request_fingerprint: Vec<u8>,
-    pub authority: Principal,
-    pub captured_control_epoch: u64,
-    pub prepared_at_nanos: u64,
-}
+#[rustfmt::skip]
+pub struct ReceiptPreparation { pub request: PrepareLiquidReceiptArgs, pub request_fingerprint: Vec<u8>, pub authority: Principal, pub captured_control_epoch: u64, pub prepared_at_nanos: u64 }
 
 impl BackingSnapshot {
     pub(crate) fn validate(&self, config: &StreamConfig) -> Result<(), String> {

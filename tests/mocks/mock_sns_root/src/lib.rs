@@ -16,6 +16,7 @@ struct RootState {
     history: Vec<RootUpgradeAttempt>,
     next_attempt_id: u64,
     now: u64,
+    summary_calls: u64,
 }
 
 thread_local! {
@@ -47,6 +48,11 @@ pub fn debug_set_governance_module_hash(module_hash: Vec<u8>) -> Result<(), Stri
     Ok(())
 }
 
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn debug_get_summary_call_count() -> u64 {
+    STATE.with(|cell| cell.borrow().summary_calls)
+}
+
 #[derive(Clone, Debug, CandidType, Deserialize)]
 pub struct GetSnsCanistersSummaryRequest {
     pub update_canister_list: Option<bool>,
@@ -73,7 +79,8 @@ pub fn get_sns_canisters_summary(
     _request: GetSnsCanistersSummaryRequest,
 ) -> GetSnsCanistersSummaryResponse {
     STATE.with(|cell| {
-        let state = cell.borrow();
+        let mut state = cell.borrow_mut();
+        state.summary_calls += 1;
         GetSnsCanistersSummaryResponse {
             governance: state
                 .governance_principal

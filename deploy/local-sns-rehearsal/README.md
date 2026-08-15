@@ -5,7 +5,7 @@ This package is local-only. It provides rehearsal scaffolding and evidence valid
 It is not production launch configuration, not final tokenomics, not a mainnet SNS proposal, not required CI, and not proof that IO is live.
 
 Do not use `--network ic`. Do not call mainnet. Do not touch NNS Manager
-execution canister `oae4c-3iaaa-aaaar-qb5qq-cai` or protected IO NNS neuron
+execution canister `oae4c-3iaaa-aaaar-qb5qq-cai` or the two-year protected NNS neuron
 `10292412127977304661`.
 
 ## Files

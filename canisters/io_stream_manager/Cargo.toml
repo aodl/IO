@@ -25,7 +25,7 @@ candid.workspace = true
 ic-cdk.workspace = true
 ic-cdk-timers.workspace = true
 ic-stable-structures.workspace = true
-io-accounts = { path = "../../crates/io_accounts" }
+io-accounts = { version = "0.1.0", path = "../../crates/io_accounts" }
 io-core-model.workspace = true
 io-ledger-boundary.workspace = true
 io-nns-types.workspace = true

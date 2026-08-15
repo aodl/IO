@@ -1,4 +1,4 @@
-import { prepareRedemption, progressLabel, resumeRedemption, submitRedemption } from "../app/redemption.js";
+import { consentAndSubmitRedemption, prepareRedemption, progressLabel, resumeRedemption } from "../app/redemption.js";
 
 function text(node, value) {
   if (node) node.textContent = value;
@@ -21,12 +21,6 @@ export function mountRedemptionForm(document, actors, session) {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     try {
-      const consent = await session.requestApprovalConsent({
-        action: "icrc2_approve_for_io_redemption",
-        ioAmountE8s: BigInt(form.elements.ioAmount.value),
-        network: session.network,
-      });
-      if (consent !== true) throw new Error("Wallet approval consent was not granted");
       text(status, "Querying exact fee, allowance and caller nonce");
       const request = await prepareRedemption({
         ...actors,
@@ -37,7 +31,12 @@ export function mountRedemptionForm(document, actors, session) {
         maxIcpFeeE8s: BigInt(form.elements.maxIcpFee.value),
         nowNanos: BigInt(Date.now()) * 1_000_000n,
       });
-      const result = await submitRedemption({ ...actors, request });
+      text(status, "Awaiting wallet consent for the exact approval and redemption terms");
+      const result = await consentAndSubmitRedemption({
+        ...actors,
+        request,
+        session,
+      });
       if ("Err" in result) throw new Error(JSON.stringify(result.Err));
       text(status, progressLabel(result.Ok));
     } catch (error) {

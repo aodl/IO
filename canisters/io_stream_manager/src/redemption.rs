@@ -7,15 +7,8 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct RedeemArgs {
-    pub from_subaccount: Option<Vec<u8>>,
-    pub io_amount_e8s: u128,
-    pub min_icp_out_e8s: u128,
-    pub max_io_fee_e8s: u128,
-    pub max_icp_fee_e8s: u128,
-    pub expires_at_nanos: u64,
-    pub nonce: u64,
-}
+#[rustfmt::skip]
+pub struct RedeemArgs { pub from_subaccount: Option<Vec<u8>>, pub io_amount_e8s: u128, pub min_icp_out_e8s: u128, pub max_io_fee_e8s: u128, pub max_icp_fee_e8s: u128, pub expires_at_nanos: u64, pub nonce: u64 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum RedemptionPhase {
@@ -30,15 +23,8 @@ pub enum RedemptionPhase {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct CanonicalRedeemRequestV1 {
-    pub effective_subaccount: [u8; 32],
-    pub io_amount_e8s: u128,
-    pub min_icp_out_e8s: u128,
-    pub max_io_fee_e8s: u128,
-    pub max_icp_fee_e8s: u128,
-    pub expires_at_nanos: u64,
-    pub nonce: u64,
-}
+#[rustfmt::skip]
+pub struct CanonicalRedeemRequestV1 { pub effective_subaccount: [u8; 32], pub io_amount_e8s: u128, pub min_icp_out_e8s: u128, pub max_io_fee_e8s: u128, pub max_icp_fee_e8s: u128, pub expires_at_nanos: u64, pub nonce: u64 }
 
 impl CanonicalRedeemRequestV1 {
     pub fn from_args(args: &RedeemArgs) -> Result<Self, String> {
@@ -70,15 +56,8 @@ impl CanonicalRedeemRequestV1 {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct RedemptionPreparation {
-    pub sequence: OperationSequence,
-    pub captured_control_epoch: u64,
-    pub request_fingerprint: Vec<u8>,
-    pub request: CanonicalRedeemRequestV1,
-    pub caller: Principal,
-    pub account: Account,
-    pub prepared_at_nanos: u64,
-}
+#[rustfmt::skip]
+pub struct RedemptionPreparation { pub sequence: OperationSequence, pub captured_control_epoch: u64, pub request_fingerprint: Vec<u8>, pub request: CanonicalRedeemRequestV1, pub caller: Principal, pub account: Account, pub prepared_at_nanos: u64 }
 
 impl RedemptionPreparation {
     pub fn validate(&self) -> Result<(), String> {
@@ -104,31 +83,12 @@ impl RedemptionPreparation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct CanonicalRedemptionSnapshot {
-    pub total_supply_e8s: u128,
-    pub reserve_io_e8s: u128,
-    pub excluded_io_balances: Vec<(Account, u128)>,
-    pub liquid_icp_e8s: u128,
-    pub io_fee_e8s: u128,
-    pub icp_fee_e8s: u128,
-}
+#[rustfmt::skip]
+pub struct CanonicalRedemptionSnapshot { pub total_supply_e8s: u128, pub reserve_io_e8s: u128, pub excluded_io_balances: Vec<(Account, u128)>, pub liquid_icp_e8s: u128, pub io_fee_e8s: u128, pub icp_fee_e8s: u128 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct RedemptionOperation {
-    pub sequence: OperationSequence,
-    pub request_fingerprint: Vec<u8>,
-    pub caller: Principal,
-    pub nonce: u64,
-    pub account: Account,
-    pub io_amount_e8s: u128,
-    pub gross_icp_e8s: u128,
-    pub net_icp_e8s: u128,
-    pub snapshot: CanonicalRedemptionSnapshot,
-    pub io_pull: TransferAttempt,
-    pub icp_payout: Option<TransferAttempt>,
-    pub completion_result: Option<RedemptionResult>,
-    pub phase: RedemptionPhase,
-}
+#[rustfmt::skip]
+pub struct RedemptionOperation { pub sequence: OperationSequence, pub request_fingerprint: Vec<u8>, pub caller: Principal, pub nonce: u64, pub account: Account, pub io_amount_e8s: u128, pub gross_icp_e8s: u128, pub net_icp_e8s: u128, pub snapshot: CanonicalRedemptionSnapshot, pub io_pull: TransferAttempt, pub icp_payout: Option<TransferAttempt>, pub completion_result: Option<RedemptionResult>, pub phase: RedemptionPhase }
 
 impl RedemptionOperation {
     pub fn validate(&self, config: &StreamConfig) -> Result<(), String> {
@@ -421,6 +381,54 @@ pub fn verify_postconditions(
     Ok(())
 }
 
+pub fn verify_pre_payout_conditions(
+    operation: &RedemptionOperation,
+    fresh: &CanonicalRedemptionSnapshot,
+) -> Result<(), String> {
+    if fresh.io_fee_e8s != operation.snapshot.io_fee_e8s {
+        return Err("IO fee changed before redemption payout".into());
+    }
+    if fresh.icp_fee_e8s != operation.snapshot.icp_fee_e8s {
+        return Err("ICP fee changed before redemption payout".into());
+    }
+    let minimum_reserve = operation
+        .snapshot
+        .reserve_io_e8s
+        .checked_add(operation.io_amount_e8s)
+        .ok_or("reserve pre-payout check overflow")?;
+    if fresh.reserve_io_e8s < minimum_reserve {
+        return Err("IO reserve does not reflect the exact redemption pull".into());
+    }
+    let maximum_supply = operation
+        .snapshot
+        .total_supply_e8s
+        .checked_sub(operation.snapshot.io_fee_e8s)
+        .ok_or("supply pre-payout check underflow")?;
+    if fresh.total_supply_e8s > maximum_supply {
+        return Err("IO total supply increased or did not reflect the pull fee burn".into());
+    }
+    if fresh.excluded_io_balances.len() != operation.snapshot.excluded_io_balances.len() {
+        return Err("excluded IO account set changed before payout".into());
+    }
+    for ((expected_account, expected_balance), (fresh_account, fresh_balance)) in operation
+        .snapshot
+        .excluded_io_balances
+        .iter()
+        .zip(&fresh.excluded_io_balances)
+    {
+        if !expected_account.effective_eq(fresh_account)? {
+            return Err("excluded IO account identity/order changed before payout".into());
+        }
+        if fresh_balance < expected_balance {
+            return Err("excluded IO balance decreased before payout".into());
+        }
+    }
+    if fresh.liquid_icp_e8s < operation.snapshot.liquid_icp_e8s {
+        return Err("liquid ICP backing decreased before payout".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,6 +569,74 @@ mod tests {
         let mut adverse = post;
         adverse.reserve_io_e8s = 499;
         assert!(verify_postconditions(&operation, &adverse).is_err());
+    }
+
+    #[test]
+    fn pre_payout_conditions_reject_adverse_and_accept_conservative_drift() {
+        let args = RedeemArgs {
+            from_subaccount: None,
+            io_amount_e8s: 100,
+            min_icp_out_e8s: 1,
+            max_io_fee_e8s: 2,
+            max_icp_fee_e8s: 10,
+            expires_at_nanos: 2,
+            nonce: 0,
+        };
+        let excluded = Account {
+            owner: principal(8),
+            subaccount: None,
+        };
+        let snapshot = CanonicalRedemptionSnapshot {
+            total_supply_e8s: 1_000,
+            reserve_io_e8s: 400,
+            excluded_io_balances: vec![(excluded.clone(), 100)],
+            liquid_icp_e8s: 1_000,
+            io_fee_e8s: 2,
+            icp_fee_e8s: 10,
+        };
+        let operation = calculate(&preparation(&args), snapshot, &config(None)).unwrap();
+        let valid = CanonicalRedemptionSnapshot {
+            total_supply_e8s: 998,
+            reserve_io_e8s: 500,
+            excluded_io_balances: vec![(excluded.clone(), 100)],
+            liquid_icp_e8s: 1_000,
+            io_fee_e8s: 2,
+            icp_fee_e8s: 10,
+        };
+        assert_eq!(verify_pre_payout_conditions(&operation, &valid), Ok(()));
+
+        let mut cases = Vec::new();
+        let mut value = valid.clone();
+        value.excluded_io_balances[0].1 = 99;
+        cases.push(value);
+        let mut value = valid.clone();
+        value.excluded_io_balances[0].0.owner = principal(9);
+        cases.push(value);
+        let mut value = valid.clone();
+        value.total_supply_e8s = 999;
+        cases.push(value);
+        let mut value = valid.clone();
+        value.liquid_icp_e8s = 999;
+        cases.push(value);
+        let mut value = valid.clone();
+        value.io_fee_e8s = 3;
+        cases.push(value);
+        let mut value = valid.clone();
+        value.icp_fee_e8s = 11;
+        cases.push(value);
+        let mut value = valid.clone();
+        value.reserve_io_e8s = 499;
+        cases.push(value);
+        for adverse in cases {
+            assert!(verify_pre_payout_conditions(&operation, &adverse).is_err());
+        }
+
+        let mut favorable = valid.clone();
+        favorable.liquid_icp_e8s += 1;
+        favorable.excluded_io_balances[0].1 += 1;
+        favorable.reserve_io_e8s += 1;
+        favorable.total_supply_e8s -= 1;
+        assert_eq!(verify_pre_payout_conditions(&operation, &favorable), Ok(()));
     }
 
     #[test]

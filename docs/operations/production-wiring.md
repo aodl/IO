@@ -28,6 +28,18 @@ activation has happened and no IO issuance/redemption is enabled.
 The checked-in dry-run target for `io_nns_neuron_manager` is the existing
 controller `oae4c-3iaaa-aaaar-qb5qq-cai`. Static validation allows `oae4c`
 only in this one field and rejects it as the Stream Manager or a general
-mutation target. Protected IO NNS neuron `10292412127977304661` remains a
+mutation target. Two-year protected NNS neuron `10292412127977304661` remains a
 protected reference and is never a mutation target. This static plan
 authorizes no inspection or mainnet action.
+
+## NNS launch inventory
+
+| Role | Neuron ID | Controller/executor | Expected launch stake | Maturity baseline | Dissolve configuration | Staging/destination |
+| --- | --- | --- | --- | --- | --- | --- |
+| Two-year protected NNS neuron | `10292412127977304661` | `oae4c-3iaaa-aaaar-qb5qq-cai` | audited `seeded_two_year_principal_e8s`; unresolved in the production template | ordinary and staked maturity zero; no pending disbursement | non-dissolving, approved 252,460,800-second delay, auto-stake off | canonical Mint proof to the Stream Manager liquid ICP Account |
+| Two-week reward-backing NNS neuron | unresolved production neuron ID; configured separately | `oae4c-3iaaa-aaaar-qb5qq-cai` | audited `seeded_two_week_principal_e8s`; unresolved in the production template | ordinary and staked maturity zero; no pending disbursement or child ambiguity | non-dissolving, approved 252,460,800-second delay, auto-stake off | NNS Manager self-owned two-week staging Account, then proof-bound Stream receipt |
+
+The Jupiter and two-week staging Accounts are distinct ICP-ledger Accounts
+owned by the executing NNS Manager. Their final fee floats and subaccounts,
+the Stream liquid destination, and the Jupiter activation block floor remain
+explicit launch inputs; local fixture values are not production values.

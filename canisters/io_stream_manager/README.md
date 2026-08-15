@@ -48,6 +48,7 @@ The checked-in [production Candid](io_stream_manager.did) exposes:
 - `prove_active_transfer`
 - `resume_reward_work`
 - `resume_reward_backing`
+- `retry_neuron_refresh`
 - `set_paused`
 - `validate_set_paused` (query)
 - `get_status` (query)
@@ -62,6 +63,11 @@ completed result without inventing client-side nonce or completion state.
 `validate_set_paused` renders the reviewed SNS generic-function payload without
 changing state. `set_paused` independently enforces the configured SNS
 Governance caller.
+
+`retry_neuron_refresh` retries the oldest recorded non-monetary SNS
+`ClaimOrRefresh` failure. It is permissionless, operates on one bounded entry,
+uses a persisted 60-second canister-wide cooldown, and never repeats the
+already completed IO transfer.
 
 ## Lifecycle and readiness
 
@@ -106,6 +112,20 @@ also requires `redeemed_io + current_io_transfer_from_fee <= redeemable_io`, a
 nonzero redeemable denominator, a positive net payout, the caller's minimum
 output, and both caller fee maxima. Overflow, underflow, or a changed canonical
 fee fails closed.
+
+After the exact IO pull succeeds and before any ICP payout intent is persisted,
+the manager takes a fresh canonical snapshot. The original payout remains
+valid only if IO and ICP fees are unchanged, the reserve reflects at least the
+exact pulled IO, total supply has not increased adversely, excluded Account
+identity/order is unchanged and no excluded balance decreased, and liquid ICP
+has not decreased. Increased backing or excluded balances and additional
+fee-burn supply reduction are conservative and may proceed. Any observed
+adverse drift pauses before an ICP transfer exists. This sequential
+cross-canister reread is defence in depth, not an atomic canonical snapshot or
+lock: a mutation can occur between its individual reads. Governance or treasury
+actions capable of increasing IO supply or decreasing an excluded balance must
+pause Stream Manager and drain or resolve active redemption work before
+execution.
 
 The SNS Ledger supplies `total_io_supply`; reserve and excluded Accounts are
 separate denominator roles rather than generic liabilities. IO settlement uses
@@ -164,6 +184,15 @@ continue accumulating while a frozen batch waits. The amount of ICP actually
 received and exactly proved from the NNS maturity path determines the
 economically backed IO settlement quantity.
 
+Recipient monetary completion is the exact IO Ledger transfer into the
+canonical SNS neuron staking Account. Governance `ClaimOrRefresh` is tracked
+separately as `NotAttempted`, `Attempting`, `Confirmed`, or a bounded explicit
+Governance rejection, transport failure, or malformed response. A response is
+confirmed only when it returns the expected neuron ID. Failed refreshes remain
+visible and retryable, while settlement advances to later recipients without
+duplicating delivery or allowing one Governance outage to hold the entire
+batch.
+
 ## Stable state and upgrades
 
 Launch state is `StableCell<StreamStateV1>` plus
@@ -172,6 +201,12 @@ pre-launch migration chains are not runtime code. Upgrade restores the durable
 snapshot, preserves accumulator, pending batch, caller replay, and operation
 state, forces `Paused`, and arms at most one future reward timer only after
 reviewed activation.
+
+The caller map stores one bounded nonce/fingerprint/result record per
+authenticated redemption caller; invalid public probes do not allocate caller
+records. Pending failed neuron refreshes are capped at 1,000 unique 32-byte
+neuron IDs with diagnostics capped at 256 bytes. Cooldowns use single scalar
+timestamps, not per-principal or per-probe collections.
 
 One `StreamOperation` slot serializes external monetary effects. Reward
 observation has no external value effect and does not occupy that slot.
@@ -200,6 +235,12 @@ it cannot select a new transfer or rewrite monetary state.
 Direct transfers without an authenticated command create no claim and are not
 automatically refunded. Rare ambiguity stays visible for proof or a separately
 reviewed SNS-governed forward fix.
+
+Premature reward observation is locally rejected while durable
+`reward_work_due` is false, before Root or Governance is contacted. The timer
+sets that flag, after which a permissionless keeper may execute the same exact
+observation path. Public bounds reduce cycles exposure; they are not a claim
+that a public endpoint can never be delayed by adversarial traffic.
 
 ## Commands and verification
 

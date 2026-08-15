@@ -64,6 +64,25 @@ pub struct NervousSystemParameters {
     pub max_age_bonus_percentage: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
+pub enum ClaimOrRefreshMode {
+    #[default]
+    Normal,
+    GovernanceError,
+    MissingCommand,
+    MissingNeuronId,
+    WrongNeuronId,
+    Trap,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
+pub struct CallCounters {
+    pub latest_reward_event: u64,
+    pub list_neurons: u64,
+    pub nervous_system_parameters: u64,
+    pub manage_neuron: u64,
+}
+
 #[derive(Default)]
 struct SnsState {
     neurons: Vec<MockSnsNeuron>,
@@ -80,6 +99,8 @@ struct SnsState {
     latest_reward_shares: BTreeMap<u64, SnsUint128>,
     reward_round_duration_seconds: u64,
     max_number_of_neurons: u64,
+    claim_or_refresh_mode: ClaimOrRefreshMode,
+    call_counters: CallCounters,
 }
 
 thread_local! {
@@ -412,8 +433,19 @@ pub fn debug_set_max_number_of_neurons(maximum: u64) {
     STATE.with(|cell| cell.borrow_mut().max_number_of_neurons = maximum);
 }
 
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_claim_or_refresh_mode(mode: ClaimOrRefreshMode) {
+    STATE.with(|cell| cell.borrow_mut().claim_or_refresh_mode = mode);
+}
+
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn debug_get_call_counters() -> CallCounters {
+    STATE.with(|cell| cell.borrow().call_counters)
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn get_nervous_system_parameters() -> NervousSystemParameters {
+    STATE.with(|cell| cell.borrow_mut().call_counters.nervous_system_parameters += 1);
     NervousSystemParameters {
         max_number_of_neurons: Some(STATE.with(|cell| cell.borrow().max_number_of_neurons)),
         max_dissolve_delay_bonus_percentage: Some(0),
@@ -524,15 +556,17 @@ fn mock_to_production_neuron(
     }
 }
 
-#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn get_latest_reward_event() -> SnsRewardEvent {
+    STATE.with(|cell| cell.borrow_mut().call_counters.latest_reward_event += 1);
     STATE.with(|cell| cell.borrow().latest_reward_event.clone())
 }
 
-#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn list_neurons(request: SnsProductionListNeuronsRequest) -> SnsProductionListNeuronsResponse {
     STATE.with(|cell| {
-        let state = cell.borrow();
+        let mut state = cell.borrow_mut();
+        state.call_counters.list_neurons += 1;
         assert!(state.available, "mock SNS governance unavailable");
         let mut neurons = state.neurons.iter().collect::<Vec<_>>();
         neurons.sort_by_key(|neuron| mock_neuron_id(neuron.neuron_id));
@@ -581,11 +615,30 @@ pub fn get_neuron(request: SnsProductionGetNeuronRequest) -> SnsProductionGetNeu
 pub async fn manage_neuron(
     request: SnsProductionManageNeuronRequest,
 ) -> SnsProductionManageNeuronResponse {
+    let mode = STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        state.call_counters.manage_neuron += 1;
+        state.claim_or_refresh_mode
+    });
+    assert!(mode != ClaimOrRefreshMode::Trap, "mock ClaimOrRefresh trap");
     let id = request.subaccount;
     if matches!(
         request.command,
         Some(SnsManageNeuronCommand::ClaimOrRefresh(_))
     ) {
+        if mode == ClaimOrRefreshMode::MissingCommand {
+            return SnsProductionManageNeuronResponse { command: None };
+        }
+        if mode == ClaimOrRefreshMode::GovernanceError {
+            return SnsProductionManageNeuronResponse {
+                command: Some(SnsManageNeuronCommandResponse::Error(
+                    io_governance_types::SnsGovernanceErrorRecord {
+                        error_type: 99,
+                        error_message: "controlled ClaimOrRefresh rejection".into(),
+                    },
+                )),
+            };
+        }
         let known_neuron = STATE.with(|cell| {
             cell.borrow()
                 .neurons
@@ -638,10 +691,15 @@ pub async fn manage_neuron(
                 state.governance_neurons.push(updated);
             }
         });
+        let refreshed_neuron_id = match mode {
+            ClaimOrRefreshMode::MissingNeuronId => None,
+            ClaimOrRefreshMode::WrongNeuronId => Some(SnsNeuronIdRecord { id: vec![255; 32] }),
+            _ => Some(SnsNeuronIdRecord { id }),
+        };
         return SnsProductionManageNeuronResponse {
             command: Some(SnsManageNeuronCommandResponse::ClaimOrRefresh(
                 io_governance_types::SnsClaimOrRefreshResponse {
-                    refreshed_neuron_id: Some(SnsNeuronIdRecord { id }),
+                    refreshed_neuron_id,
                 },
             )),
         };

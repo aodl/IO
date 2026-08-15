@@ -10,57 +10,22 @@ use serde::Deserialize;
 use sha2::{Digest, Sha224};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ExactIcrcTransfer {
-    pub from: Account,
-    pub to: Account,
-    pub amount_e8s: u128,
-    pub fee_e8s: Option<u128>,
-    pub memo: Option<Vec<u8>>,
-    pub created_at_time: Option<u64>,
-    pub spender: Option<Account>,
-}
+#[rustfmt::skip]
+pub struct ExactIcrcTransfer { pub from: Account, pub to: Account, pub amount_e8s: u128, pub fee_e8s: Option<u128>, pub memo: Option<Vec<u8>>, pub created_at_time: Option<u64>, pub spender: Option<Account> }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ExactIcpTransfer {
-    pub from: Vec<u8>,
-    pub to: Vec<u8>,
-    pub amount_e8s: u128,
-    pub fee_e8s: u128,
-    pub native_memo_u64: u64,
-    pub icrc1_memo: Option<Vec<u8>>,
-    pub created_at_time: u64,
-    pub spender: Option<Vec<u8>>,
-}
+#[rustfmt::skip]
+pub struct ExactIcpTransfer { pub from: Vec<u8>, pub to: Vec<u8>, pub amount_e8s: u128, pub fee_e8s: u128, pub native_memo_u64: u64, pub icrc1_memo: Option<Vec<u8>>, pub created_at_time: u64, pub spender: Option<Vec<u8>> }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ExactIcpMint {
-    pub to: Vec<u8>,
-    pub amount_e8s: u128,
-    pub native_memo_u64: u64,
-    pub icrc1_memo: Option<Vec<u8>>,
-    pub created_at_time: u64,
-}
+#[rustfmt::skip]
+pub struct ExactIcpMint { pub to: Vec<u8>, pub amount_e8s: u128, pub native_memo_u64: u64, pub icrc1_memo: Option<Vec<u8>>, pub created_at_time: u64 }
 
-pub struct ExpectedIcrcTransfer<'a> {
-    pub from: &'a Account,
-    pub to: &'a Account,
-    pub amount_e8s: u128,
-    pub fee_e8s: Option<u128>,
-    pub memo: Option<&'a [u8]>,
-    pub created_at_time: Option<u64>,
-    pub spender: Option<&'a Account>,
-}
+#[rustfmt::skip]
+pub struct ExpectedIcrcTransfer<'a> { pub from: &'a Account, pub to: &'a Account, pub amount_e8s: u128, pub fee_e8s: Option<u128>, pub memo: Option<&'a [u8]>, pub created_at_time: Option<u64>, pub spender: Option<&'a Account> }
 
-pub struct ExpectedQueryBlockTransfer<'a> {
-    pub from: &'a [u8],
-    pub to: &'a [u8],
-    pub amount_e8s: u128,
-    pub fee_e8s: u128,
-    pub native_memo_u64: u64,
-    pub icrc1_memo: Option<&'a [u8]>,
-    pub created_at_time: u64,
-    pub spender: Option<&'a [u8]>,
-}
+#[rustfmt::skip]
+pub struct ExpectedQueryBlockTransfer<'a> { pub from: &'a [u8], pub to: &'a [u8], pub amount_e8s: u128, pub fee_e8s: u128, pub native_memo_u64: u64, pub icrc1_memo: Option<&'a [u8]>, pub created_at_time: u64, pub spender: Option<&'a [u8]> }
 
 impl ExactIcrcTransfer {
     pub fn matches(&self, expected: &ExpectedIcrcTransfer<'_>) -> Result<bool, String> {
@@ -109,14 +74,8 @@ impl ExactIcpMint {
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-pub struct IcrcTransferArg {
-    pub from_subaccount: Option<Vec<u8>>,
-    pub to: Account,
-    pub amount: Nat,
-    pub fee: Option<Nat>,
-    pub memo: Option<Vec<u8>>,
-    pub created_at_time: Option<u64>,
-}
+#[rustfmt::skip]
+pub struct IcrcTransferArg { pub from_subaccount: Option<Vec<u8>>, pub to: Account, pub amount: Nat, pub fee: Option<Nat>, pub memo: Option<Vec<u8>>, pub created_at_time: Option<u64> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 pub enum IcrcTransferError {
@@ -133,48 +92,30 @@ pub enum IcrcTransferError {
 pub type IcrcTransferResult = Result<Nat, IcrcTransferError>;
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct GetTransactionsRequest {
-    start: Nat,
-    length: Nat,
-}
+#[rustfmt::skip]
+struct GetTransactionsRequest { start: Nat, length: Nat }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct GetTransactionsResponse {
-    transactions: Vec<IcrcTransaction>,
-    first_index: Nat,
-    archived_transactions: Vec<ArchivedTransactions>,
-}
+#[rustfmt::skip]
+struct GetTransactionsResponse { transactions: Vec<IcrcTransaction>, first_index: Nat, archived_transactions: Vec<ArchivedTransactions> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct ArchivedTransactions {
-    start: Nat,
-    length: Nat,
-    callback: IcrcArchiveCallback,
-}
+#[rustfmt::skip]
+struct ArchivedTransactions { start: Nat, length: Nat, callback: IcrcArchiveCallback }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct TransactionRange {
-    transactions: Vec<IcrcTransaction>,
-}
+#[rustfmt::skip]
+struct TransactionRange { transactions: Vec<IcrcTransaction> }
 
 candid::define_function!(IcrcArchiveCallback : (GetTransactionsRequest) -> (TransactionRange) query);
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct IcrcTransaction {
-    kind: String,
-    transfer: Option<IcrcTransfer>,
-}
+#[rustfmt::skip]
+struct IcrcTransaction { kind: String, transfer: Option<IcrcTransfer> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct IcrcTransfer {
-    to: Account,
-    fee: Option<Nat>,
-    from: Account,
-    memo: Option<Vec<u8>>,
-    created_at_time: Option<u64>,
-    amount: Nat,
-    spender: Option<Account>,
-}
+#[rustfmt::skip]
+struct IcrcTransfer { to: Account, fee: Option<Nat>, from: Account, memo: Option<Vec<u8>>, created_at_time: Option<u64>, amount: Nat, spender: Option<Account> }
 
 pub async fn exact_icrc_transfer(
     ledger: Principal,
@@ -236,28 +177,20 @@ pub async fn exact_icrc_transfer(
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct IcpGetBlocksArgs {
-    start: u64,
-    length: u64,
-}
+#[rustfmt::skip]
+struct IcpGetBlocksArgs { start: u64, length: u64 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct IcpTokens {
-    e8s: u64,
-}
+#[rustfmt::skip]
+struct IcpTokens { e8s: u64 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct IcpTimestamp {
-    timestamp_nanos: u64,
-}
+#[rustfmt::skip]
+struct IcpTimestamp { timestamp_nanos: u64 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct IcpTransaction {
-    memo: u64,
-    icrc1_memo: Option<Vec<u8>>,
-    operation: Option<IcpOperation>,
-    created_at_time: IcpTimestamp,
-}
+#[rustfmt::skip]
+struct IcpTransaction { memo: u64, icrc1_memo: Option<Vec<u8>>, operation: Option<IcpOperation>, created_at_time: IcpTimestamp }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 enum IcpOperation {
@@ -283,28 +216,20 @@ enum IcpOperation {
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct IcpBlock {
-    transaction: IcpTransaction,
-}
+#[rustfmt::skip]
+struct IcpBlock { transaction: IcpTransaction }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct IcpArchivedRange {
-    start: u64,
-    length: u64,
-    callback: IcpArchiveCallback,
-}
+#[rustfmt::skip]
+struct IcpArchivedRange { start: u64, length: u64, callback: IcpArchiveCallback }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct IcpQueryBlocksResponse {
-    blocks: Vec<IcpBlock>,
-    first_block_index: u64,
-    archived_blocks: Vec<IcpArchivedRange>,
-}
+#[rustfmt::skip]
+struct IcpQueryBlocksResponse { blocks: Vec<IcpBlock>, first_block_index: u64, archived_blocks: Vec<IcpArchivedRange> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct IcpBlockRange {
-    blocks: Vec<IcpBlock>,
-}
+#[rustfmt::skip]
+struct IcpBlockRange { blocks: Vec<IcpBlock> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 enum IcpArchiveResult {

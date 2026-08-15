@@ -110,11 +110,16 @@ configuration pauses reward processing without automatic retry; no interval
 timer or backoff scheduler exists.
 
 An exact ICRC transfer to the canonical neuron staking account is recipient
-monetary completion. IO persists at most one subsequent `claim_or_refresh`
-attempt as best-effort work and advances on success, explicit reject, transport
-failure, or replay after callback loss. Observation and backing waits do not
-block redemption. Reserve-transfer fan-out is serialized with redemption, but
-refresh availability cannot prolong that serialization indefinitely.
+monetary completion. Governance refresh is a separate, persisted typed state:
+`NotAttempted`, `Attempting`, `Confirmed`, or a bounded Governance-rejection,
+transport, or malformed-response failure. The returned neuron ID must match the
+expected recipient. A failed refresh remains observable in a bounded pending
+list and is retryable without repeating the IO transfer. Settlement advances
+to later recipients after recording a failed refresh, so a Governance outage
+does not lose accounting or indefinitely hold the monetary serialization slot.
+The permissionless retry path operates on one pending entry and has one
+canister-wide persisted cooldown. Observation and backing waits do not block
+redemption.
 
 The exact 1,209,600-second duration remains authoritative for ordinary IO
 reward-neuron eligibility, the user withdrawal delay and the beneficiary

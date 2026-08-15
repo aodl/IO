@@ -8,7 +8,9 @@ use serde::Deserialize;
 use std::{borrow::Cow, cell::RefCell};
 
 use crate::{
-    receipt::{LastCompletedReceipt, LiquidReceiptOperation, ReceiptPreparation},
+    receipt::{
+        LastCompletedReceipt, LiquidReceiptOperation, PendingNeuronRefresh, ReceiptPreparation,
+    },
     redemption::{RedemptionOperation, RedemptionPreparation},
 };
 pub use io_accounts::Account;
@@ -44,35 +46,33 @@ impl StreamConfig {
 
     pub fn validate(&self, canister_self: Principal) -> Result<(), String> {
         let management = Principal::management_canister();
-        for (name, principal) in [
+        let principals = [
             ("canister self", canister_self),
             ("IO ledger", self.io_ledger),
             ("ICP ledger", self.icp_ledger),
             ("NNS manager", self.nns_manager),
             ("SNS governance", self.sns_governance),
-        ] {
+            ("SNS root", self.sns_root),
+        ];
+        for (name, principal) in principals {
             if principal == Principal::anonymous() || principal == management {
                 return Err(format!("{name} principal is forbidden"));
             }
         }
-        if self.sns_root == Principal::anonymous()
-            || self.sns_root == management
-            || self.sns_root == self.sns_governance
-            || self.sns_root == self.nns_manager
-        {
-            return Err("SNS Root principal is forbidden or aliases another boundary".into());
+        for (index, (left_name, left)) in principals.iter().enumerate() {
+            for (right_name, right) in principals.iter().skip(index + 1) {
+                if left == right {
+                    return Err(format!(
+                        "{left_name} and {right_name} principals must be distinct"
+                    ));
+                }
+            }
         }
         if self.expected_sns_governance_module_hash.len() != 32 {
             return Err("expected SNS Governance module hash must contain 32 bytes".into());
         }
         if self.approved_reward_event_duration_seconds != 86_400 {
             return Err("approved reward-event duration must equal one day".into());
-        }
-        if self.io_ledger == self.icp_ledger {
-            return Err("IO and ICP ledgers must be distinct".into());
-        }
-        if self.nns_manager == self.sns_governance {
-            return Err("NNS manager and SNS governance must be distinct".into());
         }
         if self.io_reserve.owner != canister_self || self.liquid_icp.owner != canister_self {
             return Err("reserve and liquid accounts must be owned by this canister".into());
@@ -98,17 +98,10 @@ impl StreamConfig {
                 return Err(format!("{name} owner is forbidden"));
             }
         }
-        if self.io_reserve.effective_eq(&self.liquid_icp)? {
-            return Err("reserve and liquid accounts must be distinct".into());
-        }
         if self
             .jupiter_receipt_source
             .effective_eq(&self.two_week_receipt_source)?
-            || self.jupiter_receipt_source.effective_eq(&self.io_reserve)?
             || self.jupiter_receipt_source.effective_eq(&self.liquid_icp)?
-            || self
-                .two_week_receipt_source
-                .effective_eq(&self.io_reserve)?
             || self
                 .two_week_receipt_source
                 .effective_eq(&self.liquid_icp)?
@@ -185,11 +178,8 @@ pub enum LiquidReceiptStreamOperation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct RewardEntitlementEntry {
-    pub sns_neuron_id: Vec<u8>,
-    pub destination: Account,
-    pub accumulated_eligible_credit: u128,
-}
+#[rustfmt::skip]
+pub struct RewardEntitlementEntry { pub sns_neuron_id: Vec<u8>, pub destination: Account, pub accumulated_eligible_credit: u128 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum RewardEventClassification {
@@ -200,46 +190,20 @@ pub enum RewardEventClassification {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct RewardEventCredit {
-    pub sns_neuron_id: Vec<u8>,
-    pub destination: Account,
-    pub event_credit: u128,
-}
+#[rustfmt::skip]
+pub struct RewardEventCredit { pub sns_neuron_id: Vec<u8>, pub destination: Account, pub event_credit: u128 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct RewardEventObservation {
-    pub event: RewardEventId,
-    pub proposal_count: u64,
-    pub classification: RewardEventClassification,
-    pub credits: Vec<RewardEventCredit>,
-    pub policy_credit: u128,
-    pub eligible_credit_total: u128,
-    pub observed_at_nanos: u64,
-}
+#[rustfmt::skip]
+pub struct RewardEventObservation { pub event: RewardEventId, pub proposal_count: u64, pub classification: RewardEventClassification, pub credits: Vec<RewardEventCredit>, pub policy_credit: u128, pub eligible_credit_total: u128, pub observed_at_nanos: u64 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct SkippedRewardEvent {
-    pub previous_event: Option<RewardEventId>,
-    pub observed_event: RewardEventId,
-    pub ambiguous_event_count: u64,
-    pub rounds_since_last_distribution: u64,
-    pub observed_at_nanos: u64,
-}
+#[rustfmt::skip]
+pub struct SkippedRewardEvent { pub previous_event: Option<RewardEventId>, pub observed_event: RewardEventId, pub ambiguous_event_count: u64, pub rounds_since_last_distribution: u64, pub observed_at_nanos: u64 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct RewardEntitlementAccumulator {
-    pub last_processed_event: Option<RewardEventId>,
-    pub entries: Vec<RewardEntitlementEntry>,
-    #[serde(default)]
-    pub accumulated_policy_credit: u128,
-    pub processed_event_count: u64,
-    pub missed_event_count: u64,
-    pub reward_work_due: bool,
-    pub reward_processing_paused: bool,
-    pub latest_observation: Option<RewardEventObservation>,
-    pub latest_skipped_event: Option<SkippedRewardEvent>,
-    pub governance_parameters_fresh: bool,
-}
+#[rustfmt::skip]
+pub struct RewardEntitlementAccumulator { pub last_processed_event: Option<RewardEventId>, pub entries: Vec<RewardEntitlementEntry>, pub accumulated_policy_credit: u128, pub processed_event_count: u64, pub missed_event_count: u64, pub reward_work_due: bool, pub reward_processing_paused: bool, pub latest_observation: Option<RewardEventObservation>, pub latest_skipped_event: Option<SkippedRewardEvent>, pub governance_parameters_fresh: bool }
 
 impl Default for RewardEntitlementAccumulator {
     fn default() -> Self {
@@ -259,39 +223,16 @@ impl Default for RewardEntitlementAccumulator {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct PendingEntitlementBatch {
-    pub generation: u64,
-    pub frozen_at_timestamp_seconds: u64,
-    pub through_event: RewardEventId,
-    pub target_icp_e8s: u128,
-    pub entries: Vec<RewardEntitlementEntry>,
-    pub eligible_credit_total: u128,
-    pub policy_credit_total: u128,
-    pub processed_event_count: u64,
-}
+#[rustfmt::skip]
+pub struct PendingEntitlementBatch { pub generation: u64, pub frozen_at_timestamp_seconds: u64, pub through_event: RewardEventId, pub target_icp_e8s: u128, pub entries: Vec<RewardEntitlementEntry>, pub eligible_credit_total: u128, pub policy_credit_total: u128, pub processed_event_count: u64 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct RewardEventId {
-    pub end_timestamp_seconds: u64,
-    pub round: u64,
-}
+#[rustfmt::skip]
+pub struct RewardEventId { pub end_timestamp_seconds: u64, pub round: u64 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct StreamStateV1 {
-    pub config: StreamConfig,
-    pub lifecycle: Lifecycle,
-    pub active_operation: Option<StreamOperation>,
-    #[serde(default)]
-    pub reward_entitlements: RewardEntitlementAccumulator,
-    #[serde(default)]
-    pub pending_entitlement_batch: Option<PendingEntitlementBatch>,
-    #[serde(default)]
-    pub latest_entitlement_batch_generation: u64,
-    pub next_nns_receipt_sequence: u64,
-    pub next_operation_sequence: OperationSequence,
-    pub control_epoch: u64,
-    pub last_completed_receipt: Option<LastCompletedReceipt>,
-}
+#[rustfmt::skip]
+pub struct StreamStateV1 { pub config: StreamConfig, pub lifecycle: Lifecycle, pub active_operation: Option<StreamOperation>, pub reward_entitlements: RewardEntitlementAccumulator, pub pending_entitlement_batch: Option<PendingEntitlementBatch>, pub latest_entitlement_batch_generation: u64, pub next_nns_receipt_sequence: u64, pub next_operation_sequence: OperationSequence, pub control_epoch: u64, pub last_completed_receipt: Option<LastCompletedReceipt>, pub pending_neuron_refreshes: Vec<PendingNeuronRefresh>, pub last_refresh_retry_attempt_nanos: Option<u64>, pub last_reward_observation_attempt_nanos: Option<u64>, pub last_reward_backing_attempt_nanos: Option<u64> }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum StableStreamState {
@@ -336,6 +277,10 @@ impl StreamStateV1 {
             next_operation_sequence: OperationSequence(0),
             control_epoch: 0,
             last_completed_receipt: None,
+            pending_neuron_refreshes: Vec::new(),
+            last_refresh_retry_attempt_nanos: None,
+            last_reward_observation_attempt_nanos: None,
+            last_reward_backing_attempt_nanos: None,
         }
     }
 }
@@ -343,6 +288,30 @@ impl StreamStateV1 {
 impl StreamStateV1 {
     pub fn validate(&self, canister_self: Principal) -> Result<(), String> {
         self.config.validate(canister_self)?;
+        if [
+            self.last_refresh_retry_attempt_nanos,
+            self.last_reward_observation_attempt_nanos,
+            self.last_reward_backing_attempt_nanos,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|value| value == 0)
+        {
+            return Err("persisted keeper cooldown timestamps must be nonzero".into());
+        }
+        if self.pending_neuron_refreshes.len() > Self::MAX_PENDING_NEURON_REFRESHES {
+            return Err("too many pending SNS neuron refreshes".into());
+        }
+        let mut pending_refresh_ids = std::collections::BTreeSet::new();
+        for pending in &self.pending_neuron_refreshes {
+            if pending.sns_neuron_id.len() != 32
+                || !pending.status.is_failure()
+                || !pending_refresh_ids.insert(pending.sns_neuron_id.clone())
+            {
+                return Err("pending SNS neuron refresh is invalid or duplicated".into());
+            }
+            pending.status.validate()?;
+        }
         match &self.active_operation {
             Some(StreamOperation::Redemption(operation)) => match operation.as_ref() {
                 RedemptionStreamOperation::Preparing(value) => {
@@ -403,6 +372,10 @@ impl StreamStateV1 {
         }
         Ok(())
     }
+}
+
+impl StreamStateV1 {
+    pub const MAX_PENDING_NEURON_REFRESHES: usize = 1_000;
 }
 
 impl RewardEntitlementAccumulator {
@@ -712,6 +685,30 @@ pub fn set_caller_state(caller: Principal, state: CallerRedemptionState) {
 mod tests {
     use super::*;
 
+    #[derive(candid::CandidType)]
+    enum FutureStableStreamState {
+        V2(StreamStateV1),
+    }
+
+    #[derive(candid::CandidType)]
+    struct PreviousStreamStateV1 {
+        config: StreamConfig,
+        lifecycle: Lifecycle,
+        active_operation: Option<StreamOperation>,
+        reward_entitlements: RewardEntitlementAccumulator,
+        pending_entitlement_batch: Option<PendingEntitlementBatch>,
+        latest_entitlement_batch_generation: u64,
+        next_nns_receipt_sequence: u64,
+        next_operation_sequence: OperationSequence,
+        control_epoch: u64,
+        last_completed_receipt: Option<LastCompletedReceipt>,
+    }
+
+    #[derive(candid::CandidType)]
+    enum PreviousStableStreamState {
+        V1(PreviousStreamStateV1),
+    }
+
     fn principal(value: u8) -> Principal {
         Principal::from_slice(&[value; 29])
     }
@@ -787,6 +784,10 @@ mod tests {
                 },
                 pending_entitlement_batch: None,
                 latest_entitlement_batch_generation: 0,
+                pending_neuron_refreshes: Vec::new(),
+                last_refresh_retry_attempt_nanos: None,
+                last_reward_observation_attempt_nanos: None,
+                last_reward_backing_attempt_nanos: None,
                 next_nns_receipt_sequence: 0,
                 next_operation_sequence: OperationSequence(1),
                 control_epoch: 0,
@@ -804,6 +805,58 @@ mod tests {
             .validate(canister_self)
             .unwrap_err()
             .contains("one day"));
+    }
+
+    #[test]
+    fn every_control_principal_pair_must_be_distinct() {
+        let roles = ["self", "io", "icp", "nns", "governance", "root"];
+        for left in 0..roles.len() {
+            for right in left + 1..roles.len() {
+                let (canister_self, mut state) = valid_state();
+                let value = match roles[left] {
+                    "self" => canister_self,
+                    "io" => state.config.io_ledger,
+                    "icp" => state.config.icp_ledger,
+                    "nns" => state.config.nns_manager,
+                    "governance" => state.config.sns_governance,
+                    "root" => state.config.sns_root,
+                    _ => unreachable!(),
+                };
+                match roles[right] {
+                    "io" => state.config.io_ledger = value,
+                    "icp" => state.config.icp_ledger = value,
+                    "nns" => state.config.nns_manager = value,
+                    "governance" => state.config.sns_governance = value,
+                    "root" => state.config.sns_root = value,
+                    _ => unreachable!(),
+                }
+                assert!(
+                    state.validate(canister_self).is_err(),
+                    "{} may not alias {}",
+                    roles[left],
+                    roles[right]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn io_and_icp_account_collisions_are_rejected_within_each_ledger() {
+        let (canister_self, mut state) = valid_state();
+        state.config.jupiter_io_account = state.config.io_reserve.clone();
+        assert!(state.validate(canister_self).is_err());
+
+        let (canister_self, mut state) = valid_state();
+        state.config.excluded_io_accounts[0] = state.config.io_reserve.clone();
+        assert!(state.validate(canister_self).is_err());
+
+        let (canister_self, mut state) = valid_state();
+        state.config.excluded_io_accounts[0] = state.config.jupiter_io_account.clone();
+        assert!(state.validate(canister_self).is_err());
+
+        let (canister_self, mut state) = valid_state();
+        state.config.two_week_receipt_source = state.config.jupiter_receipt_source.clone();
+        assert!(state.validate(canister_self).is_err());
     }
 
     #[test]
@@ -846,9 +899,48 @@ mod tests {
             processed_event_count: 1,
         });
         state.latest_entitlement_batch_generation = 1;
+        state.pending_neuron_refreshes = (0..StreamStateV1::MAX_PENDING_NEURON_REFRESHES)
+            .map(|index| {
+                let mut id = [0_u8; 32];
+                id[24..].copy_from_slice(&(index as u64 + 1).to_be_bytes());
+                PendingNeuronRefresh {
+                    sns_neuron_id: id.to_vec(),
+                    status: crate::receipt::NeuronRefreshStatus::TransportFailure {
+                        diagnostic: "x".repeat(crate::receipt::MAX_REFRESH_DIAGNOSTIC_BYTES),
+                    },
+                }
+            })
+            .collect();
         state.validate(canister_self).unwrap();
         state.pending_entitlement_batch = None;
         state.validate(canister_self).unwrap();
+    }
+
+    #[test]
+    fn pending_refresh_queue_rejects_duplicates_oversize_diagnostics_and_non_failures() {
+        let (canister_self, mut state) = valid_state();
+        let failure = PendingNeuronRefresh {
+            sns_neuron_id: vec![7; 32],
+            status: crate::receipt::NeuronRefreshStatus::TransportFailure {
+                diagnostic: "x".into(),
+            },
+        };
+        state.pending_neuron_refreshes = vec![failure.clone(), failure.clone()];
+        assert!(state.validate(canister_self).is_err());
+
+        state.pending_neuron_refreshes = vec![PendingNeuronRefresh {
+            status: crate::receipt::NeuronRefreshStatus::TransportFailure {
+                diagnostic: "x".repeat(crate::receipt::MAX_REFRESH_DIAGNOSTIC_BYTES + 1),
+            },
+            ..failure.clone()
+        }];
+        assert!(state.validate(canister_self).is_err());
+
+        state.pending_neuron_refreshes = vec![PendingNeuronRefresh {
+            status: crate::receipt::NeuronRefreshStatus::Confirmed,
+            ..failure
+        }];
+        assert!(state.validate(canister_self).is_err());
     }
 
     #[test]
@@ -912,18 +1004,24 @@ mod tests {
 
     #[test]
     fn stable_reopen_preserves_entitlements_and_forces_paused() {
-        let (canister_self, state) = valid_state();
+        let (canister_self, mut state) = valid_state();
+        state.last_refresh_retry_attempt_nanos = Some(11);
+        state.last_reward_observation_attempt_nanos = Some(12);
+        state.last_reward_backing_attempt_nanos = Some(13);
         let expected = state.reward_entitlements.clone();
         initialize(state, canister_self).unwrap();
         reopen(canister_self);
         let reopened = read();
         assert_eq!(reopened.lifecycle, Lifecycle::Paused);
         assert_eq!(reopened.reward_entitlements, expected);
+        assert_eq!(reopened.last_refresh_retry_attempt_nanos, Some(11));
+        assert_eq!(reopened.last_reward_observation_attempt_nanos, Some(12));
+        assert_eq!(reopened.last_reward_backing_attempt_nanos, Some(13));
         assert!(reopened.active_operation.is_none());
     }
 
     #[test]
-    fn maximum_accumulator_and_pending_batch_fit_the_stable_cell_bound() {
+    fn maximum_simultaneously_valid_state_fits_the_stable_cell_bound() {
         let (canister_self, mut state) = valid_state();
         let governance = state.config.sns_governance;
         let entries = (0..RewardEntitlementAccumulator::MAX_ENTRIES)
@@ -941,19 +1039,138 @@ mod tests {
             })
             .collect::<Vec<_>>();
         state.reward_entitlements.entries = entries.clone();
-        state.reward_entitlements.accumulated_policy_credit = io_reward_policy::DAILY_EVENT_CREDIT;
+        state.reward_entitlements.accumulated_policy_credit = entries.len() as u128;
         state.reward_entitlements.latest_observation = None;
         state.pending_entitlement_batch = Some(PendingEntitlementBatch {
             generation: 1,
             frozen_at_timestamp_seconds: 1,
             through_event: state.reward_entitlements.last_processed_event.unwrap(),
             target_icp_e8s: 1,
-            entries,
+            entries: entries.clone(),
             eligible_credit_total: RewardEntitlementAccumulator::MAX_ENTRIES as u128,
-            policy_credit_total: io_reward_policy::DAILY_EVENT_CREDIT,
+            policy_credit_total: entries.len() as u128,
             processed_event_count: 1,
         });
         state.latest_entitlement_batch_generation = 1;
+        state.pending_neuron_refreshes = entries
+            .iter()
+            .map(|entry| PendingNeuronRefresh {
+                sns_neuron_id: entry.sns_neuron_id.clone(),
+                status: crate::receipt::NeuronRefreshStatus::TransportFailure {
+                    diagnostic: "x".repeat(crate::receipt::MAX_REFRESH_DIAGNOSTIC_BYTES),
+                },
+            })
+            .collect();
+        state.last_refresh_retry_attempt_nanos = Some(u64::MAX);
+        state.last_reward_observation_attempt_nanos = Some(u64::MAX - 1);
+        state.last_reward_backing_attempt_nanos = Some(u64::MAX - 2);
+
+        let active_request = crate::receipt::PrepareLiquidReceiptArgs {
+            receipt_sequence: 1,
+            receipt_kind: crate::receipt::ReceiptKind::TwoWeekMaturity,
+            source_operation_id: vec![9; 64],
+            liquid_amount_e8s: entries.len() as u128,
+            entitlement_batch_generation: Some(1),
+        };
+        let active_fingerprint = crate::receipt::request_fingerprint(&active_request);
+        let backing_snapshot = crate::receipt::BackingSnapshot {
+            total_io_supply_e8s: 10_000,
+            reserve_io_e8s: 1_000,
+            excluded_io_balances: vec![(state.config.excluded_io_accounts[0].clone(), 1_000)],
+            liquid_icp_e8s: 8_000,
+            io_fee_e8s: state.config.expected_io_fee_e8s,
+            observed_at_nanos: u64::MAX,
+        };
+        let recipients = entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let intent = crate::transfer::OwnTransferIntent::Icrc1 {
+                    ledger: state.config.io_ledger,
+                    from_subaccount: state.config.io_reserve.canonical().unwrap().subaccount,
+                    to: entry.destination.clone(),
+                    amount: 1,
+                    fee: state.config.expected_io_fee_e8s,
+                    memo: vec![8; crate::transfer::MAX_MEMO_BYTES],
+                    created_at_time: index as u64 + 1,
+                };
+                crate::receipt::RewardRecipient {
+                    sns_neuron_id: entry.sns_neuron_id.clone(),
+                    destination: entry.destination.clone(),
+                    io_e8s: 1,
+                    transfer: Some(crate::transfer::TransferAttempt {
+                        fingerprint: intent.fingerprint(),
+                        intent,
+                        state: crate::transfer::TransferState::Succeeded {
+                            block: index as u128,
+                        },
+                    }),
+                    refresh_status: crate::receipt::NeuronRefreshStatus::TransportFailure {
+                        diagnostic: "y".repeat(crate::receipt::MAX_REFRESH_DIAGNOSTIC_BYTES),
+                    },
+                }
+            })
+            .collect();
+        state.active_operation = Some(StreamOperation::LiquidReceipt(Box::new(
+            LiquidReceiptStreamOperation::Active(Box::new(
+                crate::receipt::LiquidReceiptOperation::TwoWeek(Box::new(
+                    crate::receipt::TwoWeekReceiptOperation {
+                        context: crate::receipt::ReceiptContext {
+                            request: active_request,
+                            request_fingerprint: active_fingerprint,
+                            source: state.config.two_week_receipt_source.clone(),
+                            permit: crate::receipt::LiquidReceiptPermit {
+                                sequence: 1,
+                                destination: state.config.liquid_icp.clone(),
+                                memo: crate::receipt::receipt_memo(state.config.nns_manager, 1),
+                            },
+                            backing_snapshot: backing_snapshot.clone(),
+                        },
+                        phase: crate::receipt::ReceiptPhase::Settling,
+                        receipt_block: Some(u128::MAX),
+                        settlement: Some(crate::receipt::TwoWeekSettlement {
+                            backed_io_pool_e8s: entries.len() as u128,
+                            recipients,
+                            recipient_index: entries.len() as u32,
+                            distributed_io_e8s: entries.len() as u128,
+                            forfeited_io_e8s: 0,
+                            rounding_dust_io_e8s: 0,
+                        }),
+                    },
+                )),
+            )),
+        )));
+
+        let completed_request = crate::receipt::PrepareLiquidReceiptArgs {
+            receipt_sequence: 0,
+            receipt_kind: crate::receipt::ReceiptKind::Jupiter,
+            source_operation_id: vec![7; 64],
+            liquid_amount_e8s: 1,
+            entitlement_batch_generation: None,
+        };
+        let completed_fingerprint = crate::receipt::request_fingerprint(&completed_request);
+        state.next_nns_receipt_sequence = 1;
+        state.last_completed_receipt = Some(crate::receipt::LastCompletedReceipt {
+            request: completed_request,
+            request_fingerprint: completed_fingerprint.clone(),
+            permit: crate::receipt::LiquidReceiptPermit {
+                sequence: 0,
+                destination: state.config.liquid_icp.clone(),
+                memo: crate::receipt::receipt_memo(state.config.nns_manager, 0),
+            },
+            backing_snapshot,
+            receipt_block: u128::MAX - 1,
+            result: crate::receipt::CompletedReceiptResult::Jupiter(
+                crate::receipt::JupiterReceiptResult {
+                    request_fingerprint: completed_fingerprint,
+                    receipt_block: u128::MAX - 1,
+                    backed_io_e8s: u128::MAX,
+                    io_transfer_block: u128::MAX,
+                    io_fee_e8s: state.config.expected_io_fee_e8s,
+                    completed_at_nanos: u64::MAX,
+                },
+            ),
+        });
         state.validate(canister_self).unwrap();
         let stable = StableStreamState::V1(state);
         let encoded = stable.to_bytes();
@@ -961,10 +1178,32 @@ mod tests {
             panic!("stream state must remain bounded");
         };
         eprintln!(
-            "maximum accumulator plus pending batch encodes to {} bytes of the {}-byte stable bound",
+            "maximum simultaneous Stream state encodes to {} bytes of the {}-byte stable bound",
             encoded.len(),
             max_size
         );
         assert!(encoded.len() <= max_size as usize);
+    }
+
+    #[test]
+    fn strict_launch_v1_rejects_corrupt_and_future_state() {
+        assert!(candid::decode_one::<StableStreamState>(b"not candid").is_err());
+        let (_, state) = valid_state();
+        let future = candid::encode_one(FutureStableStreamState::V2(state.clone())).unwrap();
+        assert!(candid::decode_one::<StableStreamState>(&future).is_err());
+        let previous = candid::encode_one(PreviousStableStreamState::V1(PreviousStreamStateV1 {
+            config: state.config,
+            lifecycle: state.lifecycle,
+            active_operation: state.active_operation,
+            reward_entitlements: state.reward_entitlements,
+            pending_entitlement_batch: state.pending_entitlement_batch,
+            latest_entitlement_batch_generation: state.latest_entitlement_batch_generation,
+            next_nns_receipt_sequence: state.next_nns_receipt_sequence,
+            next_operation_sequence: state.next_operation_sequence,
+            control_epoch: state.control_epoch,
+            last_completed_receipt: state.last_completed_receipt,
+        }))
+        .unwrap();
+        assert!(candid::decode_one::<StableStreamState>(&previous).is_err());
     }
 }

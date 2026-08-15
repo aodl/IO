@@ -48,7 +48,9 @@ Root, and Governance services:
    allowance on the SNS IO Ledger and submits an exact redemption intent.
 2. The Stream Manager reads canonical supply, reserve, excluded-account,
    liquid-ICP, and fee values. It pulls the user's IO into the protocol reserve
-   and pays net ICP to the same principal and selected subaccount.
+   and then re-reads the canonical economics before creating any payout. An
+   adverse supply, exclusion, fee, reserve-reflection, or liquid-backing change
+   pauses before ICP can be sent.
 3. Once per exact SNS reward event, the Stream Manager converts eligible
    proposal-bearing reward shares into policy credit. A genuinely
    no-proposal event uses the defined eligible-stake fallback; an ambiguous
@@ -59,6 +61,9 @@ Root, and Governance services:
 5. The NNS Manager applies the fixed 40/60 maturity policy: 40% is staked and
    the remaining maturity is disbursed. Only the actual ICP proved at the ICP
    Ledger becomes maturity backing.
+   Permissionless Jupiter notification additionally requires an exact routed
+   ICP block at or above the immutable launch activation floor and not already
+   present in permanent replay state.
 6. A proof-bound receipt lets the Stream Manager settle the immutable backed
    batch from the IO reserve. Later daily credit can continue accumulating
    while that one batch is pending.
@@ -159,6 +164,12 @@ The Stream Manager also requires the redeemed amount plus the current IO
 `transfer_from` fee to fit within redeemable supply. IO issuance is a transfer
 from the reviewed reserve, not arbitrary application minting.
 
+After the IO pull, a fresh pre-payout snapshot must still support the persisted
+quote: fees and excluded Account identities are unchanged, reserve and supply
+reflect the pull conservatively, no excluded balance fell, and liquid ICP did
+not fall. Favorable drift may make the user's fixed quote more conservative;
+adverse drift cannot make IO overpay.
+
 The backing target for the two-week beneficiary policy is:
 
 ```text
@@ -214,16 +225,16 @@ immutable work to resume.
 ## NNS terminology and production authority
 
 The NNS Manager directly calls NNS Governance, and its configuration requires
-both staging Accounts to be owned by the executing canister. Protected IO NNS
-neuron `10292412127977304661` has controller authority at
+both staging Accounts to be owned by the executing canister. The two-year
+protected NNS neuron `10292412127977304661` has controller authority at
 `oae4c-3iaaa-aaaar-qb5qq-cai`; therefore the accepted production model places
 the manager at that existing controller. Static wiring permits that principal
 only as the NNS Manager authority target. Any inspection, installation,
 upgrade, controller change, or neuron action requires a separate audit and
 explicit mainnet authorization.
 
-This protected IO NNS neuron is distinct from the protected reward-backing NNS
-parent used for the 14-day SNS reward product. That parent has the accepted
+The two-year protected NNS neuron is distinct from the two-week reward-backing
+NNS neuron used for the 14-day SNS reward product. The latter has the accepted
 baseline `non-dissolving`, dissolve delay `252460800` seconds, and
 `auto_stake_maturity = false`. Both are distinct from ordinary eligible IO SNS
 neurons, which have positive stake, are non-dissolving, and have an exact
@@ -236,11 +247,6 @@ neurons, which have positive stake, are non-dissolving, and have an exact
 | Historian | `tjqj3-uaaaa-aaaar-qb7xa-cai` | Fiduciary reservation, `ReservedNotLive` |
 | Frontend | `torpp-zyaaa-aaaar-qb7xq-cai` | Fiduciary reservation, `ReservedNotLive` |
 | SNS IO Ledger/Index/Governance/Root/Swap | not assigned | Final production SNS configuration is incomplete |
-
-The earlier public-shell frontend `6h2pa-qiaaa-aaaao-qp4fa-cai` and Historian
-`yo47z-piaaa-aaaac-qg3xa-cai` are historical `DevMainnet` canisters, not
-production IO protocol targets. See the
-[legacy record](deploy/mainnet-dev/legacy-phase1/README.md).
 
 ## Source, build, and release verification
 
@@ -258,6 +264,9 @@ Reproducibility checks also cover pinned compiler/toolchain paths, absolute
 source and Cargo-home path remapping, clean frontend generation, deterministic
 compression, manifest contents, and complete artifact inventories. Later
 evidence/documentation tails do not become artifact-recording commits.
+Hosted test, security, and reproducible-build results count only when all three
+ran against the exact reviewed release-tail SHA; a green ancestor is not
+current-head evidence.
 
 ```bash
 cargo run -p xtask -- verify_artifacts
@@ -348,11 +357,12 @@ Maintained integration and operations material:
 - [Stable-state fixtures](tests/fixtures/stable-state/README.md)
 - [Testing guide](docs/development/testing.md)
 - [Release checklist](docs/operations/release-checklist.md)
+- [Cycles operations](docs/operations/cycles-management.md)
+- [Threat model](docs/security/threat-model.md)
 - [Audit-readiness index](docs/security/audit-readiness.md)
 
 Historical material is explicitly labelled and is not current deployment
 instruction:
 
-- [Legacy Phase 1 DevMainnet public shell](deploy/mainnet-dev/legacy-phase1/README.md)
 - [`docs/research/pre-simplification/`](docs/research/pre-simplification/) — superseded, non-normative research
 - [Historical research-branch disposition](docs/operations/p0-research-branch-disposition-2026-07-29.md)

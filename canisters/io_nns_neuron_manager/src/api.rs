@@ -25,20 +25,16 @@ pub enum ApiError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct NotifyJupiterDepositArgs {
-    pub block_index: u128,
-}
+#[rustfmt::skip]
+pub struct NotifyJupiterDepositArgs { pub block_index: u128 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct PrepareTwoWeekMaturityArgs {
-    pub entitlement_batch_generation: u64,
-    pub target_e8s: u128,
-}
+#[rustfmt::skip]
+pub struct PrepareTwoWeekMaturityArgs { pub entitlement_batch_generation: u64, pub target_e8s: u128 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct ReconcileTwoWeekBackingReadinessArgs {
-    pub target_e8s: u128,
-}
+#[rustfmt::skip]
+pub struct ReconcileTwoWeekBackingReadinessArgs { pub target_e8s: u128 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum JupiterProgress {
@@ -89,15 +85,8 @@ pub enum NnsProgress {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct Status {
-    pub lifecycle: Lifecycle,
-    pub active_operation: Option<String>,
-    pub two_week_maturity_baseline_reconciled: bool,
-    pub latest_started_two_week_generation: u64,
-    pub latest_completed_two_week_generation: u64,
-    pub latest_two_week_target: Option<TwoWeekTarget>,
-    pub unwinding_child_principal_e8s: u128,
-}
+#[rustfmt::skip]
+pub struct Status { pub lifecycle: Lifecycle, pub active_operation: Option<String>, pub two_year_maturity_baseline_reconciled: bool, pub two_week_maturity_baseline_reconciled: bool, pub latest_started_two_week_generation: u64, pub latest_completed_two_week_generation: u64, pub latest_two_week_target: Option<TwoWeekTarget>, pub unwinding_child_principal_e8s: u128 }
 
 pub(crate) fn ready() -> Result<crate::state::NnsStateV1, ApiError> {
     let state = state::read();
@@ -131,6 +120,9 @@ pub async fn resume() -> Result<NnsProgress, ApiError> {
         .await
         .map(NnsProgress::Unwind),
         None => {
+            if !begin_passive_reconciliation(ic_cdk::api::time())? {
+                return Ok(NnsProgress::Idle);
+            }
             reconcile_latest_target().await?;
             Ok(NnsProgress::Idle)
         }
@@ -144,6 +136,23 @@ pub async fn resume() -> Result<NnsProgress, ApiError> {
             .await
             .map(NnsProgress::Unwind),
     }
+}
+
+pub const PASSIVE_RECONCILIATION_COOLDOWN_NANOS: u64 = 60_000_000_000;
+
+fn passive_reconciliation_due(last_attempt: Option<u64>, now_nanos: u64) -> bool {
+    last_attempt
+        .is_none_or(|last| now_nanos.saturating_sub(last) >= PASSIVE_RECONCILIATION_COOLDOWN_NANOS)
+}
+
+fn begin_passive_reconciliation(now_nanos: u64) -> Result<bool, ApiError> {
+    let mut latest = ready()?;
+    if !passive_reconciliation_due(latest.last_passive_reconciliation_attempt_nanos, now_nanos) {
+        return Ok(false);
+    }
+    latest.last_passive_reconciliation_attempt_nanos = Some(now_nanos);
+    state::write(latest);
+    Ok(true)
 }
 
 pub async fn prove_active_transfer(block_index: u128) -> Result<NnsProgress, ApiError> {
@@ -271,6 +280,7 @@ pub fn get_status() -> Status {
                 NnsOperation::Maturity(_) => "Maturity".into(),
                 NnsOperation::Unwind(_) => "Unwind".into(),
             }),
+        two_year_maturity_baseline_reconciled: current.two_year_maturity_baseline_reconciled,
         two_week_maturity_baseline_reconciled: current.two_week_maturity_baseline_reconciled,
         latest_started_two_week_generation: current.latest_started_two_week_generation,
         latest_completed_two_week_generation: current.latest_completed_two_week_generation,
@@ -336,6 +346,20 @@ async fn reconcile_latest_target() -> Result<(), ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn passive_idle_reconciliation_is_canister_wide_and_cooled_down() {
+        assert!(passive_reconciliation_due(None, 1));
+        assert!(!passive_reconciliation_due(Some(1), 1));
+        assert!(!passive_reconciliation_due(
+            Some(1),
+            PASSIVE_RECONCILIATION_COOLDOWN_NANOS
+        ));
+        assert!(passive_reconciliation_due(
+            Some(1),
+            PASSIVE_RECONCILIATION_COOLDOWN_NANOS + 1
+        ));
+    }
 
     #[test]
     fn one_unsubmitted_unwind_is_replayed_retargeted_or_cancelled() {

@@ -9,4 +9,5 @@ candid.workspace = true
 ic-cdk.workspace = true
 io-core-model.workspace = true
 io-ledger-types.workspace = true
+io-sns-reward-boundary.workspace = true
 serde.workspace = true

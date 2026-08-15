@@ -17,24 +17,12 @@ pub enum MaturityKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct MaturityPlan {
-    pub neuron: NeuronSnapshot,
-    pub original_maturity_e8s: u64,
-    pub original_staked_maturity_e8s: u64,
-    pub stake_maturity_e8s: u64,
-    pub remaining_maturity_e8s: u64,
-    pub destination: Account,
-    pub requested_at_seconds: u64,
-    pub entitlement_batch_generation: Option<u64>,
-}
+#[rustfmt::skip]
+pub struct MaturityPlan { pub neuron: NeuronSnapshot, pub original_maturity_e8s: u64, pub original_staked_maturity_e8s: u64, pub stake_maturity_e8s: u64, pub remaining_maturity_e8s: u64, pub destination: Account, pub requested_at_seconds: u64, pub entitlement_batch_generation: Option<u64> }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct StakeMaturitySucceeded {
-    pub plan: MaturityPlan,
-    pub remaining_maturity_e8s: u64,
-    pub staked_maturity_e8s: u64,
-    pub evidence_source: MaturityEvidenceSource,
-}
+#[rustfmt::skip]
+pub struct StakeMaturitySucceeded { pub plan: MaturityPlan, pub remaining_maturity_e8s: u64, pub staked_maturity_e8s: u64, pub evidence_source: MaturityEvidenceSource }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum MaturityEvidenceSource {
@@ -43,31 +31,20 @@ pub enum MaturityEvidenceSource {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct DisburseMaturitySubmission {
-    pub stake: StakeMaturitySucceeded,
-    pub submitted_at_seconds: u64,
-}
+#[rustfmt::skip]
+pub struct DisburseMaturitySubmission { pub stake: StakeMaturitySucceeded, pub submitted_at_seconds: u64 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct DisburseMaturitySucceeded {
-    pub submission: DisburseMaturitySubmission,
-    pub amount_disbursed_e8s: u64,
-    pub evidence_source: MaturityEvidenceSource,
-}
+#[rustfmt::skip]
+pub struct DisburseMaturitySucceeded { pub submission: DisburseMaturitySubmission, pub amount_disbursed_e8s: u64, pub evidence_source: MaturityEvidenceSource }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct CanonicalDisbursementEvidence {
-    pub initiated_at_seconds: u64,
-    pub scheduled_finalization_timestamp_seconds: u64,
-}
+#[rustfmt::skip]
+pub struct CanonicalDisbursementEvidence { pub initiated_at_seconds: u64, pub scheduled_finalization_timestamp_seconds: u64 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct MintEvidence {
-    pub mint_block: u128,
-    pub actual_minted_icp_e8s: u128,
-    pub native_memo_u64: u64,
-    pub created_at_time_nanos: u64,
-}
+#[rustfmt::skip]
+pub struct MintEvidence { pub mint_block: u128, pub actual_minted_icp_e8s: u128, pub native_memo_u64: u64, pub created_at_time_nanos: u64 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum MintProofState {
@@ -77,65 +54,25 @@ pub enum MintProofState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct PendingMaturityDisbursement {
-    pub kind: MaturityKind,
-    pub neuron_id: u64,
-    pub nominal_disbursed_maturity_e8s: u64,
-    pub destination: Account,
-    pub initiation_timestamp_seconds: u64,
-    pub scheduled_finalization_timestamp_seconds: u64,
-    pub stake_evidence: StakeMaturitySucceeded,
-    pub disburse_evidence: DisburseMaturitySucceeded,
-    pub mint_proof: MintProofState,
-}
+#[rustfmt::skip]
+pub struct PendingMaturityDisbursement { pub kind: MaturityKind, pub neuron_id: u64, pub nominal_disbursed_maturity_e8s: u64, pub destination: Account, pub initiation_timestamp_seconds: u64, pub scheduled_finalization_timestamp_seconds: u64, pub stake_evidence: StakeMaturitySucceeded, pub disburse_evidence: DisburseMaturitySucceeded, pub mint_proof: MintProofState }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct TwoWeekDeliveryOperation {
-    pub pending: PendingMaturityDisbursement,
-    pub permit: Option<StreamReceiptPermit>,
-    pub transfer: Option<NnsTransferAttempt>,
-    pub receipt_completed: bool,
-}
+#[rustfmt::skip]
+pub struct TwoWeekDeliveryOperation { pub pending: PendingMaturityDisbursement, pub permit: Option<StreamReceiptPermit>, pub transfer: Option<NnsTransferAttempt>, pub receipt_completed: bool }
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum MaturityCommandPhase {
-    Observed(MaturityPlan),
-    StakeMaturitySubmitted(MaturityPlan),
-    StakeMaturitySucceeded(StakeMaturitySucceeded),
-    ReadyToDisburse(DisburseMaturitySubmission),
-    DisburseMaturitySubmitted(DisburseMaturitySubmission),
-    DisburseMaturitySucceeded(DisburseMaturitySucceeded),
-    TwoWeekDelivery(TwoWeekDeliveryOperation),
-    MaturityDrift {
-        reason: String,
-        stake: StakeMaturitySucceeded,
-    },
-    DisburseMaturityMismatch {
-        reason: String,
-        submission: DisburseMaturitySubmission,
-        observed_amount_e8s: u64,
-    },
-}
+#[rustfmt::skip]
+pub enum MaturityCommandPhase { Observed(MaturityPlan), StakeMaturitySubmitted(MaturityPlan), StakeMaturitySucceeded(StakeMaturitySucceeded), ReadyToDisburse(DisburseMaturitySubmission), DisburseMaturitySubmitted(DisburseMaturitySubmission), DisburseMaturitySucceeded(DisburseMaturitySucceeded), TwoWeekDelivery(TwoWeekDeliveryOperation), MaturityDrift { reason: String, stake: StakeMaturitySucceeded }, DisburseMaturityMismatch { reason: String, submission: DisburseMaturitySubmission, observed_amount_e8s: u64 } }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct MaturityCommandOperation {
-    pub operation_sequence: u64,
-    pub dispatch_epoch: u64,
-    pub kind: MaturityKind,
-    pub phase: MaturityCommandPhase,
-}
+#[rustfmt::skip]
+pub struct MaturityCommandOperation { pub operation_sequence: u64, pub dispatch_epoch: u64, pub kind: MaturityKind, pub phase: MaturityCommandPhase }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct CompletedMaturity {
-    pub kind: MaturityKind,
-    pub neuron_id: u64,
-    pub mint_block: u128,
-    pub nominal_disbursed_maturity_e8s: u64,
-    pub actual_minted_icp_e8s: u128,
-    pub destination: Account,
-    pub completed_at_nanos: u64,
-}
+#[rustfmt::skip]
+pub struct CompletedMaturity { pub kind: MaturityKind, pub neuron_id: u64, pub mint_block: u128, pub nominal_disbursed_maturity_e8s: u64, pub actual_minted_icp_e8s: u128, pub destination: Account, pub completed_at_nanos: u64 }
 
 impl MaturityCommandOperation {
     pub fn plan(&self) -> &MaturityPlan {

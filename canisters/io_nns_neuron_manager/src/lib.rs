@@ -30,6 +30,7 @@ pub fn init(args: InitArgs) {
             lifecycle: Lifecycle::Paused,
             active_operation: None,
             latest_two_week_target: None,
+            two_year_maturity_baseline_reconciled: false,
             two_week_maturity_baseline_reconciled: false,
             latest_started_two_week_generation: 0,
             latest_completed_two_week_generation: 0,
@@ -40,6 +41,9 @@ pub fn init(args: InitArgs) {
             last_two_week_maturity: None,
             next_operation_sequence: 1,
             control_epoch: 0,
+            last_passive_reconciliation_attempt_nanos: None,
+            last_public_jupiter_lookup_attempt_nanos: None,
+            jupiter_lookup_lease: None,
         },
         ic_cdk::api::canister_self(),
     )

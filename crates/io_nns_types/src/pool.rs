@@ -19,15 +19,8 @@ pub enum UnwindPhase {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct UnwindOperation {
-    pub operation_sequence: u64,
-    pub target_e8s: u128,
-    pub excess_e8s: u128,
-    pub child_neuron_id: u64,
-    pub principal_e8s: u128,
-    pub child_staking_subaccount: Vec<u8>,
-    pub phase: UnwindPhase,
-}
+#[rustfmt::skip]
+pub struct UnwindOperation { pub operation_sequence: u64, pub target_e8s: u128, pub excess_e8s: u128, pub child_neuron_id: u64, pub principal_e8s: u128, pub child_staking_subaccount: Vec<u8>, pub phase: UnwindPhase }
 
 impl UnwindOperation {
     pub fn validate(&self, next_operation_sequence: u64) -> Result<(), String> {

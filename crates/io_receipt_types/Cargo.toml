@@ -6,5 +6,5 @@ license.workspace = true
 
 [dependencies]
 candid.workspace = true
-io-accounts = { path = "../io_accounts" }
+io-accounts = { version = "0.1.0", path = "../io_accounts" }
 serde.workspace = true

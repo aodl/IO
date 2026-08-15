@@ -44,20 +44,20 @@ ic-asset-certification = "3.2.0"
 ic-http-certification = "3.2.0"
 include_dir = "0.7.4"
 ic-stable-structures = "0.7.2"
-io-core-model = { path = "crates/io_core_model" }
-io-governance-types = { path = "crates/io_governance_types" }
-io-ledger-boundary = { path = "crates/io_ledger_boundary" }
-io-nns-types = { path = "crates/io_nns_types" }
-io-ledger-types = { path = "crates/io_ledger_types" }
-io-production-wiring = { path = "crates/io_production_wiring" }
-io-reward-policy = { path = "crates/io_reward_policy" }
-io-sns-reward-boundary = { path = "crates/io_sns_reward_boundary" }
-io-receipt-types = { path = "crates/io_receipt_types" }
-io-build-support = { path = "crates/io_build_support" }
-io-sns-lifecycle = { path = "crates/io_sns_lifecycle" }
-io-stable-schema = { path = "crates/io_stable_schema" }
-io-sns-manifest = { path = "tools/sns_manifest" }
-io-nns-neuron-manager = { path = "canisters/io_nns_neuron_manager" }
+io-core-model = { version = "0.1.0", path = "crates/io_core_model" }
+io-governance-types = { version = "0.1.0", path = "crates/io_governance_types" }
+io-ledger-boundary = { version = "0.1.0", path = "crates/io_ledger_boundary" }
+io-nns-types = { version = "0.1.0", path = "crates/io_nns_types" }
+io-ledger-types = { version = "0.1.0", path = "crates/io_ledger_types" }
+io-production-wiring = { version = "0.1.0", path = "crates/io_production_wiring" }
+io-reward-policy = { version = "0.1.0", path = "crates/io_reward_policy" }
+io-sns-reward-boundary = { version = "0.1.0", path = "crates/io_sns_reward_boundary" }
+io-receipt-types = { version = "0.1.0", path = "crates/io_receipt_types" }
+io-build-support = { version = "0.1.0", path = "crates/io_build_support" }
+io-sns-lifecycle = { version = "0.1.0", path = "crates/io_sns_lifecycle" }
+io-stable-schema = { version = "0.1.0", path = "crates/io_stable_schema" }
+io-sns-manifest = { version = "0.1.0", path = "tools/sns_manifest" }
+io-nns-neuron-manager = { version = "0.1.0", path = "canisters/io_nns_neuron_manager" }
 serde = { version = "1.0.228", features = ["derive"] }
 pocket-ic = "14.0.0"
 mime_guess = "2.0.5"

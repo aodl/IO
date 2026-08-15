@@ -27,6 +27,11 @@ pub async fn start(caller: Principal, kind: MaturityKind) -> Result<MaturityProg
             "two-week maturity must be prepared by the stream manager for a frozen entitlement batch".into(),
         ));
     }
+    if !snapshot.two_year_maturity_baseline_reconciled {
+        return Err(ApiError::Pending(
+            "two-year protected NNS neuron launch baseline is unreconciled".into(),
+        ));
+    }
     start_observed(snapshot, kind, None).await
 }
 

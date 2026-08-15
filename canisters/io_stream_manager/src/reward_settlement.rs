@@ -57,15 +57,22 @@ pub(crate) fn validate(
                         .effective_eq(excluded)
                         .map(|same| matched || same)
                 })?
-            || recipient.refresh_attempted
-                && !matches!(
-                    recipient.transfer.as_ref().map(|attempt| &attempt.state),
-                    Some(crate::transfer::TransferState::Succeeded { .. })
+            || !matches!(
+                recipient.refresh_status,
+                crate::receipt::NeuronRefreshStatus::NotAttempted
+            ) && !matches!(
+                recipient.transfer.as_ref().map(|attempt| &attempt.state),
+                Some(crate::transfer::TransferState::Succeeded { .. })
+            )
+            || index < settlement.recipient_index as usize
+                && matches!(
+                    recipient.refresh_status,
+                    crate::receipt::NeuronRefreshStatus::NotAttempted
                 )
-            || index < settlement.recipient_index as usize && !recipient.refresh_attempted
         {
             return Err("two-week reward recipient is inconsistent".into());
         }
+        recipient.refresh_status.validate()?;
         let Some(attempt) = &recipient.transfer else {
             continue;
         };

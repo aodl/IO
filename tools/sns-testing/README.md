@@ -38,5 +38,5 @@ Expected manual order:
 
 These scripts must not use `--network ic`, must not call mainnet, and must not
 start a replica inside the dapp deployment step. NNS Manager execution canister
-`oae4c-3iaaa-aaaar-qb5qq-cai` and protected IO NNS neuron
+`oae4c-3iaaa-aaaar-qb5qq-cai` and the two-year protected NNS neuron
 `10292412127977304661` are not touched.

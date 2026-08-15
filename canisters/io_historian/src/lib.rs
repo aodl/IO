@@ -20,9 +20,15 @@ const SOURCE_NAMES: &[&str] = &[
     "sns-index",
 ];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum LaunchSchema {
+    V1,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct StableState {
     pub schema_version: u32,
+    pub launch_schema: LaunchSchema,
     pub config: Option<ObservationConfig>,
     pub protocol: ProtocolSnapshot,
     pub source_health: Vec<SourceHealth>,
@@ -41,6 +47,7 @@ impl Default for StableState {
     fn default() -> Self {
         Self {
             schema_version: HISTORIAN_SCHEMA_VERSION,
+            launch_schema: LaunchSchema::V1,
             config: None,
             protocol: ProtocolSnapshot::default(),
             source_health: SOURCE_NAMES
@@ -183,57 +190,23 @@ pub fn pre_upgrade() {
     ic_cdk::storage::stable_save((bytes,)).expect("failed to save historian stable state");
 }
 
-#[derive(CandidType, Deserialize)]
-struct LegacyState {
-    schema_version: u32,
-    last_ingested_timestamp_nanos: Option<u64>,
-}
-
 fn restore_state(bytes: &[u8]) -> Result<StableState, String> {
-    if let Ok(state) = Decode!(bytes, StableState) {
-        if state.schema_version != HISTORIAN_SCHEMA_VERSION {
-            return Err(format!(
-                "unsupported historian schema {}",
-                state.schema_version
-            ));
-        }
-        return Ok(state);
-    }
-    let legacy = Decode!(bytes, LegacyState)
+    let state = Decode!(bytes, StableState)
         .map_err(|err| format!("historian stable state is corrupt: {err}"))?;
-    if legacy.schema_version > 2 {
+    if state.schema_version != HISTORIAN_SCHEMA_VERSION {
         return Err(format!(
             "unsupported historian schema {}",
-            legacy.schema_version
+            state.schema_version
         ));
     }
-    Ok(StableState {
-        last_success_timestamp_nanos: legacy.last_ingested_timestamp_nanos,
-        ..StableState::default()
-    })
+    Ok(state)
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::post_upgrade)]
 pub fn post_upgrade(config: Option<ObservationConfig>) {
-    let mut state = match ic_cdk::storage::stable_restore::<(Vec<u8>,)>() {
-        Ok((bytes,)) => restore_state(&bytes).expect("historian stable schema migration failed"),
-        Err(current_error) => {
-            let (legacy,) = ic_cdk::storage::stable_restore::<(LegacyState,)>().unwrap_or_else(
-                |legacy_error| {
-                    panic!(
-                        "historian stable state is missing or corrupt: current={current_error}; legacy={legacy_error}"
-                    )
-                },
-            );
-            if legacy.schema_version > 2 {
-                panic!("unsupported historian schema {}", legacy.schema_version);
-            }
-            StableState {
-                last_success_timestamp_nanos: legacy.last_ingested_timestamp_nanos,
-                ..StableState::default()
-            }
-        }
-    };
+    let (bytes,) = ic_cdk::storage::stable_restore::<(Vec<u8>,)>()
+        .expect("historian stable state is missing or corrupt");
+    let mut state = restore_state(&bytes).expect("invalid historian launch V1 state");
     state.source_health.iter_mut().for_each(|health| {
         if health.freshness == ObservationFreshness::Fresh {
             health.freshness = ObservationFreshness::Stale;
@@ -392,6 +365,23 @@ mod tests {
     use candid::Principal;
     use io_ledger_types::Subaccount;
 
+    #[derive(CandidType)]
+    struct PreviousStableStateV1 {
+        schema_version: u32,
+        config: Option<ObservationConfig>,
+        protocol: ProtocolSnapshot,
+        source_health: Vec<SourceHealth>,
+        canisters: Vec<CanisterObservation>,
+        stream: Option<StreamStatus>,
+        nns_manager: Option<NnsManagerStatus>,
+        nns_governance: Option<NnsGovernanceStatus>,
+        sns: Option<SnsStatus>,
+        index: Option<IndexStatus>,
+        refresh_generation: u64,
+        last_attempt_timestamp_nanos: Option<u64>,
+        last_success_timestamp_nanos: Option<u64>,
+    }
+
     fn account(seed: u8) -> io_ledger_types::Account {
         io_ledger_types::Account::new(Principal::from_slice(&[seed]), Some(Subaccount([seed; 32])))
     }
@@ -525,5 +515,37 @@ mod tests {
             Some("transport")
         );
         assert!(!get_public_status().refresh_active);
+    }
+
+    #[test]
+    fn launch_v1_rejects_corrupt_and_unknown_schema_bytes() {
+        assert!(restore_state(b"not candid").is_err());
+        let future = StableState {
+            schema_version: HISTORIAN_SCHEMA_VERSION + 1,
+            ..StableState::default()
+        };
+        let bytes = Encode!(&future).unwrap();
+        assert!(restore_state(&bytes)
+            .unwrap_err()
+            .contains("unsupported historian schema"));
+
+        let previous = StableState::default();
+        let bytes = Encode!(&PreviousStableStateV1 {
+            schema_version: previous.schema_version,
+            config: previous.config,
+            protocol: previous.protocol,
+            source_health: previous.source_health,
+            canisters: previous.canisters,
+            stream: previous.stream,
+            nns_manager: previous.nns_manager,
+            nns_governance: previous.nns_governance,
+            sns: previous.sns,
+            index: previous.index,
+            refresh_generation: previous.refresh_generation,
+            last_attempt_timestamp_nanos: previous.last_attempt_timestamp_nanos,
+            last_success_timestamp_nanos: previous.last_success_timestamp_nanos,
+        })
+        .unwrap();
+        assert!(restore_state(&bytes).is_err());
     }
 }

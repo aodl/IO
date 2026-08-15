@@ -21,7 +21,7 @@ One non-overlapping, one-shot timer generation observes:
 - the ICP Ledger's liquid-reserve balance;
 - Stream Manager and NNS Manager `get_status`;
 - public NNS Governance build metadata and bounded public neuron-info queries
-  for the distinct configured reward-backing parent and protected IO NNS neuron
+  for the distinct two-week reward-backing and two-year protected NNS neuron
   IDs;
 - SNS Root topology, controllers, module hashes, and discovered archives;
 - SNS Governance parameters and latest reward event; and
@@ -106,9 +106,8 @@ together from one successful set of ledger reads, so it never combines partial
 monetary generations. The global last-success timestamp advances only when all
 sources are `Fresh` after the attempt.
 
-The historical v1/v2 stable record is decoded through a narrow compatibility
-shape. Historical scanner/cohort records do not re-enter the current public
-model.
+Stable restore accepts only the strict launch V1 record. Obsolete development
+shapes fail to decode; there is no pre-launch compatibility path.
 
 ## Failure and consistency semantics
 
@@ -142,5 +141,5 @@ The Historian is not a transfer scanner, ledger replacement, controller,
 arithmetic oracle for value-moving canisters, or source of launch readiness.
 It performs no caller impersonation and exposes no production ingestion method.
 Protected NNS Manager execution canister `oae4c-3iaaa-aaaar-qb5qq-cai` and
-protected IO NNS neuron `10292412127977304661` are not Historian observation
+two-year protected NNS neuron `10292412127977304661` are not Historian observation
 sources and are not touched by its validation or local tests.

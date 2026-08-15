@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   connectWalletAdapter,
-  injectedTestingAdapter,
   resolveWalletSession,
 } from "../src/app/wallet-adapter.js";
 
@@ -31,17 +30,17 @@ test("adapter rejects malformed subaccount, wrong network and missing consent", 
   await assert.rejects(connect({ identity, selectedSubaccount: new Uint8Array(32), network: "local" }));
 });
 
-test("injected session is explicitly labeled local/testing", async () => {
+test("production resolution uses only ioWalletAdapter", async () => {
   const window = {
-    ioRedemptionSession: {
-      identity,
-      selectedSubaccount: new Uint8Array(32),
-      network: "local",
-      requestApprovalConsent: consent,
+    ioWalletAdapter: {
+      connect: async () => ({
+        identity,
+        selectedSubaccount: new Uint8Array(32),
+        network: "local",
+        requestApprovalConsent: consent,
+      }),
     },
   };
-  const adapter = injectedTestingAdapter(window, "local");
-  const session = await adapter.connect();
-  assert.equal(session.adapterKind, "injected-local-testing");
-  assert.equal((await resolveWalletSession(window, "local")).adapterKind, "injected-local-testing");
+  assert.equal((await resolveWalletSession(window, "local")).adapterKind, "wallet");
+  assert.equal(await resolveWalletSession({}, "local"), null);
 });

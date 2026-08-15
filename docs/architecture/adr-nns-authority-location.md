@@ -3,7 +3,7 @@
 - Status: accepted for simplified launch design
 - Date: 2026-07-31
 
-Protected IO NNS neuron `10292412127977304661` has controller authority at
+Two-year protected NNS neuron `10292412127977304661` has controller authority at
 `oae4c-3iaaa-aaaar-qb5qq-cai`. Hotkeys do not supply stake and disbursement
 authority. The simplified production NNS Manager therefore executes at that
 existing controller canister.

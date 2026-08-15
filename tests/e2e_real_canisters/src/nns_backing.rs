@@ -155,6 +155,8 @@ struct ManagerConfig {
     expected_icp_fee_e8s: u128,
     jupiter_fee_float_e8s: u128,
     two_week_fee_float_e8s: u128,
+    jupiter_activation_block_floor: u128,
+    seeded_two_year_principal_e8s: u128,
     seeded_two_week_principal_e8s: u128,
     transfer_retry_delay_nanos: u64,
     ledger_deduplication_window_nanos: u64,
@@ -296,6 +298,7 @@ pub struct ControlledNnsNeuron {
     pub two_year_neuron_id: u64,
     pub proposer_neuron_id: u64,
     pub protected_principal_e8s: u64,
+    pub two_year_principal_e8s: u64,
 }
 
 pub fn create_zero_maturity_protected_neuron() -> ControlledNnsNeuron {
@@ -327,13 +330,14 @@ fn create_zero_maturity_protected_neuron_with_stake(
         1_000 * 100_000_000,
         ONE_YEAR_SECONDS,
     );
+    let two_year_principal_e8s = 100 * 100_000_000;
     let two_year_neuron_id = stake_neuron(
         &pic,
         governance,
         ledger,
         controller,
         TWO_YEAR_MEMO,
-        100 * 100_000_000,
+        two_year_principal_e8s,
         EIGHT_YEARS_SECONDS,
     );
     let neuron = neuron(&pic, governance, controller, neuron_id);
@@ -355,6 +359,7 @@ fn create_zero_maturity_protected_neuron_with_stake(
         two_year_neuron_id,
         proposer_neuron_id,
         protected_principal_e8s,
+        two_year_principal_e8s,
     }
 }
 
@@ -881,6 +886,8 @@ fn install_manager(
                 expected_icp_fee_e8s: ICP_FEE_E8S.into(),
                 jupiter_fee_float_e8s: 20_000,
                 two_week_fee_float_e8s: 20_000,
+                jupiter_activation_block_floor: 1,
+                seeded_two_year_principal_e8s: fixture.two_year_principal_e8s.into(),
                 seeded_two_week_principal_e8s: fixture.protected_principal_e8s.into(),
                 transfer_retry_delay_nanos: 1_000_000_000,
                 ledger_deduplication_window_nanos: 86_400_000_000_000,
@@ -1461,6 +1468,18 @@ mod tests {
             IcpAccount::new(fixture.controller, None).icp_account_identifier_bytes();
         let deposit_block = transfer(jupiter, manager_account.to_vec(), gross_e8s, 21);
 
+        let pre_activation: Result<ManagerJupiterProgress, ManagerApiError> = super::update(
+            &fixture.pic,
+            fixture.controller,
+            Principal::anonymous(),
+            "notify_jupiter_deposit",
+            NotifyJupiterDepositArgs { block_index: 0 },
+        );
+        assert!(matches!(
+            pre_activation,
+            Err(ManagerApiError::Invalid(message)) if message.contains("predates activation floor")
+        ));
+
         let wrong: Result<ManagerJupiterProgress, ManagerApiError> = super::update(
             &fixture.pic,
             fixture.controller,
@@ -1471,6 +1490,7 @@ mod tests {
             },
         );
         assert!(matches!(wrong, Err(ManagerApiError::Invalid(_))));
+        fixture.pic.advance_time(std::time::Duration::from_secs(1));
 
         let before_neuron = super::neuron(
             &fixture.pic,

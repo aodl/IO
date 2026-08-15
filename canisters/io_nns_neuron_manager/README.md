@@ -3,8 +3,8 @@
 ## Role in IO
 
 `io_nns_neuron_manager` exclusively owns IO's proof and commands for the
-protected IO NNS neuron (`two_year_neuron_id`), the protected reward-backing NNS
-parent for the 14-day SNS product (`two_week_neuron_id` in the API), Jupiter
+two-year protected NNS neuron (`two_year_neuron_id`), the two-week reward-
+backing NNS neuron for the 14-day SNS product (`two_week_neuron_id`), Jupiter
 and maturity staging Accounts, direct 40/60 maturity policy, and one pending
 unwind child. It does not own a general fee Account or a queue of target
 positions.
@@ -18,17 +18,27 @@ repository.
 ## Dependencies and authority
 
 The manager directly calls the configured NNS Governance canister as the
-executing canister. Protected IO NNS neuron `10292412127977304661` has
+executing canister. The two-year protected NNS neuron
+`10292412127977304661` has
 controller authority at `oae4c-3iaaa-aaaar-qb5qq-cai`, so the accepted
 production model places this implementation at that existing controller. The
 architecture has no authority adapter. Any mainnet inspection or change
 requires a separate audit and explicit authorization.
 
+The launch inventory is explicit; TODO values are blockers, not fixture
+defaults:
+
+| NNS role | Neuron ID | Controller/executor | Expected launch principal | Maturity baseline | Dissolve configuration | Staging/destination |
+| --- | --- | --- | --- | --- | --- | --- |
+| Two-year protected NNS neuron | `10292412127977304661` | `oae4c-3iaaa-aaaar-qb5qq-cai` | audited `seeded_two_year_principal_e8s` (production template TODO) | ordinary `0`, staked `0`, no pending disbursement | non-dissolving, approved `252460800` seconds, auto-stake off | actual Mint proof to Stream Manager liquid ICP Account |
+| Two-week reward-backing NNS neuron | final production ID is open | same NNS Manager execution canister | audited `seeded_two_week_principal_e8s` (production template TODO) | ordinary `0`, staked `0`, no pending disbursement/child ambiguity | non-dissolving, approved `252460800` seconds, auto-stake off | self-owned two-week maturity staging Account, then proof-bound Stream receipt |
+
 SNS Governance controls `set_paused` and the reviewed two-year maturity generic
 function. Only the configured Stream Manager can reconcile and prepare the
 two-week backing path. Jupiter observation is permissionless but authoritative
 only when one exact ICP Ledger block matches the configured Jupiter source and
-manager staging Accounts.
+manager staging Accounts and is at or above the immutable launch activation
+floor.
 
 The correctness-critical NNS command DTOs and behavior are pinned to
 `dfinity/ic` commit `021bf342f66296d5605b355a61b2430406a83783`; see the
@@ -45,10 +55,12 @@ distinct from each other. Neither staging Account, nor the Jupiter source
 Account, may equal the Stream liquid Account.
 
 An exact Jupiter deposit is split with checked integer arithmetic: 40% (rounded
-down) is staked in the protected IO NNS neuron and the remainder goes through
+down) is staked in the two-year protected NNS neuron and the remainder goes through
 Jupiter staging to the Stream Manager's proof-bound liquid receipt. Processed
 Jupiter block indexes have narrow permanent replay protection; there is no
-Jupiter callback.
+Jupiter callback. Blocks below `jupiter_activation_block_floor` are rejected
+without a Ledger/archive call. New unprocessed lookups share one persisted
+one-second cooldown; invalid probes create no per-block stable state.
 
 For direct maturity, the manager observes canonical ordinary maturity `M`,
 calls `StakeMaturity(40%)`, verifies returned remaining and staked maturity,
@@ -91,15 +103,18 @@ delivery/unwind work remain resumable while paused.
 
 Configuration validation requires:
 
-- distinct, nonzero protected IO and reward-backing NNS neuron IDs and valid
-  non-system principals;
+- distinct, nonzero two-year and two-week NNS neuron IDs and valid non-system
+  principals, with canister self, SNS Governance, Stream Manager, Jupiter, ICP
+  Ledger, and NNS Governance pairwise distinct;
 - self-owned, distinct staging Accounts;
 - canonical default Accounts for Jupiter source and Jupiter staging;
 - the configured Jupiter owner and Stream liquid owner to match their roles;
 - nonzero reviewed IO and ICP fees;
 - a Jupiter fee float covering at least two current ICP fees;
 - a two-week staging fee float covering at least one current ICP fee;
-- each configured staging fee float capped at 100,000,000 e8s (1 ICP); and
+- each configured staging fee float capped at 100,000,000 e8s (1 ICP);
+- a nonzero immutable Jupiter activation block floor and nonzero exact seeded
+  principals for both NNS roles; and
 - a positive retry delay strictly inside the configured ledger deduplication
   window.
 
@@ -109,12 +124,15 @@ to contain its full configured fee float. The captured control epoch,
 configuration, lifecycle, and active/passive operation state must remain
 unchanged through the asynchronous preflight.
 
-On first readiness only, the manager also proves the exact configured reward-
-backing parent and seeded principal, zero pre-launch ordinary and staked
-maturity, effectively disabled auto-stake, the exact non-dissolving approved
-delay, and no pending maturity disbursement or child ambiguity. That baseline
-proof survives upgrade. Later retained staked maturity is expected, but auto-
-stake or dissolve-state drift blocks new preparation.
+On first readiness only, the manager proves those conditions independently for
+both the two-year protected NNS neuron and the two-week reward-backing NNS
+neuron: exact ID and seeded principal, zero pre-launch ordinary and staked
+maturity, `auto_stake_maturity = false`, the exact non-dissolving approved
+delay, and no pending maturity disbursement. The two-week role additionally
+requires no child ambiguity. Separate baseline flags survive upgrade, and the
+two-year maturity command is unavailable until its own flag is reconciled. A
+nonzero pre-launch maturity observation blocks readiness for reviewed operator
+resolution; it is never silently treated as protocol earnings.
 
 ## Target reconciliation and direct unwind
 
@@ -148,7 +166,10 @@ destination, amount, fee, memo, timestamp, and operation identity. Retry stays
 inside the ledger deduplication window; uncertain expired outcomes become
 `Stuck`.
 
-`resume` advances the exact active or passive state. `prove_active_transfer`
+`resume` advances the exact active or passive state. With no work present, its
+optional target observation uses one persisted 60-second canister-wide
+cooldown; continuing real monetary work is never delayed by that cooldown.
+`prove_active_transfer`
 accepts only a canonical block matching a Stuck Jupiter/two-week staging
 transfer or an unwind disbursement effect. `prove_maturity_mint` accepts only
 the exact delayed NNS maturity Mint to the configured destination, including

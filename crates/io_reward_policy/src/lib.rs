@@ -3,10 +3,8 @@
 pub const DAILY_EVENT_CREDIT: u128 = 1_000_000_000_000_000_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EntitlementCredit {
-    pub sns_neuron_id: Vec<u8>,
-    pub accumulated_eligible_credit: u128,
-}
+#[rustfmt::skip]
+pub struct EntitlementCredit { pub sns_neuron_id: Vec<u8>, pub accumulated_eligible_credit: u128 }
 
 pub fn entitlement_credit_from_bytes(
     sns_neuron_id: Vec<u8>,
@@ -19,17 +17,12 @@ pub fn entitlement_credit_from_bytes(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RewardAllocation {
-    pub sns_neuron_id: Vec<u8>,
-    pub io_e8s: u128,
-}
+#[rustfmt::skip]
+pub struct RewardAllocation { pub sns_neuron_id: Vec<u8>, pub io_e8s: u128 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AllocationOutcome {
-    pub allocations: Vec<RewardAllocation>,
-    pub forfeited_io_e8s: u128,
-    pub rounding_dust_e8s: u128,
-}
+#[rustfmt::skip]
+pub struct AllocationOutcome { pub allocations: Vec<RewardAllocation>, pub forfeited_io_e8s: u128, pub rounding_dust_e8s: u128 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RewardPolicyError {

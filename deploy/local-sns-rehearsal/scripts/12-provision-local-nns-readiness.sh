@@ -173,14 +173,31 @@ transfer_delta "two-week maturity staging fee float" "$nns_manager" "$two_week_s
 two_year_neuron_id="$(claim_and_shape_neuron two-year "$two_year_nonce" "$two_year_stake")"
 two_week_neuron_id="$(claim_and_shape_neuron reward-backing "$two_week_nonce" "$two_week_stake")"
 if [ "$two_year_neuron_id" = "$two_week_neuron_id" ]; then
-  record_blocker "local protected NNS neuron roles resolved to the same ID"
+  record_blocker "local two-year and two-week NNS neuron roles resolved to the same ID"
+  exit 2
+fi
+
+ledger_tip="$(dfx canister call --network "$network_url" --identity "$identity" --query \
+  --candid "$ledger_did" "$icp_ledger" query_blocks \
+  '(record { start = 0 : nat64; length = 0 : nat64 })')"
+jupiter_activation_block_floor="$(printf '%s' "$ledger_tip" | tr -d '_' \
+  | sed -n 's/.*chain_length = \([0-9][0-9]*\) : nat64.*/\1/p')"
+require_nat "Jupiter activation block floor" "$jupiter_activation_block_floor"
+if [ "$jupiter_activation_block_floor" = 0 ]; then
+  record_blocker "local Jupiter activation block floor resolved to zero"
   exit 2
 fi
 
 sed -i -E "s/(two_year_neuron_id = )[0-9_]+/\1${two_year_neuron_id}/" "$nns_args"
 sed -i -E "s/(two_week_neuron_id = )[0-9_]+/\1${two_week_neuron_id}/" "$nns_args"
+sed -i -E "s/(jupiter_activation_block_floor = )[0-9_]+/\1${jupiter_activation_block_floor}/" "$nns_args"
+sed -i -E "s/(seeded_two_year_principal_e8s = )[0-9_]+/\1${two_year_stake}/" "$nns_args"
+sed -i -E "s/(seeded_two_week_principal_e8s = )[0-9_]+/\1${two_week_stake}/" "$nns_args"
 grep -Fq "two_year_neuron_id = ${two_year_neuron_id}" "$nns_args"
 grep -Fq "two_week_neuron_id = ${two_week_neuron_id}" "$nns_args"
+grep -Fq "jupiter_activation_block_floor = ${jupiter_activation_block_floor}" "$nns_args"
+grep -Fq "seeded_two_year_principal_e8s = ${two_year_stake}" "$nns_args"
+grep -Fq "seeded_two_week_principal_e8s = ${two_week_stake}" "$nns_args"
 
 fixture="${GENERATED_DIR}/nns-readiness-fixture.toml"
 cat > "$fixture" <<EOF
@@ -188,6 +205,7 @@ cat > "$fixture" <<EOF
 canonical_icp_fee_e8s = ${expected_fee}
 jupiter_fee_float_e8s = ${jupiter_fee_float}
 two_week_fee_float_e8s = ${two_week_fee_float}
+jupiter_activation_block_floor = ${jupiter_activation_block_floor}
 
 [two_year_neuron]
 id = ${two_year_neuron_id}
@@ -214,4 +232,4 @@ maturity_disbursement_pending = false
 EOF
 
 mark_phase_done 12-provision-local-nns-readiness \
-  "two_year_neuron_id=${two_year_neuron_id} reward_backing_neuron_id=${two_week_neuron_id} controller=${nns_manager} canonical_fee=${expected_fee} jupiter_float=${jupiter_fee_float} two_week_float=${two_week_fee_float}"
+  "two_year_neuron_id=${two_year_neuron_id} reward_backing_neuron_id=${two_week_neuron_id} controller=${nns_manager} canonical_fee=${expected_fee} jupiter_activation_block_floor=${jupiter_activation_block_floor} jupiter_float=${jupiter_fee_float} two_week_float=${two_week_fee_float}"

@@ -19,6 +19,17 @@ jobs:
           # Artifact provenance requires the exact recorded source commit to be
           # locally available for detached-worktree builds.
           fetch-depth: 0
+      - name: Verify exact event source revision
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          actual_head="$(git rev-parse HEAD)"
+          echo "validated source SHA: ${actual_head}"
+          if [[ "${actual_head}" != "${EXPECTED_SOURCE_SHA}" ]]; then
+            echo "checked-out HEAD ${actual_head} does not equal intended event SHA ${EXPECTED_SOURCE_SHA}" >&2
+            exit 1
+          fi
       - name: Verify pull-request fast-forward lineage
         if: github.event_name == 'pull_request'
         shell: bash
@@ -26,13 +37,8 @@ jobs:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          actual_head="$(git rev-parse HEAD)"
-          if [[ "${actual_head}" != "${PR_HEAD_SHA}" ]]; then
-            echo "checked-out HEAD ${actual_head} does not equal PR head ${PR_HEAD_SHA}" >&2
-            exit 1
-          fi
           if ! git merge-base --is-ancestor "${PR_BASE_SHA}" HEAD; then
-            echo "PR base ${PR_BASE_SHA} is not an ancestor of HEAD ${actual_head}" >&2
+            echo "PR base ${PR_BASE_SHA} is not an ancestor of PR head ${PR_HEAD_SHA}" >&2
             exit 1
           fi
       # Swatinem/rust-cache v2.9.2

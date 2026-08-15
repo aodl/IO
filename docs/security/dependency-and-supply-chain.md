@@ -53,10 +53,26 @@ runs the basename-exact `icp` binary. It fails closed on a checksum mismatch.
 
 - advisories as hard failures, with yanked crates reported;
 - unknown registries and unknown git sources denied;
+- wildcard dependency requirements denied, including local path dependencies
+  without an explicit workspace version;
 - common Rust ecosystem licenses allowed;
 - duplicate dependency versions reported as warnings while the graph is reviewed.
 
 Duplicate versions should be reduced when doing so is low-risk. They should not be flattened through broad upgrades during unrelated work.
+
+The reviewed advisory exceptions are narrow and must be retired with their
+upstream dependency path:
+
+| Advisory | Resolved path | Runtime class | Retirement condition |
+| --- | --- | --- | --- |
+| `RUSTSEC-2025-0012` | `pocket-ic 14.0.0 -> backoff 0.4.0` | development/test only | PocketIC removes or upgrades `backoff` |
+| `RUSTSEC-2024-0384` | `pocket-ic -> backoff -> instant 0.1.13` | development/test only | the same PocketIC/backoff update removes `instant` |
+| `RUSTSEC-2024-0436` | `candid 0.10.x -> paste 1.0.15` | production and tests | the pinned IC/Candid stack removes `paste` |
+| `RUSTSEC-2021-0127` | `ic-http-certification -> serde_cbor 0.11.2`, plus PocketIC | certified frontend production path and tests | both upstream paths remove `serde_cbor` |
+
+These are unmaintained-crate notices, not blanket vulnerability suppressions.
+Any new advisory remains a hard failure. The locked graph uses `anyhow 1.0.103`
+or newer within the lockfile line so `RUSTSEC-2026-0190` is not ignored.
 
 ## Release Artifact Provenance
 

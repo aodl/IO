@@ -8,56 +8,28 @@ pub use io_receipt_types::LiquidReceiptPermit as StreamReceiptPermit;
 pub const PINNED_DFINITY_IC_COMMIT: &str = "021bf342f66296d5605b355a61b2430406a83783";
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct JupiterDeposit {
-    pub block_index: u128,
-    pub gross_e8s: u128,
-    pub stake_e8s: u128,
-    pub liquid_e8s: u128,
-    pub created_at_time_nanos: u64,
-}
+#[rustfmt::skip]
+pub struct JupiterDeposit { pub block_index: u128, pub gross_e8s: u128, pub stake_e8s: u128, pub liquid_e8s: u128, pub created_at_time_nanos: u64 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct NeuronSnapshot {
-    pub neuron_id: u64,
-    pub staking_subaccount: [u8; 32],
-    pub cached_stake_e8s: u128,
-}
+#[rustfmt::skip]
+pub struct NeuronSnapshot { pub neuron_id: u64, pub staking_subaccount: [u8; 32], pub cached_stake_e8s: u128 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct StakeTransferSucceeded {
-    pub before: NeuronSnapshot,
-    pub block_index: u128,
-}
+#[rustfmt::skip]
+pub struct StakeTransferSucceeded { pub before: NeuronSnapshot, pub block_index: u128 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct StakeIncreaseProof {
-    pub before: NeuronSnapshot,
-    pub after_cached_stake_e8s: u128,
-    pub stake_transfer_block: u128,
-}
+#[rustfmt::skip]
+pub struct StakeIncreaseProof { pub before: NeuronSnapshot, pub after_cached_stake_e8s: u128, pub stake_transfer_block: u128 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct LiquidTransferSucceeded {
-    pub proof: StakeIncreaseProof,
-    pub permit: StreamReceiptPermit,
-    pub block_index: u128,
-}
+#[rustfmt::skip]
+pub struct LiquidTransferSucceeded { pub proof: StakeIncreaseProof, pub permit: StreamReceiptPermit, pub block_index: u128 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct JupiterCompleted {
-    pub deposit_block: u128,
-    pub gross_e8s: u128,
-    pub stake_e8s: u128,
-    pub liquid_e8s: u128,
-    pub stake_transfer_block: u128,
-    pub liquid_transfer_block: u128,
-    pub stream_receipt_sequence: u64,
-    pub backed_io_e8s: u128,
-    pub io_transfer_block: u128,
-    pub io_fee_e8s: u128,
-    pub stream_receipt_fingerprint: Vec<u8>,
-    pub completed_at_nanos: u64,
-}
+#[rustfmt::skip]
+pub struct JupiterCompleted { pub deposit_block: u128, pub gross_e8s: u128, pub stake_e8s: u128, pub liquid_e8s: u128, pub stake_transfer_block: u128, pub liquid_transfer_block: u128, pub stream_receipt_sequence: u64, pub backed_io_e8s: u128, pub io_transfer_block: u128, pub io_fee_e8s: u128, pub stream_receipt_fingerprint: Vec<u8>, pub completed_at_nanos: u64 }
 
 impl Storable for JupiterCompleted {
     fn to_bytes(&self) -> Cow<'_, [u8]> {
@@ -137,13 +109,8 @@ pub enum JupiterPhase {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct JupiterOperation {
-    pub operation_sequence: u64,
-    pub dispatch_epoch: u64,
-    pub captured_control_epoch: u64,
-    pub deposit: JupiterDeposit,
-    pub phase: JupiterPhase,
-}
+#[rustfmt::skip]
+pub struct JupiterOperation { pub operation_sequence: u64, pub dispatch_epoch: u64, pub captured_control_epoch: u64, pub deposit: JupiterDeposit, pub phase: JupiterPhase }
 
 impl JupiterOperation {
     pub fn validate(&self, icp_ledger: Principal, nns_governance: Principal) -> Result<(), String> {

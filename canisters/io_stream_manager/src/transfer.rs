@@ -8,27 +8,8 @@ use crate::state::DispatchEpoch;
 pub const MAX_MEMO_BYTES: usize = 32;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum OwnTransferIntent {
-    Icrc1 {
-        ledger: Principal,
-        from_subaccount: [u8; 32],
-        to: Account,
-        amount: u128,
-        fee: u128,
-        memo: Vec<u8>,
-        created_at_time: u64,
-    },
-    Icrc2TransferFrom {
-        ledger: Principal,
-        spender_subaccount: [u8; 32],
-        from: Account,
-        to: Account,
-        amount: u128,
-        fee: u128,
-        memo: Vec<u8>,
-        created_at_time: u64,
-    },
-}
+#[rustfmt::skip]
+pub enum OwnTransferIntent { Icrc1 { ledger: Principal, from_subaccount: [u8; 32], to: Account, amount: u128, fee: u128, memo: Vec<u8>, created_at_time: u64 }, Icrc2TransferFrom { ledger: Principal, spender_subaccount: [u8; 32], from: Account, to: Account, amount: u128, fee: u128, memo: Vec<u8>, created_at_time: u64 } }
 
 impl OwnTransferIntent {
     pub fn validate(&self) -> Result<(), String> {
@@ -105,20 +86,8 @@ impl OwnTransferIntent {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum TransferState {
-    Prepared,
-    Submitted {
-        epoch: DispatchEpoch,
-        first_submitted_at: u64,
-        last_submitted_at: u64,
-    },
-    Succeeded {
-        block: u128,
-    },
-    Stuck {
-        reason: String,
-    },
-}
+#[rustfmt::skip]
+pub enum TransferState { Prepared, Submitted { epoch: DispatchEpoch, first_submitted_at: u64, last_submitted_at: u64 }, Succeeded { block: u128 }, Stuck { reason: String } }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct TransferAttempt {

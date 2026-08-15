@@ -79,7 +79,7 @@ The SNS root/controller lifecycle path is mock/PocketIC only: mock governance/ro
 IO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical and only useful for local/mock compatibility.
 
 The existing NNS Manager execution canister
-`oae4c-3iaaa-aaaar-qb5qq-cai` and protected IO NNS neuron
+`oae4c-3iaaa-aaaar-qb5qq-cai` and the two-year protected NNS neuron
 `10292412127977304661` are not touched by these tests.
 
 ## Commands

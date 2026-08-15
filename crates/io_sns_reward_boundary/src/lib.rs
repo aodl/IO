@@ -16,11 +16,16 @@ pub enum Error {
     },
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
-pub struct Uint128 {
-    pub high: u64,
-    pub low: u64,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClaimOrRefreshError {
+    Governance(String),
+    Transport(String),
+    Malformed(String),
 }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
+#[rustfmt::skip]
+pub struct Uint128 { pub high: u64, pub low: u64 }
 
 impl Uint128 {
     pub fn exact(self) -> u128 {
@@ -29,10 +34,8 @@ impl Uint128 {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct RewardEventParticipation {
-    pub reward_event_end_timestamp_seconds: u64,
-    pub reward_shares: Option<Uint128>,
-}
+#[rustfmt::skip]
+pub struct RewardEventParticipation { pub reward_event_end_timestamp_seconds: u64, pub reward_shares: Option<Uint128> }
 
 impl RewardEventParticipation {
     pub fn exact_reward_shares(self) -> Result<u128, Error> {
@@ -46,18 +49,12 @@ impl RewardEventParticipation {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct ProposalId {
-    pub id: u64,
-}
+#[rustfmt::skip]
+pub struct ProposalId { pub id: u64 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
-pub struct RewardEvent {
-    pub rounds_since_last_distribution: Option<u64>,
-    pub actual_timestamp_seconds: u64,
-    pub end_timestamp_seconds: Option<u64>,
-    pub round: u64,
-    pub settled_proposals: Vec<ProposalId>,
-}
+#[rustfmt::skip]
+pub struct RewardEvent { pub rounds_since_last_distribution: Option<u64>, pub actual_timestamp_seconds: u64, pub end_timestamp_seconds: Option<u64>, pub round: u64, pub settled_proposals: Vec<ProposalId> }
 
 impl RewardEvent {
     pub fn settled_proposal_count(&self) -> Result<u64, Error> {
@@ -69,10 +66,8 @@ impl RewardEvent {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct EventId {
-    pub end_timestamp_seconds: u64,
-    pub round: u64,
-}
+#[rustfmt::skip]
+pub struct EventId { pub end_timestamp_seconds: u64, pub round: u64 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventSequenceError {
@@ -162,12 +157,8 @@ pub enum DissolveState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Neuron {
-    pub id: Vec<u8>,
-    pub cached_neuron_stake_e8s: u128,
-    pub dissolve_state: DissolveState,
-    pub latest_reward_event_participation: Option<RewardEventParticipation>,
-}
+#[rustfmt::skip]
+pub struct Neuron { pub id: Vec<u8>, pub cached_neuron_stake_e8s: u128, pub dissolve_state: DissolveState, pub latest_reward_event_participation: Option<RewardEventParticipation> }
 
 impl Neuron {
     pub fn is_non_dissolving_for(&self, dissolve_delay_seconds: u64) -> bool {
@@ -182,9 +173,8 @@ impl Neuron {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-struct NeuronId {
-    id: Vec<u8>,
-}
+#[rustfmt::skip]
+pub struct SnsNeuronIdRecord { pub id: Vec<u8> }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 enum DissolveStateRecord {
@@ -193,12 +183,8 @@ enum DissolveStateRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-struct NeuronRecord {
-    id: Option<NeuronId>,
-    cached_neuron_stake_e8s: u64,
-    dissolve_state: Option<DissolveStateRecord>,
-    latest_reward_event_participation: Option<RewardEventParticipation>,
-}
+#[rustfmt::skip]
+struct NeuronRecord { id: Option<SnsNeuronIdRecord>, cached_neuron_stake_e8s: u64, dissolve_state: Option<DissolveStateRecord>, latest_reward_event_participation: Option<RewardEventParticipation> }
 
 impl TryFrom<NeuronRecord> for Neuron {
     type Error = Error;
@@ -229,63 +215,66 @@ impl TryFrom<NeuronRecord> for Neuron {
 }
 
 #[derive(Clone, Debug, CandidType)]
-struct ListNeuronsRequest {
-    of_principal: Option<Principal>,
-    limit: u32,
-    start_page_at: Option<NeuronId>,
-}
+#[rustfmt::skip]
+struct ListNeuronsRequest { of_principal: Option<Principal>, limit: u32, start_page_at: Option<SnsNeuronIdRecord> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct ListNeuronsResponse {
-    neurons: Vec<NeuronRecord>,
-}
+#[rustfmt::skip]
+struct ListNeuronsResponse { neurons: Vec<NeuronRecord> }
+
+#[rustfmt::skip]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SnsProductionManageNeuronRequest { pub subaccount: Vec<u8>, pub command: Option<SnsManageNeuronCommand> }
+#[rustfmt::skip]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum SnsManageNeuronCommand { ClaimOrRefresh(SnsClaimOrRefresh) }
+#[rustfmt::skip]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SnsClaimOrRefresh { pub by: Option<SnsClaimOrRefreshBy> }
+#[rustfmt::skip]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum SnsClaimOrRefreshBy { NeuronId(EmptyRecord) }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct EmptyRecord {}
+#[rustfmt::skip]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SnsProductionManageNeuronResponse { pub command: Option<SnsManageNeuronCommandResponse> }
+#[rustfmt::skip]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum SnsManageNeuronCommandResponse { Error(SnsGovernanceErrorRecord), ClaimOrRefresh(SnsClaimOrRefreshResponse) }
+#[rustfmt::skip]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SnsGovernanceErrorRecord { pub error_type: i32, pub error_message: String }
+#[rustfmt::skip]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SnsClaimOrRefreshResponse { pub refreshed_neuron_id: Option<SnsNeuronIdRecord> }
 
 #[derive(Clone, Debug, CandidType)]
-struct SummaryRequest {
-    update_canister_list: Option<bool>,
-}
+#[rustfmt::skip]
+struct SummaryRequest { update_canister_list: Option<bool> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct SummaryResponse {
-    governance: Option<CanisterSummary>,
-}
+#[rustfmt::skip]
+struct SummaryResponse { governance: Option<CanisterSummary> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct CanisterSummary {
-    canister_id: Option<Principal>,
-    status: Option<CanisterStatus>,
-}
+#[rustfmt::skip]
+struct CanisterSummary { canister_id: Option<Principal>, status: Option<CanisterStatus> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct CanisterStatus {
-    module_hash: Option<Vec<u8>>,
-}
+#[rustfmt::skip]
+struct CanisterStatus { module_hash: Option<Vec<u8>> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct NervousSystemParameters {
-    voting_rewards_parameters: Option<VotingRewardsParameters>,
-    max_number_of_neurons: Option<u64>,
-    max_dissolve_delay_bonus_percentage: Option<u64>,
-    max_age_bonus_percentage: Option<u64>,
-}
+#[rustfmt::skip]
+struct NervousSystemParameters { voting_rewards_parameters: Option<VotingRewardsParameters>, max_number_of_neurons: Option<u64>, max_dissolve_delay_bonus_percentage: Option<u64>, max_age_bonus_percentage: Option<u64> }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct VotingRewardsParameters {
-    final_reward_rate_basis_points: Option<u64>,
-    initial_reward_rate_basis_points: Option<u64>,
-    round_duration_seconds: Option<u64>,
-}
+#[rustfmt::skip]
+struct VotingRewardsParameters { final_reward_rate_basis_points: Option<u64>, initial_reward_rate_basis_points: Option<u64>, round_duration_seconds: Option<u64> }
 
-pub struct InstalledGovernance {
-    pub canister: Principal,
-    pub module_hash: Vec<u8>,
-    pub initial_reward_rate_basis_points: u64,
-    pub final_reward_rate_basis_points: u64,
-    pub round_duration_seconds: u64,
-    pub max_number_of_neurons: u64,
-    pub max_dissolve_delay_bonus_percentage: u64,
-    pub max_age_bonus_percentage: u64,
-}
+#[rustfmt::skip]
+pub struct InstalledGovernance { pub canister: Principal, pub module_hash: Vec<u8>, pub initial_reward_rate_basis_points: u64, pub final_reward_rate_basis_points: u64, pub round_duration_seconds: u64, pub max_number_of_neurons: u64, pub max_dissolve_delay_bonus_percentage: u64, pub max_age_bonus_percentage: u64 }
 
 pub async fn installed_governance(
     root: Principal,
@@ -362,6 +351,56 @@ pub async fn latest_reward_event(governance: Principal) -> Result<RewardEvent, E
     call(governance, "get_latest_reward_event", ()).await
 }
 
+pub async fn claim_or_refresh(
+    governance: Principal,
+    neuron_id: Vec<u8>,
+) -> Result<(), ClaimOrRefreshError> {
+    #[cfg(target_family = "wasm")]
+    {
+        let response = ic_cdk::call::Call::bounded_wait(governance, "manage_neuron")
+            .with_arg(SnsProductionManageNeuronRequest {
+                subaccount: neuron_id.clone(),
+                command: Some(SnsManageNeuronCommand::ClaimOrRefresh(SnsClaimOrRefresh {
+                    by: Some(SnsClaimOrRefreshBy::NeuronId(EmptyRecord {})),
+                })),
+            })
+            .await
+            .map_err(|error| ClaimOrRefreshError::Transport(format!("{error:?}")))?
+            .candid::<SnsProductionManageNeuronResponse>()
+            .map_err(|error| ClaimOrRefreshError::Malformed(format!("{error:?}")))?;
+        match response.command {
+            Some(SnsManageNeuronCommandResponse::ClaimOrRefresh(value))
+                if value
+                    .refreshed_neuron_id
+                    .as_ref()
+                    .map(|id| id.id.as_slice())
+                    == Some(neuron_id.as_slice()) =>
+            {
+                Ok(())
+            }
+            Some(SnsManageNeuronCommandResponse::ClaimOrRefresh(_)) => Err(
+                ClaimOrRefreshError::Malformed("missing or wrong refreshed neuron id".into()),
+            ),
+            Some(SnsManageNeuronCommandResponse::Error(error)) => {
+                Err(ClaimOrRefreshError::Governance(format!(
+                    "{}: {}",
+                    error.error_type, error.error_message
+                )))
+            }
+            None => Err(ClaimOrRefreshError::Malformed(
+                "manage_neuron response missing command".into(),
+            )),
+        }
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let _ = (governance, neuron_id);
+        Err(ClaimOrRefreshError::Transport(
+            "manage_neuron is unavailable outside canister Wasm".into(),
+        ))
+    }
+}
+
 pub async fn list_neurons(
     governance: Principal,
     limit: u32,
@@ -373,7 +412,7 @@ pub async fn list_neurons(
         ListNeuronsRequest {
             of_principal: None,
             limit,
-            start_page_at: start_page_at.map(|id| NeuronId { id }),
+            start_page_at: start_page_at.map(|id| SnsNeuronIdRecord { id }),
         },
     )
     .await?;
@@ -486,12 +525,12 @@ mod tests {
     fn old_neuron_without_additive_field_decodes() {
         #[derive(CandidType)]
         struct OldNeuron {
-            id: Option<NeuronId>,
+            id: Option<SnsNeuronIdRecord>,
             cached_neuron_stake_e8s: u64,
             dissolve_state: Option<DissolveStateRecord>,
         }
         let bytes = candid::encode_one(OldNeuron {
-            id: Some(NeuronId { id: vec![1; 32] }),
+            id: Some(SnsNeuronIdRecord { id: vec![1; 32] }),
             cached_neuron_stake_e8s: 10,
             dissolve_state: Some(DissolveStateRecord::DissolveDelaySeconds(10)),
         })

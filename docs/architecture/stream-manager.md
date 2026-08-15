@@ -7,8 +7,9 @@ one immutable pending entitlement batch, and serialized recipient settlement.
 Daily observation has no external value effect. It verifies the exact SNS Root,
 Governance principal, reviewed module hash, zero native reward rates, 86,400
 second round duration, and approved zero voting-power bonus parameters. It then
-reads one stable reward-event boundary around paginated neuron reads and merges
-the event's canonical weights atomically. A stale callback mutates nothing.
+reads one stable reward-event boundary around paginated neuron reads and commits
+the event's canonical weights in one state mutation after rechecking the durable
+checkpoint. A stale callback mutates nothing.
 
 One transient one-shot timer marks reward work due and calls the same idempotent
 method available to permissionless keepers. Failures leave work due. Successful

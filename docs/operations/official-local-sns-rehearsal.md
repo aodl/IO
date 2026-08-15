@@ -6,7 +6,7 @@ For a lighter local real-framework path that does not use official SNS launch to
 
 It must not use `--network ic`, must not call mainnet, must not touch NNS
 Manager execution canister `oae4c-3iaaa-aaaar-qb5qq-cai`, and must not touch
-protected IO NNS neuron `10292412127977304661`.
+the two-year protected NNS neuron `10292412127977304661`.
 
 ## Package
 

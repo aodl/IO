@@ -42,11 +42,9 @@ result must provide:
 - a `requestApprovalConsent` function.
 
 The frontend does not derive an Account from user-entered text and does not
-silently select another subaccount. It asks the wallet for explicit approval
-consent before constructing the allowance.
-
-`window.ioRedemptionSession` is an injected local-testing fallback. The wrapper
-labels it `injected-local-testing`; it is not the production wallet interface.
+silently select another subaccount. The production bundle resolves only
+`window.ioWalletAdapter`; tests inject a fake implementation of that same
+interface and ship no alternate authentication/session hook.
 
 ## Production API
 
@@ -66,12 +64,21 @@ parallel:
 - Stream Manager `get_caller_redemption_state` for the next nonce, last request
   fingerprint, and last completed result.
 
-It requests an allowance of `io_amount + current transfer_from fee`, supplies
-the exact observed allowance as `expected_allowance`, includes a deterministic
-nonce-bound memo/timestamp, and uses a five-minute approval expiry. The approval
-itself burns its own IO fee. The subsequent `redeem` request uses the same
-canonical subaccount, a two-minute request expiry, minimum ICP output, and IO
-and ICP fee maxima.
+It constructs the exact allowance and redemption requests before consent. The
+wallet receives the IO amount, Stream Manager spender, selected source
+subaccount, exact allowance, current IO fee, observed existing allowance,
+approval expiry/memo/timestamp, request nonce, minimum ICP output, maximum ICP
+fee, redemption expiry, and exact network. Only affirmative consent permits
+`icrc2_approve`; only a successful approval permits `redeem`. The ordering is
+queries, exact construction, consent, approve, redeem. Denial performs no
+monetary call.
+
+The allowance is `io_amount + current transfer_from fee`, uses the exact
+observed allowance as `expected_allowance`, includes a deterministic
+nonce-bound memo/timestamp, and expires after five minutes. The approval itself
+burns its own IO fee. The subsequent `redeem` request uses the same canonical
+subaccount, a two-minute request expiry, minimum ICP output, and IO and ICP fee
+maxima.
 
 The UI renders preparation, IO-pull, IO-in-reserve, payout, completion, and
 `Stuck` progress. Anyone may call the canister's permissionless `resume`; the
@@ -130,15 +137,10 @@ release` builds the browser bundle before compiling Wasm so the recorded asset
 canister embeds the stamped files. See the [xtask guide](../../tools/xtask/README.md)
 for aggregate frontend/release gates.
 
-## Deployment status and legacy shell
+## Deployment status
 
-The earlier frontend `6h2pa-qiaaa-aaaao-qp4fa-cai` and Historian
-`yo47z-piaaa-aaaac-qg3xa-cai` are `DevMainnet` only: historical public-shell
-canisters. They are superseded as production targets, are not on the fiduciary
-subnet, and do not activate IO issuance or redemption. A DevMainnet shell is
-not a production IO protocol canister. The historical record, including its
-public URLs and release reference, is in
-[legacy Phase 1](../../deploy/mainnet-dev/legacy-phase1/README.md).
+The production frontend reservation remains pre-launch and does not activate
+IO issuance or redemption. Local fixture deployments are test evidence only.
 
 ## Non-goals and limitations
 
@@ -153,5 +155,5 @@ public URLs and release reference, is in
 - The frontend has no custom metrics/dashboard JSON endpoint and cannot
   authorize monetary or Governance effects.
 - Local/frontend validation does not inspect or mutate protected canister
-  `oae4c-3iaaa-aaaar-qb5qq-cai` or protected IO NNS neuron
+  `oae4c-3iaaa-aaaar-qb5qq-cai` or the two-year protected NNS neuron
   `10292412127977304661`.

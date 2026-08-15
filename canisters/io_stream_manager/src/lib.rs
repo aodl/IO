@@ -18,8 +18,8 @@ use serde::Deserialize;
 pub use api::{ApiError, LiquidReceiptProgress, RedemptionProgress, Status, StreamProgress};
 pub use io_nns_types::reward_boundary::BackingNotReadyReason;
 pub use receipt::{
-    CompleteLiquidReceiptArgs, CompletedReceiptResult, LiquidReceiptPermit,
-    PrepareLiquidReceiptArgs, ReceiptKind,
+    CompleteLiquidReceiptArgs, CompletedReceiptResult, LiquidReceiptPermit, NeuronRefreshStatus,
+    PendingNeuronRefresh, PrepareLiquidReceiptArgs, ReceiptKind,
 };
 pub use redemption::RedeemArgs;
 pub use rewards::RewardBackingProgress;
@@ -49,6 +49,10 @@ pub fn init(args: InitArgs) {
         next_operation_sequence: state::OperationSequence(0),
         control_epoch: 0,
         last_completed_receipt: None,
+        pending_neuron_refreshes: Vec::new(),
+        last_refresh_retry_attempt_nanos: None,
+        last_reward_observation_attempt_nanos: None,
+        last_reward_backing_attempt_nanos: None,
     };
     state::initialize(state, ic_cdk::api::canister_self())
         .unwrap_or_else(|error| ic_cdk::trap(&error));
@@ -96,6 +100,11 @@ pub async fn resume_reward_work() -> Result<RewardEventObservation, ApiError> {
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub async fn resume_reward_backing() -> Result<RewardBackingProgress, ApiError> {
     rewards::resume_backing(ic_cdk::api::time()).await
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn retry_neuron_refresh() -> Result<receipt::NeuronRefreshStatus, ApiError> {
+    rewards::retry_neuron_refresh(ic_cdk::api::time()).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]

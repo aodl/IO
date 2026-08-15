@@ -8,9 +8,9 @@ license.workspace = true
 candid.workspace = true
 hex = "0.4.3"
 io-governance-types.workspace = true
-io-historian = { path = "../../canisters/io_historian" }
+io-historian = { version = "0.1.0", path = "../../canisters/io_historian" }
 io-ledger-types.workspace = true
-io-stream-manager = { path = "../../canisters/io_stream_manager" }
+io-stream-manager = { version = "0.1.0", path = "../../canisters/io_stream_manager" }
 io-production-wiring.workspace = true
 io-reward-policy.workspace = true
 io-receipt-types.workspace = true

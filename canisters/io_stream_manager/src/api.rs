@@ -53,25 +53,8 @@ pub enum StreamProgress {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct Status {
-    pub lifecycle: Lifecycle,
-    pub operation_kind: Option<String>,
-    pub operation_phase: Option<String>,
-    pub next_nns_receipt_sequence: u64,
-    pub latest_entitlement_batch_generation: u64,
-    pub latest_processed_reward_event: Option<crate::state::RewardEventId>,
-    pub latest_reward_event_classification: Option<crate::state::RewardEventClassification>,
-    pub accumulated_entitlements: Vec<crate::state::RewardEntitlementEntry>,
-    pub accumulated_eligible_credit: u128,
-    pub accumulated_policy_credit: u128,
-    pub processed_reward_event_count: u64,
-    pub missed_reward_event_count: u64,
-    pub reward_work_due: bool,
-    pub reward_processing_paused: bool,
-    pub governance_parameters_fresh: bool,
-    pub pending_entitlement_batch_eligible_credit: Option<u128>,
-    pub pending_entitlement_batch_policy_credit: Option<u128>,
-}
+#[rustfmt::skip]
+pub struct Status { pub lifecycle: Lifecycle, pub operation_kind: Option<String>, pub operation_phase: Option<String>, pub next_nns_receipt_sequence: u64, pub latest_entitlement_batch_generation: u64, pub latest_processed_reward_event: Option<crate::state::RewardEventId>, pub latest_reward_event_classification: Option<crate::state::RewardEventClassification>, pub accumulated_entitlements: Vec<crate::state::RewardEntitlementEntry>, pub accumulated_eligible_credit: u128, pub accumulated_policy_credit: u128, pub processed_reward_event_count: u64, pub missed_reward_event_count: u64, pub reward_work_due: bool, pub reward_processing_paused: bool, pub governance_parameters_fresh: bool, pub pending_entitlement_batch_eligible_credit: Option<u128>, pub pending_entitlement_batch_policy_credit: Option<u128>, pub pending_neuron_refresh_count: u64, pub oldest_pending_neuron_refresh: Option<crate::receipt::PendingNeuronRefresh> }
 
 pub fn get_status() -> Status {
     let state = state::read();
@@ -132,6 +115,8 @@ pub fn get_status() -> Status {
             .pending_entitlement_batch
             .as_ref()
             .map(|batch| batch.policy_credit_total),
+        pending_neuron_refresh_count: state.pending_neuron_refreshes.len() as u64,
+        oldest_pending_neuron_refresh: state.pending_neuron_refreshes.first().cloned(),
     }
 }
 
@@ -470,7 +455,7 @@ async fn dispatch_redemption_transfer(
     }
     if !io_pull && operation.icp_payout.is_none() {
         let config = state::read().config;
-        let current_fee = canonical::fee(config.icp_ledger)
+        let fresh = canonical::redemption_snapshot(&config)
             .await
             .map_err(ApiError::Ledger)?;
         let latest = active_redemption()?;
@@ -481,11 +466,9 @@ async fn dispatch_redemption_transfer(
         {
             return Err(ApiError::Busy);
         }
-        if current_fee != latest.snapshot.icp_fee_e8s || current_fee > config.expected_icp_fee_e8s {
+        if let Err(error) = redemption::verify_pre_payout_conditions(&latest, &fresh) {
             pause();
-            return Err(ApiError::Invalid(
-                "current ICP fee differs from approved redemption fee".into(),
-            ));
+            return Err(ApiError::Stuck(error));
         }
         now.checked_add(config.ledger_deduplication_window_nanos)
             .ok_or_else(|| ApiError::Invalid("payout deduplication deadline overflow".into()))?;
@@ -498,7 +481,7 @@ async fn dispatch_redemption_transfer(
                 .subaccount,
             to: latest.account.clone(),
             amount: latest.net_icp_e8s,
-            fee: current_fee,
+            fee: fresh.icp_fee_e8s,
             memo: crate::transfer::deterministic_memo(
                 b"io-redemption-pay-v1",
                 latest.caller,

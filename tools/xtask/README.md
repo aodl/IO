@@ -75,7 +75,6 @@ With no command, xtask runs `test_all`.
 | `did_surface` | Match production DIDs, exported methods, frontend declarations, and debug separation |
 | `validate_install_args [local\|mainnet\|all]` | Validate constructor shapes and the non-runnable mainnet templates; default is `all` |
 | `validate_nns_boundary_pin` | Validate pinned NNS source/Wasm/DID contract and related tests/docs |
-| `validate_prelaunch_public_shell` | Check legacy DevMainnet status and no-value-moving boundaries |
 | `validate_production_wiring` | Parse offline production-planned templates and enforce principals, fees, roles, protected targets, and reserved/authority distinctions |
 | `validate_historian_freshness` | Check Historian production read-only/freshness and protected-reference guardrails |
 | `validate_stable_storage` | Check schema registry, stable fixtures, constructor-only DIDs, and upgrade/storage documentation |

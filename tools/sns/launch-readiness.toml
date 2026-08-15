@@ -14,8 +14,8 @@ status = "incomplete"
 evidence = "tools/sns/sns_init.io.template.yaml exists and the maintained source-built SNS flow validates and consumes the local init. The absent optional dfx sns extension remains an upstream non-blocking tooling defect for this evidence path; final production SNS configuration review is incomplete."
 
 [local_sns_testing_rehearsal]
-status = "complete"
-evidence = "A fresh isolated same-source candidate Governance/Root compatibility rehearsal completed on the master-descended release. current-canonical.toml selects immutable package 2026-08-14-master-descended-4320fdf-canonical-economics and binds it to source 23fbc4f62863f421803cc49c34aa8c5c576b4d89 and immediate artifact commit 2d28f84a4d36e8e9fd17d019478a0ae432d55838. Earlier packages, including those retained only on the diverged misc branch, remain immutable historical evidence and were not rebound."
+status = "incomplete"
+evidence = "The selected immutable package proves the preceding master-descended release, including same-source candidate Governance/Root compatibility, and remains historical evidence for that exact pair. The hardened launch schema changes NNS install state, both protected-neuron readiness baselines, Jupiter activation, and Stream reward settlement state; it therefore requires a fresh immutable current package bound to its own finalized source/artifact pair. Existing packages must not be rebound."
 
 [mainnet_testflight]
 status = "incomplete"
@@ -59,7 +59,7 @@ evidence = "Certified frontend exists; final SNS/testflight frontend integration
 
 [cycles_management_strategy]
 status = "incomplete"
-evidence = "TODO: define post-SNS cycles top-up and monitoring strategy."
+evidence = "docs/operations/cycles-management.md defines per-canister monitoring, minimum launch reserve, warning/critical thresholds, bounded public keeper behavior, and abnormal-burn response. Completion still requires approval of the production cycles source, top-up authority/automation caps, and final SNS canister cycles policy; no funding is authorized by this repository state."
 
 [custom_domain_frontend_plan]
 status = "incomplete"
