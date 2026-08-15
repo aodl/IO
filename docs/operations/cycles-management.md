@@ -27,11 +27,21 @@ authority.
 ## Public-call bounds
 
 Reward observation returns locally when durable timer state says work is not
-due. Idle NNS `resume` uses one persisted passive-reconciliation cooldown.
-Jupiter activation-floor and completed-block checks are local, while new block
-lookups share one persisted cooldown. SNS neuron-refresh retries likewise use
-one bounded pending list and canister-wide cooldown. Principals are not used as
-rate-limit identities because they are cheap to create.
+due and consumes that due bit before making external reads. Idle NNS `resume`
+returns `Idle` without optional reconciliation. Jupiter activation-floor and
+completed-block checks are local; each new at-or-above-floor index may still
+cause one bounded canonical Ledger/archive lookup. Reward backing can perform
+bounded Governance/Root/Ledger/NNS reads when public callers request progress.
+There is no durable refresh retry endpoint or availability throttle state.
+Principals are not used as rate-limit identities because they are cheap to
+create.
+
+Residual risk is explicit: arbitrary callers can spend canister cycles through
+fresh Jupiter indexes and backing attempts. These calls cannot fabricate
+canonical proof or bypass monetary serialization, but launch operations must
+monitor endpoint rates, reject/timeout rates, and cycles burn. If measured burn
+is unacceptable, a separately reviewed caller or scheduling design is required;
+the launch schema does not pre-commit to a recovery state machine.
 
 If burn materially exceeds load-test projections, operators pause new monetary
 preparation where safe, preserve resumable persisted effects, and inspect call

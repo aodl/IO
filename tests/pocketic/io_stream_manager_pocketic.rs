@@ -1,7 +1,7 @@
 use candid::{decode_one, encode_one, CandidType, Principal};
 use io_stream_manager::{
-    Account, ApiError, InitArgs, Lifecycle, NeuronRefreshStatus, ReceiptKind, RedeemArgs,
-    RedemptionProgress, RewardBackingProgress, RewardEventObservation, Status, StreamConfig,
+    Account, ApiError, InitArgs, Lifecycle, ReceiptKind, RedeemArgs, RedemptionProgress,
+    RewardBackingProgress, RewardEventObservation, Status, StreamConfig,
 };
 use pocket_ic::PocketIc;
 use serde::Deserialize;
@@ -261,7 +261,7 @@ fn simplified_stream_installs_paused_and_rejects_anonymous_before_funds_move() {
 }
 
 #[test]
-fn reward_observation_backing_and_refresh_retries_are_bounded_and_monetary_once() {
+fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
     if std::env::var_os("POCKET_IC_BIN").is_none() {
         eprintln!("skipping Stream liveness PocketIC test because POCKET_IC_BIN is not set");
         return;
@@ -435,7 +435,7 @@ fn reward_observation_backing_and_refresh_retries_are_bounded_and_monetary_once(
     for _ in 0..3 {
         pic.tick();
     }
-    assert!(query::<Status>(&pic, stream, "get_status").reward_work_due);
+    assert!(!query::<Status>(&pic, stream, "get_status").reward_work_due);
     let after_wait: GovernanceCallCounters = query(&pic, governance, "debug_get_call_counters");
     let root_after_wait: u64 = query(&pic, root, "debug_get_summary_call_count");
     assert!(after_wait.latest_reward_event > governance_before.latest_reward_event);
@@ -447,7 +447,7 @@ fn reward_observation_backing_and_refresh_retries_are_bounded_and_monetary_once(
         "resume_reward_work",
         (),
     );
-    assert!(matches!(cooled, Err(ApiError::Pending(message)) if message.contains("cooling down")));
+    assert!(matches!(cooled, Err(ApiError::Pending(message)) if message.contains("not due")));
     assert_eq!(
         query::<GovernanceCallCounters>(&pic, governance, "debug_get_call_counters"),
         after_wait
@@ -474,14 +474,9 @@ fn reward_observation_backing_and_refresh_retries_are_bounded_and_monetary_once(
     );
     advanced.unwrap();
     pic.advance_time(Duration::from_secs(61));
-    let observed: Result<RewardEventObservation, ApiError> = update(
-        &pic,
-        stream,
-        Principal::anonymous(),
-        "resume_reward_work",
-        (),
-    );
-    observed.unwrap();
+    for _ in 0..3 {
+        pic.tick();
+    }
     assert!(!query::<Status>(&pic, stream, "get_status").reward_work_due);
 
     let _: () = update(
@@ -504,21 +499,6 @@ fn reward_observation_backing_and_refresh_retries_are_bounded_and_monetary_once(
         matches!(pending, Ok(RewardBackingProgress::Pending { .. })),
         "unexpected first backing result: {pending:?}"
     );
-    let reconcile_calls: u64 = query(&pic, nns, "debug_get_reconcile_call_count");
-    let cooled: Result<RewardBackingProgress, ApiError> = update(
-        &pic,
-        stream,
-        Principal::anonymous(),
-        "resume_reward_backing",
-        (),
-    );
-    assert!(matches!(cooled, Err(ApiError::Pending(message)) if message.contains("cooling down")));
-    assert_eq!(
-        query::<u64>(&pic, nns, "debug_get_reconcile_call_count"),
-        reconcile_calls
-    );
-
-    pic.advance_time(Duration::from_secs(61));
     let _: () = update(
         &pic,
         nns,
@@ -596,7 +576,8 @@ fn reward_observation_backing_and_refresh_retries_are_bounded_and_monetary_once(
             .transfer
             - transfers_before.transfer;
         let mode = match delivered {
-            0..=2 => ClaimOrRefreshMode::Trap,
+            0..=1 => ClaimOrRefreshMode::Normal,
+            2 => ClaimOrRefreshMode::Trap,
             3 => ClaimOrRefreshMode::GovernanceError,
             4 => ClaimOrRefreshMode::MissingCommand,
             5 => ClaimOrRefreshMode::MissingNeuronId,
@@ -614,9 +595,35 @@ fn reward_observation_backing_and_refresh_retries_are_bounded_and_monetary_once(
     }
     let settled = query::<Status>(&pic, stream, "get_status");
     assert!(settled.operation_kind.is_none());
-    assert_eq!(settled.pending_neuron_refresh_count, 6);
     let after_settlement: LedgerCallCounters = query(&pic, io_ledger, "debug_get_call_counters");
     assert_eq!(after_settlement.transfer, transfers_before.transfer + 6);
+    // The trapping mock rolls its own counter increment back; the other five
+    // returned callbacks remain directly observable.
+    assert_eq!(
+        query::<GovernanceCallCounters>(&pic, governance, "debug_get_call_counters").manage_neuron,
+        5
+    );
+    let reward_balances = (1_u64..=6)
+        .map(|id| {
+            let mut subaccount = vec![0_u8; 32];
+            subaccount[24..].copy_from_slice(&id.to_be_bytes());
+            let balance: candid::Nat = update(
+                &pic,
+                io_ledger,
+                Principal::anonymous(),
+                "icrc1_balance_of",
+                Account {
+                    owner: governance,
+                    subaccount: Some(subaccount),
+                },
+            );
+            u128::try_from(balance.0).unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert!(reward_balances[0] > 0);
+    assert!(reward_balances
+        .iter()
+        .all(|balance| *balance == reward_balances[0]));
 
     pic.upgrade_canister(
         stream,
@@ -627,61 +634,13 @@ fn reward_observation_backing_and_refresh_retries_are_bounded_and_monetary_once(
     .unwrap();
     let upgraded = query::<Status>(&pic, stream, "get_status");
     assert_eq!(upgraded.lifecycle, Lifecycle::Paused);
-    assert_eq!(upgraded.pending_neuron_refresh_count, 6);
-    let oldest_before = upgraded
-        .oldest_pending_neuron_refresh
-        .unwrap()
-        .sns_neuron_id;
     let unpaused: Result<(), ApiError> = update(&pic, stream, governance, "set_paused", false);
     unpaused.unwrap();
-    let _: () = update(
-        &pic,
-        governance,
-        Principal::anonymous(),
-        "debug_set_claim_or_refresh_mode",
-        ClaimOrRefreshMode::Trap,
-    );
-
-    let failed_retry: Result<NeuronRefreshStatus, ApiError> = update(
-        &pic,
-        stream,
-        Principal::anonymous(),
-        "retry_neuron_refresh",
-        (),
-    );
-    assert!(matches!(
-        failed_retry,
-        Ok(NeuronRefreshStatus::TransportFailure { .. })
-    ));
-    let rotated = query::<Status>(&pic, stream, "get_status");
-    assert_eq!(rotated.pending_neuron_refresh_count, 6);
-    assert_ne!(
-        rotated.oldest_pending_neuron_refresh.unwrap().sns_neuron_id,
-        oldest_before
-    );
-    pic.advance_time(Duration::from_secs(61));
-    let _: () = update(
-        &pic,
-        governance,
-        Principal::anonymous(),
-        "debug_set_claim_or_refresh_mode",
-        ClaimOrRefreshMode::Normal,
-    );
-    let succeeded_retry: Result<NeuronRefreshStatus, ApiError> = update(
-        &pic,
-        stream,
-        Principal::anonymous(),
-        "retry_neuron_refresh",
-        (),
-    );
-    assert_eq!(succeeded_retry, Ok(NeuronRefreshStatus::Confirmed));
-    let final_status = query::<Status>(&pic, stream, "get_status");
-    assert_eq!(final_status.pending_neuron_refresh_count, 5);
-    let transfers_after_retry: LedgerCallCounters =
+    let transfers_after_upgrade: LedgerCallCounters =
         query(&pic, io_ledger, "debug_get_call_counters");
-    assert_eq!(transfers_after_retry.transfer, after_settlement.transfer);
+    assert_eq!(transfers_after_upgrade.transfer, after_settlement.transfer);
     assert_eq!(
-        transfers_after_retry.transfer_from,
+        transfers_after_upgrade.transfer_from,
         after_settlement.transfer_from
     );
 

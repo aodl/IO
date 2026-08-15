@@ -5,16 +5,12 @@ use crate::{
         self, JupiterCompleted, JupiterDeposit, JupiterOperation, JupiterPauseReason, JupiterPhase,
         JupiterStuckTransfer, LiquidTransferSucceeded, StakeIncreaseProof, StakeTransferSucceeded,
     },
-    state::{self, JupiterLookupLease, Lifecycle, NnsOperation},
+    state::{self, Lifecycle, NnsOperation},
     transfer::{
         NnsTransferAttempt, NnsTransferIntent, TransferOutcomeClassification, TransferState,
     },
 };
-use candid::Principal;
 use io_ledger_boundary::{exact_icp_transfer, icp_account_identifier, ExpectedQueryBlockTransfer};
-
-pub const JUPITER_LOOKUP_COOLDOWN_NANOS: u64 = 1_000_000_000;
-pub const JUPITER_LOOKUP_LEASE_NANOS: u64 = 60_000_000_000;
 
 fn enforce_activation_floor(
     current: &state::NnsStateV1,
@@ -29,44 +25,7 @@ fn enforce_activation_floor(
     Ok(())
 }
 
-fn begin_lookup(
-    current: &state::NnsStateV1,
-    caller: Principal,
-    block_index: u128,
-    now: u64,
-) -> Result<JupiterLookupLease, ApiError> {
-    if current.jupiter_lookup_lease.is_some_and(|lease| {
-        now.saturating_sub(lease.started_at_nanos) < JUPITER_LOOKUP_LEASE_NANOS
-    }) {
-        return Err(ApiError::Pending(
-            "Jupiter proof lookup is in flight".into(),
-        ));
-    }
-    if caller != current.config.jupiter
-        && current
-            .last_public_jupiter_lookup_attempt_nanos
-            .is_some_and(|last| now.saturating_sub(last) < JUPITER_LOOKUP_COOLDOWN_NANOS)
-    {
-        return Err(ApiError::Pending(
-            "public Jupiter proof lookup is cooling down".into(),
-        ));
-    }
-    Ok(JupiterLookupLease {
-        block_index,
-        started_at_nanos: now,
-    })
-}
-
-fn clear_lookup(lease: JupiterLookupLease) {
-    let mut latest = state::read();
-    if latest.jupiter_lookup_lease == Some(lease) {
-        latest.jupiter_lookup_lease = None;
-        state::write(latest);
-    }
-}
-
 pub async fn notify_jupiter_deposit(
-    caller: Principal,
     args: NotifyJupiterDepositArgs,
 ) -> Result<JupiterProgress, ApiError> {
     if let Some(completed) =
@@ -86,26 +45,12 @@ pub async fn notify_jupiter_deposit(
         return Err(ApiError::Busy);
     }
 
-    let now = ic_cdk::api::time();
-    let lease = begin_lookup(&current, caller, args.block_index, now)?;
-    let mut throttled = current.clone();
-    throttled.jupiter_lookup_lease = Some(lease);
-    if caller != current.config.jupiter {
-        throttled.last_public_jupiter_lookup_attempt_nanos = Some(now);
-    }
-    state::write(throttled);
-
-    let result = lookup_and_begin(current, args.block_index, lease).await;
-    if result.is_err() {
-        clear_lookup(lease);
-    }
-    result
+    lookup_and_begin(current, args.block_index).await
 }
 
 async fn lookup_and_begin(
     current: state::NnsStateV1,
     block_index: u128,
-    lease: JupiterLookupLease,
 ) -> Result<JupiterProgress, ApiError> {
     let transfer = exact_icp_transfer(current.config.icp_ledger, block_index)
         .await
@@ -143,7 +88,6 @@ async fn lookup_and_begin(
     if latest.lifecycle != Lifecycle::Ready
         || latest.control_epoch != current.control_epoch
         || latest.active_operation.is_some()
-        || latest.jupiter_lookup_lease != Some(lease)
     {
         return Err(ApiError::Busy);
     }
@@ -164,7 +108,6 @@ async fn lookup_and_begin(
         },
         phase: JupiterPhase::DepositProved,
     })));
-    latest.jupiter_lookup_lease = None;
     state::write(latest);
     Ok(JupiterProgress::DepositProved)
 }
@@ -807,6 +750,7 @@ fn jupiter_progress(operation: &JupiterOperation) -> JupiterProgress {
 mod tests {
     use super::*;
     use crate::TwoWeekTargetStatus;
+    use candid::Principal;
 
     fn valid_test_state() -> (Principal, crate::state::NnsStateV1) {
         let principal = Principal::from_slice(&[1; 29]);
@@ -862,9 +806,6 @@ mod tests {
                 last_two_week_maturity: None,
                 next_operation_sequence: 1,
                 control_epoch: 0,
-                last_passive_reconciliation_attempt_nanos: None,
-                last_public_jupiter_lookup_attempt_nanos: None,
-                jupiter_lookup_lease: None,
             },
         )
     }
@@ -892,7 +833,7 @@ mod tests {
     }
 
     #[test]
-    fn activation_floor_and_lookup_throttle_fail_before_ledger_work() {
+    fn activation_floor_fails_before_ledger_work() {
         let (_, mut state) = valid_test_state();
         state.config.jupiter_activation_block_floor = 50;
         assert!(matches!(
@@ -901,31 +842,6 @@ mod tests {
         ));
         enforce_activation_floor(&state, 50).unwrap();
         enforce_activation_floor(&state, 51).unwrap();
-
-        state.last_public_jupiter_lookup_attempt_nanos = Some(1_000);
-        let public = Principal::from_slice(&[9]);
-        assert!(matches!(
-            begin_lookup(
-                &state,
-                public,
-                50,
-                1_000 + JUPITER_LOOKUP_COOLDOWN_NANOS - 1
-            ),
-            Err(ApiError::Pending(_))
-        ));
-        let authorized = begin_lookup(&state, state.config.jupiter, 50, 1_001).unwrap();
-        state.jupiter_lookup_lease = Some(authorized);
-        assert!(matches!(
-            begin_lookup(&state, state.config.jupiter, 50, 1_002),
-            Err(ApiError::Pending(_))
-        ));
-        assert!(begin_lookup(
-            &state,
-            public,
-            50,
-            authorized.started_at_nanos + JUPITER_LOOKUP_LEASE_NANOS
-        )
-        .is_ok());
 
         // A later balance change cannot affect this local immutable boundary.
         state.config.jupiter_fee_float_e8s = u128::MAX;

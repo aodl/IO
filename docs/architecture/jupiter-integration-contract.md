@@ -42,11 +42,12 @@ mainnet template.
 The NNS manager keeps a narrowly scoped stable set of completed Jupiter ICP
 block indexes for permanent replay protection. This set is not a source-event
 journal, account-history cursor, scanner, or proof-of-absence mechanism.
-Processed-block replay and activation-floor rejection are always cheap. New
-unprocessed Ledger lookups share one persisted canister-wide cooldown, so
-arbitrary invalid block numbers do not create permanent negative-cache state.
-This bounds cycles burn from public probing; it does not claim to eliminate all
-possible public-endpoint starvation.
+Processed-block replay and activation-floor rejection are always local. New
+at-or-above-floor block indexes perform one bounded canonical Ledger/archive
+lookup and create no negative-cache or throttle state. Because the Faucet does
+not call IO, there is no configured-caller priority path. Repeated invalid
+permissionless lookups remain a monitored cycles/liveness risk; they cannot
+fabricate a deposit or bypass exact proof.
 
 ## Route that does not issue IO
 

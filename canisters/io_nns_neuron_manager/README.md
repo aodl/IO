@@ -59,8 +59,10 @@ down) is staked in the two-year protected NNS neuron and the remainder goes thro
 Jupiter staging to the Stream Manager's proof-bound liquid receipt. Processed
 Jupiter block indexes have narrow permanent replay protection; there is no
 Jupiter callback. Blocks below `jupiter_activation_block_floor` are rejected
-without a Ledger/archive call. New unprocessed lookups share one persisted
-one-second cooldown; invalid probes create no per-block stable state.
+without a Ledger/archive call. Invalid probes create no per-block stable state,
+but an at-or-above-floor permissionless probe can consume one bounded canonical
+Ledger/archive lookup; call rate and cycles burn remain an operationally
+monitored residual risk.
 
 For direct maturity, the manager observes canonical ordinary maturity `M`,
 calls `StakeMaturity(40%)`, verifies returned remaining and staked maturity,
@@ -166,9 +168,9 @@ destination, amount, fee, memo, timestamp, and operation identity. Retry stays
 inside the ledger deduplication window; uncertain expired outcomes become
 `Stuck`.
 
-`resume` advances the exact active or passive state. With no work present, its
-optional target observation uses one persisted 60-second canister-wide
-cooldown; continuing real monetary work is never delayed by that cooldown.
+`resume` advances the exact active or passive state. With no work present it
+returns `Idle`; target reconciliation occurs only through the authenticated
+Stream readiness path or while resuming already-persisted work.
 `prove_active_transfer`
 accepts only a canonical block matching a Stuck Jupiter/two-week staging
 transfer or an unwind disbursement effect. `prove_maturity_mint` accepts only

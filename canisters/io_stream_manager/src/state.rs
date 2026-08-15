@@ -8,9 +8,7 @@ use serde::Deserialize;
 use std::{borrow::Cow, cell::RefCell};
 
 use crate::{
-    receipt::{
-        LastCompletedReceipt, LiquidReceiptOperation, PendingNeuronRefresh, ReceiptPreparation,
-    },
+    receipt::{LastCompletedReceipt, LiquidReceiptOperation, ReceiptPreparation},
     redemption::{RedemptionOperation, RedemptionPreparation},
 };
 pub use io_accounts::Account;
@@ -232,7 +230,7 @@ pub struct RewardEventId { pub end_timestamp_seconds: u64, pub round: u64 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 #[rustfmt::skip]
-pub struct StreamStateV1 { pub config: StreamConfig, pub lifecycle: Lifecycle, pub active_operation: Option<StreamOperation>, pub reward_entitlements: RewardEntitlementAccumulator, pub pending_entitlement_batch: Option<PendingEntitlementBatch>, pub latest_entitlement_batch_generation: u64, pub next_nns_receipt_sequence: u64, pub next_operation_sequence: OperationSequence, pub control_epoch: u64, pub last_completed_receipt: Option<LastCompletedReceipt>, pub pending_neuron_refreshes: Vec<PendingNeuronRefresh>, pub last_refresh_retry_attempt_nanos: Option<u64>, pub last_reward_observation_attempt_nanos: Option<u64>, pub last_reward_backing_attempt_nanos: Option<u64> }
+pub struct StreamStateV1 { pub launch_schema_marker: u8, pub config: StreamConfig, pub lifecycle: Lifecycle, pub active_operation: Option<StreamOperation>, pub reward_entitlements: RewardEntitlementAccumulator, pub pending_entitlement_batch: Option<PendingEntitlementBatch>, pub latest_entitlement_batch_generation: u64, pub next_nns_receipt_sequence: u64, pub next_operation_sequence: OperationSequence, pub control_epoch: u64, pub last_completed_receipt: Option<LastCompletedReceipt> }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum StableStreamState {
@@ -247,6 +245,7 @@ impl StreamStateV1 {
             subaccount: None,
         };
         Self {
+            launch_schema_marker: 1,
             config: StreamConfig {
                 io_ledger: anonymous,
                 icp_ledger: anonymous,
@@ -277,41 +276,16 @@ impl StreamStateV1 {
             next_operation_sequence: OperationSequence(0),
             control_epoch: 0,
             last_completed_receipt: None,
-            pending_neuron_refreshes: Vec::new(),
-            last_refresh_retry_attempt_nanos: None,
-            last_reward_observation_attempt_nanos: None,
-            last_reward_backing_attempt_nanos: None,
         }
     }
 }
 
 impl StreamStateV1 {
     pub fn validate(&self, canister_self: Principal) -> Result<(), String> {
+        if self.launch_schema_marker != 1 {
+            return Err("invalid Stream launch schema marker".into());
+        }
         self.config.validate(canister_self)?;
-        if [
-            self.last_refresh_retry_attempt_nanos,
-            self.last_reward_observation_attempt_nanos,
-            self.last_reward_backing_attempt_nanos,
-        ]
-        .into_iter()
-        .flatten()
-        .any(|value| value == 0)
-        {
-            return Err("persisted keeper cooldown timestamps must be nonzero".into());
-        }
-        if self.pending_neuron_refreshes.len() > Self::MAX_PENDING_NEURON_REFRESHES {
-            return Err("too many pending SNS neuron refreshes".into());
-        }
-        let mut pending_refresh_ids = std::collections::BTreeSet::new();
-        for pending in &self.pending_neuron_refreshes {
-            if pending.sns_neuron_id.len() != 32
-                || !pending.status.is_failure()
-                || !pending_refresh_ids.insert(pending.sns_neuron_id.clone())
-            {
-                return Err("pending SNS neuron refresh is invalid or duplicated".into());
-            }
-            pending.status.validate()?;
-        }
         match &self.active_operation {
             Some(StreamOperation::Redemption(operation)) => match operation.as_ref() {
                 RedemptionStreamOperation::Preparing(value) => {
@@ -372,10 +346,6 @@ impl StreamStateV1 {
         }
         Ok(())
     }
-}
-
-impl StreamStateV1 {
-    pub const MAX_PENDING_NEURON_REFRESHES: usize = 1_000;
 }
 
 impl RewardEntitlementAccumulator {
@@ -735,6 +705,7 @@ mod tests {
         (
             canister_self,
             StreamStateV1 {
+                launch_schema_marker: 1,
                 config: StreamConfig {
                     io_ledger: principal(2),
                     icp_ledger: principal(3),
@@ -784,10 +755,6 @@ mod tests {
                 },
                 pending_entitlement_batch: None,
                 latest_entitlement_batch_generation: 0,
-                pending_neuron_refreshes: Vec::new(),
-                last_refresh_retry_attempt_nanos: None,
-                last_reward_observation_attempt_nanos: None,
-                last_reward_backing_attempt_nanos: None,
                 next_nns_receipt_sequence: 0,
                 next_operation_sequence: OperationSequence(1),
                 control_epoch: 0,
@@ -899,48 +866,9 @@ mod tests {
             processed_event_count: 1,
         });
         state.latest_entitlement_batch_generation = 1;
-        state.pending_neuron_refreshes = (0..StreamStateV1::MAX_PENDING_NEURON_REFRESHES)
-            .map(|index| {
-                let mut id = [0_u8; 32];
-                id[24..].copy_from_slice(&(index as u64 + 1).to_be_bytes());
-                PendingNeuronRefresh {
-                    sns_neuron_id: id.to_vec(),
-                    status: crate::receipt::NeuronRefreshStatus::TransportFailure {
-                        diagnostic: "x".repeat(crate::receipt::MAX_REFRESH_DIAGNOSTIC_BYTES),
-                    },
-                }
-            })
-            .collect();
         state.validate(canister_self).unwrap();
         state.pending_entitlement_batch = None;
         state.validate(canister_self).unwrap();
-    }
-
-    #[test]
-    fn pending_refresh_queue_rejects_duplicates_oversize_diagnostics_and_non_failures() {
-        let (canister_self, mut state) = valid_state();
-        let failure = PendingNeuronRefresh {
-            sns_neuron_id: vec![7; 32],
-            status: crate::receipt::NeuronRefreshStatus::TransportFailure {
-                diagnostic: "x".into(),
-            },
-        };
-        state.pending_neuron_refreshes = vec![failure.clone(), failure.clone()];
-        assert!(state.validate(canister_self).is_err());
-
-        state.pending_neuron_refreshes = vec![PendingNeuronRefresh {
-            status: crate::receipt::NeuronRefreshStatus::TransportFailure {
-                diagnostic: "x".repeat(crate::receipt::MAX_REFRESH_DIAGNOSTIC_BYTES + 1),
-            },
-            ..failure.clone()
-        }];
-        assert!(state.validate(canister_self).is_err());
-
-        state.pending_neuron_refreshes = vec![PendingNeuronRefresh {
-            status: crate::receipt::NeuronRefreshStatus::Confirmed,
-            ..failure
-        }];
-        assert!(state.validate(canister_self).is_err());
     }
 
     #[test]
@@ -1004,19 +932,13 @@ mod tests {
 
     #[test]
     fn stable_reopen_preserves_entitlements_and_forces_paused() {
-        let (canister_self, mut state) = valid_state();
-        state.last_refresh_retry_attempt_nanos = Some(11);
-        state.last_reward_observation_attempt_nanos = Some(12);
-        state.last_reward_backing_attempt_nanos = Some(13);
+        let (canister_self, state) = valid_state();
         let expected = state.reward_entitlements.clone();
         initialize(state, canister_self).unwrap();
         reopen(canister_self);
         let reopened = read();
         assert_eq!(reopened.lifecycle, Lifecycle::Paused);
         assert_eq!(reopened.reward_entitlements, expected);
-        assert_eq!(reopened.last_refresh_retry_attempt_nanos, Some(11));
-        assert_eq!(reopened.last_reward_observation_attempt_nanos, Some(12));
-        assert_eq!(reopened.last_reward_backing_attempt_nanos, Some(13));
         assert!(reopened.active_operation.is_none());
     }
 
@@ -1052,19 +974,6 @@ mod tests {
             processed_event_count: 1,
         });
         state.latest_entitlement_batch_generation = 1;
-        state.pending_neuron_refreshes = entries
-            .iter()
-            .map(|entry| PendingNeuronRefresh {
-                sns_neuron_id: entry.sns_neuron_id.clone(),
-                status: crate::receipt::NeuronRefreshStatus::TransportFailure {
-                    diagnostic: "x".repeat(crate::receipt::MAX_REFRESH_DIAGNOSTIC_BYTES),
-                },
-            })
-            .collect();
-        state.last_refresh_retry_attempt_nanos = Some(u64::MAX);
-        state.last_reward_observation_attempt_nanos = Some(u64::MAX - 1);
-        state.last_reward_backing_attempt_nanos = Some(u64::MAX - 2);
-
         let active_request = crate::receipt::PrepareLiquidReceiptArgs {
             receipt_sequence: 1,
             receipt_kind: crate::receipt::ReceiptKind::TwoWeekMaturity,
@@ -1105,9 +1014,7 @@ mod tests {
                             block: index as u128,
                         },
                     }),
-                    refresh_status: crate::receipt::NeuronRefreshStatus::TransportFailure {
-                        diagnostic: "y".repeat(crate::receipt::MAX_REFRESH_DIAGNOSTIC_BYTES),
-                    },
+                    refresh_attempted: true,
                 }
             })
             .collect();

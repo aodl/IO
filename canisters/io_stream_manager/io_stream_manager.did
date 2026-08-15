@@ -87,18 +87,6 @@ type RewardEntitlementEntry = record {
   destination : Account;
   accumulated_eligible_credit : nat;
 };
-type NeuronRefreshStatus = variant {
-  NotAttempted;
-  Attempting : record { attempted_at_nanos : nat64 };
-  Confirmed;
-  GovernanceRejected : record { diagnostic : text };
-  TransportFailure : record { diagnostic : text };
-  MalformedResponse : record { diagnostic : text };
-};
-type PendingNeuronRefresh = record {
-  sns_neuron_id : blob;
-  status : NeuronRefreshStatus;
-};
 type RewardEventObservation = record {
   event : RewardEventId;
   proposal_count : nat64;
@@ -183,8 +171,6 @@ type Status = record {
   governance_parameters_fresh : bool;
   pending_entitlement_batch_eligible_credit : opt nat;
   pending_entitlement_batch_policy_credit : opt nat;
-  pending_neuron_refresh_count : nat64;
-  oldest_pending_neuron_refresh : opt PendingNeuronRefresh;
 };
 service : (InitArgs) -> {
   redeem : (RedeemArgs) -> (variant { Ok : RedemptionProgress; Err : ApiError });
@@ -194,7 +180,6 @@ service : (InitArgs) -> {
   prove_active_transfer : (nat) -> (variant { Ok; Err : ApiError });
   resume_reward_work : () -> (variant { Ok : RewardEventObservation; Err : ApiError });
   resume_reward_backing : () -> (variant { Ok : RewardBackingProgress; Err : ApiError });
-  retry_neuron_refresh : () -> (variant { Ok : NeuronRefreshStatus; Err : ApiError });
   set_paused : (bool) -> (variant { Ok; Err : ApiError });
   validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;
   get_status : () -> (Status) query;

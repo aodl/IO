@@ -7,9 +7,10 @@ bounded V1 control state in one `StableCell` and successful Jupiter block replay
 records in a `StableBTreeMap`. Historian remains a bounded, rebuildable V1
 snapshot.
 
-This split keeps the one active operation, one pending entitlement batch, one
-passive unwind child, scalar cooldowns, and bounded refresh-failure list easy to
-validate as a whole. Permanent maps are reserved for identities whose deletion
+This split keeps the one active operation, one pending entitlement batch, and
+one passive unwind child easy to validate as a whole. Ancillary refresh
+failures and permissionless invalid proof probes add no stable collections or
+scheduler state. Permanent maps are reserved for identities whose deletion
 would weaken exact replay: a caller entry is written only on completed
 redemption, and a Jupiter block entry only on canonical successful completion.
 Invalid proof probes allocate no map entries.

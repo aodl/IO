@@ -15,7 +15,7 @@ evidence = "tools/sns/sns_init.io.template.yaml exists and the maintained source
 
 [local_sns_testing_rehearsal]
 status = "incomplete"
-evidence = "The selected immutable package proves the preceding master-descended release, including same-source candidate Governance/Root compatibility, and remains historical evidence for that exact pair. The hardened launch schema changes NNS install state, both protected-neuron readiness baselines, Jupiter activation, and Stream reward settlement state; it therefore requires a fresh immutable current package bound to its own finalized source/artifact pair. Existing packages must not be rebound."
+evidence = "The selected immutable package proves the preceding master-descended release, including same-source candidate Governance/Root compatibility, and remains historical evidence for that exact pair. The simplified hardened launch schema changes NNS install state, both protected-neuron readiness baselines, Jupiter activation, and Stream reward settlement state while deliberately omitting a durable refresh-retry queue; it therefore requires a fresh immutable current package bound to its own finalized source/artifact pair. Existing packages must not be rebound."
 
 [mainnet_testflight]
 status = "incomplete"

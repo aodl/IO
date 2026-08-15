@@ -5,9 +5,8 @@ use crate::{
     api::ApiError,
     canonical,
     receipt::{
-        CompletedReceiptResult, LastCompletedReceipt, LiquidReceiptOperation, NeuronRefreshStatus,
-        PendingNeuronRefresh, ReceiptPhase, RewardRecipient, TwoWeekReceiptOperation,
-        TwoWeekReceiptResult, TwoWeekSettlement,
+        CompletedReceiptResult, LastCompletedReceipt, LiquidReceiptOperation, ReceiptPhase,
+        RewardRecipient, TwoWeekReceiptOperation, TwoWeekReceiptResult, TwoWeekSettlement,
     },
     reward_evidence::{
         classify_sequence, eligible_stake_total, event_credits, event_id, installed_governance,
@@ -29,12 +28,6 @@ use io_sns_reward_boundary::claim_or_refresh;
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 #[rustfmt::skip]
 pub enum RewardBackingProgress { Pending { reason: reward_nns::BackingNotReadyReason }, MaturityPrepared { generation: u64 } }
-
-pub const REWARD_KEEPER_COOLDOWN_NANOS: u64 = 60_000_000_000;
-
-fn keeper_attempt_due(last: Option<u64>, now: u64) -> bool {
-    last.is_none_or(|value| now.saturating_sub(value) >= REWARD_KEEPER_COOLDOWN_NANOS)
-}
 
 fn ensure_reward_observation_due(
     lifecycle: Lifecycle,
@@ -61,13 +54,19 @@ pub async fn observe(now_nanos: u64) -> Result<RewardEventObservation, ApiError>
         snapshot.reward_entitlements.reward_processing_paused,
         snapshot.reward_entitlements.reward_work_due,
     )?;
-    if !keeper_attempt_due(snapshot.last_reward_observation_attempt_nanos, now_nanos) {
-        return Err(ApiError::Pending(
-            "reward-event observation is cooling down".into(),
-        ));
-    }
-    snapshot.last_reward_observation_attempt_nanos = Some(now_nanos);
+    snapshot.reward_entitlements.reward_work_due = false;
     state::write(snapshot.clone());
+    let result = observe_due(snapshot, now_nanos).await;
+    if matches!(result, Err(ApiError::Pending(_))) {
+        crate::reward_timer::install_retry();
+    }
+    result
+}
+
+async fn observe_due(
+    snapshot: crate::state::StreamStateV1,
+    now_nanos: u64,
+) -> Result<RewardEventObservation, ApiError> {
     verify_governance(&snapshot).await?;
     let before = latest_reward_event(snapshot.config.sns_governance).await?;
     let sequence = classify_sequence(snapshot.reward_entitlements.last_processed_event, &before)?;
@@ -172,8 +171,7 @@ fn pause_reward_processing(expected: &crate::state::StreamStateV1) {
         && latest.control_epoch == expected.control_epoch
         && latest.reward_entitlements.last_processed_event
             == expected.reward_entitlements.last_processed_event
-        && latest.last_reward_observation_attempt_nanos
-            == expected.last_reward_observation_attempt_nanos
+        && !latest.reward_entitlements.reward_work_due
     {
         latest.reward_entitlements.reward_processing_paused = true;
         latest.reward_entitlements.reward_work_due = true;
@@ -195,8 +193,7 @@ fn commit_observation(
         || latest.reward_entitlements.reward_processing_paused
         || latest.reward_entitlements.last_processed_event
             != expected.reward_entitlements.last_processed_event
-        || latest.last_reward_observation_attempt_nanos
-            != expected.last_reward_observation_attempt_nanos
+        || latest.reward_entitlements.reward_work_due
     {
         return Err(ApiError::Busy);
     }
@@ -234,7 +231,7 @@ fn commit_observation(
 }
 
 pub async fn resume_backing(now_nanos: u64) -> Result<RewardBackingProgress, ApiError> {
-    let mut snapshot = state::read();
+    let snapshot = state::read();
     if snapshot.lifecycle != Lifecycle::Ready {
         return Err(ApiError::Paused);
     }
@@ -253,13 +250,6 @@ pub async fn resume_backing(now_nanos: u64) -> Result<RewardBackingProgress, Api
             "no new entitlement event is available to freeze".into(),
         ));
     }
-    if !keeper_attempt_due(snapshot.last_reward_backing_attempt_nanos, now_nanos) {
-        return Err(ApiError::Pending(
-            "reward-backing observation is cooling down".into(),
-        ));
-    }
-    snapshot.last_reward_backing_attempt_nanos = Some(now_nanos);
-    state::write(snapshot.clone());
     match snapshot.pending_entitlement_batch.clone() {
         Some(batch) => submit_maturity(snapshot, batch).await,
         None => freeze_and_prepare(snapshot, now_nanos).await,
@@ -338,7 +328,6 @@ async fn freeze_and_prepare(
         || latest.lifecycle != Lifecycle::Ready
         || latest.pending_entitlement_batch.is_some()
         || latest.reward_entitlements != snapshot.reward_entitlements
-        || latest.last_reward_backing_attempt_nanos != snapshot.last_reward_backing_attempt_nanos
     {
         return Err(ApiError::Busy);
     }
@@ -474,7 +463,7 @@ async fn prepare_settlement(
                 destination: entry.destination.clone(),
                 io_e8s: allocation.io_e8s,
                 transfer: None,
-                refresh_status: NeuronRefreshStatus::NotAttempted,
+                refresh_attempted: false,
             })
         })
         .collect::<Result<Vec<_>, ApiError>>()?;
@@ -496,7 +485,6 @@ async fn prepare_settlement(
             "IO reserve does not cover rewards plus one fee per recipient".into(),
         ));
     }
-    ensure_refresh_capacity(&snapshot.pending_neuron_refreshes, &recipients)?;
     if state::read() != snapshot {
         return Err(ApiError::Busy);
     }
@@ -529,7 +517,7 @@ async fn resume_recipient(
     if index == settlement.recipients.len() {
         return complete_settlement(operation, now);
     }
-    let recipient = settlement.recipients[index].clone();
+    let recipient = &settlement.recipients[index];
     match &recipient.transfer {
         None
         | Some(TransferAttempt {
@@ -539,13 +527,7 @@ async fn resume_recipient(
         Some(TransferAttempt {
             state: TransferState::Succeeded { .. },
             ..
-        }) if matches!(
-            recipient.refresh_status,
-            NeuronRefreshStatus::NotAttempted | NeuronRefreshStatus::Attempting { .. }
-        ) =>
-        {
-            refresh_recipient(operation, now).await
-        }
+        }) if !recipient.refresh_attempted => refresh_recipient(operation).await,
         Some(TransferAttempt {
             state: TransferState::Succeeded { .. },
             ..
@@ -690,7 +672,6 @@ fn stick_recipient(
 
 async fn refresh_recipient(
     operation: TwoWeekReceiptOperation,
-    now: u64,
 ) -> Result<crate::api::LiquidReceiptProgress, ApiError> {
     let settlement = operation.settlement.as_ref().expect("validated settlement");
     let index = settlement.recipient_index as usize;
@@ -701,9 +682,7 @@ async fn refresh_recipient(
         .as_mut()
         .expect("validated settlement")
         .recipients[index]
-        .refresh_status = NeuronRefreshStatus::Attempting {
-        attempted_at_nanos: now,
-    };
+        .refresh_attempted = true;
     crate::receipt::persist_exact(
         &LiquidReceiptOperation::TwoWeek(Box::new(operation)),
         LiquidReceiptOperation::TwoWeek(Box::new(submitted.clone())),
@@ -712,18 +691,34 @@ async fn refresh_recipient(
     if active_two_week()? != submitted {
         return Err(ApiError::Busy);
     }
-    let mut observed = submitted.clone();
-    observed
-        .settlement
-        .as_mut()
-        .expect("validated settlement")
-        .recipients[index]
-        .refresh_status = NeuronRefreshStatus::from_claim_result(result);
-    crate::receipt::persist_exact(
-        &LiquidReceiptOperation::TwoWeek(Box::new(submitted)),
-        LiquidReceiptOperation::TwoWeek(Box::new(observed.clone())),
-    )?;
-    advance_recipient(observed)
+    if let Err(error) = result {
+        log_refresh_failure(&neuron_id, error);
+    }
+    advance_recipient(submitted)
+}
+
+fn log_refresh_failure(neuron_id: &[u8], error: io_sns_reward_boundary::ClaimOrRefreshError) {
+    let (class, diagnostic) = match error {
+        io_sns_reward_boundary::ClaimOrRefreshError::Governance(value) => ("governance", value),
+        io_sns_reward_boundary::ClaimOrRefreshError::Transport(value) => ("transport", value),
+        io_sns_reward_boundary::ClaimOrRefreshError::Malformed(value) => ("malformed", value),
+    };
+    let diagnostic = bounded_refresh_diagnostic(diagnostic);
+    ic_cdk::api::debug_print(format!(
+        "best-effort SNS neuron refresh failed: class={class} neuron_id={neuron_id:?} diagnostic={diagnostic}"
+    ));
+}
+
+fn bounded_refresh_diagnostic(mut diagnostic: String) -> String {
+    const MAX_BYTES: usize = 256;
+    if diagnostic.len() > MAX_BYTES {
+        let mut end = MAX_BYTES;
+        while !diagnostic.is_char_boundary(end) {
+            end -= 1;
+        }
+        diagnostic.truncate(end);
+    }
+    diagnostic
 }
 
 fn advance_recipient(
@@ -731,14 +726,13 @@ fn advance_recipient(
 ) -> Result<crate::api::LiquidReceiptProgress, ApiError> {
     let settlement = operation.settlement.as_ref().expect("validated settlement");
     let index = settlement.recipient_index as usize;
-    let recipient = settlement.recipients[index].clone();
-    if matches!(
-        recipient.refresh_status,
-        NeuronRefreshStatus::NotAttempted | NeuronRefreshStatus::Attempting { .. }
-    ) || !matches!(
-        recipient.transfer.as_ref().map(|attempt| &attempt.state),
-        Some(TransferState::Succeeded { .. })
-    ) {
+    let recipient = &settlement.recipients[index];
+    if !recipient.refresh_attempted
+        || !matches!(
+            recipient.transfer.as_ref().map(|attempt| &attempt.state),
+            Some(TransferState::Succeeded { .. })
+        )
+    {
         return Err(ApiError::Invalid(
             "reward recipient cannot advance before exact transfer and refresh attempt".into(),
         ));
@@ -756,131 +750,11 @@ fn advance_recipient(
         .recipient_index
         .checked_add(1)
         .ok_or_else(|| ApiError::Invalid("reward recipient index overflow".into()))?;
-    let mut latest = state::read();
-    let expected = LiquidReceiptOperation::TwoWeek(Box::new(operation));
-    if !matches!(&latest.active_operation, Some(StreamOperation::LiquidReceipt(current))
-        if matches!(current.as_ref(), LiquidReceiptStreamOperation::Active(value) if **value == expected))
-    {
-        return Err(ApiError::Busy);
-    }
-    record_refresh_outcome(
-        &mut latest.pending_neuron_refreshes,
-        recipient.sns_neuron_id,
-        recipient.refresh_status,
-    );
-    let replacement = LiquidReceiptOperation::TwoWeek(Box::new(replacement));
-    replacement
-        .validate(&latest.config)
-        .map_err(ApiError::Invalid)?;
-    latest.active_operation = Some(StreamOperation::LiquidReceipt(Box::new(
-        LiquidReceiptStreamOperation::Active(Box::new(replacement)),
-    )));
-    state::write(latest);
-    Ok(crate::api::LiquidReceiptProgress::Settling)
-}
-
-pub const REFRESH_RETRY_COOLDOWN_NANOS: u64 = 60_000_000_000;
-
-fn ensure_refresh_capacity(
-    queue: &[PendingNeuronRefresh],
-    recipients: &[RewardRecipient],
-) -> Result<(), ApiError> {
-    let mut ids = queue
-        .iter()
-        .map(|pending| pending.sns_neuron_id.as_slice())
-        .collect::<std::collections::BTreeSet<_>>();
-    ids.extend(
-        recipients
-            .iter()
-            .map(|recipient| recipient.sns_neuron_id.as_slice()),
-    );
-    if ids.len() > crate::state::StreamStateV1::MAX_PENDING_NEURON_REFRESHES {
-        return Err(ApiError::Invalid(
-            "unique SNS refresh set exceeds bounded capacity".into(),
-        ));
-    }
-    Ok(())
-}
-
-fn record_refresh_outcome(
-    queue: &mut Vec<PendingNeuronRefresh>,
-    sns_neuron_id: Vec<u8>,
-    status: NeuronRefreshStatus,
-) {
-    let existing = queue
-        .iter()
-        .position(|pending| pending.sns_neuron_id == sns_neuron_id);
-    if status == NeuronRefreshStatus::Confirmed {
-        if let Some(index) = existing {
-            queue.remove(index);
-        }
-    } else if status.is_failure() {
-        if let Some(index) = existing {
-            queue[index].status = status;
-        } else if queue.len() < crate::state::StreamStateV1::MAX_PENDING_NEURON_REFRESHES {
-            queue.push(PendingNeuronRefresh {
-                sns_neuron_id,
-                status,
-            });
-        }
-    }
-}
-
-fn refresh_retry_due(last_attempt: Option<u64>, now: u64) -> bool {
-    last_attempt.is_none_or(|last| now.saturating_sub(last) >= REFRESH_RETRY_COOLDOWN_NANOS)
-}
-
-fn apply_refresh_retry_result(
-    queue: &mut Vec<PendingNeuronRefresh>,
-    expected: &PendingNeuronRefresh,
-    status: NeuronRefreshStatus,
-) -> Result<(), ApiError> {
-    if queue.first() != Some(expected) {
-        return Err(ApiError::Busy);
-    }
-    queue.remove(0);
-    record_refresh_outcome(queue, expected.sns_neuron_id.clone(), status);
-    Ok(())
-}
-
-pub async fn retry_neuron_refresh(now: u64) -> Result<NeuronRefreshStatus, ApiError> {
-    let mut snapshot = state::read();
-    if snapshot.lifecycle != Lifecycle::Ready {
-        return Err(ApiError::Paused);
-    }
-    if snapshot.active_operation.is_some() {
-        return Err(ApiError::Busy);
-    }
-    let Some(pending) = snapshot.pending_neuron_refreshes.first().cloned() else {
-        return Err(ApiError::Pending("no SNS neuron refresh is pending".into()));
-    };
-    if !refresh_retry_due(snapshot.last_refresh_retry_attempt_nanos, now) {
-        return Err(ApiError::Pending(
-            "SNS neuron refresh retry is cooling down".into(),
-        ));
-    }
-    snapshot.last_refresh_retry_attempt_nanos = Some(now);
-    state::write(snapshot.clone());
-    let result = claim_or_refresh(
-        snapshot.config.sns_governance,
-        pending.sns_neuron_id.clone(),
-    )
-    .await;
-    let status = NeuronRefreshStatus::from_claim_result(result);
-    let mut latest = state::read();
-    if latest.active_operation.is_some()
-        || latest.last_refresh_retry_attempt_nanos != Some(now)
-        || latest.pending_neuron_refreshes.first() != Some(&pending)
-    {
-        return Err(ApiError::Busy);
-    }
-    apply_refresh_retry_result(
-        &mut latest.pending_neuron_refreshes,
-        &pending,
-        status.clone(),
+    crate::receipt::persist_exact(
+        &LiquidReceiptOperation::TwoWeek(Box::new(operation)),
+        LiquidReceiptOperation::TwoWeek(Box::new(replacement)),
     )?;
-    state::write(latest);
-    Ok(status)
+    Ok(crate::api::LiquidReceiptProgress::Settling)
 }
 
 fn complete_settlement(
@@ -1041,125 +915,12 @@ mod composition_tests {
             Err(ApiError::Paused)
         );
         assert!(ensure_reward_observation_due(Lifecycle::Ready, false, true).is_ok());
-        assert!(keeper_attempt_due(None, 1));
-        assert!(!keeper_attempt_due(Some(1), 1));
-        assert!(keeper_attempt_due(
-            Some(1),
-            REWARD_KEEPER_COOLDOWN_NANOS + 1
-        ));
     }
 
     #[test]
-    fn refresh_retry_is_cooled_down_and_never_repeats_delivery() {
-        assert!(refresh_retry_due(None, 1));
-        assert!(!refresh_retry_due(Some(1), 1));
-        assert!(refresh_retry_due(Some(1), REFRESH_RETRY_COOLDOWN_NANOS + 1));
-        let failed = PendingNeuronRefresh {
-            sns_neuron_id: vec![9; 32],
-            status: NeuronRefreshStatus::TransportFailure {
-                diagnostic: "offline".into(),
-            },
-        };
-        let mut queue = vec![failed.clone()];
-        queue.push(PendingNeuronRefresh {
-            sns_neuron_id: vec![8; 32],
-            status: NeuronRefreshStatus::TransportFailure {
-                diagnostic: "broad outage".into(),
-            },
-        });
-        apply_refresh_retry_result(
-            &mut queue,
-            &failed,
-            NeuronRefreshStatus::GovernanceRejected {
-                diagnostic: "retry rejected".into(),
-            },
-        )
-        .unwrap();
-        assert_eq!(queue.len(), 2);
-        assert_eq!(queue[0].sns_neuron_id, vec![8; 32]);
-        assert_eq!(queue[1].sns_neuron_id, vec![9; 32]);
-        let retried = queue[0].clone();
-        apply_refresh_retry_result(&mut queue, &retried, NeuronRefreshStatus::Confirmed).unwrap();
-        assert_eq!(queue.len(), 1);
-        assert_eq!(queue[0].sns_neuron_id, vec![9; 32]);
-    }
-
-    fn failed(id: u16) -> PendingNeuronRefresh {
-        PendingNeuronRefresh {
-            sns_neuron_id: id.to_be_bytes().repeat(16),
-            status: NeuronRefreshStatus::TransportFailure {
-                diagnostic: "offline".into(),
-            },
-        }
-    }
-
-    fn recipient(id: u16) -> RewardRecipient {
-        RewardRecipient {
-            sns_neuron_id: id.to_be_bytes().repeat(16),
-            destination: Account {
-                owner: candid::Principal::from_slice(&[1]),
-                subaccount: None,
-            },
-            io_e8s: 1,
-            transfer: None,
-            refresh_status: NeuronRefreshStatus::NotAttempted,
-        }
-    }
-
-    #[test]
-    fn refresh_capacity_counts_only_the_exact_unique_union() {
-        let maximum = crate::state::StreamStateV1::MAX_PENDING_NEURON_REFRESHES as u16;
-        let full_batch = (1..=maximum).map(recipient).collect::<Vec<_>>();
-        assert_eq!(ensure_refresh_capacity(&[failed(1)], &full_batch), Ok(()));
-        let full_queue = (1..=maximum).map(failed).collect::<Vec<_>>();
-        assert_eq!(ensure_refresh_capacity(&full_queue, &full_batch), Ok(()));
-        let partial_queue = (1..=500).map(failed).collect::<Vec<_>>();
-        let partial_batch = (500..=maximum).map(recipient).collect::<Vec<_>>();
-        assert_eq!(
-            ensure_refresh_capacity(&partial_queue, &partial_batch),
-            Ok(())
-        );
-        assert!(ensure_refresh_capacity(
-            &partial_queue,
-            &(501..=1001).map(recipient).collect::<Vec<_>>()
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn normal_refresh_outcomes_clear_or_upsert_without_duplicates() {
-        let mut queue = vec![failed(1), failed(2)];
-        record_refresh_outcome(
-            &mut queue,
-            failed(1).sns_neuron_id,
-            NeuronRefreshStatus::Confirmed,
-        );
-        assert_eq!(queue, vec![failed(2)]);
-        record_refresh_outcome(
-            &mut queue,
-            failed(2).sns_neuron_id,
-            NeuronRefreshStatus::GovernanceRejected {
-                diagnostic: "rejected".into(),
-            },
-        );
-        assert_eq!(queue.len(), 1);
-        assert!(matches!(
-            queue[0].status,
-            NeuronRefreshStatus::GovernanceRejected { .. }
-        ));
-    }
-
-    #[test]
-    fn full_refresh_queue_cannot_turn_ancillary_recording_into_a_monetary_blocker() {
-        let maximum = crate::state::StreamStateV1::MAX_PENDING_NEURON_REFRESHES as u16;
-        let mut queue = (1..=maximum).map(failed).collect::<Vec<_>>();
-        record_refresh_outcome(
-            &mut queue,
-            failed(1001).sns_neuron_id,
-            NeuronRefreshStatus::TransportFailure {
-                diagnostic: "offline".into(),
-            },
-        );
-        assert_eq!(queue.len(), usize::from(maximum));
+    fn refresh_diagnostics_are_bounded_without_splitting_utf8() {
+        let diagnostic = bounded_refresh_diagnostic("é".repeat(200));
+        assert!(diagnostic.len() <= 256);
+        assert!(diagnostic.is_char_boundary(diagnostic.len()));
     }
 }

@@ -95,10 +95,9 @@ pub(crate) fn ready() -> Result<crate::state::NnsStateV1, ApiError> {
 }
 
 pub async fn notify_jupiter_deposit(
-    caller: Principal,
     args: NotifyJupiterDepositArgs,
 ) -> Result<JupiterProgress, ApiError> {
-    crate::jupiter_flow::notify_jupiter_deposit(caller, args).await
+    crate::jupiter_flow::notify_jupiter_deposit(args).await
 }
 
 pub async fn resume() -> Result<NnsProgress, ApiError> {
@@ -119,13 +118,7 @@ pub async fn resume() -> Result<NnsProgress, ApiError> {
         )
         .await
         .map(NnsProgress::Unwind),
-        None => {
-            if !begin_passive_reconciliation(ic_cdk::api::time())? {
-                return Ok(NnsProgress::Idle);
-            }
-            reconcile_latest_target().await?;
-            Ok(NnsProgress::Idle)
-        }
+        None => Ok(NnsProgress::Idle),
         Some(NnsOperation::Jupiter(operation)) => crate::jupiter_flow::resume(*operation)
             .await
             .map(NnsProgress::Jupiter),
@@ -136,23 +129,6 @@ pub async fn resume() -> Result<NnsProgress, ApiError> {
             .await
             .map(NnsProgress::Unwind),
     }
-}
-
-pub const PASSIVE_RECONCILIATION_COOLDOWN_NANOS: u64 = 60_000_000_000;
-
-fn passive_reconciliation_due(last_attempt: Option<u64>, now_nanos: u64) -> bool {
-    last_attempt
-        .is_none_or(|last| now_nanos.saturating_sub(last) >= PASSIVE_RECONCILIATION_COOLDOWN_NANOS)
-}
-
-fn begin_passive_reconciliation(now_nanos: u64) -> Result<bool, ApiError> {
-    let mut latest = ready()?;
-    if !passive_reconciliation_due(latest.last_passive_reconciliation_attempt_nanos, now_nanos) {
-        return Ok(false);
-    }
-    latest.last_passive_reconciliation_attempt_nanos = Some(now_nanos);
-    state::write(latest);
-    Ok(true)
 }
 
 pub async fn prove_active_transfer(block_index: u128) -> Result<NnsProgress, ApiError> {
@@ -335,31 +311,9 @@ fn reconcile_unwind(
     Ok(())
 }
 
-async fn reconcile_latest_target() -> Result<(), ApiError> {
-    let Some(target) = ready()?.latest_two_week_target else {
-        return Ok(());
-    };
-    let _ = reconcile_two_week_target(target.target_e8s).await?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn passive_idle_reconciliation_is_canister_wide_and_cooled_down() {
-        assert!(passive_reconciliation_due(None, 1));
-        assert!(!passive_reconciliation_due(Some(1), 1));
-        assert!(!passive_reconciliation_due(
-            Some(1),
-            PASSIVE_RECONCILIATION_COOLDOWN_NANOS
-        ));
-        assert!(passive_reconciliation_due(
-            Some(1),
-            PASSIVE_RECONCILIATION_COOLDOWN_NANOS + 1
-        ));
-    }
 
     #[test]
     fn one_unsubmitted_unwind_is_replayed_retargeted_or_cancelled() {

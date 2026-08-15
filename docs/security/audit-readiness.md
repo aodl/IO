@@ -16,15 +16,15 @@ This is the handoff index for an independent auditor. It is not a self-audit and
 - Accepted ADRs: `adr-simplified-execution.md`, `adr-daily-sns-entitlement-events.md`, `adr-io-ledger-fee-and-supply-authority.md`, `adr-nns-authority-location.md`, and `adr-protected-reward-backing-nns-neuron.md`.
 - Monetary policy: `monetary-policy.md`, `fee-dust-accounting.md`, `reward-allocation.md`, and `sns-eligibility.md`.
 - Redemption/idempotency/ambiguity: `stream-manager.md`, `docs/operations/p0-simplified-composition-evidence.md`, and `docs/security/threat-model.md`.
-- Jupiter activation/replay/throttling, both protected-neuron launch baselines,
+- Jupiter activation/replay boundary and residual lookup risk, both protected-neuron launch baselines,
   maturity, and passive unwind: `jupiter-integration-contract.md`,
   `nns-neuron-manager.md`, and the composition evidence.
 - Availability and stable growth: `docs/operations/cycles-management.md`,
   `stable-storage.md`, and the permissionless-endpoint rows in the threat
   model.
 - Reward settlement: the Stream Manager README and daily-entitlement ADR
-  distinguish exact IO ledger delivery from the bounded, observable,
-  retryable SNS `ClaimOrRefresh` result.
+  distinguish exact IO ledger delivery from one bounded, observable,
+  best-effort SNS `ClaimOrRefresh` attempt.
 - Timers/upgrades: `scheduler.md`, `upgrades.md`, `stable-storage.md`, and `journal-compaction.md`.
 - SNS authority/controllers: `sns-root-lifecycle.md`, `docs/security/controller-and-recovery.md`, and `docs/operations/production-wiring.md`.
 - Historian non-authority: `historian.md`, `historian-ingestion.md`, and `docs/operations/historian-freshness.md`.

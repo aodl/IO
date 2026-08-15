@@ -41,9 +41,6 @@ pub fn init(args: InitArgs) {
             last_two_week_maturity: None,
             next_operation_sequence: 1,
             control_epoch: 0,
-            last_passive_reconciliation_attempt_nanos: None,
-            last_public_jupiter_lookup_attempt_nanos: None,
-            jupiter_lookup_lease: None,
         },
         ic_cdk::api::canister_self(),
     )
@@ -59,7 +56,7 @@ pub fn post_upgrade() {
 pub async fn notify_jupiter_deposit(
     args: NotifyJupiterDepositArgs,
 ) -> Result<JupiterProgress, ApiError> {
-    api::notify_jupiter_deposit(ic_cdk::api::msg_caller(), args).await
+    api::notify_jupiter_deposit(args).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]

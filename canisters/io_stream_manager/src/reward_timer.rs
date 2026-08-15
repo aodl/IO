@@ -36,9 +36,8 @@ fn observation_deadline(event: RewardEventId) -> Option<u64> {
         .checked_add(OBSERVATION_MARGIN_SECONDS)
 }
 
-fn retry_deadline(error: &crate::api::ApiError, now_seconds: u64) -> Option<u64> {
-    matches!(error, crate::api::ApiError::Pending(_))
-        .then(|| now_seconds.checked_add(RETRY_DELAY_SECONDS))?
+pub(crate) fn install_retry() {
+    install((ic_cdk::api::time() / 1_000_000_000).checked_add(RETRY_DELAY_SECONDS));
 }
 
 pub(crate) fn install(deadline_seconds: Option<u64>) {
@@ -67,10 +66,6 @@ pub(crate) fn install(deadline_seconds: Option<u64>) {
                 ic_cdk::api::debug_print(format!(
                     "daily reward-event work remains due after failure: {error:?}"
                 ));
-                if let Some(deadline) = retry_deadline(&error, ic_cdk::api::time() / 1_000_000_000)
-                {
-                    install(Some(deadline));
-                }
             }
         });
         *slot.borrow_mut() = Some(timer);
@@ -82,22 +77,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pending_event_uses_margin_and_one_fixed_replacement_deadline() {
+    fn pending_event_uses_reviewed_margin() {
         let event = RewardEventId {
             end_timestamp_seconds: 1_000,
             round: 1,
         };
         assert_eq!(observation_deadline(event), Some(87_700));
-        assert_eq!(
-            retry_deadline(
-                &crate::api::ApiError::Pending("event has not advanced".into()),
-                87_700,
-            ),
-            Some(87_760)
-        );
-        assert_eq!(
-            retry_deadline(&crate::api::ApiError::Invalid("bad".into()), 1),
-            None
-        );
     }
 }

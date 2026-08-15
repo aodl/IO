@@ -211,9 +211,9 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
 }
 
 #[test]
-fn jupiter_floor_priority_throttle_upgrade_and_idle_reconciliation_are_bounded() {
+fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
     if std::env::var_os("POCKET_IC_BIN").is_none() {
-        eprintln!("skipping NNS liveness PocketIC test because POCKET_IC_BIN is not set");
+        eprintln!("skipping NNS boundary PocketIC test because POCKET_IC_BIN is not set");
         return;
     }
     let pic = PocketIc::new();
@@ -323,26 +323,9 @@ fn jupiter_floor_priority_throttle_upgrade_and_idle_reconciliation_are_bounded()
     assert!(ready_status.two_year_maturity_baseline_reconciled);
     assert!(ready_status.two_week_maturity_baseline_reconciled);
 
-    let _: Result<io_nns_neuron_manager::TwoWeekBackingReadiness, ApiError> = update(
-        &pic,
-        manager,
-        stream,
-        "reconcile_two_week_backing_readiness",
-        io_nns_neuron_manager::ReconcileTwoWeekBackingReadinessArgs {
-            target_e8s: 1_000_000,
-        },
-    );
-    let before_idle: u64 = query(&pic, governance, "debug_get_full_neuron_call_count");
-    let _: Result<io_nns_neuron_manager::api::NnsProgress, ApiError> =
+    let idle: Result<io_nns_neuron_manager::api::NnsProgress, ApiError> =
         update(&pic, manager, Principal::anonymous(), "resume", ());
-    let after_first_idle: u64 = query(&pic, governance, "debug_get_full_neuron_call_count");
-    assert!(after_first_idle > before_idle);
-    let _: Result<io_nns_neuron_manager::api::NnsProgress, ApiError> =
-        update(&pic, manager, Principal::anonymous(), "resume", ());
-    assert_eq!(
-        query::<u64>(&pic, governance, "debug_get_full_neuron_call_count"),
-        after_first_idle
-    );
+    assert_eq!(idle, Ok(io_nns_neuron_manager::api::NnsProgress::Idle));
 
     let before_floor: LedgerCallCounters = query(&pic, ledger, "debug_get_call_counters");
     let rejected: Result<JupiterProgress, ApiError> = update(
@@ -413,7 +396,7 @@ fn jupiter_floor_priority_throttle_upgrade_and_idle_reconciliation_are_bounded()
     assert!(reopened.two_week_maturity_baseline_reconciled);
     let ready: Result<(), ApiError> = update(&pic, manager, sns_governance, "set_paused", false);
     ready.unwrap();
-    let cooled: Result<JupiterProgress, ApiError> = update(
+    let invalid_after_upgrade: Result<JupiterProgress, ApiError> = update(
         &pic,
         manager,
         Principal::anonymous(),
@@ -422,10 +405,10 @@ fn jupiter_floor_priority_throttle_upgrade_and_idle_reconciliation_are_bounded()
             block_index: old_block + 2,
         },
     );
-    assert!(matches!(cooled, Err(ApiError::Pending(message)) if message.contains("cooling down")));
+    assert!(matches!(invalid_after_upgrade, Err(ApiError::Invalid(_))));
     assert_eq!(
         query::<LedgerCallCounters>(&pic, ledger, "debug_get_call_counters").query_blocks,
-        after_public
+        after_public + 1
     );
 
     let valid_block: io_ledger_boundary::IcrcTransferResult = update(
@@ -455,7 +438,7 @@ fn jupiter_floor_priority_throttle_upgrade_and_idle_reconciliation_are_bounded()
     assert_eq!(legitimate, Ok(JupiterProgress::DepositProved));
     assert_eq!(
         query::<LedgerCallCounters>(&pic, ledger, "debug_get_call_counters").query_blocks,
-        after_public + 1
+        after_public + 2
     );
 
     pic.advance_time(Duration::from_secs(1));

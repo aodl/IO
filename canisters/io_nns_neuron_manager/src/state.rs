@@ -120,13 +120,9 @@ pub struct TwoWeekTarget { pub target_e8s: u128, pub status: TwoWeekTargetStatus
 
 pub use io_receipt_types::BackingTargetStatus as TwoWeekTargetStatus;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct JupiterLookupLease { pub block_index: u128, pub started_at_nanos: u64 }
-
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 #[rustfmt::skip]
-pub struct NnsStateV1 { pub config: NnsConfig, pub lifecycle: Lifecycle, pub active_operation: Option<NnsOperation>, pub latest_two_week_target: Option<TwoWeekTarget>, pub two_year_maturity_baseline_reconciled: bool, pub two_week_maturity_baseline_reconciled: bool, pub latest_started_two_week_generation: u64, pub latest_completed_two_week_generation: u64, pub pending_two_year_maturity: Option<PendingMaturityDisbursement>, pub pending_two_week_maturity: Option<PendingMaturityDisbursement>, pub pending_unwind: Option<UnwindOperation>, pub last_two_year_maturity: Option<CompletedMaturity>, pub last_two_week_maturity: Option<CompletedMaturity>, pub next_operation_sequence: u64, pub control_epoch: u64, pub last_passive_reconciliation_attempt_nanos: Option<u64>, pub last_public_jupiter_lookup_attempt_nanos: Option<u64>, pub jupiter_lookup_lease: Option<JupiterLookupLease> }
+pub struct NnsStateV1 { pub config: NnsConfig, pub lifecycle: Lifecycle, pub active_operation: Option<NnsOperation>, pub latest_two_week_target: Option<TwoWeekTarget>, pub two_year_maturity_baseline_reconciled: bool, pub two_week_maturity_baseline_reconciled: bool, pub latest_started_two_week_generation: u64, pub latest_completed_two_week_generation: u64, pub pending_two_year_maturity: Option<PendingMaturityDisbursement>, pub pending_two_week_maturity: Option<PendingMaturityDisbursement>, pub pending_unwind: Option<UnwindOperation>, pub last_two_year_maturity: Option<CompletedMaturity>, pub last_two_week_maturity: Option<CompletedMaturity>, pub next_operation_sequence: u64, pub control_epoch: u64 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum StableNnsState {
@@ -177,9 +173,6 @@ impl NnsStateV1 {
             last_two_week_maturity: None,
             next_operation_sequence: 1,
             control_epoch: 0,
-            last_passive_reconciliation_attempt_nanos: None,
-            last_public_jupiter_lookup_attempt_nanos: None,
-            jupiter_lookup_lease: None,
         }
     }
 
@@ -192,23 +185,6 @@ impl NnsStateV1 {
 impl NnsStateV1 {
     pub fn validate(&self, canister_self: Principal) -> Result<(), String> {
         self.config.validate(canister_self)?;
-        if self
-            .last_public_jupiter_lookup_attempt_nanos
-            .is_some_and(|value| value == 0)
-            || self
-                .last_passive_reconciliation_attempt_nanos
-                .is_some_and(|value| value == 0)
-        {
-            return Err("persisted cooldown timestamps must be nonzero".into());
-        }
-        if let Some(lease) = self.jupiter_lookup_lease {
-            if lease.started_at_nanos == 0
-                || lease.block_index < self.config.jupiter_activation_block_floor
-                || matches!(self.active_operation, Some(NnsOperation::Jupiter(_)))
-            {
-                return Err("Jupiter lookup lease is inconsistent".into());
-            }
-        }
         if (self.pending_two_year_maturity.is_some()
             || self.last_two_year_maturity.is_some()
             || matches!(
@@ -631,9 +607,6 @@ mod tests {
                 last_two_week_maturity: None,
                 next_operation_sequence: 1,
                 control_epoch: 0,
-                last_passive_reconciliation_attempt_nanos: None,
-                last_public_jupiter_lookup_attempt_nanos: None,
-                jupiter_lookup_lease: None,
             },
         )
     }
@@ -780,12 +753,6 @@ mod tests {
         state.lifecycle = Lifecycle::Ready;
         state.two_year_maturity_baseline_reconciled = true;
         state.two_week_maturity_baseline_reconciled = true;
-        state.last_passive_reconciliation_attempt_nanos = Some(7);
-        state.last_public_jupiter_lookup_attempt_nanos = Some(8);
-        state.jupiter_lookup_lease = Some(JupiterLookupLease {
-            block_index: 9,
-            started_at_nanos: 10,
-        });
         initialize(state, canister_self).unwrap();
         reopen(canister_self);
         let reopened = read();
@@ -793,15 +760,6 @@ mod tests {
         assert_eq!(reopened.config.jupiter_activation_block_floor, 1);
         assert!(reopened.two_year_maturity_baseline_reconciled);
         assert!(reopened.two_week_maturity_baseline_reconciled);
-        assert_eq!(reopened.last_passive_reconciliation_attempt_nanos, Some(7));
-        assert_eq!(reopened.last_public_jupiter_lookup_attempt_nanos, Some(8));
-        assert_eq!(
-            reopened.jupiter_lookup_lease,
-            Some(JupiterLookupLease {
-                block_index: 9,
-                started_at_nanos: 10,
-            })
-        );
 
         let mut unreconciled = reopened;
         unreconciled.two_year_maturity_baseline_reconciled = false;

@@ -54,7 +54,7 @@ pub enum StreamProgress {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 #[rustfmt::skip]
-pub struct Status { pub lifecycle: Lifecycle, pub operation_kind: Option<String>, pub operation_phase: Option<String>, pub next_nns_receipt_sequence: u64, pub latest_entitlement_batch_generation: u64, pub latest_processed_reward_event: Option<crate::state::RewardEventId>, pub latest_reward_event_classification: Option<crate::state::RewardEventClassification>, pub accumulated_entitlements: Vec<crate::state::RewardEntitlementEntry>, pub accumulated_eligible_credit: u128, pub accumulated_policy_credit: u128, pub processed_reward_event_count: u64, pub missed_reward_event_count: u64, pub reward_work_due: bool, pub reward_processing_paused: bool, pub governance_parameters_fresh: bool, pub pending_entitlement_batch_eligible_credit: Option<u128>, pub pending_entitlement_batch_policy_credit: Option<u128>, pub pending_neuron_refresh_count: u64, pub oldest_pending_neuron_refresh: Option<crate::receipt::PendingNeuronRefresh> }
+pub struct Status { pub lifecycle: Lifecycle, pub operation_kind: Option<String>, pub operation_phase: Option<String>, pub next_nns_receipt_sequence: u64, pub latest_entitlement_batch_generation: u64, pub latest_processed_reward_event: Option<crate::state::RewardEventId>, pub latest_reward_event_classification: Option<crate::state::RewardEventClassification>, pub accumulated_entitlements: Vec<crate::state::RewardEntitlementEntry>, pub accumulated_eligible_credit: u128, pub accumulated_policy_credit: u128, pub processed_reward_event_count: u64, pub missed_reward_event_count: u64, pub reward_work_due: bool, pub reward_processing_paused: bool, pub governance_parameters_fresh: bool, pub pending_entitlement_batch_eligible_credit: Option<u128>, pub pending_entitlement_batch_policy_credit: Option<u128> }
 
 pub fn get_status() -> Status {
     let state = state::read();
@@ -115,8 +115,6 @@ pub fn get_status() -> Status {
             .pending_entitlement_batch
             .as_ref()
             .map(|batch| batch.policy_credit_total),
-        pending_neuron_refresh_count: state.pending_neuron_refreshes.len() as u64,
-        oldest_pending_neuron_refresh: state.pending_neuron_refreshes.first().cloned(),
     }
 }
 

@@ -48,7 +48,6 @@ The checked-in [production Candid](io_stream_manager.did) exposes:
 - `prove_active_transfer`
 - `resume_reward_work`
 - `resume_reward_backing`
-- `retry_neuron_refresh`
 - `set_paused`
 - `validate_set_paused` (query)
 - `get_status` (query)
@@ -63,11 +62,6 @@ completed result without inventing client-side nonce or completion state.
 `validate_set_paused` renders the reviewed SNS generic-function payload without
 changing state. `set_paused` independently enforces the configured SNS
 Governance caller.
-
-`retry_neuron_refresh` retries the oldest recorded non-monetary SNS
-`ClaimOrRefresh` failure. It is permissionless, operates on one bounded entry,
-uses a persisted 60-second canister-wide cooldown, and never repeats the
-already completed IO transfer.
 
 ## Lifecycle and readiness
 
@@ -185,13 +179,13 @@ received and exactly proved from the NNS maturity path determines the
 economically backed IO settlement quantity.
 
 Recipient monetary completion is the exact IO Ledger transfer into the
-canonical SNS neuron staking Account. Governance `ClaimOrRefresh` is tracked
-separately as `NotAttempted`, `Attempting`, `Confirmed`, or a bounded explicit
-Governance rejection, transport failure, or malformed response. A response is
-confirmed only when it returns the expected neuron ID. Failed refreshes remain
-visible and retryable, while settlement advances to later recipients without
-duplicating delivery or allowing one Governance outage to hold the entire
-batch.
+canonical SNS neuron staking Account. The recipient is marked refresh-attempted
+before the Stream Manager makes one best-effort Governance `ClaimOrRefresh`
+call. Success requires the expected neuron ID; Governance rejection, transport
+failure, malformed response, or a wrong/missing ID is bounded canister-log
+telemetry and cannot change or block monetary completion. IO has no durable
+refresh-retry queue at launch. A later reward delivery to the same neuron makes
+a new best-effort attempt naturally.
 
 ## Stable state and upgrades
 
@@ -204,9 +198,8 @@ reviewed activation.
 
 The caller map stores one bounded nonce/fingerprint/result record per
 authenticated redemption caller; invalid public probes do not allocate caller
-records. Pending failed neuron refreshes are capped at 1,000 unique 32-byte
-neuron IDs with diagnostics capped at 256 bytes. Cooldowns use single scalar
-timestamps, not per-principal or per-probe collections.
+records. Ancillary refresh failures allocate no stable collection or retry
+state.
 
 One `StreamOperation` slot serializes external monetary effects. Reward
 observation has no external value effect and does not occupy that slot.

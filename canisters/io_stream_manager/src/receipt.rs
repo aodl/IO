@@ -37,80 +37,7 @@ pub struct TwoWeekSettlement { pub backed_io_pool_e8s: u128, pub recipients: Vec
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 #[rustfmt::skip]
-pub struct RewardRecipient { pub sns_neuron_id: Vec<u8>, pub destination: Account, pub io_e8s: u128, pub transfer: Option<TransferAttempt>, pub refresh_status: NeuronRefreshStatus }
-
-pub const MAX_REFRESH_DIAGNOSTIC_BYTES: usize = 256;
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum NeuronRefreshStatus {
-    NotAttempted,
-    Attempting { attempted_at_nanos: u64 },
-    Confirmed,
-    GovernanceRejected { diagnostic: String },
-    TransportFailure { diagnostic: String },
-    MalformedResponse { diagnostic: String },
-}
-
-impl NeuronRefreshStatus {
-    pub fn is_failure(&self) -> bool {
-        matches!(
-            self,
-            Self::GovernanceRejected { .. }
-                | Self::TransportFailure { .. }
-                | Self::MalformedResponse { .. }
-        )
-    }
-
-    pub fn validate(&self) -> Result<(), String> {
-        let diagnostic = match self {
-            Self::GovernanceRejected { diagnostic }
-            | Self::TransportFailure { diagnostic }
-            | Self::MalformedResponse { diagnostic } => Some(diagnostic),
-            Self::Attempting { attempted_at_nanos } if *attempted_at_nanos == 0 => {
-                return Err("refresh attempt timestamp must be nonzero".into())
-            }
-            _ => None,
-        };
-        if diagnostic
-            .is_some_and(|value| value.is_empty() || value.len() > MAX_REFRESH_DIAGNOSTIC_BYTES)
-        {
-            return Err("refresh diagnostic is empty or exceeds its byte bound".into());
-        }
-        Ok(())
-    }
-
-    pub(crate) fn from_claim_result(
-        result: Result<(), io_sns_reward_boundary::ClaimOrRefreshError>,
-    ) -> Self {
-        use io_sns_reward_boundary::ClaimOrRefreshError;
-        fn bounded(mut value: String) -> String {
-            if value.len() > MAX_REFRESH_DIAGNOSTIC_BYTES {
-                let mut end = MAX_REFRESH_DIAGNOSTIC_BYTES;
-                while !value.is_char_boundary(end) {
-                    end -= 1;
-                }
-                value.truncate(end);
-            }
-            value
-        }
-        match result {
-            Ok(()) => Self::Confirmed,
-            Err(ClaimOrRefreshError::Governance(value)) => Self::GovernanceRejected {
-                diagnostic: bounded(value),
-            },
-            Err(ClaimOrRefreshError::Transport(value)) => Self::TransportFailure {
-                diagnostic: bounded(value),
-            },
-            Err(ClaimOrRefreshError::Malformed(value)) => Self::MalformedResponse {
-                diagnostic: bounded(value),
-            },
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct PendingNeuronRefresh { pub sns_neuron_id: Vec<u8>, pub status: NeuronRefreshStatus }
+pub struct RewardRecipient { pub sns_neuron_id: Vec<u8>, pub destination: Account, pub io_e8s: u128, pub transfer: Option<TransferAttempt>, pub refresh_attempted: bool }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 #[rustfmt::skip]
@@ -1089,35 +1016,5 @@ mod tests {
         let retry = transfer.clone();
         assert_eq!(retry.intent, transfer.intent);
         assert_eq!(retry.fingerprint, transfer.fingerprint);
-    }
-
-    #[test]
-    fn claim_or_refresh_outcomes_are_typed_and_bounded() {
-        use io_sns_reward_boundary::ClaimOrRefreshError;
-        assert_eq!(
-            NeuronRefreshStatus::from_claim_result(Ok(())),
-            NeuronRefreshStatus::Confirmed
-        );
-        let status = NeuronRefreshStatus::from_claim_result(Err(ClaimOrRefreshError::Transport(
-            "x".repeat(1_000),
-        )));
-        assert!(matches!(
-            &status,
-            NeuronRefreshStatus::TransportFailure { diagnostic }
-                if diagnostic.len() == MAX_REFRESH_DIAGNOSTIC_BYTES
-        ));
-        assert_eq!(status.validate(), Ok(()));
-        assert!(matches!(
-            NeuronRefreshStatus::from_claim_result(Err(ClaimOrRefreshError::Governance(
-                "rejected".into()
-            ))),
-            NeuronRefreshStatus::GovernanceRejected { .. }
-        ));
-        assert!(matches!(
-            NeuronRefreshStatus::from_claim_result(Err(ClaimOrRefreshError::Malformed(
-                "bad".into()
-            ))),
-            NeuronRefreshStatus::MalformedResponse { .. }
-        ));
     }
 }
