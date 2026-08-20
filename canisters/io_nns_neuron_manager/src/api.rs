@@ -25,16 +25,20 @@ pub enum ApiError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct NotifyJupiterDepositArgs { pub block_index: u128 }
+pub struct NotifyJupiterDepositArgs {
+    pub block_index: u128,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct PrepareTwoWeekMaturityArgs { pub entitlement_batch_generation: u64, pub target_e8s: u128 }
+pub struct PrepareTwoWeekMaturityArgs {
+    pub entitlement_batch_generation: u64,
+    pub target_e8s: u128,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct ReconcileTwoWeekBackingReadinessArgs { pub target_e8s: u128 }
+pub struct ReconcileTwoWeekBackingReadinessArgs {
+    pub target_e8s: u128,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum JupiterProgress {
@@ -85,8 +89,16 @@ pub enum NnsProgress {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct Status { pub lifecycle: Lifecycle, pub active_operation: Option<String>, pub two_year_maturity_baseline_reconciled: bool, pub two_week_maturity_baseline_reconciled: bool, pub latest_started_two_week_generation: u64, pub latest_completed_two_week_generation: u64, pub latest_two_week_target: Option<TwoWeekTarget>, pub unwinding_child_principal_e8s: u128 }
+pub struct Status {
+    pub lifecycle: Lifecycle,
+    pub active_operation: Option<String>,
+    pub two_year_maturity_baseline_reconciled: bool,
+    pub two_week_maturity_baseline_reconciled: bool,
+    pub latest_started_two_week_generation: u64,
+    pub latest_completed_two_week_generation: u64,
+    pub latest_two_week_target: Option<TwoWeekTarget>,
+    pub unwinding_child_principal_e8s: u128,
+}
 
 pub(crate) fn ready() -> Result<crate::state::NnsStateV1, ApiError> {
     let state = state::read();

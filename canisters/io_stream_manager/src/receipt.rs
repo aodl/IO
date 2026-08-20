@@ -24,28 +24,54 @@ pub enum ReceiptPhase {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct ReceiptContext { pub request: PrepareLiquidReceiptArgs, pub request_fingerprint: Vec<u8>, pub source: Account, pub permit: LiquidReceiptPermit, pub backing_snapshot: BackingSnapshot }
+pub struct ReceiptContext {
+    pub request: PrepareLiquidReceiptArgs,
+    pub request_fingerprint: Vec<u8>,
+    pub source: Account,
+    pub permit: LiquidReceiptPermit,
+    pub backing_snapshot: BackingSnapshot,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct JupiterSettlement { pub backed_io_e8s: u128, pub transfer: TransferAttempt }
+pub struct JupiterSettlement {
+    pub backed_io_e8s: u128,
+    pub transfer: TransferAttempt,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct TwoWeekSettlement { pub backed_io_pool_e8s: u128, pub recipients: Vec<RewardRecipient>, pub recipient_index: u32, pub distributed_io_e8s: u128, pub forfeited_io_e8s: u128, pub rounding_dust_io_e8s: u128 }
+pub struct TwoWeekSettlement {
+    pub backed_io_pool_e8s: u128,
+    pub recipients: Vec<RewardRecipient>,
+    pub recipient_index: u32,
+    pub distributed_io_e8s: u128,
+    pub forfeited_io_e8s: u128,
+    pub rounding_dust_io_e8s: u128,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct RewardRecipient { pub sns_neuron_id: Vec<u8>, pub destination: Account, pub io_e8s: u128, pub transfer: Option<TransferAttempt>, pub refresh_attempted: bool }
+pub struct RewardRecipient {
+    pub sns_neuron_id: Vec<u8>,
+    pub destination: Account,
+    pub io_e8s: u128,
+    pub transfer: Option<TransferAttempt>,
+    pub refresh_attempted: bool,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct JupiterReceiptOperation { pub context: ReceiptContext, pub phase: ReceiptPhase, pub receipt_block: Option<u128>, pub settlement: Option<JupiterSettlement> }
+pub struct JupiterReceiptOperation {
+    pub context: ReceiptContext,
+    pub phase: ReceiptPhase,
+    pub receipt_block: Option<u128>,
+    pub settlement: Option<JupiterSettlement>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct TwoWeekReceiptOperation { pub context: ReceiptContext, pub phase: ReceiptPhase, pub receipt_block: Option<u128>, pub settlement: Option<TwoWeekSettlement> }
+pub struct TwoWeekReceiptOperation {
+    pub context: ReceiptContext,
+    pub phase: ReceiptPhase,
+    pub receipt_block: Option<u128>,
+    pub settlement: Option<TwoWeekSettlement>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum LiquidReceiptOperation {
@@ -54,8 +80,14 @@ pub enum LiquidReceiptOperation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct LastCompletedReceipt { pub request: PrepareLiquidReceiptArgs, pub request_fingerprint: Vec<u8>, pub permit: LiquidReceiptPermit, pub backing_snapshot: BackingSnapshot, pub receipt_block: u128, pub result: CompletedReceiptResult }
+pub struct LastCompletedReceipt {
+    pub request: PrepareLiquidReceiptArgs,
+    pub request_fingerprint: Vec<u8>,
+    pub permit: LiquidReceiptPermit,
+    pub backing_snapshot: BackingSnapshot,
+    pub receipt_block: u128,
+    pub result: CompletedReceiptResult,
+}
 
 impl ReceiptContext {
     pub(crate) fn validate(&self, config: &StreamConfig) -> Result<(), String> {

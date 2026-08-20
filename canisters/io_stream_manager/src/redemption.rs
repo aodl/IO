@@ -7,8 +7,15 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct RedeemArgs { pub from_subaccount: Option<Vec<u8>>, pub io_amount_e8s: u128, pub min_icp_out_e8s: u128, pub max_io_fee_e8s: u128, pub max_icp_fee_e8s: u128, pub expires_at_nanos: u64, pub nonce: u64 }
+pub struct RedeemArgs {
+    pub from_subaccount: Option<Vec<u8>>,
+    pub io_amount_e8s: u128,
+    pub min_icp_out_e8s: u128,
+    pub max_io_fee_e8s: u128,
+    pub max_icp_fee_e8s: u128,
+    pub expires_at_nanos: u64,
+    pub nonce: u64,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum RedemptionPhase {
@@ -23,8 +30,15 @@ pub enum RedemptionPhase {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct CanonicalRedeemRequestV1 { pub effective_subaccount: [u8; 32], pub io_amount_e8s: u128, pub min_icp_out_e8s: u128, pub max_io_fee_e8s: u128, pub max_icp_fee_e8s: u128, pub expires_at_nanos: u64, pub nonce: u64 }
+pub struct CanonicalRedeemRequestV1 {
+    pub effective_subaccount: [u8; 32],
+    pub io_amount_e8s: u128,
+    pub min_icp_out_e8s: u128,
+    pub max_io_fee_e8s: u128,
+    pub max_icp_fee_e8s: u128,
+    pub expires_at_nanos: u64,
+    pub nonce: u64,
+}
 
 impl CanonicalRedeemRequestV1 {
     pub fn from_args(args: &RedeemArgs) -> Result<Self, String> {
@@ -56,8 +70,15 @@ impl CanonicalRedeemRequestV1 {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct RedemptionPreparation { pub sequence: OperationSequence, pub captured_control_epoch: u64, pub request_fingerprint: Vec<u8>, pub request: CanonicalRedeemRequestV1, pub caller: Principal, pub account: Account, pub prepared_at_nanos: u64 }
+pub struct RedemptionPreparation {
+    pub sequence: OperationSequence,
+    pub captured_control_epoch: u64,
+    pub request_fingerprint: Vec<u8>,
+    pub request: CanonicalRedeemRequestV1,
+    pub caller: Principal,
+    pub account: Account,
+    pub prepared_at_nanos: u64,
+}
 
 impl RedemptionPreparation {
     pub fn validate(&self) -> Result<(), String> {
@@ -83,12 +104,31 @@ impl RedemptionPreparation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct CanonicalRedemptionSnapshot { pub total_supply_e8s: u128, pub reserve_io_e8s: u128, pub excluded_io_balances: Vec<(Account, u128)>, pub liquid_icp_e8s: u128, pub io_fee_e8s: u128, pub icp_fee_e8s: u128 }
+pub struct CanonicalRedemptionSnapshot {
+    pub total_supply_e8s: u128,
+    pub reserve_io_e8s: u128,
+    pub excluded_io_balances: Vec<(Account, u128)>,
+    pub liquid_icp_e8s: u128,
+    pub io_fee_e8s: u128,
+    pub icp_fee_e8s: u128,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct RedemptionOperation { pub sequence: OperationSequence, pub request_fingerprint: Vec<u8>, pub caller: Principal, pub nonce: u64, pub account: Account, pub io_amount_e8s: u128, pub gross_icp_e8s: u128, pub net_icp_e8s: u128, pub snapshot: CanonicalRedemptionSnapshot, pub io_pull: TransferAttempt, pub icp_payout: Option<TransferAttempt>, pub completion_result: Option<RedemptionResult>, pub phase: RedemptionPhase }
+pub struct RedemptionOperation {
+    pub sequence: OperationSequence,
+    pub request_fingerprint: Vec<u8>,
+    pub caller: Principal,
+    pub nonce: u64,
+    pub account: Account,
+    pub io_amount_e8s: u128,
+    pub gross_icp_e8s: u128,
+    pub net_icp_e8s: u128,
+    pub snapshot: CanonicalRedemptionSnapshot,
+    pub io_pull: TransferAttempt,
+    pub icp_payout: Option<TransferAttempt>,
+    pub completion_result: Option<RedemptionResult>,
+    pub phase: RedemptionPhase,
+}
 
 impl RedemptionOperation {
     pub fn validate(&self, config: &StreamConfig) -> Result<(), String> {

@@ -8,9 +8,31 @@ pub use io_accounts::Account;
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
 
+pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 1;
+
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct NnsConfig { pub sns_governance: Principal, pub stream_manager: Principal, pub jupiter: Principal, pub icp_ledger: Principal, pub nns_governance: Principal, pub two_year_neuron_id: u64, pub two_week_neuron_id: u64, pub jupiter_account: Account, pub jupiter_staging: Account, pub two_week_maturity_staging: Account, pub stream_liquid_account: Account, pub expected_io_fee_e8s: u128, pub expected_icp_fee_e8s: u128, pub jupiter_fee_float_e8s: u128, pub two_week_fee_float_e8s: u128, pub jupiter_activation_block_floor: u128, pub seeded_two_year_principal_e8s: u128, pub seeded_two_week_principal_e8s: u128, pub transfer_retry_delay_nanos: u64, pub ledger_deduplication_window_nanos: u64 }
+pub struct NnsConfig {
+    pub sns_governance: Principal,
+    pub stream_manager: Principal,
+    pub jupiter: Principal,
+    pub icp_ledger: Principal,
+    pub nns_governance: Principal,
+    pub two_year_neuron_id: u64,
+    pub two_week_neuron_id: u64,
+    pub jupiter_account: Account,
+    pub jupiter_staging: Account,
+    pub two_week_maturity_staging: Account,
+    pub stream_liquid_account: Account,
+    pub expected_io_fee_e8s: u128,
+    pub expected_icp_fee_e8s: u128,
+    pub jupiter_fee_float_e8s: u128,
+    pub two_week_fee_float_e8s: u128,
+    pub jupiter_activation_block_floor: u128,
+    pub seeded_two_year_principal_e8s: u128,
+    pub seeded_two_week_principal_e8s: u128,
+    pub transfer_retry_delay_nanos: u64,
+    pub ledger_deduplication_window_nanos: u64,
+}
 
 impl NnsConfig {
     pub const MAX_STAGING_FEE_FLOAT_E8S: u128 = 100_000_000;
@@ -115,14 +137,32 @@ pub enum NnsOperation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct TwoWeekTarget { pub target_e8s: u128, pub status: TwoWeekTargetStatus }
+pub struct TwoWeekTarget {
+    pub target_e8s: u128,
+    pub status: TwoWeekTargetStatus,
+}
 
 pub use io_receipt_types::BackingTargetStatus as TwoWeekTargetStatus;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct NnsStateV1 { pub config: NnsConfig, pub lifecycle: Lifecycle, pub active_operation: Option<NnsOperation>, pub latest_two_week_target: Option<TwoWeekTarget>, pub two_year_maturity_baseline_reconciled: bool, pub two_week_maturity_baseline_reconciled: bool, pub latest_started_two_week_generation: u64, pub latest_completed_two_week_generation: u64, pub pending_two_year_maturity: Option<PendingMaturityDisbursement>, pub pending_two_week_maturity: Option<PendingMaturityDisbursement>, pub pending_unwind: Option<UnwindOperation>, pub last_two_year_maturity: Option<CompletedMaturity>, pub last_two_week_maturity: Option<CompletedMaturity>, pub next_operation_sequence: u64, pub control_epoch: u64 }
+pub struct NnsStateV1 {
+    pub launch_schema_marker: u8,
+    pub config: NnsConfig,
+    pub lifecycle: Lifecycle,
+    pub active_operation: Option<NnsOperation>,
+    pub latest_two_week_target: Option<TwoWeekTarget>,
+    pub two_year_maturity_baseline_reconciled: bool,
+    pub two_week_maturity_baseline_reconciled: bool,
+    pub latest_started_two_week_generation: u64,
+    pub latest_completed_two_week_generation: u64,
+    pub pending_two_year_maturity: Option<PendingMaturityDisbursement>,
+    pub pending_two_week_maturity: Option<PendingMaturityDisbursement>,
+    pub pending_unwind: Option<UnwindOperation>,
+    pub last_two_year_maturity: Option<CompletedMaturity>,
+    pub last_two_week_maturity: Option<CompletedMaturity>,
+    pub next_operation_sequence: u64,
+    pub control_epoch: u64,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum StableNnsState {
@@ -137,6 +177,7 @@ impl NnsStateV1 {
             subaccount: None,
         };
         Self {
+            launch_schema_marker: LAUNCH_SCHEMA_MARKER,
             config: NnsConfig {
                 sns_governance: principal,
                 stream_manager: principal,
@@ -184,6 +225,9 @@ impl NnsStateV1 {
 
 impl NnsStateV1 {
     pub fn validate(&self, canister_self: Principal) -> Result<(), String> {
+        if self.launch_schema_marker != LAUNCH_SCHEMA_MARKER {
+            return Err("invalid NNS launch schema marker".into());
+        }
         self.config.validate(canister_self)?;
         if (self.pending_two_year_maturity.is_some()
             || self.last_two_year_maturity.is_some()
@@ -506,33 +550,18 @@ mod tests {
     }
 
     #[derive(candid::CandidType)]
-    struct PreviousNnsConfigV1 {
-        sns_governance: Principal,
-        stream_manager: Principal,
-        jupiter: Principal,
-        icp_ledger: Principal,
-        nns_governance: Principal,
-        two_year_neuron_id: u64,
-        two_week_neuron_id: u64,
-        jupiter_account: Account,
-        jupiter_staging: Account,
-        two_week_maturity_staging: Account,
-        stream_liquid_account: Account,
-        expected_io_fee_e8s: u128,
-        expected_icp_fee_e8s: u128,
-        jupiter_fee_float_e8s: u128,
-        two_week_fee_float_e8s: u128,
-        seeded_two_week_principal_e8s: u128,
-        transfer_retry_delay_nanos: u64,
-        ledger_deduplication_window_nanos: u64,
+    struct CheckpointJupiterLookupLease {
+        block_index: u128,
+        started_at_nanos: u64,
     }
 
     #[derive(candid::CandidType)]
-    struct PreviousNnsStateV1 {
-        config: PreviousNnsConfigV1,
+    struct CheckpointNnsStateV1 {
+        config: NnsConfig,
         lifecycle: Lifecycle,
         active_operation: Option<NnsOperation>,
         latest_two_week_target: Option<TwoWeekTarget>,
+        two_year_maturity_baseline_reconciled: bool,
         two_week_maturity_baseline_reconciled: bool,
         latest_started_two_week_generation: u64,
         latest_completed_two_week_generation: u64,
@@ -543,11 +572,14 @@ mod tests {
         last_two_week_maturity: Option<CompletedMaturity>,
         next_operation_sequence: u64,
         control_epoch: u64,
+        last_passive_reconciliation_attempt_nanos: Option<u64>,
+        last_public_jupiter_lookup_attempt_nanos: Option<u64>,
+        jupiter_lookup_lease: Option<CheckpointJupiterLookupLease>,
     }
 
     #[derive(candid::CandidType)]
-    enum PreviousStableNnsState {
-        V1(PreviousNnsStateV1),
+    enum CheckpointStableNnsState {
+        V1(CheckpointNnsStateV1),
     }
 
     fn principal(value: u8) -> Principal {
@@ -565,6 +597,7 @@ mod tests {
         (
             canister_self,
             NnsStateV1 {
+                launch_schema_marker: LAUNCH_SCHEMA_MARKER,
                 config: NnsConfig {
                     sns_governance: principal(4),
                     stream_manager: stream,
@@ -955,34 +988,27 @@ mod tests {
     #[test]
     fn strict_launch_v1_rejects_corrupt_and_future_state() {
         assert!(candid::decode_one::<StableNnsState>(b"not candid").is_err());
-        let (_, state) = valid_state();
+        let (canister_self, state) = valid_state();
+        let current = candid::encode_one(StableNnsState::V1(state.clone())).unwrap();
+        let decoded = candid::decode_one::<StableNnsState>(&current).unwrap();
+        assert_eq!(decoded, StableNnsState::V1(state.clone()));
+
+        let mut bad_marker = state.clone();
+        bad_marker.launch_schema_marker = LAUNCH_SCHEMA_MARKER + 1;
+        assert!(bad_marker
+            .validate(canister_self)
+            .unwrap_err()
+            .contains("launch schema marker"));
+
         let future = candid::encode_one(FutureStableNnsState::V2(state.clone())).unwrap();
         assert!(candid::decode_one::<StableNnsState>(&future).is_err());
-        let config = state.config;
-        let previous = candid::encode_one(PreviousStableNnsState::V1(PreviousNnsStateV1 {
-            config: PreviousNnsConfigV1 {
-                sns_governance: config.sns_governance,
-                stream_manager: config.stream_manager,
-                jupiter: config.jupiter,
-                icp_ledger: config.icp_ledger,
-                nns_governance: config.nns_governance,
-                two_year_neuron_id: config.two_year_neuron_id,
-                two_week_neuron_id: config.two_week_neuron_id,
-                jupiter_account: config.jupiter_account,
-                jupiter_staging: config.jupiter_staging,
-                two_week_maturity_staging: config.two_week_maturity_staging,
-                stream_liquid_account: config.stream_liquid_account,
-                expected_io_fee_e8s: config.expected_io_fee_e8s,
-                expected_icp_fee_e8s: config.expected_icp_fee_e8s,
-                jupiter_fee_float_e8s: config.jupiter_fee_float_e8s,
-                two_week_fee_float_e8s: config.two_week_fee_float_e8s,
-                seeded_two_week_principal_e8s: config.seeded_two_week_principal_e8s,
-                transfer_retry_delay_nanos: config.transfer_retry_delay_nanos,
-                ledger_deduplication_window_nanos: config.ledger_deduplication_window_nanos,
-            },
+
+        let checkpoint = candid::encode_one(CheckpointStableNnsState::V1(CheckpointNnsStateV1 {
+            config: state.config,
             lifecycle: state.lifecycle,
             active_operation: state.active_operation,
             latest_two_week_target: state.latest_two_week_target,
+            two_year_maturity_baseline_reconciled: state.two_year_maturity_baseline_reconciled,
             two_week_maturity_baseline_reconciled: state.two_week_maturity_baseline_reconciled,
             latest_started_two_week_generation: state.latest_started_two_week_generation,
             latest_completed_two_week_generation: state.latest_completed_two_week_generation,
@@ -993,8 +1019,14 @@ mod tests {
             last_two_week_maturity: state.last_two_week_maturity,
             next_operation_sequence: state.next_operation_sequence,
             control_epoch: state.control_epoch,
+            last_passive_reconciliation_attempt_nanos: Some(1),
+            last_public_jupiter_lookup_attempt_nanos: Some(2),
+            jupiter_lookup_lease: Some(CheckpointJupiterLookupLease {
+                block_index: 3,
+                started_at_nanos: 4,
+            }),
         }))
         .unwrap();
-        assert!(candid::decode_one::<StableNnsState>(&previous).is_err());
+        assert!(candid::decode_one::<StableNnsState>(&checkpoint).is_err());
     }
 }

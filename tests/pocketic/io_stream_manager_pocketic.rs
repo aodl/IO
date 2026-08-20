@@ -479,6 +479,83 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
     }
     assert!(!query::<Status>(&pic, stream, "get_status").reward_work_due);
 
+    let transport_event: Result<(), String> = update(
+        &pic,
+        governance,
+        Principal::anonymous(),
+        "debug_set_latest_reward_event",
+        LatestRewardEventFixture {
+            round: 3,
+            rounds_since_last_distribution: 1,
+            end_timestamp_seconds: baseline_end + 172_800,
+            settled_proposal_ids: vec![2],
+            neuron_reward_shares: (1_u64..=6)
+                .map(|id| (id, SnsUint128 { high: 0, low: 1 }))
+                .collect(),
+        },
+    );
+    transport_event.unwrap();
+    let _: () = update(
+        &pic,
+        governance,
+        Principal::anonymous(),
+        "debug_set_available",
+        false,
+    );
+    let governance_before_transport: GovernanceCallCounters =
+        query(&pic, governance, "debug_get_call_counters");
+    let root_before_transport: u64 = query(&pic, root, "debug_get_summary_call_count");
+    pic.advance_time(Duration::from_secs(86_701));
+    for _ in 0..3 {
+        pic.tick();
+    }
+    let retrying = query::<Status>(&pic, stream, "get_status");
+    assert!(!retrying.reward_work_due);
+    assert!(!retrying.reward_processing_paused);
+    let governance_after_transport: GovernanceCallCounters =
+        query(&pic, governance, "debug_get_call_counters");
+    let root_after_transport: u64 = query(&pic, root, "debug_get_summary_call_count");
+    assert!(
+        governance_after_transport.latest_reward_event
+            > governance_before_transport.latest_reward_event
+    );
+    assert!(root_after_transport > root_before_transport);
+    for _ in 0..3 {
+        let retry_too_early: Result<RewardEventObservation, ApiError> = update(
+            &pic,
+            stream,
+            Principal::anonymous(),
+            "resume_reward_work",
+            (),
+        );
+        assert!(
+            matches!(retry_too_early, Err(ApiError::Pending(message)) if message.contains("not due"))
+        );
+    }
+    assert_eq!(
+        query::<GovernanceCallCounters>(&pic, governance, "debug_get_call_counters"),
+        governance_after_transport
+    );
+    assert_eq!(
+        query::<u64>(&pic, root, "debug_get_summary_call_count"),
+        root_after_transport
+    );
+    let _: () = update(
+        &pic,
+        governance,
+        Principal::anonymous(),
+        "debug_set_available",
+        true,
+    );
+    pic.advance_time(Duration::from_secs(61));
+    for _ in 0..3 {
+        pic.tick();
+    }
+    let recovered = query::<Status>(&pic, stream, "get_status");
+    assert_eq!(recovered.latest_processed_reward_event.unwrap().round, 3);
+    assert!(!recovered.reward_work_due);
+    assert!(!recovered.reward_processing_paused);
+
     let _: () = update(
         &pic,
         nns,
@@ -624,6 +701,64 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
     assert!(reward_balances
         .iter()
         .all(|balance| *balance == reward_balances[0]));
+
+    let invalid_event: Result<(), String> = update(
+        &pic,
+        governance,
+        Principal::anonymous(),
+        "debug_set_latest_reward_event",
+        LatestRewardEventFixture {
+            round: 2,
+            rounds_since_last_distribution: 1,
+            end_timestamp_seconds: baseline_end + 259_200,
+            settled_proposal_ids: vec![3],
+            neuron_reward_shares: Vec::new(),
+        },
+    );
+    invalid_event.unwrap();
+    let governance_before_invalid: GovernanceCallCounters =
+        query(&pic, governance, "debug_get_call_counters");
+    let root_before_invalid: u64 = query(&pic, root, "debug_get_summary_call_count");
+    let ledger_before_invalid: LedgerCallCounters =
+        query(&pic, io_ledger, "debug_get_call_counters");
+    pic.advance_time(Duration::from_secs(86_701));
+    for _ in 0..3 {
+        pic.tick();
+    }
+    let invalid = query::<Status>(&pic, stream, "get_status");
+    assert!(invalid.reward_processing_paused);
+    assert!(invalid.operation_kind.is_none());
+    assert!(invalid.pending_entitlement_batch_eligible_credit.is_none());
+    assert_eq!(
+        query::<LedgerCallCounters>(&pic, io_ledger, "debug_get_call_counters"),
+        ledger_before_invalid
+    );
+    let governance_after_invalid: GovernanceCallCounters =
+        query(&pic, governance, "debug_get_call_counters");
+    let root_after_invalid: u64 = query(&pic, root, "debug_get_summary_call_count");
+    assert!(
+        governance_after_invalid.latest_reward_event
+            > governance_before_invalid.latest_reward_event
+    );
+    assert!(root_after_invalid > root_before_invalid);
+    for _ in 0..3 {
+        let paused: Result<RewardEventObservation, ApiError> = update(
+            &pic,
+            stream,
+            Principal::anonymous(),
+            "resume_reward_work",
+            (),
+        );
+        assert!(matches!(paused, Err(ApiError::Invalid(message)) if message.contains("paused")));
+    }
+    assert_eq!(
+        query::<GovernanceCallCounters>(&pic, governance, "debug_get_call_counters"),
+        governance_after_invalid
+    );
+    assert_eq!(
+        query::<u64>(&pic, root, "debug_get_summary_call_count"),
+        root_after_invalid
+    );
 
     pic.upgrade_canister(
         stream,

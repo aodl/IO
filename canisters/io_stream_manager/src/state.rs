@@ -176,8 +176,11 @@ pub enum LiquidReceiptStreamOperation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct RewardEntitlementEntry { pub sns_neuron_id: Vec<u8>, pub destination: Account, pub accumulated_eligible_credit: u128 }
+pub struct RewardEntitlementEntry {
+    pub sns_neuron_id: Vec<u8>,
+    pub destination: Account,
+    pub accumulated_eligible_credit: u128,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum RewardEventClassification {
@@ -188,20 +191,45 @@ pub enum RewardEventClassification {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct RewardEventCredit { pub sns_neuron_id: Vec<u8>, pub destination: Account, pub event_credit: u128 }
+pub struct RewardEventCredit {
+    pub sns_neuron_id: Vec<u8>,
+    pub destination: Account,
+    pub event_credit: u128,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct RewardEventObservation { pub event: RewardEventId, pub proposal_count: u64, pub classification: RewardEventClassification, pub credits: Vec<RewardEventCredit>, pub policy_credit: u128, pub eligible_credit_total: u128, pub observed_at_nanos: u64 }
+pub struct RewardEventObservation {
+    pub event: RewardEventId,
+    pub proposal_count: u64,
+    pub classification: RewardEventClassification,
+    pub credits: Vec<RewardEventCredit>,
+    pub policy_credit: u128,
+    pub eligible_credit_total: u128,
+    pub observed_at_nanos: u64,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct SkippedRewardEvent { pub previous_event: Option<RewardEventId>, pub observed_event: RewardEventId, pub ambiguous_event_count: u64, pub rounds_since_last_distribution: u64, pub observed_at_nanos: u64 }
+pub struct SkippedRewardEvent {
+    pub previous_event: Option<RewardEventId>,
+    pub observed_event: RewardEventId,
+    pub ambiguous_event_count: u64,
+    pub rounds_since_last_distribution: u64,
+    pub observed_at_nanos: u64,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct RewardEntitlementAccumulator { pub last_processed_event: Option<RewardEventId>, pub entries: Vec<RewardEntitlementEntry>, pub accumulated_policy_credit: u128, pub processed_event_count: u64, pub missed_event_count: u64, pub reward_work_due: bool, pub reward_processing_paused: bool, pub latest_observation: Option<RewardEventObservation>, pub latest_skipped_event: Option<SkippedRewardEvent>, pub governance_parameters_fresh: bool }
+pub struct RewardEntitlementAccumulator {
+    pub last_processed_event: Option<RewardEventId>,
+    pub entries: Vec<RewardEntitlementEntry>,
+    pub accumulated_policy_credit: u128,
+    pub processed_event_count: u64,
+    pub missed_event_count: u64,
+    pub reward_work_due: bool,
+    pub reward_processing_paused: bool,
+    pub latest_observation: Option<RewardEventObservation>,
+    pub latest_skipped_event: Option<SkippedRewardEvent>,
+    pub governance_parameters_fresh: bool,
+}
 
 impl Default for RewardEntitlementAccumulator {
     fn default() -> Self {
@@ -221,16 +249,37 @@ impl Default for RewardEntitlementAccumulator {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct PendingEntitlementBatch { pub generation: u64, pub frozen_at_timestamp_seconds: u64, pub through_event: RewardEventId, pub target_icp_e8s: u128, pub entries: Vec<RewardEntitlementEntry>, pub eligible_credit_total: u128, pub policy_credit_total: u128, pub processed_event_count: u64 }
+pub struct PendingEntitlementBatch {
+    pub generation: u64,
+    pub frozen_at_timestamp_seconds: u64,
+    pub through_event: RewardEventId,
+    pub target_icp_e8s: u128,
+    pub entries: Vec<RewardEntitlementEntry>,
+    pub eligible_credit_total: u128,
+    pub policy_credit_total: u128,
+    pub processed_event_count: u64,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct RewardEventId { pub end_timestamp_seconds: u64, pub round: u64 }
+pub struct RewardEventId {
+    pub end_timestamp_seconds: u64,
+    pub round: u64,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct StreamStateV1 { pub launch_schema_marker: u8, pub config: StreamConfig, pub lifecycle: Lifecycle, pub active_operation: Option<StreamOperation>, pub reward_entitlements: RewardEntitlementAccumulator, pub pending_entitlement_batch: Option<PendingEntitlementBatch>, pub latest_entitlement_batch_generation: u64, pub next_nns_receipt_sequence: u64, pub next_operation_sequence: OperationSequence, pub control_epoch: u64, pub last_completed_receipt: Option<LastCompletedReceipt> }
+pub struct StreamStateV1 {
+    pub launch_schema_marker: u8,
+    pub config: StreamConfig,
+    pub lifecycle: Lifecycle,
+    pub active_operation: Option<StreamOperation>,
+    pub reward_entitlements: RewardEntitlementAccumulator,
+    pub pending_entitlement_batch: Option<PendingEntitlementBatch>,
+    pub latest_entitlement_batch_generation: u64,
+    pub next_nns_receipt_sequence: u64,
+    pub next_operation_sequence: OperationSequence,
+    pub control_epoch: u64,
+    pub last_completed_receipt: Option<LastCompletedReceipt>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum StableStreamState {
@@ -660,8 +709,25 @@ mod tests {
         V2(StreamStateV1),
     }
 
+    #[allow(dead_code)]
     #[derive(candid::CandidType)]
-    struct PreviousStreamStateV1 {
+    enum CheckpointNeuronRefreshStatus {
+        NotAttempted,
+        Attempting { attempted_at_nanos: u64 },
+        Confirmed,
+        GovernanceRejected { diagnostic: String },
+        TransportFailure { diagnostic: String },
+        MalformedResponse { diagnostic: String },
+    }
+
+    #[derive(candid::CandidType)]
+    struct CheckpointPendingNeuronRefresh {
+        sns_neuron_id: Vec<u8>,
+        status: CheckpointNeuronRefreshStatus,
+    }
+
+    #[derive(candid::CandidType)]
+    struct CheckpointStreamStateV1 {
         config: StreamConfig,
         lifecycle: Lifecycle,
         active_operation: Option<StreamOperation>,
@@ -672,11 +738,15 @@ mod tests {
         next_operation_sequence: OperationSequence,
         control_epoch: u64,
         last_completed_receipt: Option<LastCompletedReceipt>,
+        pending_neuron_refreshes: Vec<CheckpointPendingNeuronRefresh>,
+        last_refresh_retry_attempt_nanos: Option<u64>,
+        last_reward_observation_attempt_nanos: Option<u64>,
+        last_reward_backing_attempt_nanos: Option<u64>,
     }
 
     #[derive(candid::CandidType)]
-    enum PreviousStableStreamState {
-        V1(PreviousStreamStateV1),
+    enum CheckpointStableStreamState {
+        V1(CheckpointStreamStateV1),
     }
 
     fn principal(value: u8) -> Principal {
@@ -1095,22 +1165,44 @@ mod tests {
     #[test]
     fn strict_launch_v1_rejects_corrupt_and_future_state() {
         assert!(candid::decode_one::<StableStreamState>(b"not candid").is_err());
-        let (_, state) = valid_state();
+        let (canister_self, state) = valid_state();
+        let current = candid::encode_one(StableStreamState::V1(state.clone())).unwrap();
+        let decoded = candid::decode_one::<StableStreamState>(&current).unwrap();
+        assert_eq!(decoded, StableStreamState::V1(state.clone()));
+
+        let mut bad_marker = state.clone();
+        bad_marker.launch_schema_marker = 2;
+        assert!(bad_marker
+            .validate(canister_self)
+            .unwrap_err()
+            .contains("launch schema marker"));
+
         let future = candid::encode_one(FutureStableStreamState::V2(state.clone())).unwrap();
         assert!(candid::decode_one::<StableStreamState>(&future).is_err());
-        let previous = candid::encode_one(PreviousStableStreamState::V1(PreviousStreamStateV1 {
-            config: state.config,
-            lifecycle: state.lifecycle,
-            active_operation: state.active_operation,
-            reward_entitlements: state.reward_entitlements,
-            pending_entitlement_batch: state.pending_entitlement_batch,
-            latest_entitlement_batch_generation: state.latest_entitlement_batch_generation,
-            next_nns_receipt_sequence: state.next_nns_receipt_sequence,
-            next_operation_sequence: state.next_operation_sequence,
-            control_epoch: state.control_epoch,
-            last_completed_receipt: state.last_completed_receipt,
-        }))
-        .unwrap();
-        assert!(candid::decode_one::<StableStreamState>(&previous).is_err());
+
+        let checkpoint =
+            candid::encode_one(CheckpointStableStreamState::V1(CheckpointStreamStateV1 {
+                config: state.config,
+                lifecycle: state.lifecycle,
+                active_operation: state.active_operation,
+                reward_entitlements: state.reward_entitlements,
+                pending_entitlement_batch: state.pending_entitlement_batch,
+                latest_entitlement_batch_generation: state.latest_entitlement_batch_generation,
+                next_nns_receipt_sequence: state.next_nns_receipt_sequence,
+                next_operation_sequence: state.next_operation_sequence,
+                control_epoch: state.control_epoch,
+                last_completed_receipt: state.last_completed_receipt,
+                pending_neuron_refreshes: vec![CheckpointPendingNeuronRefresh {
+                    sns_neuron_id: vec![1; 32],
+                    status: CheckpointNeuronRefreshStatus::TransportFailure {
+                        diagnostic: "retryable transport failure".into(),
+                    },
+                }],
+                last_refresh_retry_attempt_nanos: Some(1),
+                last_reward_observation_attempt_nanos: Some(2),
+                last_reward_backing_attempt_nanos: Some(3),
+            }))
+            .unwrap();
+        assert!(candid::decode_one::<StableStreamState>(&checkpoint).is_err());
     }
 }

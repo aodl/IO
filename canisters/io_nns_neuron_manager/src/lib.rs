@@ -26,6 +26,7 @@ pub struct InitArgs {
 pub fn init(args: InitArgs) {
     state::initialize(
         NnsStateV1 {
+            launch_schema_marker: state::LAUNCH_SCHEMA_MARKER,
             config: args.config,
             lifecycle: Lifecycle::Paused,
             active_operation: None,

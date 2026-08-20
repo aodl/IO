@@ -5,8 +5,15 @@ use sha2::{Digest, Sha256};
 pub const MAX_MEMO_BYTES: usize = 32;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct NnsTransferIntent { pub ledger: Principal, pub source_subaccount: [u8; 32], pub destination: Account, pub amount_e8s: u128, pub fee_e8s: u128, pub memo: Vec<u8>, pub created_at_time_nanos: u64 }
+pub struct NnsTransferIntent {
+    pub ledger: Principal,
+    pub source_subaccount: [u8; 32],
+    pub destination: Account,
+    pub amount_e8s: u128,
+    pub fee_e8s: u128,
+    pub memo: Vec<u8>,
+    pub created_at_time_nanos: u64,
+}
 
 impl NnsTransferIntent {
     pub fn validate(&self) -> Result<(), String> {
@@ -28,8 +35,27 @@ impl NnsTransferIntent {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub enum TransferState { Prepared, Submitted { epoch: u64, first_submitted_at_nanos: u64, last_submitted_at_nanos: u64 }, Succeeded { block: u128 }, Paused { epoch: u64, first_submitted_at_nanos: u64, last_submitted_at_nanos: u64, classification: TransferOutcomeClassification, reason: String }, Stuck { reason: String } }
+pub enum TransferState {
+    Prepared,
+    Submitted {
+        epoch: u64,
+        first_submitted_at_nanos: u64,
+        last_submitted_at_nanos: u64,
+    },
+    Succeeded {
+        block: u128,
+    },
+    Paused {
+        epoch: u64,
+        first_submitted_at_nanos: u64,
+        last_submitted_at_nanos: u64,
+        classification: TransferOutcomeClassification,
+        reason: String,
+    },
+    Stuck {
+        reason: String,
+    },
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum TransferOutcomeClassification {
@@ -40,8 +66,11 @@ pub enum TransferOutcomeClassification {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub struct NnsTransferAttempt { pub intent: NnsTransferIntent, pub fingerprint: Vec<u8>, pub state: TransferState }
+pub struct NnsTransferAttempt {
+    pub intent: NnsTransferIntent,
+    pub fingerprint: Vec<u8>,
+    pub state: TransferState,
+}
 
 impl NnsTransferAttempt {
     pub fn prepared(intent: NnsTransferIntent) -> Result<Self, String> {

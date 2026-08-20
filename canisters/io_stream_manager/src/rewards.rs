@@ -26,8 +26,14 @@ use io_nns_types::reward_boundary::{self as reward_nns, CallError};
 use io_sns_reward_boundary::claim_or_refresh;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-#[rustfmt::skip]
-pub enum RewardBackingProgress { Pending { reason: reward_nns::BackingNotReadyReason }, MaturityPrepared { generation: u64 } }
+pub enum RewardBackingProgress {
+    Pending {
+        reason: reward_nns::BackingNotReadyReason,
+    },
+    MaturityPrepared {
+        generation: u64,
+    },
+}
 
 fn ensure_reward_observation_due(
     lifecycle: Lifecycle,
@@ -56,18 +62,18 @@ pub async fn observe(now_nanos: u64) -> Result<RewardEventObservation, ApiError>
     )?;
     snapshot.reward_entitlements.reward_work_due = false;
     state::write(snapshot.clone());
-    let result = observe_due(snapshot, now_nanos).await;
-    if matches!(result, Err(ApiError::Pending(_))) {
-        crate::reward_timer::install_retry();
+    let result = observe_due(&snapshot, now_nanos).await;
+    if let Err(error) = &result {
+        handle_observation_error(&snapshot, error);
     }
     result
 }
 
 async fn observe_due(
-    snapshot: crate::state::StreamStateV1,
+    snapshot: &crate::state::StreamStateV1,
     now_nanos: u64,
 ) -> Result<RewardEventObservation, ApiError> {
-    verify_governance(&snapshot).await?;
+    verify_governance(snapshot).await?;
     let before = latest_reward_event(snapshot.config.sns_governance).await?;
     let sequence = classify_sequence(snapshot.reward_entitlements.last_processed_event, &before)?;
     if matches!(sequence, io_sns_reward_boundary::EventSequence::Same) {
@@ -78,7 +84,7 @@ async fn observe_due(
     let neurons = list_all_neurons(snapshot.config.sns_governance).await?;
     let after = latest_reward_event(snapshot.config.sns_governance).await?;
     require_consistent_event(&before, &after)?;
-    verify_governance(&snapshot).await?;
+    verify_governance(snapshot).await?;
     let event = event_id(&before)?;
     let proposal_count = before.settled_proposal_count().map_err(|error| {
         ApiError::Invalid(format!("SNS reward event proposal count failed: {error:?}"))
@@ -130,9 +136,31 @@ async fn observe_due(
         eligible_credit_total,
         observed_at_nanos: now_nanos,
     };
-    commit_observation(&snapshot, observation.clone(), skipped)?;
+    commit_observation(snapshot, observation.clone(), skipped)?;
     crate::reward_timer::install_after(event);
     Ok(observation)
+}
+
+fn handle_observation_error(expected: &crate::state::StreamStateV1, error: &ApiError) {
+    match error {
+        ApiError::Pending(_) | ApiError::Ledger(_) | ApiError::Busy => {
+            crate::reward_timer::install_retry();
+        }
+        ApiError::Invalid(_)
+        | ApiError::Stuck(_)
+        | ApiError::Paused
+        | ApiError::Anonymous
+        | ApiError::Unauthorized
+        | ApiError::WrongNonce { .. }
+        | ApiError::NonceAlreadyUsed => {
+            pause_reward_processing(expected);
+            if !state::read().reward_entitlements.reward_processing_paused {
+                // A concurrent state change made the stale snapshot unsafe to
+                // pause. Re-observe through the existing timer instead.
+                crate::reward_timer::install_retry();
+            }
+        }
+    }
 }
 
 async fn verify_governance(snapshot: &crate::state::StreamStateV1) -> Result<(), ApiError> {

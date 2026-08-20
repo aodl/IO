@@ -12,12 +12,15 @@ pub enum CallError {
 }
 
 #[derive(CandidType)]
-#[rustfmt::skip]
-struct PrepareMaturityArgs { entitlement_batch_generation: u64, target_e8s: u128 }
+struct PrepareMaturityArgs {
+    entitlement_batch_generation: u64,
+    target_e8s: u128,
+}
 
 #[derive(CandidType)]
-#[rustfmt::skip]
-struct ReconcileReadinessArgs { target_e8s: u128 }
+struct ReconcileReadinessArgs {
+    target_e8s: u128,
+}
 
 #[derive(CandidType, Deserialize)]
 enum MaturityProgress {

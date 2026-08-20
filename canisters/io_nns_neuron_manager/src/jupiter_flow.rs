@@ -761,6 +761,7 @@ mod tests {
         (
             principal,
             crate::state::NnsStateV1 {
+                launch_schema_marker: crate::state::LAUNCH_SCHEMA_MARKER,
                 config: crate::state::NnsConfig {
                     sns_governance: Principal::from_slice(&[2; 29]),
                     stream_manager: Principal::from_slice(&[6; 29]),
