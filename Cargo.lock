@@ -1403,12 +1403,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "mock-nns-candidate-actor"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "ic-cdk",
+ "io-governance-types",
+ "io-ledger-types",
+ "serde",
+]
+
+[[package]]
 name = "mock-nns-governance"
 version = "0.1.0"
 dependencies = [
  "candid",
  "ic-cdk",
  "io-receipt-types",
+ "serde",
+]
+
+[[package]]
+name = "mock-nns-xrc"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "ic-cdk",
  "serde",
 ]
 

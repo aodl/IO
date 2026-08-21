@@ -26,6 +26,8 @@ members = [
   "tests/mocks/mock_sns_governance",
   "tests/mocks/mock_sns_root",
   "tests/mocks/mock_jupiter_faucet",
+  "tests/mocks/mock_nns_candidate_actor",
+  "tests/mocks/mock_nns_xrc",
   "tests/e2e_real_canisters",
   "tools/sns_manifest",
   "tools/xtask",

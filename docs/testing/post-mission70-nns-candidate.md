@@ -1,0 +1,114 @@
+# Post-Mission-70 NNS Governance candidate evidence
+
+## Status
+
+This is candidate-only test evidence. It is not IO's active NNS boundary, a
+launch authorization, or proof that pooled claim-backing economics have been
+implemented. The active pins and the separately endowed/eight-year production
+model remain unchanged.
+
+## Official release lineage
+
+NNS proposal 141441 introduced Mission 70. The subsequently executed
+Governance `InstallCode` proposals inspected for this evidence were 141738,
+141771, 141779, 142447, 142679, 142936, 143410, and 143577. Proposal 143577,
+executed on 2026-08-17, remains the latest executed Governance `InstallCode`
+proposal found in the public official proposal metadata through proposal
+143654.
+
+The selected candidate is proposal 143577 at source commit
+`8aa4680e378f3248e7e7b9b8237915aded999bd9`, following
+`3ec5d044f5dc45a93943ec14258891a1c3c272be`. Its official compressed Wasm,
+reproduced raw Wasm, and source Governance DID identities are respectively:
+
+- `b41a5add38d54751d53fb4f0c826b09aaee38e0c5bea632400f1dbaaa11cfd4b`
+- `eaa2da45722d980b25405525873571ab7dad426a93e1d4971f6b555d80906d85`
+- `6e9a397f4bf0adc913980ef6c176e765534617d0ce59d52e7bcc66add2b0cd71`
+
+The compressed proposal artifact was downloaded from the official IC release
+location, decompressed, and checked against those compressed and raw hashes.
+The DID at the pinned source commit matched the DID hash. The candidate lock
+records the exact digest-qualified official build image and the production
+`local+stamped` profile; the Governance test feature was disabled.
+
+## Decisive controlled proofs
+
+`exact_post_m70_upgrade_rewards_fourteen_day_boundary` installs the old
+IO-pinned Governance Wasm and source-shaped NNS state, upgrades it with the
+exact selected production Wasm, and exercises deterministic local XRC history.
+Its serial PocketIC evidence records the following exact run values:
+
+| Observation | Controlled value |
+| --- | --- |
+| Old voting threshold | 15,778,800 seconds |
+| Upgraded voting threshold | 1,209,600 seconds |
+| Exact neuron dissolve delay | 1,209,600 seconds |
+| Below-threshold control | 1,209,599 seconds |
+| Proposal/reward round | Proposal 1 / round 126 |
+| Ordinary maturity before/after | 0 / 6,411,740,158,210,222 e8s |
+| Direct top-up amount / fee / block | 200,000,000 e8s / 10,000 e8s / block 7 |
+| Cached stake before/after | 10,000,000,000,000,000 / 10,000,000,200,000,000 e8s |
+| Split children | 6,670,980,498,903,551,809; 17,951,363,335,400,986,306; 1,238,449,259,371,036,481 |
+| Split gross / credited | 200,010,000 / 200,000,000 e8s |
+| Inherited delay | 1,209,600 seconds for every child |
+| Merge child start / parent stake before/after | 1,631,608,226 / 9,999,999,599,970,000 / 9,999,999,799,960,000 e8s |
+| Disburse/continuing starts and readiness | 1,631,608,226 / 1,631,608,227; readiness 1,632,817,826 / 1,632,817,827 |
+| Early/exact disbursement | At 1,632,817,825, error type 11: `Neuron 17951363335400986306 has NOT been dissolved. It is in state Dissolving`; succeeds at 1,632,817,826 in block 12 |
+| Nominal maturity | 6,411,739,901,727,798 e8s |
+| Finalization delay | 604,800 seconds |
+| Maturity modulation | 0 permyriad under deterministic fixture inputs |
+| Actual Mint / Mint block | 6,411,739,901,727,798 e8s / block 13; spend succeeds in block 14 |
+
+The same run proves the exact neuron receives a ballot, the one-second-below
+control does not, the exact neuron casts a yes vote and receives ordinary
+voting maturity, three children coexist, one stops and merges, another
+disburses at the exact boundary, and the third continues independently. The
+Mint increases the Stream-like staging balance by the exact Mint amount and is
+spendable.
+
+`exact_post_m70_minimum_stake_boundaries` records these controlled boundaries:
+
+- Claiming against 99,999,999 e8s fails with error type 14: `Account does not
+  have enough funds to stake a neuron. Please make sure that account has at
+  least 100000000 e8s (was 99999999 e8s)`.
+- Exactly 100,000,000 e8s creates neuron 17,047,225,741,041,935,755 with that
+  exact cached stake.
+- A source that pays the 10,000-e8s transfer fee separately needs exactly
+  100,010,000 e8s gross to place 100,000,000 e8s in the staking account; the
+  claim creates neuron 6,003,521,757,219,431,476.
+- A 100,009,999-e8s split fails with error type 14 and reports the exact
+  100,010,000-e8s minimum. A 100,010,000-e8s split creates neuron
+  7,051,052,760,892,872,357 with exactly 100,000,000 e8s cached stake.
+- The parent retains 300,010,000 e8s. Attempting to split 200,010,001 e8s,
+  which would leave 99,999,999 e8s, and attempting to split its entire
+  300,010,000 e8s both fail with error type 14 and the minimum-parent-stake
+  explanation.
+
+## Mechanical conclusions
+
+- A separately endowed reward-backing fund is not mechanically required.
+- A direct Stream-owned ICP transfer followed by NNS Manager refresh and
+  cached-stake proof is supported.
+- Candidate A--an actual maturity Mint followed by explicit restaking--is
+  supported.
+- `StakeMaturity` remains distinct staked-maturity state and is not ordinary
+  reusable cached principal.
+- Multiple passive children are mechanically supported.
+- SNS-state detection latency is additional to the 14-day NNS dissolve delay.
+- Exact SNS/NNS unlock alignment is not guaranteed.
+
+These are upstream-mechanics conclusions only; they do not select or implement
+IO's future orchestration or monetary policy.
+
+## Boundary details left unproved
+
+The original investigation left the exact below-minimum creation result and
+the exact minimum valid creation amount unproved; the maintained
+`exact_post_m70_minimum_stake_boundaries` run above closes both gaps. The
+remaining unproved details are only:
+
+- Later reward accrual while a child is dissolving.
+- The final IO child-maturity policy.
+- The eventual independent component-pin design.
+
+Source-supported facts are not classified as controlled-run proof.

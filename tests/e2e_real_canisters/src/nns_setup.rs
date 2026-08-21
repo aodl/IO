@@ -288,8 +288,21 @@ pub fn bootstrap_sns_wasm_with_pocketic_icp_features(
 }
 
 pub fn controlled_pinned_nns(required: bool) -> Result<PocketIc, NnsSetupError> {
+    controlled_pinned_nns_on(
+        required,
+        pocketic_env::new_pic_with_nns_governance_features(),
+    )
+}
+
+pub fn controlled_pinned_nns_with_fiduciary(required: bool) -> Result<PocketIc, NnsSetupError> {
+    controlled_pinned_nns_on(
+        required,
+        pocketic_env::new_pic_with_nns_governance_and_fiduciary_features(),
+    )
+}
+
+fn controlled_pinned_nns_on(required: bool, pic: PocketIc) -> Result<PocketIc, NnsSetupError> {
     let artifacts = maybe_artifacts(required)?;
-    let pic = pocketic_env::new_pic_with_nns_governance_features();
     let root = principal(install_nns_root().canister_id);
     for (plan, key) in [
         (install_nns_governance(), "nns_governance"),
