@@ -31,7 +31,8 @@ P = active pooled two-week NNS principal
 U = pending two-week unwind principal
 T = exact claim backing frozen in an in-transit operation
 K = permanent/max-delay protocol principal, excluded from B
-A = structurally active ordinary staked IO
+A_backing = all structurally active claim-bearing ordinary staked IO
+A_reward = the subset currently eligible for reward allocation
 
 claim_rate = B / C
 ```
@@ -46,11 +47,18 @@ The proposed replacement has no separately endowed reward-backing capital.
 Claim backing is one pool whose physical liquidity and NNS lifecycle states are
 the `L`, `P`, `U` and `T` partitions above.
 
-`C = 0, B = 0` is empty genesis. `C = 0, B > 0` is backing without claims and
-has no claim rate. `C > 0, B = 0` has the defined zero rate. Exclusions greater
-than supply and arithmetic overflow fail closed. `A > C` is representable for
-validation: it can produce a target greater than total backing and an explicit
-remaining-under-target result; it is never silently clamped.
+`B=0, C=0, A_backing=0` is valid empty genesis. `B>0, C=0, A_backing=0` is
+backing without claims and has no normal claim rate or target. `B=0, C>0` is an
+invalid uncovered-claims state. `C=0, A_backing>0` is invalid, as are
+`A_backing>C`, exclusions greater than supply and arithmetic overflow. These
+conditions have distinct typed errors. Every allocation validates both its
+pre-event and post-event canonical observation before calculating a target;
+an invalid observation is never converted into a target or silently clamped.
+
+`A_backing`, not `A_reward`, is used in the backing target. A generation can
+remain structurally active for solvency while reward-ineligible because its
+exit or re-entry proof is incomplete. Reward eligibility is a separate
+prospective policy and never changes historical reward observations.
 
 ## Unified post-event allocation
 
@@ -63,9 +71,9 @@ dA = actual change in structurally active staked IO
 
 B1 = B0 + Q
 C1 = C0 + dC
-A1 = A0 + dA
+A_backing1 = A_backing0 + dA
 
-target1 = floor(A1 * B1 / C1)
+target1 = floor(A_backing1 * B1 / C1)
 pool_need = max(0, target1 - P0)
 to_pool = min(Q, pool_need)
 to_liquid = Q - to_pool
@@ -75,24 +83,26 @@ resulting_over_target = max(0, (P0 + to_pool) - target1)
 ```
 
 `U` and `T` remain in `B` but are not `P`. Allocation does not move them into
-the active pool. The event result contains post-event `B`, `C`, `A`, target,
-both destinations and both residuals.
+the active pool. The event result contains post-event `B`, `C`, `A_backing`,
+target, both destinations and both residuals. Both `A_backing0<=C0` and
+`A_backing1<=C1` are mandatory.
 
 ### Jupiter inflow
 
 Ignoring fees and floors, Jupiter contributes `Q = 60%` of actual source ICP
 to claim backing and releases `dC = Q / pre_event_rate` reserve IO to a liquid
-recipient; `dA = 0`. When the pool starts on target, preserving `B/C` while `A`
-is unchanged preserves the target exactly, so all `Q` remains liquid. Jupiter's
-separate permanent contribution is not a reason to top up the pool.
+recipient; `dA = 0`. When the pool starts on target, preserving `B/C` while
+`A_backing` is unchanged preserves the target exactly, so all `Q` remains
+liquid. Jupiter's separate permanent contribution is not a reason to top up the
+pool.
 
 Examples from the executable model:
 
 - Empty genesis: `Q=60, dC=60` produces `B=C=60`, target zero, all liquid.
-- Rate 1: `B=C=1,000, A=P=250, Q=dC=600` preserves target 250.
-- Rate 2: `B=2,000, C=1,000, A=250, P=500, Q=600, dC=300` preserves target
+- Rate 1: `B=C=1,000, A_backing=P=250, Q=dC=600` preserves target 250.
+- Rate 2: `B=2,000, C=1,000, A_backing=250, P=500, Q=600, dC=300` preserves target
   500.
-- With `B=3, C=2, A=P=1, Q=1`, floor delivery is zero, the rate appreciates,
+- With `B=3, C=2, A_backing=P=1, Q=1`, floor delivery is zero, the rate appreciates,
   and the one-unit target delta goes to the pool. This is rounding, not source
   provenance.
 
@@ -112,8 +122,8 @@ dC = actual_delivered_IO
 dA = actual_delivered_IO
 ```
 
-At `B=C=1,000, A=P=500`, a Mint of 1,000 gives `K += 400` and `Q=600`.
-Delivering 600 IO gives `B=C=1,600`, `A=1,100`, target 1,100 and allocates all
+At `B=C=1,000, A_backing=P=500`, a Mint of 1,000 gives `K += 400` and `Q=600`.
+Delivering 600 IO gives `B=C=1,600`, `A_backing=1,100`, target 1,100 and allocates all
 600 to the pool without diluting the rate. With only 300 IO actually delivered,
 the target-derived result is 484 to the pool and 116 liquid. With no delivery
 because the reward entitlement is fully forfeited, the result is 300 pool and
@@ -137,10 +147,10 @@ dA = 0
 ```
 
 The rate appreciates. If the pool was on target, the pool receives the exact
-target delta, approximately `floor(Q * A / C)`, and the rest remains liquid.
-For `B=C=1,000` and `Q=600`, the tested `A/C` cases are:
+target delta, approximately `floor(Q * A_backing / C)`, and the rest remains liquid.
+For `B=C=1,000` and `Q=600`, the tested `A_backing/C` cases are:
 
-| A/C | Pre-event P | To pool | To liquid |
+| A_backing/C | Pre-event P | To pool | To liquid |
 | ---: | ---: | ---: | ---: |
 | 0% | 0 | 0 | 600 |
 | 25% | 250 | 150 | 450 |
@@ -156,6 +166,32 @@ small values.
 
 Permanent-neuron yield needs no source-provenance attribution. The same target
 rule determines its destination.
+
+### Fee-aware physical claim-leg route
+
+Dynamic allocation is executed through the smallest deterministic physical
+route, not by pretending the destination split is fee-free:
+
+1. The permanent gross leg is debited from staging once and its destination is
+   credited by `permanent_gross - permanent_transfer_fee`.
+2. Evaluate the claim leg with its unavoidable first staging-transfer fee.
+   If the resulting allocation is all liquid, transfer staging to liquid once.
+   If it is all pool, transfer staging to the pooled staking account once.
+3. Only a genuinely mixed result first transfers staging to liquid, then uses
+   ordinary liquid-to-pool reconciliation. Recalculate `B` and the target with
+   the second exact fee before fixing that pool credit.
+4. The second-fee floor can erase the pool remainder or consume the liquid
+   remainder. In those two boundary cases choose the direct one-fee route and
+   expose the at-most-floor residual rather than oscillating between fee-count
+   assumptions.
+
+The executable planner evaluates at most the one-fee and two-fee candidates.
+Its result records the permanent source debit and credit, claim staging debit,
+first claim credit, optional liquid-to-pool source debit, both destination
+credits, exact fees, and post-fee `B`, `K` and target. The selected route's
+reported target is always recalculated using that route's actual fee count.
+Candidate fixtures cover boundaries where changing from one fee to two changes
+the target floor; the planner terminates after at most two evaluations.
 
 ## Conservation
 
@@ -298,14 +334,24 @@ state-dependent subsidy or Policy C's cross-cohort transfer.
 Before freezing a direction-changing operation under Policy A:
 
 ```text
+current_raw_target = floor(A_backing * B / C)
 Bfee = B - exact_total_fee_of_next_operation
-raw_target = floor(A * Bfee / C)
-planned_target = max(raw_target, minimum_parent_principal)
+post_fee_raw_target = floor(A_backing * Bfee / C)
 ```
 
-- Under target: if `planned_target - P <= next_operation_fee`, hold. Otherwise
-  freeze a top-up whose credited amount is that delta and whose source debit is
-  credited amount plus fee.
+- With no parent, `A_backing=0` never creates one. If `current_raw_target` is below the
+  canonical minimum parent principal, return typed
+  `Hold(BelowMinimumStake)` and keep all backing liquid. If the pre-fee raw
+  target meets the minimum, lazily create the parent from liquid. Its
+  planned post-fee target is at least the minimum, and the frozen source debit
+  is exact credited principal plus the transfer fee.
+- With an existing parent, use
+  `planned_target=max(post_fee_raw_target, minimum_parent_principal)`. A later
+  target below minimum therefore retains the minimum parent rather than
+  creating and destroying it across observations.
+- Under target: if `planned_target - P <= next_operation_fee`, return typed
+  `Hold(FeeTolerance)`. Otherwise freeze a top-up whose credited amount is that
+  delta and whose source debit is credited amount plus fee.
 - Over target: hold unless `P - planned_target` is at least the exact minimum
   child gross (`minimum_stake + split_fee`). Otherwise freeze that gross
   unwind, expecting gross minus fee in `U`.
@@ -316,10 +362,10 @@ planned_target = max(raw_target, minimum_parent_principal)
 
 Because the frozen target already includes the operation's fee loss, an exact
 completion lands on that post-fee target rather than causing `top up -> fee ->
-unwind`. Minimum stake is the only additional bounded tolerance. No generic
-hysteresis, cooldown, lease or queue is needed.
+unwind`. Minimum stake and the existing-parent residual are the only additional
+bounded tolerances. No generic hysteresis, cooldown, lease or queue is needed.
 
-## Sticky backing unwind and delayed reward re-entry
+## Bounded passive unwind cohorts and delayed reward re-entry
 
 SNS dissolve cancellation changes reward eligibility and later allocation; it
 does not reverse a committed NNS lifecycle. Before a split intent is submitted,
@@ -329,11 +375,18 @@ into one latest target delta. A cancellation can therefore remove an
 
 Submission of the exact split transfer intent is the commit point. It freezes
 the gross amount from `P` into `T` without charging a fee. Canonical split proof
-moves the credited child principal from `T` into `U` and charges the exact split
-fee once. From the commit point onward, the child completes its 14-day dissolve
-and disburses to `L` even if the SNS neuron cancels dissolve. Cancellation does
-not stop or merge the child and does not associate that child with the SNS
-neuron.
+moves the credited child principal from `T` into `U`, charges the exact split
+fee once, and creates one bounded passive aggregate cohort. A cohort contains
+only its deterministic generation, aggregate principal, lifecycle/proof state,
+and ready-at time. There is no user-to-child ownership map, child ID in a
+per-neuron record, or per-user principal attribution. A per-neuron sticky status
+may reference only the committed generation.
+
+One NNS command remains active at a time, but already-proved cohorts are passive
+and multiple generations may dissolve concurrently. From each commit point its
+child completes the 14-day dissolve relative to that cohort's own start time and
+disburses to global `L`, even if the referenced SNS neuron cancels dissolve.
+Cancellation does not stop or merge a child.
 
 The minimum conceptual states and transitions are:
 
@@ -341,19 +394,26 @@ The minimum conceptual states and transitions are:
 | --- | --- | --- |
 | `ActiveBacked` | First dissolving observation -> `ExitObserved` | Ineligible immediately; no retroactive reward |
 | `ExitObserved` | Active before split commit -> `ActiveBacked` | No NNS effect or fee; eligible from the next canonical reward observation |
-| `ExitObserved` | Split intent submitted -> `ExitCommitted` | Gross `P -> T`; unwind becomes sticky |
+| `ExitObserved` | Split intent submitted -> `ExitCommitted(generation)` | Gross `P -> T`; unwind becomes sticky |
 | `ExitCommitted` | Active observation -> `ReentryPending` | Child continues; no merge; remains ineligible |
 | `ReentryPending` | Dissolving observation -> `ExitCommitted` | Latest state changes only; no second child or transfer |
 | `ExitCommitted` or `ReentryPending` | Child disbursement proof -> `LiquidReturned` | Net principal `U -> L`; exact disbursement fee once |
-| `LiquidReturned` | Latest state active and executable target delta -> `RestakePending` | Restake only the latest aggregate target delta |
-| `RestakePending` | Exact pooled-credit proof -> `ActiveBacked` | Eligible from the next canonical reward observation |
+| `LiquidReturned` | Latest state active and executable target delta -> `RestakePlanned` | No external transfer submitted; plan may be discarded |
+| `RestakePlanned` | Exact transfer intent submitted -> `RestakeCommitted` | Exact liquid debit is frozen in `T`; cannot be discarded |
+| `RestakeCommitted` | Exact cached-principal credit proved -> `RestakeProved` | `T -> P`, fee counted once even after callback loss |
+| `RestakeProved` | Latest state active -> `ActiveBacked` | Eligible prospectively from the next canonical reward observation |
+| `RestakeProved` | Latest state dissolving -> `ExitObserved` | Restake remains counted; later net reconciliation may commit a new unwind generation |
 
-If the latest state is dissolving at or before returned-liquidity planning,
-the value remains in `L`. A no-effect restake plan can also be discarded if a
-new dissolving observation arrives before its transfer intent is submitted.
-Repeated start/cancel observations while one unwind is committed change only
-the latest state and the bounded eligibility status; they create no additional
-child, merge, split or restake.
+If the latest state is dissolving at or before returned-liquidity planning, the
+value remains in `L`. `RestakePlanned` may be discarded if a new dissolving
+observation arrives before submission. After `RestakeCommitted`, an observed or
+possibly effective transfer must be finished and proved exactly; dissolving
+cannot erase `T`, the transfer intent, or its fee. After proof, ordinary net
+reconciliation may create a new unwind generation if the latest state still
+requires one. Callback loss therefore cannot double-submit or double-count the
+restake. Repeated start/cancel observations for the same committed generation
+change only latest state and bounded eligibility status; they do not create a
+second child for that generation.
 
 Reward eligibility uses the smallest bounded representation available in the
 future state design: a status plus an `eligible_from` canonical observation or
@@ -364,34 +424,64 @@ until all of the following are canonically proved:
 
 1. the child principal returned to liquid;
 2. the latest SNS state is still non-dissolving;
-3. aggregate reconciliation reached its target, including an approved bounded
-   minimum/fee tolerance; and
+3. aggregate reconciliation has `P>=target`; and
 4. any required exact pooled-principal increase was proved.
 
-When no increase is required because canonical aggregate principal already
-equals the target, proving that equality satisfies the fourth condition. An
-over-target or batched under-target state does not.
+When no increase is required because canonical aggregate principal equals or
+exceeds the target, that canonical observation satisfies the fourth condition.
+An over-target pool is sufficient backing and must not permanently block
+re-entry. When `P<target`, the affected generation remains ineligible until the
+exact pooled credit is proved. Fee and minimum tolerances permit operational
+batching but do not restore reward eligibility. Eligibility resumes only for
+future reward observations; there are no retroactive rewards.
 
 ### Returned liquidity is globally reallocated
 
 Child disbursement never implies restaking the child's original amount. The
-planner recomputes `B`, `C`, `A` and the target from the latest `L`, `P`, `U`
+planner recomputes `B`, `C`, `A_backing` and the target from the latest `L`, `P`, `U`
 and `T`. Pending unwind and transit remain in `B`, but neither is active pooled
 principal. If the latest SNS state is active, only the post-fee target delta is
 eligible for restaking; if it is dissolving, all returned value stays liquid.
 
 The executable example starts with `L=500, P=500, B=C=1,000`. A gross split of
 110 with fee 10 produces `P=390, U=100, B=990`. Disbursement with fee 10
-produces `L=590, P=390, B=980`. With latest `A=500`, a prospective restake fee
+produces `L=590, P=390, B=980`. With latest `A_backing=500`, a prospective restake fee
 of 10 gives `Bfee=970` and target 485. The exact restake is therefore credited
 95 from a 105 liquid debit, producing `L=P=485, B=970`. The original child
 principal of 100 is not automatically restaked. Eligibility resumes only after
 the 95 credit is proved.
 
-This remains aggregate when cohorts differ. Some neurons may still be
-dissolving while others are pending re-entry; one completed child still returns
-to shared `L`, and the latest aggregate `A/C` determines the pool delta. No ICP
-child, e8s range or transfer is assigned to a user or SNS neuron.
+This remains aggregate when cohorts differ. The executable overlap has cohort A
+committed on day 0 and cohort B on day 1 while A is still dissolving. Both
+children coexist, become ready relative to their own start times, and return to
+shared `L`. Cancellation in A does not reverse A. Cancel/re-dissolve in B does
+not create another B child. Disbursing A neither erases nor delays B. A mixed
+eligibility scenario retains one dissolving generation while a canceled,
+returned generation sees partial target restoration and remains ineligible;
+only later `P>=target` restores that generation prospectively. No ICP child,
+e8s range or transfer is assigned to a user or SNS neuron.
+
+### Liquidity-lag bound
+
+A future guaranteed bound must be derived, not selected arbitrarily:
+
+```text
+liquidity_lag_bound
+  = guaranteed_reconciliation_cadence
+  + 14_day_NNS_delay
+  + maximum_reviewed_detection_margin
+  + maximum_reviewed_command_margin
+  + maximum_reviewed_disbursement_margin
+```
+
+Using candidate fixtures of one day for each cadence/margin term produces an
+18-day candidate bound: `1 + 14 + 1 + 1 + 1`. These are test values, not
+hard-coded proposed production economics. The executable overlap needs capacity
+for two cohorts; it accepts that capacity as a fixture rather than asserting a
+production collection limit. The active design does not yet prove a guaranteed
+reconciliation cadence, so both the production collection capacity and the
+liquidity-lag guarantee remain unresolved. Production review must establish
+that cadence and each maximum margin before adopting either bound.
 
 ### Sticky fees and anti-churn bound
 
@@ -410,10 +500,11 @@ oscillation and cancellation-driven direction reversal.
 
 For a normalized lifecycle with three cancel/start pairs and 10-unit fees,
 immediate mirroring incurs four splits, three merges and one disbursement: 80.
-Sticky unwind incurs one split, one disbursement and at most one later restake:
-30. For any number of flips during the same committed 14-day lifecycle, the
-sticky bound remains those three fee-bearing operations; only the latest state
-controls post-disbursement allocation.
+Each sticky generation incurs one split, one disbursement and at most one later
+restake: 30. For any number of flips during that committed generation, its
+bound remains those three fee-bearing operations; flips cannot add another
+child to the generation. A later independently committed target delta may use
+the next bounded generation.
 
 ### Deferred shard optimization
 
@@ -423,6 +514,19 @@ merge. This is not the default launch design. It requires a bounded
 multi-active-shard model, shard-level target accounting and reviewed reward
 eligibility rules, which add state and proof surface without being necessary
 for launch correctness.
+
+### Child maturity is a production blocker
+
+Unminted child maturity is not backing. Production NNS implementation of this
+replacement cannot begin until controlled evidence determines:
+
+- whether a dissolving 14-day child receives later reward maturity;
+- what maturity remains after principal disbursement; and
+- how that maturity is ultimately realised without loss or double counting.
+
+This ADR intentionally does not design production child-maturity state. The
+future proof must identify the canonical observation and realisation path before
+the passive cohort record can be finalized.
 
 ## Redemption implication
 
@@ -435,29 +539,29 @@ rate and this proposal introduces no queue.
 
 ## Bounded future state and complexity
 
-The estimates below are planning bounds, not simplicity-budget changes. All
-options share replacement of the old path with one allocator and reuse existing
-typed transfer intents and NNS mechanics.
+These are functional requirements, not simplicity-budget changes. All fee
+policies share replacement of the old path with one allocator, reuse of the
+single active NNS command slot, and one bounded passive cohort collection.
 
-| Policy | New stable scalars | Collections | Extra immutable operation fields | Public methods | Candid change | Estimated add/delete/net production Rust |
-| --- | ---: | ---: | ---: | ---: | --- | --- |
-| A | 0 | 0 new; one bounded marker in the existing per-neuron record | 3–6 allocator/commit/proof values in the existing fixed operation slot | 0 | None | `+240 / -300 or more / -60 or better` |
-| B | 2 reserve scalars | 0 new; same bounded marker | Common values plus one reserve-consumption amount | 0 | Install/config fields only | `+310 / -300 or more / +10 or better` |
-| C | 1 fee-loss scalar | 0 new; same bounded marker | Common values plus one reimbursement amount | 0 | None | `+280 / -300 or more / -20 or better` |
+| Policy | New fee-policy scalars | Passive collections | Active operation | Public/API estimate | Production Rust delta |
+| --- | ---: | ---: | --- | --- | --- |
+| A | 0 | 1 bounded cohort collection | Existing single slot, extended for exact commit/proof values | Method count may remain stable; proof/status Candid types will change | Unknown until the replacement diff exists |
+| B | 2 reserve scalars | Same one collection | Same plus reserve-consumption proof | Method count may remain stable; install/config and proof/status types will change | Unknown until the replacement diff exists |
+| C | 1 fee-loss scalar | Same one collection | Same plus reimbursement proof | Method count may remain stable; proof/status types will change | Unknown until the replacement diff exists |
 
-Policy A is the selected plan: no new stable fee field, collection, public
-method or Candid surface. The allocator may persist only values already needed
-to make an existing immutable transfer intent exact; conceptual `T` is the
-amount in that existing active operation, not a new collection.
+Policy A remains selected because it adds no fee-policy scalar. That does not
+remove the functionally required passive cohort collection. Reuse the existing
+canonical reward-observation checkpoint as the deterministic generation source;
+do not add a scheduler counter. An existing per-neuron status may carry one
+bounded generation marker. Conceptual `T` remains the exact amount in the
+single active operation, while proved dissolving/ready cohorts live in the
+bounded passive collection. There is no user-to-child map or event log.
 
-Sticky unwind is common to all three policy estimates. Reuse the existing
-canonical reward-observation checkpoint as the generation source; do not add a
-second scheduler counter. Extend an existing per-neuron status/eligibility
-record with one bounded status or generation marker rather than adding a new
-collection. The aggregate frozen split, child principal and prospective
-restake remain in the existing fixed monetary-operation slot. There is one
-committed aggregate unwind at a time, no user-to-child map, no event log and no
-passive-child collection in the default plan.
+The exact stable-state, line-count and deletion/net delta is unknown until a
+reviewed production replacement diff exists. Public method count may remain
+stable, but cohort/restake proof and status Candid types will change. This
+proposed ADR authorizes no increase or recalibration of the production
+simplicity budget.
 
 The implementation must be a replacement with no feature flag and no prelaunch
 migration:
@@ -472,6 +576,7 @@ migration:
 
 Active-pin selection, stable-state edits, public interfaces and monetary
 orchestration remain future work. No production implementation should begin
-until the pure-model treatment of delayed re-entry eligibility, mixed aggregate
-cohorts, returned-liquidity target recomputation and Policy A has been
-independently reviewed.
+until the pure-model treatment has been independently reviewed, a guaranteed
+reconciliation cadence and maximum lag margins have been established, and the
+controlled child-maturity evidence above resolves its accounting and
+realisation path.
