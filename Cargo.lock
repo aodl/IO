@@ -1152,6 +1152,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "io-proposed-economics-tests"
+version = "0.1.0"
+
+[[package]]
 name = "io-receipt-types"
 version = "0.1.0"
 dependencies = [
