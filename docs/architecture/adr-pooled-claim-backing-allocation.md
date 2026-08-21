@@ -319,6 +319,111 @@ completion lands on that post-fee target rather than causing `top up -> fee ->
 unwind`. Minimum stake is the only additional bounded tolerance. No generic
 hysteresis, cooldown, lease or queue is needed.
 
+## Sticky backing unwind and delayed reward re-entry
+
+SNS dissolve cancellation changes reward eligibility and later allocation; it
+does not reverse a committed NNS lifecycle. Before a split intent is submitted,
+the existing canonical reconciliation cadence nets start/cancel observations
+into one latest target delta. A cancellation can therefore remove an
+`ExitObserved` state without an NNS call or fee. No new scheduler is required.
+
+Submission of the exact split transfer intent is the commit point. It freezes
+the gross amount from `P` into `T` without charging a fee. Canonical split proof
+moves the credited child principal from `T` into `U` and charges the exact split
+fee once. From the commit point onward, the child completes its 14-day dissolve
+and disburses to `L` even if the SNS neuron cancels dissolve. Cancellation does
+not stop or merge the child and does not associate that child with the SNS
+neuron.
+
+The minimum conceptual states and transitions are:
+
+| State | Canonical transition | Reward eligibility / NNS effect |
+| --- | --- | --- |
+| `ActiveBacked` | First dissolving observation -> `ExitObserved` | Ineligible immediately; no retroactive reward |
+| `ExitObserved` | Active before split commit -> `ActiveBacked` | No NNS effect or fee; eligible from the next canonical reward observation |
+| `ExitObserved` | Split intent submitted -> `ExitCommitted` | Gross `P -> T`; unwind becomes sticky |
+| `ExitCommitted` | Active observation -> `ReentryPending` | Child continues; no merge; remains ineligible |
+| `ReentryPending` | Dissolving observation -> `ExitCommitted` | Latest state changes only; no second child or transfer |
+| `ExitCommitted` or `ReentryPending` | Child disbursement proof -> `LiquidReturned` | Net principal `U -> L`; exact disbursement fee once |
+| `LiquidReturned` | Latest state active and executable target delta -> `RestakePending` | Restake only the latest aggregate target delta |
+| `RestakePending` | Exact pooled-credit proof -> `ActiveBacked` | Eligible from the next canonical reward observation |
+
+If the latest state is dissolving at or before returned-liquidity planning,
+the value remains in `L`. A no-effect restake plan can also be discarded if a
+new dissolving observation arrives before its transfer intent is submitted.
+Repeated start/cancel observations while one unwind is committed change only
+the latest state and the bounded eligibility status; they create no additional
+child, merge, split or restake.
+
+Reward eligibility uses the smallest bounded representation available in the
+future state design: a status plus an `eligible_from` canonical observation or
+cohort/generation marker in the existing per-neuron record. It must not store
+an event history. A pre-commit cancellation can set eligibility to the next
+canonical reward observation. A post-commit cancellation remains ineligible
+until all of the following are canonically proved:
+
+1. the child principal returned to liquid;
+2. the latest SNS state is still non-dissolving;
+3. aggregate reconciliation reached its target, including an approved bounded
+   minimum/fee tolerance; and
+4. any required exact pooled-principal increase was proved.
+
+When no increase is required because canonical aggregate principal already
+equals the target, proving that equality satisfies the fourth condition. An
+over-target or batched under-target state does not.
+
+### Returned liquidity is globally reallocated
+
+Child disbursement never implies restaking the child's original amount. The
+planner recomputes `B`, `C`, `A` and the target from the latest `L`, `P`, `U`
+and `T`. Pending unwind and transit remain in `B`, but neither is active pooled
+principal. If the latest SNS state is active, only the post-fee target delta is
+eligible for restaking; if it is dissolving, all returned value stays liquid.
+
+The executable example starts with `L=500, P=500, B=C=1,000`. A gross split of
+110 with fee 10 produces `P=390, U=100, B=990`. Disbursement with fee 10
+produces `L=590, P=390, B=980`. With latest `A=500`, a prospective restake fee
+of 10 gives `Bfee=970` and target 485. The exact restake is therefore credited
+95 from a 105 liquid debit, producing `L=P=485, B=970`. The original child
+principal of 100 is not automatically restaked. Eligibility resumes only after
+the 95 credit is proved.
+
+This remains aggregate when cohorts differ. Some neurons may still be
+dissolving while others are pending re-entry; one completed child still returns
+to shared `L`, and the latest aggregate `A/C` determines the pool delta. No ICP
+child, e8s range or transfer is assigned to a user or SNS neuron.
+
+### Sticky fees and anti-churn bound
+
+Under selected Policy A, split proof, child disbursement and a later restake
+each reduce `B` by their exact fee once. The default sticky path never pays a
+merge fee. Under Policy B the same qualifying losses would consume excluded
+reserve once, and under Policy C they would increment the loss counter once;
+neither alternative changes the lifecycle rule. A fee is never both applied to
+backing and re-applied merely because eligibility changes.
+
+The same post-fee planner and tolerance apply after disbursement. A required
+credit no larger than the next operation's total fee, or smaller than the
+applicable minimum stake for the operation shape, remains batched. Canonical
+proof then recomputes from actual credited amounts. This prevents both fee
+oscillation and cancellation-driven direction reversal.
+
+For a normalized lifecycle with three cancel/start pairs and 10-unit fees,
+immediate mirroring incurs four splits, three merges and one disbursement: 80.
+Sticky unwind incurs one split, one disbursement and at most one later restake:
+30. For any number of flips during the same committed 14-day lifecycle, the
+sticky bound remains those three fee-bearing operations; only the latest state
+controls post-disbursement allocation.
+
+### Deferred shard optimization
+
+A possible later optimization could stop a wholly canceled child, restore its
+exact 14-day dissolve delay and retain it as active pooled principal without a
+merge. This is not the default launch design. It requires a bounded
+multi-active-shard model, shard-level target accounting and reviewed reward
+eligibility rules, which add state and proof surface without being necessary
+for launch correctness.
+
 ## Redemption implication
 
 The redemption quote is always `floor(user_io * B / C)`. Immediate availability
@@ -336,14 +441,23 @@ typed transfer intents and NNS mechanics.
 
 | Policy | New stable scalars | Collections | Extra immutable operation fields | Public methods | Candid change | Estimated add/delete/net production Rust |
 | --- | ---: | ---: | ---: | ---: | --- | --- |
-| A | 0 | 0 | 0–3 common allocation values, replacing old snapshots | 0 | None | `+130 / -300 or more / -170 or better` |
-| B | 2 reserve scalars | 0 | Common values plus one reserve-consumption amount | 0 | Install/config fields only | `+200 / -300 or more / -100 or better` |
-| C | 1 fee-loss scalar | 0 | Common values plus one reimbursement amount | 0 | None | `+170 / -300 or more / -130 or better` |
+| A | 0 | 0 new; one bounded marker in the existing per-neuron record | 3–6 allocator/commit/proof values in the existing fixed operation slot | 0 | None | `+240 / -300 or more / -60 or better` |
+| B | 2 reserve scalars | 0 new; same bounded marker | Common values plus one reserve-consumption amount | 0 | Install/config fields only | `+310 / -300 or more / +10 or better` |
+| C | 1 fee-loss scalar | 0 new; same bounded marker | Common values plus one reimbursement amount | 0 | None | `+280 / -300 or more / -20 or better` |
 
 Policy A is the selected plan: no new stable fee field, collection, public
 method or Candid surface. The allocator may persist only values already needed
 to make an existing immutable transfer intent exact; conceptual `T` is the
 amount in that existing active operation, not a new collection.
+
+Sticky unwind is common to all three policy estimates. Reuse the existing
+canonical reward-observation checkpoint as the generation source; do not add a
+second scheduler counter. Extend an existing per-neuron status/eligibility
+record with one bounded status or generation marker rather than adding a new
+collection. The aggregate frozen split, child principal and prospective
+restake remain in the existing fixed monetary-operation slot. There is one
+committed aggregate unwind at a time, no user-to-child map, no event log and no
+passive-child collection in the default plan.
 
 The implementation must be a replacement with no feature flag and no prelaunch
 migration:
@@ -357,4 +471,7 @@ migration:
   mechanics.
 
 Active-pin selection, stable-state edits, public interfaces and monetary
-orchestration remain future work.
+orchestration remain future work. No production implementation should begin
+until the pure-model treatment of delayed re-entry eligibility, mixed aggregate
+cohorts, returned-liquidity target recomputation and Policy A has been
+independently reviewed.

@@ -16,6 +16,8 @@ pub mod proposed_model {
         InsufficientOperationalReserve,
         InsufficientLiquid,
         InvalidBackingState,
+        InvalidTransition,
+        ProofMismatch,
         SameBucket,
     }
 
@@ -514,6 +516,384 @@ pub mod proposed_model {
             expected_credit: excess
                 .checked_sub(input.next_fee)
                 .ok_or(ModelError::InsufficientBacking)?,
+        })
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum CanonicalSnsState {
+        Active,
+        Dissolving,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum StickyStatus {
+        ActiveBacked,
+        ExitObserved,
+        ExitCommitted,
+        ReentryPending,
+        LiquidReturned,
+        RestakePending,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct StickyNeuron {
+        pub status: StickyStatus,
+        pub latest_sns_state: CanonicalSnsState,
+        pub reward_eligible_from_observation: Option<u64>,
+    }
+
+    impl Default for StickyNeuron {
+        fn default() -> Self {
+            Self {
+                status: StickyStatus::ActiveBacked,
+                latest_sns_state: CanonicalSnsState::Active,
+                reward_eligible_from_observation: Some(0),
+            }
+        }
+    }
+
+    impl StickyNeuron {
+        pub fn reward_eligible_at(self, observation: u64) -> bool {
+            self.status == StickyStatus::ActiveBacked
+                && self.latest_sns_state == CanonicalSnsState::Active
+                && self
+                    .reward_eligible_from_observation
+                    .is_some_and(|first| observation >= first)
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct StickyOperationCounts {
+        pub split_intents: u128,
+        pub split_proofs: u128,
+        pub merge_proofs: u128,
+        pub disbursement_proofs: u128,
+        pub restake_proofs: u128,
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct StickyFeeTotals {
+        pub split: u128,
+        pub merge: u128,
+        pub disbursement: u128,
+        pub restake: u128,
+    }
+
+    impl StickyFeeTotals {
+        pub fn total(self) -> Result<u128, ModelError> {
+            self.split
+                .checked_add(self.merge)
+                .and_then(|value| value.checked_add(self.disbursement))
+                .and_then(|value| value.checked_add(self.restake))
+                .ok_or(ModelError::ArithmeticOverflow)
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum ReturnedLiquidityPlan {
+        LatestStateDissolving,
+        RestoredWithoutTransfer {
+            target: u128,
+        },
+        Hold {
+            target: u128,
+            required_credit: u128,
+            tolerance: u128,
+        },
+        Restake {
+            post_fee_target: u128,
+            credited: u128,
+            source_debit: u128,
+        },
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct StickyUnwindModel {
+        pub neuron: StickyNeuron,
+        pub backing: Backing,
+        pub frozen_split_gross: u128,
+        pub aggregate_child_principal: u128,
+        pub planned_restake_credit: u128,
+        pub planned_restake_debit: u128,
+        pub planned_post_fee_target: u128,
+        pub operations: StickyOperationCounts,
+        pub fees: StickyFeeTotals,
+    }
+
+    impl StickyUnwindModel {
+        pub fn new(backing: Backing) -> Self {
+            Self {
+                neuron: StickyNeuron::default(),
+                backing,
+                frozen_split_gross: 0,
+                aggregate_child_principal: 0,
+                planned_restake_credit: 0,
+                planned_restake_debit: 0,
+                planned_post_fee_target: 0,
+                operations: StickyOperationCounts::default(),
+                fees: StickyFeeTotals::default(),
+            }
+        }
+
+        pub fn observe_sns(
+            &mut self,
+            state: CanonicalSnsState,
+            observation: u64,
+        ) -> Result<(), ModelError> {
+            self.neuron.latest_sns_state = state;
+            match state {
+                CanonicalSnsState::Dissolving => {
+                    self.neuron.reward_eligible_from_observation = None;
+                    self.neuron.status = match self.neuron.status {
+                        StickyStatus::ActiveBacked => StickyStatus::ExitObserved,
+                        StickyStatus::ExitObserved => StickyStatus::ExitObserved,
+                        StickyStatus::ExitCommitted | StickyStatus::ReentryPending => {
+                            StickyStatus::ExitCommitted
+                        }
+                        StickyStatus::LiquidReturned => StickyStatus::LiquidReturned,
+                        StickyStatus::RestakePending => {
+                            self.clear_planned_restake();
+                            StickyStatus::LiquidReturned
+                        }
+                    };
+                }
+                CanonicalSnsState::Active => {
+                    self.neuron.status = match self.neuron.status {
+                        StickyStatus::ExitObserved => {
+                            self.neuron.reward_eligible_from_observation = Some(
+                                observation
+                                    .checked_add(1)
+                                    .ok_or(ModelError::ArithmeticOverflow)?,
+                            );
+                            StickyStatus::ActiveBacked
+                        }
+                        StickyStatus::ExitCommitted => StickyStatus::ReentryPending,
+                        status => status,
+                    };
+                }
+            }
+            Ok(())
+        }
+
+        pub fn submit_split_intent(&mut self, gross: u128) -> Result<(), ModelError> {
+            if self.neuron.status != StickyStatus::ExitObserved
+                || self.neuron.latest_sns_state != CanonicalSnsState::Dissolving
+                || self.frozen_split_gross != 0
+                || self.aggregate_child_principal != 0
+            {
+                return Err(ModelError::InvalidTransition);
+            }
+            self.backing = move_backing(self.backing, Bucket::Pooled, Bucket::Transit, gross, 0)?;
+            self.frozen_split_gross = gross;
+            self.operations.split_intents = self
+                .operations
+                .split_intents
+                .checked_add(1)
+                .ok_or(ModelError::ArithmeticOverflow)?;
+            self.neuron.status = StickyStatus::ExitCommitted;
+            Ok(())
+        }
+
+        pub fn prove_split(&mut self, exact_fee: u128) -> Result<(), ModelError> {
+            if self.frozen_split_gross == 0 || self.aggregate_child_principal != 0 {
+                return Err(ModelError::InvalidTransition);
+            }
+            let credited = self
+                .frozen_split_gross
+                .checked_sub(exact_fee)
+                .ok_or(ModelError::InsufficientBacking)?;
+            self.backing = move_backing(
+                self.backing,
+                Bucket::Transit,
+                Bucket::PendingUnwind,
+                self.frozen_split_gross,
+                exact_fee,
+            )?;
+            self.frozen_split_gross = 0;
+            self.aggregate_child_principal = credited;
+            self.operations.split_proofs = self
+                .operations
+                .split_proofs
+                .checked_add(1)
+                .ok_or(ModelError::ArithmeticOverflow)?;
+            self.fees.split = self
+                .fees
+                .split
+                .checked_add(exact_fee)
+                .ok_or(ModelError::ArithmeticOverflow)?;
+            Ok(())
+        }
+
+        pub fn prove_child_disbursement(&mut self, exact_fee: u128) -> Result<(), ModelError> {
+            if self.aggregate_child_principal == 0 || self.frozen_split_gross != 0 {
+                return Err(ModelError::InvalidTransition);
+            }
+            self.backing = move_backing(
+                self.backing,
+                Bucket::PendingUnwind,
+                Bucket::Liquid,
+                self.aggregate_child_principal,
+                exact_fee,
+            )?;
+            self.aggregate_child_principal = 0;
+            self.operations.disbursement_proofs = self
+                .operations
+                .disbursement_proofs
+                .checked_add(1)
+                .ok_or(ModelError::ArithmeticOverflow)?;
+            self.fees.disbursement = self
+                .fees
+                .disbursement
+                .checked_add(exact_fee)
+                .ok_or(ModelError::ArithmeticOverflow)?;
+            self.neuron.status = StickyStatus::LiquidReturned;
+            Ok(())
+        }
+
+        pub fn plan_returned_liquidity(
+            &mut self,
+            claims: u128,
+            active_stake: u128,
+            exact_restake_fee: u128,
+            minimum_restake_credit: u128,
+            minimum_parent: u128,
+            next_reward_observation: u64,
+        ) -> Result<ReturnedLiquidityPlan, ModelError> {
+            if self.neuron.status != StickyStatus::LiquidReturned {
+                return Err(ModelError::InvalidTransition);
+            }
+            if self.neuron.latest_sns_state == CanonicalSnsState::Dissolving {
+                return Ok(ReturnedLiquidityPlan::LatestStateDissolving);
+            }
+
+            let backing = self.backing.claim_backing()?;
+            let current_target = target_pool(active_stake, backing, claims)?.max(minimum_parent);
+            if self.backing.pooled == current_target {
+                self.neuron.status = StickyStatus::ActiveBacked;
+                self.neuron.reward_eligible_from_observation = Some(next_reward_observation);
+                return Ok(ReturnedLiquidityPlan::RestoredWithoutTransfer {
+                    target: current_target,
+                });
+            }
+            if self.backing.pooled > current_target {
+                return Ok(ReturnedLiquidityPlan::Hold {
+                    target: current_target,
+                    required_credit: 0,
+                    tolerance: self.backing.pooled - current_target,
+                });
+            }
+
+            let post_fee_backing = backing
+                .checked_sub(exact_restake_fee)
+                .ok_or(ModelError::InsufficientBacking)?;
+            let post_fee_target =
+                target_pool(active_stake, post_fee_backing, claims)?.max(minimum_parent);
+            let required_credit = post_fee_target.saturating_sub(self.backing.pooled);
+            let tolerance = exact_restake_fee.max(minimum_restake_credit.saturating_sub(1));
+            if required_credit <= exact_restake_fee || required_credit < minimum_restake_credit {
+                return Ok(ReturnedLiquidityPlan::Hold {
+                    target: post_fee_target,
+                    required_credit,
+                    tolerance,
+                });
+            }
+            let source_debit = required_credit
+                .checked_add(exact_restake_fee)
+                .ok_or(ModelError::ArithmeticOverflow)?;
+            if self.backing.liquid < source_debit {
+                return Err(ModelError::InsufficientLiquid);
+            }
+            self.planned_restake_credit = required_credit;
+            self.planned_restake_debit = source_debit;
+            self.planned_post_fee_target = post_fee_target;
+            self.neuron.status = StickyStatus::RestakePending;
+            self.neuron.reward_eligible_from_observation = None;
+            Ok(ReturnedLiquidityPlan::Restake {
+                post_fee_target,
+                credited: required_credit,
+                source_debit,
+            })
+        }
+
+        pub fn prove_restake(
+            &mut self,
+            actual_credited: u128,
+            exact_fee: u128,
+            next_reward_observation: u64,
+        ) -> Result<(), ModelError> {
+            if self.neuron.status != StickyStatus::RestakePending
+                || actual_credited != self.planned_restake_credit
+                || actual_credited
+                    .checked_add(exact_fee)
+                    .ok_or(ModelError::ArithmeticOverflow)?
+                    != self.planned_restake_debit
+            {
+                return Err(ModelError::ProofMismatch);
+            }
+            self.backing = move_backing(
+                self.backing,
+                Bucket::Liquid,
+                Bucket::Pooled,
+                self.planned_restake_debit,
+                exact_fee,
+            )?;
+            if self.backing.pooled != self.planned_post_fee_target {
+                return Err(ModelError::ProofMismatch);
+            }
+            self.operations.restake_proofs = self
+                .operations
+                .restake_proofs
+                .checked_add(1)
+                .ok_or(ModelError::ArithmeticOverflow)?;
+            self.fees.restake = self
+                .fees
+                .restake
+                .checked_add(exact_fee)
+                .ok_or(ModelError::ArithmeticOverflow)?;
+            self.clear_planned_restake();
+            self.neuron.status = StickyStatus::ActiveBacked;
+            self.neuron.reward_eligible_from_observation = Some(next_reward_observation);
+            Ok(())
+        }
+
+        fn clear_planned_restake(&mut self) {
+            self.planned_restake_credit = 0;
+            self.planned_restake_debit = 0;
+            self.planned_post_fee_target = 0;
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct LifecycleFeeComparison {
+        pub immediate_mirroring: u128,
+        pub sticky_unwind: u128,
+    }
+
+    pub fn lifecycle_fee_comparison(
+        cancel_start_pairs: u128,
+        split_fee: u128,
+        merge_fee: u128,
+        disbursement_fee: u128,
+        restake_fee: u128,
+    ) -> Result<LifecycleFeeComparison, ModelError> {
+        let repeated_split_fees = cancel_start_pairs
+            .checked_add(1)
+            .and_then(|count| count.checked_mul(split_fee))
+            .ok_or(ModelError::ArithmeticOverflow)?;
+        let repeated_merge_fees = cancel_start_pairs
+            .checked_mul(merge_fee)
+            .ok_or(ModelError::ArithmeticOverflow)?;
+        let immediate_mirroring = repeated_split_fees
+            .checked_add(repeated_merge_fees)
+            .and_then(|value| value.checked_add(disbursement_fee))
+            .ok_or(ModelError::ArithmeticOverflow)?;
+        let sticky_unwind = split_fee
+            .checked_add(disbursement_fee)
+            .and_then(|value| value.checked_add(restake_fee))
+            .ok_or(ModelError::ArithmeticOverflow)?;
+        Ok(LifecycleFeeComparison {
+            immediate_mirroring,
+            sticky_unwind,
         })
     }
 
@@ -1154,6 +1534,260 @@ mod tests {
         assert_eq!(
             (actual_mint.permanent_leg, actual_mint.net_claim_increment),
             (40, 60)
+        );
+    }
+
+    fn sticky_base() -> StickyUnwindModel {
+        StickyUnwindModel::new(Backing {
+            liquid: 500,
+            pooled: 500,
+            ..Backing::default()
+        })
+    }
+
+    fn prove_one_sticky_child(model: &mut StickyUnwindModel) {
+        model.observe_sns(CanonicalSnsState::Dissolving, 1).unwrap();
+        model.submit_split_intent(110).unwrap();
+        model.prove_split(10).unwrap();
+        assert_eq!(model.aggregate_child_principal, 100);
+    }
+
+    #[test]
+    fn sticky_start_then_cancel_before_split_is_fee_free() {
+        let mut model = sticky_base();
+        let initial = model.backing;
+        assert!(model.neuron.reward_eligible_at(0));
+
+        model.observe_sns(CanonicalSnsState::Dissolving, 1).unwrap();
+        assert_eq!(model.neuron.status, StickyStatus::ExitObserved);
+        assert!(!model.neuron.reward_eligible_at(1));
+        model.observe_sns(CanonicalSnsState::Active, 2).unwrap();
+
+        assert_eq!(model.neuron.status, StickyStatus::ActiveBacked);
+        assert!(!model.neuron.reward_eligible_at(2));
+        assert!(model.neuron.reward_eligible_at(3));
+        assert_eq!(model.backing, initial);
+        assert_eq!(model.backing.pending_unwind, 0);
+        assert_eq!(model.operations, StickyOperationCounts::default());
+        assert_eq!(model.fees.total(), Ok(0));
+    }
+
+    #[test]
+    fn sticky_committed_cancel_continues_without_merge_or_rewards() {
+        let mut model = sticky_base();
+        model.observe_sns(CanonicalSnsState::Dissolving, 1).unwrap();
+        model.submit_split_intent(110).unwrap();
+        assert_eq!((model.backing.pooled, model.backing.transit), (390, 110));
+
+        model.observe_sns(CanonicalSnsState::Active, 2).unwrap();
+        assert_eq!(model.neuron.status, StickyStatus::ReentryPending);
+        model.prove_split(10).unwrap();
+
+        assert_eq!(model.aggregate_child_principal, 100);
+        assert_eq!(model.backing.pending_unwind, 100);
+        assert_eq!(model.operations.split_intents, 1);
+        assert_eq!(model.operations.split_proofs, 1);
+        assert_eq!(model.operations.merge_proofs, 0);
+        assert_eq!(model.fees.split, 10);
+        assert!(!model.neuron.reward_eligible_at(u64::MAX));
+    }
+
+    #[test]
+    fn sticky_redissolve_before_disbursement_returns_liquid_without_restake() {
+        let mut model = sticky_base();
+        prove_one_sticky_child(&mut model);
+        model.observe_sns(CanonicalSnsState::Active, 2).unwrap();
+        model.observe_sns(CanonicalSnsState::Dissolving, 3).unwrap();
+        assert_eq!(model.neuron.status, StickyStatus::ExitCommitted);
+
+        model.prove_child_disbursement(10).unwrap();
+        assert_eq!(model.neuron.status, StickyStatus::LiquidReturned);
+        assert_eq!(
+            model
+                .plan_returned_liquidity(1_000, 400, 10, 1, 0, 4)
+                .unwrap(),
+            ReturnedLiquidityPlan::LatestStateDissolving
+        );
+        assert_eq!((model.backing.liquid, model.backing.pooled), (590, 390));
+        assert_eq!(model.operations.split_proofs, 1);
+        assert_eq!(model.operations.disbursement_proofs, 1);
+        assert_eq!(model.operations.restake_proofs, 0);
+        assert_eq!(model.operations.merge_proofs, 0);
+        assert_eq!(model.fees.total(), Ok(20));
+    }
+
+    #[test]
+    fn sticky_active_reentry_restakes_only_global_target_delta_after_proof() {
+        let mut model = sticky_base();
+        let initial = model.backing;
+        prove_one_sticky_child(&mut model);
+        model.observe_sns(CanonicalSnsState::Active, 2).unwrap();
+        model.prove_child_disbursement(10).unwrap();
+
+        let plan = model
+            .plan_returned_liquidity(1_000, 500, 10, 1, 0, 4)
+            .unwrap();
+        assert_eq!(
+            plan,
+            ReturnedLiquidityPlan::Restake {
+                post_fee_target: 485,
+                credited: 95,
+                source_debit: 105,
+            }
+        );
+        assert_eq!(model.neuron.status, StickyStatus::RestakePending);
+        assert_eq!(
+            model.prove_restake(94, 10, 4),
+            Err(ModelError::ProofMismatch)
+        );
+        assert!(!model.neuron.reward_eligible_at(4));
+        model.prove_restake(95, 10, 4).unwrap();
+
+        assert_eq!((model.backing.liquid, model.backing.pooled), (485, 485));
+        assert_eq!(model.backing.claim_backing(), Ok(970));
+        assert_eq!(target_pool(500, 970, 1_000), Ok(485));
+        assert_ne!(95, 100, "the original child amount is not auto-restaked");
+        assert_eq!(model.operations.restake_proofs, 1);
+        assert_eq!(model.operations.merge_proofs, 0);
+        assert_eq!(model.fees.total(), Ok(30));
+        assert_conservation(initial, model.backing, 0, 30, 0).unwrap();
+        assert!(model.neuron.reward_eligible_at(4));
+    }
+
+    #[test]
+    fn sticky_flip_flops_net_before_commit_and_do_not_multiply_committed_effects() {
+        let mut before_commit = sticky_base();
+        before_commit
+            .observe_sns(CanonicalSnsState::Dissolving, 1)
+            .unwrap();
+        before_commit
+            .observe_sns(CanonicalSnsState::Active, 2)
+            .unwrap();
+        before_commit
+            .observe_sns(CanonicalSnsState::Dissolving, 3)
+            .unwrap();
+        before_commit.submit_split_intent(110).unwrap();
+        before_commit.prove_split(10).unwrap();
+        assert_eq!(before_commit.operations.split_intents, 1);
+
+        for observation in 4..=21 {
+            let state = if observation % 2 == 0 {
+                CanonicalSnsState::Active
+            } else {
+                CanonicalSnsState::Dissolving
+            };
+            before_commit.observe_sns(state, observation).unwrap();
+        }
+        assert_eq!(before_commit.operations.split_intents, 1);
+        assert_eq!(before_commit.operations.split_proofs, 1);
+        assert_eq!(before_commit.operations.merge_proofs, 0);
+        assert_eq!(before_commit.aggregate_child_principal, 100);
+        assert_eq!(before_commit.fees.total(), Ok(10));
+        assert!(!before_commit.neuron.reward_eligible_at(u64::MAX));
+
+        before_commit
+            .observe_sns(CanonicalSnsState::Active, 22)
+            .unwrap();
+        before_commit.prove_child_disbursement(10).unwrap();
+        assert!(matches!(
+            before_commit.plan_returned_liquidity(1_000, 500, 10, 1, 0, 23),
+            Ok(ReturnedLiquidityPlan::Restake {
+                credited: 95,
+                source_debit: 105,
+                ..
+            })
+        ));
+        assert_eq!(before_commit.operations.split_intents, 1);
+        assert_eq!(before_commit.operations.disbursement_proofs, 1);
+        assert_eq!(before_commit.operations.merge_proofs, 0);
+    }
+
+    #[test]
+    fn sticky_mixed_cohort_uses_latest_global_target_without_child_ownership() {
+        let still_dissolving = StickyNeuron {
+            status: StickyStatus::ExitCommitted,
+            latest_sns_state: CanonicalSnsState::Dissolving,
+            reward_eligible_from_observation: None,
+        };
+        let mut aggregate = sticky_base();
+        prove_one_sticky_child(&mut aggregate);
+        aggregate.observe_sns(CanonicalSnsState::Active, 2).unwrap();
+        aggregate.prove_child_disbursement(10).unwrap();
+
+        let plan = aggregate
+            .plan_returned_liquidity(1_000, 600, 10, 1, 0, 4)
+            .unwrap();
+        assert_eq!(
+            plan,
+            ReturnedLiquidityPlan::Restake {
+                post_fee_target: 582,
+                credited: 192,
+                source_debit: 202,
+            }
+        );
+        aggregate.prove_restake(192, 10, 4).unwrap();
+
+        assert_eq!(aggregate.backing.pooled, 582);
+        assert_eq!(target_pool(600, 970, 1_000), Ok(582));
+        assert!(!still_dissolving.reward_eligible_at(u64::MAX));
+        assert!(aggregate.neuron.reward_eligible_at(4));
+        assert_eq!(aggregate.operations.split_proofs, 1);
+        assert_eq!(aggregate.aggregate_child_principal, 0);
+    }
+
+    #[test]
+    fn sticky_tolerance_and_fee_comparison_bound_reversal_churn() {
+        let mut fee_batched = StickyUnwindModel::new(Backing {
+            liquid: 509,
+            pooled: 491,
+            ..Backing::default()
+        });
+        fee_batched.neuron.status = StickyStatus::LiquidReturned;
+        let before = fee_batched.backing;
+        assert_eq!(
+            fee_batched
+                .plan_returned_liquidity(1_000, 500, 10, 1, 0, 1)
+                .unwrap(),
+            ReturnedLiquidityPlan::Hold {
+                target: 495,
+                required_credit: 4,
+                tolerance: 10,
+            }
+        );
+        assert_eq!(fee_batched.backing, before);
+        assert_eq!(fee_batched.operations.restake_proofs, 0);
+        assert_eq!(fee_batched.fees.total(), Ok(0));
+
+        let mut minimum_batched = StickyUnwindModel::new(Backing {
+            liquid: 600,
+            pooled: 400,
+            ..Backing::default()
+        });
+        minimum_batched.neuron.status = StickyStatus::LiquidReturned;
+        assert_eq!(
+            minimum_batched
+                .plan_returned_liquidity(1_000, 500, 10, 100, 0, 1)
+                .unwrap(),
+            ReturnedLiquidityPlan::Hold {
+                target: 495,
+                required_credit: 95,
+                tolerance: 99,
+            }
+        );
+        assert_eq!(minimum_batched.operations.restake_proofs, 0);
+        assert_eq!(minimum_batched.fees.total(), Ok(0));
+
+        let comparison = lifecycle_fee_comparison(3, 10, 10, 10, 10).unwrap();
+        assert_eq!(comparison.immediate_mirroring, 80);
+        assert_eq!(comparison.sticky_unwind, 30);
+        for flip_flops in 1..=100 {
+            let fees = lifecycle_fee_comparison(flip_flops, 10, 10, 10, 10).unwrap();
+            assert_eq!(fees.sticky_unwind, 30);
+            assert!(fees.immediate_mirroring > fees.sticky_unwind);
+        }
+        assert_eq!(
+            lifecycle_fee_comparison(u128::MAX, 1, 1, 1, 1),
+            Err(ModelError::ArithmeticOverflow)
         );
     }
 }
