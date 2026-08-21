@@ -9,6 +9,7 @@ use io_governance_types::{
     NnsNeuronRecord, NnsProductionConfigure, NnsProductionConfigureOperation,
     NnsProductionDisburseMaturity, NnsProductionManageNeuronRequest,
     NnsProductionManageNeuronResponse, NnsProposalIdRecord, NnsRegisterVote, NnsSplit,
+    NnsStakeMaturity,
 };
 use io_ledger_types::{
     Account as IcpAccount, IcpTokens, IcpTransferArgs, IcpTransferError, Subaccount,
@@ -152,6 +153,7 @@ struct GetBlocksArgs {
 struct QueryBlocksResponse {
     blocks: Vec<IcpBlock>,
     first_block_index: u64,
+    chain_length: u64,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -466,6 +468,16 @@ fn configure(
     neuron_id: u64,
     operation: NnsProductionConfigureOperation,
 ) {
+    try_configure(fixture, controller, neuron_id, operation)
+        .unwrap_or_else(|error| panic!("Configure failed: {error:?}"));
+}
+
+fn try_configure(
+    fixture: &CandidateFixture,
+    controller: Principal,
+    neuron_id: u64,
+    operation: NnsProductionConfigureOperation,
+) -> Result<(), NnsGovernanceErrorRecord> {
     let response = manage(
         fixture,
         controller,
@@ -481,12 +493,11 @@ fn configure(
             id: None,
         },
     );
-    assert!(matches!(
-        response.command,
-        Some(NnsManageNeuronResponseCommandRecord::Configure(
-            EmptyRecord {}
-        ))
-    ));
+    match response.command {
+        Some(NnsManageNeuronResponseCommandRecord::Configure(EmptyRecord {})) => Ok(()),
+        Some(NnsManageNeuronResponseCommandRecord::Error(error)) => Err(error),
+        other => panic!("unexpected Configure response: {other:?}"),
+    }
 }
 
 fn full_neuron(
@@ -732,6 +743,15 @@ fn merge(
     parent_id: u64,
     child_id: u64,
 ) -> io_governance_types::NnsMergeResponse {
+    try_merge(fixture, parent_id, child_id)
+        .unwrap_or_else(|error| panic!("Merge failed: {error:?}"))
+}
+
+fn try_merge(
+    fixture: &CandidateFixture,
+    parent_id: u64,
+    child_id: u64,
+) -> Result<io_governance_types::NnsMergeResponse, NnsGovernanceErrorRecord> {
     let response = manage(
         fixture,
         fixture.manager,
@@ -746,8 +766,35 @@ fn merge(
         },
     );
     match response.command {
-        Some(NnsManageNeuronResponseCommandRecord::Merge(response)) => *response,
-        other => panic!("Merge failed: {other:?}"),
+        Some(NnsManageNeuronResponseCommandRecord::Merge(response)) => Ok(*response),
+        Some(NnsManageNeuronResponseCommandRecord::Error(error)) => Err(error),
+        other => panic!("unexpected Merge response: {other:?}"),
+    }
+}
+
+fn stake_maturity(
+    fixture: &CandidateFixture,
+    neuron_id: u64,
+    percentage_to_stake: u32,
+) -> io_governance_types::NnsStakeMaturityResponse {
+    let response = manage(
+        fixture,
+        fixture.manager,
+        NnsProductionManageNeuronRequest {
+            neuron_id_or_subaccount: Some(NnsNeuronIdOrSubaccount::NeuronId(NnsNeuronIdRecord {
+                id: neuron_id,
+            })),
+            command: Some(NnsManageNeuronCommandRequest::StakeMaturity(
+                NnsStakeMaturity {
+                    percentage_to_stake: Some(percentage_to_stake),
+                },
+            )),
+            id: None,
+        },
+    );
+    match response.command {
+        Some(NnsManageNeuronResponseCommandRecord::StakeMaturity(response)) => response,
+        other => panic!("StakeMaturity failed: {other:?}"),
     }
 }
 
@@ -826,6 +873,20 @@ fn find_mint(fixture: &CandidateFixture, destination: &[u8]) -> (u64, u64) {
             _ => None,
         })
         .expect("canonical maturity Mint should be present in the ICP ledger")
+}
+
+fn ledger_chain_length(fixture: &CandidateFixture) -> u64 {
+    let response: QueryBlocksResponse = query(
+        fixture,
+        fixture.ledger,
+        Principal::anonymous(),
+        "query_blocks",
+        GetBlocksArgs {
+            start: 0,
+            length: 0,
+        },
+    );
+    response.chain_length
 }
 
 fn lock_value<'a>(text: &'a str, section: &str, key: &str) -> &'a str {
@@ -1075,11 +1136,26 @@ fn exact_post_m70_upgrade_rewards_fourteen_day_boundary() {
         .cached_neuron_stake_e8s;
     assert_eq!(parent_after_top_up - parent_before_top_up, TOP_UP_E8S);
 
-    let children = [
-        split(&fixture, exact, CHILD_GROSS_E8S).unwrap(),
-        split(&fixture, exact, CHILD_GROSS_E8S).unwrap(),
-        split(&fixture, exact, CHILD_GROSS_E8S).unwrap(),
-    ];
+    let staked = stake_maturity(&fixture, exact, 40);
+    assert!(staked.maturity_e8s > 0);
+    assert!(staked.staked_maturity_e8s > 0);
+    let parent_before_splits = full_neuron(&fixture, fixture.manager, exact).unwrap();
+    assert_eq!(
+        parent_before_splits.maturity_e8s_equivalent,
+        staked.maturity_e8s
+    );
+    assert_eq!(
+        parent_before_splits
+            .staked_maturity_e8s_equivalent
+            .unwrap_or(0),
+        staked.staked_maturity_e8s
+    );
+
+    let merge_child_id = split(&fixture, exact, CHILD_GROSS_E8S).unwrap();
+    let selected_split_submission_timestamp = now_seconds(&fixture);
+    let disburse_child_id = split(&fixture, exact, CHILD_GROSS_E8S).unwrap();
+    let continuing_child_id = split(&fixture, exact, CHILD_GROSS_E8S).unwrap();
+    let children = [merge_child_id, disburse_child_id, continuing_child_id];
     assert_eq!(
         children
             .iter()
@@ -1088,8 +1164,11 @@ fn exact_post_m70_upgrade_rewards_fourteen_day_boundary() {
             .len(),
         3
     );
-    for child in children {
-        let child = full_neuron(&fixture, fixture.manager, child).unwrap();
+    let child_records: Vec<NnsNeuronRecord> = children
+        .iter()
+        .map(|child| full_neuron(&fixture, fixture.manager, *child).unwrap())
+        .collect();
+    for child in &child_records {
         assert_eq!(child.cached_neuron_stake_e8s, CHILD_CREDITED_E8S);
         assert_eq!(
             child.dissolve_state,
@@ -1098,24 +1177,50 @@ fn exact_post_m70_upgrade_rewards_fourteen_day_boundary() {
             ))
         );
     }
+    let parent_after_splits = full_neuron(&fixture, fixture.manager, exact).unwrap();
+    assert_eq!(
+        parent_after_splits.maturity_e8s_equivalent
+            + child_records
+                .iter()
+                .map(|child| child.maturity_e8s_equivalent)
+                .sum::<u64>(),
+        parent_before_splits.maturity_e8s_equivalent
+    );
+    assert_eq!(
+        parent_after_splits
+            .staked_maturity_e8s_equivalent
+            .unwrap_or(0)
+            + child_records
+                .iter()
+                .map(|child| child.staked_maturity_e8s_equivalent.unwrap_or(0))
+                .sum::<u64>(),
+        parent_before_splits
+            .staked_maturity_e8s_equivalent
+            .unwrap_or(0)
+    );
+    let inherited_child_maturity = child_records[1].maturity_e8s_equivalent;
+    let inherited_child_staked_maturity =
+        child_records[1].staked_maturity_e8s_equivalent.unwrap_or(0);
+    assert!(inherited_child_maturity > 0);
+    assert!(inherited_child_staked_maturity > 0);
 
     let merge_child_started_at = now_seconds(&fixture);
     configure(
         &fixture,
         fixture.manager,
-        children[0],
+        merge_child_id,
         NnsProductionConfigureOperation::StartDissolving(EmptyRecord {}),
     );
     configure(
         &fixture,
         fixture.manager,
-        children[0],
+        merge_child_id,
         NnsProductionConfigureOperation::StopDissolving(EmptyRecord {}),
     );
     let parent_before_merge = full_neuron(&fixture, fixture.manager, exact)
         .unwrap()
         .cached_neuron_stake_e8s;
-    let merged = merge(&fixture, exact, children[0]);
+    let merged = merge(&fixture, exact, merge_child_id);
     assert_eq!(
         merged
             .source_neuron
@@ -1131,17 +1236,28 @@ fn exact_post_m70_upgrade_rewards_fourteen_day_boundary() {
         CHILD_CREDITED_E8S - ICP_FEE_E8S
     );
     assert_eq!(
-        full_neuron(&fixture, fixture.manager, children[0])
+        full_neuron(&fixture, fixture.manager, merge_child_id)
             .unwrap()
             .cached_neuron_stake_e8s,
         0
     );
 
+    refresh_voting_power(&fixture, fixture.manager, disburse_child_id);
+    let child_reward_proposal = make_motion(&fixture, proposer);
+    let child_ballot = proposal_info(&fixture, fixture.manager, child_reward_proposal);
+    assert!(child_ballot
+        .ballots
+        .iter()
+        .any(|(neuron_id, ballot)| { *neuron_id == disburse_child_id && ballot.voting_power > 0 }));
+    register_yes_vote(&fixture, disburse_child_id, child_reward_proposal);
+
+    fixture.pic.advance_time(Duration::from_secs(37));
     let disburse_child_started_at = now_seconds(&fixture);
+    assert!(disburse_child_started_at > selected_split_submission_timestamp);
     configure(
         &fixture,
         fixture.manager,
-        children[1],
+        disburse_child_id,
         NnsProductionConfigureOperation::StartDissolving(EmptyRecord {}),
     );
     fixture.pic.advance_time(Duration::from_secs(1));
@@ -1149,10 +1265,10 @@ fn exact_post_m70_upgrade_rewards_fourteen_day_boundary() {
     configure(
         &fixture,
         fixture.manager,
-        children[2],
+        continuing_child_id,
         NnsProductionConfigureOperation::StartDissolving(EmptyRecord {}),
     );
-    let readiness = match full_neuron(&fixture, fixture.manager, children[1])
+    let readiness = match full_neuron(&fixture, fixture.manager, disburse_child_id)
         .unwrap()
         .dissolve_state
         .unwrap()
@@ -1161,7 +1277,17 @@ fn exact_post_m70_upgrade_rewards_fourteen_day_boundary() {
         other => panic!("child should be dissolving: {other:?}"),
     };
     assert_eq!(readiness, disburse_child_started_at + FOURTEEN_DAYS_SECONDS);
-    let continuing_readiness = match full_neuron(&fixture, fixture.manager, children[2])
+    assert_ne!(
+        readiness,
+        selected_split_submission_timestamp + FOURTEEN_DAYS_SECONDS,
+        "the split timestamp must not start the dissolve clock"
+    );
+    let canonical_start_effective_timestamp = readiness - FOURTEEN_DAYS_SECONDS;
+    assert_eq!(
+        canonical_start_effective_timestamp,
+        disburse_child_started_at
+    );
+    let continuing_readiness = match full_neuron(&fixture, fixture.manager, continuing_child_id)
         .unwrap()
         .dissolve_state
         .unwrap()
@@ -1170,22 +1296,176 @@ fn exact_post_m70_upgrade_rewards_fourteen_day_boundary() {
         other => panic!("continuing child should be dissolving: {other:?}"),
     };
     assert_eq!(continuing_readiness, readiness + 1);
+
+    let (_, child_maturity_after_reward) = await_reward(
+        &fixture,
+        disburse_child_id,
+        child_reward_proposal,
+        inherited_child_maturity,
+    );
+    assert!(child_maturity_after_reward > inherited_child_maturity);
+    assert!(now_seconds(&fixture) < readiness);
+    let dissolving_after_reward =
+        full_neuron(&fixture, fixture.manager, disburse_child_id).unwrap();
+    assert_eq!(
+        dissolving_after_reward.dissolve_state,
+        Some(NnsDissolveStateRecord::WhenDissolvedTimestampSeconds(
+            readiness
+        ))
+    );
+    assert_eq!(
+        dissolving_after_reward
+            .staked_maturity_e8s_equivalent
+            .unwrap_or(0),
+        inherited_child_staked_maturity
+    );
     fixture
         .pic
         .advance_time(Duration::from_secs(readiness - now_seconds(&fixture) - 1));
-    let disbursement_destination = IcpAccount::new(fixture.manager, Some(Subaccount([8; 32])))
-        .icp_account_identifier_bytes()
-        .to_vec();
-    let one_second_early_error =
-        disburse(&fixture, children[1], disbursement_destination.clone()).unwrap_err();
+    let disbursement_subaccount = [8_u8; 32];
+    let disbursement_destination =
+        IcpAccount::new(fixture.manager, Some(Subaccount(disbursement_subaccount)))
+            .icp_account_identifier_bytes()
+            .to_vec();
+    let disbursement_balance_before =
+        icrc_balance(&fixture, fixture.manager, Some(disbursement_subaccount));
+    let one_second_early_error = disburse(
+        &fixture,
+        disburse_child_id,
+        disbursement_destination.clone(),
+    )
+    .unwrap_err();
     assert!(one_second_early_error
         .error_message
         .to_ascii_lowercase()
         .contains("dissolv"));
     fixture.pic.advance_time(Duration::from_secs(1));
     assert_eq!(now_seconds(&fixture), readiness);
-    let disbursement_block = disburse(&fixture, children[1], disbursement_destination).unwrap();
-    let continuing = full_neuron(&fixture, fixture.manager, children[2]).unwrap();
+    let disbursement_block =
+        disburse(&fixture, disburse_child_id, disbursement_destination).unwrap();
+    let disbursement_balance_after =
+        icrc_balance(&fixture, fixture.manager, Some(disbursement_subaccount));
+    assert_eq!(
+        disbursement_balance_after - disbursement_balance_before,
+        u128::from(CHILD_CREDITED_E8S - ICP_FEE_E8S)
+    );
+    let child_after_principal_disbursement =
+        full_neuron(&fixture, fixture.manager, disburse_child_id).unwrap();
+    assert_eq!(
+        child_after_principal_disbursement.cached_neuron_stake_e8s,
+        0
+    );
+    assert_eq!(
+        child_after_principal_disbursement.dissolve_state,
+        Some(NnsDissolveStateRecord::WhenDissolvedTimestampSeconds(
+            readiness
+        ))
+    );
+    assert_eq!(
+        child_after_principal_disbursement.maturity_e8s_equivalent
+            + child_after_principal_disbursement
+                .staked_maturity_e8s_equivalent
+                .unwrap_or(0),
+        child_maturity_after_reward + inherited_child_staked_maturity
+    );
+
+    fixture.pic.advance_time(Duration::from_secs(60));
+    for _ in 0..100 {
+        fixture.pic.tick();
+    }
+    let child_before_cleanup = full_neuron(&fixture, fixture.manager, disburse_child_id).unwrap();
+    assert_eq!(child_before_cleanup.cached_neuron_stake_e8s, 0);
+    assert_eq!(child_before_cleanup.staked_maturity_e8s_equivalent, None);
+    assert_eq!(
+        child_before_cleanup.maturity_e8s_equivalent,
+        child_maturity_after_reward + inherited_child_staked_maturity
+    );
+
+    let parent_before_cleanup = full_neuron(&fixture, fixture.manager, exact).unwrap();
+    let ledger_before_cleanup = ledger_chain_length(&fixture);
+    let mut cleanup_required_stop = false;
+    let mut cleanup_required_delay = false;
+    let mut cleanup_direct_error = None;
+    let mut cleanup_stop_error = None;
+    let cleanup_merge = match try_merge(&fixture, exact, disburse_child_id) {
+        Ok(response) => response,
+        Err(error) => {
+            cleanup_direct_error = Some(error.error_message);
+            cleanup_required_stop = true;
+            let stopped = try_configure(
+                &fixture,
+                fixture.manager,
+                disburse_child_id,
+                NnsProductionConfigureOperation::StopDissolving(EmptyRecord {}),
+            );
+            if let Err(error) = &stopped {
+                cleanup_stop_error = Some(error.error_message.clone());
+            }
+            let merge_after_stop = stopped
+                .is_ok()
+                .then(|| try_merge(&fixture, exact, disburse_child_id));
+            match merge_after_stop {
+                Some(Ok(response)) => response,
+                Some(Err(error)) => {
+                    cleanup_stop_error = Some(error.error_message);
+                    cleanup_required_delay = true;
+                    configure(
+                        &fixture,
+                        fixture.manager,
+                        disburse_child_id,
+                        NnsProductionConfigureOperation::IncreaseDissolveDelay(
+                            NnsIncreaseDissolveDelay {
+                                additional_dissolve_delay_seconds: 1,
+                            },
+                        ),
+                    );
+                    merge(&fixture, exact, disburse_child_id)
+                }
+                None => {
+                    cleanup_required_delay = true;
+                    configure(
+                        &fixture,
+                        fixture.manager,
+                        disburse_child_id,
+                        NnsProductionConfigureOperation::IncreaseDissolveDelay(
+                            NnsIncreaseDissolveDelay {
+                                additional_dissolve_delay_seconds: 1,
+                            },
+                        ),
+                    );
+                    merge(&fixture, exact, disburse_child_id)
+                }
+            }
+        }
+    };
+    let parent_after_cleanup = full_neuron(&fixture, fixture.manager, exact).unwrap();
+    let child_after_cleanup = full_neuron(&fixture, fixture.manager, disburse_child_id).unwrap();
+    assert_eq!(
+        parent_after_cleanup.maturity_e8s_equivalent
+            - parent_before_cleanup.maturity_e8s_equivalent,
+        child_before_cleanup.maturity_e8s_equivalent
+    );
+    assert_eq!(
+        parent_after_cleanup
+            .staked_maturity_e8s_equivalent
+            .unwrap_or(0),
+        parent_before_cleanup
+            .staked_maturity_e8s_equivalent
+            .unwrap_or(0)
+    );
+    assert_eq!(child_after_cleanup.cached_neuron_stake_e8s, 0);
+    assert_eq!(child_after_cleanup.maturity_e8s_equivalent, 0);
+    assert_eq!(child_after_cleanup.staked_maturity_e8s_equivalent, None);
+    assert_eq!(ledger_chain_length(&fixture), ledger_before_cleanup);
+    assert_eq!(
+        cleanup_merge
+            .source_neuron
+            .expect("cleanup merge should report the emptied child")
+            .maturity_e8s_equivalent,
+        0
+    );
+
+    let continuing = full_neuron(&fixture, fixture.manager, continuing_child_id).unwrap();
     assert_eq!(
         continuing.dissolve_state,
         Some(NnsDissolveStateRecord::WhenDissolvedTimestampSeconds(
@@ -1256,7 +1536,7 @@ fn exact_post_m70_upgrade_rewards_fourteen_day_boundary() {
     .expect("canonical maturity Mint should be spendable");
 
     eprintln!(
-        "post_m70_evidence old_threshold={} new_threshold={} exact_neuron={} below_neuron={} proposer={} proposal={} reward_round={} maturity_before={} maturity_after={} top_up_amount={} top_up_fee={} top_up_block={} cached_before={} cached_after={} children={:?} split_gross={} child_credited={} merge_child_started_at={} merge_parent_before={} merge_parent_after={} disburse_child_started_at={} continuing_child_started_at={} readiness={} early_error={:?} disbursement_block={} nominal_maturity={} finalization_delay={} modulation={} actual_mint={} mint_block={} spend_block={}",
+        "post_m70_evidence old_threshold={} new_threshold={} exact_neuron={} below_neuron={} proposer={} proposal={} reward_round={} maturity_before={} maturity_after={} top_up_amount={} top_up_fee={} top_up_block={} cached_before={} cached_after={} parent_ordinary_before_split={} parent_staked_before_split={} children={:?} split_gross={} child_credited={} selected_child={} inherited_child_ordinary={} inherited_child_staked={} merge_child_started_at={} merge_parent_before={} merge_parent_after={} split_submission={} start_effective={} disburse_child_started_at={} continuing_child_started_at={} readiness={} child_reward_proposal={} child_ordinary_after_reward={} early_error={:?} disbursement_block={} zero_principal_ordinary={} converted_ordinary={} cleanup_stop={} cleanup_delay={} cleanup_direct_error={:?} cleanup_stop_error={:?} cleanup_fee={} child_retained_after_cleanup={} nominal_maturity={} finalization_delay={} modulation={} actual_mint={} mint_block={} spend_block={}",
         PROPOSAL_SUBMISSION_THRESHOLD_SECONDS,
         FOURTEEN_DAYS_SECONDS,
         exact,
@@ -1271,17 +1551,36 @@ fn exact_post_m70_upgrade_rewards_fourteen_day_boundary() {
         top_up_block,
         parent_before_top_up,
         parent_after_top_up,
+        parent_before_splits.maturity_e8s_equivalent,
+        parent_before_splits
+            .staked_maturity_e8s_equivalent
+            .unwrap_or(0),
         children,
         CHILD_GROSS_E8S,
         CHILD_CREDITED_E8S,
+        disburse_child_id,
+        inherited_child_maturity,
+        inherited_child_staked_maturity,
         merge_child_started_at,
         parent_before_merge,
         parent_after_merge,
+        selected_split_submission_timestamp,
+        canonical_start_effective_timestamp,
         disburse_child_started_at,
         continuing_child_started_at,
         readiness,
+        child_reward_proposal,
+        child_maturity_after_reward,
         one_second_early_error,
         disbursement_block,
+        child_after_principal_disbursement.maturity_e8s_equivalent,
+        child_before_cleanup.maturity_e8s_equivalent,
+        cleanup_required_stop,
+        cleanup_required_delay,
+        cleanup_direct_error,
+        cleanup_stop_error,
+        0,
+        full_neuron(&fixture, fixture.manager, disburse_child_id).is_ok(),
         nominal_maturity_e8s,
         MATURITY_FINALIZATION_SECONDS,
         modulation.current_value_permyriad.unwrap(),

@@ -10,7 +10,6 @@ pub mod proposed_model {
     pub enum ModelError {
         ArithmeticOverflow,
         ExclusionsExceedSupply,
-        ZeroClaimSupply,
         BackingWithoutClaims,
         UncoveredClaims,
         ActiveWithoutClaims,
@@ -21,6 +20,11 @@ pub mod proposed_model {
         InvalidBackingState,
         InvalidTransition,
         ProofMismatch,
+        DuplicateGeneration,
+        DuplicateChild,
+        CohortCapacityExhausted,
+        RewardActiveExceedsBacking,
+        RewardBackingUnderTarget,
         SameBucket,
     }
 
@@ -696,6 +700,7 @@ pub mod proposed_model {
     pub enum CanonicalSnsState {
         Active,
         Dissolving,
+        LiquidOrDissolved,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -738,14 +743,17 @@ pub mod proposed_model {
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum CohortProofState {
-        PrincipalProved,
+        CanonicalDissolving,
         DisbursementSubmitted,
-        ReturnProved,
+        PrincipalReturned,
+        MaturityHandled,
+        CleanupComplete,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct PassiveCohort {
         pub generation: u64,
+        pub child_neuron_id: u64,
         pub principal: u128,
         pub lifecycle: CohortLifecycle,
         pub proof: CohortProofState,
@@ -766,7 +774,6 @@ pub mod proposed_model {
     pub struct StickyOperationCounts {
         pub split_intents: u128,
         pub split_proofs: u128,
-        pub merge_proofs: u128,
         pub disbursement_proofs: u128,
         pub restake_proofs: u128,
     }
@@ -774,7 +781,6 @@ pub mod proposed_model {
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct StickyFeeTotals {
         pub split: u128,
-        pub merge: u128,
         pub disbursement: u128,
         pub restake: u128,
     }
@@ -782,8 +788,7 @@ pub mod proposed_model {
     impl StickyFeeTotals {
         pub fn total(self) -> Result<u128, ModelError> {
             self.split
-                .checked_add(self.merge)
-                .and_then(|value| value.checked_add(self.disbursement))
+                .checked_add(self.disbursement)
                 .and_then(|value| value.checked_add(self.restake))
                 .ok_or(ModelError::ArithmeticOverflow)
         }
@@ -791,7 +796,7 @@ pub mod proposed_model {
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum ReturnedLiquidityPlan {
-        LatestStateDissolving,
+        NoActiveMembersNeedRestake,
         RestoredWithoutTransfer {
             target: u128,
         },
@@ -830,11 +835,19 @@ pub mod proposed_model {
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum ActiveNnsCommand {
-        Split {
+        SplitCommitted {
             generation: u64,
             gross: u128,
-            started_at: u64,
-            dissolve_delay: u64,
+        },
+        SplitProved {
+            generation: u64,
+            child_neuron_id: u64,
+            principal: u128,
+        },
+        StartDissolvingCommitted {
+            generation: u64,
+            child_neuron_id: u64,
+            principal: u128,
         },
         Disburse {
             generation: u64,
@@ -856,6 +869,8 @@ pub mod proposed_model {
     }
 
     impl StickyUnwindModel {
+        pub const NNS_DISSOLVE_DELAY_SECONDS: u64 = 14 * 86_400;
+
         pub fn with_neurons(
             backing: Backing,
             neuron_count: usize,
@@ -880,10 +895,39 @@ pub mod proposed_model {
             state: CanonicalSnsState,
             observation: u64,
         ) -> Result<(), ModelError> {
-            let neuron = self
+            let generation = self
                 .neurons
-                .get_mut(neuron_index)
-                .ok_or(ModelError::InvalidTransition)?;
+                .get(neuron_index)
+                .ok_or(ModelError::InvalidTransition)?
+                .committed_generation;
+            if state == CanonicalSnsState::Dissolving
+                && self.neurons[neuron_index].status == StickyStatus::RestakePlanned
+            {
+                let intent = self
+                    .planned_restake
+                    .take()
+                    .filter(|intent| Some(intent.generation) == generation)
+                    .ok_or(ModelError::InvalidTransition)?;
+                for member in &mut self.neurons {
+                    if member.committed_generation == Some(intent.generation)
+                        && member.status == StickyStatus::RestakePlanned
+                    {
+                        member.status = StickyStatus::LiquidReturned;
+                    }
+                }
+            }
+            let returned = generation.is_some_and(|generation| {
+                self.cohorts.iter().any(|cohort| {
+                    cohort.generation == generation
+                        && matches!(
+                            cohort.proof,
+                            CohortProofState::PrincipalReturned
+                                | CohortProofState::MaturityHandled
+                                | CohortProofState::CleanupComplete
+                        )
+                })
+            });
+            let neuron = &mut self.neurons[neuron_index];
             neuron.latest_sns_state = state;
             match state {
                 CanonicalSnsState::Dissolving => {
@@ -895,10 +939,7 @@ pub mod proposed_model {
                             StickyStatus::ExitCommitted
                         }
                         StickyStatus::LiquidReturned => StickyStatus::LiquidReturned,
-                        StickyStatus::RestakePlanned => {
-                            self.planned_restake = None;
-                            StickyStatus::LiquidReturned
-                        }
+                        StickyStatus::RestakePlanned => StickyStatus::LiquidReturned,
                         StickyStatus::RestakeCommitted => StickyStatus::RestakeCommitted,
                         StickyStatus::RestakeProved => StickyStatus::RestakeProved,
                     };
@@ -918,60 +959,81 @@ pub mod proposed_model {
                         status => status,
                     };
                 }
+                CanonicalSnsState::LiquidOrDissolved => {
+                    neuron.reward_eligible_from_observation = None;
+                    if returned {
+                        neuron.committed_generation = None;
+                    }
+                    neuron.status = StickyStatus::ReentryPending;
+                }
             }
             Ok(())
         }
 
         pub fn submit_split_intent(
             &mut self,
-            neuron_index: usize,
+            neuron_indices: &[usize],
             gross: u128,
-            started_at: u64,
-            dissolve_delay: u64,
         ) -> Result<u64, ModelError> {
-            let neuron = self
-                .neurons
-                .get_mut(neuron_index)
-                .ok_or(ModelError::InvalidTransition)?;
-            if neuron.status != StickyStatus::ExitObserved
-                || neuron.latest_sns_state != CanonicalSnsState::Dissolving
-                || self.active_command.is_some()
-                || self.cohorts.len() >= self.max_passive_cohorts
+            if neuron_indices.is_empty() || self.active_command.is_some() {
+                return Err(ModelError::InvalidTransition);
+            }
+            if self.cohorts.len() >= self.max_passive_cohorts {
+                return Err(ModelError::CohortCapacityExhausted);
+            }
+            let mut unique = neuron_indices.to_vec();
+            unique.sort_unstable();
+            unique.dedup();
+            if unique.len() != neuron_indices.len()
+                || unique.iter().any(|index| {
+                    self.neurons.get(*index).is_none_or(|neuron| {
+                        neuron.status != StickyStatus::ExitObserved
+                            || neuron.latest_sns_state != CanonicalSnsState::Dissolving
+                    })
+                })
             {
                 return Err(ModelError::InvalidTransition);
             }
             let generation = self.next_generation;
+            if self
+                .cohorts
+                .iter()
+                .any(|cohort| cohort.generation == generation)
+            {
+                return Err(ModelError::DuplicateGeneration);
+            }
             self.next_generation = self
                 .next_generation
                 .checked_add(1)
                 .ok_or(ModelError::ArithmeticOverflow)?;
             self.backing = move_backing(self.backing, Bucket::Pooled, Bucket::Transit, gross, 0)?;
-            self.active_command = Some(ActiveNnsCommand::Split {
-                generation,
-                gross,
-                started_at,
-                dissolve_delay,
-            });
+            self.active_command = Some(ActiveNnsCommand::SplitCommitted { generation, gross });
             self.operations.split_intents = self
                 .operations
                 .split_intents
                 .checked_add(1)
                 .ok_or(ModelError::ArithmeticOverflow)?;
-            neuron.status = StickyStatus::ExitCommitted;
-            neuron.committed_generation = Some(generation);
+            for index in unique {
+                self.neurons[index].status = StickyStatus::ExitCommitted;
+                self.neurons[index].committed_generation = Some(generation);
+            }
             Ok(generation)
         }
 
-        pub fn prove_split(&mut self, exact_fee: u128) -> Result<(), ModelError> {
-            let (generation, gross, started_at, dissolve_delay) = match self.active_command {
-                Some(ActiveNnsCommand::Split {
-                    generation,
-                    gross,
-                    started_at,
-                    dissolve_delay,
-                }) => (generation, gross, started_at, dissolve_delay),
+        pub fn prove_split(
+            &mut self,
+            child_neuron_id: u64,
+            exact_fee: u128,
+        ) -> Result<(), ModelError> {
+            let (generation, gross) = match self.active_command {
+                Some(ActiveNnsCommand::SplitCommitted { generation, gross }) => (generation, gross),
                 _ => return Err(ModelError::InvalidTransition),
             };
+            if self.cohorts.iter().any(|cohort| {
+                cohort.child_neuron_id == child_neuron_id || cohort.generation == generation
+            }) {
+                return Err(ModelError::DuplicateChild);
+            }
             let credited = gross
                 .checked_sub(exact_fee)
                 .ok_or(ModelError::InsufficientBacking)?;
@@ -982,16 +1044,11 @@ pub mod proposed_model {
                 gross,
                 exact_fee,
             )?;
-            self.cohorts.push(PassiveCohort {
+            self.active_command = Some(ActiveNnsCommand::SplitProved {
                 generation,
+                child_neuron_id,
                 principal: credited,
-                lifecycle: CohortLifecycle::Dissolving,
-                proof: CohortProofState::PrincipalProved,
-                ready_at: started_at
-                    .checked_add(dissolve_delay)
-                    .ok_or(ModelError::ArithmeticOverflow)?,
             });
-            self.active_command = None;
             self.operations.split_proofs = self
                 .operations
                 .split_proofs
@@ -1003,6 +1060,94 @@ pub mod proposed_model {
                 .checked_add(exact_fee)
                 .ok_or(ModelError::ArithmeticOverflow)?;
             Ok(())
+        }
+
+        pub fn commit_start_dissolving(&mut self, generation: u64) -> Result<(), ModelError> {
+            let (child_neuron_id, principal) = match self.active_command {
+                Some(ActiveNnsCommand::SplitProved {
+                    generation: active_generation,
+                    child_neuron_id,
+                    principal,
+                }) if active_generation == generation => (child_neuron_id, principal),
+                _ => return Err(ModelError::InvalidTransition),
+            };
+            self.active_command = Some(ActiveNnsCommand::StartDissolvingCommitted {
+                generation,
+                child_neuron_id,
+                principal,
+            });
+            Ok(())
+        }
+
+        pub fn prove_start_dissolving_rejected(
+            &mut self,
+            generation: u64,
+            child_neuron_id: u64,
+        ) -> Result<(), ModelError> {
+            let principal = match self.active_command {
+                Some(ActiveNnsCommand::StartDissolvingCommitted {
+                    generation: active_generation,
+                    child_neuron_id: active_child,
+                    principal,
+                }) if active_generation == generation && active_child == child_neuron_id => {
+                    principal
+                }
+                _ => return Err(ModelError::ProofMismatch),
+            };
+            self.active_command = Some(ActiveNnsCommand::SplitProved {
+                generation,
+                child_neuron_id,
+                principal,
+            });
+            Ok(())
+        }
+
+        pub fn prove_start_dissolving(
+            &mut self,
+            generation: u64,
+            child_neuron_id: u64,
+            canonical_ready_at: u64,
+        ) -> Result<u64, ModelError> {
+            let principal = match self.active_command {
+                Some(ActiveNnsCommand::StartDissolvingCommitted {
+                    generation: active_generation,
+                    child_neuron_id: active_child,
+                    principal,
+                }) if active_generation == generation && active_child == child_neuron_id => {
+                    principal
+                }
+                _ => return Err(ModelError::ProofMismatch),
+            };
+            if self.cohorts.len() >= self.max_passive_cohorts {
+                return Err(ModelError::CohortCapacityExhausted);
+            }
+            if self
+                .cohorts
+                .iter()
+                .any(|cohort| cohort.generation == generation)
+            {
+                return Err(ModelError::DuplicateGeneration);
+            }
+            if self
+                .cohorts
+                .iter()
+                .any(|cohort| cohort.child_neuron_id == child_neuron_id)
+            {
+                return Err(ModelError::DuplicateChild);
+            }
+            let effective_start = canonical_ready_at
+                .checked_sub(Self::NNS_DISSOLVE_DELAY_SECONDS)
+                .ok_or(ModelError::ProofMismatch)?;
+            self.cohorts.push(PassiveCohort {
+                generation,
+                child_neuron_id,
+                principal,
+                lifecycle: CohortLifecycle::Dissolving,
+                proof: CohortProofState::CanonicalDissolving,
+                ready_at: canonical_ready_at,
+            });
+            self.active_command = None;
+            Ok(effective_start)
         }
 
         pub fn refresh_cohort_readiness(&mut self, now: u64) {
@@ -1028,7 +1173,7 @@ pub mod proposed_model {
                 .find(|cohort| cohort.generation == generation)
                 .ok_or(ModelError::InvalidTransition)?;
             if cohort.lifecycle != CohortLifecycle::Ready
-                || cohort.proof != CohortProofState::PrincipalProved
+                || cohort.proof != CohortProofState::CanonicalDissolving
             {
                 return Err(ModelError::InvalidTransition);
             }
@@ -1060,7 +1205,7 @@ pub mod proposed_model {
             )?;
             self.backing = next_backing;
             self.cohorts[cohort_index].lifecycle = CohortLifecycle::Returned;
-            self.cohorts[cohort_index].proof = CohortProofState::ReturnProved;
+            self.cohorts[cohort_index].proof = CohortProofState::PrincipalReturned;
             self.active_command = None;
             self.operations.disbursement_proofs = self
                 .operations
@@ -1102,7 +1247,12 @@ pub mod proposed_model {
                 .find(|cohort| cohort.generation == generation)
                 .ok_or(ModelError::InvalidTransition)?;
             if cohort.lifecycle != CohortLifecycle::Returned
-                || cohort.proof != CohortProofState::ReturnProved
+                || !matches!(
+                    cohort.proof,
+                    CohortProofState::PrincipalReturned
+                        | CohortProofState::MaturityHandled
+                        | CohortProofState::CleanupComplete
+                )
             {
                 return Err(ModelError::InvalidTransition);
             }
@@ -1117,11 +1267,13 @@ pub mod proposed_model {
             if matching.is_empty() {
                 return Err(ModelError::InvalidTransition);
             }
-            if matching
+            let active: Vec<usize> = matching
                 .iter()
-                .any(|index| self.neurons[*index].latest_sns_state == CanonicalSnsState::Dissolving)
-            {
-                return Ok(ReturnedLiquidityPlan::LatestStateDissolving);
+                .copied()
+                .filter(|index| self.neurons[*index].latest_sns_state == CanonicalSnsState::Active)
+                .collect();
+            if active.is_empty() {
+                return Ok(ReturnedLiquidityPlan::NoActiveMembersNeedRestake);
             }
 
             let backing = self.backing.claim_backing()?;
@@ -1166,7 +1318,7 @@ pub mod proposed_model {
                 fee: exact_restake_fee,
             };
             self.planned_restake = Some(intent);
-            for index in matching {
+            for index in active {
                 self.neurons[index].status = StickyStatus::RestakePlanned;
                 self.neurons[index].reward_eligible_from_observation = None;
             }
@@ -1196,7 +1348,9 @@ pub mod proposed_model {
             self.planned_restake = None;
             self.active_command = Some(ActiveNnsCommand::Restake(intent));
             for neuron in &mut self.neurons {
-                if neuron.committed_generation == Some(generation) {
+                if neuron.committed_generation == Some(generation)
+                    && neuron.latest_sns_state == CanonicalSnsState::Active
+                {
                     neuron.status = StickyStatus::RestakeCommitted;
                 }
             }
@@ -1240,7 +1394,9 @@ pub mod proposed_model {
                 .checked_add(intent.fee)
                 .ok_or(ModelError::ArithmeticOverflow)?;
             for neuron in &mut self.neurons {
-                if neuron.committed_generation == Some(generation) {
+                if neuron.committed_generation == Some(generation)
+                    && neuron.status == StickyStatus::RestakeCommitted
+                {
                     neuron.status = StickyStatus::RestakeProved;
                 }
             }
@@ -1254,18 +1410,22 @@ pub mod proposed_model {
         ) -> Result<(), ModelError> {
             let mut found = false;
             for neuron in &mut self.neurons {
-                if neuron.committed_generation == Some(generation) {
+                if neuron.committed_generation == Some(generation)
+                    && neuron.status == StickyStatus::RestakeProved
+                {
                     if neuron.status != StickyStatus::RestakeProved {
                         return Err(ModelError::InvalidTransition);
                     }
                     found = true;
                     neuron.reward_eligible_from_observation = None;
                     neuron.committed_generation = None;
-                    neuron.status = if neuron.latest_sns_state == CanonicalSnsState::Active {
-                        neuron.reward_eligible_from_observation = Some(next_reward_observation);
-                        StickyStatus::ActiveBacked
-                    } else {
-                        StickyStatus::ExitObserved
+                    neuron.status = match neuron.latest_sns_state {
+                        CanonicalSnsState::Active => {
+                            neuron.reward_eligible_from_observation = Some(next_reward_observation);
+                            StickyStatus::ActiveBacked
+                        }
+                        CanonicalSnsState::Dissolving => StickyStatus::ExitObserved,
+                        CanonicalSnsState::LiquidOrDissolved => StickyStatus::ReentryPending,
                     };
                 }
             }
@@ -1282,6 +1442,55 @@ pub mod proposed_model {
                 .find(|cohort| cohort.generation == generation)
         }
 
+        pub fn prove_child_maturity_handled(&mut self, generation: u64) -> Result<(), ModelError> {
+            let cohort = self
+                .cohorts
+                .iter_mut()
+                .find(|cohort| cohort.generation == generation)
+                .ok_or(ModelError::InvalidTransition)?;
+            if cohort.proof != CohortProofState::PrincipalReturned {
+                return Err(ModelError::InvalidTransition);
+            }
+            cohort.proof = CohortProofState::MaturityHandled;
+            Ok(())
+        }
+
+        pub fn prove_child_cleanup_complete(&mut self, generation: u64) -> Result<(), ModelError> {
+            let cohort = self
+                .cohorts
+                .iter_mut()
+                .find(|cohort| cohort.generation == generation)
+                .ok_or(ModelError::InvalidTransition)?;
+            if cohort.proof != CohortProofState::MaturityHandled {
+                return Err(ModelError::InvalidTransition);
+            }
+            cohort.proof = CohortProofState::CleanupComplete;
+            Ok(())
+        }
+
+        pub fn retire_cohort(&mut self, generation: u64) -> Result<PassiveCohort, ModelError> {
+            let index = self
+                .cohorts
+                .iter()
+                .position(|cohort| cohort.generation == generation)
+                .ok_or(ModelError::InvalidTransition)?;
+            let cohort = self.cohorts[index];
+            if cohort.lifecycle != CohortLifecycle::Returned
+                || cohort.proof != CohortProofState::CleanupComplete
+                || self
+                    .neurons
+                    .iter()
+                    .any(|neuron| neuron.committed_generation == Some(generation))
+                || self.active_command.is_some_and(|command| {
+                    command.generation() == generation
+                        || command.child_neuron_id() == Some(cohort.child_neuron_id)
+                })
+            {
+                return Err(ModelError::InvalidTransition);
+            }
+            Ok(self.cohorts.remove(index))
+        }
+
         fn restore_generation_without_transfer(
             &mut self,
             generation: u64,
@@ -1295,6 +1504,30 @@ pub mod proposed_model {
                     neuron.committed_generation = None;
                     neuron.reward_eligible_from_observation = Some(next_reward_observation);
                 }
+            }
+        }
+    }
+
+    impl ActiveNnsCommand {
+        fn generation(self) -> u64 {
+            match self {
+                Self::SplitCommitted { generation, .. }
+                | Self::SplitProved { generation, .. }
+                | Self::StartDissolvingCommitted { generation, .. }
+                | Self::Disburse { generation }
+                | Self::Restake(RestakeIntent { generation, .. }) => generation,
+            }
+        }
+
+        fn child_neuron_id(self) -> Option<u64> {
+            match self {
+                Self::SplitProved {
+                    child_neuron_id, ..
+                }
+                | Self::StartDissolvingCommitted {
+                    child_neuron_id, ..
+                } => Some(child_neuron_id),
+                _ => None,
             }
         }
     }
@@ -1319,6 +1552,50 @@ pub mod proposed_model {
             .and_then(|value| value.checked_add(input.max_disbursement_margin))
             .map(Some)
             .ok_or(ModelError::ArithmeticOverflow)
+    }
+
+    pub fn cohort_capacity_bound(
+        maximum_unresolved_cohort_lifetime: u64,
+        guaranteed_cohort_creation_interval: u64,
+        reviewed_operational_margin: u64,
+    ) -> Result<u64, ModelError> {
+        if guaranteed_cohort_creation_interval == 0 {
+            return Err(ModelError::InvalidTransition);
+        }
+        let rounded = maximum_unresolved_cohort_lifetime
+            .checked_add(guaranteed_cohort_creation_interval - 1)
+            .ok_or(ModelError::ArithmeticOverflow)?
+            / guaranteed_cohort_creation_interval;
+        rounded
+            .checked_add(reviewed_operational_margin)
+            .ok_or(ModelError::ArithmeticOverflow)
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct RewardCoverage {
+        pub backing_target: u128,
+        pub reward_target: u128,
+    }
+
+    pub fn require_reward_coverage(
+        active_backing: u128,
+        reward_eligible_active: u128,
+        backing: u128,
+        claims: u128,
+        pooled: u128,
+    ) -> Result<RewardCoverage, ModelError> {
+        if reward_eligible_active > active_backing {
+            return Err(ModelError::RewardActiveExceedsBacking);
+        }
+        let backing_target = target_pool(active_backing, backing, claims)?;
+        let reward_target = target_pool(reward_eligible_active, backing, claims)?;
+        if pooled < reward_target {
+            return Err(ModelError::RewardBackingUnderTarget);
+        }
+        Ok(RewardCoverage {
+            backing_target,
+            reward_target,
+        })
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1357,6 +1634,8 @@ pub mod proposed_model {
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum RedemptionReadiness {
+        EmptyGenesis,
+        BackingWithoutClaims { backing: u128 },
         AwaitLiquidity { gross_quote: u128 },
         Ready { gross_quote: u128, net_payout: u128 },
     }
@@ -1367,11 +1646,16 @@ pub mod proposed_model {
         claim_supply: u128,
         payout_fee: u128,
     ) -> Result<RedemptionReadiness, ModelError> {
-        if claim_supply == 0 {
-            return Err(ModelError::ZeroClaimSupply);
+        let claim_backing = backing.claim_backing()?;
+        match claim_rate(claim_backing, claim_supply)? {
+            ClaimRate::EmptyGenesis => return Ok(RedemptionReadiness::EmptyGenesis),
+            ClaimRate::BackingWithoutClaims { backing } => {
+                return Ok(RedemptionReadiness::BackingWithoutClaims { backing });
+            }
+            ClaimRate::Ratio { .. } => {}
         }
         let gross_quote = io_amount
-            .checked_mul(backing.claim_backing()?)
+            .checked_mul(claim_backing)
             .ok_or(ModelError::ArithmeticOverflow)?
             / claim_supply;
         if backing.liquid < gross_quote {
@@ -2261,7 +2545,7 @@ mod tests {
     const DAY: u64 = 86_400;
     const TWO_WEEK_DELAY: u64 = 14 * DAY;
 
-    fn sticky_base(neuron_count: usize) -> StickyUnwindModel {
+    fn sticky_base(neuron_count: usize, capacity: usize) -> StickyUnwindModel {
         StickyUnwindModel::with_neurons(
             Backing {
                 liquid: 500,
@@ -2269,35 +2553,36 @@ mod tests {
                 ..Backing::default()
             },
             neuron_count,
-            2,
+            capacity,
         )
     }
 
     fn commit_cohort(
         model: &mut StickyUnwindModel,
-        neuron_index: usize,
-        observation: u64,
-        started_at: u64,
+        neuron_indices: &[usize],
+        child_neuron_id: u64,
+        ready_at: u64,
     ) -> u64 {
-        model
-            .observe_sns(neuron_index, CanonicalSnsState::Dissolving, observation)
-            .unwrap();
-        let generation = model
-            .submit_split_intent(neuron_index, 110, started_at, TWO_WEEK_DELAY)
-            .unwrap();
-        model.prove_split(10).unwrap();
+        for index in neuron_indices {
+            model
+                .observe_sns(*index, CanonicalSnsState::Dissolving, 1)
+                .unwrap();
+        }
+        let generation = model.submit_split_intent(neuron_indices, 110).unwrap();
+        model.prove_split(child_neuron_id, 10).unwrap();
+        model.commit_start_dissolving(generation).unwrap();
+        assert_eq!(
+            model
+                .prove_start_dissolving(generation, child_neuron_id, ready_at)
+                .unwrap(),
+            ready_at - TWO_WEEK_DELAY
+        );
         generation
     }
 
-    fn returned_active_cohort() -> (StickyUnwindModel, u64) {
-        let mut model = sticky_base(1);
-        let generation = commit_cohort(&mut model, 0, 1, 0);
-        model.observe_sns(0, CanonicalSnsState::Active, 2).unwrap();
-        model
-            .submit_child_disbursement(generation, TWO_WEEK_DELAY)
-            .unwrap();
+    fn return_cohort(model: &mut StickyUnwindModel, generation: u64, now: u64) {
+        model.submit_child_disbursement(generation, now).unwrap();
         model.prove_child_disbursement(generation, 10).unwrap();
-        (model, generation)
     }
 
     fn returned_liquidity_input(
@@ -2318,256 +2603,324 @@ mod tests {
     }
 
     #[test]
-    fn precommit_cancellation_is_fee_free_and_not_retroactively_eligible() {
-        let mut model = sticky_base(1);
-        let initial = model.backing;
-        assert!(model.neurons[0].reward_eligible_at(0));
-        model
-            .observe_sns(0, CanonicalSnsState::Dissolving, 1)
-            .unwrap();
-        assert_eq!(model.neurons[0].status, StickyStatus::ExitObserved);
-        model.observe_sns(0, CanonicalSnsState::Active, 2).unwrap();
-        assert_eq!(model.neurons[0].status, StickyStatus::ActiveBacked);
-        assert!(!model.neurons[0].reward_eligible_at(2));
-        assert!(model.neurons[0].reward_eligible_at(3));
-        assert_eq!(model.backing, initial);
+    fn split_and_start_dissolving_are_distinct_recoverable_active_phases() {
+        let mut model = sticky_base(3, 2);
+        for index in 0..3 {
+            model
+                .observe_sns(index, CanonicalSnsState::Dissolving, 1)
+                .unwrap();
+        }
+        let generation = model.submit_split_intent(&[0, 1, 2], 110).unwrap();
+        assert_eq!(generation, 0);
         assert!(model.cohorts.is_empty());
-        assert_eq!(model.operations, StickyOperationCounts::default());
-        assert_eq!(model.fees.total(), Ok(0));
+        model.prove_split(7_001, 10).unwrap();
+        assert_eq!(
+            model.active_command,
+            Some(ActiveNnsCommand::SplitProved {
+                generation,
+                child_neuron_id: 7_001,
+                principal: 100,
+            })
+        );
+        assert!(model.cohorts.is_empty());
+
+        model.commit_start_dissolving(generation).unwrap();
+        assert!(matches!(
+            model.active_command,
+            Some(ActiveNnsCommand::StartDissolvingCommitted { .. })
+        ));
+        model
+            .prove_start_dissolving_rejected(generation, 7_001)
+            .unwrap();
+        assert!(matches!(
+            model.active_command,
+            Some(ActiveNnsCommand::SplitProved { .. })
+        ));
+        model.commit_start_dissolving(generation).unwrap();
+        assert_eq!(
+            model.prove_start_dissolving(generation, 7_002, TWO_WEEK_DELAY + 37),
+            Err(ModelError::ProofMismatch)
+        );
+        assert!(
+            model.active_command.is_some(),
+            "callback loss retains the slot"
+        );
+        let effective_start = model
+            .prove_start_dissolving(generation, 7_001, TWO_WEEK_DELAY + 37)
+            .unwrap();
+        assert_eq!(effective_start, 37);
+        assert_eq!(model.cohorts.len(), 1);
+        assert_eq!(
+            model.cohort(generation).unwrap().ready_at,
+            TWO_WEEK_DELAY + 37
+        );
+        assert!(model.active_command.is_none());
+        assert!(model
+            .neurons
+            .iter()
+            .all(|neuron| neuron.committed_generation == Some(generation)));
     }
 
     #[test]
-    fn overlapping_passive_cohorts_keep_independent_ready_times_and_global_liquidity() {
-        let mut model = sticky_base(2);
-        let generation_a = commit_cohort(&mut model, 0, 1, 0);
-        let generation_b = commit_cohort(&mut model, 1, 2, DAY);
-        assert_eq!((generation_a, generation_b), (0, 1));
-        assert_eq!(model.cohorts.len(), 2);
-        assert_eq!(model.backing.pending_unwind, 200);
-
-        model.observe_sns(0, CanonicalSnsState::Active, 3).unwrap();
-        assert_eq!(model.neurons[0].status, StickyStatus::ReentryPending);
-        model.observe_sns(1, CanonicalSnsState::Active, 4).unwrap();
+    fn overlapping_cohorts_have_independent_canonical_clocks_and_pooled_returns() {
+        let mut model = sticky_base(2, 2);
+        let a = commit_cohort(&mut model, &[0], 7_001, TWO_WEEK_DELAY);
         model
-            .observe_sns(1, CanonicalSnsState::Dissolving, 5)
+            .observe_sns(1, CanonicalSnsState::Dissolving, 2)
             .unwrap();
-        assert_eq!(model.neurons[1].status, StickyStatus::ExitCommitted);
-        assert_eq!(model.operations.split_intents, 2);
+        model.next_generation = a;
         assert_eq!(
-            model.submit_split_intent(1, 110, 2 * DAY, TWO_WEEK_DELAY),
-            Err(ModelError::InvalidTransition)
+            model.submit_split_intent(&[1], 110),
+            Err(ModelError::DuplicateGeneration)
         );
-
+        model.next_generation = a + 1;
+        let b = model.submit_split_intent(&[1], 110).unwrap();
+        assert_eq!(
+            model.prove_split(7_001, 10),
+            Err(ModelError::DuplicateChild)
+        );
+        model.prove_split(7_002, 10).unwrap();
+        model.commit_start_dissolving(b).unwrap();
+        model
+            .prove_start_dissolving(b, 7_002, TWO_WEEK_DELAY + DAY)
+            .unwrap();
         model.refresh_cohort_readiness(TWO_WEEK_DELAY);
+        assert_eq!(model.cohort(a).unwrap().lifecycle, CohortLifecycle::Ready);
         assert_eq!(
-            model.cohort(generation_a).unwrap().lifecycle,
-            CohortLifecycle::Ready
-        );
-        assert_eq!(
-            model.cohort(generation_b).unwrap().lifecycle,
+            model.cohort(b).unwrap().lifecycle,
             CohortLifecycle::Dissolving
         );
-        model
-            .submit_child_disbursement(generation_a, TWO_WEEK_DELAY)
-            .unwrap();
-        assert_eq!(
-            model.submit_child_disbursement(generation_b, TWO_WEEK_DELAY + DAY),
-            Err(ModelError::InvalidTransition),
-            "only one NNS command may be active"
-        );
-        model.prove_child_disbursement(generation_a, 10).unwrap();
-        assert_eq!(
-            model.cohort(generation_a).unwrap().lifecycle,
-            CohortLifecycle::Returned
-        );
-        assert_eq!(
-            model.cohort(generation_b).unwrap().lifecycle,
-            CohortLifecycle::Dissolving
-        );
+        return_cohort(&mut model, a, TWO_WEEK_DELAY);
         assert_eq!(
             (model.backing.liquid, model.backing.pending_unwind),
             (590, 100)
         );
-        model.refresh_cohort_readiness(TWO_WEEK_DELAY + DAY);
         assert_eq!(
-            model.cohort(generation_b).unwrap().lifecycle,
-            CohortLifecycle::Ready
+            model.cohort(b).unwrap().lifecycle,
+            CohortLifecycle::Dissolving
         );
-        model
-            .submit_child_disbursement(generation_b, TWO_WEEK_DELAY + DAY)
-            .unwrap();
-        model.prove_child_disbursement(generation_b, 10).unwrap();
-        assert_eq!(
-            model.cohort(generation_b).unwrap().lifecycle,
-            CohortLifecycle::Returned
-        );
+        return_cohort(&mut model, b, TWO_WEEK_DELAY + DAY);
         assert_eq!(
             (model.backing.liquid, model.backing.pending_unwind),
             (680, 0)
         );
-        assert_eq!(model.operations.split_intents, 2);
-        assert_eq!(model.operations.merge_proofs, 0);
     }
 
     #[test]
-    fn reentry_requires_target_credit_but_exact_and_over_target_need_no_transfer() {
-        for (active_backing, expected_target) in [(398, 390), (300, 294)] {
-            let (mut model, generation) = returned_active_cohort();
-            assert_eq!(
-                model
-                    .plan_returned_liquidity(returned_liquidity_input(
-                        generation,
-                        active_backing,
-                        1,
-                        10,
-                    ))
-                    .unwrap(),
-                ReturnedLiquidityPlan::RestoredWithoutTransfer {
-                    target: expected_target,
-                }
-            );
-            assert!(!model.neurons[0].reward_eligible_at(9));
-            assert!(model.neurons[0].reward_eligible_at(10));
-            assert_eq!(model.operations.restake_proofs, 0);
-        }
+    fn aggregate_generation_processes_active_and_dissolving_members_separately() {
+        let mut model = sticky_base(3, 2);
+        let generation = commit_cohort(&mut model, &[0, 1, 2], 8_001, TWO_WEEK_DELAY);
+        model.observe_sns(1, CanonicalSnsState::Active, 2).unwrap();
+        model.observe_sns(2, CanonicalSnsState::Active, 2).unwrap();
+        model
+            .observe_sns(2, CanonicalSnsState::Dissolving, 3)
+            .unwrap();
+        assert_eq!(model.operations.split_intents, 1);
+        assert_eq!(model.cohorts.len(), 1);
+        assert!(model.neurons.iter().all(|member| {
+            member.committed_generation == Some(generation) && !member.reward_eligible_at(u64::MAX)
+        }));
 
-        let (mut fee_tolerated, fee_generation) = returned_active_cohort();
+        return_cohort(&mut model, generation, TWO_WEEK_DELAY);
         assert_eq!(
-            fee_tolerated
-                .plan_returned_liquidity(returned_liquidity_input(fee_generation, 407, 1, 10,))
+            model
+                .plan_returned_liquidity(returned_liquidity_input(generation, 398, 1, 10))
                 .unwrap(),
-            ReturnedLiquidityPlan::Hold {
-                target: 394,
-                required_credit: 4,
-                tolerance: 10,
-                reason: HoldReason::FeeTolerance,
-            }
+            ReturnedLiquidityPlan::RestoredWithoutTransfer { target: 390 }
         );
-        assert!(!fee_tolerated.neurons[0].reward_eligible_at(u64::MAX));
+        assert!(model.neurons[1].reward_eligible_at(10));
+        assert_eq!(model.neurons[1].committed_generation, None);
+        assert!(!model.neurons[0].reward_eligible_at(u64::MAX));
+        assert!(!model.neurons[2].reward_eligible_at(u64::MAX));
+        assert_eq!(model.operations.split_intents, 1);
 
-        let (mut minimum_tolerated, minimum_generation) = returned_active_cohort();
-        assert_eq!(
-            minimum_tolerated
-                .plan_returned_liquidity(
-                    returned_liquidity_input(minimum_generation, 500, 100, 10,)
-                )
-                .unwrap(),
-            ReturnedLiquidityPlan::Hold {
-                target: 485,
-                required_credit: 95,
-                tolerance: 99,
-                reason: HoldReason::BelowMinimumStake,
-            }
-        );
-        assert!(!minimum_tolerated.neurons[0].reward_eligible_at(u64::MAX));
-    }
-
-    #[test]
-    fn restake_plan_is_discardable_but_committed_ambiguous_effect_must_be_proved() {
-        let (mut planned, generation) = returned_active_cohort();
-        let before_plan = planned.backing;
+        model.observe_sns(2, CanonicalSnsState::Active, 11).unwrap();
         assert!(matches!(
-            planned.plan_returned_liquidity(returned_liquidity_input(generation, 500, 1, 4,)),
+            model.plan_returned_liquidity(returned_liquidity_input(generation, 500, 1, 12)),
+            Ok(ReturnedLiquidityPlan::Restake { .. })
+        ));
+        model
+            .observe_sns(2, CanonicalSnsState::Dissolving, 12)
+            .unwrap();
+        assert!(model.planned_restake.is_none());
+        assert_eq!(model.operations.split_intents, 1);
+
+        model
+            .observe_sns(0, CanonicalSnsState::LiquidOrDissolved, 13)
+            .unwrap();
+        model
+            .observe_sns(2, CanonicalSnsState::LiquidOrDissolved, 13)
+            .unwrap();
+        assert!(model
+            .neurons
+            .iter()
+            .all(|member| member.committed_generation.is_none()));
+        assert!(!model.neurons[0].reward_eligible_at(u64::MAX));
+        assert!(!model.neurons[2].reward_eligible_at(u64::MAX));
+        model.observe_sns(0, CanonicalSnsState::Active, 14).unwrap();
+        assert_eq!(model.neurons[0].status, StickyStatus::ReentryPending);
+        assert_eq!(model.neurons[0].committed_generation, None);
+    }
+
+    #[test]
+    fn cohort_retirement_requires_return_maturity_cleanup_and_no_references() {
+        let mut model = sticky_base(2, 1);
+        let generation = commit_cohort(&mut model, &[0], 9_001, TWO_WEEK_DELAY);
+        assert_eq!(
+            model.submit_split_intent(&[1], 110),
+            Err(ModelError::CohortCapacityExhausted)
+        );
+        return_cohort(&mut model, generation, TWO_WEEK_DELAY);
+        assert_eq!(
+            model.retire_cohort(generation),
+            Err(ModelError::InvalidTransition),
+            "returned but uncleaned remains live"
+        );
+        model.prove_child_maturity_handled(generation).unwrap();
+        model.prove_child_cleanup_complete(generation).unwrap();
+        assert_eq!(
+            model.retire_cohort(generation),
+            Err(ModelError::InvalidTransition),
+            "a referenced cleaned cohort remains live"
+        );
+        model
+            .observe_sns(1, CanonicalSnsState::Dissolving, 2)
+            .unwrap();
+        assert_eq!(
+            model.submit_split_intent(&[1], 110),
+            Err(ModelError::CohortCapacityExhausted)
+        );
+        model
+            .observe_sns(0, CanonicalSnsState::LiquidOrDissolved, 2)
+            .unwrap();
+        let before = (model.backing, model.neurons.clone());
+        let retired = model.retire_cohort(generation).unwrap();
+        assert_eq!((retired.generation, retired.child_neuron_id), (0, 9_001));
+        assert_eq!((model.backing, model.neurons.clone()), before);
+
+        let next = commit_cohort(&mut model, &[1], 9_002, TWO_WEEK_DELAY + DAY);
+        assert_eq!(next, generation + 1);
+        assert_eq!(model.cohorts.len(), 1);
+    }
+
+    #[test]
+    fn aggregate_restake_commit_is_irreversible_and_counted_once() {
+        let mut model = sticky_base(2, 2);
+        let generation = commit_cohort(&mut model, &[0, 1], 10_001, TWO_WEEK_DELAY);
+        model.observe_sns(0, CanonicalSnsState::Active, 2).unwrap();
+        model.observe_sns(1, CanonicalSnsState::Active, 2).unwrap();
+        return_cohort(&mut model, generation, TWO_WEEK_DELAY);
+        assert!(matches!(
+            model.plan_returned_liquidity(returned_liquidity_input(generation, 500, 1, 4)),
             Ok(ReturnedLiquidityPlan::Restake {
                 credited: 95,
                 source_debit: 105,
                 ..
             })
         ));
-        assert_eq!(planned.neurons[0].status, StickyStatus::RestakePlanned);
-        planned
-            .observe_sns(0, CanonicalSnsState::Dissolving, 3)
+        model.commit_restake(generation).unwrap();
+        model
+            .observe_sns(1, CanonicalSnsState::Dissolving, 3)
             .unwrap();
-        assert_eq!(planned.planned_restake, None);
-        assert_eq!(planned.backing, before_plan);
-        assert_eq!(planned.neurons[0].status, StickyStatus::LiquidReturned);
-
-        let (mut committed, generation) = returned_active_cohort();
-        committed
-            .plan_returned_liquidity(returned_liquidity_input(generation, 500, 1, 4))
-            .unwrap();
-        committed.commit_restake(generation).unwrap();
+        assert_eq!(model.neurons[1].status, StickyStatus::RestakeCommitted);
         assert_eq!(
-            (committed.backing.liquid, committed.backing.transit),
-            (485, 105)
-        );
-        committed
-            .observe_sns(0, CanonicalSnsState::Dissolving, 3)
-            .unwrap();
-        assert_eq!(committed.neurons[0].status, StickyStatus::RestakeCommitted);
-        assert_eq!(
-            committed.commit_restake(generation),
-            Err(ModelError::InvalidTransition)
-        );
-        assert_eq!(
-            committed.prove_restake(generation, 94),
+            model.prove_restake(generation, 94),
             Err(ModelError::ProofMismatch)
         );
-        assert_eq!(committed.backing.transit, 105);
-        committed.prove_restake(generation, 95).unwrap();
-        assert_eq!(committed.neurons[0].status, StickyStatus::RestakeProved);
+        assert_eq!(model.backing.transit, 105);
+        model.prove_restake(generation, 95).unwrap();
+        assert_eq!(model.operations.restake_proofs, 1);
         assert_eq!(
-            (committed.backing.transit, committed.backing.pooled),
-            (0, 485)
+            model.prove_restake(generation, 95),
+            Err(ModelError::InvalidTransition)
         );
-        assert_eq!(committed.operations.restake_proofs, 1);
-        committed.finish_restake(generation, 4).unwrap();
-        assert_eq!(committed.neurons[0].status, StickyStatus::ExitObserved);
-        assert!(!committed.neurons[0].reward_eligible_at(u64::MAX));
-        let next_generation = committed
-            .submit_split_intent(0, 110, 20 * DAY, TWO_WEEK_DELAY)
-            .unwrap();
-        assert_eq!(next_generation, generation + 1);
+        model.finish_restake(generation, 4).unwrap();
+        assert!(model.neurons[0].reward_eligible_at(4));
+        assert_eq!(model.neurons[1].status, StickyStatus::ExitObserved);
+        assert!(!model.neurons[1].reward_eligible_at(u64::MAX));
+        let next = model.submit_split_intent(&[1], 110).unwrap();
+        assert_eq!(next, generation + 1);
     }
 
     #[test]
-    fn mixed_generations_remain_ineligible_until_global_target_is_fully_restored() {
-        let mut model = sticky_base(2);
-        let generation_a = commit_cohort(&mut model, 0, 1, 2 * DAY);
-        let generation_b = commit_cohort(&mut model, 1, 2, 0);
-        model.observe_sns(1, CanonicalSnsState::Active, 3).unwrap();
-        assert_eq!(model.neurons[1].status, StickyStatus::ReentryPending);
-        model
-            .submit_child_disbursement(generation_b, TWO_WEEK_DELAY)
-            .unwrap();
-        model.prove_child_disbursement(generation_b, 10).unwrap();
-
+    fn reward_coverage_separates_structural_backing_from_reward_eligibility() {
         assert_eq!(
-            model.cohort(generation_a).unwrap().lifecycle,
-            CohortLifecycle::Dissolving
+            require_reward_coverage(50, 0, 1_000, 1_000, 0),
+            Ok(RewardCoverage {
+                backing_target: 50,
+                reward_target: 0,
+            }),
+            "below-minimum structural stake is backed but earns no rewards"
         );
         assert_eq!(
-            model.cohort(generation_b).unwrap().lifecycle,
-            CohortLifecycle::Returned
+            require_reward_coverage(600, 500, 1_000, 1_000, 500),
+            Ok(RewardCoverage {
+                backing_target: 600,
+                reward_target: 500,
+            }),
+            "pending re-entry is excluded while existing eligibility stays covered"
         );
-        assert!(!model.neurons[0].reward_eligible_at(u64::MAX));
-        assert!(!model.neurons[1].reward_eligible_at(u64::MAX));
-
-        model.backing =
-            move_backing(model.backing, Bucket::Liquid, Bucket::Pooled, 100, 0).unwrap();
         assert_eq!(
-            (model.backing.pooled, target_pool(500, 970, 1_000).unwrap()),
-            (380, 485)
+            require_reward_coverage(500, 500, 1_000, 1_000, 499),
+            Err(ModelError::RewardBackingUnderTarget)
         );
-        assert!(!model.neurons[1].reward_eligible_at(u64::MAX));
-
-        model.backing =
-            move_backing(model.backing, Bucket::Liquid, Bucket::Pooled, 105, 0).unwrap();
-        assert_eq!(model.backing.pooled, 485);
+        for pooled in [500, 501] {
+            assert!(require_reward_coverage(500, 500, 1_000, 1_000, pooled).is_ok());
+        }
         assert_eq!(
-            model
-                .plan_returned_liquidity(returned_liquidity_input(generation_b, 500, 1, 20,))
-                .unwrap(),
-            ReturnedLiquidityPlan::RestoredWithoutTransfer { target: 485 }
+            require_reward_coverage(600, 600, 1_000, 1_000, 599),
+            Err(ModelError::RewardBackingUnderTarget),
+            "re-entry cannot join A_reward until its expanded target is covered"
         );
-        assert!(!model.neurons[0].reward_eligible_at(u64::MAX));
-        assert!(!model.neurons[1].reward_eligible_at(19));
-        assert!(model.neurons[1].reward_eligible_at(20));
-        assert_eq!(model.operations.restake_proofs, 0);
+        assert!(require_reward_coverage(600, 600, 1_000, 1_000, 600).is_ok());
+        assert_eq!(
+            require_reward_coverage(500, 501, 1_000, 1_000, 501),
+            Err(ModelError::RewardActiveExceedsBacking)
+        );
     }
 
     #[test]
-    fn candidate_liquidity_bound_is_formula_derived_and_unresolved_without_cadence() {
+    fn redemption_uses_strict_economic_state_validation() {
+        let uncovered = Backing::default();
+        for fee in [0, 10] {
+            assert_eq!(
+                redemption_readiness(100, uncovered, 1_000, fee),
+                Err(ModelError::UncoveredClaims)
+            );
+        }
+        assert_eq!(
+            redemption_readiness(
+                0,
+                Backing {
+                    liquid: 100,
+                    ..Backing::default()
+                },
+                0,
+                10,
+            ),
+            Ok(RedemptionReadiness::BackingWithoutClaims { backing: 100 })
+        );
+        assert_eq!(
+            redemption_readiness(0, Backing::default(), 0, 0),
+            Ok(RedemptionReadiness::EmptyGenesis)
+        );
+        assert_eq!(
+            redemption_readiness(
+                200,
+                Backing {
+                    liquid: 100,
+                    pooled: 900,
+                    ..Backing::default()
+                },
+                1_000,
+                10,
+            ),
+            Ok(RedemptionReadiness::AwaitLiquidity { gross_quote: 200 })
+        );
+    }
+
+    #[test]
+    fn cadence_and_capacity_bounds_remain_formula_derived() {
         let unresolved = LiquidityLagInputs {
             guaranteed_reconciliation_cadence: None,
             nns_dissolve_delay: TWO_WEEK_DELAY,
@@ -2576,18 +2929,16 @@ mod tests {
             max_disbursement_margin: DAY,
         };
         assert_eq!(liquidity_lag_bound(unresolved), Ok(None));
-
         let candidate = LiquidityLagInputs {
             guaranteed_reconciliation_cadence: Some(DAY),
             ..unresolved
         };
         assert_eq!(liquidity_lag_bound(candidate), Ok(Some(18 * DAY)));
+        assert_eq!(cohort_capacity_bound(18 * DAY, DAY, 2), Ok(20));
+        assert_eq!(cohort_capacity_bound(DAY + 1, DAY, 0), Ok(2));
         assert_eq!(
-            liquidity_lag_bound(LiquidityLagInputs {
-                guaranteed_reconciliation_cadence: Some(u64::MAX),
-                ..candidate
-            }),
-            Err(ModelError::ArithmeticOverflow)
+            cohort_capacity_bound(DAY, 0, 0),
+            Err(ModelError::InvalidTransition)
         );
     }
 
@@ -2601,9 +2952,5 @@ mod tests {
             assert_eq!(fees.sticky_unwind, 30);
             assert!(fees.immediate_mirroring > fees.sticky_unwind);
         }
-        assert_eq!(
-            lifecycle_fee_comparison(u128::MAX, 1, 1, 1, 1),
-            Err(ModelError::ArithmeticOverflow)
-        );
     }
 }

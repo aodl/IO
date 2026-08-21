@@ -60,6 +60,24 @@ remain structurally active for solvency while reward-ineligible because its
 exit or re-entry proof is incomplete. Reward eligibility is a separate
 prospective policy and never changes historical reward observations.
 
+The reward gate is a separate fail-closed coverage check:
+
+```text
+A_reward <= A_backing <= C
+backing_target = floor(A_backing * B / C)
+reward_target = floor(A_reward * B / C)
+reward allocation permitted only when P >= reward_target
+```
+
+`backing_target` remains the physical reconciliation target. `A_reward` is
+derived from the bounded per-neuron eligibility records; it is not a second
+stored aggregate. Initial structurally active stake below the pooled-parent
+minimum remains in `A_backing` but not `A_reward`. A pending re-entry remains
+outside `A_reward` until adding it still leaves `P>=reward_target`. Existing
+eligible stake may continue only while its own reward target is covered. A
+shortfall pauses reward processing; exact or over-target coverage permits only
+prospective rewards, never retroactive rewards.
+
 ## Unified post-event allocation
 
 Every event supplies actual values, not source-based destination percentages:
@@ -373,20 +391,47 @@ the existing canonical reconciliation cadence nets start/cancel observations
 into one latest target delta. A cancellation can therefore remove an
 `ExitObserved` state without an NNS call or fee. No new scheduler is required.
 
-Submission of the exact split transfer intent is the commit point. It freezes
-the gross amount from `P` into `T` without charging a fee. Canonical split proof
-moves the credited child principal from `T` into `U`, charges the exact split
-fee once, and creates one bounded passive aggregate cohort. A cohort contains
-only its deterministic generation, aggregate principal, lifecycle/proof state,
-and ready-at time. There is no user-to-child ownership map, child ID in a
-per-neuron record, or per-user principal attribution. A per-neuron sticky status
-may reference only the committed generation.
+Submission of the exact split transfer intent is the split commit point. It
+freezes the aggregate gross amount from `P` into `T` without assigning any
+amount to a member neuron. The single active NNS slot then progresses through:
 
-One NNS command remains active at a time, but already-proved cohorts are passive
-and multiple generations may dissolve concurrently. From each commit point its
-child completes the 14-day dissolve relative to that cohort's own start time and
-disburses to global `L`, even if the referenced SNS neuron cancels dissolve.
-Cancellation does not stop or merge a child.
+```text
+SplitCommitted { generation, gross }
+SplitProved { generation, child_neuron_id, principal }
+StartDissolvingCommitted { generation, child_neuron_id, principal }
+```
+
+Canonical split proof moves the credited child principal from `T` into `U` and
+charges the exact split fee once, but it does **not** create a passive cohort or
+release the active slot. The child is initially non-dissolving with the
+inherited exact 14-day delay; the dissolve clock has not begun.
+`StartDissolving` is a separate command. Only a canonical Governance
+observation of `WhenDissolvedTimestampSeconds(ready_at)` creates:
+
+```text
+PassiveCohort {
+  generation,
+  child_neuron_id,
+  principal,
+  ready_at,
+  lifecycle/proof_state
+}
+```
+
+The effective start is derived as `ready_at - 1,209,600`; it is never supplied
+by a caller. A rejected `StartDissolving` leaves `SplitProved` available for a
+retry. Callback loss leaves `StartDissolvingCommitted` until canonical
+Governance state proves the exact child is dissolving. The active slot is
+released only by that proof.
+
+The child ID belongs only to the active aggregate operation and live aggregate
+cohort. Per-neuron state carries only a generation marker; there is no
+user-to-child map or per-user principal attribution. One aggregate generation
+may include several `ExitObserved` SNS neurons. One NNS command remains active
+at a time, while proved cohorts are passive and multiple generations may
+dissolve concurrently. Each child completes relative to its own canonical
+StartDissolving time and returns principal to global `L`, even if any member
+cancels dissolve. Cancellation does not stop, merge, or duplicate the child.
 
 The minimum conceptual states and transitions are:
 
@@ -403,6 +448,7 @@ The minimum conceptual states and transitions are:
 | `RestakeCommitted` | Exact cached-principal credit proved -> `RestakeProved` | `T -> P`, fee counted once even after callback loss |
 | `RestakeProved` | Latest state active -> `ActiveBacked` | Eligible prospectively from the next canonical reward observation |
 | `RestakeProved` | Latest state dissolving -> `ExitObserved` | Restake remains counted; later net reconciliation may commit a new unwind generation |
+| Completed exit reference | Canonical `LiquidOrDissolved` | Remains ineligible; clear the completed generation marker, and treat later staking as fresh structural activation |
 
 If the latest state is dissolving at or before returned-liquidity planning, the
 value remains in `L`. `RestakePlanned` may be discarded if a new dissolving
@@ -414,6 +460,14 @@ requires one. Callback loss therefore cannot double-submit or double-count the
 restake. Repeated start/cancel observations for the same committed generation
 change only latest state and bounded eligibility status; they do not create a
 second child for that generation.
+
+Aggregate returned-liquidity planning processes the active and dissolving
+subsets independently. An active member may complete re-entry while another
+member of the same generation remains dissolving. A dissolving member remains
+ineligible and does not block the active subset. A re-dissolve before
+`RestakeCommitted` cancels only the plan; after commit the exact transfer must
+be proved and counted once, and the new dissolving state is handled by the next
+reconciliation.
 
 Reward eligibility uses the smallest bounded representation available in the
 future state design: a status plus an `eligible_from` canonical observation or
@@ -453,35 +507,71 @@ the 95 credit is proved.
 
 This remains aggregate when cohorts differ. The executable overlap has cohort A
 committed on day 0 and cohort B on day 1 while A is still dissolving. Both
-children coexist, become ready relative to their own start times, and return to
-shared `L`. Cancellation in A does not reverse A. Cancel/re-dissolve in B does
-not create another B child. Disbursing A neither erases nor delays B. A mixed
-eligibility scenario retains one dissolving generation while a canceled,
-returned generation sees partial target restoration and remains ineligible;
-only later `P>=target` restores that generation prospectively. No ICP child,
-e8s range or transfer is assigned to a user or SNS neuron.
+children coexist, become ready from their separately proved canonical clocks,
+and return to shared `L`. Cancellation in A does not reverse A.
+Cancel/re-dissolve in B does not create another B child. Disbursing A neither
+erases nor delays B.
+
+The aggregate membership fixture commits three SNS neurons in one generation
+and one child. A stays dissolving, B cancels, and C cancels then dissolves
+again. All three store the same generation and no principal amount. On return,
+B completes re-entry independently; A and C stay ineligible without blocking
+B. C's re-dissolve cancels an unsubmitted restake plan without another split.
+`LiquidOrDissolved` clears A and C's completed generation references while
+keeping them ineligible; later staking is a fresh structural activation. No
+ICP child, e8s range, or transfer is assigned to a user or SNS neuron.
+
+### Cohort retirement
+
+The bounded collection counts live unresolved cohorts, not history. A cohort
+may be removed only after all five facts hold:
+
+1. principal return is canonically proved;
+2. child maturity has been moved to the parent or proved zero;
+3. child cleanup is complete;
+4. no SNS eligibility record references the generation; and
+5. no active command references the generation or child ID.
+
+Returned-but-uncleaned and cleaned-but-referenced cohorts continue consuming
+capacity. Retirement removes only the resolved record; it changes neither
+`B`, `P`, `U`, `T` nor reward eligibility. The freed live slot may be reused by
+a later monotonically increasing generation. Live child IDs and generations
+must be unique. The final production capacity remains a reviewed bound, not a
+unit-fixture constant.
 
 ### Liquidity-lag bound
 
-A future guaranteed bound must be derived, not selected arbitrarily:
+A future guaranteed bound must use non-overlapping reviewed terms:
 
 ```text
-liquidity_lag_bound
-  = guaranteed_reconciliation_cadence
+maximum_unresolved_cohort_lifetime
+  = maximum_detection_to_generation_margin
+  + maximum_split_and_start_command_margin
   + 14_day_NNS_delay
-  + maximum_reviewed_detection_margin
-  + maximum_reviewed_command_margin
-  + maximum_reviewed_disbursement_margin
+  + maximum_readiness_to_disbursement_margin
+  + maximum_maturity_cleanup_and_reference_clear_margin
+
+max_live_cohorts
+  >= ceil(maximum_unresolved_cohort_lifetime
+          / guaranteed_cohort_creation_interval)
+     + reviewed_operational_margin
 ```
 
-Using candidate fixtures of one day for each cadence/margin term produces an
-18-day candidate bound: `1 + 14 + 1 + 1 + 1`. These are test values, not
-hard-coded proposed production economics. The executable overlap needs capacity
-for two cohorts; it accepts that capacity as a fixture rather than asserting a
-production collection limit. The active design does not yet prove a guaranteed
-reconciliation cadence, so both the production collection capacity and the
-liquidity-lag guarantee remain unresolved. Production review must establish
-that cadence and each maximum margin before adopting either bound.
+The existing Stream reward mechanism is the smallest reusable cadence source:
+one durable `reward_work_due` flag and one daily one-shot timer, whose scheduled
+deadline is the last event end plus 86,400 seconds plus the 300-second
+observation margin. Retryable pending/ledger/busy work schedules a 60-second
+retry. Cohort reconciliation can share that durable due checkpoint; frontend
+and permissionless calls remain additional hints, not cadence authority. This
+adds no general scheduler.
+
+That mechanism does not yet prove a maximum successful reconciliation interval:
+reviewed pause, unavailable dependencies, repeated retryable failures, and
+out-of-cycles execution can defer completion without a protocol bound. The
+executable 18-day calculation and two-cohort overlap remain fixtures only.
+Until the successful creation interval and every lifetime margin above are
+bounded, neither an 18-day liquidity guarantee nor a production cohort capacity
+is established.
 
 ### Sticky fees and anti-churn bound
 
@@ -515,22 +605,49 @@ multi-active-shard model, shard-level target accounting and reviewed reward
 eligibility rules, which add state and proof surface without being necessary
 for launch correctness.
 
-### Child maturity is a production blocker
+### Controlled child maturity and cleanup result
 
-Unminted child maturity is not backing. Production NNS implementation of this
-replacement cannot begin until controlled evidence determines:
+Unminted child maturity is never backing. The maintained exact-candidate
+PocketIC test now proves the missing lifecycle against the locked Governance
+Wasm. Before three splits the parent held ordinary maturity
+`3,847,044,094,926,134` and staked maturity `2,564,696,063,284,088` e8s; parent
+plus children conserved each total exactly. Selected child
+`17,951,363,335,400,986,306` inherited `76,944,727` ordinary and `51,296,484`
+staked-maturity e8s.
 
-- whether a dissolving 14-day child receives later reward maturity;
-- what maturity remains after principal disbursement; and
-- how that maturity is ultimately realised without loss or double counting.
+Split returned that exact child ID at timestamp `1,631,608,226`. Immediately
+afterward it was non-dissolving with `DissolveDelaySeconds(1,209,600)`, proving
+the clock had not begun. The separate StartDissolving command was deliberately
+delayed to `1,631,608,263`; Governance reported canonical readiness
+`1,632,817,863`, exactly `1,209,600` seconds later. A split-derived readiness
+would have been 37 seconds early.
 
-This ADR intentionally does not design production child-maturity state. The
-future proof must identify the canonical observation and realisation path before
-the passive cohort record can be finalized.
+The child voted before its separately delayed StartDissolving command. A later
+reward event settled while it was dissolving and increased ordinary maturity
+to `82,914,450` e8s. At readiness, Governance converted all `51,296,484`
+staked-maturity e8s to ordinary. Principal disbursement left the retained child
+with zero cached stake, `134,210,934` ordinary maturity, zero staked maturity,
+and its canonical dissolved timestamp state. The principal ledger transfer
+charged the ordinary 10,000-e8s disbursement fee.
+
+Direct zero-principal merge was rejected because both neurons must be
+non-dissolving with positive delay. `StopDissolving` was not sufficient for the
+already dissolved child; increasing its delay by one second made it eligible.
+Merge then moved all `134,210,934` ordinary maturity to the pooled parent,
+left the retained source child empty/finalizable, created no ICP ledger block,
+and incurred zero ICP fee. This merge cleanup is selected over maturity
+disbursement because it uses no Mint, staging route, or monetary transfer.
+Production needs only bounded cohort proof states for principal return,
+maturity handled, and cleanup complete; it does not need bespoke child-reward
+policy or user attribution.
 
 ## Redemption implication
 
-The redemption quote is always `floor(user_io * B / C)`. Immediate availability
+Redemption first applies the same strict economic-state validation as claim-rate
+and allocation. `B=0,C>0` returns typed `UncoveredClaims` for both zero and
+nonzero payout fees; it never returns a zero-valued ready quote. `B>0,C=0`
+reports backing without claims, and `B=C=0` reports empty genesis. For a valid
+solvent state, the quote is `floor(user_io * B / C)`. Immediate availability
 uses only spendable `L`; `P`, `U` and `T` support solvency but cannot fund an
 immediate payout. An excluded operational reserve, if Policy B were selected,
 would be neither `B` nor spendable `L`. The user's IO must not be pulled until
@@ -575,8 +692,8 @@ migration:
   mechanics.
 
 Active-pin selection, stable-state edits, public interfaces and monetary
-orchestration remain future work. No production implementation should begin
-until the pure-model treatment has been independently reviewed, a guaranteed
-reconciliation cadence and maximum lag margins have been established, and the
-controlled child-maturity evidence above resolves its accounting and
-realisation path.
+orchestration remain future work. The controlled evidence above resolves the
+child-maturity accounting and realization route. No production implementation
+should begin until the pure-model treatment has been independently reviewed
+and a guaranteed reconciliation cadence, every maximum lifetime margin, and a
+derived production cohort capacity have been established.
