@@ -52,8 +52,14 @@ Its serial PocketIC evidence records the following exact run values:
 | Split gross / credited | 200,010,000 / 200,000,000 e8s |
 | Inherited delay | 1,209,600 seconds for every child |
 | Merge child start / parent stake before/after | 1,631,608,226 / 9,999,999,599,970,000 / 9,999,999,799,960,000 e8s |
-| Disburse/continuing starts and readiness | 1,631,608,226 / 1,631,608,227; readiness 1,632,817,826 / 1,632,817,827 |
-| Early/exact disbursement | At 1,632,817,825, error type 11: `Neuron 17951363335400986306 has NOT been dissolved. It is in state Dissolving`; succeeds at 1,632,817,826 in block 12 |
+| Parent maturity before three splits | 3,847,044,094,926,134 ordinary / 2,564,696,063,284,088 staked e8s |
+| Selected child / inherited maturity | 17,951,363,335,400,986,306 / 76,944,727 ordinary / 51,296,484 staked e8s |
+| Selected split / disburse-child StartDissolving / readiness | 1,631,608,226 / 1,631,608,263 / 1,632,817,863 seconds |
+| Continuing child start / readiness | 1,631,608,264 / 1,632,817,864 seconds |
+| Dissolving-child ordinary maturity after reward | 82,914,450 e8s |
+| Early/exact disbursement | At 1,632,817,862, error type 11 reports the child still dissolving; succeeds at 1,632,817,863 in block 12 |
+| Post-disbursement retained maturity | Zero cached stake / 134,210,934 ordinary / zero staked e8s |
+| Zero-principal cleanup | One-second delay increase; 134,210,934 maturity merged to parent; zero ICP blocks and zero ICP fee |
 | Nominal maturity | 6,411,739,901,727,798 e8s |
 | Finalization delay | 604,800 seconds |
 | Maturity modulation | 0 permyriad under deterministic fixture inputs |
@@ -65,6 +71,16 @@ voting maturity, three children coexist, one stops and merges, another
 disburses at the exact boundary, and the third continues independently. The
 Mint increases the Stream-like staging balance by the exact Mint amount and is
 spendable.
+
+The selected child's split and `StartDissolving` are distinct: split creates a
+non-dissolving child with the inherited delay, while the later command
+establishes its canonical readiness timestamp. The child accrues additional
+ordinary reward maturity while dissolving, and inherited staked maturity
+converts to ordinary maturity at dissolution. Principal disbursement leaves
+zero cached stake and retains all maturity. Increasing that zero-principal
+child's delay by one second then permits a merge that moves all child maturity
+to the pooled parent. The cleanup leaves the child empty/finalizable, creates
+no ICP ledger block, and charges no ICP fee.
 
 `exact_post_m70_minimum_stake_boundaries` records these controlled boundaries:
 
@@ -96,19 +112,20 @@ spendable.
 - Multiple passive children are mechanically supported.
 - SNS-state detection latency is additional to the 14-day NNS dissolve delay.
 - Exact SNS/NNS unlock alignment is not guaranteed.
+- Split and `StartDissolving` are separate canonical lifecycle steps.
+- A dissolving child can accrue ordinary maturity; inherited staked maturity
+  converts to ordinary maturity at dissolution.
+- Zero-principal child maturity can be merged completely into the pooled
+  parent without an ICP ledger block or fee, leaving an empty/finalizable child.
 
 These are upstream-mechanics conclusions only; they do not select or implement
 IO's future orchestration or monetary policy.
 
-## Boundary details left unproved
+## Remaining candidate-boundary design
 
-The original investigation left the exact below-minimum creation result and
-the exact minimum valid creation amount unproved; the maintained
-`exact_post_m70_minimum_stake_boundaries` run above closes both gaps. The
-remaining unproved details are only:
-
-- Later reward accrual while a child is dissolving.
-- The final IO child-maturity policy.
-- The eventual independent component-pin design.
+The maintained controlled tests resolve the creation minimum, dissolving-child
+reward accrual, staked-maturity conversion, principal-return state, and
+zero-principal maturity cleanup mechanics. The only remaining candidate-boundary
+design item is the independent active component-pin design.
 
 Source-supported facts are not classified as controlled-run proof.

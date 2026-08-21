@@ -64,6 +64,7 @@ The reward gate is a separate fail-closed coverage check:
 
 ```text
 A_reward <= A_backing <= C
+P <= B
 backing_target = floor(A_backing * B / C)
 reward_target = floor(A_reward * B / C)
 reward allocation permitted only when P >= reward_target
@@ -76,7 +77,8 @@ minimum remains in `A_backing` but not `A_reward`. A pending re-entry remains
 outside `A_reward` until adding it still leaves `P>=reward_target`. Existing
 eligible stake may continue only while its own reward target is covered. A
 shortfall pauses reward processing; exact or over-target coverage permits only
-prospective rewards, never retroactive rewards.
+prospective rewards, never retroactive rewards. `P>B` is an impossible
+canonical partition and fails before either reward target is accepted.
 
 ## Unified post-event allocation
 
@@ -188,28 +190,42 @@ rule determines its destination.
 ### Fee-aware physical claim-leg route
 
 Dynamic allocation is executed through the smallest deterministic physical
-route, not by pretending the destination split is fee-free:
+route, not by pretending the destination split is fee-free. The planner takes
+the canonical parent-existence observation and exact minimum parent-creation
+credit together with the exact observed transfer fees:
 
 1. The permanent gross leg is debited from staging once and its destination is
    credited by `permanent_gross - permanent_transfer_fee`.
-2. Evaluate the claim leg with its unavoidable first staging-transfer fee.
-   If the resulting allocation is all liquid, transfer staging to liquid once.
-   If it is all pool, transfer staging to the pooled staking account once.
-3. Only a genuinely mixed result first transfers staging to liquid, then uses
-   ordinary liquid-to-pool reconciliation. Recalculate `B` and the target with
-   the second exact fee before fixing that pool credit.
-4. The second-fee floor can erase the pool remainder or consume the liquid
-   remainder. In those two boundary cases choose the direct one-fee route and
-   expose the at-most-floor residual rather than oscillating between fee-count
-   assumptions.
+2. Evaluate the claim leg with its unavoidable first staging-transfer fee. Use
+   one staging-to-liquid transfer when the target needs no pooled credit, when
+   the two-fee candidate's net pooled credit is no larger than the second exact
+   fee, or when the parent is absent and that net credit is below the exact
+   creation minimum. Record the remaining under-target delta for batching.
+3. Use one staging-to-pool transfer only when the post-one-fee target consumes
+   the entire claim credit and either the parent exists or the exact net credit
+   satisfies the minimum valid parent-creation amount.
+4. Use staging-to-liquid followed by liquid-to-pool only when the one-fee
+   target is mixed, the pooled credit recalculated after the second exact fee
+   is strictly greater than that fee, and the credit is executable for the
+   existing parent or the lazy-creation minimum. Otherwise keep the claim leg
+   liquid and expose the bounded under-target residual.
 
 The executable planner evaluates at most the one-fee and two-fee candidates.
-Its result records the permanent source debit and credit, claim staging debit,
+Its result records the parent-aware decision, permanent source debit and credit,
+claim staging debit,
 first claim credit, optional liquid-to-pool source debit, both destination
 credits, exact fees, and post-fee `B`, `K` and target. The selected route's
 reported target is always recalculated using that route's actual fee count.
 Candidate fixtures cover boundaries where changing from one fee to two changes
 the target floor; the planner terminates after at most two evaluations.
+
+The executable sub-fee counterexample uses `B=C=1,000,000,000`,
+`A_backing=500,000,000`, `P=529,989,000`, actual Mint `100,000,000`, and an
+exact claim-transfer fee of `10,000`, with no `dC` or `dA`. The two-fee
+candidate would credit only `1,000` to the pool while spending that second
+`10,000` fee. The selected one-fee route instead credits `59,990,000` to
+liquid, spends no second fee, and records the `6,000` under-target residual for
+later batching.
 
 ## Conservation
 
@@ -450,24 +466,30 @@ The minimum conceptual states and transitions are:
 | `RestakeProved` | Latest state dissolving -> `ExitObserved` | Restake remains counted; later net reconciliation may commit a new unwind generation |
 | Completed exit reference | Canonical `LiquidOrDissolved` | Remains ineligible; clear the completed generation marker, and treat later staking as fresh structural activation |
 
-If the latest state is dissolving at or before returned-liquidity planning, the
-value remains in `L`. `RestakePlanned` may be discarded if a new dissolving
-observation arrives before submission. After `RestakeCommitted`, an observed or
-possibly effective transfer must be finished and proved exactly; dissolving
-cannot erase `T`, the transfer intent, or its fee. After proof, ordinary net
-reconciliation may create a new unwind generation if the latest state still
-requires one. Callback loss therefore cannot double-submit or double-count the
-restake. Repeated start/cancel observations for the same committed generation
-change only latest state and bounded eligibility status; they do not create a
-second child for that generation.
+If the latest state is dissolving or `LiquidOrDissolved` at or before
+returned-liquidity planning, the value remains in `L`. Any valid active member
+leaving the plan's active subset before submission invalidates the global
+target snapshot, discards `RestakePlanned`, and returns every still-active
+planned member to returned-liquidity planning. Clearing the last valid active
+member therefore cannot leave a plan behind. A fresh plan may be calculated
+for the remaining active subset. `commit_restake` requires the exact still-current
+planned generation, its live returned cohort, and at least one current active
+generation member. After `RestakeCommitted`, an observed or possibly effective
+transfer must be finished and proved exactly; dissolving cannot erase `T`, the
+transfer intent, or its fee. After proof, ordinary net reconciliation may
+create a new unwind generation if the latest state still requires one. Callback
+loss therefore cannot double-submit or double-count the restake. Repeated
+start/cancel observations for the same committed generation change only latest
+state and bounded eligibility status; they do not create a second child for
+that generation.
 
 Aggregate returned-liquidity planning processes the active and dissolving
 subsets independently. An active member may complete re-entry while another
 member of the same generation remains dissolving. A dissolving member remains
-ineligible and does not block the active subset. A re-dissolve before
-`RestakeCommitted` cancels only the plan; after commit the exact transfer must
-be proved and counted once, and the new dissolving state is handled by the next
-reconciliation.
+ineligible and does not block the active subset. A re-dissolve or liquidation
+before `RestakeCommitted` cancels the plan for the whole stale snapshot; after
+commit the exact transfer must be proved and counted once, and the new canonical
+state is handled by the next reconciliation.
 
 Reward eligibility uses the smallest bounded representation available in the
 future state design: a status plus an `eligible_from` canonical observation or
@@ -524,13 +546,14 @@ ICP child, e8s range, or transfer is assigned to a user or SNS neuron.
 ### Cohort retirement
 
 The bounded collection counts live unresolved cohorts, not history. A cohort
-may be removed only after all five facts hold:
+may be removed only after all six facts hold:
 
 1. principal return is canonically proved;
 2. child maturity has been moved to the parent or proved zero;
 3. child cleanup is complete;
-4. no SNS eligibility record references the generation; and
-5. no active command references the generation or child ID.
+4. no SNS eligibility record references the generation;
+5. no active command references the generation or child ID; and
+6. no unsubmitted `planned_restake` references the generation.
 
 Returned-but-uncleaned and cleaned-but-referenced cohorts continue consuming
 capacity. Retirement removes only the resolved record; it changes neither
@@ -545,7 +568,7 @@ A future guaranteed bound must use non-overlapping reviewed terms:
 
 ```text
 maximum_unresolved_cohort_lifetime
-  = maximum_detection_to_generation_margin
+  = maximum_detection_reconciliation_interval
   + maximum_split_and_start_command_margin
   + 14_day_NNS_delay
   + maximum_readiness_to_disbursement_margin
@@ -553,9 +576,16 @@ maximum_unresolved_cohort_lifetime
 
 max_live_cohorts
   >= ceil(maximum_unresolved_cohort_lifetime
-          / guaranteed_cohort_creation_interval)
+          / minimum_spacing_between_committed_cohort_generations)
      + reviewed_operational_margin
 ```
+
+The maximum detection/reconciliation interval determines the first liquidity
+lag term. It is distinct from the minimum spacing between committed cohort
+generations, equivalently the maximum cohort-creation rate, which is the
+capacity denominator. The eventual production design must enforce at most one
+committed aggregate cohort per canonical reconciliation generation. Neither
+quantity selects the final capacity.
 
 The existing Stream reward mechanism is the smallest reusable cadence source:
 one durable `reward_work_due` flag and one daily one-shot timer, whose scheduled
@@ -565,13 +595,13 @@ retry. Cohort reconciliation can share that durable due checkpoint; frontend
 and permissionless calls remain additional hints, not cadence authority. This
 adds no general scheduler.
 
-That mechanism does not yet prove a maximum successful reconciliation interval:
+That mechanism does not yet prove a maximum detection/reconciliation interval:
 reviewed pause, unavailable dependencies, repeated retryable failures, and
 out-of-cycles execution can defer completion without a protocol bound. The
 executable 18-day calculation and two-cohort overlap remain fixtures only.
-Until the successful creation interval and every lifetime margin above are
-bounded, neither an 18-day liquidity guarantee nor a production cohort capacity
-is established.
+Until that maximum interval, the minimum committed-generation spacing, and
+every lifetime margin above are bounded, neither an 18-day liquidity guarantee
+nor a production cohort capacity is established.
 
 ### Sticky fees and anti-churn bound
 
@@ -695,5 +725,6 @@ Active-pin selection, stable-state edits, public interfaces and monetary
 orchestration remain future work. The controlled evidence above resolves the
 child-maturity accounting and realization route. No production implementation
 should begin until the pure-model treatment has been independently reviewed
-and a guaranteed reconciliation cadence, every maximum lifetime margin, and a
+and a maximum detection/reconciliation interval, minimum spacing between
+committed cohort generations, every other maximum lifetime margin, and a
 derived production cohort capacity have been established.

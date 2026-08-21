@@ -35,6 +35,11 @@ stop_dissolve = true
 merge_back = true
 exact_disbursement_boundary = true
 actual_maturity_mint = true
+split_and_start_dissolving_are_distinct = true
+child_maturity_accrues_while_dissolving = true
+staked_maturity_converts_at_dissolution = true
+zero_principal_child_maturity_merge = true
+zero_principal_cleanup_has_no_ledger_fee = true
 
 [not_active]
 reason = "Current IO production code still implements the superseded separately endowed/eight-year two-week backing model."

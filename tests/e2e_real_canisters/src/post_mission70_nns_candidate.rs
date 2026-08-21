@@ -965,6 +965,43 @@ fn post_mission70_candidate_lock_is_self_consistent() {
             "candidate evidence is missing {expected}"
         );
     }
+    for (key, evidence_fact) in [
+        (
+            "split_and_start_dissolving_are_distinct",
+            "split and `StartDissolving` are distinct",
+        ),
+        (
+            "child_maturity_accrues_while_dissolving",
+            "accrues additional\nordinary reward maturity while dissolving",
+        ),
+        (
+            "staked_maturity_converts_at_dissolution",
+            "staked maturity\nconverts to ordinary maturity at dissolution",
+        ),
+        (
+            "zero_principal_child_maturity_merge",
+            "merge that moves all child maturity\nto the pooled parent",
+        ),
+        (
+            "zero_principal_cleanup_has_no_ledger_fee",
+            "creates\nno ICP ledger block, and charges no ICP fee",
+        ),
+    ] {
+        assert_eq!(lock_value(lock, "proved_mechanics", key), "true");
+        assert!(
+            evidence.contains(evidence_fact),
+            "candidate evidence and lock disagree on {key}"
+        );
+    }
+    for obsolete in [
+        "Later reward accrual while a child is dissolving.",
+        "The final IO child-maturity policy.",
+    ] {
+        assert!(
+            !evidence.contains(obsolete),
+            "candidate evidence retains obsolete unproved claim: {obsolete}"
+        );
+    }
 
     for (path, active_boundary) in [
         (
