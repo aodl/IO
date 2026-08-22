@@ -1,6 +1,6 @@
 [candidate]
-status = "candidate_only"
-production_active_pin = false
+status = "active_boundary"
+production_active_pin = true
 selected_at_utc = "2026-08-21T08:00:43Z"
 proposal_id = 143577
 source_commit = "8aa4680e378f3248e7e7b9b8237915aded999bd9"
@@ -41,5 +41,5 @@ staked_maturity_converts_at_dissolution = true
 zero_principal_child_maturity_merge = true
 zero_principal_cleanup_has_no_ledger_fee = true
 
-[not_active]
-reason = "Current IO production code still implements the superseded separately endowed/eight-year two-week backing model."
+[active]
+reason = "The pooled parent uses the exact 14-day boundary, explicit following, refresh, bounded children, and direct Stream-owned top-up mechanics proved by this candidate."

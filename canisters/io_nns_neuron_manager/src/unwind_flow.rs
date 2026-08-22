@@ -1,233 +1,172 @@
 use io_ledger_boundary::{exact_icp_transfer, icp_account_identifier};
+use io_nns_types::backing::CohortProofState;
 
-#[rustfmt::skip]
-use crate::{api::{ApiError, UnwindProgress}, execution::{self, DissolveState}, pool::{UnwindOperation, UnwindPhase}, state::{self, Lifecycle, NnsConfig, NnsOperation}};
+use crate::{
+    api::{ApiError, UnwindProgress},
+    execution::{self, DissolveState},
+    pool::{PassiveCohort, UnwindOperation, UnwindPhase},
+    state::{self, Lifecycle, NnsOperation},
+};
 
 pub async fn resume(operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
     match operation.phase.clone() {
-        UnwindPhase::SplitPrepared => split(operation).await,
-        UnwindPhase::SplitSubmitted => Ok(UnwindProgress::Stuck(
-            "Split outcome is ambiguous; governance review is required".into(),
-        )),
-        UnwindPhase::ChildCreated => observe_child(operation).await,
-        UnwindPhase::StartDissolvingSubmitted => recover_dissolving(operation, true).await,
-        UnwindPhase::Dissolving => {
-            let expected = operation.clone();
-            submit_dissolving(&expected, operation, false).await
+        UnwindPhase::SplitPrepared => submit_split(operation).await,
+        UnwindPhase::SplitSubmitted => pause(operation, "Split callback is unresolved".into()),
+        UnwindPhase::ChildIdentified => prove_split(operation).await,
+        UnwindPhase::SplitProved => submit_start(operation).await,
+        UnwindPhase::StartDissolvingSubmitted => recover_start(operation).await,
+        UnwindPhase::StartDissolvingProved => prove_start(operation).await,
+        UnwindPhase::DisbursementPrepared => submit_disbursement(operation).await,
+        UnwindPhase::DisbursementSubmitted => Ok(UnwindProgress::AwaitingTransferProof),
+        UnwindPhase::PrincipalReturned => observe_cleanup(operation).await,
+        UnwindPhase::DelayIncreaseSubmitted => recover_delay(operation).await,
+        UnwindPhase::DelayIncreaseProved | UnwindPhase::MergePrepared => {
+            submit_merge(operation).await
         }
-        UnwindPhase::StopDissolvingSubmitted => recover_dissolving(operation, false).await,
-        UnwindPhase::MergePrepared => merge(operation).await,
-        UnwindPhase::MergeSubmitted => Ok(UnwindProgress::Stuck(
-            "Merge outcome is ambiguous; governance review is required".into(),
-        )),
-        UnwindPhase::ReadyToDisburse => disburse(operation).await,
-        UnwindPhase::DisburseSubmitted => Ok(UnwindProgress::Stuck(
-            "Disburse outcome is ambiguous; provide its exact ICP block".into(),
-        )),
-        UnwindPhase::AwaitingTransferProof { block_index, .. } => match block_index {
-            Some(block_index) => prove(operation, block_index).await,
-            None => Ok(UnwindProgress::AwaitingTransferProof),
-        },
+        UnwindPhase::MergeSubmitted => recover_merge(operation).await,
+        UnwindPhase::MergeProved => prove_cleanup(operation).await,
+        UnwindPhase::CleanupProved => retire(operation),
         UnwindPhase::Stuck(reason) => Ok(UnwindProgress::Stuck(reason)),
     }
 }
 
-pub async fn resume_passive(operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
-    let current = state::read();
-    let observation =
-        execution::query_neuron_observation(&current.config, operation.child_neuron_id).await?;
-    ensure_passive(&operation)?;
-    let latest = state::read();
-    let Some(DissolveState::WhenDissolvedTimestampSeconds(timestamp)) = observation.dissolve_state
-    else {
-        let mut latest = state::read();
-        latest.lifecycle = Lifecycle::Paused;
-        state::write(latest);
-        return Ok(UnwindProgress::Stuck(
-            "passive child is not canonically dissolving".into(),
-        ));
+pub async fn resume_passive(cohort: PassiveCohort) -> Result<UnwindProgress, ApiError> {
+    let now = ic_cdk::api::time() / 1_000_000_000;
+    if cohort.proof == CohortProofState::Dissolving && now < cohort.ready_at_seconds {
+        return Ok(UnwindProgress::Waiting);
+    }
+    let phase = match cohort.proof {
+        CohortProofState::Dissolving => UnwindPhase::DisbursementPrepared,
+        CohortProofState::PrincipalReturned => UnwindPhase::PrincipalReturned,
+        CohortProofState::MaturityHandled => UnwindPhase::MergeProved,
+        CohortProofState::CleanupComplete => UnwindPhase::CleanupProved,
+        CohortProofState::DisbursementSubmitted => return Err(ApiError::Busy),
     };
-    if timestamp <= ic_cdk::api::time() / 1_000_000_000 {
-        promote(&operation, UnwindPhase::ReadyToDisburse)?;
-        let mut active = operation;
-        active.phase = UnwindPhase::ReadyToDisburse;
-        return disburse(active).await;
-    }
-    if latest
-        .latest_two_week_target
-        .as_ref()
-        .is_some_and(|target| target.status == state::TwoWeekTargetStatus::UnderTarget)
-        && latest.active_operation.is_none()
-    {
-        promote(&operation, UnwindPhase::Dissolving)?;
-        let expected = operation.clone();
-        return submit_dissolving(&expected, operation, false).await;
-    }
-    Ok(UnwindProgress::Waiting)
+    promote(cohort, phase)?;
+    let Some(NnsOperation::Unwind(operation)) = state::read().active_operation else {
+        return Err(ApiError::Busy);
+    };
+    resume(operation).await
 }
 
-async fn split(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
+async fn submit_split(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
     let expected = operation.clone();
     operation.phase = UnwindPhase::SplitSubmitted;
     replace(&expected, operation.clone())?;
-    let config = state::read().config;
-    let result = execution::split_neuron(
-        &config,
-        config.two_week_neuron_id,
-        operation.excess_e8s,
-        operation.operation_sequence,
+    let current = state::read();
+    let parent = current
+        .pooled_parent_id
+        .ok_or_else(|| ApiError::Invalid("pooled parent is absent".into()))?;
+    match execution::split_neuron(
+        &current.config,
+        parent,
+        operation.gross_e8s,
+        operation.generation,
     )
-    .await;
-    ensure(&operation)?;
-    let child_neuron_id = match result {
-        Ok(child) => child,
-        Err(error) => {
-            return pause(
-                operation,
-                format!("Split requires reviewed recovery: {error:?}"),
-            )
+    .await
+    {
+        Ok(child) => {
+            ensure(&operation)?;
+            let submitted = operation.clone();
+            operation.child_neuron_id = child;
+            operation.phase = UnwindPhase::ChildIdentified;
+            replace(&submitted, operation)?;
+            Ok(UnwindProgress::Waiting)
         }
-    };
-    let principal_e8s = operation
-        .excess_e8s
-        .checked_sub(config.expected_icp_fee_e8s)
-        .ok_or_else(|| ApiError::Invalid("unwind excess cannot cover the Split fee".into()))?;
-    let submitted = operation.clone();
-    operation.phase = UnwindPhase::ChildCreated;
-    operation.child_neuron_id = child_neuron_id;
-    operation.principal_e8s = principal_e8s;
-    replace(&submitted, operation.clone())?;
+        Err(error) => pause(
+            operation,
+            format!("Split outcome requires proof: {error:?}"),
+        ),
+    }
+}
+
+async fn prove_split(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
+    let expected = operation.clone();
+    let current = state::read();
+    let observed =
+        execution::query_neuron_observation(&current.config, operation.child_neuron_id).await?;
+    ensure(&expected)?;
+    let principal = operation
+        .gross_e8s
+        .checked_sub(current.config.expected_icp_fee_e8s)
+        .ok_or_else(|| ApiError::Invalid("Split gross cannot cover the fee".into()))?;
+    if observed.snapshot.cached_stake_e8s != principal {
+        return pause(operation, "Split principal proof mismatch".into());
+    }
+    operation.principal_e8s = principal;
+    operation.child_staking_subaccount = observed.snapshot.staking_subaccount.to_vec();
+    operation.phase = UnwindPhase::SplitProved;
+    replace(&expected, operation)?;
     Ok(UnwindProgress::Waiting)
 }
 
-async fn observe_child(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
+async fn submit_start(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
     let expected = operation.clone();
-    let current = state::read();
-    let observation =
-        execution::query_neuron_observation(&current.config, operation.child_neuron_id).await?;
-    ensure(&expected)?;
-    if observation.snapshot.cached_stake_e8s != operation.principal_e8s {
-        return pause(
-            expected,
-            "Split child principal differs from the exact fee-adjusted excess".into(),
-        );
-    }
-    operation.child_staking_subaccount = observation.snapshot.staking_subaccount.to_vec();
-    submit_dissolving(&expected, operation, true).await
-}
-
-async fn submit_dissolving(
-    expected: &UnwindOperation,
-    mut operation: UnwindOperation,
-    start: bool,
-) -> Result<UnwindProgress, ApiError> {
-    let current = state::read();
-    operation.phase = if start {
-        UnwindPhase::StartDissolvingSubmitted
-    } else {
-        UnwindPhase::StopDissolvingSubmitted
-    };
-    replace(expected, operation.clone())?;
-    let result = execution::set_dissolving(&current.config, operation.child_neuron_id, start).await;
+    operation.phase = UnwindPhase::StartDissolvingSubmitted;
+    replace(&expected, operation.clone())?;
+    let result =
+        execution::set_dissolving(&state::read().config, operation.child_neuron_id, true).await;
     ensure(&operation)?;
     if let Err(error) = result {
-        let command = if start {
-            "StartDissolving"
-        } else {
-            "StopDissolving"
-        };
         return pause(
             operation,
-            format!("{command} requires canonical review: {error:?}"),
+            format!("StartDissolving outcome requires proof: {error:?}"),
         );
     }
-    finish_dissolving(operation, start, &current.config).await
+    let submitted = operation.clone();
+    operation.phase = UnwindPhase::StartDissolvingProved;
+    replace(&submitted, operation)?;
+    Ok(UnwindProgress::Waiting)
 }
 
-async fn recover_dissolving(
-    operation: UnwindOperation,
-    start: bool,
-) -> Result<UnwindProgress, ApiError> {
+async fn recover_start(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
+    let expected = operation.clone();
+    let observed =
+        execution::query_neuron_observation(&state::read().config, operation.child_neuron_id)
+            .await?;
+    ensure(&expected)?;
+    if !matches!(
+        observed.dissolve_state,
+        Some(DissolveState::WhenDissolvedTimestampSeconds(_))
+    ) {
+        return pause(operation, "StartDissolving remains unproved".into());
+    }
+    operation.phase = UnwindPhase::StartDissolvingProved;
+    replace(&expected, operation)?;
+    Ok(UnwindProgress::Waiting)
+}
+
+async fn prove_start(operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
     let current = state::read();
     let observed =
         execution::query_neuron_observation(&current.config, operation.child_neuron_id).await?;
     ensure(&operation)?;
-    let succeeded = matches!(
-        observed.dissolve_state,
-        Some(DissolveState::WhenDissolvedTimestampSeconds(_))
-    ) == start;
-    if !succeeded {
-        return pause(operation, "dissolve command remains ambiguous".into());
-    }
-    finish_dissolving(operation, start, &current.config).await
-}
-
-async fn finish_dissolving(
-    operation: UnwindOperation,
-    start: bool,
-    config: &NnsConfig,
-) -> Result<UnwindProgress, ApiError> {
-    if !start {
-        let expected = operation.clone();
-        advance(&expected, operation, UnwindPhase::MergePrepared)?;
-        return Ok(UnwindProgress::Waiting);
-    }
-    let parent = execution::query_neuron_observation(config, config.two_week_neuron_id).await?;
-    ensure(&operation)?;
-    if parent.snapshot.cached_stake_e8s != operation.target_e8s {
-        return pause(
-            operation,
-            "parent principal does not equal the exact post-Split target".into(),
-        );
-    }
-    move_to_passive(&operation)?;
+    let Some(DissolveState::WhenDissolvedTimestampSeconds(ready_at_seconds)) =
+        observed.dissolve_state
+    else {
+        return pause(operation, "child is not canonically dissolving".into());
+    };
+    move_to_passive(
+        &operation,
+        PassiveCohort {
+            generation: operation.generation,
+            child_neuron_id: operation.child_neuron_id,
+            principal_e8s: operation.principal_e8s,
+            child_staking_subaccount: operation.child_staking_subaccount.clone(),
+            ready_at_seconds,
+            proof: CohortProofState::Dissolving,
+            disbursement_block: None,
+        },
+    )?;
     Ok(UnwindProgress::Waiting)
 }
 
-async fn merge(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
+async fn submit_disbursement(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
     let expected = operation.clone();
-    operation.phase = UnwindPhase::MergeSubmitted;
+    operation.phase = UnwindPhase::DisbursementSubmitted;
+    operation.submitted_at_seconds = ic_cdk::api::time() / 1_000_000_000;
     replace(&expected, operation.clone())?;
     let current = state::read();
-    let result = execution::merge_neuron(
-        &current.config,
-        current.config.two_week_neuron_id,
-        operation.child_neuron_id,
-    )
-    .await;
-    ensure(&operation)?;
-    if let Err(error) = result {
-        return pause(
-            operation,
-            format!("Merge requires canonical review: {error:?}"),
-        );
-    }
-    let observation =
-        execution::query_neuron_observation(&current.config, current.config.two_week_neuron_id)
-            .await?;
-    ensure(&operation)?;
-    let minimum_parent = operation
-        .target_e8s
-        .checked_add(operation.principal_e8s)
-        .and_then(|value| value.checked_sub(current.config.expected_icp_fee_e8s))
-        .ok_or_else(|| ApiError::Invalid("merged parent expectation overflow".into()))?;
-    if observation.snapshot.cached_stake_e8s < minimum_parent {
-        return pause(
-            operation,
-            "merged child principal is not canonically observable in the parent".into(),
-        );
-    }
-    clear(&operation)?;
-    Ok(UnwindProgress::Waiting)
-}
-
-async fn disburse(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
-    let expected = operation.clone();
-    let current = state::read();
-    let submitted_at_seconds = ic_cdk::api::time() / 1_000_000_000;
-    operation.phase = UnwindPhase::DisburseSubmitted;
-    replace(&expected, operation.clone())?;
-    let submitted = operation.clone();
     let result = execution::disburse_neuron(
         &current.config,
         operation.child_neuron_id,
@@ -235,41 +174,25 @@ async fn disburse(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiE
     )
     .await;
     ensure(&operation)?;
-    operation.phase = UnwindPhase::AwaitingTransferProof {
-        block_index: result.as_ref().ok().copied(),
-        submitted_at_seconds,
-    };
-    replace(&submitted, operation.clone())?;
-    match result {
-        Ok(_) => Ok(UnwindProgress::AwaitingTransferProof),
-        Err(_) => {
-            let mut latest = state::read();
-            latest.lifecycle = Lifecycle::Paused;
-            state::write(latest);
-            Ok(UnwindProgress::AwaitingTransferProof)
-        }
+    if let Ok(block) = result {
+        let submitted = operation.clone();
+        operation.expected_block_index = Some(block);
+        replace(&submitted, operation)?;
     }
+    Ok(UnwindProgress::AwaitingTransferProof)
 }
 
 pub async fn prove(
-    operation: UnwindOperation,
+    mut operation: UnwindOperation,
     block_index: u128,
 ) -> Result<UnwindProgress, ApiError> {
-    let (expected_block, submitted_at_seconds) = match operation.phase {
-        UnwindPhase::AwaitingTransferProof {
-            block_index,
-            submitted_at_seconds,
-        } => (block_index, submitted_at_seconds),
-        UnwindPhase::DisburseSubmitted => (None, 0),
-        _ => {
-            return Err(ApiError::Invalid(
-                "unwind is not awaiting an exact transfer proof".into(),
-            ))
-        }
-    };
-    if expected_block.is_some_and(|expected| expected != block_index) {
+    if operation.phase != UnwindPhase::DisbursementSubmitted
+        || operation
+            .expected_block_index
+            .is_some_and(|expected| expected != block_index)
+    {
         return Err(ApiError::Invalid(
-            "proof block differs from the canonical Disburse response".into(),
+            "unwind is not awaiting this block".into(),
         ));
     }
     let current = state::read();
@@ -277,7 +200,7 @@ pub async fn prove(
         .await
         .map_err(ApiError::Invalid)?;
     ensure(&operation)?;
-    let from = icp_account_identifier(&crate::state::Account {
+    let from = icp_account_identifier(&state::Account {
         owner: current.config.nns_governance,
         subaccount: Some(operation.child_staking_subaccount.clone()),
     })
@@ -287,35 +210,173 @@ pub async fn prove(
     let amount = operation
         .principal_e8s
         .checked_sub(current.config.expected_icp_fee_e8s)
-        .ok_or_else(|| ApiError::Invalid("child principal cannot cover Disburse fee".into()))?;
+        .ok_or_else(|| ApiError::Invalid("child principal cannot cover fee".into()))?;
     if exact.from != from
         || exact.to != to
         || exact.amount_e8s != amount
         || exact.fee_e8s != current.config.expected_icp_fee_e8s
-        || exact.icrc1_memo.is_some()
-        || exact.spender.is_some()
-        || exact.native_memo_u64 < submitted_at_seconds
-        || exact.created_at_time / 1_000_000_000 < exact.native_memo_u64
+        || exact.native_memo_u64 < operation.submitted_at_seconds
     {
         return Err(ApiError::Invalid(
-            "exact ICP block does not match direct child disbursement".into(),
+            "exact child disbursement mismatch".into(),
         ));
     }
-    clear(&operation)?;
+    update_cohort(
+        operation.generation,
+        CohortProofState::PrincipalReturned,
+        Some(block_index),
+    )?;
+    let expected = operation.clone();
+    operation.phase = UnwindPhase::PrincipalReturned;
+    replace(&expected, operation)?;
     Ok(UnwindProgress::Completed {
         block_index,
         liquid_e8s: amount,
     })
 }
 
-fn ensure(expected: &UnwindOperation) -> Result<(), ApiError> {
-    matches!(state::read().active_operation, Some(NnsOperation::Unwind(active)) if active == *expected)
-        .then_some(())
-        .ok_or(ApiError::Busy)
+async fn observe_cleanup(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
+    let expected = operation.clone();
+    let current = state::read();
+    let child =
+        execution::query_neuron_observation(&current.config, operation.child_neuron_id).await?;
+    ensure(&expected)?;
+    if child.snapshot.cached_stake_e8s != 0 {
+        return Err(ApiError::Pending(
+            "child principal has not reached zero".into(),
+        ));
+    }
+    let maturity = u128::from(child.maturity_e8s)
+        .checked_add(u128::from(child.staked_maturity_e8s))
+        .ok_or_else(|| ApiError::Invalid("child maturity overflow".into()))?;
+    if maturity == 0 {
+        update_cohort(
+            operation.generation,
+            CohortProofState::CleanupComplete,
+            None,
+        )?;
+        operation.phase = UnwindPhase::CleanupProved;
+        replace(&expected, operation.clone())?;
+        return retire(operation);
+    }
+    let parent = current
+        .pooled_parent_id
+        .ok_or_else(|| ApiError::Invalid("maturity cleanup requires the parent".into()))?;
+    let parent = execution::query_neuron_observation(&current.config, parent).await?;
+    ensure(&expected)?;
+    operation.child_maturity_e8s = maturity;
+    operation.parent_maturity_e8s = u128::from(parent.maturity_e8s)
+        .checked_add(u128::from(parent.staked_maturity_e8s))
+        .ok_or_else(|| ApiError::Invalid("parent maturity overflow".into()))?;
+    operation.phase = UnwindPhase::DelayIncreaseSubmitted;
+    replace(&expected, operation.clone())?;
+    execution::increase_delay(&current.config, operation.child_neuron_id, 1).await?;
+    ensure(&operation)?;
+    let submitted = operation.clone();
+    operation.phase = UnwindPhase::DelayIncreaseProved;
+    replace(&submitted, operation)?;
+    Ok(UnwindProgress::Waiting)
 }
 
-fn ensure_passive(expected: &UnwindOperation) -> Result<(), ApiError> {
-    (state::read().pending_unwind.as_ref() == Some(expected))
+async fn recover_delay(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
+    let expected = operation.clone();
+    let observed =
+        execution::query_neuron_observation(&state::read().config, operation.child_neuron_id)
+            .await?;
+    ensure(&expected)?;
+    if observed.dissolve_state != Some(DissolveState::DissolveDelaySeconds(1)) {
+        return pause(operation, "child delay increase remains unproved".into());
+    }
+    operation.phase = UnwindPhase::DelayIncreaseProved;
+    replace(&expected, operation)?;
+    Ok(UnwindProgress::Waiting)
+}
+
+async fn submit_merge(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
+    let expected = operation.clone();
+    operation.phase = UnwindPhase::MergeSubmitted;
+    replace(&expected, operation.clone())?;
+    let current = state::read();
+    let parent = current
+        .pooled_parent_id
+        .ok_or_else(|| ApiError::Invalid("pooled parent is absent".into()))?;
+    execution::merge_neuron(&current.config, parent, operation.child_neuron_id).await?;
+    ensure(&operation)?;
+    let submitted = operation.clone();
+    operation.phase = UnwindPhase::MergeProved;
+    replace(&submitted, operation)?;
+    Ok(UnwindProgress::Waiting)
+}
+
+async fn recover_merge(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
+    let expected = operation.clone();
+    let child =
+        execution::query_neuron_observation(&state::read().config, operation.child_neuron_id)
+            .await?;
+    ensure(&expected)?;
+    if child.maturity_e8s != 0 || child.staked_maturity_e8s != 0 {
+        return pause(operation, "child maturity merge remains unproved".into());
+    }
+    operation.phase = UnwindPhase::MergeProved;
+    replace(&expected, operation)?;
+    Ok(UnwindProgress::Waiting)
+}
+
+async fn prove_cleanup(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
+    let expected = operation.clone();
+    let current = state::read();
+    let child =
+        execution::query_neuron_observation(&current.config, operation.child_neuron_id).await?;
+    let parent = execution::query_neuron_observation(
+        &current.config,
+        current
+            .pooled_parent_id
+            .ok_or_else(|| ApiError::Invalid("parent absent".into()))?,
+    )
+    .await?;
+    ensure(&expected)?;
+    let parent_maturity = u128::from(parent.maturity_e8s)
+        .checked_add(u128::from(parent.staked_maturity_e8s))
+        .ok_or_else(|| ApiError::Invalid("parent maturity overflow".into()))?;
+    let expected_maturity = operation
+        .parent_maturity_e8s
+        .checked_add(operation.child_maturity_e8s)
+        .ok_or_else(|| ApiError::Invalid("cleanup maturity overflow".into()))?;
+    if child.snapshot.cached_stake_e8s != 0
+        || child.maturity_e8s != 0
+        || child.staked_maturity_e8s != 0
+        || parent_maturity < expected_maturity
+    {
+        return pause(operation, "child cleanup conservation proof failed".into());
+    }
+    update_cohort(
+        operation.generation,
+        CohortProofState::CleanupComplete,
+        None,
+    )?;
+    operation.phase = UnwindPhase::CleanupProved;
+    replace(&expected, operation.clone())?;
+    retire(operation)
+}
+
+fn retire(operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
+    let mut latest = state::read();
+    clear_active(&mut latest, &operation)?;
+    let index = latest
+        .live_cohorts
+        .iter()
+        .position(|cohort| cohort.generation == operation.generation)
+        .ok_or(ApiError::Busy)?;
+    if latest.live_cohorts[index].proof != CohortProofState::CleanupComplete {
+        return Err(ApiError::Busy);
+    }
+    latest.live_cohorts.remove(index);
+    state::write(latest);
+    Ok(UnwindProgress::Waiting)
+}
+
+fn ensure(expected: &UnwindOperation) -> Result<(), ApiError> {
+    matches!(state::read().active_operation, Some(NnsOperation::Unwind(active)) if active == *expected)
         .then_some(())
         .ok_or(ApiError::Busy)
 }
@@ -331,37 +392,65 @@ fn replace(expected: &UnwindOperation, replacement: UnwindOperation) -> Result<(
     Ok(())
 }
 
-fn advance(
-    expected: &UnwindOperation,
-    mut operation: UnwindOperation,
-    phase: UnwindPhase,
-) -> Result<(), ApiError> {
-    operation.phase = phase;
-    replace(expected, operation)
-}
-
-fn move_to_passive(expected: &UnwindOperation) -> Result<(), ApiError> {
+fn move_to_passive(expected: &UnwindOperation, cohort: PassiveCohort) -> Result<(), ApiError> {
     let mut latest = state::read();
-    if latest.pending_unwind.is_some() {
+    clear_active(&mut latest, expected)?;
+    if latest.live_cohorts.len() >= io_nns_types::backing::MAX_LIVE_UNWIND_COHORTS
+        || latest.live_cohorts.iter().any(|item| {
+            item.generation == cohort.generation || item.child_neuron_id == cohort.child_neuron_id
+        })
+    {
         return Err(ApiError::Busy);
     }
-    clear_active(&mut latest, expected)?;
-    let mut passive = expected.clone();
-    passive.phase = UnwindPhase::Dissolving;
-    latest.pending_unwind = Some(passive);
+    latest.live_cohorts.push(cohort);
+    latest.live_cohorts.sort_by_key(|item| item.generation);
     state::write(latest);
     Ok(())
 }
 
-fn promote(expected: &UnwindOperation, phase: UnwindPhase) -> Result<(), ApiError> {
+fn promote(cohort: PassiveCohort, phase: UnwindPhase) -> Result<(), ApiError> {
     let mut latest = state::read();
-    if latest.active_operation.is_some() || latest.pending_unwind.as_ref() != Some(expected) {
+    if latest.active_operation.is_some() || !latest.live_cohorts.iter().any(|item| item == &cohort)
+    {
         return Err(ApiError::Busy);
     }
-    let mut active = expected.clone();
-    active.phase = phase;
-    latest.pending_unwind = None;
-    latest.active_operation = Some(NnsOperation::Unwind(active));
+    latest.active_operation = Some(NnsOperation::Unwind(UnwindOperation {
+        operation_sequence: latest.next_operation_sequence,
+        generation: cohort.generation,
+        target_e8s: 0,
+        gross_e8s: cohort.principal_e8s,
+        child_neuron_id: cohort.child_neuron_id,
+        principal_e8s: cohort.principal_e8s,
+        child_staking_subaccount: cohort.child_staking_subaccount,
+        submitted_at_seconds: 0,
+        expected_block_index: cohort.disbursement_block,
+        child_maturity_e8s: 0,
+        parent_maturity_e8s: 0,
+        phase,
+    }));
+    latest.next_operation_sequence = latest
+        .next_operation_sequence
+        .checked_add(1)
+        .ok_or_else(|| ApiError::Invalid("operation sequence overflow".into()))?;
+    state::write(latest);
+    Ok(())
+}
+
+fn update_cohort(
+    generation: u64,
+    proof: CohortProofState,
+    block: Option<u128>,
+) -> Result<(), ApiError> {
+    let mut latest = state::read();
+    let cohort = latest
+        .live_cohorts
+        .iter_mut()
+        .find(|cohort| cohort.generation == generation)
+        .ok_or(ApiError::Busy)?;
+    cohort.proof = proof;
+    if block.is_some() {
+        cohort.disbursement_block = block;
+    }
     state::write(latest);
     Ok(())
 }
@@ -376,17 +465,7 @@ fn pause(mut operation: UnwindOperation, reason: String) -> Result<UnwindProgres
     Ok(UnwindProgress::Stuck(reason))
 }
 
-fn clear(expected: &UnwindOperation) -> Result<(), ApiError> {
-    let mut latest = state::read();
-    clear_active(&mut latest, expected)?;
-    state::write(latest);
-    Ok(())
-}
-
-fn clear_active(
-    state: &mut crate::state::NnsStateV1,
-    expected: &UnwindOperation,
-) -> Result<(), ApiError> {
+fn clear_active(state: &mut state::NnsStateV1, expected: &UnwindOperation) -> Result<(), ApiError> {
     if !matches!(&state.active_operation, Some(NnsOperation::Unwind(active)) if active == expected)
     {
         return Err(ApiError::Busy);

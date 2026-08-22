@@ -1,14 +1,23 @@
-#[rustfmt::skip]
-use {candid::{CandidType, Principal}, serde::Deserialize, std::{borrow::Cow, cell::RefCell}};
-#[rustfmt::skip]
-use crate::{jupiter::{JupiterCompleted, JupiterOperation}, maturity::{CompletedMaturity, MaturityCommandOperation, PendingMaturityDisbursement}, pool::UnwindOperation};
-#[rustfmt::skip]
-use ic_stable_structures::{memory_manager::{MemoryId, MemoryManager, VirtualMemory}, storable::Bound, DefaultMemoryImpl, StableBTreeMap, StableCell, Storable};
+use crate::{
+    jupiter::{JupiterCompleted, JupiterOperation},
+    maturity::{CompletedMaturity, MaturityCommandOperation, PendingMaturityDisbursement},
+    pool::{PassiveCohort, UnwindOperation},
+};
+use ic_stable_structures::{
+    memory_manager::{MemoryId, MemoryManager, VirtualMemory},
+    storable::Bound,
+    DefaultMemoryImpl, StableBTreeMap, StableCell, Storable,
+};
 pub use io_accounts::Account;
+use {
+    candid::{CandidType, Principal},
+    serde::Deserialize,
+    std::{borrow::Cow, cell::RefCell},
+};
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
 
-pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 1;
+pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct NnsConfig {
@@ -18,18 +27,17 @@ pub struct NnsConfig {
     pub icp_ledger: Principal,
     pub nns_governance: Principal,
     pub two_year_neuron_id: u64,
-    pub two_week_neuron_id: u64,
+    pub pooled_parent_memo: u64,
+    pub pooled_parent_followee_id: u64,
+    pub minimum_parent_stake_e8s: u128,
     pub jupiter_account: Account,
     pub jupiter_staging: Account,
-    pub two_week_maturity_staging: Account,
+    pub maturity_staging: Account,
     pub stream_liquid_account: Account,
     pub expected_io_fee_e8s: u128,
     pub expected_icp_fee_e8s: u128,
-    pub jupiter_fee_float_e8s: u128,
-    pub two_week_fee_float_e8s: u128,
     pub jupiter_activation_block_floor: u128,
     pub seeded_two_year_principal_e8s: u128,
-    pub seeded_two_week_principal_e8s: u128,
     pub transfer_retry_delay_nanos: u64,
     pub ledger_deduplication_window_nanos: u64,
 }
@@ -62,10 +70,11 @@ impl NnsConfig {
             }
         }
         if self.two_year_neuron_id == 0
-            || self.two_week_neuron_id == 0
-            || self.two_year_neuron_id == self.two_week_neuron_id
+            || self.pooled_parent_memo == 0
+            || self.pooled_parent_followee_id == 0
+            || self.minimum_parent_stake_e8s <= self.expected_icp_fee_e8s
         {
-            return Err("protected neuron ids must be distinct and non-zero".into());
+            return Err("protected neuron and pooled-parent policy must be non-zero".into());
         }
         if self.stream_liquid_account.owner != self.stream_manager {
             return Err("stream liquid account must be owned by stream manager".into());
@@ -73,7 +82,7 @@ impl NnsConfig {
         if self.jupiter_account.owner != self.jupiter {
             return Err("Jupiter account must be owned by configured Jupiter".into());
         }
-        let staging = [&self.jupiter_staging, &self.two_week_maturity_staging];
+        let staging = [&self.jupiter_staging, &self.maturity_staging];
         let mut canonical = std::collections::BTreeSet::new();
         for account in staging {
             account.validate()?;
@@ -100,20 +109,11 @@ impl NnsConfig {
         {
             return Err("staging, Jupiter and stream liquid accounts must be distinct".into());
         }
-        let two_fees = self
-            .expected_icp_fee_e8s
-            .checked_mul(2)
-            .ok_or("Jupiter staging fee requirement overflow")?;
         if self.expected_io_fee_e8s == 0
             || self.expected_io_fee_e8s > Self::MAX_STAGING_FEE_FLOAT_E8S
             || self.expected_icp_fee_e8s == 0
-            || self.jupiter_fee_float_e8s < two_fees
-            || self.two_week_fee_float_e8s < self.expected_icp_fee_e8s
-            || self.jupiter_fee_float_e8s > Self::MAX_STAGING_FEE_FLOAT_E8S
-            || self.two_week_fee_float_e8s > Self::MAX_STAGING_FEE_FLOAT_E8S
             || self.jupiter_activation_block_floor == 0
             || self.seeded_two_year_principal_e8s == 0
-            || self.seeded_two_week_principal_e8s == 0
             || self.transfer_retry_delay_nanos == 0
             || self.transfer_retry_delay_nanos >= self.ledger_deduplication_window_nanos
         {
@@ -133,6 +133,7 @@ pub enum Lifecycle {
 pub enum NnsOperation {
     Jupiter(Box<JupiterOperation>),
     Maturity(Box<MaturityCommandOperation>),
+    Pool(io_nns_types::backing::PoolCommand),
     Unwind(UnwindOperation),
 }
 
@@ -150,14 +151,16 @@ pub struct NnsStateV1 {
     pub config: NnsConfig,
     pub lifecycle: Lifecycle,
     pub active_operation: Option<NnsOperation>,
+    pub pooled_parent_id: Option<u64>,
+    pub pooled_parent_staking_account: Option<Account>,
+    pub live_cohorts: Vec<PassiveCohort>,
+    pub latest_reconciliation_generation: u64,
     pub latest_two_week_target: Option<TwoWeekTarget>,
     pub two_year_maturity_baseline_reconciled: bool,
-    pub two_week_maturity_baseline_reconciled: bool,
     pub latest_started_two_week_generation: u64,
     pub latest_completed_two_week_generation: u64,
     pub pending_two_year_maturity: Option<PendingMaturityDisbursement>,
     pub pending_two_week_maturity: Option<PendingMaturityDisbursement>,
-    pub pending_unwind: Option<UnwindOperation>,
     pub last_two_year_maturity: Option<CompletedMaturity>,
     pub last_two_week_maturity: Option<CompletedMaturity>,
     pub next_operation_sequence: u64,
@@ -185,31 +188,32 @@ impl NnsStateV1 {
                 icp_ledger: principal,
                 nns_governance: principal,
                 two_year_neuron_id: 0,
-                two_week_neuron_id: 0,
+                pooled_parent_memo: 0,
+                pooled_parent_followee_id: 0,
+                minimum_parent_stake_e8s: 0,
                 jupiter_account: account.clone(),
                 jupiter_staging: account.clone(),
-                two_week_maturity_staging: account.clone(),
+                maturity_staging: account.clone(),
                 stream_liquid_account: account,
                 expected_io_fee_e8s: 0,
                 expected_icp_fee_e8s: 0,
-                jupiter_fee_float_e8s: 0,
-                two_week_fee_float_e8s: 0,
                 jupiter_activation_block_floor: 0,
                 seeded_two_year_principal_e8s: 0,
-                seeded_two_week_principal_e8s: 0,
                 transfer_retry_delay_nanos: 1,
                 ledger_deduplication_window_nanos: 2,
             },
             lifecycle: Lifecycle::Paused,
             active_operation: None,
+            pooled_parent_id: None,
+            pooled_parent_staking_account: None,
+            live_cohorts: Vec::new(),
+            latest_reconciliation_generation: 0,
             latest_two_week_target: None,
             two_year_maturity_baseline_reconciled: false,
-            two_week_maturity_baseline_reconciled: false,
             latest_started_two_week_generation: 0,
             latest_completed_two_week_generation: 0,
             pending_two_year_maturity: None,
             pending_two_week_maturity: None,
-            pending_unwind: None,
             last_two_year_maturity: None,
             last_two_week_maturity: None,
             next_operation_sequence: 1,
@@ -229,6 +233,15 @@ impl NnsStateV1 {
             return Err("invalid NNS launch schema marker".into());
         }
         self.config.validate(canister_self)?;
+        let pooled_parent_id = self.pooled_parent_id.unwrap_or_default();
+        if self.pooled_parent_id.is_some() != self.pooled_parent_staking_account.is_some()
+            || self
+                .pooled_parent_staking_account
+                .as_ref()
+                .is_some_and(|account| account.owner != self.config.nns_governance)
+        {
+            return Err("pooled parent identity evidence is inconsistent".into());
+        }
         if (self.pending_two_year_maturity.is_some()
             || self.last_two_year_maturity.is_some()
             || matches!(
@@ -242,18 +255,8 @@ impl NnsStateV1 {
                 "two-year maturity work exists before launch baseline reconciliation".into(),
             );
         }
-        if let Some(operation) = &self.pending_unwind {
-            if self.latest_two_week_target.is_none()
-                || matches!(self.active_operation, Some(NnsOperation::Unwind(_)))
-                || operation.phase != crate::pool::UnwindPhase::Dissolving
-            {
-                return Err("invalid passive unwind child".into());
-            }
-            operation.validate(self.next_operation_sequence)?;
-        }
+        crate::pool::validate_cohorts(&self.live_cohorts)?;
         if self.latest_completed_two_week_generation > self.latest_started_two_week_generation
-            || (self.latest_started_two_week_generation > 0
-                && !self.two_week_maturity_baseline_reconciled)
             || (self.latest_started_two_week_generation > 0
                 && self.latest_two_week_target.is_none())
             || (self.latest_completed_two_week_generation > 0
@@ -294,10 +297,9 @@ impl NnsStateV1 {
                             self.config.two_year_neuron_id,
                             &self.config.stream_liquid_account,
                         ),
-                        crate::maturity::MaturityKind::TwoWeek => (
-                            self.config.two_week_neuron_id,
-                            &self.config.two_week_maturity_staging,
-                        ),
+                        crate::maturity::MaturityKind::TwoWeek => {
+                            (pooled_parent_id, &self.config.maturity_staging)
+                        }
                     };
                     operation.validate(self.next_operation_sequence, neuron_id, destination)?;
                     if let crate::maturity::MaturityCommandPhase::TwoWeekDelivery(delivery) =
@@ -330,11 +332,7 @@ impl NnsStateV1 {
                                 .ok_or("two-week transfer lacks its stream permit")?;
                             if transfer.intent.ledger != self.config.icp_ledger
                                 || transfer.intent.source_subaccount
-                                    != self
-                                        .config
-                                        .two_week_maturity_staging
-                                        .canonical()?
-                                        .subaccount
+                                    != self.config.maturity_staging.canonical()?.subaccount
                                 || !transfer
                                     .intent
                                     .destination
@@ -358,6 +356,9 @@ impl NnsStateV1 {
                         }
                     }
                 }
+                NnsOperation::Pool(operation) => {
+                    operation.validate(self.next_operation_sequence)?;
+                }
                 NnsOperation::Unwind(operation) => {
                     operation.validate(self.next_operation_sequence)?
                 }
@@ -373,8 +374,8 @@ impl NnsStateV1 {
             (
                 self.pending_two_week_maturity.as_ref(),
                 crate::maturity::MaturityKind::TwoWeek,
-                self.config.two_week_neuron_id,
-                &self.config.two_week_maturity_staging,
+                pooled_parent_id,
+                &self.config.maturity_staging,
             ),
         ] {
             let Some(pending) = pending else { continue };
@@ -390,8 +391,8 @@ impl NnsStateV1 {
             (
                 self.last_two_week_maturity.as_ref(),
                 crate::maturity::MaturityKind::TwoWeek,
-                self.config.two_week_neuron_id,
-                &self.config.two_week_maturity_staging,
+                pooled_parent_id,
+                &self.config.maturity_staging,
             ),
         ] {
             let Some(completed) = completed else { continue };
@@ -605,7 +606,9 @@ mod tests {
                     icp_ledger: principal(5),
                     nns_governance: principal(6),
                     two_year_neuron_id: 1,
-                    two_week_neuron_id: 2,
+                    pooled_parent_memo: 2,
+                    pooled_parent_followee_id: 3,
+                    minimum_parent_stake_e8s: 100_000_000,
                     jupiter_account: Account {
                         owner: jupiter,
                         subaccount: None,
@@ -614,28 +617,27 @@ mod tests {
                         owner: canister_self,
                         subaccount: None,
                     },
-                    two_week_maturity_staging: account(canister_self, 2),
+                    maturity_staging: account(canister_self, 2),
                     stream_liquid_account: account(stream, 3),
                     expected_io_fee_e8s: 10_000,
                     expected_icp_fee_e8s: 10_000,
-                    jupiter_fee_float_e8s: 20_000,
-                    two_week_fee_float_e8s: 20_000,
                     jupiter_activation_block_floor: 1,
                     seeded_two_year_principal_e8s: 1,
-                    seeded_two_week_principal_e8s: 1,
                     transfer_retry_delay_nanos: 1_000_000_000,
                     ledger_deduplication_window_nanos: 86_400_000_000_000,
                 },
                 lifecycle: Lifecycle::Paused,
                 active_operation: None,
+                pooled_parent_id: None,
+                pooled_parent_staking_account: None,
+                live_cohorts: Vec::new(),
+                latest_reconciliation_generation: 0,
                 latest_two_week_target: None,
                 two_year_maturity_baseline_reconciled: false,
-                two_week_maturity_baseline_reconciled: false,
                 latest_started_two_week_generation: 0,
                 latest_completed_two_week_generation: 0,
                 pending_two_year_maturity: None,
                 pending_two_week_maturity: None,
-                pending_unwind: None,
                 last_two_year_maturity: None,
                 last_two_week_maturity: None,
                 next_operation_sequence: 1,
@@ -644,15 +646,15 @@ mod tests {
         )
     }
 
-    fn passive_unwind() -> UnwindOperation {
-        UnwindOperation {
-            operation_sequence: 1,
-            target_e8s: 1,
-            excess_e8s: 2,
+    fn passive_unwind() -> PassiveCohort {
+        PassiveCohort {
+            generation: 1,
             child_neuron_id: 3,
             principal_e8s: 1,
             child_staking_subaccount: vec![3; 32],
-            phase: crate::pool::UnwindPhase::Dissolving,
+            ready_at_seconds: 4,
+            proof: io_nns_types::backing::CohortProofState::Dissolving,
+            disbursement_block: None,
         }
     }
 
@@ -670,6 +672,7 @@ mod tests {
                     gross_e8s: 100,
                     stake_e8s: 39,
                     liquid_e8s: 61,
+                    fee_e8s: 0,
                     created_at_time_nanos: 1,
                 },
                 phase: crate::jupiter::JupiterPhase::DepositProved,
@@ -687,7 +690,7 @@ mod tests {
             original_staked_maturity_e8s: 0,
             stake_maturity_e8s: 80_000_000,
             remaining_maturity_e8s: 120_000_000,
-            destination: state.config.two_week_maturity_staging.clone(),
+            destination: state.config.maturity_staging.clone(),
             requested_at_seconds: 1,
             entitlement_batch_generation: None,
         };
@@ -705,7 +708,7 @@ mod tests {
             kind: crate::maturity::MaturityKind::TwoYear,
             neuron_id: 1,
             nominal_disbursed_maturity_e8s: 120_000_000,
-            destination: state.config.two_week_maturity_staging.clone(),
+            destination: state.config.maturity_staging.clone(),
             initiation_timestamp_seconds: 1,
             scheduled_finalization_timestamp_seconds: 604_801,
             stake_evidence: stake,
@@ -720,11 +723,8 @@ mod tests {
     }
 
     #[test]
-    fn config_requires_default_jupiter_accounts_and_two_fees() {
+    fn config_requires_default_jupiter_accounts() {
         let (canister_self, mut state) = valid_state();
-        state.config.jupiter_fee_float_e8s = state.config.expected_icp_fee_e8s;
-        assert!(state.validate(canister_self).is_err());
-        state.config.jupiter_fee_float_e8s = state.config.expected_icp_fee_e8s * 2;
         state.config.jupiter_account.subaccount = Some(vec![9; 32]);
         assert!(state.validate(canister_self).is_err());
         state.config.jupiter_account.subaccount = None;
@@ -776,7 +776,7 @@ mod tests {
         assert!(state.validate(canister_self).is_err());
 
         let (canister_self, mut state) = valid_state();
-        state.config.two_week_maturity_staging = state.config.jupiter_staging.clone();
+        state.config.maturity_staging = state.config.jupiter_staging.clone();
         assert!(state.validate(canister_self).is_err());
     }
 
@@ -785,14 +785,12 @@ mod tests {
         let (canister_self, mut state) = valid_state();
         state.lifecycle = Lifecycle::Ready;
         state.two_year_maturity_baseline_reconciled = true;
-        state.two_week_maturity_baseline_reconciled = true;
         initialize(state, canister_self).unwrap();
         reopen(canister_self);
         let reopened = read();
         assert_eq!(reopened.lifecycle, Lifecycle::Paused);
         assert_eq!(reopened.config.jupiter_activation_block_floor, 1);
         assert!(reopened.two_year_maturity_baseline_reconciled);
-        assert!(reopened.two_week_maturity_baseline_reconciled);
 
         let mut unreconciled = reopened;
         unreconciled.two_year_maturity_baseline_reconciled = false;
@@ -808,14 +806,13 @@ mod tests {
             target_e8s: 1,
             status: TwoWeekTargetStatus::AtTarget,
         });
-        state.pending_unwind = Some(passive_unwind());
-        state.next_operation_sequence = 2;
+        state.live_cohorts = vec![passive_unwind()];
         initialize(state, canister_self).unwrap();
         reopen(canister_self);
         let reopened = read();
-        assert_eq!(reopened.pending_unwind, Some(passive_unwind()));
+        assert_eq!(reopened.live_cohorts, vec![passive_unwind()]);
         let mut duplicate = reopened;
-        duplicate.active_operation = Some(NnsOperation::Unwind(passive_unwind()));
+        duplicate.live_cohorts.push(passive_unwind());
         assert!(duplicate.validate(canister_self).is_err());
     }
 
@@ -890,8 +887,8 @@ mod tests {
             .expect("valid adverse modulation may Mint less than nominal maturity");
         let mut two_week = pending(
             MaturityKind::TwoWeek,
-            state.config.two_week_neuron_id,
-            state.config.two_week_maturity_staging.clone(),
+            2,
+            state.config.maturity_staging.clone(),
             Some(1),
         );
         two_week.mint_proof = MintProofState::Delivering(MintEvidence {
@@ -905,15 +902,25 @@ mod tests {
             target_e8s: 1,
             status: TwoWeekTargetStatus::AtTarget,
         });
-        state.two_week_maturity_baseline_reconciled = true;
+        state.pooled_parent_id = Some(2);
+        state.pooled_parent_staking_account = Some(Account {
+            owner: state.config.nns_governance,
+            subaccount: Some(vec![2; 32]),
+        });
         state.latest_started_two_week_generation = 1;
         state.pending_two_year_maturity = Some(two_year);
         state.pending_two_week_maturity = Some(two_week.clone());
-        state.pending_unwind = Some(UnwindOperation {
-            principal_e8s: u128::MAX,
-            excess_e8s: u128::MAX,
-            ..passive_unwind()
-        });
+        state.live_cohorts = (1..=io_nns_types::backing::MAX_LIVE_UNWIND_COHORTS as u64)
+            .map(|generation| PassiveCohort {
+                generation,
+                child_neuron_id: generation,
+                principal_e8s: u128::MAX,
+                child_staking_subaccount: vec![generation as u8; 32],
+                ready_at_seconds: u64::MAX,
+                proof: io_nns_types::backing::CohortProofState::Dissolving,
+                disbursement_block: None,
+            })
+            .collect();
         state.last_two_year_maturity = Some(CompletedMaturity {
             kind: MaturityKind::TwoYear,
             neuron_id: state.config.two_year_neuron_id,
@@ -925,11 +932,11 @@ mod tests {
         });
         state.last_two_week_maturity = Some(CompletedMaturity {
             kind: MaturityKind::TwoWeek,
-            neuron_id: state.config.two_week_neuron_id,
+            neuron_id: 2,
             mint_block: u128::MAX,
             nominal_disbursed_maturity_e8s: u64::MAX,
             actual_minted_icp_e8s: u128::MAX,
-            destination: state.config.two_week_maturity_staging.clone(),
+            destination: state.config.maturity_staging.clone(),
             completed_at_nanos: u64::MAX,
         });
         state.active_operation = Some(NnsOperation::Maturity(Box::new(MaturityCommandOperation {
@@ -944,7 +951,6 @@ mod tests {
             }),
         })));
         state.two_year_maturity_baseline_reconciled = true;
-        state.two_week_maturity_baseline_reconciled = true;
         state.next_operation_sequence = 2;
         state.validate(canister_self).unwrap();
         let stable = StableNnsState::V1(state);
@@ -1009,12 +1015,12 @@ mod tests {
             active_operation: state.active_operation,
             latest_two_week_target: state.latest_two_week_target,
             two_year_maturity_baseline_reconciled: state.two_year_maturity_baseline_reconciled,
-            two_week_maturity_baseline_reconciled: state.two_week_maturity_baseline_reconciled,
+            two_week_maturity_baseline_reconciled: false,
             latest_started_two_week_generation: state.latest_started_two_week_generation,
             latest_completed_two_week_generation: state.latest_completed_two_week_generation,
             pending_two_year_maturity: state.pending_two_year_maturity,
             pending_two_week_maturity: state.pending_two_week_maturity,
-            pending_unwind: state.pending_unwind,
+            pending_unwind: None,
             last_two_year_maturity: state.last_two_year_maturity,
             last_two_week_maturity: state.last_two_week_maturity,
             next_operation_sequence: state.next_operation_sequence,

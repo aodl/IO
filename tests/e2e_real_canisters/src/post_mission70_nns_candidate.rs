@@ -920,10 +920,10 @@ fn assert_lower_hex(value: &str, expected_length: usize) {
 fn post_mission70_candidate_lock_is_self_consistent() {
     let lock = include_str!("../post_mission70_nns_candidate.toml");
     io_sns_manifest::SnsManifest::parse(lock).expect("candidate lock should be valid TOML");
-    assert_eq!(lock_value(lock, "candidate", "status"), "candidate_only");
+    assert_eq!(lock_value(lock, "candidate", "status"), "active_boundary");
     assert_eq!(
         lock_value(lock, "candidate", "production_active_pin"),
-        "false"
+        "true"
     );
     let source = lock_value(lock, "candidate", "source_commit");
     assert_lower_hex(source, 40);
@@ -1003,35 +1003,23 @@ fn post_mission70_candidate_lock_is_self_consistent() {
         );
     }
 
-    for (path, active_boundary) in [
-        (
-            "tools/xtask/src/main.rs",
-            include_str!("../../../tools/xtask/src/main.rs"),
-        ),
-        (
-            "crates/io_nns_types/src/jupiter.rs",
-            include_str!("../../../crates/io_nns_types/src/jupiter.rs"),
-        ),
-        (
-            "tests/e2e_real_canisters/wasms.example.toml",
-            include_str!("../wasms.example.toml"),
-        ),
-        (
-            "docs/testing/nns-boundary-pin.md",
-            include_str!("../../../docs/testing/nns-boundary-pin.md"),
-        ),
+    let active_boundary = [
+        include_str!("../../../tools/xtask/src/main.rs"),
+        include_str!("../../../crates/io_nns_types/src/jupiter.rs"),
+        include_str!("../wasms.example.toml"),
+        include_str!("../../../docs/testing/nns-boundary-pin.md"),
+    ]
+    .join("\n");
+    for required in [
+        CANDIDATE_COMMIT,
+        CANDIDATE_COMPRESSED_SHA256,
+        CANDIDATE_RAW_SHA256,
+        CANDIDATE_DID_SHA256,
     ] {
-        for forbidden in [
-            CANDIDATE_COMMIT,
-            CANDIDATE_COMPRESSED_SHA256,
-            CANDIDATE_RAW_SHA256,
-            CANDIDATE_DID_SHA256,
-        ] {
-            assert!(
-                !active_boundary.contains(forbidden),
-                "candidate identity must not enter active boundary file {path}"
-            );
-        }
+        assert!(
+            active_boundary.contains(required),
+            "active boundary is missing candidate identity {required}"
+        );
     }
 }
 

@@ -18,15 +18,12 @@ pub async fn start_delivery(
         return Err(ApiError::Busy);
     };
     let config = state::read().config;
-    let balance = execution::icp_balance(&config, &config.two_week_maturity_staging).await?;
+    let balance = execution::icp_balance(&config, &config.maturity_staging).await?;
     maturity_flow::ensure_pending(&expected)?;
-    let required = mint
-        .actual_minted_icp_e8s
-        .checked_add(config.two_week_fee_float_e8s)
-        .ok_or_else(|| ApiError::Invalid("two-week delivery preflight overflow".into()))?;
+    let required = mint.actual_minted_icp_e8s;
     if balance < required {
         return Err(ApiError::Stuck(format!(
-            "two-week staging balance {balance} is below actual Mint plus fee float {required}"
+            "maturity staging balance {balance} is below the actual Mint {required}"
         )));
     }
     let mut latest = state::read();
@@ -81,7 +78,7 @@ pub async fn prepare(
                             | crate::state::TwoWeekTargetStatus::AtTargetWithinUnwindTolerance
                     )
             })
-        || !snapshot.two_week_maturity_baseline_reconciled
+        || snapshot.pooled_parent_id.is_none()
     {
         return Err(ApiError::Invalid(
             "two-week maturity does not match one frozen entitlement batch and target".into(),

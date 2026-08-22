@@ -33,11 +33,12 @@ const CURRENT_CANONICAL_SELECTOR: &str =
 const KNOWN_TWO_YEAR_NNS_NEURON_ID: u64 = PROTECTED_IO_NNS_NEURON_ID;
 const KNOWN_CONTROLLER_CANISTER_PRINCIPAL: &str = PROTECTED_IO_NEURON_OWNER_CANISTER;
 const PRODUCTION_CANISTER_IDS_PATH: &str = "deploy/production-wiring/canister-ids.toml";
-const NNS_BOUNDARY_SOURCE_COMMIT: &str = "021bf342f66296d5605b355a61b2430406a83783";
+const NNS_GOVERNANCE_SOURCE_COMMIT: &str = "8aa4680e378f3248e7e7b9b8237915aded999bd9";
+const ICP_LEDGER_SOURCE_COMMIT: &str = "021bf342f66296d5605b355a61b2430406a83783";
 const NNS_GOVERNANCE_SOURCE_SHA256: &str =
-    "c66ff7d948ff79a826e61eab9e11714082d93a45e42f3b7deec1c2377341285f";
+    "b41a5add38d54751d53fb4f0c826b09aaee38e0c5bea632400f1dbaaa11cfd4b";
 const NNS_GOVERNANCE_WASM_SHA256: &str =
-    "0a341fd53eba8cdfdd2330f968758bab2858fe7a26bbe1bc6a55320c23ba0ec5";
+    "eaa2da45722d980b25405525873571ab7dad426a93e1d4971f6b555d80906d85";
 const ICP_LEDGER_SOURCE_SHA256: &str =
     "5d69ec2e26e5546fe7e94bab721d6c4ed840106f9e2e69d11a8f3ee6e7721df0";
 const ICP_LEDGER_WASM_SHA256: &str =
@@ -280,25 +281,30 @@ fn check_nns_boundary_pin_at(root: &Path) -> Result<(), String> {
     let manifest_path = "tests/e2e_real_canisters/wasms.example.toml";
     let evidence_path = "docs/testing/nns-boundary-pin.md";
     let implementation = require_file(root, implementation_path)?;
-    let implementation_pin = quoted_rust_const(&implementation, "PINNED_DFINITY_IC_COMMIT")?;
-    if implementation_pin != NNS_BOUNDARY_SOURCE_COMMIT {
+    let governance_pin = quoted_rust_const(&implementation, "PINNED_NNS_GOVERNANCE_COMMIT")?;
+    let ledger_pin = quoted_rust_const(&implementation, "PINNED_ICP_LEDGER_COMMIT")?;
+    if governance_pin != NNS_GOVERNANCE_SOURCE_COMMIT || ledger_pin != ICP_LEDGER_SOURCE_COMMIT {
         return Err(format!(
-            "{implementation_path}: implementation pin {implementation_pin} does not equal approved boundary {NNS_BOUNDARY_SOURCE_COMMIT}"
+            "{implementation_path}: implementation component pins do not equal the approved boundaries"
         ));
     }
 
     let manifest = require_file(root, manifest_path)?;
-    for artifact in ["nns_governance", "nns_ledger", "icp_ledger"] {
+    for (artifact, component_pin) in [
+        ("nns_governance", governance_pin.as_str()),
+        ("nns_ledger", ledger_pin.as_str()),
+        ("icp_ledger", ledger_pin.as_str()),
+    ] {
         require_toml_string(
             manifest_path,
             &manifest,
             "artifacts",
             &format!("{artifact}_upstream_rev"),
-            &implementation_pin,
+            component_pin,
         )?;
         let source_url =
             parse_toml_string(&manifest, "artifacts", &format!("{artifact}_source_url"))?;
-        if !source_url.contains(&format!("/ic/{implementation_pin}/")) {
+        if !source_url.contains(&format!("/ic/{component_pin}/")) {
             return Err(format!(
                 "{manifest_path}: {artifact} source URL does not contain implementation revision"
             ));
@@ -342,12 +348,13 @@ fn check_nns_boundary_pin_at(root: &Path) -> Result<(), String> {
         evidence_path,
         &evidence,
         &[
-            NNS_BOUNDARY_SOURCE_COMMIT,
+            NNS_GOVERNANCE_SOURCE_COMMIT,
+            ICP_LEDGER_SOURCE_COMMIT,
             NNS_GOVERNANCE_SOURCE_SHA256,
             NNS_GOVERNANCE_WASM_SHA256,
             ICP_LEDGER_SOURCE_SHA256,
             ICP_LEDGER_WASM_SHA256,
-            "edbbc660d8a819ac4c400296d444f3caf01b21fed3680d0defc099bac3d02c84",
+            "6e9a397f4bf0adc913980ef6c176e765534617d0ce59d52e7bcc66add2b0cd71",
             "45a6f13779ead0f7247b728f7a8953d649173863fea1f01fbf7c04f30589aad7",
             "100_000_000",
             "604_800",

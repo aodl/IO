@@ -10,13 +10,28 @@ use crate::{
 use candid::{CandidType, Nat, Principal, Reserved};
 use ic_cdk::call::Call;
 use io_ledger_boundary::{IcrcTransferArg, IcrcTransferError, IcrcTransferResult};
+use io_nns_types::backing::{FollowPolicy, POOLED_PARENT_DELAY_SECONDS};
 use io_receipt_types::{CompleteLiquidReceiptArgs, PrepareLiquidReceiptArgs, ReceiptKind};
 pub use io_receipt_types::{CompletedReceiptResult, LiquidReceiptProgress as StreamLiquidProgress};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 pub enum ExactTransferOutcome {
     Succeeded(u128),
     Paused(TransferOutcomeClassification, String),
+}
+
+pub fn parent_staking_account(config: &NnsConfig, memo: u64) -> Account {
+    let controller = ic_cdk::api::canister_self();
+    let mut hasher = Sha256::new();
+    hasher.update([0x0c]);
+    hasher.update(b"neuron-stake");
+    hasher.update(controller.as_slice());
+    hasher.update(memo.to_be_bytes());
+    Account {
+        owner: config.nns_governance,
+        subaccount: Some(hasher.finalize().to_vec()),
+    }
 }
 
 pub fn classify_transfer(
@@ -59,20 +74,47 @@ pub struct NeuronObservation {
     pub auto_stake_maturity: bool,
     pub maturity_disbursements: Vec<MaturityDisbursement>,
     pub dissolve_state: Option<DissolveState>,
+    pub followees: Vec<(i32, Vec<u64>)>,
+    pub voting_power_refreshed_timestamp_seconds: Option<u64>,
 }
 
-pub const APPROVED_REWARD_BACKING_DISSOLVE_DELAY_SECONDS: u64 = 252_460_800;
+pub const APPROVED_PERMANENT_DISSOLVE_DELAY_SECONDS: u64 = 252_460_800;
 
-pub fn validate_maturity_configuration(observation: &NeuronObservation) -> Result<(), String> {
+pub fn validate_permanent_configuration(observation: &NeuronObservation) -> Result<(), String> {
     if !observation.auto_stake_maturity
         && observation.dissolve_state
             == Some(DissolveState::DissolveDelaySeconds(
-                APPROVED_REWARD_BACKING_DISSOLVE_DELAY_SECONDS,
+                APPROVED_PERMANENT_DISSOLVE_DELAY_SECONDS,
             ))
     {
         Ok(())
     } else {
         Err("configured NNS neuron auto-stake or approved dissolve configuration drifted".into())
+    }
+}
+
+pub fn validate_parent_configuration(
+    observation: &NeuronObservation,
+    policy: FollowPolicy,
+) -> Result<(), String> {
+    let expected = [0, 4, 14];
+    let exact_following = observation.followees.len() == expected.len()
+        && expected.iter().all(|topic| {
+            observation
+                .followees
+                .iter()
+                .any(|(actual, ids)| actual == topic && ids == &[policy.followee_neuron_id])
+        });
+    if !observation.auto_stake_maturity
+        && observation.dissolve_state
+            == Some(DissolveState::DissolveDelaySeconds(
+                POOLED_PARENT_DELAY_SECONDS,
+            ))
+        && exact_following
+    {
+        Ok(())
+    } else {
+        Err("pooled parent delay, auto-stake, or following policy drifted".into())
     }
 }
 
@@ -92,6 +134,13 @@ struct Neuron {
     auto_stake_maturity: Option<bool>,
     maturity_disbursements_in_progress: Option<Vec<MaturityDisbursement>>,
     dissolve_state: Option<DissolveState>,
+    followees: Vec<(i32, Followees)>,
+    voting_power_refreshed_timestamp_seconds: Option<u64>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct Followees {
+    followees: Vec<NeuronId>,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -132,10 +181,22 @@ struct ClaimOrRefresh {
 #[derive(Clone, Debug, CandidType, Deserialize)]
 enum ClaimBy {
     NeuronIdOrSubaccount(Empty),
+    MemoAndController(ClaimFromAccount),
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct ClaimFromAccount {
+    controller: Option<Principal>,
+    memo: u64,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 struct Empty {}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct ClaimOrRefreshResponse {
+    refreshed_neuron_id: Option<NeuronId>,
+}
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 enum Command {
@@ -146,6 +207,8 @@ enum Command {
     Disburse(Disburse),
     StakeMaturity(StakeMaturity),
     DisburseMaturity(DisburseMaturity),
+    SetFollowing(SetFollowing),
+    RefreshVotingPower(Empty),
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -157,6 +220,23 @@ struct Configure {
 enum ConfigureOperation {
     StopDissolving(Empty),
     StartDissolving(Empty),
+    IncreaseDissolveDelay(IncreaseDissolveDelay),
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct IncreaseDissolveDelay {
+    additional_dissolve_delay_seconds: u32,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct SetFollowing {
+    topic_following: Option<Vec<FolloweesForTopic>>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct FolloweesForTopic {
+    followees: Option<Vec<NeuronId>>,
+    topic: Option<i32>,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -201,13 +281,15 @@ struct DisburseMaturity {
 #[derive(Clone, Debug, CandidType, Deserialize)]
 enum CommandResponse {
     Error(GovernanceError),
-    ClaimOrRefresh(Reserved),
+    ClaimOrRefresh(ClaimOrRefreshResponse),
     Configure(Reserved),
     Split(SpawnResponse),
     Merge(Reserved),
     Disburse(DisburseResponse),
     StakeMaturity(StakeMaturityResponse),
     DisburseMaturity(DisburseMaturityResponse),
+    SetFollowing(Reserved),
+    RefreshVotingPower(Reserved),
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -285,7 +367,98 @@ pub async fn query_neuron_observation(
             .maturity_disbursements_in_progress
             .unwrap_or_default(),
         dissolve_state: neuron.dissolve_state,
+        followees: neuron
+            .followees
+            .into_iter()
+            .map(|(topic, followees)| {
+                (
+                    topic,
+                    followees.followees.into_iter().map(|id| id.id).collect(),
+                )
+            })
+            .collect(),
+        voting_power_refreshed_timestamp_seconds: neuron.voting_power_refreshed_timestamp_seconds,
     })
+}
+
+pub async fn claim_parent(config: &NnsConfig, memo: u64) -> Result<u64, ApiError> {
+    let response = manage(
+        config,
+        0,
+        Command::ClaimOrRefresh(ClaimOrRefresh {
+            by: Some(ClaimBy::MemoAndController(ClaimFromAccount {
+                controller: Some(ic_cdk::api::canister_self()),
+                memo,
+            })),
+        }),
+    )
+    .await?;
+    match response {
+        Some(CommandResponse::ClaimOrRefresh(value)) => value
+            .refreshed_neuron_id
+            .map(|id| id.id)
+            .ok_or_else(|| ApiError::Invalid("ClaimOrRefresh returned no parent ID".into())),
+        Some(CommandResponse::Error(error)) => Err(governance_error("ClaimOrRefresh", error)),
+        _ => Err(ApiError::Invalid(
+            "parent claim returned the wrong response".into(),
+        )),
+    }
+}
+
+pub async fn increase_delay(
+    config: &NnsConfig,
+    neuron_id: u64,
+    additional_seconds: u32,
+) -> Result<(), ApiError> {
+    configure(
+        config,
+        neuron_id,
+        ConfigureOperation::IncreaseDissolveDelay(IncreaseDissolveDelay {
+            additional_dissolve_delay_seconds: additional_seconds,
+        }),
+    )
+    .await
+}
+
+pub async fn set_following(
+    config: &NnsConfig,
+    neuron_id: u64,
+    policy: FollowPolicy,
+) -> Result<(), ApiError> {
+    let topic_following = [0, 4, 14]
+        .into_iter()
+        .map(|topic| FolloweesForTopic {
+            followees: Some(vec![NeuronId {
+                id: policy.followee_neuron_id,
+            }]),
+            topic: Some(topic),
+        })
+        .collect();
+    match manage(
+        config,
+        neuron_id,
+        Command::SetFollowing(SetFollowing {
+            topic_following: Some(topic_following),
+        }),
+    )
+    .await?
+    {
+        Some(CommandResponse::SetFollowing(_)) => Ok(()),
+        Some(CommandResponse::Error(error)) => Err(governance_error("SetFollowing", error)),
+        _ => Err(ApiError::Invalid(
+            "SetFollowing returned the wrong response".into(),
+        )),
+    }
+}
+
+pub async fn refresh_voting_power(config: &NnsConfig, neuron_id: u64) -> Result<(), ApiError> {
+    match manage(config, neuron_id, Command::RefreshVotingPower(Empty {})).await? {
+        Some(CommandResponse::RefreshVotingPower(_)) => Ok(()),
+        Some(CommandResponse::Error(error)) => Err(governance_error("RefreshVotingPower", error)),
+        _ => Err(ApiError::Invalid(
+            "RefreshVotingPower returned the wrong response".into(),
+        )),
+    }
 }
 
 pub async fn refresh_neuron(config: &NnsConfig, neuron_id: u64) -> Result<(), ApiError> {
@@ -401,6 +574,14 @@ pub async fn set_dissolving(
     } else {
         ConfigureOperation::StopDissolving(Empty {})
     };
+    configure(config, neuron_id, operation).await
+}
+
+async fn configure(
+    config: &NnsConfig,
+    neuron_id: u64,
+    operation: ConfigureOperation,
+) -> Result<(), ApiError> {
     match manage(
         config,
         neuron_id,
@@ -816,8 +997,10 @@ mod tests {
             auto_stake_maturity: false,
             maturity_disbursements: vec![],
             dissolve_state: Some(DissolveState::DissolveDelaySeconds(
-                APPROVED_REWARD_BACKING_DISSOLVE_DELAY_SECONDS,
+                APPROVED_PERMANENT_DISSOLVE_DELAY_SECONDS,
             )),
+            followees: vec![],
+            voting_power_refreshed_timestamp_seconds: None,
         }
     }
 
@@ -846,12 +1029,12 @@ mod tests {
     #[test]
     fn later_retained_staked_maturity_is_valid_but_configuration_drift_is_not() {
         let valid = observation();
-        assert_eq!(validate_maturity_configuration(&valid), Ok(()));
+        assert_eq!(validate_permanent_configuration(&valid), Ok(()));
         let mut auto = valid.clone();
         auto.auto_stake_maturity = true;
-        assert!(validate_maturity_configuration(&auto).is_err());
+        assert!(validate_permanent_configuration(&auto).is_err());
         let mut dissolving = valid;
         dissolving.dissolve_state = Some(DissolveState::WhenDissolvedTimestampSeconds(u64::MAX));
-        assert!(validate_maturity_configuration(&dissolving).is_err());
+        assert!(validate_permanent_configuration(&dissolving).is_err());
     }
 }

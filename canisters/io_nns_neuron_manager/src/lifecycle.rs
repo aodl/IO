@@ -5,7 +5,7 @@ fn validate_prelaunch_baseline(
     seeded_principal_e8s: u128,
     observation: &crate::execution::NeuronObservation,
 ) -> Result<(), crate::api::ApiError> {
-    crate::execution::validate_maturity_configuration(observation)
+    crate::execution::validate_permanent_configuration(observation)
         .map_err(crate::api::ApiError::Invalid)?;
     let observed_principal_e8s = observation.snapshot.cached_stake_e8s;
     if observed_principal_e8s != seeded_principal_e8s {
@@ -33,11 +33,10 @@ pub async fn readiness_preflight(
 ) -> Result<(), crate::api::ApiError> {
     let snapshot = state::read();
     let two_year_baseline_needed = !snapshot.two_year_maturity_baseline_reconciled;
-    let two_week_baseline_needed = !snapshot.two_week_maturity_baseline_reconciled;
     if snapshot.active_operation.is_some()
         || snapshot.pending_two_year_maturity.is_some()
         || snapshot.pending_two_week_maturity.is_some()
-        || (two_week_baseline_needed && snapshot.pending_unwind.is_some())
+        || !snapshot.live_cohorts.is_empty()
     {
         return Err(crate::api::ApiError::Busy);
     }
@@ -65,43 +64,6 @@ pub async fn readiness_preflight(
             "canonical ICP fee differs from approved config".into(),
         ));
     }
-    for (name, account, required) in [
-        (
-            "Jupiter",
-            snapshot.config.jupiter_staging.clone(),
-            snapshot.config.jupiter_fee_float_e8s,
-        ),
-        (
-            "two-week maturity",
-            snapshot.config.two_week_maturity_staging.clone(),
-            snapshot.config.two_week_fee_float_e8s,
-        ),
-    ] {
-        let balance: candid::Nat =
-            ic_cdk::call::Call::bounded_wait(snapshot.config.icp_ledger, "icrc1_balance_of")
-                .with_arg(account)
-                .await
-                .map_err(|error| {
-                    crate::api::ApiError::Stuck(format!(
-                        "{name} staging balance query failed: {error:?}"
-                    ))
-                })?
-                .candid()
-                .map_err(|error| {
-                    crate::api::ApiError::Invalid(format!(
-                        "{name} staging balance decode failed: {error:?}"
-                    ))
-                })?;
-        let balance: u128 = balance
-            .0
-            .try_into()
-            .map_err(|_| crate::api::ApiError::Invalid("ICP balance does not fit u128".into()))?;
-        if balance < required {
-            return Err(crate::api::ApiError::Invalid(format!(
-                "{name} staging fee float is below its configured minimum"
-            )));
-        }
-    }
     if two_year_baseline_needed {
         let observation = crate::execution::query_neuron_observation(
             &snapshot.config,
@@ -114,23 +76,22 @@ pub async fn readiness_preflight(
             &observation,
         )?;
     }
-    if two_week_baseline_needed {
-        let observation = crate::execution::query_neuron_observation(
-            &snapshot.config,
-            snapshot.config.two_week_neuron_id,
-        )
-        .await?;
-        validate_prelaunch_baseline(
-            "two-week reward-backing NNS neuron",
-            snapshot.config.seeded_two_week_principal_e8s,
+    if let Some(parent_id) = snapshot.pooled_parent_id {
+        let observation =
+            crate::execution::query_neuron_observation(&snapshot.config, parent_id).await?;
+        crate::execution::validate_parent_configuration(
             &observation,
-        )?;
+            io_nns_types::backing::FollowPolicy {
+                followee_neuron_id: snapshot.config.pooled_parent_followee_id,
+            },
+        )
+        .map_err(crate::api::ApiError::Invalid)?;
     }
     let latest = state::read();
     if latest.active_operation.is_some()
         || latest.pending_two_year_maturity.is_some()
         || latest.pending_two_week_maturity.is_some()
-        || (two_week_baseline_needed && latest.pending_unwind.is_some())
+        || !latest.live_cohorts.is_empty()
         || latest.lifecycle != Lifecycle::Paused
         || latest.control_epoch != captured_control_epoch
         || latest.config != snapshot.config
@@ -139,7 +100,6 @@ pub async fn readiness_preflight(
     }
     let mut latest = latest;
     latest.two_year_maturity_baseline_reconciled |= two_year_baseline_needed;
-    latest.two_week_maturity_baseline_reconciled |= two_week_baseline_needed;
     latest.lifecycle = Lifecycle::Ready;
     state::write(latest);
     Ok(())
@@ -178,8 +138,10 @@ mod tests {
             auto_stake_maturity: false,
             maturity_disbursements: vec![],
             dissolve_state: Some(crate::execution::DissolveState::DissolveDelaySeconds(
-                crate::execution::APPROVED_REWARD_BACKING_DISSOLVE_DELAY_SECONDS,
+                crate::execution::APPROVED_PERMANENT_DISSOLVE_DELAY_SECONDS,
             )),
+            followees: vec![],
+            voting_power_refreshed_timestamp_seconds: None,
         }
     }
 
@@ -223,7 +185,7 @@ mod tests {
         assert!(validate_prelaunch_baseline("fixture", 100, &dissolving).is_err());
         let mut wrong_delay = observation();
         wrong_delay.dissolve_state = Some(crate::execution::DissolveState::DissolveDelaySeconds(
-            crate::execution::APPROVED_REWARD_BACKING_DISSOLVE_DELAY_SECONDS - 1,
+            crate::execution::APPROVED_PERMANENT_DISSOLVE_DELAY_SECONDS - 1,
         ));
         assert!(validate_prelaunch_baseline("fixture", 100, &wrong_delay).is_err());
     }

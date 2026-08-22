@@ -71,16 +71,14 @@ async fn lookup_and_begin(
         ));
     }
     let (stake_e8s, liquid_e8s) =
-        jupiter::checked_split(transfer.amount_e8s).map_err(ApiError::Invalid)?;
+        jupiter::fee_reduced_split(transfer.amount_e8s, current.config.expected_icp_fee_e8s)
+            .map_err(ApiError::Invalid)?;
     let staging_balance =
         execution::icp_balance(&current.config, &current.config.jupiter_staging).await?;
-    let required_staging = transfer
-        .amount_e8s
-        .checked_add(current.config.jupiter_fee_float_e8s)
-        .ok_or_else(|| ApiError::Invalid("Jupiter staging preflight overflow".into()))?;
-    if staging_balance < required_staging {
+    if staging_balance < transfer.amount_e8s {
         return Err(ApiError::Invalid(format!(
-            "Jupiter staging balance {staging_balance} is below gross deposit plus fee float {required_staging}"
+            "Jupiter staging balance {staging_balance} is below the exact deposit {}",
+            transfer.amount_e8s
         )));
     }
 
@@ -104,6 +102,7 @@ async fn lookup_and_begin(
             gross_e8s: transfer.amount_e8s,
             stake_e8s,
             liquid_e8s,
+            fee_e8s: current.config.expected_icp_fee_e8s,
             created_at_time_nanos: transfer.created_at_time,
         },
         phase: JupiterPhase::DepositProved,
@@ -769,7 +768,9 @@ mod tests {
                     icp_ledger: Principal::from_slice(&[4; 29]),
                     nns_governance: Principal::from_slice(&[5; 29]),
                     two_year_neuron_id: 1,
-                    two_week_neuron_id: 2,
+                    pooled_parent_memo: 2,
+                    pooled_parent_followee_id: 3,
+                    minimum_parent_stake_e8s: 100_000_000,
                     jupiter_account: crate::state::Account {
                         owner: Principal::from_slice(&[3; 29]),
                         subaccount: None,
@@ -778,31 +779,30 @@ mod tests {
                         owner: principal,
                         subaccount: None,
                     },
-                    two_week_maturity_staging: account(2),
+                    maturity_staging: account(2),
                     stream_liquid_account: crate::state::Account {
                         owner: Principal::from_slice(&[6; 29]),
                         subaccount: Some(vec![3; 32]),
                     },
                     expected_io_fee_e8s: 10_000,
                     expected_icp_fee_e8s: 10_000,
-                    jupiter_fee_float_e8s: 20_000,
-                    two_week_fee_float_e8s: 10_000,
                     jupiter_activation_block_floor: 1,
                     seeded_two_year_principal_e8s: 1,
-                    seeded_two_week_principal_e8s: 1,
                     transfer_retry_delay_nanos: 1_000_000_000,
                     ledger_deduplication_window_nanos: 86_400_000_000_000,
                 },
                 lifecycle: Lifecycle::Ready,
                 active_operation: None,
+                pooled_parent_id: None,
+                pooled_parent_staking_account: None,
+                live_cohorts: Vec::new(),
+                latest_reconciliation_generation: 0,
                 latest_two_week_target: None,
                 two_year_maturity_baseline_reconciled: true,
-                two_week_maturity_baseline_reconciled: false,
                 latest_started_two_week_generation: 0,
                 latest_completed_two_week_generation: 0,
                 pending_two_year_maturity: None,
                 pending_two_week_maturity: None,
-                pending_unwind: None,
                 last_two_year_maturity: None,
                 last_two_week_maturity: None,
                 next_operation_sequence: 1,
@@ -845,7 +845,7 @@ mod tests {
         enforce_activation_floor(&state, 51).unwrap();
 
         // A later balance change cannot affect this local immutable boundary.
-        state.config.jupiter_fee_float_e8s = u128::MAX;
+        state.config.minimum_parent_stake_e8s = u128::MAX;
         assert!(matches!(
             enforce_activation_floor(&state, 49),
             Err(ApiError::Invalid(_))
@@ -922,6 +922,7 @@ mod tests {
                 gross_e8s: 1_000,
                 stake_e8s: 400,
                 liquid_e8s: 600,
+                fee_e8s: 0,
                 created_at_time_nanos: 1,
             },
             phase,

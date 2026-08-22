@@ -1,6 +1,9 @@
-#[rustfmt::skip]
-use {candid::{CandidType, Principal}, io_accounts::Account, serde::Deserialize};
 use sha2::{Digest, Sha256};
+use {
+    candid::{CandidType, Principal},
+    io_accounts::Account,
+    serde::Deserialize,
+};
 
 pub const MAX_MEMO_BYTES: usize = 32;
 

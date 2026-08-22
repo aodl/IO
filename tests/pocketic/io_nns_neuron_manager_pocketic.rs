@@ -108,7 +108,9 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
                 icp_ledger: principal,
                 nns_governance: Principal::from_slice(&[5; 29]),
                 two_year_neuron_id: 1,
-                two_week_neuron_id: 2,
+                pooled_parent_memo: 2,
+                pooled_parent_followee_id: 3,
+                minimum_parent_stake_e8s: 100_000_000,
                 jupiter_account: Account {
                     owner: Principal::from_slice(&[4; 29]),
                     subaccount: None,
@@ -117,18 +119,15 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
                     owner: canister,
                     subaccount: None,
                 },
-                two_week_maturity_staging: staging(2),
+                maturity_staging: staging(2),
                 stream_liquid_account: Account {
                     owner: Principal::from_slice(&[3; 29]),
                     subaccount: None,
                 },
                 expected_io_fee_e8s: 10_000,
                 expected_icp_fee_e8s: 10_000,
-                jupiter_fee_float_e8s: 20_000,
-                two_week_fee_float_e8s: 10_000,
                 jupiter_activation_block_floor: 1,
                 seeded_two_year_principal_e8s: 1,
-                seeded_two_week_principal_e8s: 1,
                 transfer_retry_delay_nanos: 1_000_000_000,
                 ledger_deduplication_window_nanos: 86_400_000_000_000,
             },
@@ -289,21 +288,20 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
         icp_ledger: ledger,
         nns_governance: governance,
         two_year_neuron_id: 41,
-        two_week_neuron_id: 42,
+        pooled_parent_memo: 42,
+        pooled_parent_followee_id: 43,
+        minimum_parent_stake_e8s: 100_000_000,
         jupiter_account,
         jupiter_staging: staging(0),
-        two_week_maturity_staging: staging(2),
+        maturity_staging: staging(2),
         stream_liquid_account: Account {
             owner: stream,
             subaccount: None,
         },
         expected_io_fee_e8s: 10_000,
         expected_icp_fee_e8s: 10_000,
-        jupiter_fee_float_e8s: 20_000,
-        two_week_fee_float_e8s: 10_000,
         jupiter_activation_block_floor: old_block + 1,
         seeded_two_year_principal_e8s: 1_000_000,
-        seeded_two_week_principal_e8s: 1_000_000,
         transfer_retry_delay_nanos: 1_000_000_000,
         ledger_deduplication_window_nanos: 86_400_000_000_000,
     };
@@ -316,12 +314,10 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
 
     let initial: Status = query(&pic, manager, "get_status");
     assert!(!initial.two_year_maturity_baseline_reconciled);
-    assert!(!initial.two_week_maturity_baseline_reconciled);
     let ready: Result<(), ApiError> = update(&pic, manager, sns_governance, "set_paused", false);
     ready.unwrap();
     let ready_status: Status = query(&pic, manager, "get_status");
     assert!(ready_status.two_year_maturity_baseline_reconciled);
-    assert!(ready_status.two_week_maturity_baseline_reconciled);
 
     let idle: Result<io_nns_neuron_manager::api::NnsProgress, ApiError> =
         update(&pic, manager, Principal::anonymous(), "resume", ());
@@ -393,7 +389,6 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
     let reopened: Status = query(&pic, manager, "get_status");
     assert_eq!(reopened.lifecycle, Lifecycle::Paused);
     assert!(reopened.two_year_maturity_baseline_reconciled);
-    assert!(reopened.two_week_maturity_baseline_reconciled);
     let ready: Result<(), ApiError> = update(&pic, manager, sns_governance, "set_paused", false);
     ready.unwrap();
     let invalid_after_upgrade: Result<JupiterProgress, ApiError> = update(

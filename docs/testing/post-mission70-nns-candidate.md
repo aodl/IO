@@ -2,10 +2,9 @@
 
 ## Status
 
-This is candidate-only test evidence. It is not IO's active NNS boundary, a
-launch authorization, or proof that pooled claim-backing economics have been
-implemented. The active pins and the separately endowed/eight-year production
-model remain unchanged.
+This is the active NNS Governance boundary evidence for the pooled
+claim-backing source. It is not launch authorization, release lineage, or a
+mainnet action.
 
 ## Official release lineage
 
@@ -13,8 +12,9 @@ NNS proposal 141441 introduced Mission 70. The subsequently executed
 Governance `InstallCode` proposals inspected for this evidence were 141738,
 141771, 141779, 142447, 142679, 142936, 143410, and 143577. Proposal 143577,
 executed on 2026-08-17, remains the latest executed Governance `InstallCode`
-proposal found in the public official proposal metadata through proposal
-143654.
+proposal found in the public official proposal metadata. A freshness check
+through proposal 143660 on 2026-08-22 found that later proposal open, not
+executed.
 
 The selected candidate is proposal 143577 at source commit
 `8aa4680e378f3248e7e7b9b8237915aded999bd9`, following
@@ -121,11 +121,10 @@ no ICP ledger block, and charges no ICP fee.
 These are upstream-mechanics conclusions only; they do not select or implement
 IO's future orchestration or monetary policy.
 
-## Remaining candidate-boundary design
+## Component boundary
 
-The maintained controlled tests resolve the creation minimum, dissolving-child
-reward accrual, staked-maturity conversion, principal-return state, and
-zero-principal maturity cleanup mechanics. The only remaining candidate-boundary
-design item is the independent active component-pin design.
+The Governance pin is independent of the maintained ICP Ledger pin. Each
+component retains its own exact source revision, compressed and raw artifact
+hashes, and DID hash in `nns-boundary-pin.md` and the executable manifest.
 
 Source-supported facts are not classified as controlled-run proof.

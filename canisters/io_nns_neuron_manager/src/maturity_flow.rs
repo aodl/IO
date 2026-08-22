@@ -1,6 +1,8 @@
 use candid::Principal;
-#[rustfmt::skip]
-use io_ledger_boundary::{exact_icp_block, exact_icp_transfer, icp_account_identifier, ExpectedQueryBlockTransfer, IcpExactResult};
+use io_ledger_boundary::{
+    exact_icp_block, exact_icp_transfer, icp_account_identifier, ExpectedQueryBlockTransfer,
+    IcpExactResult,
+};
 
 use crate::{
     api::{ApiError, MaturityProgress, PrepareTwoWeekMaturityArgs},
@@ -43,12 +45,12 @@ pub(crate) async fn start_observed(
     if snapshot.active_operation.is_some() || pending_from(&snapshot, kind).is_some() {
         return Err(ApiError::Busy);
     }
-    let (neuron_id, destination) = identity(&snapshot.config, kind);
+    let (neuron_id, destination) = identity(&snapshot.config, kind)?;
     let observation = execution::query_neuron_observation(&snapshot.config, neuron_id).await?;
     if state::read() != snapshot {
         return Err(ApiError::Busy);
     }
-    if let Err(reason) = execution::validate_maturity_configuration(&observation) {
+    if let Err(reason) = execution::validate_permanent_configuration(&observation) {
         let mut latest = snapshot;
         latest.lifecycle = Lifecycle::Paused;
         state::write(latest);
@@ -537,7 +539,7 @@ async fn resume_two_week_delivery(
         let intent = NnsTransferIntent {
             ledger: config.icp_ledger,
             source_subaccount: config
-                .two_week_maturity_staging
+                .maturity_staging
                 .canonical()
                 .map_err(ApiError::Invalid)?
                 .subaccount,
@@ -919,17 +921,22 @@ fn next_epoch(epoch: u64) -> Result<u64, ApiError> {
         .ok_or_else(|| ApiError::Invalid("maturity dispatch epoch exhausted".into()))
 }
 
-fn identity(config: &crate::state::NnsConfig, kind: MaturityKind) -> (u64, crate::state::Account) {
-    match kind {
+fn identity(
+    config: &crate::state::NnsConfig,
+    kind: MaturityKind,
+) -> Result<(u64, crate::state::Account), ApiError> {
+    Ok(match kind {
         MaturityKind::TwoYear => (
             config.two_year_neuron_id,
             config.stream_liquid_account.clone(),
         ),
         MaturityKind::TwoWeek => (
-            config.two_week_neuron_id,
-            config.two_week_maturity_staging.clone(),
+            state::read()
+                .pooled_parent_id
+                .ok_or_else(|| ApiError::Pending("pooled parent is absent".into()))?,
+            config.maturity_staging.clone(),
         ),
-    }
+    })
 }
 
 fn write_exact(
@@ -942,7 +949,7 @@ fn write_exact(
     {
         return Err(ApiError::Busy);
     }
-    let (neuron_id, destination) = identity(&latest.config, replacement.kind);
+    let (neuron_id, destination) = identity(&latest.config, replacement.kind)?;
     replacement
         .validate(latest.next_operation_sequence, neuron_id, &destination)
         .map_err(ApiError::Invalid)?;

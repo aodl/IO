@@ -4,6 +4,7 @@ pub use io_nns_types::{jupiter, maturity, maturity::MaturityKind, pool, transfer
 mod jupiter_flow;
 pub mod lifecycle;
 mod maturity_flow;
+mod pool_flow;
 pub mod state;
 mod two_week_binding;
 mod unwind_flow;
@@ -12,8 +13,9 @@ use {candid::CandidType, serde::Deserialize};
 
 pub use api::{
     ApiError, BackingNotReadyReason, JupiterProgress, MaturityProgress, NnsProgress,
-    NotifyJupiterDepositArgs, PrepareTwoWeekMaturityArgs, ReconcileTwoWeekBackingReadinessArgs,
-    Status, TwoWeekBackingReadiness,
+    NotifyJupiterDepositArgs, PoolProgress, PreparePoolReconciliationArgs,
+    PrepareTwoWeekMaturityArgs, ReconcileTwoWeekBackingReadinessArgs, Status,
+    TwoWeekBackingReadiness,
 };
 pub use state::{Lifecycle, NnsConfig, NnsStateV1, TwoWeekTargetStatus};
 
@@ -30,14 +32,16 @@ pub fn init(args: InitArgs) {
             config: args.config,
             lifecycle: Lifecycle::Paused,
             active_operation: None,
+            pooled_parent_id: None,
+            pooled_parent_staking_account: None,
+            live_cohorts: Vec::new(),
+            latest_reconciliation_generation: 0,
             latest_two_week_target: None,
             two_year_maturity_baseline_reconciled: false,
-            two_week_maturity_baseline_reconciled: false,
             latest_started_two_week_generation: 0,
             latest_completed_two_week_generation: 0,
             pending_two_year_maturity: None,
             pending_two_week_maturity: None,
-            pending_unwind: None,
             last_two_year_maturity: None,
             last_two_week_maturity: None,
             next_operation_sequence: 1,
@@ -68,6 +72,19 @@ pub async fn resume() -> Result<NnsProgress, ApiError> {
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub async fn prove_active_transfer(block_index: u128) -> Result<NnsProgress, ApiError> {
     api::prove_active_transfer(block_index).await
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn prepare_pool_reconciliation(
+    args: PreparePoolReconciliationArgs,
+) -> Result<PoolProgress, ApiError> {
+    api::prepare_pool_reconciliation(ic_cdk::api::msg_caller(), args).await
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn observe_claim_backing(
+) -> Result<io_nns_types::backing::ClaimBackingObservation, ApiError> {
+    api::observe_claim_backing().await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]

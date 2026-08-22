@@ -1,11 +1,15 @@
-#[rustfmt::skip]
-use {candid::{CandidType, Principal}, serde::Deserialize, std::borrow::Cow};
 use ic_stable_structures::{storable::Bound, Storable};
+use {
+    candid::{CandidType, Principal},
+    serde::Deserialize,
+    std::borrow::Cow,
+};
 
 use crate::transfer::NnsTransferAttempt;
 pub use io_receipt_types::LiquidReceiptPermit as StreamReceiptPermit;
 
-pub const PINNED_DFINITY_IC_COMMIT: &str = "021bf342f66296d5605b355a61b2430406a83783";
+pub const PINNED_NNS_GOVERNANCE_COMMIT: &str = "8aa4680e378f3248e7e7b9b8237915aded999bd9";
+pub const PINNED_ICP_LEDGER_COMMIT: &str = "021bf342f66296d5605b355a61b2430406a83783";
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct JupiterDeposit {
@@ -13,6 +17,7 @@ pub struct JupiterDeposit {
     pub gross_e8s: u128,
     pub stake_e8s: u128,
     pub liquid_e8s: u128,
+    pub fee_e8s: u128,
     pub created_at_time_nanos: u64,
 }
 
@@ -151,7 +156,7 @@ impl JupiterOperation {
             || self.deposit.block_index > u128::from(u64::MAX)
             || self.deposit.gross_e8s == 0
             || self.deposit.created_at_time_nanos == 0
-            || checked_split(self.deposit.gross_e8s)?
+            || fee_reduced_split(self.deposit.gross_e8s, self.deposit.fee_e8s)?
                 != (self.deposit.stake_e8s, self.deposit.liquid_e8s)
         {
             return Err("Jupiter operation identity is malformed".into());
@@ -278,6 +283,20 @@ pub fn checked_split(gross_e8s: u128) -> Result<(u128, u128), String> {
     Ok((stake, liquid))
 }
 
+pub fn fee_reduced_split(gross_e8s: u128, fee_e8s: u128) -> Result<(u128, u128), String> {
+    let (permanent_gross, claim_gross) = checked_split(gross_e8s)?;
+    let permanent_credit = permanent_gross
+        .checked_sub(fee_e8s)
+        .ok_or("Jupiter permanent gross cannot cover its fee")?;
+    let claim_credit = claim_gross
+        .checked_sub(fee_e8s)
+        .ok_or("Jupiter claim gross cannot cover its fee")?;
+    if permanent_credit == 0 || claim_credit == 0 {
+        return Err("Jupiter destination credit must be positive".into());
+    }
+    Ok((permanent_credit, claim_credit))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +309,11 @@ mod tests {
             checked_split(u128::MAX),
             Err("Jupiter split overflow".into())
         );
+    }
+
+    #[test]
+    fn internal_fees_reduce_each_physical_credit() {
+        assert_eq!(fee_reduced_split(100_000, 10_000), Ok((30_000, 50_000)));
+        assert!(fee_reduced_split(20_000, 10_000).is_err());
     }
 }

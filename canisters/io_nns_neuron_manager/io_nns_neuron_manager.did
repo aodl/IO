@@ -7,18 +7,17 @@ type NnsConfig = record {
   icp_ledger : principal;
   nns_governance : principal;
   two_year_neuron_id : nat64;
-  two_week_neuron_id : nat64;
+  pooled_parent_memo : nat64;
+  pooled_parent_followee_id : nat64;
+  minimum_parent_stake_e8s : nat;
   jupiter_account : Account;
   jupiter_staging : Account;
-  two_week_maturity_staging : Account;
+  maturity_staging : Account;
   stream_liquid_account : Account;
   expected_io_fee_e8s : nat;
   expected_icp_fee_e8s : nat;
-  jupiter_fee_float_e8s : nat;
-  two_week_fee_float_e8s : nat;
   jupiter_activation_block_floor : nat;
   seeded_two_year_principal_e8s : nat;
-  seeded_two_week_principal_e8s : nat;
   transfer_retry_delay_nanos : nat64;
   ledger_deduplication_window_nanos : nat64;
 };
@@ -29,6 +28,68 @@ type PrepareTwoWeekMaturityArgs = record {
   target_e8s : nat;
 };
 type ReconcileTwoWeekBackingReadinessArgs = record { target_e8s : nat };
+type PreparePoolReconciliationArgs = record {
+  generation : nat64;
+  target_e8s : nat;
+  expected_credit_e8s : nat;
+  fee_e8s : nat;
+  snapshot_fingerprint : blob;
+  memo : blob;
+  created_at_time_nanos : nat64;
+};
+type TopUpPermit = record {
+  generation : nat64;
+  operation_sequence : nat64;
+  expected_parent_principal_e8s : nat;
+  destination : Account;
+  expected_credit_e8s : nat;
+  fee_e8s : nat;
+  memo : blob;
+  prepared_at_nanos : nat64;
+  snapshot_fingerprint : blob;
+};
+type PoolProgress = variant {
+  AwaitingTransfer : TopUpPermit;
+  ConfiguringParent;
+  AwaitingParentProof;
+  Completed : record { parent_neuron_id : nat64; principal_e8s : nat };
+  CapacityPending;
+};
+type FollowPolicy = record { followee_neuron_id : nat64 };
+type CohortProofState = variant {
+  Dissolving;
+  DisbursementSubmitted;
+  PrincipalReturned;
+  MaturityHandled;
+  CleanupComplete;
+};
+type ParentObservation = record {
+  neuron_id : nat64;
+  staking_account : Account;
+  principal_e8s : nat;
+  dissolve_delay_seconds : nat64;
+  auto_stake_maturity : bool;
+  follow_policy : FollowPolicy;
+  voting_power_refreshed_at_seconds : nat64;
+};
+type CohortObservation = record {
+  generation : nat64;
+  child_neuron_id : nat64;
+  principal_e8s : nat;
+  ready_at_seconds : nat64;
+  proof : CohortProofState;
+};
+type ClaimBackingObservation = record {
+  parent : opt ParentObservation;
+  pooled_principal_e8s : nat;
+  live_cohorts : vec CohortObservation;
+  unwinding_principal_e8s : nat;
+  transit_backing_e8s : nat;
+  active_operation_sequence : nat64;
+  control_epoch : nat64;
+  fingerprint : blob;
+  oldest_ready_at_seconds : opt nat64;
+};
 type TwoWeekTargetStatus = variant {
   UnderTarget;
   AtTarget;
@@ -98,7 +159,7 @@ type CompletedMaturity = record {
   neuron_id : nat64;
   mint_block : nat;
   nominal_disbursed_maturity_e8s : nat64;
-  actual_minted_e8s : nat;
+  actual_minted_icp_e8s : nat;
   destination : Account;
   completed_at_nanos : nat64;
 };
@@ -124,13 +185,13 @@ type NnsProgress = variant {
   Jupiter : JupiterProgress;
   Maturity : MaturityProgress;
   Unwind : UnwindProgress;
+  Pool : PoolProgress;
   Idle;
 };
 type Status = record {
   lifecycle : Lifecycle;
   active_operation : opt text;
   two_year_maturity_baseline_reconciled : bool;
-  two_week_maturity_baseline_reconciled : bool;
   latest_started_two_week_generation : nat64;
   latest_completed_two_week_generation : nat64;
   latest_two_week_target : opt record { target_e8s : nat; status : TwoWeekTargetStatus };
@@ -140,6 +201,8 @@ service : (InitArgs) -> {
   notify_jupiter_deposit : (NotifyJupiterDepositArgs) -> (variant { Ok : JupiterProgress; Err : ApiError });
   resume : () -> (variant { Ok : NnsProgress; Err : ApiError });
   prove_active_transfer : (nat) -> (variant { Ok : NnsProgress; Err : ApiError });
+  prepare_pool_reconciliation : (PreparePoolReconciliationArgs) -> (variant { Ok : PoolProgress; Err : ApiError });
+  observe_claim_backing : () -> (variant { Ok : ClaimBackingObservation; Err : ApiError });
   start_maturity : (MaturityKind) -> (variant { Ok : MaturityProgress; Err : ApiError });
   validate_start_maturity : (MaturityKind) -> (variant { Ok : text; Err : text }) query;
   prepare_two_week_maturity : (PrepareTwoWeekMaturityArgs) -> (variant { Ok : MaturityProgress; Err : ApiError });
