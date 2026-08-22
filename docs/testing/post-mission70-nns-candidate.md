@@ -72,6 +72,13 @@ disburses at the exact boundary, and the third continues independently. The
 Mint increases the Stream-like staging balance by the exact Mint amount and is
 spendable.
 
+`exact_post_m70_fourteen_day_parent_follows_and_earns_maturity` is the
+production-policy control: a separate proposer creates a Motion, the pooled
+parent registers no manual vote, its configured leader votes yes, and the
+parent ballot follows yes. The exact 14-day parent then receives nonzero
+ordinary maturity. A subsequent `RefreshVotingPower` preserves the fixed
+topic-0, Governance-topic, and SNS-management-topic following policy.
+
 The selected child's split and `StartDissolving` are distinct: split creates a
 non-dissolving child with the inherited delay, while the later command
 establishes its canonical readiness timestamp. The child accrues additional

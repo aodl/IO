@@ -4,12 +4,12 @@ use candid::{decode_one, encode_one, CandidType, Nat, Principal, Reserved};
 use io_governance_types::{
     nns_refresh_voting_power_request, EmptyRecord, NnsAccount, NnsClaimOrRefresh,
     NnsClaimOrRefreshBy, NnsClaimOrRefreshNeuronFromAccount, NnsDissolveStateRecord,
-    NnsGovernanceErrorRecord, NnsIncreaseDissolveDelay, NnsManageNeuronCommandRequest,
-    NnsManageNeuronResponseCommandRecord, NnsMerge, NnsNeuronIdOrSubaccount, NnsNeuronIdRecord,
-    NnsNeuronRecord, NnsProductionConfigure, NnsProductionConfigureOperation,
-    NnsProductionDisburseMaturity, NnsProductionManageNeuronRequest,
-    NnsProductionManageNeuronResponse, NnsProposalIdRecord, NnsRegisterVote, NnsSplit,
-    NnsStakeMaturity,
+    NnsFolloweesForTopic, NnsGovernanceErrorRecord, NnsIncreaseDissolveDelay,
+    NnsManageNeuronCommandRequest, NnsManageNeuronResponseCommandRecord, NnsMerge,
+    NnsNeuronIdOrSubaccount, NnsNeuronIdRecord, NnsNeuronRecord, NnsProductionConfigure,
+    NnsProductionConfigureOperation, NnsProductionDisburseMaturity,
+    NnsProductionManageNeuronRequest, NnsProductionManageNeuronResponse, NnsProposalIdRecord,
+    NnsRegisterVote, NnsSetFollowing, NnsSplit, NnsStakeMaturity,
 };
 use io_ledger_types::{
     Account as IcpAccount, IcpTokens, IcpTransferArgs, IcpTransferError, Subaccount,
@@ -526,6 +526,36 @@ fn refresh_voting_power(fixture: &CandidateFixture, caller: Principal, neuron_id
     ));
 }
 
+fn set_following(fixture: &CandidateFixture, neuron_id: u64, followee: u64) {
+    let response = manage(
+        fixture,
+        fixture.manager,
+        NnsProductionManageNeuronRequest {
+            neuron_id_or_subaccount: Some(NnsNeuronIdOrSubaccount::NeuronId(NnsNeuronIdRecord {
+                id: neuron_id,
+            })),
+            command: Some(NnsManageNeuronCommandRequest::SetFollowing(
+                NnsSetFollowing {
+                    topic_following: Some(
+                        [0, 4, 14]
+                            .into_iter()
+                            .map(|topic| NnsFolloweesForTopic {
+                                followees: Some(vec![NnsNeuronIdRecord { id: followee }]),
+                                topic: Some(topic),
+                            })
+                            .collect(),
+                    ),
+                },
+            )),
+            id: None,
+        },
+    );
+    assert!(matches!(
+        response.command,
+        Some(NnsManageNeuronResponseCommandRecord::SetFollowing(_))
+    ));
+}
+
 fn make_motion(fixture: &CandidateFixture, proposer: u64) -> u64 {
     let response: NnsProductionManageNeuronResponse = update(
         fixture,
@@ -958,6 +988,7 @@ fn post_mission70_candidate_lock_is_self_consistent() {
         CANDIDATE_DID_SHA256,
         "143577",
         "exact_post_m70_upgrade_rewards_fourteen_day_boundary",
+        "exact_post_m70_fourteen_day_parent_follows_and_earns_maturity",
         "exact_post_m70_minimum_stake_boundaries",
     ] {
         assert!(
@@ -1613,6 +1644,91 @@ fn exact_post_m70_upgrade_rewards_fourteen_day_boundary() {
         mint_block,
         spend_block,
     );
+}
+
+#[test]
+#[ignore = "requires exact old/candidate NNS Governance, ICP ledger, test-only actor/XRC Wasms, and POCKET_IC_BIN"]
+fn exact_post_m70_fourteen_day_parent_follows_and_earns_maturity() {
+    let _guard = crate::lock_test_env();
+    let fixture = CandidateFixture::old_io_boundary();
+    let parent = create_neuron(
+        &fixture,
+        fixture.manager,
+        70_101,
+        EXACT_PARENT_STAKE_E8S,
+        u32::try_from(FOURTEEN_DAYS_SECONDS).unwrap(),
+    );
+    let leader = create_neuron(
+        &fixture,
+        fixture.manager,
+        70_102,
+        EXACT_PARENT_STAKE_E8S,
+        ONE_YEAR_SECONDS,
+    );
+    let proposer = create_neuron(
+        &fixture,
+        Principal::anonymous(),
+        70_103,
+        1_000 * 100_000_000,
+        ONE_YEAR_SECONDS,
+    );
+
+    fixture.upgrade_to_candidate();
+    fixture.pic.advance_time(Duration::from_secs(121 * 86_400));
+    for _ in 0..100 {
+        fixture.pic.tick();
+    }
+    await_maturity_modulation(&fixture);
+    set_following(&fixture, parent, leader);
+    for (caller, neuron_id) in [
+        (fixture.manager, parent),
+        (fixture.manager, leader),
+        (Principal::anonymous(), proposer),
+    ] {
+        refresh_voting_power(&fixture, caller, neuron_id);
+    }
+    let configured = full_neuron(&fixture, fixture.manager, parent).unwrap();
+    for topic in [0, 4, 14] {
+        assert!(configured
+            .followees
+            .iter()
+            .any(|(actual_topic, followees)| {
+                *actual_topic == topic
+                    && followees.followees == vec![NnsNeuronIdRecord { id: leader }]
+            }));
+    }
+    let maturity_before = configured.maturity_e8s_equivalent;
+    let proposal_id = make_motion(&fixture, proposer);
+    assert_eq!(
+        proposal_info(&fixture, fixture.manager, proposal_id)
+            .ballots
+            .iter()
+            .find(|(id, _)| *id == parent)
+            .map(|(_, ballot)| ballot.vote),
+        Some(0),
+        "the pooled parent must not register a manual vote"
+    );
+    register_yes_vote(&fixture, leader, proposal_id);
+    for _ in 0..10 {
+        fixture.pic.tick();
+    }
+    assert_eq!(
+        proposal_info(&fixture, fixture.manager, proposal_id)
+            .ballots
+            .iter()
+            .find(|(id, _)| *id == parent)
+            .map(|(_, ballot)| ballot.vote),
+        Some(1),
+        "the pooled parent ballot must follow the configured leader"
+    );
+    let (_, maturity_after) = await_reward(&fixture, parent, proposal_id, maturity_before);
+    assert!(maturity_after > maturity_before);
+    refresh_voting_power(&fixture, fixture.manager, parent);
+    let refreshed = full_neuron(&fixture, fixture.manager, parent).unwrap();
+    assert!(refreshed.followees.iter().any(|(topic, followees)| {
+        *topic == 4 && followees.followees == vec![NnsNeuronIdRecord { id: leader }]
+    }));
+    assert!(refreshed.voting_power_refreshed_timestamp_seconds.is_some());
 }
 
 #[test]
