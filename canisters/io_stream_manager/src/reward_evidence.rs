@@ -132,28 +132,22 @@ fn eligible_destination(
         .map_err(ApiError::Invalid)
 }
 
-pub(crate) fn eligible_stake_total(
-    governance: Principal,
-    excluded_io_accounts: &[Account],
-    neurons: &[Neuron],
-) -> Result<u128, ApiError> {
-    require_unique_neurons(neurons)?;
-    let mut total = 0u128;
-    for neuron in neurons {
-        if eligible_destination(governance, excluded_io_accounts, neuron)?.is_some() {
-            total = total
-                .checked_add(neuron.cached_neuron_stake_e8s)
-                .ok_or_else(|| ApiError::Invalid("eligible stake total overflow".into()))?;
-        }
-    }
-    Ok(total)
-}
-
+#[cfg(test)]
 pub(crate) fn event_credits(
     governance: Principal,
     excluded_io_accounts: &[Account],
     event: &RewardEvent,
     neurons: &[Neuron],
+) -> Result<(RewardEventClassification, Vec<RewardEventCredit>), ApiError> {
+    event_credits_for(governance, excluded_io_accounts, event, neurons, None)
+}
+
+pub(crate) fn event_credits_for(
+    governance: Principal,
+    excluded_io_accounts: &[Account],
+    event: &RewardEvent,
+    neurons: &[Neuron],
+    reward_eligible_ids: Option<&std::collections::BTreeSet<Vec<u8>>>,
 ) -> Result<(RewardEventClassification, Vec<RewardEventCredit>), ApiError> {
     let proposal_count = event.settled_proposal_count().map_err(governance_error)?;
     let event_id = event_id(event)?;
@@ -185,6 +179,9 @@ pub(crate) fn event_credits(
         else {
             continue;
         };
+        if reward_eligible_ids.is_some_and(|ids| !ids.contains(&neuron.id)) {
+            continue;
+        }
         eligible_stake_total = eligible_stake_total
             .checked_add(neuron.cached_neuron_stake_e8s)
             .ok_or_else(|| ApiError::Invalid("eligible stake total overflow".into()))?;

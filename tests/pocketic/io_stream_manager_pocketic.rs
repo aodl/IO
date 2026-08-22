@@ -151,10 +151,6 @@ fn simplified_stream_installs_paused_and_rejects_anonymous_before_funds_move() {
                     owner: manager,
                     subaccount: Some(vec![7; 32]),
                 },
-                two_week_receipt_source: Account {
-                    owner: manager,
-                    subaccount: Some(vec![8; 32]),
-                },
                 jupiter_io_account: Account {
                     owner: manager,
                     subaccount: Some(vec![9; 32]),
@@ -168,7 +164,7 @@ fn simplified_stream_installs_paused_and_rejects_anonymous_before_funds_move() {
                     owner: canister,
                     subaccount: Some(vec![1; 32]),
                 },
-                excluded_io_accounts: Vec::new(),
+                nonredeemable_governance_io_accounts: Vec::new(),
                 minimum_redemption_io_e8s: 20_000,
                 expected_io_fee_e8s: 10_000,
                 expected_icp_fee_e8s: 10_000,
@@ -383,7 +379,6 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
                     owner: nns,
                     subaccount: Some(vec![7; 32]),
                 },
-                two_week_receipt_source: reward_source,
                 jupiter_io_account: Account {
                     owner: Principal::from_slice(&[77; 29]),
                     subaccount: None,
@@ -394,7 +389,7 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
                 approved_reward_event_duration_seconds: 86_400,
                 io_reserve: reserve,
                 liquid_icp: liquid,
-                excluded_io_accounts: Vec::new(),
+                nonredeemable_governance_io_accounts: Vec::new(),
                 minimum_redemption_io_e8s: 20_000,
                 expected_io_fee_e8s: 10_000,
                 expected_icp_fee_e8s: 10_000,

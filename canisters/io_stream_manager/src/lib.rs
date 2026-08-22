@@ -1,4 +1,5 @@
 pub mod api;
+mod backing_registry;
 pub mod canonical;
 mod completed_receipt;
 pub mod lifecycle;
@@ -39,12 +40,15 @@ pub struct InitArgs {
 pub fn init(args: InitArgs) {
     // Launch stays inert; reviewed unpause installs at most one reward-event timer.
     let state = StreamStateV1 {
-        launch_schema_marker: 1,
+        launch_schema_marker: 2,
         config: args.config,
         lifecycle: Lifecycle::Paused,
         active_operation: None,
         reward_entitlements: RewardEntitlementAccumulator::default(),
         pending_entitlement_batch: None,
+        backing_registry: Vec::new(),
+        latest_reconciliation_checkpoint: None,
+        latest_reconciliation_generation: 0,
         latest_entitlement_batch_generation: 0,
         next_nns_receipt_sequence: 0,
         next_operation_sequence: state::OperationSequence(0),

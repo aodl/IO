@@ -43,7 +43,7 @@ impl BackingSnapshot {
     pub(crate) fn validate(&self, config: &StreamConfig) -> Result<(), String> {
         if self.observed_at_nanos == 0
             || self.io_fee_e8s != config.expected_io_fee_e8s
-            || self.excluded_io_balances.len() != config.excluded_io_accounts.len()
+            || self.excluded_io_balances.len() != config.nonredeemable_governance_io_accounts.len()
             || self
                 .reserve_io_e8s
                 .checked_add(
@@ -59,7 +59,7 @@ impl BackingSnapshot {
         for ((account, _), expected) in self
             .excluded_io_balances
             .iter()
-            .zip(&config.excluded_io_accounts)
+            .zip(&config.nonredeemable_governance_io_accounts)
         {
             if !account.effective_eq(expected)? {
                 return Err("backing snapshot excluded account mismatch".into());
@@ -158,6 +158,7 @@ mod tests {
             liquid_icp_e8s: before.liquid_icp_e8s + 70,
             io_fee_e8s: before.io_fee_e8s,
             icp_fee_e8s: 10,
+            ..Default::default()
         }
     }
 

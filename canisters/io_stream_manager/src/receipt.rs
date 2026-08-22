@@ -102,7 +102,9 @@ impl ReceiptContext {
         self.backing_snapshot.validate(config)?;
         let expected_source = match self.request.receipt_kind {
             ReceiptKind::Jupiter => &config.jupiter_receipt_source,
-            ReceiptKind::TwoWeekMaturity => &config.two_week_receipt_source,
+            ReceiptKind::TwoWeekMaturity => {
+                return Err("two-week maturity is not a liquid receipt".into())
+            }
         };
         if !self.source.effective_eq(expected_source)?
             || self.permit.sequence != self.request.receipt_sequence
@@ -381,7 +383,7 @@ pub async fn prepare_liquid_receipt(
     let context = ReceiptContext {
         source: match args.receipt_kind {
             ReceiptKind::Jupiter => current.config.jupiter_receipt_source.clone(),
-            ReceiptKind::TwoWeekMaturity => current.config.two_week_receipt_source.clone(),
+            ReceiptKind::TwoWeekMaturity => unreachable!("rejected above"),
         },
         request: args,
         request_fingerprint: fingerprint,

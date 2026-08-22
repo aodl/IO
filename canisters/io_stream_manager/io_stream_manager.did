@@ -5,7 +5,6 @@ type StreamConfig = record {
   icp_ledger : principal;
   nns_manager : principal;
   jupiter_receipt_source : Account;
-  two_week_receipt_source : Account;
   jupiter_io_account : Account;
   sns_governance : principal;
   sns_root : principal;
@@ -13,7 +12,7 @@ type StreamConfig = record {
   approved_reward_event_duration_seconds : nat64;
   io_reserve : Account;
   liquid_icp : Account;
-  excluded_io_accounts : vec Account;
+  nonredeemable_governance_io_accounts : vec Account;
   minimum_redemption_io_e8s : nat;
   expected_io_fee_e8s : nat;
   expected_icp_fee_e8s : nat;
@@ -152,6 +151,11 @@ type ApiError = variant {
   Ledger : text;
   Pending : text;
   Stuck : text;
+  LiquidityShortfall : record {
+    gross_icp_e8s : nat;
+    net_icp_e8s : nat;
+    available_liquid_e8s : nat;
+  };
 };
 type Status = record {
   lifecycle : Lifecycle;

@@ -496,6 +496,10 @@ pub async fn observe_claim_backing() -> Result<ClaimBackingObservation, ApiError
         Some(NnsOperation::Unwind(value)) => value.operation_sequence,
         None => 0,
     };
+    let active_unwind_generation = match &snapshot.active_operation {
+        Some(NnsOperation::Unwind(value)) => Some(value.generation),
+        _ => None,
+    };
     let pooled_principal_e8s = parent.as_ref().map_or(0, |value| value.principal_e8s);
     let oldest_ready_at_seconds = live_cohorts
         .iter()
@@ -508,6 +512,7 @@ pub async fn observe_claim_backing() -> Result<ClaimBackingObservation, ApiError
         unwinding_principal_e8s,
         transit_backing_e8s,
         active_operation_sequence,
+        active_unwind_generation,
         snapshot.control_epoch,
     ))
     .map_err(|error| ApiError::Invalid(format!("observation fingerprint failed: {error}")))?;
@@ -518,6 +523,7 @@ pub async fn observe_claim_backing() -> Result<ClaimBackingObservation, ApiError
         unwinding_principal_e8s,
         transit_backing_e8s,
         active_operation_sequence,
+        active_unwind_generation,
         control_epoch: snapshot.control_epoch,
         fingerprint: Sha256::digest(encoded).to_vec(),
         oldest_ready_at_seconds,

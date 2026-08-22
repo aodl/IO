@@ -10,7 +10,9 @@ impl LastCompletedReceipt {
             request_fingerprint: self.request_fingerprint.clone(),
             source: match self.request.receipt_kind {
                 ReceiptKind::Jupiter => config.jupiter_receipt_source.clone(),
-                ReceiptKind::TwoWeekMaturity => config.two_week_receipt_source.clone(),
+                ReceiptKind::TwoWeekMaturity => {
+                    return Err("two-week maturity is not a liquid receipt".into())
+                }
             },
             permit: self.permit.clone(),
             backing_snapshot: self.backing_snapshot.clone(),

@@ -9,8 +9,8 @@ use crate::{
         RewardRecipient, TwoWeekReceiptOperation, TwoWeekReceiptResult, TwoWeekSettlement,
     },
     reward_evidence::{
-        classify_sequence, eligible_stake_total, event_credits, event_id, installed_governance,
-        latest_reward_event, list_all_neurons, merge_event_credits, require_consistent_event,
+        classify_sequence, event_credits_for, event_id, installed_governance, latest_reward_event,
+        list_all_neurons, merge_event_credits, require_consistent_event,
     },
     state::{
         self, Account, Lifecycle, LiquidReceiptStreamOperation, PendingEntitlementBatch,
@@ -86,17 +86,23 @@ async fn observe_due(
     require_consistent_event(&before, &after)?;
     verify_governance(snapshot).await?;
     let event = event_id(&before)?;
+    let canonical = canonical::redemption_snapshot(&snapshot.config)
+        .await
+        .map_err(ApiError::Ledger)?;
+    let eligible_ids =
+        crate::backing_registry::reward_eligible_ids(&snapshot.backing_registry, event.round);
     let proposal_count = before.settled_proposal_count().map_err(|error| {
         ApiError::Invalid(format!("SNS reward event proposal count failed: {error:?}"))
     })?;
     let (classification, credits, skipped) = match sequence {
         io_sns_reward_boundary::EventSequence::First
         | io_sns_reward_boundary::EventSequence::Next => {
-            let (classification, credits) = event_credits(
+            let (classification, credits) = event_credits_for(
                 snapshot.config.sns_governance,
-                &snapshot.config.excluded_io_accounts,
+                &snapshot.config.nonredeemable_governance_io_accounts,
                 &before,
                 &neurons,
+                Some(&eligible_ids),
             )?;
             (classification, credits, None)
         }
@@ -136,7 +142,7 @@ async fn observe_due(
         eligible_credit_total,
         observed_at_nanos: now_nanos,
     };
-    commit_observation(snapshot, observation.clone(), skipped)?;
+    commit_observation(snapshot, observation.clone(), skipped, canonical)?;
     crate::reward_timer::install_after(event);
     Ok(observation)
 }
@@ -160,6 +166,7 @@ fn handle_observation_error(expected: &crate::state::StreamStateV1, error: &ApiE
                 crate::reward_timer::install_retry();
             }
         }
+        ApiError::LiquidityShortfall { .. } => crate::reward_timer::install_retry(),
     }
 }
 
@@ -213,6 +220,7 @@ fn commit_observation(
     expected: &crate::state::StreamStateV1,
     observation: RewardEventObservation,
     skipped: Option<SkippedRewardEvent>,
+    canonical: crate::redemption::CanonicalRedemptionSnapshot,
 ) -> Result<(), ApiError> {
     let mut latest = state::read();
     if latest.config != expected.config
@@ -246,10 +254,47 @@ fn commit_observation(
             .checked_add(1)
             .ok_or_else(|| ApiError::Invalid("processed reward-event count overflow".into()))?;
     }
+    let event_marker = observation.event.round;
     latest.reward_entitlements.last_processed_event = Some(observation.event);
     latest.reward_entitlements.latest_observation = Some(observation);
     latest.reward_entitlements.reward_work_due = false;
     latest.reward_entitlements.governance_parameters_fresh = true;
+    latest.backing_registry = crate::backing_registry::reconcile(
+        &expected.backing_registry,
+        &canonical,
+        event_marker,
+        &expected.config,
+    )
+    .map_err(ApiError::Invalid)?;
+    let excluded = canonical
+        .excluded_io_balances
+        .iter()
+        .try_fold(0u128, |total, (_, balance)| total.checked_add(*balance))
+        .ok_or_else(|| ApiError::Invalid("nonredeemable balance overflow".into()))?;
+    let claims = io_core_model::claim_supply(
+        canonical.total_supply_e8s,
+        canonical.reserve_io_e8s,
+        &[excluded],
+    )
+    .map_err(|error| ApiError::Invalid(format!("claim supply failed: {error:?}")))?;
+    let target = io_core_model::target(
+        canonical.active_backing_io_e8s,
+        canonical.total_claim_backing_e8s,
+        claims,
+    )
+    .map_err(|error| ApiError::Invalid(format!("pooled target failed: {error:?}")))?;
+    let generation = latest
+        .latest_reconciliation_generation
+        .checked_add(1)
+        .ok_or_else(|| ApiError::Invalid("reconciliation generation overflow".into()))?;
+    latest.latest_reconciliation_generation = generation;
+    latest.latest_reconciliation_checkpoint = Some(crate::state::ReconciliationCheckpoint {
+        generation,
+        event_marker,
+        pooled_target_e8s: target,
+        observed_pooled_e8s: canonical.pooled_principal_e8s,
+        snapshot_fingerprint: canonical.observation_fingerprint,
+    });
     latest
         .reward_entitlements
         .validate(&latest.config)
@@ -293,13 +338,6 @@ async fn freeze_and_prepare(
         .last_processed_event
         .ok_or_else(|| ApiError::Invalid("entitlement checkpoint is missing".into()))?;
     verify_governance(&snapshot).await?;
-    let neurons = list_all_neurons(snapshot.config.sns_governance).await?;
-    verify_governance(&snapshot).await?;
-    let active_io = eligible_stake_total(
-        snapshot.config.sns_governance,
-        &snapshot.config.excluded_io_accounts,
-        &neurons,
-    )?;
     let canonical = canonical::redemption_snapshot(&snapshot.config)
         .await
         .map_err(ApiError::Ledger)?;
@@ -313,8 +351,12 @@ async fn freeze_and_prepare(
         .checked_sub(canonical.reserve_io_e8s)
         .and_then(|value| value.checked_sub(excluded))
         .ok_or_else(|| ApiError::Invalid("invalid redeemable IO supply".into()))?;
-    let target = io_core_model::target(active_io, canonical.liquid_icp_e8s, redeemable)
-        .map_err(|error| ApiError::Invalid(format!("two-week target failed: {error:?}")))?;
+    let target = io_core_model::target(
+        canonical.active_backing_io_e8s,
+        canonical.total_claim_backing_e8s,
+        redeemable,
+    )
+    .map_err(|error| ApiError::Invalid(format!("two-week target failed: {error:?}")))?;
     let readiness = reward_nns::reconcile_readiness(snapshot.config.nns_manager, target)
         .await
         .map_err(nns_call_error)?;

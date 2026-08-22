@@ -47,6 +47,7 @@ pub struct ClaimBackingObservation {
     pub unwinding_principal_e8s: u128,
     pub transit_backing_e8s: u128,
     pub active_operation_sequence: u64,
+    pub active_unwind_generation: Option<u64>,
     pub control_epoch: u64,
     pub fingerprint: Vec<u8>,
     pub oldest_ready_at_seconds: Option<u64>,
@@ -54,7 +55,10 @@ pub struct ClaimBackingObservation {
 
 impl ClaimBackingObservation {
     pub fn validate(&self) -> Result<(), String> {
-        if self.fingerprint.len() != 32 || self.live_cohorts.len() > MAX_LIVE_UNWIND_COHORTS {
+        if self.fingerprint.len() != 32
+            || self.live_cohorts.len() > MAX_LIVE_UNWIND_COHORTS
+            || self.active_unwind_generation == Some(0)
+        {
             return Err("claim-backing observation bounds are invalid".into());
         }
         if self
@@ -216,6 +220,7 @@ mod tests {
             unwinding_principal_e8s: 0,
             transit_backing_e8s: 0,
             active_operation_sequence: 0,
+            active_unwind_generation: None,
             control_epoch: 0,
             fingerprint: vec![1; 32],
             oldest_ready_at_seconds: Some(3),

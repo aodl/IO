@@ -25,12 +25,19 @@ pub enum ApiError {
     Unauthorized,
     Paused,
     Busy,
-    WrongNonce { expected: u64 },
+    WrongNonce {
+        expected: u64,
+    },
     NonceAlreadyUsed,
     Invalid(String),
     Ledger(String),
     Pending(String),
     Stuck(String),
+    LiquidityShortfall {
+        gross_icp_e8s: u128,
+        net_icp_e8s: u128,
+        available_liquid_e8s: u128,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -290,7 +297,7 @@ pub async fn redeem(
     }
     if initial
         .config
-        .excluded_io_accounts
+        .nonredeemable_governance_io_accounts
         .iter()
         .try_fold(false, |matched, excluded| {
             account.effective_eq(excluded).map(|same| matched || same)
@@ -368,6 +375,21 @@ pub async fn redeem(
         return Err(ApiError::Invalid(
             "canonical fee differs from approved config".into(),
         ));
+    }
+    if let Err(error) = redemption::quote_for(&preparation, &snapshot) {
+        clear_matching_preparation(&preparation);
+        return match error {
+            io_core_model::EconomicsError::InsufficientLiquidity(shortfall) => {
+                Err(ApiError::LiquidityShortfall {
+                    gross_icp_e8s: shortfall.gross_icp,
+                    net_icp_e8s: shortfall.net_icp,
+                    available_liquid_e8s: shortfall.available_liquid,
+                })
+            }
+            error => Err(ApiError::Invalid(format!(
+                "redemption quote failed: {error:?}"
+            ))),
+        };
     }
     let operation = match redemption::calculate(&preparation, snapshot, &initial.config) {
         Ok(operation) => operation,

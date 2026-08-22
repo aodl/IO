@@ -49,7 +49,7 @@ pub(crate) fn validate(
             || account.owner != config.sns_governance
             || account.subaccount.as_slice() != recipient.sns_neuron_id
             || config
-                .excluded_io_accounts
+                .nonredeemable_governance_io_accounts
                 .iter()
                 .try_fold(false, |matched, excluded| {
                     recipient

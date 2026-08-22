@@ -175,10 +175,6 @@ fn pocketic_live_sns_topology_installs_io_canisters_with_local_principals() {
                     owner: nns_manager,
                     subaccount: Some(vec![7; 32]),
                 },
-                two_week_receipt_source: io_stream_manager::Account {
-                    owner: nns_manager,
-                    subaccount: Some(vec![8; 32]),
-                },
                 jupiter_io_account: io_stream_manager::Account {
                     owner: sns_root,
                     subaccount: None,
@@ -195,7 +191,7 @@ fn pocketic_live_sns_topology_installs_io_canisters_with_local_principals() {
                     owner: stream,
                     subaccount: Some(vec![1; 32]),
                 },
-                excluded_io_accounts: Vec::new(),
+                nonredeemable_governance_io_accounts: Vec::new(),
                 minimum_redemption_io_e8s: 20_000,
                 expected_io_fee_e8s: 10_000,
                 expected_icp_fee_e8s: 10_000,

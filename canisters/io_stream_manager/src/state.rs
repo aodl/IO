@@ -21,7 +21,6 @@ pub struct StreamConfig {
     pub icp_ledger: Principal,
     pub nns_manager: Principal,
     pub jupiter_receipt_source: Account,
-    pub two_week_receipt_source: Account,
     pub jupiter_io_account: Account,
     pub sns_governance: Principal,
     pub sns_root: Principal,
@@ -29,7 +28,7 @@ pub struct StreamConfig {
     pub approved_reward_event_duration_seconds: u64,
     pub io_reserve: Account,
     pub liquid_icp: Account,
-    pub excluded_io_accounts: Vec<Account>,
+    pub nonredeemable_governance_io_accounts: Vec<Account>,
     pub minimum_redemption_io_e8s: u128,
     pub expected_io_fee_e8s: u128,
     pub expected_icp_fee_e8s: u128,
@@ -75,46 +74,36 @@ impl StreamConfig {
         if self.io_reserve.owner != canister_self || self.liquid_icp.owner != canister_self {
             return Err("reserve and liquid accounts must be owned by this canister".into());
         }
-        if self.jupiter_receipt_source.owner != self.nns_manager
-            || self.two_week_receipt_source.owner != self.nns_manager
-        {
-            return Err("receipt source owners must equal NNS manager".into());
+        if self.jupiter_receipt_source.owner != self.nns_manager {
+            return Err("Jupiter receipt source owner must equal NNS manager".into());
         }
         self.io_reserve.validate()?;
         self.liquid_icp.validate()?;
         self.jupiter_receipt_source.validate()?;
-        self.two_week_receipt_source.validate()?;
         self.jupiter_io_account.validate()?;
         for (name, account) in [
             ("IO reserve", &self.io_reserve),
             ("liquid ICP", &self.liquid_icp),
             ("Jupiter receipt source", &self.jupiter_receipt_source),
-            ("two-week receipt source", &self.two_week_receipt_source),
             ("Jupiter IO account", &self.jupiter_io_account),
         ] {
             if account.owner == Principal::anonymous() || account.owner == management {
                 return Err(format!("{name} owner is forbidden"));
             }
         }
-        if self
-            .jupiter_receipt_source
-            .effective_eq(&self.two_week_receipt_source)?
-            || self.jupiter_receipt_source.effective_eq(&self.liquid_icp)?
-            || self
-                .two_week_receipt_source
-                .effective_eq(&self.liquid_icp)?
+        if self.jupiter_receipt_source.effective_eq(&self.liquid_icp)?
             || self.jupiter_io_account.effective_eq(&self.io_reserve)?
         {
             return Err("receipt sources, reserve and liquid accounts must be distinct".into());
         }
-        if self.excluded_io_accounts.len() > Self::MAX_EXCLUDED_ACCOUNTS {
-            return Err("too many excluded IO accounts".into());
+        if self.nonredeemable_governance_io_accounts.len() > Self::MAX_EXCLUDED_ACCOUNTS {
+            return Err("too many nonredeemable governance IO accounts".into());
         }
         let mut canonical_excluded = std::collections::BTreeSet::new();
-        for account in &self.excluded_io_accounts {
+        for account in &self.nonredeemable_governance_io_accounts {
             account.validate()?;
             if account.owner == Principal::anonymous() || account.owner == management {
-                return Err("excluded IO account owner is forbidden".into());
+                return Err("nonredeemable governance IO account owner is forbidden".into());
             }
             if account.effective_eq(&self.io_reserve)? {
                 return Err("reserve account cannot be excluded".into());
@@ -123,7 +112,7 @@ impl StreamConfig {
                 return Err("Jupiter IO account cannot be excluded".into());
             }
             if !canonical_excluded.insert(account.canonical()?) {
-                return Err("excluded IO accounts must be unique".into());
+                return Err("nonredeemable governance IO accounts must be unique".into());
             }
         }
         if self.minimum_redemption_io_e8s <= self.expected_io_fee_e8s {
@@ -261,6 +250,73 @@ pub struct PendingEntitlementBatch {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum StructuralStakeState {
+    Active,
+    Dissolving,
+    LiquidOrDissolved,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum BackingRewardStatus {
+    ActiveEligible { eligible_from_event: u64 },
+    ActiveIneligible,
+    ExitCommitted { generation: u64 },
+    ExitObserved,
+    ReentryPending { eligible_from_event: u64 },
+    Inactive,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct BackingRewardRecord {
+    pub sns_neuron_id: Vec<u8>,
+    pub staking_account: Account,
+    pub latest_structural_state: StructuralStakeState,
+    pub status: BackingRewardStatus,
+    pub unresolved_cohort_generation: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct ReconciliationCheckpoint {
+    pub generation: u64,
+    pub event_marker: u64,
+    pub pooled_target_e8s: u128,
+    pub observed_pooled_e8s: u128,
+    pub snapshot_fingerprint: Vec<u8>,
+}
+
+pub fn validate_backing_registry(
+    records: &[BackingRewardRecord],
+    config: &StreamConfig,
+) -> Result<(), String> {
+    if records.len() > 1_000 {
+        return Err("backing/reward registry exceeds 1,000 entries".into());
+    }
+    let mut previous: Option<&[u8]> = None;
+    let mut accounts = std::collections::BTreeSet::new();
+    for record in records {
+        let account = record.staking_account.canonical()?;
+        if record.sns_neuron_id.len() != 32
+            || previous.is_some_and(|value| value >= record.sns_neuron_id.as_slice())
+            || account.owner != config.sns_governance
+            || account.subaccount.as_slice() != record.sns_neuron_id
+            || !accounts.insert(account)
+            || match (&record.status, record.unresolved_cohort_generation) {
+                (BackingRewardStatus::ExitCommitted { generation }, Some(bound)) => {
+                    *generation != bound || bound == 0
+                }
+                (BackingRewardStatus::ExitCommitted { .. }, None) => true,
+                (_, Some(_)) => true,
+                (_, None) => false,
+            }
+        {
+            return Err("backing/reward registry is malformed or unsorted".into());
+        }
+        previous = Some(&record.sns_neuron_id);
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct RewardEventId {
     pub end_timestamp_seconds: u64,
     pub round: u64,
@@ -274,6 +330,9 @@ pub struct StreamStateV1 {
     pub active_operation: Option<StreamOperation>,
     pub reward_entitlements: RewardEntitlementAccumulator,
     pub pending_entitlement_batch: Option<PendingEntitlementBatch>,
+    pub backing_registry: Vec<BackingRewardRecord>,
+    pub latest_reconciliation_checkpoint: Option<ReconciliationCheckpoint>,
+    pub latest_reconciliation_generation: u64,
     pub latest_entitlement_batch_generation: u64,
     pub next_nns_receipt_sequence: u64,
     pub next_operation_sequence: OperationSequence,
@@ -294,13 +353,12 @@ impl StreamStateV1 {
             subaccount: None,
         };
         Self {
-            launch_schema_marker: 1,
+            launch_schema_marker: 2,
             config: StreamConfig {
                 io_ledger: anonymous,
                 icp_ledger: anonymous,
                 nns_manager: anonymous,
                 jupiter_receipt_source: account.clone(),
-                two_week_receipt_source: account.clone(),
                 jupiter_io_account: account.clone(),
                 sns_governance: anonymous,
                 sns_root: anonymous,
@@ -308,7 +366,7 @@ impl StreamStateV1 {
                 approved_reward_event_duration_seconds: 0,
                 io_reserve: account.clone(),
                 liquid_icp: account,
-                excluded_io_accounts: Vec::new(),
+                nonredeemable_governance_io_accounts: Vec::new(),
                 minimum_redemption_io_e8s: 1,
                 expected_io_fee_e8s: 0,
                 expected_icp_fee_e8s: 0,
@@ -320,6 +378,9 @@ impl StreamStateV1 {
             active_operation: None,
             reward_entitlements: RewardEntitlementAccumulator::default(),
             pending_entitlement_batch: None,
+            backing_registry: Vec::new(),
+            latest_reconciliation_checkpoint: None,
+            latest_reconciliation_generation: 0,
             latest_entitlement_batch_generation: 0,
             next_nns_receipt_sequence: 0,
             next_operation_sequence: OperationSequence(0),
@@ -331,7 +392,7 @@ impl StreamStateV1 {
 
 impl StreamStateV1 {
     pub fn validate(&self, canister_self: Principal) -> Result<(), String> {
-        if self.launch_schema_marker != 1 {
+        if self.launch_schema_marker != 2 {
             return Err("invalid Stream launch schema marker".into());
         }
         self.config.validate(canister_self)?;
@@ -352,15 +413,16 @@ impl StreamStateV1 {
                                 lifetime > self.config.maximum_request_lifetime_nanos
                             })
                         || value.account.effective_eq(&self.config.io_reserve)?
-                        || self.config.excluded_io_accounts.iter().try_fold(
-                            false,
-                            |matched, account| {
+                        || self
+                            .config
+                            .nonredeemable_governance_io_accounts
+                            .iter()
+                            .try_fold(false, |matched, account| {
                                 value
                                     .account
                                     .effective_eq(account)
                                     .map(|same| matched || same)
-                            },
-                        )?
+                            })?
                     {
                         return Err("redemption preparation does not match stream state".into());
                     }
@@ -384,6 +446,19 @@ impl StreamStateV1 {
             None => {}
         }
         self.reward_entitlements.validate(&self.config)?;
+        validate_backing_registry(&self.backing_registry, &self.config)?;
+        if self
+            .latest_reconciliation_checkpoint
+            .as_ref()
+            .is_some_and(|checkpoint| {
+                checkpoint.generation == 0
+                    || checkpoint.generation > self.latest_reconciliation_generation
+                    || checkpoint.event_marker == 0
+                    || checkpoint.snapshot_fingerprint.len() != 32
+            })
+        {
+            return Err("reconciliation checkpoint fingerprint is malformed".into());
+        }
         if let Some(batch) = &self.pending_entitlement_batch {
             batch.validate(&self.config)?;
             if batch.generation != self.latest_entitlement_batch_generation {
@@ -514,7 +589,7 @@ fn validate_entitlement_entries(
             || account.subaccount.as_slice() != entry.sns_neuron_id
             || entry.accumulated_eligible_credit == 0
             || config
-                .excluded_io_accounts
+                .nonredeemable_governance_io_accounts
                 .iter()
                 .try_fold(false, |matched, excluded| {
                     entry
@@ -775,13 +850,12 @@ mod tests {
         (
             canister_self,
             StreamStateV1 {
-                launch_schema_marker: 1,
+                launch_schema_marker: 2,
                 config: StreamConfig {
                     io_ledger: principal(2),
                     icp_ledger: principal(3),
                     nns_manager: principal(4),
                     jupiter_receipt_source: account(principal(4), 1),
-                    two_week_receipt_source: account(principal(4), 2),
                     jupiter_io_account: account(principal(7), 3),
                     sns_governance: governance,
                     sns_root: principal(6),
@@ -789,7 +863,7 @@ mod tests {
                     approved_reward_event_duration_seconds: 86_400,
                     io_reserve: account(canister_self, 4),
                     liquid_icp: account(canister_self, 5),
-                    excluded_io_accounts: vec![account(governance, 9)],
+                    nonredeemable_governance_io_accounts: vec![account(governance, 9)],
                     minimum_redemption_io_e8s: 20_000,
                     expected_io_fee_e8s: 10_000,
                     expected_icp_fee_e8s: 10_000,
@@ -824,6 +898,9 @@ mod tests {
                     governance_parameters_fresh: true,
                 },
                 pending_entitlement_batch: None,
+                backing_registry: Vec::new(),
+                latest_reconciliation_checkpoint: None,
+                latest_reconciliation_generation: 0,
                 latest_entitlement_batch_generation: 0,
                 next_nns_receipt_sequence: 0,
                 next_operation_sequence: OperationSequence(1),
@@ -884,15 +961,16 @@ mod tests {
         assert!(state.validate(canister_self).is_err());
 
         let (canister_self, mut state) = valid_state();
-        state.config.excluded_io_accounts[0] = state.config.io_reserve.clone();
+        state.config.nonredeemable_governance_io_accounts[0] = state.config.io_reserve.clone();
         assert!(state.validate(canister_self).is_err());
 
         let (canister_self, mut state) = valid_state();
-        state.config.excluded_io_accounts[0] = state.config.jupiter_io_account.clone();
+        state.config.nonredeemable_governance_io_accounts[0] =
+            state.config.jupiter_io_account.clone();
         assert!(state.validate(canister_self).is_err());
 
         let (canister_self, mut state) = valid_state();
-        state.config.two_week_receipt_source = state.config.jupiter_receipt_source.clone();
+        state.config.jupiter_receipt_source = state.config.liquid_icp.clone();
         assert!(state.validate(canister_self).is_err());
     }
 
@@ -1044,58 +1122,52 @@ mod tests {
             processed_event_count: 1,
         });
         state.latest_entitlement_batch_generation = 1;
+        state.backing_registry = entries
+            .iter()
+            .map(|entry| BackingRewardRecord {
+                sns_neuron_id: entry.sns_neuron_id.clone(),
+                staking_account: entry.destination.clone(),
+                latest_structural_state: StructuralStakeState::Active,
+                status: BackingRewardStatus::ActiveIneligible,
+                unresolved_cohort_generation: None,
+            })
+            .collect();
         let active_request = crate::receipt::PrepareLiquidReceiptArgs {
             receipt_sequence: 1,
-            receipt_kind: crate::receipt::ReceiptKind::TwoWeekMaturity,
+            receipt_kind: crate::receipt::ReceiptKind::Jupiter,
             source_operation_id: vec![9; 64],
             liquid_amount_e8s: entries.len() as u128,
-            entitlement_batch_generation: Some(1),
+            entitlement_batch_generation: None,
         };
         let active_fingerprint = crate::receipt::request_fingerprint(&active_request);
         let backing_snapshot = crate::receipt::BackingSnapshot {
             total_io_supply_e8s: 10_000,
             reserve_io_e8s: 1_000,
-            excluded_io_balances: vec![(state.config.excluded_io_accounts[0].clone(), 1_000)],
+            excluded_io_balances: vec![(
+                state.config.nonredeemable_governance_io_accounts[0].clone(),
+                1_000,
+            )],
             liquid_icp_e8s: 8_000,
             io_fee_e8s: state.config.expected_io_fee_e8s,
             observed_at_nanos: u64::MAX,
         };
-        let recipients = entries
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| {
-                let intent = crate::transfer::OwnTransferIntent::Icrc1 {
-                    ledger: state.config.io_ledger,
-                    from_subaccount: state.config.io_reserve.canonical().unwrap().subaccount,
-                    to: entry.destination.clone(),
-                    amount: 1,
-                    fee: state.config.expected_io_fee_e8s,
-                    memo: vec![8; crate::transfer::MAX_MEMO_BYTES],
-                    created_at_time: index as u64 + 1,
-                };
-                crate::receipt::RewardRecipient {
-                    sns_neuron_id: entry.sns_neuron_id.clone(),
-                    destination: entry.destination.clone(),
-                    io_e8s: 1,
-                    transfer: Some(crate::transfer::TransferAttempt {
-                        fingerprint: intent.fingerprint(),
-                        intent,
-                        state: crate::transfer::TransferState::Succeeded {
-                            block: index as u128,
-                        },
-                    }),
-                    refresh_attempted: true,
-                }
-            })
-            .collect();
+        let io_intent = crate::transfer::OwnTransferIntent::Icrc1 {
+            ledger: state.config.io_ledger,
+            from_subaccount: state.config.io_reserve.canonical().unwrap().subaccount,
+            to: state.config.jupiter_io_account.clone(),
+            amount: u128::MAX - state.config.expected_io_fee_e8s,
+            fee: state.config.expected_io_fee_e8s,
+            memo: crate::receipt::receipt_memo(state.config.nns_manager, 1),
+            created_at_time: 1,
+        };
         state.active_operation = Some(StreamOperation::LiquidReceipt(Box::new(
             LiquidReceiptStreamOperation::Active(Box::new(
-                crate::receipt::LiquidReceiptOperation::TwoWeek(Box::new(
-                    crate::receipt::TwoWeekReceiptOperation {
+                crate::receipt::LiquidReceiptOperation::Jupiter(Box::new(
+                    crate::receipt::JupiterReceiptOperation {
                         context: crate::receipt::ReceiptContext {
                             request: active_request,
                             request_fingerprint: active_fingerprint,
-                            source: state.config.two_week_receipt_source.clone(),
+                            source: state.config.jupiter_receipt_source.clone(),
                             permit: crate::receipt::LiquidReceiptPermit {
                                 sequence: 1,
                                 destination: state.config.liquid_icp.clone(),
@@ -1105,13 +1177,15 @@ mod tests {
                         },
                         phase: crate::receipt::ReceiptPhase::Settling,
                         receipt_block: Some(u128::MAX),
-                        settlement: Some(crate::receipt::TwoWeekSettlement {
-                            backed_io_pool_e8s: entries.len() as u128,
-                            recipients,
-                            recipient_index: entries.len() as u32,
-                            distributed_io_e8s: entries.len() as u128,
-                            forfeited_io_e8s: 0,
-                            rounding_dust_io_e8s: 0,
+                        settlement: Some(crate::receipt::JupiterSettlement {
+                            backed_io_e8s: u128::MAX - state.config.expected_io_fee_e8s,
+                            transfer: crate::transfer::TransferAttempt {
+                                fingerprint: io_intent.fingerprint(),
+                                intent: io_intent,
+                                state: crate::transfer::TransferState::Succeeded {
+                                    block: u128::MAX,
+                                },
+                            },
                         }),
                     },
                 )),
@@ -1171,7 +1245,7 @@ mod tests {
         assert_eq!(decoded, StableStreamState::V1(state.clone()));
 
         let mut bad_marker = state.clone();
-        bad_marker.launch_schema_marker = 2;
+        bad_marker.launch_schema_marker = 1;
         assert!(bad_marker
             .validate(canister_self)
             .unwrap_err()

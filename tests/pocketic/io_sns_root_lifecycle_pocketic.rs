@@ -151,10 +151,6 @@ fn setup() -> Fixture {
                     owner: nns_manager,
                     subaccount: Some(vec![7; 32]),
                 },
-                two_week_receipt_source: io_stream_manager::Account {
-                    owner: nns_manager,
-                    subaccount: Some(vec![8; 32]),
-                },
                 jupiter_io_account: io_stream_manager::Account {
                     owner: jupiter,
                     subaccount: None,
@@ -168,7 +164,7 @@ fn setup() -> Fixture {
                     subaccount: None,
                 },
                 liquid_icp: stream_liquid.clone(),
-                excluded_io_accounts: Vec::new(),
+                nonredeemable_governance_io_accounts: Vec::new(),
                 minimum_redemption_io_e8s: 20_000,
                 expected_io_fee_e8s: 10_000,
                 expected_icp_fee_e8s: 10_000,
