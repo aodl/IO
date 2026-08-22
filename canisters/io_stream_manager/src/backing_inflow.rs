@@ -15,29 +15,13 @@ use crate::{
     },
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum BackingInflowPhase {
-    AwaitingNnsEffects,
-    AwaitingPooledTransfer,
-    PooledTransferSubmitted,
-    SettlingRewards,
-    Stuck,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct InflowRecipient {
-    pub frozen: FrozenRewardRecipient,
-    pub transfer: Option<TransferAttempt>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct BackingInflowOperation {
     pub permit: BackingInflowPermit,
-    pub phase: BackingInflowPhase,
     pub permanent_block: Option<u128>,
     pub first_claim_block: Option<u128>,
     pub pooled_transfer: Option<TransferAttempt>,
-    pub recipients: Vec<InflowRecipient>,
+    pub recipient_transfers: Vec<Option<TransferAttempt>>,
     pub recipient_index: u32,
 }
 
@@ -48,70 +32,56 @@ pub struct LastCompletedBackingInflow {
 }
 
 impl BackingInflowOperation {
+    pub fn phase_name(&self) -> &'static str {
+        match stage(self) {
+            InflowStage::Effects => "AwaitingNnsEffects",
+            InflowStage::Pool => "AwaitingPooledTransfer",
+            InflowStage::PoolSubmitted => "PooledTransferSubmitted",
+            InflowStage::Rewards => "SettlingRewards",
+            InflowStage::Stuck => "Stuck",
+        }
+    }
+
+    fn recipients(&self) -> &[FrozenRewardRecipient] {
+        match &self.permit.economics {
+            FrozenInflowEconomics::Permanent { .. } => &[],
+            FrozenInflowEconomics::Pooled { recipients, .. } => recipients,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         self.permit.validate()?;
-        if usize::try_from(self.recipient_index).map_err(|_| "recipient index overflow")?
-            > self.recipients.len()
+        let index =
+            usize::try_from(self.recipient_index).map_err(|_| "recipient index overflow")?;
+        if index > self.recipient_transfers.len()
+            || self.recipient_transfers.len() != self.recipients().len()
         {
             return Err("backing-inflow recipient index exceeds its frozen list".into());
         }
-        let expected = match &self.permit.economics {
-            FrozenInflowEconomics::Permanent { .. } => Vec::new(),
-            FrozenInflowEconomics::Pooled { recipients, .. } => recipients.clone(),
-        };
-        if self
-            .recipients
-            .iter()
-            .map(|value| &value.frozen)
-            .ne(expected.iter())
-        {
-            return Err("backing-inflow recipients differ from the frozen plan".into());
-        }
-        for recipient in &self.recipients {
-            if let Some(transfer) = &recipient.transfer {
-                transfer.validate()?;
-            }
+        for transfer in self.recipient_transfers.iter().flatten() {
+            transfer.validate()?;
         }
         if let Some(transfer) = &self.pooled_transfer {
             transfer.validate()?;
         }
-        let permanent_ready = self.permit.permanent_credit() == 0 || self.permanent_block.is_some();
-        let claim_ready = self.first_claim_block.is_some();
-        let pooled_succeeded = self
-            .pooled_transfer
-            .as_ref()
-            .is_some_and(|transfer| matches!(transfer.state, TransferState::Succeeded { .. }));
-        let route = self.permit.route().route;
-        let phase_valid = match self.phase {
-            BackingInflowPhase::AwaitingNnsEffects => !permanent_ready || !claim_ready,
-            BackingInflowPhase::AwaitingPooledTransfer => {
-                permanent_ready
-                    && claim_ready
-                    && route == ClaimRoute::Mixed
-                    && self.pooled_transfer.is_none()
-            }
-            BackingInflowPhase::PooledTransferSubmitted => {
-                permanent_ready
-                    && claim_ready
-                    && route == ClaimRoute::Mixed
-                    && self.pooled_transfer.is_some()
-            }
-            BackingInflowPhase::SettlingRewards => {
-                permanent_ready && claim_ready && (route != ClaimRoute::Mixed || pooled_succeeded)
-            }
-            BackingInflowPhase::Stuck => true,
-        };
-        if !phase_valid {
-            return Err("backing-inflow phase is not supported by exact effect proofs".into());
-        }
-        for (index, recipient) in self.recipients.iter().enumerate() {
-            let succeeded = recipient
-                .transfer
+        let effects_proved = (self.permit.permanent_credit() == 0
+            || self.permanent_block.is_some())
+            && self.first_claim_block.is_some();
+        let pool_proved = self.permit.route().route != ClaimRoute::Mixed
+            || self
+                .pooled_transfer
                 .as_ref()
                 .is_some_and(|transfer| matches!(transfer.state, TransferState::Succeeded { .. }));
-            if index < self.recipient_index as usize && !succeeded
-                || index > self.recipient_index as usize && recipient.transfer.is_some()
-            {
+        if !effects_proved && (self.pooled_transfer.is_some() || index != 0)
+            || !pool_proved && (index != 0 || self.recipient_transfers.iter().any(Option::is_some))
+        {
+            return Err("backing-inflow effects are out of order".into());
+        }
+        for (position, transfer) in self.recipient_transfers.iter().enumerate() {
+            let succeeded = transfer
+                .as_ref()
+                .is_some_and(|transfer| matches!(transfer.state, TransferState::Succeeded { .. }));
+            if position < index && !succeeded || position > index && transfer.is_some() {
                 return Err("reward settlement cursor contradicts transfer evidence".into());
             }
         }
@@ -180,24 +150,16 @@ pub async fn prepare(
         ));
     }
     let permit = plan(&initial, &args, &snapshot)?;
-    let recipients = match &permit.economics {
-        FrozenInflowEconomics::Permanent { .. } => Vec::new(),
-        FrozenInflowEconomics::Pooled { recipients, .. } => recipients
-            .iter()
-            .cloned()
-            .map(|frozen| InflowRecipient {
-                frozen,
-                transfer: None,
-            })
-            .collect(),
+    let recipient_count = match &permit.economics {
+        FrozenInflowEconomics::Permanent { .. } => 0,
+        FrozenInflowEconomics::Pooled { recipients, .. } => recipients.len(),
     };
     let operation = BackingInflowOperation {
         permit: permit.clone(),
-        phase: BackingInflowPhase::AwaitingNnsEffects,
         permanent_block: None,
         first_claim_block: None,
         pooled_transfer: None,
-        recipients,
+        recipient_transfers: vec![None; recipient_count],
         recipient_index: 0,
     };
     operation.validate().map_err(ApiError::Invalid)?;
@@ -434,7 +396,6 @@ pub async fn prove_effect(args: ProveBackingEffectArgs) -> Result<BackingInflowP
         }
         _ => return Err(ApiError::Invalid("unexpected backing effect".into())),
     }
-    advance(&mut updated)?;
     persist(&operation, updated.clone())?;
     progress(&updated)
 }
@@ -507,36 +468,49 @@ fn existing_block(operation: &BackingInflowOperation, effect: BackingEffect) -> 
     }
 }
 
-fn advance(operation: &mut BackingInflowOperation) -> Result<(), ApiError> {
+#[derive(Clone, Copy)]
+enum InflowStage {
+    Effects,
+    Pool,
+    PoolSubmitted,
+    Rewards,
+    Stuck,
+}
+
+fn stage(operation: &BackingInflowOperation) -> InflowStage {
+    if operation
+        .pooled_transfer
+        .iter()
+        .chain(operation.recipient_transfers.iter().flatten())
+        .any(|transfer| matches!(transfer.state, TransferState::Stuck { .. }))
+    {
+        return InflowStage::Stuck;
+    }
     let permanent_ready =
         operation.permit.permanent_credit() == 0 || operation.permanent_block.is_some();
     if !permanent_ready || operation.first_claim_block.is_none() {
-        operation.phase = BackingInflowPhase::AwaitingNnsEffects;
-    } else if operation.permit.route().route == ClaimRoute::Mixed
-        && operation
+        InflowStage::Effects
+    } else if operation.permit.route().route != ClaimRoute::Mixed
+        || operation
             .pooled_transfer
             .as_ref()
-            .is_none_or(|transfer| !matches!(transfer.state, TransferState::Succeeded { .. }))
+            .is_some_and(|transfer| matches!(transfer.state, TransferState::Succeeded { .. }))
     {
-        operation.phase = if operation.pooled_transfer.is_some() {
-            BackingInflowPhase::PooledTransferSubmitted
-        } else {
-            BackingInflowPhase::AwaitingPooledTransfer
-        };
+        InflowStage::Rewards
+    } else if operation.pooled_transfer.is_some() {
+        InflowStage::PoolSubmitted
     } else {
-        operation.phase = BackingInflowPhase::SettlingRewards;
+        InflowStage::Pool
     }
-    Ok(())
 }
 
 pub async fn resume(now: u64) -> Result<BackingInflowProgress, ApiError> {
     let operation = active()?;
-    match operation.phase {
-        BackingInflowPhase::AwaitingNnsEffects => progress(&operation),
-        BackingInflowPhase::AwaitingPooledTransfer => submit_pool(operation, now).await,
-        BackingInflowPhase::PooledTransferSubmitted => progress(&operation),
-        BackingInflowPhase::SettlingRewards => settle_reward(operation, now).await,
-        BackingInflowPhase::Stuck => Err(ApiError::Stuck(
+    match stage(&operation) {
+        InflowStage::Effects | InflowStage::PoolSubmitted => progress(&operation),
+        InflowStage::Pool => submit_pool(operation, now).await,
+        InflowStage::Rewards => settle_reward(operation, now).await,
+        InflowStage::Stuck => Err(ApiError::Stuck(
             "backing-inflow effect requires exact proof".into(),
         )),
     }
@@ -570,7 +544,6 @@ async fn submit_pool(
         last_submitted_at: now,
     };
     let mut submitted = operation.clone();
-    submitted.phase = BackingInflowPhase::PooledTransferSubmitted;
     submitted.pooled_transfer = Some(attempt.clone());
     persist(&operation, submitted.clone())?;
     match crate::api::submit(&attempt.intent).await {
@@ -591,12 +564,11 @@ async fn settle_reward(
 ) -> Result<BackingInflowProgress, ApiError> {
     let index = usize::try_from(operation.recipient_index)
         .map_err(|_| ApiError::Invalid("recipient index overflow".into()))?;
-    if index == operation.recipients.len() {
+    if index == operation.recipient_transfers.len() {
         return complete(operation);
     }
     let config = state::read().config;
-    if operation.recipients[index]
-        .transfer
+    if operation.recipient_transfers[index]
         .as_ref()
         .is_some_and(|transfer| matches!(transfer.state, TransferState::Succeeded { .. }))
     {
@@ -608,8 +580,8 @@ async fn settle_reward(
         persist(&expected, operation.clone())?;
         return progress(&operation);
     }
-    if operation.recipients[index].transfer.is_none() {
-        let recipient = &operation.recipients[index];
+    if operation.recipient_transfers[index].is_none() {
+        let recipient = &operation.recipients()[index];
         let intent = OwnTransferIntent::Icrc1 {
             ledger: config.io_ledger,
             from_subaccount: config
@@ -617,8 +589,8 @@ async fn settle_reward(
                 .canonical()
                 .map_err(ApiError::Invalid)?
                 .subaccount,
-            to: recipient.frozen.destination.clone(),
-            amount: recipient.frozen.io_e8s,
+            to: recipient.destination.clone(),
+            amount: recipient.io_e8s,
             fee: config.expected_io_fee_e8s,
             memo: crate::transfer::deterministic_memo(
                 b"io-backing-reward-v1",
@@ -628,11 +600,10 @@ async fn settle_reward(
             ),
             created_at_time: now,
         };
-        operation.recipients[index].transfer =
+        operation.recipient_transfers[index] =
             Some(TransferAttempt::prepared(intent).map_err(ApiError::Invalid)?);
     }
-    let attempt = operation.recipients[index]
-        .transfer
+    let attempt = operation.recipient_transfers[index]
         .as_mut()
         .expect("reward transfer was prepared");
     let (epoch, first_submitted_at) = match attempt.state {
@@ -654,7 +625,6 @@ async fn settle_reward(
                 attempt.state = TransferState::Stuck {
                     reason: "reward settlement deduplication window expired".into(),
                 };
-                operation.phase = BackingInflowPhase::Stuck;
                 let expected = active()?;
                 persist(&expected, operation)?;
                 return Err(ApiError::Stuck(
@@ -679,8 +649,7 @@ async fn settle_reward(
         Ok(result) => match classify_result(result).map_err(ApiError::Ledger)? {
             ClassifiedResult::Succeeded(block) => {
                 let mut succeeded = operation.clone();
-                succeeded.recipients[index]
-                    .transfer
+                succeeded.recipient_transfers[index]
                     .as_mut()
                     .expect("submitted transfer")
                     .state = TransferState::Succeeded { block };
@@ -707,16 +676,15 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<(), ApiError> {
                 .as_mut()
                 .expect("validated pooled transfer")
                 .state = TransferState::Succeeded { block: block_index };
-            advance(&mut succeeded)?;
             return persist(&operation, succeeded);
         }
     }
     let index = usize::try_from(operation.recipient_index)
         .map_err(|_| ApiError::Invalid("recipient index overflow".into()))?;
     let transfer = operation
-        .recipients
+        .recipient_transfers
         .get(index)
-        .and_then(|recipient| recipient.transfer.as_ref())
+        .and_then(Option::as_ref)
         .ok_or_else(|| ApiError::Invalid("no active backing-inflow transfer".into()))?;
     if !matches!(
         transfer.state,
@@ -762,22 +730,18 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<(), ApiError> {
         ));
     }
     let mut succeeded = operation.clone();
-    succeeded.recipients[index]
-        .transfer
+    succeeded.recipient_transfers[index]
         .as_mut()
         .expect("validated reward transfer")
         .state = TransferState::Succeeded { block: block_index };
-    succeeded.phase = BackingInflowPhase::SettlingRewards;
     persist(&operation, succeeded)
 }
 
 fn complete(operation: BackingInflowOperation) -> Result<BackingInflowProgress, ApiError> {
     let distributed = operation
-        .recipients
+        .recipients()
         .iter()
-        .try_fold(0u128, |sum, recipient| {
-            sum.checked_add(recipient.frozen.io_e8s)
-        })
+        .try_fold(0u128, |sum, recipient| sum.checked_add(recipient.io_e8s))
         .ok_or_else(|| ApiError::Invalid("distributed IO overflow".into()))?;
     let mut latest = state::read();
     if !matches!(&latest.active_operation, Some(StreamOperation::BackingInflow(active)) if **active == operation)
@@ -806,7 +770,15 @@ fn stick(
     mut operation: BackingInflowOperation,
     reason: String,
 ) -> Result<BackingInflowProgress, ApiError> {
-    operation.phase = BackingInflowPhase::Stuck;
+    let target = operation
+        .recipient_transfers
+        .get_mut(operation.recipient_index as usize)
+        .and_then(Option::as_mut)
+        .or(operation.pooled_transfer.as_mut())
+        .ok_or_else(|| ApiError::Invalid("no submitted backing transfer to stick".into()))?;
+    target.state = TransferState::Stuck {
+        reason: reason.clone(),
+    };
     let expected = active()?;
     persist(&expected, operation)?;
     Ok(BackingInflowProgress::Stuck(reason))
@@ -836,12 +808,12 @@ fn persist(
 }
 
 fn progress(operation: &BackingInflowOperation) -> Result<BackingInflowProgress, ApiError> {
-    Ok(match operation.phase {
-        BackingInflowPhase::AwaitingNnsEffects => {
+    Ok(match stage(operation) {
+        InflowStage::Effects => {
             BackingInflowProgress::AwaitingNnsEffects(Box::new(operation.permit.clone()))
         }
-        BackingInflowPhase::AwaitingPooledTransfer => BackingInflowProgress::AwaitingPooledTransfer,
-        BackingInflowPhase::PooledTransferSubmitted => {
+        InflowStage::Pool => BackingInflowProgress::AwaitingPooledTransfer,
+        InflowStage::PoolSubmitted => {
             let block = operation
                 .pooled_transfer
                 .as_ref()
@@ -854,9 +826,7 @@ fn progress(operation: &BackingInflowOperation) -> Result<BackingInflowProgress,
                 None => BackingInflowProgress::AwaitingPooledTransfer,
             }
         }
-        BackingInflowPhase::SettlingRewards => BackingInflowProgress::SettlingRewards,
-        BackingInflowPhase::Stuck => {
-            BackingInflowProgress::Stuck("exact effect proof required".into())
-        }
+        InflowStage::Rewards => BackingInflowProgress::SettlingRewards,
+        InflowStage::Stuck => BackingInflowProgress::Stuck("exact effect proof required".into()),
     })
 }

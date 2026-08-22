@@ -26,7 +26,7 @@ pub fn get_status() -> Status {
         },
         Some(StreamOperation::BackingInflow(operation)) => (
             Some("BackingInflow".into()),
-            Some(format!("{:?}", operation.phase)),
+            Some(operation.phase_name().into()),
         ),
         Some(StreamOperation::PoolTopUp(_)) => {
             (Some("BackingReconciliation".into()), Some("TopUp".into()))
