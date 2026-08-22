@@ -2323,14 +2323,12 @@ fn validate_pooled_claim_topology(stream: &str, nns: &str) -> Result<(), String>
     ] {
         require_field_token(text, field, token)?;
     }
-    for (stream_field, nns_field, token) in [(
-        "liquid_icp",
+    require_field_token(stream, "liquid_icp", "TODO_STREAM_LIQUID_SUBACCOUNT")?;
+    require_field_token(
+        nns,
         "stream_liquid_account",
         "TODO_STREAM_LIQUID_SUBACCOUNT",
-    )] {
-        require_field_token(stream, stream_field, token)?;
-        require_field_token(nns, nns_field, token)?;
-    }
+    )?;
     Ok(())
 }
 

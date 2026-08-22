@@ -285,33 +285,41 @@ pub struct ReconciliationProjection {
     pub observed_pooled_e8s: u128,
 }
 
+pub struct ProtocolSnapshotInput<'a> {
+    pub generation: u64,
+    pub total: u128,
+    pub reserve: u128,
+    pub nonredeemable: &'a [u128],
+    pub liquid: u128,
+    pub reconciliation: Option<&'a ReconciliationProjection>,
+    pub permanent_productive_capital_e8s: Option<u128>,
+    pub observed_at: u64,
+}
+
 pub fn coherent_protocol_snapshot(
-    generation: u64,
-    total: u128,
-    reserve: u128,
-    nonredeemable: &[u128],
-    liquid: u128,
-    reconciliation: Option<&ReconciliationProjection>,
-    permanent_productive_capital_e8s: Option<u128>,
-    observed_at: u64,
+    input: ProtocolSnapshotInput<'_>,
 ) -> Result<ProtocolSnapshot, String> {
-    let nonredeemable_total = nonredeemable
+    let nonredeemable_total = input
+        .nonredeemable
         .iter()
         .try_fold(0u128, |sum, value| sum.checked_add(*value))
         .ok_or_else(|| "nonredeemable governance IO balance sum overflow".to_string())?;
-    let non_redeemable = reserve
+    let non_redeemable = input
+        .reserve
         .checked_add(nonredeemable_total)
         .ok_or_else(|| "non-redeemable IO balance sum overflow".to_string())?;
-    let claims = total.checked_sub(non_redeemable).ok_or_else(|| {
+    let claims = input.total.checked_sub(non_redeemable).ok_or_else(|| {
         "total IO supply is less than protocol reserve plus nonredeemable governance balances"
             .to_string()
     })?;
-    let projection = reconciliation.filter(|value| value.claim_supply_e8s == claims);
+    let projection = input
+        .reconciliation
+        .filter(|value| value.claim_supply_e8s == claims);
     let rate = projection.and_then(|value| {
         (value.claim_supply_e8s > 0).then_some(ClaimRateSnapshot {
             backing_numerator_e8s: value.total_claim_backing_e8s,
             claim_denominator_e8s: value.claim_supply_e8s,
-            available_liquid_e8s: liquid,
+            available_liquid_e8s: input.liquid,
             observed_at_timestamp_nanos: value.observed_at_nanos,
         })
     });
@@ -325,9 +333,9 @@ pub fn coherent_protocol_snapshot(
         }
     });
     Ok(ProtocolSnapshot {
-        generation,
-        total_io_supply_e8s: Some(total),
-        protocol_reserve_io_e8s: Some(reserve),
+        generation: input.generation,
+        total_io_supply_e8s: Some(input.total),
+        protocol_reserve_io_e8s: Some(input.reserve),
         nonredeemable_governance_io_e8s: Some(nonredeemable_total),
         claim_io_supply_e8s: Some(claims),
         liquid_claim_backing_e8s: projection.map(|value| value.liquid_backing_e8s),
@@ -342,8 +350,8 @@ pub fn coherent_protocol_snapshot(
         pooled_target_delta: delta,
         live_cohort_count: projection.map(|value| value.live_cohort_count),
         oldest_ready_at_seconds: projection.and_then(|value| value.oldest_ready_at_seconds),
-        permanent_productive_capital_e8s,
-        observed_at_timestamp_nanos: Some(observed_at),
+        permanent_productive_capital_e8s: input.permanent_productive_capital_e8s,
+        observed_at_timestamp_nanos: Some(input.observed_at),
         completeness: DataCompleteness {
             total_io_supply: true,
             protocol_reserve_io: true,

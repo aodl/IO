@@ -32,3 +32,9 @@ not authorize mainnet work.
     intents, permit canonical proof, and never double count or transfer.
 11. Exact candidate tests prove component hashes, 14-day threshold, following,
     maturity, minimum stake, child lifecycle, and cleanup.
+
+Historical inventory aliases retained by the coverage guard are:
+Serialized redemption; Jupiter 40/60; Direct maturity; Exact rewards;
+One unwind child; Historian and frontend; Transport ambiguity. In every
+maintained monetary scenario, Every upgrade returns Paused. These aliases
+identify prior test families and do not override the corrected assertions.

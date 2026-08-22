@@ -19,3 +19,9 @@
 The checked-in historical SNS evidence remains proof of the superseded model.
 Corrected-economics canonical evidence is intentionally absent until a separately
 authorized complete rehearsal succeeds.
+
+Historical compatibility inventory still names the real SNS ledger and these
+labels: Installed direct-reserve redemption, Exact reward allocation, and
+Historian separation.
+Scanner-era tests are historical; these labels keep coverage provenance visible
+without making the superseded economics normative.

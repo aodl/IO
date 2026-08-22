@@ -49,18 +49,18 @@ pub async fn protocol(
     let liquid = balance(config.icp_ledger, &config.liquid_icp_reserve).await?;
     let stream = stream(config, now).await.ok();
     let permanent = permanent_productive_capital(config).await.ok();
-    coherent_protocol_snapshot(
+    coherent_protocol_snapshot(ProtocolSnapshotInput {
         generation,
         total,
         reserve,
-        &nonredeemable,
+        nonredeemable: &nonredeemable,
         liquid,
-        stream
+        reconciliation: stream
             .as_ref()
             .and_then(|value| value.latest_reconciliation_checkpoint.as_ref()),
-        permanent,
-        now,
-    )
+        permanent_productive_capital_e8s: permanent,
+        observed_at: now,
+    })
 }
 
 async fn balance(ledger: Principal, account: &Account) -> Result<u128, String> {

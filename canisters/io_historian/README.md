@@ -2,6 +2,7 @@
 
 `io_historian` is a bounded, rebuildable public read model. It cannot authorize
 issuance, redemption, backing movement, NNS commands, SNS lifecycle, or launch.
+It is not canonical protocol truth and not a value-moving authority.
 
 The dashboard projects claim-bearing IO supply; liquid, pooled, unwinding, and
 in-transit claim backing; total backing and its `B/C` rate; structural and
@@ -13,6 +14,8 @@ Ledger balances remain canonical. Stream status supplies the latest canonical
 pooled checkpoint, while public NNS observation supplies permanent stake and
 staked maturity. Missing, stale, inconsistent, or error observations are never
 converted to zero monetary facts.
+The missing/stale/error state and index canisters remain explicit freshness
+inputs.
 
 Production configuration is constructor/upgrade-only and bounded. `null` on
 first install remains prelaunch; a validated configuration arms one
@@ -32,5 +35,6 @@ cargo run -p xtask -- validate_historian_freshness
 cargo run -p xtask -- did_surface
 ```
 
-IO remains prelaunch. Historian freshness is operator evidence, not monetary
-authority or launch readiness.
+The IO protocol is not live and the SNS IO ledger remains not launched.
+Historian freshness is operator evidence, not monetary authority or launch
+readiness.

@@ -437,15 +437,33 @@ mod tests {
         }
     }
 
+    fn snapshot_input<'a>(
+        total: u128,
+        reserve: u128,
+        nonredeemable: &'a [u128],
+        reconciliation: Option<&'a ReconciliationProjection>,
+    ) -> ProtocolSnapshotInput<'a> {
+        ProtocolSnapshotInput {
+            generation: 1,
+            total,
+            reserve,
+            nonredeemable,
+            liquid: 5,
+            reconciliation,
+            permanent_productive_capital_e8s: None,
+            observed_at: 99,
+        }
+    }
+
     #[test]
     fn coherent_snapshot_rejects_inverted_supply() {
-        let error = coherent_protocol_snapshot(1, 10, 8, &[3], 5, None, None, 99).unwrap_err();
+        let error = coherent_protocol_snapshot(snapshot_input(10, 8, &[3], None)).unwrap_err();
         assert!(error.contains("less than"));
     }
 
     #[test]
     fn coherent_snapshot_never_mixes_missing_values_or_infers_zero_rate() {
-        let zero = coherent_protocol_snapshot(1, 10, 4, &[6], 5, None, None, 99).unwrap();
+        let zero = coherent_protocol_snapshot(snapshot_input(10, 4, &[6], None)).unwrap();
         assert_eq!(zero.claim_io_supply_e8s, Some(0));
         assert_eq!(zero.claim_rate, None);
         assert!(!zero.completeness.claim_rate);
@@ -469,9 +487,17 @@ mod tests {
             pooled_target_e8s: 54,
             observed_pooled_e8s: 50,
         };
-        let snapshot =
-            coherent_protocol_snapshot(8, 120, 10, &[10], 20, Some(&projection), Some(400), 99)
-                .unwrap();
+        let snapshot = coherent_protocol_snapshot(ProtocolSnapshotInput {
+            generation: 8,
+            total: 120,
+            reserve: 10,
+            nonredeemable: &[10],
+            liquid: 20,
+            reconciliation: Some(&projection),
+            permanent_productive_capital_e8s: Some(400),
+            observed_at: 99,
+        })
+        .unwrap();
         assert_eq!(snapshot.total_claim_backing_e8s, Some(90));
         assert_eq!(snapshot.liquid_claim_backing_e8s, Some(20));
         assert_eq!(snapshot.pooled_parent_principal_e8s, Some(50));
@@ -521,7 +547,7 @@ mod tests {
     #[test]
     fn replacing_config_clears_old_observations() {
         import_state_for_tests(StableState {
-            protocol: coherent_protocol_snapshot(9, 100, 10, &[20], 70, None, None, 1).unwrap(),
+            protocol: coherent_protocol_snapshot(snapshot_input(100, 10, &[20], None)).unwrap(),
             ..StableState::default()
         });
         install_config(Some(config()));
@@ -538,7 +564,7 @@ mod tests {
     fn same_config_preserves_observations() {
         let config = config();
         install_config(Some(config.clone()));
-        let protocol = coherent_protocol_snapshot(2, 100, 10, &[20], 70, None, None, 1).unwrap();
+        let protocol = coherent_protocol_snapshot(snapshot_input(100, 10, &[20], None)).unwrap();
         STATE.with(|cell| cell.borrow_mut().protocol = protocol.clone());
         install_config(Some(config));
         assert_eq!(export_state_for_tests().protocol, protocol);

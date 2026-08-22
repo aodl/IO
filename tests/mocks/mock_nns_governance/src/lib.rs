@@ -207,6 +207,13 @@ pub struct FullNeuron {
     pub auto_stake_maturity: Option<bool>,
     pub maturity_disbursements_in_progress: Option<Vec<MaturityDisbursement>>,
     pub dissolve_state: Option<NnsDissolveState>,
+    pub followees: Vec<(i32, NnsFollowees)>,
+    pub voting_power_refreshed_timestamp_seconds: Option<u64>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct NnsFollowees {
+    pub followees: Vec<NnsNeuronId>,
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -239,6 +246,18 @@ pub fn get_full_neuron(neuron_id: u64) -> Result<FullNeuron, GovernanceError> {
             } else {
                 NnsDissolveState::DissolveDelaySeconds(neuron.dissolve_delay_seconds)
             }),
+            followees: [0, 4, 14]
+                .into_iter()
+                .map(|topic| {
+                    (
+                        topic,
+                        NnsFollowees {
+                            followees: vec![NnsNeuronId { id: 43 }],
+                        },
+                    )
+                })
+                .collect(),
+            voting_power_refreshed_timestamp_seconds: Some(1),
         })
     })
 }
