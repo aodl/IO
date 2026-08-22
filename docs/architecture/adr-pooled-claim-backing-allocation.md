@@ -199,16 +199,21 @@ credit together with the exact observed transfer fees:
 2. Evaluate the claim leg with its unavoidable first staging-transfer fee. Use
    one staging-to-liquid transfer when the target needs no pooled credit, when
    the two-fee candidate's net pooled credit is no larger than the second exact
-   fee, or when the parent is absent and that net credit is below the exact
-   creation minimum. Record the remaining under-target delta for batching.
+   fee, when the optional second fee cannot be paid, or when the parent is
+   absent and that net credit is below the exact creation minimum. Record the
+   remaining under-target delta for batching. Failure to afford the optional
+   second fee is an `AllLiquid` decision, not a global planning error.
 3. Use one staging-to-pool transfer only when the post-one-fee target consumes
-   the entire claim credit and either the parent exists or the exact net credit
-   satisfies the minimum valid parent-creation amount.
+   the entire claim credit, or when the two-fee candidate has zero liquid
+   credit, and either the parent exists or the exact one-fee credit satisfies
+   the minimum valid parent-creation amount. In the latter case, credit the
+   entire one-fee claim amount, report the one-fee target and bounded
+   over-target residual, and do not spend the optional second fee.
 4. Use staging-to-liquid followed by liquid-to-pool only when the one-fee
-   target is mixed, the pooled credit recalculated after the second exact fee
-   is strictly greater than that fee, and the credit is executable for the
-   existing parent or the lazy-creation minimum. Otherwise keep the claim leg
-   liquid and expose the bounded under-target residual.
+   target is mixed, both recalculated destination credits are positive, the
+   pooled credit after the second exact fee is strictly greater than that fee,
+   and the credit is executable for the existing parent or the lazy-creation
+   minimum. Otherwise select the applicable direct one-fee route.
 
 The executable planner evaluates at most the one-fee and two-fee candidates.
 Its result records the parent-aware decision, permanent source debit and credit,
@@ -226,6 +231,14 @@ candidate would credit only `1,000` to the pool while spending that second
 `10,000` fee. The selected one-fee route instead credits `59,990,000` to
 liquid, spends no second fee, and records the `6,000` under-target residual for
 later batching.
+
+The all-pool boundary fixture uses `B=C=100,000,000,000`,
+`A_backing=50,000,000,000`, `P=49,970,010,000`, actual Mint `100,000,000`, an
+exact claim-transfer fee of `10,000`, and no `dC` or `dA`. The two-fee candidate
+has zero liquid credit, so the selected route is direct one-fee `AllPool`: it
+credits `59,990,000`, reports the one-fee target `50,029,995,000` and bounded
+`5,000` over-target residual, performs no liquid-to-pool transfer, and retains
+`10,000` more total claim backing than the two-fee alternative.
 
 ## Conservation
 
@@ -464,6 +477,7 @@ The minimum conceptual states and transitions are:
 | `RestakeCommitted` | Exact cached-principal credit proved -> `RestakeProved` | `T -> P`, fee counted once even after callback loss |
 | `RestakeProved` | Latest state active -> `ActiveBacked` | Eligible prospectively from the next canonical reward observation |
 | `RestakeProved` | Latest state dissolving -> `ExitObserved` | Restake remains counted; later net reconciliation may commit a new unwind generation |
+| `RestakeProved` | Latest state liquid or dissolved -> inactive liquid-exit status | Restake remains counted; no reward eligibility |
 | Completed exit reference | Canonical `LiquidOrDissolved` | Remains ineligible; clear the completed generation marker, and treat later staking as fresh structural activation |
 
 If the latest state is dissolving or `LiquidOrDissolved` at or before
@@ -474,14 +488,26 @@ planned member to returned-liquidity planning. Clearing the last valid active
 member therefore cannot leave a plan behind. A fresh plan may be calculated
 for the remaining active subset. `commit_restake` requires the exact still-current
 planned generation, its live returned cohort, and at least one current active
-generation member. After `RestakeCommitted`, an observed or possibly effective
-transfer must be finished and proved exactly; dissolving cannot erase `T`, the
-transfer intent, or its fee. After proof, ordinary net reconciliation may
-create a new unwind generation if the latest state still requires one. Callback
-loss therefore cannot double-submit or double-count the restake. Repeated
-start/cancel observations for the same committed generation change only latest
-state and bounded eligibility status; they do not create a second child for
-that generation.
+generation member. Production should preferably calculate this no-effect plan
+and persist the exact `RestakeCommitted` transfer intent in the same update,
+after validating the canonical snapshot. It should not create durable plan
+history. The test-only `RestakePlanned` state remains useful for transition
+tests, but it is neither an economic asset nor an irreversible operation.
+
+After `RestakeCommitted`, an observed or possibly effective transfer must be
+finished and proved exactly. Neither dissolving nor `LiquidOrDissolved` can
+erase `T`, the committed generation, exact operation relationship, transfer
+intent, or fee. The observation updates only the latest SNS state and keeps
+reward eligibility disabled. Exact proof moves the credit to `P` once while
+retaining that relationship through `RestakeProved`; `finish_restake` then
+applies the latest state. Active becomes `ActiveBacked` prospectively,
+dissolving becomes `ExitObserved`, and liquid or dissolved becomes an inactive
+liquid-exit status. The credited pooled principal remains counted in every
+case, and later ordinary net reconciliation may unwind it when the latest state
+is not active. Callback loss therefore cannot double-submit or double-count the
+restake. Repeated start/cancel observations for the same committed generation
+change only latest state and bounded eligibility status; they do not create a
+second child for that generation.
 
 Aggregate returned-liquidity planning processes the active and dissolving
 subsets independently. An active member may complete re-entry while another
@@ -545,22 +571,22 @@ ICP child, e8s range, or transfer is assigned to a user or SNS neuron.
 
 ### Cohort retirement
 
-The bounded collection counts live unresolved cohorts, not history. A cohort
-may be removed only after all six facts hold:
+The bounded collection counts live unresolved child lifecycles, not history.
+Cohort identity is required only while that NNS child lifecycle remains
+unresolved. Once principal return is canonically proved, child maturity has
+been moved to the parent or proved zero, and child cleanup is complete, the
+child record must be independently retireable. Members still awaiting reward
+re-entry move to a bounded generation-free status. Pending re-entry must not
+keep a resolved child slot occupied indefinitely, and later eligibility
+restoration is based on the global reward-coverage invariant rather than
+retention of a historical child generation.
 
-1. principal return is canonically proved;
-2. child maturity has been moved to the parent or proved zero;
-3. child cleanup is complete;
-4. no SNS eligibility record references the generation;
-5. no active command references the generation or child ID; and
-6. no unsubmitted `planned_restake` references the generation.
-
-Returned-but-uncleaned and cleaned-but-referenced cohorts continue consuming
-capacity. Retirement removes only the resolved record; it changes neither
-`B`, `P`, `U`, `T` nor reward eligibility. The freed live slot may be reused by
-a later monotonically increasing generation. Live child IDs and generations
-must be unique. The final production capacity remains a reviewed bound, not a
-unit-fixture constant.
+This decoupling is a requirement for the later production representation, not
+an instruction to enlarge the transition-test simulator in this proposal.
+Retirement changes neither `B`, `P`, `U`, `T` nor reward eligibility. The freed
+live slot may be reused by a later monotonically increasing generation. Live
+child IDs and unresolved generations must be unique. The final production
+capacity remains a reviewed bound, not a unit-fixture constant.
 
 ### Liquidity-lag bound
 

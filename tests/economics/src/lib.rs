@@ -332,6 +332,19 @@ pub mod proposed_model {
                 .saturating_sub(allocation.target_pool);
             allocation
         };
+        let as_all_pool = |mut allocation: Allocation| -> Result<Allocation, ModelError> {
+            allocation.to_pool = first_claim_credit;
+            allocation.to_liquid = 0;
+            allocation.remaining_under_target = 0;
+            allocation.resulting_over_target = input
+                .state
+                .backing
+                .pooled
+                .checked_add(first_claim_credit)
+                .ok_or(ModelError::ArithmeticOverflow)?
+                .saturating_sub(allocation.target_pool);
+            Ok(allocation)
+        };
         let can_credit_parent =
             |credit: u128| input.parent_exists || credit >= input.minimum_parent_credit;
 
@@ -342,21 +355,32 @@ pub mod proposed_model {
         } else if one_fee.to_liquid == 0 {
             (ClaimLegRoute::AllLiquid, 1, as_all_liquid(one_fee), None)
         } else {
-            let two_fee_credit = first_claim_credit
-                .checked_sub(input.claim_transfer_fee)
-                .ok_or(ModelError::InsufficientBacking)?;
-            let two_fee = allocate(allocation_input(two_fee_credit))?;
-            if two_fee.to_pool > input.claim_transfer_fee && can_credit_parent(two_fee.to_pool) {
-                let source_debit = two_fee
-                    .to_pool
-                    .checked_add(input.claim_transfer_fee)
-                    .ok_or(ModelError::ArithmeticOverflow)?;
-                (ClaimLegRoute::Mixed, 2, two_fee, Some(source_debit))
-            } else {
-                // A second fee that produces no material, executable pooled
-                // credit is not spent. Keep the claim leg liquid and expose
-                // the one-fee target residual for later reconciliation.
-                (ClaimLegRoute::AllLiquid, 2, as_all_liquid(one_fee), None)
+            match first_claim_credit.checked_sub(input.claim_transfer_fee) {
+                None => (ClaimLegRoute::AllLiquid, 2, as_all_liquid(one_fee), None),
+                Some(two_fee_credit) => {
+                    let two_fee = allocate(allocation_input(two_fee_credit))?;
+                    if two_fee.to_pool <= input.claim_transfer_fee {
+                        (ClaimLegRoute::AllLiquid, 2, as_all_liquid(one_fee), None)
+                    } else if two_fee.to_liquid == 0 {
+                        if can_credit_parent(first_claim_credit) {
+                            (ClaimLegRoute::AllPool, 2, as_all_pool(one_fee)?, None)
+                        } else {
+                            (ClaimLegRoute::AllLiquid, 2, as_all_liquid(one_fee), None)
+                        }
+                    } else if can_credit_parent(two_fee.to_pool) {
+                        let source_debit = two_fee
+                            .to_pool
+                            .checked_add(input.claim_transfer_fee)
+                            .ok_or(ModelError::ArithmeticOverflow)?;
+                        (ClaimLegRoute::Mixed, 2, two_fee, Some(source_debit))
+                    } else {
+                        // A second fee that produces no material, executable
+                        // pooled credit is not spent. Keep the claim leg liquid
+                        // and expose the one-fee target residual for later
+                        // reconciliation.
+                        (ClaimLegRoute::AllLiquid, 2, as_all_liquid(one_fee), None)
+                    }
+                }
             }
         };
 
@@ -960,10 +984,15 @@ pub mod proposed_model {
                 }
                 CanonicalSnsState::LiquidOrDissolved => {
                     neuron.reward_eligible_from_observation = None;
-                    if returned {
-                        neuron.committed_generation = None;
+                    match neuron.status {
+                        StickyStatus::RestakeCommitted | StickyStatus::RestakeProved => {}
+                        _ => {
+                            if returned {
+                                neuron.committed_generation = None;
+                            }
+                            neuron.status = StickyStatus::ReentryPending;
+                        }
                     }
-                    neuron.status = StickyStatus::ReentryPending;
                 }
             }
             Ok(())
@@ -2046,6 +2075,69 @@ mod tests {
     }
 
     #[test]
+    fn two_fee_all_pool_candidate_uses_direct_one_fee_route() {
+        let result = plan_maturity_route(maturity_route_input(
+            Backing {
+                liquid: 50_029_990_000,
+                pooled: 49_970_010_000,
+                ..Backing::default()
+            },
+            100_000_000_000,
+            50_000_000_000,
+            100_000_000,
+            0,
+            (10_000, 10_000),
+            (true, 100_000_000),
+        ))
+        .unwrap();
+
+        assert_eq!(result.route, ClaimLegRoute::AllPool);
+        assert_eq!(result.route_evaluations, 2);
+        assert_eq!(
+            (result.liquid_credit, result.pooled_credit),
+            (0, 59_990_000)
+        );
+        assert_eq!(result.liquid_to_pool_source_debit, None);
+        assert_eq!(result.claim_fees, 10_000);
+        assert_eq!(result.post_backing, 100_059_990_000);
+        assert_eq!(result.post_target, 50_029_995_000);
+        assert_eq!(result.remaining_under_target, 0);
+        assert_eq!(result.resulting_over_target, 5_000);
+        assert_eq!(
+            result.post_backing - 100_059_980_000,
+            10_000,
+            "the direct route retains the optional second fee in claim backing"
+        );
+    }
+
+    #[test]
+    fn unaffordable_optional_second_fee_falls_back_to_all_liquid() {
+        let result = plan_maturity_route(maturity_route_input(
+            Backing {
+                liquid: 50,
+                pooled: 50,
+                ..Backing::default()
+            },
+            100,
+            50,
+            25,
+            0,
+            (0, 10),
+            (true, 0),
+        ))
+        .unwrap();
+
+        assert_eq!(result.route, ClaimLegRoute::AllLiquid);
+        assert_eq!(result.route_evaluations, 2);
+        assert_eq!((result.liquid_credit, result.pooled_credit), (5, 0));
+        assert_eq!(result.liquid_to_pool_source_debit, None);
+        assert_eq!(result.claim_fees, 10);
+        assert_eq!(result.post_backing, 105);
+        assert_eq!(result.post_target, 52);
+        assert_eq!(result.remaining_under_target, 2);
+    }
+
+    #[test]
     fn absent_parent_maturity_route_respects_exact_creation_minimum() {
         let below_minimum = plan_maturity_route(maturity_route_input(
             Backing {
@@ -2950,10 +3042,16 @@ mod tests {
             })
         ));
         model.commit_restake(generation).unwrap();
+        let committed_command = model.active_command;
+        let backing_after_commit = model.backing;
         model
             .observe_sns(1, CanonicalSnsState::Dissolving, 3)
             .unwrap();
         assert_eq!(model.neurons[1].status, StickyStatus::RestakeCommitted);
+        assert_eq!(model.neurons[1].committed_generation, Some(generation));
+        assert_eq!(model.active_command, committed_command);
+        assert_eq!(model.backing, backing_after_commit);
+        assert!(!model.neurons[1].reward_eligible_at(u64::MAX));
         assert_eq!(
             model.prove_restake(generation, 94),
             Err(ModelError::ProofMismatch)
@@ -2961,6 +3059,8 @@ mod tests {
         assert_eq!(model.backing.transit, 105);
         model.prove_restake(generation, 95).unwrap();
         assert_eq!(model.operations.restake_proofs, 1);
+        assert_eq!(model.fees.restake, 10);
+        assert_eq!((model.backing.pooled, model.backing.transit), (485, 0));
         assert_eq!(
             model.prove_restake(generation, 95),
             Err(ModelError::InvalidTransition)
@@ -2971,6 +3071,81 @@ mod tests {
         assert!(!model.neurons[1].reward_eligible_at(u64::MAX));
         let next = model.submit_split_intent(&[1], 110).unwrap();
         assert_eq!(next, generation + 1);
+    }
+
+    #[test]
+    fn committed_restake_survives_liquid_observation_until_proof_and_finish() {
+        let mut model = sticky_base(1, 1);
+        let generation = commit_cohort(&mut model, &[0], 10_002, TWO_WEEK_DELAY);
+        model.observe_sns(0, CanonicalSnsState::Active, 2).unwrap();
+        return_cohort(&mut model, generation, TWO_WEEK_DELAY);
+        model
+            .plan_returned_liquidity(returned_liquidity_input(generation, 500, 1, 4))
+            .unwrap();
+        model.commit_restake(generation).unwrap();
+        let committed_command = model.active_command;
+        let backing_after_commit = model.backing;
+
+        model
+            .observe_sns(0, CanonicalSnsState::LiquidOrDissolved, 3)
+            .unwrap();
+        assert_eq!(
+            model.neurons[0].latest_sns_state,
+            CanonicalSnsState::LiquidOrDissolved
+        );
+        assert_eq!(model.neurons[0].status, StickyStatus::RestakeCommitted);
+        assert_eq!(model.neurons[0].committed_generation, Some(generation));
+        assert_eq!(model.active_command, committed_command);
+        assert_eq!(model.backing, backing_after_commit);
+        assert!(!model.neurons[0].reward_eligible_at(u64::MAX));
+
+        model.prove_restake(generation, 95).unwrap();
+        assert_eq!(model.neurons[0].status, StickyStatus::RestakeProved);
+        assert_eq!(model.neurons[0].committed_generation, Some(generation));
+        assert_eq!(model.operations.restake_proofs, 1);
+        assert_eq!(model.fees.restake, 10);
+        assert_eq!((model.backing.pooled, model.backing.transit), (485, 0));
+
+        model.finish_restake(generation, 4).unwrap();
+        assert_eq!(model.neurons[0].status, StickyStatus::ReentryPending);
+        assert_eq!(model.neurons[0].committed_generation, None);
+        assert!(!model.neurons[0].reward_eligible_at(u64::MAX));
+    }
+
+    #[test]
+    fn proved_restake_survives_liquid_observation_until_finish() {
+        let mut model = sticky_base(1, 1);
+        let generation = commit_cohort(&mut model, &[0], 10_003, TWO_WEEK_DELAY);
+        model.observe_sns(0, CanonicalSnsState::Active, 2).unwrap();
+        return_cohort(&mut model, generation, TWO_WEEK_DELAY);
+        model
+            .plan_returned_liquidity(returned_liquidity_input(generation, 500, 1, 4))
+            .unwrap();
+        model.commit_restake(generation).unwrap();
+        model.prove_restake(generation, 95).unwrap();
+        let backing_after_proof = model.backing;
+
+        model
+            .observe_sns(0, CanonicalSnsState::LiquidOrDissolved, 3)
+            .unwrap();
+        assert_eq!(
+            model.neurons[0].latest_sns_state,
+            CanonicalSnsState::LiquidOrDissolved
+        );
+        assert_eq!(model.neurons[0].status, StickyStatus::RestakeProved);
+        assert_eq!(model.neurons[0].committed_generation, Some(generation));
+        assert_eq!(model.backing, backing_after_proof);
+        assert_eq!(model.operations.restake_proofs, 1);
+        assert_eq!(model.fees.restake, 10);
+        assert!(!model.neurons[0].reward_eligible_at(u64::MAX));
+
+        model.finish_restake(generation, 4).unwrap();
+        assert_eq!(model.neurons[0].status, StickyStatus::ReentryPending);
+        assert_eq!(model.neurons[0].committed_generation, None);
+        assert_eq!(model.backing, backing_after_proof);
+        assert_eq!(model.operations.restake_proofs, 1);
+        assert_eq!(model.fees.restake, 10);
+        assert!(!model.neurons[0].reward_eligible_at(u64::MAX));
     }
 
     #[test]
