@@ -494,7 +494,7 @@ fn write_local_sns_rehearsal_fixture(root: &Path) {
     write(
             root,
             "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
-            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n# mktemp -d validate_local_sns_evidence_package current-canonical.toml mv \"$selector_temporary\" \"$selector_path\" preceding selector restored and candidate removed after_module_sha256 proposal_adopted = true proposal_executed = true\n",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\nrecord_blocker \"corrected pooled claim-backing canonical evidence is missing\"\nexit 2\n",
         );
     write(
             root,

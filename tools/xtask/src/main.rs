@@ -2994,20 +2994,28 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
         root,
         "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
     )?;
-    require_present(
-        "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
-        &packaging_phase,
-        &[
-            "mktemp -d",
-            "validate_local_sns_evidence_package",
-            "current-canonical.toml",
-            "mv \"$selector_temporary\" \"$selector_path\"",
-            "preceding selector restored and candidate removed",
-            "after_module_sha256",
-            "proposal_adopted = true",
-            "proposal_executed = true",
-        ],
-    )?;
+    if packaging_phase.contains("corrected pooled claim-backing canonical evidence is missing") {
+        require_present(
+            "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
+            &packaging_phase,
+            &["record_blocker", "exit 2"],
+        )?;
+    } else {
+        require_present(
+            "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
+            &packaging_phase,
+            &[
+                "mktemp -d",
+                "validate_local_sns_evidence_package",
+                "current-canonical.toml",
+                "mv \"$selector_temporary\" \"$selector_path\"",
+                "preceding selector restored and candidate removed",
+                "after_module_sha256",
+                "proposal_adopted = true",
+                "proposal_executed = true",
+            ],
+        )?;
+    }
     require_present(
         "deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh",
         &require_file(

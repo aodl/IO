@@ -29,6 +29,10 @@ economics and remains immutable. Readiness must report that corrected-economics
 evidence is missing; it must never reinterpret old evidence as proof of the
 pooled model.
 
+Local rehearsal uses a real SNS-created stack installed through SNS-W. Its
+`IO_TEST` ledger and protocol reserve are non-canonical local evidence; IO is
+not launched on mainnet.
+
 Historian remains a rebuildable public read model. It is not canonical protocol truth
 and not a value-moving authority. The IO protocol is not live and the
 SNS IO ledger remains not launched. The missing/stale/error observations remain
