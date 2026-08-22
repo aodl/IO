@@ -140,29 +140,36 @@ justification under the
 
 ## Core economics
 
-The SNS Ledger is the canonical IO total-supply authority; the Stream Manager
-does not maintain a second supply ledger. IO release uses explicit transfers
-from the protocol reserve, not arbitrary Stream Manager minting. Configured
-reserve IO and excluded IO Accounts are distinct denominator terms, and ICP
-principal held in protected NNS positions is not liquid redemption backing.
-Ordinary IO transfer fees follow the configured SNS Ledger fee/burn policy.
+The SNS Ledger is the canonical IO supply and staking-balance authority. The
+Stream Manager does not maintain a second supply or backing scalar. Reserve IO
+and genuinely nonredeemable governance staking Accounts are distinct
+denominator terms. Ordinary liquid, active-staked, and dissolving user IO is
+claim-bearing; the Jupiter IO recipient is not implicitly excluded.
 
 All token quantities are integer e8s. Checked multiplication is performed
 before integer division, so ratios round down; overflow, underflow, a zero
 denominator, or a payout that cannot cover the current fee rejects or pauses the
 operation rather than approximating it.
 
-For redemption:
+Canonical claim accounting is:
 
 ```text
-redeemable_io = total_io_supply - reserve_io - excluded_io
-gross_icp = redeemed_io * liquid_icp / redeemable_io
+C = total_io_supply - protocol_reserve_io - nonredeemable_governance_io
+B = liquid_icp + pooled_parent_principal + live_child_principal + in_transit_backing
+gross_icp = redeemed_io * B / C
 net_icp = gross_icp - current_icp_payout_fee
+pooled_target = floor(A_backing * B / C)
+reward_target = floor(A_reward * B / C)
 ```
 
-The Stream Manager also requires the redeemed amount plus the current IO
-`transfer_from` fee to fit within redeemable supply. IO issuance is a transfer
-from the reviewed reserve, not arbitrary application minting.
+Permanent capital, ordinary/staked maturity before an actual Mint, cycles, and
+operational balances are outside `B`. Each e8s of claim backing exists in
+exactly one of its four buckets. Exact internal fees reduce the source bucket
+once. IO issuance is an explicit reserve transfer, not application minting.
+
+Redemption uses `B/C` for its immutable quote and spendable liquid ICP for the
+independent availability check. An illiquid quote is not discounted: the
+caller receives a typed shortfall before IO is pulled or its nonce consumed.
 
 After the IO pull, a fresh pre-payout snapshot must still support the persisted
 quote: fees and excluded Account identities are unchanged, reserve and supply
@@ -170,20 +177,13 @@ reflect the pull conservatively, no excluded balance fell, and liquid ICP did
 not fall. Favorable drift may make the user's fixed quote more conservative;
 adverse drift cannot make IO overpay.
 
-The backing target for the two-week beneficiary policy is:
-
-```text
-two_week_target = active_eligible_io * liquid_icp / redeemable_io_supply
-```
-
-The protected reward-backing NNS parent is an eight-year, non-dissolving
-position with `auto_stake_maturity = false`; “14-day” describes ordinary IO SNS
-neuron eligibility, not that parent's dissolve delay. Daily proposal-bearing
-allocations normalize canonical current-event shares. Excluded or ineligible
-shares are forfeited, not redistributed. A true no-proposal event uses the
-defined eligible-stake fallback. A skipped or ambiguous sequence is recorded
-as `MissedSkipped`, receives zero policy credit, and is never interpolated into
-a synthetic event.
+`A_backing` is structurally active ordinary SNS IO; `A_reward` is its currently
+prospective reward-eligible subset. Rewards require pooled principal to cover
+`reward_target`. The lazily created pooled parent has an exact 1,209,600-second
+delay, auto-stake off, and a fixed configured following policy. Daily
+proposal-bearing allocations normalize canonical current-event shares;
+ineligible shares are forfeited, not redistributed. A true no-proposal event
+uses eligible stake, and ambiguous skipped events receive no synthetic credit.
 
 ## Lifecycle and readiness
 
@@ -217,15 +217,15 @@ transport outcome becomes `Stuck` rather than guessing whether value moved.
 `resume` advances an existing operation idempotently. `prove_active_transfer`
 accepts only an exact canonical ledger block for the active proof slot; it is
 not a manual balance rewrite or debug completion path. Stream proof slots cover
-ambiguous redemption pull/payout and reward/liquid-receipt transfers. The NNS
-Manager similarly proves its exact staging and maturity effects. Upgrades
-preserve durable operation state and force reviewed reactivation while allowing
-immutable work to resume.
+redemption, Jupiter, backing-inflow, pooled top-up, and reward transfers. The
+NNS Manager similarly proves exact staging, maturity, parent, and cohort
+effects. Upgrades preserve durable operation state and force reviewed
+reactivation while allowing immutable work to resume.
 
 ## NNS terminology and production authority
 
 The NNS Manager directly calls NNS Governance, and its configuration requires
-both staging Accounts to be owned by the executing canister. The two-year
+its staging Accounts to be owned by the executing canister. The two-year
 protected NNS neuron `10292412127977304661` has controller authority at
 `oae4c-3iaaa-aaaar-qb5qq-cai`; therefore the accepted production model places
 the manager at that existing controller. Static wiring permits that principal
@@ -233,12 +233,11 @@ only as the NNS Manager authority target. Any inspection, installation,
 upgrade, controller change, or neuron action requires a separate audit and
 explicit mainnet authorization.
 
-The two-year protected NNS neuron is distinct from the two-week reward-backing
-NNS neuron used for the 14-day SNS reward product. The latter has the accepted
-baseline `non-dissolving`, dissolve delay `252460800` seconds, and
-`auto_stake_maturity = false`. Both are distinct from ordinary eligible IO SNS
-neurons, which have positive stake, are non-dissolving, and have an exact
-`1209600`-second eligibility delay.
+The two-year protected neuron is distinct from the lazy pooled claim-backing
+parent. The pooled parent is created only from existing liquid backing, uses an
+exact `1209600`-second non-dissolving delay, has auto-stake off, and follows one
+fixed configured neuron. Ordinary eligible IO SNS neurons have positive ledger
+stake, are non-dissolving, and have the same exact eligibility delay.
 
 | Role | Identifier | Status |
 | --- | --- | --- |

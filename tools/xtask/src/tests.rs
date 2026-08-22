@@ -4,23 +4,24 @@ use io_sns_lifecycle::{
 };
 
 #[test]
-fn simplified_receipt_topology_requires_shared_account_tokens() {
+fn pooled_claim_topology_requires_shared_account_tokens() {
     let stream = "nns_manager = TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL\n\
                       jupiter_receipt_source = record { owner = TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL; subaccount = null }\n\
-                      two_week_receipt_source = record { owner = TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL; subaccount = opt TODO_TWO_WEEK_STAGING }\n\
                       liquid_icp = TODO_STREAM_LIQUID_SUBACCOUNT";
     let nns = "jupiter_staging = record { owner = TODO_EXISTING_NNS_CONTROLLER_SELF; subaccount = null }\n\
-                   two_week_maturity_staging = record { owner = TODO_EXISTING_NNS_CONTROLLER_SELF; subaccount = opt TODO_TWO_WEEK_STAGING }\n\
+                   maturity_staging = record { owner = TODO_EXISTING_NNS_CONTROLLER_SELF; subaccount = opt TODO_MATURITY_STAGING }\n\
                    jupiter_activation_block_floor = TODO_JUPITER_ACTIVATION_BLOCK_FLOOR\n\
-                   seeded_two_year_principal_e8s = TODO_SEEDED_TWO_YEAR_PRINCIPAL_E8S\n\
+                   audited_permanent_principal_e8s = TODO_AUDITED_PERMANENT_PRINCIPAL_E8S\n\
+                   pooled_parent_memo = TODO_POOLED_PARENT_MEMO\n\
+                   pooled_parent_followee_id = TODO_POOLED_PARENT_FOLLOWEE_ID\n\
                    stream_liquid_account = TODO_STREAM_LIQUID_SUBACCOUNT";
-    validate_simplified_receipt_topology(stream, nns).unwrap();
-    assert!(validate_simplified_receipt_topology(
+    validate_pooled_claim_topology(stream, nns).unwrap();
+    assert!(validate_pooled_claim_topology(
         &stream.replace("subaccount = null", "subaccount = opt TODO_WRONG",),
         nns,
     )
     .is_err());
-    assert!(validate_simplified_receipt_topology(
+    assert!(validate_pooled_claim_topology(
         &stream.replace(
             "nns_manager = TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL",
             "nns_manager = TODO_OBSOLETE_MANAGER",
@@ -473,7 +474,7 @@ fn write_local_sns_rehearsal_fixture(root: &Path) {
     write(
             root,
             "deploy/local-sns-rehearsal/scripts/12-provision-local-nns-readiness.sh",
-            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# icrc1_transfer claim_or_refresh_neuron_from_account update_neuron 252460800 auto_stake_maturity = opt false maturity_disbursements_in_progress = opt vec {} two_year_neuron_id two_week_neuron_id\n",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# icrc1_transfer claim_or_refresh_neuron_from_account update_neuron 252460800 auto_stake_maturity = opt false maturity_disbursements_in_progress = opt vec {} two_year_neuron_id pooled_parent_memo pooled_parent_followee_id minimum_parent_stake\n",
         );
     write(
             root,
@@ -563,22 +564,22 @@ fn write_did_surface_fixture(root: &Path) {
     write(
             root,
             "canisters/io_stream_manager/io_stream_manager.did",
-            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  redeem : () -> ();\n  prepare_liquid_receipt : () -> ();\n  complete_liquid_receipt : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;\n  get_status : () -> () query;\n}\n",
+            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  redeem : () -> ();\n  prepare_jupiter_receipt : () -> ();\n  complete_jupiter_receipt : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;\n  get_status : () -> () query;\n}\n",
         );
     write(
             root,
             "canisters/io_nns_neuron_manager/io_nns_neuron_manager.did",
-            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  notify_jupiter_deposit : () -> ();\n  reconcile_two_week_backing_readiness : () -> ();\n  prepare_two_week_maturity : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;\n  get_status : () -> () query;\n}\n",
+            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  notify_jupiter_deposit : () -> ();\n  prepare_pool_reconciliation : () -> ();\n  observe_claim_backing : () -> ();\n  prepare_two_week_maturity : () -> ();\n  start_maturity : () -> ();\n  prove_maturity_mint : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;\n  get_status : () -> () query;\n}\n",
         );
     write(
             root,
             "canisters/io_historian/io_historian.did",
-            "type ObservationConfig = record {};\nservice : (opt ObservationConfig) -> {\n  get_dashboard_state : () -> (text) query;\n  get_protocol_snapshot : () -> (text) query;\n  get_public_status : () -> (text) query;\n  get_redemption_rate : () -> (text) query;\n  version : () -> (text) query;\n}\n",
+            "type ObservationConfig = record {};\nservice : (opt ObservationConfig) -> {\n  get_dashboard_state : () -> (text) query;\n  get_protocol_snapshot : () -> (text) query;\n  get_public_status : () -> (text) query;\n  get_claim_rate : () -> (text) query;\n  version : () -> (text) query;\n}\n",
         );
     write(
             root,
             "canisters/frontend/web/declarations/io_historian/io_historian.did.js",
-            "export const idlFactory = ({ IDL }) => IDL.Service({\n  get_dashboard_state: IDL.Func([], [], [\"query\"]),\n  get_protocol_snapshot: IDL.Func([], [], [\"query\"]),\n  get_public_status: IDL.Func([], [], [\"query\"]),\n  get_redemption_rate: IDL.Func([], [], [\"query\"]),\n  version: IDL.Func([], [], [\"query\"]),\n});\n",
+            "export const idlFactory = ({ IDL }) => IDL.Service({\n  get_dashboard_state: IDL.Func([], [], [\"query\"]),\n  get_protocol_snapshot: IDL.Func([], [], [\"query\"]),\n  get_public_status: IDL.Func([], [], [\"query\"]),\n  get_claim_rate: IDL.Func([], [], [\"query\"]),\n  version: IDL.Func([], [], [\"query\"]),\n});\n",
         );
     write(
         root,

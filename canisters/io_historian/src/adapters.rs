@@ -42,12 +42,25 @@ pub async fn protocol(
         "total IO supply",
     )?;
     let reserve = balance(config.sns_ledger, &config.protocol_io_reserve).await?;
-    let mut excluded = Vec::with_capacity(config.excluded_io_accounts.len());
-    for named in &config.excluded_io_accounts {
-        excluded.push(balance(config.sns_ledger, &named.account).await?);
+    let mut nonredeemable = Vec::with_capacity(config.nonredeemable_governance_io_accounts.len());
+    for named in &config.nonredeemable_governance_io_accounts {
+        nonredeemable.push(balance(config.sns_ledger, &named.account).await?);
     }
     let liquid = balance(config.icp_ledger, &config.liquid_icp_reserve).await?;
-    coherent_protocol_snapshot(generation, total, reserve, &excluded, liquid, now)
+    let stream = stream(config, now).await.ok();
+    let permanent = permanent_productive_capital(config).await.ok();
+    coherent_protocol_snapshot(
+        generation,
+        total,
+        reserve,
+        &nonredeemable,
+        liquid,
+        stream
+            .as_ref()
+            .and_then(|value| value.latest_reconciliation_checkpoint.as_ref()),
+        permanent,
+        now,
+    )
 }
 
 async fn balance(ledger: Principal, account: &Account) -> Result<u128, String> {
@@ -74,6 +87,7 @@ struct RawStreamStatus {
     governance_parameters_fresh: bool,
     pending_entitlement_batch_eligible_credit: Option<u128>,
     pending_entitlement_batch_policy_credit: Option<u128>,
+    latest_reconciliation_checkpoint: Option<ReconciliationProjection>,
 }
 
 pub async fn stream(config: &ObservationConfig, now: u64) -> Result<StreamStatus, String> {
@@ -102,6 +116,7 @@ pub async fn stream(config: &ObservationConfig, now: u64) -> Result<StreamStatus
         governance_parameters_fresh: raw.governance_parameters_fresh,
         pending_entitlement_batch_eligible_credit: raw.pending_entitlement_batch_eligible_credit,
         pending_entitlement_batch_policy_credit: raw.pending_entitlement_batch_policy_credit,
+        latest_reconciliation_checkpoint: raw.latest_reconciliation_checkpoint,
         observed_at_timestamp_nanos: now,
     })
 }
@@ -110,10 +125,10 @@ pub async fn stream(config: &ObservationConfig, now: u64) -> Result<StreamStatus
 struct RawNnsStatus {
     lifecycle: Lifecycle,
     active_operation: Option<String>,
-    two_week_maturity_baseline_reconciled: bool,
+    two_year_maturity_baseline_reconciled: bool,
     latest_started_two_week_generation: u64,
     latest_completed_two_week_generation: u64,
-    latest_two_week_target: Option<TwoWeekTargetObservation>,
+    latest_pooled_target: Option<PooledTargetObservation>,
     unwinding_child_principal_e8s: u128,
 }
 
@@ -129,10 +144,10 @@ pub async fn nns(config: &ObservationConfig, now: u64) -> Result<NnsManagerStatu
     Ok(NnsManagerStatus {
         lifecycle: raw.lifecycle,
         active_operation: raw.active_operation,
-        two_week_maturity_baseline_reconciled: raw.two_week_maturity_baseline_reconciled,
+        permanent_maturity_baseline_reconciled: raw.two_year_maturity_baseline_reconciled,
         latest_started_two_week_generation: raw.latest_started_two_week_generation,
         latest_completed_two_week_generation: raw.latest_completed_two_week_generation,
-        latest_two_week_target: raw.latest_two_week_target,
+        latest_pooled_target: raw.latest_pooled_target,
         unwinding_child_principal_e8s: raw.unwinding_child_principal_e8s,
         observed_at_timestamp_nanos: now,
     })
@@ -166,14 +181,8 @@ pub async fn nns_governance(
     if build_metadata.len() > 4_096 {
         return Err("NNS Governance build metadata exceeds 4096 bytes".into());
     }
-    let mut neurons = Vec::with_capacity(2);
-    for (role, neuron_id) in [
-        (
-            NnsNeuronRole::RewardBacking,
-            config.reward_backing_neuron_id,
-        ),
-        (NnsNeuronRole::TwoYearProtected, config.two_year_neuron_id),
-    ] {
+    let mut neurons = Vec::with_capacity(1);
+    for (role, neuron_id) in [(NnsNeuronRole::TwoYearProtected, config.two_year_neuron_id)] {
         let info = match call(config.nns_governance, "get_neuron_info", neuron_id).await? {
             NeuronInfoResult::Ok(info) => info,
             NeuronInfoResult::Err(error) => {
@@ -197,6 +206,29 @@ pub async fn nns_governance(
         neurons,
         observed_at_timestamp_nanos: now,
     })
+}
+
+async fn permanent_productive_capital(config: &ObservationConfig) -> Result<u128, String> {
+    let info = match call(
+        config.nns_governance,
+        "get_neuron_info",
+        config.two_year_neuron_id,
+    )
+    .await?
+    {
+        NeuronInfoResult::Ok(info) => info,
+        NeuronInfoResult::Err(error) => {
+            return Err(format!(
+                "get_neuron_info({}) failed {}: {}",
+                config.two_year_neuron_id, error.error_type, error.error_message
+            ))
+        }
+    };
+    u128::from(info.stake_e8s)
+        .checked_add(u128::from(
+            info.staked_maturity_e8s_equivalent.unwrap_or_default(),
+        ))
+        .ok_or_else(|| "permanent productive capital overflow".into())
 }
 
 #[derive(CandidType, Deserialize)]

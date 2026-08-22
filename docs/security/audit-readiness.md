@@ -13,11 +13,15 @@ This is the handoff index for an independent auditor. It is not a self-audit and
 ## Normative architecture and invariants
 
 - Simplicity and authority: `docs/architecture/simplicity-constitution.md`, `canister-roles.md`, and `api-surface.md`.
-- Accepted ADRs: `adr-simplified-execution.md`, `adr-daily-sns-entitlement-events.md`, `adr-io-ledger-fee-and-supply-authority.md`, `adr-nns-authority-location.md`, and `adr-protected-reward-backing-nns-neuron.md`.
+- Accepted ADRs: `adr-pooled-claim-backing-allocation.md`,
+  `adr-daily-sns-entitlement-events.md`,
+  `adr-io-ledger-fee-and-supply-authority.md`, and
+  `adr-nns-authority-location.md`. The separate-endowment ADR is superseded.
 - Monetary policy: `monetary-policy.md`, `fee-dust-accounting.md`, `reward-allocation.md`, and `sns-eligibility.md`.
 - Redemption/idempotency/ambiguity: `stream-manager.md`, `docs/operations/p0-simplified-composition-evidence.md`, and `docs/security/threat-model.md`.
-- Jupiter activation/replay boundary and residual lookup risk, both protected-neuron launch baselines,
-  maturity, and passive unwind: `jupiter-integration-contract.md`,
+- Jupiter activation/replay boundary and residual lookup risk, the permanent
+  launch baseline, lazy pooled parent, maturity, and bounded passive unwind:
+  `jupiter-integration-contract.md`,
   `nns-neuron-manager.md`, and the composition evidence.
 - Availability and stable growth: `docs/operations/cycles-management.md`,
   `stable-storage.md`, and the permissionless-endpoint rows in the threat

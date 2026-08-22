@@ -27,14 +27,19 @@ execution canister `oae4c-3iaaa-aaaar-qb5qq-cai` or the two-year protected NNS n
 - `scripts/10-bootstrap-official-network.sh`: checks pinned `dfinity/ic` `rs/sns/testing` provenance and local SNS tooling prerequisites.
 - `scripts/11-build-local-io-canisters.sh`: verifies every exact-source release artifact and hash used by the rehearsal.
 - `scripts/12-deploy-local-dapps.sh`: creates the per-run planned local dapp IDs, installs exact release Wasms Paused, and adds NNS Root through the maintained SNS CLI.
-- `scripts/12-provision-local-nns-readiness.sh`: canonically funds both staging Accounts, claims two distinct local NNS neurons, shapes them through the pinned test-enabled NNS Governance bootstrap surface, and renders their actual IDs into the ignored NNS-manager install args.
+- `scripts/12-provision-local-nns-readiness.sh`: claims and shapes the permanent
+  local NNS neuron, records a deterministic local pooled-parent memo/followee,
+  and leaves the pooled parent absent for lazy creation from Stream liquid
+  claim backing.
 - `scripts/13-propose-and-finalize-sns.sh`: publishes the reviewed same-source candidate Governance/Root bundle through executed local NNS Governance proposals into SNS-W, verifies the exact compressed hashes, submits CreateServiceNervousSystem, and completes the swap.
 - `scripts/14-discover-sns-canisters.sh`: discovers the real SNS canonically and rejects any mismatch with the per-run plan.
 - `scripts/15-exercise-ledger.sh`: submits signed treasury proposals, records duplicate/negative ledger behavior, funds liquid ICP, and runs the production ICRC-2 redemption after activation.
 - `scripts/16-exercise-index-and-archives.sh`: captures index synchronization, exact Account histories and canonical ledger/Root archive discovery.
 - `scripts/17-exercise-governance-and-controllers.sh`: records controller and hash-changing upgrade evidence, registers lifecycle functions, and requires both managers to activate through signed SNS Governance proposals.
 - `scripts/17-observe-one-day-reward.sh`: advances only the attached local PocketIC instance by exactly one day and records the proposal-bearing production reward observation and permissionless keeper result.
-- `scripts/18-package-evidence.sh`: packages only a completed, release-bound canonical-economics run, including the exact rendered install/config inputs and Account histories.
+- `scripts/18-package-evidence.sh`: fails closed until a complete fresh pooled
+  claim-backing rehearsal is implemented, executed, and reviewed; historical
+  evidence is never rebound.
 - `scripts/19-cleanup-official-network.sh`: scoped cleanup reminder for local-only processes.
 
 `canister-ids.local.toml` is the operator-filled local evidence file and should not be treated as production config.

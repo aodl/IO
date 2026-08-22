@@ -38,11 +38,10 @@ fn config(historian: Principal) -> ObservationConfig {
         sns_index: ids[5],
         icp_ledger: ids[6],
         nns_governance: ids[7],
-        reward_backing_neuron_id: 1,
         two_year_neuron_id: 2,
         protocol_io_reserve: account(40),
         liquid_icp_reserve: account(41),
-        excluded_io_accounts: vec![NamedAccount {
+        nonredeemable_governance_io_accounts: vec![NamedAccount {
             name: "governance".into(),
             account: account(42),
         }],

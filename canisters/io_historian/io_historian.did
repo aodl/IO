@@ -25,11 +25,10 @@ type ObservationConfig = record {
   sns_index : principal;
   icp_ledger : principal;
   nns_governance : principal;
-  reward_backing_neuron_id : nat64;
   two_year_neuron_id : nat64;
   protocol_io_reserve : Account;
   liquid_icp_reserve : Account;
-  excluded_io_accounts : vec NamedAccount;
+  nonredeemable_governance_io_accounts : vec NamedAccount;
   history_accounts : vec NamedAccount;
   expected_modules : vec ExpectedModule;
   reward_share_capable_governance_sha256 : opt blob;
@@ -52,24 +51,39 @@ type SourceHealth = record {
 type DataCompleteness = record {
   total_io_supply : bool;
   protocol_reserve_io : bool;
-  excluded_io : bool;
-  redeemable_io_supply : bool;
-  liquid_icp_reserve : bool;
-  redemption_rate : bool;
+  nonredeemable_governance_io : bool;
+  claim_io_supply : bool;
+  claim_backing : bool;
+  active_backing_io : bool;
+  active_reward_io : bool;
+  claim_rate : bool;
 };
-type RedemptionRateSnapshot = record {
-  liquid_icp_e8s : nat;
-  redeemable_io_e8s : nat;
+type ClaimRateSnapshot = record {
+  backing_numerator_e8s : nat;
+  claim_denominator_e8s : nat;
+  available_liquid_e8s : nat;
   observed_at_timestamp_nanos : nat64;
 };
+type PooledTargetDelta = variant { UnderTarget : nat; AtTarget; OverTarget : nat };
 type ProtocolSnapshot = record {
   generation : nat64;
   total_io_supply_e8s : opt nat;
   protocol_reserve_io_e8s : opt nat;
-  excluded_io_e8s : opt nat;
-  redeemable_io_supply_e8s : opt nat;
-  liquid_icp_reserve_e8s : opt nat;
-  redemption_rate : opt RedemptionRateSnapshot;
+  nonredeemable_governance_io_e8s : opt nat;
+  claim_io_supply_e8s : opt nat;
+  liquid_claim_backing_e8s : opt nat;
+  pooled_parent_principal_e8s : opt nat;
+  live_child_principal_e8s : opt nat;
+  in_transit_backing_e8s : opt nat;
+  total_claim_backing_e8s : opt nat;
+  claim_rate : opt ClaimRateSnapshot;
+  active_backing_io_e8s : opt nat;
+  active_reward_io_e8s : opt nat;
+  pooled_target_e8s : opt nat;
+  pooled_target_delta : opt PooledTargetDelta;
+  live_cohort_count : opt nat32;
+  oldest_ready_at_seconds : opt nat64;
+  permanent_productive_capital_e8s : opt nat;
   observed_at_timestamp_nanos : opt nat64;
   completeness : DataCompleteness;
 };
@@ -97,15 +111,32 @@ type StreamStatus = record {
   governance_parameters_fresh : bool;
   pending_entitlement_batch_eligible_credit : opt nat;
   pending_entitlement_batch_policy_credit : opt nat;
+  latest_reconciliation_checkpoint : opt ReconciliationProjection;
   observed_at_timestamp_nanos : nat64;
+};
+type ReconciliationProjection = record {
+  generation : nat64;
+  observed_at_nanos : nat64;
+  claim_supply_e8s : nat;
+  liquid_backing_e8s : nat;
+  pooled_backing_e8s : nat;
+  unwinding_backing_e8s : nat;
+  transit_backing_e8s : nat;
+  total_claim_backing_e8s : nat;
+  active_backing_io_e8s : nat;
+  active_reward_io_e8s : nat;
+  live_cohort_count : nat32;
+  oldest_ready_at_seconds : opt nat64;
+  pooled_target_e8s : nat;
+  observed_pooled_e8s : nat;
 };
 type NnsManagerStatus = record {
   lifecycle : Lifecycle;
   active_operation : opt text;
-  two_week_maturity_baseline_reconciled : bool;
+  permanent_maturity_baseline_reconciled : bool;
   latest_started_two_week_generation : nat64;
   latest_completed_two_week_generation : nat64;
-  latest_two_week_target : opt TwoWeekTargetObservation;
+  latest_pooled_target : opt PooledTargetObservation;
   unwinding_child_principal_e8s : nat;
   observed_at_timestamp_nanos : nat64;
 };
@@ -115,11 +146,11 @@ type TwoWeekTargetStatus = variant {
   AtTargetWithinUnwindTolerance;
   OverTarget;
 };
-type TwoWeekTargetObservation = record {
+type PooledTargetObservation = record {
   target_e8s : nat;
   status : TwoWeekTargetStatus;
 };
-type NnsNeuronRole = variant { RewardBacking; TwoYearProtected };
+type NnsNeuronRole = variant { TwoYearProtected };
 type NnsNeuronObservation = record {
   role : NnsNeuronRole;
   neuron_id : nat64;
@@ -205,6 +236,6 @@ service : (opt ObservationConfig) -> {
   get_dashboard_state : () -> (Dashboard) query;
   get_protocol_snapshot : () -> (ProtocolSnapshot) query;
   get_public_status : () -> (PublicStatus) query;
-  get_redemption_rate : () -> (opt RedemptionRateSnapshot) query;
+  get_claim_rate : () -> (opt ClaimRateSnapshot) query;
   version : () -> (text) query;
 }

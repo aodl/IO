@@ -1,31 +1,31 @@
-# Stream manager
+# Stream Manager
 
-The stream manager owns the IO reserve, liquid ICP Account, direct ICRC-2
-redemption, proof-bound liquid receipts, daily reward-entitlement observation,
-one immutable pending entitlement batch, and serialized recipient settlement.
+The Stream Manager owns the IO reserve, spendable liquid ICP backing, direct
+ICRC-2 redemption, canonical SNS backing/reward observation, one pending
+entitlement batch, and one serialized monetary operation.
 
-Daily observation has no external value effect. It verifies the exact SNS Root,
-Governance principal, reviewed module hash, zero native reward rates, 86,400
-second round duration, and approved zero voting-power bonus parameters. It then
-reads one stable reward-event boundary around paginated neuron reads and commits
-the event's canonical weights in one state mutation after rechecking the durable
-checkpoint. A stale callback mutates nothing.
+Its canonical snapshot brackets IO/ICP ledger and SNS reads with two identical
+NNS observations. It derives claim-bearing supply `C`, liquid backing `L`,
+pooled parent principal `P`, live-child principal `U`, exact in-transit backing
+`T`, total backing `B=L+P+U+T`, structural active stake `A_backing`, and the
+prospectively eligible subset `A_reward`. Governance supplies neuron identity
+and structural state; the IO ledger staking Account supplies stake value.
 
-One transient one-shot timer marks reward work due and calls the same idempotent
-method available to permissionless keepers. Failures leave work due. Successful
-processing schedules the next observation. There is no interval timer, retry
-scheduler, proposal timer, task queue, or event archive.
+Each successful daily observation refreshes the bounded, sorted neuron
+registry and stores one latest no-effect reconciliation checkpoint. The same
+durable one-shot reward timer wakes reward and backing work. There is no target
+queue or additional scheduler. Reward allocation is allowed only when pooled
+principal covers `floor(A_reward*B/C)`.
 
-Backing is asynchronous. One live accumulator can continue receiving daily
-weights while one frozen batch moves through the two-week-staker reward-backing
-NNS 40/60 maturity path, actual ICP receipt, and sequential IO transfers. A second pending
-batch is not created. Missing reward events add no credits, advance only through
-a typed skip record, and leave undistributed backing in reserve.
+Redemption quotes `floor(user_io*B/C)` and separately requires spendable `L`.
+Insufficient liquidity returns a typed shortfall before IO is pulled or a nonce
+is consumed. A valid operation retains exact allowance, transfer-intent,
+deduplication, replay, and postcondition proofs.
 
-Redemption pulls IO from the authenticated caller Account directly to reserve.
-A separate `resume` pays ICP and later verifies postconditions. Reward
-observation never occupies the redemption operation slot, so governance
-availability and payout delays do not block redemption.
+Jupiter and NNS maturity enter through narrow source-specific protocols. Every
+route freezes its fees, destinations, recipient allocation, and snapshot before
+any monetary effect. IO-ledger staking balances remain authoritative when an
+ancillary SNS `ClaimOrRefresh` is delayed.
 
 Install and post-upgrade state are Paused. Reviewed unpause is required before
-the one-shot observation timer is installed. IO remains inert and prelaunch.
+the existing one-shot timer is armed. IO remains inert and prelaunch.

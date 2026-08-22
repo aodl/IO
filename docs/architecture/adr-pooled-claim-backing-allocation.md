@@ -2,22 +2,21 @@
 
 ## Status
 
-Proposed — implementation pending.
+Accepted.
 
-This proposal does not supersede the accepted separate-endowment ADR, change
-the active NNS pin, or authorize deployment. Production code continues to
-implement the accepted pre-replacement model until a later reviewed tranche
-deletes and replaces it.
+This ADR supersedes the separate-endowment design. It defines the production
+claim-backing economics and bounded orchestration model. Acceptance does not
+authorize deployment, mainnet activity, or production configuration values.
 
 ## Scope and evidence boundary
 
 The upstream mechanics are preserved separately by commit
 `eceb406604d51ed7d4730bdce3581f73f4c65121` and the
 [post-Mission-70 candidate evidence](../testing/post-mission70-nns-candidate.md).
-This ADR does not repeat that investigation or activate its candidate. It
-defines only proposed pure economics and a bounded replacement plan.
+This ADR does not repeat that investigation. The exact component boundary is
+recorded by the active pin and its maintained candidate tests.
 
-## Proposed accounting model
+## Accounting model
 
 ```text
 C = total_io_supply
@@ -43,7 +42,7 @@ produces an actual canonical ICP Mint. These categories are accounting
 identities; they do not each require an independent stable field. All products,
 sums, subtractions and floors use checked `u128` integer arithmetic.
 
-The proposed replacement has no separately endowed reward-backing capital.
+The implementation has no separately endowed reward-backing capital.
 Claim backing is one pool whose physical liquidity and NNS lifecycle states are
 the `L`, `P`, `U` and `T` partitions above.
 
@@ -710,7 +709,7 @@ would be neither `B` nor spendable `L`. The user's IO must not be pulled until
 spendable `L` covers the gross quote. Illiquidity never creates a lower exchange
 rate and this proposal introduces no queue.
 
-## Bounded future state and complexity
+## Bounded state and complexity
 
 These are functional requirements, not simplicity-budget changes. All fee
 policies share replacement of the old path with one allocator, reuse of the
@@ -730,11 +729,9 @@ bounded generation marker. Conceptual `T` remains the exact amount in the
 single active operation, while proved dissolving/ready cohorts live in the
 bounded passive collection. There is no user-to-child map or event log.
 
-The exact stable-state, line-count and deletion/net delta is unknown until a
-reviewed production replacement diff exists. Public method count may remain
-stable, but cohort/restake proof and status Candid types will change. This
-proposed ADR authorizes no increase or recalibration of the production
-simplicity budget.
+The production replacement uses strict launch states, bounded collections, and
+narrow proof-oriented Candid methods. This ADR authorizes no increase or
+recalibration of the production simplicity budget.
 
 The implementation must be a replacement with no feature flag and no prelaunch
 migration:
@@ -747,10 +744,9 @@ migration:
 - reuse existing exact transfer intents, one active operation and fixed NNS
   mechanics.
 
-Active-pin selection, stable-state edits, public interfaces and monetary
-orchestration remain future work. The controlled evidence above resolves the
-child-maturity accounting and realization route. No production implementation
-should begin until the pure-model treatment has been independently reviewed
-and a maximum detection/reconciliation interval, minimum spacing between
-committed cohort generations, every other maximum lifetime margin, and a
-derived production cohort capacity have been established.
+The controlled evidence above resolves the child-maturity accounting and
+realization route. Production uses the canonical daily reward checkpoint as
+the reconciliation generation, permits at most one committed cohort per
+generation, and bounds live cohorts at 32. Release artifacts, corrected local
+SNS evidence, final production memo/followee values, and deployment remain
+separate reviewed work.

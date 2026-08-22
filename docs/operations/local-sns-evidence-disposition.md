@@ -1,5 +1,13 @@
 # Local SNS evidence disposition
 
+Every checked-in package predates the accepted pooled claim-backing
+replacement. The packages remain immutable evidence of the exact mechanics and
+economics they recorded, but none is current launch evidence for `B=L+P+U+T`,
+the exact-14-day pooled parent, bounded cohorts, or joint maturity routing.
+Corrected-economics canonical evidence is intentionally missing and requires a
+separately authorized complete rehearsal; no existing selector or package may
+be rebound to the replacement.
+
 The immutable packages `deploy/local-sns-rehearsal/evidence/2026-08-11-4320fdf/` and `deploy/local-sns-rehearsal/evidence/2026-08-12-4320fdf-monitoring/` retain valid checksums and historical observations. Their bytes are preserved.
 
 They remain valid evidence for SNS-W mechanics, controller handoff, lifecycle authority, transfer mechanics, upgrade mechanics, replay behavior, reward observation, and historian connectivity.

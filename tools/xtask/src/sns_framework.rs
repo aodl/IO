@@ -1422,9 +1422,9 @@ fn rewrite_lifecycle_allocations(inputs: &Path, topology_path: &Path) -> Result<
         if relative == "io_stream_manager.did" {
             text = replace_single_assignment_line(
                 &text,
-                "excluded_io_accounts",
+                "nonredeemable_governance_io_accounts",
                 &format!(
-                    "excluded_io_accounts = vec {{ record {{ owner = principal \"{}\"; subaccount = opt blob \"{}\" }} }};",
+                    "nonredeemable_governance_io_accounts = vec {{ record {{ owner = principal \"{}\"; subaccount = opt blob \"{}\" }} }};",
                     sns_ids[1],
                     treasury_subaccount
                         .as_bytes()

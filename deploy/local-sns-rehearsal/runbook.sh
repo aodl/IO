@@ -75,7 +75,9 @@ Local-only official SNS rehearsal flow:
 6. Run runbook.sh capture-evidence to print local ledger/index/governance/root calls.
 7. Paste observed evidence into canister-ids.local.toml.
 8. Run runbook.sh validate and cargo run -p xtask -- validate_local_sns_ledger.
-9. Run runbook.sh package-evidence to create a sanitized committed evidence package or blocker report.
+9. `package-evidence` intentionally returns a blocker until the complete fresh
+   pooled claim-backing rehearsal is implemented and reviewed. Do not bind the
+   historical packages to this source.
 
 No mainnet commands are part of this runbook.
 EOF

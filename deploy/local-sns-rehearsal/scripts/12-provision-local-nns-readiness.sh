@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.
-# Provisions canonical local ICP balances and two source-shaped local NNS neurons.
+# Provisions the permanent local NNS neuron and fixed pooled-parent policy.
+# The pooled parent remains absent and is created lazily from Stream liquid backing.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib-local-sns.sh"
 require_local_script_guard "$@"
@@ -35,14 +36,11 @@ for file in "$vars_file" "$runtime" "$ledger_did" "$governance_did" "$governance
 done
 
 expected_fee=10000
-jupiter_fee_float=20000
-two_week_fee_float=10000
-two_week_stake=100000000
 two_year_stake=100000000
-two_week_nonce=42001
 two_year_nonce=42002
 approved_delay=252460800
-two_week_staging_hex="0303030303030303030303030303030303030303030303030303030303030303"
+pooled_parent_memo=42001
+minimum_parent_stake=100000000
 
 observed_fee="$(dfx canister call --network "$network_url" --identity "$identity" --query \
   --candid "$ledger_did" "$icp_ledger" icrc1_fee '()' | tr -d '()_ :nat[:space:]')"
@@ -168,14 +166,7 @@ claim_and_shape_neuron() {
   printf '%s\n' "$neuron_id"
 }
 
-transfer_delta "Jupiter staging fee float" "$nns_manager" "" "$jupiter_fee_float"
-transfer_delta "two-week maturity staging fee float" "$nns_manager" "$two_week_staging_hex" "$two_week_fee_float"
 two_year_neuron_id="$(claim_and_shape_neuron two-year "$two_year_nonce" "$two_year_stake")"
-two_week_neuron_id="$(claim_and_shape_neuron reward-backing "$two_week_nonce" "$two_week_stake")"
-if [ "$two_year_neuron_id" = "$two_week_neuron_id" ]; then
-  record_blocker "local two-year and two-week NNS neuron roles resolved to the same ID"
-  exit 2
-fi
 
 ledger_tip="$(dfx canister call --network "$network_url" --identity "$identity" --query \
   --candid "$ledger_did" "$icp_ledger" query_blocks \
@@ -189,22 +180,22 @@ if [ "$jupiter_activation_block_floor" = 0 ]; then
 fi
 
 sed -i -E "s/(two_year_neuron_id = )[0-9_]+/\1${two_year_neuron_id}/" "$nns_args"
-sed -i -E "s/(two_week_neuron_id = )[0-9_]+/\1${two_week_neuron_id}/" "$nns_args"
+sed -i -E "s/(pooled_parent_memo = )[0-9_]+/\1${pooled_parent_memo}/" "$nns_args"
+sed -i -E "s/(pooled_parent_followee_id = )[0-9_]+/\1${two_year_neuron_id}/" "$nns_args"
+sed -i -E "s/(minimum_parent_stake_e8s = )[0-9_]+/\1${minimum_parent_stake}/" "$nns_args"
 sed -i -E "s/(jupiter_activation_block_floor = )[0-9_]+/\1${jupiter_activation_block_floor}/" "$nns_args"
-sed -i -E "s/(seeded_two_year_principal_e8s = )[0-9_]+/\1${two_year_stake}/" "$nns_args"
-sed -i -E "s/(seeded_two_week_principal_e8s = )[0-9_]+/\1${two_week_stake}/" "$nns_args"
+sed -i -E "s/(audited_permanent_principal_e8s = )[0-9_]+/\1${two_year_stake}/" "$nns_args"
 grep -Fq "two_year_neuron_id = ${two_year_neuron_id}" "$nns_args"
-grep -Fq "two_week_neuron_id = ${two_week_neuron_id}" "$nns_args"
+grep -Fq "pooled_parent_memo = ${pooled_parent_memo}" "$nns_args"
+grep -Fq "pooled_parent_followee_id = ${two_year_neuron_id}" "$nns_args"
+grep -Fq "minimum_parent_stake_e8s = ${minimum_parent_stake}" "$nns_args"
 grep -Fq "jupiter_activation_block_floor = ${jupiter_activation_block_floor}" "$nns_args"
-grep -Fq "seeded_two_year_principal_e8s = ${two_year_stake}" "$nns_args"
-grep -Fq "seeded_two_week_principal_e8s = ${two_week_stake}" "$nns_args"
+grep -Fq "audited_permanent_principal_e8s = ${two_year_stake}" "$nns_args"
 
 fixture="${GENERATED_DIR}/nns-readiness-fixture.toml"
 cat > "$fixture" <<EOF
 [staging]
 canonical_icp_fee_e8s = ${expected_fee}
-jupiter_fee_float_e8s = ${jupiter_fee_float}
-two_week_fee_float_e8s = ${two_week_fee_float}
 jupiter_activation_block_floor = ${jupiter_activation_block_floor}
 
 [two_year_neuron]
@@ -218,18 +209,14 @@ auto_stake_maturity = false
 ordinary_maturity_e8s = 0
 staked_maturity_e8s = 0
 
-[reward_backing_neuron]
-id = ${two_week_neuron_id}
-controller = "${nns_manager}"
-claim_controller = "${operator}"
-nonce = ${two_week_nonce}
-seeded_principal_e8s = ${two_week_stake}
-dissolve_delay_seconds = ${approved_delay}
+[pooled_parent]
+exists = false
+memo = ${pooled_parent_memo}
+followee_neuron_id = ${two_year_neuron_id}
+minimum_stake_e8s = ${minimum_parent_stake}
+dissolve_delay_seconds = 1209600
 auto_stake_maturity = false
-ordinary_maturity_e8s = 0
-staked_maturity_e8s = 0
-maturity_disbursement_pending = false
 EOF
 
 mark_phase_done 12-provision-local-nns-readiness \
-  "two_year_neuron_id=${two_year_neuron_id} reward_backing_neuron_id=${two_week_neuron_id} controller=${nns_manager} canonical_fee=${expected_fee} jupiter_activation_block_floor=${jupiter_activation_block_floor} jupiter_float=${jupiter_fee_float} two_week_float=${two_week_fee_float}"
+  "two_year_neuron_id=${two_year_neuron_id} pooled_parent=absent pooled_parent_memo=${pooled_parent_memo} pooled_parent_followee_id=${two_year_neuron_id} controller=${nns_manager} canonical_fee=${expected_fee} jupiter_activation_block_floor=${jupiter_activation_block_floor}"

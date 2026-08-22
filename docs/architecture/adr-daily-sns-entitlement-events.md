@@ -71,11 +71,11 @@ accumulator, one immutable pending batch, the latest event/skip observation and
 cumulative counters; it does not retain ballots, per-proposal state, an event
 archive or a moving accounting window.
 
-Governance entitlement time and ICP-backing receipt time are intentionally
+Governance entitlement time and ICP-backing realization are intentionally
 asynchronous. Daily observations continue while one frozen entitlement batch
-awaits the two-week-staker reward-backing NNS neuron's actual modulated ICP
-receipt and sequential IO payout. Only actually received ICP determines the
-backed IO pool. At payout,
+awaits the pooled parent's actual modulated ICP Mint, the jointly frozen
+physical backing route, and sequential IO payout. Only the actual Mint and
+fee-reduced claim credits determine the backed IO pool. At payout,
 the backed pool is first reduced by the frozen batch's forfeited policy
 fraction; the eligible pool is then allocated over eligible credits. A frozen
 zero-eligible-credit batch completes without recipient transfers and leaves
@@ -86,16 +86,15 @@ The first successful readiness transition seeds the latest canonical event as
 pre-activation events from becoming retroactive IO entitlement. An existing
 checkpoint survives pause/unpause and same-Wasm upgrade and is never reseeded.
 
-Before freezing, the stream manager revalidates reviewed SNS Governance and
-authentically reconciles the current NNS target. The exact target value is
-idempotent authority; only entitlement batches have generations. `UnderTarget`,
-`OverTarget`, `BelowThreshold`, `Busy`, `Paused`, or an unreconciled baseline
-leaves every live credit in place. OverTarget starts at most one direct unwind,
-while UnderTarget requires separately authorized principal growth. A ready
-result permits one exact compare-and-swap freeze and immediate maturity
-preparation in the same update. Every pending replay first reconciles the
-batch's immutable stored target and preserves that batch in every waiting
-state; later observations accumulate only in the fresh live accumulator.
+Before freezing, the Stream Manager revalidates reviewed SNS Governance and
+takes a bracketed canonical claim-backing snapshot. The daily checkpoint is the
+single reconciliation generation. Under-target work moves existing liquid
+claim backing through a typed NNS permit; over-target work may commit one
+aggregate child for that generation. Capacity, liquidity, reward-coverage,
+parent-minimum, Busy, or Paused outcomes leave live credit in place. A pooled
+maturity Mint invokes the finite joint route/reward planner and freezes the
+batch only when one physical candidate is safe. Every replay preserves the
+immutable plan; later observations accumulate in the fresh live accumulator.
 
 Governance readiness and every daily boundary require
 `max_number_of_neurons <= 1,000`. This is a bound on the complete SNS Governance
@@ -120,14 +119,11 @@ or block later recipients. IO maintains no durable refresh-retry queue at
 launch. A later reward delivery to the same neuron naturally makes another
 best-effort attempt. Observation and backing waits do not block redemption.
 
-The exact 1,209,600-second duration remains authoritative for ordinary IO
-reward-neuron eligibility, the user withdrawal delay and the beneficiary
-class. It does not describe the protected NNS parent's dissolve delay. The
-two-week-staker reward-backing NNS neuron uses the reviewed non-dissolving delay
-defined by
-[`adr-protected-reward-backing-nns-neuron.md`](adr-protected-reward-backing-nns-neuron.md).
-The two-week duration is a staking-product rule, not the SNS reward-event
-duration or an independent accounting cohort.
+The exact 1,209,600-second duration is authoritative for ordinary IO reward
+eligibility, user withdrawal, and the pooled NNS parent. The parent additionally
+requires a fixed reviewed following policy and periodic voting-power refresh.
+This duration is not the daily SNS reward-event duration or an independent
+accounting cohort.
 
 ## Availability and skips
 
@@ -150,9 +146,8 @@ observations remain missing rather than becoming zero.
 
 Historian projection distinguishes daily policy credit, eligible credit,
 policy-forfeited credit, live and pending totals, distributed IO, forfeited IO,
-rounding dust, event classification, skips, Governance freshness and NNS
-backing readiness. Legacy proposal-count and frozen-cohort-shaped fields are
-historical compatibility observations only and have no allocation authority.
+rounding dust, event classification, skips, Governance freshness, total claim
+backing, pooled target, reward coverage, and liquid availability.
 
 ## Replaced policy
 

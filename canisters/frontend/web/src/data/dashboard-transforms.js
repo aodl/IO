@@ -41,7 +41,7 @@ export function transformDashboard(loadResult) {
 
   const dashboard = loadResult.dashboard;
   const protocol = dashboard?.protocol ?? {};
-  const redemptionRate = opt(protocol.redemption_rate);
+  const claimRate = opt(protocol.claim_rate);
   warnings.push(...completenessWarnings(protocol));
   warnings.push(...sourceHealthWarnings(dashboard?.source_health));
 
@@ -54,15 +54,18 @@ export function transformDashboard(loadResult) {
       : "Historian data unavailable",
     lastUpdated: `Last updated: ${formatTimestampNanos(opt(protocol.observed_at_timestamp_nanos))}`,
     metrics: {
-      redemptionRate: formatRatio(redemptionRate),
-      redemptionRateHint: "liquid ICP per IO",
-      liquidReserve: formatTokenE8s(opt(protocol.liquid_icp_reserve_e8s), ""),
-      redeemableSupply: formatTokenE8s(opt(protocol.redeemable_io_supply_e8s), ""),
+      claimRate: formatRatio(claimRate),
+      claimRateHint: "total claim backing per claim-bearing IO",
+      availableLiquid: formatTokenE8s(claimRate?.available_liquid_e8s, ""),
+      claimSupply: formatTokenE8s(opt(protocol.claim_io_supply_e8s), ""),
+      activePooledBacking: formatTokenE8s(opt(protocol.pooled_parent_principal_e8s), ""),
+      pendingUnwind: formatTokenE8s(opt(protocol.live_child_principal_e8s), ""),
+      permanentCapital: formatTokenE8s(opt(protocol.permanent_productive_capital_e8s), ""),
       indexHealth: index ? "Observed" : "-",
       indexHealthHint: index ? `${indexAccounts.length} bounded Account histories` : "Observation unavailable",
     },
     charts: {
-      rate: singlePointSeries("latest", redemptionRate?.liquid_icp_e8s),
+      rate: singlePointSeries("latest", claimRate?.backing_numerator_e8s),
       supply: singlePointSeries("latest", protocol.total_io_supply_e8s),
     },
     lists: {

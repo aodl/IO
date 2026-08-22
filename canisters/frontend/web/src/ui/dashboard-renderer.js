@@ -14,7 +14,7 @@ export function renderDashboard(document, view) {
   for (const card of document.querySelectorAll("[data-chart]")) {
     installRangeButtons(card);
     renderChart(card.querySelector("[data-role='chart']"), view.charts[card.dataset.chart] ?? []);
-    setText(card.querySelector("[data-role='primary-value']"), view.metrics[card.dataset.chart === "rate" ? "redemptionRate" : "redeemableSupply"]);
+    setText(card.querySelector("[data-role='primary-value']"), view.metrics[card.dataset.chart === "rate" ? "claimRate" : "claimSupply"]);
     setText(card.querySelector("[data-role='delta-value']"), "Live history required");
   }
 

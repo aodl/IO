@@ -3,7 +3,7 @@ use io_ledger_types::Account;
 use serde::Deserialize;
 use std::collections::BTreeSet;
 
-pub const MAX_EXCLUDED_ACCOUNTS: usize = 16;
+pub const MAX_NONREDEEMABLE_ACCOUNTS: usize = 16;
 pub const MAX_HISTORY_ACCOUNTS: usize = 8;
 pub const MAX_EXPECTED_MODULES: usize = 12;
 pub const MAX_RECENT_TRANSACTIONS: usize = 16;
@@ -20,11 +20,10 @@ pub struct ObservationConfig {
     pub sns_index: Principal,
     pub icp_ledger: Principal,
     pub nns_governance: Principal,
-    pub reward_backing_neuron_id: u64,
     pub two_year_neuron_id: u64,
     pub protocol_io_reserve: Account,
     pub liquid_icp_reserve: Account,
-    pub excluded_io_accounts: Vec<NamedAccount>,
+    pub nonredeemable_governance_io_accounts: Vec<NamedAccount>,
     pub history_accounts: Vec<NamedAccount>,
     pub expected_modules: Vec<ExpectedModule>,
     pub reward_share_capable_governance_sha256: Option<Vec<u8>>,
@@ -68,7 +67,7 @@ pub fn validate_config(
             "refresh_interval_seconds must be in {MIN_REFRESH_INTERVAL_SECONDS}..={MAX_REFRESH_INTERVAL_SECONDS}"
         ));
     }
-    if config.excluded_io_accounts.len() > MAX_EXCLUDED_ACCOUNTS
+    if config.nonredeemable_governance_io_accounts.len() > MAX_NONREDEEMABLE_ACCOUNTS
         || config.history_accounts.len() > MAX_HISTORY_ACCOUNTS
         || config.expected_modules.len() > MAX_EXPECTED_MODULES
     {
@@ -93,29 +92,28 @@ pub fn validate_config(
     if principals.iter().copied().collect::<BTreeSet<_>>().len() != principals.len() {
         return Err("source principals must be distinct".into());
     }
-    if config.reward_backing_neuron_id == 0
-        || config.two_year_neuron_id == 0
-        || config.reward_backing_neuron_id == config.two_year_neuron_id
-    {
-        return Err("NNS observation neuron IDs must be nonzero and distinct".into());
+    if config.two_year_neuron_id == 0 {
+        return Err("permanent NNS neuron ID must be nonzero".into());
     }
-    let mut excluded_accounts = BTreeSet::new();
-    let mut excluded_names = BTreeSet::new();
-    for named in &config.excluded_io_accounts {
+    let mut nonredeemable_accounts = BTreeSet::new();
+    let mut nonredeemable_names = BTreeSet::new();
+    for named in &config.nonredeemable_governance_io_accounts {
         validate_name(&named.name)?;
-        if !excluded_names.insert(named.name.as_str()) {
-            return Err("duplicate excluded IO Account name".into());
+        if !nonredeemable_names.insert(named.name.as_str()) {
+            return Err("duplicate nonredeemable governance IO Account name".into());
         }
         let bytes = candid::encode_one(&named.account)
             .map_err(|err| format!("failed to encode account: {err}"))?;
-        if !excluded_accounts.insert(bytes) {
-            return Err("duplicate excluded IO Account".into());
+        if !nonredeemable_accounts.insert(bytes) {
+            return Err("duplicate nonredeemable governance IO Account".into());
         }
     }
     let reserve_bytes = candid::encode_one(&config.protocol_io_reserve)
         .map_err(|err| format!("failed to encode account: {err}"))?;
-    if excluded_accounts.contains(&reserve_bytes) {
-        return Err("protocol reserve must not also be an excluded IO Account".into());
+    if nonredeemable_accounts.contains(&reserve_bytes) {
+        return Err(
+            "protocol reserve must not also be an nonredeemable governance IO Account".into(),
+        );
     }
     let mut history_accounts = BTreeSet::new();
     let mut history_names = BTreeSet::new();
@@ -222,10 +220,12 @@ impl SourceHealth {
 pub struct DataCompleteness {
     pub total_io_supply: bool,
     pub protocol_reserve_io: bool,
-    pub excluded_io: bool,
-    pub redeemable_io_supply: bool,
-    pub liquid_icp_reserve: bool,
-    pub redemption_rate: bool,
+    pub nonredeemable_governance_io: bool,
+    pub claim_io_supply: bool,
+    pub claim_backing: bool,
+    pub active_backing_io: bool,
+    pub active_reward_io: bool,
+    pub claim_rate: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
@@ -233,60 +233,126 @@ pub struct ProtocolSnapshot {
     pub generation: u64,
     pub total_io_supply_e8s: Option<u128>,
     pub protocol_reserve_io_e8s: Option<u128>,
-    pub excluded_io_e8s: Option<u128>,
-    pub redeemable_io_supply_e8s: Option<u128>,
-    pub liquid_icp_reserve_e8s: Option<u128>,
-    pub redemption_rate: Option<RedemptionRateSnapshot>,
+    pub nonredeemable_governance_io_e8s: Option<u128>,
+    pub claim_io_supply_e8s: Option<u128>,
+    pub liquid_claim_backing_e8s: Option<u128>,
+    pub pooled_parent_principal_e8s: Option<u128>,
+    pub live_child_principal_e8s: Option<u128>,
+    pub in_transit_backing_e8s: Option<u128>,
+    pub total_claim_backing_e8s: Option<u128>,
+    pub claim_rate: Option<ClaimRateSnapshot>,
+    pub active_backing_io_e8s: Option<u128>,
+    pub active_reward_io_e8s: Option<u128>,
+    pub pooled_target_e8s: Option<u128>,
+    pub pooled_target_delta: Option<PooledTargetDelta>,
+    pub live_cohort_count: Option<u32>,
+    pub oldest_ready_at_seconds: Option<u64>,
+    pub permanent_productive_capital_e8s: Option<u128>,
     pub observed_at_timestamp_nanos: Option<u64>,
     pub completeness: DataCompleteness,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct RedemptionRateSnapshot {
-    pub liquid_icp_e8s: u128,
-    pub redeemable_io_e8s: u128,
+pub struct ClaimRateSnapshot {
+    pub backing_numerator_e8s: u128,
+    pub claim_denominator_e8s: u128,
+    pub available_liquid_e8s: u128,
     pub observed_at_timestamp_nanos: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum PooledTargetDelta {
+    UnderTarget(u128),
+    AtTarget,
+    OverTarget(u128),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct ReconciliationProjection {
+    pub generation: u64,
+    pub observed_at_nanos: u64,
+    pub claim_supply_e8s: u128,
+    pub liquid_backing_e8s: u128,
+    pub pooled_backing_e8s: u128,
+    pub unwinding_backing_e8s: u128,
+    pub transit_backing_e8s: u128,
+    pub total_claim_backing_e8s: u128,
+    pub active_backing_io_e8s: u128,
+    pub active_reward_io_e8s: u128,
+    pub live_cohort_count: u32,
+    pub oldest_ready_at_seconds: Option<u64>,
+    pub pooled_target_e8s: u128,
+    pub observed_pooled_e8s: u128,
 }
 
 pub fn coherent_protocol_snapshot(
     generation: u64,
     total: u128,
     reserve: u128,
-    excluded: &[u128],
+    nonredeemable: &[u128],
     liquid: u128,
+    reconciliation: Option<&ReconciliationProjection>,
+    permanent_productive_capital_e8s: Option<u128>,
     observed_at: u64,
 ) -> Result<ProtocolSnapshot, String> {
-    let excluded_total = excluded
+    let nonredeemable_total = nonredeemable
         .iter()
         .try_fold(0u128, |sum, value| sum.checked_add(*value))
-        .ok_or_else(|| "excluded IO balance sum overflow".to_string())?;
+        .ok_or_else(|| "nonredeemable governance IO balance sum overflow".to_string())?;
     let non_redeemable = reserve
-        .checked_add(excluded_total)
+        .checked_add(nonredeemable_total)
         .ok_or_else(|| "non-redeemable IO balance sum overflow".to_string())?;
-    let redeemable = total.checked_sub(non_redeemable).ok_or_else(|| {
-        "total IO supply is less than protocol reserve plus excluded balances".to_string()
+    let claims = total.checked_sub(non_redeemable).ok_or_else(|| {
+        "total IO supply is less than protocol reserve plus nonredeemable governance balances"
+            .to_string()
     })?;
-    let rate = (redeemable > 0).then_some(RedemptionRateSnapshot {
-        liquid_icp_e8s: liquid,
-        redeemable_io_e8s: redeemable,
-        observed_at_timestamp_nanos: observed_at,
+    let projection = reconciliation.filter(|value| value.claim_supply_e8s == claims);
+    let rate = projection.and_then(|value| {
+        (value.claim_supply_e8s > 0).then_some(ClaimRateSnapshot {
+            backing_numerator_e8s: value.total_claim_backing_e8s,
+            claim_denominator_e8s: value.claim_supply_e8s,
+            available_liquid_e8s: liquid,
+            observed_at_timestamp_nanos: value.observed_at_nanos,
+        })
+    });
+    let delta = projection.map(|value| {
+        if value.observed_pooled_e8s < value.pooled_target_e8s {
+            PooledTargetDelta::UnderTarget(value.pooled_target_e8s - value.observed_pooled_e8s)
+        } else if value.observed_pooled_e8s > value.pooled_target_e8s {
+            PooledTargetDelta::OverTarget(value.observed_pooled_e8s - value.pooled_target_e8s)
+        } else {
+            PooledTargetDelta::AtTarget
+        }
     });
     Ok(ProtocolSnapshot {
         generation,
         total_io_supply_e8s: Some(total),
         protocol_reserve_io_e8s: Some(reserve),
-        excluded_io_e8s: Some(excluded_total),
-        redeemable_io_supply_e8s: Some(redeemable),
-        liquid_icp_reserve_e8s: Some(liquid),
-        redemption_rate: rate.clone(),
+        nonredeemable_governance_io_e8s: Some(nonredeemable_total),
+        claim_io_supply_e8s: Some(claims),
+        liquid_claim_backing_e8s: projection.map(|value| value.liquid_backing_e8s),
+        pooled_parent_principal_e8s: projection.map(|value| value.pooled_backing_e8s),
+        live_child_principal_e8s: projection.map(|value| value.unwinding_backing_e8s),
+        in_transit_backing_e8s: projection.map(|value| value.transit_backing_e8s),
+        total_claim_backing_e8s: projection.map(|value| value.total_claim_backing_e8s),
+        claim_rate: rate.clone(),
+        active_backing_io_e8s: projection.map(|value| value.active_backing_io_e8s),
+        active_reward_io_e8s: projection.map(|value| value.active_reward_io_e8s),
+        pooled_target_e8s: projection.map(|value| value.pooled_target_e8s),
+        pooled_target_delta: delta,
+        live_cohort_count: projection.map(|value| value.live_cohort_count),
+        oldest_ready_at_seconds: projection.and_then(|value| value.oldest_ready_at_seconds),
+        permanent_productive_capital_e8s,
         observed_at_timestamp_nanos: Some(observed_at),
         completeness: DataCompleteness {
             total_io_supply: true,
             protocol_reserve_io: true,
-            excluded_io: true,
-            redeemable_io_supply: true,
-            liquid_icp_reserve: true,
-            redemption_rate: rate.is_some(),
+            nonredeemable_governance_io: true,
+            claim_io_supply: true,
+            claim_backing: projection.is_some(),
+            active_backing_io: projection.is_some(),
+            active_reward_io: projection.is_some(),
+            claim_rate: rate.is_some(),
         },
     })
 }
@@ -328,6 +394,7 @@ pub struct StreamStatus {
     pub governance_parameters_fresh: bool,
     pub pending_entitlement_batch_eligible_credit: Option<u128>,
     pub pending_entitlement_batch_policy_credit: Option<u128>,
+    pub latest_reconciliation_checkpoint: Option<ReconciliationProjection>,
     pub observed_at_timestamp_nanos: u64,
 }
 
@@ -335,10 +402,10 @@ pub struct StreamStatus {
 pub struct NnsManagerStatus {
     pub lifecycle: Lifecycle,
     pub active_operation: Option<String>,
-    pub two_week_maturity_baseline_reconciled: bool,
+    pub permanent_maturity_baseline_reconciled: bool,
     pub latest_started_two_week_generation: u64,
     pub latest_completed_two_week_generation: u64,
-    pub latest_two_week_target: Option<TwoWeekTargetObservation>,
+    pub latest_pooled_target: Option<PooledTargetObservation>,
     pub unwinding_child_principal_e8s: u128,
     pub observed_at_timestamp_nanos: u64,
 }
@@ -352,14 +419,13 @@ pub enum TwoWeekTargetStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct TwoWeekTargetObservation {
+pub struct PooledTargetObservation {
     pub target_e8s: u128,
     pub status: TwoWeekTargetStatus,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum NnsNeuronRole {
-    RewardBacking,
     TwoYearProtected,
 }
 

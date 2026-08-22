@@ -236,6 +236,89 @@ fn require_present(path: &str, text: &str, needles: &[&str]) -> Result<(), Strin
     Ok(())
 }
 
+fn check_obsolete_economics_guard_at(root: &Path) -> Result<(), String> {
+    const ALLOWED_PREFIXES: &[&str] = &[
+        "deploy/local-sns-rehearsal/evidence/",
+        "deploy/local-sns-rehearsal/generated/",
+        "deploy/local-sns-rehearsal/install-args.local/",
+        "canisters/frontend/public/generated/",
+        "docs/research/",
+        "docs/architecture/adr-protected-reward-backing-nns-neuron.md",
+        "docs/operations/p0-simplified-composition-evidence.md",
+        "deploy/local-sns-rehearsal/canister-ids.local.toml",
+    ];
+    let forbidden = [
+        concat!("seeded_two_week", "_principal_e8s"),
+        concat!("two_week", "_receipt_source"),
+        concat!("two_week", "_fee_float_e8s"),
+        concat!("reward_backing", "_neuron_id"),
+        concat!("reconcile_two_week", "_backing_readiness"),
+    ];
+    fn visit(
+        root: &Path,
+        directory: &Path,
+        forbidden: &[&str],
+        violations: &mut Vec<String>,
+    ) -> Result<(), String> {
+        for entry in fs::read_dir(directory)
+            .map_err(|error| format!("failed to scan {}: {error}", directory.display()))?
+        {
+            let entry = entry.map_err(|error| format!("source scan failed: {error}"))?;
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|error| format!("source path escaped root: {error}"))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            if entry
+                .file_type()
+                .map_err(|error| format!("failed to inspect {relative}: {error}"))?
+                .is_dir()
+            {
+                if matches!(relative.as_str(), ".git" | "target" | "release-artifacts")
+                    || relative.starts_with("node_modules/")
+                    || relative.starts_with("debug-artifacts/")
+                {
+                    continue;
+                }
+                visit(root, &path, forbidden, violations)?;
+                continue;
+            }
+            if ALLOWED_PREFIXES
+                .iter()
+                .any(|allowed| relative == *allowed || relative.starts_with(allowed))
+                || relative == "tools/xtask/src/main.rs"
+            {
+                continue;
+            }
+            let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if !matches!(
+                extension,
+                "rs" | "md" | "did" | "sh" | "toml" | "yaml" | "yml" | "js" | "mjs"
+            ) {
+                continue;
+            }
+            let text = fs::read_to_string(&path)
+                .map_err(|error| format!("failed to read {relative}: {error}"))?;
+            for needle in forbidden {
+                if text.contains(needle) {
+                    violations.push(format!("{relative}: obsolete active assumption {needle:?}"));
+                }
+            }
+        }
+        Ok(())
+    }
+    let mut violations = Vec::new();
+    visit(root, root, &forbidden, &mut violations)?;
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(violations.join("\n"))
+    }
+}
+
 fn require_debug_some_value(
     path: &str,
     text: &str,
@@ -1186,8 +1269,8 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
         &stream_production,
         &[
             "  redeem :",
-            "  prepare_liquid_receipt :",
-            "  complete_liquid_receipt :",
+            "  prepare_jupiter_receipt :",
+            "  complete_jupiter_receipt :",
             "  resume :",
             "  prove_active_transfer :",
             "  set_paused :",
@@ -1200,8 +1283,11 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
         &nns_production,
         &[
             "  notify_jupiter_deposit :",
-            "  reconcile_two_week_backing_readiness :",
+            "  prepare_pool_reconciliation :",
+            "  observe_claim_backing :",
             "  prepare_two_week_maturity :",
+            "  start_maturity :",
+            "  prove_maturity_mint :",
             "  resume :",
             "  prove_active_transfer :",
             "  set_paused :",
@@ -1240,7 +1326,7 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
         &[
             "get_dashboard_state",
             "get_protocol_snapshot",
-            "get_redemption_rate",
+            "get_claim_rate",
             "ObservationConfig",
             "service : (opt ObservationConfig)",
         ],
@@ -2185,7 +2271,7 @@ fn validate_stream_install_args_text(text: &str, mode: InstallArgsMode) -> Resul
     Ok(())
 }
 
-fn validate_simplified_receipt_topology(stream: &str, nns: &str) -> Result<(), String> {
+fn validate_pooled_claim_topology(stream: &str, nns: &str) -> Result<(), String> {
     fn require_field_token(text: &str, field: &str, token: &str) -> Result<(), String> {
         let line = text
             .lines()
@@ -2216,17 +2302,8 @@ fn validate_simplified_receipt_topology(stream: &str, nns: &str) -> Result<(), S
             "jupiter_receipt_source",
             "TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL",
         ),
-        (
-            stream,
-            "two_week_receipt_source",
-            "TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL",
-        ),
         (nns, "jupiter_staging", "TODO_EXISTING_NNS_CONTROLLER_SELF"),
-        (
-            nns,
-            "two_week_maturity_staging",
-            "TODO_EXISTING_NNS_CONTROLLER_SELF",
-        ),
+        (nns, "maturity_staging", "TODO_EXISTING_NNS_CONTROLLER_SELF"),
         (
             nns,
             "jupiter_activation_block_floor",
@@ -2234,24 +2311,23 @@ fn validate_simplified_receipt_topology(stream: &str, nns: &str) -> Result<(), S
         ),
         (
             nns,
-            "seeded_two_year_principal_e8s",
-            "TODO_SEEDED_TWO_YEAR_PRINCIPAL_E8S",
+            "audited_permanent_principal_e8s",
+            "TODO_AUDITED_PERMANENT_PRINCIPAL_E8S",
+        ),
+        (nns, "pooled_parent_memo", "TODO_POOLED_PARENT_MEMO"),
+        (
+            nns,
+            "pooled_parent_followee_id",
+            "TODO_POOLED_PARENT_FOLLOWEE_ID",
         ),
     ] {
         require_field_token(text, field, token)?;
     }
-    for (stream_field, nns_field, token) in [
-        (
-            "two_week_receipt_source",
-            "two_week_maturity_staging",
-            "TODO_TWO_WEEK_STAGING",
-        ),
-        (
-            "liquid_icp",
-            "stream_liquid_account",
-            "TODO_STREAM_LIQUID_SUBACCOUNT",
-        ),
-    ] {
+    for (stream_field, nns_field, token) in [(
+        "liquid_icp",
+        "stream_liquid_account",
+        "TODO_STREAM_LIQUID_SUBACCOUNT",
+    )] {
         require_field_token(stream, stream_field, token)?;
         require_field_token(nns, nns_field, token)?;
     }
@@ -2303,7 +2379,7 @@ fn validate_install_args_at(root: &Path, mode: InstallArgsMode) -> Result<(), St
                 ));
             }
         }
-        validate_simplified_receipt_topology(&stream_args, &nns_args)?;
+        validate_pooled_claim_topology(&stream_args, &nns_args)?;
         validate_historian_install_args_did(root, "canisters/io_historian/io_historian.did")
             .map_err(|err| format!("io_historian install args: {err}"))?;
         validate_no_install_args_did(root, "canisters/frontend/frontend.did")
@@ -2823,7 +2899,9 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "auto_stake_maturity = opt false",
             "maturity_disbursements_in_progress = opt vec {}",
             "two_year_neuron_id",
-            "two_week_neuron_id",
+            "pooled_parent_memo",
+            "pooled_parent_followee_id",
+            "minimum_parent_stake",
         ],
     )?;
     require_absent(
@@ -7905,7 +7983,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, simplicity_check, validate_workflows, validate_nns_boundary_pin, security_scan, security_scan_required, validate_install_args, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_evidence_package, validate_local_sns_committed_evidence, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, build_recorded_source, verify_recorded_source, compare_release_artifact_dirs, nns_neuron_staking_subaccount, sns_distribution_subaccount, calculate_redemption_economics, index_transfer_block, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, simplicity_check, validate_workflows, validate_obsolete_economics_guard, validate_nns_boundary_pin, security_scan, security_scan_required, validate_install_args, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_evidence_package, validate_local_sns_committed_evidence, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, build_recorded_source, verify_recorded_source, compare_release_artifact_dirs, nns_neuron_staking_subaccount, sns_distribution_subaccount, calculate_redemption_economics, index_transfer_block, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -7931,6 +8009,13 @@ fn main() -> ExitCode {
             Ok(()) => eprintln!("✓ required workflows validate the exact event source SHA"),
             Err(err) => {
                 eprintln!("✗ required workflow validation: {err}");
+                ok = false;
+            }
+        },
+        "validate_obsolete_economics_guard" => match check_obsolete_economics_guard_at(&root) {
+            Ok(()) => eprintln!("✓ validate_obsolete_economics_guard"),
+            Err(err) => {
+                eprintln!("✗ validate_obsolete_economics_guard: {err}");
                 ok = false;
             }
         },
@@ -8787,6 +8872,7 @@ fn main() -> ExitCode {
         "verify_release" => {
             for sub in [
                 "validate_workflows",
+                "validate_obsolete_economics_guard",
                 "did_surface",
                 "validate_nns_boundary_pin",
                 "verify_recorded_source",
@@ -9023,6 +9109,7 @@ fn main() -> ExitCode {
                 "fmt_check",
                 "check",
                 "validate_workflows",
+                "validate_obsolete_economics_guard",
                 "simplicity_check",
                 "did_surface",
                 "validate_nns_boundary_pin",

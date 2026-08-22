@@ -1,20 +1,29 @@
-# NNS neuron manager
+# NNS Neuron Manager
 
-The manager is self-bound to its running canister principal and uses distinct Jupiter, two-year maturity, two-week maturity, unwind and operational-fee Accounts. Each sending staging Account requires explicit fee float.
+The manager controls one audited permanent neuron and a lazily created pooled
+parent. The pooled parent uses a fixed memo, exact 1,209,600-second
+non-dissolving delay, auto-stake off, and a fixed configured following policy.
+Production memo and followee values remain unresolved non-runnable template
+inputs. No external capital seeds the parent.
 
-Jupiter stakes checked 40% into the permanent neuron and delivers the remainder as proved liquid backing. Maturity stakes 40% of ordinary maturity and disburses all remaining maturity; actual modulated ICP is backing. A two-week-staker reward-backing command can be prepared only by the stream manager for one exact frozen entitlement-batch generation. Target capacity is only the canonical non-dissolving parent stake; a dissolving child is reported separately. Target growth reports UnderTarget and never consumes liquid backing. Material excess permits one direct unwind child, while fee-sized excess is recorded within conservative unwind tolerance.
+Under target, Stream owns the liquid-to-staking transfer and NNS freezes a
+permit bound to the reconciliation generation, operation sequence, parent
+principal, destination, fee, and canonical fingerprint. NNS proves the exact
+ledger block and cached-principal increase. Over target, NNS performs one
+split/start command; canonical `StartDissolving` proof moves the child into a
+bounded collection of at most 32 passive cohorts.
 
-The protected parent is the two-week-staker reward-backing NNS neuron, not a
-14-day NNS position. Its approved dissolve delay is exactly 252,460,800 seconds
-(the NNS canonical eight-year maximum). The first readiness transition proves the configured parent ID,
-exact seeded principal, zero canonical ordinary and staked maturity,
-effective `auto_stake_maturity = false`, no pending maturity, exact non-dissolving delay
-and no child ambiguity. That baseline is durable across upgrades. Retained
-staked maturity is expected after the baseline, but auto-stake or dissolve-state
-drift pauses later preparation.
+Cancellation before split commitment can net away an exit. After commitment,
+the child completes its own lifecycle. Earliest-ready promotion is
+deterministic. Principal returns to Stream liquid, zero-principal maturity is
+proved zero or merged to the parent with exact conservation, and the child
+record retires independently of generation-free member reward re-entry.
 
-`reconcile_two_week_backing_readiness` authenticates the stream and persists the exact target value. Same-target replay re-queries the parent without creating a second operation. UnderTarget requires separately authorized principal growth. OverTarget uses the one direct unwind. After canonical `StartDissolving`, the exact child becomes passive and the immediate slot is free for maturity on the reduced parent. Merge-back and direct disbursement clear child evidence only after canonical proof. No second child or queue exists.
+Permanent maturity stakes 40% first and disburses all remaining ordinary
+maturity. Its actual Mint is entirely new claim backing and issues no IO.
+Pooled-parent maturity disburses 100%, then splits the actual Mint into 40%
+permanent gross and 60% claim gross. The Stream jointly freezes the physical
+claim route and backed recipient settlement before effects.
 
-On Ready, the stream freezes and immediately prepares the same immutable entitlement generation in one update. A post-upgrade Paused manager continues already immutable active or passive maturity work. No target queue, batch queue or second child exists.
-
-Production authority is intended to remain at existing controller `oae4c`; `tatch` is unused. No mainnet operation is authorized.
+One update submits at most one external effect. Install and upgrade reopen
+Paused; immutable submitted/proved operations remain resumable.

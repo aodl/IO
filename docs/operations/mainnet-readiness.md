@@ -1,30 +1,26 @@
 # Mainnet readiness
 
-IO is not live. ProductionActive is unavailable and no production timer exists. Reserved production canisters are not deployment targets in this work.
+IO is not live. Production activation, mainnet calls, controllers, funding,
+identities, release artifacts, and canonical evidence are outside this source
+tranche.
 
-The `io_nns_neuron_manager` execution identity is existing protected-neuron
-controller `oae4c-3iaaa-aaaar-qb5qq-cai`. A later explicitly approved audit
-must inspect module/controllers/stable state and authorize any clean install or
-upgrade.
+The source implements pooled claim backing, but launch remains blocked on final
+production SNS identities, the pooled-parent memo and followee, fresh
+source/artifact lineage, fresh corrected local-SNS evidence, hosted exact-head
+CI, mainnet testflight, controllers/cycles/domain work, and independent review.
+Production templates deliberately retain unresolved values and cannot be used
+as install arguments.
 
-Launch readiness requires all simplified execution, installed real-ledger, NNS authority, upgrade/failure, official SNS evidence and GitHub CI gates to pass. Unsupported transfers remain unsupported by design.
+The NNS Manager execution identity is the existing protected-neuron controller
+`oae4c-3iaaa-aaaar-qb5qq-cai`. The permanent neuron remains protected input.
+The pooled parent does not exist until canonical liquid backing reaches the
+minimum and the reviewed bootstrap protocol creates it with an exact 14-day
+delay and fixed following policy.
 
-Controlled PocketIC evidence reaches the two-week-staker reward-backing path
-through an eight-year, non-dissolving NNS parent, a complete zero-maturity
-launch baseline, independent target reconciliation, one direct/passive unwind,
-StakeMaturity, DisburseMaturity, delayed exact Mint, proof-bound stream receipt
-and recipient settlement using pinned official NNS Governance and ICP ledger
-Wasms. The exact two-week rule belongs to the SNS beneficiary product, not the
-protected NNS parent's dissolve delay. This is local evidence only and grants no
-mainnet authority. Production installation remains Paused and requires a
-separate reviewed launch decision.
+Historical local rehearsal and release evidence describes the superseded
+economics and remains immutable. Readiness must report that corrected-economics
+evidence is missing; it must never reinterpret old evidence as proof of the
+pooled model.
 
-Local rehearsal evidence concerns a real SNS-created stack installed through SNS-W with the local-only test symbol `IOLO`. Its `IO_TEST` ledger is non-canonical evidence for a local protocol reserve; IO is not launched on mainnet. The pinned SNS implementation requires a 3–10 character symbol, so final production naming remains a product/upstream decision.
-
-Reserved mapping record: `io_stream_manager`
-`thset-pqaaa-aaaar-qb7wa-cai`; `io_historian`
-`tjqj3-uaaaa-aaaar-qb7xa-cai`; `frontend`
-`torpp-zyaaa-aaaar-qb7xq-cai`. The NNS Manager execution identity is not part
-of this reservation inventory.
-
-Historian remains a public read model: rebuildable, not canonical protocol truth, and not a value-moving authority. IO protocol is not live; SNS IO ledger remains not launched. `missing/stale/error` observations remain explicit, and index canisters are historian inputs only.
+Historian remains a rebuildable public read model, not monetary authority.
+Missing, stale, and error observations remain explicit.

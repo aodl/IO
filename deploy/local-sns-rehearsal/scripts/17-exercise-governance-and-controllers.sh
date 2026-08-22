@@ -55,7 +55,6 @@ if ! phase_is_done 17-upgrade-attempted; then
   treasury_subaccount="$(sns_treasury_subaccount_hex "$governance")"
   fixture="${GENERATED_DIR}/nns-readiness-fixture.toml"
   require_file "$fixture"
-  reward_backing_neuron_id="$(toml_number "$fixture" reward_backing_neuron id)"
   two_year_neuron_id="$(toml_number "$fixture" two_year_neuron id)"
   config_file="${GENERATED_DIR}/historian-observation-config.did"
   cat > "$config_file" <<EOF
@@ -68,11 +67,10 @@ if ! phase_is_done 17-upgrade-attempted; then
   sns_index = principal "${index}";
   icp_ledger = principal "$(runtime_value nns icp_ledger)";
   nns_governance = principal "$(runtime_value nns governance)";
-  reward_backing_neuron_id = ${reward_backing_neuron_id} : nat64;
   two_year_neuron_id = ${two_year_neuron_id} : nat64;
   protocol_io_reserve = record { owner = principal "${stream}"; subaccount = opt blob "$(hex_blob_literal "$reserve_subaccount")" };
   liquid_icp_reserve = record { owner = principal "${stream}"; subaccount = opt blob "$(hex_blob_literal "$liquid_subaccount")" };
-  excluded_io_accounts = vec { record { name = "sns-treasury"; account = record { owner = principal "${governance}"; subaccount = opt blob "$(hex_blob_literal "$treasury_subaccount")" } } };
+  nonredeemable_governance_io_accounts = vec { record { name = "sns-treasury"; account = record { owner = principal "${governance}"; subaccount = opt blob "$(hex_blob_literal "$treasury_subaccount")" } } };
   history_accounts = vec {
     record { name = "protocol-reserve"; account = record { owner = principal "${stream}"; subaccount = opt blob "$(hex_blob_literal "$reserve_subaccount")" } };
     record { name = "sns-treasury"; account = record { owner = principal "${governance}"; subaccount = opt blob "$(hex_blob_literal "$treasury_subaccount")" } };
@@ -178,43 +176,21 @@ if ! phase_is_done 17-nns-activated; then
     record_blocker 'NNS manager activation proposal executed through SNS Governance but readiness remained Paused despite the source-shaped staging and protected-neuron fixture; inspect the canonical readiness error'
     exit 2
   }
-  printf '%s' "$status" | grep -q 'two_week_maturity_baseline_reconciled = true' || {
-    record_blocker 'NNS manager entered Ready without the required recorded reward-backing baseline'
+  printf '%s' "$status" | grep -q 'two_year_maturity_baseline_reconciled = true' || {
+    record_blocker 'NNS manager entered Ready without the permanent-neuron baseline'
     exit 2
   }
   fixture="${GENERATED_DIR}/nns-readiness-fixture.toml"
   require_file "$fixture"
-  two_week_neuron_id="$(toml_number "$fixture" reward_backing_neuron id)"
-  seeded_principal="$(toml_number "$fixture" reward_backing_neuron seeded_principal_e8s)"
-  approved_delay="$(toml_number "$fixture" reward_backing_neuron dissolve_delay_seconds)"
-  icp_ledger="$(runtime_value nns icp_ledger)"
-  checkout="$(official_checkout)"
-  ledger_did="${checkout}/rs/ledger_suite/icrc1/ledger/ledger.did"
-  governance_did="${checkout}/rs/nns/governance/canister/governance.did"
-  jupiter_balance="$(dfx canister call --network "$network_url" --identity "$identity" --query \
-    --candid "$ledger_did" "$icp_ledger" icrc1_balance_of \
-    "(record { owner = principal \"${nns_manager}\"; subaccount = null })" | tr -d '()_ :nat[:space:]')"
-  two_week_balance="$(dfx canister call --network "$network_url" --identity "$identity" --query \
-    --candid "$ledger_did" "$icp_ledger" icrc1_balance_of \
-    "(record { owner = principal \"${nns_manager}\"; subaccount = opt blob \"$(hex_blob_literal 0303030303030303030303030303030303030303030303030303030303030303)\" })" | tr -d '()_ :nat[:space:]')"
-  if [ "$jupiter_balance" -lt 20000 ] || [ "$two_week_balance" -lt 10000 ]; then
-    record_blocker "NNS manager Ready observation has insufficient staging balances: Jupiter=${jupiter_balance} two-week=${two_week_balance}"
-    exit 2
-  fi
-  neuron_info="$(dfx canister call --network "$network_url" --identity "$identity" --query \
-    --candid "$governance_did" "$(runtime_value nns governance)" get_neuron_info \
-    "(${two_week_neuron_id} : nat64)")"
-  printf '%s\n' "$neuron_info" >> "$log_file"
-  neuron_info_compact="$(printf '%s' "$neuron_info" | tr -d '_')"
-  printf '%s' "$neuron_info_compact" | grep -q "stakee8s = ${seeded_principal}" || {
-    record_blocker 'reward-backing neuron observation no longer matches seeded principal'
+  observation="$(dfx canister call --network "$network_url" --identity "$identity" --candid \
+    "${REPO_ROOT}/canisters/io_nns_neuron_manager/io_nns_neuron_manager.did" \
+    "$nns_manager" observe_claim_backing '()')"
+  printf '%s\n' "$observation" >> "$log_file"
+  printf '%s' "$observation" | grep -q 'parent_exists = false' || {
+    record_blocker 'pooled parent must remain absent until existing liquid backing bootstraps it'
     exit 2
   }
-  printf '%s' "$neuron_info_compact" | grep -q "dissolvedelayseconds = ${approved_delay}" || {
-    record_blocker 'reward-backing neuron observation no longer matches approved dissolve delay'
-    exit 2
-  }
-  mark_phase_done 17-nns-activated "function_id=${function_id} proposal_id=${proposal_id} lifecycle=Ready baseline_reconciled=true reward_backing_neuron_id=${two_week_neuron_id} seeded_principal_e8s=${seeded_principal} dissolve_delay_seconds=${approved_delay} jupiter_staging_e8s=${jupiter_balance} two_week_staging_e8s=${two_week_balance}"
+  mark_phase_done 17-nns-activated "function_id=${function_id} proposal_id=${proposal_id} lifecycle=Ready permanent_baseline_reconciled=true pooled_parent=absent"
 fi
 
 mark_phase_done 17-exercise-governance-and-controllers "controllers checked; upgrade result and authenticated lifecycle proposals recorded"

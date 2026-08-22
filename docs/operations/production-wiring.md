@@ -1,45 +1,29 @@
-# Simplified production wiring
+# Pooled claim-backing production wiring
 
-Production wiring remains a non-runnable plan. Stream reserve and liquid Accounts must be owned by the installed stream manager. NNS staging and fee Accounts must be owned by the installed manager, while the stream liquid destination is owned by the configured stream manager.
+Production wiring is a non-runnable plan. Stream explicitly configures the IO
+and ICP ledgers, NNS Manager, Jupiter receipt source, Jupiter claim-bearing IO
+recipient, IO reserve, liquid ICP Account, SNS Governance/Root, exact fees and
+retry windows. A distinct bounded list contains genuinely nonredeemable
+governance staking Accounts; it must not contain the Jupiter recipient.
 
-The NNS implementation executes at existing protected-neuron controller
-`oae4c-3iaaa-aaaar-qb5qq-cai`. Any mainnet audit, installation, or controller
-action requires separate explicit approval.
+NNS explicitly configures the ICP ledger, Governance, permanent neuron,
+maturity and Jupiter staging Accounts, Stream liquid destination, one fixed
+pooled-parent memo, one fixed followee, exact parent minimum, fees, and retry
+windows. There is no separately funded pooled parent, separate pooled fee
+float, or caller-selected destination.
 
 ## Role identity record
 
-- `io_stream_manager` `thset-pqaaa-aaaar-qb7wa-cai`
-- `io_nns_neuron_manager` `oae4c-3iaaa-aaaar-qb5qq-cai` — existing protected execution identity, not a reservation or general mutation target
-- `io_historian` `tjqj3-uaaaa-aaaar-qb7xa-cai`
-- `frontend` `torpp-zyaaa-aaaar-qb7xq-cai`
+- Stream Manager: `thset-pqaaa-aaaar-qb7wa-cai`
+- NNS Manager: `oae4c-3iaaa-aaaar-qb5qq-cai`
+- Historian: `tjqj3-uaaaa-aaaar-qb7xa-cai`
+- Frontend: `torpp-zyaaa-aaaar-qb7xq-cai`
 
-This remains dry-run/config validation only. No production execution is active;
-IO protocol remains not live; SNS IO ledger is not launched. Production
-activation is a later audited milestone. Required workflows use `icp-cli`
-convention and required workflows do not use `dfx`. The IO_TEST ledger is
-non-canonical. The Stream Manager, Historian, and frontend values are planned
-reserved placeholders only: `ReservedNotLive`, empty/inert, and not live, with
-no value-moving Wasm installed. The NNS Manager entry identifies its existing
-protected authority rather than reserving a fourth canister. No production
-activation has happened and no IO issuance/redemption is enabled.
+Two-year protected neuron `10292412127977304661` remains a protected reference
+and is never a mutation target outside the installed NNS Manager. The pooled
+parent is lazy: its final memo and followee are unresolved TODO values, and no
+production neuron ID is invented.
 
-## Production Wiring Checklist
-
-The checked-in dry-run target for `io_nns_neuron_manager` is the existing
-controller `oae4c-3iaaa-aaaar-qb5qq-cai`. Static validation allows `oae4c`
-only in this one field and rejects it as the Stream Manager or a general
-mutation target. Two-year protected NNS neuron `10292412127977304661` remains a
-protected reference and is never a mutation target. This static plan
-authorizes no inspection or mainnet action.
-
-## NNS launch inventory
-
-| Role | Neuron ID | Controller/executor | Expected launch stake | Maturity baseline | Dissolve configuration | Staging/destination |
-| --- | --- | --- | --- | --- | --- | --- |
-| Two-year protected NNS neuron | `10292412127977304661` | `oae4c-3iaaa-aaaar-qb5qq-cai` | audited `seeded_two_year_principal_e8s`; unresolved in the production template | ordinary and staked maturity zero; no pending disbursement | non-dissolving, approved 252,460,800-second delay, auto-stake off | canonical Mint proof to the Stream Manager liquid ICP Account |
-| Two-week reward-backing NNS neuron | unresolved production neuron ID; configured separately | `oae4c-3iaaa-aaaar-qb5qq-cai` | audited `seeded_two_week_principal_e8s`; unresolved in the production template | ordinary and staked maturity zero; no pending disbursement or child ambiguity | non-dissolving, approved 252,460,800-second delay, auto-stake off | NNS Manager self-owned two-week staging Account, then proof-bound Stream receipt |
-
-The Jupiter and two-week staging Accounts are distinct ICP-ledger Accounts
-owned by the executing NNS Manager. Their final fee floats and subaccounts,
-the Stream liquid destination, and the Jupiter activation block floor remain
-explicit launch inputs; local fixture values are not production values.
+All production files remain dry-run validation inputs. IO issuance/redemption
+is inactive, and this document authorizes no inspection, installation,
+controller change, funding, or mainnet operation.

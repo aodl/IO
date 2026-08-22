@@ -142,8 +142,8 @@ pub fn get_protocol_snapshot() -> ProtocolSnapshot {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
-pub fn get_redemption_rate() -> Option<RedemptionRateSnapshot> {
-    STATE.with(|cell| cell.borrow().protocol.redemption_rate.clone())
+pub fn get_claim_rate() -> Option<ClaimRateSnapshot> {
+    STATE.with(|cell| cell.borrow().protocol.claim_rate.clone())
 }
 
 fn install_config(config: Option<ObservationConfig>) {
@@ -408,11 +408,10 @@ mod tests {
             sns_index: principals[5],
             icp_ledger: principals[6],
             nns_governance: principals[7],
-            reward_backing_neuron_id: 1,
             two_year_neuron_id: 2,
             protocol_io_reserve: account(20),
             liquid_icp_reserve: account(21),
-            excluded_io_accounts: vec![NamedAccount {
+            nonredeemable_governance_io_accounts: vec![NamedAccount {
                 name: "governance".into(),
                 account: account(22),
             }],
@@ -440,16 +439,58 @@ mod tests {
 
     #[test]
     fn coherent_snapshot_rejects_inverted_supply() {
-        let error = coherent_protocol_snapshot(1, 10, 8, &[3], 5, 99).unwrap_err();
+        let error = coherent_protocol_snapshot(1, 10, 8, &[3], 5, None, None, 99).unwrap_err();
         assert!(error.contains("less than"));
     }
 
     #[test]
     fn coherent_snapshot_never_mixes_missing_values_or_infers_zero_rate() {
-        let zero = coherent_protocol_snapshot(1, 10, 4, &[6], 5, 99).unwrap();
-        assert_eq!(zero.redeemable_io_supply_e8s, Some(0));
-        assert_eq!(zero.redemption_rate, None);
-        assert!(!zero.completeness.redemption_rate);
+        let zero = coherent_protocol_snapshot(1, 10, 4, &[6], 5, None, None, 99).unwrap();
+        assert_eq!(zero.claim_io_supply_e8s, Some(0));
+        assert_eq!(zero.claim_rate, None);
+        assert!(!zero.completeness.claim_rate);
+    }
+
+    #[test]
+    fn projected_claim_rate_includes_every_backing_bucket_and_separates_liquidity() {
+        let projection = ReconciliationProjection {
+            generation: 7,
+            observed_at_nanos: 90,
+            claim_supply_e8s: 100,
+            liquid_backing_e8s: 20,
+            pooled_backing_e8s: 50,
+            unwinding_backing_e8s: 15,
+            transit_backing_e8s: 5,
+            total_claim_backing_e8s: 90,
+            active_backing_io_e8s: 60,
+            active_reward_io_e8s: 50,
+            live_cohort_count: 2,
+            oldest_ready_at_seconds: Some(100),
+            pooled_target_e8s: 54,
+            observed_pooled_e8s: 50,
+        };
+        let snapshot =
+            coherent_protocol_snapshot(8, 120, 10, &[10], 20, Some(&projection), Some(400), 99)
+                .unwrap();
+        assert_eq!(snapshot.total_claim_backing_e8s, Some(90));
+        assert_eq!(snapshot.liquid_claim_backing_e8s, Some(20));
+        assert_eq!(snapshot.pooled_parent_principal_e8s, Some(50));
+        assert_eq!(snapshot.live_child_principal_e8s, Some(15));
+        assert_eq!(snapshot.in_transit_backing_e8s, Some(5));
+        assert_eq!(snapshot.permanent_productive_capital_e8s, Some(400));
+        assert_eq!(
+            snapshot.pooled_target_delta,
+            Some(PooledTargetDelta::UnderTarget(4))
+        );
+        assert_eq!(
+            snapshot.claim_rate,
+            Some(ClaimRateSnapshot {
+                backing_numerator_e8s: 90,
+                claim_denominator_e8s: 100,
+                available_liquid_e8s: 20,
+                observed_at_timestamp_nanos: 90,
+            })
+        );
     }
 
     #[test]
@@ -480,7 +521,7 @@ mod tests {
     #[test]
     fn replacing_config_clears_old_observations() {
         import_state_for_tests(StableState {
-            protocol: coherent_protocol_snapshot(9, 100, 10, &[20], 70, 1).unwrap(),
+            protocol: coherent_protocol_snapshot(9, 100, 10, &[20], 70, None, None, 1).unwrap(),
             ..StableState::default()
         });
         install_config(Some(config()));
@@ -497,7 +538,7 @@ mod tests {
     fn same_config_preserves_observations() {
         let config = config();
         install_config(Some(config.clone()));
-        let protocol = coherent_protocol_snapshot(2, 100, 10, &[20], 70, 1).unwrap();
+        let protocol = coherent_protocol_snapshot(2, 100, 10, &[20], 70, None, None, 1).unwrap();
         STATE.with(|cell| cell.borrow_mut().protocol = protocol.clone());
         install_config(Some(config));
         assert_eq!(export_state_for_tests().protocol, protocol);
