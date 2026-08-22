@@ -2605,12 +2605,17 @@ mod tests {
         )
         .unwrap();
         let quote = io_core_model::redemption_quote(
+            io_core_model::EconomicState {
+                backing: io_core_model::Backing {
+                    liquid: liquid_before,
+                    ..Default::default()
+                },
+                claims: supply_before - reserve_before,
+                active_backing: 0,
+                active_reward: 0,
+            },
             redemption_amount.into(),
             ICP_FEE_E8S.into(),
-            supply_before,
-            reserve_before,
-            0,
-            liquid_before,
             ICP_FEE_E8S.into(),
         )
         .unwrap();
@@ -2632,7 +2637,7 @@ mod tests {
             RedeemArgs {
                 from_subaccount: None,
                 io_amount_e8s: redemption_amount.into(),
-                min_icp_out_e8s: quote.net_icp_e8s,
+                min_icp_out_e8s: quote.net_icp,
                 max_io_fee_e8s: ICP_FEE_E8S.into(),
                 max_icp_fee_e8s: ICP_FEE_E8S.into(),
                 expires_at_nanos: now + 800_000_000_000,
@@ -2658,8 +2663,8 @@ mod tests {
                 break completed;
             }
         };
-        assert_eq!(redemption.gross_icp_e8s, quote.gross_icp_e8s);
-        assert_eq!(redemption.net_icp_e8s, quote.net_icp_e8s);
+        assert_eq!(redemption.gross_icp_e8s, quote.gross_icp);
+        assert_eq!(redemption.net_icp_e8s, quote.net_icp);
         let icp_after = super::query::<Nat>(
             &fixture.pic,
             fixture.ledger,
@@ -2670,7 +2675,7 @@ mod tests {
                 subaccount: None,
             },
         );
-        assert_eq!(icp_after.0 - icp_before.0, quote.net_icp_e8s.into());
+        assert_eq!(icp_after.0 - icp_before.0, quote.net_icp.into());
         assert_eq!(
             icrc::icrc1_total_supply(&fixture.pic, sns.governance.ledger),
             Nat::from(supply_before - u128::from(ICP_FEE_E8S))

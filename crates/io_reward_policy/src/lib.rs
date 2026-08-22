@@ -1,5 +1,9 @@
 //! Pure allocation of one actually backed IO pool over cumulative entitlement credits.
 
+use io_core_model::{
+    backed_io, checked_add, claim_backing, split_40_60, target, EconomicState, EconomicsError,
+};
+
 pub const DAILY_EVENT_CREDIT: u128 = 1_000_000_000_000_000_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -169,6 +173,303 @@ pub fn allocate_rewards(
     })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClaimRoute {
+    AllLiquid,
+    AllPool,
+    Mixed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClaimRoutePlan {
+    pub route: ClaimRoute,
+    pub fee_count: u8,
+    pub claim_credit: u128,
+    pub liquid_credit: u128,
+    pub pooled_credit: u128,
+    pub target: u128,
+    pub under_target: u128,
+    pub over_target: u128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TwoWeekSettlementPlan {
+    pub route: ClaimRoutePlan,
+    pub permanent_credit: u128,
+    pub maximum_io_pool: u128,
+    pub rewards: AllocationOutcome,
+    pub distributed_io: u128,
+    pub recipient_io_fees: u128,
+    pub post_backing: u128,
+    pub post_claims: u128,
+    pub post_active_backing: u128,
+    pub post_active_reward: u128,
+    pub reward_target: u128,
+    pub snapshot_fingerprint: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanningError {
+    Economics(EconomicsError),
+    Rewards(RewardPolicyError),
+    InsufficientPermanentCredit,
+    InsufficientClaimCredit,
+    InsufficientIoReserve,
+    NoSafeRoute,
+}
+
+impl From<EconomicsError> for PlanningError {
+    fn from(value: EconomicsError) -> Self {
+        Self::Economics(value)
+    }
+}
+
+impl From<RewardPolicyError> for PlanningError {
+    fn from(value: RewardPolicyError) -> Self {
+        Self::Rewards(value)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Candidate {
+    credit: u128,
+    target: u128,
+    reward_target: u128,
+}
+
+fn executable(parent_exists: bool, credit: u128, minimum: u128) -> bool {
+    parent_exists || credit >= minimum
+}
+
+fn finish_route(
+    pooled: u128,
+    fee: u128,
+    parent_exists: bool,
+    minimum: u128,
+    one: Candidate,
+    two: Option<Candidate>,
+) -> Result<ClaimRoutePlan, PlanningError> {
+    let one_need = one.target.saturating_sub(pooled);
+    let one_liquid_ok = pooled >= one.reward_target;
+    let make = |route, fee_count, candidate: Candidate, pool| ClaimRoutePlan {
+        route,
+        fee_count,
+        claim_credit: candidate.credit,
+        liquid_credit: candidate.credit - pool,
+        pooled_credit: pool,
+        target: candidate.target,
+        under_target: candidate.target.saturating_sub(pooled + pool),
+        over_target: (pooled + pool).saturating_sub(candidate.target),
+    };
+    if one_need == 0 && one_liquid_ok {
+        return Ok(make(ClaimRoute::AllLiquid, 1, one, 0));
+    }
+    if one_need >= one.credit
+        && executable(parent_exists, one.credit, minimum)
+        && pooled + one.credit >= one.reward_target
+    {
+        return Ok(make(ClaimRoute::AllPool, 1, one, one.credit));
+    }
+    let Some(two) = two else {
+        return one_liquid_ok
+            .then(|| make(ClaimRoute::AllLiquid, 1, one, 0))
+            .ok_or(PlanningError::NoSafeRoute);
+    };
+    let pool = two.credit.min(two.target.saturating_sub(pooled));
+    let liquid = two.credit - pool;
+    if pool <= fee || !executable(parent_exists, pool, minimum) {
+        return one_liquid_ok
+            .then(|| make(ClaimRoute::AllLiquid, 1, one, 0))
+            .ok_or(PlanningError::NoSafeRoute);
+    }
+    if liquid == 0 {
+        if executable(parent_exists, one.credit, minimum)
+            && pooled + one.credit >= one.reward_target
+        {
+            return Ok(make(ClaimRoute::AllPool, 1, one, one.credit));
+        }
+        return one_liquid_ok
+            .then(|| make(ClaimRoute::AllLiquid, 1, one, 0))
+            .ok_or(PlanningError::NoSafeRoute);
+    }
+    if pooled + pool < two.reward_target {
+        return Err(PlanningError::NoSafeRoute);
+    }
+    Ok(make(ClaimRoute::Mixed, 2, two, pool))
+}
+
+fn route_candidate(
+    state: EconomicState,
+    credit: u128,
+    claims_delta: u128,
+    active_delta: u128,
+    reward_delta: u128,
+) -> Result<Candidate, PlanningError> {
+    let backing = claim_backing(state.backing)?
+        .checked_add(credit)
+        .ok_or(EconomicsError::ArithmeticOverflow)?;
+    let claims = state
+        .claims
+        .checked_add(claims_delta)
+        .ok_or(EconomicsError::ArithmeticOverflow)?;
+    let active = state
+        .active_backing
+        .checked_add(active_delta)
+        .ok_or(EconomicsError::ArithmeticOverflow)?;
+    let reward = state
+        .active_reward
+        .checked_add(reward_delta)
+        .ok_or(EconomicsError::ArithmeticOverflow)?;
+    Ok(Candidate {
+        credit,
+        target: target(active, backing, claims)?,
+        reward_target: target(reward, backing, claims)?,
+    })
+}
+
+pub fn plan_permanent_maturity(
+    state: EconomicState,
+    actual_mint: u128,
+    fee: u128,
+    parent_exists: bool,
+    minimum_parent_credit: u128,
+) -> Result<ClaimRoutePlan, PlanningError> {
+    let one_credit = actual_mint
+        .checked_sub(fee)
+        .ok_or(PlanningError::InsufficientClaimCredit)?;
+    let one = route_candidate(state, one_credit, 0, 0, 0)?;
+    let two = one_credit
+        .checked_sub(fee)
+        .map(|credit| route_candidate(state, credit, 0, 0, 0))
+        .transpose()?;
+    finish_route(
+        state.backing.pooled,
+        fee,
+        parent_exists,
+        minimum_parent_credit,
+        one,
+        two,
+    )
+}
+
+pub struct TwoWeekSettlementInput<'a> {
+    pub state: EconomicState,
+    pub actual_mint: u128,
+    pub permanent_transfer_fee: u128,
+    pub claim_transfer_fee: u128,
+    pub parent_exists: bool,
+    pub minimum_parent_credit: u128,
+    pub policy_credit_total: u128,
+    pub entitlements: &'a [EntitlementCredit],
+    pub reward_eligible_ids: &'a [Vec<u8>],
+    pub reserve_io_capacity: u128,
+    pub io_fee: u128,
+    pub snapshot_fingerprint: [u8; 32],
+}
+
+struct SettlementCandidate {
+    route: Candidate,
+    maximum_io_pool: u128,
+    rewards: AllocationOutcome,
+    distributed: u128,
+    recipient_fees: u128,
+    reward_delta: u128,
+}
+
+fn settlement_candidate(
+    input: &TwoWeekSettlementInput<'_>,
+    pre_backing: u128,
+    credit: u128,
+) -> Result<SettlementCandidate, PlanningError> {
+    let maximum_io_pool = backed_io(credit, pre_backing, input.state.claims)?;
+    let rewards = allocate_rewards(
+        maximum_io_pool,
+        input.policy_credit_total,
+        input.entitlements,
+    )?;
+    let distributed = rewards.allocations.iter().try_fold(0u128, |sum, item| {
+        sum.checked_add(item.io_e8s).ok_or(PlanningError::Rewards(
+            RewardPolicyError::ArithmeticOverflow,
+        ))
+    })?;
+    let recipients = u128::try_from(rewards.allocations.len())
+        .map_err(|_| PlanningError::InsufficientIoReserve)?;
+    let recipient_fees = input
+        .io_fee
+        .checked_mul(recipients)
+        .ok_or(PlanningError::InsufficientIoReserve)?;
+    let reserve_debit = distributed
+        .checked_add(recipient_fees)
+        .ok_or(PlanningError::InsufficientIoReserve)?;
+    if reserve_debit > input.reserve_io_capacity {
+        return Err(PlanningError::InsufficientIoReserve);
+    }
+    let reward_delta = rewards.allocations.iter().try_fold(0u128, |sum, item| {
+        if input.reward_eligible_ids.contains(&item.sns_neuron_id) {
+            sum.checked_add(item.io_e8s).ok_or(PlanningError::Rewards(
+                RewardPolicyError::ArithmeticOverflow,
+            ))
+        } else {
+            Ok(sum)
+        }
+    })?;
+    Ok(SettlementCandidate {
+        route: route_candidate(input.state, credit, distributed, distributed, reward_delta)?,
+        maximum_io_pool,
+        rewards,
+        distributed,
+        recipient_fees,
+        reward_delta,
+    })
+}
+
+pub fn plan_two_week_settlement(
+    input: TwoWeekSettlementInput<'_>,
+) -> Result<TwoWeekSettlementPlan, PlanningError> {
+    let split = split_40_60(input.actual_mint)?;
+    let permanent_credit = split
+        .permanent
+        .checked_sub(input.permanent_transfer_fee)
+        .ok_or(PlanningError::InsufficientPermanentCredit)?;
+    let one_credit = split
+        .claim
+        .checked_sub(input.claim_transfer_fee)
+        .ok_or(PlanningError::InsufficientClaimCredit)?;
+    let pre_backing = claim_backing(input.state.backing)?;
+    let one = settlement_candidate(&input, pre_backing, one_credit)?;
+    let two = one_credit
+        .checked_sub(input.claim_transfer_fee)
+        .map(|credit| settlement_candidate(&input, pre_backing, credit))
+        .transpose()?;
+    let route = finish_route(
+        input.state.backing.pooled,
+        input.claim_transfer_fee,
+        input.parent_exists,
+        input.minimum_parent_credit,
+        one.route,
+        two.as_ref().map(|candidate| candidate.route),
+    )?;
+    let selected = if route.fee_count == 1 {
+        one
+    } else {
+        two.unwrap()
+    };
+    Ok(TwoWeekSettlementPlan {
+        post_backing: checked_add(pre_backing, route.claim_credit)?,
+        post_claims: checked_add(input.state.claims, selected.distributed)?,
+        post_active_backing: checked_add(input.state.active_backing, selected.distributed)?,
+        post_active_reward: checked_add(input.state.active_reward, selected.reward_delta)?,
+        reward_target: selected.route.reward_target,
+        maximum_io_pool: selected.maximum_io_pool,
+        rewards: selected.rewards,
+        distributed_io: selected.distributed,
+        recipient_io_fees: selected.recipient_fees,
+        snapshot_fingerprint: input.snapshot_fingerprint,
+        permanent_credit,
+        route,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,5 +571,115 @@ mod tests {
         assert_eq!(outcome.rounding_dust_e8s, 1);
         assert_eq!(sum_allocations(&outcome), 49);
         assert_eq!(49 + 51 + 1, 101);
+    }
+
+    fn economic_state(pooled: u128, active: u128) -> EconomicState {
+        EconomicState {
+            backing: io_core_model::Backing {
+                liquid: 100_000_000_000 - pooled,
+                pooled,
+                unwinding: 0,
+                transit: 0,
+            },
+            claims: 100_000_000_000,
+            active_backing: active,
+            active_reward: 0,
+        }
+    }
+
+    fn settlement(
+        pooled: u128,
+        active: u128,
+        actual_mint: u128,
+        fee: u128,
+        parent_exists: bool,
+        minimum: u128,
+    ) -> TwoWeekSettlementPlan {
+        plan_two_week_settlement(TwoWeekSettlementInput {
+            state: economic_state(pooled, active),
+            actual_mint,
+            permanent_transfer_fee: fee,
+            claim_transfer_fee: fee,
+            parent_exists,
+            minimum_parent_credit: minimum,
+            policy_credit_total: 1,
+            entitlements: &[],
+            reward_eligible_ids: &[],
+            reserve_io_capacity: u128::MAX,
+            io_fee: fee,
+            snapshot_fingerprint: [7; 32],
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn joint_planner_selects_each_physical_route() {
+        assert_eq!(
+            settlement(60_000_000_000, 50_000_000_000, 100_000_000, 10_000, true, 1)
+                .route
+                .route,
+            ClaimRoute::AllLiquid
+        );
+        assert_eq!(
+            settlement(49_900_000_000, 50_000_000_000, 100_000_000, 10_000, true, 1)
+                .route
+                .route,
+            ClaimRoute::AllPool
+        );
+        assert_eq!(
+            settlement(49_980_000_000, 50_000_000_000, 100_000_000, 10_000, true, 1)
+                .route
+                .route,
+            ClaimRoute::Mixed
+        );
+    }
+
+    #[test]
+    fn two_fee_all_pool_candidate_becomes_direct_one_fee_all_pool() {
+        let plan = settlement(49_970_010_000, 50_000_000_000, 100_000_000, 10_000, true, 1);
+        assert_eq!(plan.route.route, ClaimRoute::AllPool);
+        assert_eq!(plan.route.fee_count, 1);
+        assert_eq!(plan.route.pooled_credit, 59_990_000);
+        assert_eq!(plan.route.liquid_credit, 0);
+        assert_eq!(plan.route.over_target, 5_000);
+        assert_eq!(plan.route.claim_credit - 59_980_000, 10_000);
+    }
+
+    #[test]
+    fn optional_second_fee_and_absent_parent_fall_back_to_liquid() {
+        let sub_fee = settlement(0, 1, 25, 10, true, 1);
+        assert_eq!(sub_fee.route.route, ClaimRoute::AllLiquid);
+        assert_eq!(sub_fee.route.fee_count, 1);
+        let absent = settlement(0, 1_000, 100_000_000, 10_000, false, 100_000_000);
+        assert_eq!(absent.route.route, ClaimRoute::AllLiquid);
+        assert_eq!(absent.route.pooled_credit, 0);
+    }
+
+    #[test]
+    fn settlement_freezes_reward_effects_and_io_fees() {
+        let eligible = vec![vec![1; 32]];
+        let plan = plan_two_week_settlement(TwoWeekSettlementInput {
+            state: economic_state(60_000_000_000, 50_000_000_000),
+            actual_mint: 100_000_000,
+            permanent_transfer_fee: 10_000,
+            claim_transfer_fee: 10_000,
+            parent_exists: true,
+            minimum_parent_credit: 1,
+            policy_credit_total: 2,
+            entitlements: &[credit(1, 1)],
+            reward_eligible_ids: &eligible,
+            reserve_io_capacity: 100_000_000,
+            io_fee: 1_000,
+            snapshot_fingerprint: [9; 32],
+        })
+        .unwrap();
+        assert!(plan.distributed_io > 0);
+        assert_eq!(plan.recipient_io_fees, 1_000);
+        assert_eq!(plan.post_active_reward, plan.distributed_io);
+        assert_eq!(plan.snapshot_fingerprint, [9; 32]);
+        assert_eq!(
+            plan.distributed_io + plan.rewards.forfeited_io_e8s + plan.rewards.rounding_dust_e8s,
+            plan.maximum_io_pool
+        );
     }
 }

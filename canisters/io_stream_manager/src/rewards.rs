@@ -313,7 +313,7 @@ async fn freeze_and_prepare(
         .checked_sub(canonical.reserve_io_e8s)
         .and_then(|value| value.checked_sub(excluded))
         .ok_or_else(|| ApiError::Invalid("invalid redeemable IO supply".into()))?;
-    let target = io_core_model::two_week_target(active_io, canonical.liquid_icp_e8s, redeemable)
+    let target = io_core_model::target(active_io, canonical.liquid_icp_e8s, redeemable)
         .map_err(|error| ApiError::Invalid(format!("two-week target failed: {error:?}")))?;
     let readiness = reward_nns::reconcile_readiness(snapshot.config.nns_manager, target)
         .await

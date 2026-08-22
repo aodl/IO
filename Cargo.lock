@@ -1154,6 +1154,10 @@ dependencies = [
 [[package]]
 name = "io-proposed-economics-tests"
 version = "0.1.0"
+dependencies = [
+ "io-core-model",
+ "io-reward-policy",
+]
 
 [[package]]
 name = "io-receipt-types"
@@ -1167,6 +1171,9 @@ dependencies = [
 [[package]]
 name = "io-reward-policy"
 version = "0.1.0"
+dependencies = [
+ "io-core-model",
+]
 
 [[package]]
 name = "io-sns-lifecycle"

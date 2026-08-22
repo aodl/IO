@@ -60,7 +60,7 @@ struct GovernanceCallCounters {
     manage_neuron: u64,
 }
 
-#[derive(Clone, Copy, Debug, Default, CandidType, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
 struct LedgerCallCounters {
     transfer: u64,
     transfer_from: u64,

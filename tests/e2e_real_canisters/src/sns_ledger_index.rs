@@ -571,32 +571,37 @@ pub fn run_installed_stream_redemption(required: bool) {
         },
     )
     .expect("approval should succeed");
-    let supply_before = icrc::icrc1_total_supply(&pic, io_ledger)
+    let supply_before: u128 = icrc::icrc1_total_supply(&pic, io_ledger)
         .0
         .try_into()
         .unwrap();
-    let reserve_before = icrc::icrc1_balance_of(&pic, io_ledger, reserve.clone())
+    let reserve_before: u128 = icrc::icrc1_balance_of(&pic, io_ledger, reserve.clone())
         .0
         .try_into()
         .unwrap();
-    let liquid_before = icrc::icrc1_balance_of(&pic, icp_ledger, liquid.clone())
+    let liquid_before: u128 = icrc::icrc1_balance_of(&pic, icp_ledger, liquid.clone())
         .0
         .try_into()
         .unwrap();
     let quote = io_core_model::redemption_quote(
+        io_core_model::EconomicState {
+            backing: io_core_model::Backing {
+                liquid: liquid_before,
+                ..Default::default()
+            },
+            claims: supply_before - reserve_before - user_io_e8s as u128,
+            active_backing: 0,
+            active_reward: 0,
+        },
         amount as u128,
         icrc::FEE_E8S as u128,
-        supply_before,
-        reserve_before,
-        user_io_e8s as u128,
-        liquid_before,
         icrc::FEE_E8S as u128,
     )
     .unwrap();
     let args = RedeemArgs {
         from_subaccount: None,
         io_amount_e8s: amount as u128,
-        min_icp_out_e8s: quote.net_icp_e8s,
+        min_icp_out_e8s: quote.net_icp,
         max_io_fee_e8s: icrc::FEE_E8S as u128,
         max_icp_fee_e8s: icrc::FEE_E8S as u128,
         expires_at_nanos: now + 800_000_000_000,
@@ -648,11 +653,11 @@ pub fn run_installed_stream_redemption(required: bool) {
     );
     assert_eq!(
         icrc::icrc1_balance_of(&pic, icp_ledger, user_account),
-        Nat::from(quote.net_icp_e8s)
+        Nat::from(quote.net_icp)
     );
     assert_eq!(
         icrc::icrc1_balance_of(&pic, icp_ledger, liquid.clone()),
-        Nat::from(liquid_before - quote.gross_icp_e8s)
+        Nat::from(liquid_before - quote.gross_icp)
     );
     pocketic_env::upgrade_canister(&pic, stream, stream_wasm.clone(), encode_one(()).unwrap());
     let paused_after_payout_upgrade: Status = decode_one(
@@ -675,8 +680,8 @@ pub fn run_installed_stream_redemption(required: bool) {
         Ok(StreamProgress::Redemption(RedemptionProgress::Completed(result))) => result,
         other => panic!("expected completion, got {other:?}"),
     };
-    assert_eq!(result.gross_icp_e8s, quote.gross_icp_e8s);
-    assert_eq!(result.net_icp_e8s, quote.net_icp_e8s);
+    assert_eq!(result.gross_icp_e8s, quote.gross_icp);
+    assert_eq!(result.net_icp_e8s, quote.net_icp);
     let replay: Result<RedemptionProgress, ApiError> = decode_one(
         &pic.update_call(stream, user, "redeem", encode_one(args.clone()).unwrap())
             .unwrap(),

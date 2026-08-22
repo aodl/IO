@@ -328,17 +328,28 @@ pub fn calculate(
         .iter()
         .try_fold(0u128, |total, (_, balance)| total.checked_add(*balance))
         .ok_or("excluded balance sum overflow")?;
-    let quote = io_core_model::redemption_quote(
-        args.io_amount_e8s,
-        snapshot.io_fee_e8s,
+    let claims = io_core_model::claim_supply(
         snapshot.total_supply_e8s,
         snapshot.reserve_io_e8s,
-        excluded,
-        snapshot.liquid_icp_e8s,
+        &[excluded],
+    )
+    .map_err(|error| format!("claim supply failed: {error:?}"))?;
+    let quote = io_core_model::redemption_quote(
+        io_core_model::EconomicState {
+            backing: io_core_model::Backing {
+                liquid: snapshot.liquid_icp_e8s,
+                ..io_core_model::Backing::default()
+            },
+            claims,
+            active_backing: 0,
+            active_reward: 0,
+        },
+        args.io_amount_e8s,
+        snapshot.io_fee_e8s,
         snapshot.icp_fee_e8s,
     )
     .map_err(|error| format!("redemption quote failed: {error:?}"))?;
-    if quote.net_icp_e8s < args.min_icp_out_e8s {
+    if quote.net_icp < args.min_icp_out_e8s {
         return Err("minimum ICP output not met".into());
     }
     let io_memo = deterministic_memo(b"io-redemption-pull-v1", caller, args.nonce);
@@ -359,8 +370,8 @@ pub fn calculate(
         nonce: args.nonce,
         account,
         io_amount_e8s: args.io_amount_e8s,
-        gross_icp_e8s: quote.gross_icp_e8s,
-        net_icp_e8s: quote.net_icp_e8s,
+        gross_icp_e8s: quote.gross_icp,
+        net_icp_e8s: quote.net_icp,
         snapshot,
         io_pull,
         icp_payout: None,

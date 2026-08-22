@@ -2314,19 +2314,24 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             let liquid_balance =
                 u128::try_from(icrc::icrc1_balance_of(&pic, icp_ledger, liquid_account).0).unwrap();
             let quote = io_core_model::redemption_quote(
+                io_core_model::EconomicState {
+                    backing: io_core_model::Backing {
+                        liquid: liquid_balance,
+                        ..Default::default()
+                    },
+                    claims: total_supply - reserve_balance - excluded_balance,
+                    active_backing: 0,
+                    active_reward: 0,
+                },
                 u128::from(amount),
                 u128::from(FEE_E8S),
-                total_supply,
-                reserve_balance,
-                excluded_balance,
-                liquid_balance,
                 u128::from(FEE_E8S),
             )
             .unwrap();
             let args = RedeemArgs {
                 from_subaccount: None,
                 io_amount_e8s: u128::from(amount),
-                min_icp_out_e8s: quote.net_icp_e8s,
+                min_icp_out_e8s: quote.net_icp,
                 max_io_fee_e8s: u128::from(FEE_E8S),
                 max_icp_fee_e8s: u128::from(FEE_E8S),
                 expires_at_nanos: now + 800_000_000_000,
@@ -2383,11 +2388,11 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                 other => panic!("pending-batch redemption did not complete: {other:?}"),
             };
             let quote = redemption.expect("redemption quote was captured");
-            assert_eq!(result.gross_icp_e8s, quote.gross_icp_e8s);
-            assert_eq!(result.net_icp_e8s, quote.net_icp_e8s);
+            assert_eq!(result.gross_icp_e8s, quote.gross_icp);
+            assert_eq!(result.net_icp_e8s, quote.net_icp);
             assert_eq!(
                 icrc::icrc1_balance_of(&pic, icp_ledger, icrc::account(controller, None)),
-                redemption_icp_before.as_ref().unwrap().clone() + Nat::from(quote.net_icp_e8s)
+                redemption_icp_before.as_ref().unwrap().clone() + Nat::from(quote.net_icp)
             );
             assert_eq!(
                 stream_status().pending_entitlement_batch_eligible_credit,
