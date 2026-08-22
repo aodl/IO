@@ -6,7 +6,7 @@ use {
 };
 
 use crate::transfer::NnsTransferAttempt;
-pub use io_receipt_types::LiquidReceiptPermit as StreamReceiptPermit;
+pub use io_receipt_types::JupiterReceiptPermit as StreamReceiptPermit;
 
 pub const PINNED_NNS_GOVERNANCE_COMMIT: &str = "8aa4680e378f3248e7e7b9b8237915aded999bd9";
 pub const PINNED_ICP_LEDGER_COMMIT: &str = "021bf342f66296d5605b355a61b2430406a83783";

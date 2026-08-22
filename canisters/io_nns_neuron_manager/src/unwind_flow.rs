@@ -268,6 +268,7 @@ async fn observe_cleanup(mut operation: UnwindOperation) -> Result<UnwindProgres
     operation.parent_maturity_e8s = u128::from(parent.maturity_e8s)
         .checked_add(u128::from(parent.staked_maturity_e8s))
         .ok_or_else(|| ApiError::Invalid("parent maturity overflow".into()))?;
+    operation.parent_principal_e8s = parent.snapshot.cached_stake_e8s;
     operation.phase = UnwindPhase::DelayIncreaseSubmitted;
     replace(&expected, operation.clone())?;
     execution::increase_delay(&current.config, operation.child_neuron_id, 1).await?;
@@ -345,7 +346,8 @@ async fn prove_cleanup(mut operation: UnwindOperation) -> Result<UnwindProgress,
     if child.snapshot.cached_stake_e8s != 0
         || child.maturity_e8s != 0
         || child.staked_maturity_e8s != 0
-        || parent_maturity < expected_maturity
+        || parent_maturity != expected_maturity
+        || parent.snapshot.cached_stake_e8s != operation.parent_principal_e8s
     {
         return pause(operation, "child cleanup conservation proof failed".into());
     }
@@ -426,6 +428,7 @@ fn promote(cohort: PassiveCohort, phase: UnwindPhase) -> Result<(), ApiError> {
         expected_block_index: cohort.disbursement_block,
         child_maturity_e8s: 0,
         parent_maturity_e8s: 0,
+        parent_principal_e8s: 0,
         phase,
     }));
     latest.next_operation_sequence = latest

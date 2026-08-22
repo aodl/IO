@@ -127,7 +127,7 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
                 expected_io_fee_e8s: 10_000,
                 expected_icp_fee_e8s: 10_000,
                 jupiter_activation_block_floor: 1,
-                seeded_two_year_principal_e8s: 1,
+                audited_permanent_principal_e8s: 1,
                 transfer_retry_delay_nanos: 1_000_000_000,
                 ledger_deduplication_window_nanos: 86_400_000_000_000,
             },
@@ -301,7 +301,7 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
         expected_io_fee_e8s: 10_000,
         expected_icp_fee_e8s: 10_000,
         jupiter_activation_block_floor: old_block + 1,
-        seeded_two_year_principal_e8s: 1_000_000,
+        audited_permanent_principal_e8s: 1_000_000,
         transfer_retry_delay_nanos: 1_000_000_000,
         ledger_deduplication_window_nanos: 86_400_000_000_000,
     };

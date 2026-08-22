@@ -144,8 +144,8 @@ pub fn set_paused() {
             if matches!(operation.as_ref(), crate::state::RedemptionStreamOperation::Preparing(_))
     ) || matches!(
         &state.active_operation,
-        Some(crate::state::StreamOperation::LiquidReceipt(operation))
-            if matches!(operation.as_ref(), crate::state::LiquidReceiptStreamOperation::Preparing(_))
+        Some(crate::state::StreamOperation::JupiterReceipt(operation))
+            if matches!(operation.as_ref(), crate::state::JupiterReceiptStreamOperation::Preparing(_))
     ) {
         state.active_operation = None;
     }

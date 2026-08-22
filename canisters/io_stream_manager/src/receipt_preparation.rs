@@ -6,9 +6,9 @@ use crate::{
     redemption::CanonicalRedemptionSnapshot,
     state::{Account, StreamConfig},
 };
-use io_receipt_types::PrepareLiquidReceiptArgs;
+use io_receipt_types::PrepareJupiterReceiptArgs;
 
-pub fn request_fingerprint(args: &PrepareLiquidReceiptArgs) -> Vec<u8> {
+pub fn request_fingerprint(args: &PrepareJupiterReceiptArgs) -> Vec<u8> {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(b"io-liquid-receipt-request-v1\0");
@@ -26,13 +26,15 @@ pub struct BackingSnapshot {
     pub reserve_io_e8s: u128,
     pub excluded_io_balances: Vec<(Account, u128)>,
     pub liquid_icp_e8s: u128,
+    pub pre_event_claim_backing_e8s: u128,
+    pub pre_event_claim_supply_e8s: u128,
     pub io_fee_e8s: u128,
     pub observed_at_nanos: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct ReceiptPreparation {
-    pub request: PrepareLiquidReceiptArgs,
+    pub request: PrepareJupiterReceiptArgs,
     pub request_fingerprint: Vec<u8>,
     pub authority: Principal,
     pub captured_control_epoch: u64,
@@ -89,12 +91,12 @@ impl ReceiptPreparation {
 pub(crate) fn validate_post_receipt_snapshot(
     before: &BackingSnapshot,
     after: &CanonicalRedemptionSnapshot,
-    liquid_receipt_e8s: u128,
+    jupiter_receipt_e8s: u128,
     allowed_reserve_debit_e8s: u128,
 ) -> Result<(), ApiError> {
     let required_liquid = before
         .liquid_icp_e8s
-        .checked_add(liquid_receipt_e8s)
+        .checked_add(jupiter_receipt_e8s)
         .ok_or_else(|| ApiError::Invalid("post-receipt liquid requirement overflow".into()))?;
     let minimum_reserve = before
         .reserve_io_e8s
@@ -144,6 +146,8 @@ mod tests {
                 100,
             )],
             liquid_icp_e8s: 700,
+            pre_event_claim_backing_e8s: 700,
+            pre_event_claim_supply_e8s: 700,
             io_fee_e8s: 10,
             observed_at_nanos: 1,
         }

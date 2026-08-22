@@ -105,7 +105,7 @@ fn require_unique_neurons(neurons: &[Neuron]) -> Result<(), ApiError> {
 
 fn eligible_destination(
     governance: Principal,
-    excluded_io_accounts: &[Account],
+    nonredeemable_governance_io_accounts: &[Account],
     neuron: &Neuron,
 ) -> Result<Option<Account>, ApiError> {
     if !neuron.is_non_dissolving_for(io_core_model::TWO_WEEK_SECONDS) {
@@ -120,31 +120,38 @@ fn eligible_destination(
         owner: governance,
         subaccount: Some(neuron.id.clone()),
     };
-    let excluded = excluded_io_accounts
-        .iter()
-        .try_fold(false, |matched, account| {
-            destination
-                .effective_eq(account)
-                .map(|same| matched || same)
-        });
-    excluded
-        .map(|excluded| (!excluded).then_some(destination))
+    let nonredeemable =
+        nonredeemable_governance_io_accounts
+            .iter()
+            .try_fold(false, |matched, account| {
+                destination
+                    .effective_eq(account)
+                    .map(|same| matched || same)
+            });
+    nonredeemable
+        .map(|nonredeemable| (!nonredeemable).then_some(destination))
         .map_err(ApiError::Invalid)
 }
 
 #[cfg(test)]
 pub(crate) fn event_credits(
     governance: Principal,
-    excluded_io_accounts: &[Account],
+    nonredeemable_governance_io_accounts: &[Account],
     event: &RewardEvent,
     neurons: &[Neuron],
 ) -> Result<(RewardEventClassification, Vec<RewardEventCredit>), ApiError> {
-    event_credits_for(governance, excluded_io_accounts, event, neurons, None)
+    event_credits_for(
+        governance,
+        nonredeemable_governance_io_accounts,
+        event,
+        neurons,
+        None,
+    )
 }
 
 pub(crate) fn event_credits_for(
     governance: Principal,
-    excluded_io_accounts: &[Account],
+    nonredeemable_governance_io_accounts: &[Account],
     event: &RewardEvent,
     neurons: &[Neuron],
     reward_eligible_ids: Option<&std::collections::BTreeSet<Vec<u8>>>,
@@ -175,7 +182,8 @@ pub(crate) fn event_credits_for(
         canonical_share_total = canonical_share_total
             .checked_add(current_shares)
             .ok_or_else(|| ApiError::Invalid("canonical reward-share total overflow".into()))?;
-        let Some(destination) = eligible_destination(governance, excluded_io_accounts, neuron)?
+        let Some(destination) =
+            eligible_destination(governance, nonredeemable_governance_io_accounts, neuron)?
         else {
             continue;
         };
@@ -444,7 +452,7 @@ mod tests {
     #[test]
     fn no_proposal_excludes_protocol_jupiter_and_ineligible_neurons() {
         let governance = principal(1);
-        let excluded = vec![
+        let nonredeemable = vec![
             Account {
                 owner: governance,
                 subaccount: Some(vec![1; 32]),
@@ -466,7 +474,7 @@ mod tests {
             neuron(7, 700, io_core_model::TWO_WEEK_SECONDS, None),
         ];
         let (_, weights) =
-            event_credits(governance, &excluded, &event(1, 10, 0), &neurons).unwrap();
+            event_credits(governance, &nonredeemable, &event(1, 10, 0), &neurons).unwrap();
         assert_eq!(weights.len(), 1);
         assert_eq!(weights[0].sns_neuron_id, vec![7; 32]);
         assert_eq!(
@@ -735,7 +743,7 @@ mod tests {
     #[test]
     fn excluded_current_event_share_is_forfeited() {
         let governance = principal(1);
-        let excluded = Account {
+        let nonredeemable = Account {
             owner: governance,
             subaccount: Some(vec![9; 32]),
         };
@@ -754,7 +762,7 @@ mod tests {
             ),
         ];
         let (_, weights) =
-            event_credits(governance, &[excluded], &event(1, 10, 1), &neurons).unwrap();
+            event_credits(governance, &[nonredeemable], &event(1, 10, 1), &neurons).unwrap();
         assert_eq!(weights.len(), 1);
         assert_eq!(weights[0].event_credit, daily_fraction(1, 2));
         let allocation = io_reward_policy::allocate_rewards(

@@ -49,7 +49,8 @@ pub async fn redemption_snapshot(
         config.liquid_icp.clone(),
     )
     .await?;
-    let registry = crate::state::read().backing_registry;
+    let stream_snapshot = crate::state::read();
+    let registry = stream_snapshot.backing_registry.clone();
     let neurons = io_sns_reward_boundary::list_all_neurons(config.sns_governance)
         .await
         .map_err(|error| format!("SNS structural observation failed: {error:?}"))?;
@@ -79,7 +80,12 @@ pub async fn redemption_snapshot(
                 StructuralStakeState::Active
             }
             io_sns_reward_boundary::DissolveState::Dissolving => StructuralStakeState::Dissolving,
-            _ => StructuralStakeState::LiquidOrDissolved,
+            io_sns_reward_boundary::DissolveState::Dissolved => {
+                StructuralStakeState::LiquidOrDissolved
+            }
+            io_sns_reward_boundary::DissolveState::NotDissolving { .. } => {
+                return Err("SNS structural observation contains a non-14-day active neuron".into())
+            }
         };
         let ledger_balance_e8s = nat_call(
             config.io_ledger,
@@ -120,11 +126,19 @@ pub async fn redemption_snapshot(
         .iter()
         .try_fold(0u128, |total, (_, balance)| total.checked_add(*balance))
         .ok_or("nonredeemable balance overflow")?;
+    let stream_transit = stream_transit_backing(&stream_snapshot, &nns_before)?;
+    let transit_backing_e8s = nns_before
+        .transit_backing_e8s
+        .checked_add(stream_transit)
+        .ok_or("combined transit backing overflow")?;
+    if crate::state::read() != stream_snapshot {
+        return Err("Stream state drifted across the canonical reads".into());
+    }
     let total_claim_backing_e8s = io_core_model::claim_backing(io_core_model::Backing {
         liquid,
         pooled: nns_before.pooled_principal_e8s,
         unwinding: nns_before.unwinding_principal_e8s,
-        transit: nns_before.transit_backing_e8s,
+        transit: transit_backing_e8s,
     })
     .map_err(|error| format!("claim backing failed: {error:?}"))?;
     let observation_bytes = candid::encode_one((
@@ -146,24 +160,84 @@ pub async fn redemption_snapshot(
         liquid_icp_e8s: liquid,
         pooled_principal_e8s: nns_before.pooled_principal_e8s,
         unwinding_principal_e8s: nns_before.unwinding_principal_e8s,
-        transit_backing_e8s: nns_before.transit_backing_e8s,
+        transit_backing_e8s,
         total_claim_backing_e8s,
         active_backing_io_e8s,
         active_reward_io_e8s,
         structural_stakes,
         nns_control_epoch: nns_before.control_epoch,
         nns_operation_sequence: nns_before.active_operation_sequence,
+        last_completed_pool_operation_sequence: nns_before.last_completed_pool_operation_sequence,
         active_unwind_generation: nns_before.active_unwind_generation,
         live_cohort_generations: nns_before
             .live_cohorts
             .iter()
             .map(|cohort| cohort.generation)
             .collect(),
+        oldest_ready_at_seconds: nns_before.oldest_ready_at_seconds,
         nns_fingerprint: nns_before.fingerprint,
+        permanent_staking_account: nns_before.permanent_staking_account,
+        pool_staking_account: nns_before.pool_staking_account,
+        minimum_parent_stake_e8s: nns_before.minimum_parent_stake_e8s,
+        pooled_parent_exists: nns_before.parent.is_some(),
         observation_fingerprint: sha2::Sha256::digest(observation_bytes).to_vec(),
         io_fee_e8s: io_fee,
         icp_fee_e8s: icp_fee,
     })
+}
+
+fn stream_transit_backing(
+    stream: &crate::state::StreamStateV1,
+    nns: &io_nns_types::backing::ClaimBackingObservation,
+) -> Result<u128, String> {
+    use crate::{state::StreamOperation, transfer::TransferState};
+    match &stream.active_operation {
+        Some(StreamOperation::PoolTopUp(operation)) => match operation.transfer.state {
+            TransferState::Submitted { .. } => {
+                Err("pool top-up transfer has an ambiguous submitted effect".into())
+            }
+            TransferState::Succeeded { .. }
+                if !operation.nns_transfer_proved
+                    && nns.last_completed_pool_operation_sequence
+                        != Some(operation.permit.operation_sequence)
+                    && nns.pooled_principal_e8s
+                        < operation
+                            .permit
+                            .expected_parent_principal_e8s
+                            .checked_add(operation.permit.expected_credit_e8s)
+                            .ok_or("pool top-up principal overflow")?
+                    && nns.transit_backing_e8s < operation.permit.expected_credit_e8s =>
+            {
+                Ok(operation.permit.expected_credit_e8s)
+            }
+            _ => Ok(0),
+        },
+        Some(StreamOperation::BackingInflow(operation)) => {
+            let Some(transfer) = &operation.pooled_transfer else {
+                return Ok(0);
+            };
+            match transfer.state {
+                TransferState::Submitted { .. } => {
+                    Err("mixed pooled transfer has an ambiguous submitted effect".into())
+                }
+                TransferState::Succeeded { .. } => {
+                    let route = operation.permit.route();
+                    let expected = operation
+                        .permit
+                        .expected_parent_before_e8s
+                        .checked_add(route.pooled_credit)
+                        .ok_or("mixed pooled principal overflow")?;
+                    Ok(if nns.pooled_principal_e8s < expected {
+                        route.pooled_credit
+                    } else {
+                        0
+                    })
+                }
+                _ => Ok(0),
+            }
+        }
+        _ => Ok(0),
+    }
 }
 
 async fn nns_observation(

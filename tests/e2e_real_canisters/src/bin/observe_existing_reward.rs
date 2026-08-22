@@ -175,8 +175,8 @@ fn main() {
         assert_eq!(
             dashboard.nns_manager.as_ref().map(|status| (
                 status.lifecycle,
-                status.two_week_maturity_baseline_reconciled,
-                status.latest_two_week_target.is_some()
+                status.permanent_maturity_baseline_reconciled,
+                status.latest_pooled_target.is_some()
             )),
             Some((io_historian::Lifecycle::Ready, true, false)),
         );
@@ -187,7 +187,7 @@ fn main() {
                 .map(|status| status.neurons.len()),
             Some(2),
         );
-        assert!(dashboard.protocol.redemption_rate.is_some());
+        assert!(dashboard.protocol.claim_rate.is_some());
         assert!(dashboard
             .index
             .as_ref()

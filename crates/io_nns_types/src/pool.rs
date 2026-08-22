@@ -36,6 +36,7 @@ pub struct UnwindOperation {
     pub expected_block_index: Option<u128>,
     pub child_maturity_e8s: u128,
     pub parent_maturity_e8s: u128,
+    pub parent_principal_e8s: u128,
     pub phase: UnwindPhase,
 }
 
@@ -46,6 +47,20 @@ impl UnwindOperation {
             UnwindPhase::SplitPrepared | UnwindPhase::SplitSubmitted
         );
         let identified = self.phase == UnwindPhase::ChildIdentified;
+        let maturity_cleanup = matches!(
+            self.phase,
+            UnwindPhase::DelayIncreaseSubmitted
+                | UnwindPhase::DelayIncreaseProved
+                | UnwindPhase::MergePrepared
+                | UnwindPhase::MergeSubmitted
+                | UnwindPhase::MergeProved
+        );
+        let cleanup_with_maturity = self.phase == UnwindPhase::CleanupProved
+            && self.child_maturity_e8s > 0
+            && self.parent_principal_e8s > 0;
+        let no_maturity_evidence = self.child_maturity_e8s == 0
+            && self.parent_maturity_e8s == 0
+            && self.parent_principal_e8s == 0;
         if self.operation_sequence == 0
             || self.operation_sequence >= next_operation_sequence
             || self.generation == 0
@@ -57,6 +72,9 @@ impl UnwindOperation {
                 && !identified
                 && (self.child_neuron_id == 0 || self.principal_e8s == 0))
             || (!before_child && !identified && self.child_staking_subaccount.len() != 32)
+            || (maturity_cleanup
+                && (self.child_maturity_e8s == 0 || self.parent_principal_e8s == 0))
+            || (!maturity_cleanup && !cleanup_with_maturity && !no_maturity_evidence)
         {
             return Err("unwind command evidence is inconsistent".into());
         }

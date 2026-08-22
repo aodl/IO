@@ -106,7 +106,7 @@ impl RedemptionPreparation {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct CanonicalRedemptionSnapshot {
     pub total_supply_e8s: u128,
     pub reserve_io_e8s: u128,
@@ -121,12 +121,54 @@ pub struct CanonicalRedemptionSnapshot {
     pub structural_stakes: Vec<StructuralStakeObservation>,
     pub nns_control_epoch: u64,
     pub nns_operation_sequence: u64,
+    pub last_completed_pool_operation_sequence: Option<u64>,
     pub active_unwind_generation: Option<u64>,
     pub live_cohort_generations: Vec<u64>,
+    pub oldest_ready_at_seconds: Option<u64>,
     pub nns_fingerprint: Vec<u8>,
+    pub permanent_staking_account: Account,
+    pub pool_staking_account: Account,
+    pub minimum_parent_stake_e8s: u128,
+    pub pooled_parent_exists: bool,
     pub observation_fingerprint: Vec<u8>,
     pub io_fee_e8s: u128,
     pub icp_fee_e8s: u128,
+}
+
+impl Default for CanonicalRedemptionSnapshot {
+    fn default() -> Self {
+        let empty = Account {
+            owner: Principal::anonymous(),
+            subaccount: None,
+        };
+        Self {
+            total_supply_e8s: 0,
+            reserve_io_e8s: 0,
+            excluded_io_balances: Vec::new(),
+            liquid_icp_e8s: 0,
+            pooled_principal_e8s: 0,
+            unwinding_principal_e8s: 0,
+            transit_backing_e8s: 0,
+            total_claim_backing_e8s: 0,
+            active_backing_io_e8s: 0,
+            active_reward_io_e8s: 0,
+            structural_stakes: Vec::new(),
+            nns_control_epoch: 0,
+            nns_operation_sequence: 0,
+            last_completed_pool_operation_sequence: None,
+            active_unwind_generation: None,
+            live_cohort_generations: Vec::new(),
+            oldest_ready_at_seconds: None,
+            nns_fingerprint: Vec::new(),
+            permanent_staking_account: empty.clone(),
+            pool_staking_account: empty,
+            minimum_parent_stake_e8s: 0,
+            pooled_parent_exists: false,
+            observation_fingerprint: Vec::new(),
+            io_fee_e8s: 0,
+            icp_fee_e8s: 0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]

@@ -1,7 +1,13 @@
 use candid::{CandidType, Principal};
-use io_receipt_types::TwoWeekBackingReadiness as BackingReadiness;
-pub use io_receipt_types::{BackingNotReadyReason, BackingTargetStatus as TargetStatus};
 use serde::Deserialize;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum BackingNotReadyReason {
+    Paused,
+    Busy,
+    ReconciliationPending,
+    BelowThreshold,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CallError {
@@ -14,11 +20,6 @@ pub enum CallError {
 #[derive(CandidType)]
 struct PrepareMaturityArgs {
     entitlement_batch_generation: u64,
-    target_e8s: u128,
-}
-
-#[derive(CandidType)]
-struct ReconcileReadinessArgs {
     target_e8s: u128,
 }
 
@@ -39,18 +40,6 @@ enum NnsError {
         remaining_e8s: u64,
         minimum_e8s: u64,
     },
-}
-
-pub async fn reconcile_readiness(
-    manager: Principal,
-    target_e8s: u128,
-) -> Result<BackingReadiness, CallError> {
-    nns_call(
-        manager,
-        "reconcile_two_week_backing_readiness",
-        ReconcileReadinessArgs { target_e8s },
-    )
-    .await
 }
 
 pub async fn prepare_maturity(

@@ -8,7 +8,9 @@ use serde::Deserialize;
 use std::{borrow::Cow, cell::RefCell};
 
 use crate::{
-    receipt::{LastCompletedReceipt, LiquidReceiptOperation, ReceiptPreparation},
+    backing_inflow::{BackingInflowOperation, LastCompletedBackingInflow},
+    pool_reconciliation::PoolTopUpOperation,
+    receipt::{JupiterReceiptState, LastCompletedReceipt, ReceiptPreparation},
     redemption::{RedemptionOperation, RedemptionPreparation},
 };
 pub use io_accounts::Account;
@@ -149,7 +151,9 @@ pub struct DispatchEpoch(pub u64);
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum StreamOperation {
     Redemption(Box<RedemptionStreamOperation>),
-    LiquidReceipt(Box<LiquidReceiptStreamOperation>),
+    JupiterReceipt(Box<JupiterReceiptStreamOperation>),
+    BackingInflow(Box<BackingInflowOperation>),
+    PoolTopUp(Box<PoolTopUpOperation>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -159,9 +163,9 @@ pub enum RedemptionStreamOperation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum LiquidReceiptStreamOperation {
+pub enum JupiterReceiptStreamOperation {
     Preparing(Box<ReceiptPreparation>),
-    Active(Box<LiquidReceiptOperation>),
+    Active(Box<JupiterReceiptState>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -279,6 +283,17 @@ pub struct BackingRewardRecord {
 pub struct ReconciliationCheckpoint {
     pub generation: u64,
     pub event_marker: u64,
+    pub observed_at_nanos: u64,
+    pub claim_supply_e8s: u128,
+    pub liquid_backing_e8s: u128,
+    pub pooled_backing_e8s: u128,
+    pub unwinding_backing_e8s: u128,
+    pub transit_backing_e8s: u128,
+    pub total_claim_backing_e8s: u128,
+    pub active_backing_io_e8s: u128,
+    pub active_reward_io_e8s: u128,
+    pub live_cohort_count: u32,
+    pub oldest_ready_at_seconds: Option<u64>,
     pub pooled_target_e8s: u128,
     pub observed_pooled_e8s: u128,
     pub snapshot_fingerprint: Vec<u8>,
@@ -338,6 +353,7 @@ pub struct StreamStateV1 {
     pub next_operation_sequence: OperationSequence,
     pub control_epoch: u64,
     pub last_completed_receipt: Option<LastCompletedReceipt>,
+    pub last_completed_backing_inflow: Option<LastCompletedBackingInflow>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -353,7 +369,7 @@ impl StreamStateV1 {
             subaccount: None,
         };
         Self {
-            launch_schema_marker: 2,
+            launch_schema_marker: 3,
             config: StreamConfig {
                 io_ledger: anonymous,
                 icp_ledger: anonymous,
@@ -386,13 +402,14 @@ impl StreamStateV1 {
             next_operation_sequence: OperationSequence(0),
             control_epoch: 0,
             last_completed_receipt: None,
+            last_completed_backing_inflow: None,
         }
     }
 }
 
 impl StreamStateV1 {
     pub fn validate(&self, canister_self: Principal) -> Result<(), String> {
-        if self.launch_schema_marker != 2 {
+        if self.launch_schema_marker != 3 {
             return Err("invalid Stream launch schema marker".into());
         }
         self.config.validate(canister_self)?;
@@ -434,15 +451,22 @@ impl StreamStateV1 {
                     }
                 }
             },
-            Some(StreamOperation::LiquidReceipt(operation)) => match operation.as_ref() {
-                LiquidReceiptStreamOperation::Preparing(value) => {
+            Some(StreamOperation::JupiterReceipt(operation)) => match operation.as_ref() {
+                JupiterReceiptStreamOperation::Preparing(value) => {
                     value.validate(&self.config)?;
                     if value.captured_control_epoch != self.control_epoch {
                         return Err("receipt preparation control epoch is stale".into());
                     }
                 }
-                LiquidReceiptStreamOperation::Active(value) => value.validate(&self.config)?,
+                JupiterReceiptStreamOperation::Active(value) => value.validate(&self.config)?,
             },
+            Some(StreamOperation::BackingInflow(operation)) => {
+                operation.validate()?;
+                if operation.permit.stream_operation_sequence >= self.next_operation_sequence.0 {
+                    return Err("active backing-inflow sequence was not reserved".into());
+                }
+            }
+            Some(StreamOperation::PoolTopUp(operation)) => operation.validate(&self.config)?,
             None => {}
         }
         self.reward_entitlements.validate(&self.config)?;
@@ -454,7 +478,21 @@ impl StreamStateV1 {
                 checkpoint.generation == 0
                     || checkpoint.generation > self.latest_reconciliation_generation
                     || checkpoint.event_marker == 0
+                    || checkpoint.observed_at_nanos == 0
                     || checkpoint.snapshot_fingerprint.len() != 32
+                    || checkpoint.live_cohort_count
+                        > io_nns_types::backing::MAX_LIVE_UNWIND_COHORTS as u32
+                    || io_core_model::claim_backing(io_core_model::Backing {
+                        liquid: checkpoint.liquid_backing_e8s,
+                        pooled: checkpoint.pooled_backing_e8s,
+                        unwinding: checkpoint.unwinding_backing_e8s,
+                        transit: checkpoint.transit_backing_e8s,
+                    }) != Ok(checkpoint.total_claim_backing_e8s)
+                    || io_core_model::target(
+                        checkpoint.active_backing_io_e8s,
+                        checkpoint.total_claim_backing_e8s,
+                        checkpoint.claim_supply_e8s,
+                    ) != Ok(checkpoint.pooled_target_e8s)
             })
         {
             return Err("reconciliation checkpoint fingerprint is malformed".into());
@@ -467,6 +505,12 @@ impl StreamStateV1 {
         }
         if let Some(completed) = &self.last_completed_receipt {
             completed.validate(&self.config, self.next_nns_receipt_sequence)?;
+        }
+        if let Some(completed) = &self.last_completed_backing_inflow {
+            completed.validate()?;
+            if completed.permit.stream_operation_sequence >= self.next_operation_sequence.0 {
+                return Err("completed backing-inflow sequence was not reserved".into());
+            }
         }
         Ok(())
     }
@@ -713,8 +757,8 @@ pub fn reopen(canister_self: Principal) {
             if matches!(operation.as_ref(), RedemptionStreamOperation::Preparing(_))
     ) || matches!(
         &reopened.active_operation,
-        Some(StreamOperation::LiquidReceipt(operation))
-            if matches!(operation.as_ref(), LiquidReceiptStreamOperation::Preparing(_))
+        Some(StreamOperation::JupiterReceipt(operation))
+            if matches!(operation.as_ref(), JupiterReceiptStreamOperation::Preparing(_))
     ) {
         reopened.active_operation = None;
     }
@@ -850,7 +894,7 @@ mod tests {
         (
             canister_self,
             StreamStateV1 {
-                launch_schema_marker: 2,
+                launch_schema_marker: 3,
                 config: StreamConfig {
                     io_ledger: principal(2),
                     icp_ledger: principal(3),
@@ -906,6 +950,7 @@ mod tests {
                 next_operation_sequence: OperationSequence(1),
                 control_epoch: 0,
                 last_completed_receipt: None,
+                last_completed_backing_inflow: None,
             },
         )
     }
@@ -1132,12 +1177,10 @@ mod tests {
                 unresolved_cohort_generation: None,
             })
             .collect();
-        let active_request = crate::receipt::PrepareLiquidReceiptArgs {
+        let active_request = crate::receipt::PrepareJupiterReceiptArgs {
             receipt_sequence: 1,
-            receipt_kind: crate::receipt::ReceiptKind::Jupiter,
             source_operation_id: vec![9; 64],
             liquid_amount_e8s: entries.len() as u128,
-            entitlement_batch_generation: None,
         };
         let active_fingerprint = crate::receipt::request_fingerprint(&active_request);
         let backing_snapshot = crate::receipt::BackingSnapshot {
@@ -1148,6 +1191,8 @@ mod tests {
                 1_000,
             )],
             liquid_icp_e8s: 8_000,
+            pre_event_claim_backing_e8s: 8_000,
+            pre_event_claim_supply_e8s: 8_000,
             io_fee_e8s: state.config.expected_io_fee_e8s,
             observed_at_nanos: u64::MAX,
         };
@@ -1160,15 +1205,15 @@ mod tests {
             memo: crate::receipt::receipt_memo(state.config.nns_manager, 1),
             created_at_time: 1,
         };
-        state.active_operation = Some(StreamOperation::LiquidReceipt(Box::new(
-            LiquidReceiptStreamOperation::Active(Box::new(
-                crate::receipt::LiquidReceiptOperation::Jupiter(Box::new(
+        state.active_operation = Some(StreamOperation::JupiterReceipt(Box::new(
+            JupiterReceiptStreamOperation::Active(Box::new(
+                crate::receipt::JupiterReceiptState::Jupiter(Box::new(
                     crate::receipt::JupiterReceiptOperation {
                         context: crate::receipt::ReceiptContext {
                             request: active_request,
                             request_fingerprint: active_fingerprint,
                             source: state.config.jupiter_receipt_source.clone(),
-                            permit: crate::receipt::LiquidReceiptPermit {
+                            permit: crate::receipt::JupiterReceiptPermit {
                                 sequence: 1,
                                 destination: state.config.liquid_icp.clone(),
                                 memo: crate::receipt::receipt_memo(state.config.nns_manager, 1),
@@ -1192,35 +1237,31 @@ mod tests {
             )),
         )));
 
-        let completed_request = crate::receipt::PrepareLiquidReceiptArgs {
+        let completed_request = crate::receipt::PrepareJupiterReceiptArgs {
             receipt_sequence: 0,
-            receipt_kind: crate::receipt::ReceiptKind::Jupiter,
             source_operation_id: vec![7; 64],
             liquid_amount_e8s: 1,
-            entitlement_batch_generation: None,
         };
         let completed_fingerprint = crate::receipt::request_fingerprint(&completed_request);
         state.next_nns_receipt_sequence = 1;
         state.last_completed_receipt = Some(crate::receipt::LastCompletedReceipt {
             request: completed_request,
             request_fingerprint: completed_fingerprint.clone(),
-            permit: crate::receipt::LiquidReceiptPermit {
+            permit: crate::receipt::JupiterReceiptPermit {
                 sequence: 0,
                 destination: state.config.liquid_icp.clone(),
                 memo: crate::receipt::receipt_memo(state.config.nns_manager, 0),
             },
             backing_snapshot,
             receipt_block: u128::MAX - 1,
-            result: crate::receipt::CompletedReceiptResult::Jupiter(
-                crate::receipt::JupiterReceiptResult {
-                    request_fingerprint: completed_fingerprint,
-                    receipt_block: u128::MAX - 1,
-                    backed_io_e8s: u128::MAX,
-                    io_transfer_block: u128::MAX,
-                    io_fee_e8s: state.config.expected_io_fee_e8s,
-                    completed_at_nanos: u64::MAX,
-                },
-            ),
+            result: crate::receipt::JupiterReceiptResult {
+                request_fingerprint: completed_fingerprint,
+                receipt_block: u128::MAX - 1,
+                backed_io_e8s: u128::MAX,
+                io_transfer_block: u128::MAX,
+                io_fee_e8s: state.config.expected_io_fee_e8s,
+                completed_at_nanos: u64::MAX,
+            },
         });
         state.validate(canister_self).unwrap();
         let stable = StableStreamState::V1(state);
@@ -1245,7 +1286,7 @@ mod tests {
         assert_eq!(decoded, StableStreamState::V1(state.clone()));
 
         let mut bad_marker = state.clone();
-        bad_marker.launch_schema_marker = 1;
+        bad_marker.launch_schema_marker = 2;
         assert!(bad_marker
             .validate(canister_self)
             .unwrap_err()

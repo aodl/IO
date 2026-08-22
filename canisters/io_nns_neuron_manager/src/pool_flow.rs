@@ -1,6 +1,7 @@
 use io_ledger_boundary::{exact_icp_transfer, icp_account_identifier};
 use io_nns_types::backing::{
-    FollowPolicy, PoolCommand, PoolCommandKind, PoolCommandPhase, POOLED_PARENT_DELAY_SECONDS,
+    CompletedPoolCommand, FollowPolicy, PoolCommand, PoolCommandKind, PoolCommandPhase,
+    POOLED_PARENT_DELAY_SECONDS,
 };
 
 use crate::{
@@ -14,6 +15,9 @@ pub async fn prove_transfer(
     block_index: u128,
 ) -> Result<PoolProgress, ApiError> {
     if operation.phase != PoolCommandPhase::AwaitingTransfer {
+        if operation.transfer_block_index == Some(block_index) {
+            return Ok(progress(&operation));
+        }
         return Err(ApiError::Invalid(
             "pool command is not awaiting a transfer".into(),
         ));
@@ -39,6 +43,7 @@ pub async fn prove_transfer(
         ));
     }
     operation.phase = PoolCommandPhase::TransferProved { block_index };
+    operation.transfer_block_index = Some(block_index);
     replace(operation.clone())?;
     Ok(progress(&operation))
 }
@@ -192,6 +197,14 @@ async fn complete_refresh(operation: PoolCommand) -> Result<PoolProgress, ApiErr
     }
     latest.pooled_parent_id = Some(parent_id);
     latest.pooled_parent_staking_account = Some(operation.permit.destination.clone());
+    latest.last_completed_pool = Some(CompletedPoolCommand {
+        permit: operation.permit.clone(),
+        transfer_block_index: operation
+            .transfer_block_index
+            .ok_or_else(|| ApiError::Invalid("pool transfer proof was not retained".into()))?,
+        parent_neuron_id: parent_id,
+        principal_e8s: expected,
+    });
     latest.active_operation = None;
     latest.control_epoch = latest
         .control_epoch

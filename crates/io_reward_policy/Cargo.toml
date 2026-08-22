@@ -8,4 +8,6 @@ license.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
+candid.workspace = true
 io-core-model.workspace = true
+serde.workspace = true

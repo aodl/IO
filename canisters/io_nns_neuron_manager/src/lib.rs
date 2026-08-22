@@ -4,6 +4,8 @@ pub use io_nns_types::{jupiter, maturity, maturity::MaturityKind, pool, transfer
 mod jupiter_flow;
 pub mod lifecycle;
 mod maturity_flow;
+mod maturity_mint;
+mod parent_credit;
 mod pool_flow;
 pub mod state;
 mod two_week_binding;
@@ -12,12 +14,10 @@ mod unwind_flow;
 use {candid::CandidType, serde::Deserialize};
 
 pub use api::{
-    ApiError, BackingNotReadyReason, JupiterProgress, MaturityProgress, NnsProgress,
-    NotifyJupiterDepositArgs, PoolProgress, PreparePoolReconciliationArgs,
-    PrepareTwoWeekMaturityArgs, ReconcileTwoWeekBackingReadinessArgs, Status,
-    TwoWeekBackingReadiness,
+    ApiError, JupiterProgress, MaturityProgress, NnsProgress, NotifyJupiterDepositArgs,
+    PoolProgress, PreparePoolReconciliationArgs, PrepareTwoWeekMaturityArgs, Status,
 };
-pub use state::{Lifecycle, NnsConfig, NnsStateV1, TwoWeekTargetStatus};
+pub use state::{Lifecycle, NnsConfig, NnsStateV1, PooledTargetStatus};
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 pub struct InitArgs {
@@ -35,8 +35,10 @@ pub fn init(args: InitArgs) {
             pooled_parent_id: None,
             pooled_parent_staking_account: None,
             live_cohorts: Vec::new(),
+            last_completed_pool: None,
+            last_held_reconciliation: None,
             latest_reconciliation_generation: 0,
-            latest_two_week_target: None,
+            latest_pooled_target: None,
             two_year_maturity_baseline_reconciled: false,
             latest_started_two_week_generation: 0,
             latest_completed_two_week_generation: 0,
@@ -107,13 +109,6 @@ pub async fn prepare_two_week_maturity(
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn reconcile_two_week_backing_readiness(
-    args: ReconcileTwoWeekBackingReadinessArgs,
-) -> Result<TwoWeekBackingReadiness, ApiError> {
-    api::reconcile_two_week_backing_readiness(ic_cdk::api::msg_caller(), args).await
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub async fn prove_maturity_mint(
     kind: MaturityKind,
     block_index: u128,
@@ -168,5 +163,12 @@ mod tests {
             validate_set_paused(false).unwrap(),
             "Set IO NNS manager paused: false"
         );
+    }
+
+    #[test]
+    fn candid_surface_is_exportable() {
+        let candid = __export_service();
+        assert!(!candid.is_empty());
+        println!("{candid}");
     }
 }

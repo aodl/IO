@@ -1,27 +1,29 @@
 pub mod api;
+mod backing_inflow;
 mod backing_registry;
 pub mod canonical;
 mod completed_receipt;
 pub mod lifecycle;
+mod pool_reconciliation;
 pub mod receipt;
 mod receipt_preparation;
 pub mod redemption;
 mod reward_evidence;
-mod reward_settlement;
 mod reward_timer;
 pub mod rewards;
 pub mod state;
+mod status;
 pub mod transfer;
 
 use candid::CandidType;
 use serde::Deserialize;
 
-pub use api::{ApiError, LiquidReceiptProgress, RedemptionProgress, Status, StreamProgress};
-pub use io_nns_types::reward_boundary::BackingNotReadyReason;
-pub use receipt::{
-    CompleteLiquidReceiptArgs, CompletedReceiptResult, LiquidReceiptPermit,
-    PrepareLiquidReceiptArgs, ReceiptKind,
+pub use api::{ApiError, JupiterReceiptProgress, RedemptionProgress, Status, StreamProgress};
+pub use io_nns_types::inflow::{
+    BackingInflowPermit, BackingInflowProgress, PrepareBackingInflowArgs, ProveBackingEffectArgs,
 };
+pub use io_nns_types::reward_boundary::BackingNotReadyReason;
+pub use receipt::{CompleteJupiterReceiptArgs, JupiterReceiptPermit, PrepareJupiterReceiptArgs};
 pub use redemption::RedeemArgs;
 pub use rewards::RewardBackingProgress;
 pub use state::CallerRedemptionState;
@@ -40,7 +42,7 @@ pub struct InitArgs {
 pub fn init(args: InitArgs) {
     // Launch stays inert; reviewed unpause installs at most one reward-event timer.
     let state = StreamStateV1 {
-        launch_schema_marker: 2,
+        launch_schema_marker: 3,
         config: args.config,
         lifecycle: Lifecycle::Paused,
         active_operation: None,
@@ -54,6 +56,7 @@ pub fn init(args: InitArgs) {
         next_operation_sequence: state::OperationSequence(0),
         control_epoch: 0,
         last_completed_receipt: None,
+        last_completed_backing_inflow: None,
     };
     state::initialize(state, ic_cdk::api::canister_self())
         .unwrap_or_else(|error| ic_cdk::trap(&error));
@@ -70,17 +73,31 @@ pub async fn redeem(args: RedeemArgs) -> Result<RedemptionProgress, ApiError> {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn prepare_liquid_receipt(
-    args: PrepareLiquidReceiptArgs,
-) -> Result<LiquidReceiptPermit, ApiError> {
-    receipt::prepare_liquid_receipt(ic_cdk::api::msg_caller(), args, ic_cdk::api::time()).await
+pub async fn prepare_jupiter_receipt(
+    args: PrepareJupiterReceiptArgs,
+) -> Result<JupiterReceiptPermit, ApiError> {
+    receipt::prepare_jupiter_receipt(ic_cdk::api::msg_caller(), args, ic_cdk::api::time()).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn complete_liquid_receipt(
-    args: CompleteLiquidReceiptArgs,
-) -> Result<LiquidReceiptProgress, ApiError> {
-    receipt::complete_liquid_receipt(ic_cdk::api::msg_caller(), args).await
+pub async fn complete_jupiter_receipt(
+    args: CompleteJupiterReceiptArgs,
+) -> Result<JupiterReceiptProgress, ApiError> {
+    receipt::complete_jupiter_receipt(ic_cdk::api::msg_caller(), args).await
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn prepare_backing_inflow(
+    args: PrepareBackingInflowArgs,
+) -> Result<BackingInflowPermit, ApiError> {
+    backing_inflow::prepare(ic_cdk::api::msg_caller(), args).await
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn prove_backing_effect(
+    args: ProveBackingEffectArgs,
+) -> Result<BackingInflowProgress, ApiError> {
+    backing_inflow::prove_effect(args).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -128,7 +145,7 @@ pub async fn set_paused(paused: bool) -> Result<(), ApiError> {
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn get_status() -> Status {
-    api::get_status()
+    status::get_status()
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
@@ -158,5 +175,12 @@ mod tests {
             validate_set_paused(false).unwrap(),
             "Set IO stream paused: false"
         );
+    }
+
+    #[test]
+    fn candid_surface_is_exportable() {
+        let candid = __export_service();
+        assert!(!candid.is_empty());
+        println!("{candid}");
     }
 }

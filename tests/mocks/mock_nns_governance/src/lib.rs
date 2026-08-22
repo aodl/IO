@@ -37,14 +37,12 @@ struct GovernanceState {
     neurons: Vec<MockNeuron>,
     two_week_target: Option<SetTargetArgs>,
     maturity_preparation: Option<PrepareTwoWeekMaturityArgs>,
-    backing_readiness: Option<io_receipt_types::TwoWeekBackingReadiness>,
-    backing_readiness_after_next_reconcile: Option<io_receipt_types::TwoWeekBackingReadiness>,
     reconcile_calls: u64,
     get_full_neuron_calls: u64,
 }
 
 thread_local! {
-    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new(), two_week_target: None, maturity_preparation: None, backing_readiness: None, backing_readiness_after_next_reconcile: None, reconcile_calls: 0, get_full_neuron_calls: 0 }) };
+    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new(), two_week_target: None, maturity_preparation: None, reconcile_calls: 0, get_full_neuron_calls: 0 }) };
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -78,6 +76,59 @@ pub enum NnsError {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn observe_claim_backing() -> Result<io_nns_types::backing::ClaimBackingObservation, NnsError> {
+    use io_accounts::Account;
+    use io_nns_types::backing::ClaimBackingObservation;
+    let owner = ic_cdk::api::canister_self();
+    Ok(ClaimBackingObservation {
+        parent: None,
+        permanent_staking_account: Account {
+            owner,
+            subaccount: Some(vec![1; 32]),
+        },
+        pool_staking_account: Account {
+            owner,
+            subaccount: Some(vec![2; 32]),
+        },
+        minimum_parent_stake_e8s: u128::MAX,
+        pooled_principal_e8s: 0,
+        live_cohorts: Vec::new(),
+        unwinding_principal_e8s: 0,
+        transit_backing_e8s: 0,
+        active_operation_sequence: 0,
+        last_completed_pool_operation_sequence: None,
+        active_unwind_generation: None,
+        control_epoch: 1,
+        fingerprint: vec![42; 32],
+        oldest_ready_at_seconds: None,
+    })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn prepare_pool_reconciliation(
+    args: io_nns_types::backing::PreparePoolReconciliationArgs,
+) -> Result<io_nns_types::backing::PoolProgress, NnsError> {
+    use io_nns_types::backing::{PoolProgress, PoolReconciliationAction};
+    if args.generation == 0
+        || args.snapshot_fingerprint != vec![42; 32]
+        || !matches!(args.action, PoolReconciliationAction::Hold)
+    {
+        return Err(NnsError::Invalid(
+            "mock accepts only a bounded absent-parent hold".into(),
+        ));
+    }
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        state.reconcile_calls = state.reconcile_calls.saturating_add(1);
+        state.two_week_target = Some(SetTargetArgs {
+            target_e8s: args.target_e8s,
+            generation: args.generation,
+        });
+    });
+    Ok(PoolProgress::Held { principal_e8s: 0 })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn prepare_two_week_maturity(
     args: PrepareTwoWeekMaturityArgs,
 ) -> Result<PreparedMaturityProgress, NnsError> {
@@ -108,41 +159,6 @@ pub fn prepare_two_week_maturity(
         state.maturity_preparation = Some(args);
         Ok(PreparedMaturityProgress::Observed)
     })
-}
-
-#[derive(CandidType, Deserialize)]
-pub struct ReconcileReadinessArgs {
-    target_e8s: u128,
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn reconcile_two_week_backing_readiness(
-    args: ReconcileReadinessArgs,
-) -> Result<io_receipt_types::TwoWeekBackingReadiness, NnsError> {
-    Ok(STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
-        state.reconcile_calls += 1;
-        let generation = state.two_week_target.as_ref().map_or(1, |target| {
-            target.generation + u64::from(target.target_e8s != args.target_e8s)
-        });
-        state.two_week_target = Some(SetTargetArgs {
-            target_e8s: args.target_e8s,
-            generation,
-        });
-        let readiness = state.backing_readiness.clone().unwrap_or(
-            io_receipt_types::TwoWeekBackingReadiness::Ready {
-                target_status: io_receipt_types::BackingTargetStatus::AtTarget,
-                ordinary_maturity_e8s: 200_000_000,
-                retained_maturity_e8s: 80_000_000,
-                liquid_maturity_e8s: 120_000_000,
-                minimum_disbursement_e8s: 100_000_000,
-            },
-        );
-        if let Some(next) = state.backing_readiness_after_next_reconcile.take() {
-            state.backing_readiness = Some(next);
-        }
-        readiness
-    }))
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
@@ -230,18 +246,6 @@ pub fn get_full_neuron(neuron_id: u64) -> Result<FullNeuron, GovernanceError> {
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn debug_get_full_neuron_call_count() -> u64 {
     STATE.with(|cell| cell.borrow().get_full_neuron_calls)
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn debug_set_backing_readiness(readiness: io_receipt_types::TwoWeekBackingReadiness) {
-    STATE.with(|cell| cell.borrow_mut().backing_readiness = Some(readiness));
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn debug_set_backing_readiness_after_next_reconcile(
-    readiness: io_receipt_types::TwoWeekBackingReadiness,
-) {
-    STATE.with(|cell| cell.borrow_mut().backing_readiness_after_next_reconcile = Some(readiness));
 }
 
 fn neuron_mut(state: &mut GovernanceState, id: u64) -> Result<&mut MockNeuron, String> {

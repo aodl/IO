@@ -1,7 +1,4 @@
-use crate::{
-    jupiter::{NeuronSnapshot, StreamReceiptPermit},
-    transfer::NnsTransferAttempt,
-};
+use crate::{inflow::BackingInflowPermit, jupiter::NeuronSnapshot, transfer::NnsTransferAttempt};
 use {candid::CandidType, io_accounts::Account, serde::Deserialize};
 
 pub const MINIMUM_DISBURSEMENT_E8S: u64 = 100_000_000;
@@ -92,11 +89,25 @@ pub struct PendingMaturityDisbursement {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct TwoWeekDeliveryOperation {
+pub struct BackingInflowDeliveryOperation {
     pub pending: PendingMaturityDisbursement,
-    pub permit: Option<StreamReceiptPermit>,
-    pub transfer: Option<NnsTransferAttempt>,
-    pub receipt_completed: bool,
+    pub permit: Option<BackingInflowPermit>,
+    pub permanent_transfer: Option<NnsTransferAttempt>,
+    pub claim_transfer: Option<NnsTransferAttempt>,
+    pub parent_credit_phase: ParentCreditPhase,
+    pub stream_pooled_block: Option<u128>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum ParentCreditPhase {
+    NotRequired,
+    Required,
+    ClaimSubmitted { parent_neuron_id: u64 },
+    DelaySubmitted { parent_neuron_id: u64 },
+    FollowingSubmitted { parent_neuron_id: u64 },
+    VotingPowerRefreshSubmitted { parent_neuron_id: u64 },
+    RefreshSubmitted { parent_neuron_id: u64 },
+    Proved { parent_neuron_id: u64 },
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -108,7 +119,7 @@ pub enum MaturityCommandPhase {
     ReadyToDisburse(DisburseMaturitySubmission),
     DisburseMaturitySubmitted(DisburseMaturitySubmission),
     DisburseMaturitySucceeded(DisburseMaturitySucceeded),
-    TwoWeekDelivery(TwoWeekDeliveryOperation),
+    BackingInflowDelivery(BackingInflowDeliveryOperation),
     MaturityDrift {
         reason: String,
         stake: StakeMaturitySucceeded,
@@ -152,7 +163,9 @@ impl MaturityCommandOperation {
                 &submission.stake.plan
             }
             MaturityCommandPhase::DisburseMaturitySucceeded(value) => &value.submission.stake.plan,
-            MaturityCommandPhase::TwoWeekDelivery(value) => &value.pending.stake_evidence.plan,
+            MaturityCommandPhase::BackingInflowDelivery(value) => {
+                &value.pending.stake_evidence.plan
+            }
         }
     }
 
@@ -166,11 +179,15 @@ impl MaturityCommandOperation {
             return Err("maturity command sequence is malformed".into());
         }
         let plan = self.plan();
-        let expected_stake = plan
-            .original_maturity_e8s
-            .checked_mul(40)
-            .ok_or("maturity stake calculation overflow")?
-            / 100;
+        let expected_stake = match self.kind {
+            MaturityKind::TwoYear => {
+                plan.original_maturity_e8s
+                    .checked_mul(40)
+                    .ok_or("maturity stake calculation overflow")?
+                    / 100
+            }
+            MaturityKind::TwoWeek => 0,
+        };
         if plan.neuron.neuron_id != expected_neuron_id
             || plan.stake_maturity_e8s != expected_stake
             || plan.remaining_maturity_e8s
@@ -243,5 +260,10 @@ mod tests {
         assert_eq!(super::commands(), (40, 100));
         assert_eq!(super::MINIMUM_DISBURSEMENT_E8S, 100_000_000);
         assert_eq!(super::DISBURSEMENT_DELAY_SECONDS, 604_800);
+    }
+
+    #[test]
+    fn pooled_parent_disburses_all_without_staking_maturity() {
+        assert_eq!(super::MaturityKind::TwoWeek, super::MaturityKind::TwoWeek);
     }
 }

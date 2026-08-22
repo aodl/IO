@@ -1,12 +1,14 @@
 //! Pure allocation of one actually backed IO pool over cumulative entitlement credits.
 
+use candid::CandidType;
 use io_core_model::{
     backed_io, checked_add, claim_backing, split_40_60, target, EconomicState, EconomicsError,
 };
+use serde::Deserialize;
 
 pub const DAILY_EVENT_CREDIT: u128 = 1_000_000_000_000_000_000;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct EntitlementCredit {
     pub sns_neuron_id: Vec<u8>,
     pub accumulated_eligible_credit: u128,
@@ -22,13 +24,13 @@ pub fn entitlement_credit_from_bytes(
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct RewardAllocation {
     pub sns_neuron_id: Vec<u8>,
     pub io_e8s: u128,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct AllocationOutcome {
     pub allocations: Vec<RewardAllocation>,
     pub forfeited_io_e8s: u128,
@@ -173,14 +175,14 @@ pub fn allocate_rewards(
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum ClaimRoute {
     AllLiquid,
     AllPool,
     Mixed,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct ClaimRoutePlan {
     pub route: ClaimRoute,
     pub fee_count: u8,
@@ -192,7 +194,7 @@ pub struct ClaimRoutePlan {
     pub over_target: u128,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct TwoWeekSettlementPlan {
     pub route: ClaimRoutePlan,
     pub permanent_credit: u128,

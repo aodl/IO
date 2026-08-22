@@ -1,6 +1,6 @@
 use candid::{CandidType, Nat, Principal};
 use ic_cdk::call::Call;
-pub use io_receipt_types::LiquidReceiptProgress;
+pub use io_receipt_types::JupiterReceiptProgress;
 use serde::Deserialize;
 
 use crate::{
@@ -10,7 +10,7 @@ use crate::{
         RedemptionPreparation,
     },
     state::{
-        self, Account, DispatchEpoch, Lifecycle, LiquidReceiptStreamOperation, OperationSequence,
+        self, Account, DispatchEpoch, JupiterReceiptStreamOperation, Lifecycle, OperationSequence,
         RedemptionResult, RedemptionStreamOperation, StreamOperation, StreamStateV1,
     },
     transfer::{
@@ -55,7 +55,9 @@ pub enum RedemptionProgress {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum StreamProgress {
     Redemption(RedemptionProgress),
-    LiquidReceipt(LiquidReceiptProgress),
+    JupiterReceipt(JupiterReceiptProgress),
+    BackingInflow(io_nns_types::inflow::BackingInflowProgress),
+    BackingReconciliation,
     Idle,
 }
 
@@ -78,68 +80,7 @@ pub struct Status {
     pub governance_parameters_fresh: bool,
     pub pending_entitlement_batch_eligible_credit: Option<u128>,
     pub pending_entitlement_batch_policy_credit: Option<u128>,
-}
-
-pub fn get_status() -> Status {
-    let state = state::read();
-    let (operation_kind, operation_phase) = match state.active_operation {
-        Some(StreamOperation::Redemption(operation)) => match *operation {
-            RedemptionStreamOperation::Preparing(_) => {
-                (Some("Redemption".into()), Some("Preparing".into()))
-            }
-            RedemptionStreamOperation::Active(operation) => (
-                Some("Redemption".into()),
-                Some(format!("{:?}", operation.phase)),
-            ),
-        },
-        Some(StreamOperation::LiquidReceipt(operation)) => match *operation {
-            LiquidReceiptStreamOperation::Preparing(_) => {
-                (Some("LiquidReceipt".into()), Some("Preparing".into()))
-            }
-            LiquidReceiptStreamOperation::Active(operation) => (
-                Some("LiquidReceipt".into()),
-                Some(format!("{:?}", operation.phase())),
-            ),
-        },
-        None => (None, None),
-    };
-    let accumulated_eligible_credit = state
-        .reward_entitlements
-        .entries
-        .iter()
-        .try_fold(0u128, |sum, entry| {
-            sum.checked_add(entry.accumulated_eligible_credit)
-        })
-        .expect("validated entitlement accumulator total");
-    Status {
-        lifecycle: state.lifecycle,
-        operation_kind,
-        operation_phase,
-        next_nns_receipt_sequence: state.next_nns_receipt_sequence,
-        latest_entitlement_batch_generation: state.latest_entitlement_batch_generation,
-        latest_processed_reward_event: state.reward_entitlements.last_processed_event,
-        latest_reward_event_classification: state
-            .reward_entitlements
-            .latest_observation
-            .as_ref()
-            .map(|observation| observation.classification),
-        accumulated_entitlements: state.reward_entitlements.entries,
-        accumulated_eligible_credit,
-        accumulated_policy_credit: state.reward_entitlements.accumulated_policy_credit,
-        processed_reward_event_count: state.reward_entitlements.processed_event_count,
-        missed_reward_event_count: state.reward_entitlements.missed_event_count,
-        reward_work_due: state.reward_entitlements.reward_work_due,
-        reward_processing_paused: state.reward_entitlements.reward_processing_paused,
-        governance_parameters_fresh: state.reward_entitlements.governance_parameters_fresh,
-        pending_entitlement_batch_eligible_credit: state
-            .pending_entitlement_batch
-            .as_ref()
-            .map(|batch| batch.eligible_credit_total),
-        pending_entitlement_batch_policy_credit: state
-            .pending_entitlement_batch
-            .as_ref()
-            .map(|batch| batch.policy_credit_total),
-    }
+    pub latest_reconciliation_checkpoint: Option<crate::state::ReconciliationCheckpoint>,
 }
 
 pub(crate) fn require_ready(state: &StreamStateV1) -> Result<(), ApiError> {
@@ -861,32 +802,48 @@ pub async fn resume_stream(now: u64) -> Result<StreamProgress, ApiError> {
                 resume(now).await.map(StreamProgress::Redemption)
             }
         },
-        Some(StreamOperation::LiquidReceipt(operation)) => match *operation {
-            LiquidReceiptStreamOperation::Preparing(_) => Err(ApiError::Pending(
+        Some(StreamOperation::JupiterReceipt(operation)) => match *operation {
+            JupiterReceiptStreamOperation::Preparing(_) => Err(ApiError::Pending(
                 "no-effect receipt preparation must be retried by the NNS manager".into(),
             )),
-            LiquidReceiptStreamOperation::Active(operation) => {
-                receipt::resume_liquid_receipt(*operation, now)
+            JupiterReceiptStreamOperation::Active(operation) => {
+                receipt::resume_jupiter_receipt(*operation, now)
                     .await
-                    .map(StreamProgress::LiquidReceipt)
+                    .map(StreamProgress::JupiterReceipt)
             }
         },
+        Some(StreamOperation::BackingInflow(_)) => crate::backing_inflow::resume(now)
+            .await
+            .map(StreamProgress::BackingInflow),
+        Some(StreamOperation::PoolTopUp(_)) => {
+            crate::pool_reconciliation::resume(now).await?;
+            Ok(StreamProgress::BackingReconciliation)
+        }
         None => Ok(StreamProgress::Idle),
     }
 }
 
 pub async fn prove_active_transfer(block_index: u128) -> Result<(), ApiError> {
-    if let Some(StreamOperation::LiquidReceipt(operation)) = state::read().active_operation {
+    if matches!(
+        state::read().active_operation,
+        Some(StreamOperation::BackingInflow(_))
+    ) {
+        return crate::backing_inflow::prove_active_transfer(block_index).await;
+    }
+    if matches!(
+        state::read().active_operation,
+        Some(StreamOperation::PoolTopUp(_))
+    ) {
+        return crate::pool_reconciliation::prove_transfer(block_index).await;
+    }
+    if let Some(StreamOperation::JupiterReceipt(operation)) = state::read().active_operation {
         return match *operation {
-            LiquidReceiptStreamOperation::Active(operation) => match *operation {
-                crate::receipt::LiquidReceiptOperation::Jupiter(_) => {
+            JupiterReceiptStreamOperation::Active(operation) => match *operation {
+                crate::receipt::JupiterReceiptState::Jupiter(_) => {
                     receipt::prove_jupiter_settlement(block_index).await
                 }
-                crate::receipt::LiquidReceiptOperation::TwoWeek(_) => {
-                    crate::rewards::prove_recipient_transfer(block_index).await
-                }
             },
-            LiquidReceiptStreamOperation::Preparing(_) => Err(ApiError::Invalid(
+            JupiterReceiptStreamOperation::Preparing(_) => Err(ApiError::Invalid(
                 "receipt preparation has no active transfer".into(),
             )),
         };
@@ -1011,36 +968,4 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<(), ApiError> {
     };
     persist_redemption(latest);
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn status_does_not_claim_canonical_balances() {
-        assert!(!format!("{:?}", std::any::type_name::<Status>()).contains("balance"));
-    }
-
-    #[test]
-    fn retry_expiry_is_anchored_to_immutable_intent_time() {
-        let owner = Principal::from_slice(&[1]);
-        let intent = OwnTransferIntent::Icrc1 {
-            ledger: Principal::from_slice(&[2]),
-            from_subaccount: [0; 32],
-            to: Account {
-                owner,
-                subaccount: None,
-            },
-            amount: 10,
-            fee: 1,
-            memo: vec![1],
-            created_at_time: 100,
-        };
-        let deadline = intent.created_at_time().checked_add(50).unwrap();
-        let misleading_first_submission = 140;
-        assert_eq!(deadline, 150);
-        assert!(151u64.saturating_sub(misleading_first_submission) < 50);
-        assert!(151 >= deadline);
-    }
 }

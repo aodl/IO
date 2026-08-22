@@ -72,7 +72,7 @@ pub async fn readiness_preflight(
         .await?;
         validate_prelaunch_baseline(
             "two-year protected NNS neuron",
-            snapshot.config.seeded_two_year_principal_e8s,
+            snapshot.config.audited_permanent_principal_e8s,
             &observation,
         )?;
     }

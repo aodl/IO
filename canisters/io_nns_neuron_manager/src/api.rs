@@ -3,7 +3,7 @@ use io_nns_types::backing::{
     ClaimBackingObservation, CohortObservation, CohortProofState, FollowPolicy, ParentObservation,
     PoolCommand, PoolCommandKind, PoolCommandPhase, TopUpPermit, POOLED_PARENT_DELAY_SECONDS,
 };
-pub use io_receipt_types::{BackingNotReadyReason, TwoWeekBackingReadiness};
+pub use io_nns_types::backing::{PoolProgress, PreparePoolReconciliationArgs};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -12,7 +12,7 @@ use crate::{
     jupiter::JupiterCompleted,
     maturity::{CompletedMaturity, MaturityKind},
     pool::{UnwindOperation, UnwindPhase},
-    state::{self, Lifecycle, NnsOperation, TwoWeekTarget, TwoWeekTargetStatus},
+    state::{self, Lifecycle, NnsOperation, PooledTarget, PooledTargetStatus},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -38,34 +38,6 @@ pub struct NotifyJupiterDepositArgs {
 pub struct PrepareTwoWeekMaturityArgs {
     pub entitlement_batch_generation: u64,
     pub target_e8s: u128,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct ReconcileTwoWeekBackingReadinessArgs {
-    pub target_e8s: u128,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct PreparePoolReconciliationArgs {
-    pub generation: u64,
-    pub target_e8s: u128,
-    pub expected_credit_e8s: u128,
-    pub fee_e8s: u128,
-    pub snapshot_fingerprint: Vec<u8>,
-    pub memo: Vec<u8>,
-    pub created_at_time_nanos: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum PoolProgress {
-    AwaitingTransfer(TopUpPermit),
-    ConfiguringParent,
-    AwaitingParentProof,
-    Completed {
-        parent_neuron_id: u64,
-        principal_e8s: u128,
-    },
-    CapacityPending,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -95,7 +67,7 @@ pub enum MaturityProgress {
     DisburseMaturitySucceeded,
     AwaitingMintProof,
     MintProved,
-    DeliveringTwoWeekReceipt,
+    DeliveringBackingInflow,
     Completed(CompletedMaturity),
     Stuck(String),
 }
@@ -124,7 +96,7 @@ pub struct Status {
     pub two_year_maturity_baseline_reconciled: bool,
     pub latest_started_two_week_generation: u64,
     pub latest_completed_two_week_generation: u64,
-    pub latest_two_week_target: Option<TwoWeekTarget>,
+    pub latest_pooled_target: Option<PooledTarget>,
     pub unwinding_child_principal_e8s: u128,
 }
 
@@ -202,7 +174,15 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<NnsProgress, Api
                 .await
                 .map(NnsProgress::Pool)
         }
-        None => Err(ApiError::Invalid("no active transfer proof slot".into())),
+        None => match state::read().last_completed_pool {
+            Some(completed) if completed.transfer_block_index == block_index => {
+                Ok(NnsProgress::Pool(PoolProgress::Completed {
+                    parent_neuron_id: completed.parent_neuron_id,
+                    principal_e8s: completed.principal_e8s,
+                }))
+            }
+            _ => Err(ApiError::Invalid("no active transfer proof slot".into())),
+        },
     }
 }
 
@@ -220,110 +200,11 @@ pub async fn prepare_two_week_maturity(
     crate::two_week_binding::prepare(caller, args).await
 }
 
-pub async fn reconcile_two_week_backing_readiness(
-    caller: Principal,
-    args: ReconcileTwoWeekBackingReadinessArgs,
-) -> Result<TwoWeekBackingReadiness, ApiError> {
-    let snapshot = state::read();
-    if caller != snapshot.config.stream_manager {
-        return Err(ApiError::Unauthorized);
-    }
-    if snapshot.lifecycle != Lifecycle::Ready {
-        return Ok(TwoWeekBackingReadiness::NotReady(
-            BackingNotReadyReason::Paused,
-        ));
-    }
-    reconcile_two_week_target(args.target_e8s).await
-}
-
-async fn reconcile_two_week_target(target_e8s: u128) -> Result<TwoWeekBackingReadiness, ApiError> {
-    let snapshot = ready()?;
-    let observation = match snapshot.pooled_parent_id {
-        Some(parent_id) => {
-            let before = execution::query_neuron_observation(&snapshot.config, parent_id).await?;
-            execution::refresh_voting_power(&snapshot.config, parent_id).await?;
-            let after = execution::query_neuron_observation(&snapshot.config, parent_id).await?;
-            if after.voting_power_refreshed_timestamp_seconds
-                < before.voting_power_refreshed_timestamp_seconds
-            {
-                return Err(ApiError::Invalid(
-                    "pooled parent voting-power refresh regressed".into(),
-                ));
-            }
-            Some(after)
-        }
-        None => None,
-    };
-    if let Some(observation) = &observation {
-        execution::validate_parent_configuration(
-            observation,
-            io_nns_types::backing::FollowPolicy {
-                followee_neuron_id: snapshot.config.pooled_parent_followee_id,
-            },
-        )
-        .map_err(ApiError::Invalid)?;
-    }
-    let maturity = observation.as_ref().map_or(0, |value| value.maturity_e8s);
-    let (retained, liquid) = crate::maturity::split_maturity(maturity)
-        .ok_or_else(|| ApiError::Invalid("maturity readiness split overflow".into()))?;
-    let tolerance = snapshot
-        .config
-        .expected_icp_fee_e8s
-        .checked_mul(2)
-        .ok_or_else(|| ApiError::Invalid("unwind tolerance overflow".into()))?;
-    let target_status = state::target_status(
-        observation
-            .as_ref()
-            .map_or(0, |value| value.snapshot.cached_stake_e8s),
-        target_e8s,
-        tolerance,
-    );
-    if state::read() != snapshot {
-        return Err(ApiError::Busy);
-    }
-    let mut latest = snapshot;
-    latest.latest_two_week_target = Some(TwoWeekTarget {
-        target_e8s,
-        status: target_status,
-    });
-    if latest.pending_two_week_maturity.is_none() {
-        reconcile_unwind(
-            &mut latest,
-            target_e8s,
-            observation
-                .as_ref()
-                .map_or(0, |value| value.snapshot.cached_stake_e8s),
-            target_status,
-        )?;
-    }
-    let busy = latest.active_operation.is_some() || latest.pending_two_week_maturity.is_some();
-    state::write(latest);
-    let reason = match target_status {
-        TwoWeekTargetStatus::UnderTarget => Some(BackingNotReadyReason::UnderTarget),
-        TwoWeekTargetStatus::OverTarget => Some(BackingNotReadyReason::OverTarget),
-        _ if busy => Some(BackingNotReadyReason::Busy),
-        _ if liquid < crate::maturity::MINIMUM_DISBURSEMENT_E8S => {
-            Some(BackingNotReadyReason::BelowThreshold)
-        }
-        _ => None,
-    };
-    if let Some(reason) = reason {
-        return Ok(TwoWeekBackingReadiness::NotReady(reason));
-    }
-    Ok(TwoWeekBackingReadiness::Ready {
-        target_status,
-        ordinary_maturity_e8s: maturity,
-        retained_maturity_e8s: retained,
-        liquid_maturity_e8s: liquid,
-        minimum_disbursement_e8s: crate::maturity::MINIMUM_DISBURSEMENT_E8S,
-    })
-}
-
 pub async fn prove_maturity_mint(
     kind: MaturityKind,
     block_index: u128,
 ) -> Result<MaturityProgress, ApiError> {
-    crate::maturity_flow::prove_mint(kind, block_index).await
+    crate::maturity_mint::prove(kind, block_index).await
 }
 
 pub fn get_status() -> Status {
@@ -342,7 +223,7 @@ pub fn get_status() -> Status {
         two_year_maturity_baseline_reconciled: current.two_year_maturity_baseline_reconciled,
         latest_started_two_week_generation: current.latest_started_two_week_generation,
         latest_completed_two_week_generation: current.latest_completed_two_week_generation,
-        latest_two_week_target: current.latest_two_week_target.clone(),
+        latest_pooled_target: current.latest_pooled_target.clone(),
         unwinding_child_principal_e8s: current.live_cohorts.iter().fold(0, |total, cohort| {
             total.saturating_add(cohort.principal_e8s)
         }),
@@ -353,11 +234,78 @@ pub async fn prepare_pool_reconciliation(
     caller: Principal,
     args: PreparePoolReconciliationArgs,
 ) -> Result<PoolProgress, ApiError> {
+    use io_nns_types::backing::PoolReconciliationAction;
+
     let snapshot = ready()?;
     if caller != snapshot.config.stream_manager {
         return Err(ApiError::Unauthorized);
     }
-    if snapshot.active_operation.is_some() {
+    if let Some(cohort) = snapshot
+        .live_cohorts
+        .iter()
+        .find(|cohort| cohort.generation == args.generation)
+    {
+        return Ok(PoolProgress::UnwindCommitted {
+            generation: cohort.generation,
+            principal_e8s: cohort.principal_e8s,
+        });
+    }
+    if args.generation == snapshot.latest_reconciliation_generation
+        && snapshot.active_operation.is_none()
+    {
+        if let Some(held) = &snapshot.last_held_reconciliation {
+            if held.generation == args.generation
+                && held.target_e8s == args.target_e8s
+                && held.snapshot_fingerprint == args.snapshot_fingerprint
+                && matches!(args.action, PoolReconciliationAction::Hold)
+            {
+                return Ok(PoolProgress::Held {
+                    principal_e8s: held.principal_e8s,
+                });
+            }
+        }
+        return Err(ApiError::Invalid(
+            "reconciliation generation was already consumed".into(),
+        ));
+    }
+    if let Some(NnsOperation::Unwind(operation)) = &snapshot.active_operation {
+        if operation.generation == args.generation {
+            return Ok(PoolProgress::UnwindPrepared {
+                generation: operation.generation,
+                gross_e8s: operation.gross_e8s,
+            });
+        }
+    }
+    if let Some(NnsOperation::Pool(operation)) = &snapshot.active_operation {
+        if operation.permit.generation == args.generation
+            && operation.permit.snapshot_fingerprint == args.snapshot_fingerprint
+            && operation.permit.fee_e8s == args.fee_e8s
+            && operation.permit.memo == args.memo
+            && operation.permit.prepared_at_nanos == args.created_at_time_nanos
+            && operation
+                .permit
+                .expected_parent_principal_e8s
+                .checked_add(operation.permit.expected_credit_e8s)
+                == Some(args.target_e8s)
+            && matches!(
+                args.action,
+                io_nns_types::backing::PoolReconciliationAction::TopUp {
+                    expected_credit_e8s
+                } if expected_credit_e8s == operation.permit.expected_credit_e8s
+            )
+        {
+            return Ok(PoolProgress::AwaitingTransfer(operation.permit.clone()));
+        }
+    }
+    if snapshot.active_operation.is_some()
+        && !matches!(
+            &snapshot.active_operation,
+            Some(NnsOperation::Unwind(UnwindOperation {
+                phase: UnwindPhase::SplitPrepared,
+                ..
+            }))
+        )
+    {
         return Err(ApiError::Busy);
     }
     let observation = observe_claim_backing().await?;
@@ -373,15 +321,162 @@ pub async fn prepare_pool_reconciliation(
             "pool reconciliation snapshot or intent is invalid".into(),
         ));
     }
-    let expected_credit = args
-        .target_e8s
-        .checked_sub(observation.pooled_principal_e8s)
-        .ok_or_else(|| ApiError::Invalid("pool reconciliation is not a top-up".into()))?;
-    if expected_credit == 0 || expected_credit != args.expected_credit_e8s {
-        return Err(ApiError::Invalid(
-            "pool top-up credit does not match the target".into(),
-        ));
+    let actual = observation.pooled_principal_e8s;
+    if let Some(NnsOperation::Unwind(mut operation)) = snapshot.active_operation.clone() {
+        match args.action {
+            PoolReconciliationAction::Unwind { expected_gross_e8s } => {
+                let expected = actual.checked_sub(args.target_e8s).ok_or_else(|| {
+                    ApiError::Invalid("retargeted reconciliation is not an unwind".into())
+                })?;
+                if expected == 0 || expected != expected_gross_e8s {
+                    return Err(ApiError::Invalid(
+                        "retargeted unwind gross is inconsistent".into(),
+                    ));
+                }
+                operation.generation = args.generation;
+                operation.target_e8s = args.target_e8s;
+                operation.gross_e8s = expected;
+                let mut latest = state::read();
+                if latest != snapshot {
+                    return Err(ApiError::Busy);
+                }
+                latest.latest_reconciliation_generation = args.generation;
+                latest.latest_pooled_target = Some(PooledTarget {
+                    target_e8s: args.target_e8s,
+                    status: PooledTargetStatus::OverTarget,
+                });
+                latest.active_operation = Some(NnsOperation::Unwind(operation));
+                state::write(latest);
+                return Ok(PoolProgress::UnwindPrepared {
+                    generation: args.generation,
+                    gross_e8s: expected,
+                });
+            }
+            PoolReconciliationAction::Hold => {
+                validate_hold(&snapshot, actual, args.target_e8s, args.fee_e8s)?;
+                refresh_parent_for_reconciliation(&snapshot).await?;
+                let mut latest = state::read();
+                if latest != snapshot {
+                    return Err(ApiError::Busy);
+                }
+                latest.active_operation = None;
+                latest.latest_reconciliation_generation = args.generation;
+                latest.last_held_reconciliation = Some(state::HeldReconciliation {
+                    generation: args.generation,
+                    target_e8s: args.target_e8s,
+                    principal_e8s: actual,
+                    snapshot_fingerprint: args.snapshot_fingerprint,
+                });
+                latest.latest_pooled_target = Some(PooledTarget {
+                    target_e8s: args.target_e8s,
+                    status: state::target_status(
+                        actual,
+                        args.target_e8s,
+                        snapshot.config.expected_icp_fee_e8s,
+                    ),
+                });
+                state::write(latest);
+                return Ok(PoolProgress::Held {
+                    principal_e8s: actual,
+                });
+            }
+            PoolReconciliationAction::TopUp { .. } => {
+                let mut latest = state::read();
+                if latest != snapshot {
+                    return Err(ApiError::Busy);
+                }
+                latest.active_operation = None;
+                state::write(latest);
+                return Ok(PoolProgress::CapacityPending);
+            }
+        }
     }
+    match args.action {
+        PoolReconciliationAction::Hold => {
+            validate_hold(&snapshot, actual, args.target_e8s, args.fee_e8s)?;
+            refresh_parent_for_reconciliation(&snapshot).await?;
+            commit_reconciliation_generation(
+                &snapshot,
+                args.generation,
+                args.target_e8s,
+                actual,
+                args.snapshot_fingerprint,
+            )?;
+            Ok(PoolProgress::Held {
+                principal_e8s: actual,
+            })
+        }
+        PoolReconciliationAction::TopUp {
+            expected_credit_e8s,
+        } => {
+            let expected_credit = args
+                .target_e8s
+                .checked_sub(actual)
+                .ok_or_else(|| ApiError::Invalid("pool reconciliation is not a top-up".into()))?;
+            if expected_credit == 0 || expected_credit != expected_credit_e8s {
+                return Err(ApiError::Invalid(
+                    "pool top-up credit does not match the target".into(),
+                ));
+            }
+            prepare_top_up(snapshot, observation, args, expected_credit)
+        }
+        PoolReconciliationAction::Unwind { expected_gross_e8s } => {
+            let expected_gross = actual
+                .checked_sub(args.target_e8s)
+                .ok_or_else(|| ApiError::Invalid("pool reconciliation is not an unwind".into()))?;
+            if expected_gross == 0 || expected_gross != expected_gross_e8s {
+                return Err(ApiError::Invalid(
+                    "pool unwind gross does not match the target".into(),
+                ));
+            }
+            if snapshot.live_cohorts.len() >= io_nns_types::backing::MAX_LIVE_UNWIND_COHORTS {
+                return Ok(PoolProgress::CapacityPending);
+            }
+            refresh_parent_for_reconciliation(&snapshot).await?;
+            let mut latest = state::read();
+            if latest != snapshot || latest.active_operation.is_some() {
+                return Err(ApiError::Busy);
+            }
+            let operation_sequence = latest.next_operation_sequence;
+            latest.next_operation_sequence = operation_sequence
+                .checked_add(1)
+                .ok_or_else(|| ApiError::Invalid("operation sequence exhausted".into()))?;
+            latest.latest_reconciliation_generation = args.generation;
+            latest.last_held_reconciliation = None;
+            latest.latest_pooled_target = Some(PooledTarget {
+                target_e8s: args.target_e8s,
+                status: PooledTargetStatus::OverTarget,
+            });
+            latest.active_operation = Some(NnsOperation::Unwind(UnwindOperation {
+                operation_sequence,
+                generation: args.generation,
+                target_e8s: args.target_e8s,
+                gross_e8s: expected_gross,
+                child_neuron_id: 0,
+                principal_e8s: 0,
+                child_staking_subaccount: Vec::new(),
+                submitted_at_seconds: 0,
+                expected_block_index: None,
+                child_maturity_e8s: 0,
+                parent_maturity_e8s: 0,
+                parent_principal_e8s: 0,
+                phase: UnwindPhase::SplitPrepared,
+            }));
+            state::write(latest);
+            Ok(PoolProgress::UnwindPrepared {
+                generation: args.generation,
+                gross_e8s: expected_gross,
+            })
+        }
+    }
+}
+
+fn prepare_top_up(
+    snapshot: crate::state::NnsStateV1,
+    observation: ClaimBackingObservation,
+    args: PreparePoolReconciliationArgs,
+    expected_credit: u128,
+) -> Result<PoolProgress, ApiError> {
     let kind = if snapshot.pooled_parent_id.is_some() {
         PoolCommandKind::TopUp
     } else {
@@ -420,6 +515,7 @@ pub async fn prepare_pool_reconciliation(
     let operation = PoolCommand {
         kind,
         permit: permit.clone(),
+        transfer_block_index: None,
         parent_neuron_id: snapshot.pooled_parent_id,
         phase: PoolCommandPhase::AwaitingTransfer,
     };
@@ -427,13 +523,88 @@ pub async fn prepare_pool_reconciliation(
         .validate(latest.next_operation_sequence)
         .map_err(ApiError::Invalid)?;
     latest.latest_reconciliation_generation = args.generation;
+    latest.last_held_reconciliation = None;
+    latest.latest_pooled_target = Some(PooledTarget {
+        target_e8s: args.target_e8s,
+        status: PooledTargetStatus::UnderTarget,
+    });
     latest.active_operation = Some(NnsOperation::Pool(operation));
     state::write(latest);
     Ok(PoolProgress::AwaitingTransfer(permit))
 }
 
+async fn refresh_parent_for_reconciliation(
+    snapshot: &crate::state::NnsStateV1,
+) -> Result<(), ApiError> {
+    if let Some(parent) = snapshot.pooled_parent_id {
+        execution::refresh_voting_power(&snapshot.config, parent).await?;
+        if state::read() != *snapshot {
+            return Err(ApiError::Busy);
+        }
+    }
+    Ok(())
+}
+
+fn commit_reconciliation_generation(
+    snapshot: &crate::state::NnsStateV1,
+    generation: u64,
+    target_e8s: u128,
+    actual_e8s: u128,
+    snapshot_fingerprint: Vec<u8>,
+) -> Result<(), ApiError> {
+    let mut latest = state::read();
+    if latest != *snapshot {
+        return Err(ApiError::Busy);
+    }
+    latest.latest_reconciliation_generation = generation;
+    latest.last_held_reconciliation = Some(state::HeldReconciliation {
+        generation,
+        target_e8s,
+        principal_e8s: actual_e8s,
+        snapshot_fingerprint,
+    });
+    latest.latest_pooled_target = Some(PooledTarget {
+        target_e8s,
+        status: state::target_status(actual_e8s, target_e8s, snapshot.config.expected_icp_fee_e8s),
+    });
+    state::write(latest);
+    Ok(())
+}
+
+fn validate_hold(
+    snapshot: &crate::state::NnsStateV1,
+    actual_e8s: u128,
+    target_e8s: u128,
+    fee_e8s: u128,
+) -> Result<(), ApiError> {
+    let delta = actual_e8s.abs_diff(target_e8s);
+    let valid = actual_e8s == target_e8s
+        || (actual_e8s < target_e8s
+            && (delta <= fee_e8s
+                || (snapshot.pooled_parent_id.is_none()
+                    && target_e8s < snapshot.config.minimum_parent_stake_e8s)))
+        || (actual_e8s > target_e8s
+            && delta
+                < u128::from(crate::maturity::MINIMUM_DISBURSEMENT_E8S)
+                    .checked_add(fee_e8s)
+                    .ok_or_else(|| ApiError::Invalid("minimum unwind gross overflow".into()))?);
+    if valid {
+        Ok(())
+    } else {
+        Err(ApiError::Invalid(
+            "hold contradicts the canonical target".into(),
+        ))
+    }
+}
 pub async fn observe_claim_backing() -> Result<ClaimBackingObservation, ApiError> {
     let snapshot = state::read();
+    let permanent =
+        execution::query_neuron_observation(&snapshot.config, snapshot.config.two_year_neuron_id)
+            .await?;
+    let permanent_staking_account =
+        execution::staking_account(&snapshot.config, &permanent.snapshot);
+    let pool_staking_account =
+        execution::parent_staking_account(&snapshot.config, snapshot.config.pooled_parent_memo);
     let parent = match snapshot.pooled_parent_id {
         Some(parent_id) => {
             let observed = execution::query_neuron_observation(&snapshot.config, parent_id).await?;
@@ -488,7 +659,7 @@ pub async fn observe_claim_backing() -> Result<ClaimBackingObservation, ApiError
             .checked_add(cohort.principal_e8s)
             .ok_or_else(|| ApiError::Invalid("cohort backing overflow".into()))
     })?;
-    let transit_backing_e8s = transit_backing(&snapshot);
+    let transit_backing_e8s = transit_backing(&snapshot)?;
     let active_operation_sequence = match &snapshot.active_operation {
         Some(NnsOperation::Jupiter(value)) => value.operation_sequence,
         Some(NnsOperation::Maturity(value)) => value.operation_sequence,
@@ -497,7 +668,9 @@ pub async fn observe_claim_backing() -> Result<ClaimBackingObservation, ApiError
         None => 0,
     };
     let active_unwind_generation = match &snapshot.active_operation {
-        Some(NnsOperation::Unwind(value)) => Some(value.generation),
+        Some(NnsOperation::Unwind(value)) if !matches!(value.phase, UnwindPhase::SplitPrepared) => {
+            Some(value.generation)
+        }
         _ => None,
     };
     let pooled_principal_e8s = parent.as_ref().map_or(0, |value| value.principal_e8s);
@@ -507,22 +680,36 @@ pub async fn observe_claim_backing() -> Result<ClaimBackingObservation, ApiError
         .min();
     let encoded = candid::encode_one((
         &parent,
+        &permanent_staking_account,
+        &pool_staking_account,
+        snapshot.config.minimum_parent_stake_e8s,
         pooled_principal_e8s,
         &live_cohorts,
         unwinding_principal_e8s,
         transit_backing_e8s,
         active_operation_sequence,
+        snapshot
+            .last_completed_pool
+            .as_ref()
+            .map(|completed| completed.permit.operation_sequence),
         active_unwind_generation,
         snapshot.control_epoch,
     ))
     .map_err(|error| ApiError::Invalid(format!("observation fingerprint failed: {error}")))?;
     let result = ClaimBackingObservation {
         parent,
+        permanent_staking_account,
+        pool_staking_account,
+        minimum_parent_stake_e8s: snapshot.config.minimum_parent_stake_e8s,
         pooled_principal_e8s,
         live_cohorts,
         unwinding_principal_e8s,
         transit_backing_e8s,
         active_operation_sequence,
+        last_completed_pool_operation_sequence: snapshot
+            .last_completed_pool
+            .as_ref()
+            .map(|completed| completed.permit.operation_sequence),
         active_unwind_generation,
         control_epoch: snapshot.control_epoch,
         fingerprint: Sha256::digest(encoded).to_vec(),
@@ -532,8 +719,13 @@ pub async fn observe_claim_backing() -> Result<ClaimBackingObservation, ApiError
     Ok(result)
 }
 
-fn transit_backing(snapshot: &crate::state::NnsStateV1) -> u128 {
-    match &snapshot.active_operation {
+fn transit_backing(snapshot: &crate::state::NnsStateV1) -> Result<u128, ApiError> {
+    if has_ambiguous_backing_effect(snapshot) {
+        return Err(ApiError::Pending(
+            "claim backing has an ambiguous submitted monetary effect".into(),
+        ));
+    }
+    let backing = match &snapshot.active_operation {
         Some(NnsOperation::Pool(command))
             if !matches!(command.phase, PoolCommandPhase::AwaitingTransfer) =>
         {
@@ -542,165 +734,118 @@ fn transit_backing(snapshot: &crate::state::NnsStateV1) -> u128 {
         Some(NnsOperation::Unwind(command))
             if matches!(
                 command.phase,
-                UnwindPhase::SplitProved
+                UnwindPhase::ChildIdentified
+                    | UnwindPhase::SplitProved
                     | UnwindPhase::StartDissolvingSubmitted
                     | UnwindPhase::StartDissolvingProved
             ) =>
         {
-            command.principal_e8s
+            if command.phase == UnwindPhase::ChildIdentified {
+                command
+                    .gross_e8s
+                    .checked_sub(snapshot.config.expected_icp_fee_e8s)
+                    .ok_or_else(|| ApiError::Invalid("unwind transit underflow".into()))?
+            } else {
+                command.principal_e8s
+            }
         }
         Some(NnsOperation::Jupiter(command))
-            if !matches!(
+            if matches!(
                 command.phase,
-                crate::jupiter::JupiterPhase::LiquidTransferSucceeded(_)
-                    | crate::jupiter::JupiterPhase::ReceiptCompletionSubmitted(_)
-                    | crate::jupiter::JupiterPhase::AwaitingStreamSettlement(_)
+                crate::jupiter::JupiterPhase::DepositProved
+                    | crate::jupiter::JupiterPhase::StakeTransferPrepared { .. }
+                    | crate::jupiter::JupiterPhase::StakeTransferSubmitted { .. }
+                    | crate::jupiter::JupiterPhase::StakeTransferSucceeded(_)
+                    | crate::jupiter::JupiterPhase::RefreshSubmitted(_)
+                    | crate::jupiter::JupiterPhase::StakeIncreaseProved(_)
+                    | crate::jupiter::JupiterPhase::ReceiptPermitPrepared { .. }
+                    | crate::jupiter::JupiterPhase::LiquidTransferPrepared { .. }
             ) =>
         {
             command.deposit.liquid_e8s
         }
-        _ => 0,
-    }
-}
-
-fn reconcile_unwind(
-    state: &mut crate::state::NnsStateV1,
-    target_e8s: u128,
-    actual_e8s: u128,
-    target_status: TwoWeekTargetStatus,
-) -> Result<(), ApiError> {
-    if let Some(NnsOperation::Unwind(operation)) = state.active_operation.as_mut() {
-        if operation.phase == UnwindPhase::SplitPrepared {
-            if target_status == TwoWeekTargetStatus::OverTarget {
-                operation.target_e8s = target_e8s;
-                operation.gross_e8s = actual_e8s - target_e8s;
+        Some(NnsOperation::Maturity(command)) => {
+            let delivery = match &command.phase {
+                crate::maturity::MaturityCommandPhase::BackingInflowDelivery(delivery) => delivery,
+                _ => return Ok(0),
+            };
+            if delivery.claim_transfer.as_ref().is_some_and(|attempt| {
+                matches!(
+                    attempt.state,
+                    crate::transfer::TransferState::Succeeded { .. }
+                )
+            }) {
+                let permit = delivery.permit.as_ref().ok_or_else(|| {
+                    ApiError::Invalid("proved maturity transfer lacks its permit".into())
+                })?;
+                if permit.route().route == io_reward_policy::ClaimRoute::AllPool
+                    && !matches!(
+                        delivery.parent_credit_phase,
+                        crate::maturity::ParentCreditPhase::Proved { .. }
+                    )
+                {
+                    permit.route().pooled_credit
+                } else {
+                    0
+                }
             } else {
-                state.active_operation = None;
+                maturity_claim_transit(&delivery.pending)?
             }
         }
-        return Ok(());
-    }
-    if target_status != TwoWeekTargetStatus::OverTarget
-        || state.active_operation.is_some()
-        || state.live_cohorts.len() >= io_nns_types::backing::MAX_LIVE_UNWIND_COHORTS
-    {
-        return Ok(());
-    }
-    let generation = state
-        .latest_reconciliation_generation
-        .checked_add(1)
-        .ok_or_else(|| ApiError::Invalid("reconciliation generation exhausted".into()))?;
-    let operation_sequence = state.next_operation_sequence;
-    state.next_operation_sequence = operation_sequence
-        .checked_add(1)
-        .ok_or_else(|| ApiError::Invalid("operation sequence exhausted".into()))?;
-    state.active_operation = Some(NnsOperation::Unwind(UnwindOperation {
-        operation_sequence,
-        generation,
-        target_e8s,
-        gross_e8s: actual_e8s - target_e8s,
-        child_neuron_id: 0,
-        principal_e8s: 0,
-        child_staking_subaccount: Vec::new(),
-        submitted_at_seconds: 0,
-        expected_block_index: None,
-        child_maturity_e8s: 0,
-        parent_maturity_e8s: 0,
-        phase: UnwindPhase::SplitPrepared,
-    }));
-    state.latest_reconciliation_generation = generation;
-    Ok(())
+        _ => {
+            let pending = snapshot
+                .pending_two_week_maturity
+                .as_ref()
+                .or(snapshot.pending_two_year_maturity.as_ref());
+            pending
+                .map(maturity_claim_transit)
+                .transpose()?
+                .unwrap_or(0)
+        }
+    };
+    Ok(backing)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn one_unsubmitted_unwind_is_replayed_retargeted_or_cancelled() {
-        let mut state = crate::state::NnsStateV1::test_placeholder();
-        state.latest_two_week_target = Some(TwoWeekTarget {
-            target_e8s: 900_000,
-            status: TwoWeekTargetStatus::OverTarget,
-        });
-        reconcile_unwind(
-            &mut state,
-            900_000,
-            1_000_000,
-            TwoWeekTargetStatus::OverTarget,
-        )
-        .unwrap();
-        let first = state.active_operation.clone();
-        reconcile_unwind(
-            &mut state,
-            900_000,
-            1_000_000,
-            TwoWeekTargetStatus::OverTarget,
-        )
-        .unwrap();
-        assert_eq!(state.active_operation, first);
-        assert_eq!(state.next_operation_sequence, 2);
-
-        reconcile_unwind(
-            &mut state,
-            800_000,
-            1_000_000,
-            TwoWeekTargetStatus::OverTarget,
-        )
-        .unwrap();
-        let Some(NnsOperation::Unwind(operation)) = &state.active_operation else {
-            panic!("one unwind must remain")
-        };
-        assert_eq!(operation.operation_sequence, 1);
-        assert_eq!(operation.gross_e8s, 200_000);
-
-        reconcile_unwind(
-            &mut state,
-            1_000_000,
-            1_000_000,
-            TwoWeekTargetStatus::AtTarget,
-        )
-        .unwrap();
-        assert!(state.active_operation.is_none());
+fn has_ambiguous_backing_effect(snapshot: &crate::state::NnsStateV1) -> bool {
+    use crate::transfer::TransferState;
+    match &snapshot.active_operation {
+        Some(NnsOperation::Unwind(command)) => matches!(
+            command.phase,
+            UnwindPhase::SplitSubmitted | UnwindPhase::DisbursementSubmitted
+        ),
+        Some(NnsOperation::Jupiter(command)) => match &command.phase {
+            crate::jupiter::JupiterPhase::LiquidTransferSubmitted { .. } => true,
+            crate::jupiter::JupiterPhase::Stuck {
+                transfer: Some(crate::jupiter::JupiterStuckTransfer::Liquid { attempt, .. }),
+                ..
+            } => matches!(attempt.state, TransferState::Submitted { .. }),
+            _ => false,
+        },
+        Some(NnsOperation::Maturity(command)) => match &command.phase {
+            crate::maturity::MaturityCommandPhase::BackingInflowDelivery(delivery) => delivery
+                .claim_transfer
+                .as_ref()
+                .is_some_and(|attempt| matches!(attempt.state, TransferState::Submitted { .. })),
+            _ => false,
+        },
+        _ => false,
     }
+}
 
-    #[test]
-    fn live_capacity_blocks_a_second_split_for_every_target_status() {
-        let mut state = crate::state::NnsStateV1::test_placeholder();
-        state.latest_two_week_target = Some(TwoWeekTarget {
-            target_e8s: 800_000,
-            status: TwoWeekTargetStatus::OverTarget,
-        });
-        state.live_cohorts = (1..=io_nns_types::backing::MAX_LIVE_UNWIND_COHORTS as u64)
-            .map(|generation| crate::pool::PassiveCohort {
-                generation,
-                child_neuron_id: generation + 100,
-                principal_e8s: 90_000,
-                child_staking_subaccount: vec![generation as u8; 32],
-                ready_at_seconds: 1_000 + generation,
-                proof: io_nns_types::backing::CohortProofState::Dissolving,
-                disbursement_block: None,
-            })
-            .collect();
-        state.next_operation_sequence = 2;
-        reconcile_unwind(
-            &mut state,
-            800_000,
-            900_000,
-            TwoWeekTargetStatus::OverTarget,
-        )
-        .unwrap();
-        assert!(state.active_operation.is_none());
-        assert_eq!(state.next_operation_sequence, 2);
-        reconcile_unwind(
-            &mut state,
-            1_000_000,
-            900_000,
-            TwoWeekTargetStatus::UnderTarget,
-        )
-        .unwrap();
-        assert!(state.active_operation.is_none());
-        assert_eq!(state.live_cohorts.len(), 32);
-        assert_eq!(state.next_operation_sequence, 2);
+fn maturity_claim_transit(
+    pending: &crate::maturity::PendingMaturityDisbursement,
+) -> Result<u128, ApiError> {
+    let mint = match &pending.mint_proof {
+        crate::maturity::MintProofState::Proved(mint)
+        | crate::maturity::MintProofState::Delivering(mint) => mint,
+        crate::maturity::MintProofState::Awaiting => return Ok(0),
+    };
+    match pending.kind {
+        MaturityKind::TwoYear => Ok(mint.actual_minted_icp_e8s),
+        MaturityKind::TwoWeek => io_core_model::split_40_60(mint.actual_minted_icp_e8s)
+            .map(|split| split.claim)
+            .map_err(|error| {
+                ApiError::Invalid(format!("maturity transit split failed: {error:?}"))
+            }),
     }
 }

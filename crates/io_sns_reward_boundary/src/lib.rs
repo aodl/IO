@@ -16,13 +16,6 @@ pub enum Error {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ClaimOrRefreshError {
-    Governance(String),
-    Transport(String),
-    Malformed(String),
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
 pub struct Uint128 {
     pub high: u64,
@@ -405,56 +398,6 @@ pub async fn installed_governance(
 
 pub async fn latest_reward_event(governance: Principal) -> Result<RewardEvent, Error> {
     call(governance, "get_latest_reward_event", ()).await
-}
-
-pub async fn claim_or_refresh(
-    governance: Principal,
-    neuron_id: Vec<u8>,
-) -> Result<(), ClaimOrRefreshError> {
-    #[cfg(target_family = "wasm")]
-    {
-        let response = ic_cdk::call::Call::bounded_wait(governance, "manage_neuron")
-            .with_arg(SnsProductionManageNeuronRequest {
-                subaccount: neuron_id.clone(),
-                command: Some(SnsManageNeuronCommand::ClaimOrRefresh(SnsClaimOrRefresh {
-                    by: Some(SnsClaimOrRefreshBy::NeuronId(EmptyRecord {})),
-                })),
-            })
-            .await
-            .map_err(|error| ClaimOrRefreshError::Transport(format!("{error:?}")))?
-            .candid::<SnsProductionManageNeuronResponse>()
-            .map_err(|error| ClaimOrRefreshError::Malformed(format!("{error:?}")))?;
-        match response.command {
-            Some(SnsManageNeuronCommandResponse::ClaimOrRefresh(value))
-                if value
-                    .refreshed_neuron_id
-                    .as_ref()
-                    .map(|id| id.id.as_slice())
-                    == Some(neuron_id.as_slice()) =>
-            {
-                Ok(())
-            }
-            Some(SnsManageNeuronCommandResponse::ClaimOrRefresh(_)) => Err(
-                ClaimOrRefreshError::Malformed("missing or wrong refreshed neuron id".into()),
-            ),
-            Some(SnsManageNeuronCommandResponse::Error(error)) => {
-                Err(ClaimOrRefreshError::Governance(format!(
-                    "{}: {}",
-                    error.error_type, error.error_message
-                )))
-            }
-            None => Err(ClaimOrRefreshError::Malformed(
-                "manage_neuron response missing command".into(),
-            )),
-        }
-    }
-    #[cfg(not(target_family = "wasm"))]
-    {
-        let _ = (governance, neuron_id);
-        Err(ClaimOrRefreshError::Transport(
-            "manage_neuron is unavailable outside canister Wasm".into(),
-        ))
-    }
 }
 
 pub async fn list_neurons(

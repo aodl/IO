@@ -2,57 +2,10 @@ use candid::Principal;
 
 use crate::{
     api::{ApiError, MaturityProgress, PrepareTwoWeekMaturityArgs},
-    execution,
-    maturity::{
-        MaturityCommandOperation, MaturityCommandPhase, MaturityKind, MaturityPlan, MintProofState,
-        PendingMaturityDisbursement, TwoWeekDeliveryOperation,
-    },
+    maturity::{MaturityKind, MaturityPlan},
     maturity_flow,
     state::{self, Lifecycle, NnsOperation, NnsStateV1},
 };
-
-pub async fn start_delivery(
-    expected: PendingMaturityDisbursement,
-) -> Result<MaturityProgress, ApiError> {
-    let MintProofState::Proved(mint) = expected.mint_proof.clone() else {
-        return Err(ApiError::Busy);
-    };
-    let config = state::read().config;
-    let balance = execution::icp_balance(&config, &config.maturity_staging).await?;
-    maturity_flow::ensure_pending(&expected)?;
-    let required = mint.actual_minted_icp_e8s;
-    if balance < required {
-        return Err(ApiError::Stuck(format!(
-            "maturity staging balance {balance} is below the actual Mint {required}"
-        )));
-    }
-    let mut latest = state::read();
-    if latest.active_operation.is_some()
-        || maturity_flow::pending_from(&latest, MaturityKind::TwoWeek).as_ref() != Some(&expected)
-    {
-        return Err(ApiError::Busy);
-    }
-    let operation_sequence = latest.next_operation_sequence;
-    latest.next_operation_sequence = operation_sequence
-        .checked_add(1)
-        .ok_or_else(|| ApiError::Invalid("operation sequence exhausted".into()))?;
-    let mut passive = expected;
-    passive.mint_proof = MintProofState::Delivering(mint);
-    latest.pending_two_week_maturity = Some(passive.clone());
-    latest.active_operation = Some(NnsOperation::Maturity(Box::new(MaturityCommandOperation {
-        operation_sequence,
-        dispatch_epoch: 0,
-        kind: MaturityKind::TwoWeek,
-        phase: MaturityCommandPhase::TwoWeekDelivery(TwoWeekDeliveryOperation {
-            pending: passive,
-            permit: None,
-            transfer: None,
-            receipt_completed: false,
-        }),
-    })));
-    state::write(latest);
-    Ok(MaturityProgress::DeliveringTwoWeekReceipt)
-}
 
 pub async fn prepare(
     caller: Principal,
@@ -67,17 +20,14 @@ pub async fn prepare(
     }
     let snapshot = state::read();
     if args.entitlement_batch_generation == 0
-        || snapshot
-            .latest_two_week_target
-            .as_ref()
-            .is_none_or(|target| {
-                target.target_e8s != args.target_e8s
-                    || !matches!(
-                        target.status,
-                        crate::state::TwoWeekTargetStatus::AtTarget
-                            | crate::state::TwoWeekTargetStatus::AtTargetWithinUnwindTolerance
-                    )
-            })
+        || snapshot.latest_pooled_target.as_ref().is_none_or(|target| {
+            target.target_e8s != args.target_e8s
+                || !matches!(
+                    target.status,
+                    crate::state::PooledTargetStatus::AtTarget
+                        | crate::state::PooledTargetStatus::AtTargetWithinUnwindTolerance
+                )
+        })
         || snapshot.pooled_parent_id.is_none()
     {
         return Err(ApiError::Invalid(

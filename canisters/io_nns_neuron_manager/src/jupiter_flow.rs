@@ -545,16 +545,8 @@ async fn observe_stream_settlement(
 fn finish_jupiter(
     operation: JupiterOperation,
     succeeded: LiquidTransferSucceeded,
-    completed: execution::CompletedReceiptResult,
+    stream: io_receipt_types::JupiterReceiptResult,
 ) -> Result<JupiterProgress, ApiError> {
-    let stream = match completed {
-        execution::CompletedReceiptResult::Jupiter(result) => result,
-        execution::CompletedReceiptResult::TwoWeek(_) => {
-            return Err(ApiError::Invalid(
-                "stream completed the wrong receipt kind for Jupiter".into(),
-            ))
-        }
-    };
     let expected_fingerprint = execution::jupiter_receipt_fingerprint(
         succeeded.permit.sequence,
         operation.deposit.block_index,
@@ -748,7 +740,7 @@ fn jupiter_progress(operation: &JupiterOperation) -> JupiterProgress {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TwoWeekTargetStatus;
+    use crate::PooledTargetStatus;
     use candid::Principal;
 
     fn valid_test_state() -> (Principal, crate::state::NnsStateV1) {
@@ -787,7 +779,7 @@ mod tests {
                     expected_io_fee_e8s: 10_000,
                     expected_icp_fee_e8s: 10_000,
                     jupiter_activation_block_floor: 1,
-                    seeded_two_year_principal_e8s: 1,
+                    audited_permanent_principal_e8s: 1,
                     transfer_retry_delay_nanos: 1_000_000_000,
                     ledger_deduplication_window_nanos: 86_400_000_000_000,
                 },
@@ -796,8 +788,10 @@ mod tests {
                 pooled_parent_id: None,
                 pooled_parent_staking_account: None,
                 live_cohorts: Vec::new(),
+                last_completed_pool: None,
+                last_held_reconciliation: None,
                 latest_reconciliation_generation: 0,
-                latest_two_week_target: None,
+                latest_pooled_target: None,
                 two_year_maturity_baseline_reconciled: true,
                 latest_started_two_week_generation: 0,
                 latest_completed_two_week_generation: 0,
@@ -817,19 +811,19 @@ mod tests {
         crate::state::initialize(state, principal).unwrap();
         assert_eq!(
             crate::state::target_status(9, 10, 1),
-            TwoWeekTargetStatus::UnderTarget
+            PooledTargetStatus::UnderTarget
         );
         assert_eq!(
             crate::state::target_status(10, 10, 1),
-            TwoWeekTargetStatus::AtTarget
+            PooledTargetStatus::AtTarget
         );
         assert_eq!(
             crate::state::target_status(11, 10, 1),
-            TwoWeekTargetStatus::AtTargetWithinUnwindTolerance
+            PooledTargetStatus::AtTargetWithinUnwindTolerance
         );
         assert_eq!(
             crate::state::target_status(12, 10, 1),
-            TwoWeekTargetStatus::OverTarget
+            PooledTargetStatus::OverTarget
         );
     }
 

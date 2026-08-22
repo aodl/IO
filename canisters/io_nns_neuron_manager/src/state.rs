@@ -9,6 +9,7 @@ use ic_stable_structures::{
     DefaultMemoryImpl, StableBTreeMap, StableCell, Storable,
 };
 pub use io_accounts::Account;
+use io_nns_types::backing::CompletedPoolCommand;
 use {
     candid::{CandidType, Principal},
     serde::Deserialize,
@@ -17,7 +18,7 @@ use {
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
 
-pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 2;
+pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct NnsConfig {
@@ -37,13 +38,13 @@ pub struct NnsConfig {
     pub expected_io_fee_e8s: u128,
     pub expected_icp_fee_e8s: u128,
     pub jupiter_activation_block_floor: u128,
-    pub seeded_two_year_principal_e8s: u128,
+    pub audited_permanent_principal_e8s: u128,
     pub transfer_retry_delay_nanos: u64,
     pub ledger_deduplication_window_nanos: u64,
 }
 
 impl NnsConfig {
-    pub const MAX_STAGING_FEE_FLOAT_E8S: u128 = 100_000_000;
+    pub const MAX_LEDGER_FEE_E8S: u128 = 100_000_000;
 
     pub fn validate(&self, canister_self: Principal) -> Result<(), String> {
         let management = Principal::management_canister();
@@ -110,10 +111,11 @@ impl NnsConfig {
             return Err("staging, Jupiter and stream liquid accounts must be distinct".into());
         }
         if self.expected_io_fee_e8s == 0
-            || self.expected_io_fee_e8s > Self::MAX_STAGING_FEE_FLOAT_E8S
+            || self.expected_io_fee_e8s > Self::MAX_LEDGER_FEE_E8S
             || self.expected_icp_fee_e8s == 0
+            || self.expected_icp_fee_e8s > Self::MAX_LEDGER_FEE_E8S
             || self.jupiter_activation_block_floor == 0
-            || self.seeded_two_year_principal_e8s == 0
+            || self.audited_permanent_principal_e8s == 0
             || self.transfer_retry_delay_nanos == 0
             || self.transfer_retry_delay_nanos >= self.ledger_deduplication_window_nanos
         {
@@ -138,12 +140,26 @@ pub enum NnsOperation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct TwoWeekTarget {
+pub struct PooledTarget {
     pub target_e8s: u128,
-    pub status: TwoWeekTargetStatus,
+    pub status: PooledTargetStatus,
 }
 
-pub use io_receipt_types::BackingTargetStatus as TwoWeekTargetStatus;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum PooledTargetStatus {
+    UnderTarget,
+    AtTarget,
+    AtTargetWithinUnwindTolerance,
+    OverTarget,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct HeldReconciliation {
+    pub generation: u64,
+    pub target_e8s: u128,
+    pub principal_e8s: u128,
+    pub snapshot_fingerprint: Vec<u8>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct NnsStateV1 {
@@ -154,8 +170,10 @@ pub struct NnsStateV1 {
     pub pooled_parent_id: Option<u64>,
     pub pooled_parent_staking_account: Option<Account>,
     pub live_cohorts: Vec<PassiveCohort>,
+    pub last_completed_pool: Option<CompletedPoolCommand>,
+    pub last_held_reconciliation: Option<HeldReconciliation>,
     pub latest_reconciliation_generation: u64,
-    pub latest_two_week_target: Option<TwoWeekTarget>,
+    pub latest_pooled_target: Option<PooledTarget>,
     pub two_year_maturity_baseline_reconciled: bool,
     pub latest_started_two_week_generation: u64,
     pub latest_completed_two_week_generation: u64,
@@ -198,7 +216,7 @@ impl NnsStateV1 {
                 expected_io_fee_e8s: 0,
                 expected_icp_fee_e8s: 0,
                 jupiter_activation_block_floor: 0,
-                seeded_two_year_principal_e8s: 0,
+                audited_permanent_principal_e8s: 0,
                 transfer_retry_delay_nanos: 1,
                 ledger_deduplication_window_nanos: 2,
             },
@@ -207,8 +225,10 @@ impl NnsStateV1 {
             pooled_parent_id: None,
             pooled_parent_staking_account: None,
             live_cohorts: Vec::new(),
+            last_completed_pool: None,
+            last_held_reconciliation: None,
             latest_reconciliation_generation: 0,
-            latest_two_week_target: None,
+            latest_pooled_target: None,
             two_year_maturity_baseline_reconciled: false,
             latest_started_two_week_generation: 0,
             latest_completed_two_week_generation: 0,
@@ -220,11 +240,136 @@ impl NnsStateV1 {
             control_epoch: 0,
         }
     }
+}
 
-    #[cfg(test)]
-    pub(crate) fn test_placeholder() -> Self {
-        Self::decode_placeholder()
+fn validate_backing_inflow_delivery(
+    kind: crate::maturity::MaturityKind,
+    delivery: &crate::maturity::BackingInflowDeliveryOperation,
+    config: &NnsConfig,
+) -> Result<(), String> {
+    use io_nns_types::{
+        inflow::{effect_memo, BackingEffect, FrozenInflowEconomics},
+        transfer::{NnsTransferAttempt, TransferState},
+    };
+    use sha2::Digest;
+
+    let Some(permit) = &delivery.permit else {
+        if delivery.permanent_transfer.is_some()
+            || delivery.claim_transfer.is_some()
+            || delivery.stream_pooled_block.is_some()
+            || delivery.parent_credit_phase != crate::maturity::ParentCreditPhase::NotRequired
+        {
+            return Err("unpermitted backing inflow contains effect evidence".into());
+        }
+        return Ok(());
+    };
+    permit.validate()?;
+    let crate::maturity::MintProofState::Delivering(mint) = &delivery.pending.mint_proof else {
+        return Err("backing inflow permit lacks a delivering Mint".into());
+    };
+    let economics_match = matches!(
+        (kind, &permit.economics),
+        (
+            crate::maturity::MaturityKind::TwoYear,
+            FrozenInflowEconomics::Permanent { .. }
+        ) | (
+            crate::maturity::MaturityKind::TwoWeek,
+            FrozenInflowEconomics::Pooled { .. }
+        )
+    );
+    let generation = delivery
+        .pending
+        .stake_evidence
+        .plan
+        .entitlement_batch_generation
+        .unwrap_or(delivery.pending.initiation_timestamp_seconds);
+    let source_operation_id = sha2::Sha256::digest(
+        candid::encode_one(&delivery.pending)
+            .map_err(|error| format!("maturity source evidence encode failed: {error}"))?,
+    )
+    .to_vec();
+    if !economics_match
+        || permit.actual_mint_e8s != mint.actual_minted_icp_e8s
+        || permit.mint_block != mint.mint_block
+        || permit.maturity_generation != generation
+        || permit.source_operation_id != source_operation_id
+        || !permit
+            .staging_account
+            .effective_eq(&config.maturity_staging)?
+        || permit.permanent_transfer_fee_e8s != config.expected_icp_fee_e8s
+        || permit.claim_transfer_fee_e8s != config.expected_icp_fee_e8s
+    {
+        return Err("backing-inflow permit differs from exact maturity evidence".into());
     }
+
+    let validate_transfer = |attempt: &NnsTransferAttempt,
+                             effect: BackingEffect,
+                             destination: &Account,
+                             amount: u128,
+                             fee: u128|
+     -> Result<(), String> {
+        attempt.validate()?;
+        if attempt.intent.ledger != config.icp_ledger
+            || attempt.intent.source_subaccount != config.maturity_staging.canonical()?.subaccount
+            || !attempt.intent.destination.effective_eq(destination)?
+            || attempt.intent.amount_e8s != amount
+            || attempt.intent.fee_e8s != fee
+            || attempt.intent.memo != effect_memo(&permit.source_operation_id, effect)
+        {
+            return Err("backing-inflow transfer differs from its permit".into());
+        }
+        Ok(())
+    };
+    if let Some(transfer) = &delivery.permanent_transfer {
+        if permit.permanent_credit() == 0 {
+            return Err("zero permanent route contains a transfer".into());
+        }
+        validate_transfer(
+            transfer,
+            BackingEffect::PermanentCredit,
+            &permit.permanent_destination,
+            permit.permanent_credit(),
+            permit.permanent_transfer_fee_e8s,
+        )?;
+    }
+    if let Some(transfer) = &delivery.claim_transfer {
+        let route = permit.route();
+        validate_transfer(
+            transfer,
+            BackingEffect::FirstClaimCredit,
+            if route.route == io_reward_policy::ClaimRoute::AllPool {
+                &permit.pool_destination
+            } else {
+                &permit.liquid_destination
+            },
+            permit
+                .first_claim_credit()
+                .ok_or("claim transfer credit overflow")?,
+            permit.claim_transfer_fee_e8s,
+        )?;
+    }
+    let route = permit.route().route;
+    let claim_succeeded = delivery
+        .claim_transfer
+        .as_ref()
+        .is_some_and(|attempt| matches!(attempt.state, TransferState::Succeeded { .. }));
+    let permanent_succeeded = delivery
+        .permanent_transfer
+        .as_ref()
+        .is_some_and(|attempt| matches!(attempt.state, TransferState::Succeeded { .. }));
+    if permit.permanent_credit() > 0 && delivery.claim_transfer.is_some() && !permanent_succeeded
+        || delivery.stream_pooled_block.is_some()
+            && (route != io_reward_policy::ClaimRoute::Mixed || !claim_succeeded)
+        || route == io_reward_policy::ClaimRoute::AllLiquid
+            && delivery.parent_credit_phase != crate::maturity::ParentCreditPhase::NotRequired
+        || delivery.parent_credit_phase != crate::maturity::ParentCreditPhase::NotRequired
+            && (!claim_succeeded
+                || route == io_reward_policy::ClaimRoute::Mixed
+                    && delivery.stream_pooled_block.is_none())
+    {
+        return Err("backing-inflow pooled effect contradicts its route".into());
+    }
+    Ok(())
 }
 
 impl NnsStateV1 {
@@ -256,9 +401,19 @@ impl NnsStateV1 {
             );
         }
         crate::pool::validate_cohorts(&self.live_cohorts)?;
+        if let Some(completed) = &self.last_completed_pool {
+            completed.validate(self.next_operation_sequence)?;
+        }
+        if let Some(held) = &self.last_held_reconciliation {
+            if held.generation == 0
+                || held.generation != self.latest_reconciliation_generation
+                || held.snapshot_fingerprint.len() != 32
+            {
+                return Err("held reconciliation checkpoint is inconsistent".into());
+            }
+        }
         if self.latest_completed_two_week_generation > self.latest_started_two_week_generation
-            || (self.latest_started_two_week_generation > 0
-                && self.latest_two_week_target.is_none())
+            || (self.latest_started_two_week_generation > 0 && self.latest_pooled_target.is_none())
             || (self.latest_completed_two_week_generation > 0
                 && self.last_two_week_maturity.is_none())
         {
@@ -295,65 +450,33 @@ impl NnsStateV1 {
                     let (neuron_id, destination) = match operation.kind {
                         crate::maturity::MaturityKind::TwoYear => (
                             self.config.two_year_neuron_id,
-                            &self.config.stream_liquid_account,
+                            &self.config.maturity_staging,
                         ),
                         crate::maturity::MaturityKind::TwoWeek => {
                             (pooled_parent_id, &self.config.maturity_staging)
                         }
                     };
                     operation.validate(self.next_operation_sequence, neuron_id, destination)?;
-                    if let crate::maturity::MaturityCommandPhase::TwoWeekDelivery(delivery) =
+                    if let crate::maturity::MaturityCommandPhase::BackingInflowDelivery(delivery) =
                         &operation.phase
                     {
-                        if self.pending_two_week_maturity.as_ref() != Some(&delivery.pending) {
-                            return Err(
-                                "two-week delivery lost its passive maturity evidence".into()
-                            );
+                        let pending = match operation.kind {
+                            crate::maturity::MaturityKind::TwoYear => {
+                                self.pending_two_year_maturity.as_ref()
+                            }
+                            crate::maturity::MaturityKind::TwoWeek => {
+                                self.pending_two_week_maturity.as_ref()
+                            }
+                        };
+                        if pending != Some(&delivery.pending) {
+                            return Err("backing inflow lost its passive maturity evidence".into());
                         }
-                        let crate::maturity::MintProofState::Delivering(mint) =
+                        let crate::maturity::MintProofState::Delivering(_) =
                             &delivery.pending.mint_proof
                         else {
-                            return Err("two-week delivery lacks an exact Mint".into());
+                            return Err("backing inflow lacks an exact Mint".into());
                         };
-                        if let Some(permit) = &delivery.permit {
-                            if permit.memo.is_empty()
-                                || !permit
-                                    .destination
-                                    .effective_eq(&self.config.stream_liquid_account)?
-                            {
-                                return Err("two-week stream permit is inconsistent".into());
-                            }
-                        }
-                        if let Some(transfer) = &delivery.transfer {
-                            transfer.validate()?;
-                            let permit = delivery
-                                .permit
-                                .as_ref()
-                                .ok_or("two-week transfer lacks its stream permit")?;
-                            if transfer.intent.ledger != self.config.icp_ledger
-                                || transfer.intent.source_subaccount
-                                    != self.config.maturity_staging.canonical()?.subaccount
-                                || !transfer
-                                    .intent
-                                    .destination
-                                    .effective_eq(&permit.destination)?
-                                || transfer.intent.amount_e8s != mint.actual_minted_icp_e8s
-                                || transfer.intent.fee_e8s != self.config.expected_icp_fee_e8s
-                                || transfer.intent.memo != permit.memo
-                            {
-                                return Err(
-                                    "two-week transfer does not match exact Mint receipt".into()
-                                );
-                            }
-                        }
-                        if delivery.receipt_completed
-                            && !matches!(
-                                delivery.transfer.as_ref().map(|value| &value.state),
-                                Some(crate::transfer::TransferState::Succeeded { .. })
-                            )
-                        {
-                            return Err("completed two-week receipt lacks transfer proof".into());
-                        }
+                        validate_backing_inflow_delivery(operation.kind, delivery, &self.config)?;
                     }
                 }
                 NnsOperation::Pool(operation) => {
@@ -369,7 +492,7 @@ impl NnsStateV1 {
                 self.pending_two_year_maturity.as_ref(),
                 crate::maturity::MaturityKind::TwoYear,
                 self.config.two_year_neuron_id,
-                &self.config.stream_liquid_account,
+                &self.config.maturity_staging,
             ),
             (
                 self.pending_two_week_maturity.as_ref(),
@@ -386,7 +509,7 @@ impl NnsStateV1 {
                 self.last_two_year_maturity.as_ref(),
                 crate::maturity::MaturityKind::TwoYear,
                 self.config.two_year_neuron_id,
-                &self.config.stream_liquid_account,
+                &self.config.maturity_staging,
             ),
             (
                 self.last_two_week_maturity.as_ref(),
@@ -410,14 +533,14 @@ impl NnsStateV1 {
     }
 }
 
-pub fn target_status(actual: u128, target: u128, tolerance: u128) -> TwoWeekTargetStatus {
+pub fn target_status(actual: u128, target: u128, tolerance: u128) -> PooledTargetStatus {
     match actual.cmp(&target) {
-        std::cmp::Ordering::Less => TwoWeekTargetStatus::UnderTarget,
-        std::cmp::Ordering::Equal => TwoWeekTargetStatus::AtTarget,
+        std::cmp::Ordering::Less => PooledTargetStatus::UnderTarget,
+        std::cmp::Ordering::Equal => PooledTargetStatus::AtTarget,
         std::cmp::Ordering::Greater if actual - target <= tolerance => {
-            TwoWeekTargetStatus::AtTargetWithinUnwindTolerance
+            PooledTargetStatus::AtTargetWithinUnwindTolerance
         }
-        std::cmp::Ordering::Greater => TwoWeekTargetStatus::OverTarget,
+        std::cmp::Ordering::Greater => PooledTargetStatus::OverTarget,
     }
 }
 
@@ -561,7 +684,7 @@ mod tests {
         config: NnsConfig,
         lifecycle: Lifecycle,
         active_operation: Option<NnsOperation>,
-        latest_two_week_target: Option<TwoWeekTarget>,
+        latest_pooled_target: Option<PooledTarget>,
         two_year_maturity_baseline_reconciled: bool,
         two_week_maturity_baseline_reconciled: bool,
         latest_started_two_week_generation: u64,
@@ -622,7 +745,7 @@ mod tests {
                     expected_io_fee_e8s: 10_000,
                     expected_icp_fee_e8s: 10_000,
                     jupiter_activation_block_floor: 1,
-                    seeded_two_year_principal_e8s: 1,
+                    audited_permanent_principal_e8s: 1,
                     transfer_retry_delay_nanos: 1_000_000_000,
                     ledger_deduplication_window_nanos: 86_400_000_000_000,
                 },
@@ -631,8 +754,10 @@ mod tests {
                 pooled_parent_id: None,
                 pooled_parent_staking_account: None,
                 live_cohorts: Vec::new(),
+                last_completed_pool: None,
+                last_held_reconciliation: None,
                 latest_reconciliation_generation: 0,
-                latest_two_week_target: None,
+                latest_pooled_target: None,
                 two_year_maturity_baseline_reconciled: false,
                 latest_started_two_week_generation: 0,
                 latest_completed_two_week_generation: 0,
@@ -772,7 +897,7 @@ mod tests {
         assert!(state.validate(canister_self).is_err());
 
         let (canister_self, mut state) = valid_state();
-        state.config.seeded_two_year_principal_e8s = 0;
+        state.config.audited_permanent_principal_e8s = 0;
         assert!(state.validate(canister_self).is_err());
 
         let (canister_self, mut state) = valid_state();
@@ -802,9 +927,9 @@ mod tests {
     #[test]
     fn passive_unwind_survives_upgrade_and_cannot_duplicate_active_child() {
         let (canister_self, mut state) = valid_state();
-        state.latest_two_week_target = Some(TwoWeekTarget {
+        state.latest_pooled_target = Some(PooledTarget {
             target_e8s: 1,
-            status: TwoWeekTargetStatus::AtTarget,
+            status: PooledTargetStatus::AtTarget,
         });
         state.live_cohorts = vec![passive_unwind()];
         initialize(state, canister_self).unwrap();
@@ -819,14 +944,20 @@ mod tests {
     #[test]
     fn maximum_fixed_nns_v1_slots_fit_the_stable_cell_bound() {
         use crate::maturity::{
-            CompletedMaturity, DisburseMaturitySubmission, DisburseMaturitySucceeded,
-            MaturityCommandOperation, MaturityCommandPhase, MaturityEvidenceSource, MaturityKind,
-            MaturityPlan, MintEvidence, MintProofState, PendingMaturityDisbursement,
-            StakeMaturitySucceeded, TwoWeekDeliveryOperation,
+            BackingInflowDeliveryOperation, CompletedMaturity, DisburseMaturitySubmission,
+            DisburseMaturitySucceeded, MaturityCommandOperation, MaturityCommandPhase,
+            MaturityEvidenceSource, MaturityKind, MaturityPlan, MintEvidence, MintProofState,
+            ParentCreditPhase, PendingMaturityDisbursement, StakeMaturitySucceeded,
         };
 
         let (canister_self, mut state) = valid_state();
         let pending = |kind: MaturityKind, neuron_id: u64, destination: Account, generation| {
+            let stake_maturity_e8s = if kind == MaturityKind::TwoYear {
+                400_000_000
+            } else {
+                0
+            };
+            let remaining_maturity_e8s = 1_000_000_000 - stake_maturity_e8s;
             let plan = MaturityPlan {
                 neuron: crate::jupiter::NeuronSnapshot {
                     neuron_id,
@@ -835,22 +966,22 @@ mod tests {
                 },
                 original_maturity_e8s: 1_000_000_000,
                 original_staked_maturity_e8s: u64::MAX,
-                stake_maturity_e8s: 400_000_000,
-                remaining_maturity_e8s: 600_000_000,
+                stake_maturity_e8s,
+                remaining_maturity_e8s,
                 destination: destination.clone(),
                 requested_at_seconds: 1,
                 entitlement_batch_generation: generation,
             };
             let stake = StakeMaturitySucceeded {
                 plan,
-                remaining_maturity_e8s: 600_000_000,
+                remaining_maturity_e8s,
                 staked_maturity_e8s: u64::MAX,
                 evidence_source: MaturityEvidenceSource::CanonicalNeuronObservation,
             };
             PendingMaturityDisbursement {
                 kind,
                 neuron_id,
-                nominal_disbursed_maturity_e8s: 600_000_000,
+                nominal_disbursed_maturity_e8s: remaining_maturity_e8s,
                 destination,
                 initiation_timestamp_seconds: 1,
                 scheduled_finalization_timestamp_seconds: 604_801,
@@ -860,7 +991,7 @@ mod tests {
                         stake,
                         submitted_at_seconds: 1,
                     },
-                    amount_disbursed_e8s: 600_000_000,
+                    amount_disbursed_e8s: remaining_maturity_e8s,
                     evidence_source: MaturityEvidenceSource::CanonicalNeuronObservation,
                 },
                 mint_proof: MintProofState::Awaiting,
@@ -869,7 +1000,7 @@ mod tests {
         let mut two_year = pending(
             MaturityKind::TwoYear,
             state.config.two_year_neuron_id,
-            state.config.stream_liquid_account.clone(),
+            state.config.maturity_staging.clone(),
             None,
         );
         two_year.mint_proof = MintProofState::Proved(MintEvidence {
@@ -882,7 +1013,7 @@ mod tests {
             .validate(
                 MaturityKind::TwoYear,
                 state.config.two_year_neuron_id,
-                &state.config.stream_liquid_account,
+                &state.config.maturity_staging,
             )
             .expect("valid adverse modulation may Mint less than nominal maturity");
         let mut two_week = pending(
@@ -898,9 +1029,9 @@ mod tests {
             created_at_time_nanos: 604_801_000_000_000,
         });
         state.lifecycle = Lifecycle::Paused;
-        state.latest_two_week_target = Some(TwoWeekTarget {
+        state.latest_pooled_target = Some(PooledTarget {
             target_e8s: 1,
-            status: TwoWeekTargetStatus::AtTarget,
+            status: PooledTargetStatus::AtTarget,
         });
         state.pooled_parent_id = Some(2);
         state.pooled_parent_staking_account = Some(Account {
@@ -927,7 +1058,7 @@ mod tests {
             mint_block: u128::MAX,
             nominal_disbursed_maturity_e8s: u64::MAX,
             actual_minted_icp_e8s: u128::MAX,
-            destination: state.config.stream_liquid_account.clone(),
+            destination: state.config.maturity_staging.clone(),
             completed_at_nanos: u64::MAX,
         });
         state.last_two_week_maturity = Some(CompletedMaturity {
@@ -943,11 +1074,13 @@ mod tests {
             operation_sequence: 1,
             dispatch_epoch: u64::MAX,
             kind: MaturityKind::TwoWeek,
-            phase: MaturityCommandPhase::TwoWeekDelivery(TwoWeekDeliveryOperation {
+            phase: MaturityCommandPhase::BackingInflowDelivery(BackingInflowDeliveryOperation {
                 pending: two_week,
                 permit: None,
-                transfer: None,
-                receipt_completed: false,
+                permanent_transfer: None,
+                claim_transfer: None,
+                parent_credit_phase: ParentCreditPhase::NotRequired,
+                stream_pooled_block: None,
             }),
         })));
         state.two_year_maturity_baseline_reconciled = true;
@@ -1000,7 +1133,7 @@ mod tests {
         assert_eq!(decoded, StableNnsState::V1(state.clone()));
 
         let mut bad_marker = state.clone();
-        bad_marker.launch_schema_marker = LAUNCH_SCHEMA_MARKER + 1;
+        bad_marker.launch_schema_marker = 2;
         assert!(bad_marker
             .validate(canister_self)
             .unwrap_err()
@@ -1013,7 +1146,7 @@ mod tests {
             config: state.config,
             lifecycle: state.lifecycle,
             active_operation: state.active_operation,
-            latest_two_week_target: state.latest_two_week_target,
+            latest_pooled_target: state.latest_pooled_target,
             two_year_maturity_baseline_reconciled: state.two_year_maturity_baseline_reconciled,
             two_week_maturity_baseline_reconciled: false,
             latest_started_two_week_generation: state.latest_started_two_week_generation,

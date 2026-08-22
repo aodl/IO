@@ -341,6 +341,7 @@ dependencies = [
  "io-governance-types",
  "io-historian",
  "io-ledger-types",
+ "io-nns-types",
  "io-production-wiring",
  "io-receipt-types",
  "io-reward-policy",
@@ -1122,9 +1123,11 @@ dependencies = [
  "ic-stable-structures",
  "io-accounts",
  "io-build-support",
+ "io-core-model",
  "io-ledger-boundary",
  "io-nns-types",
  "io-receipt-types",
+ "io-reward-policy",
  "pocket-ic",
  "serde",
  "sha2",
@@ -1138,7 +1141,9 @@ dependencies = [
  "ic-cdk",
  "ic-stable-structures",
  "io-accounts",
+ "io-core-model",
  "io-receipt-types",
+ "io-reward-policy",
  "serde",
  "sha2",
 ]
@@ -1172,7 +1177,9 @@ dependencies = [
 name = "io-reward-policy"
 version = "0.1.0"
 dependencies = [
+ "candid",
  "io-core-model",
+ "serde",
 ]
 
 [[package]]
@@ -1430,7 +1437,8 @@ version = "0.1.0"
 dependencies = [
  "candid",
  "ic-cdk",
- "io-receipt-types",
+ "io-accounts",
+ "io-nns-types",
  "serde",
 ]
 

@@ -42,11 +42,15 @@ pub struct CohortObservation {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct ClaimBackingObservation {
     pub parent: Option<ParentObservation>,
+    pub permanent_staking_account: Account,
+    pub pool_staking_account: Account,
+    pub minimum_parent_stake_e8s: u128,
     pub pooled_principal_e8s: u128,
     pub live_cohorts: Vec<CohortObservation>,
     pub unwinding_principal_e8s: u128,
     pub transit_backing_e8s: u128,
     pub active_operation_sequence: u64,
+    pub last_completed_pool_operation_sequence: Option<u64>,
     pub active_unwind_generation: Option<u64>,
     pub control_epoch: u64,
     pub fingerprint: Vec<u8>,
@@ -55,9 +59,17 @@ pub struct ClaimBackingObservation {
 
 impl ClaimBackingObservation {
     pub fn validate(&self) -> Result<(), String> {
+        self.permanent_staking_account.validate()?;
+        self.pool_staking_account.validate()?;
         if self.fingerprint.len() != 32
             || self.live_cohorts.len() > MAX_LIVE_UNWIND_COHORTS
             || self.active_unwind_generation == Some(0)
+            || self.last_completed_pool_operation_sequence == Some(0)
+            || self.minimum_parent_stake_e8s == 0
+            || self
+                .parent
+                .as_ref()
+                .is_some_and(|parent| parent.staking_account != self.pool_staking_account)
         {
             return Err("claim-backing observation bounds are invalid".into());
         }
@@ -120,6 +132,47 @@ pub struct TopUpPermit {
     pub snapshot_fingerprint: Vec<u8>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct PreparePoolReconciliationArgs {
+    pub generation: u64,
+    pub target_e8s: u128,
+    pub action: PoolReconciliationAction,
+    pub fee_e8s: u128,
+    pub snapshot_fingerprint: Vec<u8>,
+    pub memo: Vec<u8>,
+    pub created_at_time_nanos: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum PoolReconciliationAction {
+    Hold,
+    TopUp { expected_credit_e8s: u128 },
+    Unwind { expected_gross_e8s: u128 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum PoolProgress {
+    Held {
+        principal_e8s: u128,
+    },
+    AwaitingTransfer(TopUpPermit),
+    UnwindPrepared {
+        generation: u64,
+        gross_e8s: u128,
+    },
+    UnwindCommitted {
+        generation: u64,
+        principal_e8s: u128,
+    },
+    ConfiguringParent,
+    AwaitingParentProof,
+    Completed {
+        parent_neuron_id: u64,
+        principal_e8s: u128,
+    },
+    CapacityPending,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum PoolCommandKind {
     Bootstrap,
@@ -141,8 +194,17 @@ pub enum PoolCommandPhase {
 pub struct PoolCommand {
     pub kind: PoolCommandKind,
     pub permit: TopUpPermit,
+    pub transfer_block_index: Option<u128>,
     pub parent_neuron_id: Option<u64>,
     pub phase: PoolCommandPhase,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct CompletedPoolCommand {
+    pub permit: TopUpPermit,
+    pub transfer_block_index: u128,
+    pub parent_neuron_id: u64,
+    pub principal_e8s: u128,
 }
 
 impl PoolCommand {
@@ -162,10 +224,40 @@ impl PoolCommand {
             || (self.kind == PoolCommandKind::TopUp
                 && (self.permit.expected_parent_principal_e8s == 0
                     || self.parent_neuron_id.is_none()))
+            || self.transfer_block_index.is_some()
+                != !matches!(self.phase, PoolCommandPhase::AwaitingTransfer)
         {
             return Err("pooled-parent command is inconsistent".into());
         }
         Ok(())
+    }
+}
+
+impl CompletedPoolCommand {
+    pub fn validate(&self, next_operation_sequence: u64) -> Result<(), String> {
+        if self.transfer_block_index == 0
+            || self.parent_neuron_id == 0
+            || self.principal_e8s
+                != self
+                    .permit
+                    .expected_parent_principal_e8s
+                    .checked_add(self.permit.expected_credit_e8s)
+                    .ok_or("completed pool principal overflow")?
+        {
+            return Err("completed pool command evidence is inconsistent".into());
+        }
+        PoolCommand {
+            kind: if self.permit.expected_parent_principal_e8s == 0 {
+                PoolCommandKind::Bootstrap
+            } else {
+                PoolCommandKind::TopUp
+            },
+            permit: self.permit.clone(),
+            transfer_block_index: Some(self.transfer_block_index),
+            parent_neuron_id: Some(self.parent_neuron_id),
+            phase: PoolCommandPhase::RefreshSubmitted,
+        }
+        .validate(next_operation_sequence)
     }
 }
 
@@ -196,6 +288,7 @@ mod tests {
                 prepared_at_nanos: 1,
                 snapshot_fingerprint: vec![7; 32],
             },
+            transfer_block_index: None,
             parent_neuron_id: None,
             phase: PoolCommandPhase::AwaitingTransfer,
         };
@@ -209,6 +302,9 @@ mod tests {
     fn returned_principal_is_not_counted_while_cleanup_remains_live() {
         let observation = ClaimBackingObservation {
             parent: None,
+            permanent_staking_account: account(8),
+            pool_staking_account: account(9),
+            minimum_parent_stake_e8s: 100_000_000,
             pooled_principal_e8s: 0,
             live_cohorts: vec![CohortObservation {
                 generation: 1,
@@ -220,6 +316,7 @@ mod tests {
             unwinding_principal_e8s: 0,
             transit_backing_e8s: 0,
             active_operation_sequence: 0,
+            last_completed_pool_operation_sequence: None,
             active_unwind_generation: None,
             control_epoch: 0,
             fingerprint: vec![1; 32],

@@ -2,60 +2,22 @@ use candid::CandidType;
 use io_accounts::Account;
 use serde::Deserialize;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum BackingTargetStatus {
-    UnderTarget,
-    AtTarget,
-    AtTargetWithinUnwindTolerance,
-    OverTarget,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum BackingNotReadyReason {
-    Paused,
-    Busy,
-    BaselineUnreconciled,
-    UnderTarget,
-    OverTarget,
-    BelowThreshold,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum TwoWeekBackingReadiness {
-    Ready {
-        target_status: BackingTargetStatus,
-        ordinary_maturity_e8s: u64,
-        retained_maturity_e8s: u64,
-        liquid_maturity_e8s: u64,
-        minimum_disbursement_e8s: u64,
-    },
-    NotReady(BackingNotReadyReason),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum ReceiptKind {
-    Jupiter,
-    TwoWeekMaturity,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct PrepareLiquidReceiptArgs {
+pub struct PrepareJupiterReceiptArgs {
     pub receipt_sequence: u64,
-    pub receipt_kind: ReceiptKind,
     pub source_operation_id: Vec<u8>,
     pub liquid_amount_e8s: u128,
-    pub entitlement_batch_generation: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct LiquidReceiptPermit {
+pub struct JupiterReceiptPermit {
     pub sequence: u64,
     pub destination: Account,
     pub memo: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct CompleteLiquidReceiptArgs {
+pub struct CompleteJupiterReceiptArgs {
     pub receipt_sequence: u64,
     pub block_index: u128,
 }
@@ -71,27 +33,10 @@ pub struct JupiterReceiptResult {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct TwoWeekReceiptResult {
-    pub request_fingerprint: Vec<u8>,
-    pub receipt_block: u128,
-    pub backed_io_pool_e8s: u128,
-    pub distributed_io_e8s: u128,
-    pub forfeited_io_e8s: u128,
-    pub rounding_dust_io_e8s: u128,
-    pub completed_at_nanos: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum CompletedReceiptResult {
-    Jupiter(JupiterReceiptResult),
-    TwoWeek(TwoWeekReceiptResult),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum LiquidReceiptProgress {
+pub enum JupiterReceiptProgress {
     AwaitingReceipt,
     ReceiptProved,
     Settling,
-    Completed(CompletedReceiptResult),
+    Completed(JupiterReceiptResult),
     Stuck(String),
 }
