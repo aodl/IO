@@ -2,10 +2,7 @@ use candid::Principal;
 
 use crate::{
     api::ApiError,
-    state::{
-        Account, RewardEntitlementEntry, RewardEventClassification, RewardEventCredit,
-        RewardEventId,
-    },
+    state::{Account, RewardEventClassification, RewardEventCredit, RewardEventId},
 };
 use io_sns_reward_boundary::{
     self as reward_governance, Error, EventId, EventSequence, EventSequenceError, Neuron,
@@ -241,69 +238,43 @@ pub(crate) fn event_credits_for(
     Ok((classification, credits))
 }
 
-pub(crate) fn merge_event_credits(
-    existing: &[RewardEntitlementEntry],
-    event: &[RewardEventCredit],
-) -> Result<Vec<RewardEntitlementEntry>, ApiError> {
-    let mut merged = std::collections::BTreeMap::<Vec<u8>, RewardEntitlementEntry>::new();
-    for entry in existing {
-        if merged
-            .insert(entry.sns_neuron_id.clone(), entry.clone())
-            .is_some()
-        {
-            return Err(ApiError::Invalid(
-                "entitlement accumulator contains a duplicate neuron ID".into(),
-            ));
-        }
-    }
-    let mut event_ids = std::collections::BTreeSet::new();
-    for credit in event {
-        if !event_ids.insert(credit.sns_neuron_id.clone()) {
-            return Err(ApiError::Invalid(
-                "reward event contains a duplicate neuron ID".into(),
-            ));
-        }
-        match merged.get_mut(&credit.sns_neuron_id) {
-            Some(entry) => {
-                if !entry
-                    .destination
-                    .effective_eq(&credit.destination)
-                    .map_err(ApiError::Invalid)?
-                {
-                    return Err(ApiError::Invalid(
-                        "reward destination changed for an accumulated neuron".into(),
-                    ));
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::FrozenEntitlement;
+    use io_sns_reward_boundary::{DissolveState, ProposalId, RewardEventParticipation, Uint128};
+
+    fn merge_event_credits(
+        accumulated: &[FrozenEntitlement],
+        credits: &[RewardEventCredit],
+    ) -> Result<Vec<FrozenEntitlement>, String> {
+        let mut merged = accumulated.to_vec();
+        for credit in credits {
+            match merged.binary_search_by(|entry| entry.sns_neuron_id.cmp(&credit.sns_neuron_id)) {
+                Ok(index) => {
+                    if !merged[index]
+                        .destination
+                        .effective_eq(&credit.destination)?
+                    {
+                        return Err("reward destination changed".into());
+                    }
+                    merged[index].accumulated_eligible_credit = merged[index]
+                        .accumulated_eligible_credit
+                        .checked_add(credit.event_credit)
+                        .ok_or("reward credit overflow")?;
                 }
-                entry.accumulated_eligible_credit = entry
-                    .accumulated_eligible_credit
-                    .checked_add(credit.event_credit)
-                    .ok_or_else(|| ApiError::Invalid("entitlement credit overflow".into()))?;
-            }
-            None if credit.event_credit > 0 => {
-                merged.insert(
-                    credit.sns_neuron_id.clone(),
-                    RewardEntitlementEntry {
+                Err(index) => merged.insert(
+                    index,
+                    FrozenEntitlement {
                         sns_neuron_id: credit.sns_neuron_id.clone(),
                         destination: credit.destination.clone(),
                         accumulated_eligible_credit: credit.event_credit,
                     },
-                );
+                ),
             }
-            None => {}
         }
+        Ok(merged)
     }
-    if merged.len() > crate::state::RewardEntitlementAccumulator::MAX_ENTRIES {
-        return Err(ApiError::Invalid(
-            "entitlement accumulator exceeds 1,000 entries".into(),
-        ));
-    }
-    Ok(merged.into_values().collect())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use io_sns_reward_boundary::{DissolveState, ProposalId, RewardEventParticipation, Uint128};
 
     fn principal(value: u8) -> Principal {
         Principal::from_slice(&[value; 29])
@@ -541,7 +512,7 @@ mod tests {
         assert_eq!(accumulated[0].accumulated_eligible_credit, 100);
         assert_eq!(accumulated[1].accumulated_eligible_credit, 400);
 
-        let overflow = vec![RewardEntitlementEntry {
+        let overflow = vec![FrozenEntitlement {
             sns_neuron_id: vec![1; 32],
             destination: destination(1),
             accumulated_eligible_credit: u128::MAX,

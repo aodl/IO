@@ -8,7 +8,7 @@ use serde::Deserialize;
 use crate::{
     api::ApiError,
     canonical,
-    state::{self, DispatchEpoch, ReconciliationCheckpoint, StreamConfig, StreamOperation},
+    state::{self, DispatchEpoch, StreamConfig, StreamOperation},
     transfer::{
         classify_result, ClassifiedResult, OwnTransferIntent, TransferAttempt, TransferState,
     },
@@ -16,7 +16,6 @@ use crate::{
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct PoolTopUpOperation {
-    pub checkpoint: ReconciliationCheckpoint,
     pub permit: TopUpPermit,
     pub transfer: TransferAttempt,
     pub nns_transfer_proved: bool,
@@ -62,28 +61,18 @@ pub async fn ensure_latest(now: u64) -> Result<bool, ApiError> {
     if stream.active_operation.is_some() {
         return Err(ApiError::Busy);
     }
+    if stream.stake_observation_due {
+        return Err(ApiError::Pending(
+            "fresh daily stake observation is required".into(),
+        ));
+    }
     let checkpoint = stream
         .latest_reconciliation_checkpoint
         .clone()
         .ok_or_else(|| ApiError::Pending("no canonical daily reconciliation exists".into()))?;
-    let canonical = canonical::redemption_snapshot(&stream.config)
+    let canonical = canonical::claim_snapshot(&stream.config)
         .await
         .map_err(ApiError::Ledger)?;
-    if canonical.active_unwind_generation.is_some() {
-        wake_nns(stream.config.nns_manager).await?;
-        return Ok(false);
-    }
-    let excluded = canonical
-        .excluded_io_balances
-        .iter()
-        .try_fold(0u128, |sum, (_, value)| sum.checked_add(*value))
-        .ok_or_else(|| ApiError::Invalid("nonredeemable IO overflow".into()))?;
-    let claims = io_core_model::claim_supply(
-        canonical.total_supply_e8s,
-        canonical.reserve_io_e8s,
-        &[excluded],
-    )
-    .map_err(|error| ApiError::Invalid(format!("claim supply failed: {error:?}")))?;
     let plan = io_core_model::reconcile(
         io_core_model::EconomicState {
             backing: io_core_model::Backing {
@@ -92,9 +81,9 @@ pub async fn ensure_latest(now: u64) -> Result<bool, ApiError> {
                 unwinding: canonical.unwinding_principal_e8s,
                 transit: canonical.transit_backing_e8s,
             },
-            claims,
-            active_backing: canonical.active_backing_io_e8s,
-            active_reward: canonical.active_reward_io_e8s,
+            claims: canonical.claim_supply_e8s,
+            active_backing: checkpoint.active_backing_io_e8s,
+            active_reward: checkpoint.active_reward_io_e8s,
         },
         canonical.icp_fee_e8s,
         canonical.minimum_parent_stake_e8s,
@@ -191,7 +180,6 @@ pub async fn ensure_latest(now: u64) -> Result<bool, ApiError> {
             })
             .map_err(ApiError::Invalid)?;
             let operation = PoolTopUpOperation {
-                checkpoint,
                 permit,
                 transfer,
                 nns_transfer_proved: false,

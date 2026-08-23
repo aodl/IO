@@ -12,15 +12,16 @@ thread_local! {
 
 pub(crate) fn install_for_ready_state() {
     let state = crate::state::read();
-    if state.lifecycle != Lifecycle::Ready || state.reward_entitlements.reward_processing_paused {
+    if state.lifecycle != Lifecycle::Ready || state.reward_checkpoint.reward_processing_paused {
         install(None);
         return;
     }
-    if state.reward_entitlements.reward_work_due
-        || state.reward_entitlements.last_processed_event.is_none()
+    if state.reward_checkpoint.reward_work_due
+        || state.stake_observation_due
+        || state.reward_checkpoint.last_processed_event.is_none()
     {
         install((ic_cdk::api::time() / 1_000_000_000).checked_add(1));
-    } else if let Some(event) = state.reward_entitlements.last_processed_event {
+    } else if let Some(event) = state.reward_checkpoint.last_processed_event {
         install_after(event);
     }
 }
@@ -56,11 +57,12 @@ pub(crate) fn install(deadline_seconds: Option<u64>) {
             });
             let mut state = crate::state::read();
             if state.lifecycle != Lifecycle::Ready
-                || state.reward_entitlements.reward_processing_paused
+                || state.reward_checkpoint.reward_processing_paused
             {
                 return;
             }
-            state.reward_entitlements.reward_work_due = true;
+            state.reward_checkpoint.reward_work_due = true;
+            state.stake_observation_due = true;
             crate::state::write(state);
             if let Err(error) = crate::rewards::observe(ic_cdk::api::time()).await {
                 ic_cdk::api::debug_print(format!(
