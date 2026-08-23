@@ -1,4 +1,6 @@
-use crate::{inflow::BackingInflowPermit, jupiter::NeuronSnapshot, transfer::NnsTransferAttempt};
+use crate::{
+    jupiter::NeuronSnapshot, receipt::ClaimBackingReceiptPermit, transfer::NnsTransferAttempt,
+};
 use {candid::CandidType, io_accounts::Account, serde::Deserialize};
 
 pub const MINIMUM_DISBURSEMENT_E8S: u64 = 100_000_000;
@@ -89,25 +91,11 @@ pub struct PendingMaturityDisbursement {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct BackingInflowDeliveryOperation {
+pub struct ClaimReceiptDeliveryOperation {
     pub pending: PendingMaturityDisbursement,
-    pub permit: Option<BackingInflowPermit>,
+    pub permit: Option<ClaimBackingReceiptPermit>,
     pub permanent_transfer: Option<NnsTransferAttempt>,
     pub claim_transfer: Option<NnsTransferAttempt>,
-    pub parent_credit_phase: ParentCreditPhase,
-    pub stream_pooled_block: Option<u128>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum ParentCreditPhase {
-    NotRequired,
-    Required,
-    ClaimSubmitted { parent_neuron_id: u64 },
-    DelaySubmitted { parent_neuron_id: u64 },
-    FollowingSubmitted { parent_neuron_id: u64 },
-    VotingPowerRefreshSubmitted { parent_neuron_id: u64 },
-    RefreshSubmitted { parent_neuron_id: u64 },
-    Proved { parent_neuron_id: u64 },
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -119,7 +107,7 @@ pub enum MaturityCommandPhase {
     ReadyToDisburse(DisburseMaturitySubmission),
     DisburseMaturitySubmitted(DisburseMaturitySubmission),
     DisburseMaturitySucceeded(DisburseMaturitySucceeded),
-    BackingInflowDelivery(BackingInflowDeliveryOperation),
+    ClaimReceiptDelivery(ClaimReceiptDeliveryOperation),
     MaturityDrift {
         reason: String,
         stake: StakeMaturitySucceeded,
@@ -163,9 +151,7 @@ impl MaturityCommandOperation {
                 &submission.stake.plan
             }
             MaturityCommandPhase::DisburseMaturitySucceeded(value) => &value.submission.stake.plan,
-            MaturityCommandPhase::BackingInflowDelivery(value) => {
-                &value.pending.stake_evidence.plan
-            }
+            MaturityCommandPhase::ClaimReceiptDelivery(value) => &value.pending.stake_evidence.plan,
         }
     }
 

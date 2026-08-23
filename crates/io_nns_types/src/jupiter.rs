@@ -6,7 +6,7 @@ use {
 };
 
 use crate::transfer::NnsTransferAttempt;
-pub use io_receipt_types::JupiterReceiptPermit as StreamReceiptPermit;
+pub use io_receipt_types::ClaimBackingReceiptPermit as StreamReceiptPermit;
 
 pub const PINNED_NNS_GOVERNANCE_COMMIT: &str = "8aa4680e378f3248e7e7b9b8237915aded999bd9";
 pub const PINNED_ICP_LEDGER_COMMIT: &str = "021bf342f66296d5605b355a61b2430406a83783";
@@ -266,7 +266,11 @@ fn validate_stake_increase(proof: &StakeIncreaseProof, stake_e8s: u128) -> Resul
 }
 
 fn validate_permit(permit: &StreamReceiptPermit) -> Result<(), String> {
-    if permit.memo.is_empty() || permit.memo.len() > 32 {
+    if permit.stream_operation_sequence == 0
+        || permit.amount_e8s == 0
+        || permit.memo.len() != 32
+        || permit.request_fingerprint.len() != 32
+    {
         return Err("stream receipt permit memo is malformed".into());
     }
     permit.destination.validate()

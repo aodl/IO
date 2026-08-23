@@ -3,6 +3,18 @@ use io_accounts::Account;
 use serde::Deserialize;
 
 pub const MAX_LIVE_UNWIND_COHORTS: usize = 32;
+
+pub fn remaining_parent_transit(
+    expected_before: u128,
+    expected_credit: u128,
+    observed_parent: u128,
+) -> Result<u128, io_core_model::EconomicsError> {
+    let expected_after = io_core_model::checked_add(expected_before, expected_credit)?;
+    if observed_parent < expected_before || observed_parent > expected_after {
+        return Err(io_core_model::EconomicsError::InsufficientBacking);
+    }
+    Ok(expected_after - observed_parent)
+}
 pub const POOLED_PARENT_DELAY_SECONDS: u64 = 1_209_600;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -164,8 +176,7 @@ pub enum PoolProgress {
         generation: u64,
         principal_e8s: u128,
     },
-    ConfiguringParent,
-    AwaitingParentProof,
+    AwaitingProof,
     Completed {
         parent_neuron_id: u64,
         principal_e8s: u128,
@@ -271,6 +282,15 @@ mod tests {
             owner: Principal::from_slice(&[byte; 29]),
             subaccount: Some(vec![byte; 32]),
         }
+    }
+
+    #[test]
+    fn parent_principal_and_transit_partition_one_committed_credit() {
+        assert_eq!(remaining_parent_transit(1_000, 100, 1_000), Ok(100));
+        assert_eq!(remaining_parent_transit(1_000, 100, 1_040), Ok(60));
+        assert_eq!(remaining_parent_transit(1_000, 100, 1_100), Ok(0));
+        assert!(remaining_parent_transit(1_000, 100, 999).is_err());
+        assert!(remaining_parent_transit(1_000, 100, 1_101).is_err());
     }
 
     #[test]

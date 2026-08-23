@@ -1,6 +1,5 @@
 //! Checked, stateless launch economics for IO claim backing.
 
-pub const E8S_PER_TOKEN: u128 = 100_000_000;
 pub const TWO_WEEK_SECONDS: u64 = 1_209_600;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -207,6 +206,9 @@ pub fn reconcile(
 ) -> Result<ReconcilePlan, EconomicsError> {
     let backing = claim_backing(state.backing)?;
     let raw = target(state.active_backing, backing, state.claims)?;
+    if state.backing.pooled == raw {
+        return Ok(ReconcilePlan::Hold { target: raw });
+    }
     if state.backing.pooled == 0 && raw < minimum_parent {
         return Ok(ReconcilePlan::Hold { target: raw });
     }
@@ -219,7 +221,7 @@ pub fn reconcile(
     if state.backing.pooled < post_fee {
         let credit = post_fee - state.backing.pooled;
         return if credit <= fee || (state.backing.pooled == 0 && credit < minimum_parent) {
-            Ok(ReconcilePlan::Hold { target: post_fee })
+            Ok(ReconcilePlan::Hold { target: raw })
         } else {
             Ok(ReconcilePlan::TopUp {
                 target: post_fee,
@@ -230,7 +232,7 @@ pub fn reconcile(
     }
     let gross = state.backing.pooled - post_fee;
     if gross < minimum_child_gross {
-        Ok(ReconcilePlan::Hold { target: post_fee })
+        Ok(ReconcilePlan::Hold { target: raw })
     } else {
         Ok(ReconcilePlan::Unwind {
             target: post_fee,
@@ -355,6 +357,10 @@ mod tests {
         assert_eq!(
             reconcile(state(1_000, 0, 1_000, 50), 10, 100, 110),
             Ok(ReconcilePlan::Hold { target: 50 })
+        );
+        assert_eq!(
+            reconcile(state(400, 600, 1_000, 600), 10, 100, 110),
+            Ok(ReconcilePlan::Hold { target: 600 })
         );
         assert!(matches!(
             reconcile(state(600, 400, 1_000, 500), 10, 100, 110),
