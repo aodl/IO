@@ -95,7 +95,7 @@ pub async fn ensure_latest(now: u64) -> Result<bool, ApiError> {
     .map_err(|error| ApiError::Invalid(format!("pool reconciliation failed: {error:?}")))?;
     match plan {
         io_core_model::ReconcilePlan::Hold { target } => {
-            let result = prepare_nns(
+            let result = prepare_initial_reconciliation(
                 stream.config.nns_manager,
                 PreparePoolReconciliationArgs {
                     generation: checkpoint.generation,
@@ -145,7 +145,7 @@ pub async fn ensure_latest(now: u64) -> Result<bool, ApiError> {
             if debit > canonical.liquid_icp_e8s {
                 return Ok(false);
             }
-            let result = prepare_nns(
+            let result = prepare_initial_reconciliation(
                 stream.config.nns_manager,
                 PreparePoolReconciliationArgs {
                     generation: checkpoint.generation,
@@ -435,6 +435,18 @@ async fn prepare_nns(
                 ApiError::Pending(format!("NNS pool prepare decode ambiguous: {error:?}"))
             })?;
     result.map_err(|_| ApiError::Invalid("NNS rejected pool reconciliation".into()))
+}
+
+async fn prepare_initial_reconciliation(
+    nns_manager: candid::Principal,
+    args: PreparePoolReconciliationArgs,
+) -> Result<PoolProgress, ApiError> {
+    match prepare_nns(nns_manager, args).await {
+        Err(ApiError::Invalid(reason)) => Err(ApiError::Pending(format!(
+            "NNS reconciliation was concurrently prepared or rejected: {reason}"
+        ))),
+        result => result,
+    }
 }
 
 fn reconciliation_memo(generation: u64) -> Vec<u8> {

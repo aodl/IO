@@ -286,6 +286,7 @@ pub async fn prepare_pool_reconciliation(
     if caller != snapshot.config.stream_manager {
         return Err(ApiError::Unauthorized);
     }
+    refresh_parent_for_reconciliation(&snapshot).await?;
     if let Some(completed) = snapshot
         .last_completed_unwind
         .as_ref()
@@ -333,8 +334,7 @@ pub async fn prepare_pool_reconciliation(
         }
     }
     if let Some(NnsOperation::Pool(operation)) = &snapshot.active_operation {
-        if operation.permit.generation == args.generation
-            && operation.permit.snapshot_fingerprint == args.snapshot_fingerprint
+        let stable_identity = operation.permit.generation == args.generation
             && operation.permit.fee_e8s == args.fee_e8s
             && operation.permit.memo == args.memo
             && operation.permit.prepared_at_nanos == args.created_at_time_nanos
@@ -347,8 +347,15 @@ pub async fn prepare_pool_reconciliation(
                 args.action,
                 PoolReconciliationAction::TopUp { expected_credit_e8s }
                     if expected_credit_e8s == operation.permit.expected_credit_e8s
-            )
+            );
+        let canonical_snapshot = if stable_identity
+            && operation.permit.snapshot_fingerprint != args.snapshot_fingerprint
         {
+            claim_asset_observation().await?.fingerprint == args.snapshot_fingerprint
+        } else {
+            true
+        };
+        if stable_identity && canonical_snapshot {
             return Ok(PoolProgress::AwaitingTransfer(operation.permit.clone()));
         }
     }
@@ -390,7 +397,6 @@ pub async fn prepare_pool_reconciliation(
             "pool reconciliation snapshot or intent is invalid".into(),
         ));
     }
-    refresh_parent_for_reconciliation(&snapshot).await?;
     require_pool_policy(&snapshot).await?;
     let actual = observation.pooled_parent_principal_e8s;
     match args.action {
@@ -1043,5 +1049,20 @@ mod tests {
         assert!(!tail[..boundary].contains("unwind_flow::resume"));
         assert!(!tail[..boundary].contains(".await"));
         assert!(!tail[..boundary].contains("Err("));
+    }
+
+    #[test]
+    fn claim_observation_has_one_parent_query_and_no_child_query_loop() {
+        let source = include_str!("api.rs");
+        let body = source
+            .split("pub(crate) async fn claim_asset_observation")
+            .nth(1)
+            .unwrap()
+            .split("pub async fn observe_pool_policy")
+            .next()
+            .unwrap();
+        assert_eq!(body.matches("query_neuron_observation").count(), 1);
+        assert!(!body.contains("cohort.child_neuron_id).await"));
+        assert!(body.contains("Vec::with_capacity(snapshot.live_cohorts.len())"));
     }
 }

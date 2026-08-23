@@ -24,7 +24,16 @@ async fn nat_call<A: candid::CandidType>(
     nat_to_u128(value)
 }
 
+const NNS_SNAPSHOT_DRIFT: &str = "NNS claim-backing observation drifted across the canonical reads";
+
 pub async fn claim_snapshot(config: &StreamConfig) -> Result<ClaimSnapshot, String> {
+    match claim_snapshot_once(config).await {
+        Err(error) if error == NNS_SNAPSHOT_DRIFT => claim_snapshot_once(config).await,
+        result => result,
+    }
+}
+
+async fn claim_snapshot_once(config: &StreamConfig) -> Result<ClaimSnapshot, String> {
     let nns_before = claim_asset_observation(config.nns_manager).await?;
     let io_fee = nat_call(config.io_ledger, "icrc1_fee", ()).await?;
     let icp_fee = nat_call(config.icp_ledger, "icrc1_fee", ()).await?;
@@ -50,7 +59,7 @@ pub async fn claim_snapshot(config: &StreamConfig) -> Result<ClaimSnapshot, Stri
     let stream_snapshot = crate::state::read();
     let nns_after = claim_asset_observation(config.nns_manager).await?;
     if nns_after != nns_before {
-        return Err("NNS claim-backing observation drifted across the canonical reads".into());
+        return Err(NNS_SNAPSHOT_DRIFT.into());
     }
     let excluded = excluded_io_balances
         .iter()

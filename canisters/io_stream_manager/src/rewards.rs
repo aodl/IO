@@ -315,6 +315,7 @@ pub async fn resume_backing(now_nanos: u64) -> Result<RewardBackingProgress, Api
     if snapshot.reward_checkpoint.reward_processing_paused
         || !snapshot.reward_checkpoint.governance_parameters_fresh
     {
+        let _ = crate::pool_reconciliation::ensure_latest(now_nanos).await;
         return Err(ApiError::Pending(
             "daily stake observation is not fresh".into(),
         ));
