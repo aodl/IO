@@ -29,7 +29,7 @@ L = liquid claim backing
 P = active pooled two-week NNS principal
 U = pending two-week unwind principal
 T = exact claim backing frozen in an in-transit operation
-K = permanent/max-delay protocol principal, excluded from B
+K = permanent/exact-two-year protocol principal, excluded from B
 A_backing = all structurally active claim-bearing ordinary staked IO
 A_reward = the subset currently eligible for reward allocation
 
@@ -79,166 +79,134 @@ shortfall pauses reward processing; exact or over-target coverage permits only
 prospective rewards, never retroactive rewards. `P>B` is an impossible
 canonical partition and fails before either reward target is accepted.
 
-## Unified post-event allocation
+## Liquid-first claim ingress
 
-Every event supplies actual values, not source-based destination percentages:
+Every new claim-backing amount enters the Stream Manager liquid claim Account
+before pooled positioning. The receipt freezes the pre-inflow claim scalars,
+source operation identity, net liquid credit, exact NNS fingerprint and, where
+IO is delivered, one canonical recipient vector. It persists only one current
+recipient transfer. Completion retains a compact replay result and no recipient
+history.
 
-```text
-Q  = actual net claim-backing increment
-dC = actual change in claim-bearing IO supply
-dA = actual change in structurally active staked IO
-
-B1 = B0 + Q
-C1 = C0 + dC
-A_backing1 = A_backing0 + dA
-
-target1 = floor(A_backing1 * B1 / C1)
-pool_need = max(0, target1 - P0)
-to_pool = min(Q, pool_need)
-to_liquid = Q - to_pool
-
-remaining_under_target = max(0, target1 - (P0 + to_pool))
-resulting_over_target = max(0, (P0 + to_pool) - target1)
-```
-
-`U` and `T` remain in `B` but are not `P`. Allocation does not move them into
-the active pool. The event result contains post-event `B`, `C`, `A_backing`,
-target, both destinations and both residuals. Both `A_backing0<=C0` and
-`A_backing1<=C1` are mandatory.
-
-### Jupiter inflow
-
-Ignoring fees and floors, Jupiter contributes `Q = 60%` of actual source ICP
-to claim backing and releases `dC = Q / pre_event_rate` reserve IO to a liquid
-recipient; `dA = 0`. When the pool starts on target, preserving `B/C` while
-`A_backing` is unchanged preserves the target exactly, so all `Q` remains
-liquid. Jupiter's separate permanent contribution is not a reason to top up the
-pool.
-
-Examples from the executable model:
-
-- Empty genesis: `Q=60, dC=60` produces `B=C=60`, target zero, all liquid.
-- Rate 1: `B=C=1,000, A_backing=P=250, Q=dC=600` preserves target 250.
-- Rate 2: `B=2,000, C=1,000, A_backing=250, P=500, Q=600, dC=300` preserves target
-  500.
-- With `B=3, C=2, A_backing=P=1, Q=1`, floor delivery is zero, the rate appreciates,
-  and the one-unit target delta goes to the pool. This is rounding, not source
-  provenance.
-
-An IO reserve transfer fee is an IO supply burn, not an ICP backing fee. If 60
-IO is delivered and one IO is burned, the reserve debit is 61, total supply
-falls by one, and `C` increases by the actual delivered 60. Nominal reserve
-debit must not be used as `dC`.
-
-### Pooled two-week maturity
-
-For actual canonical Mint `M`:
+The receipt uses the pre-inflow rate:
 
 ```text
-permanent_leg = floor(M * 40 / 100)
-Q = M - permanent_leg - exact_claim_reducing_fees
-dC = actual_delivered_IO
-dA = actual_delivered_IO
+maximum_backed_IO = floor(net_liquid_credit * C0 / B0)
 ```
 
-At `B=C=1,000, A_backing=P=500`, a Mint of 1,000 gives `K += 400` and `Q=600`.
-Delivering 600 IO gives `B=C=1,600`, `A_backing=1,100`, target 1,100 and allocates all
-600 to the pool without diluting the rate. With only 300 IO actually delivered,
-the target-derived result is 484 to the pool and 116 liquid. With no delivery
-because the reward entitlement is fully forfeited, the result is 300 pool and
-300 liquid. A one-e8s claim-reducing fee makes `Q=599`; actual delivered IO,
-not nominal reserve debit, remains authoritative.
+True empty genesis uses one IO per net claim-backing ICP. Every successfully
+delivered IO increases `C`; maturity settlement does not assume that a
+recipient remains structurally active and does not supply a synthetic `dA`.
+The next daily observation derives `A_backing` and `A_reward` from canonical
+SNS state and staking-account ledger balances.
 
-Therefore “60% always goes to the pooled neuron” is not a rule. Partial
-distribution, forfeiture, fees and floors can make part of the claim leg
-liquid. Allocating from the post-event target avoids an unnecessary later
-split/unwind and its fee.
+### Jupiter
 
-### Permanent/max-delay-neuron maturity
+For an authorized source amount `S`, Jupiter proves the source block, sends
+`floor(S*40/100)` gross toward permanent capital, and sends the remaining
+claim gross minus its exact transfer fee to Stream liquid. Stream settles the
+Jupiter IO recipient at the pre-inflow `B/C` rate. The ordinary Jupiter
+recipient remains claim-bearing unless it is separately configured as an
+explicit nonredeemable governance Account.
 
-Initially ignoring fee subsidy:
+### Pooled-parent maturity
+
+For an actual canonical Mint `M`:
 
 ```text
-permanent_leg = floor(M * 40 / 100)
-Q = M - permanent_leg
-dC = 0
-dA = 0
+permanent_gross = floor(M * 40 / 100)
+claim_gross = M - permanent_gross
+permanent_credit = permanent_gross - exact_permanent_fee
+liquid_claim_credit = claim_gross - exact_claim_fee
 ```
 
-The rate appreciates. If the pool was on target, the pool receives the exact
-target delta, approximately `floor(Q * A_backing / C)`, and the rest remains liquid.
-For `B=C=1,000` and `Q=600`, the tested `A_backing/C` cases are:
+The permanent credit is proved first. The claim credit then enters Stream
+liquid through the common receipt and settles the already-frozen entitlement
+batch. Delivery increases `C` but makes no immediate claim about
+`A_backing`. There is no maturity-specific parent destination or second
+maturity transfer.
 
-| A_backing/C | Pre-event P | To pool | To liquid |
-| ---: | ---: | ---: | ---: |
-| 0% | 0 | 0 | 600 |
-| 25% | 250 | 150 | 450 |
-| 50% | 500 | 300 | 300 |
-| 100% | 1,000 | 600 | 0 |
+### Permanent-neuron maturity
 
-If `P=100` while the pre-event target is 500, all 600 goes to the pool and 100
-remains under target. If `P=900`, the post-event target is 800, all 600 remains
-liquid, and ordinary reconciliation later unwinds the 100 excess. Pending
-unwind and transit remain in total backing when calculating the target but do
-not become active pooled principal. Bounded integer loops test rounding across
-small values.
+The controlled permanent neuron first executes and proves
+`StakeMaturity(40%)`. Governance then disburses all remaining ordinary
+maturity and the protocol proves the actual Mint. That entire Mint, minus one
+exact claim transfer fee, enters Stream liquid. It releases no IO. The retained
+staked maturity remains permanent productive capital outside `B`.
 
-Permanent-neuron yield needs no source-provenance attribution. The same target
-rule determines its destination.
+### Child return
 
-### Fee-aware physical claim-leg route
+A dissolved child proves its principal transfer to Stream liquid. Its
+zero-principal ordinary and staked maturity are then cleaned through the proved
+merge path, after which the bounded child record is retired. Reward re-entry
+state is generation-free after cleanup and cannot retain the child slot.
 
-Dynamic allocation is executed through the smallest deterministic physical
-route, not by pretending the destination split is fee-free. The planner takes
-the canonical parent-existence observation and exact minimum parent-creation
-credit together with the exact observed transfer fees:
+### Ordinary post-ingress reconciliation
 
-1. The permanent gross leg is debited from staging once and its destination is
-   credited by `permanent_gross - permanent_transfer_fee`.
-2. Evaluate the claim leg with its unavoidable first staging-transfer fee. Use
-   one staging-to-liquid transfer when the target needs no pooled credit, when
-   the two-fee candidate's net pooled credit is no larger than the second exact
-   fee, when the optional second fee cannot be paid, or when the parent is
-   absent and that net credit is below the exact creation minimum. Record the
-   remaining under-target delta for batching. Failure to afford the optional
-   second fee is an `AllLiquid` decision, not a global planning error.
-3. Use one staging-to-pool transfer only when the post-one-fee target consumes
-   the entire claim credit, or when the two-fee candidate has zero liquid
-   credit, and either the parent exists or the exact one-fee credit satisfies
-   the minimum valid parent-creation amount. In the latter case, credit the
-   entire one-fee claim amount, report the one-fee target and bounded
-   over-target residual, and do not spend the optional second fee.
-4. Use staging-to-liquid followed by liquid-to-pool only when the one-fee
-   target is mixed, both recalculated destination credits are positive, the
-   pooled credit after the second exact fee is strictly greater than that fee,
-   and the credit is executable for the existing parent or the lazy-creation
-   minimum. Otherwise select the applicable direct one-fee route.
+Receipt completion marks the ordinary daily observation work due but does not
+wait for physical positioning. A fresh bounded observation later calculates:
 
-The executable planner evaluates at most the one-fee and two-fee candidates.
-Its result records the parent-aware decision, permanent source debit and credit,
-claim staging debit,
-first claim credit, optional liquid-to-pool source debit, both destination
-credits, exact fees, and post-fee `B`, `K` and target. The selected route's
-reported target is always recalculated using that route's actual fee count.
-Candidate fixtures cover boundaries where changing from one fee to two changes
-the target floor; the planner terminates after at most two evaluations.
+```text
+target = floor(A_backing * B / C)
+```
 
-The executable sub-fee counterexample uses `B=C=1,000,000,000`,
-`A_backing=500,000,000`, `P=529,989,000`, actual Mint `100,000,000`, and an
-exact claim-transfer fee of `10,000`, with no `dC` or `dA`. The two-fee
-candidate would credit only `1,000` to the pool while spending that second
-`10,000` fee. The selected one-fee route instead credits `59,990,000` to
-liquid, spends no second fee, and records the `6,000` under-target residual for
-later batching.
+Only ordinary reconciliation may transfer a material liquid delta to the
+pooled parent or commit a material unwind cohort. A top-up debits liquid by its
+gross leg, credits the parent by gross minus the exact fee, and reduces `B`
+once under Policy A. A claim ingress can therefore incur one additional ICP
+fee when the fresh global target requires a later top-up. This fee is accepted
+because liquid-first ingress removes source-specific destination planners and
+their durable effect graphs.
 
-The all-pool boundary fixture uses `B=C=100,000,000,000`,
-`A_backing=50,000,000,000`, `P=49,970,010,000`, actual Mint `100,000,000`, an
-exact claim-transfer fee of `10,000`, and no `dC` or `dA`. The two-fee candidate
-has zero liquid credit, so the selected route is direct one-fee `AllPool`: it
-credits `59,990,000`, reports the one-fee target `50,029,995,000` and bounded
-`5,000` over-target residual, performs no liquid-to-pool transfer, and retains
-`10,000` more total claim backing than the two-fee alternative.
+Future reward events remain fail-closed unless the canonical pooled principal
+covers `floor(A_reward*B/C)`. Receipt completion itself never restores reward
+eligibility.
 
+## Purpose-specific observations and unified registry
+
+A `ClaimSnapshot` reads only scalar IO supply/reserve/exclusions, liquid ICP,
+NNS `P/U/T`, fees, epochs, operation sequence and fingerprints. Redemption
+uses this fixed-size read path and never lists SNS neurons or scans staking
+Accounts. Its active state freezes only the exact quote scalars and adverse
+postcondition floors.
+
+A `DailyStakeObservation` verifies SNS Governance, brackets the reward event
+and scalar snapshot, lists neurons once, and reads each distinct eligible
+staking Account at most once. It rejects duplicate IDs and Accounts and is
+bounded at 1,000 neurons. A non-dissolving neuron with any delay other than
+1,209,600 seconds remains claim-bearing in `C` but is excluded from
+`A_backing` and rewards; it cannot block redemption, daily observation or
+reconciliation.
+
+One sorted bounded registry stores neuron ID, canonical staking Account,
+accumulated eligible credit, structural classification, prospective reward
+status and an optional unresolved cohort generation. Freezing a batch moves
+credit out of these records into the receipt's single recipient vector while
+later events may accumulate fresh credit in the same registry.
+
+Daily processing first reconciles structure, then proves coverage for the
+existing eligible subset, then credits the current event, and only afterward
+considers re-entry for a future event. All active pending re-entries are
+promoted together only when `P` covers the full `A_backing` target;
+otherwise none are promoted. This prevents per-neuron ordering from allocating
+coverage that does not exist.
+
+## Transit ownership
+
+A Stream liquid-to-parent top-up has one owner at every phase:
+
+- before transfer success, the value remains in `L` and `T=0`;
+- after exact Stream transfer success but before NNS accepts proof, Stream owns
+  only the unreflected residual in `T`;
+- after NNS accepts proof, NNS owns that residual and Stream contributes zero;
+- as cached parent principal reflects the credit, the residual is
+  `expected_before + expected_credit - observed_parent`;
+- at full reflection the value is wholly in `P` and `T=0`.
+
+The observed parent must remain within the committed before/after interval.
+An ambiguous submitted transfer makes the snapshot unavailable until exact
+proof. Consequently `P+T` can never count more than the committed final
+credit.
 ## Conservation
 
 Every completed transition must prove:
@@ -272,7 +240,7 @@ or expense policy, not balancing the books.
 | Child merge-back | Pending/passive child | Reduces `B` by one fee; parent receives child principal minus fee | No | Yes |
 | Child disbursement | Dissolved child | Reduces `B` by one fee | No | Yes |
 | Maturity staging to permanent staking | Permanent leg in staging | Reduces `K` by one fee | No | No |
-| Maturity staging to pooled staking | Claim leg in staging | Reduces `B` by one fee | No | Yes |
+| Maturity staging to Stream liquid | Claim leg in staging | Reduces the actual net `Q`/`B` by one fee | No | Yes |
 | Jupiter staging to permanent staking | Jupiter permanent leg | Reduces `K` by one fee | No | No |
 | Jupiter staging to Stream liquid backing | Jupiter claim leg | Reduces the actual net `Q`/`B` by one fee | No | Yes |
 | Redemption payout | Gross liquid claim payout; user receives gross minus fee | `B` falls by the gross quote; fee is part of that payout loss | Yes, deducted from gross | No |

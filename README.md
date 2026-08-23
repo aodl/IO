@@ -217,10 +217,10 @@ transport outcome becomes `Stuck` rather than guessing whether value moved.
 `resume` advances an existing operation idempotently. `prove_active_transfer`
 accepts only an exact canonical ledger block for the active proof slot; it is
 not a manual balance rewrite or debug completion path. Stream proof slots cover
-redemption, Jupiter, backing-inflow, pooled top-up, and reward transfers. The
-NNS Manager similarly proves exact staging, maturity, parent, and cohort
-effects. Upgrades preserve durable operation state and force reviewed
-reactivation while allowing immutable work to resume.
+redemption, the unified liquid claim receipt, pooled top-up, and reward
+transfers. The NNS Manager similarly proves exact staging, maturity, parent,
+and cohort effects. Upgrades preserve durable operation state and force
+reviewed reactivation while allowing immutable work to resume.
 
 ## NNS terminology and production authority
 

@@ -1,7 +1,7 @@
 # Production API surface
 
-Stream exposes narrow redemption/resume/proof, Jupiter receipt, backing-inflow,
-reward observation/backing, lifecycle, and status methods. NNS exposes narrow
+Stream exposes narrow redemption/resume/proof, unified claim-receipt,
+reward-observation/backing, lifecycle, and status methods. NNS exposes narrow
 Jupiter, maturity, pooled reconciliation, resume/proof, lifecycle, status, and
 claim-backing observation methods.
 
