@@ -698,6 +698,11 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
     );
     initial_observation.unwrap();
     assert!(!query::<Status>(&pic, stream, "get_status").reward_work_due);
+    assert_eq!(
+        query::<u64>(&pic, nns, "debug_get_reconcile_call_count"),
+        1,
+        "the daily cadence must attempt one ordinary pool reconciliation"
+    );
 
     let governance_before: GovernanceCallCounters =
         query(&pic, governance, "debug_get_call_counters");

@@ -319,6 +319,37 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
     let ready_status: Status = query(&pic, manager, "get_status");
     assert!(ready_status.two_year_maturity_baseline_reconciled);
 
+    let governance_calls_before_unauthorized: u64 =
+        query(&pic, governance, "debug_get_full_neuron_call_count");
+    let unauthorized_assets: Result<io_nns_types::backing::ClaimAssetObservation, ApiError> =
+        update(
+            &pic,
+            manager,
+            Principal::anonymous(),
+            "observe_claim_assets",
+            (),
+        );
+    assert_eq!(unauthorized_assets, Err(ApiError::Unauthorized));
+    assert_eq!(
+        query::<u64>(&pic, governance, "debug_get_full_neuron_call_count"),
+        governance_calls_before_unauthorized,
+        "unauthorized asset observation must not call Governance"
+    );
+    let unauthorized_policy: Result<io_nns_types::backing::PoolPolicyObservation, ApiError> =
+        update(
+            &pic,
+            manager,
+            Principal::anonymous(),
+            "observe_pool_policy",
+            (),
+        );
+    assert_eq!(unauthorized_policy, Err(ApiError::Unauthorized));
+    assert_eq!(
+        query::<u64>(&pic, governance, "debug_get_full_neuron_call_count"),
+        governance_calls_before_unauthorized,
+        "unauthorized policy observation must not call Governance"
+    );
+
     let idle: Result<io_nns_neuron_manager::api::NnsProgress, ApiError> =
         update(&pic, manager, Principal::anonymous(), "resume", ());
     assert_eq!(idle, Ok(io_nns_neuron_manager::api::NnsProgress::Idle));

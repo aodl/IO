@@ -176,6 +176,10 @@ pub fn prepare_pool_reconciliation(
     args: io_nns_types::backing::PreparePoolReconciliationArgs,
 ) -> Result<io_nns_types::backing::PoolProgress, NnsError> {
     use io_nns_types::backing::{PoolProgress, PoolReconciliationAction};
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        state.reconcile_calls = state.reconcile_calls.saturating_add(1);
+    });
     if args.generation == 0
         || args.snapshot_fingerprint != vec![42; 32]
         || !matches!(args.action, PoolReconciliationAction::Hold)
@@ -186,7 +190,6 @@ pub fn prepare_pool_reconciliation(
     }
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        state.reconcile_calls = state.reconcile_calls.saturating_add(1);
         state.two_week_target = Some(SetTargetArgs {
             target_e8s: args.target_e8s,
             generation: args.generation,
