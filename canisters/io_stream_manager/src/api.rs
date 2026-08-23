@@ -1,6 +1,6 @@
 use candid::{CandidType, Nat, Principal};
 use ic_cdk::call::Call;
-pub use io_receipt_types::JupiterReceiptProgress;
+pub use io_receipt_types::ClaimBackingReceiptProgress;
 use serde::Deserialize;
 
 use crate::{
@@ -10,8 +10,8 @@ use crate::{
         RedemptionPreparation,
     },
     state::{
-        self, Account, DispatchEpoch, JupiterReceiptStreamOperation, Lifecycle, OperationSequence,
-        RedemptionResult, RedemptionStreamOperation, StreamOperation, StreamStateV1,
+        self, Account, DispatchEpoch, Lifecycle, OperationSequence, RedemptionResult,
+        RedemptionStreamOperation, StreamOperation, StreamStateV1,
     },
     transfer::{
         classify_result, ClassifiedResult, IcrcTransferArg, IcrcTransferFromArg, OwnTransferIntent,
@@ -55,8 +55,7 @@ pub enum RedemptionProgress {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum StreamProgress {
     Redemption(RedemptionProgress),
-    JupiterReceipt(JupiterReceiptProgress),
-    BackingInflow(io_nns_types::inflow::BackingInflowProgress),
+    ClaimReceipt(ClaimBackingReceiptProgress),
     BackingReconciliation,
     Idle,
 }
@@ -66,11 +65,11 @@ pub struct Status {
     pub lifecycle: Lifecycle,
     pub operation_kind: Option<String>,
     pub operation_phase: Option<String>,
-    pub next_nns_receipt_sequence: u64,
+    pub next_operation_sequence: u64,
     pub latest_entitlement_batch_generation: u64,
     pub latest_processed_reward_event: Option<crate::state::RewardEventId>,
     pub latest_reward_event_classification: Option<crate::state::RewardEventClassification>,
-    pub accumulated_entitlements: Vec<crate::state::RewardEntitlementEntry>,
+    pub accumulated_entitlements: Vec<crate::state::FrozenEntitlement>,
     pub accumulated_eligible_credit: u128,
     pub accumulated_policy_credit: u128,
     pub processed_reward_event_count: u64,
@@ -302,7 +301,7 @@ pub async fn redeem(
     )));
     state::write(latest);
 
-    let snapshot = match canonical::redemption_snapshot(&initial.config).await {
+    let snapshot = match canonical::claim_snapshot(&initial.config).await {
         Ok(snapshot) => snapshot,
         Err(error) => {
             clear_matching_preparation(&preparation);
@@ -433,7 +432,7 @@ async fn dispatch_redemption_transfer(
     }
     if !io_pull && operation.icp_payout.is_none() {
         let config = state::read().config;
-        let fresh = canonical::redemption_snapshot(&config)
+        let fresh = canonical::claim_snapshot(&config)
             .await
             .map_err(ApiError::Ledger)?;
         let latest = active_redemption()?;
@@ -669,7 +668,7 @@ async fn commit_redemption(
     mut operation: RedemptionOperation,
     now: u64,
 ) -> Result<RedemptionProgress, ApiError> {
-    let post = canonical::redemption_snapshot(&state::read().config)
+    let post = canonical::claim_snapshot(&state::read().config)
         .await
         .map_err(ApiError::Ledger)?;
     if let Err(error) = redemption::verify_postconditions(&operation, &post) {
@@ -802,19 +801,9 @@ pub async fn resume_stream(now: u64) -> Result<StreamProgress, ApiError> {
                 resume(now).await.map(StreamProgress::Redemption)
             }
         },
-        Some(StreamOperation::JupiterReceipt(operation)) => match *operation {
-            JupiterReceiptStreamOperation::Preparing(_) => Err(ApiError::Pending(
-                "no-effect receipt preparation must be retried by the NNS manager".into(),
-            )),
-            JupiterReceiptStreamOperation::Active(operation) => {
-                receipt::resume_jupiter_receipt(*operation, now)
-                    .await
-                    .map(StreamProgress::JupiterReceipt)
-            }
-        },
-        Some(StreamOperation::BackingInflow(_)) => crate::backing_inflow::resume(now)
-            .await
-            .map(StreamProgress::BackingInflow),
+        Some(StreamOperation::ClaimReceipt(_)) => {
+            receipt::resume(now).await.map(StreamProgress::ClaimReceipt)
+        }
         Some(StreamOperation::PoolTopUp(_)) => {
             crate::pool_reconciliation::resume(now).await?;
             Ok(StreamProgress::BackingReconciliation)
@@ -826,27 +815,16 @@ pub async fn resume_stream(now: u64) -> Result<StreamProgress, ApiError> {
 pub async fn prove_active_transfer(block_index: u128) -> Result<(), ApiError> {
     if matches!(
         state::read().active_operation,
-        Some(StreamOperation::BackingInflow(_))
+        Some(StreamOperation::ClaimReceipt(_))
     ) {
-        return crate::backing_inflow::prove_active_transfer(block_index).await;
+        receipt::prove_recipient(block_index).await?;
+        return Ok(());
     }
     if matches!(
         state::read().active_operation,
         Some(StreamOperation::PoolTopUp(_))
     ) {
         return crate::pool_reconciliation::prove_transfer(block_index).await;
-    }
-    if let Some(StreamOperation::JupiterReceipt(operation)) = state::read().active_operation {
-        return match *operation {
-            JupiterReceiptStreamOperation::Active(operation) => match *operation {
-                crate::receipt::JupiterReceiptState::Jupiter(_) => {
-                    receipt::prove_jupiter_settlement(block_index).await
-                }
-            },
-            JupiterReceiptStreamOperation::Preparing(_) => Err(ApiError::Invalid(
-                "receipt preparation has no active transfer".into(),
-            )),
-        };
     }
     let operation = active_redemption()?;
     if operation.phase != RedemptionPhase::Stuck {

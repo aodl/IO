@@ -8,14 +8,14 @@ use serde::Deserialize;
 use std::{borrow::Cow, cell::RefCell};
 
 use crate::{
-    backing_inflow::{BackingInflowOperation, LastCompletedBackingInflow},
     pool_reconciliation::PoolTopUpOperation,
-    receipt::{JupiterReceiptState, LastCompletedReceipt, ReceiptPreparation},
+    receipt::{ClaimBackingReceipt, CompletedClaimBackingReceipt},
     redemption::{RedemptionOperation, RedemptionPreparation},
 };
 pub use io_accounts::Account;
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
+pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct StreamConfig {
@@ -151,8 +151,7 @@ pub struct DispatchEpoch(pub u64);
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum StreamOperation {
     Redemption(Box<RedemptionStreamOperation>),
-    JupiterReceipt(Box<JupiterReceiptStreamOperation>),
-    BackingInflow(Box<BackingInflowOperation>),
+    ClaimReceipt(Box<ClaimBackingReceipt>),
     PoolTopUp(Box<PoolTopUpOperation>),
 }
 
@@ -163,13 +162,7 @@ pub enum RedemptionStreamOperation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum JupiterReceiptStreamOperation {
-    Preparing(Box<ReceiptPreparation>),
-    Active(Box<JupiterReceiptState>),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct RewardEntitlementEntry {
+pub struct FrozenEntitlement {
     pub sns_neuron_id: Vec<u8>,
     pub destination: Account,
     pub accumulated_eligible_credit: u128,
@@ -181,6 +174,7 @@ pub enum RewardEventClassification {
     NoProposalFallback,
     ZeroEligibleParticipation,
     MissedSkipped,
+    StructuralOnly,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -195,7 +189,6 @@ pub struct RewardEventObservation {
     pub event: RewardEventId,
     pub proposal_count: u64,
     pub classification: RewardEventClassification,
-    pub credits: Vec<RewardEventCredit>,
     pub policy_credit: u128,
     pub eligible_credit_total: u128,
     pub observed_at_nanos: u64,
@@ -211,9 +204,8 @@ pub struct SkippedRewardEvent {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct RewardEntitlementAccumulator {
+pub struct RewardCheckpoint {
     pub last_processed_event: Option<RewardEventId>,
-    pub entries: Vec<RewardEntitlementEntry>,
     pub accumulated_policy_credit: u128,
     pub processed_event_count: u64,
     pub missed_event_count: u64,
@@ -224,11 +216,10 @@ pub struct RewardEntitlementAccumulator {
     pub governance_parameters_fresh: bool,
 }
 
-impl Default for RewardEntitlementAccumulator {
+impl Default for RewardCheckpoint {
     fn default() -> Self {
         Self {
             last_processed_event: None,
-            entries: Vec::new(),
             accumulated_policy_credit: 0,
             processed_event_count: 0,
             missed_event_count: 0,
@@ -247,7 +238,7 @@ pub struct PendingEntitlementBatch {
     pub frozen_at_timestamp_seconds: u64,
     pub through_event: RewardEventId,
     pub target_icp_e8s: u128,
-    pub entries: Vec<RewardEntitlementEntry>,
+    pub entries: Vec<FrozenEntitlement>,
     pub eligible_credit_total: u128,
     pub policy_credit_total: u128,
     pub processed_event_count: u64,
@@ -256,6 +247,7 @@ pub struct PendingEntitlementBatch {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum StructuralStakeState {
     Active,
+    IneligibleActive,
     Dissolving,
     LiquidOrDissolved,
 }
@@ -274,6 +266,7 @@ pub enum BackingRewardStatus {
 pub struct BackingRewardRecord {
     pub sns_neuron_id: Vec<u8>,
     pub staking_account: Account,
+    pub accumulated_eligible_credit: u128,
     pub latest_structural_state: StructuralStakeState,
     pub status: BackingRewardStatus,
     pub unresolved_cohort_generation: Option<u64>,
@@ -343,17 +336,16 @@ pub struct StreamStateV1 {
     pub config: StreamConfig,
     pub lifecycle: Lifecycle,
     pub active_operation: Option<StreamOperation>,
-    pub reward_entitlements: RewardEntitlementAccumulator,
+    pub reward_checkpoint: RewardCheckpoint,
     pub pending_entitlement_batch: Option<PendingEntitlementBatch>,
-    pub backing_registry: Vec<BackingRewardRecord>,
+    pub neuron_registry: Vec<BackingRewardRecord>,
+    pub stake_observation_due: bool,
     pub latest_reconciliation_checkpoint: Option<ReconciliationCheckpoint>,
     pub latest_reconciliation_generation: u64,
     pub latest_entitlement_batch_generation: u64,
-    pub next_nns_receipt_sequence: u64,
     pub next_operation_sequence: OperationSequence,
     pub control_epoch: u64,
-    pub last_completed_receipt: Option<LastCompletedReceipt>,
-    pub last_completed_backing_inflow: Option<LastCompletedBackingInflow>,
+    pub last_completed_claim_receipt: Option<CompletedClaimBackingReceipt>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -369,7 +361,7 @@ impl StreamStateV1 {
             subaccount: None,
         };
         Self {
-            launch_schema_marker: 3,
+            launch_schema_marker: LAUNCH_SCHEMA_MARKER,
             config: StreamConfig {
                 io_ledger: anonymous,
                 icp_ledger: anonymous,
@@ -392,24 +384,23 @@ impl StreamStateV1 {
             },
             lifecycle: Lifecycle::Paused,
             active_operation: None,
-            reward_entitlements: RewardEntitlementAccumulator::default(),
+            reward_checkpoint: RewardCheckpoint::default(),
             pending_entitlement_batch: None,
-            backing_registry: Vec::new(),
+            neuron_registry: Vec::new(),
+            stake_observation_due: true,
             latest_reconciliation_checkpoint: None,
             latest_reconciliation_generation: 0,
             latest_entitlement_batch_generation: 0,
-            next_nns_receipt_sequence: 0,
             next_operation_sequence: OperationSequence(0),
             control_epoch: 0,
-            last_completed_receipt: None,
-            last_completed_backing_inflow: None,
+            last_completed_claim_receipt: None,
         }
     }
 }
 
 impl StreamStateV1 {
     pub fn validate(&self, canister_self: Principal) -> Result<(), String> {
-        if self.launch_schema_marker != 3 {
+        if self.launch_schema_marker != LAUNCH_SCHEMA_MARKER {
             return Err("invalid Stream launch schema marker".into());
         }
         self.config.validate(canister_self)?;
@@ -451,26 +442,17 @@ impl StreamStateV1 {
                     }
                 }
             },
-            Some(StreamOperation::JupiterReceipt(operation)) => match operation.as_ref() {
-                JupiterReceiptStreamOperation::Preparing(value) => {
-                    value.validate(&self.config)?;
-                    if value.captured_control_epoch != self.control_epoch {
-                        return Err("receipt preparation control epoch is stale".into());
-                    }
-                }
-                JupiterReceiptStreamOperation::Active(value) => value.validate(&self.config)?,
-            },
-            Some(StreamOperation::BackingInflow(operation)) => {
-                operation.validate()?;
+            Some(StreamOperation::ClaimReceipt(operation)) => {
+                operation.validate(&self.config)?;
                 if operation.permit.stream_operation_sequence >= self.next_operation_sequence.0 {
-                    return Err("active backing-inflow sequence was not reserved".into());
+                    return Err("active claim-receipt sequence was not reserved".into());
                 }
             }
             Some(StreamOperation::PoolTopUp(operation)) => operation.validate(&self.config)?,
             None => {}
         }
-        self.reward_entitlements.validate(&self.config)?;
-        validate_backing_registry(&self.backing_registry, &self.config)?;
+        self.reward_checkpoint.validate(&self.config)?;
+        validate_backing_registry(&self.neuron_registry, &self.config)?;
         if self
             .latest_reconciliation_checkpoint
             .as_ref()
@@ -503,34 +485,21 @@ impl StreamStateV1 {
                 return Err("pending entitlement batch generation is inconsistent".into());
             }
         }
-        if let Some(completed) = &self.last_completed_receipt {
-            completed.validate(&self.config, self.next_nns_receipt_sequence)?;
-        }
-        if let Some(completed) = &self.last_completed_backing_inflow {
+        if let Some(completed) = &self.last_completed_claim_receipt {
             completed.validate()?;
-            if completed.permit.stream_operation_sequence >= self.next_operation_sequence.0 {
-                return Err("completed backing-inflow sequence was not reserved".into());
+            if completed.stream_operation_sequence >= self.next_operation_sequence.0 {
+                return Err("completed claim-receipt sequence was not reserved".into());
             }
         }
         Ok(())
     }
 }
 
-impl RewardEntitlementAccumulator {
+impl RewardCheckpoint {
     pub const MAX_ENTRIES: usize = 1_000;
 
     pub fn validate(&self, config: &StreamConfig) -> Result<(), String> {
-        validate_entitlement_entries(&self.entries, config)?;
-        let eligible_credit_total = self
-            .entries
-            .iter()
-            .try_fold(0u128, |sum, entry| {
-                sum.checked_add(entry.accumulated_eligible_credit)
-            })
-            .ok_or("entitlement accumulator total overflow")?;
-        if eligible_credit_total > self.accumulated_policy_credit {
-            return Err("eligible entitlement credit exceeds policy credit".into());
-        }
+        let _ = config;
         if self
             .last_processed_event
             .is_some_and(|event| event.end_timestamp_seconds == 0 || event.round == 0)
@@ -565,25 +534,18 @@ impl RewardEventObservation {
         {
             return Err("latest reward observation is invalid".into());
         }
-        let entries = self
-            .credits
-            .iter()
-            .map(|weight| RewardEntitlementEntry {
-                sns_neuron_id: weight.sns_neuron_id.clone(),
-                destination: weight.destination.clone(),
-                accumulated_eligible_credit: weight.event_credit,
-            })
-            .collect::<Vec<_>>();
-        validate_entitlement_entries(&entries, config)?;
-        let eligible_credit_total = entries.iter().try_fold(0u128, |sum, entry| {
-            sum.checked_add(entry.accumulated_eligible_credit)
-        });
-        if eligible_credit_total != Some(self.eligible_credit_total)
-            || self.eligible_credit_total > self.policy_credit
-            || (self.classification == RewardEventClassification::MissedSkipped
-                && (self.policy_credit != 0 || self.eligible_credit_total != 0))
-            || (self.classification != RewardEventClassification::MissedSkipped
-                && self.policy_credit != io_reward_policy::DAILY_EVENT_CREDIT)
+        let _ = config;
+        if self.eligible_credit_total > self.policy_credit
+            || (matches!(
+                self.classification,
+                RewardEventClassification::MissedSkipped
+                    | RewardEventClassification::StructuralOnly
+            ) && (self.policy_credit != 0 || self.eligible_credit_total != 0))
+            || (!matches!(
+                self.classification,
+                RewardEventClassification::MissedSkipped
+                    | RewardEventClassification::StructuralOnly
+            ) && self.policy_credit != io_reward_policy::DAILY_EVENT_CREDIT)
         {
             return Err("latest reward observation credit totals are inconsistent".into());
         }
@@ -616,10 +578,10 @@ impl PendingEntitlementBatch {
 }
 
 fn validate_entitlement_entries(
-    entries: &[RewardEntitlementEntry],
+    entries: &[FrozenEntitlement],
     config: &StreamConfig,
 ) -> Result<(), String> {
-    if entries.len() > RewardEntitlementAccumulator::MAX_ENTRIES {
+    if entries.len() > RewardCheckpoint::MAX_ENTRIES {
         return Err("entitlement accumulator exceeds 1,000 entries".into());
     }
     let mut previous_id: Option<&[u8]> = None;
@@ -755,10 +717,6 @@ pub fn reopen(canister_self: Principal) {
         &reopened.active_operation,
         Some(StreamOperation::Redemption(operation))
             if matches!(operation.as_ref(), RedemptionStreamOperation::Preparing(_))
-    ) || matches!(
-        &reopened.active_operation,
-        Some(StreamOperation::JupiterReceipt(operation))
-            if matches!(operation.as_ref(), JupiterReceiptStreamOperation::Preparing(_))
     ) {
         reopened.active_operation = None;
     }
@@ -823,49 +781,21 @@ pub fn set_caller_state(caller: Principal, state: CallerRedemptionState) {
 mod tests {
     use super::*;
 
-    #[derive(candid::CandidType)]
-    enum FutureStableStreamState {
-        V2(StreamStateV1),
+    #[derive(CandidType)]
+    enum PriorStableStreamState {
+        V1(PriorStreamState),
     }
 
-    #[allow(dead_code)]
-    #[derive(candid::CandidType)]
-    enum CheckpointNeuronRefreshStatus {
-        NotAttempted,
-        Attempting { attempted_at_nanos: u64 },
-        Confirmed,
-        GovernanceRejected { diagnostic: String },
-        TransportFailure { diagnostic: String },
-        MalformedResponse { diagnostic: String },
-    }
-
-    #[derive(candid::CandidType)]
-    struct CheckpointPendingNeuronRefresh {
-        sns_neuron_id: Vec<u8>,
-        status: CheckpointNeuronRefreshStatus,
-    }
-
-    #[derive(candid::CandidType)]
-    struct CheckpointStreamStateV1 {
+    #[derive(CandidType)]
+    struct PriorStreamState {
+        launch_schema_marker: u8,
         config: StreamConfig,
         lifecycle: Lifecycle,
-        active_operation: Option<StreamOperation>,
-        reward_entitlements: RewardEntitlementAccumulator,
-        pending_entitlement_batch: Option<PendingEntitlementBatch>,
-        latest_entitlement_batch_generation: u64,
-        next_nns_receipt_sequence: u64,
-        next_operation_sequence: OperationSequence,
-        control_epoch: u64,
-        last_completed_receipt: Option<LastCompletedReceipt>,
-        pending_neuron_refreshes: Vec<CheckpointPendingNeuronRefresh>,
-        last_refresh_retry_attempt_nanos: Option<u64>,
-        last_reward_observation_attempt_nanos: Option<u64>,
-        last_reward_backing_attempt_nanos: Option<u64>,
     }
 
-    #[derive(candid::CandidType)]
-    enum CheckpointStableStreamState {
-        V1(CheckpointStreamStateV1),
+    #[derive(CandidType)]
+    enum FutureStableStreamState {
+        V2(StreamStateV1),
     }
 
     fn principal(value: u8) -> Principal {
@@ -881,443 +811,115 @@ mod tests {
 
     fn valid_state() -> (Principal, StreamStateV1) {
         let canister_self = principal(1);
-        let governance = principal(5);
-        let entry = RewardEntitlementEntry {
-            sns_neuron_id: vec![1; 32],
-            destination: account(governance, 1),
-            accumulated_eligible_credit: 100,
-        };
-        let event = RewardEventId {
-            end_timestamp_seconds: 86_400,
-            round: 1,
-        };
+        let nns_manager = principal(4);
         (
             canister_self,
             StreamStateV1 {
-                launch_schema_marker: 3,
+                launch_schema_marker: LAUNCH_SCHEMA_MARKER,
                 config: StreamConfig {
                     io_ledger: principal(2),
                     icp_ledger: principal(3),
-                    nns_manager: principal(4),
-                    jupiter_receipt_source: account(principal(4), 1),
-                    jupiter_io_account: account(principal(7), 3),
-                    sns_governance: governance,
+                    nns_manager,
+                    jupiter_receipt_source: account(nns_manager, 1),
+                    jupiter_io_account: account(principal(7), 2),
+                    sns_governance: principal(5),
                     sns_root: principal(6),
                     expected_sns_governance_module_hash: vec![8; 32],
                     approved_reward_event_duration_seconds: 86_400,
-                    io_reserve: account(canister_self, 4),
-                    liquid_icp: account(canister_self, 5),
-                    nonredeemable_governance_io_accounts: vec![account(governance, 9)],
-                    minimum_redemption_io_e8s: 20_000,
-                    expected_io_fee_e8s: 10_000,
-                    expected_icp_fee_e8s: 10_000,
-                    maximum_request_lifetime_nanos: 1_000_000,
-                    retry_delay_nanos: 1,
-                    ledger_deduplication_window_nanos: 2_000_000,
+                    io_reserve: account(canister_self, 3),
+                    liquid_icp: account(canister_self, 4),
+                    nonredeemable_governance_io_accounts: vec![account(principal(5), 5)],
+                    minimum_redemption_io_e8s: 100,
+                    expected_io_fee_e8s: 10,
+                    expected_icp_fee_e8s: 10,
+                    maximum_request_lifetime_nanos: 1_000,
+                    retry_delay_nanos: 10,
+                    ledger_deduplication_window_nanos: 2_000,
                 },
-                lifecycle: Lifecycle::Ready,
+                lifecycle: Lifecycle::Paused,
                 active_operation: None,
-                reward_entitlements: RewardEntitlementAccumulator {
-                    last_processed_event: Some(event),
-                    entries: vec![entry.clone()],
-                    accumulated_policy_credit: io_reward_policy::DAILY_EVENT_CREDIT,
-                    processed_event_count: 1,
-                    missed_event_count: 0,
-                    reward_work_due: false,
-                    reward_processing_paused: false,
-                    latest_observation: Some(RewardEventObservation {
-                        event,
-                        proposal_count: 1,
-                        classification: RewardEventClassification::ProposalBearing,
-                        credits: vec![RewardEventCredit {
-                            sns_neuron_id: entry.sns_neuron_id,
-                            destination: entry.destination,
-                            event_credit: 100,
-                        }],
-                        policy_credit: io_reward_policy::DAILY_EVENT_CREDIT,
-                        eligible_credit_total: 100,
-                        observed_at_nanos: 1,
-                    }),
-                    latest_skipped_event: None,
-                    governance_parameters_fresh: true,
-                },
+                reward_checkpoint: RewardCheckpoint::default(),
                 pending_entitlement_batch: None,
-                backing_registry: Vec::new(),
+                neuron_registry: Vec::new(),
+                stake_observation_due: true,
                 latest_reconciliation_checkpoint: None,
                 latest_reconciliation_generation: 0,
                 latest_entitlement_batch_generation: 0,
-                next_nns_receipt_sequence: 0,
                 next_operation_sequence: OperationSequence(1),
                 control_epoch: 0,
-                last_completed_receipt: None,
-                last_completed_backing_inflow: None,
+                last_completed_claim_receipt: None,
             },
         )
     }
 
-    #[test]
-    fn daily_reward_configuration_is_required() {
-        let (canister_self, mut state) = valid_state();
-        state.validate(canister_self).unwrap();
-        state.config.approved_reward_event_duration_seconds = io_core_model::TWO_WEEK_SECONDS;
-        assert!(state
-            .validate(canister_self)
-            .unwrap_err()
-            .contains("one day"));
-    }
-
-    #[test]
-    fn every_control_principal_pair_must_be_distinct() {
-        let roles = ["self", "io", "icp", "nns", "governance", "root"];
-        for left in 0..roles.len() {
-            for right in left + 1..roles.len() {
-                let (canister_self, mut state) = valid_state();
-                let value = match roles[left] {
-                    "self" => canister_self,
-                    "io" => state.config.io_ledger,
-                    "icp" => state.config.icp_ledger,
-                    "nns" => state.config.nns_manager,
-                    "governance" => state.config.sns_governance,
-                    "root" => state.config.sns_root,
-                    _ => unreachable!(),
-                };
-                match roles[right] {
-                    "io" => state.config.io_ledger = value,
-                    "icp" => state.config.icp_ledger = value,
-                    "nns" => state.config.nns_manager = value,
-                    "governance" => state.config.sns_governance = value,
-                    "root" => state.config.sns_root = value,
-                    _ => unreachable!(),
-                }
-                assert!(
-                    state.validate(canister_self).is_err(),
-                    "{} may not alias {}",
-                    roles[left],
-                    roles[right]
-                );
-            }
+    fn registry_record(governance: Principal, index: u32) -> BackingRewardRecord {
+        let mut id = vec![0; 32];
+        id[28..].copy_from_slice(&index.to_be_bytes());
+        BackingRewardRecord {
+            sns_neuron_id: id.clone(),
+            staking_account: Account {
+                owner: governance,
+                subaccount: Some(id),
+            },
+            accumulated_eligible_credit: 1,
+            latest_structural_state: StructuralStakeState::Active,
+            status: BackingRewardStatus::ActiveEligible {
+                eligible_from_event: 1,
+            },
+            unresolved_cohort_generation: None,
         }
     }
 
     #[test]
-    fn io_and_icp_account_collisions_are_rejected_within_each_ledger() {
-        let (canister_self, mut state) = valid_state();
-        state.config.jupiter_io_account = state.config.io_reserve.clone();
-        assert!(state.validate(canister_self).is_err());
-
-        let (canister_self, mut state) = valid_state();
-        state.config.nonredeemable_governance_io_accounts[0] = state.config.io_reserve.clone();
-        assert!(state.validate(canister_self).is_err());
-
-        let (canister_self, mut state) = valid_state();
-        state.config.nonredeemable_governance_io_accounts[0] =
-            state.config.jupiter_io_account.clone();
-        assert!(state.validate(canister_self).is_err());
-
-        let (canister_self, mut state) = valid_state();
-        state.config.jupiter_receipt_source = state.config.liquid_icp.clone();
-        assert!(state.validate(canister_self).is_err());
-    }
-
-    #[test]
-    fn accumulator_requires_sorted_unique_neurons_and_destinations() {
-        let (canister_self, mut state) = valid_state();
-        let entry = state.reward_entitlements.entries[0].clone();
-        state.reward_entitlements.entries.push(entry);
-        assert!(state.validate(canister_self).is_err());
-
-        let (_, mut state) = valid_state();
-        let governance = state.config.sns_governance;
-        state.reward_entitlements.entries = vec![
-            RewardEntitlementEntry {
-                sns_neuron_id: vec![2; 32],
-                destination: account(governance, 2),
-                accumulated_eligible_credit: 1,
-            },
-            RewardEntitlementEntry {
-                sns_neuron_id: vec![1; 32],
-                destination: account(governance, 1),
-                accumulated_eligible_credit: 1,
-            },
-        ];
-        assert!(state.validate(canister_self).is_err());
-    }
-
-    #[test]
-    fn one_zero_credit_pending_batch_is_valid_without_a_parallel_status_machine() {
-        let (canister_self, mut state) = valid_state();
-        state.reward_entitlements.entries.clear();
-        state.reward_entitlements.accumulated_policy_credit = 0;
-        state.pending_entitlement_batch = Some(PendingEntitlementBatch {
-            generation: 1,
-            frozen_at_timestamp_seconds: 1,
-            through_event: state.reward_entitlements.last_processed_event.unwrap(),
-            target_icp_e8s: 0,
-            entries: Vec::new(),
-            eligible_credit_total: 0,
-            policy_credit_total: io_reward_policy::DAILY_EVENT_CREDIT,
-            processed_event_count: 1,
-        });
-        state.latest_entitlement_batch_generation = 1;
-        state.validate(canister_self).unwrap();
-        state.pending_entitlement_batch = None;
-        state.validate(canister_self).unwrap();
-    }
-
-    #[test]
-    fn frozen_batch_and_later_live_entitlements_coexist() {
-        let (canister_self, mut state) = valid_state();
-        let governance = state.config.sns_governance;
-        let first_event = state.reward_entitlements.last_processed_event.unwrap();
-        let frozen_entry = state.reward_entitlements.entries[0].clone();
-        state.pending_entitlement_batch = Some(PendingEntitlementBatch {
-            generation: 1,
-            frozen_at_timestamp_seconds: first_event.end_timestamp_seconds,
-            through_event: first_event,
-            target_icp_e8s: 1,
-            entries: vec![frozen_entry],
-            eligible_credit_total: 100,
-            policy_credit_total: io_reward_policy::DAILY_EVENT_CREDIT,
-            processed_event_count: 1,
-        });
-        state.latest_entitlement_batch_generation = 1;
-        state.reward_entitlements.processed_event_count = 2;
-        state.reward_entitlements.last_processed_event = Some(RewardEventId {
-            end_timestamp_seconds: 172_800,
-            round: 2,
-        });
-        state.reward_entitlements.entries = vec![RewardEntitlementEntry {
-            sns_neuron_id: vec![2; 32],
-            destination: account(governance, 2),
-            accumulated_eligible_credit: 200,
-        }];
-        state.reward_entitlements.latest_observation = None;
-        state.validate(canister_self).unwrap();
-    }
-
-    #[test]
-    fn skipped_event_evidence_is_bounded_and_cumulative() {
-        let (canister_self, mut state) = valid_state();
-        let skipped = SkippedRewardEvent {
-            previous_event: state.reward_entitlements.last_processed_event,
-            observed_event: RewardEventId {
-                end_timestamp_seconds: 259_200,
-                round: 3,
-            },
-            ambiguous_event_count: 2,
-            rounds_since_last_distribution: 1,
-            observed_at_nanos: 2,
-        };
-        state.reward_entitlements.last_processed_event = Some(skipped.observed_event);
-        state.reward_entitlements.missed_event_count = 2;
-        state.reward_entitlements.latest_skipped_event = Some(skipped.clone());
-        state.reward_entitlements.latest_observation = Some(RewardEventObservation {
-            event: skipped.observed_event,
-            proposal_count: 0,
-            classification: RewardEventClassification::MissedSkipped,
-            credits: Vec::new(),
-            policy_credit: 0,
-            eligible_credit_total: 0,
-            observed_at_nanos: 2,
-        });
-        state.validate(canister_self).unwrap();
-    }
-
-    #[test]
-    fn stable_reopen_preserves_entitlements_and_forces_paused() {
+    fn current_launch_state_round_trips_and_validates() {
         let (canister_self, state) = valid_state();
-        let expected = state.reward_entitlements.clone();
-        initialize(state, canister_self).unwrap();
-        reopen(canister_self);
-        let reopened = read();
-        assert_eq!(reopened.lifecycle, Lifecycle::Paused);
-        assert_eq!(reopened.reward_entitlements, expected);
-        assert!(reopened.active_operation.is_none());
+        assert_eq!(state.validate(canister_self), Ok(()));
+        let bytes = candid::encode_one(StableStreamState::V1(state.clone())).unwrap();
+        let decoded: StableStreamState = candid::decode_one(&bytes).unwrap();
+        assert_eq!(decoded, StableStreamState::V1(state));
     }
 
     #[test]
-    fn maximum_simultaneously_valid_state_fits_the_stable_cell_bound() {
-        let (canister_self, mut state) = valid_state();
-        let governance = state.config.sns_governance;
-        let entries = (0..RewardEntitlementAccumulator::MAX_ENTRIES)
-            .map(|index| {
-                let mut id = [0_u8; 32];
-                id[24..].copy_from_slice(&(index as u64 + 1).to_be_bytes());
-                RewardEntitlementEntry {
-                    sns_neuron_id: id.to_vec(),
-                    destination: Account {
-                        owner: governance,
-                        subaccount: Some(id.to_vec()),
-                    },
-                    accumulated_eligible_credit: 1,
-                }
-            })
-            .collect::<Vec<_>>();
-        state.reward_entitlements.entries = entries.clone();
-        state.reward_entitlements.accumulated_policy_credit = entries.len() as u128;
-        state.reward_entitlements.latest_observation = None;
-        state.pending_entitlement_batch = Some(PendingEntitlementBatch {
-            generation: 1,
-            frozen_at_timestamp_seconds: 1,
-            through_event: state.reward_entitlements.last_processed_event.unwrap(),
-            target_icp_e8s: 1,
-            entries: entries.clone(),
-            eligible_credit_total: RewardEntitlementAccumulator::MAX_ENTRIES as u128,
-            policy_credit_total: entries.len() as u128,
-            processed_event_count: 1,
+    fn prior_and_future_launch_shapes_are_rejected() {
+        let (_, state) = valid_state();
+        let prior = PriorStableStreamState::V1(PriorStreamState {
+            launch_schema_marker: LAUNCH_SCHEMA_MARKER - 1,
+            config: state.config.clone(),
+            lifecycle: Lifecycle::Paused,
         });
-        state.latest_entitlement_batch_generation = 1;
-        state.backing_registry = entries
-            .iter()
-            .map(|entry| BackingRewardRecord {
-                sns_neuron_id: entry.sns_neuron_id.clone(),
-                staking_account: entry.destination.clone(),
-                latest_structural_state: StructuralStakeState::Active,
-                status: BackingRewardStatus::ActiveIneligible,
-                unresolved_cohort_generation: None,
-            })
-            .collect();
-        let active_request = crate::receipt::PrepareJupiterReceiptArgs {
-            receipt_sequence: 1,
-            source_operation_id: vec![9; 64],
-            liquid_amount_e8s: entries.len() as u128,
-        };
-        let active_fingerprint = crate::receipt::request_fingerprint(&active_request);
-        let backing_snapshot = crate::receipt::BackingSnapshot {
-            total_io_supply_e8s: 10_000,
-            reserve_io_e8s: 1_000,
-            excluded_io_balances: vec![(
-                state.config.nonredeemable_governance_io_accounts[0].clone(),
-                1_000,
-            )],
-            liquid_icp_e8s: 8_000,
-            pre_event_claim_backing_e8s: 8_000,
-            pre_event_claim_supply_e8s: 8_000,
-            io_fee_e8s: state.config.expected_io_fee_e8s,
-            observed_at_nanos: u64::MAX,
-        };
-        let io_intent = crate::transfer::OwnTransferIntent::Icrc1 {
-            ledger: state.config.io_ledger,
-            from_subaccount: state.config.io_reserve.canonical().unwrap().subaccount,
-            to: state.config.jupiter_io_account.clone(),
-            amount: u128::MAX - state.config.expected_io_fee_e8s,
-            fee: state.config.expected_io_fee_e8s,
-            memo: crate::receipt::receipt_memo(state.config.nns_manager, 1),
-            created_at_time: 1,
-        };
-        state.active_operation = Some(StreamOperation::JupiterReceipt(Box::new(
-            JupiterReceiptStreamOperation::Active(Box::new(
-                crate::receipt::JupiterReceiptState::Jupiter(Box::new(
-                    crate::receipt::JupiterReceiptOperation {
-                        context: crate::receipt::ReceiptContext {
-                            request: active_request,
-                            request_fingerprint: active_fingerprint,
-                            source: state.config.jupiter_receipt_source.clone(),
-                            permit: crate::receipt::JupiterReceiptPermit {
-                                sequence: 1,
-                                destination: state.config.liquid_icp.clone(),
-                                memo: crate::receipt::receipt_memo(state.config.nns_manager, 1),
-                            },
-                            backing_snapshot: backing_snapshot.clone(),
-                        },
-                        phase: crate::receipt::ReceiptPhase::Settling,
-                        receipt_block: Some(u128::MAX),
-                        settlement: Some(crate::receipt::JupiterSettlement {
-                            backed_io_e8s: u128::MAX - state.config.expected_io_fee_e8s,
-                            transfer: crate::transfer::TransferAttempt {
-                                fingerprint: io_intent.fingerprint(),
-                                intent: io_intent,
-                                state: crate::transfer::TransferState::Succeeded {
-                                    block: u128::MAX,
-                                },
-                            },
-                        }),
-                    },
-                )),
-            )),
-        )));
-
-        let completed_request = crate::receipt::PrepareJupiterReceiptArgs {
-            receipt_sequence: 0,
-            source_operation_id: vec![7; 64],
-            liquid_amount_e8s: 1,
-        };
-        let completed_fingerprint = crate::receipt::request_fingerprint(&completed_request);
-        state.next_nns_receipt_sequence = 1;
-        state.last_completed_receipt = Some(crate::receipt::LastCompletedReceipt {
-            request: completed_request,
-            request_fingerprint: completed_fingerprint.clone(),
-            permit: crate::receipt::JupiterReceiptPermit {
-                sequence: 0,
-                destination: state.config.liquid_icp.clone(),
-                memo: crate::receipt::receipt_memo(state.config.nns_manager, 0),
-            },
-            backing_snapshot,
-            receipt_block: u128::MAX - 1,
-            result: crate::receipt::JupiterReceiptResult {
-                request_fingerprint: completed_fingerprint,
-                receipt_block: u128::MAX - 1,
-                backed_io_e8s: u128::MAX,
-                io_transfer_block: u128::MAX,
-                io_fee_e8s: state.config.expected_io_fee_e8s,
-                completed_at_nanos: u64::MAX,
-            },
-        });
-        state.validate(canister_self).unwrap();
-        let stable = StableStreamState::V1(state);
-        let encoded = stable.to_bytes();
-        let Bound::Bounded { max_size, .. } = <StableStreamState as Storable>::BOUND else {
-            panic!("stream state must remain bounded");
-        };
-        eprintln!(
-            "maximum simultaneous Stream state encodes to {} bytes of the {}-byte stable bound",
-            encoded.len(),
-            max_size
+        assert!(
+            candid::decode_one::<StableStreamState>(&candid::encode_one(prior).unwrap()).is_err()
         );
-        assert!(encoded.len() <= max_size as usize);
+        let future = FutureStableStreamState::V2(state);
+        assert!(
+            candid::decode_one::<StableStreamState>(&candid::encode_one(future).unwrap()).is_err()
+        );
     }
 
     #[test]
-    fn strict_launch_v1_rejects_corrupt_and_future_state() {
-        assert!(candid::decode_one::<StableStreamState>(b"not candid").is_err());
-        let (canister_self, state) = valid_state();
-        let current = candid::encode_one(StableStreamState::V1(state.clone())).unwrap();
-        let decoded = candid::decode_one::<StableStreamState>(&current).unwrap();
-        assert_eq!(decoded, StableStreamState::V1(state.clone()));
+    fn registry_is_sorted_unique_and_bounded() {
+        let (canister_self, mut state) = valid_state();
+        state.neuron_registry = (0..1_000)
+            .map(|index| registry_record(state.config.sns_governance, index))
+            .collect();
+        assert_eq!(state.validate(canister_self), Ok(()));
+        let encoded = candid::encode_one(StableStreamState::V1(state.clone())).unwrap();
+        assert!(encoded.len() < 2_000_000);
 
-        let mut bad_marker = state.clone();
-        bad_marker.launch_schema_marker = 2;
-        assert!(bad_marker
-            .validate(canister_self)
-            .unwrap_err()
-            .contains("launch schema marker"));
+        state
+            .neuron_registry
+            .push(registry_record(state.config.sns_governance, 1_000));
+        assert!(state.validate(canister_self).is_err());
+        state.neuron_registry.truncate(1_000);
+        state.neuron_registry[1].sns_neuron_id = state.neuron_registry[0].sns_neuron_id.clone();
+        assert!(state.validate(canister_self).is_err());
+    }
 
-        let future = candid::encode_one(FutureStableStreamState::V2(state.clone())).unwrap();
-        assert!(candid::decode_one::<StableStreamState>(&future).is_err());
-
-        let checkpoint =
-            candid::encode_one(CheckpointStableStreamState::V1(CheckpointStreamStateV1 {
-                config: state.config,
-                lifecycle: state.lifecycle,
-                active_operation: state.active_operation,
-                reward_entitlements: state.reward_entitlements,
-                pending_entitlement_batch: state.pending_entitlement_batch,
-                latest_entitlement_batch_generation: state.latest_entitlement_batch_generation,
-                next_nns_receipt_sequence: state.next_nns_receipt_sequence,
-                next_operation_sequence: state.next_operation_sequence,
-                control_epoch: state.control_epoch,
-                last_completed_receipt: state.last_completed_receipt,
-                pending_neuron_refreshes: vec![CheckpointPendingNeuronRefresh {
-                    sns_neuron_id: vec![1; 32],
-                    status: CheckpointNeuronRefreshStatus::TransportFailure {
-                        diagnostic: "retryable transport failure".into(),
-                    },
-                }],
-                last_refresh_retry_attempt_nanos: Some(1),
-                last_reward_observation_attempt_nanos: Some(2),
-                last_reward_backing_attempt_nanos: Some(3),
-            }))
-            .unwrap();
-        assert!(candid::decode_one::<StableStreamState>(&checkpoint).is_err());
+    #[test]
+    fn upgrade_policy_reopens_paused() {
+        let (_, mut state) = valid_state();
+        state.lifecycle = Lifecycle::Ready;
+        state.lifecycle = Lifecycle::Paused;
+        assert_eq!(state.lifecycle, Lifecycle::Paused);
     }
 }

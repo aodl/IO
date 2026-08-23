@@ -1,825 +1,558 @@
 use candid::{CandidType, Principal};
-pub use io_receipt_types::{
-    CompleteJupiterReceiptArgs, JupiterReceiptPermit, JupiterReceiptResult,
-    PrepareJupiterReceiptArgs,
+use io_receipt_types::{
+    ClaimBackingReceiptKind, ClaimBackingReceiptPermit, ClaimBackingReceiptProgress,
+    ClaimBackingReceiptResult, PrepareClaimBackingReceiptArgs, ProveClaimBackingReceiptArgs,
 };
 use serde::Deserialize;
-
-pub use crate::receipt_preparation::{
-    receipt_memo, request_fingerprint, BackingSnapshot, ReceiptPreparation,
-};
+use sha2::{Digest, Sha256};
 
 use crate::{
-    state::{Account, DispatchEpoch, StreamConfig},
-    transfer::{OwnTransferIntent, TransferAttempt, TransferState},
+    api::ApiError,
+    canonical,
+    state::{self, Account, DispatchEpoch, Lifecycle, StreamOperation},
+    transfer::{
+        classify_result, ClassifiedResult, OwnTransferIntent, TransferAttempt, TransferState,
+    },
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum ReceiptPhase {
-    AwaitingReceipt,
-    ReceiptProved,
-    Settling,
-    Completed,
-    Stuck,
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct FrozenClaimEconomics {
+    pub pre_claim_backing_e8s: u128,
+    pub pre_claim_supply_e8s: u128,
+    pub liquid_credit_e8s: u128,
+    pub io_fee_e8s: u128,
+    pub snapshot_fingerprint: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct ReceiptContext {
-    pub request: PrepareJupiterReceiptArgs,
+pub struct FrozenRecipient {
+    pub sns_neuron_id: Option<Vec<u8>>,
+    pub destination: Account,
+    pub io_e8s: u128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct ClaimBackingReceipt {
+    pub request: PrepareClaimBackingReceiptArgs,
     pub request_fingerprint: Vec<u8>,
-    pub source: Account,
-    pub permit: JupiterReceiptPermit,
-    pub backing_snapshot: BackingSnapshot,
+    pub permit: ClaimBackingReceiptPermit,
+    pub economics: FrozenClaimEconomics,
+    pub liquid_block: Option<u128>,
+    pub recipients: Vec<FrozenRecipient>,
+    pub recipient_cursor: u32,
+    pub current_recipient: Option<TransferAttempt>,
+    pub jupiter_recipient_block: Option<u128>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct JupiterSettlement {
-    pub backed_io_e8s: u128,
-    pub transfer: TransferAttempt,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct JupiterReceiptOperation {
-    pub context: ReceiptContext,
-    pub phase: ReceiptPhase,
-    pub receipt_block: Option<u128>,
-    pub settlement: Option<JupiterSettlement>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum JupiterReceiptState {
-    Jupiter(Box<JupiterReceiptOperation>),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct LastCompletedReceipt {
-    pub request: PrepareJupiterReceiptArgs,
+pub struct CompletedClaimBackingReceipt {
+    pub stream_operation_sequence: u64,
     pub request_fingerprint: Vec<u8>,
-    pub permit: JupiterReceiptPermit,
-    pub backing_snapshot: BackingSnapshot,
-    pub receipt_block: u128,
-    pub result: JupiterReceiptResult,
+    pub result: ClaimBackingReceiptResult,
 }
 
-impl ReceiptContext {
-    pub(crate) fn validate(&self, config: &StreamConfig) -> Result<(), String> {
-        if self.request.source_operation_id.is_empty()
-            || self.request.source_operation_id.len() > 64
-            || self.request.liquid_amount_e8s == 0
+impl ClaimBackingReceipt {
+    pub fn validate(&self, config: &state::StreamConfig) -> Result<(), String> {
+        validate_request(&self.request, config)?;
+        if self.request_fingerprint != request_fingerprint(&self.request)
+            || self.permit.stream_operation_sequence == 0
+            || self.permit.destination != config.liquid_icp
+            || self.permit.amount_e8s != self.request.net_liquid_credit_e8s
+            || self.permit.memo
+                != io_nns_types::receipt::receipt_memo(&self.request.source_operation_id)
+            || self.permit.request_fingerprint != self.request_fingerprint
+            || self.economics.liquid_credit_e8s != self.request.net_liquid_credit_e8s
+            || self.economics.io_fee_e8s != config.expected_io_fee_e8s
+            || self.economics.snapshot_fingerprint.len() != 32
+        {
+            return Err("claim receipt identity or economics is malformed".into());
+        }
+        let cursor =
+            usize::try_from(self.recipient_cursor).map_err(|_| "recipient cursor overflow")?;
+        if cursor > self.recipients.len()
+            || self.liquid_block.is_none()
+                && (cursor != 0
+                    || self.current_recipient.is_some()
+                    || self.jupiter_recipient_block.is_some())
+        {
+            return Err("claim receipt cursor precedes its liquid proof".into());
+        }
+        let mut previous_id: Option<&[u8]> = None;
+        for recipient in &self.recipients {
+            recipient.destination.validate()?;
+            if recipient.io_e8s == 0 {
+                return Err("claim receipt contains a zero recipient".into());
+            }
+            if let Some(id) = &recipient.sns_neuron_id {
+                if id.len() != 32 || previous_id.is_some_and(|previous| previous >= id.as_slice()) {
+                    return Err("claim receipt recipients are malformed or unsorted".into());
+                }
+                previous_id = Some(id);
+            }
+        }
+        if let Some(transfer) = &self.current_recipient {
+            transfer.validate()?;
+            let recipient = self
+                .recipients
+                .get(cursor)
+                .ok_or("current recipient is past the cursor")?;
+            validate_recipient_transfer(transfer, recipient, self, config)?;
+        }
+        match &self.request.kind {
+            ClaimBackingReceiptKind::Jupiter => {
+                if self.recipients.len() != 1
+                    || self.recipients[0].sns_neuron_id.is_some()
+                    || !self.recipients[0]
+                        .destination
+                        .effective_eq(&config.jupiter_io_account)?
+                {
+                    return Err("Jupiter receipt recipient is not canonical".into());
+                }
+            }
+            ClaimBackingReceiptKind::PermanentMaturity { .. } if !self.recipients.is_empty() => {
+                return Err("permanent maturity must not release IO".into())
+            }
+            ClaimBackingReceiptKind::PermanentMaturity { .. }
+            | ClaimBackingReceiptKind::PooledMaturity { .. } => {}
+        }
+        if matches!(
+            self.request.kind,
+            ClaimBackingReceiptKind::PooledMaturity { .. }
+        ) && self
+            .recipients
+            .iter()
+            .any(|recipient| recipient.sns_neuron_id.is_none())
+        {
+            return Err("pooled maturity recipient lacks a neuron identity".into());
+        }
+        Ok(())
+    }
+}
+
+impl CompletedClaimBackingReceipt {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.stream_operation_sequence == 0
             || self.request_fingerprint.len() != 32
-            || self.request_fingerprint != request_fingerprint(&self.request)
+            || self.result.request_fingerprint != self.request_fingerprint
+            || self.result.source_operation_id.is_empty()
+            || self.result.liquid_credit_e8s == 0
+            || self.result.completed_at_nanos == 0
         {
-            return Err("invalid canonical receipt request".into());
-        }
-        self.backing_snapshot.validate(config)?;
-        if !self.source.effective_eq(&config.jupiter_receipt_source)?
-            || self.permit.sequence != self.request.receipt_sequence
-            || !self.permit.destination.effective_eq(&config.liquid_icp)?
-            || self.permit.memo != receipt_memo(config.nns_manager, self.request.receipt_sequence)
-        {
-            return Err("receipt context does not match immutable configuration".into());
+            return Err("completed claim receipt is malformed".into());
         }
         Ok(())
     }
-}
 
-impl JupiterReceiptState {
-    pub fn context(&self) -> &ReceiptContext {
-        match self {
-            Self::Jupiter(operation) => &operation.context,
-        }
-    }
-
-    pub fn phase(&self) -> ReceiptPhase {
-        match self {
-            Self::Jupiter(operation) => operation.phase,
-        }
-    }
-
-    pub fn validate(&self, config: &StreamConfig) -> Result<(), String> {
-        match self {
-            Self::Jupiter(operation) => operation.validate(config),
+    fn replay_permit(&self, liquid_account: &Account) -> ClaimBackingReceiptPermit {
+        ClaimBackingReceiptPermit {
+            stream_operation_sequence: self.stream_operation_sequence,
+            destination: liquid_account.clone(),
+            amount_e8s: self.result.liquid_credit_e8s,
+            memo: io_nns_types::receipt::receipt_memo(&self.result.source_operation_id),
+            request_fingerprint: self.request_fingerprint.clone(),
         }
     }
 }
 
-impl JupiterReceiptOperation {
-    fn validate(&self, config: &StreamConfig) -> Result<(), String> {
-        self.context.validate(config)?;
-        validate_phase_proof(self.phase, self.receipt_block)?;
-        match (&self.phase, &self.settlement) {
-            (ReceiptPhase::AwaitingReceipt | ReceiptPhase::ReceiptProved, None) => Ok(()),
-            (ReceiptPhase::Settling, Some(settlement)) => {
-                settlement.validate(&self.context, config)?;
-                if matches!(
-                    settlement.transfer.state,
-                    TransferState::Submitted { .. } | TransferState::Succeeded { .. }
-                ) {
-                    Ok(())
-                } else {
-                    Err("settling Jupiter transfer has the wrong state".into())
-                }
-            }
-            (ReceiptPhase::Stuck, Some(settlement)) => {
-                settlement.validate(&self.context, config)?;
-                if matches!(settlement.transfer.state, TransferState::Stuck { .. }) {
-                    Ok(())
-                } else {
-                    Err("Stuck Jupiter operation lacks a Stuck transfer".into())
-                }
-            }
-            _ => Err("Jupiter receipt phase and settlement disagree".into()),
-        }
-    }
-}
-
-impl JupiterSettlement {
-    fn validate(&self, context: &ReceiptContext, config: &StreamConfig) -> Result<(), String> {
-        if self.backed_io_e8s == 0 {
-            return Err("Jupiter settlement amount must be positive".into());
-        }
-        self.transfer.validate()?;
-        match &self.transfer.intent {
-            OwnTransferIntent::Icrc1 {
-                ledger,
-                from_subaccount,
-                to,
-                amount,
-                fee,
-                memo,
-                ..
-            } if *ledger == config.io_ledger
-                && *from_subaccount == config.io_reserve.canonical()?.subaccount
-                && to.effective_eq(&config.jupiter_io_account)?
-                && *amount == self.backed_io_e8s
-                && *fee == config.expected_io_fee_e8s
-                && *memo == context.permit.memo =>
-            {
-                Ok(())
-            }
-            _ => Err("Jupiter settlement intent does not match receipt".into()),
-        }
-    }
-}
-
-fn validate_phase_proof(phase: ReceiptPhase, block: Option<u128>) -> Result<(), String> {
-    let requires_proof = matches!(
-        phase,
-        ReceiptPhase::ReceiptProved
-            | ReceiptPhase::Settling
-            | ReceiptPhase::Completed
-            | ReceiptPhase::Stuck
-    );
-    if block.is_some() == requires_proof {
-        Ok(())
-    } else {
-        Err("receipt phase and exact block proof disagree".into())
-    }
-}
-
-pub async fn prepare_jupiter_receipt(
+pub async fn prepare(
     caller: Principal,
-    args: PrepareJupiterReceiptArgs,
-    now: u64,
-) -> Result<JupiterReceiptPermit, crate::api::ApiError> {
-    use crate::{api::ApiError, canonical, state};
-    let mut current = state::read();
-    if caller != current.config.nns_manager {
+    request: PrepareClaimBackingReceiptArgs,
+) -> Result<ClaimBackingReceiptPermit, ApiError> {
+    let initial = state::read();
+    if caller != initial.config.nns_manager {
         return Err(ApiError::Unauthorized);
     }
-    let fingerprint = request_fingerprint(&args);
-    if let Some(completed) = &current.last_completed_receipt {
-        if completed.request_fingerprint == fingerprint {
-            return Ok(completed.permit.clone());
-        }
-        if completed.request.receipt_sequence == args.receipt_sequence {
-            return Err(ApiError::NonceAlreadyUsed);
-        }
+    if initial.lifecycle != Lifecycle::Ready {
+        return Err(ApiError::Paused);
     }
-    if let Some(state::StreamOperation::JupiterReceipt(operation)) = &current.active_operation {
-        match operation.as_ref() {
-            state::JupiterReceiptStreamOperation::Active(existing) => {
-                if existing.context().request_fingerprint == fingerprint {
-                    return Ok(existing.context().permit.clone());
-                }
-                if existing.context().request.receipt_sequence == args.receipt_sequence {
-                    return Err(ApiError::NonceAlreadyUsed);
-                }
-            }
-            state::JupiterReceiptStreamOperation::Preparing(existing) => {
-                if existing.request.receipt_sequence == args.receipt_sequence
-                    && existing.request_fingerprint != fingerprint
-                {
-                    return Err(ApiError::NonceAlreadyUsed);
-                }
-                if existing.request_fingerprint != fingerprint || existing.authority != caller {
-                    return Err(ApiError::Busy);
-                }
-            }
-        }
+    validate_request(&request, &initial.config).map_err(ApiError::Invalid)?;
+    let fingerprint = request_fingerprint(&request);
+    if let Some(StreamOperation::ClaimReceipt(active)) = &initial.active_operation {
+        return if active.request_fingerprint == fingerprint {
+            Ok(active.permit.clone())
+        } else if active.request.source_operation_id == request.source_operation_id {
+            Err(ApiError::Invalid(
+                "claim receipt replay conflicts with its request".into(),
+            ))
+        } else {
+            Err(ApiError::Busy)
+        };
     }
-    crate::api::require_ready(&current)?;
-    if current.active_operation.is_some()
-        && !matches!(
-            &current.active_operation,
-            Some(state::StreamOperation::JupiterReceipt(operation))
-                if matches!(operation.as_ref(), state::JupiterReceiptStreamOperation::Preparing(_))
-        )
-    {
+    if initial.active_operation.is_some() {
         return Err(ApiError::Busy);
     }
-    if args.receipt_sequence != current.next_nns_receipt_sequence
-        || args.liquid_amount_e8s == 0
-        || args.source_operation_id.is_empty()
-        || args.source_operation_id.len() > 64
-    {
-        return Err(ApiError::Invalid(
-            "invalid receipt sequence or bounded intent".into(),
-        ));
-    }
-    let preparation = ReceiptPreparation {
-        request: args.clone(),
-        request_fingerprint: fingerprint.clone(),
-        authority: caller,
-        captured_control_epoch: current.control_epoch,
-        prepared_at_nanos: now,
-    };
-    preparation
-        .validate(&current.config)
-        .map_err(ApiError::Invalid)?;
-    current.active_operation = Some(state::StreamOperation::JupiterReceipt(Box::new(
-        state::JupiterReceiptStreamOperation::Preparing(Box::new(preparation.clone())),
-    )));
-    state::write(current.clone());
-
-    let canonical = match canonical::redemption_snapshot(&current.config).await {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            clear_matching_preparation(&preparation);
-            return Err(ApiError::Ledger(error));
+    if let Some(completed) = &initial.last_completed_claim_receipt {
+        if completed.result.source_operation_id == request.source_operation_id {
+            return if completed.request_fingerprint == fingerprint {
+                Ok(completed.replay_permit(&initial.config.liquid_icp))
+            } else {
+                Err(ApiError::Invalid(
+                    "completed claim receipt replay conflicts".into(),
+                ))
+            };
         }
-    };
-    if canonical.io_fee_e8s != current.config.expected_io_fee_e8s
-        || canonical.icp_fee_e8s != current.config.expected_icp_fee_e8s
-    {
-        clear_matching_preparation(&preparation);
-        return Err(ApiError::Invalid(
-            "canonical fee differs from approved receipt configuration".into(),
+    }
+    let snapshot = canonical::claim_snapshot(&initial.config)
+        .await
+        .map_err(ApiError::Ledger)?;
+    if snapshot.nns_fingerprint != request.nns_fingerprint {
+        return Err(ApiError::Pending(
+            "NNS observation changed before receipt commitment".into(),
         ));
     }
-    let observed_at_nanos = ic_cdk::api::time().max(now);
-    let nonredeemable = canonical
-        .excluded_io_balances
-        .iter()
-        .try_fold(0u128, |sum, (_, balance)| sum.checked_add(*balance))
-        .ok_or_else(|| ApiError::Invalid("nonredeemable balance overflow".into()))?;
-    let pre_event_claim_supply_e8s = io_core_model::claim_supply(
-        canonical.total_supply_e8s,
-        canonical.reserve_io_e8s,
-        &[nonredeemable],
-    )
-    .map_err(|error| ApiError::Invalid(format!("claim supply failed: {error:?}")))?;
-    let pre_event_claim_backing_e8s = canonical
+    let pre_backing = snapshot
         .total_claim_backing_e8s
-        .checked_sub(args.liquid_amount_e8s)
-        .ok_or_else(|| ApiError::Invalid("Jupiter transit backing is missing".into()))?;
-    let backing_snapshot = BackingSnapshot {
-        total_io_supply_e8s: canonical.total_supply_e8s,
-        reserve_io_e8s: canonical.reserve_io_e8s,
-        excluded_io_balances: canonical.excluded_io_balances,
-        liquid_icp_e8s: canonical.liquid_icp_e8s,
-        pre_event_claim_backing_e8s,
-        pre_event_claim_supply_e8s,
-        io_fee_e8s: canonical.io_fee_e8s,
-        observed_at_nanos,
+        .checked_sub(request.net_liquid_credit_e8s)
+        .ok_or_else(|| ApiError::Invalid("NNS transit omits the claim ingress".into()))?;
+    let (recipients, pending_generation) =
+        plan_recipients(&initial, &request, &snapshot, pre_backing)?;
+    let sequence = initial.next_operation_sequence.0;
+    let permit = ClaimBackingReceiptPermit {
+        stream_operation_sequence: sequence,
+        destination: initial.config.liquid_icp.clone(),
+        amount_e8s: request.net_liquid_credit_e8s,
+        memo: io_nns_types::receipt::receipt_memo(&request.source_operation_id),
+        request_fingerprint: fingerprint.clone(),
     };
-    backing_snapshot
-        .validate(&current.config)
-        .map_err(ApiError::Invalid)?;
-
-    let mut latest = state::read();
-    if latest.config != current.config
-        || latest.control_epoch != preparation.captured_control_epoch
-        || !matches!(
-            &latest.active_operation,
-            Some(state::StreamOperation::JupiterReceipt(active))
-                if matches!(active.as_ref(), state::JupiterReceiptStreamOperation::Preparing(value) if **value == preparation)
-        )
-    {
-        return Err(ApiError::Busy);
-    }
-    let permit = JupiterReceiptPermit {
-        sequence: args.receipt_sequence,
-        destination: current.config.liquid_icp.clone(),
-        memo: receipt_memo(caller, args.receipt_sequence),
-    };
-    let context = ReceiptContext {
-        source: current.config.jupiter_receipt_source.clone(),
-        request: args,
+    let operation = ClaimBackingReceipt {
+        request,
         request_fingerprint: fingerprint,
         permit: permit.clone(),
-        backing_snapshot,
+        economics: FrozenClaimEconomics {
+            pre_claim_backing_e8s: pre_backing,
+            pre_claim_supply_e8s: snapshot.claim_supply_e8s,
+            liquid_credit_e8s: permit.amount_e8s,
+            io_fee_e8s: snapshot.io_fee_e8s,
+            snapshot_fingerprint: snapshot.observation_fingerprint,
+        },
+        liquid_block: None,
+        recipients,
+        recipient_cursor: 0,
+        current_recipient: None,
+        jupiter_recipient_block: None,
     };
-    let operation = JupiterReceiptState::Jupiter(Box::new(JupiterReceiptOperation {
-        context,
-        phase: ReceiptPhase::AwaitingReceipt,
-        receipt_block: None,
-        settlement: None,
-    }));
     operation
-        .validate(&latest.config)
+        .validate(&initial.config)
         .map_err(ApiError::Invalid)?;
-    latest.active_operation = Some(state::StreamOperation::JupiterReceipt(Box::new(
-        state::JupiterReceiptStreamOperation::Active(Box::new(operation)),
-    )));
+    let mut latest = state::read();
+    if latest != initial || latest.active_operation.is_some() {
+        return Err(ApiError::Busy);
+    }
+    if let Some(generation) = pending_generation {
+        if latest
+            .pending_entitlement_batch
+            .as_ref()
+            .map(|batch| batch.generation)
+            != Some(generation)
+        {
+            return Err(ApiError::Busy);
+        }
+        latest.pending_entitlement_batch = None;
+    }
+    latest.next_operation_sequence.0 = sequence
+        .checked_add(1)
+        .ok_or_else(|| ApiError::Invalid("Stream operation sequence exhausted".into()))?;
+    latest.active_operation = Some(StreamOperation::ClaimReceipt(Box::new(operation)));
     state::write(latest);
     Ok(permit)
 }
 
-fn clear_matching_preparation(expected: &ReceiptPreparation) {
-    use crate::state::{self, JupiterReceiptStreamOperation, StreamOperation};
-    let mut latest = state::read();
-    if matches!(
-        &latest.active_operation,
-        Some(StreamOperation::JupiterReceipt(active))
-            if matches!(active.as_ref(), JupiterReceiptStreamOperation::Preparing(value) if **value == *expected)
-    ) {
-        latest.active_operation = None;
-        state::write(latest);
-    }
-}
-
-pub(crate) async fn resume_jupiter_receipt(
-    operation: JupiterReceiptState,
-    now: u64,
-) -> Result<crate::api::JupiterReceiptProgress, crate::api::ApiError> {
-    match operation {
-        JupiterReceiptState::Jupiter(operation) => resume_jupiter(*operation, now).await,
-    }
-}
-
-async fn resume_jupiter(
-    operation: JupiterReceiptOperation,
-    now: u64,
-) -> Result<crate::api::JupiterReceiptProgress, crate::api::ApiError> {
-    use crate::api::{ApiError, JupiterReceiptProgress};
-    match operation.phase {
-        ReceiptPhase::AwaitingReceipt => Ok(JupiterReceiptProgress::AwaitingReceipt),
-        ReceiptPhase::ReceiptProved => prepare_jupiter_settlement(operation, now).await,
-        ReceiptPhase::Settling => {
-            let settlement = operation
-                .settlement
+fn plan_recipients(
+    state: &state::StreamStateV1,
+    request: &PrepareClaimBackingReceiptArgs,
+    snapshot: &crate::redemption::ClaimSnapshot,
+    pre_backing: u128,
+) -> Result<(Vec<FrozenRecipient>, Option<u64>), ApiError> {
+    let reserve = snapshot
+        .reserve_io_e8s
+        .checked_sub(snapshot.io_fee_e8s)
+        .ok_or_else(|| ApiError::Invalid("IO reserve cannot pay a recipient fee".into()))?;
+    match &request.kind {
+        ClaimBackingReceiptKind::Jupiter => {
+            let amount = io_core_model::backed_io(
+                request.net_liquid_credit_e8s,
+                pre_backing,
+                snapshot.claim_supply_e8s,
+            )
+            .map_err(|error| ApiError::Invalid(format!("Jupiter backing failed: {error:?}")))?;
+            if amount > reserve {
+                return Err(ApiError::Invalid(
+                    "IO reserve cannot cover Jupiter settlement".into(),
+                ));
+            }
+            Ok((
+                vec![FrozenRecipient {
+                    sns_neuron_id: None,
+                    destination: state.config.jupiter_io_account.clone(),
+                    io_e8s: amount,
+                }],
+                None,
+            ))
+        }
+        ClaimBackingReceiptKind::PermanentMaturity {
+            maturity_generation,
+        } => {
+            if *maturity_generation == 0 {
+                return Err(ApiError::Invalid(
+                    "permanent maturity generation is zero".into(),
+                ));
+            }
+            Ok((Vec::new(), None))
+        }
+        ClaimBackingReceiptKind::PooledMaturity {
+            entitlement_batch_generation,
+        } => {
+            let batch = state
+                .pending_entitlement_batch
                 .as_ref()
-                .ok_or_else(|| ApiError::Invalid("Jupiter settlement is missing".into()))?;
-            match settlement.transfer.state {
-                TransferState::Succeeded { .. } => complete_jupiter(operation, now),
-                TransferState::Submitted { .. } => retry_jupiter_settlement(operation, now).await,
-                _ => Err(ApiError::Invalid(
-                    "Jupiter settling transfer has invalid state".into(),
-                )),
+                .filter(|batch| batch.generation == *entitlement_batch_generation)
+                .ok_or_else(|| {
+                    ApiError::Invalid("pooled maturity has no matching entitlement batch".into())
+                })?;
+            let entitlements = batch
+                .entries
+                .iter()
+                .map(|entry| {
+                    io_reward_policy::entitlement_credit_from_bytes(
+                        entry.sns_neuron_id.clone(),
+                        entry.accumulated_eligible_credit,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let plan = io_reward_policy::plan_claim_settlement(
+                pre_backing,
+                snapshot.claim_supply_e8s,
+                request.net_liquid_credit_e8s,
+                batch.policy_credit_total,
+                &entitlements,
+                snapshot.reserve_io_e8s,
+                snapshot.io_fee_e8s,
+            )
+            .map_err(|error| ApiError::Invalid(format!("reward settlement failed: {error:?}")))?;
+            let mut recipients = Vec::with_capacity(plan.rewards.allocations.len());
+            for allocation in plan.rewards.allocations {
+                let entry = batch
+                    .entries
+                    .iter()
+                    .find(|entry| entry.sns_neuron_id == allocation.sns_neuron_id)
+                    .ok_or_else(|| {
+                        ApiError::Invalid("reward allocation lost its destination".into())
+                    })?;
+                recipients.push(FrozenRecipient {
+                    sns_neuron_id: Some(allocation.sns_neuron_id),
+                    destination: entry.destination.clone(),
+                    io_e8s: allocation.io_e8s,
+                });
             }
+            Ok((recipients, Some(*entitlement_batch_generation)))
         }
-        ReceiptPhase::Stuck => Err(ApiError::Stuck(
-            "exact Jupiter IO transfer proof is required".into(),
-        )),
-        ReceiptPhase::Completed => Err(ApiError::Invalid(
-            "completed receipt should be available through replay".into(),
-        )),
     }
 }
 
-async fn prepare_jupiter_settlement(
-    operation: JupiterReceiptOperation,
-    now: u64,
-) -> Result<crate::api::JupiterReceiptProgress, crate::api::ApiError> {
-    use crate::{api::ApiError, canonical, state};
-    let config = state::read().config;
-    let snapshot = canonical::redemption_snapshot(&config)
-        .await
-        .map_err(ApiError::Ledger)?;
-    crate::receipt_preparation::validate_post_receipt_snapshot(
-        &operation.context.backing_snapshot,
-        &snapshot,
-        operation.context.request.liquid_amount_e8s,
-        0,
-    )?;
-    let backed_io = io_core_model::backed_io(
-        operation.context.request.liquid_amount_e8s,
-        operation
-            .context
-            .backing_snapshot
-            .pre_event_claim_backing_e8s,
-        operation
-            .context
-            .backing_snapshot
-            .pre_event_claim_supply_e8s,
-    )
-    .map_err(|error| ApiError::Invalid(format!("backed IO calculation failed: {error:?}")))?;
-    let intent = OwnTransferIntent::Icrc1 {
-        ledger: config.io_ledger,
-        from_subaccount: config
-            .io_reserve
-            .canonical()
-            .map_err(ApiError::Invalid)?
-            .subaccount,
-        to: config.jupiter_io_account,
-        amount: backed_io,
-        fee: operation.context.backing_snapshot.io_fee_e8s,
-        memo: operation.context.permit.memo.clone(),
-        created_at_time: now,
-    };
-    now.checked_add(config.ledger_deduplication_window_nanos)
-        .ok_or_else(|| ApiError::Invalid("settlement deduplication deadline overflow".into()))?;
-    let reserve_required = backed_io
-        .checked_add(operation.context.backing_snapshot.io_fee_e8s)
-        .ok_or_else(|| ApiError::Invalid("Jupiter reserve requirement overflow".into()))?;
-    if snapshot.reserve_io_e8s < reserve_required {
-        return Err(ApiError::Invalid(
-            "IO reserve does not cover Jupiter backing plus fee".into(),
-        ));
-    }
-    let mut transfer = TransferAttempt::prepared(intent).map_err(ApiError::Invalid)?;
-    transfer.state = TransferState::Submitted {
-        epoch: DispatchEpoch(1),
-        first_submitted_at: now,
-        last_submitted_at: now,
-    };
-    let fingerprint = transfer.fingerprint.clone();
-    let intent = transfer.intent.clone();
-    let mut submitted = operation.clone();
-    submitted.phase = ReceiptPhase::Settling;
-    submitted.settlement = Some(JupiterSettlement {
-        backed_io_e8s: backed_io,
-        transfer,
-    });
-    persist_exact(
-        &JupiterReceiptState::Jupiter(Box::new(operation)),
-        JupiterReceiptState::Jupiter(Box::new(submitted.clone())),
-    )?;
-    let response = crate::api::submit(&intent).await;
-    apply_jupiter_callback(
-        submitted.context.request.receipt_sequence,
-        submitted.context.request_fingerprint,
-        fingerprint,
-        DispatchEpoch(1),
-        response,
-    )
-}
-
-async fn retry_jupiter_settlement(
-    operation: JupiterReceiptOperation,
-    now: u64,
-) -> Result<crate::api::JupiterReceiptProgress, crate::api::ApiError> {
-    use crate::api::ApiError;
-    let config = crate::state::read().config;
-    let settlement = operation
-        .settlement
-        .as_ref()
-        .ok_or_else(|| ApiError::Invalid("Jupiter settlement is missing".into()))?;
-    let next_epoch = match retry_decision(
-        &settlement.transfer,
-        now,
-        config.retry_delay_nanos,
-        config.ledger_deduplication_window_nanos,
-    )
-    .map_err(ApiError::Invalid)?
-    {
-        RetryDecision::Wait => return Ok(crate::api::JupiterReceiptProgress::Settling),
-        RetryDecision::Expired => {
-            let mut stuck = operation.clone();
-            stuck.phase = ReceiptPhase::Stuck;
-            stuck
-                .settlement
-                .as_mut()
-                .expect("validated Jupiter settlement")
-                .transfer
-                .state = TransferState::Stuck {
-                reason: "Jupiter IO settlement deduplication window expired".into(),
-            };
-            persist_exact(
-                &JupiterReceiptState::Jupiter(Box::new(operation)),
-                JupiterReceiptState::Jupiter(Box::new(stuck)),
-            )?;
-            crate::api::pause();
-            return Err(ApiError::Stuck(
-                "Jupiter IO settlement deduplication window expired".into(),
-            ));
-        }
-        RetryDecision::Dispatch(epoch) => epoch,
-    };
-    let mut submitted = operation.clone();
-    let transfer = &mut submitted
-        .settlement
-        .as_mut()
-        .expect("validated Jupiter settlement")
-        .transfer;
-    let first_submitted_at = match transfer.state {
-        TransferState::Submitted {
-            first_submitted_at, ..
-        } => first_submitted_at,
-        _ => return Err(ApiError::Busy),
-    };
-    transfer.state = TransferState::Submitted {
-        epoch: next_epoch,
-        first_submitted_at,
-        last_submitted_at: now,
-    };
-    let fingerprint = transfer.fingerprint.clone();
-    let intent = transfer.intent.clone();
-    persist_exact(
-        &JupiterReceiptState::Jupiter(Box::new(operation)),
-        JupiterReceiptState::Jupiter(Box::new(submitted.clone())),
-    )?;
-    let response = crate::api::submit(&intent).await;
-    apply_jupiter_callback(
-        submitted.context.request.receipt_sequence,
-        submitted.context.request_fingerprint,
-        fingerprint,
-        next_epoch,
-        response,
-    )
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RetryDecision {
-    Wait,
-    Dispatch(DispatchEpoch),
-    Expired,
-}
-
-pub(crate) fn retry_decision(
-    transfer: &TransferAttempt,
-    now: u64,
-    retry_delay_nanos: u64,
-    deduplication_window_nanos: u64,
-) -> Result<RetryDecision, String> {
-    let (epoch, last_submitted_at) = match transfer.state {
-        TransferState::Submitted {
-            epoch,
-            last_submitted_at,
-            ..
-        } => (epoch, last_submitted_at),
-        _ => return Err("retry requires a submitted transfer".into()),
-    };
-    if now
-        .checked_sub(last_submitted_at)
-        .ok_or("receipt retry clock regressed")?
-        < retry_delay_nanos
-    {
-        return Ok(RetryDecision::Wait);
-    }
-    let deadline = transfer
-        .intent
-        .created_at_time()
-        .checked_add(deduplication_window_nanos)
-        .ok_or("settlement deduplication deadline overflow")?;
-    if now >= deadline {
-        return Ok(RetryDecision::Expired);
-    }
-    Ok(RetryDecision::Dispatch(DispatchEpoch(
-        epoch.0.checked_add(1).ok_or("dispatch epoch overflow")?,
-    )))
-}
-
-fn apply_jupiter_callback(
-    sequence: u64,
-    request_fingerprint: Vec<u8>,
-    transfer_fingerprint: Vec<u8>,
-    epoch: DispatchEpoch,
-    response: Result<crate::transfer::TransferResult, String>,
-) -> Result<crate::api::JupiterReceiptProgress, crate::api::ApiError> {
-    use crate::{
-        api::{ApiError, JupiterReceiptProgress},
-        transfer::{classify_result, ClassifiedResult},
-    };
-    let current = active_jupiter()?;
-    if current.context.request.receipt_sequence != sequence
-        || current.context.request_fingerprint != request_fingerprint
-        || current.phase != ReceiptPhase::Settling
-    {
-        return Err(ApiError::Busy);
-    }
-    let transfer = &current
-        .settlement
-        .as_ref()
-        .ok_or_else(|| ApiError::Invalid("Jupiter settlement is missing".into()))?
-        .transfer;
-    if transfer.fingerprint != transfer_fingerprint
-        || !matches!(transfer.state, TransferState::Submitted { epoch: current, .. } if current == epoch)
-    {
-        return Err(ApiError::Busy);
-    }
-    let classified = match response {
-        Ok(value) => classify_result(value).map_err(ApiError::Ledger)?,
-        Err(error) => return Err(ApiError::Pending(error)),
-    };
-    let mut updated = current.clone();
-    let transfer = &mut updated
-        .settlement
-        .as_mut()
-        .expect("validated Jupiter settlement")
-        .transfer;
-    match classified {
-        ClassifiedResult::Succeeded(block) => {
-            transfer.state = TransferState::Succeeded { block };
-            persist_exact(
-                &JupiterReceiptState::Jupiter(Box::new(current)),
-                JupiterReceiptState::Jupiter(Box::new(updated)),
-            )?;
-            Ok(JupiterReceiptProgress::Settling)
-        }
-        ClassifiedResult::NoEffect(error) => {
-            transfer.state = TransferState::Stuck {
-                reason: error.clone(),
-            };
-            updated.phase = ReceiptPhase::Stuck;
-            persist_exact(
-                &JupiterReceiptState::Jupiter(Box::new(current)),
-                JupiterReceiptState::Jupiter(Box::new(updated)),
-            )?;
-            crate::api::pause();
-            Err(ApiError::Stuck(error))
-        }
-        ClassifiedResult::Ambiguous(error) => Err(ApiError::Pending(error)),
-    }
-}
-
-fn complete_jupiter(
-    operation: JupiterReceiptOperation,
-    now: u64,
-) -> Result<crate::api::JupiterReceiptProgress, crate::api::ApiError> {
-    use crate::{api::ApiError, state};
-    let settlement = operation
-        .settlement
-        .as_ref()
-        .ok_or_else(|| ApiError::Invalid("Jupiter settlement is missing".into()))?;
-    let io_transfer_block = settlement
-        .transfer
-        .succeeded_block()
-        .map_err(ApiError::Invalid)?;
-    let receipt_block = operation
-        .receipt_block
-        .ok_or_else(|| ApiError::Invalid("receipt proof is missing".into()))?;
-    let result = JupiterReceiptResult {
-        request_fingerprint: operation.context.request_fingerprint.clone(),
-        receipt_block,
-        backed_io_e8s: settlement.backed_io_e8s,
-        io_transfer_block,
-        io_fee_e8s: state::read().config.expected_io_fee_e8s,
-        completed_at_nanos: now,
-    };
-    let expected = JupiterReceiptState::Jupiter(Box::new(operation.clone()));
-    let mut latest = state::read();
-    if !matches!(&latest.active_operation, Some(state::StreamOperation::JupiterReceipt(current))
-        if matches!(current.as_ref(), state::JupiterReceiptStreamOperation::Active(value) if **value == expected))
-    {
-        return Err(ApiError::Busy);
-    }
-    latest.last_completed_receipt = Some(LastCompletedReceipt {
-        request: operation.context.request,
-        request_fingerprint: operation.context.request_fingerprint,
-        permit: operation.context.permit,
-        backing_snapshot: operation.context.backing_snapshot,
-        receipt_block,
-        result: result.clone(),
-    });
-    latest.next_nns_receipt_sequence = latest
-        .next_nns_receipt_sequence
-        .checked_add(1)
-        .ok_or_else(|| ApiError::Invalid("receipt sequence overflow".into()))?;
-    latest.active_operation = None;
-    state::write(latest);
-    Ok(crate::api::JupiterReceiptProgress::Completed(result))
-}
-
-fn active_jupiter() -> Result<JupiterReceiptOperation, crate::api::ApiError> {
-    match crate::state::read().active_operation {
-        Some(crate::state::StreamOperation::JupiterReceipt(operation)) => match *operation {
-            crate::state::JupiterReceiptStreamOperation::Active(operation) => match *operation {
-                JupiterReceiptState::Jupiter(operation) => Ok(*operation),
-            },
-            crate::state::JupiterReceiptStreamOperation::Preparing(_) => {
-                Err(crate::api::ApiError::Busy)
-            }
-        },
-        _ => Err(crate::api::ApiError::Busy),
-    }
-}
-
-pub(crate) fn persist_exact(
-    expected: &JupiterReceiptState,
-    replacement: JupiterReceiptState,
-) -> Result<(), crate::api::ApiError> {
-    use crate::{api::ApiError, state};
-    let mut latest = state::read();
-    if !matches!(&latest.active_operation, Some(state::StreamOperation::JupiterReceipt(current))
-        if matches!(current.as_ref(), state::JupiterReceiptStreamOperation::Active(value) if **value == *expected))
-    {
-        return Err(ApiError::Busy);
-    }
-    replacement
-        .validate(&latest.config)
-        .map_err(ApiError::Invalid)?;
-    latest.active_operation = Some(state::StreamOperation::JupiterReceipt(Box::new(
-        state::JupiterReceiptStreamOperation::Active(Box::new(replacement)),
-    )));
-    state::write(latest);
-    Ok(())
-}
-
-pub async fn complete_jupiter_receipt(
+pub async fn prove_liquid(
     caller: Principal,
-    args: CompleteJupiterReceiptArgs,
-) -> Result<crate::api::JupiterReceiptProgress, crate::api::ApiError> {
-    use crate::{
-        api::{ApiError, JupiterReceiptProgress},
-        canonical, state,
-    };
+    args: ProveClaimBackingReceiptArgs,
+) -> Result<ClaimBackingReceiptProgress, ApiError> {
     let snapshot = state::read();
     if caller != snapshot.config.nns_manager {
         return Err(ApiError::Unauthorized);
     }
-    if let Some(completed) = &snapshot.last_completed_receipt {
-        if completed.request.receipt_sequence == args.receipt_sequence {
-            if completed.receipt_block == args.block_index {
-                return Ok(JupiterReceiptProgress::Completed(completed.result.clone()));
-            }
-            return Err(ApiError::Invalid(
-                "conflicting completed receipt block".into(),
+    if let Some(completed) = &snapshot.last_completed_claim_receipt {
+        if completed.stream_operation_sequence == args.stream_operation_sequence {
+            return Ok(ClaimBackingReceiptProgress::Completed(
+                completed.result.clone(),
             ));
         }
     }
-    let operation = match snapshot.active_operation {
-        Some(state::StreamOperation::JupiterReceipt(operation)) => match *operation {
-            state::JupiterReceiptStreamOperation::Active(operation)
-                if operation.context().request.receipt_sequence == args.receipt_sequence =>
-            {
-                *operation
-            }
-            _ => return Err(ApiError::Invalid("no matching Jupiter receipt".into())),
-        },
-        _ => return Err(ApiError::Invalid("no matching Jupiter receipt".into())),
-    };
-    let context = operation.context();
-    let existing_block = match &operation {
-        JupiterReceiptState::Jupiter(value) => value.receipt_block,
-    };
-    if existing_block == Some(args.block_index) {
-        return Ok(JupiterReceiptProgress::ReceiptProved);
+    let operation = active()?;
+    if operation.permit.stream_operation_sequence != args.stream_operation_sequence {
+        return Err(ApiError::Invalid(
+            "claim receipt sequence does not match".into(),
+        ));
     }
-    if existing_block.is_some() {
-        return Err(ApiError::Invalid("conflicting receipt block".into()));
+    if let Some(block) = operation.liquid_block {
+        return if block == args.block_index {
+            Ok(progress(&operation))
+        } else {
+            Err(ApiError::Invalid("conflicting claim receipt block".into()))
+        };
     }
-    let transfer = canonical::exact_icp_transfer(snapshot.config.icp_ledger, args.block_index)
+    let exact = canonical::exact_icp_transfer(snapshot.config.icp_ledger, args.block_index)
         .await
         .map_err(ApiError::Ledger)?;
-    if transfer.from
-        != canonical::icp_account_identifier(&context.source).map_err(ApiError::Invalid)?
-        || transfer.to
-            != canonical::icp_account_identifier(&context.permit.destination)
+    if exact.from
+        != canonical::icp_account_identifier(&operation.request.source_account)
+            .map_err(ApiError::Invalid)?
+        || exact.to
+            != canonical::icp_account_identifier(&operation.permit.destination)
                 .map_err(ApiError::Invalid)?
-        || transfer.amount_e8s != context.request.liquid_amount_e8s
-        || transfer.fee_e8s != snapshot.config.expected_icp_fee_e8s
-        || transfer.native_memo_u64 != 0
-        || transfer.icrc1_memo.as_deref() != Some(context.permit.memo.as_slice())
-        || transfer.created_at_time == 0
-        || transfer.spender.is_some()
+        || exact.amount_e8s != operation.permit.amount_e8s
+        || exact.fee_e8s != snapshot.config.expected_icp_fee_e8s
+        || exact.native_memo_u64 != 0
+        || exact.icrc1_memo.as_deref() != Some(operation.permit.memo.as_slice())
+        || exact.created_at_time == 0
+        || exact.spender.is_some()
     {
         return Err(ApiError::Invalid(
-            "canonical block does not match receipt intent".into(),
+            "exact ICP block differs from the claim receipt".into(),
         ));
     }
-    let replacement = match &operation {
-        JupiterReceiptState::Jupiter(value) if value.phase == ReceiptPhase::AwaitingReceipt => {
-            let mut value = value.clone();
-            value.receipt_block = Some(args.block_index);
-            value.phase = ReceiptPhase::ReceiptProved;
-            JupiterReceiptState::Jupiter(value)
-        }
-        _ => return Err(ApiError::Busy),
-    };
-    persist_exact(&operation, replacement)?;
-    Ok(JupiterReceiptProgress::ReceiptProved)
+    let mut proved = operation.clone();
+    proved.liquid_block = Some(args.block_index);
+    persist(&operation, proved.clone())?;
+    Ok(progress(&proved))
 }
 
-pub async fn prove_jupiter_settlement(block_index: u128) -> Result<(), crate::api::ApiError> {
-    use crate::{api::ApiError, canonical};
-    let operation = active_jupiter()?;
-    if operation.phase != ReceiptPhase::Stuck {
-        return Err(ApiError::Invalid(
-            "only a Stuck Jupiter settlement accepts proof".into(),
+pub async fn resume(now: u64) -> Result<ClaimBackingReceiptProgress, ApiError> {
+    let operation = active()?;
+    if operation.liquid_block.is_none() {
+        return Ok(ClaimBackingReceiptProgress::AwaitingLiquidProof(
+            operation.permit,
         ));
     }
-    let settlement = operation
-        .settlement
+    let cursor = usize::try_from(operation.recipient_cursor)
+        .map_err(|_| ApiError::Invalid("recipient cursor overflow".into()))?;
+    if cursor == operation.recipients.len() {
+        return complete(operation, now);
+    }
+    match operation
+        .current_recipient
         .as_ref()
-        .ok_or_else(|| ApiError::Invalid("Jupiter settlement is missing".into()))?;
-    if !matches!(settlement.transfer.state, TransferState::Stuck { .. }) {
+        .map(|attempt| attempt.state.clone())
+    {
+        None => submit_recipient(operation, now, DispatchEpoch(1), now).await,
+        Some(TransferState::Submitted {
+            epoch,
+            first_submitted_at,
+            last_submitted_at,
+        }) => {
+            if now.saturating_sub(last_submitted_at) < state::read().config.retry_delay_nanos {
+                return Ok(ClaimBackingReceiptProgress::SettlingRecipients);
+            }
+            let deadline = first_submitted_at
+                .checked_add(state::read().config.ledger_deduplication_window_nanos)
+                .ok_or_else(|| {
+                    ApiError::Invalid("recipient deduplication deadline overflow".into())
+                })?;
+            if now >= deadline {
+                return mark_stuck(operation, "recipient transfer proof window expired".into());
+            }
+            let next =
+                DispatchEpoch(epoch.0.checked_add(1).ok_or_else(|| {
+                    ApiError::Invalid("recipient dispatch epoch exhausted".into())
+                })?);
+            submit_recipient(operation, now, next, first_submitted_at).await
+        }
+        Some(TransferState::Succeeded { block }) => advance_recipient(operation, block),
+        Some(TransferState::Stuck { reason }) => Err(ApiError::Stuck(reason)),
+        Some(TransferState::Prepared) => {
+            submit_recipient(operation, now, DispatchEpoch(1), now).await
+        }
+    }
+}
+
+async fn submit_recipient(
+    operation: ClaimBackingReceipt,
+    now: u64,
+    epoch: DispatchEpoch,
+    first_submitted_at: u64,
+) -> Result<ClaimBackingReceiptProgress, ApiError> {
+    let cursor = usize::try_from(operation.recipient_cursor)
+        .map_err(|_| ApiError::Invalid("recipient cursor overflow".into()))?;
+    let recipient = operation
+        .recipients
+        .get(cursor)
+        .ok_or_else(|| ApiError::Invalid("recipient cursor is complete".into()))?;
+    let mut submitted = operation.clone();
+    let attempt = submitted.current_recipient.get_or_insert(
+        TransferAttempt::prepared(recipient_intent(&operation, recipient, now)?)
+            .map_err(ApiError::Invalid)?,
+    );
+    attempt.state = TransferState::Submitted {
+        epoch,
+        first_submitted_at,
+        last_submitted_at: now,
+    };
+    let fingerprint = attempt.fingerprint.clone();
+    let intent = attempt.intent.clone();
+    persist(&operation, submitted.clone())?;
+    let response = crate::api::submit(&intent).await;
+    apply_callback(submitted, fingerprint, epoch, response)
+}
+
+fn apply_callback(
+    submitted: ClaimBackingReceipt,
+    fingerprint: Vec<u8>,
+    epoch: DispatchEpoch,
+    response: Result<crate::transfer::TransferResult, String>,
+) -> Result<ClaimBackingReceiptProgress, ApiError> {
+    let current = active()?;
+    if current.request_fingerprint != submitted.request_fingerprint {
+        return Err(ApiError::Busy);
+    }
+    let attempt = current.current_recipient.as_ref().ok_or(ApiError::Busy)?;
+    if attempt.fingerprint != fingerprint
+        || !matches!(attempt.state, TransferState::Submitted { epoch: value, .. } if value == epoch)
+    {
+        return Err(ApiError::Busy);
+    }
+    let classified = match response {
+        Ok(result) => classify_result(result).map_err(ApiError::Ledger)?,
+        Err(error) => return Err(ApiError::Pending(error)),
+    };
+    let mut replacement = current.clone();
+    let attempt = replacement
+        .current_recipient
+        .as_mut()
+        .expect("validated current recipient");
+    match classified {
+        ClassifiedResult::Succeeded(block) => attempt.state = TransferState::Succeeded { block },
+        ClassifiedResult::Ambiguous(reason) => return Err(ApiError::Pending(reason)),
+        ClassifiedResult::NoEffect(reason) => {
+            attempt.state = TransferState::Stuck {
+                reason: reason.clone(),
+            };
+            persist(&current, replacement)?;
+            crate::api::pause();
+            return Err(ApiError::Stuck(reason));
+        }
+    }
+    persist(&current, replacement)?;
+    Ok(ClaimBackingReceiptProgress::SettlingRecipients)
+}
+
+fn advance_recipient(
+    operation: ClaimBackingReceipt,
+    block: u128,
+) -> Result<ClaimBackingReceiptProgress, ApiError> {
+    let mut replacement = operation.clone();
+    if matches!(replacement.request.kind, ClaimBackingReceiptKind::Jupiter) {
+        replacement.jupiter_recipient_block = Some(block);
+    }
+    replacement.recipient_cursor = replacement
+        .recipient_cursor
+        .checked_add(1)
+        .ok_or_else(|| ApiError::Invalid("recipient cursor exhausted".into()))?;
+    replacement.current_recipient = None;
+    persist(&operation, replacement)?;
+    Ok(ClaimBackingReceiptProgress::SettlingRecipients)
+}
+
+pub async fn prove_recipient(block_index: u128) -> Result<ClaimBackingReceiptProgress, ApiError> {
+    let operation = active()?;
+    let attempt = operation
+        .current_recipient
+        .as_ref()
+        .ok_or_else(|| ApiError::Invalid("no current recipient transfer".into()))?;
+    if !matches!(
+        attempt.state,
+        TransferState::Submitted { .. } | TransferState::Stuck { .. }
+    ) {
         return Err(ApiError::Invalid(
-            "Jupiter settlement transfer is not Stuck".into(),
+            "recipient transfer is not proof-recoverable".into(),
         ));
     }
-    let exact = canonical::exact_icrc_transfer(settlement.transfer.intent.ledger(), block_index)
+    let exact = canonical::exact_icrc_transfer(attempt.intent.ledger(), block_index)
         .await
         .map_err(ApiError::Ledger)?;
     let OwnTransferIntent::Icrc1 {
@@ -830,11 +563,9 @@ pub async fn prove_jupiter_settlement(block_index: u128) -> Result<(), crate::ap
         memo,
         created_at_time,
         ..
-    } = &settlement.transfer.intent
+    } = &attempt.intent
     else {
-        return Err(ApiError::Invalid(
-            "Jupiter settlement has wrong intent kind".into(),
-        ));
+        return Err(ApiError::Invalid("recipient intent is not ICRC-1".into()));
     };
     let source = Account {
         owner: ic_cdk::api::canister_self(),
@@ -853,71 +584,233 @@ pub async fn prove_jupiter_settlement(block_index: u128) -> Result<(), crate::ap
         .map_err(ApiError::Invalid)?
     {
         return Err(ApiError::Invalid(
-            "exact block does not match Stuck Jupiter settlement".into(),
+            "exact block differs from the recipient intent".into(),
         ));
     }
-    let mut succeeded = operation.clone();
-    succeeded.phase = ReceiptPhase::Settling;
-    succeeded
-        .settlement
+    let mut replacement = operation.clone();
+    replacement
+        .current_recipient
         .as_mut()
-        .expect("validated Jupiter settlement")
-        .transfer
+        .expect("validated recipient")
         .state = TransferState::Succeeded { block: block_index };
-    persist_exact(
-        &JupiterReceiptState::Jupiter(Box::new(operation)),
-        JupiterReceiptState::Jupiter(Box::new(succeeded)),
-    )
+    persist(&operation, replacement)?;
+    Ok(ClaimBackingReceiptProgress::SettlingRecipients)
+}
+
+fn complete(
+    operation: ClaimBackingReceipt,
+    now: u64,
+) -> Result<ClaimBackingReceiptProgress, ApiError> {
+    let distributed = operation
+        .recipients
+        .iter()
+        .try_fold(0u128, |sum, recipient| sum.checked_add(recipient.io_e8s))
+        .ok_or_else(|| ApiError::Invalid("receipt distribution overflow".into()))?;
+    let result = ClaimBackingReceiptResult {
+        source_operation_id: operation.request.source_operation_id.clone(),
+        request_fingerprint: operation.request_fingerprint.clone(),
+        kind: operation.request.kind.clone(),
+        liquid_credit_e8s: operation.request.net_liquid_credit_e8s,
+        distributed_io_e8s: distributed,
+        recipient_transfer_block: operation.jupiter_recipient_block,
+        io_fee_e8s: operation.economics.io_fee_e8s,
+        completed_at_nanos: now,
+    };
+    let completed = CompletedClaimBackingReceipt {
+        stream_operation_sequence: operation.permit.stream_operation_sequence,
+        request_fingerprint: operation.request_fingerprint.clone(),
+        result: result.clone(),
+    };
+    completed.validate().map_err(ApiError::Invalid)?;
+    let mut latest = state::read();
+    if !matches!(&latest.active_operation, Some(StreamOperation::ClaimReceipt(active)) if **active == operation)
+    {
+        return Err(ApiError::Busy);
+    }
+    latest.active_operation = None;
+    latest.last_completed_claim_receipt = Some(completed);
+    latest.stake_observation_due = true;
+    state::write(latest);
+    Ok(ClaimBackingReceiptProgress::Completed(result))
+}
+
+fn mark_stuck(
+    operation: ClaimBackingReceipt,
+    reason: String,
+) -> Result<ClaimBackingReceiptProgress, ApiError> {
+    let mut replacement = operation.clone();
+    replacement
+        .current_recipient
+        .as_mut()
+        .ok_or_else(|| ApiError::Invalid("missing recipient".into()))?
+        .state = TransferState::Stuck {
+        reason: reason.clone(),
+    };
+    persist(&operation, replacement)?;
+    crate::api::pause();
+    Err(ApiError::Stuck(reason))
+}
+
+fn recipient_intent(
+    operation: &ClaimBackingReceipt,
+    recipient: &FrozenRecipient,
+    now: u64,
+) -> Result<OwnTransferIntent, ApiError> {
+    let config = state::read().config;
+    let mut hasher = Sha256::new();
+    hasher.update(b"io-claim-receipt-recipient-v1");
+    hasher.update(&operation.request.source_operation_id);
+    hasher.update(operation.recipient_cursor.to_be_bytes());
+    Ok(OwnTransferIntent::Icrc1 {
+        ledger: config.io_ledger,
+        from_subaccount: config
+            .io_reserve
+            .canonical()
+            .map_err(ApiError::Invalid)?
+            .subaccount,
+        to: recipient.destination.clone(),
+        amount: recipient.io_e8s,
+        fee: operation.economics.io_fee_e8s,
+        memo: hasher.finalize().to_vec(),
+        created_at_time: now,
+    })
+}
+
+fn validate_recipient_transfer(
+    transfer: &TransferAttempt,
+    recipient: &FrozenRecipient,
+    operation: &ClaimBackingReceipt,
+    config: &state::StreamConfig,
+) -> Result<(), String> {
+    match &transfer.intent {
+        OwnTransferIntent::Icrc1 {
+            ledger,
+            from_subaccount,
+            to,
+            amount,
+            fee,
+            ..
+        } if *ledger == config.io_ledger
+            && *from_subaccount == config.io_reserve.canonical()?.subaccount
+            && to.effective_eq(&recipient.destination)?
+            && *amount == recipient.io_e8s
+            && *fee == operation.economics.io_fee_e8s =>
+        {
+            Ok(())
+        }
+        _ => Err("current recipient transfer differs from the frozen receipt".into()),
+    }
+}
+
+fn validate_request(
+    request: &PrepareClaimBackingReceiptArgs,
+    config: &state::StreamConfig,
+) -> Result<(), String> {
+    request.source_account.validate()?;
+    if request.source_operation_id.is_empty()
+        || request.source_operation_id.len() > 64
+        || request.source_account.owner != config.nns_manager
+        || request.net_liquid_credit_e8s == 0
+        || request.nns_fingerprint.len() != 32
+    {
+        return Err("claim receipt request is malformed".into());
+    }
+    match &request.kind {
+        ClaimBackingReceiptKind::Jupiter => {
+            if !request
+                .source_account
+                .effective_eq(&config.jupiter_receipt_source)?
+            {
+                return Err("Jupiter receipt roles differ from configuration".into());
+            }
+        }
+        ClaimBackingReceiptKind::PermanentMaturity {
+            maturity_generation,
+        }
+        | ClaimBackingReceiptKind::PooledMaturity {
+            entitlement_batch_generation: maturity_generation,
+        } if *maturity_generation == 0 => return Err("maturity receipt generation is zero".into()),
+        ClaimBackingReceiptKind::PermanentMaturity { .. }
+        | ClaimBackingReceiptKind::PooledMaturity { .. } => {}
+    }
+    Ok(())
+}
+
+fn request_fingerprint(request: &PrepareClaimBackingReceiptArgs) -> Vec<u8> {
+    Sha256::digest(candid::encode_one(request).expect("claim receipt request must encode")).to_vec()
+}
+
+fn progress(operation: &ClaimBackingReceipt) -> ClaimBackingReceiptProgress {
+    if operation.liquid_block.is_none() {
+        ClaimBackingReceiptProgress::AwaitingLiquidProof(operation.permit.clone())
+    } else {
+        ClaimBackingReceiptProgress::SettlingRecipients
+    }
+}
+
+fn active() -> Result<ClaimBackingReceipt, ApiError> {
+    match state::read().active_operation {
+        Some(StreamOperation::ClaimReceipt(operation)) => Ok(*operation),
+        Some(_) => Err(ApiError::Busy),
+        None => Err(ApiError::Invalid("no active claim receipt".into())),
+    }
+}
+
+fn persist(
+    expected: &ClaimBackingReceipt,
+    replacement: ClaimBackingReceipt,
+) -> Result<(), ApiError> {
+    let mut latest = state::read();
+    if !matches!(&latest.active_operation, Some(StreamOperation::ClaimReceipt(active)) if **active == *expected)
+    {
+        return Err(ApiError::Busy);
+    }
+    replacement
+        .validate(&latest.config)
+        .map_err(ApiError::Invalid)?;
+    latest.active_operation = Some(StreamOperation::ClaimReceipt(Box::new(replacement)));
+    state::write(latest);
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn submitted_transfer(
-        created_at_time: u64,
-        first_submitted_at: u64,
-        last_submitted_at: u64,
-        epoch: u64,
-    ) -> TransferAttempt {
-        let mut attempt = TransferAttempt::prepared(OwnTransferIntent::Icrc1 {
-            ledger: Principal::from_slice(&[1]),
-            from_subaccount: [0; 32],
-            to: Account {
-                owner: Principal::from_slice(&[2]),
-                subaccount: None,
-            },
-            amount: 10,
-            fee: 1,
-            memo: vec![3],
-            created_at_time,
-        })
-        .unwrap();
-        attempt.state = TransferState::Submitted {
-            epoch: DispatchEpoch(epoch),
-            first_submitted_at,
-            last_submitted_at,
-        };
-        attempt
-    }
-
     #[test]
-    fn jupiter_retry_reuses_identity_and_expires_from_intent_creation() {
-        let transfer = submitted_transfer(100, 140, 145, 1);
+    fn compact_completion_reconstructs_the_exact_replay_permit() {
+        let liquid = Account {
+            owner: Principal::from_slice(&[1; 29]),
+            subaccount: Some(vec![2; 32]),
+        };
+        let source_operation_id = vec![3; 32];
+        let completed = CompletedClaimBackingReceipt {
+            stream_operation_sequence: 7,
+            request_fingerprint: vec![4; 32],
+            result: ClaimBackingReceiptResult {
+                source_operation_id: source_operation_id.clone(),
+                request_fingerprint: vec![4; 32],
+                kind: ClaimBackingReceiptKind::PooledMaturity {
+                    entitlement_batch_generation: 9,
+                },
+                liquid_credit_e8s: 100,
+                distributed_io_e8s: 80,
+                recipient_transfer_block: None,
+                io_fee_e8s: 10,
+                completed_at_nanos: 11,
+            },
+        };
+        completed.validate().unwrap();
         assert_eq!(
-            retry_decision(&transfer, 149, 5, 50),
-            Ok(RetryDecision::Wait)
+            completed.replay_permit(&liquid),
+            ClaimBackingReceiptPermit {
+                stream_operation_sequence: 7,
+                destination: liquid,
+                amount_e8s: 100,
+                memo: io_nns_types::receipt::receipt_memo(&source_operation_id),
+                request_fingerprint: vec![4; 32],
+            }
         );
-        assert_eq!(
-            retry_decision(&transfer, 149, 4, 50),
-            Ok(RetryDecision::Dispatch(DispatchEpoch(2)))
-        );
-        assert_eq!(
-            retry_decision(&transfer, 150, 4, 50),
-            Ok(RetryDecision::Expired)
-        );
-        let retry = transfer.clone();
-        assert_eq!(retry.intent, transfer.intent);
-        assert_eq!(retry.fingerprint, transfer.fingerprint);
+        assert!(candid::encode_one(completed).unwrap().len() < 512);
     }
 }

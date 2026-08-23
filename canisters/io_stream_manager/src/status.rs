@@ -1,6 +1,6 @@
 use crate::{
     api::Status,
-    state::{self, JupiterReceiptStreamOperation, RedemptionStreamOperation, StreamOperation},
+    state::{self, RedemptionStreamOperation, StreamOperation},
 };
 
 pub fn get_status() -> Status {
@@ -15,18 +15,13 @@ pub fn get_status() -> Status {
                 Some(format!("{:?}", operation.phase)),
             ),
         },
-        Some(StreamOperation::JupiterReceipt(operation)) => match *operation {
-            JupiterReceiptStreamOperation::Preparing(_) => {
-                (Some("JupiterReceipt".into()), Some("Preparing".into()))
-            }
-            JupiterReceiptStreamOperation::Active(operation) => (
-                Some("JupiterReceipt".into()),
-                Some(format!("{:?}", operation.phase())),
-            ),
-        },
-        Some(StreamOperation::BackingInflow(operation)) => (
-            Some("BackingInflow".into()),
-            Some(operation.phase_name().into()),
+        Some(StreamOperation::ClaimReceipt(operation)) => (
+            Some("ClaimReceipt".into()),
+            Some(if operation.liquid_block.is_none() {
+                "AwaitingLiquidProof".into()
+            } else {
+                "SettlingRecipients".into()
+            }),
         ),
         Some(StreamOperation::PoolTopUp(_)) => {
             (Some("BackingReconciliation".into()), Some("TopUp".into()))
@@ -34,8 +29,7 @@ pub fn get_status() -> Status {
         None => (None, None),
     };
     let accumulated_eligible_credit = state
-        .reward_entitlements
-        .entries
+        .neuron_registry
         .iter()
         .try_fold(0u128, |sum, entry| {
             sum.checked_add(entry.accumulated_eligible_credit)
@@ -45,22 +39,31 @@ pub fn get_status() -> Status {
         lifecycle: state.lifecycle,
         operation_kind,
         operation_phase,
-        next_nns_receipt_sequence: state.next_nns_receipt_sequence,
+        next_operation_sequence: state.next_operation_sequence.0,
         latest_entitlement_batch_generation: state.latest_entitlement_batch_generation,
-        latest_processed_reward_event: state.reward_entitlements.last_processed_event,
+        latest_processed_reward_event: state.reward_checkpoint.last_processed_event,
         latest_reward_event_classification: state
-            .reward_entitlements
+            .reward_checkpoint
             .latest_observation
             .as_ref()
             .map(|observation| observation.classification),
-        accumulated_entitlements: state.reward_entitlements.entries,
+        accumulated_entitlements: state
+            .neuron_registry
+            .iter()
+            .filter(|record| record.accumulated_eligible_credit > 0)
+            .map(|record| crate::state::FrozenEntitlement {
+                sns_neuron_id: record.sns_neuron_id.clone(),
+                destination: record.staking_account.clone(),
+                accumulated_eligible_credit: record.accumulated_eligible_credit,
+            })
+            .collect(),
         accumulated_eligible_credit,
-        accumulated_policy_credit: state.reward_entitlements.accumulated_policy_credit,
-        processed_reward_event_count: state.reward_entitlements.processed_event_count,
-        missed_reward_event_count: state.reward_entitlements.missed_event_count,
-        reward_work_due: state.reward_entitlements.reward_work_due,
-        reward_processing_paused: state.reward_entitlements.reward_processing_paused,
-        governance_parameters_fresh: state.reward_entitlements.governance_parameters_fresh,
+        accumulated_policy_credit: state.reward_checkpoint.accumulated_policy_credit,
+        processed_reward_event_count: state.reward_checkpoint.processed_event_count,
+        missed_reward_event_count: state.reward_checkpoint.missed_event_count,
+        reward_work_due: state.reward_checkpoint.reward_work_due || state.stake_observation_due,
+        reward_processing_paused: state.reward_checkpoint.reward_processing_paused,
+        governance_parameters_fresh: state.reward_checkpoint.governance_parameters_fresh,
         pending_entitlement_batch_eligible_credit: state
             .pending_entitlement_batch
             .as_ref()

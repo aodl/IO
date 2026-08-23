@@ -1,12 +1,10 @@
 pub mod api;
-mod backing_inflow;
 mod backing_registry;
 pub mod canonical;
-mod completed_receipt;
+mod daily_stake;
 pub mod lifecycle;
 mod pool_reconciliation;
 pub mod receipt;
-mod receipt_preparation;
 pub mod redemption;
 mod reward_evidence;
 mod reward_timer;
@@ -18,19 +16,19 @@ pub mod transfer;
 use candid::CandidType;
 use serde::Deserialize;
 
-pub use api::{ApiError, JupiterReceiptProgress, RedemptionProgress, Status, StreamProgress};
-pub use io_nns_types::inflow::{
-    BackingInflowPermit, BackingInflowProgress, PrepareBackingInflowArgs, ProveBackingEffectArgs,
-};
+pub use api::{ApiError, RedemptionProgress, Status, StreamProgress};
 pub use io_nns_types::reward_boundary::BackingNotReadyReason;
-pub use receipt::{CompleteJupiterReceiptArgs, JupiterReceiptPermit, PrepareJupiterReceiptArgs};
+pub use io_receipt_types::{
+    ClaimBackingReceiptPermit, ClaimBackingReceiptProgress, PrepareClaimBackingReceiptArgs,
+    ProveClaimBackingReceiptArgs,
+};
 pub use redemption::RedeemArgs;
 pub use rewards::RewardBackingProgress;
 pub use state::CallerRedemptionState;
 pub use state::{
-    Account, Lifecycle, PendingEntitlementBatch, RewardEntitlementAccumulator,
-    RewardEntitlementEntry, RewardEventClassification, RewardEventCredit, RewardEventId,
-    RewardEventObservation, SkippedRewardEvent, StreamConfig, StreamStateV1,
+    Account, Lifecycle, PendingEntitlementBatch, RewardCheckpoint, RewardEventClassification,
+    RewardEventCredit, RewardEventId, RewardEventObservation, SkippedRewardEvent, StreamConfig,
+    StreamStateV1,
 };
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -42,21 +40,20 @@ pub struct InitArgs {
 pub fn init(args: InitArgs) {
     // Launch stays inert; reviewed unpause installs at most one reward-event timer.
     let state = StreamStateV1 {
-        launch_schema_marker: 3,
+        launch_schema_marker: state::LAUNCH_SCHEMA_MARKER,
         config: args.config,
         lifecycle: Lifecycle::Paused,
         active_operation: None,
-        reward_entitlements: RewardEntitlementAccumulator::default(),
+        reward_checkpoint: RewardCheckpoint::default(),
         pending_entitlement_batch: None,
-        backing_registry: Vec::new(),
+        neuron_registry: Vec::new(),
+        stake_observation_due: true,
         latest_reconciliation_checkpoint: None,
         latest_reconciliation_generation: 0,
         latest_entitlement_batch_generation: 0,
-        next_nns_receipt_sequence: 0,
-        next_operation_sequence: state::OperationSequence(0),
+        next_operation_sequence: state::OperationSequence(1),
         control_epoch: 0,
-        last_completed_receipt: None,
-        last_completed_backing_inflow: None,
+        last_completed_claim_receipt: None,
     };
     state::initialize(state, ic_cdk::api::canister_self())
         .unwrap_or_else(|error| ic_cdk::trap(&error));
@@ -73,31 +70,17 @@ pub async fn redeem(args: RedeemArgs) -> Result<RedemptionProgress, ApiError> {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn prepare_jupiter_receipt(
-    args: PrepareJupiterReceiptArgs,
-) -> Result<JupiterReceiptPermit, ApiError> {
-    receipt::prepare_jupiter_receipt(ic_cdk::api::msg_caller(), args, ic_cdk::api::time()).await
+pub async fn prepare_claim_backing_receipt(
+    args: PrepareClaimBackingReceiptArgs,
+) -> Result<ClaimBackingReceiptPermit, ApiError> {
+    receipt::prepare(ic_cdk::api::msg_caller(), args).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn complete_jupiter_receipt(
-    args: CompleteJupiterReceiptArgs,
-) -> Result<JupiterReceiptProgress, ApiError> {
-    receipt::complete_jupiter_receipt(ic_cdk::api::msg_caller(), args).await
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn prepare_backing_inflow(
-    args: PrepareBackingInflowArgs,
-) -> Result<BackingInflowPermit, ApiError> {
-    backing_inflow::prepare(ic_cdk::api::msg_caller(), args).await
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn prove_backing_effect(
-    args: ProveBackingEffectArgs,
-) -> Result<BackingInflowProgress, ApiError> {
-    backing_inflow::prove_effect(args).await
+pub async fn prove_claim_backing_receipt(
+    args: ProveClaimBackingReceiptArgs,
+) -> Result<ClaimBackingReceiptProgress, ApiError> {
+    receipt::prove_liquid(ic_cdk::api::msg_caller(), args).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]

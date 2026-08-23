@@ -24,24 +24,21 @@ export const idlFactory = ({ IDL }) => {
     'io_reserve' : Account,
   });
   const InitArgs = IDL.Record({ 'config' : StreamConfig });
-  const CompleteJupiterReceiptArgs = IDL.Record({
-    'block_index' : IDL.Nat,
-    'receipt_sequence' : IDL.Nat64,
-  });
-  const JupiterReceiptResult = IDL.Record({
-    'io_transfer_block' : IDL.Nat,
+  const RedemptionResult = IDL.Record({
+    'icp_fee_e8s' : IDL.Nat,
+    'io_block' : IDL.Nat,
     'request_fingerprint' : IDL.Vec(IDL.Nat8),
+    'net_icp_e8s' : IDL.Nat,
+    'icp_block' : IDL.Nat,
+    'nonce' : IDL.Nat64,
     'completed_at_nanos' : IDL.Nat64,
-    'receipt_block' : IDL.Nat,
     'io_fee_e8s' : IDL.Nat,
-    'backed_io_e8s' : IDL.Nat,
+    'gross_icp_e8s' : IDL.Nat,
   });
-  const JupiterReceiptProgress = IDL.Variant({
-    'Stuck' : IDL.Text,
-    'ReceiptProved' : IDL.Null,
-    'Settling' : IDL.Null,
-    'AwaitingReceipt' : IDL.Null,
-    'Completed' : JupiterReceiptResult,
+  const CallerRedemptionState = IDL.Record({
+    'next_nonce' : IDL.Nat64,
+    'last_result' : IDL.Opt(RedemptionResult),
+    'last_request_fingerprint' : IDL.Opt(IDL.Vec(IDL.Nat8)),
   });
   const ApiError = IDL.Variant({
     'Invalid' : IDL.Text,
@@ -60,23 +57,7 @@ export const idlFactory = ({ IDL }) => {
     'NonceAlreadyUsed' : IDL.Null,
     'Pending' : IDL.Text,
   });
-  const RedemptionResult = IDL.Record({
-    'icp_fee_e8s' : IDL.Nat,
-    'io_block' : IDL.Nat,
-    'request_fingerprint' : IDL.Vec(IDL.Nat8),
-    'net_icp_e8s' : IDL.Nat,
-    'icp_block' : IDL.Nat,
-    'nonce' : IDL.Nat64,
-    'completed_at_nanos' : IDL.Nat64,
-    'io_fee_e8s' : IDL.Nat,
-    'gross_icp_e8s' : IDL.Nat,
-  });
-  const CallerRedemptionState = IDL.Record({
-    'next_nonce' : IDL.Nat64,
-    'last_result' : IDL.Opt(RedemptionResult),
-    'last_request_fingerprint' : IDL.Opt(IDL.Vec(IDL.Nat8)),
-  });
-  const RewardEntitlementEntry = IDL.Record({
+  const FrozenEntitlement = IDL.Record({
     'destination' : Account,
     'accumulated_eligible_credit' : IDL.Nat,
     'sns_neuron_id' : IDL.Vec(IDL.Nat8),
@@ -107,15 +88,15 @@ export const idlFactory = ({ IDL }) => {
   const RewardEventClassification = IDL.Variant({
     'NoProposalFallback' : IDL.Null,
     'ZeroEligibleParticipation' : IDL.Null,
+    'StructuralOnly' : IDL.Null,
     'MissedSkipped' : IDL.Null,
     'ProposalBearing' : IDL.Null,
   });
   const Status = IDL.Record({
     'accumulated_policy_credit' : IDL.Nat,
-    'accumulated_entitlements' : IDL.Vec(RewardEntitlementEntry),
+    'accumulated_entitlements' : IDL.Vec(FrozenEntitlement),
     'operation_kind' : IDL.Opt(IDL.Text),
     'processed_reward_event_count' : IDL.Nat64,
-    'next_nns_receipt_sequence' : IDL.Nat64,
     'pending_entitlement_batch_policy_credit' : IDL.Opt(IDL.Nat),
     'reward_work_due' : IDL.Bool,
     'operation_phase' : IDL.Opt(IDL.Text),
@@ -125,123 +106,53 @@ export const idlFactory = ({ IDL }) => {
     'lifecycle' : Lifecycle,
     'accumulated_eligible_credit' : IDL.Nat,
     'pending_entitlement_batch_eligible_credit' : IDL.Opt(IDL.Nat),
+    'next_operation_sequence' : IDL.Nat64,
     'latest_reward_event_classification' : IDL.Opt(RewardEventClassification),
     'missed_reward_event_count' : IDL.Nat64,
     'latest_entitlement_batch_generation' : IDL.Nat64,
     'reward_processing_paused' : IDL.Bool,
   });
-  const BackingInflowKind = IDL.Variant({
-    'PooledMaturity' : IDL.Null,
-    'PermanentMaturity' : IDL.Null,
-  });
-  const PrepareBackingInflowArgs = IDL.Record({
-    'nns_fingerprint' : IDL.Vec(IDL.Nat8),
-    'actual_mint_e8s' : IDL.Nat,
-    'staging_account' : Account,
-    'claim_transfer_fee_e8s' : IDL.Nat,
-    'kind' : BackingInflowKind,
-    'source_operation_id' : IDL.Vec(IDL.Nat8),
-    'maturity_generation' : IDL.Nat64,
-    'mint_block' : IDL.Nat,
-    'permanent_transfer_fee_e8s' : IDL.Nat,
-  });
-  const FrozenRewardRecipient = IDL.Record({
-    'destination' : Account,
-    'io_e8s' : IDL.Nat,
-    'sns_neuron_id' : IDL.Vec(IDL.Nat8),
-  });
-  const RewardAllocation = IDL.Record({
-    'io_e8s' : IDL.Nat,
-    'sns_neuron_id' : IDL.Vec(IDL.Nat8),
-  });
-  const AllocationOutcome = IDL.Record({
-    'rounding_dust_e8s' : IDL.Nat,
-    'forfeited_io_e8s' : IDL.Nat,
-    'allocations' : IDL.Vec(RewardAllocation),
-  });
-  const ClaimRoute = IDL.Variant({
-    'AllPool' : IDL.Null,
-    'AllLiquid' : IDL.Null,
-    'Mixed' : IDL.Null,
-  });
-  const ClaimRoutePlan = IDL.Record({
-    'over_target' : IDL.Nat,
-    'under_target' : IDL.Nat,
-    'fee_count' : IDL.Nat8,
-    'claim_credit' : IDL.Nat,
-    'pooled_credit' : IDL.Nat,
-    'target' : IDL.Nat,
-    'route' : ClaimRoute,
-    'liquid_credit' : IDL.Nat,
-  });
-  const TwoWeekSettlementPlan = IDL.Record({
-    'reward_target' : IDL.Nat,
-    'post_active_backing' : IDL.Nat,
-    'maximum_io_pool' : IDL.Nat,
-    'distributed_io' : IDL.Nat,
-    'post_active_reward' : IDL.Nat,
-    'snapshot_fingerprint' : IDL.Vec(IDL.Nat8),
-    'recipient_io_fees' : IDL.Nat,
-    'rewards' : AllocationOutcome,
-    'post_backing' : IDL.Nat,
-    'post_claims' : IDL.Nat,
-    'route' : ClaimRoutePlan,
-    'permanent_credit' : IDL.Nat,
-  });
-  const FrozenInflowEconomics = IDL.Variant({
-    'Pooled' : IDL.Record({
-      'recipients' : IDL.Vec(FrozenRewardRecipient),
-      'settlement' : TwoWeekSettlementPlan,
+  const ClaimBackingReceiptKind = IDL.Variant({
+    'PooledMaturity' : IDL.Record({
+      'entitlement_batch_generation' : IDL.Nat64,
     }),
-    'Permanent' : IDL.Record({ 'route' : ClaimRoutePlan }),
+    'PermanentMaturity' : IDL.Record({ 'maturity_generation' : IDL.Nat64 }),
+    'Jupiter' : IDL.Null,
   });
-  const BackingInflowPermit = IDL.Record({
+  const PrepareClaimBackingReceiptArgs = IDL.Record({
     'nns_fingerprint' : IDL.Vec(IDL.Nat8),
-    'liquid_destination' : Account,
-    'pool_destination' : Account,
-    'actual_mint_e8s' : IDL.Nat,
-    'staging_account' : Account,
-    'claim_transfer_fee_e8s' : IDL.Nat,
+    'kind' : ClaimBackingReceiptKind,
+    'source_block' : IDL.Nat,
     'source_operation_id' : IDL.Vec(IDL.Nat8),
-    'snapshot_fingerprint' : IDL.Vec(IDL.Nat8),
-    'maturity_generation' : IDL.Nat64,
-    'mint_block' : IDL.Nat,
-    'economics' : FrozenInflowEconomics,
-    'stream_operation_sequence' : IDL.Nat64,
-    'expected_parent_before_e8s' : IDL.Nat,
-    'permanent_destination' : Account,
-    'permanent_transfer_fee_e8s' : IDL.Nat,
+    'source_account' : Account,
+    'net_liquid_credit_e8s' : IDL.Nat,
   });
-  const PrepareJupiterReceiptArgs = IDL.Record({
-    'liquid_amount_e8s' : IDL.Nat,
-    'source_operation_id' : IDL.Vec(IDL.Nat8),
-    'receipt_sequence' : IDL.Nat64,
-  });
-  const JupiterReceiptPermit = IDL.Record({
+  const ClaimBackingReceiptPermit = IDL.Record({
     'destination' : Account,
+    'request_fingerprint' : IDL.Vec(IDL.Nat8),
     'memo' : IDL.Vec(IDL.Nat8),
-    'sequence' : IDL.Nat64,
-  });
-  const BackingEffect = IDL.Variant({
-    'FirstClaimCredit' : IDL.Null,
-    'PermanentCredit' : IDL.Null,
-    'PooledCredit' : IDL.Null,
-  });
-  const ProveBackingEffectArgs = IDL.Record({
-    'block_index' : IDL.Nat,
-    'effect' : BackingEffect,
+    'amount_e8s' : IDL.Nat,
     'stream_operation_sequence' : IDL.Nat64,
   });
-  const BackingInflowProgress = IDL.Variant({
+  const ProveClaimBackingReceiptArgs = IDL.Record({
+    'block_index' : IDL.Nat,
+    'stream_operation_sequence' : IDL.Nat64,
+  });
+  const ClaimBackingReceiptResult = IDL.Record({
+    'request_fingerprint' : IDL.Vec(IDL.Nat8),
+    'kind' : ClaimBackingReceiptKind,
+    'source_operation_id' : IDL.Vec(IDL.Nat8),
+    'distributed_io_e8s' : IDL.Nat,
+    'completed_at_nanos' : IDL.Nat64,
+    'recipient_transfer_block' : IDL.Opt(IDL.Nat),
+    'io_fee_e8s' : IDL.Nat,
+    'liquid_credit_e8s' : IDL.Nat,
+  });
+  const ClaimBackingReceiptProgress = IDL.Variant({
     'Stuck' : IDL.Text,
-    'AwaitingPooledTransfer' : IDL.Null,
-    'SettlingRewards' : IDL.Null,
-    'AwaitingPooledProof' : IDL.Record({ 'block_index' : IDL.Nat }),
-    'Completed' : IDL.Record({
-      'source_operation_id' : IDL.Vec(IDL.Nat8),
-      'distributed_io_e8s' : IDL.Nat,
-    }),
-    'AwaitingNnsEffects' : BackingInflowPermit,
+    'AwaitingLiquidProof' : ClaimBackingReceiptPermit,
+    'SettlingRecipients' : IDL.Null,
+    'Completed' : ClaimBackingReceiptResult,
   });
   const RedeemArgs = IDL.Record({
     'expires_at_nanos' : IDL.Nat64,
@@ -265,8 +176,7 @@ export const idlFactory = ({ IDL }) => {
   const StreamProgress = IDL.Variant({
     'BackingReconciliation' : IDL.Null,
     'Idle' : IDL.Null,
-    'JupiterReceipt' : JupiterReceiptProgress,
-    'BackingInflow' : BackingInflowProgress,
+    'ClaimReceipt' : ClaimBackingReceiptProgress,
     'Redemption' : RedemptionProgress,
   });
   const BackingNotReadyReason = IDL.Variant({
@@ -279,13 +189,7 @@ export const idlFactory = ({ IDL }) => {
     'MaturityPrepared' : IDL.Record({ 'generation' : IDL.Nat64 }),
     'Pending' : IDL.Record({ 'reason' : BackingNotReadyReason }),
   });
-  const RewardEventCredit = IDL.Record({
-    'destination' : Account,
-    'event_credit' : IDL.Nat,
-    'sns_neuron_id' : IDL.Vec(IDL.Nat8),
-  });
   const RewardEventObservation = IDL.Record({
-    'credits' : IDL.Vec(RewardEventCredit),
     'eligible_credit_total' : IDL.Nat,
     'observed_at_nanos' : IDL.Nat64,
     'event' : RewardEventId,
@@ -294,25 +198,15 @@ export const idlFactory = ({ IDL }) => {
     'classification' : RewardEventClassification,
   });
   return IDL.Service({
-    'complete_jupiter_receipt' : IDL.Func(
-        [CompleteJupiterReceiptArgs],
-        [IDL.Variant({ 'Ok' : JupiterReceiptProgress, 'Err' : ApiError })],
-        [],
-      ),
     'get_caller_redemption_state' : IDL.Func(
         [],
         [IDL.Variant({ 'Ok' : CallerRedemptionState, 'Err' : ApiError })],
         ['query'],
       ),
     'get_status' : IDL.Func([], [Status], ['query']),
-    'prepare_backing_inflow' : IDL.Func(
-        [PrepareBackingInflowArgs],
-        [IDL.Variant({ 'Ok' : BackingInflowPermit, 'Err' : ApiError })],
-        [],
-      ),
-    'prepare_jupiter_receipt' : IDL.Func(
-        [PrepareJupiterReceiptArgs],
-        [IDL.Variant({ 'Ok' : JupiterReceiptPermit, 'Err' : ApiError })],
+    'prepare_claim_backing_receipt' : IDL.Func(
+        [PrepareClaimBackingReceiptArgs],
+        [IDL.Variant({ 'Ok' : ClaimBackingReceiptPermit, 'Err' : ApiError })],
         [],
       ),
     'prove_active_transfer' : IDL.Func(
@@ -320,9 +214,9 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Variant({ 'Ok' : IDL.Null, 'Err' : ApiError })],
         [],
       ),
-    'prove_backing_effect' : IDL.Func(
-        [ProveBackingEffectArgs],
-        [IDL.Variant({ 'Ok' : BackingInflowProgress, 'Err' : ApiError })],
+    'prove_claim_backing_receipt' : IDL.Func(
+        [ProveClaimBackingReceiptArgs],
+        [IDL.Variant({ 'Ok' : ClaimBackingReceiptProgress, 'Err' : ApiError })],
         [],
       ),
     'redeem' : IDL.Func(

@@ -26,7 +26,7 @@ pub async fn readiness_preflight(
         )),
     })?;
     validate_installed_governance(&snapshot.config, &installed)?;
-    let activation_baseline = if snapshot.reward_entitlements.last_processed_event.is_none() {
+    let activation_baseline = if snapshot.reward_checkpoint.last_processed_event.is_none() {
         let event =
             crate::reward_evidence::latest_reward_event(snapshot.config.sns_governance).await?;
         Some(crate::reward_evidence::event_id(&event)?)
@@ -57,7 +57,7 @@ pub async fn readiness_preflight(
             "ICP ledger lacks ICRC-1".into(),
         ));
     }
-    let canonical = crate::canonical::redemption_snapshot(&snapshot.config)
+    let canonical = crate::canonical::claim_snapshot(&snapshot.config)
         .await
         .map_err(crate::api::ApiError::Ledger)?;
     if canonical.io_fee_e8s != snapshot.config.expected_io_fee_e8s
@@ -85,18 +85,19 @@ pub async fn readiness_preflight(
     if latest.active_operation.is_some()
         || latest.lifecycle != Lifecycle::Paused
         || latest.control_epoch != captured_control_epoch
-        || latest.reward_entitlements.last_processed_event
-            != snapshot.reward_entitlements.last_processed_event
+        || latest.reward_checkpoint.last_processed_event
+            != snapshot.reward_checkpoint.last_processed_event
     {
         return Err(crate::api::ApiError::Busy);
     }
     latest.lifecycle = Lifecycle::Ready;
     if let Some(event) = activation_baseline {
-        latest.reward_entitlements.last_processed_event = Some(event);
+        latest.reward_checkpoint.last_processed_event = Some(event);
     }
-    latest.reward_entitlements.reward_processing_paused = false;
-    latest.reward_entitlements.reward_work_due = activation_baseline.is_none();
-    latest.reward_entitlements.governance_parameters_fresh = true;
+    latest.reward_checkpoint.reward_processing_paused = false;
+    latest.reward_checkpoint.reward_work_due = activation_baseline.is_none();
+    latest.reward_checkpoint.governance_parameters_fresh = true;
+    latest.stake_observation_due = true;
     state::write(latest);
     Ok(())
 }
@@ -142,10 +143,6 @@ pub fn set_paused() {
         &state.active_operation,
         Some(crate::state::StreamOperation::Redemption(operation))
             if matches!(operation.as_ref(), crate::state::RedemptionStreamOperation::Preparing(_))
-    ) || matches!(
-        &state.active_operation,
-        Some(crate::state::StreamOperation::JupiterReceipt(operation))
-            if matches!(operation.as_ref(), crate::state::JupiterReceiptStreamOperation::Preparing(_))
     ) {
         state.active_operation = None;
     }
