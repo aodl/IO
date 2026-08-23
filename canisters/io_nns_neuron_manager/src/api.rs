@@ -71,7 +71,7 @@ pub enum MaturityProgress {
     AwaitingMintProof,
     MintProved,
     DeliveringClaimReceipt,
-    Completed(CompletedMaturity),
+    Completed(Box<CompletedMaturity>),
     Stuck(String),
 }
 

@@ -90,7 +90,7 @@ variant or persistent collection is added. The measured final delta is:
 | Counted component | Prior correction | Cross-flow final | Delta |
 | --- | ---: | ---: | ---: |
 | Stream Manager | 5,353 | 5,377 | +24 |
-| NNS Manager | 5,337 | 5,367 | +30 |
+| NNS Manager | 5,337 | 5,460 | +123 |
 | pure economics | 220 | 220 | 0 |
 | ledger boundary | 517 | 528 | +11 |
 | reward policy | 282 | 282 | 0 |
@@ -98,13 +98,13 @@ variant or persistent collection is added. The measured final delta is:
 | accounts | 45 | 45 | 0 |
 | NNS types | 1,144 | 1,206 | +62 |
 | receipt types | 49 | 49 | 0 |
-| **Combined** | **13,404** | **13,531** | **+127** |
+| **Combined** | **13,404** | **13,624** | **+220** |
 
 ## Decision
 
 The final ceilings are 5,480 Stream Manager lines, 5,460 NNS Manager lines,
 and 13,720 combined lines. Against the final measured counts these provide
-103 lines (1.88%), 93 lines (1.70%), and 189 lines (1.40%) of headroom. The
+103 lines (1.88%), 0 lines (0%), and 96 lines (0.70%) of headroom. The
 pure-economics, reward-boundary, ledger-boundary, shared-type, and per-file
 ceilings do not change. In particular, every production file remains limited
 to 1,000 normally formatted lines.

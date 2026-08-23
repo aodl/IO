@@ -52,7 +52,7 @@ pub async fn prepare(
         return snapshot
             .last_two_week_maturity
             .clone()
-            .map(MaturityProgress::Completed)
+            .map(|completed| MaturityProgress::Completed(Box::new(completed)))
             .ok_or_else(|| ApiError::Invalid("completed generation lacks evidence".into()));
     }
     if args.entitlement_batch_generation == snapshot.latest_started_two_week_generation {

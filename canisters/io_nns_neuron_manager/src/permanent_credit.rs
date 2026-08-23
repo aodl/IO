@@ -32,7 +32,10 @@ pub(crate) fn prepare(
     .map_err(ApiError::Invalid)?;
     let mut replacement = operation.clone();
     maturity_flow::delivery_mut(&mut replacement).permanent_credit =
-        Some(PermanentCreditState::Prepared { before, transfer });
+        Some(PermanentCreditState::Prepared {
+            before,
+            transfer: Box::new(transfer),
+        });
     maturity_flow::write_exact(&operation, replacement, false)?;
     Ok(MaturityProgress::DeliveringClaimReceipt)
 }
@@ -40,11 +43,7 @@ pub(crate) fn prepare(
 pub(crate) async fn refresh(neuron_id: u64) -> Result<MaturityProgress, ApiError> {
     execution::refresh_neuron(&state::read().config, neuron_id)
         .await
-        .map_err(|error| {
-            ApiError::Pending(format!(
-                "permanent ClaimOrRefresh outcome requires canonical observation: {error:?}"
-            ))
-        })?;
+        .map_err(|error| ApiError::Pending(format!("permanent refresh awaits proof: {error:?}")))?;
     Ok(MaturityProgress::DeliveringClaimReceipt)
 }
 

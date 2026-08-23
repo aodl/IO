@@ -754,7 +754,7 @@ pub async fn prove_active_transfer(
         (
             true,
             match delivery.permanent_credit.as_ref() {
-                Some(PermanentCreditState::Prepared { transfer, .. }) => Some(transfer),
+                Some(PermanentCreditState::Prepared { transfer, .. }) => Some(transfer.as_ref()),
                 _ => None,
             },
         ),
@@ -869,7 +869,7 @@ fn transfer_mut(
 ) -> Result<&mut NnsTransferAttempt, ApiError> {
     if permanent {
         match delivery.permanent_credit.as_mut() {
-            Some(PermanentCreditState::Prepared { transfer, .. }) => Some(transfer),
+            Some(PermanentCreditState::Prepared { transfer, .. }) => Some(transfer.as_mut()),
             _ => None,
         }
     } else {

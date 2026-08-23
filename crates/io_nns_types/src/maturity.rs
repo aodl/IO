@@ -96,7 +96,7 @@ pub struct PendingMaturityDisbursement {
 pub enum PermanentCreditState {
     Prepared {
         before: NeuronSnapshot,
-        transfer: NnsTransferAttempt,
+        transfer: Box<NnsTransferAttempt>,
     },
     RefreshSubmitted {
         before: NeuronSnapshot,

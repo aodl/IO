@@ -1144,7 +1144,7 @@ mod tests {
                 }
             } else {
                 crate::maturity::PermanentCreditState::Prepared {
-                    transfer: permanent_transfer(&state, &before),
+                    transfer: Box::new(permanent_transfer(&state, &before)),
                     before,
                 }
             };

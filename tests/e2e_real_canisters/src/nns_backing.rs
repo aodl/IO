@@ -145,7 +145,7 @@ enum ManagerMaturityProgress {
     AwaitingMintProof,
     MintProved,
     DeliveringClaimReceipt,
-    Completed(ManagerCompletedMaturity),
+    Completed(Box<ManagerCompletedMaturity>),
     Stuck(String),
 }
 
@@ -3033,7 +3033,7 @@ mod tests {
                         subaccount: Some(permanent_subaccount.to_vec()),
                     },
                 );
-                if ledger_stake > Nat::from(permanent.cached_neuron_stake_e8s) {
+                if ledger_stake > permanent.cached_neuron_stake_e8s {
                     let donation: Result<u64, IcpTransferError> = icrc::update_one(
                         &fixture.pic,
                         fixture.ledger,

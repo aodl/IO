@@ -403,30 +403,6 @@ fn retire(operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
     Ok(UnwindProgress::Waiting)
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn canonical_fee_drift_returns_before_any_disbursement_effect() {
-        let source = include_str!("unwind_flow.rs");
-        let body = source
-            .split("async fn submit_disbursement")
-            .nth(1)
-            .unwrap()
-            .split("pub async fn prove")
-            .next()
-            .unwrap();
-        let fee = body.find("io_ledger_boundary::icp_fee").unwrap();
-        let drift = body.find("canonical_fee !=").unwrap();
-        let submitted = body.find("UnwindPhase::DisbursementSubmitted").unwrap();
-        let effect = body.find("execution::disburse_neuron").unwrap();
-        assert!(fee < drift && drift < submitted && submitted < effect);
-        let drift_body = &body[drift..submitted];
-        assert!(drift_body.contains("Lifecycle::Paused"));
-        assert!(drift_body.contains("return Err(ApiError::Stuck"));
-        assert!(!drift_body.contains("disburse_neuron"));
-    }
-}
-
 fn ensure(expected: &UnwindOperation) -> Result<(), ApiError> {
     matches!(state::read().active_operation, Some(NnsOperation::Unwind(active)) if active == *expected)
         .then_some(())
@@ -526,4 +502,28 @@ fn clear_active(state: &mut state::NnsStateV1, expected: &UnwindOperation) -> Re
     }
     state.active_operation = None;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn canonical_fee_drift_returns_before_any_disbursement_effect() {
+        let source = include_str!("unwind_flow.rs");
+        let body = source
+            .split("async fn submit_disbursement")
+            .nth(1)
+            .unwrap()
+            .split("pub async fn prove")
+            .next()
+            .unwrap();
+        let fee = body.find("io_ledger_boundary::icp_fee").unwrap();
+        let drift = body.find("canonical_fee !=").unwrap();
+        let submitted = body.find("UnwindPhase::DisbursementSubmitted").unwrap();
+        let effect = body.find("execution::disburse_neuron").unwrap();
+        assert!(fee < drift && drift < submitted && submitted < effect);
+        let drift_body = &body[drift..submitted];
+        assert!(drift_body.contains("Lifecycle::Paused"));
+        assert!(drift_body.contains("return Err(ApiError::Stuck"));
+        assert!(!drift_body.contains("disburse_neuron"));
+    }
 }

@@ -22,7 +22,7 @@ pub async fn prove(kind: MaturityKind, block_index: u128) -> Result<MaturityProg
             return completed
                 .filter(|completed| completed.mint_block == block_index)
                 .cloned()
-                .map(MaturityProgress::Completed)
+                .map(|completed| MaturityProgress::Completed(Box::new(completed)))
                 .ok_or_else(|| ApiError::Invalid("no pending matching maturity Mint".into()));
         }
     };
@@ -133,5 +133,5 @@ pub(crate) fn finish(operation: MaturityCommandOperation) -> Result<MaturityProg
         }
     }
     state::write(latest);
-    Ok(MaturityProgress::Completed(completed))
+    Ok(MaturityProgress::Completed(Box::new(completed)))
 }
