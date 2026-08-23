@@ -147,6 +147,11 @@ async fn observe_due(
         skipped,
         sequence,
     )?;
+    if let Err(error) = crate::pool_reconciliation::ensure_latest(now_nanos).await {
+        ic_cdk::api::debug_print(format!(
+            "daily pool reconciliation remains pending after observation: {error:?}"
+        ));
+    }
     crate::reward_timer::install_after(event);
     Ok(observation)
 }

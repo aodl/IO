@@ -432,7 +432,7 @@ async fn prepare_nns(
             .map_err(|error| ApiError::Pending(format!("NNS pool prepare ambiguous: {error:?}")))?
             .candid()
             .map_err(|error| {
-                ApiError::Invalid(format!("NNS pool prepare decode failed: {error:?}"))
+                ApiError::Pending(format!("NNS pool prepare decode ambiguous: {error:?}"))
             })?;
     result.map_err(|_| ApiError::Invalid("NNS rejected pool reconciliation".into()))
 }
@@ -545,4 +545,25 @@ fn persist(expected: &PoolTopUpOperation, replacement: PoolTopUpOperation) -> Re
     latest.active_operation = Some(StreamOperation::PoolTopUp(Box::new(replacement)));
     state::write(latest);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn malformed_and_transport_prepare_replies_are_ambiguous_not_rollback_authority() {
+        let source = include_str!("pool_reconciliation.rs");
+        assert!(source.contains("NNS pool prepare ambiguous"));
+        assert!(source.contains("NNS pool prepare decode ambiguous"));
+        let resolver = source
+            .split("async fn resolve_prepared_exit")
+            .nth(1)
+            .expect("prepared-exit resolver");
+        let pending = resolver
+            .find("Err(ApiError::Pending(reason)) => return Err(ApiError::Pending(reason))")
+            .expect("ambiguous reply retention");
+        let rollback = resolver
+            .find("rollback_exit_generation(generation)?")
+            .expect("decoded no-effect rollback");
+        assert!(pending < rollback);
+    }
 }
