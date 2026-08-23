@@ -121,7 +121,18 @@ struct ManagerCompletedMaturity {
     nominal_disbursed_maturity_e8s: u64,
     actual_minted_icp_e8s: u128,
     destination: ManagerAccount,
+    permanent_credit_proof: Option<ManagerPermanentCreditProof>,
     completed_at_nanos: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+struct ManagerPermanentCreditProof {
+    neuron_id: u64,
+    staking_subaccount: [u8; 32],
+    before_cached_stake_e8s: u128,
+    protocol_credit_e8s: u128,
+    transfer_block: u128,
+    observed_after_cached_stake_e8s: u128,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -199,6 +210,7 @@ struct ManagerJupiterCompleted {
     deposit_block: u128,
     gross_e8s: u128,
     stake_e8s: u128,
+    observed_after_cached_stake_e8s: u128,
     liquid_e8s: u128,
     stake_transfer_block: u128,
     liquid_transfer_block: u128,
@@ -539,10 +551,22 @@ fn configure_neuron(
 }
 
 pub fn earn_maturity(fixture: &ControlledNnsNeuron) -> u64 {
-    earn_maturity_for(fixture, fixture.neuron_id)
+    earn_maturity_with_daily(fixture, || {})
+}
+
+fn earn_maturity_with_daily(fixture: &ControlledNnsNeuron, after_daily_tick: impl FnMut()) -> u64 {
+    earn_maturity_for_with_daily(fixture, fixture.neuron_id, after_daily_tick)
 }
 
 pub fn earn_maturity_for(fixture: &ControlledNnsNeuron, neuron_id: u64) -> u64 {
+    earn_maturity_for_with_daily(fixture, neuron_id, || {})
+}
+
+fn earn_maturity_for_with_daily(
+    fixture: &ControlledNnsNeuron,
+    neuron_id: u64,
+    mut after_daily_tick: impl FnMut(),
+) -> u64 {
     // The production spike guard intentionally uses a prior voting-power
     // snapshot. Age that bootstrapped snapshot out, then let the pinned timer
     // record this controlled population before creating the proposal.
@@ -658,6 +682,7 @@ pub fn earn_maturity_for(fixture: &ControlledNnsNeuron, neuron_id: u64) -> u64 {
         for _ in 0..100 {
             fixture.pic.tick();
         }
+        after_daily_tick();
         maturity = neuron(
             &fixture.pic,
             fixture.governance,
@@ -923,6 +948,175 @@ fn fund_manager_staging(fixture: &ControlledNnsNeuron) {
         );
         transfer.unwrap();
     }
+}
+
+fn run_jupiter_credit(
+    fixture: &ControlledNnsNeuron,
+    stream: Principal,
+    stream_governance: Principal,
+    jupiter: Principal,
+    gross_e8s: u64,
+    memo: u64,
+    donation_before_refresh_e8s: u64,
+) -> ManagerJupiterCompleted {
+    for _ in 0..16 {
+        let status: ManagerStatus = query(
+            &fixture.pic,
+            fixture.controller,
+            Principal::anonymous(),
+            "get_status",
+            (),
+        );
+        if status.active_operation.is_none() {
+            break;
+        }
+        let _: Result<ManagerNnsProgress, ManagerApiError> = update(
+            &fixture.pic,
+            fixture.controller,
+            Principal::anonymous(),
+            "resume",
+            (),
+        );
+    }
+    assert!(
+        query::<ManagerStatus>(
+            &fixture.pic,
+            fixture.controller,
+            Principal::anonymous(),
+            "get_status",
+            (),
+        )
+        .active_operation
+        .is_none(),
+        "Jupiter must not overlap an earlier NNS operation"
+    );
+    let manager_status: ManagerStatus = query(
+        &fixture.pic,
+        fixture.controller,
+        Principal::anonymous(),
+        "get_status",
+        (),
+    );
+    if manager_status.lifecycle == ManagerLifecycle::Paused {
+        let manager_ready: Result<(), ManagerApiError> = update(
+            &fixture.pic,
+            fixture.controller,
+            stream_governance,
+            "set_paused",
+            false,
+        );
+        manager_ready.unwrap();
+    }
+    let stream_status: io_stream_manager::Status = query(
+        &fixture.pic,
+        stream,
+        Principal::anonymous(),
+        "get_status",
+        (),
+    );
+    if stream_status.lifecycle == io_stream_manager::Lifecycle::Paused {
+        let stream_ready: Result<(), io_stream_manager::ApiError> =
+            update(&fixture.pic, stream, stream_governance, "set_paused", false);
+        stream_ready.unwrap();
+    }
+
+    let jupiter_account = IcpAccount::new(jupiter, None).icp_account_identifier_bytes();
+    let funding: Result<u64, IcpTransferError> = icrc::update_one(
+        &fixture.pic,
+        fixture.ledger,
+        Principal::anonymous(),
+        "transfer",
+        IcpTransferArgs {
+            memo,
+            amount: IcpTokens {
+                e8s: gross_e8s + ICP_FEE_E8S,
+            },
+            fee: IcpTokens { e8s: ICP_FEE_E8S },
+            from_subaccount: None,
+            to: jupiter_account.to_vec(),
+            created_at_time: None,
+        },
+    );
+    funding.unwrap();
+    let manager_account = IcpAccount::new(fixture.controller, None).icp_account_identifier_bytes();
+    let deposit: Result<u64, IcpTransferError> = icrc::update_one(
+        &fixture.pic,
+        fixture.ledger,
+        jupiter,
+        "transfer",
+        IcpTransferArgs {
+            memo: memo + 1,
+            amount: IcpTokens { e8s: gross_e8s },
+            fee: IcpTokens { e8s: ICP_FEE_E8S },
+            from_subaccount: None,
+            to: manager_account.to_vec(),
+            created_at_time: None,
+        },
+    );
+    let deposit_block = deposit.unwrap();
+    let notified: Result<ManagerJupiterProgress, ManagerApiError> = update(
+        &fixture.pic,
+        fixture.controller,
+        jupiter,
+        "notify_jupiter_deposit",
+        NotifyJupiterDepositArgs {
+            block_index: deposit_block.into(),
+        },
+    );
+    assert_eq!(notified, Ok(ManagerJupiterProgress::DepositProved));
+
+    let mut donated = false;
+    for _ in 0..24 {
+        let progress: Result<ManagerNnsProgress, ManagerApiError> = update(
+            &fixture.pic,
+            fixture.controller,
+            Principal::anonymous(),
+            "resume",
+            (),
+        );
+        if progress
+            == Ok(ManagerNnsProgress::Jupiter(
+                ManagerJupiterProgress::StakeTransferSucceeded,
+            ))
+            && donation_before_refresh_e8s > 0
+        {
+            let staking = IcpAccount::new(
+                fixture.governance,
+                Some(Subaccount(neuron_subaccount(
+                    fixture.controller,
+                    TWO_YEAR_MEMO,
+                ))),
+            )
+            .icp_account_identifier_bytes();
+            let donation: Result<u64, IcpTransferError> = icrc::update_one(
+                &fixture.pic,
+                fixture.ledger,
+                Principal::anonymous(),
+                "transfer",
+                IcpTransferArgs {
+                    memo: memo + 2,
+                    amount: IcpTokens {
+                        e8s: donation_before_refresh_e8s,
+                    },
+                    fee: IcpTokens { e8s: ICP_FEE_E8S },
+                    from_subaccount: None,
+                    to: staking.to_vec(),
+                    created_at_time: None,
+                },
+            );
+            donation.unwrap();
+            donated = true;
+        }
+        if let Ok(ManagerNnsProgress::Jupiter(ManagerJupiterProgress::Completed(completed))) =
+            progress
+        {
+            assert_eq!(completed.deposit_block, u128::from(deposit_block));
+            assert_eq!(completed.gross_e8s, u128::from(gross_e8s));
+            assert_eq!(donated, donation_before_refresh_e8s > 0);
+            return completed;
+        }
+    }
+    panic!("Jupiter credit did not complete within its bounded phase count")
 }
 
 fn install_manager(
@@ -2147,9 +2341,7 @@ mod tests {
         assert!(drifted_status.active_operation.is_none());
     }
 
-    #[test]
-    #[ignore = "requires candidate SNS Governance/Root/ledger, pinned real NNS Governance/ICP ledger, production IO Wasms, and POCKET_IC_BIN"]
-    fn combined_real_sns_nns_io_lifecycle_reconciles_maturity_and_redemption() {
+    fn run_combined_real_sns_nns_io_lifecycle(jupiter_before_maturity: bool) {
         use candid::Nat;
         use io_stream_manager::{
             ApiError as StreamApiError, RedeemArgs, RedemptionProgress, RewardBackingProgress,
@@ -2162,7 +2354,7 @@ mod tests {
         let stream_wasm = super::install_combined_stream(&fixture, &sns);
         let manager_wasm = super::production_wasm("io_nns_neuron_manager");
         super::fund_manager_staging(&fixture);
-        super::install_manager(
+        let jupiter = super::install_manager(
             &fixture,
             sns.stream,
             sns.governance.governance,
@@ -2254,7 +2446,7 @@ mod tests {
         assert!(
             matches!(
                 first_reconciliation,
-                Ok(RewardBackingProgress::Pending { .. })
+                Ok(RewardBackingProgress::Pending { .. }) | Err(StreamApiError::Pending(_))
             ),
             "{first_reconciliation:?}"
         );
@@ -2401,7 +2593,7 @@ mod tests {
             super::update(
                 &fixture.pic,
                 fixture.controller,
-                Principal::anonymous(),
+                sns.stream,
                 "observe_claim_assets",
                 (),
             );
@@ -2423,9 +2615,42 @@ mod tests {
                 ..
             })
         ));
+        if jupiter_before_maturity {
+            let permanent_before_jupiter = super::neuron(
+                &fixture.pic,
+                fixture.governance,
+                fixture.controller,
+                fixture.two_year_neuron_id,
+            );
+            let jupiter_donation = 1_000_000_u64;
+            let first_jupiter = super::run_jupiter_credit(
+                &fixture,
+                sns.stream,
+                sns.governance.governance,
+                jupiter,
+                10 * 100_000_000,
+                40,
+                jupiter_donation,
+            );
+            assert_eq!(
+                first_jupiter.observed_after_cached_stake_e8s,
+                u128::from(permanent_before_jupiter.cached_neuron_stake_e8s)
+                    + first_jupiter.stake_e8s
+                    + u128::from(jupiter_donation)
+            );
+        }
         fixture.neuron_id = parent.neuron_id;
         fixture.protected_principal_e8s = u64::try_from(parent.physical_principal_e8s).unwrap();
-        let ordinary_maturity = super::earn_maturity(&fixture);
+        let ordinary_maturity = super::earn_maturity_with_daily(&fixture, || {
+            let _: Result<io_stream_manager::RewardEventObservation, StreamApiError> =
+                super::update(
+                    &fixture.pic,
+                    sns.stream,
+                    Principal::anonymous(),
+                    "resume_reward_work",
+                    (),
+                );
+        });
         assert!(ordinary_maturity >= 200_000_000);
         let baseline: StreamStatus = super::query(
             &fixture.pic,
@@ -2466,7 +2691,7 @@ mod tests {
                 }
                 fixture.pic.tick();
             }
-            let observation: Result<io_stream_manager::RewardEventObservation, StreamApiError> =
+            let mut observation: Result<io_stream_manager::RewardEventObservation, StreamApiError> =
                 super::update(
                     &fixture.pic,
                     sns.stream,
@@ -2474,13 +2699,87 @@ mod tests {
                     "resume_reward_work",
                     (),
                 );
-            let status: StreamStatus = super::query(
+            let mut status: StreamStatus = super::query(
                 &fixture.pic,
                 sns.stream,
                 Principal::anonymous(),
                 "get_status",
                 (),
             );
+            if matches!(
+                &observation,
+                Err(StreamApiError::Pending(reason)) if reason.contains("not due")
+            ) {
+                super::update::<Result<(), StreamApiError>>(
+                    &fixture.pic,
+                    sns.stream,
+                    sns.governance.governance,
+                    "set_paused",
+                    true,
+                )
+                .unwrap();
+                super::update::<Result<(), StreamApiError>>(
+                    &fixture.pic,
+                    sns.stream,
+                    sns.governance.governance,
+                    "set_paused",
+                    false,
+                )
+                .unwrap();
+                observation = super::update(
+                    &fixture.pic,
+                    sns.stream,
+                    Principal::anonymous(),
+                    "resume_reward_work",
+                    (),
+                );
+                status = super::query(
+                    &fixture.pic,
+                    sns.stream,
+                    Principal::anonymous(),
+                    "get_status",
+                    (),
+                );
+            }
+            if status.reward_processing_paused {
+                let _: Result<RewardBackingProgress, StreamApiError> = super::update(
+                    &fixture.pic,
+                    sns.stream,
+                    Principal::anonymous(),
+                    "resume_reward_backing",
+                    (),
+                );
+                super::update::<Result<(), StreamApiError>>(
+                    &fixture.pic,
+                    sns.stream,
+                    sns.governance.governance,
+                    "set_paused",
+                    true,
+                )
+                .unwrap();
+                super::update::<Result<(), StreamApiError>>(
+                    &fixture.pic,
+                    sns.stream,
+                    sns.governance.governance,
+                    "set_paused",
+                    false,
+                )
+                .unwrap();
+                observation = super::update(
+                    &fixture.pic,
+                    sns.stream,
+                    Principal::anonymous(),
+                    "resume_reward_work",
+                    (),
+                );
+                status = super::query(
+                    &fixture.pic,
+                    sns.stream,
+                    Principal::anonymous(),
+                    "get_status",
+                    (),
+                );
+            }
             reward_steps.push(format!(
                 "event={} observation={observation:?} classification={:?} eligible={} policy={} paused={} checkpoint={:?}",
                 event.round,
@@ -2696,7 +2995,18 @@ mod tests {
         .unwrap();
         assert_eq!(proved, Ok(ManagerMaturityProgress::MintProved));
 
-        let mut stream_upgraded = false;
+        let permanent_before_maturity = super::neuron(
+            &fixture.pic,
+            fixture.governance,
+            fixture.controller,
+            fixture.two_year_neuron_id,
+        );
+        let permanent_subaccount = super::neuron_subaccount(fixture.controller, TWO_YEAR_MEMO);
+        let permanent_staking =
+            IcpAccount::new(fixture.governance, Some(Subaccount(permanent_subaccount)))
+                .icp_account_identifier_bytes();
+        let maturity_donation = 2_000_000_u64;
+        let mut maturity_donation_sent = false;
         let completed = loop {
             let progress: Result<ManagerNnsProgress, ManagerApiError> = super::update(
                 &fixture.pic,
@@ -2706,26 +3016,43 @@ mod tests {
                 (),
             );
             maturity_phases.push(format!("{progress:?}"));
-            let stream_status: StreamStatus = super::query(
-                &fixture.pic,
-                sns.stream,
-                Principal::anonymous(),
-                "get_status",
-                (),
-            );
-            if !stream_upgraded
-                && stream_status.operation_phase.as_deref() == Some("SettlingRecipients")
-            {
-                fixture
-                    .pic
-                    .upgrade_canister(
-                        sns.stream,
-                        stream_wasm.clone(),
-                        encode_one(()).unwrap(),
-                        None,
-                    )
-                    .unwrap();
-                stream_upgraded = true;
+            if !maturity_donation_sent {
+                let permanent = super::neuron(
+                    &fixture.pic,
+                    fixture.governance,
+                    fixture.controller,
+                    fixture.two_year_neuron_id,
+                );
+                let ledger_stake = super::query::<Nat>(
+                    &fixture.pic,
+                    fixture.ledger,
+                    Principal::anonymous(),
+                    "icrc1_balance_of",
+                    ManagerAccount {
+                        owner: fixture.governance,
+                        subaccount: Some(permanent_subaccount.to_vec()),
+                    },
+                );
+                if ledger_stake > Nat::from(permanent.cached_neuron_stake_e8s) {
+                    let donation: Result<u64, IcpTransferError> = icrc::update_one(
+                        &fixture.pic,
+                        fixture.ledger,
+                        Principal::anonymous(),
+                        "transfer",
+                        IcpTransferArgs {
+                            memo: 43,
+                            amount: IcpTokens {
+                                e8s: maturity_donation,
+                            },
+                            fee: IcpTokens { e8s: ICP_FEE_E8S },
+                            from_subaccount: None,
+                            to: permanent_staking.to_vec(),
+                            created_at_time: None,
+                        },
+                    );
+                    donation.unwrap();
+                    maturity_donation_sent = true;
+                }
             }
             if let Ok(ManagerNnsProgress::Maturity(ManagerMaturityProgress::Completed(completed))) =
                 progress
@@ -2734,10 +3061,33 @@ mod tests {
             }
             assert!(maturity_phases.len() < 40, "{maturity_phases:?}");
         };
-        assert!(stream_upgraded, "{maturity_phases:?}");
+        assert!(maturity_donation_sent, "{maturity_phases:?}");
         assert_eq!(
             completed.actual_minted_icp_e8s,
             u128::from(actual_minted_e8s)
+        );
+        let permanent_proof = completed
+            .permanent_credit_proof
+            .as_ref()
+            .expect("pooled maturity retains its permanent credit proof");
+        let expected_permanent_credit = io_core_model::split_40_60(u128::from(actual_minted_e8s))
+            .unwrap()
+            .permanent
+            - u128::from(ICP_FEE_E8S);
+        assert_eq!(
+            permanent_proof.before_cached_stake_e8s,
+            u128::from(permanent_before_maturity.cached_neuron_stake_e8s)
+        );
+        assert_eq!(
+            permanent_proof.protocol_credit_e8s,
+            expected_permanent_credit
+        );
+        assert_eq!(permanent_proof.neuron_id, fixture.two_year_neuron_id);
+        assert_eq!(
+            permanent_proof.observed_after_cached_stake_e8s,
+            permanent_proof.before_cached_stake_e8s
+                + permanent_proof.protocol_credit_e8s
+                + u128::from(maturity_donation)
         );
         let recipient_after = recipient_accounts
             .iter()
@@ -2824,14 +3174,48 @@ mod tests {
             (3 * u128::from(ICP_FEE_E8S)).into()
         );
 
-        let resumed: Result<(), StreamApiError> = super::update(
+        if !jupiter_before_maturity {
+            let permanent_before_second_jupiter = super::neuron(
+                &fixture.pic,
+                fixture.governance,
+                fixture.controller,
+                fixture.two_year_neuron_id,
+            );
+            let second_jupiter = super::run_jupiter_credit(
+                &fixture,
+                sns.stream,
+                sns.governance.governance,
+                jupiter,
+                12 * 100_000_000,
+                50,
+                0,
+            );
+            assert_eq!(
+                second_jupiter.observed_after_cached_stake_e8s,
+                u128::from(permanent_before_second_jupiter.cached_neuron_stake_e8s)
+                    + second_jupiter.stake_e8s
+            );
+        }
+
+        if super::query::<StreamStatus>(
             &fixture.pic,
             sns.stream,
-            sns.governance.governance,
-            "set_paused",
-            false,
-        );
-        assert_eq!(resumed, Ok(()));
+            Principal::anonymous(),
+            "get_status",
+            (),
+        )
+        .lifecycle
+            == io_stream_manager::Lifecycle::Paused
+        {
+            let resumed: Result<(), StreamApiError> = super::update(
+                &fixture.pic,
+                sns.stream,
+                sns.governance.governance,
+                "set_paused",
+                false,
+            );
+            assert_eq!(resumed, Ok(()));
+        }
         let redemption_amount = 20_000_000_u64;
         let now = fixture.pic.get_time().as_nanos_since_unix_epoch();
         icrc::icrc2_approve(
@@ -2884,7 +3268,7 @@ mod tests {
         > = super::update(
             &fixture.pic,
             fixture.controller,
-            Principal::anonymous(),
+            sns.stream,
             "observe_claim_assets",
             (),
         );
@@ -2991,22 +3375,31 @@ mod tests {
             "get_status",
             (),
         );
-        assert_eq!(final_manager.lifecycle, ManagerLifecycle::Paused);
+        assert_eq!(
+            final_manager.lifecycle,
+            if jupiter_before_maturity {
+                ManagerLifecycle::Paused
+            } else {
+                ManagerLifecycle::Ready
+            }
+        );
         assert_eq!(final_stream.lifecycle, io_stream_manager::Lifecycle::Paused);
 
-        super::update::<Result<(), ManagerApiError>>(
-            &fixture.pic,
-            fixture.controller,
-            sns.governance.governance,
-            "set_paused",
-            false,
-        )
-        .unwrap();
+        if final_manager.lifecycle == ManagerLifecycle::Paused {
+            super::update::<Result<(), ManagerApiError>>(
+                &fixture.pic,
+                fixture.controller,
+                sns.governance.governance,
+                "set_paused",
+                false,
+            )
+            .unwrap();
+        }
         let before_top_up: io_nns_types::backing::ClaimAssetObservation =
             super::update::<Result<_, ManagerApiError>>(
                 &fixture.pic,
                 fixture.controller,
-                Principal::anonymous(),
+                sns.stream,
                 "observe_claim_assets",
                 (),
             )
@@ -3136,5 +3529,17 @@ mod tests {
             actual_minted_e8s,
             recipient_after.len(),
         );
+    }
+
+    #[test]
+    #[ignore = "requires candidate SNS Governance/Root/ledger, pinned real NNS Governance/ICP ledger, production IO Wasms, and POCKET_IC_BIN"]
+    fn combined_real_sns_nns_io_lifecycle_reconciles_maturity_and_redemption() {
+        run_combined_real_sns_nns_io_lifecycle(false);
+    }
+
+    #[test]
+    #[ignore = "requires candidate SNS Governance/Root/ledger, pinned real NNS Governance/ICP ledger, production IO Wasms, and POCKET_IC_BIN"]
+    fn combined_real_jupiter_then_pooled_maturity_accepts_donations() {
+        run_combined_real_sns_nns_io_lifecycle(true);
     }
 }
