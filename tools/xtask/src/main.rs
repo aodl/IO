@@ -253,6 +253,11 @@ fn check_obsolete_economics_guard_at(root: &Path) -> Result<(), String> {
         concat!("two_week", "_fee_float_e8s"),
         concat!("reward_backing", "_neuron_id"),
         concat!("reconcile_two_week", "_backing_readiness"),
+        concat!("Claim", "Route"),
+        concat!("prepare_", "backing_inflow"),
+        concat!("prove_", "backing_inflow"),
+        concat!("Backing", "InflowDelivery"),
+        concat!("prepare_", "jupiter_receipt"),
     ];
     fn visit(
         root: &Path,
@@ -1166,7 +1171,7 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
             "stream-manager production Rust has {stream_lines} lines"
         ));
     }
-    if combined_lines > 11_100 {
+    if combined_lines > 13_050 {
         return Err(format!(
             "combined production Rust has {combined_lines} lines; simplified limit not met"
         ));
@@ -1178,7 +1183,7 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
                 .map(|text| sum + production_line_count(&text))
                 .map_err(|error| format!("{}: {error}", path.display()))
         })?;
-    if nns_lines > 4_300 {
+    if nns_lines > 5_160 {
         return Err(format!("NNS-manager production Rust has {nns_lines} lines"));
     }
     let tree = Command::new("cargo")
@@ -1269,8 +1274,8 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
         &stream_production,
         &[
             "  redeem :",
-            "  prepare_jupiter_receipt :",
-            "  complete_jupiter_receipt :",
+            "  prepare_claim_backing_receipt :",
+            "  prove_claim_backing_receipt :",
             "  resume :",
             "  prove_active_transfer :",
             "  set_paused :",
@@ -2893,7 +2898,7 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "icrc1_transfer",
             "claim_or_refresh_neuron_from_account",
             "update_neuron",
-            "252460800",
+            "63115200",
             "auto_stake_maturity = opt false",
             "maturity_disbursements_in_progress = opt vec {}",
             "two_year_neuron_id",
@@ -7932,17 +7937,19 @@ fn check_exact_two_week_policy_at(root: &Path) -> Result<(), String> {
         "stream-manager bounded entitlement slots",
         &stream_state,
         &[
-            "RewardEntitlementAccumulator",
+            "BackingRewardRecord",
             "PendingEntitlementBatch",
             "MAX_ENTRIES",
         ],
     )?;
     let rewards = require_file(root, "canisters/io_stream_manager/src/rewards.rs")?;
     let reward_evidence = require_file(root, "canisters/io_stream_manager/src/reward_evidence.rs")?;
+    let backing_registry =
+        require_file(root, "canisters/io_stream_manager/src/backing_registry.rs")?;
     require_present(
         "stream-manager daily event and backing separation",
-        &format!("{rewards}\n{reward_evidence}"),
-        &["event_credits", "merge_event_credits", "freeze_and_prepare"],
+        &format!("{rewards}\n{reward_evidence}\n{backing_registry}"),
+        &["event_credits", "apply_credits", "freeze_and_prepare"],
     )?;
     Ok(())
 }

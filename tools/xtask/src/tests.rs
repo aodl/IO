@@ -474,7 +474,7 @@ fn write_local_sns_rehearsal_fixture(root: &Path) {
     write(
             root,
             "deploy/local-sns-rehearsal/scripts/12-provision-local-nns-readiness.sh",
-            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# icrc1_transfer claim_or_refresh_neuron_from_account update_neuron 252460800 auto_stake_maturity = opt false maturity_disbursements_in_progress = opt vec {} two_year_neuron_id pooled_parent_memo pooled_parent_followee_id minimum_parent_stake\n",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# icrc1_transfer claim_or_refresh_neuron_from_account update_neuron 63115200 auto_stake_maturity = opt false maturity_disbursements_in_progress = opt vec {} two_year_neuron_id pooled_parent_memo pooled_parent_followee_id minimum_parent_stake\n",
         );
     write(
             root,
@@ -564,7 +564,7 @@ fn write_did_surface_fixture(root: &Path) {
     write(
             root,
             "canisters/io_stream_manager/io_stream_manager.did",
-            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  redeem : () -> ();\n  prepare_jupiter_receipt : () -> ();\n  complete_jupiter_receipt : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;\n  get_status : () -> () query;\n}\n",
+            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  redeem : () -> ();\n  prepare_claim_backing_receipt : () -> ();\n  prove_claim_backing_receipt : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;\n  get_status : () -> () query;\n}\n",
         );
     write(
             root,
