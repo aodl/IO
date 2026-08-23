@@ -1630,10 +1630,10 @@ mod tests {
     }
 
     #[test]
-    fn remaining_real_vertical_gaps_are_recorded_before_correction() {
+    fn real_vertical_sources_stay_explicit_and_bounded() {
         let all = include_str!("nns_backing.rs");
         let harness = &all[..all.find("\nmod tests").unwrap()];
-        assert!(!harness.contains("\"notify_jupiter_deposit\""));
+        assert_eq!(harness.matches("\"notify_jupiter_deposit\"").count(), 1);
         assert!(all.contains("debug_set_latest_reward_event"));
         assert!(!harness.contains("real SNS Governance generic function"));
         assert!(!harness.contains("merge-back interruption"));
