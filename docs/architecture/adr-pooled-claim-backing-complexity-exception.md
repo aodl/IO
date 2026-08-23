@@ -59,7 +59,7 @@ checkpoint is:
 | Counted component | Simplified checkpoint | Final correction | Delta |
 | --- | ---: | ---: | ---: |
 | Stream Manager | 5,098 | 5,353 | +255 |
-| NNS Manager | 5,061 | 5,335 | +274 |
+| NNS Manager | 5,061 | 5,337 | +276 |
 | pure economics | 220 | 220 | 0 |
 | ledger boundary | 517 | 517 | 0 |
 | reward policy | 282 | 282 | 0 |
@@ -67,7 +67,7 @@ checkpoint is:
 | accounts | 45 | 45 | 0 |
 | NNS types | 1,086 | 1,144 | +58 |
 | receipt types | 49 | 49 | 0 |
-| **Combined** | **12,815** | **13,402** | **+587** |
+| **Combined** | **12,815** | **13,404** | **+589** |
 
 The unavoidable additions keep one operation slot per canister. Stream adds
 one optional exact prepared-reconciliation request; NNS adds one compact last
@@ -82,7 +82,7 @@ exception is introduced.
 
 The final ceilings are 5,480 Stream Manager lines, 5,460 NNS Manager lines,
 and 13,720 combined lines. Against the final measured counts these provide
-127 lines (2.37%), 125 lines (2.34%), and 318 lines (2.37%) of headroom. The
+127 lines (2.37%), 123 lines (2.30%), and 316 lines (2.36%) of headroom. The
 pure-economics, reward-boundary, ledger-boundary, shared-type, and per-file
 ceilings do not change. In particular, every production file remains limited
 to 1,000 normally formatted lines.

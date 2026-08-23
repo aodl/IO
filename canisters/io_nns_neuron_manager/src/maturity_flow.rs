@@ -67,11 +67,7 @@ pub(crate) async fn start_observed(
         return Err(ApiError::Invalid(reason));
     }
     if let Some(batch) = &entitlement_batch {
-        let tolerance = snapshot
-            .config
-            .expected_icp_fee_e8s
-            .checked_mul(2)
-            .ok_or_else(|| ApiError::Invalid("unwind tolerance overflow".into()))?;
+        let tolerance = crate::api::hold_excess_tolerance(snapshot.config.expected_icp_fee_e8s)?;
         if !matches!(
             state::target_status(
                 observation.snapshot.cached_stake_e8s,

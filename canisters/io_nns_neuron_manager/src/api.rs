@@ -574,7 +574,11 @@ fn commit_reconciliation_generation(
     });
     latest.latest_pooled_target = Some(PooledTarget {
         target_e8s,
-        status: state::target_status(actual_e8s, target_e8s, snapshot.config.expected_icp_fee_e8s),
+        status: state::target_status(
+            actual_e8s,
+            target_e8s,
+            hold_excess_tolerance(snapshot.config.expected_icp_fee_e8s)?,
+        ),
     });
     state::write(latest);
     Ok(())
@@ -592,11 +596,7 @@ fn validate_hold(
             && (delta <= fee_e8s
                 || (snapshot.pooled_parent_id.is_none()
                     && target_e8s < snapshot.config.minimum_parent_stake_e8s)))
-        || (actual_e8s > target_e8s
-            && delta
-                < u128::from(crate::maturity::MINIMUM_DISBURSEMENT_E8S)
-                    .checked_add(fee_e8s)
-                    .ok_or_else(|| ApiError::Invalid("minimum unwind gross overflow".into()))?);
+        || (actual_e8s > target_e8s && delta <= hold_excess_tolerance(fee_e8s)?);
     if valid {
         Ok(())
     } else {
@@ -605,6 +605,14 @@ fn validate_hold(
         ))
     }
 }
+
+pub(crate) fn hold_excess_tolerance(fee_e8s: u128) -> Result<u128, ApiError> {
+    u128::from(crate::maturity::MINIMUM_DISBURSEMENT_E8S)
+        .checked_add(fee_e8s)
+        .and_then(|threshold| threshold.checked_sub(1))
+        .ok_or_else(|| ApiError::Invalid("minimum unwind gross overflow".into()))
+}
+
 pub async fn observe_claim_assets() -> Result<ClaimAssetObservation, ApiError> {
     let snapshot = state::read();
     if has_ambiguous_backing_effect(&snapshot) {
@@ -964,5 +972,24 @@ fn maturity_claim_transit(
                 .filter(|credit| *credit > 0)
                 .ok_or_else(|| ApiError::Invalid("pooled claim transit cannot pay its fee".into()))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn held_excess_and_maturity_readiness_use_the_same_unwind_threshold() {
+        let tolerance = hold_excess_tolerance(10_000).unwrap();
+        assert_eq!(tolerance, 100_009_999);
+        assert_eq!(
+            state::target_status(200_009_999, 100_000_000, tolerance),
+            state::PooledTargetStatus::AtTargetWithinUnwindTolerance
+        );
+        assert_eq!(
+            state::target_status(200_010_000, 100_000_000, tolerance),
+            state::PooledTargetStatus::OverTarget
+        );
     }
 }
