@@ -3,6 +3,7 @@
 - Status: accepted
 - Date: 2026-08-23
 - Baseline commit: `44c37cf7222b343dda9b7f63ac128a02614bcda7`
+- Final-correction baseline: `221d8c7703d4ad4cf58c7c30ca07ed056663b369`
 
 ## Context
 
@@ -47,14 +48,44 @@ cleanup, prospective reward eligibility, or the independent canonical
 observation boundaries. Those are monetary correctness requirements rather
 than optional orchestration.
 
+The final correctness tranche first deleted permanent-neuron identity and
+policy fields from the monetary claim observation, arbitrary active-unwind
+generation inference, exact-equality donation branches, and active root
+rehearsal authority. It then added only the state needed for monotone parent
+credit proof, net committed child value, exact prepared-exit membership and
+ambiguous-call replay. The measured correction delta from the simplified
+checkpoint is:
+
+| Counted component | Simplified checkpoint | Final correction | Delta |
+| --- | ---: | ---: | ---: |
+| Stream Manager | 5,098 | 5,353 | +255 |
+| NNS Manager | 5,061 | 5,335 | +274 |
+| pure economics | 220 | 220 | 0 |
+| ledger boundary | 517 | 517 | 0 |
+| reward policy | 282 | 282 | 0 |
+| SNS reward boundary | 457 | 457 | 0 |
+| accounts | 45 | 45 | 0 |
+| NNS types | 1,086 | 1,144 | +58 |
+| receipt types | 49 | 49 | 0 |
+| **Combined** | **12,815** | **13,402** | **+587** |
+
+The unavoidable additions keep one operation slot per canister. Stream adds
+one optional exact prepared-reconciliation request; NNS adds one compact last
+completed-unwind replay record. Operation-variant and persistent-collection
+counts do not increase. Physical child principal remains Governance evidence,
+while net value and its derived liability prevent a second backing loss at
+disbursement. No mutable fee-debt scalar, SNS per-neuron principal mapping,
+second scheduler, migration, feature flag, packed source, or formatter
+exception is introduced.
+
 ## Decision
 
-The combined ceiling is 13,050 lines and the NNS Manager ceiling is 5,160
-lines. These provide respectively 235 lines (1.83%) and 99 lines (1.96%) of
-headroom at this checkpoint. The Stream, pure-economics, reward-boundary,
-ledger-boundary, shared-type, and per-file ceilings do not change. In
-particular, every production file remains limited to 1,000 normally formatted
-lines.
+The final ceilings are 5,480 Stream Manager lines, 5,460 NNS Manager lines,
+and 13,720 combined lines. Against the final measured counts these provide
+127 lines (2.37%), 125 lines (2.34%), and 318 lines (2.37%) of headroom. The
+pure-economics, reward-boundary, ledger-boundary, shared-type, and per-file
+ceilings do not change. In particular, every production file remains limited
+to 1,000 normally formatted lines.
 
 This exception applies only after the deletion-first replacement described
 above. It does not authorize source packing, `rustfmt` suppression, hidden

@@ -27,8 +27,10 @@ B = L + P + U + T
 
 L = liquid claim backing
 P = active pooled two-week NNS principal
-U = pending two-week unwind principal
-T = exact claim backing frozen in an in-transit operation
+U = live unwind child physical principal minus its unavoidable future
+    disbursement fee
+T = exact claim backing frozen in an in-transit operation, net of that future
+    fee once the child lifecycle is committed
 K = permanent/exact-two-year protocol principal, excluded from B
 A_backing = all structurally active claim-bearing ordinary staked IO
 A_reward = the subset currently eligible for reward allocation
@@ -165,10 +167,13 @@ eligibility.
 ## Purpose-specific observations and unified registry
 
 A `ClaimSnapshot` reads only scalar IO supply/reserve/exclusions, liquid ICP,
-NNS `P/U/T`, fees, epochs, operation sequence and fingerprints. Redemption
-uses this fixed-size read path and never lists SNS neurons or scans staking
-Accounts. Its active state freezes only the exact quote scalars and adverse
-postcondition floors.
+NNS asset `P/U/T`, fees, epochs, operation sequence and fingerprints. It does
+not read permanent-neuron policy, parent following/delay policy, SNS neurons or
+SNS staking Accounts. A separate bounded policy observation verifies parent
+delay, following, auto-stake and voting-power readiness before daily reward,
+maturity, lifecycle or new reconciliation work. Redemption uses the fixed-size
+asset path and freezes only the exact quote scalars and adverse postcondition
+floors.
 
 A `DailyStakeObservation` verifies SNS Governance, brackets the reward event
 and scalar snapshot, lists neurons once, and reads each distinct eligible
@@ -180,7 +185,9 @@ reconciliation.
 
 One sorted bounded registry stores neuron ID, canonical staking Account,
 accumulated eligible credit, structural classification, prospective reward
-status and an optional unresolved cohort generation. Freezing a batch moves
+status, including explicit `ExitPrepared { generation }` before the NNS call
+and `ExitCommitted { generation }` only after exact replay/result resolution.
+Freezing a batch moves
 credit out of these records into the receipt's single recipient vector while
 later events may accumulate fresh credit in the same registry.
 
@@ -238,7 +245,7 @@ or expense policy, not balancing the books.
 | Stream liquid to pooled staking account | Stream claim-backing liquid account | Reduces `B` by one fee | No | Yes |
 | NNS parent split | Active pooled parent; child is credited gross minus fee | Reduces `B` by one fee | No | Yes |
 | Child merge-back | Pending/passive child | Reduces `B` by one fee; parent receives child principal minus fee | No | Yes |
-| Child disbursement | Dissolved child | Reduces `B` by one fee | No | Yes |
+| Child disbursement | Dissolved child whose unavoidable fee was recognized at sticky commitment | Net `U -> L`; `B` is unchanged at proof | No | Yes |
 | Maturity staging to permanent staking | Permanent leg in staging | Reduces `K` by one fee | No | No |
 | Maturity staging to Stream liquid | Claim leg in staging | Reduces the actual net `Q`/`B` by one fee | No | Yes |
 | Jupiter staging to permanent staking | Jupiter permanent leg | Reduces `K` by one fee | No | No |
@@ -435,10 +442,12 @@ The minimum conceptual states and transitions are:
 | --- | --- | --- |
 | `ActiveBacked` | First dissolving observation -> `ExitObserved` | Ineligible immediately; no retroactive reward |
 | `ExitObserved` | Active before split commit -> `ActiveBacked` | No NNS effect or fee; eligible from the next canonical reward observation |
-| `ExitObserved` | Split intent submitted -> `ExitCommitted(generation)` | Gross `P -> T`; unwind becomes sticky |
+| `ExitObserved` | Exact unwind plan persisted -> `ExitPrepared(generation)` | No NNS effect yet; exact request identity is durable |
+| `ExitPrepared` | Matching active/live canonical NNS generation -> `ExitCommitted(generation)` | Gross `P -> T`; unwind becomes sticky; future disbursement fee is recognized once |
+| `ExitPrepared` | Canonical no-effect/rejection -> `ExitObserved` | No child, fee or membership is retained |
 | `ExitCommitted` | Active observation -> `ReentryPending` | Child continues; no merge; remains ineligible |
 | `ReentryPending` | Dissolving observation -> `ExitCommitted` | Latest state changes only; no second child or transfer |
-| `ExitCommitted` or `ReentryPending` | Child disbursement proof -> `LiquidReturned` | Net principal `U -> L`; exact disbursement fee once |
+| `ExitCommitted` or `ReentryPending` | Child disbursement proof -> `LiquidReturned` | Net principal `U -> L`; no second backing loss |
 | `LiquidReturned` | Latest state active and executable target delta -> `RestakePlanned` | No external transfer submitted; plan may be discarded |
 | `RestakePlanned` | Exact transfer intent submitted -> `RestakeCommitted` | Exact liquid debit is frozen in `T`; cannot be discarded |
 | `RestakeCommitted` | Exact cached-principal credit proved -> `RestakeProved` | `T -> P`, fee counted once even after callback loss |
@@ -513,8 +522,10 @@ principal. If the latest SNS state is active, only the post-fee target delta is
 eligible for restaking; if it is dissolving, all returned value stays liquid.
 
 The executable example starts with `L=500, P=500, B=C=1,000`. A gross split of
-110 with fee 10 produces `P=390, U=100, B=990`. Disbursement with fee 10
-produces `L=590, P=390, B=980`. With latest `A_backing=500`, a prospective restake fee
+110 with fee 10 produces physical child principal 100. Recognizing its
+unavoidable future disbursement fee at sticky commitment gives `P=390, U=90,
+B=980`. Disbursement produces `L=590, P=390, U=0, B=980`; it does not charge
+claim backing again. With latest `A_backing=500`, a prospective restake fee
 of 10 gives `Bfee=970` and target 485. The exact restake is therefore credited
 95 from a 105 liquid debit, producing `L=P=485, B=970`. The original child
 principal of 100 is not automatically restaked. Eligibility resumes only after

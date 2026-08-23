@@ -155,7 +155,7 @@ Canonical claim accounting is:
 
 ```text
 C = total_io_supply - protocol_reserve_io - nonredeemable_governance_io
-B = liquid_icp + pooled_parent_principal + live_child_principal + in_transit_backing
+B = liquid_icp + pooled_parent_principal + net_live_child_backing + net_in_transit_backing
 gross_icp = redeemed_io * B / C
 net_icp = gross_icp - current_icp_payout_fee
 pooled_target = floor(A_backing * B / C)
@@ -163,9 +163,12 @@ reward_target = floor(A_reward * B / C)
 ```
 
 Permanent capital, ordinary/staked maturity before an actual Mint, cycles, and
-operational balances are outside `B`. Each e8s of claim backing exists in
-exactly one of its four buckets. Exact internal fees reduce the source bucket
-once. IO issuance is an explicit reserve transfer, not application minting.
+operational balances are outside `B`. Live-child and committed active-unwind
+values are net of their exactly derived unavoidable future disbursement fees;
+physical principal remains separate for Governance commands and transfer
+proof. Each e8s of claim backing exists in exactly one of its four buckets.
+Exact internal fees reduce backing once. IO issuance is an explicit reserve
+transfer, not application minting.
 
 Redemption uses `B/C` for its immutable quote and spendable liquid ICP for the
 independent availability check. An illiquid quote is not discounted: the

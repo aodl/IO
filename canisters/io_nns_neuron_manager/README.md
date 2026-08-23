@@ -20,9 +20,15 @@ auto-stake state before recording the parent.
 Stream owns under-target source transfers. NNS freezes a typed permit bound to
 the reconciliation generation, expected parent principal, destination, credit,
 fee, operation sequence, memo, time, and canonical fingerprint. It proves the
-exact Ledger block and cached-principal increase before completion.
+exact Ledger block and a monotone cached-principal increase before completion.
+The expected IO credit must be fully reflected; unsolicited excess is recorded
+as actual favourable backing and reported `OverTarget`, never attributed to
+IO's transfer.
 
-Over-target work separates Split and StartDissolving submission/proof. Only a
+Over-target work separates Split and StartDissolving submission/proof. The
+split fee is recognized when physical child principal is proved, and the
+unavoidable future disbursement fee is recognized once at sticky commitment.
+Only a
 canonically dissolving child enters the sorted bounded passive collection.
 Postcommit cancellation never stops or merges the child. The earliest ready
 cohort returns principal to Stream liquid, then proves zero maturity or merges

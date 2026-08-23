@@ -16,11 +16,17 @@ pooled_target = floor(A_backing * B / C)
 reward_target = floor(A_reward * B / C)
 ```
 
-`L` is spendable liquid backing, `P` active pooled parent principal, `U`
-live passive-child principal, and `T` exact backing represented by a persisted
-in-transit phase. Permanent capital, unminted maturity, cycles, and operational
-balances are excluded. The separate bounded daily observation lists SNS
-neurons once. Governance supplies neuron identity/state; each distinct exact IO
+`L` is spendable liquid backing, `P` active pooled parent principal, `U` live
+passive-child net claim backing, and `T` exact net backing represented by a
+persisted in-transit phase. Physical child principal is retained separately for
+Governance commands; `U/T` deduct the exactly derived unavoidable future
+disbursement fee once sticky child commitment is proved. Permanent capital,
+unminted maturity, cycles, and operational balances are excluded. The separate
+bounded daily observation lists SNS neurons once. Pool policy readiness is a
+separate observation used by daily reward and reconciliation work, so
+following, voting-power or permanent-neuron query failures cannot erase
+existing claim assets or block a liquid redemption. Governance supplies
+neuron identity/state; each distinct exact IO
 Ledger staking Account is read at most once and supplies `A_backing`. A delayed
 ancillary SNS `ClaimOrRefresh` cannot hide a successful reward transfer.
 
@@ -32,8 +38,11 @@ transfer intent, deduplication, replay, and postcondition verification.
 
 Each successful daily observation updates the sorted registry and one latest
 no-effect reconciliation checkpoint. The existing durable one-shot reward timer
-wakes the same work. At most one cohort may be committed per daily generation;
-there is no target queue or second scheduler. Reward allocation is prospective
+wakes the same work. At most one cohort may be committed per daily generation.
+Exit membership moves through exact `ExitPrepared { generation }` and
+`ExitCommitted { generation }` states resolved by the matching NNS request; it
+is never inferred from an arbitrary active unwind. There is no target queue or
+second scheduler. Reward allocation is prospective
 and requires `P >= reward_target`.
 
 Jupiter and both maturity roles use one narrow claim-backing receipt. Every
