@@ -3195,6 +3195,16 @@ mod tests {
                 u128::from(permanent_before_second_jupiter.cached_neuron_stake_e8s)
                     + second_jupiter.stake_e8s
             );
+            let maturity_before_reward = super::neuron(
+                &fixture.pic,
+                fixture.governance,
+                fixture.controller,
+                fixture.two_year_neuron_id,
+            )
+            .maturity_e8s_equivalent;
+            let maturity_after_reward =
+                super::earn_maturity_for(&fixture, fixture.two_year_neuron_id);
+            assert!(maturity_after_reward > maturity_before_reward);
         }
 
         if super::query::<StreamStatus>(
