@@ -71,7 +71,10 @@ impl UnwindOperation {
             || self.principal_e8s > u128::from(u64::MAX)
             || (self.phase == UnwindPhase::DisbursementSubmitted && self.submitted_at_seconds == 0)
             || (before_child && (self.child_neuron_id != 0 || self.principal_e8s != 0))
-            || (identified && (self.child_neuron_id == 0 || self.principal_e8s != 0))
+            || (identified
+                && (self.child_neuron_id == 0
+                    || self.principal_e8s == 0
+                    || !self.child_staking_subaccount.is_empty()))
             || (!before_child
                 && !identified
                 && (self.child_neuron_id == 0 || self.principal_e8s == 0))

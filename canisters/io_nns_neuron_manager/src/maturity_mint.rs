@@ -92,6 +92,16 @@ pub(crate) fn finish(operation: MaturityCommandOperation) -> Result<MaturityProg
         nominal_disbursed_maturity_e8s: delivery.pending.nominal_disbursed_maturity_e8s,
         actual_minted_icp_e8s: mint.actual_minted_icp_e8s,
         destination: delivery.pending.destination.clone(),
+        permanent_credit_proof: match &delivery.permanent_credit {
+            Some(crate::maturity::PermanentCreditState::Proved(proof)) => Some(proof.clone()),
+            None if operation.kind == MaturityKind::TwoYear => None,
+            _ if operation.kind == MaturityKind::TwoWeek => {
+                return Err(ApiError::Invalid(
+                    "completed pooled maturity lacks its permanent credit proof".into(),
+                ))
+            }
+            _ => None,
+        },
         completed_at_nanos: ic_cdk::api::time(),
     };
     if completed.completed_at_nanos == 0 {

@@ -131,10 +131,19 @@ type ApiError = variant {
   Stuck : text;
   BelowMaturityThreshold : record { remaining_e8s : nat64; minimum_e8s : nat64 };
 };
+type PermanentNeuronCreditProof = record {
+  neuron_id : nat64;
+  staking_subaccount : blob;
+  before_cached_stake_e8s : nat;
+  protocol_credit_e8s : nat;
+  transfer_block : nat;
+  observed_after_cached_stake_e8s : nat;
+};
 type JupiterCompleted = record {
   deposit_block : nat;
   gross_e8s : nat;
   stake_e8s : nat;
+  observed_after_cached_stake_e8s : nat;
   liquid_e8s : nat;
   stake_transfer_block : nat;
   liquid_transfer_block : nat;
@@ -169,6 +178,7 @@ type CompletedMaturity = record {
   nominal_disbursed_maturity_e8s : nat64;
   actual_minted_icp_e8s : nat;
   destination : Account;
+  permanent_credit_proof : opt PermanentNeuronCreditProof;
   completed_at_nanos : nat64;
 };
 type MaturityProgress = variant {

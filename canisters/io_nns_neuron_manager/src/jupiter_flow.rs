@@ -3,7 +3,8 @@ use crate::{
     execution::{self, ExactTransferOutcome, StreamLiquidProgress},
     jupiter::{
         self, JupiterCompleted, JupiterDeposit, JupiterOperation, JupiterPauseReason, JupiterPhase,
-        JupiterStuckTransfer, LiquidTransferSucceeded, StakeIncreaseProof, StakeTransferSucceeded,
+        JupiterStuckTransfer, LiquidTransferSucceeded, PermanentNeuronCreditProof,
+        StakeTransferSucceeded,
     },
     state::{self, Lifecycle, NnsOperation},
     transfer::{
@@ -136,13 +137,7 @@ pub async fn resume(operation: JupiterOperation) -> Result<JupiterProgress, ApiE
             permit,
             attempt,
         } => {
-            submit_jupiter_transfer(
-                operation,
-                proof.before.clone(),
-                Some((proof, permit)),
-                attempt,
-            )
-            .await
+            submit_jupiter_transfer(operation, proof.before(), Some((proof, permit)), attempt).await
         }
         JupiterPhase::LiquidTransferSucceeded(succeeded) => {
             complete_receipt(operation, succeeded).await
@@ -247,7 +242,7 @@ async fn prepare_stake_transfer(
 async fn submit_jupiter_transfer(
     mut operation: JupiterOperation,
     before: jupiter::NeuronSnapshot,
-    liquid: Option<(StakeIncreaseProof, jupiter::StreamReceiptPermit)>,
+    liquid: Option<(PermanentNeuronCreditProof, jupiter::StreamReceiptPermit)>,
     mut attempt: NnsTransferAttempt,
 ) -> Result<JupiterProgress, ApiError> {
     let expected = operation.clone();
@@ -419,34 +414,31 @@ async fn prove_stake_increase(
     let snapshot = state::read();
     let after = execution::query_neuron(&snapshot.config, succeeded.before.neuron_id).await?;
     ensure_exact_jupiter(&operation, &state::read())?;
-    if after.staking_subaccount != succeeded.before.staking_subaccount
-        || after
-            .cached_stake_e8s
-            .checked_sub(succeeded.before.cached_stake_e8s)
-            != Some(operation.deposit.stake_e8s)
+    let proof = PermanentNeuronCreditProof {
+        neuron_id: succeeded.before.neuron_id,
+        staking_subaccount: succeeded.before.staking_subaccount,
+        before_cached_stake_e8s: succeeded.before.cached_stake_e8s,
+        protocol_credit_e8s: operation.deposit.stake_e8s,
+        transfer_block: succeeded.block_index,
+        observed_after_cached_stake_e8s: after.cached_stake_e8s,
+    };
+    if after.neuron_id != proof.neuron_id
+        || after.staking_subaccount != proof.staking_subaccount
+        || proof.validate().is_err()
     {
-        let reason: String =
-            "protected neuron cached stake did not increase by the exact 40% deposit".into();
-        operation.phase = JupiterPhase::Stuck {
-            reason: reason.clone(),
-            pause_reason: JupiterPauseReason::RefreshUnconfirmed,
-            transfer: None,
-        };
-        pause_and_replace_jupiter(&expected, operation)?;
-        return Err(ApiError::Stuck(reason));
+        pause_exact_jupiter(&expected)?;
+        return Err(ApiError::Pending(
+            "protected neuron has not yet reflected the Jupiter protocol credit".into(),
+        ));
     }
-    operation.phase = JupiterPhase::StakeIncreaseProved(StakeIncreaseProof {
-        before: succeeded.before,
-        after_cached_stake_e8s: after.cached_stake_e8s,
-        stake_transfer_block: succeeded.block_index,
-    });
+    operation.phase = JupiterPhase::StakeIncreaseProved(proof);
     replace_jupiter(&expected, operation.clone())?;
     Ok(JupiterProgress::StakeIncreaseProved)
 }
 
 async fn prepare_receipt(
     mut operation: JupiterOperation,
-    proof: StakeIncreaseProof,
+    proof: PermanentNeuronCreditProof,
 ) -> Result<JupiterProgress, ApiError> {
     let expected = operation.clone();
     let config = state::read().config;
@@ -474,7 +466,7 @@ async fn prepare_receipt(
 
 fn prepare_liquid_transfer(
     mut operation: JupiterOperation,
-    proof: StakeIncreaseProof,
+    proof: PermanentNeuronCreditProof,
     permit: jupiter::StreamReceiptPermit,
 ) -> Result<JupiterProgress, ApiError> {
     let expected = operation.clone();
@@ -566,8 +558,9 @@ fn finish_jupiter(
         deposit_block: operation.deposit.block_index,
         gross_e8s: operation.deposit.gross_e8s,
         stake_e8s: operation.deposit.stake_e8s,
+        observed_after_cached_stake_e8s: succeeded.proof.observed_after_cached_stake_e8s,
         liquid_e8s: operation.deposit.liquid_e8s,
-        stake_transfer_block: succeeded.proof.stake_transfer_block,
+        stake_transfer_block: succeeded.proof.transfer_block,
         liquid_transfer_block: succeeded.block_index,
         stream_receipt_sequence: succeeded.permit.stream_operation_sequence,
         backed_io_e8s: stream.distributed_io_e8s,
@@ -607,7 +600,7 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<JupiterProgress,
                 proof,
                 permit,
                 attempt,
-            } => (Some((proof.clone(), permit)), (proof.before, attempt)),
+            } => (Some((proof.clone(), permit)), (proof.before(), attempt)),
         },
         _ => {
             return Err(ApiError::Invalid(
@@ -883,10 +876,13 @@ mod tests {
             before: neuron.clone(),
             block_index: 10,
         };
-        let proof = StakeIncreaseProof {
-            before: neuron,
-            after_cached_stake_e8s: 1_400,
-            stake_transfer_block: 10,
+        let proof = PermanentNeuronCreditProof {
+            neuron_id: neuron.neuron_id,
+            staking_subaccount: neuron.staking_subaccount,
+            before_cached_stake_e8s: neuron.cached_stake_e8s,
+            protocol_credit_e8s: 400,
+            transfer_block: 10,
+            observed_after_cached_stake_e8s: 1_400,
         };
         let permit = jupiter::StreamReceiptPermit {
             stream_operation_sequence: 11,
@@ -949,8 +945,12 @@ mod tests {
             (
                 "stake increase query",
                 operation(JupiterPhase::RefreshSubmitted(StakeTransferSucceeded {
-                    before: proof.before.clone(),
-                    block_index: proof.stake_transfer_block,
+                    before: jupiter::NeuronSnapshot {
+                        neuron_id: proof.neuron_id,
+                        staking_subaccount: proof.staking_subaccount,
+                        cached_stake_e8s: proof.before_cached_stake_e8s,
+                    },
+                    block_index: proof.transfer_block,
                 })),
                 operation(JupiterPhase::StakeIncreaseProved(proof.clone())),
             ),

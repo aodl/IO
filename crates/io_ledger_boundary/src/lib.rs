@@ -9,6 +9,18 @@ use io_accounts::Account;
 use serde::Deserialize;
 use sha2::{Digest, Sha224};
 
+pub async fn icp_fee(ledger: Principal) -> Result<u128, String> {
+    let fee: Nat = Call::bounded_wait(ledger, "icrc1_fee")
+        .with_arg(())
+        .await
+        .map_err(|error| format!("ICP fee query failed: {error:?}"))?
+        .candid()
+        .map_err(|error| format!("ICP fee decode failed: {error:?}"))?;
+    fee.0
+        .try_into()
+        .map_err(|_| "ICP fee does not fit u128".into())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExactIcrcTransfer {
     pub from: Account,

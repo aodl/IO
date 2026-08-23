@@ -16,6 +16,8 @@ use crate::{
     state::{self, Lifecycle, NnsOperation, PooledTarget, PooledTargetStatus},
 };
 
+pub const MAX_VOTING_POWER_REFRESH_AGE_SECONDS: u64 = 7 * 24 * 60 * 60;
+
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum ApiError {
     Unauthorized,
@@ -117,33 +119,7 @@ pub async fn notify_jupiter_deposit(
 
 pub async fn resume() -> Result<NnsProgress, ApiError> {
     let snapshot = state::read();
-    match snapshot.active_operation {
-        None if snapshot.pending_two_week_maturity.is_some() => {
-            crate::maturity_flow::resume_kind(MaturityKind::TwoWeek)
-                .await
-                .map(NnsProgress::Maturity)
-        }
-        None if snapshot.pending_two_year_maturity.is_some() => {
-            crate::maturity_flow::resume_kind(MaturityKind::TwoYear)
-                .await
-                .map(NnsProgress::Maturity)
-        }
-        None if !snapshot.live_cohorts.is_empty() => {
-            let now = ic_cdk::api::time() / 1_000_000_000;
-            let cohort = snapshot
-                .live_cohorts
-                .iter()
-                .filter(|cohort| cohort.ready_at_seconds <= now)
-                .min_by_key(|cohort| (cohort.ready_at_seconds, cohort.generation))
-                .cloned();
-            match cohort {
-                Some(cohort) => crate::unwind_flow::resume_passive(cohort)
-                    .await
-                    .map(NnsProgress::Unwind),
-                None => Ok(NnsProgress::Idle),
-            }
-        }
-        None => Ok(NnsProgress::Idle),
+    match snapshot.active_operation.clone() {
         Some(NnsOperation::Jupiter(operation)) => crate::jupiter_flow::resume(*operation)
             .await
             .map(NnsProgress::Jupiter),
@@ -156,6 +132,52 @@ pub async fn resume() -> Result<NnsProgress, ApiError> {
         Some(NnsOperation::Unwind(operation)) => crate::unwind_flow::resume(operation)
             .await
             .map(NnsProgress::Unwind),
+        None => resume_passive_work(snapshot).await,
+    }
+}
+
+async fn resume_passive_work(snapshot: crate::state::NnsStateV1) -> Result<NnsProgress, ApiError> {
+    let now = ic_cdk::api::time() / 1_000_000_000;
+    if let Some(ready) = snapshot
+        .live_cohorts
+        .iter()
+        .filter(|cohort| cohort.ready_at_seconds <= now)
+        .min_by_key(|cohort| (cohort.ready_at_seconds, cohort.generation))
+        .cloned()
+    {
+        return crate::unwind_flow::resume_passive(ready)
+            .await
+            .map(NnsProgress::Unwind);
+    }
+    for (kind, pending) in [
+        (
+            MaturityKind::TwoWeek,
+            snapshot.pending_two_week_maturity.as_ref(),
+        ),
+        (
+            MaturityKind::TwoYear,
+            snapshot.pending_two_year_maturity.as_ref(),
+        ),
+    ] {
+        if pending.is_some_and(|pending| {
+            !matches!(
+                pending.mint_proof,
+                crate::maturity::MintProofState::Awaiting
+            )
+        }) {
+            return crate::maturity_flow::resume_kind(kind)
+                .await
+                .map(NnsProgress::Maturity);
+        }
+    }
+    if snapshot.pending_two_week_maturity.is_some() || snapshot.pending_two_year_maturity.is_some()
+    {
+        return Ok(NnsProgress::Maturity(MaturityProgress::AwaitingMintProof));
+    }
+    if snapshot.live_cohorts.is_empty() {
+        Ok(NnsProgress::Idle)
+    } else {
+        Ok(NnsProgress::Unwind(UnwindProgress::Waiting))
     }
 }
 
@@ -355,7 +377,7 @@ pub async fn prepare_pool_reconciliation(
         return Err(ApiError::Busy);
     }
 
-    let observation = observe_claim_assets().await?;
+    let observation = claim_asset_observation().await?;
     if observation.fingerprint != args.snapshot_fingerprint
         || args.generation == 0
         || args.generation <= snapshot.latest_reconciliation_generation
@@ -368,12 +390,12 @@ pub async fn prepare_pool_reconciliation(
             "pool reconciliation snapshot or intent is invalid".into(),
         ));
     }
+    refresh_parent_for_reconciliation(&snapshot).await?;
     require_pool_policy(&snapshot).await?;
     let actual = observation.pooled_parent_principal_e8s;
     match args.action {
         PoolReconciliationAction::Hold => {
             validate_hold(&snapshot, actual, args.target_e8s, args.fee_e8s)?;
-            refresh_parent_for_reconciliation(&snapshot).await?;
             commit_reconciliation_generation(
                 &snapshot,
                 args.generation,
@@ -411,7 +433,6 @@ pub async fn prepare_pool_reconciliation(
             if snapshot.live_cohorts.len() >= io_nns_types::backing::MAX_LIVE_UNWIND_COHORTS {
                 return Ok(PoolProgress::CapacityPending);
             }
-            refresh_parent_for_reconciliation(&snapshot).await?;
             let mut latest = state::read();
             if latest != snapshot || latest.active_operation.is_some() {
                 return Err(ApiError::Busy);
@@ -444,27 +465,10 @@ pub async fn prepare_pool_reconciliation(
             };
             latest.active_operation = Some(NnsOperation::Unwind(operation.clone()));
             state::write(latest);
-            match crate::unwind_flow::resume(operation).await {
-                Ok(_) => Ok(PoolProgress::UnwindPrepared {
-                    generation: args.generation,
-                    gross_e8s: expected_gross,
-                }),
-                Err(_)
-                    if matches!(
-                        state::read().active_operation,
-                        Some(NnsOperation::Unwind(ref active))
-                            if active.generation == args.generation
-                                && active.reconciliation_request_fingerprint
-                                    == reconciliation_request_fingerprint
-                    ) =>
-                {
-                    Ok(PoolProgress::UnwindPrepared {
-                        generation: args.generation,
-                        gross_e8s: expected_gross,
-                    })
-                }
-                Err(error) => Err(error),
-            }
+            Ok(PoolProgress::UnwindPrepared {
+                generation: args.generation,
+                gross_e8s: expected_gross,
+            })
         }
     }
 }
@@ -613,7 +617,14 @@ pub(crate) fn hold_excess_tolerance(fee_e8s: u128) -> Result<u128, ApiError> {
         .ok_or_else(|| ApiError::Invalid("minimum unwind gross overflow".into()))
 }
 
-pub async fn observe_claim_assets() -> Result<ClaimAssetObservation, ApiError> {
+pub async fn observe_claim_assets(caller: Principal) -> Result<ClaimAssetObservation, ApiError> {
+    if caller != state::read().config.stream_manager {
+        return Err(ApiError::Unauthorized);
+    }
+    claim_asset_observation().await
+}
+
+pub(crate) async fn claim_asset_observation() -> Result<ClaimAssetObservation, ApiError> {
     let snapshot = state::read();
     if has_ambiguous_backing_effect(&snapshot) {
         return Err(ApiError::Pending(
@@ -650,18 +661,7 @@ pub async fn observe_claim_assets() -> Result<ClaimAssetObservation, ApiError> {
             cohort.proof,
             CohortProofState::Dissolving | CohortProofState::DisbursementSubmitted
         ) {
-            let observed =
-                execution::query_neuron_observation(&snapshot.config, cohort.child_neuron_id)
-                    .await?;
-            if observed.snapshot.staking_subaccount.as_slice()
-                != cohort.child_staking_subaccount.as_slice()
-                || observed.snapshot.cached_stake_e8s != cohort.principal_e8s
-            {
-                return Err(ApiError::Invalid(
-                    "live unwind child identity or physical principal drifted".into(),
-                ));
-            }
-            observed.snapshot.cached_stake_e8s
+            cohort.principal_e8s
         } else {
             0
         };
@@ -756,7 +756,10 @@ pub async fn observe_claim_assets() -> Result<ClaimAssetObservation, ApiError> {
     Ok(result)
 }
 
-pub async fn observe_pool_policy() -> Result<PoolPolicyObservation, ApiError> {
+pub async fn observe_pool_policy(caller: Principal) -> Result<PoolPolicyObservation, ApiError> {
+    if caller != state::read().config.stream_manager {
+        return Err(ApiError::Unauthorized);
+    }
     let snapshot = state::read();
     pool_policy_observation(&snapshot).await
 }
@@ -788,6 +791,16 @@ async fn pool_policy_observation(
                 },
             )
             .map_err(ApiError::Invalid)?;
+            let refreshed_at = observed
+                .voting_power_refreshed_timestamp_seconds
+                .filter(|timestamp| *timestamp > 0)
+                .ok_or_else(|| ApiError::Pending("pooled parent voting power is stale".into()))?;
+            let now = ic_cdk::api::time() / 1_000_000_000;
+            if !voting_power_refresh_is_current(refreshed_at, now) {
+                return Err(ApiError::Pending(format!(
+                    "pooled parent voting power refresh is older than {MAX_VOTING_POWER_REFRESH_AGE_SECONDS} seconds"
+                )));
+            }
             Some(ParentPolicyObservation {
                 neuron_id: parent_id,
                 dissolve_delay_seconds: POOLED_PARENT_DELAY_SECONDS,
@@ -795,12 +808,7 @@ async fn pool_policy_observation(
                 follow_policy: FollowPolicy {
                     followee_neuron_id: snapshot.config.pooled_parent_followee_id,
                 },
-                voting_power_refreshed_at_seconds: observed
-                    .voting_power_refreshed_timestamp_seconds
-                    .filter(|timestamp| *timestamp > 0)
-                    .ok_or_else(|| {
-                        ApiError::Pending("pooled parent voting power is stale".into())
-                    })?,
+                voting_power_refreshed_at_seconds: refreshed_at,
             })
         }
         None => None,
@@ -819,6 +827,12 @@ async fn pool_policy_observation(
     };
     result.validate().map_err(ApiError::Invalid)?;
     Ok(result)
+}
+
+fn voting_power_refresh_is_current(refreshed_at: u64, now: u64) -> bool {
+    refreshed_at > 0
+        && refreshed_at <= now
+        && now - refreshed_at <= MAX_VOTING_POWER_REFRESH_AGE_SECONDS
 }
 
 fn active_operation_sequence(snapshot: &crate::state::NnsStateV1) -> u64 {
@@ -857,22 +871,15 @@ fn transit_backing(
                     | UnwindPhase::StartDissolvingProved
             ) =>
         {
-            if command.phase == UnwindPhase::ChildIdentified {
-                command
-                    .gross_e8s
-                    .checked_sub(snapshot.config.expected_icp_fee_e8s)
-                    .ok_or_else(|| ApiError::Invalid("unwind transit underflow".into()))?
-            } else {
-                io_nns_types::backing::net_committed_child_backing(
-                    command.principal_e8s,
-                    snapshot.config.expected_icp_fee_e8s,
+            io_nns_types::backing::net_committed_child_backing(
+                command.principal_e8s,
+                snapshot.config.expected_icp_fee_e8s,
+            )
+            .map_err(|_| {
+                ApiError::Invalid(
+                    "committed unwind transit cannot cover its future disbursement fee".into(),
                 )
-                .map_err(|_| {
-                    ApiError::Invalid(
-                        "committed unwind transit cannot cover its future disbursement fee".into(),
-                    )
-                })?
-            }
+            })?
         }
         Some(NnsOperation::Jupiter(command))
             if matches!(
@@ -991,5 +998,50 @@ mod tests {
             state::target_status(200_010_000, 100_000_000, tolerance),
             state::PooledTargetStatus::OverTarget
         );
+    }
+
+    #[test]
+    fn passive_resume_prioritizes_actionable_work_deterministically() {
+        let source = include_str!("api.rs");
+        let body = source.split("async fn resume_passive_work").nth(1).unwrap();
+        let ready = body.find("resume_passive(ready)").unwrap();
+        let two_week = body.find("MaturityKind::TwoWeek").unwrap();
+        let two_year = body.find("MaturityKind::TwoYear").unwrap();
+        let awaiting = body.find("MaturityProgress::AwaitingMintProof").unwrap();
+        let waiting = body.find("UnwindProgress::Waiting").unwrap();
+        assert!(ready < two_week && two_week < two_year && two_year < awaiting);
+        assert!(awaiting < waiting);
+    }
+
+    #[test]
+    fn voting_power_refresh_age_is_conservatively_bounded() {
+        let now = 10 * 24 * 60 * 60;
+        assert!(voting_power_refresh_is_current(
+            now - MAX_VOTING_POWER_REFRESH_AGE_SECONDS,
+            now
+        ));
+        assert!(!voting_power_refresh_is_current(
+            now - MAX_VOTING_POWER_REFRESH_AGE_SECONDS - 1,
+            now
+        ));
+        assert!(!voting_power_refresh_is_current(0, now));
+        assert!(!voting_power_refresh_is_current(now + 1, now));
+    }
+
+    #[test]
+    fn unwind_prepare_has_no_after_persist_error_or_child_submission() {
+        let source = include_str!("api.rs");
+        let persist = source
+            .find("latest.active_operation = Some(NnsOperation::Unwind(operation.clone()))")
+            .expect("unwind preparation persistence");
+        let tail = &source[persist..];
+        let returned = tail
+            .find("Ok(PoolProgress::UnwindPrepared")
+            .expect("prepared response after persistence");
+        let boundary = tail.find("fn reconciliation_request_fingerprint").unwrap();
+        assert!(returned < boundary);
+        assert!(!tail[..boundary].contains("unwind_flow::resume"));
+        assert!(!tail[..boundary].contains(".await"));
+        assert!(!tail[..boundary].contains("Err("));
     }
 }

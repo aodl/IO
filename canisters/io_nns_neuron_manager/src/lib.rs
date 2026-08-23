@@ -5,6 +5,7 @@ mod jupiter_flow;
 pub mod lifecycle;
 mod maturity_flow;
 mod maturity_mint;
+mod permanent_credit;
 mod pool_flow;
 pub mod state;
 mod two_week_binding;
@@ -86,13 +87,13 @@ pub async fn prepare_pool_reconciliation(
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub async fn observe_claim_assets() -> Result<io_nns_types::backing::ClaimAssetObservation, ApiError>
 {
-    api::observe_claim_assets().await
+    api::observe_claim_assets(ic_cdk::api::msg_caller()).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub async fn observe_pool_policy() -> Result<io_nns_types::backing::PoolPolicyObservation, ApiError>
 {
-    api::observe_pool_policy().await
+    api::observe_pool_policy(ic_cdk::api::msg_caller()).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]

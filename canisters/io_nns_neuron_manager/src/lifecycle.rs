@@ -44,21 +44,9 @@ pub async fn readiness_preflight(
         .config
         .validate(canister_self)
         .map_err(crate::api::ApiError::Invalid)?;
-    let fee: candid::Nat =
-        ic_cdk::call::Call::bounded_wait(snapshot.config.icp_ledger, "icrc1_fee")
-            .with_arg(())
-            .await
-            .map_err(|error| {
-                crate::api::ApiError::Stuck(format!("ICP fee query failed: {error:?}"))
-            })?
-            .candid()
-            .map_err(|error| {
-                crate::api::ApiError::Invalid(format!("ICP fee decode failed: {error:?}"))
-            })?;
-    let fee: u128 = fee
-        .0
-        .try_into()
-        .map_err(|_| crate::api::ApiError::Invalid("ICP fee does not fit u128".into()))?;
+    let fee = io_ledger_boundary::icp_fee(snapshot.config.icp_ledger)
+        .await
+        .map_err(crate::api::ApiError::Stuck)?;
     if fee != snapshot.config.expected_icp_fee_e8s {
         return Err(crate::api::ApiError::Invalid(
             "canonical ICP fee differs from approved config".into(),

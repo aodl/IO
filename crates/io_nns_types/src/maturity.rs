@@ -1,5 +1,7 @@
 use crate::{
-    jupiter::NeuronSnapshot, receipt::ClaimBackingReceiptPermit, transfer::NnsTransferAttempt,
+    jupiter::{NeuronSnapshot, PermanentNeuronCreditProof},
+    receipt::ClaimBackingReceiptPermit,
+    transfer::NnsTransferAttempt,
 };
 use {candid::CandidType, io_accounts::Account, serde::Deserialize};
 
@@ -91,10 +93,23 @@ pub struct PendingMaturityDisbursement {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum PermanentCreditState {
+    Prepared {
+        before: NeuronSnapshot,
+        transfer: NnsTransferAttempt,
+    },
+    RefreshSubmitted {
+        before: NeuronSnapshot,
+        transfer_block: u128,
+    },
+    Proved(PermanentNeuronCreditProof),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct ClaimReceiptDeliveryOperation {
     pub pending: PendingMaturityDisbursement,
     pub permit: Option<ClaimBackingReceiptPermit>,
-    pub permanent_transfer: Option<NnsTransferAttempt>,
+    pub permanent_credit: Option<PermanentCreditState>,
     pub claim_transfer: Option<NnsTransferAttempt>,
 }
 
@@ -135,6 +150,7 @@ pub struct CompletedMaturity {
     pub nominal_disbursed_maturity_e8s: u64,
     pub actual_minted_icp_e8s: u128,
     pub destination: Account,
+    pub permanent_credit_proof: Option<PermanentNeuronCreditProof>,
     pub completed_at_nanos: u64,
 }
 

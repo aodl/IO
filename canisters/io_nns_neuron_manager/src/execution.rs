@@ -851,7 +851,7 @@ pub async fn prepare_jupiter_claim_receipt(
     deposit_block: u128,
     liquid_e8s: u128,
 ) -> Result<StreamReceiptPermit, ApiError> {
-    let observation = crate::api::observe_claim_assets().await?;
+    let observation = crate::api::claim_asset_observation().await?;
     prepare_claim_receipt(
         config,
         PrepareClaimBackingReceiptArgs {

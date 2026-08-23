@@ -13,6 +13,26 @@ pub fn net_committed_child_backing(
         .ok_or(io_core_model::EconomicsError::InsufficientBacking)
 }
 
+pub fn expected_split_child_principal(
+    gross_e8s: u128,
+    split_fee_e8s: u128,
+) -> Result<u128, io_core_model::EconomicsError> {
+    gross_e8s
+        .checked_sub(split_fee_e8s)
+        .ok_or(io_core_model::EconomicsError::InsufficientBacking)
+}
+
+pub fn net_committed_unwind_backing(
+    gross_e8s: u128,
+    split_fee_e8s: u128,
+    future_disbursement_fee_e8s: u128,
+) -> Result<u128, io_core_model::EconomicsError> {
+    net_committed_child_backing(
+        expected_split_child_principal(gross_e8s, split_fee_e8s)?,
+        future_disbursement_fee_e8s,
+    )
+}
+
 pub fn remaining_parent_transit(
     expected_before: u128,
     expected_credit: u128,
@@ -437,6 +457,19 @@ mod tests {
             after_return.backing.liquid.checked_sub(frozen.gross_icp),
             Some(10)
         );
+    }
+
+    #[test]
+    fn child_identified_through_passive_uses_one_net_value() {
+        let gross = 200_000_000;
+        let fee = 10_000;
+        let principal = expected_split_child_principal(gross, fee).unwrap();
+        let child_identified = net_committed_unwind_backing(gross, fee, fee).unwrap();
+        let split_proved = net_committed_child_backing(principal, fee).unwrap();
+        let passive = net_committed_child_backing(principal, fee).unwrap();
+        assert_eq!(child_identified, gross - fee - fee);
+        assert_eq!(child_identified, split_proved);
+        assert_eq!(split_proved, passive);
     }
 
     #[test]

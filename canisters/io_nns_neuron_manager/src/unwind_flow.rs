@@ -69,6 +69,11 @@ async fn submit_split(mut operation: UnwindOperation) -> Result<UnwindProgress, 
             ensure(&operation)?;
             let submitted = operation.clone();
             operation.child_neuron_id = child;
+            operation.principal_e8s = io_nns_types::backing::expected_split_child_principal(
+                operation.gross_e8s,
+                current.config.expected_icp_fee_e8s,
+            )
+            .map_err(|_| ApiError::Invalid("Split gross cannot cover the fee".into()))?;
             operation.phase = UnwindPhase::ChildIdentified;
             replace(&submitted, operation)?;
             Ok(UnwindProgress::Waiting)
@@ -86,14 +91,9 @@ async fn prove_split(mut operation: UnwindOperation) -> Result<UnwindProgress, A
     let observed =
         execution::query_neuron_observation(&current.config, operation.child_neuron_id).await?;
     ensure(&expected)?;
-    let principal = operation
-        .gross_e8s
-        .checked_sub(current.config.expected_icp_fee_e8s)
-        .ok_or_else(|| ApiError::Invalid("Split gross cannot cover the fee".into()))?;
-    if observed.snapshot.cached_stake_e8s != principal {
+    if observed.snapshot.cached_stake_e8s != operation.principal_e8s {
         return pause(operation, "Split principal proof mismatch".into());
     }
-    operation.principal_e8s = principal;
     operation.child_staking_subaccount = observed.snapshot.staking_subaccount.to_vec();
     operation.phase = UnwindPhase::SplitProved;
     replace(&expected, operation)?;
@@ -166,6 +166,24 @@ async fn prove_start(operation: UnwindOperation) -> Result<UnwindProgress, ApiEr
 
 async fn submit_disbursement(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
     let expected = operation.clone();
+    let current = state::read();
+    let canonical_fee = io_ledger_boundary::icp_fee(current.config.icp_ledger)
+        .await
+        .map_err(ApiError::Pending)?;
+    ensure(&expected)?;
+    if canonical_fee != current.config.expected_icp_fee_e8s {
+        let mut latest = state::read();
+        if !matches!(latest.active_operation, Some(NnsOperation::Unwind(ref active)) if active == &expected)
+        {
+            return Err(ApiError::Busy);
+        }
+        latest.lifecycle = Lifecycle::Paused;
+        state::write(latest);
+        return Err(ApiError::Stuck(format!(
+            "ICP fee parameter drift: approved {}, observed {canonical_fee}; child disbursement was not submitted",
+            current.config.expected_icp_fee_e8s
+        )));
+    }
     operation.phase = UnwindPhase::DisbursementSubmitted;
     operation.submitted_at_seconds = ic_cdk::api::time() / 1_000_000_000;
     replace(&expected, operation.clone())?;

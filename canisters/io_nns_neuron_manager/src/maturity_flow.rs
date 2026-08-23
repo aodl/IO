@@ -11,8 +11,8 @@ use crate::{
     maturity::{
         ClaimReceiptDeliveryOperation, DisburseMaturitySubmission, DisburseMaturitySucceeded,
         MaturityCommandOperation, MaturityCommandPhase, MaturityEvidenceSource, MaturityKind,
-        MaturityPlan, MintProofState, PendingMaturityDisbursement, StakeMaturitySucceeded,
-        MINIMUM_DISBURSEMENT_E8S,
+        MaturityPlan, MintProofState, PendingMaturityDisbursement, PermanentCreditState,
+        StakeMaturitySucceeded, MINIMUM_DISBURSEMENT_E8S,
     },
     state::{self, Lifecycle, NnsOperation},
     transfer::{
@@ -477,7 +477,7 @@ pub(crate) fn start_claim_receipt_delivery(
         phase: MaturityCommandPhase::ClaimReceiptDelivery(ClaimReceiptDeliveryOperation {
             pending: delivering.clone(),
             permit: None,
-            permanent_transfer: None,
+            permanent_credit: None,
             claim_transfer: None,
         }),
     };
@@ -501,19 +501,15 @@ async fn resume_claim_receipt_delivery(
     };
     let config = state::read().config;
     if operation.kind == MaturityKind::TwoWeek {
-        match delivery.permanent_transfer.as_ref() {
+        let split = io_core_model::split_40_60(mint.actual_minted_icp_e8s)
+            .map_err(|error| ApiError::Invalid(format!("maturity split failed: {error:?}")))?;
+        let credit = split
+            .permanent
+            .checked_sub(config.expected_icp_fee_e8s)
+            .filter(|credit| *credit > 0)
+            .ok_or_else(|| ApiError::Invalid("permanent maturity leg cannot pay its fee".into()))?;
+        match delivery.permanent_credit.as_ref() {
             None => {
-                let split =
-                    io_core_model::split_40_60(mint.actual_minted_icp_e8s).map_err(|error| {
-                        ApiError::Invalid(format!("maturity split failed: {error:?}"))
-                    })?;
-                let credit = split
-                    .permanent
-                    .checked_sub(config.expected_icp_fee_e8s)
-                    .filter(|credit| *credit > 0)
-                    .ok_or_else(|| {
-                        ApiError::Invalid("permanent maturity leg cannot pay its fee".into())
-                    })?;
                 let permanent =
                     execution::query_neuron_observation(&config, config.two_year_neuron_id).await?;
                 ensure_exact(&operation)?;
@@ -523,21 +519,41 @@ async fn resume_claim_receipt_delivery(
                     state::write(latest);
                     return Err(ApiError::Invalid(reason));
                 }
-                return prepare_maturity_transfer(
-                    operation,
-                    true,
-                    execution::staking_account(&config, &permanent.snapshot),
-                    credit,
-                );
+                return crate::permanent_credit::prepare(operation, permanent.snapshot, credit);
             }
-            Some(attempt) if !matches!(attempt.state, TransferState::Succeeded { .. }) => {
+            Some(PermanentCreditState::Prepared { transfer, .. })
+                if !matches!(transfer.state, TransferState::Succeeded { .. }) =>
+            {
                 return submit_maturity_transfer(operation, true).await;
             }
-            Some(_) => {}
+            Some(PermanentCreditState::Prepared { before, transfer }) => {
+                let transfer_block = transfer.succeeded_block().map_err(ApiError::Invalid)?;
+                let mut replacement = operation.clone();
+                delivery_mut(&mut replacement).permanent_credit =
+                    Some(PermanentCreditState::RefreshSubmitted {
+                        before: before.clone(),
+                        transfer_block,
+                    });
+                write_exact(&operation, replacement, false)?;
+                return crate::permanent_credit::refresh(before.neuron_id).await;
+            }
+            Some(PermanentCreditState::RefreshSubmitted {
+                before,
+                transfer_block,
+            }) => {
+                return crate::permanent_credit::prove_or_refresh(
+                    operation,
+                    before.clone(),
+                    *transfer_block,
+                    credit,
+                )
+                .await;
+            }
+            Some(PermanentCreditState::Proved(_)) => {}
         }
     }
     let Some(permit) = delivery.permit.clone() else {
-        let observation = crate::api::observe_claim_assets().await?;
+        let observation = crate::api::claim_asset_observation().await?;
         ensure_exact(&operation)?;
         let (kind, claim_credit) = claim_receipt_economics(
             &delivery.pending,
@@ -574,12 +590,7 @@ async fn resume_claim_receipt_delivery(
     };
     match delivery.claim_transfer.as_ref() {
         None => {
-            return prepare_maturity_transfer(
-                operation,
-                false,
-                permit.destination.clone(),
-                permit.amount_e8s,
-            )
+            return prepare_claim_transfer(operation, permit.destination.clone(), permit.amount_e8s)
         }
         Some(attempt) if !matches!(attempt.state, TransferState::Succeeded { .. }) => {
             return submit_maturity_transfer(operation, false).await;
@@ -644,26 +655,18 @@ fn claim_receipt_economics(
     })
 }
 
-fn prepare_maturity_transfer(
+fn prepare_claim_transfer(
     operation: MaturityCommandOperation,
-    permanent: bool,
     destination: crate::state::Account,
     amount: u128,
 ) -> Result<MaturityProgress, ApiError> {
     let config = state::read().config;
-    let memo = if permanent {
-        maturity_transfer_memo(
-            b"io-pooled-maturity-permanent-v1",
-            operation.operation_sequence,
-        )
-    } else {
-        delivery_ref(&operation)
-            .permit
-            .as_ref()
-            .ok_or(ApiError::Busy)?
-            .memo
-            .clone()
-    };
+    let memo = delivery_ref(&operation)
+        .permit
+        .as_ref()
+        .ok_or(ApiError::Busy)?
+        .memo
+        .clone();
     let attempt = NnsTransferAttempt::prepared(NnsTransferIntent {
         ledger: config.icp_ledger,
         source_subaccount: config
@@ -679,11 +682,7 @@ fn prepare_maturity_transfer(
     })
     .map_err(ApiError::Invalid)?;
     let mut replacement = operation.clone();
-    if permanent {
-        delivery_mut(&mut replacement).permanent_transfer = Some(attempt);
-    } else {
-        delivery_mut(&mut replacement).claim_transfer = Some(attempt);
-    }
+    delivery_mut(&mut replacement).claim_transfer = Some(attempt);
     write_exact(&operation, replacement, false)?;
     Ok(MaturityProgress::DeliveringClaimReceipt)
 }
@@ -752,7 +751,13 @@ pub async fn prove_active_transfer(
 ) -> Result<MaturityProgress, ApiError> {
     let delivery = delivery_ref(&operation);
     let (permanent, attempt) = [
-        (true, delivery.permanent_transfer.as_ref()),
+        (
+            true,
+            match delivery.permanent_credit.as_ref() {
+                Some(PermanentCreditState::Prepared { transfer, .. }) => Some(transfer),
+                _ => None,
+            },
+        ),
         (false, delivery.claim_transfer.as_ref()),
     ]
     .into_iter()
@@ -834,7 +839,7 @@ pub(crate) fn maturity_source_operation_id(pending: &PendingMaturityDisbursement
     Sha256::digest(candid::encode_one(pending).expect("maturity evidence must encode")).to_vec()
 }
 
-fn maturity_transfer_memo(domain: &[u8], sequence: u64) -> Vec<u8> {
+pub(crate) fn maturity_transfer_memo(domain: &[u8], sequence: u64) -> Vec<u8> {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(domain);
@@ -863,7 +868,10 @@ fn transfer_mut(
     permanent: bool,
 ) -> Result<&mut NnsTransferAttempt, ApiError> {
     if permanent {
-        delivery.permanent_transfer.as_mut()
+        match delivery.permanent_credit.as_mut() {
+            Some(PermanentCreditState::Prepared { transfer, .. }) => Some(transfer),
+            _ => None,
+        }
     } else {
         delivery.claim_transfer.as_mut()
     }
@@ -1000,7 +1008,7 @@ pub(crate) fn replace_pending(
     Ok(())
 }
 
-fn now_nanos() -> Result<u64, ApiError> {
+pub(crate) fn now_nanos() -> Result<u64, ApiError> {
     let now = ic_cdk::api::time();
     if now == 0 {
         Err(ApiError::Invalid("canister time is zero".into()))

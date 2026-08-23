@@ -18,7 +18,7 @@ use {
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
 
-pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 5;
+pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 6;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct NnsConfig {
@@ -256,10 +256,7 @@ fn validate_claim_receipt_delivery(
     delivery: &crate::maturity::ClaimReceiptDeliveryOperation,
     config: &NnsConfig,
 ) -> Result<(), String> {
-    use io_nns_types::{
-        receipt::receipt_memo,
-        transfer::{NnsTransferAttempt, TransferState},
-    };
+    use io_nns_types::{receipt::receipt_memo, transfer::NnsTransferAttempt};
 
     let crate::maturity::MintProofState::Delivering(mint) = &delivery.pending.mint_proof else {
         return Err("claim receipt lacks a delivering Mint".into());
@@ -274,28 +271,46 @@ fn validate_claim_receipt_delivery(
         }
         Ok(())
     };
-    if let Some(transfer) = &delivery.permanent_transfer {
-        validate_transfer(transfer)?;
+    if let Some(credit) = &delivery.permanent_credit {
         let split = io_core_model::split_40_60(mint.actual_minted_icp_e8s)
             .map_err(|error| format!("maturity split failed: {error:?}"))?;
-        let credit = split
+        let protocol_credit = split
             .permanent
             .checked_sub(config.expected_icp_fee_e8s)
             .filter(|credit| *credit > 0)
             .ok_or("permanent maturity leg cannot pay its fee")?;
-        if kind != crate::maturity::MaturityKind::TwoWeek
-            || transfer.intent.amount_e8s != credit
-            || transfer.intent.destination.owner != config.nns_governance
-            || transfer
-                .intent
-                .destination
-                .effective_eq(&config.stream_liquid_account)?
-        {
+        if kind != crate::maturity::MaturityKind::TwoWeek {
             return Err("permanent maturity transfer is inconsistent".into());
+        }
+        match credit {
+            crate::maturity::PermanentCreditState::Prepared { before, transfer } => {
+                validate_transfer(transfer)?;
+                if before.neuron_id != config.two_year_neuron_id
+                    || transfer.intent.amount_e8s != protocol_credit
+                    || transfer.intent.destination.owner != config.nns_governance
+                    || transfer.intent.destination.canonical()?.subaccount
+                        != before.staking_subaccount
+                {
+                    return Err("permanent maturity transfer is inconsistent".into());
+                }
+            }
+            crate::maturity::PermanentCreditState::RefreshSubmitted { before, .. } => {
+                if before.neuron_id != config.two_year_neuron_id || before.cached_stake_e8s == 0 {
+                    return Err("permanent maturity refresh evidence is inconsistent".into());
+                }
+            }
+            crate::maturity::PermanentCreditState::Proved(proof) => {
+                proof.validate()?;
+                if proof.neuron_id != config.two_year_neuron_id
+                    || proof.protocol_credit_e8s != protocol_credit
+                {
+                    return Err("permanent maturity proof is inconsistent".into());
+                }
+            }
         }
     }
     if kind == crate::maturity::MaturityKind::TwoWeek
-        && delivery.permanent_transfer.is_none()
+        && delivery.permanent_credit.is_none()
         && (delivery.permit.is_some() || delivery.claim_transfer.is_some())
     {
         return Err("pooled maturity claim transfer precedes permanent transfer".into());
@@ -332,10 +347,10 @@ fn validate_claim_receipt_delivery(
         }
     }
     if kind == crate::maturity::MaturityKind::TwoWeek
-        && !delivery
-            .permanent_transfer
-            .as_ref()
-            .is_some_and(|attempt| matches!(attempt.state, TransferState::Succeeded { .. }))
+        && !matches!(
+            delivery.permanent_credit,
+            Some(crate::maturity::PermanentCreditState::Proved(_))
+        )
     {
         return Err("pooled maturity receipt precedes proved permanent credit".into());
     }
@@ -477,7 +492,6 @@ impl NnsStateV1 {
                         operation.phase,
                         crate::pool::UnwindPhase::SplitPrepared
                             | crate::pool::UnwindPhase::SplitSubmitted
-                            | crate::pool::UnwindPhase::ChildIdentified
                     ) && operation.principal_e8s <= self.config.expected_icp_fee_e8s
                     {
                         return Err(
@@ -525,8 +539,16 @@ impl NnsStateV1 {
                 || completed.actual_minted_icp_e8s == 0
                 || completed.completed_at_nanos == 0
                 || !completed.destination.effective_eq(destination)?
+                || (kind == crate::maturity::MaturityKind::TwoWeek)
+                    != completed.permanent_credit_proof.is_some()
             {
                 return Err("completed maturity result is inconsistent".into());
+            }
+            if let Some(proof) = &completed.permanent_credit_proof {
+                proof.validate()?;
+                if proof.neuron_id != self.config.two_year_neuron_id {
+                    return Err("completed permanent maturity proof has the wrong neuron".into());
+                }
             }
         }
         Ok(())
@@ -1046,6 +1068,7 @@ mod tests {
             deposit_block: 9_223_372_036_854_000_001,
             gross_e8s: 100,
             stake_e8s: 40,
+            observed_after_cached_stake_e8s: 41,
             liquid_e8s: 60,
             stake_transfer_block: 2,
             liquid_transfer_block: 3,

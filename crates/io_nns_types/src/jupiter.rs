@@ -35,15 +35,42 @@ pub struct StakeTransferSucceeded {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct StakeIncreaseProof {
-    pub before: NeuronSnapshot,
-    pub after_cached_stake_e8s: u128,
-    pub stake_transfer_block: u128,
+pub struct PermanentNeuronCreditProof {
+    pub neuron_id: u64,
+    pub staking_subaccount: [u8; 32],
+    pub before_cached_stake_e8s: u128,
+    pub protocol_credit_e8s: u128,
+    pub transfer_block: u128,
+    pub observed_after_cached_stake_e8s: u128,
+}
+
+impl PermanentNeuronCreditProof {
+    pub fn before(&self) -> NeuronSnapshot {
+        NeuronSnapshot {
+            neuron_id: self.neuron_id,
+            staking_subaccount: self.staking_subaccount,
+            cached_stake_e8s: self.before_cached_stake_e8s,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        let expected_after = self
+            .before_cached_stake_e8s
+            .checked_add(self.protocol_credit_e8s)
+            .ok_or("permanent credit expectation overflow")?;
+        if self.neuron_id == 0
+            || self.protocol_credit_e8s == 0
+            || self.observed_after_cached_stake_e8s < expected_after
+        {
+            return Err("permanent neuron protocol credit is not proved".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct LiquidTransferSucceeded {
-    pub proof: StakeIncreaseProof,
+    pub proof: PermanentNeuronCreditProof,
     pub permit: StreamReceiptPermit,
     pub block_index: u128,
 }
@@ -53,6 +80,7 @@ pub struct JupiterCompleted {
     pub deposit_block: u128,
     pub gross_e8s: u128,
     pub stake_e8s: u128,
+    pub observed_after_cached_stake_e8s: u128,
     pub liquid_e8s: u128,
     pub stake_transfer_block: u128,
     pub liquid_transfer_block: u128,
@@ -87,7 +115,7 @@ pub enum JupiterStuckTransfer {
         attempt: NnsTransferAttempt,
     },
     Liquid {
-        proof: StakeIncreaseProof,
+        proof: PermanentNeuronCreditProof,
         permit: StreamReceiptPermit,
         attempt: NnsTransferAttempt,
     },
@@ -116,18 +144,18 @@ pub enum JupiterPhase {
     },
     StakeTransferSucceeded(StakeTransferSucceeded),
     RefreshSubmitted(StakeTransferSucceeded),
-    StakeIncreaseProved(StakeIncreaseProof),
+    StakeIncreaseProved(PermanentNeuronCreditProof),
     ReceiptPermitPrepared {
-        proof: StakeIncreaseProof,
+        proof: PermanentNeuronCreditProof,
         permit: StreamReceiptPermit,
     },
     LiquidTransferPrepared {
-        proof: StakeIncreaseProof,
+        proof: PermanentNeuronCreditProof,
         permit: StreamReceiptPermit,
         attempt: NnsTransferAttempt,
     },
     LiquidTransferSubmitted {
-        proof: StakeIncreaseProof,
+        proof: PermanentNeuronCreditProof,
         permit: StreamReceiptPermit,
         attempt: NnsTransferAttempt,
     },
@@ -193,13 +221,13 @@ impl JupiterOperation {
                 validate_neuron(&value.before)
             }
             JupiterPhase::StakeIncreaseProved(proof) => {
-                validate_neuron(&proof.before)?;
+                validate_neuron(&proof.before())?;
                 validate_stake_increase(proof, self.deposit.stake_e8s)
             }
             JupiterPhase::ReceiptPermitPrepared { proof, permit }
             | JupiterPhase::LiquidTransferPrepared { proof, permit, .. }
             | JupiterPhase::LiquidTransferSubmitted { proof, permit, .. } => {
-                validate_neuron(&proof.before)?;
+                validate_neuron(&proof.before())?;
                 validate_stake_increase(proof, self.deposit.stake_e8s)?;
                 validate_permit(permit)?;
                 if let JupiterPhase::LiquidTransferPrepared { attempt, .. }
@@ -220,7 +248,7 @@ impl JupiterOperation {
             JupiterPhase::LiquidTransferSucceeded(value)
             | JupiterPhase::ReceiptCompletionSubmitted(value)
             | JupiterPhase::AwaitingStreamSettlement(value) => {
-                validate_neuron(&value.proof.before)?;
+                validate_neuron(&value.proof.before())?;
                 validate_stake_increase(&value.proof, self.deposit.stake_e8s)?;
                 validate_permit(&value.permit)
             }
@@ -241,7 +269,7 @@ impl JupiterOperation {
                             permit,
                             attempt,
                         } => {
-                            validate_neuron(&proof.before)?;
+                            validate_neuron(&proof.before())?;
                             validate_stake_increase(proof, self.deposit.stake_e8s)?;
                             validate_permit(permit)?;
                             validate_attempt(attempt)?;
@@ -254,13 +282,13 @@ impl JupiterOperation {
     }
 }
 
-fn validate_stake_increase(proof: &StakeIncreaseProof, stake_e8s: u128) -> Result<(), String> {
-    if proof
-        .after_cached_stake_e8s
-        .checked_sub(proof.before.cached_stake_e8s)
-        != Some(stake_e8s)
-    {
-        return Err("protected neuron stake increase is not exact".into());
+fn validate_stake_increase(
+    proof: &PermanentNeuronCreditProof,
+    stake_e8s: u128,
+) -> Result<(), String> {
+    proof.validate()?;
+    if proof.protocol_credit_e8s != stake_e8s {
+        return Err("Jupiter proof attributes the wrong protocol credit".into());
     }
     Ok(())
 }
@@ -319,5 +347,24 @@ mod tests {
     fn internal_fees_reduce_each_physical_credit() {
         assert_eq!(fee_reduced_split(100_000, 10_000), Ok((30_000, 50_000)));
         assert!(fee_reduced_split(20_000, 10_000).is_err());
+    }
+
+    #[test]
+    fn permanent_credit_proof_is_monotone_and_does_not_attribute_donations() {
+        let proof = PermanentNeuronCreditProof {
+            neuron_id: 7,
+            staking_subaccount: [8; 32],
+            before_cached_stake_e8s: 1_000,
+            protocol_credit_e8s: 400,
+            transfer_block: 9,
+            observed_after_cached_stake_e8s: 1_500,
+        };
+        proof.validate().unwrap();
+        assert_eq!(proof.protocol_credit_e8s, 400);
+        assert_eq!(proof.observed_after_cached_stake_e8s, 1_500);
+
+        let mut pending = proof;
+        pending.observed_after_cached_stake_e8s = 1_399;
+        assert!(pending.validate().is_err());
     }
 }
