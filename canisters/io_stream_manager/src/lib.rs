@@ -49,6 +49,7 @@ pub fn init(args: InitArgs) {
         neuron_registry: Vec::new(),
         stake_observation_due: true,
         latest_reconciliation_checkpoint: None,
+        prepared_exit_reconciliation: None,
         latest_reconciliation_generation: 0,
         latest_entitlement_batch_generation: 0,
         next_operation_sequence: state::OperationSequence(1),

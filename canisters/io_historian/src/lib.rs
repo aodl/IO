@@ -501,7 +501,7 @@ mod tests {
         assert_eq!(snapshot.total_claim_backing_e8s, Some(90));
         assert_eq!(snapshot.liquid_claim_backing_e8s, Some(20));
         assert_eq!(snapshot.pooled_parent_principal_e8s, Some(50));
-        assert_eq!(snapshot.live_child_principal_e8s, Some(15));
+        assert_eq!(snapshot.live_child_net_backing_e8s, Some(15));
         assert_eq!(snapshot.in_transit_backing_e8s, Some(5));
         assert_eq!(snapshot.permanent_productive_capital_e8s, Some(400));
         assert_eq!(

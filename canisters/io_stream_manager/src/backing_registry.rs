@@ -16,7 +16,7 @@ pub fn reconcile(
     config: &StreamConfig,
 ) -> Result<Vec<BackingRewardRecord>, String> {
     let live = observation
-        .nns
+        .assets
         .live_cohorts
         .iter()
         .map(|cohort| cohort.generation)
@@ -27,22 +27,24 @@ pub fn reconcile(
             .binary_search_by(|record| record.sns_neuron_id.cmp(&stake.sns_neuron_id))
             .ok()
             .map(|index| &existing[index]);
-        let committed = observation.nns.active_unwind_generation.filter(|_| {
-            prior.is_some_and(|record| matches!(record.status, BackingRewardStatus::ExitObserved))
-        });
-        let unresolved = committed.or_else(|| {
-            prior
-                .and_then(|record| record.unresolved_cohort_generation)
-                .filter(|generation| live.contains(generation))
-        });
-        let status = match (stake.state, prior.map(|record| &record.status), unresolved) {
-            (_, _, Some(generation)) => BackingRewardStatus::ExitCommitted { generation },
+        let status = match (stake.state, prior.map(|record| &record.status)) {
+            (_, Some(BackingRewardStatus::ExitCommitted { generation }))
+                if live.contains(generation) =>
+            {
+                BackingRewardStatus::ExitCommitted {
+                    generation: *generation,
+                }
+            }
+            (_, Some(BackingRewardStatus::ExitPrepared { generation })) => {
+                BackingRewardStatus::ExitPrepared {
+                    generation: *generation,
+                }
+            }
             (
                 StructuralStakeState::Active,
                 Some(BackingRewardStatus::ActiveEligible {
                     eligible_from_event,
                 }),
-                None,
             ) => BackingRewardStatus::ActiveEligible {
                 eligible_from_event: *eligible_from_event,
             },
@@ -51,35 +53,29 @@ pub fn reconcile(
                 Some(BackingRewardStatus::ReentryPending {
                     eligible_from_event,
                 }),
-                None,
             ) => BackingRewardStatus::ReentryPending {
                 eligible_from_event: *eligible_from_event,
             },
-            (
-                StructuralStakeState::Active,
-                Some(BackingRewardStatus::ExitCommitted { .. }),
-                None,
-            ) => BackingRewardStatus::ReentryPending {
-                eligible_from_event: event_marker.saturating_add(1),
-            },
-            (StructuralStakeState::Active, _, None) => BackingRewardStatus::ReentryPending {
-                eligible_from_event: event_marker.saturating_add(1),
-            },
-            (StructuralStakeState::IneligibleActive, _, None) => {
-                BackingRewardStatus::ActiveIneligible
+            (StructuralStakeState::Active, Some(BackingRewardStatus::ExitCommitted { .. })) => {
+                BackingRewardStatus::ReentryPending {
+                    eligible_from_event: event_marker.saturating_add(1),
+                }
             }
-            (StructuralStakeState::Dissolving, _, None) => BackingRewardStatus::ExitObserved,
-            (StructuralStakeState::LiquidOrDissolved, _, None) => BackingRewardStatus::Inactive,
+            (StructuralStakeState::Active, _) => BackingRewardStatus::ReentryPending {
+                eligible_from_event: event_marker.saturating_add(1),
+            },
+            (StructuralStakeState::IneligibleActive, _) => BackingRewardStatus::ActiveIneligible,
+            (StructuralStakeState::Dissolving, _) => BackingRewardStatus::ExitObserved,
+            (StructuralStakeState::LiquidOrDissolved, _) => BackingRewardStatus::Inactive,
         };
         let credit = prior.map_or(0, |record| record.accumulated_eligible_credit);
-        if retain(stake.state, &status, credit, unresolved) {
+        if retain(stake.state, &status, credit) {
             records.push(BackingRewardRecord {
                 sns_neuron_id: stake.sns_neuron_id.clone(),
                 staking_account: stake.staking_account.clone(),
                 accumulated_eligible_credit: credit,
                 latest_structural_state: stake.state,
                 status,
-                unresolved_cohort_generation: unresolved,
             });
         }
     }
@@ -89,7 +85,8 @@ pub fn reconcile(
             .is_err()
             && (prior.accumulated_eligible_credit > 0
                 || prior
-                    .unresolved_cohort_generation
+                    .status
+                    .generation()
                     .is_some_and(|generation| live.contains(&generation)))
         {
             records.push(prior.clone());
@@ -100,19 +97,69 @@ pub fn reconcile(
     Ok(records)
 }
 
-fn retain(
-    structural: StructuralStakeState,
-    status: &BackingRewardStatus,
-    credit: u128,
-    unresolved: Option<u64>,
-) -> bool {
+fn retain(structural: StructuralStakeState, status: &BackingRewardStatus, credit: u128) -> bool {
     credit > 0
-        || unresolved.is_some()
+        || matches!(
+            status,
+            BackingRewardStatus::ExitPrepared { .. } | BackingRewardStatus::ExitCommitted { .. }
+        )
         || matches!(
             structural,
             StructuralStakeState::Active | StructuralStakeState::Dissolving
         )
         || matches!(status, BackingRewardStatus::ReentryPending { .. })
+}
+
+impl BackingRewardStatus {
+    fn generation(&self) -> Option<u64> {
+        match self {
+            Self::ExitPrepared { generation } | Self::ExitCommitted { generation } => {
+                Some(*generation)
+            }
+            _ => None,
+        }
+    }
+}
+
+pub fn prepare_observed_exits(
+    records: &mut [BackingRewardRecord],
+    generation: u64,
+) -> Result<usize, String> {
+    if generation == 0 {
+        return Err("exit preparation generation must be non-zero".into());
+    }
+    let mut prepared = 0usize;
+    for record in records.iter_mut() {
+        if matches!(record.status, BackingRewardStatus::ExitObserved) {
+            record.status = BackingRewardStatus::ExitPrepared { generation };
+            prepared = prepared
+                .checked_add(1)
+                .ok_or("prepared exit count overflow")?;
+        }
+    }
+    Ok(prepared)
+}
+
+pub fn commit_prepared_exits(records: &mut [BackingRewardRecord], generation: u64) -> usize {
+    let mut committed = 0;
+    for record in records.iter_mut() {
+        if record.status == (BackingRewardStatus::ExitPrepared { generation }) {
+            record.status = BackingRewardStatus::ExitCommitted { generation };
+            committed += 1;
+        }
+    }
+    committed
+}
+
+pub fn rollback_prepared_exits(records: &mut [BackingRewardRecord], generation: u64) -> usize {
+    let mut rolled_back = 0;
+    for record in records.iter_mut() {
+        if record.status == (BackingRewardStatus::ExitPrepared { generation }) {
+            record.status = BackingRewardStatus::ExitObserved;
+            rolled_back += 1;
+        }
+    }
+    rolled_back
 }
 
 pub fn reward_eligible_ids(
@@ -212,7 +259,7 @@ pub fn promote_pending(
 mod tests {
     use super::*;
     use candid::Principal;
-    use io_nns_types::backing::ClaimBackingObservation;
+    use io_nns_types::backing::ClaimAssetObservation;
 
     fn principal(value: u8) -> Principal {
         Principal::from_slice(&[value; 29])
@@ -260,10 +307,6 @@ mod tests {
             },
             accumulated_eligible_credit: 0,
             latest_structural_state: state,
-            unresolved_cohort_generation: match status {
-                BackingRewardStatus::ExitCommitted { generation } => Some(generation),
-                _ => None,
-            },
             status,
         }
     }
@@ -272,45 +315,45 @@ mod tests {
         stakes: Vec<crate::redemption::StructuralStakeObservation>,
         live: Vec<u64>,
     ) -> DailyStakeObservation {
-        let mut nns = ClaimBackingObservation {
+        let mut assets = ClaimAssetObservation {
             parent: None,
-            permanent_staking_account: crate::state::Account {
-                owner: principal(9),
-                subaccount: Some(vec![9; 32]),
-            },
             pool_staking_account: crate::state::Account {
                 owner: principal(9),
                 subaccount: Some(vec![10; 32]),
             },
             minimum_parent_stake_e8s: 100,
-            pooled_principal_e8s: 0,
+            pooled_parent_principal_e8s: 0,
             live_cohorts: live
                 .into_iter()
                 .map(|generation| io_nns_types::backing::CohortObservation {
                     generation,
                     child_neuron_id: generation,
-                    principal_e8s: 1,
+                    physical_principal_e8s: 2,
+                    net_backing_e8s: 1,
                     ready_at_seconds: 1,
                     proof: io_nns_types::backing::CohortProofState::Dissolving,
                 })
                 .collect(),
-            unwinding_principal_e8s: 0,
+            live_child_physical_principal_e8s: 0,
+            live_child_net_backing_e8s: 0,
+            live_child_committed_fee_liability_e8s: 0,
             transit_backing_e8s: 0,
             active_operation_sequence: 0,
             last_completed_pool_operation_sequence: None,
-            active_unwind_generation: None,
             control_epoch: 0,
             fingerprint: vec![1; 32],
             oldest_ready_at_seconds: None,
         };
-        nns.unwinding_principal_e8s = nns.live_cohorts.len() as u128;
+        assets.live_child_physical_principal_e8s = assets.live_cohorts.len() as u128 * 2;
+        assets.live_child_net_backing_e8s = assets.live_cohorts.len() as u128;
+        assets.live_child_committed_fee_liability_e8s = assets.live_cohorts.len() as u128;
         DailyStakeObservation {
             claim: crate::redemption::ClaimSnapshot::default(),
             reward_event: io_sns_reward_boundary::RewardEvent::default(),
             neurons: Vec::new(),
             stakes,
             active_backing_io_e8s: 0,
-            nns,
+            assets,
         }
     }
 
@@ -349,7 +392,6 @@ mod tests {
                 updated[0].status,
                 BackingRewardStatus::ExitCommitted { generation: 7 }
             );
-            assert_eq!(updated[0].unresolved_cohort_generation, Some(7));
         }
     }
 
@@ -370,7 +412,98 @@ mod tests {
             &config(),
         )
         .unwrap();
-        assert_eq!(updated[0].unresolved_cohort_generation, None);
+        assert_eq!(
+            updated[0].status,
+            BackingRewardStatus::ReentryPending {
+                eligible_from_event: 11
+            }
+        );
+    }
+
+    #[test]
+    fn observed_exits_bind_only_to_the_exact_prepared_generation() {
+        let mut records = vec![
+            record(
+                1,
+                StructuralStakeState::Dissolving,
+                BackingRewardStatus::ExitObserved,
+            ),
+            record(
+                2,
+                StructuralStakeState::Dissolving,
+                BackingRewardStatus::ExitCommitted { generation: 1 },
+            ),
+        ];
+        assert_eq!(prepare_observed_exits(&mut records, 2), Ok(1));
+        assert_eq!(
+            records[0].status,
+            BackingRewardStatus::ExitPrepared { generation: 2 }
+        );
+        assert_eq!(commit_prepared_exits(&mut records, 1), 0);
+        assert_eq!(commit_prepared_exits(&mut records, 2), 1);
+        assert_eq!(
+            records[0].status,
+            BackingRewardStatus::ExitCommitted { generation: 2 }
+        );
+        assert_eq!(
+            records[1].status,
+            BackingRewardStatus::ExitCommitted { generation: 1 }
+        );
+    }
+
+    #[test]
+    fn definitive_no_effect_rolls_prepared_exit_back_without_cross_binding() {
+        let mut records = vec![record(
+            1,
+            StructuralStakeState::Dissolving,
+            BackingRewardStatus::ExitObserved,
+        )];
+        prepare_observed_exits(&mut records, 7).unwrap();
+        assert_eq!(rollback_prepared_exits(&mut records, 6), 0);
+        assert_eq!(rollback_prepared_exits(&mut records, 7), 1);
+        assert_eq!(records[0].status, BackingRewardStatus::ExitObserved);
+    }
+
+    #[test]
+    fn prepared_exit_stays_sticky_across_rapid_structural_cancellation() {
+        let prior = record(
+            1,
+            StructuralStakeState::Dissolving,
+            BackingRewardStatus::ExitPrepared { generation: 9 },
+        );
+        let updated = reconcile(
+            std::slice::from_ref(&prior),
+            &daily(
+                vec![stake(&prior, StructuralStakeState::Active)],
+                Vec::new(),
+            ),
+            10,
+            &config(),
+        )
+        .unwrap();
+        assert_eq!(
+            updated[0].status,
+            BackingRewardStatus::ExitPrepared { generation: 9 }
+        );
+    }
+
+    #[test]
+    fn precommit_cancellation_has_no_generation_and_reenters_next_event() {
+        let prior = record(
+            1,
+            StructuralStakeState::Dissolving,
+            BackingRewardStatus::ExitObserved,
+        );
+        let updated = reconcile(
+            std::slice::from_ref(&prior),
+            &daily(
+                vec![stake(&prior, StructuralStakeState::Active)],
+                Vec::new(),
+            ),
+            10,
+            &config(),
+        )
+        .unwrap();
         assert_eq!(
             updated[0].status,
             BackingRewardStatus::ReentryPending {

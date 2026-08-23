@@ -237,7 +237,7 @@ pub struct ProtocolSnapshot {
     pub claim_io_supply_e8s: Option<u128>,
     pub liquid_claim_backing_e8s: Option<u128>,
     pub pooled_parent_principal_e8s: Option<u128>,
-    pub live_child_principal_e8s: Option<u128>,
+    pub live_child_net_backing_e8s: Option<u128>,
     pub in_transit_backing_e8s: Option<u128>,
     pub total_claim_backing_e8s: Option<u128>,
     pub claim_rate: Option<ClaimRateSnapshot>,
@@ -340,7 +340,7 @@ pub fn coherent_protocol_snapshot(
         claim_io_supply_e8s: Some(claims),
         liquid_claim_backing_e8s: projection.map(|value| value.liquid_backing_e8s),
         pooled_parent_principal_e8s: projection.map(|value| value.pooled_backing_e8s),
-        live_child_principal_e8s: projection.map(|value| value.unwinding_backing_e8s),
+        live_child_net_backing_e8s: projection.map(|value| value.unwinding_backing_e8s),
         in_transit_backing_e8s: projection.map(|value| value.transit_backing_e8s),
         total_claim_backing_e8s: projection.map(|value| value.total_claim_backing_e8s),
         claim_rate: rate.clone(),
@@ -414,7 +414,9 @@ pub struct NnsManagerStatus {
     pub latest_started_two_week_generation: u64,
     pub latest_completed_two_week_generation: u64,
     pub latest_pooled_target: Option<PooledTargetObservation>,
-    pub unwinding_child_principal_e8s: u128,
+    pub live_child_physical_principal_e8s: u128,
+    pub live_child_net_backing_e8s: u128,
+    pub live_child_committed_fee_liability_e8s: u128,
     pub observed_at_timestamp_nanos: u64,
 }
 

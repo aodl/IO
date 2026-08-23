@@ -54,7 +54,7 @@ impl PoolTopUpOperation {
 }
 
 pub async fn ensure_latest(now: u64) -> Result<bool, ApiError> {
-    let stream = state::read();
+    let mut stream = state::read();
     if matches!(stream.active_operation, Some(StreamOperation::PoolTopUp(_))) {
         return Ok(false);
     }
@@ -65,6 +65,9 @@ pub async fn ensure_latest(now: u64) -> Result<bool, ApiError> {
         return Err(ApiError::Pending(
             "fresh daily stake observation is required".into(),
         ));
+    }
+    if let Some(request) = stream.prepared_exit_reconciliation.clone() {
+        return resolve_prepared_exit(&stream, request).await;
     }
     let checkpoint = stream
         .latest_reconciliation_checkpoint
@@ -78,7 +81,7 @@ pub async fn ensure_latest(now: u64) -> Result<bool, ApiError> {
             backing: io_core_model::Backing {
                 liquid: canonical.liquid_icp_e8s,
                 pooled: canonical.pooled_principal_e8s,
-                unwinding: canonical.unwinding_principal_e8s,
+                unwinding: canonical.unwinding_net_backing_e8s,
                 transit: canonical.transit_backing_e8s,
             },
             claims: canonical.claim_supply_e8s,
@@ -111,32 +114,28 @@ pub async fn ensure_latest(now: u64) -> Result<bool, ApiError> {
             ))
         }
         io_core_model::ReconcilePlan::Unwind { target, gross, .. } => {
-            let result = prepare_nns(
-                stream.config.nns_manager,
-                PreparePoolReconciliationArgs {
-                    generation: checkpoint.generation,
-                    target_e8s: target,
-                    action: PoolReconciliationAction::Unwind {
-                        expected_gross_e8s: gross,
-                    },
-                    fee_e8s: canonical.icp_fee_e8s,
-                    snapshot_fingerprint: canonical.nns_fingerprint,
-                    memo: reconciliation_memo(checkpoint.generation),
-                    created_at_time_nanos: now,
-                },
-            )
-            .await?;
-            match result {
-                PoolProgress::UnwindPrepared { .. } => {
-                    wake_nns(stream.config.nns_manager).await?;
-                    Ok(false)
-                }
-                PoolProgress::UnwindCommitted { .. } | PoolProgress::Held { .. } => Ok(true),
-                PoolProgress::CapacityPending => Ok(false),
-                _ => Err(ApiError::Invalid(
-                    "NNS returned a contradictory unwind reconciliation result".into(),
-                )),
+            if canonical.icp_fee_e8s != stream.config.expected_icp_fee_e8s {
+                pause_reconciliation(
+                    &stream,
+                    "canonical ICP fee differs from configured unwind fee",
+                )?;
+                return Err(ApiError::Invalid(
+                    "canonical ICP fee differs from configured unwind fee".into(),
+                ));
             }
+            let request = PreparePoolReconciliationArgs {
+                generation: checkpoint.generation,
+                target_e8s: target,
+                action: PoolReconciliationAction::Unwind {
+                    expected_gross_e8s: gross,
+                },
+                fee_e8s: canonical.icp_fee_e8s,
+                snapshot_fingerprint: canonical.nns_fingerprint,
+                memo: reconciliation_memo(checkpoint.generation),
+                created_at_time_nanos: now,
+            };
+            prepare_exit_generation(&mut stream, request.clone())?;
+            resolve_prepared_exit(&stream, request).await
         }
         io_core_model::ReconcilePlan::TopUp {
             target,
@@ -196,6 +195,125 @@ pub async fn ensure_latest(now: u64) -> Result<bool, ApiError> {
             Ok(false)
         }
     }
+}
+
+fn prepare_exit_generation(
+    expected: &mut state::StreamStateV1,
+    request: PreparePoolReconciliationArgs,
+) -> Result<(), ApiError> {
+    let generation = request.generation;
+    if let Some(existing) = &expected.prepared_exit_reconciliation {
+        return if existing == &request {
+            Ok(())
+        } else {
+            Err(ApiError::Busy)
+        };
+    }
+    if expected.neuron_registry.iter().any(|record| {
+        matches!(
+            record.status,
+            crate::state::BackingRewardStatus::ExitPrepared { generation: prepared }
+                if prepared != generation
+        )
+    }) {
+        return Err(ApiError::Busy);
+    }
+    let prior = expected.clone();
+    crate::backing_registry::prepare_observed_exits(&mut expected.neuron_registry, generation)
+        .map_err(ApiError::Invalid)?;
+    expected.prepared_exit_reconciliation = Some(request);
+    if state::read() != prior {
+        return Err(ApiError::Busy);
+    }
+    state::write(expected.clone());
+    Ok(())
+}
+
+fn commit_exit_generation(generation: u64) -> Result<(), ApiError> {
+    let mut latest = state::read();
+    if latest
+        .prepared_exit_reconciliation
+        .as_ref()
+        .is_none_or(|request| request.generation != generation)
+    {
+        return Err(ApiError::Busy);
+    }
+    crate::backing_registry::commit_prepared_exits(&mut latest.neuron_registry, generation);
+    latest.prepared_exit_reconciliation = None;
+    state::write(latest);
+    Ok(())
+}
+
+fn rollback_exit_generation(generation: u64) -> Result<(), ApiError> {
+    let mut latest = state::read();
+    if latest
+        .prepared_exit_reconciliation
+        .as_ref()
+        .is_none_or(|request| request.generation != generation)
+    {
+        return Err(ApiError::Busy);
+    }
+    crate::backing_registry::rollback_prepared_exits(&mut latest.neuron_registry, generation);
+    latest.prepared_exit_reconciliation = None;
+    state::write(latest);
+    Ok(())
+}
+
+async fn resolve_prepared_exit(
+    stream: &state::StreamStateV1,
+    request: PreparePoolReconciliationArgs,
+) -> Result<bool, ApiError> {
+    let generation = request.generation;
+    let result = match prepare_nns(stream.config.nns_manager, request).await {
+        Ok(result) => result,
+        Err(ApiError::Pending(reason)) => return Err(ApiError::Pending(reason)),
+        Err(error) => {
+            rollback_exit_generation(generation)?;
+            return Err(error);
+        }
+    };
+    match result {
+        PoolProgress::UnwindPrepared {
+            generation: observed,
+            ..
+        } if observed == generation => {
+            commit_exit_generation(generation)?;
+            wake_nns(stream.config.nns_manager).await?;
+            Ok(false)
+        }
+        PoolProgress::UnwindCommitted {
+            generation: observed,
+            ..
+        } if observed == generation => {
+            commit_exit_generation(generation)?;
+            Ok(true)
+        }
+        PoolProgress::CapacityPending => {
+            rollback_exit_generation(generation)?;
+            Ok(false)
+        }
+        PoolProgress::Held { .. } => {
+            rollback_exit_generation(generation)?;
+            Ok(true)
+        }
+        _ => {
+            rollback_exit_generation(generation)?;
+            Err(ApiError::Invalid(
+                "NNS returned a contradictory prepared-exit result".into(),
+            ))
+        }
+    }
+}
+
+fn pause_reconciliation(expected: &state::StreamStateV1, _reason: &str) -> Result<(), ApiError> {
+    let mut latest = state::read();
+    if latest != *expected {
+        return Err(ApiError::Busy);
+    }
+    latest.reward_checkpoint.reward_processing_paused = true;
+    latest.reward_checkpoint.governance_parameters_fresh = false;
+    state::write(latest);
+    Ok(())
 }
 
 pub async fn resume(now: u64) -> Result<(), ApiError> {

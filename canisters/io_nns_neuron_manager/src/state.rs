@@ -18,7 +18,7 @@ use {
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
 
-pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 4;
+pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 5;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct NnsConfig {
@@ -162,6 +162,13 @@ pub struct HeldReconciliation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct CompletedUnwindReconciliation {
+    pub generation: u64,
+    pub reconciliation_request_fingerprint: Vec<u8>,
+    pub physical_principal_e8s: u128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct NnsStateV1 {
     pub launch_schema_marker: u8,
     pub config: NnsConfig,
@@ -171,6 +178,7 @@ pub struct NnsStateV1 {
     pub pooled_parent_staking_account: Option<Account>,
     pub live_cohorts: Vec<PassiveCohort>,
     pub last_completed_pool: Option<CompletedPoolCommand>,
+    pub last_completed_unwind: Option<CompletedUnwindReconciliation>,
     pub last_held_reconciliation: Option<HeldReconciliation>,
     pub latest_reconciliation_generation: u64,
     pub latest_pooled_target: Option<PooledTarget>,
@@ -226,6 +234,7 @@ impl NnsStateV1 {
             pooled_parent_staking_account: None,
             live_cohorts: Vec::new(),
             last_completed_pool: None,
+            last_completed_unwind: None,
             last_held_reconciliation: None,
             latest_reconciliation_generation: 0,
             latest_pooled_target: None,
@@ -362,6 +371,13 @@ impl NnsStateV1 {
             );
         }
         crate::pool::validate_cohorts(&self.live_cohorts)?;
+        if self
+            .live_cohorts
+            .iter()
+            .any(|cohort| cohort.principal_e8s <= self.config.expected_icp_fee_e8s)
+        {
+            return Err("live child principal cannot cover its committed disbursement fee".into());
+        }
         if let Some(completed) = &self.last_completed_pool {
             completed.validate(self.next_operation_sequence)?;
         }
@@ -372,6 +388,18 @@ impl NnsStateV1 {
             {
                 return Err("held reconciliation checkpoint is inconsistent".into());
             }
+        }
+        if self
+            .last_completed_unwind
+            .as_ref()
+            .is_some_and(|completed| {
+                completed.generation == 0
+                    || completed.generation > self.latest_reconciliation_generation
+                    || completed.reconciliation_request_fingerprint.len() != 32
+                    || completed.physical_principal_e8s == 0
+            })
+        {
+            return Err("completed unwind replay evidence is inconsistent".into());
         }
         if self.latest_completed_two_week_generation > self.latest_started_two_week_generation
             || (self.latest_started_two_week_generation > 0 && self.latest_pooled_target.is_none())
@@ -444,7 +472,18 @@ impl NnsStateV1 {
                     operation.validate(self.next_operation_sequence)?;
                 }
                 NnsOperation::Unwind(operation) => {
-                    operation.validate(self.next_operation_sequence)?
+                    operation.validate(self.next_operation_sequence)?;
+                    if !matches!(
+                        operation.phase,
+                        crate::pool::UnwindPhase::SplitPrepared
+                            | crate::pool::UnwindPhase::SplitSubmitted
+                            | crate::pool::UnwindPhase::ChildIdentified
+                    ) && operation.principal_e8s <= self.config.expected_icp_fee_e8s
+                    {
+                        return Err(
+                            "committed unwind principal cannot cover its disbursement fee".into(),
+                        );
+                    }
                 }
             }
         }
@@ -635,6 +674,35 @@ mod tests {
     }
 
     #[derive(candid::CandidType)]
+    struct PriorPooledNnsStateV1 {
+        launch_schema_marker: u8,
+        config: NnsConfig,
+        lifecycle: Lifecycle,
+        active_operation: Option<NnsOperation>,
+        pooled_parent_id: Option<u64>,
+        pooled_parent_staking_account: Option<Account>,
+        live_cohorts: Vec<PassiveCohort>,
+        last_completed_pool: Option<CompletedPoolCommand>,
+        last_held_reconciliation: Option<HeldReconciliation>,
+        latest_reconciliation_generation: u64,
+        latest_pooled_target: Option<PooledTarget>,
+        two_year_maturity_baseline_reconciled: bool,
+        latest_started_two_week_generation: u64,
+        latest_completed_two_week_generation: u64,
+        pending_two_year_maturity: Option<PendingMaturityDisbursement>,
+        pending_two_week_maturity: Option<PendingMaturityDisbursement>,
+        last_two_year_maturity: Option<CompletedMaturity>,
+        last_two_week_maturity: Option<CompletedMaturity>,
+        next_operation_sequence: u64,
+        control_epoch: u64,
+    }
+
+    #[derive(candid::CandidType)]
+    enum PriorPooledStableNnsState {
+        V1(PriorPooledNnsStateV1),
+    }
+
+    #[derive(candid::CandidType)]
     struct CheckpointJupiterLookupLease {
         block_index: u128,
         started_at_nanos: u64,
@@ -716,6 +784,7 @@ mod tests {
                 pooled_parent_staking_account: None,
                 live_cohorts: Vec::new(),
                 last_completed_pool: None,
+                last_completed_unwind: None,
                 last_held_reconciliation: None,
                 latest_reconciliation_generation: 0,
                 latest_pooled_target: None,
@@ -735,8 +804,9 @@ mod tests {
     fn passive_unwind() -> PassiveCohort {
         PassiveCohort {
             generation: 1,
+            reconciliation_request_fingerprint: vec![1; 32],
             child_neuron_id: 3,
-            principal_e8s: 1,
+            principal_e8s: 10_001,
             child_staking_subaccount: vec![3; 32],
             ready_at_seconds: 4,
             proof: io_nns_types::backing::CohortProofState::Dissolving,
@@ -903,6 +973,44 @@ mod tests {
     }
 
     #[test]
+    fn active_split_survives_same_schema_upgrade_and_reopens_paused() {
+        let (canister_self, mut state) = valid_state();
+        state.lifecycle = Lifecycle::Ready;
+        state.latest_reconciliation_generation = 1;
+        state.pooled_parent_id = Some(2);
+        state.pooled_parent_staking_account = Some(Account {
+            owner: state.config.nns_governance,
+            subaccount: Some(vec![9; 32]),
+        });
+        state.latest_pooled_target = Some(PooledTarget {
+            target_e8s: 90,
+            status: PooledTargetStatus::OverTarget,
+        });
+        state.next_operation_sequence = 2;
+        state.active_operation = Some(NnsOperation::Unwind(UnwindOperation {
+            operation_sequence: 1,
+            generation: 1,
+            reconciliation_request_fingerprint: vec![1; 32],
+            target_e8s: 90,
+            gross_e8s: 30_000,
+            child_neuron_id: 3,
+            principal_e8s: 20_000,
+            child_staking_subaccount: vec![3; 32],
+            submitted_at_seconds: 0,
+            expected_block_index: None,
+            child_maturity_e8s: 0,
+            parent_maturity_e8s: 0,
+            parent_principal_e8s: 0,
+            phase: crate::pool::UnwindPhase::SplitProved,
+        }));
+        initialize(state.clone(), canister_self).unwrap();
+        reopen(canister_self);
+        let reopened = read();
+        assert_eq!(reopened.lifecycle, Lifecycle::Paused);
+        assert_eq!(reopened.active_operation, state.active_operation);
+    }
+
+    #[test]
     fn maximum_cohort_collection_fits_the_stable_cell_bound() {
         let (canister_self, mut state) = valid_state();
         state.latest_pooled_target = Some(PooledTarget {
@@ -912,8 +1020,9 @@ mod tests {
         state.live_cohorts = (1..=io_nns_types::backing::MAX_LIVE_UNWIND_COHORTS as u64)
             .map(|generation| PassiveCohort {
                 generation,
+                reconciliation_request_fingerprint: vec![generation as u8; 32],
                 child_neuron_id: generation,
-                principal_e8s: u128::MAX,
+                principal_e8s: u128::from(u64::MAX),
                 child_staking_subaccount: vec![generation as u8; 32],
                 ready_at_seconds: u64::MAX,
                 proof: io_nns_types::backing::CohortProofState::Dissolving,
@@ -961,6 +1070,46 @@ mod tests {
         let current = candid::encode_one(StableNnsState::V1(state.clone())).unwrap();
         let decoded = candid::decode_one::<StableNnsState>(&current).unwrap();
         assert_eq!(decoded, StableNnsState::V1(state.clone()));
+
+        let mut prior_checkpoint = state.clone();
+        prior_checkpoint.launch_schema_marker = LAUNCH_SCHEMA_MARKER - 1;
+        let prior = candid::encode_one(StableNnsState::V1(prior_checkpoint)).unwrap();
+        let prior = candid::decode_one::<StableNnsState>(&prior)
+            .unwrap()
+            .into_v1();
+        assert!(prior
+            .validate(canister_self)
+            .unwrap_err()
+            .contains("launch schema marker"));
+
+        let checkpoint = PriorPooledStableNnsState::V1(PriorPooledNnsStateV1 {
+            launch_schema_marker: LAUNCH_SCHEMA_MARKER - 1,
+            config: state.config.clone(),
+            lifecycle: state.lifecycle,
+            active_operation: None,
+            pooled_parent_id: None,
+            pooled_parent_staking_account: None,
+            live_cohorts: Vec::new(),
+            last_completed_pool: None,
+            last_held_reconciliation: None,
+            latest_reconciliation_generation: 0,
+            latest_pooled_target: None,
+            two_year_maturity_baseline_reconciled: false,
+            latest_started_two_week_generation: 0,
+            latest_completed_two_week_generation: 0,
+            pending_two_year_maturity: None,
+            pending_two_week_maturity: None,
+            last_two_year_maturity: None,
+            last_two_week_maturity: None,
+            next_operation_sequence: 1,
+            control_epoch: 0,
+        });
+        let checkpoint = candid::encode_one(checkpoint).unwrap();
+        let rejected = match candid::decode_one::<StableNnsState>(&checkpoint) {
+            Err(_) => true,
+            Ok(decoded) => decoded.into_v1().validate(canister_self).is_err(),
+        };
+        assert!(rejected, "the 221d8c7 pooled NNS state must be rejected");
 
         let mut bad_marker = state.clone();
         bad_marker.launch_schema_marker = 2;

@@ -150,6 +150,9 @@ async fn prove_start(operation: UnwindOperation) -> Result<UnwindProgress, ApiEr
         &operation,
         PassiveCohort {
             generation: operation.generation,
+            reconciliation_request_fingerprint: operation
+                .reconciliation_request_fingerprint
+                .clone(),
             child_neuron_id: operation.child_neuron_id,
             principal_e8s: operation.principal_e8s,
             child_staking_subaccount: operation.child_staking_subaccount.clone(),
@@ -372,6 +375,11 @@ fn retire(operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
     if latest.live_cohorts[index].proof != CohortProofState::CleanupComplete {
         return Err(ApiError::Busy);
     }
+    latest.last_completed_unwind = Some(state::CompletedUnwindReconciliation {
+        generation: operation.generation,
+        reconciliation_request_fingerprint: operation.reconciliation_request_fingerprint.clone(),
+        physical_principal_e8s: operation.principal_e8s,
+    });
     latest.live_cohorts.remove(index);
     state::write(latest);
     Ok(UnwindProgress::Waiting)
@@ -419,6 +427,7 @@ fn promote(cohort: PassiveCohort, phase: UnwindPhase) -> Result<(), ApiError> {
     latest.active_operation = Some(NnsOperation::Unwind(UnwindOperation {
         operation_sequence: latest.next_operation_sequence,
         generation: cohort.generation,
+        reconciliation_request_fingerprint: cohort.reconciliation_request_fingerprint,
         target_e8s: 0,
         gross_e8s: cohort.principal_e8s,
         child_neuron_id: cohort.child_neuron_id,

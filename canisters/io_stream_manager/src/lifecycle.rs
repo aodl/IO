@@ -5,7 +5,7 @@ pub async fn readiness_preflight(
     captured_control_epoch: u64,
 ) -> Result<(), crate::api::ApiError> {
     let snapshot = state::read();
-    if snapshot.active_operation.is_some() {
+    if snapshot.active_operation.is_some() || snapshot.prepared_exit_reconciliation.is_some() {
         return Err(crate::api::ApiError::Busy);
     }
     snapshot
@@ -60,6 +60,16 @@ pub async fn readiness_preflight(
     let canonical = crate::canonical::claim_snapshot(&snapshot.config)
         .await
         .map_err(crate::api::ApiError::Ledger)?;
+    let policy = crate::canonical::pool_policy_observation(snapshot.config.nns_manager)
+        .await
+        .map_err(|error| {
+            crate::api::ApiError::Invalid(format!("pool policy is not ready: {error}"))
+        })?;
+    if policy.control_epoch != canonical.nns_control_epoch
+        || policy.active_operation_sequence != canonical.nns_operation_sequence
+    {
+        return Err(crate::api::ApiError::Busy);
+    }
     if canonical.io_fee_e8s != snapshot.config.expected_io_fee_e8s
         || canonical.icp_fee_e8s != snapshot.config.expected_icp_fee_e8s
     {
@@ -83,6 +93,7 @@ pub async fn readiness_preflight(
     }
     let mut latest = state::read();
     if latest.active_operation.is_some()
+        || latest.prepared_exit_reconciliation.is_some()
         || latest.lifecycle != Lifecycle::Paused
         || latest.control_epoch != captured_control_epoch
         || latest.reward_checkpoint.last_processed_event

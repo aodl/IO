@@ -518,12 +518,19 @@ async fn resume_claim_receipt_delivery(
                     .ok_or_else(|| {
                         ApiError::Invalid("permanent maturity leg cannot pay its fee".into())
                     })?;
-                let observation = crate::api::observe_claim_backing().await?;
+                let permanent =
+                    execution::query_neuron_observation(&config, config.two_year_neuron_id).await?;
                 ensure_exact(&operation)?;
+                if let Err(reason) = execution::validate_permanent_configuration(&permanent) {
+                    let mut latest = state::read();
+                    latest.lifecycle = Lifecycle::Paused;
+                    state::write(latest);
+                    return Err(ApiError::Invalid(reason));
+                }
                 return prepare_maturity_transfer(
                     operation,
                     true,
-                    observation.permanent_staking_account,
+                    execution::staking_account(&config, &permanent.snapshot),
                     credit,
                 );
             }
@@ -534,7 +541,7 @@ async fn resume_claim_receipt_delivery(
         }
     }
     let Some(permit) = delivery.permit.clone() else {
-        let observation = crate::api::observe_claim_backing().await?;
+        let observation = crate::api::observe_claim_assets().await?;
         ensure_exact(&operation)?;
         let (kind, claim_credit) = claim_receipt_economics(
             &delivery.pending,

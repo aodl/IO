@@ -80,6 +80,9 @@ pub struct Status {
     pub pending_entitlement_batch_eligible_credit: Option<u128>,
     pub pending_entitlement_batch_policy_credit: Option<u128>,
     pub latest_reconciliation_checkpoint: Option<crate::state::ReconciliationCheckpoint>,
+    pub prepared_exit_generation: Option<u64>,
+    pub prepared_exit_member_count: u32,
+    pub committed_exit_member_count: u32,
 }
 
 pub(crate) fn require_ready(state: &StreamStateV1) -> Result<(), ApiError> {

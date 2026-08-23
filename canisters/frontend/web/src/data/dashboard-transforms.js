@@ -59,7 +59,7 @@ export function transformDashboard(loadResult) {
       availableLiquid: formatTokenE8s(claimRate?.available_liquid_e8s, ""),
       claimSupply: formatTokenE8s(opt(protocol.claim_io_supply_e8s), ""),
       activePooledBacking: formatTokenE8s(opt(protocol.pooled_parent_principal_e8s), ""),
-      pendingUnwind: formatTokenE8s(opt(protocol.live_child_principal_e8s), ""),
+      pendingUnwind: formatTokenE8s(opt(protocol.live_child_net_backing_e8s), ""),
       permanentCapital: formatTokenE8s(opt(protocol.permanent_productive_capital_e8s), ""),
       indexHealth: index ? "Observed" : "-",
       indexHealthHint: index ? `${indexAccounts.length} bounded Account histories` : "Observation unavailable",

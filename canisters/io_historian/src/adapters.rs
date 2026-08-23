@@ -129,7 +129,9 @@ struct RawNnsStatus {
     latest_started_two_week_generation: u64,
     latest_completed_two_week_generation: u64,
     latest_pooled_target: Option<PooledTargetObservation>,
-    unwinding_child_principal_e8s: u128,
+    live_child_physical_principal_e8s: u128,
+    live_child_net_backing_e8s: u128,
+    live_child_committed_fee_liability_e8s: u128,
 }
 
 pub async fn nns(config: &ObservationConfig, now: u64) -> Result<NnsManagerStatus, String> {
@@ -148,7 +150,9 @@ pub async fn nns(config: &ObservationConfig, now: u64) -> Result<NnsManagerStatu
         latest_started_two_week_generation: raw.latest_started_two_week_generation,
         latest_completed_two_week_generation: raw.latest_completed_two_week_generation,
         latest_pooled_target: raw.latest_pooled_target,
-        unwinding_child_principal_e8s: raw.unwinding_child_principal_e8s,
+        live_child_physical_principal_e8s: raw.live_child_physical_principal_e8s,
+        live_child_net_backing_e8s: raw.live_child_net_backing_e8s,
+        live_child_committed_fee_liability_e8s: raw.live_child_committed_fee_liability_e8s,
         observed_at_timestamp_nanos: now,
     })
 }

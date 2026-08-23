@@ -40,10 +40,13 @@ struct GovernanceState {
     reconcile_calls: u64,
     get_full_neuron_calls: u64,
     pooled_principal_e8s: u128,
+    claim_asset_observation_calls: u64,
+    pool_policy_observation_calls: u64,
+    pool_policy_valid: bool,
 }
 
 thread_local! {
-    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new(), two_week_target: None, maturity_preparation: None, reconcile_calls: 0, get_full_neuron_calls: 0, pooled_principal_e8s: 0 }) };
+    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new(), two_week_target: None, maturity_preparation: None, reconcile_calls: 0, get_full_neuron_calls: 0, pooled_principal_e8s: 0, claim_asset_observation_calls: 0, pool_policy_observation_calls: 0, pool_policy_valid: true }) };
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -77,44 +80,90 @@ pub enum NnsError {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn observe_claim_backing() -> Result<io_nns_types::backing::ClaimBackingObservation, NnsError> {
+pub fn observe_claim_assets() -> Result<io_nns_types::backing::ClaimAssetObservation, NnsError> {
     use io_accounts::Account;
-    use io_nns_types::backing::{ClaimBackingObservation, FollowPolicy, ParentObservation};
+    use io_nns_types::backing::{ClaimAssetObservation, ParentAssetObservation};
     let owner = ic_cdk::api::canister_self();
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        state.claim_asset_observation_calls = state.claim_asset_observation_calls.saturating_add(1);
+    });
     let pool_staking_account = Account {
         owner,
         subaccount: Some(vec![2; 32]),
     };
     let pooled_principal_e8s = STATE.with(|cell| cell.borrow().pooled_principal_e8s);
-    Ok(ClaimBackingObservation {
-        parent: (pooled_principal_e8s > 0).then(|| ParentObservation {
+    Ok(ClaimAssetObservation {
+        parent: (pooled_principal_e8s > 0).then(|| ParentAssetObservation {
             neuron_id: 1,
             staking_account: pool_staking_account.clone(),
-            principal_e8s: pooled_principal_e8s,
-            dissolve_delay_seconds: io_nns_types::backing::POOLED_PARENT_DELAY_SECONDS,
-            auto_stake_maturity: false,
-            follow_policy: FollowPolicy {
-                followee_neuron_id: 1,
-            },
-            voting_power_refreshed_at_seconds: 1,
+            physical_principal_e8s: pooled_principal_e8s,
         }),
-        permanent_staking_account: Account {
-            owner,
-            subaccount: Some(vec![1; 32]),
-        },
         pool_staking_account,
-        minimum_parent_stake_e8s: u128::MAX,
-        pooled_principal_e8s,
+        minimum_parent_stake_e8s: 1,
+        pooled_parent_principal_e8s: pooled_principal_e8s,
         live_cohorts: Vec::new(),
-        unwinding_principal_e8s: 0,
+        live_child_physical_principal_e8s: 0,
+        live_child_net_backing_e8s: 0,
+        live_child_committed_fee_liability_e8s: 0,
         transit_backing_e8s: 0,
         active_operation_sequence: 0,
         last_completed_pool_operation_sequence: None,
-        active_unwind_generation: None,
         control_epoch: 1,
         fingerprint: vec![42; 32],
         oldest_ready_at_seconds: None,
     })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn observe_pool_policy() -> Result<io_nns_types::backing::PoolPolicyObservation, NnsError> {
+    use io_nns_types::backing::{
+        FollowPolicy, ParentPolicyObservation, PoolPolicyObservation, POOLED_PARENT_DELAY_SECONDS,
+    };
+    let pooled = STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        state.pool_policy_observation_calls = state.pool_policy_observation_calls.saturating_add(1);
+        if !state.pool_policy_valid {
+            return Err(NnsError::Invalid("mock pooled-parent policy drift".into()));
+        }
+        Ok(state.pooled_principal_e8s > 0)
+    })?;
+    Ok(PoolPolicyObservation {
+        parent: pooled.then_some(ParentPolicyObservation {
+            neuron_id: 1,
+            dissolve_delay_seconds: POOLED_PARENT_DELAY_SECONDS,
+            auto_stake_maturity: false,
+            follow_policy: FollowPolicy {
+                followee_neuron_id: 2,
+            },
+            voting_power_refreshed_at_seconds: 1,
+        }),
+        control_epoch: 1,
+        active_operation_sequence: 0,
+        fingerprint: vec![43; 32],
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct ObservationCallCounters {
+    pub claim_assets: u64,
+    pub pool_policy: u64,
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn debug_get_observation_call_counters() -> ObservationCallCounters {
+    STATE.with(|cell| {
+        let state = cell.borrow();
+        ObservationCallCounters {
+            claim_assets: state.claim_asset_observation_calls,
+            pool_policy: state.pool_policy_observation_calls,
+        }
+    })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_pool_policy_valid(valid: bool) {
+    STATE.with(|cell| cell.borrow_mut().pool_policy_valid = valid);
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]

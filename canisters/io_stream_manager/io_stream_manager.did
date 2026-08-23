@@ -172,6 +172,9 @@ type Status = record {
   pending_entitlement_batch_eligible_credit : opt nat;
   pending_entitlement_batch_policy_credit : opt nat;
   latest_reconciliation_checkpoint : opt ReconciliationCheckpoint;
+  prepared_exit_generation : opt nat64;
+  prepared_exit_member_count : nat32;
+  committed_exit_member_count : nat32;
 };
 type ReconciliationCheckpoint = record {
   generation : nat64;

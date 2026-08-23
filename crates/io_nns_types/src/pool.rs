@@ -27,6 +27,7 @@ pub enum UnwindPhase {
 pub struct UnwindOperation {
     pub operation_sequence: u64,
     pub generation: u64,
+    pub reconciliation_request_fingerprint: Vec<u8>,
     pub target_e8s: u128,
     pub gross_e8s: u128,
     pub child_neuron_id: u64,
@@ -64,7 +65,10 @@ impl UnwindOperation {
         if self.operation_sequence == 0
             || self.operation_sequence >= next_operation_sequence
             || self.generation == 0
+            || self.reconciliation_request_fingerprint.len() != 32
             || self.gross_e8s == 0
+            || self.gross_e8s > u128::from(u64::MAX)
+            || self.principal_e8s > u128::from(u64::MAX)
             || (self.phase == UnwindPhase::DisbursementSubmitted && self.submitted_at_seconds == 0)
             || (before_child && (self.child_neuron_id != 0 || self.principal_e8s != 0))
             || (identified && (self.child_neuron_id == 0 || self.principal_e8s != 0))
@@ -85,6 +89,7 @@ impl UnwindOperation {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct PassiveCohort {
     pub generation: u64,
+    pub reconciliation_request_fingerprint: Vec<u8>,
     pub child_neuron_id: u64,
     pub principal_e8s: u128,
     pub child_staking_subaccount: Vec<u8>,
@@ -100,8 +105,10 @@ pub fn validate_cohorts(cohorts: &[PassiveCohort]) -> Result<(), String> {
     let mut previous = None;
     for cohort in cohorts {
         if cohort.generation == 0
+            || cohort.reconciliation_request_fingerprint.len() != 32
             || cohort.child_neuron_id == 0
             || cohort.principal_e8s == 0
+            || cohort.principal_e8s > u128::from(u64::MAX)
             || cohort.child_staking_subaccount.len() != 32
             || previous
                 .replace(cohort.generation)
@@ -120,6 +127,7 @@ mod tests {
     fn cohort(generation: u64) -> PassiveCohort {
         PassiveCohort {
             generation,
+            reconciliation_request_fingerprint: vec![generation as u8; 32],
             child_neuron_id: generation + 100,
             principal_e8s: 100,
             child_staking_subaccount: vec![generation as u8; 32],

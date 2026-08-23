@@ -35,6 +35,7 @@ pub fn init(args: InitArgs) {
             pooled_parent_staking_account: None,
             live_cohorts: Vec::new(),
             last_completed_pool: None,
+            last_completed_unwind: None,
             last_held_reconciliation: None,
             latest_reconciliation_generation: 0,
             latest_pooled_target: None,
@@ -83,9 +84,15 @@ pub async fn prepare_pool_reconciliation(
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn observe_claim_backing(
-) -> Result<io_nns_types::backing::ClaimBackingObservation, ApiError> {
-    api::observe_claim_backing().await
+pub async fn observe_claim_assets() -> Result<io_nns_types::backing::ClaimAssetObservation, ApiError>
+{
+    api::observe_claim_assets().await
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn observe_pool_policy() -> Result<io_nns_types::backing::PoolPolicyObservation, ApiError>
+{
+    api::observe_pool_policy().await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]

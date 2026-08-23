@@ -88,7 +88,9 @@ struct ManagerStatus {
     latest_started_two_week_generation: u64,
     latest_completed_two_week_generation: u64,
     latest_pooled_target: Option<ManagerPooledTarget>,
-    unwinding_child_principal_e8s: u128,
+    live_child_physical_principal_e8s: u128,
+    live_child_net_backing_e8s: u128,
+    live_child_committed_fee_liability_e8s: u128,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -2257,6 +2259,9 @@ mod tests {
             "{first_reconciliation:?}"
         );
         let mut pool_steps = Vec::new();
+        let mut stream_pool_upgraded = false;
+        let mut manager_pool_upgraded = false;
+        let mut bootstrap_donation_sent = false;
         for _ in 0..24 {
             let status: StreamStatus = super::query(
                 &fixture.pic,
@@ -2268,6 +2273,90 @@ mod tests {
             if status.operation_kind.is_none() {
                 break;
             }
+            if !bootstrap_donation_sent
+                && status.operation_kind.as_deref() == Some("BackingReconciliation")
+            {
+                let staking = IcpAccount::new(
+                    fixture.governance,
+                    Some(Subaccount(super::neuron_subaccount(
+                        fixture.controller,
+                        PROTECTED_MEMO,
+                    ))),
+                )
+                .icp_account_identifier_bytes();
+                let donation: Result<u64, IcpTransferError> = icrc::update_one(
+                    &fixture.pic,
+                    fixture.ledger,
+                    Principal::anonymous(),
+                    "transfer",
+                    IcpTransferArgs {
+                        memo: 32,
+                        amount: IcpTokens { e8s: 1_000_000 },
+                        fee: IcpTokens { e8s: ICP_FEE_E8S },
+                        from_subaccount: None,
+                        to: staking.to_vec(),
+                        created_at_time: None,
+                    },
+                );
+                donation.unwrap();
+                bootstrap_donation_sent = true;
+            }
+            if !stream_pool_upgraded
+                && status.operation_kind.as_deref() == Some("BackingReconciliation")
+            {
+                fixture
+                    .pic
+                    .upgrade_canister(
+                        sns.stream,
+                        stream_wasm.clone(),
+                        encode_one(()).unwrap(),
+                        None,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    super::query::<StreamStatus>(
+                        &fixture.pic,
+                        sns.stream,
+                        Principal::anonymous(),
+                        "get_status",
+                        (),
+                    )
+                    .lifecycle,
+                    io_stream_manager::Lifecycle::Paused
+                );
+                stream_pool_upgraded = true;
+            }
+            let manager_status: ManagerStatus = super::query(
+                &fixture.pic,
+                fixture.controller,
+                Principal::anonymous(),
+                "get_status",
+                (),
+            );
+            if !manager_pool_upgraded && manager_status.active_operation.as_deref() == Some("Pool")
+            {
+                fixture
+                    .pic
+                    .upgrade_canister(
+                        fixture.controller,
+                        manager_wasm.clone(),
+                        encode_one(()).unwrap(),
+                        None,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    super::query::<ManagerStatus>(
+                        &fixture.pic,
+                        fixture.controller,
+                        Principal::anonymous(),
+                        "get_status",
+                        (),
+                    )
+                    .lifecycle,
+                    ManagerLifecycle::Paused
+                );
+                manager_pool_upgraded = true;
+            }
             let progress: Result<StreamProgress, StreamApiError> = super::update(
                 &fixture.pic,
                 sns.stream,
@@ -2277,6 +2366,9 @@ mod tests {
             );
             pool_steps.push((status.operation_phase, format!("{progress:?}")));
         }
+        assert!(stream_pool_upgraded, "pool_steps={pool_steps:?}");
+        assert!(manager_pool_upgraded, "pool_steps={pool_steps:?}");
+        assert!(bootstrap_donation_sent, "pool_steps={pool_steps:?}");
         assert!(
             super::query::<StreamStatus>(
                 &fixture.pic,
@@ -2289,20 +2381,50 @@ mod tests {
             .is_none(),
             "pool_steps={pool_steps:?}"
         );
-        let backing: Result<io_nns_types::backing::ClaimBackingObservation, ManagerApiError> =
+        super::update::<Result<(), ManagerApiError>>(
+            &fixture.pic,
+            fixture.controller,
+            sns.governance.governance,
+            "set_paused",
+            false,
+        )
+        .unwrap();
+        super::update::<Result<(), StreamApiError>>(
+            &fixture.pic,
+            sns.stream,
+            sns.governance.governance,
+            "set_paused",
+            false,
+        )
+        .unwrap();
+        let backing: Result<io_nns_types::backing::ClaimAssetObservation, ManagerApiError> =
             super::update(
                 &fixture.pic,
                 fixture.controller,
                 Principal::anonymous(),
-                "observe_claim_backing",
+                "observe_claim_assets",
                 (),
             );
         let parent = backing
             .unwrap()
             .parent
             .expect("lazy pooled parent must be proved");
+        let manager_status: ManagerStatus = super::query(
+            &fixture.pic,
+            fixture.controller,
+            Principal::anonymous(),
+            "get_status",
+            (),
+        );
+        assert!(matches!(
+            manager_status.latest_pooled_target,
+            Some(ManagerPooledTarget {
+                status: ManagerPooledTargetStatus::OverTarget,
+                ..
+            })
+        ));
         fixture.neuron_id = parent.neuron_id;
-        fixture.protected_principal_e8s = u64::try_from(parent.principal_e8s).unwrap();
+        fixture.protected_principal_e8s = u64::try_from(parent.physical_principal_e8s).unwrap();
         let ordinary_maturity = super::earn_maturity(&fixture);
         assert!(ordinary_maturity >= 200_000_000);
         let baseline: StreamStatus = super::query(
@@ -2757,13 +2879,13 @@ mod tests {
         )
         .unwrap();
         let redemption_backing: Result<
-            io_nns_types::backing::ClaimBackingObservation,
+            io_nns_types::backing::ClaimAssetObservation,
             ManagerApiError,
         > = super::update(
             &fixture.pic,
             fixture.controller,
             Principal::anonymous(),
-            "observe_claim_backing",
+            "observe_claim_assets",
             (),
         );
         let redemption_backing = redemption_backing.unwrap();
@@ -2771,8 +2893,8 @@ mod tests {
             io_core_model::EconomicState {
                 backing: io_core_model::Backing {
                     liquid: liquid_before,
-                    pooled: redemption_backing.pooled_principal_e8s,
-                    unwinding: redemption_backing.unwinding_principal_e8s,
+                    pooled: redemption_backing.pooled_parent_principal_e8s,
+                    unwinding: redemption_backing.live_child_net_backing_e8s,
                     transit: redemption_backing.transit_backing_e8s,
                 },
                 claims: supply_before - reserve_before,
@@ -2871,6 +2993,142 @@ mod tests {
         );
         assert_eq!(final_manager.lifecycle, ManagerLifecycle::Paused);
         assert_eq!(final_stream.lifecycle, io_stream_manager::Lifecycle::Paused);
+
+        super::update::<Result<(), ManagerApiError>>(
+            &fixture.pic,
+            fixture.controller,
+            sns.governance.governance,
+            "set_paused",
+            false,
+        )
+        .unwrap();
+        let before_top_up: io_nns_types::backing::ClaimAssetObservation =
+            super::update::<Result<_, ManagerApiError>>(
+                &fixture.pic,
+                fixture.controller,
+                Principal::anonymous(),
+                "observe_claim_assets",
+                (),
+            )
+            .unwrap();
+        let top_up_generation = final_stream
+            .latest_reconciliation_checkpoint
+            .as_ref()
+            .unwrap()
+            .generation
+            .checked_add(1)
+            .unwrap();
+        let top_up_credit = 100_000_000_u128;
+        let top_up_created_at = fixture.pic.get_time().as_nanos_since_unix_epoch();
+        let top_up_request = io_nns_types::backing::PreparePoolReconciliationArgs {
+            generation: top_up_generation,
+            target_e8s: before_top_up.pooled_parent_principal_e8s + top_up_credit,
+            action: io_nns_types::backing::PoolReconciliationAction::TopUp {
+                expected_credit_e8s: top_up_credit,
+            },
+            fee_e8s: ICP_FEE_E8S.into(),
+            snapshot_fingerprint: before_top_up.fingerprint,
+            memo: b"io-top-up-donation".to_vec(),
+            created_at_time_nanos: top_up_created_at,
+        };
+        let prepared: io_nns_types::backing::PoolProgress =
+            super::update::<Result<_, ManagerApiError>>(
+                &fixture.pic,
+                fixture.controller,
+                sns.stream,
+                "prepare_pool_reconciliation",
+                top_up_request,
+            )
+            .unwrap();
+        let io_nns_types::backing::PoolProgress::AwaitingTransfer(permit) = prepared else {
+            panic!("top-up did not return its exact permit: {prepared:?}");
+        };
+        let top_up_donation = 1_000_000_u128;
+        let donation_to_parent: Result<u64, IcpTransferError> = icrc::update_one(
+            &fixture.pic,
+            fixture.ledger,
+            Principal::anonymous(),
+            "transfer",
+            IcpTransferArgs {
+                memo: 33,
+                amount: IcpTokens {
+                    e8s: u64::try_from(top_up_donation).unwrap(),
+                },
+                fee: IcpTokens { e8s: ICP_FEE_E8S },
+                from_subaccount: None,
+                to: IcpAccount::new(
+                    permit.destination.owner,
+                    permit
+                        .destination
+                        .subaccount
+                        .clone()
+                        .map(|bytes| Subaccount(bytes.try_into().unwrap())),
+                )
+                .icp_account_identifier_bytes()
+                .to_vec(),
+                created_at_time: None,
+            },
+        );
+        donation_to_parent.unwrap();
+        let transfer: Result<candid::Nat, io_ledger_types::IcrcTransferError> = super::update(
+            &fixture.pic,
+            fixture.ledger,
+            sns.stream,
+            "icrc1_transfer",
+            io_ledger_types::IcrcTransferArg {
+                from_subaccount: Some(vec![3; 32]),
+                to: io_ledger_types::IcrcAccount {
+                    owner: permit.destination.owner,
+                    subaccount: permit.destination.subaccount.clone(),
+                },
+                amount: candid::Nat::from(top_up_credit),
+                fee: Some(candid::Nat::from(ICP_FEE_E8S)),
+                memo: Some(permit.memo.clone()),
+                created_at_time: Some(permit.prepared_at_nanos),
+            },
+        );
+        let top_up_block: u128 = transfer.unwrap().0.try_into().unwrap();
+        let _: Result<ManagerNnsProgress, ManagerApiError> = super::update(
+            &fixture.pic,
+            fixture.controller,
+            Principal::anonymous(),
+            "prove_active_transfer",
+            top_up_block,
+        );
+        let mut completed_top_up = None;
+        for _ in 0..8 {
+            let progress: Result<ManagerNnsProgress, ManagerApiError> = super::update(
+                &fixture.pic,
+                fixture.controller,
+                Principal::anonymous(),
+                "resume",
+                (),
+            );
+            if let Ok(ManagerNnsProgress::Pool(io_nns_types::backing::PoolProgress::Completed {
+                principal_e8s,
+                target_status,
+                ..
+            })) = progress
+            {
+                completed_top_up = Some((principal_e8s, target_status));
+                break;
+            }
+        }
+        assert_eq!(
+            completed_top_up,
+            Some((
+                before_top_up.pooled_parent_principal_e8s + top_up_credit + top_up_donation,
+                io_nns_types::backing::PoolTargetResult::OverTarget,
+            ))
+        );
+        super::update::<Result<(), ManagerApiError>>(
+            &fixture.pic,
+            fixture.controller,
+            sns.governance.governance,
+            "set_paused",
+            true,
+        )
+        .unwrap();
         eprintln!(
             "combined_real_summary event_round={} ordinary_maturity={} actual_mint={} reward_recipients={} redemption={redemption:?} phases={maturity_phases:?}",
             event.round,

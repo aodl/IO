@@ -35,6 +35,9 @@ pub async fn observe(now_nanos: u64) -> Result<RewardEventObservation, ApiError>
     if initial.active_operation.is_some() {
         return Err(ApiError::Busy);
     }
+    if initial.prepared_exit_reconciliation.is_some() {
+        return Err(ApiError::Busy);
+    }
     if !initial.reward_checkpoint.reward_work_due && !initial.stake_observation_due {
         return Err(ApiError::Pending(
             "daily stake observation is not due".into(),
@@ -182,7 +185,7 @@ fn validate_coverage(daily: &DailyStakeObservation, active_reward: u128) -> Resu
         backing: io_core_model::Backing {
             liquid: daily.claim.liquid_icp_e8s,
             pooled: daily.claim.pooled_principal_e8s,
-            unwinding: daily.claim.unwinding_principal_e8s,
+            unwinding: daily.claim.unwinding_net_backing_e8s,
             transit: daily.claim.transit_backing_e8s,
         },
         claims: daily.claim.claim_supply_e8s,
@@ -207,6 +210,7 @@ fn commit(
         || latest.control_epoch != expected.control_epoch
         || latest.lifecycle != Lifecycle::Ready
         || latest.active_operation.is_some()
+        || latest.prepared_exit_reconciliation.is_some()
         || latest.reward_checkpoint.last_processed_event
             != expected.reward_checkpoint.last_processed_event
         || latest.reward_checkpoint.reward_work_due
@@ -259,14 +263,14 @@ fn commit(
         claim_supply_e8s: daily.claim.claim_supply_e8s,
         liquid_backing_e8s: daily.claim.liquid_icp_e8s,
         pooled_backing_e8s: daily.claim.pooled_principal_e8s,
-        unwinding_backing_e8s: daily.claim.unwinding_principal_e8s,
+        unwinding_backing_e8s: daily.claim.unwinding_net_backing_e8s,
         transit_backing_e8s: daily.claim.transit_backing_e8s,
         total_claim_backing_e8s: daily.claim.total_claim_backing_e8s,
         active_backing_io_e8s: daily.active_backing_io_e8s,
         active_reward_io_e8s: active_reward,
-        live_cohort_count: u32::try_from(daily.nns.live_cohorts.len())
+        live_cohort_count: u32::try_from(daily.assets.live_cohorts.len())
             .map_err(|_| ApiError::Invalid("live cohort count overflow".into()))?,
-        oldest_ready_at_seconds: daily.nns.oldest_ready_at_seconds,
+        oldest_ready_at_seconds: daily.assets.oldest_ready_at_seconds,
         pooled_target_e8s: target,
         observed_pooled_e8s: daily.claim.pooled_principal_e8s,
         snapshot_fingerprint: daily.claim.observation_fingerprint,

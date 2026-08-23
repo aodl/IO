@@ -61,6 +61,12 @@ struct LedgerCallCounters {
     query_blocks: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
+struct NnsObservationCallCounters {
+    claim_assets: u64,
+    pool_policy: u64,
+}
+
 fn debug_wasm(name: &str) -> Vec<u8> {
     std::fs::read(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
@@ -374,9 +380,33 @@ fn liquidity_shortfall_uses_only_scalar_claim_reads_and_pulls_no_io() {
         None,
     );
     update::<_, Result<(), ApiError>>(&pic, stream, governance, "set_paused", false).unwrap();
+    let _: () = update(
+        &pic,
+        nns,
+        Principal::anonymous(),
+        "debug_set_pool_policy_valid",
+        false,
+    );
+    let blocked_reward: Result<RewardEventObservation, ApiError> = update(
+        &pic,
+        stream,
+        Principal::anonymous(),
+        "resume_reward_work",
+        (),
+    );
+    assert!(matches!(
+        blocked_reward,
+        Err(ApiError::Invalid(ref reason)) if reason.contains("pool policy")
+    ));
+    let policy_blocked_status: Status = query(&pic, stream, "get_status");
+    assert!(policy_blocked_status.reward_processing_paused);
+    assert!(!policy_blocked_status.governance_parameters_fresh);
     let governance_before: GovernanceCallCounters =
         query(&pic, governance, "debug_get_call_counters");
     let ledger_before: LedgerCallCounters = query(&pic, io_ledger, "debug_get_call_counters");
+    let nns_before: NnsObservationCallCounters =
+        query(&pic, nns, "debug_get_observation_call_counters");
+    let permanent_queries_before: u64 = query(&pic, nns, "debug_get_full_neuron_call_count");
     let now = pic.get_time().as_nanos_since_unix_epoch();
     let result: Result<RedemptionProgress, ApiError> = update(
         &pic,
@@ -410,9 +440,85 @@ fn liquidity_shortfall_uses_only_scalar_claim_reads_and_pulls_no_io() {
     );
     let ledger_after: LedgerCallCounters = query(&pic, io_ledger, "debug_get_call_counters");
     assert_eq!(ledger_after.transfer_from, ledger_before.transfer_from);
+    let nns_after: NnsObservationCallCounters =
+        query(&pic, nns, "debug_get_observation_call_counters");
+    assert_eq!(nns_after.claim_assets - nns_before.claim_assets, 2);
+    assert_eq!(nns_after.pool_policy, nns_before.pool_policy);
+    assert_eq!(
+        query::<u64>(&pic, nns, "debug_get_full_neuron_call_count"),
+        permanent_queries_before,
+        "redemption must not query the permanent neuron"
+    );
     assert!(query::<Status>(&pic, stream, "get_status")
         .operation_kind
         .is_none());
+
+    for neuron_id in 100..164 {
+        let _: () = update(
+            &pic,
+            governance,
+            Principal::anonymous(),
+            "debug_add_neuron",
+            MockSnsNeuron {
+                neuron_id,
+                staked_io_e8s: 1,
+                dissolve_delay_seconds: 1_209_600,
+                eligible_closed_proposals: 0,
+                voted_closed_proposals: 0,
+                is_genesis_governance_neuron: false,
+                is_protocol_owned: false,
+                is_dissolving: false,
+            },
+        );
+    }
+    let governance_many_before: GovernanceCallCounters =
+        query(&pic, governance, "debug_get_call_counters");
+    let nns_many_before: NnsObservationCallCounters =
+        query(&pic, nns, "debug_get_observation_call_counters");
+    let result_many: Result<RedemptionProgress, ApiError> = update(
+        &pic,
+        stream,
+        user,
+        "redeem",
+        RedeemArgs {
+            from_subaccount: None,
+            io_amount_e8s: 100_000_000,
+            min_icp_out_e8s: 1,
+            max_io_fee_e8s: 10_000,
+            max_icp_fee_e8s: 10_000,
+            expires_at_nanos: now + 60_000_000_000,
+            nonce: 1,
+        },
+    );
+    assert!(matches!(
+        result_many,
+        Err(ApiError::LiquidityShortfall { .. })
+    ));
+    assert_eq!(
+        query::<GovernanceCallCounters>(&pic, governance, "debug_get_call_counters"),
+        governance_many_before,
+        "redemption call count must remain independent of 65 SNS neurons"
+    );
+    let nns_many_after: NnsObservationCallCounters =
+        query(&pic, nns, "debug_get_observation_call_counters");
+    assert_eq!(
+        nns_many_after.claim_assets - nns_many_before.claim_assets,
+        2
+    );
+    assert_eq!(nns_many_after.pool_policy, nns_many_before.pool_policy);
+
+    let _: () = update(
+        &pic,
+        nns,
+        Principal::anonymous(),
+        "debug_set_pool_policy_valid",
+        true,
+    );
+    update::<_, Result<(), ApiError>>(&pic, stream, governance, "set_paused", true).unwrap();
+    update::<_, Result<(), ApiError>>(&pic, stream, governance, "set_paused", false).unwrap();
+    let restored: Status = query(&pic, stream, "get_status");
+    assert!(!restored.reward_processing_paused);
+    assert!(restored.governance_parameters_fresh);
 }
 
 #[test]

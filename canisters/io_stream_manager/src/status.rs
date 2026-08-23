@@ -73,5 +73,23 @@ pub fn get_status() -> Status {
             .as_ref()
             .map(|batch| batch.policy_credit_total),
         latest_reconciliation_checkpoint: state.latest_reconciliation_checkpoint,
+        prepared_exit_generation: state
+            .prepared_exit_reconciliation
+            .as_ref()
+            .map(|request| request.generation),
+        prepared_exit_member_count: state.neuron_registry.iter().fold(0, |count, record| {
+            count
+                + u32::from(matches!(
+                    record.status,
+                    crate::state::BackingRewardStatus::ExitPrepared { .. }
+                ))
+        }),
+        committed_exit_member_count: state.neuron_registry.iter().fold(0, |count, record| {
+            count
+                + u32::from(matches!(
+                    record.status,
+                    crate::state::BackingRewardStatus::ExitCommitted { .. }
+                ))
+        }),
     }
 }

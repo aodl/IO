@@ -11,7 +11,7 @@ pub struct DailyStakeObservation {
     pub neurons: Vec<io_sns_reward_boundary::Neuron>,
     pub stakes: Vec<StructuralStakeObservation>,
     pub active_backing_io_e8s: u128,
-    pub nns: io_nns_types::backing::ClaimBackingObservation,
+    pub assets: io_nns_types::backing::ClaimAssetObservation,
 }
 
 pub async fn observe(config: &StreamConfig) -> Result<DailyStakeObservation, ApiError> {
@@ -97,15 +97,25 @@ pub async fn observe(config: &StreamConfig) -> Result<DailyStakeObservation, Api
             "claim snapshot drifted during daily stake observation".into(),
         ));
     }
-    let nns = canonical::nns_observation(config.nns_manager)
+    let assets = canonical::claim_asset_observation(config.nns_manager)
         .await
         .map_err(ApiError::Ledger)?;
-    if nns.fingerprint != claim_before.nns_fingerprint
-        || nns.control_epoch != claim_before.nns_control_epoch
-        || nns.active_operation_sequence != claim_before.nns_operation_sequence
+    if assets.fingerprint != claim_before.nns_fingerprint
+        || assets.control_epoch != claim_before.nns_control_epoch
+        || assets.active_operation_sequence != claim_before.nns_operation_sequence
     {
         return Err(ApiError::Pending(
             "NNS observation drifted during daily stake observation".into(),
+        ));
+    }
+    let policy = canonical::pool_policy_observation(config.nns_manager)
+        .await
+        .map_err(|error| ApiError::Invalid(format!("pool policy is not ready: {error}")))?;
+    if policy.control_epoch != assets.control_epoch
+        || policy.active_operation_sequence != assets.active_operation_sequence
+    {
+        return Err(ApiError::Pending(
+            "NNS asset and policy observations drifted".into(),
         ));
     }
     stakes.sort_by(|left, right| left.sns_neuron_id.cmp(&right.sns_neuron_id));
@@ -115,6 +125,6 @@ pub async fn observe(config: &StreamConfig) -> Result<DailyStakeObservation, Api
         neurons,
         stakes,
         active_backing_io_e8s: active_backing,
-        nns,
+        assets,
     })
 }

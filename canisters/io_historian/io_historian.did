@@ -73,7 +73,7 @@ type ProtocolSnapshot = record {
   claim_io_supply_e8s : opt nat;
   liquid_claim_backing_e8s : opt nat;
   pooled_parent_principal_e8s : opt nat;
-  live_child_principal_e8s : opt nat;
+  live_child_net_backing_e8s : opt nat;
   in_transit_backing_e8s : opt nat;
   total_claim_backing_e8s : opt nat;
   claim_rate : opt ClaimRateSnapshot;
@@ -137,7 +137,9 @@ type NnsManagerStatus = record {
   latest_started_two_week_generation : nat64;
   latest_completed_two_week_generation : nat64;
   latest_pooled_target : opt PooledTargetObservation;
-  unwinding_child_principal_e8s : nat;
+  live_child_physical_principal_e8s : nat;
+  live_child_net_backing_e8s : nat;
+  live_child_committed_fee_liability_e8s : nat;
   observed_at_timestamp_nanos : nat64;
 };
 type TwoWeekTargetStatus = variant {

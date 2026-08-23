@@ -789,6 +789,7 @@ mod tests {
                 pooled_parent_staking_account: None,
                 live_cohorts: Vec::new(),
                 last_completed_pool: None,
+                last_completed_unwind: None,
                 last_held_reconciliation: None,
                 latest_reconciliation_generation: 0,
                 latest_pooled_target: None,

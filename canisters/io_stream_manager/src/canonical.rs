@@ -25,7 +25,7 @@ async fn nat_call<A: candid::CandidType>(
 }
 
 pub async fn claim_snapshot(config: &StreamConfig) -> Result<ClaimSnapshot, String> {
-    let nns_before = nns_observation(config.nns_manager).await?;
+    let nns_before = claim_asset_observation(config.nns_manager).await?;
     let io_fee = nat_call(config.io_ledger, "icrc1_fee", ()).await?;
     let icp_fee = nat_call(config.icp_ledger, "icrc1_fee", ()).await?;
     let total_supply = nat_call(config.io_ledger, "icrc1_total_supply", ()).await?;
@@ -48,7 +48,7 @@ pub async fn claim_snapshot(config: &StreamConfig) -> Result<ClaimSnapshot, Stri
     )
     .await?;
     let stream_snapshot = crate::state::read();
-    let nns_after = nns_observation(config.nns_manager).await?;
+    let nns_after = claim_asset_observation(config.nns_manager).await?;
     if nns_after != nns_before {
         return Err("NNS claim-backing observation drifted across the canonical reads".into());
     }
@@ -68,8 +68,8 @@ pub async fn claim_snapshot(config: &StreamConfig) -> Result<ClaimSnapshot, Stri
     }
     let total_claim_backing_e8s = io_core_model::claim_backing(io_core_model::Backing {
         liquid,
-        pooled: nns_before.pooled_principal_e8s,
-        unwinding: nns_before.unwinding_principal_e8s,
+        pooled: nns_before.pooled_parent_principal_e8s,
+        unwinding: nns_before.live_child_net_backing_e8s,
         transit: transit_backing_e8s,
     })
     .map_err(|error| format!("claim backing failed: {error:?}"))?;
@@ -90,8 +90,8 @@ pub async fn claim_snapshot(config: &StreamConfig) -> Result<ClaimSnapshot, Stri
         excluded_io_balances,
         claim_supply_e8s,
         liquid_icp_e8s: liquid,
-        pooled_principal_e8s: nns_before.pooled_principal_e8s,
-        unwinding_principal_e8s: nns_before.unwinding_principal_e8s,
+        pooled_principal_e8s: nns_before.pooled_parent_principal_e8s,
+        unwinding_net_backing_e8s: nns_before.live_child_net_backing_e8s,
         transit_backing_e8s,
         total_claim_backing_e8s,
         nns_control_epoch: nns_before.control_epoch,
@@ -110,7 +110,7 @@ pub async fn claim_snapshot(config: &StreamConfig) -> Result<ClaimSnapshot, Stri
 
 fn stream_transit_backing(
     stream: &crate::state::StreamStateV1,
-    nns: &io_nns_types::backing::ClaimBackingObservation,
+    nns: &io_nns_types::backing::ClaimAssetObservation,
 ) -> Result<u128, String> {
     use crate::{state::StreamOperation, transfer::TransferState};
     match &stream.active_operation {
@@ -120,7 +120,7 @@ fn stream_transit_backing(
             }
             TransferState::Succeeded { .. } => {
                 let before = operation.permit.expected_parent_principal_e8s;
-                let observed = nns.pooled_principal_e8s;
+                let observed = nns.pooled_parent_principal_e8s;
                 let remaining = io_nns_types::backing::remaining_parent_transit(
                     before,
                     operation.permit.expected_credit_e8s,
@@ -140,17 +140,32 @@ fn stream_transit_backing(
     }
 }
 
-pub(crate) async fn nns_observation(
+pub(crate) async fn claim_asset_observation(
     nns_manager: candid::Principal,
-) -> Result<io_nns_types::backing::ClaimBackingObservation, String> {
-    let result: Result<io_nns_types::backing::ClaimBackingObservation, Reserved> =
-        Call::bounded_wait(nns_manager, "observe_claim_backing")
+) -> Result<io_nns_types::backing::ClaimAssetObservation, String> {
+    let result: Result<io_nns_types::backing::ClaimAssetObservation, Reserved> =
+        Call::bounded_wait(nns_manager, "observe_claim_assets")
             .with_arg(())
             .await
             .map_err(|error| format!("NNS observation call failed: {error:?}"))?
             .candid()
             .map_err(|error| format!("NNS observation decode failed: {error:?}"))?;
     let observation = result.map_err(|_| "NNS observation rejected".to_string())?;
+    observation.validate()?;
+    Ok(observation)
+}
+
+pub(crate) async fn pool_policy_observation(
+    nns_manager: candid::Principal,
+) -> Result<io_nns_types::backing::PoolPolicyObservation, String> {
+    let result: Result<io_nns_types::backing::PoolPolicyObservation, Reserved> =
+        Call::bounded_wait(nns_manager, "observe_pool_policy")
+            .with_arg(())
+            .await
+            .map_err(|error| format!("NNS policy observation call failed: {error:?}"))?
+            .candid()
+            .map_err(|error| format!("NNS policy observation decode failed: {error:?}"))?;
+    let observation = result.map_err(|_| "NNS policy observation rejected".to_string())?;
     observation.validate()?;
     Ok(observation)
 }

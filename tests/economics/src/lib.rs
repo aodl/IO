@@ -195,7 +195,8 @@ pub mod proposed_model {
     pub struct PassiveCohort {
         pub generation: u64,
         pub child_neuron_id: u64,
-        pub principal: u128,
+        pub physical_principal: u128,
+        pub net_backing: u128,
         pub lifecycle: CohortLifecycle,
         pub proof: CohortProofState,
         pub ready_at: u64,
@@ -283,12 +284,14 @@ pub mod proposed_model {
         SplitProved {
             generation: u64,
             child_neuron_id: u64,
-            principal: u128,
+            physical_principal: u128,
+            net_backing: u128,
         },
         StartDissolvingCommitted {
             generation: u64,
             child_neuron_id: u64,
-            principal: u128,
+            physical_principal: u128,
+            net_backing: u128,
         },
         Disburse {
             generation: u64,
@@ -469,7 +472,8 @@ pub mod proposed_model {
         pub fn prove_split(
             &mut self,
             child_neuron_id: u64,
-            exact_fee: u128,
+            exact_split_fee: u128,
+            future_disbursement_fee: u128,
         ) -> Result<(), ModelError> {
             let (generation, gross) = match self.active_command {
                 Some(ActiveNnsCommand::SplitCommitted { generation, gross }) => (generation, gross),
@@ -480,20 +484,27 @@ pub mod proposed_model {
             }) {
                 return Err(ModelError::DuplicateChild);
             }
-            let credited = gross
-                .checked_sub(exact_fee)
+            let physical_principal = gross
+                .checked_sub(exact_split_fee)
                 .ok_or(ModelError::InsufficientBacking)?;
+            let net_backing = physical_principal
+                .checked_sub(future_disbursement_fee)
+                .ok_or(ModelError::InsufficientBacking)?;
+            let committed_fees = exact_split_fee
+                .checked_add(future_disbursement_fee)
+                .ok_or(ModelError::ArithmeticOverflow)?;
             self.backing = move_backing(
                 self.backing,
                 Bucket::Transit,
                 Bucket::PendingUnwind,
                 gross,
-                exact_fee,
+                committed_fees,
             )?;
             self.active_command = Some(ActiveNnsCommand::SplitProved {
                 generation,
                 child_neuron_id,
-                principal: credited,
+                physical_principal,
+                net_backing,
             });
             self.operations.split_proofs = self
                 .operations
@@ -503,24 +514,28 @@ pub mod proposed_model {
             self.fees.split = self
                 .fees
                 .split
-                .checked_add(exact_fee)
+                .checked_add(exact_split_fee)
                 .ok_or(ModelError::ArithmeticOverflow)?;
             Ok(())
         }
 
         pub fn commit_start_dissolving(&mut self, generation: u64) -> Result<(), ModelError> {
-            let (child_neuron_id, principal) = match self.active_command {
+            let (child_neuron_id, physical_principal, net_backing) = match self.active_command {
                 Some(ActiveNnsCommand::SplitProved {
                     generation: active_generation,
                     child_neuron_id,
-                    principal,
-                }) if active_generation == generation => (child_neuron_id, principal),
+                    physical_principal,
+                    net_backing,
+                }) if active_generation == generation => {
+                    (child_neuron_id, physical_principal, net_backing)
+                }
                 _ => return Err(ModelError::InvalidTransition),
             };
             self.active_command = Some(ActiveNnsCommand::StartDissolvingCommitted {
                 generation,
                 child_neuron_id,
-                principal,
+                physical_principal,
+                net_backing,
             });
             Ok(())
         }
@@ -530,20 +545,22 @@ pub mod proposed_model {
             generation: u64,
             child_neuron_id: u64,
         ) -> Result<(), ModelError> {
-            let principal = match self.active_command {
+            let (physical_principal, net_backing) = match self.active_command {
                 Some(ActiveNnsCommand::StartDissolvingCommitted {
                     generation: active_generation,
                     child_neuron_id: active_child,
-                    principal,
+                    physical_principal,
+                    net_backing,
                 }) if active_generation == generation && active_child == child_neuron_id => {
-                    principal
+                    (physical_principal, net_backing)
                 }
                 _ => return Err(ModelError::ProofMismatch),
             };
             self.active_command = Some(ActiveNnsCommand::SplitProved {
                 generation,
                 child_neuron_id,
-                principal,
+                physical_principal,
+                net_backing,
             });
             Ok(())
         }
@@ -554,13 +571,14 @@ pub mod proposed_model {
             child_neuron_id: u64,
             canonical_ready_at: u64,
         ) -> Result<u64, ModelError> {
-            let principal = match self.active_command {
+            let (physical_principal, net_backing) = match self.active_command {
                 Some(ActiveNnsCommand::StartDissolvingCommitted {
                     generation: active_generation,
                     child_neuron_id: active_child,
-                    principal,
+                    physical_principal,
+                    net_backing,
                 }) if active_generation == generation && active_child == child_neuron_id => {
-                    principal
+                    (physical_principal, net_backing)
                 }
                 _ => return Err(ModelError::ProofMismatch),
             };
@@ -587,7 +605,8 @@ pub mod proposed_model {
             self.cohorts.push(PassiveCohort {
                 generation,
                 child_neuron_id,
-                principal,
+                physical_principal,
+                net_backing,
                 lifecycle: CohortLifecycle::Dissolving,
                 proof: CohortProofState::CanonicalDissolving,
                 ready_at: canonical_ready_at,
@@ -641,13 +660,17 @@ pub mod proposed_model {
                 .iter()
                 .position(|cohort| cohort.generation == generation)
                 .ok_or(ModelError::InvalidTransition)?;
-            let principal = self.cohorts[cohort_index].principal;
+            let physical_principal = self.cohorts[cohort_index].physical_principal;
+            let net_backing = self.cohorts[cohort_index].net_backing;
+            if physical_principal.checked_sub(exact_fee) != Some(net_backing) {
+                return Err(ModelError::ProofMismatch);
+            }
             let next_backing = move_backing(
                 self.backing,
                 Bucket::PendingUnwind,
                 Bucket::Liquid,
-                principal,
-                exact_fee,
+                net_backing,
+                0,
             )?;
             self.backing = next_backing;
             self.cohorts[cohort_index].lifecycle = CohortLifecycle::Returned;
@@ -1222,7 +1245,7 @@ mod tests {
                 .unwrap();
         }
         let generation = model.submit_split_intent(neuron_indices, 110).unwrap();
-        model.prove_split(child_neuron_id, 10).unwrap();
+        model.prove_split(child_neuron_id, 10, 10).unwrap();
         model.commit_start_dissolving(generation).unwrap();
         assert_eq!(
             model
@@ -1266,13 +1289,14 @@ mod tests {
         let generation = model.submit_split_intent(&[0, 1, 2], 110).unwrap();
         assert_eq!(generation, 0);
         assert!(model.cohorts.is_empty());
-        model.prove_split(7_001, 10).unwrap();
+        model.prove_split(7_001, 10, 10).unwrap();
         assert_eq!(
             model.active_command,
             Some(ActiveNnsCommand::SplitProved {
                 generation,
                 child_neuron_id: 7_001,
-                principal: 100,
+                physical_principal: 100,
+                net_backing: 90,
             })
         );
         assert!(model.cohorts.is_empty());
@@ -1329,10 +1353,10 @@ mod tests {
         model.next_generation = a + 1;
         let b = model.submit_split_intent(&[1], 110).unwrap();
         assert_eq!(
-            model.prove_split(7_001, 10),
+            model.prove_split(7_001, 10, 10),
             Err(ModelError::DuplicateChild)
         );
-        model.prove_split(7_002, 10).unwrap();
+        model.prove_split(7_002, 10, 10).unwrap();
         model.commit_start_dissolving(b).unwrap();
         model
             .prove_start_dissolving(b, 7_002, TWO_WEEK_DELAY + DAY)
@@ -1343,16 +1367,26 @@ mod tests {
             model.cohort(b).unwrap().lifecycle,
             CohortLifecycle::Dissolving
         );
+        let backing_before_first_return = model.backing.claim_backing().unwrap();
         return_cohort(&mut model, a, TWO_WEEK_DELAY);
         assert_eq!(
+            model.backing.claim_backing().unwrap(),
+            backing_before_first_return
+        );
+        assert_eq!(
             (model.backing.liquid, model.backing.pending_unwind),
-            (590, 100)
+            (590, 90)
         );
         assert_eq!(
             model.cohort(b).unwrap().lifecycle,
             CohortLifecycle::Dissolving
         );
+        let backing_before_second_return = model.backing.claim_backing().unwrap();
         return_cohort(&mut model, b, TWO_WEEK_DELAY + DAY);
+        assert_eq!(
+            model.backing.claim_backing().unwrap(),
+            backing_before_second_return
+        );
         assert_eq!(
             (model.backing.liquid, model.backing.pending_unwind),
             (680, 0)

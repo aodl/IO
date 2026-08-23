@@ -1,7 +1,8 @@
 use candid::{CandidType, Principal};
 use io_nns_types::backing::{
-    ClaimBackingObservation, CohortObservation, CohortProofState, FollowPolicy, ParentObservation,
-    PoolCommand, PoolCommandKind, PoolCommandPhase, TopUpPermit, POOLED_PARENT_DELAY_SECONDS,
+    ClaimAssetObservation, CohortObservation, CohortProofState, FollowPolicy,
+    ParentAssetObservation, ParentPolicyObservation, PoolCommand, PoolCommandKind,
+    PoolCommandPhase, PoolPolicyObservation, TopUpPermit, POOLED_PARENT_DELAY_SECONDS,
 };
 pub use io_nns_types::backing::{PoolProgress, PreparePoolReconciliationArgs};
 use serde::Deserialize;
@@ -97,7 +98,9 @@ pub struct Status {
     pub latest_started_two_week_generation: u64,
     pub latest_completed_two_week_generation: u64,
     pub latest_pooled_target: Option<PooledTarget>,
-    pub unwinding_child_principal_e8s: u128,
+    pub live_child_physical_principal_e8s: u128,
+    pub live_child_net_backing_e8s: u128,
+    pub live_child_committed_fee_liability_e8s: u128,
 }
 
 pub(crate) fn ready() -> Result<crate::state::NnsStateV1, ApiError> {
@@ -179,6 +182,16 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<NnsProgress, Api
                 Ok(NnsProgress::Pool(PoolProgress::Completed {
                     parent_neuron_id: completed.parent_neuron_id,
                     principal_e8s: completed.principal_e8s,
+                    target_status: if completed.principal_e8s
+                        == completed
+                            .permit
+                            .expected_parent_principal_e8s
+                            .saturating_add(completed.permit.expected_credit_e8s)
+                    {
+                        io_nns_types::backing::PoolTargetResult::AtTarget
+                    } else {
+                        io_nns_types::backing::PoolTargetResult::OverTarget
+                    },
                 }))
             }
             _ => Err(ApiError::Invalid("no active transfer proof slot".into())),
@@ -209,6 +222,16 @@ pub async fn prove_maturity_mint(
 
 pub fn get_status() -> Status {
     let current = state::read();
+    let (physical, net) = current
+        .live_cohorts
+        .iter()
+        .filter(|cohort| cohort.proof != CohortProofState::PrincipalReturned)
+        .fold((0, 0), |(physical, net), cohort| {
+            (
+                physical + cohort.principal_e8s,
+                net + cohort.principal_e8s - current.config.expected_icp_fee_e8s,
+            )
+        });
     Status {
         lifecycle: current.lifecycle,
         active_operation: current
@@ -224,9 +247,9 @@ pub fn get_status() -> Status {
         latest_started_two_week_generation: current.latest_started_two_week_generation,
         latest_completed_two_week_generation: current.latest_completed_two_week_generation,
         latest_pooled_target: current.latest_pooled_target.clone(),
-        unwinding_child_principal_e8s: current.live_cohorts.iter().fold(0, |total, cohort| {
-            total.saturating_add(cohort.principal_e8s)
-        }),
+        live_child_physical_principal_e8s: physical,
+        live_child_net_backing_e8s: net,
+        live_child_committed_fee_liability_e8s: physical - net,
     }
 }
 
@@ -236,15 +259,36 @@ pub async fn prepare_pool_reconciliation(
 ) -> Result<PoolProgress, ApiError> {
     use io_nns_types::backing::PoolReconciliationAction;
 
-    let snapshot = ready()?;
+    let snapshot = state::read();
+    let reconciliation_request_fingerprint = reconciliation_request_fingerprint(&args)?;
     if caller != snapshot.config.stream_manager {
         return Err(ApiError::Unauthorized);
+    }
+    if let Some(completed) = snapshot
+        .last_completed_unwind
+        .as_ref()
+        .filter(|completed| completed.generation == args.generation)
+    {
+        if completed.reconciliation_request_fingerprint != reconciliation_request_fingerprint {
+            return Err(ApiError::Invalid(
+                "completed reconciliation replay fingerprint differs".into(),
+            ));
+        }
+        return Ok(PoolProgress::UnwindCommitted {
+            generation: completed.generation,
+            principal_e8s: completed.physical_principal_e8s,
+        });
     }
     if let Some(cohort) = snapshot
         .live_cohorts
         .iter()
         .find(|cohort| cohort.generation == args.generation)
     {
+        if cohort.reconciliation_request_fingerprint != reconciliation_request_fingerprint {
+            return Err(ApiError::Invalid(
+                "reconciliation generation replay fingerprint differs".into(),
+            ));
+        }
         return Ok(PoolProgress::UnwindCommitted {
             generation: cohort.generation,
             principal_e8s: cohort.principal_e8s,
@@ -252,6 +296,7 @@ pub async fn prepare_pool_reconciliation(
     }
     if let Some(NnsOperation::Unwind(operation)) = &snapshot.active_operation {
         if operation.generation == args.generation
+            && operation.reconciliation_request_fingerprint == reconciliation_request_fingerprint
             && operation.target_e8s == args.target_e8s
             && matches!(
                 args.action,
@@ -285,6 +330,9 @@ pub async fn prepare_pool_reconciliation(
             return Ok(PoolProgress::AwaitingTransfer(operation.permit.clone()));
         }
     }
+    if snapshot.lifecycle != Lifecycle::Ready {
+        return Err(ApiError::Paused);
+    }
     if args.generation == snapshot.latest_reconciliation_generation
         && snapshot.active_operation.is_none()
     {
@@ -307,7 +355,7 @@ pub async fn prepare_pool_reconciliation(
         return Err(ApiError::Busy);
     }
 
-    let observation = observe_claim_backing().await?;
+    let observation = observe_claim_assets().await?;
     if observation.fingerprint != args.snapshot_fingerprint
         || args.generation == 0
         || args.generation <= snapshot.latest_reconciliation_generation
@@ -320,7 +368,8 @@ pub async fn prepare_pool_reconciliation(
             "pool reconciliation snapshot or intent is invalid".into(),
         ));
     }
-    let actual = observation.pooled_principal_e8s;
+    require_pool_policy(&snapshot).await?;
+    let actual = observation.pooled_parent_principal_e8s;
     match args.action {
         PoolReconciliationAction::Hold => {
             validate_hold(&snapshot, actual, args.target_e8s, args.fee_e8s)?;
@@ -380,6 +429,7 @@ pub async fn prepare_pool_reconciliation(
             let operation = UnwindOperation {
                 operation_sequence,
                 generation: args.generation,
+                reconciliation_request_fingerprint: reconciliation_request_fingerprint.clone(),
                 target_e8s: args.target_e8s,
                 gross_e8s: expected_gross,
                 child_neuron_id: 0,
@@ -394,20 +444,45 @@ pub async fn prepare_pool_reconciliation(
             };
             latest.active_operation = Some(NnsOperation::Unwind(operation.clone()));
             state::write(latest);
-            match crate::unwind_flow::resume(operation).await? {
-                UnwindProgress::Stuck(reason) => Err(ApiError::Stuck(reason)),
-                _ => Ok(PoolProgress::UnwindPrepared {
+            match crate::unwind_flow::resume(operation).await {
+                Ok(_) => Ok(PoolProgress::UnwindPrepared {
                     generation: args.generation,
                     gross_e8s: expected_gross,
                 }),
+                Err(_)
+                    if matches!(
+                        state::read().active_operation,
+                        Some(NnsOperation::Unwind(ref active))
+                            if active.generation == args.generation
+                                && active.reconciliation_request_fingerprint
+                                    == reconciliation_request_fingerprint
+                    ) =>
+                {
+                    Ok(PoolProgress::UnwindPrepared {
+                        generation: args.generation,
+                        gross_e8s: expected_gross,
+                    })
+                }
+                Err(error) => Err(error),
             }
         }
     }
 }
 
+fn reconciliation_request_fingerprint(
+    args: &PreparePoolReconciliationArgs,
+) -> Result<Vec<u8>, ApiError> {
+    let encoded = candid::encode_one(args).map_err(|error| {
+        ApiError::Invalid(format!(
+            "reconciliation request fingerprint failed: {error}"
+        ))
+    })?;
+    Ok(Sha256::digest(encoded).to_vec())
+}
+
 fn prepare_top_up(
     snapshot: crate::state::NnsStateV1,
-    observation: ClaimBackingObservation,
+    observation: ClaimAssetObservation,
     args: PreparePoolReconciliationArgs,
     expected_credit: u128,
 ) -> Result<PoolProgress, ApiError> {
@@ -438,7 +513,7 @@ fn prepare_top_up(
     let permit = TopUpPermit {
         generation: args.generation,
         operation_sequence,
-        expected_parent_principal_e8s: observation.pooled_principal_e8s,
+        expected_parent_principal_e8s: observation.pooled_parent_principal_e8s,
         destination,
         expected_credit_e8s: expected_credit,
         fee_e8s: args.fee_e8s,
@@ -530,15 +605,171 @@ fn validate_hold(
         ))
     }
 }
-pub async fn observe_claim_backing() -> Result<ClaimBackingObservation, ApiError> {
+pub async fn observe_claim_assets() -> Result<ClaimAssetObservation, ApiError> {
     let snapshot = state::read();
-    let permanent =
-        execution::query_neuron_observation(&snapshot.config, snapshot.config.two_year_neuron_id)
-            .await?;
-    let permanent_staking_account =
-        execution::staking_account(&snapshot.config, &permanent.snapshot);
+    if has_ambiguous_backing_effect(&snapshot) {
+        return Err(ApiError::Pending(
+            "claim backing has an ambiguous submitted monetary effect".into(),
+        ));
+    }
     let pool_staking_account =
         execution::parent_staking_account(&snapshot.config, snapshot.config.pooled_parent_memo);
+    let parent = match snapshot.pooled_parent_id {
+        Some(parent_id) => {
+            let observed = execution::query_neuron_observation(&snapshot.config, parent_id).await?;
+            let staking_account = execution::staking_account(&snapshot.config, &observed.snapshot);
+            if staking_account != pool_staking_account
+                || snapshot.pooled_parent_staking_account.as_ref() != Some(&staking_account)
+            {
+                return Err(ApiError::Invalid(
+                    "pooled parent identity or staking Account drifted".into(),
+                ));
+            }
+            Some(ParentAssetObservation {
+                neuron_id: parent_id,
+                staking_account,
+                physical_principal_e8s: observed.snapshot.cached_stake_e8s,
+            })
+        }
+        None => None,
+    };
+    if state::read() != snapshot {
+        return Err(ApiError::Busy);
+    }
+    let mut live_cohorts = Vec::with_capacity(snapshot.live_cohorts.len());
+    for cohort in &snapshot.live_cohorts {
+        let physical = if matches!(
+            cohort.proof,
+            CohortProofState::Dissolving | CohortProofState::DisbursementSubmitted
+        ) {
+            let observed =
+                execution::query_neuron_observation(&snapshot.config, cohort.child_neuron_id)
+                    .await?;
+            if observed.snapshot.staking_subaccount.as_slice()
+                != cohort.child_staking_subaccount.as_slice()
+                || observed.snapshot.cached_stake_e8s != cohort.principal_e8s
+            {
+                return Err(ApiError::Invalid(
+                    "live unwind child identity or physical principal drifted".into(),
+                ));
+            }
+            observed.snapshot.cached_stake_e8s
+        } else {
+            0
+        };
+        let net = if physical == 0 {
+            0
+        } else {
+            io_nns_types::backing::net_committed_child_backing(
+                physical,
+                snapshot.config.expected_icp_fee_e8s,
+            )
+            .map_err(|_| {
+                ApiError::Invalid(
+                    "child principal cannot cover its committed disbursement fee".into(),
+                )
+            })?
+        };
+        live_cohorts.push(CohortObservation {
+            generation: cohort.generation,
+            child_neuron_id: cohort.child_neuron_id,
+            physical_principal_e8s: physical,
+            net_backing_e8s: net,
+            ready_at_seconds: cohort.ready_at_seconds,
+            proof: cohort.proof,
+        });
+    }
+    if state::read() != snapshot {
+        return Err(ApiError::Busy);
+    }
+    let (live_child_physical_principal_e8s, live_child_net_backing_e8s) = live_cohorts
+        .iter()
+        .try_fold((0u128, 0u128), |(physical, net), cohort| {
+            Ok::<_, ApiError>((
+                physical
+                    .checked_add(cohort.physical_principal_e8s)
+                    .ok_or_else(|| {
+                        ApiError::Invalid("cohort physical principal overflow".into())
+                    })?,
+                net.checked_add(cohort.net_backing_e8s)
+                    .ok_or_else(|| ApiError::Invalid("cohort net backing overflow".into()))?,
+            ))
+        })?;
+    let live_child_committed_fee_liability_e8s = live_child_physical_principal_e8s
+        .checked_sub(live_child_net_backing_e8s)
+        .ok_or_else(|| ApiError::Invalid("cohort fee liability underflow".into()))?;
+    let pooled_parent_principal_e8s = parent
+        .as_ref()
+        .map_or(0, |value| value.physical_principal_e8s);
+    let transit_backing_e8s = transit_backing(&snapshot, pooled_parent_principal_e8s)?;
+    let active_operation_sequence = active_operation_sequence(&snapshot);
+    let oldest_ready_at_seconds = live_cohorts
+        .iter()
+        .map(|cohort| cohort.ready_at_seconds)
+        .min();
+    let encoded = candid::encode_one((
+        &parent,
+        &pool_staking_account,
+        snapshot.config.minimum_parent_stake_e8s,
+        pooled_parent_principal_e8s,
+        &live_cohorts,
+        live_child_physical_principal_e8s,
+        live_child_net_backing_e8s,
+        live_child_committed_fee_liability_e8s,
+        transit_backing_e8s,
+        active_operation_sequence,
+        snapshot
+            .last_completed_pool
+            .as_ref()
+            .map(|completed| completed.permit.operation_sequence),
+        snapshot.control_epoch,
+    ))
+    .map_err(|error| ApiError::Invalid(format!("observation fingerprint failed: {error}")))?;
+    let result = ClaimAssetObservation {
+        parent,
+        pool_staking_account,
+        minimum_parent_stake_e8s: snapshot.config.minimum_parent_stake_e8s,
+        pooled_parent_principal_e8s,
+        live_cohorts,
+        live_child_physical_principal_e8s,
+        live_child_net_backing_e8s,
+        live_child_committed_fee_liability_e8s,
+        transit_backing_e8s,
+        active_operation_sequence,
+        last_completed_pool_operation_sequence: snapshot
+            .last_completed_pool
+            .as_ref()
+            .map(|completed| completed.permit.operation_sequence),
+        control_epoch: snapshot.control_epoch,
+        fingerprint: Sha256::digest(encoded).to_vec(),
+        oldest_ready_at_seconds,
+    };
+    result.validate().map_err(ApiError::Invalid)?;
+    Ok(result)
+}
+
+pub async fn observe_pool_policy() -> Result<PoolPolicyObservation, ApiError> {
+    let snapshot = state::read();
+    pool_policy_observation(&snapshot).await
+}
+
+async fn require_pool_policy(snapshot: &crate::state::NnsStateV1) -> Result<(), ApiError> {
+    match pool_policy_observation(snapshot).await {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            let mut latest = state::read();
+            if latest == *snapshot {
+                latest.lifecycle = Lifecycle::Paused;
+                state::write(latest);
+            }
+            Err(error)
+        }
+    }
+}
+
+async fn pool_policy_observation(
+    snapshot: &crate::state::NnsStateV1,
+) -> Result<PoolPolicyObservation, ApiError> {
     let parent = match snapshot.pooled_parent_id {
         Some(parent_id) => {
             let observed = execution::query_neuron_observation(&snapshot.config, parent_id).await?;
@@ -549,10 +780,8 @@ pub async fn observe_claim_backing() -> Result<ClaimBackingObservation, ApiError
                 },
             )
             .map_err(ApiError::Invalid)?;
-            Some(ParentObservation {
+            Some(ParentPolicyObservation {
                 neuron_id: parent_id,
-                staking_account: execution::staking_account(&snapshot.config, &observed.snapshot),
-                principal_e8s: observed.snapshot.cached_stake_e8s,
                 dissolve_delay_seconds: POOLED_PARENT_DELAY_SECONDS,
                 auto_stake_maturity: observed.auto_stake_maturity,
                 follow_policy: FollowPolicy {
@@ -560,108 +789,44 @@ pub async fn observe_claim_backing() -> Result<ClaimBackingObservation, ApiError
                 },
                 voting_power_refreshed_at_seconds: observed
                     .voting_power_refreshed_timestamp_seconds
+                    .filter(|timestamp| *timestamp > 0)
                     .ok_or_else(|| {
-                        ApiError::Pending("pooled parent voting power was not refreshed".into())
+                        ApiError::Pending("pooled parent voting power is stale".into())
                     })?,
             })
         }
         None => None,
     };
-    if state::read() != snapshot {
+    if state::read() != *snapshot {
         return Err(ApiError::Busy);
     }
-    let live_cohorts = snapshot
-        .live_cohorts
-        .iter()
-        .map(|cohort| CohortObservation {
-            generation: cohort.generation,
-            child_neuron_id: cohort.child_neuron_id,
-            principal_e8s: if matches!(
-                cohort.proof,
-                CohortProofState::Dissolving | CohortProofState::DisbursementSubmitted
-            ) {
-                cohort.principal_e8s
-            } else {
-                0
-            },
-            ready_at_seconds: cohort.ready_at_seconds,
-            proof: cohort.proof,
-        })
-        .collect::<Vec<_>>();
-    let unwinding_principal_e8s = live_cohorts.iter().try_fold(0u128, |total, cohort| {
-        total
-            .checked_add(cohort.principal_e8s)
-            .ok_or_else(|| ApiError::Invalid("cohort backing overflow".into()))
-    })?;
-    let pooled_principal_e8s = parent.as_ref().map_or(0, |value| value.principal_e8s);
-    let transit_backing_e8s = transit_backing(&snapshot, pooled_principal_e8s)?;
-    let active_operation_sequence = match &snapshot.active_operation {
+    let active_operation_sequence = active_operation_sequence(snapshot);
+    let encoded = candid::encode_one((&parent, snapshot.control_epoch, active_operation_sequence))
+        .map_err(|error| ApiError::Invalid(format!("policy fingerprint failed: {error}")))?;
+    let result = PoolPolicyObservation {
+        parent,
+        control_epoch: snapshot.control_epoch,
+        active_operation_sequence,
+        fingerprint: Sha256::digest(encoded).to_vec(),
+    };
+    result.validate().map_err(ApiError::Invalid)?;
+    Ok(result)
+}
+
+fn active_operation_sequence(snapshot: &crate::state::NnsStateV1) -> u64 {
+    match &snapshot.active_operation {
         Some(NnsOperation::Jupiter(value)) => value.operation_sequence,
         Some(NnsOperation::Maturity(value)) => value.operation_sequence,
         Some(NnsOperation::Pool(value)) => value.permit.operation_sequence,
         Some(NnsOperation::Unwind(value)) => value.operation_sequence,
         None => 0,
-    };
-    let active_unwind_generation = match &snapshot.active_operation {
-        Some(NnsOperation::Unwind(value)) if !matches!(value.phase, UnwindPhase::SplitPrepared) => {
-            Some(value.generation)
-        }
-        _ => None,
-    };
-    let oldest_ready_at_seconds = live_cohorts
-        .iter()
-        .map(|cohort| cohort.ready_at_seconds)
-        .min();
-    let encoded = candid::encode_one((
-        &parent,
-        &permanent_staking_account,
-        &pool_staking_account,
-        snapshot.config.minimum_parent_stake_e8s,
-        pooled_principal_e8s,
-        &live_cohorts,
-        unwinding_principal_e8s,
-        transit_backing_e8s,
-        active_operation_sequence,
-        snapshot
-            .last_completed_pool
-            .as_ref()
-            .map(|completed| completed.permit.operation_sequence),
-        active_unwind_generation,
-        snapshot.control_epoch,
-    ))
-    .map_err(|error| ApiError::Invalid(format!("observation fingerprint failed: {error}")))?;
-    let result = ClaimBackingObservation {
-        parent,
-        permanent_staking_account,
-        pool_staking_account,
-        minimum_parent_stake_e8s: snapshot.config.minimum_parent_stake_e8s,
-        pooled_principal_e8s,
-        live_cohorts,
-        unwinding_principal_e8s,
-        transit_backing_e8s,
-        active_operation_sequence,
-        last_completed_pool_operation_sequence: snapshot
-            .last_completed_pool
-            .as_ref()
-            .map(|completed| completed.permit.operation_sequence),
-        active_unwind_generation,
-        control_epoch: snapshot.control_epoch,
-        fingerprint: Sha256::digest(encoded).to_vec(),
-        oldest_ready_at_seconds,
-    };
-    result.validate().map_err(ApiError::Invalid)?;
-    Ok(result)
+    }
 }
 
 fn transit_backing(
     snapshot: &crate::state::NnsStateV1,
     observed_parent_principal_e8s: u128,
 ) -> Result<u128, ApiError> {
-    if has_ambiguous_backing_effect(snapshot) {
-        return Err(ApiError::Pending(
-            "claim backing has an ambiguous submitted monetary effect".into(),
-        ));
-    }
     let backing = match &snapshot.active_operation {
         Some(NnsOperation::Pool(command))
             if !matches!(command.phase, PoolCommandPhase::AwaitingTransfer) =>
@@ -690,7 +855,15 @@ fn transit_backing(
                     .checked_sub(snapshot.config.expected_icp_fee_e8s)
                     .ok_or_else(|| ApiError::Invalid("unwind transit underflow".into()))?
             } else {
-                command.principal_e8s
+                io_nns_types::backing::net_committed_child_backing(
+                    command.principal_e8s,
+                    snapshot.config.expected_icp_fee_e8s,
+                )
+                .map_err(|_| {
+                    ApiError::Invalid(
+                        "committed unwind transit cannot cover its future disbursement fee".into(),
+                    )
+                })?
             }
         }
         Some(NnsOperation::Jupiter(command))

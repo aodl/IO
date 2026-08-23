@@ -112,12 +112,18 @@ pub fn validate_parent_configuration(
                 POOLED_PARENT_DELAY_SECONDS,
             ))
         && exact_following
+        && observation
+            .voting_power_refreshed_timestamp_seconds
+            .is_some_and(|timestamp| timestamp > 0)
     {
         Ok(())
     } else {
         Err(format!(
-            "pooled parent configuration drifted: dissolve_state={:?}, auto_stake={}, followees={:?}",
-            observation.dissolve_state, observation.auto_stake_maturity, observation.followees
+            "pooled parent configuration drifted: dissolve_state={:?}, auto_stake={}, followees={:?}, voting_power_refreshed_at={:?}",
+            observation.dissolve_state,
+            observation.auto_stake_maturity,
+            observation.followees,
+            observation.voting_power_refreshed_timestamp_seconds
         ))
     }
 }
@@ -845,7 +851,7 @@ pub async fn prepare_jupiter_claim_receipt(
     deposit_block: u128,
     liquid_e8s: u128,
 ) -> Result<StreamReceiptPermit, ApiError> {
-    let observation = crate::api::observe_claim_backing().await?;
+    let observation = crate::api::observe_claim_assets().await?;
     prepare_claim_receipt(
         config,
         PrepareClaimBackingReceiptArgs {

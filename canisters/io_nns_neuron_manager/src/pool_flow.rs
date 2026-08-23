@@ -1,7 +1,7 @@
 use io_ledger_boundary::{exact_icp_transfer, icp_account_identifier};
 use io_nns_types::backing::{
     CompletedPoolCommand, FollowPolicy, PoolCommand, PoolCommandKind, PoolCommandPhase,
-    POOLED_PARENT_DELAY_SECONDS,
+    PoolTargetResult, POOLED_PARENT_DELAY_SECONDS,
 };
 
 use crate::{
@@ -59,6 +59,11 @@ pub async fn resume(mut operation: PoolCommand) -> Result<PoolProgress, ApiError
                 )
                 .await?;
                 ensure(&operation)?;
+                if validate_follow_target(parent_id, state::read().config.pooled_parent_followee_id)
+                    .is_err()
+                {
+                    return fail_self_follow(operation, parent_id);
+                }
                 operation.parent_neuron_id = Some(parent_id);
                 operation.phase = PoolCommandPhase::ClaimSubmitted { block_index };
                 replace(operation.clone())?;
@@ -80,7 +85,7 @@ async fn prove_parent(mut operation: PoolCommand) -> Result<PoolProgress, ApiErr
     let parent_id = operation.parent_neuron_id.ok_or(ApiError::Busy)?;
     let observed = execution::query_neuron_observation(&state::read().config, parent_id).await?;
     ensure(&operation)?;
-    if observed.snapshot.cached_stake_e8s != operation.permit.expected_credit_e8s
+    if observed.snapshot.cached_stake_e8s < operation.permit.expected_credit_e8s
         || execution::staking_account(&state::read().config, &observed.snapshot)
             != operation.permit.destination
     {
@@ -96,6 +101,9 @@ async fn prove_parent(mut operation: PoolCommand) -> Result<PoolProgress, ApiErr
 async fn configure_delay(mut operation: PoolCommand) -> Result<PoolProgress, ApiError> {
     let parent_id = operation.parent_neuron_id.ok_or(ApiError::Busy)?;
     let current = state::read();
+    if validate_follow_target(parent_id, current.config.pooled_parent_followee_id).is_err() {
+        return fail_self_follow(operation, parent_id);
+    }
     let observed = execution::query_neuron_observation(&current.config, parent_id).await?;
     ensure(&operation)?;
     let Some(DissolveState::DissolveDelaySeconds(delay)) = observed.dissolve_state else {
@@ -122,6 +130,11 @@ async fn prove_delay(
 ) -> Result<PoolProgress, ApiError> {
     let parent_id = operation.parent_neuron_id.ok_or(ApiError::Busy)?;
     let current = state::read();
+    let follow_policy =
+        match guarded_follow_policy(parent_id, current.config.pooled_parent_followee_id) {
+            Ok(policy) => policy,
+            Err(_) => return fail_self_follow(operation, parent_id),
+        };
     let observed = execution::query_neuron_observation(&current.config, parent_id).await?;
     ensure(&operation)?;
     if observed.dissolve_state != Some(DissolveState::DissolveDelaySeconds(expected_delay_seconds))
@@ -132,14 +145,7 @@ async fn prove_delay(
     }
     operation.phase = PoolCommandPhase::FollowingSubmitted;
     replace(operation.clone())?;
-    execution::set_following(
-        &current.config,
-        parent_id,
-        FollowPolicy {
-            followee_neuron_id: current.config.pooled_parent_followee_id,
-        },
-    )
-    .await?;
+    execution::set_following(&current.config, parent_id, follow_policy).await?;
     Ok(progress(&operation))
 }
 
@@ -176,7 +182,7 @@ async fn complete_refresh(operation: PoolCommand) -> Result<PoolProgress, ApiErr
         .expected_parent_principal_e8s
         .checked_add(operation.permit.expected_credit_e8s)
         .ok_or_else(|| ApiError::Invalid("pooled parent proof overflow".into()))?;
-    if observed.snapshot.cached_stake_e8s != expected {
+    if observed.snapshot.cached_stake_e8s < expected {
         return Err(ApiError::Pending(
             "pooled parent credit is not proved".into(),
         ));
@@ -206,14 +212,21 @@ async fn complete_refresh(operation: PoolCommand) -> Result<PoolProgress, ApiErr
             "completed pool command did not reach its exact target".into(),
         ));
     }
-    target.status = crate::state::PooledTargetStatus::AtTarget;
+    let actual = observed.snapshot.cached_stake_e8s;
+    let target_status = if actual == expected {
+        target.status = crate::state::PooledTargetStatus::AtTarget;
+        PoolTargetResult::AtTarget
+    } else {
+        target.status = crate::state::PooledTargetStatus::OverTarget;
+        PoolTargetResult::OverTarget
+    };
     latest.last_completed_pool = Some(CompletedPoolCommand {
         permit: operation.permit.clone(),
         transfer_block_index: operation
             .transfer_block_index
             .ok_or_else(|| ApiError::Invalid("pool transfer proof was not retained".into()))?,
         parent_neuron_id: parent_id,
-        principal_e8s: expected,
+        principal_e8s: actual,
     });
     latest.active_operation = None;
     latest.control_epoch = latest
@@ -223,7 +236,37 @@ async fn complete_refresh(operation: PoolCommand) -> Result<PoolProgress, ApiErr
     state::write(latest);
     Ok(PoolProgress::Completed {
         parent_neuron_id: parent_id,
-        principal_e8s: expected,
+        principal_e8s: actual,
+        target_status,
+    })
+}
+
+fn fail_self_follow(operation: PoolCommand, parent_id: u64) -> Result<PoolProgress, ApiError> {
+    let mut latest = state::read();
+    if matches!(&latest.active_operation, Some(NnsOperation::Pool(active)) if active == &operation)
+    {
+        latest.lifecycle = crate::state::Lifecycle::Paused;
+        state::write(latest);
+    }
+    Err(ApiError::Invalid(format!(
+        "pooled parent {parent_id} equals the configured followee; choose a different pre-launch memo or followee"
+    )))
+}
+
+fn validate_follow_target(parent_id: u64, followee_id: u64) -> Result<(), String> {
+    if parent_id == followee_id {
+        Err(format!(
+            "pooled parent {parent_id} equals the configured followee; choose a different pre-launch memo or followee"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn guarded_follow_policy(parent_id: u64, followee_id: u64) -> Result<FollowPolicy, String> {
+    validate_follow_target(parent_id, followee_id)?;
+    Ok(FollowPolicy {
+        followee_neuron_id: followee_id,
     })
 }
 
@@ -253,5 +296,34 @@ fn progress(operation: &PoolCommand) -> PoolProgress {
             PoolProgress::AwaitingTransfer(operation.permit.clone())
         }
         _ => PoolProgress::AwaitingProof,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{guarded_follow_policy, validate_follow_target};
+    use std::cell::Cell;
+
+    #[test]
+    fn pooled_parent_self_follow_is_rejected_before_following() {
+        assert!(validate_follow_target(42, 42)
+            .unwrap_err()
+            .contains("different pre-launch memo or followee"));
+        assert_eq!(validate_follow_target(42, 43), Ok(()));
+    }
+
+    #[test]
+    fn controlled_follow_submitter_is_not_called_for_self_follow() {
+        let submissions = Cell::new(0);
+        if let Ok(policy) = guarded_follow_policy(42, 42) {
+            submissions.set(submissions.get() + 1);
+            assert_eq!(policy.followee_neuron_id, 42);
+        }
+        assert_eq!(submissions.get(), 0);
+
+        let policy = guarded_follow_policy(42, 43).unwrap();
+        submissions.set(submissions.get() + 1);
+        assert_eq!(policy.followee_neuron_id, 43);
+        assert_eq!(submissions.get(), 1);
     }
 }

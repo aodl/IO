@@ -15,7 +15,7 @@ use crate::{
 pub use io_accounts::Account;
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
-pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 4;
+pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 5;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct StreamConfig {
@@ -256,6 +256,7 @@ pub enum StructuralStakeState {
 pub enum BackingRewardStatus {
     ActiveEligible { eligible_from_event: u64 },
     ActiveIneligible,
+    ExitPrepared { generation: u64 },
     ExitCommitted { generation: u64 },
     ExitObserved,
     ReentryPending { eligible_from_event: u64 },
@@ -269,7 +270,6 @@ pub struct BackingRewardRecord {
     pub accumulated_eligible_credit: u128,
     pub latest_structural_state: StructuralStakeState,
     pub status: BackingRewardStatus,
-    pub unresolved_cohort_generation: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -308,14 +308,11 @@ pub fn validate_backing_registry(
             || account.owner != config.sns_governance
             || account.subaccount.as_slice() != record.sns_neuron_id
             || !accounts.insert(account)
-            || match (&record.status, record.unresolved_cohort_generation) {
-                (BackingRewardStatus::ExitCommitted { generation }, Some(bound)) => {
-                    *generation != bound || bound == 0
-                }
-                (BackingRewardStatus::ExitCommitted { .. }, None) => true,
-                (_, Some(_)) => true,
-                (_, None) => false,
-            }
+            || matches!(
+                record.status,
+                BackingRewardStatus::ExitPrepared { generation: 0 }
+                    | BackingRewardStatus::ExitCommitted { generation: 0 }
+            )
         {
             return Err("backing/reward registry is malformed or unsorted".into());
         }
@@ -341,6 +338,7 @@ pub struct StreamStateV1 {
     pub neuron_registry: Vec<BackingRewardRecord>,
     pub stake_observation_due: bool,
     pub latest_reconciliation_checkpoint: Option<ReconciliationCheckpoint>,
+    pub prepared_exit_reconciliation: Option<io_nns_types::backing::PreparePoolReconciliationArgs>,
     pub latest_reconciliation_generation: u64,
     pub latest_entitlement_batch_generation: u64,
     pub next_operation_sequence: OperationSequence,
@@ -389,6 +387,7 @@ impl StreamStateV1 {
             neuron_registry: Vec::new(),
             stake_observation_due: true,
             latest_reconciliation_checkpoint: None,
+            prepared_exit_reconciliation: None,
             latest_reconciliation_generation: 0,
             latest_entitlement_batch_generation: 0,
             next_operation_sequence: OperationSequence(0),
@@ -453,6 +452,45 @@ impl StreamStateV1 {
         }
         self.reward_checkpoint.validate(&self.config)?;
         validate_backing_registry(&self.neuron_registry, &self.config)?;
+        let prepared_generations = self
+            .neuron_registry
+            .iter()
+            .filter_map(|record| match record.status {
+                BackingRewardStatus::ExitPrepared { generation } => Some(generation),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        match &self.prepared_exit_reconciliation {
+            Some(request)
+                if request.generation == 0
+                    || request.snapshot_fingerprint.len() != 32
+                    || request.fee_e8s != self.config.expected_icp_fee_e8s
+                    || request.memo.is_empty()
+                    || request.memo.len() > 32
+                    || request.created_at_time_nanos == 0
+                    || self.latest_reconciliation_checkpoint.as_ref().is_none_or(
+                        |checkpoint| {
+                            checkpoint.generation != request.generation
+                                || checkpoint.pooled_target_e8s != request.target_e8s
+                        },
+                    )
+                    || !matches!(
+                        request.action,
+                        io_nns_types::backing::PoolReconciliationAction::Unwind {
+                            expected_gross_e8s
+                        } if expected_gross_e8s > 0
+                    )
+                    || prepared_generations
+                        .iter()
+                        .any(|generation| *generation != request.generation) =>
+            {
+                return Err("prepared exit reconciliation is inconsistent".into());
+            }
+            None if !prepared_generations.is_empty() => {
+                return Err("prepared exit members lack their exact NNS request".into());
+            }
+            _ => {}
+        }
         if self
             .latest_reconciliation_checkpoint
             .as_ref()
@@ -791,6 +829,37 @@ mod tests {
         launch_schema_marker: u8,
         config: StreamConfig,
         lifecycle: Lifecycle,
+        active_operation: Option<StreamOperation>,
+        reward_checkpoint: RewardCheckpoint,
+        pending_entitlement_batch: Option<PendingEntitlementBatch>,
+        neuron_registry: Vec<PriorBackingRewardRecord>,
+        stake_observation_due: bool,
+        latest_reconciliation_checkpoint: Option<ReconciliationCheckpoint>,
+        latest_reconciliation_generation: u64,
+        latest_entitlement_batch_generation: u64,
+        next_operation_sequence: OperationSequence,
+        control_epoch: u64,
+        last_completed_claim_receipt: Option<CompletedClaimBackingReceipt>,
+    }
+
+    #[derive(CandidType)]
+    struct PriorBackingRewardRecord {
+        sns_neuron_id: Vec<u8>,
+        staking_account: Account,
+        accumulated_eligible_credit: u128,
+        latest_structural_state: StructuralStakeState,
+        status: PriorBackingRewardStatus,
+        unresolved_cohort_generation: Option<u64>,
+    }
+
+    #[derive(CandidType)]
+    enum PriorBackingRewardStatus {
+        ActiveEligible { eligible_from_event: u64 },
+        ActiveIneligible,
+        ExitCommitted { generation: u64 },
+        ExitObserved,
+        ReentryPending { eligible_from_event: u64 },
+        Inactive,
     }
 
     #[derive(CandidType)]
@@ -843,6 +912,7 @@ mod tests {
                 neuron_registry: Vec::new(),
                 stake_observation_due: true,
                 latest_reconciliation_checkpoint: None,
+                prepared_exit_reconciliation: None,
                 latest_reconciliation_generation: 0,
                 latest_entitlement_batch_generation: 0,
                 next_operation_sequence: OperationSequence(1),
@@ -866,7 +936,6 @@ mod tests {
             status: BackingRewardStatus::ActiveEligible {
                 eligible_from_event: 1,
             },
-            unresolved_cohort_generation: None,
         }
     }
 
@@ -881,15 +950,53 @@ mod tests {
 
     #[test]
     fn prior_and_future_launch_shapes_are_rejected() {
+        let _complete_prior_status_shape = (
+            PriorBackingRewardStatus::ActiveEligible {
+                eligible_from_event: 1,
+            },
+            PriorBackingRewardStatus::ActiveIneligible,
+            PriorBackingRewardStatus::ExitObserved,
+            PriorBackingRewardStatus::ReentryPending {
+                eligible_from_event: 1,
+            },
+            PriorBackingRewardStatus::Inactive,
+        );
         let (_, state) = valid_state();
         let prior = PriorStableStreamState::V1(PriorStreamState {
             launch_schema_marker: LAUNCH_SCHEMA_MARKER - 1,
             config: state.config.clone(),
             lifecycle: Lifecycle::Paused,
+            active_operation: state.active_operation.clone(),
+            reward_checkpoint: state.reward_checkpoint.clone(),
+            pending_entitlement_batch: state.pending_entitlement_batch.clone(),
+            neuron_registry: vec![PriorBackingRewardRecord {
+                sns_neuron_id: vec![1; 32],
+                staking_account: Account {
+                    owner: state.config.sns_governance,
+                    subaccount: Some(vec![1; 32]),
+                },
+                accumulated_eligible_credit: 0,
+                latest_structural_state: StructuralStakeState::Dissolving,
+                status: PriorBackingRewardStatus::ExitCommitted { generation: 1 },
+                unresolved_cohort_generation: Some(1),
+            }],
+            stake_observation_due: state.stake_observation_due,
+            latest_reconciliation_checkpoint: state.latest_reconciliation_checkpoint.clone(),
+            latest_reconciliation_generation: state.latest_reconciliation_generation,
+            latest_entitlement_batch_generation: state.latest_entitlement_batch_generation,
+            next_operation_sequence: state.next_operation_sequence,
+            control_epoch: state.control_epoch,
+            last_completed_claim_receipt: state.last_completed_claim_receipt.clone(),
         });
-        assert!(
-            candid::decode_one::<StableStreamState>(&candid::encode_one(prior).unwrap()).is_err()
-        );
+        let prior = candid::encode_one(prior).unwrap();
+        let prior_is_rejected = match candid::decode_one::<StableStreamState>(&prior) {
+            Err(_) => true,
+            Ok(decoded) => decoded
+                .into_v1()
+                .validate(state.config.io_reserve.owner)
+                .is_err(),
+        };
+        assert!(prior_is_rejected);
         let future = FutureStableStreamState::V2(state);
         assert!(
             candid::decode_one::<StableStreamState>(&candid::encode_one(future).unwrap()).is_err()
@@ -921,5 +1028,61 @@ mod tests {
         state.lifecycle = Lifecycle::Ready;
         state.lifecycle = Lifecycle::Paused;
         assert_eq!(state.lifecycle, Lifecycle::Paused);
+    }
+
+    #[test]
+    fn prepared_exit_generation_round_trips_upgrade_and_reopens_paused() {
+        let (canister_self, mut state) = valid_state();
+        state.lifecycle = Lifecycle::Ready;
+        state.latest_reconciliation_generation = 1;
+        state.latest_reconciliation_checkpoint = Some(ReconciliationCheckpoint {
+            generation: 1,
+            event_marker: 1,
+            observed_at_nanos: 1,
+            claim_supply_e8s: 100,
+            liquid_backing_e8s: 100,
+            pooled_backing_e8s: 0,
+            unwinding_backing_e8s: 0,
+            transit_backing_e8s: 0,
+            total_claim_backing_e8s: 100,
+            active_backing_io_e8s: 50,
+            active_reward_io_e8s: 0,
+            live_cohort_count: 0,
+            oldest_ready_at_seconds: None,
+            pooled_target_e8s: 50,
+            observed_pooled_e8s: 100,
+            snapshot_fingerprint: vec![1; 32],
+        });
+        state.neuron_registry = vec![BackingRewardRecord {
+            sns_neuron_id: vec![1; 32],
+            staking_account: Account {
+                owner: state.config.sns_governance,
+                subaccount: Some(vec![1; 32]),
+            },
+            accumulated_eligible_credit: 7,
+            latest_structural_state: StructuralStakeState::Dissolving,
+            status: BackingRewardStatus::ExitPrepared { generation: 1 },
+        }];
+        state.prepared_exit_reconciliation =
+            Some(io_nns_types::backing::PreparePoolReconciliationArgs {
+                generation: 1,
+                target_e8s: 50,
+                action: io_nns_types::backing::PoolReconciliationAction::Unwind {
+                    expected_gross_e8s: 50,
+                },
+                fee_e8s: state.config.expected_icp_fee_e8s,
+                snapshot_fingerprint: vec![2; 32],
+                memo: vec![3],
+                created_at_time_nanos: 1,
+            });
+        initialize(state.clone(), canister_self).unwrap();
+        reopen(canister_self);
+        let reopened = read();
+        assert_eq!(reopened.lifecycle, Lifecycle::Paused);
+        assert_eq!(reopened.neuron_registry, state.neuron_registry);
+        assert_eq!(
+            reopened.prepared_exit_reconciliation,
+            state.prepared_exit_reconciliation
+        );
     }
 }
