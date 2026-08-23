@@ -106,7 +106,7 @@ cargo run -p xtask -- validate_local_sns_scripts
 
 `validate_local_sns_rehearsal` checks the package structure and local-only guardrails.
 
-`validate_local_sns_ledger` checks the committed completed local evidence file. The `production-redemption-v1` schema binds the canonical SNS/dapp IDs, exact source and module hashes, reserve/redemption identities and blocks, ledger negative behavior, index histories, explicit no-archive observation, governance proposal IDs, two-neuron readiness fixture, lifecycle results and one-day reward observation. The older detailed transfer-cycle schema remains accepted for historical packages.
+`validate_local_sns_ledger` reports `corrected pooled-claim-backing rehearsal evidence missing` until a fresh authorized rehearsal produces the ignored root evidence file. The incomplete example uses the pooled architecture and cannot validate as completed evidence. Old `production-redemption-v1`, seeded-principal, 252,460,800-second reward-backing evidence remains immutable only under dated `evidence/` history and is not active readiness authority.
 
 `validate_local_sns_scripts` copies the operator scripts to a temp directory, writes fixture local variables and completed local evidence, runs the no-network executable paths, and checks positive and negative guardrails. It does not call canisters and does not require the dfx SNS extension.
 

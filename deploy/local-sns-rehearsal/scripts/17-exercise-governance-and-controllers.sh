@@ -184,7 +184,7 @@ if ! phase_is_done 17-nns-activated; then
   require_file "$fixture"
   observation="$(dfx canister call --network "$network_url" --identity "$identity" --candid \
     "${REPO_ROOT}/canisters/io_nns_neuron_manager/io_nns_neuron_manager.did" \
-    "$nns_manager" observe_claim_backing '()')"
+    "$nns_manager" observe_claim_assets '()')"
   printf '%s\n' "$observation" >> "$log_file"
   printf '%s' "$observation" | grep -q 'parent_exists = false' || {
     record_blocker 'pooled parent must remain absent until existing liquid backing bootstraps it'

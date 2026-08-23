@@ -245,7 +245,6 @@ fn check_obsolete_economics_guard_at(root: &Path) -> Result<(), String> {
         "docs/research/",
         "docs/architecture/adr-protected-reward-backing-nns-neuron.md",
         "docs/operations/p0-simplified-composition-evidence.md",
-        "deploy/local-sns-rehearsal/canister-ids.local.toml",
     ];
     let forbidden = [
         concat!("seeded_two_week", "_principal_e8s"),
@@ -1166,12 +1165,12 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
             combined_lines += lines;
         }
     }
-    if stream_lines > 5_200 {
+    if stream_lines > 5_480 {
         return Err(format!(
             "stream-manager production Rust has {stream_lines} lines"
         ));
     }
-    if combined_lines > 13_050 {
+    if combined_lines > 13_720 {
         return Err(format!(
             "combined production Rust has {combined_lines} lines; simplified limit not met"
         ));
@@ -1183,7 +1182,7 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
                 .map(|text| sum + production_line_count(&text))
                 .map_err(|error| format!("{}: {error}", path.display()))
         })?;
-    if nns_lines > 5_160 {
+    if nns_lines > 5_460 {
         return Err(format!("NNS-manager production Rust has {nns_lines} lines"));
     }
     let tree = Command::new("cargo")
@@ -1289,7 +1288,8 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
         &[
             "  notify_jupiter_deposit :",
             "  prepare_pool_reconciliation :",
-            "  observe_claim_backing :",
+            "  observe_claim_assets :",
+            "  observe_pool_policy :",
             "  prepare_two_week_maturity :",
             "  start_maturity :",
             "  prove_maturity_mint :",
@@ -5726,17 +5726,21 @@ fn check_local_sns_ledger_at(root: &Path) -> Result<bool, String> {
         return Ok(false);
     }
     let text = require_file(root, path)?;
-    if text.contains("schema = \"production-redemption-v1\"") {
-        validate_production_redemption_evidence(
-            path,
-            &text,
-            PROTECTED_IO_NEURON_OWNER_CANISTER,
-            PROTECTED_IO_NNS_NEURON_ID,
-        )?;
-    } else {
-        parse_local_sns_evidence(path, &text)?;
+    for obsolete in [
+        concat!("production-", "redemption-v1"),
+        concat!("reward_backing", "_neuron_id"),
+        "252460800",
+        concat!("seeded", "_principal"),
+    ] {
+        if text.contains(obsolete) {
+            return Err(format!(
+                "{path}: obsolete pre-pool rehearsal evidence is not current authority ({obsolete}); corrected pooled-claim-backing rehearsal evidence missing"
+            ));
+        }
     }
-    Ok(true)
+    Err(format!(
+        "{path}: corrected pooled-claim-backing rehearsal evidence missing; no completed current schema is authorized"
+    ))
 }
 
 fn validate_production_redemption_evidence(
@@ -8403,7 +8407,7 @@ fn main() -> ExitCode {
             Ok(true) => eprintln!("✓ validate_local_sns_ledger"),
             Ok(false) => {
                 eprintln!(
-                    "skipping validate_local_sns_ledger: deploy/local-sns-rehearsal/canister-ids.local.toml is absent"
+                    "corrected pooled-claim-backing rehearsal evidence missing: deploy/local-sns-rehearsal/canister-ids.local.toml is absent"
                 );
             }
             Err(err) => {

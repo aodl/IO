@@ -91,6 +91,36 @@ fn temp_root(name: &str) -> PathBuf {
     root
 }
 
+#[test]
+fn obsolete_economics_guard_rejects_old_terms_from_active_root_files() {
+    for (index, term) in [
+        concat!("reward_backing", "_neuron_id"),
+        concat!("seeded_two_week", "_principal_e8s"),
+        concat!("two_week", "_receipt_source"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let root = temp_root(&format!("obsolete-active-{index}"));
+        write(&root, "deploy/local-sns-rehearsal/active.toml", term);
+        let error = check_obsolete_economics_guard_at(&root).unwrap_err();
+        assert!(error.contains("obsolete active assumption"), "{error}");
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
+fn obsolete_economics_guard_preserves_immutable_dated_history() {
+    let root = temp_root("obsolete-history");
+    write(
+        &root,
+        "deploy/local-sns-rehearsal/evidence/2026-01-01/history.toml",
+        concat!("reward_backing", "_neuron_id = 1\n"),
+    );
+    assert_eq!(check_obsolete_economics_guard_at(&root), Ok(()));
+    let _ = fs::remove_dir_all(root);
+}
+
 fn write(root: &Path, path: &str, text: &str) {
     let path = root.join(path);
     if let Some(parent) = path.parent() {
@@ -569,7 +599,7 @@ fn write_did_surface_fixture(root: &Path) {
     write(
             root,
             "canisters/io_nns_neuron_manager/io_nns_neuron_manager.did",
-            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  notify_jupiter_deposit : () -> ();\n  prepare_pool_reconciliation : () -> ();\n  observe_claim_backing : () -> ();\n  prepare_two_week_maturity : () -> ();\n  start_maturity : () -> ();\n  prove_maturity_mint : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;\n  get_status : () -> () query;\n}\n",
+            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  notify_jupiter_deposit : () -> ();\n  prepare_pool_reconciliation : () -> ();\n  observe_claim_assets : () -> ();\n  observe_pool_policy : () -> ();\n  prepare_two_week_maturity : () -> ();\n  start_maturity : () -> ();\n  prove_maturity_mint : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;\n  get_status : () -> () query;\n}\n",
         );
     write(
             root,
@@ -2072,11 +2102,12 @@ fn local_sns_ledger_check_skips_without_completed_evidence() {
 }
 
 #[test]
-fn local_sns_ledger_check_accepts_completed_evidence() {
+fn local_sns_ledger_check_rejects_old_completed_root_evidence() {
     let root = temp_root("local-sns-ledger-good");
     write_local_sns_rehearsal_fixture(&root);
     write_completed_local_sns_evidence(&root);
-    assert!(check_local_sns_ledger_at(&root).unwrap());
+    let error = check_local_sns_ledger_at(&root).unwrap_err();
+    assert!(error.contains("corrected pooled-claim-backing rehearsal evidence missing"));
     let _ = fs::remove_dir_all(root);
 }
 
@@ -2092,7 +2123,7 @@ fn local_sns_ledger_check_rejects_placeholders() {
     fs::write(&path, text).unwrap();
     assert!(check_local_sns_ledger_at(&root)
         .unwrap_err()
-        .contains("TODO_"));
+        .contains("corrected pooled-claim-backing rehearsal evidence missing"));
     let _ = fs::remove_dir_all(root);
 }
 
