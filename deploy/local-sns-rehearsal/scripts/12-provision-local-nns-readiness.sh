@@ -38,7 +38,7 @@ done
 expected_fee=10000
 two_year_stake=100000000
 two_year_nonce=42002
-approved_delay=252460800
+approved_delay=63115200
 pooled_parent_memo=42001
 minimum_parent_stake=100000000
 

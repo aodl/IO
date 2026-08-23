@@ -39,10 +39,11 @@ struct GovernanceState {
     maturity_preparation: Option<PrepareTwoWeekMaturityArgs>,
     reconcile_calls: u64,
     get_full_neuron_calls: u64,
+    pooled_principal_e8s: u128,
 }
 
 thread_local! {
-    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new(), two_week_target: None, maturity_preparation: None, reconcile_calls: 0, get_full_neuron_calls: 0 }) };
+    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new(), two_week_target: None, maturity_preparation: None, reconcile_calls: 0, get_full_neuron_calls: 0, pooled_principal_e8s: 0 }) };
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -78,20 +79,32 @@ pub enum NnsError {
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn observe_claim_backing() -> Result<io_nns_types::backing::ClaimBackingObservation, NnsError> {
     use io_accounts::Account;
-    use io_nns_types::backing::ClaimBackingObservation;
+    use io_nns_types::backing::{ClaimBackingObservation, FollowPolicy, ParentObservation};
     let owner = ic_cdk::api::canister_self();
+    let pool_staking_account = Account {
+        owner,
+        subaccount: Some(vec![2; 32]),
+    };
+    let pooled_principal_e8s = STATE.with(|cell| cell.borrow().pooled_principal_e8s);
     Ok(ClaimBackingObservation {
-        parent: None,
+        parent: (pooled_principal_e8s > 0).then(|| ParentObservation {
+            neuron_id: 1,
+            staking_account: pool_staking_account.clone(),
+            principal_e8s: pooled_principal_e8s,
+            dissolve_delay_seconds: io_nns_types::backing::POOLED_PARENT_DELAY_SECONDS,
+            auto_stake_maturity: false,
+            follow_policy: FollowPolicy {
+                followee_neuron_id: 1,
+            },
+            voting_power_refreshed_at_seconds: 1,
+        }),
         permanent_staking_account: Account {
             owner,
             subaccount: Some(vec![1; 32]),
         },
-        pool_staking_account: Account {
-            owner,
-            subaccount: Some(vec![2; 32]),
-        },
+        pool_staking_account,
         minimum_parent_stake_e8s: u128::MAX,
-        pooled_principal_e8s: 0,
+        pooled_principal_e8s,
         live_cohorts: Vec::new(),
         unwinding_principal_e8s: 0,
         transit_backing_e8s: 0,
@@ -102,6 +115,11 @@ pub fn observe_claim_backing() -> Result<io_nns_types::backing::ClaimBackingObse
         fingerprint: vec![42; 32],
         oldest_ready_at_seconds: None,
     })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_pooled_principal(pooled_principal_e8s: u128) {
+    STATE.with(|cell| cell.borrow_mut().pooled_principal_e8s = pooled_principal_e8s);
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]

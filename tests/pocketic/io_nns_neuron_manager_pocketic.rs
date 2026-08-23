@@ -277,7 +277,7 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
             CreateNeuronArgs {
                 neuron_id,
                 principal_e8s: 1_000_000,
-                dissolve_delay_seconds: 252_460_800,
+                dissolve_delay_seconds: 63_115_200,
             },
         );
     }

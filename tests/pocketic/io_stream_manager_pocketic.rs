@@ -50,6 +50,17 @@ struct GovernanceCallCounters {
     manage_neuron: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
+struct LedgerCallCounters {
+    fee: u64,
+    total_supply: u64,
+    balance: u64,
+    allowance: u64,
+    transfer: u64,
+    transfer_from: u64,
+    query_blocks: u64,
+}
+
 fn debug_wasm(name: &str) -> Vec<u8> {
     std::fs::read(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
@@ -241,6 +252,170 @@ fn simplified_stream_installs_paused_and_rejects_anonymous_before_funds_move() {
 }
 
 #[test]
+fn liquidity_shortfall_uses_only_scalar_claim_reads_and_pulls_no_io() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!(
+            "skipping Stream scalar-redemption PocketIC test because POCKET_IC_BIN is not set"
+        );
+        return;
+    }
+    let pic = PocketIc::new();
+    let io_ledger = install(&pic, "mock_io_ledger");
+    let icp_ledger = install(&pic, "mock_icp_ledger");
+    let root = install(&pic, "mock_sns_root");
+    let governance = install(&pic, "mock_sns_governance");
+    let nns = install(&pic, "mock_nns_governance");
+    let stream = pic.create_canister();
+    pic.add_cycles(stream, CYCLES);
+    let user = Principal::from_slice(&[88; 29]);
+    let reserve = Account {
+        owner: stream,
+        subaccount: None,
+    };
+    let liquid = Account {
+        owner: stream,
+        subaccount: Some(vec![1; 32]),
+    };
+    let user_account = Account {
+        owner: user,
+        subaccount: None,
+    };
+    let governance_hash = pic
+        .canister_status(governance, None)
+        .unwrap()
+        .module_hash
+        .unwrap();
+    let _: () = update(
+        &pic,
+        root,
+        Principal::anonymous(),
+        "debug_set_governance_principal",
+        governance,
+    );
+    update::<_, Result<(), String>>(
+        &pic,
+        root,
+        Principal::anonymous(),
+        "debug_set_governance_module_hash",
+        governance_hash.clone(),
+    )
+    .unwrap();
+    for (ledger, to, amount) in [
+        (io_ledger, reserve.clone(), 900_000_000_u128),
+        (io_ledger, user_account.clone(), 100_010_000),
+        (icp_ledger, liquid.clone(), 100_000),
+    ] {
+        let _: u64 = update(
+            &pic,
+            ledger,
+            Principal::anonymous(),
+            "debug_mint_account",
+            DebugMintAccountArgs {
+                to,
+                amount_e8s: amount,
+            },
+        );
+    }
+    let _: () = update(
+        &pic,
+        governance,
+        Principal::anonymous(),
+        "debug_add_neuron",
+        MockSnsNeuron {
+            neuron_id: 99,
+            staked_io_e8s: 10_000_000,
+            dissolve_delay_seconds: 1_209_601,
+            eligible_closed_proposals: 0,
+            voted_closed_proposals: 0,
+            is_genesis_governance_neuron: false,
+            is_protocol_owned: false,
+            is_dissolving: false,
+        },
+    );
+    let _: () = update(
+        &pic,
+        nns,
+        Principal::anonymous(),
+        "debug_set_pooled_principal",
+        1_000_000_u128,
+    );
+    pic.install_canister(
+        stream,
+        debug_wasm("io_stream_manager"),
+        encode_one(InitArgs {
+            config: StreamConfig {
+                io_ledger,
+                icp_ledger,
+                nns_manager: nns,
+                jupiter_receipt_source: Account {
+                    owner: nns,
+                    subaccount: Some(vec![7; 32]),
+                },
+                jupiter_io_account: Account {
+                    owner: Principal::from_slice(&[77; 29]),
+                    subaccount: None,
+                },
+                sns_governance: governance,
+                sns_root: root,
+                expected_sns_governance_module_hash: governance_hash,
+                approved_reward_event_duration_seconds: 86_400,
+                io_reserve: reserve,
+                liquid_icp: liquid,
+                nonredeemable_governance_io_accounts: Vec::new(),
+                minimum_redemption_io_e8s: 20_000,
+                expected_io_fee_e8s: 10_000,
+                expected_icp_fee_e8s: 10_000,
+                maximum_request_lifetime_nanos: 900_000_000_000,
+                retry_delay_nanos: 1_000_000_000,
+                ledger_deduplication_window_nanos: 86_400_000_000_000,
+            },
+        })
+        .unwrap(),
+        None,
+    );
+    update::<_, Result<(), ApiError>>(&pic, stream, governance, "set_paused", false).unwrap();
+    let governance_before: GovernanceCallCounters =
+        query(&pic, governance, "debug_get_call_counters");
+    let ledger_before: LedgerCallCounters = query(&pic, io_ledger, "debug_get_call_counters");
+    let now = pic.get_time().as_nanos_since_unix_epoch();
+    let result: Result<RedemptionProgress, ApiError> = update(
+        &pic,
+        stream,
+        user,
+        "redeem",
+        RedeemArgs {
+            from_subaccount: None,
+            io_amount_e8s: 100_000_000,
+            min_icp_out_e8s: 1,
+            max_io_fee_e8s: 10_000,
+            max_icp_fee_e8s: 10_000,
+            expires_at_nanos: now + 60_000_000_000,
+            nonce: 0,
+        },
+    );
+    assert!(
+        matches!(
+            result,
+            Err(ApiError::LiquidityShortfall {
+                available_liquid_e8s: 100_000,
+                ..
+            })
+        ),
+        "unexpected redemption result: {result:?}"
+    );
+    assert_eq!(
+        query::<GovernanceCallCounters>(&pic, governance, "debug_get_call_counters"),
+        governance_before,
+        "redemption must not list or inspect SNS neurons"
+    );
+    let ledger_after: LedgerCallCounters = query(&pic, io_ledger, "debug_get_call_counters");
+    assert_eq!(ledger_after.transfer_from, ledger_before.transfer_from);
+    assert!(query::<Status>(&pic, stream, "get_status")
+        .operation_kind
+        .is_none());
+}
+
+#[test]
 fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
     if std::env::var_os("POCKET_IC_BIN").is_none() {
         eprintln!("skipping Stream liveness PocketIC test because POCKET_IC_BIN is not set");
@@ -297,6 +472,22 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
             },
         );
     }
+    let _: () = update(
+        &pic,
+        governance,
+        Principal::anonymous(),
+        "debug_add_neuron",
+        MockSnsNeuron {
+            neuron_id: 7,
+            staked_io_e8s: 30_000_000,
+            dissolve_delay_seconds: 1_209_601,
+            eligible_closed_proposals: 1,
+            voted_closed_proposals: 1,
+            is_genesis_governance_neuron: false,
+            is_protocol_owned: false,
+            is_dissolving: false,
+        },
+    );
     let baseline_end = pic.get_time().as_nanos_since_unix_epoch() / 1_000_000_000;
     let baseline: Result<(), String> = update(
         &pic,
@@ -388,7 +579,16 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
     let unpaused: Result<(), ApiError> = update(&pic, stream, governance, "set_paused", false);
     unpaused.unwrap();
     let initial: Status = query(&pic, stream, "get_status");
-    assert!(!initial.reward_work_due);
+    assert!(initial.reward_work_due);
+    let initial_observation: Result<RewardEventObservation, ApiError> = update(
+        &pic,
+        stream,
+        Principal::anonymous(),
+        "resume_reward_work",
+        (),
+    );
+    initial_observation.unwrap();
+    assert!(!query::<Status>(&pic, stream, "get_status").reward_work_due);
 
     let governance_before: GovernanceCallCounters =
         query(&pic, governance, "debug_get_call_counters");
