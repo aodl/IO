@@ -197,6 +197,16 @@ async fn complete_refresh(operation: PoolCommand) -> Result<PoolProgress, ApiErr
     }
     latest.pooled_parent_id = Some(parent_id);
     latest.pooled_parent_staking_account = Some(operation.permit.destination.clone());
+    let target = latest
+        .latest_pooled_target
+        .as_mut()
+        .ok_or_else(|| ApiError::Invalid("completed pool command lacks its target".into()))?;
+    if target.target_e8s != expected {
+        return Err(ApiError::Invalid(
+            "completed pool command did not reach its exact target".into(),
+        ));
+    }
+    target.status = crate::state::PooledTargetStatus::AtTarget;
     latest.last_completed_pool = Some(CompletedPoolCommand {
         permit: operation.permit.clone(),
         transfer_block_index: operation
@@ -242,7 +252,6 @@ fn progress(operation: &PoolCommand) -> PoolProgress {
         PoolCommandPhase::AwaitingTransfer => {
             PoolProgress::AwaitingTransfer(operation.permit.clone())
         }
-        PoolCommandPhase::RefreshSubmitted => PoolProgress::AwaitingParentProof,
-        _ => PoolProgress::ConfiguringParent,
+        _ => PoolProgress::AwaitingProof,
     }
 }

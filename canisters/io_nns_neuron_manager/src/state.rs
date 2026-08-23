@@ -18,7 +18,7 @@ use {
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
 
-pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 3;
+pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct NnsConfig {
@@ -242,132 +242,93 @@ impl NnsStateV1 {
     }
 }
 
-fn validate_backing_inflow_delivery(
+fn validate_claim_receipt_delivery(
     kind: crate::maturity::MaturityKind,
-    delivery: &crate::maturity::BackingInflowDeliveryOperation,
+    delivery: &crate::maturity::ClaimReceiptDeliveryOperation,
     config: &NnsConfig,
 ) -> Result<(), String> {
     use io_nns_types::{
-        inflow::{effect_memo, BackingEffect, FrozenInflowEconomics},
+        receipt::receipt_memo,
         transfer::{NnsTransferAttempt, TransferState},
     };
-    use sha2::Digest;
 
-    let Some(permit) = &delivery.permit else {
-        if delivery.permanent_transfer.is_some()
-            || delivery.claim_transfer.is_some()
-            || delivery.stream_pooled_block.is_some()
-            || delivery.parent_credit_phase != crate::maturity::ParentCreditPhase::NotRequired
-        {
-            return Err("unpermitted backing inflow contains effect evidence".into());
-        }
-        return Ok(());
-    };
-    permit.validate()?;
     let crate::maturity::MintProofState::Delivering(mint) = &delivery.pending.mint_proof else {
-        return Err("backing inflow permit lacks a delivering Mint".into());
+        return Err("claim receipt lacks a delivering Mint".into());
     };
-    let economics_match = matches!(
-        (kind, &permit.economics),
-        (
-            crate::maturity::MaturityKind::TwoYear,
-            FrozenInflowEconomics::Permanent { .. }
-        ) | (
-            crate::maturity::MaturityKind::TwoWeek,
-            FrozenInflowEconomics::Pooled { .. }
-        )
-    );
-    let generation = delivery
-        .pending
-        .stake_evidence
-        .plan
-        .entitlement_batch_generation
-        .unwrap_or(delivery.pending.initiation_timestamp_seconds);
-    let source_operation_id = sha2::Sha256::digest(
-        candid::encode_one(&delivery.pending)
-            .map_err(|error| format!("maturity source evidence encode failed: {error}"))?,
-    )
-    .to_vec();
-    if !economics_match
-        || permit.actual_mint_e8s != mint.actual_minted_icp_e8s
-        || permit.mint_block != mint.mint_block
-        || permit.maturity_generation != generation
-        || permit.source_operation_id != source_operation_id
-        || !permit
-            .staging_account
-            .effective_eq(&config.maturity_staging)?
-        || permit.permanent_transfer_fee_e8s != config.expected_icp_fee_e8s
-        || permit.claim_transfer_fee_e8s != config.expected_icp_fee_e8s
-    {
-        return Err("backing-inflow permit differs from exact maturity evidence".into());
-    }
-
-    let validate_transfer = |attempt: &NnsTransferAttempt,
-                             effect: BackingEffect,
-                             destination: &Account,
-                             amount: u128,
-                             fee: u128|
-     -> Result<(), String> {
+    let validate_transfer = |attempt: &NnsTransferAttempt| -> Result<(), String> {
         attempt.validate()?;
         if attempt.intent.ledger != config.icp_ledger
             || attempt.intent.source_subaccount != config.maturity_staging.canonical()?.subaccount
-            || !attempt.intent.destination.effective_eq(destination)?
-            || attempt.intent.amount_e8s != amount
-            || attempt.intent.fee_e8s != fee
-            || attempt.intent.memo != effect_memo(&permit.source_operation_id, effect)
+            || attempt.intent.fee_e8s != config.expected_icp_fee_e8s
         {
-            return Err("backing-inflow transfer differs from its permit".into());
+            return Err("maturity transfer differs from canonical staging policy".into());
         }
         Ok(())
     };
     if let Some(transfer) = &delivery.permanent_transfer {
-        if permit.permanent_credit() == 0 {
-            return Err("zero permanent route contains a transfer".into());
+        validate_transfer(transfer)?;
+        let split = io_core_model::split_40_60(mint.actual_minted_icp_e8s)
+            .map_err(|error| format!("maturity split failed: {error:?}"))?;
+        let credit = split
+            .permanent
+            .checked_sub(config.expected_icp_fee_e8s)
+            .filter(|credit| *credit > 0)
+            .ok_or("permanent maturity leg cannot pay its fee")?;
+        if kind != crate::maturity::MaturityKind::TwoWeek
+            || transfer.intent.amount_e8s != credit
+            || transfer.intent.destination.owner != config.nns_governance
+            || transfer
+                .intent
+                .destination
+                .effective_eq(&config.stream_liquid_account)?
+        {
+            return Err("permanent maturity transfer is inconsistent".into());
         }
-        validate_transfer(
-            transfer,
-            BackingEffect::PermanentCredit,
-            &permit.permanent_destination,
-            permit.permanent_credit(),
-            permit.permanent_transfer_fee_e8s,
-        )?;
+    }
+    if kind == crate::maturity::MaturityKind::TwoWeek
+        && delivery.permanent_transfer.is_none()
+        && (delivery.permit.is_some() || delivery.claim_transfer.is_some())
+    {
+        return Err("pooled maturity claim transfer precedes permanent transfer".into());
+    }
+    let Some(permit) = &delivery.permit else {
+        if delivery.claim_transfer.is_some() {
+            return Err("unpermitted claim receipt contains transfer evidence".into());
+        }
+        return Ok(());
+    };
+    if permit.stream_operation_sequence == 0
+        || permit.amount_e8s == 0
+        || !permit
+            .destination
+            .effective_eq(&config.stream_liquid_account)?
+        || permit.memo
+            != receipt_memo(&crate::maturity_flow::maturity_source_operation_id(
+                &delivery.pending,
+            ))
+        || permit.request_fingerprint.is_empty()
+    {
+        return Err("claim receipt permit differs from maturity evidence".into());
     }
     if let Some(transfer) = &delivery.claim_transfer {
-        let route = permit.route();
-        validate_transfer(
-            transfer,
-            BackingEffect::FirstClaimCredit,
-            if route.route == io_reward_policy::ClaimRoute::AllPool {
-                &permit.pool_destination
-            } else {
-                &permit.liquid_destination
-            },
-            permit
-                .first_claim_credit()
-                .ok_or("claim transfer credit overflow")?,
-            permit.claim_transfer_fee_e8s,
-        )?;
+        validate_transfer(transfer)?;
+        if !transfer
+            .intent
+            .destination
+            .effective_eq(&permit.destination)?
+            || transfer.intent.amount_e8s != permit.amount_e8s
+            || transfer.intent.memo != permit.memo
+        {
+            return Err("claim transfer differs from its receipt permit".into());
+        }
     }
-    let route = permit.route().route;
-    let claim_succeeded = delivery
-        .claim_transfer
-        .as_ref()
-        .is_some_and(|attempt| matches!(attempt.state, TransferState::Succeeded { .. }));
-    let permanent_succeeded = delivery
-        .permanent_transfer
-        .as_ref()
-        .is_some_and(|attempt| matches!(attempt.state, TransferState::Succeeded { .. }));
-    if permit.permanent_credit() > 0 && delivery.claim_transfer.is_some() && !permanent_succeeded
-        || delivery.stream_pooled_block.is_some()
-            && (route != io_reward_policy::ClaimRoute::Mixed || !claim_succeeded)
-        || route == io_reward_policy::ClaimRoute::AllLiquid
-            && delivery.parent_credit_phase != crate::maturity::ParentCreditPhase::NotRequired
-        || delivery.parent_credit_phase != crate::maturity::ParentCreditPhase::NotRequired
-            && (!claim_succeeded
-                || route == io_reward_policy::ClaimRoute::Mixed
-                    && delivery.stream_pooled_block.is_none())
+    if kind == crate::maturity::MaturityKind::TwoWeek
+        && !delivery
+            .permanent_transfer
+            .as_ref()
+            .is_some_and(|attempt| matches!(attempt.state, TransferState::Succeeded { .. }))
     {
-        return Err("backing-inflow pooled effect contradicts its route".into());
+        return Err("pooled maturity receipt precedes proved permanent credit".into());
     }
     Ok(())
 }
@@ -457,7 +418,7 @@ impl NnsStateV1 {
                         }
                     };
                     operation.validate(self.next_operation_sequence, neuron_id, destination)?;
-                    if let crate::maturity::MaturityCommandPhase::BackingInflowDelivery(delivery) =
+                    if let crate::maturity::MaturityCommandPhase::ClaimReceiptDelivery(delivery) =
                         &operation.phase
                     {
                         let pending = match operation.kind {
@@ -469,14 +430,14 @@ impl NnsStateV1 {
                             }
                         };
                         if pending != Some(&delivery.pending) {
-                            return Err("backing inflow lost its passive maturity evidence".into());
+                            return Err("claim receipt lost its passive maturity evidence".into());
                         }
                         let crate::maturity::MintProofState::Delivering(_) =
                             &delivery.pending.mint_proof
                         else {
-                            return Err("backing inflow lacks an exact Mint".into());
+                            return Err("claim receipt lacks an exact Mint".into());
                         };
-                        validate_backing_inflow_delivery(operation.kind, delivery, &self.config)?;
+                        validate_claim_receipt_delivery(operation.kind, delivery, &self.config)?;
                     }
                 }
                 NnsOperation::Pool(operation) => {
@@ -942,105 +903,12 @@ mod tests {
     }
 
     #[test]
-    fn maximum_fixed_nns_v1_slots_fit_the_stable_cell_bound() {
-        use crate::maturity::{
-            BackingInflowDeliveryOperation, CompletedMaturity, DisburseMaturitySubmission,
-            DisburseMaturitySucceeded, MaturityCommandOperation, MaturityCommandPhase,
-            MaturityEvidenceSource, MaturityKind, MaturityPlan, MintEvidence, MintProofState,
-            ParentCreditPhase, PendingMaturityDisbursement, StakeMaturitySucceeded,
-        };
-
+    fn maximum_cohort_collection_fits_the_stable_cell_bound() {
         let (canister_self, mut state) = valid_state();
-        let pending = |kind: MaturityKind, neuron_id: u64, destination: Account, generation| {
-            let stake_maturity_e8s = if kind == MaturityKind::TwoYear {
-                400_000_000
-            } else {
-                0
-            };
-            let remaining_maturity_e8s = 1_000_000_000 - stake_maturity_e8s;
-            let plan = MaturityPlan {
-                neuron: crate::jupiter::NeuronSnapshot {
-                    neuron_id,
-                    staking_subaccount: [7; 32],
-                    cached_stake_e8s: u128::MAX,
-                },
-                original_maturity_e8s: 1_000_000_000,
-                original_staked_maturity_e8s: u64::MAX,
-                stake_maturity_e8s,
-                remaining_maturity_e8s,
-                destination: destination.clone(),
-                requested_at_seconds: 1,
-                entitlement_batch_generation: generation,
-            };
-            let stake = StakeMaturitySucceeded {
-                plan,
-                remaining_maturity_e8s,
-                staked_maturity_e8s: u64::MAX,
-                evidence_source: MaturityEvidenceSource::CanonicalNeuronObservation,
-            };
-            PendingMaturityDisbursement {
-                kind,
-                neuron_id,
-                nominal_disbursed_maturity_e8s: remaining_maturity_e8s,
-                destination,
-                initiation_timestamp_seconds: 1,
-                scheduled_finalization_timestamp_seconds: 604_801,
-                stake_evidence: stake.clone(),
-                disburse_evidence: DisburseMaturitySucceeded {
-                    submission: DisburseMaturitySubmission {
-                        stake,
-                        submitted_at_seconds: 1,
-                    },
-                    amount_disbursed_e8s: remaining_maturity_e8s,
-                    evidence_source: MaturityEvidenceSource::CanonicalNeuronObservation,
-                },
-                mint_proof: MintProofState::Awaiting,
-            }
-        };
-        let mut two_year = pending(
-            MaturityKind::TwoYear,
-            state.config.two_year_neuron_id,
-            state.config.maturity_staging.clone(),
-            None,
-        );
-        two_year.mint_proof = MintProofState::Proved(MintEvidence {
-            mint_block: 7,
-            actual_minted_icp_e8s: 500_000_000,
-            native_memo_u64: 604_801,
-            created_at_time_nanos: 604_801_000_000_000,
-        });
-        two_year
-            .validate(
-                MaturityKind::TwoYear,
-                state.config.two_year_neuron_id,
-                &state.config.maturity_staging,
-            )
-            .expect("valid adverse modulation may Mint less than nominal maturity");
-        let mut two_week = pending(
-            MaturityKind::TwoWeek,
-            2,
-            state.config.maturity_staging.clone(),
-            Some(1),
-        );
-        two_week.mint_proof = MintProofState::Delivering(MintEvidence {
-            mint_block: u128::MAX,
-            actual_minted_icp_e8s: u128::MAX,
-            native_memo_u64: 604_801,
-            created_at_time_nanos: 604_801_000_000_000,
-        });
-        state.lifecycle = Lifecycle::Paused;
         state.latest_pooled_target = Some(PooledTarget {
             target_e8s: 1,
             status: PooledTargetStatus::AtTarget,
         });
-        state.pooled_parent_id = Some(2);
-        state.pooled_parent_staking_account = Some(Account {
-            owner: state.config.nns_governance,
-            subaccount: Some(vec![2; 32]),
-        });
-        state.latest_started_two_week_generation = 1;
-        state.pending_two_year_maturity = Some(two_year);
-        state.pending_two_week_maturity = Some(two_week.clone());
         state.live_cohorts = (1..=io_nns_types::backing::MAX_LIVE_UNWIND_COHORTS as u64)
             .map(|generation| PassiveCohort {
                 generation,
@@ -1052,50 +920,12 @@ mod tests {
                 disbursement_block: None,
             })
             .collect();
-        state.last_two_year_maturity = Some(CompletedMaturity {
-            kind: MaturityKind::TwoYear,
-            neuron_id: state.config.two_year_neuron_id,
-            mint_block: u128::MAX,
-            nominal_disbursed_maturity_e8s: u64::MAX,
-            actual_minted_icp_e8s: u128::MAX,
-            destination: state.config.maturity_staging.clone(),
-            completed_at_nanos: u64::MAX,
-        });
-        state.last_two_week_maturity = Some(CompletedMaturity {
-            kind: MaturityKind::TwoWeek,
-            neuron_id: 2,
-            mint_block: u128::MAX,
-            nominal_disbursed_maturity_e8s: u64::MAX,
-            actual_minted_icp_e8s: u128::MAX,
-            destination: state.config.maturity_staging.clone(),
-            completed_at_nanos: u64::MAX,
-        });
-        state.active_operation = Some(NnsOperation::Maturity(Box::new(MaturityCommandOperation {
-            operation_sequence: 1,
-            dispatch_epoch: u64::MAX,
-            kind: MaturityKind::TwoWeek,
-            phase: MaturityCommandPhase::BackingInflowDelivery(BackingInflowDeliveryOperation {
-                pending: two_week,
-                permit: None,
-                permanent_transfer: None,
-                claim_transfer: None,
-                parent_credit_phase: ParentCreditPhase::NotRequired,
-                stream_pooled_block: None,
-            }),
-        })));
-        state.two_year_maturity_baseline_reconciled = true;
-        state.next_operation_sequence = 2;
         state.validate(canister_self).unwrap();
         let stable = StableNnsState::V1(state);
         let encoded = stable.to_bytes();
         let Bound::Bounded { max_size, .. } = <StableNnsState as Storable>::BOUND else {
             panic!("NNS state must remain bounded");
         };
-        eprintln!(
-            "maximum fixed NNS V1 slots encode to {} bytes of the {}-byte stable bound",
-            encoded.len(),
-            max_size
-        );
         assert!(encoded.len() <= max_size as usize);
     }
 

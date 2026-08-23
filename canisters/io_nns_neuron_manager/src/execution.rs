@@ -9,11 +9,11 @@ use candid::{CandidType, Nat, Principal, Reserved};
 use ic_cdk::call::Call;
 use io_ledger_boundary::{IcrcTransferArg, IcrcTransferError, IcrcTransferResult};
 use io_nns_types::backing::{FollowPolicy, POOLED_PARENT_DELAY_SECONDS};
-use io_nns_types::inflow::{
-    BackingInflowPermit, BackingInflowProgress, PrepareBackingInflowArgs, ProveBackingEffectArgs,
+pub use io_receipt_types::ClaimBackingReceiptProgress as StreamLiquidProgress;
+use io_receipt_types::{
+    ClaimBackingReceiptKind, ClaimBackingReceiptPermit, PrepareClaimBackingReceiptArgs,
+    ProveClaimBackingReceiptArgs,
 };
-pub use io_receipt_types::JupiterReceiptProgress as StreamLiquidProgress;
-use io_receipt_types::{CompleteJupiterReceiptArgs, PrepareJupiterReceiptArgs};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -79,7 +79,7 @@ pub struct NeuronObservation {
     pub voting_power_refreshed_timestamp_seconds: Option<u64>,
 }
 
-pub const APPROVED_PERMANENT_DISSOLVE_DELAY_SECONDS: u64 = 252_460_800;
+pub const APPROVED_PERMANENT_DISSOLVE_DELAY_SECONDS: u64 = 63_115_200;
 
 pub fn validate_permanent_configuration(observation: &NeuronObservation) -> Result<(), String> {
     if !observation.auto_stake_maturity
@@ -115,7 +115,10 @@ pub fn validate_parent_configuration(
     {
         Ok(())
     } else {
-        Err("pooled parent delay, auto-stake, or following policy drifted".into())
+        Err(format!(
+            "pooled parent configuration drifted: dissolve_state={:?}, auto_stake={}, followees={:?}",
+            observation.dissolve_state, observation.auto_stake_maturity, observation.followees
+        ))
     }
 }
 
@@ -775,56 +778,50 @@ pub async fn submit_transfer(intent: &NnsTransferIntent) -> Result<IcrcTransferR
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct StreamStatus {
-    next_nns_receipt_sequence: u64,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
 enum StreamProgress {
     Redemption(Reserved),
-    JupiterReceipt(StreamLiquidProgress),
-    BackingInflow(BackingInflowProgress),
+    ClaimReceipt(StreamLiquidProgress),
     BackingReconciliation,
     Idle,
 }
 
-pub async fn prepare_backing_inflow(
+pub async fn prepare_claim_receipt(
     config: &NnsConfig,
-    args: PrepareBackingInflowArgs,
-) -> Result<BackingInflowPermit, ApiError> {
-    let result: Result<BackingInflowPermit, Reserved> =
-        Call::bounded_wait(config.stream_manager, "prepare_backing_inflow")
+    args: PrepareClaimBackingReceiptArgs,
+) -> Result<ClaimBackingReceiptPermit, ApiError> {
+    let result: Result<ClaimBackingReceiptPermit, Reserved> =
+        Call::bounded_wait(config.stream_manager, "prepare_claim_backing_receipt")
             .with_arg(args)
             .await
             .map_err(|error| {
-                ApiError::Pending(format!("backing-inflow prepare ambiguous: {error:?}"))
+                ApiError::Pending(format!("claim-receipt prepare ambiguous: {error:?}"))
             })?
             .candid()
             .map_err(|error| {
-                ApiError::Invalid(format!("backing-inflow permit decode failed: {error:?}"))
+                ApiError::Invalid(format!("claim-receipt permit decode failed: {error:?}"))
             })?;
-    result.map_err(|_| ApiError::Invalid("Stream rejected backing inflow".into()))
+    result.map_err(|_| ApiError::Invalid("Stream rejected claim receipt".into()))
 }
 
-pub async fn prove_backing_effect(
+pub async fn prove_claim_receipt(
     config: &NnsConfig,
-    args: ProveBackingEffectArgs,
-) -> Result<BackingInflowProgress, ApiError> {
-    let result: Result<BackingInflowProgress, Reserved> =
-        Call::bounded_wait(config.stream_manager, "prove_backing_effect")
+    args: ProveClaimBackingReceiptArgs,
+) -> Result<StreamLiquidProgress, ApiError> {
+    let result: Result<StreamLiquidProgress, Reserved> =
+        Call::bounded_wait(config.stream_manager, "prove_claim_backing_receipt")
             .with_arg(args)
             .await
             .map_err(|error| {
-                ApiError::Pending(format!("backing-effect proof ambiguous: {error:?}"))
+                ApiError::Pending(format!("claim-receipt proof ambiguous: {error:?}"))
             })?
             .candid()
             .map_err(|error| {
-                ApiError::Invalid(format!("backing-effect proof decode failed: {error:?}"))
+                ApiError::Invalid(format!("claim-receipt proof decode failed: {error:?}"))
             })?;
-    result.map_err(|_| ApiError::Invalid("Stream rejected backing-effect proof".into()))
+    result.map_err(|_| ApiError::Invalid("Stream rejected claim-receipt proof".into()))
 }
 
-pub async fn resume_backing_inflow(config: &NnsConfig) -> Result<BackingInflowProgress, ApiError> {
+pub async fn resume_claim_receipt(config: &NnsConfig) -> Result<StreamLiquidProgress, ApiError> {
     let result: Result<StreamProgress, Reserved> =
         Call::bounded_wait(config.stream_manager, "resume")
             .with_arg(())
@@ -835,76 +832,32 @@ pub async fn resume_backing_inflow(config: &NnsConfig) -> Result<BackingInflowPr
                 ApiError::Invalid(format!("Stream resume decode failed: {error:?}"))
             })?;
     match result.map_err(|_| ApiError::Invalid("Stream resume rejected".into()))? {
-        StreamProgress::BackingInflow(progress) => Ok(progress),
-        StreamProgress::Redemption(_)
-        | StreamProgress::JupiterReceipt(_)
-        | StreamProgress::BackingReconciliation => Err(ApiError::Busy),
-        StreamProgress::Idle => Err(ApiError::Invalid("Stream lost the backing inflow".into())),
+        StreamProgress::ClaimReceipt(progress) => Ok(progress),
+        StreamProgress::Redemption(_) | StreamProgress::BackingReconciliation => {
+            Err(ApiError::Busy)
+        }
+        StreamProgress::Idle => Err(ApiError::Invalid("Stream lost the claim receipt".into())),
     }
 }
 
-pub async fn prepare_jupiter_receipt(
+pub async fn prepare_jupiter_claim_receipt(
     config: &NnsConfig,
     deposit_block: u128,
     liquid_e8s: u128,
 ) -> Result<StreamReceiptPermit, ApiError> {
-    let sequence = next_receipt_sequence(config).await?;
-    prepare_receipt(
+    let observation = crate::api::observe_claim_backing().await?;
+    prepare_claim_receipt(
         config,
-        PrepareJupiterReceiptArgs {
-            receipt_sequence: sequence,
+        PrepareClaimBackingReceiptArgs {
             source_operation_id: deposit_block.to_be_bytes().to_vec(),
-            liquid_amount_e8s: liquid_e8s,
+            kind: ClaimBackingReceiptKind::Jupiter,
+            source_account: config.jupiter_staging.clone(),
+            source_block: deposit_block,
+            net_liquid_credit_e8s: liquid_e8s,
+            nns_fingerprint: observation.fingerprint,
         },
     )
     .await
-}
-
-async fn next_receipt_sequence(config: &NnsConfig) -> Result<u64, ApiError> {
-    let status: StreamStatus = Call::bounded_wait(config.stream_manager, "get_status")
-        .with_arg(())
-        .await
-        .map_err(|error| ApiError::Pending(format!("stream status query failed: {error:?}")))?
-        .candid()
-        .map_err(|error| ApiError::Invalid(format!("stream status decode failed: {error:?}")))?;
-    Ok(status.next_nns_receipt_sequence)
-}
-
-async fn prepare_receipt(
-    config: &NnsConfig,
-    request: PrepareJupiterReceiptArgs,
-) -> Result<StreamReceiptPermit, ApiError> {
-    let result: Result<StreamReceiptPermit, Reserved> =
-        Call::bounded_wait(config.stream_manager, "prepare_jupiter_receipt")
-            .with_arg(request)
-            .await
-            .map_err(|error| ApiError::Pending(format!("receipt prepare ambiguous: {error:?}")))?
-            .candid()
-            .map_err(|error| {
-                ApiError::Invalid(format!("receipt permit decode failed: {error:?}"))
-            })?;
-    result.map_err(|error| ApiError::Invalid(format!("stream rejected receipt: {error:?}")))
-}
-
-pub fn jupiter_receipt_fingerprint(
-    sequence: u64,
-    deposit_block: u128,
-    liquid_e8s: u128,
-) -> Vec<u8> {
-    let request = PrepareJupiterReceiptArgs {
-        receipt_sequence: sequence,
-        source_operation_id: deposit_block.to_be_bytes().to_vec(),
-        liquid_amount_e8s: liquid_e8s,
-    };
-    request_fingerprint(request)
-}
-
-fn request_fingerprint(request: PrepareJupiterReceiptArgs) -> Vec<u8> {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(b"io-liquid-receipt-request-v1\0");
-    hasher.update(candid::encode_one(request).expect("receipt request must encode"));
-    hasher.finalize().to_vec()
 }
 
 pub async fn icp_balance(config: &NnsConfig, account: &Account) -> Result<u128, ApiError> {
@@ -926,9 +879,9 @@ pub async fn complete_jupiter_receipt(
     block_index: u128,
 ) -> Result<StreamLiquidProgress, ApiError> {
     let result: Result<StreamLiquidProgress, Reserved> =
-        Call::bounded_wait(config.stream_manager, "complete_jupiter_receipt")
-            .with_arg(CompleteJupiterReceiptArgs {
-                receipt_sequence: permit.sequence,
+        Call::bounded_wait(config.stream_manager, "prove_claim_backing_receipt")
+            .with_arg(ProveClaimBackingReceiptArgs {
+                stream_operation_sequence: permit.stream_operation_sequence,
                 block_index,
             })
             .await
@@ -953,10 +906,9 @@ pub async fn resume_stream(config: &NnsConfig) -> Result<StreamLiquidProgress, A
                 ApiError::Invalid(format!("stream resume decode failed: {error:?}"))
             })?;
     match result.map_err(|error| ApiError::Invalid(format!("stream resume failed: {error:?}")))? {
-        StreamProgress::JupiterReceipt(progress) => Ok(progress),
+        StreamProgress::ClaimReceipt(progress) => Ok(progress),
         StreamProgress::Idle => Err(ApiError::Invalid("stream lost the Jupiter receipt".into())),
         StreamProgress::Redemption(_) => Err(ApiError::Busy),
-        StreamProgress::BackingInflow(_) => Err(ApiError::Busy),
         StreamProgress::BackingReconciliation => Err(ApiError::Busy),
     }
 }

@@ -57,8 +57,7 @@ type PoolProgress = variant {
   AwaitingTransfer : TopUpPermit;
   UnwindPrepared : record { generation : nat64; gross_e8s : nat };
   UnwindCommitted : record { generation : nat64; principal_e8s : nat };
-  ConfiguringParent;
-  AwaitingParentProof;
+  AwaitingProof;
   Completed : record { parent_neuron_id : nat64; principal_e8s : nat };
   CapacityPending;
 };
@@ -165,7 +164,7 @@ type MaturityProgress = variant {
   DisburseMaturitySucceeded;
   AwaitingMintProof;
   MintProved;
-  DeliveringBackingInflow;
+  DeliveringClaimReceipt;
   Completed : CompletedMaturity;
   Stuck : text;
 };

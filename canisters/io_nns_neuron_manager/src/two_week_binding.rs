@@ -19,19 +19,33 @@ pub async fn prepare(
         return Err(ApiError::Paused);
     }
     let snapshot = state::read();
-    if args.entitlement_batch_generation == 0
-        || snapshot.latest_pooled_target.as_ref().is_none_or(|target| {
-            target.target_e8s != args.target_e8s
-                || !matches!(
-                    target.status,
-                    crate::state::PooledTargetStatus::AtTarget
-                        | crate::state::PooledTargetStatus::AtTargetWithinUnwindTolerance
-                )
-        })
-        || snapshot.pooled_parent_id.is_none()
-    {
+    if args.entitlement_batch_generation == 0 {
         return Err(ApiError::Invalid(
-            "two-week maturity does not match one frozen entitlement batch and target".into(),
+            "two-week maturity generation must be positive".into(),
+        ));
+    }
+    let target = snapshot
+        .latest_pooled_target
+        .as_ref()
+        .ok_or_else(|| ApiError::Invalid("two-week maturity lacks a pooled target".into()))?;
+    if target.target_e8s != args.target_e8s {
+        return Err(ApiError::Invalid(format!(
+            "two-week maturity target {} differs from canonical {}",
+            args.target_e8s, target.target_e8s
+        )));
+    }
+    if !matches!(
+        target.status,
+        crate::state::PooledTargetStatus::AtTarget
+            | crate::state::PooledTargetStatus::AtTargetWithinUnwindTolerance
+    ) {
+        return Err(ApiError::Invalid(
+            "two-week maturity requires a reconciled pooled target".into(),
+        ));
+    }
+    if snapshot.pooled_parent_id.is_none() {
+        return Err(ApiError::Invalid(
+            "two-week maturity requires a proved pooled parent".into(),
         ));
     }
     if args.entitlement_batch_generation == snapshot.latest_completed_two_week_generation {

@@ -450,7 +450,7 @@ async fn prepare_receipt(
 ) -> Result<JupiterProgress, ApiError> {
     let expected = operation.clone();
     let config = state::read().config;
-    let permit = execution::prepare_jupiter_receipt(
+    let permit = execution::prepare_jupiter_claim_receipt(
         &config,
         operation.deposit.block_index,
         operation.deposit.liquid_e8s,
@@ -461,6 +461,7 @@ async fn prepare_receipt(
         .destination
         .effective_eq(&config.stream_liquid_account)
         .map_err(ApiError::Invalid)?
+        || permit.amount_e8s != operation.deposit.liquid_e8s
     {
         return Err(ApiError::Invalid(
             "stream returned the wrong liquid destination".into(),
@@ -545,17 +546,14 @@ async fn observe_stream_settlement(
 fn finish_jupiter(
     operation: JupiterOperation,
     succeeded: LiquidTransferSucceeded,
-    stream: io_receipt_types::JupiterReceiptResult,
+    stream: io_receipt_types::ClaimBackingReceiptResult,
 ) -> Result<JupiterProgress, ApiError> {
-    let expected_fingerprint = execution::jupiter_receipt_fingerprint(
-        succeeded.permit.sequence,
-        operation.deposit.block_index,
-        operation.deposit.liquid_e8s,
-    );
-    if stream.request_fingerprint != expected_fingerprint
-        || stream.receipt_block != succeeded.block_index
-        || stream.backed_io_e8s == 0
-        || stream.io_transfer_block == 0
+    if stream.request_fingerprint != succeeded.permit.request_fingerprint
+        || stream.source_operation_id != operation.deposit.block_index.to_be_bytes()
+        || stream.kind != io_receipt_types::ClaimBackingReceiptKind::Jupiter
+        || stream.liquid_credit_e8s != operation.deposit.liquid_e8s
+        || stream.distributed_io_e8s == 0
+        || stream.recipient_transfer_block.is_none()
         || stream.io_fee_e8s != state::read().config.expected_io_fee_e8s
         || stream.completed_at_nanos == 0
     {
@@ -571,9 +569,11 @@ fn finish_jupiter(
         liquid_e8s: operation.deposit.liquid_e8s,
         stake_transfer_block: succeeded.proof.stake_transfer_block,
         liquid_transfer_block: succeeded.block_index,
-        stream_receipt_sequence: succeeded.permit.sequence,
-        backed_io_e8s: stream.backed_io_e8s,
-        io_transfer_block: stream.io_transfer_block,
+        stream_receipt_sequence: succeeded.permit.stream_operation_sequence,
+        backed_io_e8s: stream.distributed_io_e8s,
+        io_transfer_block: stream
+            .recipient_transfer_block
+            .expect("validated Jupiter block"),
         io_fee_e8s: stream.io_fee_e8s,
         stream_receipt_fingerprint: stream.request_fingerprint,
         completed_at_nanos: checked_now()?,
@@ -888,9 +888,11 @@ mod tests {
             stake_transfer_block: 10,
         };
         let permit = jupiter::StreamReceiptPermit {
-            sequence: 11,
+            stream_operation_sequence: 11,
             destination: latest.config.stream_liquid_account.clone(),
+            amount_e8s: 600,
             memo: vec![2],
+            request_fingerprint: vec![3; 32],
         };
         let liquid_attempt = NnsTransferAttempt::prepared(NnsTransferIntent {
             ledger: latest.config.icp_ledger,

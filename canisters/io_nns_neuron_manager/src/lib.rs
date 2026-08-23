@@ -5,7 +5,6 @@ mod jupiter_flow;
 pub mod lifecycle;
 mod maturity_flow;
 mod maturity_mint;
-mod parent_credit;
 mod pool_flow;
 pub mod state;
 mod two_week_binding;

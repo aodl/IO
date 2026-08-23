@@ -1,16 +1,15 @@
 use candid::Principal;
 use io_ledger_boundary::{exact_icp_transfer, icp_account_identifier, ExpectedQueryBlockTransfer};
-use io_nns_types::inflow::{
-    effect_memo, BackingEffect, BackingInflowKind, BackingInflowProgress, PrepareBackingInflowArgs,
-    ProveBackingEffectArgs,
+use io_receipt_types::{
+    ClaimBackingReceiptKind, ClaimBackingReceiptProgress, PrepareClaimBackingReceiptArgs,
+    ProveClaimBackingReceiptArgs,
 };
-use io_reward_policy::ClaimRoute;
 
 use crate::{
     api::{ApiError, MaturityProgress, PrepareTwoWeekMaturityArgs},
     execution,
     maturity::{
-        BackingInflowDeliveryOperation, DisburseMaturitySubmission, DisburseMaturitySucceeded,
+        ClaimReceiptDeliveryOperation, DisburseMaturitySubmission, DisburseMaturitySucceeded,
         MaturityCommandOperation, MaturityCommandPhase, MaturityEvidenceSource, MaturityKind,
         MaturityPlan, MintProofState, PendingMaturityDisbursement, StakeMaturitySucceeded,
         MINIMUM_DISBURSEMENT_E8S,
@@ -166,8 +165,8 @@ pub async fn resume_active(
         MaturityCommandPhase::DisburseMaturitySucceeded(disbursement) => {
             canonicalize_disbursement(operation, disbursement).await
         }
-        MaturityCommandPhase::BackingInflowDelivery(delivery) => {
-            resume_backing_inflow_delivery(operation, delivery).await
+        MaturityCommandPhase::ClaimReceiptDelivery(delivery) => {
+            resume_claim_receipt_delivery(operation, delivery).await
         }
         MaturityCommandPhase::MaturityDrift { reason, .. }
         | MaturityCommandPhase::DisburseMaturityMismatch { reason, .. } => {
@@ -189,8 +188,8 @@ pub async fn resume_kind(kind: MaturityKind) -> Result<MaturityProgress, ApiErro
         .ok_or_else(|| ApiError::Invalid("no maturity work exists for this kind".into()))?;
     match &pending.mint_proof {
         MintProofState::Awaiting => Ok(MaturityProgress::AwaitingMintProof),
-        MintProofState::Proved(_) => start_backing_inflow_delivery(pending),
-        MintProofState::Delivering(_) => Ok(MaturityProgress::DeliveringBackingInflow),
+        MintProofState::Proved(_) => start_claim_receipt_delivery(pending),
+        MintProofState::Delivering(_) => Ok(MaturityProgress::DeliveringClaimReceipt),
     }
 }
 
@@ -459,7 +458,7 @@ async fn canonicalize_disbursement(
     Ok(MaturityProgress::AwaitingMintProof)
 }
 
-pub(crate) fn start_backing_inflow_delivery(
+pub(crate) fn start_claim_receipt_delivery(
     pending: PendingMaturityDisbursement,
 ) -> Result<MaturityProgress, ApiError> {
     let MintProofState::Proved(mint) = pending.mint_proof.clone() else {
@@ -479,167 +478,189 @@ pub(crate) fn start_backing_inflow_delivery(
         operation_sequence,
         dispatch_epoch: 0,
         kind: delivering.kind,
-        phase: MaturityCommandPhase::BackingInflowDelivery(BackingInflowDeliveryOperation {
+        phase: MaturityCommandPhase::ClaimReceiptDelivery(ClaimReceiptDeliveryOperation {
             pending: delivering.clone(),
             permit: None,
             permanent_transfer: None,
             claim_transfer: None,
-            parent_credit_phase: crate::maturity::ParentCreditPhase::NotRequired,
-            stream_pooled_block: None,
         }),
     };
     set_pending(&mut latest, delivering);
     latest.active_operation = Some(NnsOperation::Maturity(Box::new(operation)));
     state::write(latest);
-    Ok(MaturityProgress::DeliveringBackingInflow)
+    Ok(MaturityProgress::DeliveringClaimReceipt)
 }
 
-async fn resume_backing_inflow_delivery(
+async fn resume_claim_receipt_delivery(
     operation: MaturityCommandOperation,
-    delivery: BackingInflowDeliveryOperation,
+    delivery: ClaimReceiptDeliveryOperation,
 ) -> Result<MaturityProgress, ApiError> {
     let mint = match &delivery.pending.mint_proof {
         MintProofState::Delivering(mint) => mint.clone(),
         _ => {
             return Err(ApiError::Invalid(
-                "backing inflow lost exact Mint evidence".into(),
+                "claim receipt lost exact Mint evidence".into(),
             ))
         }
     };
     let config = state::read().config;
+    if operation.kind == MaturityKind::TwoWeek {
+        match delivery.permanent_transfer.as_ref() {
+            None => {
+                let split =
+                    io_core_model::split_40_60(mint.actual_minted_icp_e8s).map_err(|error| {
+                        ApiError::Invalid(format!("maturity split failed: {error:?}"))
+                    })?;
+                let credit = split
+                    .permanent
+                    .checked_sub(config.expected_icp_fee_e8s)
+                    .filter(|credit| *credit > 0)
+                    .ok_or_else(|| {
+                        ApiError::Invalid("permanent maturity leg cannot pay its fee".into())
+                    })?;
+                let observation = crate::api::observe_claim_backing().await?;
+                ensure_exact(&operation)?;
+                return prepare_maturity_transfer(
+                    operation,
+                    true,
+                    observation.permanent_staking_account,
+                    credit,
+                );
+            }
+            Some(attempt) if !matches!(attempt.state, TransferState::Succeeded { .. }) => {
+                return submit_maturity_transfer(operation, true).await;
+            }
+            Some(_) => {}
+        }
+    }
     let Some(permit) = delivery.permit.clone() else {
         let observation = crate::api::observe_claim_backing().await?;
         ensure_exact(&operation)?;
-        let generation = delivery
-            .pending
-            .stake_evidence
-            .plan
-            .entitlement_batch_generation
-            .unwrap_or(delivery.pending.initiation_timestamp_seconds);
-        let permit = execution::prepare_backing_inflow(
+        let (kind, claim_credit) = claim_receipt_economics(
+            &delivery.pending,
+            mint.actual_minted_icp_e8s,
+            config.expected_icp_fee_e8s,
+        )?;
+        let permit = execution::prepare_claim_receipt(
             &config,
-            PrepareBackingInflowArgs {
-                kind: match operation.kind {
-                    MaturityKind::TwoYear => BackingInflowKind::PermanentMaturity,
-                    MaturityKind::TwoWeek => BackingInflowKind::PooledMaturity,
-                },
+            PrepareClaimBackingReceiptArgs {
                 source_operation_id: maturity_source_operation_id(&delivery.pending),
-                actual_mint_e8s: mint.actual_minted_icp_e8s,
-                maturity_generation: generation,
-                staging_account: config.maturity_staging.clone(),
-                mint_block: mint.mint_block,
-                permanent_transfer_fee_e8s: config.expected_icp_fee_e8s,
-                claim_transfer_fee_e8s: config.expected_icp_fee_e8s,
+                kind,
+                source_account: config.maturity_staging.clone(),
+                source_block: mint.mint_block,
+                net_liquid_credit_e8s: claim_credit,
                 nns_fingerprint: observation.fingerprint,
             },
         )
         .await?;
         ensure_exact(&operation)?;
+        if permit.amount_e8s != claim_credit
+            || !permit
+                .destination
+                .effective_eq(&config.stream_liquid_account)
+                .map_err(ApiError::Invalid)?
+        {
+            return Err(ApiError::Invalid(
+                "Stream claim permit differs from maturity economics".into(),
+            ));
+        }
         let mut replacement = operation.clone();
         delivery_mut(&mut replacement).permit = Some(permit);
         write_exact(&operation, replacement, false)?;
-        return Ok(MaturityProgress::DeliveringBackingInflow);
+        return Ok(MaturityProgress::DeliveringClaimReceipt);
     };
-    if permit.permanent_credit() > 0 {
-        match delivery.permanent_transfer.as_ref() {
-            None => {
-                return prepare_inflow_transfer(
-                    operation,
-                    BackingEffect::PermanentCredit,
-                    permit.permanent_destination.clone(),
-                    permit.permanent_credit(),
-                    permit.permanent_transfer_fee_e8s,
-                )
-            }
-            Some(attempt) if !matches!(attempt.state, TransferState::Succeeded { .. }) => {
-                return submit_inflow_transfer(operation, BackingEffect::PermanentCredit).await
-            }
-            Some(attempt) => {
-                let block = attempt.succeeded_block().map_err(ApiError::Invalid)?;
-                execution::prove_backing_effect(
-                    &config,
-                    ProveBackingEffectArgs {
-                        stream_operation_sequence: permit.stream_operation_sequence,
-                        effect: BackingEffect::PermanentCredit,
-                        block_index: block,
-                    },
-                )
-                .await?;
-            }
-        }
-    }
     match delivery.claim_transfer.as_ref() {
         None => {
-            let route = permit.route();
-            return prepare_inflow_transfer(
+            return prepare_maturity_transfer(
                 operation,
-                BackingEffect::FirstClaimCredit,
-                if route.route == ClaimRoute::AllPool {
-                    permit.pool_destination.clone()
-                } else {
-                    permit.liquid_destination.clone()
-                },
-                permit
-                    .first_claim_credit()
-                    .ok_or_else(|| ApiError::Invalid("claim credit overflow".into()))?,
-                permit.claim_transfer_fee_e8s,
-            );
+                false,
+                permit.destination.clone(),
+                permit.amount_e8s,
+            )
         }
         Some(attempt) if !matches!(attempt.state, TransferState::Succeeded { .. }) => {
-            return submit_inflow_transfer(operation, BackingEffect::FirstClaimCredit).await
+            return submit_maturity_transfer(operation, false).await;
         }
         Some(_) => {}
     }
-    if permit.route().route == ClaimRoute::AllPool
-        && !matches!(
-            delivery.parent_credit_phase,
-            crate::maturity::ParentCreditPhase::Proved { .. }
-        )
-    {
-        return advance_parent_credit(operation, permit.route().pooled_credit).await;
-    }
-    if permit.route().route == ClaimRoute::Mixed && delivery.stream_pooled_block.is_some() {
-        if !matches!(
-            delivery.parent_credit_phase,
-            crate::maturity::ParentCreditPhase::Proved { .. }
-        ) {
-            return advance_parent_credit(operation, permit.route().pooled_credit).await;
-        }
-        return advance_parent_credit(operation, permit.route().pooled_credit).await;
-    }
-    let claim_block = delivery
+    let block = delivery
         .claim_transfer
         .as_ref()
         .ok_or(ApiError::Busy)?
         .succeeded_block()
         .map_err(ApiError::Invalid)?;
-    let progress = execution::prove_backing_effect(
+    let progress = execution::prove_claim_receipt(
         &config,
-        ProveBackingEffectArgs {
+        ProveClaimBackingReceiptArgs {
             stream_operation_sequence: permit.stream_operation_sequence,
-            effect: BackingEffect::FirstClaimCredit,
-            block_index: claim_block,
+            block_index: block,
         },
     )
     .await?;
     ensure_exact(&operation)?;
-    resume_stream_backing(operation, progress).await
+    resume_stream_receipt(operation, progress).await
 }
 
-fn prepare_inflow_transfer(
+fn claim_receipt_economics(
+    pending: &PendingMaturityDisbursement,
+    mint: u128,
+    fee: u128,
+) -> Result<(ClaimBackingReceiptKind, u128), ApiError> {
+    Ok(match pending.kind {
+        MaturityKind::TwoYear => (
+            ClaimBackingReceiptKind::PermanentMaturity {
+                maturity_generation: pending.initiation_timestamp_seconds,
+            },
+            io_reward_policy::permanent_maturity_credit(mint, fee).map_err(|error| {
+                ApiError::Invalid(format!("permanent maturity credit failed: {error:?}"))
+            })?,
+        ),
+        MaturityKind::TwoWeek => {
+            let split = io_core_model::split_40_60(mint).map_err(|error| {
+                ApiError::Invalid(format!("pooled maturity split failed: {error:?}"))
+            })?;
+            let credit = split
+                .claim
+                .checked_sub(fee)
+                .filter(|credit| *credit > 0)
+                .ok_or_else(|| ApiError::Invalid("pooled claim leg cannot pay its fee".into()))?;
+            let generation = pending
+                .stake_evidence
+                .plan
+                .entitlement_batch_generation
+                .ok_or_else(|| {
+                    ApiError::Invalid("pooled maturity lost its entitlement generation".into())
+                })?;
+            (
+                ClaimBackingReceiptKind::PooledMaturity {
+                    entitlement_batch_generation: generation,
+                },
+                credit,
+            )
+        }
+    })
+}
+
+fn prepare_maturity_transfer(
     operation: MaturityCommandOperation,
-    effect: BackingEffect,
+    permanent: bool,
     destination: crate::state::Account,
     amount: u128,
-    fee: u128,
 ) -> Result<MaturityProgress, ApiError> {
     let config = state::read().config;
-    let source_operation_id = delivery_ref(&operation)
-        .permit
-        .as_ref()
-        .ok_or(ApiError::Busy)?
-        .source_operation_id
-        .clone();
+    let memo = if permanent {
+        maturity_transfer_memo(
+            b"io-pooled-maturity-permanent-v1",
+            operation.operation_sequence,
+        )
+    } else {
+        delivery_ref(&operation)
+            .permit
+            .as_ref()
+            .ok_or(ApiError::Busy)?
+            .memo
+            .clone()
+    };
     let attempt = NnsTransferAttempt::prepared(NnsTransferIntent {
         ledger: config.icp_ledger,
         source_subaccount: config
@@ -649,37 +670,29 @@ fn prepare_inflow_transfer(
             .subaccount,
         destination,
         amount_e8s: amount,
-        fee_e8s: fee,
-        memo: effect_memo(&source_operation_id, effect),
+        fee_e8s: config.expected_icp_fee_e8s,
+        memo,
         created_at_time_nanos: now_nanos()?,
     })
     .map_err(ApiError::Invalid)?;
     let mut replacement = operation.clone();
-    match effect {
-        BackingEffect::PermanentCredit => {
-            delivery_mut(&mut replacement).permanent_transfer = Some(attempt)
-        }
-        BackingEffect::FirstClaimCredit => {
-            delivery_mut(&mut replacement).claim_transfer = Some(attempt)
-        }
-        BackingEffect::PooledCredit => {
-            return Err(ApiError::Invalid(
-                "Stream owns the optional pooled transfer".into(),
-            ))
-        }
+    if permanent {
+        delivery_mut(&mut replacement).permanent_transfer = Some(attempt);
+    } else {
+        delivery_mut(&mut replacement).claim_transfer = Some(attempt);
     }
     write_exact(&operation, replacement, false)?;
-    Ok(MaturityProgress::DeliveringBackingInflow)
+    Ok(MaturityProgress::DeliveringClaimReceipt)
 }
 
-async fn submit_inflow_transfer(
+async fn submit_maturity_transfer(
     mut operation: MaturityCommandOperation,
-    effect: BackingEffect,
+    permanent: bool,
 ) -> Result<MaturityProgress, ApiError> {
     let now = now_nanos()?;
     let expected = operation.clone();
     operation.dispatch_epoch = next_epoch(operation.dispatch_epoch)?;
-    let attempt = transfer_mut(delivery_mut(&mut operation), effect)?;
+    let attempt = transfer_mut(delivery_mut(&mut operation), permanent)?;
     let (epoch, first) = match attempt.state {
         TransferState::Prepared => (1, now),
         TransferState::Submitted {
@@ -709,12 +722,12 @@ async fn submit_inflow_transfer(
     let result = execution::submit_transfer(&intent).await;
     ensure_exact(&operation)?;
     let mut replacement = operation.clone();
-    let attempt = transfer_mut(delivery_mut(&mut replacement), effect)?;
+    let attempt = transfer_mut(delivery_mut(&mut replacement), permanent)?;
     match execution::classify_transfer(result)? {
         execution::ExactTransferOutcome::Succeeded(block) => {
             attempt.state = TransferState::Succeeded { block };
             write_exact(&operation, replacement, false)?;
-            Ok(MaturityProgress::DeliveringBackingInflow)
+            Ok(MaturityProgress::DeliveringClaimReceipt)
         }
         execution::ExactTransferOutcome::Paused(classification, reason) => {
             attempt.state = TransferState::Paused {
@@ -735,15 +748,9 @@ pub async fn prove_active_transfer(
     block_index: u128,
 ) -> Result<MaturityProgress, ApiError> {
     let delivery = delivery_ref(&operation);
-    let (effect, attempt) = [
-        (
-            BackingEffect::PermanentCredit,
-            delivery.permanent_transfer.as_ref(),
-        ),
-        (
-            BackingEffect::FirstClaimCredit,
-            delivery.claim_transfer.as_ref(),
-        ),
+    let (permanent, attempt) = [
+        (true, delivery.permanent_transfer.as_ref()),
+        (false, delivery.claim_transfer.as_ref()),
     ]
     .into_iter()
     .find_map(|(effect, attempt)| {
@@ -783,90 +790,81 @@ pub async fn prove_active_transfer(
         spender: None,
     }) {
         return Err(ApiError::Invalid(
-            "exact ICP block does not match the backing-inflow intent".into(),
+            "exact ICP block does not match the claim-receipt intent".into(),
         ));
     }
     let mut replacement = operation.clone();
-    transfer_mut(delivery_mut(&mut replacement), effect)?.state =
+    transfer_mut(delivery_mut(&mut replacement), permanent)?.state =
         TransferState::Succeeded { block: block_index };
     write_exact(&operation, replacement, false)?;
-    Ok(MaturityProgress::DeliveringBackingInflow)
+    Ok(MaturityProgress::DeliveringClaimReceipt)
 }
 
-pub(crate) async fn resume_stream_backing(
+pub(crate) async fn resume_stream_receipt(
     operation: MaturityCommandOperation,
-    progress: BackingInflowProgress,
+    progress: ClaimBackingReceiptProgress,
 ) -> Result<MaturityProgress, ApiError> {
     match progress {
-        BackingInflowProgress::AwaitingNnsEffects(_) => {
-            Ok(MaturityProgress::DeliveringBackingInflow)
+        ClaimBackingReceiptProgress::AwaitingLiquidProof(_) => {
+            Ok(MaturityProgress::DeliveringClaimReceipt)
         }
-        BackingInflowProgress::AwaitingPooledTransfer | BackingInflowProgress::SettlingRewards => {
-            let progress = execution::resume_backing_inflow(&state::read().config).await?;
+        ClaimBackingReceiptProgress::SettlingRecipients => {
+            let progress = execution::resume_claim_receipt(&state::read().config).await?;
             ensure_exact(&operation)?;
             match progress {
-                BackingInflowProgress::Completed { .. } => finish_inflow(operation),
-                BackingInflowProgress::Stuck(reason) => Err(ApiError::Stuck(reason)),
-                _ => Ok(MaturityProgress::DeliveringBackingInflow),
+                ClaimBackingReceiptProgress::Completed(_) => finish_inflow(operation),
+                ClaimBackingReceiptProgress::Stuck(reason) => Err(ApiError::Stuck(reason)),
+                _ => Ok(MaturityProgress::DeliveringClaimReceipt),
             }
         }
-        BackingInflowProgress::AwaitingPooledProof { block_index } => {
-            let mut replacement = operation.clone();
-            let delivery = delivery_mut(&mut replacement);
-            delivery.stream_pooled_block = Some(block_index);
-            delivery.parent_credit_phase = crate::maturity::ParentCreditPhase::Required;
-            write_exact(&operation, replacement, false)?;
-            Ok(MaturityProgress::DeliveringBackingInflow)
-        }
-        BackingInflowProgress::Completed { .. } => finish_inflow(operation),
-        BackingInflowProgress::Stuck(reason) => Err(ApiError::Stuck(reason)),
+        ClaimBackingReceiptProgress::Completed(_) => finish_inflow(operation),
+        ClaimBackingReceiptProgress::Stuck(reason) => Err(ApiError::Stuck(reason)),
     }
-}
-
-async fn advance_parent_credit(
-    operation: MaturityCommandOperation,
-    credit: u128,
-) -> Result<MaturityProgress, ApiError> {
-    crate::parent_credit::advance(operation, credit).await
 }
 
 fn finish_inflow(operation: MaturityCommandOperation) -> Result<MaturityProgress, ApiError> {
     crate::maturity_mint::finish(operation)
 }
 
-fn maturity_source_operation_id(pending: &PendingMaturityDisbursement) -> Vec<u8> {
+pub(crate) fn maturity_source_operation_id(pending: &PendingMaturityDisbursement) -> Vec<u8> {
     use sha2::{Digest, Sha256};
     Sha256::digest(candid::encode_one(pending).expect("maturity evidence must encode")).to_vec()
 }
 
-pub(crate) fn delivery_ref(
-    operation: &MaturityCommandOperation,
-) -> &BackingInflowDeliveryOperation {
+fn maturity_transfer_memo(domain: &[u8], sequence: u64) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(domain);
+    hasher.update(sequence.to_be_bytes());
+    hasher.finalize().to_vec()
+}
+
+pub(crate) fn delivery_ref(operation: &MaturityCommandOperation) -> &ClaimReceiptDeliveryOperation {
     match &operation.phase {
-        MaturityCommandPhase::BackingInflowDelivery(delivery) => delivery,
-        _ => panic!("validated backing-inflow phase"),
+        MaturityCommandPhase::ClaimReceiptDelivery(delivery) => delivery,
+        _ => panic!("validated claim-receipt phase"),
     }
 }
 
 pub(crate) fn delivery_mut(
     operation: &mut MaturityCommandOperation,
-) -> &mut BackingInflowDeliveryOperation {
+) -> &mut ClaimReceiptDeliveryOperation {
     match &mut operation.phase {
-        MaturityCommandPhase::BackingInflowDelivery(delivery) => delivery,
-        _ => panic!("validated backing-inflow phase"),
+        MaturityCommandPhase::ClaimReceiptDelivery(delivery) => delivery,
+        _ => panic!("validated claim-receipt phase"),
     }
 }
 
 fn transfer_mut(
-    delivery: &mut BackingInflowDeliveryOperation,
-    effect: BackingEffect,
+    delivery: &mut ClaimReceiptDeliveryOperation,
+    permanent: bool,
 ) -> Result<&mut NnsTransferAttempt, ApiError> {
-    match effect {
-        BackingEffect::PermanentCredit => delivery.permanent_transfer.as_mut(),
-        BackingEffect::FirstClaimCredit => delivery.claim_transfer.as_mut(),
-        BackingEffect::PooledCredit => None,
+    if permanent {
+        delivery.permanent_transfer.as_mut()
+    } else {
+        delivery.claim_transfer.as_mut()
     }
-    .ok_or_else(|| ApiError::Invalid("backing-inflow transfer is not prepared".into()))
+    .ok_or_else(|| ApiError::Invalid("claim-receipt transfer is not prepared".into()))
 }
 
 pub(crate) fn replay_proved(
@@ -882,7 +880,7 @@ pub(crate) fn replay_proved(
     }
     Ok(match pending.mint_proof {
         MintProofState::Proved(_) => MaturityProgress::MintProved,
-        MintProofState::Delivering(_) => MaturityProgress::DeliveringBackingInflow,
+        MintProofState::Delivering(_) => MaturityProgress::DeliveringClaimReceipt,
         MintProofState::Awaiting => unreachable!(),
     })
 }

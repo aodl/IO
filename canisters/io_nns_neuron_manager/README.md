@@ -4,8 +4,8 @@
 neuron, lazy pooled claim-backing parent, Jupiter staging, maturity staging, one
 immediate NNS command, and at most 32 passive unwind cohorts.
 
-The permanent neuron retains its audited principal and exact maximum-delay
-configuration. Its maturity path stakes 40% of observed ordinary maturity,
+The permanent neuron retains its audited principal and exact post-Mission-70
+two-year maximum-delay configuration. Its maturity path stakes 40% of observed ordinary maturity,
 disburses 100% of the remainder, and treats the actual delayed Mint as entirely
 new claim backing. It does not issue IO or split that Mint 40/60 again.
 
