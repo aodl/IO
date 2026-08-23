@@ -487,7 +487,10 @@ fn liquidity_shortfall_uses_only_scalar_claim_reads_and_pulls_no_io() {
             max_io_fee_e8s: 10_000,
             max_icp_fee_e8s: 10_000,
             expires_at_nanos: now + 60_000_000_000,
-            nonce: 1,
+            // A quote-time liquidity rejection does not consume the caller's
+            // nonce, so repeat the still-current nonce after growing the SNS
+            // registry.
+            nonce: 0,
         },
     );
     assert!(matches!(
