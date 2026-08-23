@@ -128,6 +128,14 @@ batch. Delivery increases `C` but makes no immediate claim about
 `A_backing`. There is no maturity-specific parent destination or second
 maturity transfer.
 
+Both pooled maturity and Jupiter use one monotone permanent-neuron proof. The
+proof freezes the exact neuron ID, staking subaccount, cached stake before the
+protocol transfer, protocol credit, and transfer block. ClaimOrRefresh is
+retryable after callback loss. Receipt preparation waits until a canonical
+neuron read proves `observed_after >= before + protocol_credit`; any excess is
+a donation and is never attributed to the protocol credit. Completed pooled
+maturity retains this compact proof rather than the active transfer object.
+
 ### Permanent-neuron maturity
 
 The controlled permanent neuron first executes and proves
@@ -174,6 +182,13 @@ delay, following, auto-stake and voting-power readiness before daily reward,
 maturity, lifecycle or new reconciliation work. Redemption uses the fixed-size
 asset path and freezes only the exact quote scalars and adverse postcondition
 floors.
+
+Live cohort values come from the exact persisted split/start-dissolving proof.
+Claim observation never scans child neurons: it makes at most one Governance
+query for the pooled parent whether zero or 32 cohorts are live. A submitted
+ambiguous disbursement makes the observation pending before this path. Public
+asset and policy observation wrappers accept only the configured Stream
+Manager caller.
 
 A `DailyStakeObservation` verifies SNS Governance, brackets the reward event
 and scalar snapshot, lists neurons once, and reads each distinct eligible
@@ -404,10 +419,13 @@ SplitProved { generation, child_neuron_id, principal }
 StartDissolvingCommitted { generation, child_neuron_id, principal }
 ```
 
-Canonical split proof moves the credited child principal from `T` into `U` and
-charges the exact split fee once, but it does **not** create a passive cohort or
-release the active slot. The child is initially non-dissolving with the
-inherited exact 14-day delay; the dissolve clock has not begun.
+The successful Split response fixes physical child principal as `gross -
+split_fee`. From `ChildIdentified` onward, `T` is the single net value
+`physical_child - committed_future_disbursement_fee`. Canonical split and
+StartDissolving queries prove identity and physical principal but do not change
+backing. Passive promotion exposes the same net value in `U`, so `B` has no
+phase-dependent jump. The child is initially non-dissolving with the inherited
+exact 14-day delay; the dissolve clock has not begun.
 `StartDissolving` is a separate command. Only a canonical Governance
 observation of `WhenDissolvedTimestampSeconds(ready_at)` creates:
 
@@ -426,6 +444,11 @@ by a caller. A rejected `StartDissolving` leaves `SplitProved` available for a
 retry. Callback loss leaves `StartDissolvingCommitted` until canonical
 Governance state proves the exact child is dissolving. The active slot is
 released only by that proof.
+
+Immediately before child Disburse, NNS re-reads the canonical ICP fee. A value
+different from the committed fee pauses monetary progression and returns exact
+parameter drift before the submitted phase or Governance call. There is no fee
+debt or reimbursement scalar.
 
 The child ID belongs only to the active aggregate operation and live aggregate
 cohort. Per-neuron state carries only a generation marker; there is no
@@ -598,6 +621,14 @@ observation margin. Retryable pending/ledger/busy work schedules a 60-second
 retry. Cohort reconciliation can share that durable due checkpoint; frontend
 and permissionless calls remain additional hints, not cadence authority. This
 adds no general scheduler.
+
+Every authenticated reconciliation attempt refreshes pooled-parent voting
+power before replay or new work. The policy timestamp is accepted for at most
+seven days. A stale timestamp pauses new reward, maturity and reconciliation
+work without removing `P` from claim assets or blocking liquid redemption. The
+existing permissionless reward-backing wake-up attempts the same reconciliation
+refresh while reward work is paused; reviewed lifecycle reopening restores
+fresh policy after canonical proof.
 
 That mechanism does not yet prove a maximum detection/reconciliation interval:
 reviewed pause, unavailable dependencies, repeated retryable failures, and
