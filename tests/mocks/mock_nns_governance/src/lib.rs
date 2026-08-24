@@ -10,6 +10,9 @@ pub struct MockNeuron {
     pub dissolve_delay_seconds: u64,
     pub is_dissolving: bool,
     pub dissolve_started_at_seconds: Option<u64>,
+    pub followee_id: Option<u64>,
+    pub pending_refresh_credit_e8s: u128,
+    pub voting_power_refreshed_timestamp_seconds: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -30,6 +33,12 @@ pub struct NeuronIdArgs {
     pub neuron_id: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SetFolloweeArgs {
+    pub neuron_id: u64,
+    pub followee: Option<u64>,
+}
+
 #[derive(Default)]
 struct GovernanceState {
     now_seconds: u64,
@@ -43,10 +52,62 @@ struct GovernanceState {
     claim_asset_observation_calls: u64,
     pool_policy_observation_calls: u64,
     pool_policy_valid: bool,
+    command_controls: Vec<CommandControl>,
+    command_calls: GovernanceCommandCounters,
 }
 
 thread_local! {
-    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new(), two_week_target: None, maturity_preparation: None, reconcile_calls: 0, get_full_neuron_calls: 0, pooled_principal_e8s: 0, claim_asset_observation_calls: 0, pool_policy_observation_calls: 0, pool_policy_valid: true }) };
+    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new(), two_week_target: None, maturity_preparation: None, reconcile_calls: 0, get_full_neuron_calls: 0, pooled_principal_e8s: 0, claim_asset_observation_calls: 0, pool_policy_observation_calls: 0, pool_policy_valid: true, command_controls: Vec::new(), command_calls: GovernanceCommandCounters::ZERO }) };
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum ControlledCommand {
+    ClaimOrRefresh,
+    IncreaseDissolveDelay,
+    SetFollowing,
+    StartDissolving,
+    Merge,
+    RefreshVotingPower,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct CommandControl {
+    pub command: ControlledCommand,
+    pub reject_before_effect: u64,
+    pub malformed_after_effect: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
+pub struct GovernanceCommandCounters {
+    pub claim_or_refresh: u64,
+    pub increase_dissolve_delay: u64,
+    pub set_following: u64,
+    pub start_dissolving: u64,
+    pub merge: u64,
+    pub refresh_voting_power: u64,
+}
+
+impl GovernanceCommandCounters {
+    const ZERO: Self = Self {
+        claim_or_refresh: 0,
+        increase_dissolve_delay: 0,
+        set_following: 0,
+        start_dissolving: 0,
+        merge: 0,
+        refresh_voting_power: 0,
+    };
+
+    fn increment(&mut self, command: ControlledCommand) {
+        let counter = match command {
+            ControlledCommand::ClaimOrRefresh => &mut self.claim_or_refresh,
+            ControlledCommand::IncreaseDissolveDelay => &mut self.increase_dissolve_delay,
+            ControlledCommand::SetFollowing => &mut self.set_following,
+            ControlledCommand::StartDissolving => &mut self.start_dissolving,
+            ControlledCommand::Merge => &mut self.merge,
+            ControlledCommand::RefreshVotingPower => &mut self.refresh_voting_power,
+        };
+        *counter = counter.saturating_add(1);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -107,6 +168,7 @@ pub fn observe_claim_assets() -> Result<io_nns_types::backing::ClaimAssetObserva
         live_child_net_backing_e8s: 0,
         live_child_committed_fee_liability_e8s: 0,
         transit_backing_e8s: 0,
+        transit_fee_basis_e8s: None,
         active_operation_sequence: 0,
         last_completed_pool_operation_sequence: None,
         control_epoch: 1,
@@ -286,6 +348,247 @@ pub struct NnsFollowees {
     pub followees: Vec<NnsNeuronId>,
 }
 
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub enum NnsNeuronIdOrSubaccount {
+    NeuronId(NnsNeuronId),
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct Empty {}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct ClaimOrRefresh {
+    pub by: Option<ClaimBy>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub enum ClaimBy {
+    NeuronIdOrSubaccount(Empty),
+    MemoAndController(ClaimFromAccount),
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct ClaimFromAccount {
+    pub controller: Option<candid::Principal>,
+    pub memo: u64,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct Configure {
+    pub operation: Option<ConfigureOperation>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub enum ConfigureOperation {
+    StopDissolving(Empty),
+    StartDissolving(Empty),
+    IncreaseDissolveDelay(IncreaseDissolveDelay),
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct IncreaseDissolveDelay {
+    pub additional_dissolve_delay_seconds: u32,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct SetFollowing {
+    pub topic_following: Option<Vec<FolloweesForTopic>>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct FolloweesForTopic {
+    pub followees: Option<Vec<NnsNeuronId>>,
+    pub topic: Option<i32>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct Merge {
+    pub source_neuron_id: Option<NnsNeuronId>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub enum ManageCommand {
+    ClaimOrRefresh(ClaimOrRefresh),
+    Configure(Configure),
+    Merge(Merge),
+    SetFollowing(SetFollowing),
+    RefreshVotingPower(Empty),
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct ManageNeuron {
+    pub id: Option<NnsNeuronId>,
+    pub neuron_id_or_subaccount: Option<NnsNeuronIdOrSubaccount>,
+    pub command: Option<ManageCommand>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct ClaimOrRefreshResponse {
+    pub refreshed_neuron_id: Option<NnsNeuronId>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub enum ManageCommandResponse {
+    Error(GovernanceError),
+    ClaimOrRefresh(ClaimOrRefreshResponse),
+    Configure(candid::Reserved),
+    Merge(candid::Reserved),
+    SetFollowing(candid::Reserved),
+    RefreshVotingPower(candid::Reserved),
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct ManageNeuronResponse {
+    pub command: Option<ManageCommandResponse>,
+}
+
+fn managed_neuron_id(request: &ManageNeuron) -> Option<u64> {
+    request
+        .neuron_id_or_subaccount
+        .as_ref()
+        .map(|NnsNeuronIdOrSubaccount::NeuronId(id)| id.id)
+        .or_else(|| request.id.as_ref().map(|id| id.id))
+}
+
+fn controlled_attempt(state: &mut GovernanceState, command: ControlledCommand) -> (bool, bool) {
+    state.command_calls.increment(command);
+    let Some(control) = state
+        .command_controls
+        .iter_mut()
+        .find(|control| control.command == command)
+    else {
+        return (false, false);
+    };
+    if control.reject_before_effect > 0 {
+        control.reject_before_effect -= 1;
+        return (true, false);
+    }
+    if control.malformed_after_effect > 0 {
+        control.malformed_after_effect -= 1;
+        return (false, true);
+    }
+    (false, false)
+}
+
+fn rejected(command: ControlledCommand) -> ManageNeuronResponse {
+    ManageNeuronResponse {
+        command: Some(ManageCommandResponse::Error(GovernanceError {
+            error_type: 5,
+            error_message: format!("controlled {command:?} rejection"),
+        })),
+    }
+}
+
+fn malformed_after_effect() -> ManageNeuronResponse {
+    ManageNeuronResponse {
+        command: Some(ManageCommandResponse::RefreshVotingPower(candid::Reserved)),
+    }
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn manage_neuron(request: ManageNeuron) -> ManageNeuronResponse {
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let neuron_id = managed_neuron_id(&request).unwrap_or_default();
+        let Some(command) = request.command else {
+            return rejected(ControlledCommand::ClaimOrRefresh);
+        };
+        let kind = match &command {
+            ManageCommand::ClaimOrRefresh(_) => ControlledCommand::ClaimOrRefresh,
+            ManageCommand::Configure(Configure {
+                operation: Some(ConfigureOperation::IncreaseDissolveDelay(_)),
+            }) => ControlledCommand::IncreaseDissolveDelay,
+            ManageCommand::Configure(Configure {
+                operation: Some(ConfigureOperation::StartDissolving(_)),
+            }) => ControlledCommand::StartDissolving,
+            ManageCommand::Configure(_) => ControlledCommand::StartDissolving,
+            ManageCommand::Merge(_) => ControlledCommand::Merge,
+            ManageCommand::SetFollowing(_) => ControlledCommand::SetFollowing,
+            ManageCommand::RefreshVotingPower(_) => ControlledCommand::RefreshVotingPower,
+        };
+        let (reject, malformed) = controlled_attempt(&mut state, kind);
+        if reject {
+            return rejected(kind);
+        }
+        let response = match command {
+            ManageCommand::ClaimOrRefresh(claim) => {
+                let id = match claim.by {
+                    Some(ClaimBy::MemoAndController(from)) => from.memo,
+                    _ => neuron_id,
+                };
+                if let Ok(neuron) = neuron_mut(&mut state, id) {
+                    neuron.principal_e8s = neuron
+                        .principal_e8s
+                        .saturating_add(neuron.pending_refresh_credit_e8s);
+                    neuron.pending_refresh_credit_e8s = 0;
+                }
+                ManageCommandResponse::ClaimOrRefresh(ClaimOrRefreshResponse {
+                    refreshed_neuron_id: Some(NnsNeuronId { id }),
+                })
+            }
+            ManageCommand::Configure(Configure { operation }) => {
+                if let Some(operation) = operation {
+                    let now = state.now_seconds;
+                    if let Ok(neuron) = neuron_mut(&mut state, neuron_id) {
+                        match operation {
+                            ConfigureOperation::IncreaseDissolveDelay(increase) => {
+                                neuron.dissolve_delay_seconds =
+                                    neuron.dissolve_delay_seconds.saturating_add(u64::from(
+                                        increase.additional_dissolve_delay_seconds,
+                                    ));
+                            }
+                            ConfigureOperation::StartDissolving(_) => {
+                                neuron.is_dissolving = true;
+                                neuron.dissolve_started_at_seconds = Some(now);
+                            }
+                            ConfigureOperation::StopDissolving(_) => {
+                                neuron.is_dissolving = false;
+                                neuron.dissolve_started_at_seconds = None;
+                            }
+                        }
+                    }
+                }
+                ManageCommandResponse::Configure(candid::Reserved)
+            }
+            ManageCommand::SetFollowing(following) => {
+                let followee = following
+                    .topic_following
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find_map(|entry| entry.followees?.first().map(|id| id.id));
+                if let Ok(neuron) = neuron_mut(&mut state, neuron_id) {
+                    neuron.followee_id = followee;
+                }
+                ManageCommandResponse::SetFollowing(candid::Reserved)
+            }
+            ManageCommand::RefreshVotingPower(_) => {
+                let now = state.now_seconds;
+                if let Ok(neuron) = neuron_mut(&mut state, neuron_id) {
+                    neuron.voting_power_refreshed_timestamp_seconds = now;
+                }
+                ManageCommandResponse::RefreshVotingPower(candid::Reserved)
+            }
+            ManageCommand::Merge(merge) => {
+                let source = merge.source_neuron_id.map(|id| id.id).unwrap_or_default();
+                let maturity = neuron_mut(&mut state, source)
+                    .map(|child| std::mem::take(&mut child.maturity_e8s))
+                    .unwrap_or_default();
+                if let Ok(parent) = neuron_mut(&mut state, neuron_id) {
+                    parent.maturity_e8s = parent.maturity_e8s.saturating_add(maturity);
+                }
+                ManageCommandResponse::Merge(candid::Reserved)
+            }
+        };
+        if malformed {
+            malformed_after_effect()
+        } else {
+            ManageNeuronResponse {
+                command: Some(response),
+            }
+        }
+    })
+}
+
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn get_full_neuron(neuron_id: u64) -> Result<FullNeuron, GovernanceError> {
     STATE.with(|cell| {
@@ -316,18 +619,25 @@ pub fn get_full_neuron(neuron_id: u64) -> Result<FullNeuron, GovernanceError> {
             } else {
                 NnsDissolveState::DissolveDelaySeconds(neuron.dissolve_delay_seconds)
             }),
-            followees: [0, 4, 14]
-                .into_iter()
-                .map(|topic| {
-                    (
-                        topic,
-                        NnsFollowees {
-                            followees: vec![NnsNeuronId { id: 43 }],
-                        },
-                    )
+            followees: neuron
+                .followee_id
+                .map(|followee| {
+                    [0, 4, 14]
+                        .into_iter()
+                        .map(|topic| {
+                            (
+                                topic,
+                                NnsFollowees {
+                                    followees: vec![NnsNeuronId { id: followee }],
+                                },
+                            )
+                        })
+                        .collect()
                 })
-                .collect(),
-            voting_power_refreshed_timestamp_seconds: Some(1),
+                .unwrap_or_default(),
+            voting_power_refreshed_timestamp_seconds: Some(
+                neuron.voting_power_refreshed_timestamp_seconds,
+            ),
         })
     })
 }
@@ -335,6 +645,45 @@ pub fn get_full_neuron(neuron_id: u64) -> Result<FullNeuron, GovernanceError> {
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn debug_get_full_neuron_call_count() -> u64 {
     STATE.with(|cell| cell.borrow().get_full_neuron_calls)
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn debug_get_command_counters() -> GovernanceCommandCounters {
+    STATE.with(|cell| cell.borrow().command_calls)
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_command_control(control: CommandControl) {
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        if let Some(existing) = state
+            .command_controls
+            .iter_mut()
+            .find(|existing| existing.command == control.command)
+        {
+            *existing = control;
+        } else {
+            state.command_controls.push(control);
+        }
+    });
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_refresh_credit(args: NeuronAmountArgs) -> Result<(), String> {
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        neuron_mut(&mut state, args.neuron_id)?.pending_refresh_credit_e8s = args.amount_e8s;
+        Ok(())
+    })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_followee(args: SetFolloweeArgs) -> Result<(), String> {
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        neuron_mut(&mut state, args.neuron_id)?.followee_id = args.followee;
+        Ok(())
+    })
 }
 
 fn neuron_mut(state: &mut GovernanceState, id: u64) -> Result<&mut MockNeuron, String> {
@@ -356,6 +705,9 @@ pub fn debug_create_neuron(args: CreateNeuronArgs) -> u64 {
             dissolve_delay_seconds: args.dissolve_delay_seconds,
             is_dissolving: false,
             dissolve_started_at_seconds: None,
+            followee_id: Some(43),
+            pending_refresh_credit_e8s: 0,
+            voting_power_refreshed_timestamp_seconds: 1,
         });
         args.neuron_id
     })
@@ -412,6 +764,9 @@ pub fn debug_split(neuron_id: u64, amount_e8s: u128) -> Result<u64, String> {
             dissolve_delay_seconds,
             is_dissolving: false,
             dissolve_started_at_seconds: None,
+            followee_id: Some(43),
+            pending_refresh_credit_e8s: 0,
+            voting_power_refreshed_timestamp_seconds: 1,
         });
         Ok(child_id)
     })
