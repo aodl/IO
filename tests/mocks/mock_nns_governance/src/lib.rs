@@ -1,5 +1,6 @@
 use candid::CandidType;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -13,6 +14,7 @@ pub struct MockNeuron {
     pub dissolve_started_at_seconds: Option<u64>,
     pub followee_id: Option<u64>,
     pub pending_refresh_credit_e8s: u128,
+    pub maturity_disbursements: Vec<MaturityDisbursement>,
     pub voting_power_refreshed_timestamp_seconds: u64,
     pub controller: candid::Principal,
 }
@@ -25,21 +27,54 @@ pub struct CreateNeuronArgs {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct CreateSplitChildArgs {
+    pub neuron_id: u64,
+    pub principal_e8s: u128,
+    pub dissolve_delay_seconds: u64,
+    pub memo: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct CreateStakingNeuronArgs {
+    pub neuron_id: u64,
+    pub principal_e8s: u128,
+    pub dissolve_delay_seconds: u64,
+    pub memo: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct NeuronAmountArgs {
     pub neuron_id: u64,
     pub amount_e8s: u128,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct SetNeuronAccountArgs {
-    pub neuron_id: u64,
-    pub account: Vec<u8>,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SetNextDisburseBlockArgs {
+    pub block_index: u64,
 }
 
 fn default_neuron_account(neuron_id: u64) -> Vec<u8> {
     let mut account = vec![0_u8; 32];
     account[24..].copy_from_slice(&neuron_id.to_be_bytes());
     account
+}
+
+fn split_child_subaccount(controller: candid::Principal, memo: u64) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update([b"split-neuron".len() as u8]);
+    hasher.update(b"split-neuron");
+    hasher.update(controller.as_slice());
+    hasher.update(memo.to_be_bytes());
+    hasher.finalize().to_vec()
+}
+
+fn staking_subaccount(controller: candid::Principal, memo: u64) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update([b"neuron-stake".len() as u8]);
+    hasher.update(b"neuron-stake");
+    hasher.update(controller.as_slice());
+    hasher.update(memo.to_be_bytes());
+    hasher.finalize().to_vec()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -70,15 +105,18 @@ struct GovernanceState {
     command_calls: GovernanceCommandCounters,
     split_trap_before_effect: bool,
     transaction_fee_e8s: u64,
+    next_disburse_block: Option<u64>,
 }
 
 thread_local! {
-    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new(), two_week_target: None, maturity_preparation: None, reconcile_calls: 0, get_full_neuron_calls: 0, pooled_principal_e8s: 0, claim_asset_observation_calls: 0, pool_policy_observation_calls: 0, pool_policy_valid: true, command_controls: Vec::new(), command_calls: GovernanceCommandCounters::ZERO, split_trap_before_effect: false, transaction_fee_e8s: 10_000 }) };
+    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new(), two_week_target: None, maturity_preparation: None, reconcile_calls: 0, get_full_neuron_calls: 0, pooled_principal_e8s: 0, claim_asset_observation_calls: 0, pool_policy_observation_calls: 0, pool_policy_valid: true, command_controls: Vec::new(), command_calls: GovernanceCommandCounters::ZERO, split_trap_before_effect: false, transaction_fee_e8s: 10_000, next_disburse_block: None }) };
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum ControlledCommand {
     Split,
+    Disburse,
+    DisburseMaturity,
     ClaimOrRefresh,
     IncreaseDissolveDelay,
     SetFollowing,
@@ -97,6 +135,8 @@ pub struct CommandControl {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
 pub struct GovernanceCommandCounters {
     pub split: u64,
+    pub disburse: u64,
+    pub disburse_maturity: u64,
     pub claim_or_refresh: u64,
     pub increase_dissolve_delay: u64,
     pub set_following: u64,
@@ -108,6 +148,8 @@ pub struct GovernanceCommandCounters {
 impl GovernanceCommandCounters {
     const ZERO: Self = Self {
         split: 0,
+        disburse: 0,
+        disburse_maturity: 0,
         claim_or_refresh: 0,
         increase_dissolve_delay: 0,
         set_following: 0,
@@ -119,6 +161,8 @@ impl GovernanceCommandCounters {
     fn increment(&mut self, command: ControlledCommand) {
         let counter = match command {
             ControlledCommand::Split => &mut self.split,
+            ControlledCommand::Disburse => &mut self.disburse,
+            ControlledCommand::DisburseMaturity => &mut self.disburse_maturity,
             ControlledCommand::ClaimOrRefresh => &mut self.claim_or_refresh,
             ControlledCommand::IncreaseDissolveDelay => &mut self.increase_dissolve_delay,
             ControlledCommand::SetFollowing => &mut self.set_following,
@@ -335,13 +379,13 @@ pub enum NnsDissolveState {
     WhenDissolvedTimestampSeconds(u64),
 }
 
-#[derive(Clone, Debug, CandidType, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct NnsAccount {
     pub owner: Option<candid::Principal>,
     pub subaccount: Option<Vec<u8>>,
 }
 
-#[derive(Clone, Debug, CandidType, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct MaturityDisbursement {
     pub amount_e8s: Option<u64>,
     pub timestamp_of_disbursement_seconds: Option<u64>,
@@ -434,8 +478,33 @@ pub struct Split {
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct AccountIdentifier {
+    pub hash: Vec<u8>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct Disburse {
+    pub to_account: Option<AccountIdentifier>,
+    pub amount: Option<Amount>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct Amount {
+    pub e8s: u64,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct DisburseMaturity {
+    pub percentage_to_disburse: u32,
+    pub to_account: Option<NnsAccount>,
+    pub to_account_identifier: Option<AccountIdentifier>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
 pub enum ManageCommand {
     Split(Split),
+    Disburse(Disburse),
+    DisburseMaturity(DisburseMaturity),
     ClaimOrRefresh(ClaimOrRefresh),
     Configure(Configure),
     Merge(Merge),
@@ -461,11 +530,23 @@ pub struct SplitResponse {
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct DisburseResponse {
+    pub transfer_block_height: u64,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct DisburseMaturityResponse {
+    pub amount_disbursed_e8s: Option<u64>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
 pub enum ManageCommandResponse {
     Error(GovernanceError),
     ClaimOrRefresh(ClaimOrRefreshResponse),
     Configure(candid::Reserved),
     Split(SplitResponse),
+    Disburse(DisburseResponse),
+    DisburseMaturity(DisburseMaturityResponse),
     Merge(candid::Reserved),
     SetFollowing(candid::Reserved),
     RefreshVotingPower(candid::Reserved),
@@ -542,7 +623,10 @@ fn split_response(
     state.next_neuron_id = state.next_neuron_id.saturating_add(1);
     state.neurons.push(MockNeuron {
         neuron_id: child_id,
-        account: default_neuron_account(child_id),
+        account: split
+            .memo
+            .map(|memo| split_child_subaccount(controller, memo))
+            .unwrap_or_else(|| default_neuron_account(child_id)),
         principal_e8s: gross.saturating_sub(10_000),
         maturity_e8s: 0,
         dissolve_delay_seconds: delay,
@@ -550,6 +634,7 @@ fn split_response(
         dissolve_started_at_seconds: None,
         followee_id: Some(43),
         pending_refresh_credit_e8s: 0,
+        maturity_disbursements: Vec::new(),
         voting_power_refreshed_timestamp_seconds: 1,
         controller,
     });
@@ -569,6 +654,8 @@ pub fn manage_neuron(request: ManageNeuron) -> ManageNeuronResponse {
         };
         let kind = match &command {
             ManageCommand::Split(_) => ControlledCommand::Split,
+            ManageCommand::Disburse(_) => ControlledCommand::Disburse,
+            ManageCommand::DisburseMaturity(_) => ControlledCommand::DisburseMaturity,
             ManageCommand::ClaimOrRefresh(_) => ControlledCommand::ClaimOrRefresh,
             ManageCommand::Configure(Configure {
                 operation: Some(ConfigureOperation::IncreaseDissolveDelay(_)),
@@ -590,6 +677,40 @@ pub fn manage_neuron(request: ManageNeuron) -> ManageNeuronResponse {
         }
         let response = match command {
             ManageCommand::Split(split) => split_response(&mut state, neuron_id, split, caller),
+            ManageCommand::Disburse(_) => {
+                let block = state.next_disburse_block.take().unwrap_or(777);
+                if let Ok(neuron) = neuron_mut(&mut state, neuron_id) {
+                    neuron.principal_e8s = 0;
+                }
+                ManageCommandResponse::Disburse(DisburseResponse {
+                    transfer_block_height: block,
+                })
+            }
+            ManageCommand::DisburseMaturity(command) => {
+                let now = (ic_cdk::api::time() / 1_000_000_000).max(1);
+                let response = match neuron_mut(&mut state, neuron_id) {
+                    Ok(neuron) if command.percentage_to_disburse == 100 => {
+                        let amount = u64::try_from(std::mem::take(&mut neuron.maturity_e8s))
+                            .unwrap_or(u64::MAX);
+                        neuron.maturity_disbursements.push(MaturityDisbursement {
+                            amount_e8s: Some(amount),
+                            timestamp_of_disbursement_seconds: Some(now),
+                            finalize_disbursement_timestamp_seconds: Some(
+                                now.saturating_add(604_800),
+                            ),
+                            account_to_disburse_to: command.to_account,
+                        });
+                        ManageCommandResponse::DisburseMaturity(DisburseMaturityResponse {
+                            amount_disbursed_e8s: Some(amount),
+                        })
+                    }
+                    _ => ManageCommandResponse::Error(GovernanceError {
+                        error_type: 5,
+                        error_message: "controlled DisburseMaturity rejection".into(),
+                    }),
+                };
+                response
+            }
             ManageCommand::ClaimOrRefresh(claim) => {
                 let id = match claim.by {
                     Some(ClaimBy::MemoAndController(from)) => from.memo,
@@ -679,7 +800,7 @@ fn full_neuron(neuron: &MockNeuron) -> FullNeuron {
         maturity_e8s_equivalent: neuron.maturity_e8s.try_into().unwrap_or(u64::MAX),
         staked_maturity_e8s_equivalent: Some(0),
         auto_stake_maturity: Some(false),
-        maturity_disbursements_in_progress: Some(Vec::new()),
+        maturity_disbursements_in_progress: Some(neuron.maturity_disbursements.clone()),
         dissolve_state: Some(if neuron.is_dissolving {
             NnsDissolveState::WhenDissolvedTimestampSeconds(
                 neuron.dissolve_started_at_seconds.unwrap_or_default(),
@@ -750,14 +871,27 @@ pub struct ListNeuronsResponse {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn list_neurons(_request: ListNeuronsRequest) -> ListNeuronsResponse {
+pub fn list_neurons(request: ListNeuronsRequest) -> ListNeuronsResponse {
     let caller = ic_cdk::api::msg_caller();
+    let requested_subaccounts = request
+        .neuron_subaccounts
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| entry.subaccount)
+        .collect::<Vec<_>>();
+    let requested_ids = request.neuron_ids;
     ListNeuronsResponse {
         neuron_infos: Vec::new(),
         full_neurons: STATE.with(|cell| {
             cell.borrow()
                 .neurons
                 .iter()
+                .filter(|neuron| {
+                    requested_ids.contains(&neuron.neuron_id)
+                        || requested_subaccounts.contains(&neuron.account)
+                        || (request.include_neurons_readable_by_caller
+                            && neuron.controller == caller)
+                })
                 .filter(|neuron| neuron.controller == caller)
                 .map(full_neuron)
                 .collect()
@@ -854,6 +988,7 @@ pub fn debug_create_neuron(args: CreateNeuronArgs) -> u64 {
             dissolve_started_at_seconds: None,
             followee_id: Some(43),
             pending_refresh_credit_e8s: 0,
+            maturity_disbursements: Vec::new(),
             voting_power_refreshed_timestamp_seconds: 1,
             controller: ic_cdk::api::msg_caller(),
         });
@@ -862,13 +997,46 @@ pub fn debug_create_neuron(args: CreateNeuronArgs) -> u64 {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn debug_set_neuron_account(args: SetNeuronAccountArgs) -> Result<(), String> {
-    if args.account.len() != 32 {
-        return Err("neuron account must be 32 bytes".into());
-    }
+pub fn debug_create_staking_neuron(args: CreateStakingNeuronArgs) -> u64 {
+    let controller = ic_cdk::api::msg_caller();
     STATE.with(|cell| {
-        neuron_mut(&mut cell.borrow_mut(), args.neuron_id)?.account = args.account;
-        Ok(())
+        cell.borrow_mut().neurons.push(MockNeuron {
+            neuron_id: args.neuron_id,
+            account: staking_subaccount(controller, args.memo),
+            principal_e8s: args.principal_e8s,
+            maturity_e8s: 0,
+            dissolve_delay_seconds: args.dissolve_delay_seconds,
+            is_dissolving: false,
+            dissolve_started_at_seconds: None,
+            followee_id: Some(43),
+            pending_refresh_credit_e8s: 0,
+            maturity_disbursements: Vec::new(),
+            voting_power_refreshed_timestamp_seconds: 1,
+            controller,
+        });
+        args.neuron_id
+    })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_create_split_child(args: CreateSplitChildArgs) -> u64 {
+    let controller = ic_cdk::api::msg_caller();
+    STATE.with(|cell| {
+        cell.borrow_mut().neurons.push(MockNeuron {
+            neuron_id: args.neuron_id,
+            account: split_child_subaccount(controller, args.memo),
+            principal_e8s: args.principal_e8s,
+            maturity_e8s: 0,
+            dissolve_delay_seconds: args.dissolve_delay_seconds,
+            is_dissolving: false,
+            dissolve_started_at_seconds: None,
+            followee_id: Some(43),
+            pending_refresh_credit_e8s: 0,
+            maturity_disbursements: Vec::new(),
+            voting_power_refreshed_timestamp_seconds: 1,
+            controller,
+        });
+        args.neuron_id
     })
 }
 
@@ -880,6 +1048,11 @@ pub fn debug_add_maturity(args: NeuronAmountArgs) -> Result<u128, String> {
         neuron.maturity_e8s = neuron.maturity_e8s.saturating_add(args.amount_e8s);
         Ok(neuron.maturity_e8s)
     })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_next_disburse_block(args: SetNextDisburseBlockArgs) {
+    STATE.with(|cell| cell.borrow_mut().next_disburse_block = Some(args.block_index));
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -926,6 +1099,7 @@ pub fn debug_split(neuron_id: u64, amount_e8s: u128) -> Result<u64, String> {
             dissolve_started_at_seconds: None,
             followee_id: Some(43),
             pending_refresh_credit_e8s: 0,
+            maturity_disbursements: Vec::new(),
             voting_power_refreshed_timestamp_seconds: 1,
             controller: ic_cdk::api::msg_caller(),
         });

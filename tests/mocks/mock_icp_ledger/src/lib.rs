@@ -32,6 +32,7 @@ pub struct LedgerTransaction {
     pub memo_bytes: Option<Vec<u8>>,
     pub block_index: u64,
     pub timestamp: u64,
+    pub native_memo_u64: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -76,6 +77,14 @@ pub struct DebugDuplicateResponseArgs {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct DebugFeeArgs {
     pub fee_e8s: u128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct DebugNnsDisbursementArgs {
+    pub from: IcrcAccount,
+    pub to: IcrcAccount,
+    pub amount_e8s: u128,
+    pub native_memo_u64: u64,
 }
 
 #[derive(Default)]
@@ -131,6 +140,7 @@ struct RecordTransfer {
     amount_e8s: u128,
     memo: String,
     memo_bytes: Option<Vec<u8>>,
+    native_memo_u64: u64,
 }
 
 fn record(state: &mut LedgerState, transfer: RecordTransfer) -> u64 {
@@ -145,6 +155,7 @@ fn record(state: &mut LedgerState, transfer: RecordTransfer) -> u64 {
         memo_bytes: transfer.memo_bytes,
         block_index,
         timestamp: now(),
+        native_memo_u64: transfer.native_memo_u64,
     });
     block_index
 }
@@ -372,6 +383,7 @@ pub fn icrc1_transfer(args: IcrcTransferArg) -> Result<Nat, IcrcTransferError> {
                 amount_e8s,
                 memo,
                 memo_bytes,
+                native_memo_u64: 0,
             },
         )))
     })
@@ -432,6 +444,7 @@ pub fn icrc2_transfer_from(args: TransferFromArg) -> Result<Nat, IcrcTransferErr
                 amount_e8s,
                 memo: memo_to_string(args.memo.clone()),
                 memo_bytes: args.memo,
+                native_memo_u64: 0,
             },
         )))
     })
@@ -501,6 +514,29 @@ pub fn debug_mint_account(args: DebugMintAccountArgs) -> u64 {
                 amount_e8s: args.amount_e8s,
                 memo: "debug mint".into(),
                 memo_bytes: None,
+                native_memo_u64: 0,
+            },
+        )
+    })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_record_nns_disbursement(args: DebugNnsDisbursementArgs) -> u64 {
+    let from = account_from_icrc(args.from).expect("debug NNS source Account must be canonical");
+    let to = account_from_icrc(args.to).expect("debug NNS destination Account must be canonical");
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        record(
+            &mut state,
+            RecordTransfer {
+                from: mock_label_from_account(&from),
+                to: mock_label_from_account(&to),
+                from_account: Some(from),
+                to_account: Some(to),
+                amount_e8s: args.amount_e8s,
+                memo: args.native_memo_u64.to_string(),
+                memo_bytes: None,
+                native_memo_u64: args.native_memo_u64,
             },
         )
     })
@@ -587,7 +623,7 @@ pub fn query_blocks(args: QueryBlocksArgs) -> QueryBlocksResponse {
                 let to = tx.to_account.as_ref()?;
                 Some(Block {
                     transaction: Transaction {
-                        memo: 0,
+                        memo: tx.native_memo_u64,
                         icrc1_memo: tx.memo_bytes.clone(),
                         operation: Some(Operation::Transfer {
                             from: io_ledger_boundary::icp_account_identifier(
@@ -647,6 +683,7 @@ pub fn debug_mint(args: DebugMintArgs) -> u64 {
                 amount_e8s: args.amount_e8s,
                 memo: args.memo,
                 memo_bytes: None,
+                native_memo_u64: 0,
             },
         )
     })

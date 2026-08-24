@@ -6,8 +6,9 @@ use io_governance_types::{
     NnsClaimOrRefreshBy, NnsClaimOrRefreshNeuronFromAccount, NnsDissolveStateRecord,
     NnsFolloweesForTopic, NnsGovernanceErrorRecord, NnsIncreaseDissolveDelay,
     NnsManageNeuronCommandRequest, NnsManageNeuronResponseCommandRecord, NnsMerge,
-    NnsNeuronIdOrSubaccount, NnsNeuronIdRecord, NnsNeuronRecord, NnsProductionConfigure,
-    NnsProductionConfigureOperation, NnsProductionDisburseMaturity,
+    NnsNeuronIdOrSubaccount, NnsNeuronIdRecord, NnsNeuronRecord, NnsNeuronSubaccount,
+    NnsProductionConfigure, NnsProductionConfigureOperation, NnsProductionDisburseMaturity,
+    NnsProductionListNeuronsRequest, NnsProductionListNeuronsResponse,
     NnsProductionManageNeuronRequest, NnsProductionManageNeuronResponse, NnsProposalIdRecord,
     NnsRegisterVote, NnsSetFollowing, NnsSplit, NnsStakeMaturity,
 };
@@ -745,6 +746,15 @@ fn split(
     parent_id: u64,
     gross_e8s: u64,
 ) -> Result<u64, NnsGovernanceErrorRecord> {
+    split_with_memo(fixture, parent_id, gross_e8s, None)
+}
+
+fn split_with_memo(
+    fixture: &CandidateFixture,
+    parent_id: u64,
+    gross_e8s: u64,
+    memo: Option<u64>,
+) -> Result<u64, NnsGovernanceErrorRecord> {
     let response = manage(
         fixture,
         fixture.manager,
@@ -754,6 +764,7 @@ fn split(
             })),
             command: Some(NnsManageNeuronCommandRequest::Split(NnsSplit {
                 amount_e8s: gross_e8s,
+                memo,
             })),
             id: None,
         },
@@ -1729,6 +1740,79 @@ fn exact_post_m70_fourteen_day_parent_follows_and_earns_maturity() {
         *topic == 4 && followees.followees == vec![NnsNeuronIdRecord { id: leader }]
     }));
     assert!(refreshed.voting_power_refreshed_timestamp_seconds.is_some());
+}
+
+#[test]
+#[ignore = "requires exact candidate NNS Governance, ICP ledger, test-only actor/XRC Wasms, and POCKET_IC_BIN"]
+fn exact_post_m70_split_child_subaccount_lookup_matches_io_recovery() {
+    let _guard = crate::lock_test_env();
+    let fixture = CandidateFixture::old_io_boundary();
+    fixture.upgrade_to_candidate();
+
+    let permanent = create_neuron(
+        &fixture,
+        fixture.manager,
+        72_000,
+        300_000_000,
+        ONE_YEAR_SECONDS,
+    );
+    let parent = create_neuron(
+        &fixture,
+        fixture.manager,
+        72_001,
+        500_010_000,
+        u32::try_from(FOURTEEN_DAYS_SECONDS).unwrap(),
+    );
+    let parent_before = full_neuron(&fixture, fixture.manager, parent)
+        .unwrap()
+        .cached_neuron_stake_e8s;
+    let generation = 9_000_000_072_002_u64;
+    let child = split_with_memo(&fixture, parent, CHILD_GROSS_E8S, Some(generation)).unwrap();
+    let expected = io_nns_types::backing::split_child_subaccount(fixture.manager, generation);
+    let actual = full_neuron(&fixture, fixture.manager, child).unwrap();
+    assert_eq!(actual.controller, Some(fixture.manager));
+    assert_eq!(actual.account, expected);
+    assert_ne!(
+        actual.account,
+        staking_subaccount(fixture.manager, generation)
+    );
+    assert_ne!(child, parent);
+    assert_ne!(child, permanent);
+    assert_eq!(actual.cached_neuron_stake_e8s, CHILD_CREDITED_E8S);
+    assert_eq!(
+        actual.dissolve_state,
+        Some(NnsDissolveStateRecord::DissolveDelaySeconds(
+            FOURTEEN_DAYS_SECONDS
+        ))
+    );
+
+    let listed: NnsProductionListNeuronsResponse = update(
+        &fixture,
+        fixture.governance,
+        fixture.manager,
+        "list_neurons",
+        NnsProductionListNeuronsRequest {
+            neuron_ids: Vec::new(),
+            include_neurons_readable_by_caller: false,
+            include_empty_neurons_readable_by_caller: Some(false),
+            include_public_neurons_in_full_neurons: Some(false),
+            page_number: Some(0),
+            page_size: Some(1),
+            neuron_subaccounts: Some(vec![NnsNeuronSubaccount {
+                subaccount: expected.to_vec(),
+            }]),
+        },
+    );
+    assert_eq!(listed.full_neurons.len(), 1);
+    assert_eq!(
+        listed.full_neurons[0].id,
+        Some(NnsNeuronIdRecord { id: child })
+    );
+    assert_eq!(listed.full_neurons[0].account, expected);
+    let parent_after = full_neuron(&fixture, fixture.manager, parent)
+        .unwrap()
+        .cached_neuron_stake_e8s;
+    assert_eq!(parent_after, parent_before - CHILD_GROSS_E8S);
 }
 
 #[test]

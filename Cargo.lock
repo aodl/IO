@@ -1440,6 +1440,7 @@ dependencies = [
  "io-accounts",
  "io-nns-types",
  "serde",
+ "sha2",
 ]
 
 [[package]]

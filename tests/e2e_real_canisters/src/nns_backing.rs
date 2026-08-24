@@ -138,8 +138,6 @@ struct ManagerPermanentCreditProof {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 enum ManagerMaturityProgress {
     Observed,
-    StakeMaturitySubmitted,
-    StakeMaturitySucceeded,
     DisburseMaturitySubmitted,
     DisburseMaturitySucceeded,
     AwaitingMintProof,

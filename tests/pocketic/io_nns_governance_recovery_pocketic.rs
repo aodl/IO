@@ -1,6 +1,6 @@
 use candid::{decode_one, encode_one, CandidType, Principal};
 use io_nns_neuron_manager::{
-    api::UnwindProgress,
+    api::{MaturityProgress, PrepareTwoWeekMaturityArgs, UnwindProgress},
     jupiter::{
         JupiterDeposit, JupiterOperation, JupiterPhase, NeuronSnapshot, StakeTransferSucceeded,
     },
@@ -8,7 +8,6 @@ use io_nns_neuron_manager::{
         ClaimReceiptDeliveryOperation, DisburseMaturitySubmission, DisburseMaturitySucceeded,
         MaturityCommandOperation, MaturityCommandPhase, MaturityEvidenceSource, MaturityKind,
         MaturityPlan, MintEvidence, MintProofState, PendingMaturityDisbursement,
-        StakeMaturitySucceeded,
     },
     pool::{PassiveCohort, UnwindOperation, UnwindPhase},
     state::{Account, NnsOperation, NnsStateV1, PooledTarget},
@@ -33,20 +32,43 @@ struct CreateNeuronArgs {
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
+struct CreateSplitChildArgs {
+    neuron_id: u64,
+    principal_e8s: u128,
+    dissolve_delay_seconds: u64,
+    memo: u64,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct CreateStakingNeuronArgs {
+    neuron_id: u64,
+    principal_e8s: u128,
+    dissolve_delay_seconds: u64,
+    memo: u64,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
 struct NeuronAmountArgs {
     neuron_id: u64,
     amount_e8s: u128,
 }
 
-#[derive(Clone, Debug, CandidType, Deserialize)]
-struct SetNeuronAccountArgs {
-    neuron_id: u64,
-    account: Vec<u8>,
-}
-
 #[derive(Clone, Copy, Debug, CandidType)]
 struct DebugFeeArgs {
     fee_e8s: u128,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct DebugNnsDisbursementArgs {
+    from: Account,
+    to: Account,
+    amount_e8s: u128,
+    native_memo_u64: u64,
+}
+
+#[derive(Clone, Copy, Debug, CandidType, Deserialize)]
+struct SetNextDisburseBlockArgs {
+    block_index: u64,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -69,6 +91,8 @@ struct LedgerCallCounters {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 enum ControlledCommand {
     Split,
+    Disburse,
+    DisburseMaturity,
     ClaimOrRefresh,
     IncreaseDissolveDelay,
     SetFollowing,
@@ -87,6 +111,8 @@ struct CommandControl {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
 struct GovernanceCommandCounters {
     split: u64,
+    disburse: u64,
+    disburse_maturity: u64,
     claim_or_refresh: u64,
     increase_dissolve_delay: u64,
     set_following: u64,
@@ -150,6 +176,7 @@ struct RecoveryFixture {
     governance: Principal,
     manager: Principal,
     stream: Principal,
+    sns_governance: Principal,
 }
 
 impl RecoveryFixture {
@@ -213,10 +240,10 @@ impl RecoveryFixture {
             governance,
             manager,
             stream,
+            sns_governance,
         };
         fixture.create_neuron(41, 1_000_000, 63_115_200);
-        fixture.create_neuron(42, 1_000_000, POOLED_PARENT_DELAY_SECONDS);
-        fixture.set_neuron_account(42, parent_staking_subaccount(manager, 42));
+        fixture.create_staking_neuron(42, 1_000_000, POOLED_PARENT_DELAY_SECONDS, 42);
         fixture
     }
 
@@ -307,6 +334,21 @@ impl RecoveryFixture {
         );
     }
 
+    fn create_staking_neuron(&self, neuron_id: u64, principal_e8s: u128, delay: u64, memo: u64) {
+        let _: u64 = update(
+            &self.pic,
+            self.governance,
+            self.manager,
+            "debug_create_staking_neuron",
+            CreateStakingNeuronArgs {
+                neuron_id,
+                principal_e8s,
+                dissolve_delay_seconds: delay,
+                memo,
+            },
+        );
+    }
+
     fn add_maturity(&self, neuron_id: u64, amount_e8s: u128) {
         update::<_, Result<u128, String>>(
             &self.pic,
@@ -321,15 +363,19 @@ impl RecoveryFixture {
         .unwrap();
     }
 
-    fn set_neuron_account(&self, neuron_id: u64, account: Vec<u8>) {
-        update::<_, Result<(), String>>(
+    fn create_split_child(&self, neuron_id: u64, principal_e8s: u128, delay: u64, memo: u64) {
+        let _: u64 = update(
             &self.pic,
             self.governance,
-            Principal::anonymous(),
-            "debug_set_neuron_account",
-            SetNeuronAccountArgs { neuron_id, account },
-        )
-        .unwrap();
+            self.manager,
+            "debug_create_split_child",
+            CreateSplitChildArgs {
+                neuron_id,
+                principal_e8s,
+                dissolve_delay_seconds: delay,
+                memo,
+            },
+        );
     }
 
     fn refresh_credit(&self, neuron_id: u64, amount_e8s: u128) {
@@ -406,6 +452,32 @@ impl RecoveryFixture {
             "debug_set_fee",
             DebugFeeArgs { fee_e8s },
         );
+    }
+
+    fn record_child_disbursement(&self, child_subaccount: Vec<u8>, amount_e8s: u128) -> u128 {
+        let block: u64 = update(
+            &self.pic,
+            self.ledger,
+            Principal::anonymous(),
+            "debug_record_nns_disbursement",
+            DebugNnsDisbursementArgs {
+                from: Account {
+                    owner: self.governance,
+                    subaccount: Some(child_subaccount),
+                },
+                to: self.state_from_canister().config.stream_liquid_account,
+                amount_e8s,
+                native_memo_u64: u64::MAX,
+            },
+        );
+        let _: () = update(
+            &self.pic,
+            self.governance,
+            Principal::anonymous(),
+            "debug_set_next_disburse_block",
+            SetNextDisburseBlockArgs { block_index: block },
+        );
+        block.into()
     }
 
     fn create_controlled_neuron(&self, neuron_id: u64, principal_e8s: u128, delay: u64) {
@@ -513,7 +585,7 @@ fn unwind_operation(phase: UnwindPhase, child_neuron_id: u64) -> UnwindOperation
             vec![4; 32]
         },
         submitted_at_seconds: 1,
-        expected_block_index: Some(9),
+        expected_block_index: (phase == UnwindPhase::DisbursementSubmitted).then_some(9),
         child_maturity_e8s: if cleanup { 50_000 } else { 0 },
         parent_maturity_e8s: if cleanup { 20_000 } else { 0 },
         parent_principal_e8s: if cleanup { 1_000_000 } else { 0 },
@@ -569,9 +641,9 @@ fn unwind_phase(state: &NnsStateV1) -> &UnwindPhase {
 }
 
 fn delivering_maturity(state: &NnsStateV1, kind: MaturityKind) -> PendingMaturityDisbursement {
-    let (neuron_id, retained, remaining, generation) = match kind {
-        MaturityKind::TwoYear => (41, 80_000_000, 120_000_000, None),
-        MaturityKind::TwoWeek => (42, 0, 200_000_000, Some(1)),
+    let (neuron_id, remaining, generation) = match kind {
+        MaturityKind::TwoYear => (41, 120_000_000, None),
+        MaturityKind::TwoWeek => (42, 200_000_000, Some(1)),
     };
     let plan = MaturityPlan {
         neuron: NeuronSnapshot {
@@ -579,22 +651,13 @@ fn delivering_maturity(state: &NnsStateV1, kind: MaturityKind) -> PendingMaturit
             staking_subaccount: [6; 32],
             cached_stake_e8s: 1_000_000,
         },
-        original_maturity_e8s: 200_000_000,
-        original_staked_maturity_e8s: 0,
-        stake_maturity_e8s: retained,
-        remaining_maturity_e8s: remaining,
+        observed_maturity_e8s: 200_000_000,
         destination: state.config.maturity_staging.clone(),
         requested_at_seconds: 1,
         entitlement_batch_generation: generation,
     };
-    let stake = StakeMaturitySucceeded {
-        plan,
-        remaining_maturity_e8s: remaining,
-        staked_maturity_e8s: retained,
-        evidence_source: MaturityEvidenceSource::CommandResponse,
-    };
     let submission = DisburseMaturitySubmission {
-        stake: stake.clone(),
+        plan,
         submitted_at_seconds: 1,
     };
     PendingMaturityDisbursement {
@@ -604,7 +667,6 @@ fn delivering_maturity(state: &NnsStateV1, kind: MaturityKind) -> PendingMaturit
         destination: state.config.maturity_staging.clone(),
         initiation_timestamp_seconds: 1,
         scheduled_finalization_timestamp_seconds: 604_801,
-        stake_evidence: stake,
         disburse_evidence: DisburseMaturitySucceeded {
             submission,
             amount_disbursed_e8s: remaining,
@@ -631,7 +693,6 @@ fn ambiguous_split_is_discovered_after_upgrade_without_a_second_call() {
     fixture.control(ControlledCommand::Split, 0, 1);
 
     fixture.assert_pending();
-    fixture.set_neuron_account(10_000, parent_staking_subaccount(fixture.manager, 1));
     let submitted = fixture.state_from_canister();
     assert_eq!(unwind_phase(&submitted), &UnwindPhase::SplitSubmitted);
     assert_eq!(fixture.governance_calls().split, 1);
@@ -720,10 +781,12 @@ fn split_transport_ambiguity_and_duplicate_candidates_fail_closed() {
     fixture.replace(split_state(&fixture, UnwindPhase::SplitPrepared));
     fixture.control(ControlledCommand::Split, 0, 1);
     fixture.assert_pending();
-    fixture.set_neuron_account(10_000, parent_staking_subaccount(fixture.manager, 1));
-    fixture.create_controlled_neuron(902, 110_000, POOLED_PARENT_DELAY_SECONDS);
-    fixture.set_neuron_account(902, parent_staking_subaccount(fixture.manager, 1));
-    assert!(matches!(fixture.resume(), Err(ApiError::Stuck(_))));
+    fixture.create_split_child(902, 110_000, POOLED_PARENT_DELAY_SECONDS, 1);
+    let conflicting = fixture.resume();
+    assert!(
+        matches!(conflicting, Err(ApiError::Stuck(_))),
+        "expected conflicting exact subaccount to fail closed, got {conflicting:?}"
+    );
     assert_eq!(
         unwind_phase(&fixture.state_from_canister()),
         &UnwindPhase::SplitSubmitted
@@ -1079,4 +1142,259 @@ fn every_persisted_governance_phase_recovers_and_exact_replay_is_call_free() {
         query(&fixture.pic, fixture.ledger, "debug_get_call_counters");
     assert_eq!(monetary_after.transfer, monetary_before.transfer);
     assert_eq!(monetary_after.transfer_from, monetary_before.transfer_from);
+}
+
+fn ready_two_week_state(fixture: &RecoveryFixture) -> NnsStateV1 {
+    let mut state = fixture.state();
+    state.pooled_parent_id = Some(42);
+    state.pooled_parent_staking_account = Some(Account {
+        owner: fixture.governance,
+        subaccount: Some(parent_staking_subaccount(fixture.manager, 42)),
+    });
+    state.latest_pooled_target = Some(PooledTarget {
+        target_e8s: 1_000_000,
+        status: PooledTargetStatus::AtTarget,
+    });
+    state
+}
+
+fn child_disbursement_state(fixture: &RecoveryFixture, child_neuron_id: u64) -> NnsStateV1 {
+    let mut state = unwind_state(fixture, UnwindPhase::DisbursementPrepared, child_neuron_id);
+    state.live_cohorts = vec![PassiveCohort {
+        generation: 1,
+        reconciliation_request_fingerprint: vec![3; 32],
+        child_neuron_id,
+        principal_e8s: 110_000,
+        committed_fee_e8s: 10_000,
+        child_staking_subaccount: vec![4; 32],
+        ready_at_seconds: 1,
+        proof: CohortProofState::Dissolving,
+        disbursement_block: None,
+    }];
+    state
+}
+
+#[test]
+fn child_disburse_decoded_rejection_retries_and_proves_exact_block() {
+    let fixture = RecoveryFixture::new();
+    fixture.create_controlled_neuron(501, 110_000, 0);
+    fixture.replace(child_disbursement_state(&fixture, 501));
+    fixture.control(ControlledCommand::Disburse, 1, 0);
+    assert_eq!(
+        fixture.resume(),
+        Ok(NnsProgress::Unwind(UnwindProgress::Waiting))
+    );
+    assert_eq!(
+        unwind_phase(&fixture.state_from_canister()),
+        &UnwindPhase::DisbursementPrepared
+    );
+    assert_eq!(fixture.governance_calls().disburse, 1);
+
+    let block = fixture.record_child_disbursement(vec![4; 32], 100_000);
+    assert_eq!(
+        fixture.resume(),
+        Ok(NnsProgress::Unwind(UnwindProgress::AwaitingTransferProof))
+    );
+    assert_eq!(fixture.governance_calls().disburse, 2);
+    assert!(matches!(
+        update::<_, Result<NnsProgress, ApiError>>(
+            &fixture.pic,
+            fixture.manager,
+            Principal::anonymous(),
+            "prove_active_transfer",
+            block,
+        ),
+        Ok(NnsProgress::Unwind(UnwindProgress::Completed {
+            block_index,
+            liquid_e8s: 100_000,
+        })) if block_index == block
+    ));
+}
+
+#[test]
+fn child_disburse_malformed_after_effect_never_resubmits() {
+    let fixture = RecoveryFixture::new();
+    fixture.create_controlled_neuron(502, 110_000, 0);
+    fixture.replace(child_disbursement_state(&fixture, 502));
+    let block = fixture.record_child_disbursement(vec![4; 32], 100_000);
+    fixture.control(ControlledCommand::Disburse, 0, 1);
+    assert_eq!(
+        fixture.resume(),
+        Ok(NnsProgress::Unwind(UnwindProgress::AwaitingTransferProof))
+    );
+    assert_eq!(fixture.governance_calls().disburse, 1);
+    fixture.upgrade();
+    assert!(matches!(
+        update::<_, Result<NnsProgress, ApiError>>(
+            &fixture.pic,
+            fixture.manager,
+            Principal::anonymous(),
+            "prove_active_transfer",
+            block,
+        ),
+        Ok(NnsProgress::Unwind(UnwindProgress::Completed { .. }))
+    ));
+    assert_eq!(fixture.governance_calls().disburse, 1);
+}
+
+#[test]
+fn child_disburse_checks_governance_and_ledger_fees_before_effect() {
+    let fixture = RecoveryFixture::new();
+    fixture.create_controlled_neuron(503, 110_000, 0);
+    fixture.replace(child_disbursement_state(&fixture, 503));
+    fixture.set_governance_fee(20_000);
+    assert!(matches!(fixture.resume(), Err(ApiError::Stuck(_))));
+    assert_eq!(fixture.governance_calls().disburse, 0);
+    assert_eq!(
+        unwind_phase(&fixture.state_from_canister()),
+        &UnwindPhase::DisbursementPrepared
+    );
+    fixture.set_governance_fee(10_000);
+    fixture.record_child_disbursement(vec![4; 32], 100_000);
+    assert_eq!(
+        fixture.resume(),
+        Ok(NnsProgress::Unwind(UnwindProgress::AwaitingTransferProof))
+    );
+    assert_eq!(fixture.governance_calls().disburse, 1);
+}
+
+#[test]
+fn two_week_maturity_captures_canonical_amount_after_intervening_reward_events() {
+    for reward_events in [1_u64, 3] {
+        let fixture = RecoveryFixture::new();
+        fixture.replace(ready_two_week_state(&fixture));
+        fixture.add_maturity(42, 200_000_000);
+        assert_eq!(
+            update::<_, Result<MaturityProgress, ApiError>>(
+                &fixture.pic,
+                fixture.manager,
+                fixture.stream,
+                "prepare_two_week_maturity",
+                PrepareTwoWeekMaturityArgs {
+                    entitlement_batch_generation: 1,
+                    target_e8s: 1_000_000,
+                },
+            ),
+            Ok(MaturityProgress::Observed)
+        );
+        for _ in 0..reward_events {
+            fixture.add_maturity(42, 10_000_000);
+        }
+        if reward_events > 1 {
+            fixture.upgrade();
+        }
+        assert_eq!(
+            fixture.resume(),
+            Ok(NnsProgress::Maturity(
+                MaturityProgress::DisburseMaturitySucceeded
+            ))
+        );
+        assert_eq!(
+            fixture.resume(),
+            Ok(NnsProgress::Maturity(MaturityProgress::AwaitingMintProof))
+        );
+        let state = fixture.state_from_canister();
+        let pending = state
+            .pending_two_week_maturity
+            .expect("canonical two-week maturity must become passive");
+        assert_eq!(
+            pending
+                .disburse_evidence
+                .submission
+                .plan
+                .observed_maturity_e8s,
+            200_000_000
+        );
+        assert_eq!(
+            pending.nominal_disbursed_maturity_e8s,
+            200_000_000 + reward_events * 10_000_000
+        );
+        assert_eq!(fixture.governance_calls().disburse_maturity, 1);
+    }
+}
+
+#[test]
+fn permanent_maturity_uses_realised_mint_command_across_reward_accrual() {
+    let fixture = RecoveryFixture::new();
+    fixture.replace(fixture.state());
+    fixture.add_maturity(41, 200_000_000);
+    assert_eq!(
+        update::<_, Result<MaturityProgress, ApiError>>(
+            &fixture.pic,
+            fixture.manager,
+            fixture.sns_governance,
+            "start_maturity",
+            MaturityKind::TwoYear,
+        ),
+        Ok(MaturityProgress::Observed)
+    );
+    fixture.add_maturity(41, 25_000_000);
+    assert_eq!(
+        fixture.resume(),
+        Ok(NnsProgress::Maturity(
+            MaturityProgress::DisburseMaturitySucceeded
+        ))
+    );
+    assert_eq!(
+        fixture.resume(),
+        Ok(NnsProgress::Maturity(MaturityProgress::AwaitingMintProof))
+    );
+    let pending = fixture
+        .state_from_canister()
+        .pending_two_year_maturity
+        .expect("permanent maturity must become passive");
+    assert_eq!(pending.nominal_disbursed_maturity_e8s, 225_000_000);
+    assert_eq!(fixture.governance_calls().disburse_maturity, 1);
+}
+
+#[test]
+fn disburse_maturity_decoded_rejection_retries_but_ambiguity_never_resubmits() {
+    let fixture = RecoveryFixture::new();
+    fixture.replace(fixture.state());
+    fixture.add_maturity(41, 200_000_000);
+    assert_eq!(
+        update::<_, Result<MaturityProgress, ApiError>>(
+            &fixture.pic,
+            fixture.manager,
+            fixture.sns_governance,
+            "start_maturity",
+            MaturityKind::TwoYear,
+        ),
+        Ok(MaturityProgress::Observed)
+    );
+    fixture.control(ControlledCommand::DisburseMaturity, 1, 0);
+    assert!(matches!(fixture.resume(), Err(ApiError::Pending(_))));
+    assert!(matches!(
+        fixture.state_from_canister().active_operation,
+        Some(NnsOperation::Maturity(operation))
+            if matches!(operation.phase, MaturityCommandPhase::Observed(_))
+    ));
+    assert!(matches!(
+        fixture.resume(),
+        Ok(NnsProgress::Maturity(
+            MaturityProgress::DisburseMaturitySucceeded
+        ))
+    ));
+    assert_eq!(fixture.governance_calls().disburse_maturity, 2);
+
+    let ambiguous = RecoveryFixture::new();
+    ambiguous.replace(ambiguous.state());
+    ambiguous.add_maturity(41, 200_000_000);
+    let _: Result<MaturityProgress, ApiError> = update(
+        &ambiguous.pic,
+        ambiguous.manager,
+        ambiguous.sns_governance,
+        "start_maturity",
+        MaturityKind::TwoYear,
+    );
+    ambiguous.control(ControlledCommand::DisburseMaturity, 0, 1);
+    assert!(matches!(ambiguous.resume(), Err(ApiError::Pending(_))));
+    ambiguous.upgrade();
+    assert!(matches!(
+        ambiguous.resume(),
+        Ok(NnsProgress::Maturity(
+            MaturityProgress::DisburseMaturitySucceeded
+        ))
+    ));
+    assert_eq!(ambiguous.governance_calls().disburse_maturity, 1);
 }
