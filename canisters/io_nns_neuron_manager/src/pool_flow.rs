@@ -120,8 +120,16 @@ async fn configure_delay(mut operation: PoolCommand) -> Result<PoolProgress, Api
         expected_delay_seconds: POOLED_PARENT_DELAY_SECONDS,
     };
     replace(operation.clone())?;
-    execution::increase_delay(&current.config, parent_id, additional).await?;
-    Ok(progress(&operation))
+    let result = if additional == 0 {
+        Ok(())
+    } else {
+        execution::increase_delay(&current.config, parent_id, additional).await
+    };
+    ensure(&operation)?;
+    Err(execution::command_pending(
+        "pooled parent delay submission",
+        result,
+    ))
 }
 
 async fn prove_delay(
@@ -137,16 +145,36 @@ async fn prove_delay(
         };
     let observed = execution::query_neuron_observation(&current.config, parent_id).await?;
     ensure(&operation)?;
-    if observed.dissolve_state != Some(DissolveState::DissolveDelaySeconds(expected_delay_seconds))
-    {
-        return Err(ApiError::Pending(
-            "pooled parent delay is not proved".into(),
+    let Some(DissolveState::DissolveDelaySeconds(delay)) = observed.dissolve_state else {
+        return stuck(
+            &operation,
+            "pooled parent is not canonically non-dissolving",
+        );
+    };
+    if delay > expected_delay_seconds {
+        return stuck(
+            &operation,
+            "pooled parent delay exceeded the immutable target",
+        );
+    }
+    if delay < expected_delay_seconds {
+        let remaining = u32::try_from(expected_delay_seconds - delay)
+            .map_err(|_| ApiError::Invalid("pooled parent delay retry does not fit u32".into()))?;
+        let result = execution::increase_delay(&current.config, parent_id, remaining).await;
+        ensure(&operation)?;
+        return Err(execution::command_pending(
+            "pooled parent delay retry",
+            result,
         ));
     }
     operation.phase = PoolCommandPhase::FollowingSubmitted;
     replace(operation.clone())?;
-    execution::set_following(&current.config, parent_id, follow_policy).await?;
-    Ok(progress(&operation))
+    let result = execution::set_following(&current.config, parent_id, follow_policy).await;
+    ensure(&operation)?;
+    Err(execution::command_pending(
+        "pooled parent following submission",
+        result,
+    ))
 }
 
 async fn prove_following(operation: PoolCommand) -> Result<PoolProgress, ApiError> {
@@ -154,22 +182,29 @@ async fn prove_following(operation: PoolCommand) -> Result<PoolProgress, ApiErro
     let current = state::read();
     let observed = execution::query_neuron_observation(&current.config, parent_id).await?;
     ensure(&operation)?;
-    execution::validate_parent_configuration(
-        &observed,
-        FollowPolicy {
-            followee_neuron_id: current.config.pooled_parent_followee_id,
-        },
-    )
-    .map_err(ApiError::Pending)?;
-    submit_refresh(operation).await
+    let policy = guarded_follow_policy(parent_id, current.config.pooled_parent_followee_id)
+        .map_err(ApiError::Stuck)?;
+    if execution::has_follow_policy(&observed, policy) {
+        return submit_refresh(operation).await;
+    }
+    let result = execution::set_following(&current.config, parent_id, policy).await;
+    ensure(&operation)?;
+    Err(execution::command_pending(
+        "pooled parent following retry",
+        result,
+    ))
 }
 
 async fn submit_refresh(mut operation: PoolCommand) -> Result<PoolProgress, ApiError> {
     let parent_id = operation.parent_neuron_id.ok_or(ApiError::Busy)?;
     operation.phase = PoolCommandPhase::RefreshSubmitted;
     replace(operation.clone())?;
-    execution::refresh_neuron(&state::read().config, parent_id).await?;
-    Ok(progress(&operation))
+    let result = execution::refresh_neuron(&state::read().config, parent_id).await;
+    ensure(&operation)?;
+    Err(execution::command_pending(
+        "pooled parent ClaimOrRefresh submission",
+        result,
+    ))
 }
 
 async fn complete_refresh(operation: PoolCommand) -> Result<PoolProgress, ApiError> {
@@ -183,8 +218,11 @@ async fn complete_refresh(operation: PoolCommand) -> Result<PoolProgress, ApiErr
         .checked_add(operation.permit.expected_credit_e8s)
         .ok_or_else(|| ApiError::Invalid("pooled parent proof overflow".into()))?;
     if observed.snapshot.cached_stake_e8s < expected {
-        return Err(ApiError::Pending(
-            "pooled parent credit is not proved".into(),
+        let result = execution::refresh_neuron(&current.config, parent_id).await;
+        ensure(&operation)?;
+        return Err(execution::command_pending(
+            "pooled parent ClaimOrRefresh retry",
+            result,
         ));
     }
     if operation.kind == PoolCommandKind::Bootstrap {
@@ -251,6 +289,17 @@ fn fail_self_follow(operation: PoolCommand, parent_id: u64) -> Result<PoolProgre
     Err(ApiError::Invalid(format!(
         "pooled parent {parent_id} equals the configured followee; choose a different pre-launch memo or followee"
     )))
+}
+
+fn stuck(operation: &PoolCommand, reason: &str) -> Result<PoolProgress, ApiError> {
+    let mut latest = state::read();
+    if !matches!(&latest.active_operation, Some(NnsOperation::Pool(active)) if active == operation)
+    {
+        return Err(ApiError::Busy);
+    }
+    latest.lifecycle = crate::state::Lifecycle::Paused;
+    state::write(latest);
+    Err(ApiError::Stuck(reason.into()))
 }
 
 fn validate_follow_target(parent_id: u64, followee_id: u64) -> Result<(), String> {

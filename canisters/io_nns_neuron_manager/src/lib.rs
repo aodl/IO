@@ -1,4 +1,5 @@
 pub mod api;
+mod claim_assets;
 mod execution;
 pub use io_nns_types::{jupiter, maturity, maturity::MaturityKind, pool, transfer};
 mod jupiter_flow;
@@ -146,6 +147,20 @@ pub async fn set_paused(paused: bool) -> Result<(), ApiError> {
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn get_status() -> Status {
     api::get_status()
+}
+
+#[cfg(debug_assertions)]
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn debug_get_state() -> NnsStateV1 {
+    state::read()
+}
+
+#[cfg(debug_assertions)]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_replace_state(replacement: NnsStateV1) -> Result<(), String> {
+    replacement.validate(ic_cdk::api::canister_self())?;
+    state::write(replacement);
+    Ok(())
 }
 
 ic_cdk::export_candid!();

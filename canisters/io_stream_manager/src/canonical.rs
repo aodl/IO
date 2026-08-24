@@ -72,6 +72,7 @@ async fn claim_snapshot_once(config: &StreamConfig) -> Result<ClaimSnapshot, Str
         .transit_backing_e8s
         .checked_add(stream_transit)
         .ok_or("combined transit backing overflow")?;
+    validate_unwind_fee_basis(&nns_before, icp_fee)?;
     if crate::state::read() != stream_snapshot {
         return Err("Stream state drifted across the canonical reads".into());
     }
@@ -117,6 +118,29 @@ async fn claim_snapshot_once(config: &StreamConfig) -> Result<ClaimSnapshot, Str
     })
 }
 
+fn validate_unwind_fee_basis(
+    observation: &io_nns_types::backing::ClaimAssetObservation,
+    canonical_fee_e8s: u128,
+) -> Result<(), String> {
+    let cohort_drift = observation.live_cohorts.iter().any(|cohort| {
+        cohort.physical_principal_e8s > 0
+            && cohort
+                .physical_principal_e8s
+                .checked_sub(cohort.net_backing_e8s)
+                != Some(canonical_fee_e8s)
+    });
+    if cohort_drift
+        || observation
+            .transit_fee_basis_e8s
+            .is_some_and(|basis| basis != canonical_fee_e8s)
+    {
+        return Err(format!(
+            "committed unwind fee basis differs from current canonical ICP fee {canonical_fee_e8s}"
+        ));
+    }
+    Ok(())
+}
+
 fn stream_transit_backing(
     stream: &crate::state::StreamStateV1,
     nns: &io_nns_types::backing::ClaimAssetObservation,
@@ -145,7 +169,21 @@ fn stream_transit_backing(
             }
             _ => Ok(0),
         },
+        Some(StreamOperation::ClaimReceipt(operation)) if operation.liquid_block.is_none() => {
+            receipt_stream_transit(
+                operation.economics.liquid_credit_e8s,
+                nns.transit_backing_e8s,
+            )
+        }
         _ => Ok(0),
+    }
+}
+
+fn receipt_stream_transit(credit_e8s: u128, nns_transit_e8s: u128) -> Result<u128, String> {
+    match nns_transit_e8s {
+        0 => Ok(credit_e8s),
+        value if value == credit_e8s => Ok(0),
+        _ => Err("NNS and Stream claim-receipt transit ownership conflicts".into()),
     }
 }
 
@@ -231,3 +269,50 @@ pub async fn supported_standards(
 }
 
 pub use io_ledger_boundary::{exact_icp_transfer, exact_icrc_transfer, icp_account_identifier};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persisted_receipt_credit_has_exactly_one_transit_owner() {
+        assert_eq!(receipt_stream_transit(60, 0), Ok(60));
+        assert_eq!(receipt_stream_transit(60, 60), Ok(0));
+        assert!(receipt_stream_transit(60, 59).is_err());
+    }
+
+    #[test]
+    fn committed_unwind_fee_basis_must_match_the_live_fee() {
+        let observation = io_nns_types::backing::ClaimAssetObservation {
+            parent: None,
+            pool_staking_account: Account {
+                owner: candid::Principal::from_slice(&[1; 29]),
+                subaccount: Some(vec![1; 32]),
+            },
+            minimum_parent_stake_e8s: 1,
+            pooled_parent_principal_e8s: 0,
+            live_cohorts: vec![io_nns_types::backing::CohortObservation {
+                generation: 1,
+                child_neuron_id: 2,
+                physical_principal_e8s: 100,
+                net_backing_e8s: 90,
+                ready_at_seconds: 3,
+                proof: io_nns_types::backing::CohortProofState::Dissolving,
+            }],
+            live_child_physical_principal_e8s: 100,
+            live_child_net_backing_e8s: 90,
+            live_child_committed_fee_liability_e8s: 10,
+            transit_backing_e8s: 0,
+            transit_fee_basis_e8s: None,
+            active_operation_sequence: 0,
+            last_completed_pool_operation_sequence: None,
+            control_epoch: 1,
+            fingerprint: vec![1; 32],
+            oldest_ready_at_seconds: Some(3),
+        };
+        assert_eq!(validate_unwind_fee_basis(&observation, 10), Ok(()));
+        assert!(validate_unwind_fee_basis(&observation, 11)
+            .unwrap_err()
+            .contains("current canonical ICP fee 11"));
+    }
+}

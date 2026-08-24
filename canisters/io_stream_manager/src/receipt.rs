@@ -15,6 +15,21 @@ use crate::{
     },
 };
 
+#[cfg(debug_assertions)]
+thread_local! {
+    static MALFORMED_PREPARE_AFTER_PERSIST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(debug_assertions)]
+pub fn debug_fail_malformed_prepare_after_persist(enabled: bool) {
+    MALFORMED_PREPARE_AFTER_PERSIST.with(|flag| flag.set(enabled));
+}
+
+#[cfg(debug_assertions)]
+fn take_malformed_prepare_after_persist() -> bool {
+    MALFORMED_PREPARE_AFTER_PERSIST.with(|flag| flag.replace(false))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct FrozenClaimEconomics {
     pub pre_claim_backing_e8s: u128,
@@ -200,10 +215,8 @@ pub async fn prepare(
             "NNS observation changed before receipt commitment".into(),
         ));
     }
-    let pre_backing = snapshot
-        .total_claim_backing_e8s
-        .checked_sub(request.net_liquid_credit_e8s)
-        .ok_or_else(|| ApiError::Invalid("NNS transit omits the claim ingress".into()))?;
+    let pre_backing = receipt_pre_backing(&request, snapshot.total_claim_backing_e8s)
+        .map_err(ApiError::Invalid)?;
     let (recipients, pending_generation) =
         plan_recipients(&initial, &request, &snapshot, pre_backing)?;
     let sequence = initial.next_operation_sequence.0;
@@ -254,6 +267,12 @@ pub async fn prepare(
         .ok_or_else(|| ApiError::Invalid("Stream operation sequence exhausted".into()))?;
     latest.active_operation = Some(StreamOperation::ClaimReceipt(Box::new(operation)));
     state::write(latest);
+    #[cfg(debug_assertions)]
+    if take_malformed_prepare_after_persist() {
+        return Err(ApiError::Pending(
+            "controlled malformed prepare response after permit persistence".into(),
+        ));
+    }
     Ok(permit)
 }
 
@@ -346,6 +365,20 @@ fn plan_recipients(
             }
             Ok((recipients, Some(*entitlement_batch_generation)))
         }
+    }
+}
+
+fn receipt_pre_backing(
+    request: &PrepareClaimBackingReceiptArgs,
+    current_backing_e8s: u128,
+) -> Result<u128, String> {
+    match request.kind {
+        ClaimBackingReceiptKind::Jupiter | ClaimBackingReceiptKind::PooledMaturity { .. } => {
+            Ok(current_backing_e8s)
+        }
+        ClaimBackingReceiptKind::PermanentMaturity { .. } => current_backing_e8s
+            .checked_sub(request.net_liquid_credit_e8s)
+            .ok_or_else(|| "NNS transit omits the permanent-maturity claim ingress".into()),
     }
 }
 
@@ -812,5 +845,60 @@ mod tests {
             }
         );
         assert!(candid::encode_one(completed).unwrap().len() < 512);
+    }
+
+    #[test]
+    fn paired_ingress_preserves_pre_event_rate_until_permit() {
+        let request = |kind| PrepareClaimBackingReceiptArgs {
+            source_operation_id: vec![1; 32],
+            kind,
+            source_account: Account {
+                owner: Principal::from_slice(&[2; 29]),
+                subaccount: None,
+            },
+            source_block: 1,
+            net_liquid_credit_e8s: 60,
+            nns_fingerprint: vec![3; 32],
+        };
+        assert_eq!(
+            receipt_pre_backing(&request(ClaimBackingReceiptKind::Jupiter), 100),
+            Ok(100)
+        );
+        assert_eq!(
+            receipt_pre_backing(
+                &request(ClaimBackingReceiptKind::PooledMaturity {
+                    entitlement_batch_generation: 1,
+                }),
+                100,
+            ),
+            Ok(100)
+        );
+        assert_eq!(
+            receipt_pre_backing(
+                &request(ClaimBackingReceiptKind::PermanentMaturity {
+                    maturity_generation: 1,
+                }),
+                160,
+            ),
+            Ok(100)
+        );
+        let quote = io_core_model::redemption_quote(
+            io_core_model::EconomicState {
+                backing: io_core_model::Backing {
+                    liquid: 100,
+                    pooled: 0,
+                    unwinding: 0,
+                    transit: 0,
+                },
+                claims: 100,
+                active_backing: 0,
+                active_reward: 0,
+            },
+            10,
+            0,
+            0,
+        )
+        .unwrap();
+        assert_eq!(quote.gross_icp, 10, "paired credit must not front-run IO");
     }
 }

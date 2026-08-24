@@ -126,8 +126,6 @@ pub enum JupiterPauseReason {
     AmbiguousPossibleEffect,
     InsufficientFunds,
     BadFee,
-    RefreshUnconfirmed,
-    StakeIncreaseMismatch,
     Other,
 }
 

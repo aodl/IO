@@ -2,7 +2,8 @@ use candid::{CandidType, Principal};
 use io_nns_types::backing::{
     ClaimAssetObservation, CohortObservation, CohortProofState, FollowPolicy,
     ParentAssetObservation, ParentPolicyObservation, PoolCommand, PoolCommandKind,
-    PoolCommandPhase, PoolPolicyObservation, TopUpPermit, POOLED_PARENT_DELAY_SECONDS,
+    PoolCommandPhase, PoolPolicyObservation, PoolReconciliationAction, TopUpPermit,
+    POOLED_PARENT_DELAY_SECONDS,
 };
 pub use io_nns_types::backing::{PoolProgress, PreparePoolReconciliationArgs};
 use serde::Deserialize;
@@ -251,7 +252,7 @@ pub fn get_status() -> Status {
         .fold((0, 0), |(physical, net), cohort| {
             (
                 physical + cohort.principal_e8s,
-                net + cohort.principal_e8s - current.config.expected_icp_fee_e8s,
+                net + cohort.principal_e8s - cohort.committed_fee_e8s,
             )
         });
     Status {
@@ -279,14 +280,11 @@ pub async fn prepare_pool_reconciliation(
     caller: Principal,
     args: PreparePoolReconciliationArgs,
 ) -> Result<PoolProgress, ApiError> {
-    use io_nns_types::backing::PoolReconciliationAction;
-
     let snapshot = state::read();
-    let reconciliation_request_fingerprint = reconciliation_request_fingerprint(&args)?;
     if caller != snapshot.config.stream_manager {
         return Err(ApiError::Unauthorized);
     }
-    refresh_parent_for_reconciliation(&snapshot).await?;
+    let reconciliation_request_fingerprint = reconciliation_request_fingerprint(&args)?;
     if let Some(completed) = snapshot
         .last_completed_unwind
         .as_ref()
@@ -317,16 +315,40 @@ pub async fn prepare_pool_reconciliation(
             principal_e8s: cohort.principal_e8s,
         });
     }
+    if let Some(completed) = snapshot
+        .last_completed_pool
+        .as_ref()
+        .filter(|completed| completed.permit.generation == args.generation)
+    {
+        if !pool_permit_matches(&completed.permit, &args) {
+            return Err(ApiError::Invalid(
+                "completed pool replay fingerprint differs".into(),
+            ));
+        }
+        return Ok(PoolProgress::Completed {
+            parent_neuron_id: completed.parent_neuron_id,
+            principal_e8s: completed.principal_e8s,
+            target_status: if completed.principal_e8s == args.target_e8s {
+                io_nns_types::backing::PoolTargetResult::AtTarget
+            } else {
+                io_nns_types::backing::PoolTargetResult::OverTarget
+            },
+        });
+    }
     if let Some(NnsOperation::Unwind(operation)) = &snapshot.active_operation {
-        if operation.generation == args.generation
-            && operation.reconciliation_request_fingerprint == reconciliation_request_fingerprint
-            && operation.target_e8s == args.target_e8s
-            && matches!(
-                args.action,
-                PoolReconciliationAction::Unwind { expected_gross_e8s }
-                    if expected_gross_e8s == operation.gross_e8s
-            )
-        {
+        if operation.generation == args.generation {
+            if operation.reconciliation_request_fingerprint != reconciliation_request_fingerprint
+                || operation.target_e8s != args.target_e8s
+                || !matches!(
+                    args.action,
+                    PoolReconciliationAction::Unwind { expected_gross_e8s }
+                        if expected_gross_e8s == operation.gross_e8s
+                )
+            {
+                return Err(ApiError::Invalid(
+                    "active unwind replay fingerprint differs".into(),
+                ));
+            }
             return Ok(PoolProgress::UnwindPrepared {
                 generation: operation.generation,
                 gross_e8s: operation.gross_e8s,
@@ -334,41 +356,22 @@ pub async fn prepare_pool_reconciliation(
         }
     }
     if let Some(NnsOperation::Pool(operation)) = &snapshot.active_operation {
-        let stable_identity = operation.permit.generation == args.generation
-            && operation.permit.fee_e8s == args.fee_e8s
-            && operation.permit.memo == args.memo
-            && operation.permit.prepared_at_nanos == args.created_at_time_nanos
-            && operation
-                .permit
-                .expected_parent_principal_e8s
-                .checked_add(operation.permit.expected_credit_e8s)
-                == Some(args.target_e8s)
-            && matches!(
-                args.action,
-                PoolReconciliationAction::TopUp { expected_credit_e8s }
-                    if expected_credit_e8s == operation.permit.expected_credit_e8s
-            );
-        let canonical_snapshot = if stable_identity
-            && operation.permit.snapshot_fingerprint != args.snapshot_fingerprint
-        {
-            claim_asset_observation().await?.fingerprint == args.snapshot_fingerprint
-        } else {
-            true
-        };
-        if stable_identity && canonical_snapshot {
+        let stable_identity = pool_permit_matches(&operation.permit, &args);
+        if operation.permit.generation == args.generation && !stable_identity {
+            return Err(ApiError::Invalid(
+                "active pool replay fingerprint differs".into(),
+            ));
+        }
+        if stable_identity {
             return Ok(PoolProgress::AwaitingTransfer(operation.permit.clone()));
         }
-    }
-    if snapshot.lifecycle != Lifecycle::Ready {
-        return Err(ApiError::Paused);
     }
     if args.generation == snapshot.latest_reconciliation_generation
         && snapshot.active_operation.is_none()
     {
         if let Some(held) = &snapshot.last_held_reconciliation {
             if held.generation == args.generation
-                && held.target_e8s == args.target_e8s
-                && held.snapshot_fingerprint == args.snapshot_fingerprint
+                && held.reconciliation_request_fingerprint == reconciliation_request_fingerprint
                 && matches!(args.action, PoolReconciliationAction::Hold)
             {
                 return Ok(PoolProgress::Held {
@@ -379,6 +382,9 @@ pub async fn prepare_pool_reconciliation(
         return Err(ApiError::Invalid(
             "reconciliation generation was already consumed".into(),
         ));
+    }
+    if snapshot.lifecycle != Lifecycle::Ready {
+        return Err(ApiError::Paused);
     }
     if snapshot.active_operation.is_some() {
         return Err(ApiError::Busy);
@@ -397,6 +403,7 @@ pub async fn prepare_pool_reconciliation(
             "pool reconciliation snapshot or intent is invalid".into(),
         ));
     }
+    refresh_parent_for_reconciliation(&snapshot).await?;
     require_pool_policy(&snapshot).await?;
     let actual = observation.pooled_parent_principal_e8s;
     match args.action {
@@ -408,6 +415,7 @@ pub async fn prepare_pool_reconciliation(
                 args.target_e8s,
                 actual,
                 args.snapshot_fingerprint,
+                reconciliation_request_fingerprint,
             )?;
             Ok(PoolProgress::Held {
                 principal_e8s: actual,
@@ -490,6 +498,23 @@ fn reconciliation_request_fingerprint(
     Ok(Sha256::digest(encoded).to_vec())
 }
 
+fn pool_permit_matches(permit: &TopUpPermit, args: &PreparePoolReconciliationArgs) -> bool {
+    permit.generation == args.generation
+        && permit.fee_e8s == args.fee_e8s
+        && permit.memo == args.memo
+        && permit.prepared_at_nanos == args.created_at_time_nanos
+        && permit.snapshot_fingerprint == args.snapshot_fingerprint
+        && permit
+            .expected_parent_principal_e8s
+            .checked_add(permit.expected_credit_e8s)
+            == Some(args.target_e8s)
+        && matches!(
+            args.action,
+            PoolReconciliationAction::TopUp { expected_credit_e8s }
+                if expected_credit_e8s == permit.expected_credit_e8s
+        )
+}
+
 fn prepare_top_up(
     snapshot: crate::state::NnsStateV1,
     observation: ClaimAssetObservation,
@@ -570,6 +595,7 @@ fn commit_reconciliation_generation(
     target_e8s: u128,
     actual_e8s: u128,
     snapshot_fingerprint: Vec<u8>,
+    reconciliation_request_fingerprint: Vec<u8>,
 ) -> Result<(), ApiError> {
     let mut latest = state::read();
     if latest != *snapshot {
@@ -578,6 +604,7 @@ fn commit_reconciliation_generation(
     latest.latest_reconciliation_generation = generation;
     latest.last_held_reconciliation = Some(state::HeldReconciliation {
         generation,
+        reconciliation_request_fingerprint,
         target_e8s,
         principal_e8s: actual_e8s,
         snapshot_fingerprint,
@@ -632,10 +659,23 @@ pub async fn observe_claim_assets(caller: Principal) -> Result<ClaimAssetObserva
 
 pub(crate) async fn claim_asset_observation() -> Result<ClaimAssetObservation, ApiError> {
     let snapshot = state::read();
-    if has_ambiguous_backing_effect(&snapshot) {
+    if crate::claim_assets::has_ambiguous_backing_effect(&snapshot) {
         return Err(ApiError::Pending(
             "claim backing has an ambiguous submitted monetary effect".into(),
         ));
+    }
+    if let Some((account, required)) =
+        crate::claim_assets::insufficient_claim_asset_requirement(&snapshot)?
+    {
+        let balance = execution::icp_balance(&snapshot.config, &account).await?;
+        if state::read() != snapshot {
+            return Err(ApiError::Busy);
+        }
+        if balance < required {
+            return Err(ApiError::Stuck(format!(
+                "claim transit asset deficiency: staging balance {balance} is below immutable requirement {required}"
+            )));
+        }
     }
     let pool_staking_account =
         execution::parent_staking_account(&snapshot.config, snapshot.config.pooled_parent_memo);
@@ -674,11 +714,8 @@ pub(crate) async fn claim_asset_observation() -> Result<ClaimAssetObservation, A
         let net = if physical == 0 {
             0
         } else {
-            io_nns_types::backing::net_committed_child_backing(
-                physical,
-                snapshot.config.expected_icp_fee_e8s,
-            )
-            .map_err(|_| {
+            io_nns_types::backing::net_committed_child_backing(physical, cohort.committed_fee_e8s)
+                .map_err(|_| {
                 ApiError::Invalid(
                     "child principal cannot cover its committed disbursement fee".into(),
                 )
@@ -715,7 +752,12 @@ pub(crate) async fn claim_asset_observation() -> Result<ClaimAssetObservation, A
     let pooled_parent_principal_e8s = parent
         .as_ref()
         .map_or(0, |value| value.physical_principal_e8s);
-    let transit_backing_e8s = transit_backing(&snapshot, pooled_parent_principal_e8s)?;
+    let transit_fee_basis_e8s = crate::claim_assets::active_unwind_fee_basis(&snapshot)?;
+    let transit_backing_e8s = crate::claim_assets::transit_backing(
+        &snapshot,
+        pooled_parent_principal_e8s,
+        transit_fee_basis_e8s,
+    )?;
     let active_operation_sequence = active_operation_sequence(&snapshot);
     let oldest_ready_at_seconds = live_cohorts
         .iter()
@@ -731,6 +773,7 @@ pub(crate) async fn claim_asset_observation() -> Result<ClaimAssetObservation, A
         live_child_net_backing_e8s,
         live_child_committed_fee_liability_e8s,
         transit_backing_e8s,
+        transit_fee_basis_e8s,
         active_operation_sequence,
         snapshot
             .last_completed_pool
@@ -749,6 +792,7 @@ pub(crate) async fn claim_asset_observation() -> Result<ClaimAssetObservation, A
         live_child_net_backing_e8s,
         live_child_committed_fee_liability_e8s,
         transit_backing_e8s,
+        transit_fee_basis_e8s,
         active_operation_sequence,
         last_completed_pool_operation_sequence: snapshot
             .last_completed_pool
@@ -851,146 +895,13 @@ fn active_operation_sequence(snapshot: &crate::state::NnsStateV1) -> u64 {
     }
 }
 
-fn transit_backing(
-    snapshot: &crate::state::NnsStateV1,
-    observed_parent_principal_e8s: u128,
-) -> Result<u128, ApiError> {
-    let backing = match &snapshot.active_operation {
-        Some(NnsOperation::Pool(command))
-            if !matches!(command.phase, PoolCommandPhase::AwaitingTransfer) =>
-        {
-            io_nns_types::backing::remaining_parent_transit(
-                command.permit.expected_parent_principal_e8s,
-                command.permit.expected_credit_e8s,
-                observed_parent_principal_e8s,
-            )
-            .map_err(|error| {
-                ApiError::Invalid(format!("pooled top-up transit failed: {error:?}"))
-            })?
-        }
-        Some(NnsOperation::Unwind(command))
-            if matches!(
-                command.phase,
-                UnwindPhase::ChildIdentified
-                    | UnwindPhase::SplitProved
-                    | UnwindPhase::StartDissolvingSubmitted
-                    | UnwindPhase::StartDissolvingProved
-            ) =>
-        {
-            io_nns_types::backing::net_committed_child_backing(
-                command.principal_e8s,
-                snapshot.config.expected_icp_fee_e8s,
-            )
-            .map_err(|_| {
-                ApiError::Invalid(
-                    "committed unwind transit cannot cover its future disbursement fee".into(),
-                )
-            })?
-        }
-        Some(NnsOperation::Jupiter(command))
-            if matches!(
-                command.phase,
-                crate::jupiter::JupiterPhase::DepositProved
-                    | crate::jupiter::JupiterPhase::StakeTransferPrepared { .. }
-                    | crate::jupiter::JupiterPhase::StakeTransferSubmitted { .. }
-                    | crate::jupiter::JupiterPhase::StakeTransferSucceeded(_)
-                    | crate::jupiter::JupiterPhase::RefreshSubmitted(_)
-                    | crate::jupiter::JupiterPhase::StakeIncreaseProved(_)
-                    | crate::jupiter::JupiterPhase::ReceiptPermitPrepared { .. }
-                    | crate::jupiter::JupiterPhase::LiquidTransferPrepared { .. }
-            ) =>
-        {
-            command.deposit.liquid_e8s
-        }
-        Some(NnsOperation::Maturity(command)) => {
-            let delivery = match &command.phase {
-                crate::maturity::MaturityCommandPhase::ClaimReceiptDelivery(delivery) => delivery,
-                _ => return Ok(0),
-            };
-            if delivery.claim_transfer.as_ref().is_some_and(|attempt| {
-                matches!(
-                    attempt.state,
-                    crate::transfer::TransferState::Succeeded { .. }
-                )
-            }) {
-                0
-            } else {
-                maturity_claim_transit(&delivery.pending, snapshot.config.expected_icp_fee_e8s)?
-            }
-        }
-        _ => {
-            let pending = snapshot
-                .pending_two_week_maturity
-                .as_ref()
-                .or(snapshot.pending_two_year_maturity.as_ref());
-            pending
-                .map(|pending| {
-                    maturity_claim_transit(pending, snapshot.config.expected_icp_fee_e8s)
-                })
-                .transpose()?
-                .unwrap_or(0)
-        }
-    };
-    Ok(backing)
-}
-
-fn has_ambiguous_backing_effect(snapshot: &crate::state::NnsStateV1) -> bool {
-    use crate::transfer::TransferState;
-    match &snapshot.active_operation {
-        Some(NnsOperation::Unwind(command)) => matches!(
-            command.phase,
-            UnwindPhase::SplitSubmitted | UnwindPhase::DisbursementSubmitted
-        ),
-        Some(NnsOperation::Jupiter(command)) => match &command.phase {
-            crate::jupiter::JupiterPhase::LiquidTransferSubmitted { .. } => true,
-            crate::jupiter::JupiterPhase::Stuck {
-                transfer: Some(crate::jupiter::JupiterStuckTransfer::Liquid { attempt, .. }),
-                ..
-            } => matches!(attempt.state, TransferState::Submitted { .. }),
-            _ => false,
-        },
-        Some(NnsOperation::Maturity(command)) => match &command.phase {
-            crate::maturity::MaturityCommandPhase::ClaimReceiptDelivery(delivery) => delivery
-                .claim_transfer
-                .as_ref()
-                .is_some_and(|attempt| matches!(attempt.state, TransferState::Submitted { .. })),
-            _ => false,
-        },
-        _ => false,
-    }
-}
-
-fn maturity_claim_transit(
-    pending: &crate::maturity::PendingMaturityDisbursement,
-    fee_e8s: u128,
-) -> Result<u128, ApiError> {
-    let mint = match &pending.mint_proof {
-        crate::maturity::MintProofState::Proved(mint)
-        | crate::maturity::MintProofState::Delivering(mint) => mint,
-        crate::maturity::MintProofState::Awaiting => return Ok(0),
-    };
-    match pending.kind {
-        MaturityKind::TwoYear => {
-            io_reward_policy::permanent_maturity_credit(mint.actual_minted_icp_e8s, fee_e8s)
-                .map_err(|error| ApiError::Invalid(format!("maturity transit failed: {error:?}")))
-        }
-        MaturityKind::TwoWeek => {
-            let claim = io_core_model::split_40_60(mint.actual_minted_icp_e8s)
-                .map_err(|error| {
-                    ApiError::Invalid(format!("maturity transit split failed: {error:?}"))
-                })?
-                .claim;
-            claim
-                .checked_sub(fee_e8s)
-                .filter(|credit| *credit > 0)
-                .ok_or_else(|| ApiError::Invalid("pooled claim transit cannot pay its fee".into()))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::claim_assets::{
+        ambiguous_claim_transfer, claim_transfer_succeeded, jupiter_claim_transit,
+        maturity_ingress_transit,
+    };
 
     #[test]
     fn held_excess_and_maturity_readiness_use_the_same_unwind_threshold() {
@@ -1032,6 +943,102 @@ mod tests {
         ));
         assert!(!voting_power_refresh_is_current(0, now));
         assert!(!voting_power_refresh_is_current(now + 1, now));
+    }
+
+    #[test]
+    fn paired_mint_is_quarantined_until_permit_but_permanent_mint_is_not() {
+        assert_eq!(
+            maturity_ingress_transit(MaturityKind::TwoWeek, 200_000, 10_000, false),
+            Ok(0)
+        );
+        assert_eq!(
+            maturity_ingress_transit(MaturityKind::TwoWeek, 200_000, 10_000, true),
+            Ok(110_000)
+        );
+        assert_eq!(
+            maturity_ingress_transit(MaturityKind::TwoYear, 200_000, 10_000, false),
+            Ok(190_000)
+        );
+    }
+
+    #[test]
+    fn rejected_post_permit_jupiter_transfer_retains_transit() {
+        let principal = candid::Principal::from_slice(&[1; 29]);
+        let proof = crate::jupiter::PermanentNeuronCreditProof {
+            neuron_id: 1,
+            staking_subaccount: [1; 32],
+            before_cached_stake_e8s: 100,
+            protocol_credit_e8s: 40,
+            transfer_block: 1,
+            observed_after_cached_stake_e8s: 140,
+        };
+        let permit = crate::jupiter::StreamReceiptPermit {
+            stream_operation_sequence: 1,
+            destination: state::Account {
+                owner: principal,
+                subaccount: None,
+            },
+            amount_e8s: 60,
+            memo: vec![1],
+            request_fingerprint: vec![2; 32],
+        };
+        let mut attempt =
+            crate::transfer::NnsTransferAttempt::prepared(crate::transfer::NnsTransferIntent {
+                ledger: principal,
+                source_subaccount: [0; 32],
+                destination: permit.destination.clone(),
+                amount_e8s: 60,
+                fee_e8s: 10,
+                memo: permit.memo.clone(),
+                created_at_time_nanos: 1,
+            })
+            .unwrap();
+        attempt.state = crate::transfer::TransferState::Submitted {
+            epoch: 1,
+            first_submitted_at_nanos: 1,
+            last_submitted_at_nanos: 1,
+        };
+        assert!(ambiguous_claim_transfer(Some(&attempt)));
+        assert!(!claim_transfer_succeeded(Some(&attempt)));
+        attempt.state = crate::transfer::TransferState::Paused {
+            epoch: 1,
+            first_submitted_at_nanos: 1,
+            last_submitted_at_nanos: 1,
+            reason: "controlled BadFee".into(),
+            classification: crate::transfer::TransferOutcomeClassification::BadFee,
+        };
+        assert!(!ambiguous_claim_transfer(Some(&attempt)));
+        assert!(!claim_transfer_succeeded(Some(&attempt)));
+        let operation = |phase| crate::jupiter::JupiterOperation {
+            operation_sequence: 1,
+            dispatch_epoch: 1,
+            captured_control_epoch: 1,
+            deposit: crate::jupiter::JupiterDeposit {
+                block_index: 1,
+                gross_e8s: 120,
+                stake_e8s: 40,
+                liquid_e8s: 60,
+                fee_e8s: 10,
+                created_at_time_nanos: 1,
+            },
+            phase,
+        };
+        assert_eq!(
+            jupiter_claim_transit(&operation(crate::jupiter::JupiterPhase::DepositProved)),
+            None
+        );
+        assert_eq!(
+            jupiter_claim_transit(&operation(crate::jupiter::JupiterPhase::Stuck {
+                reason: "BadFee retained staging asset".into(),
+                pause_reason: crate::jupiter::JupiterPauseReason::BadFee,
+                transfer: Some(crate::jupiter::JupiterStuckTransfer::Liquid {
+                    proof,
+                    permit,
+                    attempt,
+                }),
+            })),
+            Some(60)
+        );
     }
 
     #[test]

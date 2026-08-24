@@ -107,16 +107,10 @@ async fn submit_start(mut operation: UnwindOperation) -> Result<UnwindProgress, 
     let result =
         execution::set_dissolving(&state::read().config, operation.child_neuron_id, true).await;
     ensure(&operation)?;
-    if let Err(error) = result {
-        return pause(
-            operation,
-            format!("StartDissolving outcome requires proof: {error:?}"),
-        );
-    }
-    let submitted = operation.clone();
-    operation.phase = UnwindPhase::StartDissolvingProved;
-    replace(&submitted, operation)?;
-    Ok(UnwindProgress::Waiting)
+    Err(execution::command_pending(
+        "StartDissolving submission",
+        result,
+    ))
 }
 
 async fn recover_start(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
@@ -125,11 +119,16 @@ async fn recover_start(mut operation: UnwindOperation) -> Result<UnwindProgress,
         execution::query_neuron_observation(&state::read().config, operation.child_neuron_id)
             .await?;
     ensure(&expected)?;
-    if !matches!(
-        observed.dissolve_state,
-        Some(DissolveState::WhenDissolvedTimestampSeconds(_))
-    ) {
-        return pause(operation, "StartDissolving remains unproved".into());
+    match observed.dissolve_state {
+        Some(DissolveState::WhenDissolvedTimestampSeconds(_)) => {}
+        Some(DissolveState::DissolveDelaySeconds(_)) => {
+            let result =
+                execution::set_dissolving(&state::read().config, operation.child_neuron_id, true)
+                    .await;
+            ensure(&operation)?;
+            return Err(execution::command_pending("StartDissolving retry", result));
+        }
+        None => return pause(operation, "child dissolve identity is contradictory".into()),
     }
     operation.phase = UnwindPhase::StartDissolvingProved;
     replace(&expected, operation)?;
@@ -155,6 +154,7 @@ async fn prove_start(operation: UnwindOperation) -> Result<UnwindProgress, ApiEr
                 .clone(),
             child_neuron_id: operation.child_neuron_id,
             principal_e8s: operation.principal_e8s,
+            committed_fee_e8s: committed_fee_basis(&operation)?,
             child_staking_subaccount: operation.child_staking_subaccount.clone(),
             ready_at_seconds,
             proof: CohortProofState::Dissolving,
@@ -292,12 +292,12 @@ async fn observe_cleanup(mut operation: UnwindOperation) -> Result<UnwindProgres
     operation.parent_principal_e8s = parent.snapshot.cached_stake_e8s;
     operation.phase = UnwindPhase::DelayIncreaseSubmitted;
     replace(&expected, operation.clone())?;
-    execution::increase_delay(&current.config, operation.child_neuron_id, 1).await?;
+    let result = execution::increase_delay(&current.config, operation.child_neuron_id, 1).await;
     ensure(&operation)?;
-    let submitted = operation.clone();
-    operation.phase = UnwindPhase::DelayIncreaseProved;
-    replace(&submitted, operation)?;
-    Ok(UnwindProgress::Waiting)
+    Err(execution::command_pending(
+        "zero-principal delay submission",
+        result,
+    ))
 }
 
 async fn recover_delay(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
@@ -306,8 +306,24 @@ async fn recover_delay(mut operation: UnwindOperation) -> Result<UnwindProgress,
         execution::query_neuron_observation(&state::read().config, operation.child_neuron_id)
             .await?;
     ensure(&expected)?;
-    if observed.dissolve_state != Some(DissolveState::DissolveDelaySeconds(1)) {
-        return pause(operation, "child delay increase remains unproved".into());
+    match observed.dissolve_state {
+        Some(DissolveState::DissolveDelaySeconds(1)) => {}
+        Some(DissolveState::DissolveDelaySeconds(0)) => {
+            let result =
+                execution::increase_delay(&state::read().config, operation.child_neuron_id, 1)
+                    .await;
+            ensure(&operation)?;
+            return Err(execution::command_pending(
+                "zero-principal delay retry",
+                result,
+            ));
+        }
+        _ => {
+            return pause(
+                operation,
+                "child delay state contradicted cleanup intent".into(),
+            )
+        }
     }
     operation.phase = UnwindPhase::DelayIncreaseProved;
     replace(&expected, operation)?;
@@ -322,12 +338,12 @@ async fn submit_merge(mut operation: UnwindOperation) -> Result<UnwindProgress, 
     let parent = current
         .pooled_parent_id
         .ok_or_else(|| ApiError::Invalid("pooled parent is absent".into()))?;
-    execution::merge_neuron(&current.config, parent, operation.child_neuron_id).await?;
+    let result = execution::merge_neuron(&current.config, parent, operation.child_neuron_id).await;
     ensure(&operation)?;
-    let submitted = operation.clone();
-    operation.phase = UnwindPhase::MergeProved;
-    replace(&submitted, operation)?;
-    Ok(UnwindProgress::Waiting)
+    Err(execution::command_pending(
+        "zero-principal maturity merge submission",
+        result,
+    ))
 }
 
 async fn recover_merge(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
@@ -336,8 +352,24 @@ async fn recover_merge(mut operation: UnwindOperation) -> Result<UnwindProgress,
         execution::query_neuron_observation(&state::read().config, operation.child_neuron_id)
             .await?;
     ensure(&expected)?;
-    if child.maturity_e8s != 0 || child.staked_maturity_e8s != 0 {
-        return pause(operation, "child maturity merge remains unproved".into());
+    let remaining = u128::from(child.maturity_e8s)
+        .checked_add(u128::from(child.staked_maturity_e8s))
+        .ok_or_else(|| ApiError::Invalid("child maturity retry overflow".into()))?;
+    if remaining > operation.child_maturity_e8s {
+        return pause(operation, "child maturity increased during cleanup".into());
+    }
+    if remaining != 0 {
+        let current = state::read();
+        let parent = current
+            .pooled_parent_id
+            .ok_or_else(|| ApiError::Invalid("pooled parent is absent".into()))?;
+        let result =
+            execution::merge_neuron(&current.config, parent, operation.child_neuron_id).await;
+        ensure(&operation)?;
+        return Err(execution::command_pending(
+            "zero-principal maturity merge retry",
+            result,
+        ));
     }
     operation.phase = UnwindPhase::MergeProved;
     replace(&expected, operation)?;
@@ -447,7 +479,10 @@ fn promote(cohort: PassiveCohort, phase: UnwindPhase) -> Result<(), ApiError> {
         generation: cohort.generation,
         reconciliation_request_fingerprint: cohort.reconciliation_request_fingerprint,
         target_e8s: 0,
-        gross_e8s: cohort.principal_e8s,
+        gross_e8s: cohort
+            .principal_e8s
+            .checked_add(cohort.committed_fee_e8s)
+            .ok_or_else(|| ApiError::Invalid("promoted unwind gross overflow".into()))?,
         child_neuron_id: cohort.child_neuron_id,
         principal_e8s: cohort.principal_e8s,
         child_staking_subaccount: cohort.child_staking_subaccount,
@@ -464,6 +499,14 @@ fn promote(cohort: PassiveCohort, phase: UnwindPhase) -> Result<(), ApiError> {
         .ok_or_else(|| ApiError::Invalid("operation sequence overflow".into()))?;
     state::write(latest);
     Ok(())
+}
+
+pub(crate) fn committed_fee_basis(operation: &UnwindOperation) -> Result<u128, ApiError> {
+    operation
+        .gross_e8s
+        .checked_sub(operation.principal_e8s)
+        .filter(|fee| *fee > 0)
+        .ok_or_else(|| ApiError::Invalid("committed unwind fee basis is invalid".into()))
 }
 
 fn update_cohort(

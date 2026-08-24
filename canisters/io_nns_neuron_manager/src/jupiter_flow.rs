@@ -397,13 +397,7 @@ async fn refresh(
     if ensure_exact_jupiter(&submitted, &state::read()).is_err() {
         return Err(ApiError::Busy);
     }
-    if let Err(error) = result {
-        pause_exact_jupiter(&submitted)?;
-        return Err(ApiError::Pending(format!(
-            "claim/refresh outcome requires canonical neuron observation: {error:?}"
-        )));
-    }
-    Ok(JupiterProgress::RefreshSubmitted)
+    Err(execution::command_pending("Jupiter ClaimOrRefresh", result))
 }
 
 async fn prove_stake_increase(
@@ -414,23 +408,20 @@ async fn prove_stake_increase(
     let snapshot = state::read();
     let after = execution::query_neuron(&snapshot.config, succeeded.before.neuron_id).await?;
     ensure_exact_jupiter(&operation, &state::read())?;
-    let proof = PermanentNeuronCreditProof {
-        neuron_id: succeeded.before.neuron_id,
-        staking_subaccount: succeeded.before.staking_subaccount,
-        before_cached_stake_e8s: succeeded.before.cached_stake_e8s,
-        protocol_credit_e8s: operation.deposit.stake_e8s,
-        transfer_block: succeeded.block_index,
-        observed_after_cached_stake_e8s: after.cached_stake_e8s,
-    };
-    if after.neuron_id != proof.neuron_id
-        || after.staking_subaccount != proof.staking_subaccount
-        || proof.validate().is_err()
-    {
-        pause_exact_jupiter(&expected)?;
-        return Err(ApiError::Pending(
-            "protected neuron has not yet reflected the Jupiter protocol credit".into(),
+    let proof = crate::permanent_credit::observe_credit(
+        &succeeded.before,
+        succeeded.block_index,
+        operation.deposit.stake_e8s,
+        &after,
+    )?;
+    let Some(proof) = proof else {
+        let result = execution::refresh_neuron(&snapshot.config, succeeded.before.neuron_id).await;
+        ensure_exact_jupiter(&expected, &state::read())?;
+        return Err(execution::command_pending(
+            "Jupiter ClaimOrRefresh retry",
+            result,
         ));
-    }
+    };
     operation.phase = JupiterPhase::StakeIncreaseProved(proof);
     replace_jupiter(&expected, operation.clone())?;
     Ok(JupiterProgress::StakeIncreaseProved)
@@ -696,17 +687,6 @@ fn pause_and_replace_jupiter(
         .validate(latest.config.icp_ledger, latest.config.nns_governance)
         .map_err(ApiError::Invalid)?;
     latest.active_operation = Some(NnsOperation::Jupiter(Box::new(replacement)));
-    latest.lifecycle = Lifecycle::Paused;
-    state::write(latest);
-    Ok(())
-}
-
-fn pause_exact_jupiter(expected: &JupiterOperation) -> Result<(), ApiError> {
-    let mut latest = state::read();
-    match &latest.active_operation {
-        Some(NnsOperation::Jupiter(active)) if **active == *expected => {}
-        _ => return Err(ApiError::Busy),
-    }
     latest.lifecycle = Lifecycle::Paused;
     state::write(latest);
     Ok(())

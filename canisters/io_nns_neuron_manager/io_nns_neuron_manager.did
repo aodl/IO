@@ -104,6 +104,7 @@ type ClaimAssetObservation = record {
   live_child_net_backing_e8s : nat;
   live_child_committed_fee_liability_e8s : nat;
   transit_backing_e8s : nat;
+  transit_fee_basis_e8s : opt nat;
   active_operation_sequence : nat64;
   last_completed_pool_operation_sequence : opt nat64;
   control_epoch : nat64;

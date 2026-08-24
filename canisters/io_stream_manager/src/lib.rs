@@ -132,6 +132,26 @@ pub fn get_status() -> Status {
     status::get_status()
 }
 
+#[cfg(debug_assertions)]
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn debug_get_state() -> StreamStateV1 {
+    state::read()
+}
+
+#[cfg(debug_assertions)]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_replace_state(replacement: StreamStateV1) -> Result<(), String> {
+    replacement.validate(ic_cdk::api::canister_self())?;
+    state::write(replacement);
+    Ok(())
+}
+
+#[cfg(debug_assertions)]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_fail_malformed_prepare_after_persist(enabled: bool) {
+    receipt::debug_fail_malformed_prepare_after_persist(enabled);
+}
+
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn get_caller_redemption_state() -> Result<CallerRedemptionState, ApiError> {
     let caller = ic_cdk::api::msg_caller();

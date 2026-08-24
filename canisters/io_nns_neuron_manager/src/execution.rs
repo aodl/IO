@@ -128,6 +128,17 @@ pub fn validate_parent_configuration(
     }
 }
 
+pub fn has_follow_policy(observation: &NeuronObservation, policy: FollowPolicy) -> bool {
+    let expected = [0, 4, 14];
+    observation.followees.len() == expected.len()
+        && expected.iter().all(|topic| {
+            observation
+                .followees
+                .iter()
+                .any(|(actual, ids)| actual == topic && ids == &[policy.followee_neuron_id])
+        })
+}
+
 #[derive(Clone, Debug, CandidType, Deserialize)]
 struct GovernanceError {
     error_type: i32,
@@ -682,6 +693,12 @@ fn governance_error(method: &str, error: GovernanceError) -> ApiError {
     ApiError::Invalid(format!(
         "{method} rejected ({}): {}",
         error.error_type, error.error_message
+    ))
+}
+
+pub fn command_pending(label: &str, result: Result<(), ApiError>) -> ApiError {
+    ApiError::Pending(format!(
+        "{label} awaits canonical proof after command result {result:?}"
     ))
 }
 

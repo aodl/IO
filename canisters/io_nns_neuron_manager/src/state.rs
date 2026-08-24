@@ -18,7 +18,7 @@ use {
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
 
-pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 6;
+pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 7;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct NnsConfig {
@@ -156,6 +156,7 @@ pub enum PooledTargetStatus {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct HeldReconciliation {
     pub generation: u64,
+    pub reconciliation_request_fingerprint: Vec<u8>,
     pub target_e8s: u128,
     pub principal_e8s: u128,
     pub snapshot_fingerprint: Vec<u8>,
@@ -399,6 +400,7 @@ impl NnsStateV1 {
         if let Some(held) = &self.last_held_reconciliation {
             if held.generation == 0
                 || held.generation != self.latest_reconciliation_generation
+                || held.reconciliation_request_fingerprint.len() != 32
                 || held.snapshot_fingerprint.len() != 32
             {
                 return Err("held reconciliation checkpoint is inconsistent".into());
@@ -829,6 +831,7 @@ mod tests {
             reconciliation_request_fingerprint: vec![1; 32],
             child_neuron_id: 3,
             principal_e8s: 10_001,
+            committed_fee_e8s: 10_000,
             child_staking_subaccount: vec![3; 32],
             ready_at_seconds: 4,
             proof: io_nns_types::backing::CohortProofState::Dissolving,
@@ -1243,6 +1246,7 @@ mod tests {
                 reconciliation_request_fingerprint: vec![generation as u8; 32],
                 child_neuron_id: generation,
                 principal_e8s: u128::from(u64::MAX),
+                committed_fee_e8s: 10_000,
                 child_staking_subaccount: vec![generation as u8; 32],
                 ready_at_seconds: u64::MAX,
                 proof: io_nns_types::backing::CohortProofState::Dissolving,

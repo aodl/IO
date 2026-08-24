@@ -95,6 +95,7 @@ pub struct PassiveCohort {
     pub reconciliation_request_fingerprint: Vec<u8>,
     pub child_neuron_id: u64,
     pub principal_e8s: u128,
+    pub committed_fee_e8s: u128,
     pub child_staking_subaccount: Vec<u8>,
     pub ready_at_seconds: u64,
     pub proof: CohortProofState,
@@ -111,6 +112,8 @@ pub fn validate_cohorts(cohorts: &[PassiveCohort]) -> Result<(), String> {
             || cohort.reconciliation_request_fingerprint.len() != 32
             || cohort.child_neuron_id == 0
             || cohort.principal_e8s == 0
+            || cohort.committed_fee_e8s == 0
+            || cohort.principal_e8s <= cohort.committed_fee_e8s
             || cohort.principal_e8s > u128::from(u64::MAX)
             || cohort.child_staking_subaccount.len() != 32
             || previous
@@ -133,6 +136,7 @@ mod tests {
             reconciliation_request_fingerprint: vec![generation as u8; 32],
             child_neuron_id: generation + 100,
             principal_e8s: 100,
+            committed_fee_e8s: 10,
             child_staking_subaccount: vec![generation as u8; 32],
             ready_at_seconds: generation + 1_000,
             proof: CohortProofState::Dissolving,
