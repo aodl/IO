@@ -5,6 +5,7 @@
 - Baseline commit: `44c37cf7222b343dda9b7f63ac128a02614bcda7`
 - Final-correction baseline: `221d8c7703d4ad4cf58c7c30ca07ed056663b369`
 - Cross-flow correction baseline: `0e7299eb43503351d80cbee933cfdab15f3b4f6b`
+- Source-local completion baseline: `4f56e48afa62dc1b775e85f420c3b71a376d2db2`
 
 ## Context
 
@@ -100,11 +101,34 @@ variant or persistent collection is added. The measured final delta is:
 | receipt types | 49 | 49 | 0 |
 | **Combined** | **13,404** | **13,624** | **+220** |
 
+The source-local completion tranche quarantines supply-paired credit until the
+matching Stream permit, makes every persisted idempotent Governance phase
+observe/reissue recoverable, resolves reconciliation replay before policy
+work, closes transfer-failure ownership, and retains the committed unwind fee
+basis. The implementation first reused the shared monotone permanent-credit
+proof, deleted obsolete Jupiter pause variants and replay-time policy branches,
+and consolidated claim-asset ownership and command-result classification. It
+adds no operation phase, collection, scheduler, feature flag, migration, or
+fee-debt scalar. The final measured delta is:
+
+| Counted component | Cross-flow final | Source-local final | Delta |
+| --- | ---: | ---: | ---: |
+| Stream Manager | 5,377 | 5,459 | +82 |
+| NNS Manager | 5,460 | 5,726 | +266 |
+| pure economics | 220 | 220 | 0 |
+| ledger boundary | 528 | 528 | 0 |
+| reward policy | 282 | 282 | 0 |
+| SNS reward boundary | 457 | 457 | 0 |
+| accounts | 45 | 45 | 0 |
+| NNS types | 1,206 | 1,211 | +5 |
+| receipt types | 49 | 49 | 0 |
+| **Combined** | **13,624** | **13,977** | **+353** |
+
 ## Decision
 
-The final ceilings are 5,480 Stream Manager lines, 5,460 NNS Manager lines,
-and 13,720 combined lines. Against the final measured counts these provide
-103 lines (1.88%), 0 lines (0%), and 96 lines (0.70%) of headroom. The
+The final ceilings are 5,600 Stream Manager lines, 5,870 NNS Manager lines,
+and 14,320 combined lines. Against the final measured counts these provide
+141 lines (2.58%), 144 lines (2.51%), and 343 lines (2.45%) of headroom. The
 pure-economics, reward-boundary, ledger-boundary, shared-type, and per-file
 ceilings do not change. In particular, every production file remains limited
 to 1,000 normally formatted lines.
