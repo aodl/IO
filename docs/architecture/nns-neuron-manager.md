@@ -25,5 +25,29 @@ Pooled-parent maturity disburses 100%, then splits the actual Mint into 40%
 permanent gross and 60% claim gross. The Stream jointly freezes the physical
 claim route and backed recipient settlement before effects.
 
+Jupiter and pooled-maturity claim credits remain in NNS staging and outside
+claim backing until Stream persists the matching receipt permit. From that
+point through any rejected, no-effect, `BadFee`, or canonically funded
+`InsufficientFunds` transfer, the exact credit remains in transit. Ambiguous
+submitted transfers make claim observation pending. Permanent-maturity Mint is
+unpaired yield and enters transit immediately; it never releases IO.
+
+Every persisted non-monetary Governance command is recovered by observing
+canonical state before another command. Exact postcondition advances the same
+immutable operation; a safely earlier state reissues the idempotent command,
+keeps the persisted phase and returns Pending; contradictory identity or
+monotonicity is Stuck. This applies to Jupiter and pooled-parent refresh,
+remaining delay increase, fixed following policy, child StartDissolving, and
+zero-principal delay/merge cleanup. These retries never repeat an ICP transfer.
+
+Exact pool-reconciliation replay is resolved locally before lifecycle, asset,
+voting-power, or policy work. Completed, passive, and active replay therefore
+makes zero Governance calls even while Paused or policy refresh is rejected.
+
+Each committed unwind and passive cohort retains its exact ICP fee basis.
+Claim observation compares it with the canonical current fee and rejects new
+monetary quotes on drift while continuing to report physical child principal.
+No fee-debt scalar is introduced.
+
 One update submits at most one external effect. Install and upgrade reopen
 Paused; immutable submitted/proved operations remain resumable.

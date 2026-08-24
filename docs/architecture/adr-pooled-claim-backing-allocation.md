@@ -81,14 +81,30 @@ shortfall pauses reward processing; exact or over-target coverage permits only
 prospective rewards, never retroactive rewards. `P>B` is an impossible
 canonical partition and fails before either reward target is accepted.
 
-## Liquid-first claim ingress
+## Claim ingress and receipt quarantine
 
-Every new claim-backing amount enters the Stream Manager liquid claim Account
-before pooled positioning. The receipt freezes the pre-inflow claim scalars,
-source operation identity, net liquid credit, exact NNS fingerprint and, where
-IO is delivered, one canonical recipient vector. It persists only one current
-recipient transfer. Completion retains a compact replay result and no recipient
-history.
+Claim ingress is classified by its fixed internal source kind. Jupiter and
+pooled-parent maturity are supply-paired: their proved staging credit is
+excluded from `T` and redeemable `B` until Stream has persisted the matching
+receipt permit. Permanent-neuron maturity is unpaired yield: its proved Mint
+enters `T` immediately because it releases no IO.
+
+For a supply-paired receipt, Stream freezes `pre_backing` as the current total
+claim backing, so a redemption before the permit uses the true pre-event rate.
+For permanent-neuron maturity, Stream freezes current total backing minus the
+already observed net Mint credit, preventing that unpaired credit from being
+counted in both the pre-event scalar and the receipt. The receipt also freezes
+the source operation identity, receipt kind, net liquid credit, exact NNS
+fingerprint and, where IO is delivered, one canonical recipient vector. It
+persists only one current recipient transfer. Completion retains a compact
+replay result and no recipient history.
+
+Once a supply-paired permit is persisted, the Stream monetary slot is occupied
+and the exact credit is represented in `T`. Claim transfer and sequential IO
+delivery proceed without an interleaving redemption. Exact completion moves
+the credit to `L` and increases `C` by the delivered IO. A malformed response
+or transport ambiguity during permit preparation is resolved by exact local
+replay and never exposes the pre-permit credit as redeemable backing.
 
 The receipt uses the pre-inflow rate:
 
@@ -214,6 +230,27 @@ otherwise none are promoted. This prevents per-neuron ordering from allocating
 coverage that does not exist.
 
 ## Transit ownership
+
+Claim-receipt ownership is complete in every transfer phase:
+
+| Receipt kind / phase | Claim-backing owner |
+| --- | --- |
+| Jupiter or pooled maturity, before permit | NNS staging, excluded from `B` |
+| Jupiter or pooled maturity, permit persisted and transfer not effective | `T` |
+| Any submitted transfer with ambiguous effect | observation is `Pending` |
+| Any exact no-effect, rejection or `BadFee` with staging value proved | `T` |
+| `InsufficientFunds` with expected staging value proved | `T` |
+| `InsufficientFunds` without expected staging value | explicit asset-deficiency error |
+| Exact liquid transfer success | `L` |
+| Supply-paired receipt completion | `L` plus the matching increase in `C` |
+| Permanent maturity, Mint proved through transfer no-effect | `T` |
+| Permanent maturity completion | `L`, with no increase in `C` |
+
+The same exact credit can be reported by Stream's persisted permit and NNS's
+post-permit operation during hand-off. Canonical observation accepts zero from
+NNS or the identical amount, counts the amount once, and rejects any mismatch.
+A no-effect transfer therefore never drops an asset from `B`, while an
+ambiguous effect fails observation closed.
 
 A Stream liquid-to-parent top-up has one owner at every phase:
 
@@ -445,10 +482,13 @@ retry. Callback loss leaves `StartDissolvingCommitted` until canonical
 Governance state proves the exact child is dissolving. The active slot is
 released only by that proof.
 
-Immediately before child Disburse, NNS re-reads the canonical ICP fee. A value
-different from the committed fee pauses monetary progression and returns exact
-parameter drift before the submitted phase or Governance call. There is no fee
-debt or reimbursement scalar.
+ClaimSnapshot and the pre-disbursement check compare the current canonical ICP
+fee with the exact fee basis committed in each active unwind or passive cohort.
+A mismatch rejects every new monetary quote before any user IO pull, reports
+the physical child principal and parameter drift, and prevents new split or
+disbursement work pending reviewed reconfiguration. The old fee basis is
+operation evidence, not a claim that the old net liability remains currently
+realizable. There is no fee debt or reimbursement scalar.
 
 The child ID belongs only to the active aggregate operation and live aggregate
 cohort. Per-neuron state carries only a generation marker; there is no
@@ -622,13 +662,20 @@ retry. Cohort reconciliation can share that durable due checkpoint; frontend
 and permissionless calls remain additional hints, not cadence authority. This
 adds no general scheduler.
 
-Every authenticated reconciliation attempt refreshes pooled-parent voting
-power before replay or new work. The policy timestamp is accepted for at most
-seven days. A stale timestamp pauses new reward, maturity and reconciliation
-work without removing `P` from claim assets or blocking liquid redemption. The
-existing permissionless reward-backing wake-up attempts the same reconciliation
-refresh while reward work is paused; reviewed lifecycle reopening restores
-fresh policy after canonical proof.
+An authenticated reconciliation request first computes its fingerprint and
+resolves exact completed, passive or active replay entirely from local state.
+Conflicting replay is rejected. Exact replay works while Paused, after a child
+becomes passive, and while voting-power refresh or policy validation would
+fail; it issues zero Governance calls. Only new work requires Ready, an empty
+active slot, fresh asset observation and policy validation.
+
+New reconciliation work refreshes pooled-parent voting power before it is
+persisted. The policy timestamp is accepted for at most seven days. A stale
+timestamp pauses new reward, maturity and reconciliation work without removing
+`P` from claim assets or blocking liquid redemption. The existing
+permissionless reward-backing wake-up attempts the same reconciliation refresh
+while reward work is paused; reviewed lifecycle reopening restores fresh
+policy after canonical proof.
 
 That mechanism does not yet prove a maximum detection/reconciliation interval:
 reviewed pause, unavailable dependencies, repeated retryable failures, and

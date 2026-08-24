@@ -10,10 +10,12 @@ decodes and fully validates only the canister's launch V1 shape; malformed,
 older development, future, or corrupt state traps. No production canister
 contains a pre-launch migration or fallback decode path.
 
-Stream V1 includes one required scalar launch-schema marker so the simplified
-field set cannot accidentally decode the immediately preceding development V1
-shape after availability-only fields were deleted. This is schema identity,
-not a migration or operational state machine.
+Stream V1 and NNS V1 include required scalar launch-schema markers, respectively
+6 and 7, so the final receipt/quarantine, replay-fingerprint, committed-fee and
+Governance-recovery shapes cannot decode the immediately preceding development
+states. This is strict pre-launch schema identity, not a migration or
+operational state machine. Tests reject the preceding marker/state shape and
+round-trip the final shape.
 
 Permanent growth is narrow and proof-gated. Stream caller records arise from
 authenticated redemption requests and retain one replay/result slot per actual
