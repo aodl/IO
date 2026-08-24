@@ -289,10 +289,8 @@ pub(crate) fn maturity_ingress_transit(
     paired_permitted: bool,
 ) -> Result<u128, ApiError> {
     match kind {
-        MaturityKind::TwoYear => io_reward_policy::permanent_maturity_credit(minted_e8s, fee_e8s)
-            .map_err(|error| ApiError::Invalid(format!("maturity transit failed: {error:?}"))),
         MaturityKind::TwoWeek if !paired_permitted => Ok(0),
-        MaturityKind::TwoWeek => {
+        MaturityKind::TwoYear | MaturityKind::TwoWeek => {
             let claim = io_core_model::split_40_60(minted_e8s)
                 .map_err(|error| {
                     ApiError::Invalid(format!("maturity transit split failed: {error:?}"))
@@ -316,9 +314,16 @@ pub(crate) fn claim_receipt_economics(
             io_receipt_types::ClaimBackingReceiptKind::PermanentMaturity {
                 maturity_generation: pending.initiation_timestamp_seconds,
             },
-            io_reward_policy::permanent_maturity_credit(mint, fee).map_err(|error| {
-                ApiError::Invalid(format!("permanent maturity credit failed: {error:?}"))
-            })?,
+            io_core_model::split_40_60(mint)
+                .map_err(|error| {
+                    ApiError::Invalid(format!("permanent maturity split failed: {error:?}"))
+                })?
+                .claim
+                .checked_sub(fee)
+                .filter(|credit| *credit > 0)
+                .ok_or_else(|| {
+                    ApiError::Invalid("permanent claim leg cannot pay its fee".into())
+                })?,
         ),
         MaturityKind::TwoWeek => {
             let split = io_core_model::split_40_60(mint).map_err(|error| {
@@ -330,7 +335,8 @@ pub(crate) fn claim_receipt_economics(
                 .filter(|credit| *credit > 0)
                 .ok_or_else(|| ApiError::Invalid("pooled claim leg cannot pay its fee".into()))?;
             let generation = pending
-                .stake_evidence
+                .disburse_evidence
+                .submission
                 .plan
                 .entitlement_batch_generation
                 .ok_or_else(|| {
@@ -348,7 +354,6 @@ pub(crate) fn claim_receipt_economics(
 
 pub(crate) fn maturity_delivery_has_unpaid_fee(
     delivery: &crate::maturity::ClaimReceiptDeliveryOperation,
-    kind: MaturityKind,
 ) -> bool {
     let claim_unpaid = !matches!(
         delivery
@@ -357,16 +362,15 @@ pub(crate) fn maturity_delivery_has_unpaid_fee(
             .map(|attempt| &attempt.state),
         Some(crate::transfer::TransferState::Succeeded { .. })
     );
-    let permanent_unpaid = kind == MaturityKind::TwoWeek
-        && match &delivery.permanent_credit {
-            Some(crate::maturity::PermanentCreditState::Prepared { transfer, .. }) => !matches!(
-                transfer.state,
-                crate::transfer::TransferState::Succeeded { .. }
-            ),
-            Some(crate::maturity::PermanentCreditState::RefreshSubmitted { .. })
-            | Some(crate::maturity::PermanentCreditState::Proved(_)) => false,
-            None => true,
-        };
+    let permanent_unpaid = match &delivery.permanent_credit {
+        Some(crate::maturity::PermanentCreditState::Prepared { transfer, .. }) => !matches!(
+            transfer.state,
+            crate::transfer::TransferState::Succeeded { .. }
+        ),
+        Some(crate::maturity::PermanentCreditState::RefreshSubmitted { .. })
+        | Some(crate::maturity::PermanentCreditState::Proved(_)) => false,
+        None => true,
+    };
     claim_unpaid || permanent_unpaid
 }
 
@@ -378,7 +382,7 @@ mod tests {
         maturity::{
             ClaimReceiptDeliveryOperation, DisburseMaturitySubmission, DisburseMaturitySucceeded,
             MaturityCommandOperation, MaturityCommandPhase, MaturityEvidenceSource, MaturityPlan,
-            MintEvidence, MintProofState, PendingMaturityDisbursement, StakeMaturitySucceeded,
+            MintEvidence, MintProofState, PendingMaturityDisbursement,
         },
         pool::UnwindOperation,
     };
@@ -390,9 +394,9 @@ mod tests {
         state: &crate::state::NnsStateV1,
         kind: MaturityKind,
     ) -> PendingMaturityDisbursement {
-        let (neuron_id, retained, remaining, generation) = match kind {
-            MaturityKind::TwoYear => (1, 40, 60, None),
-            MaturityKind::TwoWeek => (2, 0, 100, Some(1)),
+        let (neuron_id, generation) = match kind {
+            MaturityKind::TwoYear => (1, None),
+            MaturityKind::TwoWeek => (2, Some(1)),
         };
         let plan = MaturityPlan {
             neuron: crate::jupiter::NeuronSnapshot {
@@ -400,35 +404,25 @@ mod tests {
                 staking_subaccount: [neuron_id as u8; 32],
                 cached_stake_e8s: 1_000,
             },
-            original_maturity_e8s: 100,
-            original_staked_maturity_e8s: 0,
-            stake_maturity_e8s: retained,
-            remaining_maturity_e8s: remaining,
+            observed_maturity_e8s: 100,
             destination: state.config.maturity_staging.clone(),
             requested_at_seconds: 1,
             entitlement_batch_generation: generation,
         };
-        let stake = StakeMaturitySucceeded {
-            plan,
-            remaining_maturity_e8s: remaining,
-            staked_maturity_e8s: retained,
-            evidence_source: MaturityEvidenceSource::CommandResponse,
-        };
         let submission = DisburseMaturitySubmission {
-            stake: stake.clone(),
+            plan,
             submitted_at_seconds: 1,
         };
         PendingMaturityDisbursement {
             kind,
             neuron_id,
-            nominal_disbursed_maturity_e8s: remaining,
+            nominal_disbursed_maturity_e8s: 100,
             destination: state.config.maturity_staging.clone(),
             initiation_timestamp_seconds: 1,
             scheduled_finalization_timestamp_seconds: 604_801,
-            stake_evidence: stake,
             disburse_evidence: DisburseMaturitySucceeded {
                 submission,
-                amount_disbursed_e8s: remaining,
+                amount_disbursed_e8s: 100,
                 evidence_source: MaturityEvidenceSource::CommandResponse,
             },
             committed_claim_transfer_fee_e8s: FEE,
@@ -521,7 +515,7 @@ mod tests {
             component_values(&state, 0),
             vec![
                 (TransitComponentKind::ActiveJupiter, 60),
-                (TransitComponentKind::PendingTwoYearMaturity, 90),
+                (TransitComponentKind::PendingTwoYearMaturity, 50),
             ]
         );
 
@@ -534,7 +528,7 @@ mod tests {
             component_values(&state, 0),
             vec![
                 (TransitComponentKind::ActiveMaturity, 50),
-                (TransitComponentKind::PendingTwoYearMaturity, 90),
+                (TransitComponentKind::PendingTwoYearMaturity, 50),
             ]
         );
 
@@ -561,7 +555,7 @@ mod tests {
             component_values(&state, 100),
             vec![
                 (TransitComponentKind::PoolTopUp, 60),
-                (TransitComponentKind::PendingTwoYearMaturity, 90),
+                (TransitComponentKind::PendingTwoYearMaturity, 50),
             ]
         );
 
@@ -590,7 +584,7 @@ mod tests {
             component_values(&state, 100),
             vec![
                 (TransitComponentKind::ActiveUnwind, 100),
-                (TransitComponentKind::PendingTwoYearMaturity, 90),
+                (TransitComponentKind::PendingTwoYearMaturity, 50),
             ]
         );
     }
@@ -602,7 +596,7 @@ mod tests {
         state.pending_two_week_maturity = Some(pending(&state, MaturityKind::TwoWeek));
         assert_eq!(
             component_values(&state, 0),
-            vec![(TransitComponentKind::PendingTwoYearMaturity, 90)]
+            vec![(TransitComponentKind::PendingTwoYearMaturity, 50)]
         );
 
         let pooled = state.pending_two_week_maturity.clone().unwrap();
@@ -612,10 +606,10 @@ mod tests {
             values,
             vec![
                 (TransitComponentKind::ActiveMaturity, 50),
-                (TransitComponentKind::PendingTwoYearMaturity, 90),
+                (TransitComponentKind::PendingTwoYearMaturity, 50),
             ]
         );
-        assert_eq!(values.iter().map(|(_, value)| value).sum::<u128>(), 140);
+        assert_eq!(values.iter().map(|(_, value)| value).sum::<u128>(), 100);
     }
 
     #[test]

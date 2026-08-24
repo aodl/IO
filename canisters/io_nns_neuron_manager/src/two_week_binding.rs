@@ -86,5 +86,5 @@ fn replay_matches(state: &NnsStateV1, args: &PrepareTwoWeekMaturityArgs) -> bool
     ) || state
         .pending_two_week_maturity
         .as_ref()
-        .is_some_and(|pending| plan_matches(&pending.stake_evidence.plan))
+        .is_some_and(|pending| plan_matches(&pending.disburse_evidence.submission.plan))
 }

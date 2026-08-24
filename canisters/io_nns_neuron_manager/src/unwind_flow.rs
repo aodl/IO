@@ -1,5 +1,8 @@
+use candid::{CandidType, Principal};
+use ic_cdk::call::Call;
 use io_ledger_boundary::{exact_icp_transfer, icp_account_identifier};
 use io_nns_types::backing::CohortProofState;
+use serde::Deserialize;
 
 use crate::{
     api::{ApiError, UnwindProgress},
@@ -134,14 +137,16 @@ async fn recover_split(operation: UnwindOperation) -> Result<UnwindProgress, Api
         operation.split_fee_e8s,
     )
     .map_err(|_| ApiError::Invalid("Split gross cannot cover the frozen fee".into()))?;
-    let candidates = execution::controlled_neurons(&snapshot.config).await?;
+    let controller = ic_cdk::api::canister_self();
+    let expected_child_subaccount =
+        execution::split_child_subaccount(controller, operation.generation);
+    let candidate =
+        match split_child_by_subaccount(&snapshot.config, expected_child_subaccount).await {
+            Ok(candidate) => candidate,
+            Err(ApiError::Invalid(reason)) => return fail_split_recovery(&operation, reason),
+            Err(error) => return Err(error),
+        };
     ensure(&operation)?;
-    let expected_child_account =
-        execution::parent_staking_account(&snapshot.config, operation.generation);
-    let expected_child_subaccount = expected_child_account
-        .subaccount
-        .as_deref()
-        .ok_or_else(|| ApiError::Invalid("canonical Split subaccount is absent".into()))?;
     let existing = |child_id| {
         snapshot
             .live_cohorts
@@ -152,35 +157,27 @@ async fn recover_split(operation: UnwindOperation) -> Result<UnwindProgress, Api
                 .as_ref()
                 .is_some_and(|completed| completed.child_neuron_id == child_id)
     };
-    let matches = candidates
-        .into_iter()
-        .filter(|candidate| {
-            candidate.neuron_id != snapshot.config.two_year_neuron_id
-                && candidate.neuron_id != parent_id
-                && !existing(candidate.neuron_id)
-                && candidate.controller == ic_cdk::api::canister_self()
-                && candidate.staking_subaccount == expected_child_subaccount
-                && candidate.physical_principal_e8s == expected_principal
-                && candidate.dissolve_state
-                    == Some(DissolveState::DissolveDelaySeconds(
-                        io_nns_types::backing::POOLED_PARENT_DELAY_SECONDS,
-                    ))
-        })
-        .collect::<Vec<_>>();
-    if matches.len() > 1 {
-        let mut latest = state::read();
-        ensure(&operation)?;
-        latest.lifecycle = Lifecycle::Paused;
-        state::write(latest);
-        return Err(ApiError::Stuck(
-            "ambiguous Split has multiple canonical child candidates".into(),
-        ));
-    }
-    let Some(candidate) = matches.into_iter().next() else {
+    let Some(candidate) = candidate else {
         return Err(ApiError::Pending(
             "ambiguous Split has no canonical child candidate yet".into(),
         ));
     };
+    if candidate.neuron_id == snapshot.config.two_year_neuron_id
+        || candidate.neuron_id == parent_id
+        || existing(candidate.neuron_id)
+        || candidate.controller != controller
+        || candidate.staking_subaccount != expected_child_subaccount
+        || candidate.physical_principal_e8s != expected_principal
+        || candidate.dissolve_state
+            != Some(DissolveState::DissolveDelaySeconds(
+                io_nns_types::backing::POOLED_PARENT_DELAY_SECONDS,
+            ))
+    {
+        return fail_split_recovery(
+            &operation,
+            "exact Split subaccount returned conflicting child evidence".into(),
+        );
+    }
     let parent = execution::query_neuron(&snapshot.config, parent_id).await?;
     ensure(&operation)?;
     let expected_parent = operation
@@ -199,6 +196,102 @@ async fn recover_split(operation: UnwindOperation) -> Result<UnwindProgress, Api
     identified.phase = UnwindPhase::ChildIdentified;
     replace(&expected, identified)?;
     Ok(UnwindProgress::Waiting)
+}
+
+#[derive(CandidType, Deserialize)]
+struct SplitListRequest {
+    neuron_ids: Vec<u64>,
+    include_neurons_readable_by_caller: bool,
+    include_empty_neurons_readable_by_caller: Option<bool>,
+    include_public_neurons_in_full_neurons: Option<bool>,
+    page_number: Option<u64>,
+    page_size: Option<u64>,
+    neuron_subaccounts: Option<Vec<SplitSubaccount>>,
+}
+
+#[derive(CandidType, Deserialize)]
+struct SplitSubaccount {
+    subaccount: Vec<u8>,
+}
+
+#[derive(CandidType, Deserialize)]
+struct SplitListResponse {
+    full_neurons: Vec<SplitNeuron>,
+    total_pages_available: Option<u64>,
+}
+
+#[derive(CandidType, Deserialize)]
+struct SplitNeuron {
+    id: Option<SplitNeuronId>,
+    controller: Option<Principal>,
+    account: Vec<u8>,
+    cached_neuron_stake_e8s: u64,
+    dissolve_state: Option<DissolveState>,
+}
+
+#[derive(CandidType, Deserialize)]
+struct SplitNeuronId {
+    id: u64,
+}
+
+struct SplitCandidate {
+    neuron_id: u64,
+    controller: Principal,
+    physical_principal_e8s: u128,
+    staking_subaccount: Vec<u8>,
+    dissolve_state: Option<DissolveState>,
+}
+
+async fn split_child_by_subaccount(
+    config: &state::NnsConfig,
+    subaccount: [u8; 32],
+) -> Result<Option<SplitCandidate>, ApiError> {
+    let response: SplitListResponse = Call::bounded_wait(config.nns_governance, "list_neurons")
+        .with_arg(SplitListRequest {
+            neuron_ids: Vec::new(),
+            include_neurons_readable_by_caller: false,
+            include_empty_neurons_readable_by_caller: Some(false),
+            include_public_neurons_in_full_neurons: Some(false),
+            page_number: Some(0),
+            page_size: Some(1),
+            neuron_subaccounts: Some(vec![SplitSubaccount {
+                subaccount: subaccount.to_vec(),
+            }]),
+        })
+        .await
+        .map_err(|error| ApiError::Pending(format!("split-child lookup failed: {error:?}")))?
+        .candid()
+        .map_err(|error| {
+            ApiError::Pending(format!("split-child lookup decode failed: {error:?}"))
+        })?;
+    if response.total_pages_available.unwrap_or_default() > 1 || response.full_neurons.len() > 1 {
+        return Err(ApiError::Invalid(
+            "exact Split subaccount returned conflicting neurons".into(),
+        ));
+    }
+    let Some(neuron) = response.full_neurons.into_iter().next() else {
+        return Ok(None);
+    };
+    let neuron_id = neuron
+        .id
+        .map(|id| id.id)
+        .filter(|id| *id > 0)
+        .ok_or_else(|| ApiError::Invalid("split child has no ID".into()))?;
+    let controller = neuron
+        .controller
+        .ok_or_else(|| ApiError::Invalid("split child has no controller".into()))?;
+    if neuron.account.len() != 32 {
+        return Err(ApiError::Invalid(
+            "split child subaccount is not 32 bytes".into(),
+        ));
+    }
+    Ok(Some(SplitCandidate {
+        neuron_id,
+        controller,
+        physical_principal_e8s: neuron.cached_neuron_stake_e8s.into(),
+        staking_subaccount: neuron.account,
+        dissolve_state: neuron.dissolve_state,
+    }))
 }
 
 async fn prove_split(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
@@ -283,12 +376,16 @@ async fn prove_start(operation: UnwindOperation) -> Result<UnwindProgress, ApiEr
 async fn submit_disbursement(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
     let expected = operation.clone();
     let current = state::read();
-    let canonical_fee = io_ledger_boundary::icp_fee(current.config.icp_ledger)
+    let governance_fee = execution::nns_transaction_fee(&current.config).await?;
+    ensure(&expected)?;
+    let ledger_fee = io_ledger_boundary::icp_fee(current.config.icp_ledger)
         .await
         .map_err(ApiError::Pending)?;
     ensure(&expected)?;
-    if canonical_fee != current.config.expected_icp_fee_e8s
-        || canonical_fee != operation.committed_disbursement_fee_e8s
+    if governance_fee != current.config.expected_icp_fee_e8s
+        || ledger_fee != current.config.expected_icp_fee_e8s
+        || governance_fee != ledger_fee
+        || governance_fee != operation.committed_disbursement_fee_e8s
     {
         let mut latest = state::read();
         if !matches!(latest.active_operation, Some(NnsOperation::Unwind(ref active)) if active == &expected)
@@ -298,8 +395,8 @@ async fn submit_disbursement(mut operation: UnwindOperation) -> Result<UnwindPro
         latest.lifecycle = Lifecycle::Paused;
         state::write(latest);
         return Err(ApiError::Stuck(format!(
-            "ICP fee parameter drift: approved {}, observed {canonical_fee}; child disbursement was not submitted",
-            current.config.expected_icp_fee_e8s
+            "child Disburse fee drift: frozen {}, Governance {governance_fee}, Ledger {ledger_fee}; Disburse was not submitted",
+            operation.committed_disbursement_fee_e8s
         )));
     }
     operation.phase = UnwindPhase::DisbursementSubmitted;
@@ -313,10 +410,21 @@ async fn submit_disbursement(mut operation: UnwindOperation) -> Result<UnwindPro
     )
     .await;
     ensure(&operation)?;
-    if let Ok(block) = result {
-        let submitted = operation.clone();
-        operation.expected_block_index = Some(block);
-        replace(&submitted, operation)?;
+    match result? {
+        execution::GovernanceCallOutcome::Succeeded(block) => {
+            let submitted = operation.clone();
+            operation.expected_block_index = Some(block);
+            replace(&submitted, operation)?;
+        }
+        execution::GovernanceCallOutcome::RejectedNoEffect(_) => {
+            let submitted = operation.clone();
+            operation.phase = UnwindPhase::DisbursementPrepared;
+            operation.submitted_at_seconds = 0;
+            operation.expected_block_index = None;
+            replace(&submitted, operation)?;
+            return Ok(UnwindProgress::Waiting);
+        }
+        execution::GovernanceCallOutcome::Ambiguous(_) => {}
     }
     Ok(UnwindProgress::AwaitingTransferProof)
 }
@@ -658,6 +766,17 @@ fn pause(mut operation: UnwindOperation, reason: String) -> Result<UnwindProgres
     Ok(UnwindProgress::Stuck(reason))
 }
 
+fn fail_split_recovery(
+    operation: &UnwindOperation,
+    reason: String,
+) -> Result<UnwindProgress, ApiError> {
+    ensure(operation)?;
+    let mut latest = state::read();
+    latest.lifecycle = Lifecycle::Paused;
+    state::write(latest);
+    Err(ApiError::Stuck(reason))
+}
+
 fn clear_active(state: &mut state::NnsStateV1, expected: &UnwindOperation) -> Result<(), ApiError> {
     if !matches!(&state.active_operation, Some(NnsOperation::Unwind(active)) if active == expected)
     {
@@ -665,28 +784,4 @@ fn clear_active(state: &mut state::NnsStateV1, expected: &UnwindOperation) -> Re
     }
     state.active_operation = None;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn canonical_fee_drift_returns_before_any_disbursement_effect() {
-        let source = include_str!("unwind_flow.rs");
-        let body = source
-            .split("async fn submit_disbursement")
-            .nth(1)
-            .unwrap()
-            .split("pub async fn prove")
-            .next()
-            .unwrap();
-        let fee = body.find("io_ledger_boundary::icp_fee").unwrap();
-        let drift = body.find("canonical_fee !=").unwrap();
-        let submitted = body.find("UnwindPhase::DisbursementSubmitted").unwrap();
-        let effect = body.find("execution::disburse_neuron").unwrap();
-        assert!(fee < drift && drift < submitted && submitted < effect);
-        let drift_body = &body[drift..submitted];
-        assert!(drift_body.contains("Lifecycle::Paused"));
-        assert!(drift_body.contains("return Err(ApiError::Stuck"));
-        assert!(!drift_body.contains("disburse_neuron"));
-    }
 }

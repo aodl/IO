@@ -65,8 +65,6 @@ pub enum JupiterProgress {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum MaturityProgress {
     Observed,
-    StakeMaturitySubmitted,
-    StakeMaturitySucceeded,
     DisburseMaturitySubmitted,
     DisburseMaturitySucceeded,
     AwaitingMintProof,
@@ -964,7 +962,7 @@ mod tests {
         );
         assert_eq!(
             maturity_ingress_transit(MaturityKind::TwoYear, 200_000, 10_000, false),
-            Ok(190_000)
+            Ok(110_000)
         );
     }
 

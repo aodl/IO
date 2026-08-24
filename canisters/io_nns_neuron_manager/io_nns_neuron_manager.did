@@ -198,8 +198,6 @@ type CompletedMaturity = record {
 };
 type MaturityProgress = variant {
   Observed;
-  StakeMaturitySubmitted;
-  StakeMaturitySucceeded;
   DisburseMaturitySubmitted;
   DisburseMaturitySucceeded;
   AwaitingMintProof;

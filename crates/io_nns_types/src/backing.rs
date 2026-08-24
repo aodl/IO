@@ -1,8 +1,19 @@
-use candid::CandidType;
+use candid::{CandidType, Principal};
 use io_accounts::Account;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 pub const MAX_LIVE_UNWIND_COHORTS: usize = 32;
+
+/// Reproduces the exact pinned NNS Governance Split memo subaccount domain.
+pub fn split_child_subaccount(controller: Principal, generation: u64) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update([b"split-neuron".len() as u8]);
+    hasher.update(b"split-neuron");
+    hasher.update(controller.as_slice());
+    hasher.update(generation.to_be_bytes());
+    hasher.finalize().into()
+}
 
 pub fn net_committed_child_backing(
     physical_principal_e8s: u128,

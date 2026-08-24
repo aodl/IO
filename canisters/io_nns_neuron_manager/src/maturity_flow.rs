@@ -11,7 +11,7 @@ use crate::{
         ClaimReceiptDeliveryOperation, DisburseMaturitySubmission, DisburseMaturitySucceeded,
         MaturityCommandOperation, MaturityCommandPhase, MaturityEvidenceSource, MaturityKind,
         MaturityPlan, MintProofState, PendingMaturityDisbursement, PermanentCreditState,
-        StakeMaturitySucceeded, MINIMUM_DISBURSEMENT_E8S,
+        MINIMUM_DISBURSEMENT_E8S,
     },
     state::{self, Lifecycle, NnsOperation},
     transfer::{
@@ -81,14 +81,9 @@ pub(crate) async fn start_observed(
             ));
         }
     }
-    let (stake_maturity_e8s, remaining_maturity_e8s) = match kind {
-        MaturityKind::TwoYear => crate::maturity::split_maturity(observation.maturity_e8s)
-            .ok_or_else(|| ApiError::Invalid("maturity split overflow".into()))?,
-        MaturityKind::TwoWeek => (0, observation.maturity_e8s),
-    };
-    if remaining_maturity_e8s < MINIMUM_DISBURSEMENT_E8S {
+    if observation.maturity_e8s < MINIMUM_DISBURSEMENT_E8S {
         return Err(ApiError::BelowMaturityThreshold {
-            remaining_e8s: remaining_maturity_e8s,
+            remaining_e8s: observation.maturity_e8s,
             minimum_e8s: MINIMUM_DISBURSEMENT_E8S,
         });
     }
@@ -115,10 +110,7 @@ pub(crate) async fn start_observed(
         kind,
         phase: MaturityCommandPhase::Observed(MaturityPlan {
             neuron: observation.snapshot,
-            original_maturity_e8s: observation.maturity_e8s,
-            original_staked_maturity_e8s: observation.staked_maturity_e8s,
-            stake_maturity_e8s,
-            remaining_maturity_e8s,
+            observed_maturity_e8s: observation.maturity_e8s,
             destination,
             requested_at_seconds: now_seconds()?,
             entitlement_batch_generation,
@@ -143,17 +135,7 @@ pub async fn resume_active(
     operation: MaturityCommandOperation,
 ) -> Result<MaturityProgress, ApiError> {
     match operation.phase.clone() {
-        MaturityCommandPhase::Observed(plan) if operation.kind == MaturityKind::TwoWeek => {
-            prove_unstaked_maturity(operation, plan).await
-        }
-        MaturityCommandPhase::Observed(plan) => submit_stake(operation, plan).await,
-        MaturityCommandPhase::StakeMaturitySubmitted(plan) => recover_stake(operation, plan).await,
-        MaturityCommandPhase::StakeMaturitySucceeded(stake) => {
-            check_pre_disburse_drift(operation, stake).await
-        }
-        MaturityCommandPhase::ReadyToDisburse(submission) => {
-            submit_disburse(operation, submission).await
-        }
+        MaturityCommandPhase::Observed(plan) => submit_disburse(operation, plan).await,
         MaturityCommandPhase::DisburseMaturitySubmitted(submission) => {
             recover_disburse(operation, submission).await
         }
@@ -162,10 +144,6 @@ pub async fn resume_active(
         }
         MaturityCommandPhase::ClaimReceiptDelivery(delivery) => {
             resume_claim_receipt_delivery(operation, delivery).await
-        }
-        MaturityCommandPhase::MaturityDrift { reason, .. }
-        | MaturityCommandPhase::DisburseMaturityMismatch { reason, .. } => {
-            Ok(MaturityProgress::Stuck(reason))
         }
     }
 }
@@ -188,206 +166,53 @@ pub async fn resume_kind(kind: MaturityKind) -> Result<MaturityProgress, ApiErro
     }
 }
 
-async fn submit_stake(
-    mut operation: MaturityCommandOperation,
-    plan: MaturityPlan,
-) -> Result<MaturityProgress, ApiError> {
-    let expected = operation.clone();
-    operation.dispatch_epoch = next_epoch(operation.dispatch_epoch)?;
-    operation.phase = MaturityCommandPhase::StakeMaturitySubmitted(plan.clone());
-    write_exact(&expected, operation.clone(), false)?;
-    let submitted = operation.clone();
-    let result = execution::stake_maturity(&state::read().config, plan.neuron.neuron_id).await;
-    ensure_exact(&submitted)?;
-    let (remaining_maturity_e8s, staked_maturity_e8s) = match result {
-        Ok(value) => value,
-        Err(error) => {
-            write_exact(&submitted, submitted.clone(), true)?;
-            return Err(ApiError::Pending(format!(
-                "StakeMaturity outcome requires canonical observation: {error:?}"
-            )));
-        }
-    };
-    apply_stake_result(
-        submitted,
-        plan,
-        remaining_maturity_e8s,
-        staked_maturity_e8s,
-        MaturityEvidenceSource::CommandResponse,
-    )
-}
-
-async fn prove_unstaked_maturity(
-    operation: MaturityCommandOperation,
-    plan: MaturityPlan,
-) -> Result<MaturityProgress, ApiError> {
-    let observation =
-        execution::query_neuron_observation(&state::read().config, plan.neuron.neuron_id).await?;
-    ensure_exact(&operation)?;
-    if observation.maturity_e8s != plan.original_maturity_e8s
-        || observation.staked_maturity_e8s != plan.original_staked_maturity_e8s
-        || plan.stake_maturity_e8s != 0
-        || plan.remaining_maturity_e8s != plan.original_maturity_e8s
-    {
-        return Err(ApiError::Pending(
-            "pooled-parent maturity changed before its no-stake disbursement proof".into(),
-        ));
-    }
-    let mut replacement = operation.clone();
-    replacement.phase = MaturityCommandPhase::StakeMaturitySucceeded(StakeMaturitySucceeded {
-        plan,
-        remaining_maturity_e8s: observation.maturity_e8s,
-        staked_maturity_e8s: observation.staked_maturity_e8s,
-        evidence_source: MaturityEvidenceSource::CanonicalNeuronObservation,
-    });
-    write_exact(&operation, replacement, false)?;
-    Ok(MaturityProgress::StakeMaturitySucceeded)
-}
-
-async fn recover_stake(
-    operation: MaturityCommandOperation,
-    plan: MaturityPlan,
-) -> Result<MaturityProgress, ApiError> {
-    let observation =
-        execution::query_neuron_observation(&state::read().config, plan.neuron.neuron_id).await?;
-    ensure_exact(&operation)?;
-    let expected_staked = expected_staked(&plan)?;
-    if observation.maturity_e8s == plan.remaining_maturity_e8s
-        && observation.staked_maturity_e8s == expected_staked
-    {
-        return apply_stake_result(
-            operation,
-            plan.clone(),
-            observation.maturity_e8s,
-            observation.staked_maturity_e8s,
-            MaturityEvidenceSource::CanonicalNeuronObservation,
-        );
-    }
-    write_exact(&operation, operation.clone(), true)?;
-    Err(ApiError::Pending(format!(
-        "StakeMaturity remains ambiguous: expected ordinary {} and staked {}, observed ordinary {} and staked {}",
-        plan.remaining_maturity_e8s,
-        expected_staked,
-        observation.maturity_e8s,
-        observation.staked_maturity_e8s
-    )))
-}
-
-fn apply_stake_result(
-    operation: MaturityCommandOperation,
-    plan: MaturityPlan,
-    remaining_maturity_e8s: u64,
-    staked_maturity_e8s: u64,
-    evidence_source: MaturityEvidenceSource,
-) -> Result<MaturityProgress, ApiError> {
-    let expected_staked = expected_staked(&plan)?;
-    if remaining_maturity_e8s != plan.remaining_maturity_e8s
-        || staked_maturity_e8s != expected_staked
-    {
-        write_exact(&operation, operation.clone(), true)?;
-        return Err(ApiError::Stuck(format!(
-            "StakeMaturity response drift: expected ordinary {} and staked {}, observed ordinary {} and staked {}",
-            plan.remaining_maturity_e8s,
-            expected_staked,
-            remaining_maturity_e8s,
-            staked_maturity_e8s
-        )));
-    }
-    let mut replacement = operation.clone();
-    replacement.phase = MaturityCommandPhase::StakeMaturitySucceeded(StakeMaturitySucceeded {
-        plan,
-        remaining_maturity_e8s,
-        staked_maturity_e8s,
-        evidence_source,
-    });
-    write_exact(&operation, replacement, false)?;
-    Ok(MaturityProgress::StakeMaturitySucceeded)
-}
-
-async fn check_pre_disburse_drift(
-    operation: MaturityCommandOperation,
-    stake: StakeMaturitySucceeded,
-) -> Result<MaturityProgress, ApiError> {
-    let observation =
-        execution::query_neuron_observation(&state::read().config, stake.plan.neuron.neuron_id)
-            .await?;
-    ensure_exact(&operation)?;
-    if observation.maturity_e8s != stake.remaining_maturity_e8s
-        || observation.staked_maturity_e8s != stake.staked_maturity_e8s
-    {
-        let reason = format!(
-            "MaturityDrift before DisburseMaturity: expected ordinary {} and staked {}, observed ordinary {} and staked {}",
-            stake.remaining_maturity_e8s,
-            stake.staked_maturity_e8s,
-            observation.maturity_e8s,
-            observation.staked_maturity_e8s
-        );
-        let mut replacement = operation.clone();
-        replacement.phase = MaturityCommandPhase::MaturityDrift {
-            reason: reason.clone(),
-            stake,
-        };
-        write_exact(&operation, replacement, true)?;
-        return Err(ApiError::Stuck(reason));
-    }
-    let mut replacement = operation.clone();
-    replacement.phase = MaturityCommandPhase::ReadyToDisburse(DisburseMaturitySubmission {
-        stake,
-        submitted_at_seconds: now_seconds()?,
-    });
-    write_exact(&operation, replacement, false)?;
-    Ok(MaturityProgress::StakeMaturitySucceeded)
-}
-
 async fn submit_disburse(
     mut operation: MaturityCommandOperation,
-    mut submission: DisburseMaturitySubmission,
+    plan: MaturityPlan,
 ) -> Result<MaturityProgress, ApiError> {
     let expected = operation.clone();
-    submission.submitted_at_seconds = now_seconds()?;
+    let submission = DisburseMaturitySubmission {
+        plan,
+        submitted_at_seconds: now_seconds()?,
+    };
     operation.dispatch_epoch = next_epoch(operation.dispatch_epoch)?;
     operation.phase = MaturityCommandPhase::DisburseMaturitySubmitted(submission.clone());
     write_exact(&expected, operation.clone(), false)?;
-    let submitted = operation.clone();
+    let submitted = operation;
     let result = execution::disburse_maturity(
         &state::read().config,
-        submission.stake.plan.neuron.neuron_id,
-        &submission.stake.plan.destination,
+        submission.plan.neuron.neuron_id,
+        &submission.plan.destination,
     )
     .await;
     ensure_exact(&submitted)?;
-    let amount = match result {
-        Ok(amount) => amount,
-        Err(error) => {
-            write_exact(&submitted, submitted.clone(), true)?;
-            return Err(ApiError::Pending(format!(
-                "DisburseMaturity outcome requires canonical observation: {error:?}"
-            )));
+    match result {
+        execution::GovernanceCallOutcome::Succeeded(amount) => {
+            let mut replacement = submitted.clone();
+            replacement.phase =
+                MaturityCommandPhase::DisburseMaturitySucceeded(DisburseMaturitySucceeded {
+                    submission,
+                    amount_disbursed_e8s: amount,
+                    evidence_source: MaturityEvidenceSource::CommandResponse,
+                });
+            write_exact(&submitted, replacement, false)?;
+            Ok(MaturityProgress::DisburseMaturitySucceeded)
         }
-    };
-    if amount != submission.stake.remaining_maturity_e8s {
-        let reason = format!(
-            "DisburseMaturity returned {amount}, expected {}",
-            submission.stake.remaining_maturity_e8s
-        );
-        let mut replacement = submitted.clone();
-        replacement.phase = MaturityCommandPhase::DisburseMaturityMismatch {
-            reason: reason.clone(),
-            submission,
-            observed_amount_e8s: amount,
-        };
-        write_exact(&submitted, replacement, true)?;
-        return Err(ApiError::Stuck(reason));
+        execution::GovernanceCallOutcome::RejectedNoEffect(reason) => {
+            let mut replacement = submitted.clone();
+            replacement.phase = MaturityCommandPhase::Observed(submission.plan);
+            write_exact(&submitted, replacement, false)?;
+            Err(ApiError::Pending(format!(
+                "{reason}; DisburseMaturity is prepared for deterministic retry"
+            )))
+        }
+        execution::GovernanceCallOutcome::Ambiguous(reason) => {
+            write_exact(&submitted, submitted.clone(), true)?;
+            Err(ApiError::Pending(format!(
+                "{reason}; canonical pending-disbursement proof is required"
+            )))
+        }
     }
-    let mut replacement = submitted.clone();
-    replacement.phase =
-        MaturityCommandPhase::DisburseMaturitySucceeded(DisburseMaturitySucceeded {
-            submission,
-            amount_disbursed_e8s: amount,
-            evidence_source: MaturityEvidenceSource::CommandResponse,
-        });
-    write_exact(&submitted, replacement, false)?;
-    Ok(MaturityProgress::DisburseMaturitySucceeded)
 }
 
 async fn recover_disburse(
@@ -396,26 +221,31 @@ async fn recover_disburse(
 ) -> Result<MaturityProgress, ApiError> {
     let observation = execution::query_neuron_observation(
         &state::read().config,
-        submission.stake.plan.neuron.neuron_id,
+        submission.plan.neuron.neuron_id,
     )
     .await?;
     ensure_exact(&operation)?;
-    let canonical = execution::exact_maturity_disbursement(
+    let canonical = match execution::exact_maturity_disbursement(
         &observation,
-        submission.stake.remaining_maturity_e8s,
-        &submission.stake.plan.destination,
+        &submission.plan.destination,
         submission.submitted_at_seconds,
-    );
-    if canonical.is_err() {
-        write_exact(&operation, operation.clone(), true)?;
-        return Err(ApiError::Pending(
-            "DisburseMaturity remains ambiguous; no exact canonical pending record exists".into(),
-        ));
-    }
+    ) {
+        Ok(Some(canonical)) => canonical,
+        Ok(None) => {
+            return Err(ApiError::Pending(
+                "DisburseMaturity remains ambiguous; no canonical pending record exists".into(),
+            ))
+        }
+        Err(ApiError::Invalid(reason)) => {
+            write_exact(&operation, operation.clone(), true)?;
+            return Err(ApiError::Stuck(reason));
+        }
+        Err(error) => return Err(error),
+    };
     let mut replacement = operation.clone();
     replacement.phase =
         MaturityCommandPhase::DisburseMaturitySucceeded(DisburseMaturitySucceeded {
-            amount_disbursed_e8s: submission.stake.remaining_maturity_e8s,
+            amount_disbursed_e8s: canonical.amount_disbursed_e8s,
             submission,
             evidence_source: MaturityEvidenceSource::CanonicalNeuronObservation,
         });
@@ -427,25 +257,34 @@ async fn canonicalize_disbursement(
     operation: MaturityCommandOperation,
     disbursement: DisburseMaturitySucceeded,
 ) -> Result<MaturityProgress, ApiError> {
-    let plan = &disbursement.submission.stake.plan;
+    let plan = &disbursement.submission.plan;
     let observation =
         execution::query_neuron_observation(&state::read().config, plan.neuron.neuron_id).await?;
     ensure_exact(&operation)?;
     let canonical = execution::exact_maturity_disbursement(
         &observation,
-        disbursement.amount_disbursed_e8s,
         &plan.destination,
         disbursement.submission.submitted_at_seconds,
-    )?;
+    )?
+    .ok_or_else(|| {
+        ApiError::Pending("canonical maturity disbursement is not observable yet".into())
+    })?;
+    if canonical.amount_disbursed_e8s != disbursement.amount_disbursed_e8s {
+        let reason = format!(
+            "DisburseMaturity response amount {} conflicts with canonical amount {}",
+            disbursement.amount_disbursed_e8s, canonical.amount_disbursed_e8s
+        );
+        write_exact(&operation, operation.clone(), true)?;
+        return Err(ApiError::Stuck(reason));
+    }
     let passive = PendingMaturityDisbursement {
         kind: operation.kind,
         neuron_id: plan.neuron.neuron_id,
-        nominal_disbursed_maturity_e8s: disbursement.amount_disbursed_e8s,
+        nominal_disbursed_maturity_e8s: canonical.amount_disbursed_e8s,
         destination: plan.destination.clone(),
         initiation_timestamp_seconds: canonical.initiated_at_seconds,
         scheduled_finalization_timestamp_seconds: canonical
             .scheduled_finalization_timestamp_seconds,
-        stake_evidence: disbursement.submission.stake.clone(),
         disburse_evidence: disbursement,
         committed_claim_transfer_fee_e8s: 0,
         mint_proof: MintProofState::Awaiting,
@@ -453,7 +292,6 @@ async fn canonicalize_disbursement(
     move_to_passive(&operation, passive)?;
     Ok(MaturityProgress::AwaitingMintProof)
 }
-
 pub(crate) fn start_claim_receipt_delivery(
     pending: PendingMaturityDisbursement,
 ) -> Result<MaturityProgress, ApiError> {
@@ -500,7 +338,7 @@ async fn resume_claim_receipt_delivery(
         }
     };
     let config = state::read().config;
-    if crate::claim_assets::maturity_delivery_has_unpaid_fee(&delivery, operation.kind) {
+    if crate::claim_assets::maturity_delivery_has_unpaid_fee(&delivery) {
         let canonical_fee = io_ledger_boundary::icp_fee(config.icp_ledger)
             .await
             .map_err(ApiError::Pending)?;
@@ -517,62 +355,60 @@ async fn resume_claim_receipt_delivery(
             )));
         }
     }
-    if operation.kind == MaturityKind::TwoWeek {
-        let split = io_core_model::split_40_60(mint.actual_minted_icp_e8s)
-            .map_err(|error| ApiError::Invalid(format!("maturity split failed: {error:?}")))?;
-        let credit = split
-            .permanent
-            .checked_sub(delivery.pending.committed_claim_transfer_fee_e8s)
-            .filter(|credit| *credit > 0)
-            .ok_or_else(|| ApiError::Invalid("permanent maturity leg cannot pay its fee".into()))?;
-        match delivery.permanent_credit.as_ref() {
-            None => {
-                let permanent =
-                    execution::query_neuron_observation(&config, config.two_year_neuron_id).await?;
-                ensure_exact(&operation)?;
-                if let Err(reason) = execution::validate_permanent_configuration(&permanent) {
-                    let mut latest = state::read();
-                    latest.lifecycle = Lifecycle::Paused;
-                    state::write(latest);
-                    return Err(ApiError::Invalid(reason));
-                }
-                return crate::permanent_credit::prepare(
-                    operation,
-                    permanent.snapshot,
-                    credit,
-                    delivery.pending.committed_claim_transfer_fee_e8s,
-                );
+    let split = io_core_model::split_40_60(mint.actual_minted_icp_e8s)
+        .map_err(|error| ApiError::Invalid(format!("maturity split failed: {error:?}")))?;
+    let credit = split
+        .permanent
+        .checked_sub(delivery.pending.committed_claim_transfer_fee_e8s)
+        .filter(|credit| *credit > 0)
+        .ok_or_else(|| ApiError::Invalid("permanent maturity leg cannot pay its fee".into()))?;
+    match delivery.permanent_credit.as_ref() {
+        None => {
+            let permanent =
+                execution::query_neuron_observation(&config, config.two_year_neuron_id).await?;
+            ensure_exact(&operation)?;
+            if let Err(reason) = execution::validate_permanent_configuration(&permanent) {
+                let mut latest = state::read();
+                latest.lifecycle = Lifecycle::Paused;
+                state::write(latest);
+                return Err(ApiError::Invalid(reason));
             }
-            Some(PermanentCreditState::Prepared { transfer, .. })
-                if !matches!(transfer.state, TransferState::Succeeded { .. }) =>
-            {
-                return submit_maturity_transfer(operation, true).await;
-            }
-            Some(PermanentCreditState::Prepared { before, transfer }) => {
-                let transfer_block = transfer.succeeded_block().map_err(ApiError::Invalid)?;
-                let mut replacement = operation.clone();
-                delivery_mut(&mut replacement).permanent_credit =
-                    Some(PermanentCreditState::RefreshSubmitted {
-                        before: before.clone(),
-                        transfer_block,
-                    });
-                write_exact(&operation, replacement, false)?;
-                return crate::permanent_credit::refresh(before.neuron_id).await;
-            }
-            Some(PermanentCreditState::RefreshSubmitted {
-                before,
-                transfer_block,
-            }) => {
-                return crate::permanent_credit::prove_or_refresh(
-                    operation,
-                    before.clone(),
-                    *transfer_block,
-                    credit,
-                )
-                .await;
-            }
-            Some(PermanentCreditState::Proved(_)) => {}
+            return crate::permanent_credit::prepare(
+                operation,
+                permanent.snapshot,
+                credit,
+                delivery.pending.committed_claim_transfer_fee_e8s,
+            );
         }
+        Some(PermanentCreditState::Prepared { transfer, .. })
+            if !matches!(transfer.state, TransferState::Succeeded { .. }) =>
+        {
+            return submit_maturity_transfer(operation, true).await;
+        }
+        Some(PermanentCreditState::Prepared { before, transfer }) => {
+            let transfer_block = transfer.succeeded_block().map_err(ApiError::Invalid)?;
+            let mut replacement = operation.clone();
+            delivery_mut(&mut replacement).permanent_credit =
+                Some(PermanentCreditState::RefreshSubmitted {
+                    before: before.clone(),
+                    transfer_block,
+                });
+            write_exact(&operation, replacement, false)?;
+            return crate::permanent_credit::refresh(before.neuron_id).await;
+        }
+        Some(PermanentCreditState::RefreshSubmitted {
+            before,
+            transfer_block,
+        }) => {
+            return crate::permanent_credit::prove_or_refresh(
+                operation,
+                before.clone(),
+                *transfer_block,
+                credit,
+            )
+            .await;
+        }
+        Some(PermanentCreditState::Proved(_)) => {}
     }
     let Some(permit) = delivery.permit.clone() else {
         let observation = crate::api::claim_asset_observation().await?;
@@ -889,12 +725,6 @@ pub(crate) fn replay_proved(
         MintProofState::Delivering(_) => MaturityProgress::DeliveringClaimReceipt,
         MintProofState::Awaiting => unreachable!(),
     })
-}
-
-fn expected_staked(plan: &MaturityPlan) -> Result<u64, ApiError> {
-    plan.original_staked_maturity_e8s
-        .checked_add(plan.stake_maturity_e8s)
-        .ok_or_else(|| ApiError::Invalid("staked maturity overflow".into()))
 }
 
 fn next_epoch(epoch: u64) -> Result<u64, ApiError> {

@@ -108,13 +108,11 @@ pub(crate) fn finish(operation: MaturityCommandOperation) -> Result<MaturityProg
         destination: delivery.pending.destination.clone(),
         permanent_credit_proof: match &delivery.permanent_credit {
             Some(crate::maturity::PermanentCreditState::Proved(proof)) => Some(proof.clone()),
-            None if operation.kind == MaturityKind::TwoYear => None,
-            _ if operation.kind == MaturityKind::TwoWeek => {
+            _ => {
                 return Err(ApiError::Invalid(
-                    "completed pooled maturity lacks its permanent credit proof".into(),
+                    "completed maturity lacks its permanent credit proof".into(),
                 ))
             }
-            _ => None,
         },
         completed_at_nanos: ic_cdk::api::time(),
     };
@@ -135,7 +133,8 @@ pub(crate) fn finish(operation: MaturityCommandOperation) -> Result<MaturityProg
         MaturityKind::TwoWeek => {
             let generation = delivery
                 .pending
-                .stake_evidence
+                .disburse_evidence
+                .submission
                 .plan
                 .entitlement_batch_generation
                 .ok_or_else(|| {

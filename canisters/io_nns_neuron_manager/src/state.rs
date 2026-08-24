@@ -18,7 +18,7 @@ use {
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
 
-pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 8;
+pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 9;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct NnsConfig {
@@ -254,7 +254,7 @@ impl NnsStateV1 {
 }
 
 fn validate_claim_receipt_delivery(
-    kind: crate::maturity::MaturityKind,
+    _kind: crate::maturity::MaturityKind,
     delivery: &crate::maturity::ClaimReceiptDeliveryOperation,
     config: &NnsConfig,
 ) -> Result<(), String> {
@@ -281,9 +281,6 @@ fn validate_claim_receipt_delivery(
             .checked_sub(delivery.pending.committed_claim_transfer_fee_e8s)
             .filter(|credit| *credit > 0)
             .ok_or("permanent maturity leg cannot pay its fee")?;
-        if kind != crate::maturity::MaturityKind::TwoWeek {
-            return Err("permanent maturity transfer is inconsistent".into());
-        }
         match credit {
             crate::maturity::PermanentCreditState::Prepared { before, transfer } => {
                 validate_transfer(transfer)?;
@@ -311,11 +308,10 @@ fn validate_claim_receipt_delivery(
             }
         }
     }
-    if kind == crate::maturity::MaturityKind::TwoWeek
-        && delivery.permanent_credit.is_none()
+    if delivery.permanent_credit.is_none()
         && (delivery.permit.is_some() || delivery.claim_transfer.is_some())
     {
-        return Err("pooled maturity claim transfer precedes permanent transfer".into());
+        return Err("maturity claim transfer precedes permanent transfer".into());
     }
     let Some(permit) = &delivery.permit else {
         if delivery.claim_transfer.is_some() {
@@ -348,13 +344,11 @@ fn validate_claim_receipt_delivery(
             return Err("claim transfer differs from its receipt permit".into());
         }
     }
-    if kind == crate::maturity::MaturityKind::TwoWeek
-        && !matches!(
-            delivery.permanent_credit,
-            Some(crate::maturity::PermanentCreditState::Proved(_))
-        )
-    {
-        return Err("pooled maturity receipt precedes proved permanent credit".into());
+    if !matches!(
+        delivery.permanent_credit,
+        Some(crate::maturity::PermanentCreditState::Proved(_))
+    ) {
+        return Err("maturity receipt precedes proved permanent credit".into());
     }
     Ok(())
 }
@@ -436,10 +430,13 @@ impl NnsStateV1 {
                 }
                 _ => None,
             };
-            let pending_generation = self
-                .pending_two_week_maturity
-                .as_ref()
-                .and_then(|pending| pending.stake_evidence.plan.entitlement_batch_generation);
+            let pending_generation = self.pending_two_week_maturity.as_ref().and_then(|pending| {
+                pending
+                    .disburse_evidence
+                    .submission
+                    .plan
+                    .entitlement_batch_generation
+            });
             if active_generation != Some(self.latest_started_two_week_generation)
                 && pending_generation != Some(self.latest_started_two_week_generation)
             {
@@ -543,8 +540,7 @@ impl NnsStateV1 {
                 || completed.actual_minted_icp_e8s == 0
                 || completed.completed_at_nanos == 0
                 || !completed.destination.effective_eq(destination)?
-                || (kind == crate::maturity::MaturityKind::TwoWeek)
-                    != completed.permanent_credit_proof.is_some()
+                || completed.permanent_credit_proof.is_none()
             {
                 return Err("completed maturity result is inconsistent".into());
             }
@@ -700,6 +696,129 @@ pub(crate) mod tests {
     }
 
     #[derive(candid::CandidType)]
+    struct FcdMaturityPlan {
+        neuron: crate::jupiter::NeuronSnapshot,
+        original_maturity_e8s: u64,
+        original_staked_maturity_e8s: u64,
+        stake_maturity_e8s: u64,
+        remaining_maturity_e8s: u64,
+        destination: Account,
+        requested_at_seconds: u64,
+        entitlement_batch_generation: Option<u64>,
+    }
+
+    #[derive(candid::CandidType)]
+    struct FcdStakeMaturitySucceeded {
+        plan: FcdMaturityPlan,
+        remaining_maturity_e8s: u64,
+        staked_maturity_e8s: u64,
+        evidence_source: crate::maturity::MaturityEvidenceSource,
+    }
+
+    #[derive(candid::CandidType)]
+    struct FcdDisburseMaturitySubmission {
+        stake: FcdStakeMaturitySucceeded,
+        submitted_at_seconds: u64,
+    }
+
+    #[derive(candid::CandidType)]
+    struct FcdDisburseMaturitySucceeded {
+        submission: FcdDisburseMaturitySubmission,
+        amount_disbursed_e8s: u64,
+        evidence_source: crate::maturity::MaturityEvidenceSource,
+    }
+
+    #[derive(candid::CandidType)]
+    struct FcdPendingMaturityDisbursement {
+        kind: crate::maturity::MaturityKind,
+        neuron_id: u64,
+        nominal_disbursed_maturity_e8s: u64,
+        destination: Account,
+        initiation_timestamp_seconds: u64,
+        scheduled_finalization_timestamp_seconds: u64,
+        stake_evidence: FcdStakeMaturitySucceeded,
+        disburse_evidence: FcdDisburseMaturitySucceeded,
+        committed_claim_transfer_fee_e8s: u128,
+        mint_proof: crate::maturity::MintProofState,
+    }
+
+    #[derive(candid::CandidType)]
+    struct FcdClaimReceiptDeliveryOperation {
+        pending: FcdPendingMaturityDisbursement,
+        permit: Option<io_receipt_types::ClaimBackingReceiptPermit>,
+        permanent_credit: Option<crate::maturity::PermanentCreditState>,
+        claim_transfer: Option<crate::transfer::NnsTransferAttempt>,
+    }
+
+    #[allow(dead_code)]
+    #[derive(candid::CandidType)]
+    enum FcdMaturityCommandPhase {
+        Observed(FcdMaturityPlan),
+        StakeMaturitySubmitted(FcdMaturityPlan),
+        StakeMaturitySucceeded(FcdStakeMaturitySucceeded),
+        ReadyToDisburse(FcdDisburseMaturitySubmission),
+        DisburseMaturitySubmitted(FcdDisburseMaturitySubmission),
+        DisburseMaturitySucceeded(FcdDisburseMaturitySucceeded),
+        ClaimReceiptDelivery(FcdClaimReceiptDeliveryOperation),
+        MaturityDrift {
+            reason: String,
+            stake: FcdStakeMaturitySucceeded,
+        },
+        DisburseMaturityMismatch {
+            reason: String,
+            submission: FcdDisburseMaturitySubmission,
+            observed_amount_e8s: u64,
+        },
+    }
+
+    #[derive(candid::CandidType)]
+    struct FcdMaturityCommandOperation {
+        operation_sequence: u64,
+        dispatch_epoch: u64,
+        kind: crate::maturity::MaturityKind,
+        phase: FcdMaturityCommandPhase,
+    }
+
+    #[allow(dead_code)]
+    #[derive(candid::CandidType)]
+    enum FcdNnsOperation {
+        Jupiter(Box<crate::jupiter::JupiterOperation>),
+        Maturity(Box<FcdMaturityCommandOperation>),
+        Pool(io_nns_types::backing::PoolCommand),
+        Unwind(crate::pool::UnwindOperation),
+    }
+
+    #[derive(candid::CandidType)]
+    struct FcdNnsStateV1 {
+        launch_schema_marker: u8,
+        config: NnsConfig,
+        lifecycle: Lifecycle,
+        active_operation: Option<FcdNnsOperation>,
+        pooled_parent_id: Option<u64>,
+        pooled_parent_staking_account: Option<Account>,
+        live_cohorts: Vec<PassiveCohort>,
+        last_completed_pool: Option<CompletedPoolCommand>,
+        last_completed_unwind: Option<CompletedUnwindReconciliation>,
+        last_held_reconciliation: Option<HeldReconciliation>,
+        latest_reconciliation_generation: u64,
+        latest_pooled_target: Option<PooledTarget>,
+        two_year_maturity_baseline_reconciled: bool,
+        latest_started_two_week_generation: u64,
+        latest_completed_two_week_generation: u64,
+        pending_two_year_maturity: Option<FcdPendingMaturityDisbursement>,
+        pending_two_week_maturity: Option<FcdPendingMaturityDisbursement>,
+        last_two_year_maturity: Option<CompletedMaturity>,
+        last_two_week_maturity: Option<CompletedMaturity>,
+        next_operation_sequence: u64,
+        control_epoch: u64,
+    }
+
+    #[derive(candid::CandidType)]
+    enum FcdStableNnsState {
+        V1(FcdNnsStateV1),
+    }
+
+    #[derive(candid::CandidType)]
     struct PriorPooledNnsStateV1 {
         launch_schema_marker: u8,
         config: NnsConfig,
@@ -851,22 +970,13 @@ pub(crate) mod tests {
                 staking_subaccount: [9; 32],
                 cached_stake_e8s: 100_000_000,
             },
-            original_maturity_e8s: 200_000_000,
-            original_staked_maturity_e8s: 0,
-            stake_maturity_e8s: 0,
-            remaining_maturity_e8s: 200_000_000,
+            observed_maturity_e8s: 200_000_000,
             destination: state.config.maturity_staging.clone(),
             requested_at_seconds: 1,
             entitlement_batch_generation: Some(1),
         };
-        let stake = crate::maturity::StakeMaturitySucceeded {
-            plan,
-            remaining_maturity_e8s: 200_000_000,
-            staked_maturity_e8s: 0,
-            evidence_source: crate::maturity::MaturityEvidenceSource::CommandResponse,
-        };
         let submission = crate::maturity::DisburseMaturitySubmission {
-            stake: stake.clone(),
+            plan,
             submitted_at_seconds: 1,
         };
         crate::maturity::PendingMaturityDisbursement {
@@ -876,7 +986,6 @@ pub(crate) mod tests {
             destination: state.config.maturity_staging.clone(),
             initiation_timestamp_seconds: 1,
             scheduled_finalization_timestamp_seconds: 604_801,
-            stake_evidence: stake,
             disburse_evidence: crate::maturity::DisburseMaturitySucceeded {
                 submission,
                 amount_disbursed_e8s: 200_000_000,
@@ -903,22 +1012,13 @@ pub(crate) mod tests {
                 staking_subaccount: [1; 32],
                 cached_stake_e8s: 100_000_000,
             },
-            original_maturity_e8s: 200_000_000,
-            original_staked_maturity_e8s: 0,
-            stake_maturity_e8s: 80_000_000,
-            remaining_maturity_e8s: 120_000_000,
+            observed_maturity_e8s: 200_000_000,
             destination: state.config.maturity_staging.clone(),
             requested_at_seconds: 1,
             entitlement_batch_generation: None,
         };
-        let stake = crate::maturity::StakeMaturitySucceeded {
-            plan,
-            remaining_maturity_e8s: 120_000_000,
-            staked_maturity_e8s: 80_000_000,
-            evidence_source: crate::maturity::MaturityEvidenceSource::CommandResponse,
-        };
         let submission = crate::maturity::DisburseMaturitySubmission {
-            stake: stake.clone(),
+            plan,
             submitted_at_seconds: 1,
         };
         crate::maturity::PendingMaturityDisbursement {
@@ -928,7 +1028,6 @@ pub(crate) mod tests {
             destination: state.config.maturity_staging.clone(),
             initiation_timestamp_seconds: 1,
             scheduled_finalization_timestamp_seconds: 604_801,
-            stake_evidence: stake,
             disburse_evidence: crate::maturity::DisburseMaturitySucceeded {
                 submission,
                 amount_disbursed_e8s: 120_000_000,
@@ -1018,22 +1117,13 @@ pub(crate) mod tests {
                 staking_subaccount: [1; 32],
                 cached_stake_e8s: 1,
             },
-            original_maturity_e8s: 200_000_000,
-            original_staked_maturity_e8s: 0,
-            stake_maturity_e8s: 80_000_000,
-            remaining_maturity_e8s: 120_000_000,
+            observed_maturity_e8s: 200_000_000,
             destination: state.config.maturity_staging.clone(),
             requested_at_seconds: 1,
             entitlement_batch_generation: None,
         };
-        let stake = crate::maturity::StakeMaturitySucceeded {
-            plan,
-            remaining_maturity_e8s: 120_000_000,
-            staked_maturity_e8s: 80_000_000,
-            evidence_source: crate::maturity::MaturityEvidenceSource::CommandResponse,
-        };
         let submission = crate::maturity::DisburseMaturitySubmission {
-            stake: stake.clone(),
+            plan,
             submitted_at_seconds: 1,
         };
         state.pending_two_year_maturity = Some(crate::maturity::PendingMaturityDisbursement {
@@ -1043,7 +1133,6 @@ pub(crate) mod tests {
             destination: state.config.maturity_staging.clone(),
             initiation_timestamp_seconds: 1,
             scheduled_finalization_timestamp_seconds: 604_801,
-            stake_evidence: stake,
             disburse_evidence: crate::maturity::DisburseMaturitySucceeded {
                 submission,
                 amount_disbursed_e8s: 120_000_000,
@@ -1431,6 +1520,59 @@ pub(crate) mod tests {
             .validate(canister_self)
             .unwrap_err()
             .contains("launch schema marker"));
+
+        let fcd = FcdStableNnsState::V1(FcdNnsStateV1 {
+            launch_schema_marker: 8,
+            config: state.config.clone(),
+            lifecycle: state.lifecycle,
+            active_operation: Some(FcdNnsOperation::Maturity(Box::new(
+                FcdMaturityCommandOperation {
+                    operation_sequence: 1,
+                    dispatch_epoch: 0,
+                    kind: crate::maturity::MaturityKind::TwoYear,
+                    phase: FcdMaturityCommandPhase::Observed(FcdMaturityPlan {
+                        neuron: crate::jupiter::NeuronSnapshot {
+                            neuron_id: state.config.two_year_neuron_id,
+                            staking_subaccount: [1; 32],
+                            cached_stake_e8s: 100_000_000,
+                        },
+                        original_maturity_e8s: 200_000_000,
+                        original_staked_maturity_e8s: 0,
+                        stake_maturity_e8s: 80_000_000,
+                        remaining_maturity_e8s: 120_000_000,
+                        destination: state.config.maturity_staging.clone(),
+                        requested_at_seconds: 1,
+                        entitlement_batch_generation: None,
+                    }),
+                },
+            ))),
+            pooled_parent_id: None,
+            pooled_parent_staking_account: None,
+            live_cohorts: Vec::new(),
+            last_completed_pool: None,
+            last_completed_unwind: None,
+            last_held_reconciliation: None,
+            latest_reconciliation_generation: 0,
+            latest_pooled_target: None,
+            two_year_maturity_baseline_reconciled: true,
+            latest_started_two_week_generation: 0,
+            latest_completed_two_week_generation: 0,
+            pending_two_year_maturity: None,
+            pending_two_week_maturity: None,
+            last_two_year_maturity: None,
+            last_two_week_maturity: None,
+            next_operation_sequence: 2,
+            control_epoch: 0,
+        });
+        let fcd = candid::encode_one(fcd).unwrap();
+        let rejected = match candid::decode_one::<StableNnsState>(&fcd) {
+            Err(_) => true,
+            Ok(decoded) => decoded.into_v1().validate(canister_self).is_err(),
+        };
+        assert!(
+            rejected,
+            "the exact fcd9cfa maturity state must be rejected"
+        );
 
         let checkpoint = PriorPooledStableNnsState::V1(PriorPooledNnsStateV1 {
             launch_schema_marker: LAUNCH_SCHEMA_MARKER - 1,

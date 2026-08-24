@@ -8,6 +8,7 @@ use crate::{
 use candid::{CandidType, Nat, Principal, Reserved};
 use ic_cdk::call::Call;
 use io_ledger_boundary::{IcrcTransferArg, IcrcTransferError, IcrcTransferResult};
+pub use io_nns_types::backing::split_child_subaccount;
 use io_nns_types::backing::{FollowPolicy, POOLED_PARENT_DELAY_SECONDS};
 pub use io_receipt_types::ClaimBackingReceiptProgress as StreamLiquidProgress;
 use io_receipt_types::{
@@ -24,6 +25,12 @@ pub enum ExactTransferOutcome {
 
 pub enum SplitCallOutcome {
     Created(u64),
+    RejectedNoEffect(String),
+    Ambiguous(String),
+}
+
+pub enum GovernanceCallOutcome<T> {
+    Succeeded(T),
     RejectedNoEffect(String),
     Ambiguous(String),
 }
@@ -172,37 +179,6 @@ struct Neuron {
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct ListNeuronsRequest {
-    neuron_ids: Vec<u64>,
-    include_neurons_readable_by_caller: bool,
-    include_empty_neurons_readable_by_caller: Option<bool>,
-    include_public_neurons_in_full_neurons: Option<bool>,
-    page_number: Option<u64>,
-    page_size: Option<u64>,
-    neuron_subaccounts: Option<Vec<NeuronSubaccount>>,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-struct NeuronSubaccount {
-    subaccount: Vec<u8>,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-struct ListNeuronsResponse {
-    full_neurons: Vec<Neuron>,
-    total_pages_available: Option<u64>,
-}
-
-#[derive(Clone, Debug)]
-pub struct SplitCandidateObservation {
-    pub neuron_id: u64,
-    pub controller: Principal,
-    pub physical_principal_e8s: u128,
-    pub staking_subaccount: Vec<u8>,
-    pub dissolve_state: Option<DissolveState>,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
 struct Followees {
     followees: Vec<NeuronId>,
 }
@@ -269,7 +245,6 @@ enum Command {
     Split(Split),
     Merge(Merge),
     Disburse(Disburse),
-    StakeMaturity(StakeMaturity),
     DisburseMaturity(DisburseMaturity),
     SetFollowing(SetFollowing),
     RefreshVotingPower(Empty),
@@ -331,11 +306,6 @@ struct AccountIdentifier {
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct StakeMaturity {
-    percentage_to_stake: Option<u32>,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
 struct DisburseMaturity {
     percentage_to_disburse: u32,
     to_account: Option<NnsAccount>,
@@ -350,7 +320,6 @@ enum CommandResponse {
     Split(SpawnResponse),
     Merge(Reserved),
     Disburse(DisburseResponse),
-    StakeMaturity(StakeMaturityResponse),
     DisburseMaturity(DisburseMaturityResponse),
     SetFollowing(Reserved),
     RefreshVotingPower(Reserved),
@@ -364,12 +333,6 @@ struct SpawnResponse {
 #[derive(Clone, Debug, CandidType, Deserialize)]
 struct DisburseResponse {
     transfer_block_height: u64,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-struct StakeMaturityResponse {
-    maturity_e8s: u64,
-    staked_maturity_e8s: u64,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -391,61 +354,6 @@ struct ManageNeuronResponse {
 
 pub async fn query_neuron(config: &NnsConfig, neuron_id: u64) -> Result<NeuronSnapshot, ApiError> {
     Ok(query_neuron_observation(config, neuron_id).await?.snapshot)
-}
-
-pub async fn controlled_neurons(
-    config: &NnsConfig,
-) -> Result<Vec<SplitCandidateObservation>, ApiError> {
-    let response: ListNeuronsResponse = Call::bounded_wait(config.nns_governance, "list_neurons")
-        .with_arg(ListNeuronsRequest {
-            neuron_ids: Vec::new(),
-            include_neurons_readable_by_caller: true,
-            include_empty_neurons_readable_by_caller: Some(false),
-            include_public_neurons_in_full_neurons: Some(false),
-            page_number: Some(0),
-            page_size: Some(100),
-            neuron_subaccounts: None,
-        })
-        .await
-        .map_err(|error| {
-            ApiError::Pending(format!("controlled-neuron discovery failed: {error:?}"))
-        })?
-        .candid()
-        .map_err(|error| {
-            ApiError::Pending(format!(
-                "controlled-neuron discovery decode failed: {error:?}"
-            ))
-        })?;
-    if response.total_pages_available.unwrap_or(1) > 1 {
-        return Err(ApiError::Pending(
-            "controlled-neuron discovery exceeds the bounded 100-neuron proof page".into(),
-        ));
-    }
-    let controller = ic_cdk::api::canister_self();
-    response
-        .full_neurons
-        .into_iter()
-        .filter(|neuron| neuron.controller == Some(controller))
-        .map(|neuron| {
-            let neuron_id = neuron
-                .id
-                .map(|id| id.id)
-                .filter(|id| *id > 0)
-                .ok_or_else(|| ApiError::Invalid("controlled neuron has no ID".into()))?;
-            if neuron.account.len() != 32 {
-                return Err(ApiError::Invalid(
-                    "controlled neuron staking subaccount is not 32 bytes".into(),
-                ));
-            }
-            Ok(SplitCandidateObservation {
-                neuron_id,
-                controller,
-                physical_principal_e8s: neuron.cached_neuron_stake_e8s.into(),
-                staking_subaccount: neuron.account,
-                dissolve_state: neuron.dissolve_state,
-            })
-        })
-        .collect()
 }
 
 pub async fn query_neuron_observation(
@@ -604,53 +512,60 @@ pub async fn refresh_neuron(config: &NnsConfig, neuron_id: u64) -> Result<(), Ap
     }
 }
 
-pub async fn stake_maturity(config: &NnsConfig, neuron_id: u64) -> Result<(u64, u64), ApiError> {
-    let response = manage(
-        config,
-        neuron_id,
-        Command::StakeMaturity(StakeMaturity {
-            percentage_to_stake: Some(40),
-        }),
-    )
-    .await?;
-    match response {
-        Some(CommandResponse::StakeMaturity(value)) => {
-            Ok((value.maturity_e8s, value.staked_maturity_e8s))
-        }
-        Some(CommandResponse::Error(error)) => Err(governance_error("StakeMaturity", error)),
-        _ => Err(ApiError::Invalid(
-            "StakeMaturity returned the wrong command response".into(),
-        )),
-    }
-}
-
 pub async fn disburse_maturity(
     config: &NnsConfig,
     neuron_id: u64,
     destination: &Account,
-) -> Result<u64, ApiError> {
-    let response = manage(
-        config,
-        neuron_id,
-        Command::DisburseMaturity(DisburseMaturity {
-            percentage_to_disburse: 100,
-            to_account: Some(NnsAccount {
-                owner: Some(destination.owner),
-                subaccount: destination.subaccount.clone(),
-            }),
-            to_account_identifier: None,
-        }),
-    )
-    .await?;
-    match response {
+) -> GovernanceCallOutcome<u64> {
+    let response = Call::bounded_wait(config.nns_governance, "manage_neuron")
+        .with_arg(ManageNeuron {
+            id: None,
+            neuron_id_or_subaccount: Some(NeuronIdOrSubaccount::NeuronId(NeuronId {
+                id: neuron_id,
+            })),
+            command: Some(Command::DisburseMaturity(DisburseMaturity {
+                percentage_to_disburse: 100,
+                to_account: Some(NnsAccount {
+                    owner: Some(destination.owner),
+                    subaccount: destination.subaccount.clone(),
+                }),
+                to_account_identifier: None,
+            })),
+        })
+        .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            return GovernanceCallOutcome::Ambiguous(format!(
+                "DisburseMaturity transport outcome is ambiguous: {error:?}"
+            ))
+        }
+    };
+    let response = match response.candid::<ManageNeuronResponse>() {
+        Ok(response) => response,
+        Err(error) => {
+            return GovernanceCallOutcome::Ambiguous(format!(
+                "DisburseMaturity response decode is ambiguous: {error:?}"
+            ))
+        }
+    };
+    match response.command {
         Some(CommandResponse::DisburseMaturity(value)) => value
             .amount_disbursed_e8s
             .filter(|amount| *amount > 0)
-            .ok_or_else(|| ApiError::Invalid("DisburseMaturity returned no amount".into())),
-        Some(CommandResponse::Error(error)) => Err(governance_error("DisburseMaturity", error)),
-        _ => Err(ApiError::Invalid(
-            "DisburseMaturity returned the wrong command response".into(),
+            .map(GovernanceCallOutcome::Succeeded)
+            .unwrap_or_else(|| {
+                GovernanceCallOutcome::Ambiguous(
+                    "DisburseMaturity response omitted the effected amount".into(),
+                )
+            }),
+        Some(CommandResponse::Error(error)) => GovernanceCallOutcome::RejectedNoEffect(format!(
+            "DisburseMaturity rejected ({}): {}",
+            error.error_type, error.error_message
         )),
+        _ => GovernanceCallOutcome::Ambiguous(
+            "DisburseMaturity returned a malformed command response".into(),
+        ),
     }
 }
 
@@ -779,25 +694,49 @@ pub async fn disburse_neuron(
     config: &NnsConfig,
     child_neuron_id: u64,
     destination: &Account,
-) -> Result<u128, ApiError> {
+) -> Result<GovernanceCallOutcome<u128>, ApiError> {
     let hash =
         io_ledger_boundary::icp_account_identifier(destination).map_err(ApiError::Invalid)?;
-    match manage(
-        config,
-        child_neuron_id,
-        Command::Disburse(Disburse {
-            to_account: Some(AccountIdentifier { hash }),
-            amount: None,
-        }),
-    )
-    .await?
-    {
-        Some(CommandResponse::Disburse(value)) => Ok(value.transfer_block_height.into()),
-        Some(CommandResponse::Error(error)) => Err(governance_error("Disburse", error)),
-        _ => Err(ApiError::Invalid(
-            "Disburse returned the wrong command response".into(),
+    let response = Call::bounded_wait(config.nns_governance, "manage_neuron")
+        .with_arg(ManageNeuron {
+            id: None,
+            neuron_id_or_subaccount: Some(NeuronIdOrSubaccount::NeuronId(NeuronId {
+                id: child_neuron_id,
+            })),
+            command: Some(Command::Disburse(Disburse {
+                to_account: Some(AccountIdentifier { hash }),
+                amount: None,
+            })),
+        })
+        .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            return Ok(GovernanceCallOutcome::Ambiguous(format!(
+                "NNS Disburse transport outcome is ambiguous: {error:?}"
+            )))
+        }
+    };
+    let response = match response.candid::<ManageNeuronResponse>() {
+        Ok(response) => response,
+        Err(error) => {
+            return Ok(GovernanceCallOutcome::Ambiguous(format!(
+                "NNS Disburse response decode is ambiguous: {error:?}"
+            )))
+        }
+    };
+    Ok(match response.command {
+        Some(CommandResponse::Disburse(value)) => {
+            GovernanceCallOutcome::Succeeded(value.transfer_block_height.into())
+        }
+        Some(CommandResponse::Error(error)) => GovernanceCallOutcome::RejectedNoEffect(format!(
+            "Disburse rejected ({}): {}",
+            error.error_type, error.error_message
         )),
-    }
+        _ => GovernanceCallOutcome::Ambiguous(
+            "NNS Disburse returned a malformed command response".into(),
+        ),
+    })
 }
 
 async fn manage(
@@ -835,15 +774,14 @@ pub fn command_pending(label: &str, result: Result<(), ApiError>) -> ApiError {
 
 pub fn exact_maturity_disbursement(
     observation: &NeuronObservation,
-    amount_e8s: u64,
     destination: &Account,
     submitted_at_seconds: u64,
-) -> Result<CanonicalDisbursementEvidence, ApiError> {
+) -> Result<Option<CanonicalDisbursementEvidence>, ApiError> {
     let matching = observation
         .maturity_disbursements
         .iter()
         .filter(|entry| {
-            entry.amount_e8s == Some(amount_e8s)
+            entry.amount_e8s.is_some_and(|amount| amount > 0)
                 && entry
                     .timestamp_of_disbursement_seconds
                     .is_some_and(|timestamp| timestamp >= submitted_at_seconds)
@@ -861,12 +799,18 @@ pub fn exact_maturity_disbursement(
                     })
         })
         .collect::<Vec<_>>();
+    if matching.is_empty() {
+        return Ok(None);
+    }
     if matching.len() != 1 {
         return Err(ApiError::Invalid(
-            "NNS neuron lacks one exact pending maturity disbursement".into(),
+            "NNS neuron has conflicting pending maturity disbursements".into(),
         ));
     }
     let entry = matching[0];
+    let amount_disbursed_e8s = entry
+        .amount_e8s
+        .ok_or_else(|| ApiError::Invalid("maturity disbursement amount is absent".into()))?;
     let initiated_at_seconds = entry
         .timestamp_of_disbursement_seconds
         .ok_or_else(|| ApiError::Invalid("maturity initiation timestamp is absent".into()))?;
@@ -883,10 +827,11 @@ pub fn exact_maturity_disbursement(
             "maturity finalization is not the pinned seven-day delay".into(),
         ));
     }
-    Ok(CanonicalDisbursementEvidence {
+    Ok(Some(CanonicalDisbursementEvidence {
+        amount_disbursed_e8s,
         initiated_at_seconds,
         scheduled_finalization_timestamp_seconds,
-    })
+    }))
 }
 
 pub fn has_exact_maturity_disbursement(
@@ -1139,5 +1084,33 @@ mod tests {
         let mut dissolving = valid;
         dissolving.dissolve_state = Some(DissolveState::WhenDissolvedTimestampSeconds(u64::MAX));
         assert!(validate_permanent_configuration(&dissolving).is_err());
+    }
+
+    #[test]
+    fn split_child_subaccount_matches_pinned_ic_vectors_and_not_staking_domain() {
+        let controller = Principal::from_slice(&[1, 2, 3, 4]);
+        assert_eq!(
+            split_child_subaccount(controller, 42),
+            [
+                0x11, 0x46, 0xba, 0x68, 0x2f, 0xcd, 0xe6, 0x09, 0x30, 0xfe, 0xc5, 0x68, 0xc2, 0xcc,
+                0x9c, 0x1c, 0x68, 0x5b, 0x4d, 0xce, 0xd2, 0x87, 0x7c, 0x05, 0xfe, 0x68, 0xa8, 0x9f,
+                0x30, 0xab, 0x42, 0xcc,
+            ]
+        );
+        assert_eq!(
+            split_child_subaccount(controller, u64::MAX),
+            [
+                0x61, 0x70, 0xd6, 0x59, 0xb4, 0x40, 0x51, 0x20, 0xc2, 0x06, 0x8c, 0x7f, 0xa9, 0x10,
+                0xe0, 0xeb, 0xb9, 0xb2, 0xad, 0x32, 0xaa, 0x1f, 0x93, 0xa8, 0xbf, 0xed, 0x40, 0x42,
+                0x18, 0x41, 0xb8, 0x05,
+            ]
+        );
+        let mut staking_hasher = Sha256::new();
+        staking_hasher.update([b"neuron-stake".len() as u8]);
+        staking_hasher.update(b"neuron-stake");
+        staking_hasher.update(controller.as_slice());
+        staking_hasher.update(42_u64.to_be_bytes());
+        let staking_subaccount: [u8; 32] = staking_hasher.finalize().into();
+        assert_ne!(split_child_subaccount(controller, 42), staking_subaccount);
     }
 }

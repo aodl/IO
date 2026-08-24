@@ -157,6 +157,7 @@ pub struct NnsDisburse {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct NnsSplit {
     pub amount_e8s: u64,
+    pub memo: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -748,6 +749,7 @@ pub fn nns_split_request(
                     field: "split.amount_e8s".to_string(),
                 }
             })?,
+            memo: None,
         }),
     ))
 }
@@ -2559,7 +2561,10 @@ mod tests {
     fn nns_manage_neuron_fixtures_round_trip_and_map_split_child() {
         let request = NnsManageNeuron {
             id: Some(NnsNeuronIdRecord { id: 2 }),
-            command: Some(NnsManageNeuronCommand::Split(NnsSplit { amount_e8s: 100 })),
+            command: Some(NnsManageNeuronCommand::Split(NnsSplit {
+                amount_e8s: 100,
+                memo: None,
+            })),
         };
         let bytes = Encode!(&request).unwrap();
         assert_eq!(Decode!(&bytes, NnsManageNeuron).unwrap(), request);
