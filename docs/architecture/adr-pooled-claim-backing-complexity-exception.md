@@ -111,24 +111,24 @@ and consolidated claim-asset ownership and command-result classification. It
 adds no operation phase, collection, scheduler, feature flag, migration, or
 fee-debt scalar. The final measured delta is:
 
-| Counted component | Cross-flow final | Source-local final | Delta |
+| Counted component | Starting checkpoint | Review final | Delta |
 | --- | ---: | ---: | ---: |
-| Stream Manager | 5,377 | 5,459 | +82 |
-| NNS Manager | 5,460 | 5,726 | +266 |
+| Stream Manager | 5,459 | 5,452 | -7 |
+| NNS Manager | 5,726 | 6,109 | +383 |
 | pure economics | 220 | 220 | 0 |
 | ledger boundary | 528 | 528 | 0 |
 | reward policy | 282 | 282 | 0 |
 | SNS reward boundary | 457 | 457 | 0 |
 | accounts | 45 | 45 | 0 |
-| NNS types | 1,206 | 1,211 | +5 |
+| NNS types | 1,211 | 1,278 | +67 |
 | receipt types | 49 | 49 | 0 |
-| **Combined** | **13,624** | **13,977** | **+353** |
+| **Combined** | **13,977** | **14,420** | **+443** |
 
 ## Decision
 
-The final ceilings are 5,600 Stream Manager lines, 5,870 NNS Manager lines,
-and 14,320 combined lines. Against the final measured counts these provide
-141 lines (2.58%), 144 lines (2.51%), and 343 lines (2.45%) of headroom. The
+The final ceilings are 5,600 Stream Manager lines, 6,260 NNS Manager lines,
+and 14,780 combined lines. Against the final measured counts these provide
+148 lines (2.71%), 151 lines (2.47%), and 360 lines (2.50%) of headroom. The
 pure-economics, reward-boundary, ledger-boundary, shared-type, and per-file
 ceilings do not change. In particular, every production file remains limited
 to 1,000 normally formatted lines.

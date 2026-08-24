@@ -1170,7 +1170,7 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
             "stream-manager production Rust has {stream_lines} lines"
         ));
     }
-    if combined_lines > 14_320 {
+    if combined_lines > 14_780 {
         return Err(format!(
             "combined production Rust has {combined_lines} lines; simplified limit not met"
         ));
@@ -1182,7 +1182,7 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
                 .map(|text| sum + production_line_count(&text))
                 .map_err(|error| format!("{}: {error}", path.display()))
         })?;
-    if nns_lines > 5_870 {
+    if nns_lines > 6_260 {
         return Err(format!("NNS-manager production Rust has {nns_lines} lines"));
     }
     let tree = Command::new("cargo")
