@@ -257,6 +257,11 @@ fn check_obsolete_economics_guard_at(root: &Path) -> Result<(), String> {
         concat!("prove_", "backing_inflow"),
         concat!("Backing", "InflowDelivery"),
         concat!("prepare_", "jupiter_receipt"),
+        concat!("liquid_icp_reserve", " / redeemable_io_supply"),
+        concat!("Only liquid ICP counts", " as redemption NAV"),
+        concat!("NNS liquid maturity", " leg"),
+        concat!("jointly frozen", " physical backing route"),
+        concat!("finite joint route", "/reward planner"),
     ];
     fn visit(
         root: &Path,

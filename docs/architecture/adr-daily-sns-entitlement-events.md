@@ -73,9 +73,13 @@ archive or a moving accounting window.
 
 Governance entitlement time and ICP-backing realization are intentionally
 asynchronous. Daily observations continue while one frozen entitlement batch
-awaits the pooled parent's actual modulated ICP Mint, the jointly frozen
-physical backing route, and sequential IO payout. Only the actual Mint and
-fee-reduced claim credits determine the backed IO pool. At payout,
+awaits the pooled parent's canonical `DisburseMaturity(100%)` record, actual
+modulated ICP Mint, common liquid-first claim receipt, and sequential IO
+payout. The entitlement generation is immutable, while the maturity observed
+before command submission is only a readiness observation. The canonical
+pending disbursement establishes the exact nominal amount captured; reward
+maturity accrued afterward belongs to the next batch. Only the actual Mint and
+fee-reduced claim credit determine the backed IO pool. At payout,
 the backed pool is first reduced by the frozen batch's forfeited policy
 fraction; the eligible pool is then allocated over eligible credits. A frozen
 zero-eligible-credit batch completes without recipient transfers and leaves
@@ -92,9 +96,12 @@ single reconciliation generation. Under-target work moves existing liquid
 claim backing through a typed NNS permit; over-target work may commit one
 aggregate child for that generation. Capacity, liquidity, reward-coverage,
 parent-minimum, Busy, or Paused outcomes leave live credit in place. A pooled
-maturity Mint invokes the finite joint route/reward planner and freezes the
-batch only when one physical candidate is safe. Every replay preserves the
-immutable plan; later observations accumulate in the fresh live accumulator.
+maturity operation sends its proved claim leg through the same liquid-first
+receipt as other claim ingress. Receipt completion then makes ordinary global
+pool reconciliation due; there is no maturity-specific pooled destination or
+source route. Every replay preserves the immutable entitlement generation and
+command identity; later observations accumulate in the fresh live
+accumulator.
 
 Governance readiness and every daily boundary require
 `max_number_of_neurons <= 1,000`. This is a bound on the complete SNS Governance

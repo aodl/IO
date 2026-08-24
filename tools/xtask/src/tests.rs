@@ -97,6 +97,11 @@ fn obsolete_economics_guard_rejects_old_terms_from_active_root_files() {
         concat!("reward_backing", "_neuron_id"),
         concat!("seeded_two_week", "_principal_e8s"),
         concat!("two_week", "_receipt_source"),
+        concat!("liquid_icp_reserve", " / redeemable_io_supply"),
+        concat!("Only liquid ICP counts", " as redemption NAV"),
+        concat!("NNS liquid maturity", " leg"),
+        concat!("jointly frozen", " physical backing route"),
+        concat!("finite joint route", "/reward planner"),
     ]
     .into_iter()
     .enumerate()

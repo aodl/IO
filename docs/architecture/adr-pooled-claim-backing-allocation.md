@@ -154,11 +154,25 @@ maturity retains this compact proof rather than the active transfer object.
 
 ### Permanent-neuron maturity
 
-The controlled permanent neuron first executes and proves
-`StakeMaturity(40%)`. Governance then disburses all remaining ordinary
-maturity and the protocol proves the actual Mint. That entire Mint, minus one
-exact claim transfer fee, enters Stream liquid. It releases no IO. The retained
-staked maturity remains permanent productive capital outside `B`.
+The permanent-neuron maturity policy is realised-Mint 40/60. Governance
+executes `DisburseMaturity(100%)` and the protocol first proves the canonical
+pending disbursement and its actual modulated ICP Mint `M`. It then applies the
+same split as pooled-parent maturity:
+
+```text
+permanent_gross = floor(M * 40 / 100)
+claim_gross = M - permanent_gross
+```
+
+The permanent leg is transferred and proved through the existing monotone
+permanent-credit proof before the claim leg enters the common liquid-first
+receipt path. The 40/60 policy therefore applies to realised ICP, not to a
+pre-modulation maturity equivalent, and the permanent leg pays the canonical
+ICP transfer fee under Policy A. This deliberately avoids an asynchronous
+`StakeMaturity` boundary: reward maturity accruing after the command intent is
+persisted belongs to a later maturity operation and cannot invalidate the
+in-flight command. The permanent-neuron claim leg releases no IO because it is
+unpaired yield.
 
 ### Child return
 

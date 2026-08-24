@@ -12,7 +12,7 @@
 The constitutional baseline before reward integration was 10,449 normally
 formatted production Rust lines. The first source-complete pooled
 claim-backing feature checkpoint reached 14,542 lines. This replacement deletes
-the direct AllPool/Mixed maturity routes, the monolithic redemption snapshot,
+the deleted source-specific maturity routes, the monolithic redemption snapshot,
 parallel entitlement and backing registries, duplicated frozen-recipient state,
 and full completed-operation histories. The simplified result is 12,815 lines,
 1,727 fewer than the feature checkpoint and below the 13,000-line review target.
