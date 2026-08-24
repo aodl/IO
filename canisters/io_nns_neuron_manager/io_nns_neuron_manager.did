@@ -91,8 +91,22 @@ type CohortObservation = record {
   child_neuron_id : nat64;
   physical_principal_e8s : nat;
   net_backing_e8s : nat;
+  committed_fee_e8s : nat;
   ready_at_seconds : nat64;
   proof : CohortProofState;
+};
+type TransitComponentKind = variant {
+  PoolTopUp;
+  ActiveUnwind;
+  ActiveJupiter;
+  ActiveMaturity;
+  PendingTwoYearMaturity;
+  PendingTwoWeekMaturity;
+};
+type TransitComponentObservation = record {
+  kind : TransitComponentKind;
+  backing_e8s : nat;
+  fee_basis_e8s : opt nat;
 };
 type ClaimAssetObservation = record {
   parent : opt ParentAssetObservation;
@@ -103,8 +117,8 @@ type ClaimAssetObservation = record {
   live_child_physical_principal_e8s : nat;
   live_child_net_backing_e8s : nat;
   live_child_committed_fee_liability_e8s : nat;
+  transit_components : vec TransitComponentObservation;
   transit_backing_e8s : nat;
-  transit_fee_basis_e8s : opt nat;
   active_operation_sequence : nat64;
   last_completed_pool_operation_sequence : opt nat64;
   control_epoch : nat64;

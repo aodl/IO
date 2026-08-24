@@ -72,7 +72,7 @@ async fn claim_snapshot_once(config: &StreamConfig) -> Result<ClaimSnapshot, Str
         .transit_backing_e8s
         .checked_add(stream_transit)
         .ok_or("combined transit backing overflow")?;
-    validate_unwind_fee_basis(&nns_before, icp_fee)?;
+    validate_transit_fee_bases(&nns_before, icp_fee)?;
     if crate::state::read() != stream_snapshot {
         return Err("Stream state drifted across the canonical reads".into());
     }
@@ -118,24 +118,22 @@ async fn claim_snapshot_once(config: &StreamConfig) -> Result<ClaimSnapshot, Str
     })
 }
 
-fn validate_unwind_fee_basis(
+fn validate_transit_fee_bases(
     observation: &io_nns_types::backing::ClaimAssetObservation,
     canonical_fee_e8s: u128,
 ) -> Result<(), String> {
     let cohort_drift = observation.live_cohorts.iter().any(|cohort| {
-        cohort.physical_principal_e8s > 0
-            && cohort
-                .physical_principal_e8s
-                .checked_sub(cohort.net_backing_e8s)
-                != Some(canonical_fee_e8s)
+        cohort.physical_principal_e8s > 0 && cohort.committed_fee_e8s != canonical_fee_e8s
     });
     if cohort_drift
         || observation
-            .transit_fee_basis_e8s
-            .is_some_and(|basis| basis != canonical_fee_e8s)
+            .transit_components
+            .iter()
+            .filter_map(|component| component.fee_basis_e8s)
+            .any(|basis| basis != canonical_fee_e8s)
     {
         return Err(format!(
-            "committed unwind fee basis differs from current canonical ICP fee {canonical_fee_e8s}"
+            "committed transit fee basis differs from current canonical ICP fee {canonical_fee_e8s}"
         ));
     }
     Ok(())
@@ -169,22 +167,17 @@ fn stream_transit_backing(
             }
             _ => Ok(0),
         },
-        Some(StreamOperation::ClaimReceipt(operation)) if operation.liquid_block.is_none() => {
-            receipt_stream_transit(
-                operation.economics.liquid_credit_e8s,
-                nns.transit_backing_e8s,
-            )
+        Some(StreamOperation::ClaimReceipt(operation)) => {
+            claim_receipt_ownership(operation.liquid_block).map(|()| 0)
         }
         _ => Ok(0),
     }
 }
 
-fn receipt_stream_transit(credit_e8s: u128, nns_transit_e8s: u128) -> Result<u128, String> {
-    match nns_transit_e8s {
-        0 => Ok(credit_e8s),
-        value if value == credit_e8s => Ok(0),
-        _ => Err("NNS and Stream claim-receipt transit ownership conflicts".into()),
-    }
+fn claim_receipt_ownership(liquid_block: Option<u128>) -> Result<(), String> {
+    liquid_block
+        .map(|_| ())
+        .ok_or_else(|| "claim receipt ownership awaits exact liquid-block proof".into())
 }
 
 pub(crate) async fn claim_asset_observation(
@@ -274,16 +267,8 @@ pub use io_ledger_boundary::{exact_icp_transfer, exact_icrc_transfer, icp_accoun
 mod tests {
     use super::*;
 
-    #[test]
-    fn persisted_receipt_credit_has_exactly_one_transit_owner() {
-        assert_eq!(receipt_stream_transit(60, 0), Ok(60));
-        assert_eq!(receipt_stream_transit(60, 60), Ok(0));
-        assert!(receipt_stream_transit(60, 59).is_err());
-    }
-
-    #[test]
-    fn committed_unwind_fee_basis_must_match_the_live_fee() {
-        let observation = io_nns_types::backing::ClaimAssetObservation {
+    fn observation() -> io_nns_types::backing::ClaimAssetObservation {
+        io_nns_types::backing::ClaimAssetObservation {
             parent: None,
             pool_staking_account: Account {
                 owner: candid::Principal::from_slice(&[1; 29]),
@@ -296,23 +281,63 @@ mod tests {
                 child_neuron_id: 2,
                 physical_principal_e8s: 100,
                 net_backing_e8s: 90,
+                committed_fee_e8s: 10,
                 ready_at_seconds: 3,
                 proof: io_nns_types::backing::CohortProofState::Dissolving,
             }],
             live_child_physical_principal_e8s: 100,
             live_child_net_backing_e8s: 90,
             live_child_committed_fee_liability_e8s: 10,
-            transit_backing_e8s: 0,
-            transit_fee_basis_e8s: None,
+            transit_backing_e8s: 180,
+            transit_components: vec![
+                io_nns_types::backing::TransitComponentObservation {
+                    kind: io_nns_types::backing::TransitComponentKind::ActiveJupiter,
+                    backing_e8s: 60,
+                    fee_basis_e8s: Some(10),
+                },
+                io_nns_types::backing::TransitComponentObservation {
+                    kind: io_nns_types::backing::TransitComponentKind::PendingTwoYearMaturity,
+                    backing_e8s: 120,
+                    fee_basis_e8s: Some(10),
+                },
+            ],
             active_operation_sequence: 0,
             last_completed_pool_operation_sequence: None,
             control_epoch: 1,
             fingerprint: vec![1; 32],
             oldest_ready_at_seconds: Some(3),
-        };
-        assert_eq!(validate_unwind_fee_basis(&observation, 10), Ok(()));
-        assert!(validate_unwind_fee_basis(&observation, 11)
+        }
+    }
+
+    #[test]
+    fn every_coexisting_transit_fee_basis_must_match_the_live_fee() {
+        let mut observation = observation();
+        assert_eq!(validate_transit_fee_bases(&observation, 10), Ok(()));
+        assert!(validate_transit_fee_bases(&observation, 11)
             .unwrap_err()
             .contains("current canonical ICP fee 11"));
+        observation.transit_components[1].fee_basis_e8s = Some(11);
+        assert!(validate_transit_fee_bases(&observation, 10).is_err());
+        observation.transit_components[1].fee_basis_e8s = Some(10);
+        observation
+            .live_cohorts
+            .push(io_nns_types::backing::CohortObservation {
+                generation: 2,
+                child_neuron_id: 3,
+                physical_principal_e8s: 100,
+                net_backing_e8s: 89,
+                committed_fee_e8s: 11,
+                ready_at_seconds: 4,
+                proof: io_nns_types::backing::CohortProofState::Dissolving,
+            });
+        assert!(validate_transit_fee_bases(&observation, 10).is_err());
+    }
+
+    #[test]
+    fn claim_receipt_handoff_requires_exact_liquid_block_proof() {
+        assert!(claim_receipt_ownership(None)
+            .unwrap_err()
+            .contains("exact liquid-block proof"));
+        assert_eq!(claim_receipt_ownership(Some(7)), Ok(()));
     }
 }

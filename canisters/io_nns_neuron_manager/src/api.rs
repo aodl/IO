@@ -467,6 +467,9 @@ pub async fn prepare_pool_reconciliation(
                 reconciliation_request_fingerprint: reconciliation_request_fingerprint.clone(),
                 target_e8s: args.target_e8s,
                 gross_e8s: expected_gross,
+                split_fee_e8s: 0,
+                committed_disbursement_fee_e8s: 0,
+                parent_principal_before_split_e8s: 0,
                 child_neuron_id: 0,
                 principal_e8s: 0,
                 child_staking_subaccount: Vec::new(),
@@ -726,6 +729,7 @@ pub(crate) async fn claim_asset_observation() -> Result<ClaimAssetObservation, A
             child_neuron_id: cohort.child_neuron_id,
             physical_principal_e8s: physical,
             net_backing_e8s: net,
+            committed_fee_e8s: cohort.committed_fee_e8s,
             ready_at_seconds: cohort.ready_at_seconds,
             proof: cohort.proof,
         });
@@ -752,12 +756,15 @@ pub(crate) async fn claim_asset_observation() -> Result<ClaimAssetObservation, A
     let pooled_parent_principal_e8s = parent
         .as_ref()
         .map_or(0, |value| value.physical_principal_e8s);
-    let transit_fee_basis_e8s = crate::claim_assets::active_unwind_fee_basis(&snapshot)?;
-    let transit_backing_e8s = crate::claim_assets::transit_backing(
-        &snapshot,
-        pooled_parent_principal_e8s,
-        transit_fee_basis_e8s,
-    )?;
+    let transit_components =
+        crate::claim_assets::transit_components(&snapshot, pooled_parent_principal_e8s)?;
+    let transit_backing_e8s = transit_components
+        .iter()
+        .try_fold(0u128, |total, component| {
+            total
+                .checked_add(component.backing_e8s)
+                .ok_or_else(|| ApiError::Invalid("transit backing overflow".into()))
+        })?;
     let active_operation_sequence = active_operation_sequence(&snapshot);
     let oldest_ready_at_seconds = live_cohorts
         .iter()
@@ -772,8 +779,8 @@ pub(crate) async fn claim_asset_observation() -> Result<ClaimAssetObservation, A
         live_child_physical_principal_e8s,
         live_child_net_backing_e8s,
         live_child_committed_fee_liability_e8s,
+        &transit_components,
         transit_backing_e8s,
-        transit_fee_basis_e8s,
         active_operation_sequence,
         snapshot
             .last_completed_pool
@@ -791,8 +798,8 @@ pub(crate) async fn claim_asset_observation() -> Result<ClaimAssetObservation, A
         live_child_physical_principal_e8s,
         live_child_net_backing_e8s,
         live_child_committed_fee_liability_e8s,
+        transit_components,
         transit_backing_e8s,
-        transit_fee_basis_e8s,
         active_operation_sequence,
         last_completed_pool_operation_sequence: snapshot
             .last_completed_pool
@@ -1000,6 +1007,14 @@ mod tests {
         };
         assert!(ambiguous_claim_transfer(Some(&attempt)));
         assert!(!claim_transfer_succeeded(Some(&attempt)));
+        attempt.state = crate::transfer::TransferState::Paused {
+            epoch: 1,
+            first_submitted_at_nanos: 1,
+            last_submitted_at_nanos: 1,
+            reason: "lost callback after possible effect".into(),
+            classification: crate::transfer::TransferOutcomeClassification::AmbiguousPossibleEffect,
+        };
+        assert!(ambiguous_claim_transfer(Some(&attempt)));
         attempt.state = crate::transfer::TransferState::Paused {
             epoch: 1,
             first_submitted_at_nanos: 1,

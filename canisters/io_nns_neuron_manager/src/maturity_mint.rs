@@ -66,6 +66,10 @@ pub async fn prove(kind: MaturityKind, block_index: u128) -> Result<MaturityProg
             "canonical neuron still contains the pending maturity disbursement".into(),
         ));
     }
+    let fee = io_ledger_boundary::icp_fee(snapshot.config.icp_ledger)
+        .await
+        .map_err(ApiError::Pending)?;
+    maturity_flow::ensure_pending(&expected)?;
     let evidence = MintEvidence {
         mint_block: block_index,
         actual_minted_icp_e8s: mint.amount_e8s,
@@ -73,8 +77,18 @@ pub async fn prove(kind: MaturityKind, block_index: u128) -> Result<MaturityProg
         created_at_time_nanos: mint.created_at_time,
     };
     let mut replacement = expected.clone();
+    replacement.committed_claim_transfer_fee_e8s = snapshot.config.expected_icp_fee_e8s;
     replacement.mint_proof = MintProofState::Proved(evidence);
     maturity_flow::replace_pending(&expected, replacement)?;
+    if fee != snapshot.config.expected_icp_fee_e8s {
+        let mut latest = state::read();
+        latest.lifecycle = state::Lifecycle::Paused;
+        state::write(latest);
+        return Err(ApiError::Stuck(format!(
+            "maturity transit fee parameter drift: approved {}, observed {fee}",
+            snapshot.config.expected_icp_fee_e8s
+        )));
+    }
     Ok(MaturityProgress::MintProved)
 }
 

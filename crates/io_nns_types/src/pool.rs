@@ -30,6 +30,9 @@ pub struct UnwindOperation {
     pub reconciliation_request_fingerprint: Vec<u8>,
     pub target_e8s: u128,
     pub gross_e8s: u128,
+    pub split_fee_e8s: u128,
+    pub committed_disbursement_fee_e8s: u128,
+    pub parent_principal_before_split_e8s: u128,
     pub child_neuron_id: u64,
     pub principal_e8s: u128,
     pub child_staking_subaccount: Vec<u8>,
@@ -46,6 +49,15 @@ impl UnwindOperation {
         let before_child = matches!(
             self.phase,
             UnwindPhase::SplitPrepared | UnwindPhase::SplitSubmitted
+        );
+        let before_submission = self.phase == UnwindPhase::SplitPrepared;
+        let split_lifecycle = matches!(
+            self.phase,
+            UnwindPhase::SplitSubmitted
+                | UnwindPhase::ChildIdentified
+                | UnwindPhase::SplitProved
+                | UnwindPhase::StartDissolvingSubmitted
+                | UnwindPhase::StartDissolvingProved
         );
         let identified = self.phase == UnwindPhase::ChildIdentified;
         let maturity_cleanup = matches!(
@@ -68,6 +80,14 @@ impl UnwindOperation {
             || self.reconciliation_request_fingerprint.len() != 32
             || self.gross_e8s == 0
             || self.gross_e8s > u128::from(u64::MAX)
+            || (before_submission
+                && (self.split_fee_e8s != 0
+                    || self.committed_disbursement_fee_e8s != 0
+                    || self.parent_principal_before_split_e8s != 0))
+            || (split_lifecycle
+                && (self.split_fee_e8s == 0
+                    || self.committed_disbursement_fee_e8s == 0
+                    || self.parent_principal_before_split_e8s < self.gross_e8s))
             || self.principal_e8s > u128::from(u64::MAX)
             || (self.phase == UnwindPhase::DisbursementSubmitted && self.submitted_at_seconds == 0)
             || (before_child && (self.child_neuron_id != 0 || self.principal_e8s != 0))

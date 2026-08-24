@@ -330,6 +330,7 @@ mod tests {
                     child_neuron_id: generation,
                     physical_principal_e8s: 2,
                     net_backing_e8s: 1,
+                    committed_fee_e8s: 1,
                     ready_at_seconds: 1,
                     proof: io_nns_types::backing::CohortProofState::Dissolving,
                 })
@@ -338,7 +339,7 @@ mod tests {
             live_child_net_backing_e8s: 0,
             live_child_committed_fee_liability_e8s: 0,
             transit_backing_e8s: 0,
-            transit_fee_basis_e8s: None,
+            transit_components: Vec::new(),
             active_operation_sequence: 0,
             last_completed_pool_operation_sequence: None,
             control_epoch: 0,

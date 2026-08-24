@@ -1,5 +1,6 @@
 use candid::{decode_one, encode_one, CandidType, Principal};
 use io_nns_neuron_manager::{
+    api::UnwindProgress,
     jupiter::{
         JupiterDeposit, JupiterOperation, JupiterPhase, NeuronSnapshot, StakeTransferSucceeded,
     },
@@ -14,9 +15,9 @@ use io_nns_neuron_manager::{
     ApiError, InitArgs, JupiterProgress, Lifecycle, NnsConfig, NnsProgress, PooledTargetStatus,
 };
 use io_nns_types::backing::{
-    CohortProofState, CompletedPoolCommand, PoolCommand, PoolCommandKind, PoolCommandPhase,
-    PoolProgress, PoolReconciliationAction, PreparePoolReconciliationArgs, TopUpPermit,
-    POOLED_PARENT_DELAY_SECONDS,
+    ClaimAssetObservation, CohortProofState, CompletedPoolCommand, PoolCommand, PoolCommandKind,
+    PoolCommandPhase, PoolProgress, PoolReconciliationAction, PreparePoolReconciliationArgs,
+    TopUpPermit, TransitComponentKind, POOLED_PARENT_DELAY_SECONDS,
 };
 use pocket_ic::PocketIc;
 use serde::Deserialize;
@@ -38,6 +39,17 @@ struct NeuronAmountArgs {
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
+struct SetNeuronAccountArgs {
+    neuron_id: u64,
+    account: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, CandidType)]
+struct DebugFeeArgs {
+    fee_e8s: u128,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
 struct SetFolloweeArgs {
     neuron_id: u64,
     followee: Option<u64>,
@@ -56,6 +68,7 @@ struct LedgerCallCounters {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 enum ControlledCommand {
+    Split,
     ClaimOrRefresh,
     IncreaseDissolveDelay,
     SetFollowing,
@@ -73,6 +86,7 @@ struct CommandControl {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
 struct GovernanceCommandCounters {
+    split: u64,
     claim_or_refresh: u64,
     increase_dissolve_delay: u64,
     set_following: u64,
@@ -119,6 +133,15 @@ fn query<R: for<'de> Deserialize<'de> + CandidType>(
         .unwrap_or_else(|error| panic!("{method}: {error}")),
     )
     .unwrap()
+}
+
+fn parent_staking_subaccount(manager: Principal, memo: u64) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update([0x0c]);
+    hasher.update(b"neuron-stake");
+    hasher.update(manager.as_slice());
+    hasher.update(memo.to_be_bytes());
+    hasher.finalize().to_vec()
 }
 
 struct RecoveryFixture {
@@ -193,6 +216,7 @@ impl RecoveryFixture {
         };
         fixture.create_neuron(41, 1_000_000, 63_115_200);
         fixture.create_neuron(42, 1_000_000, POOLED_PARENT_DELAY_SECONDS);
+        fixture.set_neuron_account(42, parent_staking_subaccount(manager, 42));
         fixture
     }
 
@@ -218,6 +242,10 @@ impl RecoveryFixture {
         state.next_operation_sequence = 2;
         state.control_epoch = 1;
         state
+    }
+
+    fn state_from_canister(&self) -> NnsStateV1 {
+        query(&self.pic, self.manager, "debug_get_state")
     }
 
     fn replace(&self, state: NnsStateV1) {
@@ -293,6 +321,17 @@ impl RecoveryFixture {
         .unwrap();
     }
 
+    fn set_neuron_account(&self, neuron_id: u64, account: Vec<u8>) {
+        update::<_, Result<(), String>>(
+            &self.pic,
+            self.governance,
+            Principal::anonymous(),
+            "debug_set_neuron_account",
+            SetNeuronAccountArgs { neuron_id, account },
+        )
+        .unwrap();
+    }
+
     fn refresh_credit(&self, neuron_id: u64, amount_e8s: u128) {
         update::<_, Result<(), String>>(
             &self.pic,
@@ -337,6 +376,50 @@ impl RecoveryFixture {
 
     fn governance_calls(&self) -> GovernanceCommandCounters {
         query(&self.pic, self.governance, "debug_get_command_counters")
+    }
+
+    fn set_split_transport_rejection(&self, enabled: bool) {
+        let _: () = update(
+            &self.pic,
+            self.governance,
+            Principal::anonymous(),
+            "debug_set_split_trap_before_effect",
+            enabled,
+        );
+    }
+
+    fn set_governance_fee(&self, fee_e8s: u64) {
+        let _: () = update(
+            &self.pic,
+            self.governance,
+            Principal::anonymous(),
+            "debug_set_transaction_fee_e8s",
+            fee_e8s,
+        );
+    }
+
+    fn set_ledger_fee(&self, fee_e8s: u128) {
+        let _: () = update(
+            &self.pic,
+            self.ledger,
+            Principal::anonymous(),
+            "debug_set_fee",
+            DebugFeeArgs { fee_e8s },
+        );
+    }
+
+    fn create_controlled_neuron(&self, neuron_id: u64, principal_e8s: u128, delay: u64) {
+        let _: u64 = update(
+            &self.pic,
+            self.governance,
+            self.manager,
+            "debug_create_neuron",
+            CreateNeuronArgs {
+                neuron_id,
+                principal_e8s,
+                dissolve_delay_seconds: delay,
+            },
+        );
     }
 }
 
@@ -400,6 +483,11 @@ fn pool_state(
 }
 
 fn unwind_operation(phase: UnwindPhase, child_neuron_id: u64) -> UnwindOperation {
+    let before_child = matches!(
+        phase,
+        UnwindPhase::SplitPrepared | UnwindPhase::SplitSubmitted
+    );
+    let prepared = phase == UnwindPhase::SplitPrepared;
     let cleanup = matches!(
         phase,
         UnwindPhase::DelayIncreaseSubmitted
@@ -414,9 +502,16 @@ fn unwind_operation(phase: UnwindPhase, child_neuron_id: u64) -> UnwindOperation
         reconciliation_request_fingerprint: vec![3; 32],
         target_e8s: 1_000_000,
         gross_e8s: 120_000,
-        child_neuron_id,
-        principal_e8s: 110_000,
-        child_staking_subaccount: vec![4; 32],
+        split_fee_e8s: if prepared { 0 } else { 10_000 },
+        committed_disbursement_fee_e8s: if prepared { 0 } else { 10_000 },
+        parent_principal_before_split_e8s: if prepared { 0 } else { 1_120_000 },
+        child_neuron_id: if before_child { 0 } else { child_neuron_id },
+        principal_e8s: if before_child { 0 } else { 110_000 },
+        child_staking_subaccount: if before_child {
+            Vec::new()
+        } else {
+            vec![4; 32]
+        },
         submitted_at_seconds: 1,
         expected_block_index: Some(9),
         child_maturity_e8s: if cleanup { 50_000 } else { 0 },
@@ -443,6 +538,34 @@ fn unwind_state(fixture: &RecoveryFixture, phase: UnwindPhase, child_neuron_id: 
         status: PooledTargetStatus::OverTarget,
     });
     state
+}
+
+fn split_state(fixture: &RecoveryFixture, phase: UnwindPhase) -> NnsStateV1 {
+    let mut state = unwind_state(fixture, phase, 0);
+    state.config.minimum_parent_stake_e8s = 10_001;
+    state.pooled_parent_staking_account = Some(Account {
+        owner: fixture.governance,
+        subaccount: Some(parent_staking_subaccount(fixture.manager, 42)),
+    });
+    let Some(NnsOperation::Unwind(operation)) = state.active_operation.as_mut() else {
+        unreachable!()
+    };
+    operation.target_e8s = 880_000;
+    if operation.phase == UnwindPhase::SplitSubmitted {
+        operation.parent_principal_before_split_e8s = 1_000_000;
+    }
+    state.latest_pooled_target = Some(PooledTarget {
+        target_e8s: 880_000,
+        status: PooledTargetStatus::OverTarget,
+    });
+    state
+}
+
+fn unwind_phase(state: &NnsStateV1) -> &UnwindPhase {
+    let Some(NnsOperation::Unwind(operation)) = state.active_operation.as_ref() else {
+        panic!("expected active unwind")
+    };
+    &operation.phase
 }
 
 fn delivering_maturity(state: &NnsStateV1, kind: MaturityKind) -> PendingMaturityDisbursement {
@@ -487,6 +610,7 @@ fn delivering_maturity(state: &NnsStateV1, kind: MaturityKind) -> PendingMaturit
             amount_disbursed_e8s: remaining,
             evidence_source: MaturityEvidenceSource::CommandResponse,
         },
+        committed_claim_transfer_fee_e8s: 10_000,
         mint_proof: MintProofState::Delivering(MintEvidence {
             mint_block: 11,
             actual_minted_icp_e8s: u128::from(remaining),
@@ -494,6 +618,144 @@ fn delivering_maturity(state: &NnsStateV1, kind: MaturityKind) -> PendingMaturit
             created_at_time_nanos: 604_801_000_000_000,
         }),
     }
+}
+
+#[test]
+fn ambiguous_split_is_discovered_after_upgrade_without_a_second_call() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping Governance recovery PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = RecoveryFixture::new();
+    fixture.replace(split_state(&fixture, UnwindPhase::SplitPrepared));
+    fixture.control(ControlledCommand::Split, 0, 1);
+
+    fixture.assert_pending();
+    fixture.set_neuron_account(10_000, parent_staking_subaccount(fixture.manager, 1));
+    let submitted = fixture.state_from_canister();
+    assert_eq!(unwind_phase(&submitted), &UnwindPhase::SplitSubmitted);
+    assert_eq!(fixture.governance_calls().split, 1);
+    let observation: Result<ClaimAssetObservation, ApiError> = update(
+        &fixture.pic,
+        fixture.manager,
+        fixture.stream,
+        "observe_claim_assets",
+        (),
+    );
+    assert!(matches!(observation, Err(ApiError::Pending(_))));
+
+    fixture.upgrade();
+    assert_eq!(
+        fixture.resume(),
+        Ok(NnsProgress::Unwind(UnwindProgress::Waiting))
+    );
+    let identified = fixture.state_from_canister();
+    assert_eq!(unwind_phase(&identified), &UnwindPhase::ChildIdentified);
+    assert_eq!(fixture.governance_calls().split, 1);
+
+    let observation: ClaimAssetObservation = update::<_, Result<_, ApiError>>(
+        &fixture.pic,
+        fixture.manager,
+        fixture.stream,
+        "observe_claim_assets",
+        (),
+    )
+    .unwrap();
+    let child = observation
+        .transit_components
+        .iter()
+        .find(|component| component.kind == TransitComponentKind::ActiveUnwind)
+        .expect("identified child must contribute active unwind transit");
+    assert_eq!(child.backing_e8s, 100_000);
+    assert_eq!(child.fee_basis_e8s, Some(10_000));
+    assert_eq!(observation.pooled_parent_principal_e8s, 880_000);
+}
+
+#[test]
+fn decoded_split_rejection_releases_intent_for_one_safe_retry() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping Governance recovery PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = RecoveryFixture::new();
+    fixture.replace(split_state(&fixture, UnwindPhase::SplitPrepared));
+    fixture.control(ControlledCommand::Split, 1, 0);
+    fixture.assert_pending();
+    assert_eq!(
+        unwind_phase(&fixture.state_from_canister()),
+        &UnwindPhase::SplitPrepared
+    );
+    assert_eq!(fixture.governance_calls().split, 1);
+
+    assert_eq!(
+        fixture.resume(),
+        Ok(NnsProgress::Unwind(UnwindProgress::Waiting))
+    );
+    assert_eq!(
+        unwind_phase(&fixture.state_from_canister()),
+        &UnwindPhase::ChildIdentified
+    );
+    assert_eq!(fixture.governance_calls().split, 2);
+}
+
+#[test]
+fn split_transport_ambiguity_and_duplicate_candidates_fail_closed() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping Governance recovery PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = RecoveryFixture::new();
+    fixture.replace(split_state(&fixture, UnwindPhase::SplitPrepared));
+    fixture.set_split_transport_rejection(true);
+    fixture.assert_pending();
+    assert_eq!(
+        unwind_phase(&fixture.state_from_canister()),
+        &UnwindPhase::SplitSubmitted
+    );
+    fixture.set_split_transport_rejection(false);
+    fixture.create_controlled_neuron(901, 109_999, POOLED_PARENT_DELAY_SECONDS);
+    fixture.assert_pending();
+    assert_eq!(fixture.governance_calls().split, 0);
+
+    fixture.replace(split_state(&fixture, UnwindPhase::SplitPrepared));
+    fixture.control(ControlledCommand::Split, 0, 1);
+    fixture.assert_pending();
+    fixture.set_neuron_account(10_000, parent_staking_subaccount(fixture.manager, 1));
+    fixture.create_controlled_neuron(902, 110_000, POOLED_PARENT_DELAY_SECONDS);
+    fixture.set_neuron_account(902, parent_staking_subaccount(fixture.manager, 1));
+    assert!(matches!(fixture.resume(), Err(ApiError::Stuck(_))));
+    assert_eq!(
+        unwind_phase(&fixture.state_from_canister()),
+        &UnwindPhase::SplitSubmitted
+    );
+    assert_eq!(fixture.governance_calls().split, 1);
+}
+
+#[test]
+fn split_fee_drift_pauses_before_effect_and_is_resumable() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping Governance recovery PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = RecoveryFixture::new();
+    fixture.replace(split_state(&fixture, UnwindPhase::SplitPrepared));
+    fixture.set_governance_fee(10_001);
+    assert!(matches!(fixture.resume(), Err(ApiError::Stuck(_))));
+    let paused = fixture.state_from_canister();
+    assert_eq!(paused.lifecycle, Lifecycle::Paused);
+    assert_eq!(unwind_phase(&paused), &UnwindPhase::SplitPrepared);
+    assert_eq!(fixture.governance_calls().split, 0);
+
+    fixture.set_governance_fee(10_000);
+    fixture.set_ledger_fee(10_000);
+    let mut reviewed = paused;
+    reviewed.lifecycle = Lifecycle::Ready;
+    fixture.replace(reviewed);
+    assert_eq!(
+        fixture.resume(),
+        Ok(NnsProgress::Unwind(UnwindProgress::Waiting))
+    );
+    assert_eq!(fixture.governance_calls().split, 1);
 }
 
 #[test]

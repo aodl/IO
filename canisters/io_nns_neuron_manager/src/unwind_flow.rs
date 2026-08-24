@@ -11,7 +11,7 @@ use crate::{
 pub async fn resume(operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
     match operation.phase.clone() {
         UnwindPhase::SplitPrepared => submit_split(operation).await,
-        UnwindPhase::SplitSubmitted => pause(operation, "Split callback is unresolved".into()),
+        UnwindPhase::SplitSubmitted => recover_split(operation).await,
         UnwindPhase::ChildIdentified => prove_split(operation).await,
         UnwindPhase::SplitProved => submit_start(operation).await,
         UnwindPhase::StartDissolvingSubmitted => recover_start(operation).await,
@@ -51,38 +51,154 @@ pub async fn resume_passive(cohort: PassiveCohort) -> Result<UnwindProgress, Api
 
 async fn submit_split(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
     let expected = operation.clone();
-    operation.phase = UnwindPhase::SplitSubmitted;
-    replace(&expected, operation.clone())?;
     let current = state::read();
+    let governance_fee = execution::nns_transaction_fee(&current.config).await?;
+    ensure(&expected)?;
+    let ledger_fee = io_ledger_boundary::icp_fee(current.config.icp_ledger)
+        .await
+        .map_err(ApiError::Pending)?;
+    ensure(&expected)?;
     let parent = current
         .pooled_parent_id
         .ok_or_else(|| ApiError::Invalid("pooled parent is absent".into()))?;
+    let parent_before = execution::query_neuron(&current.config, parent).await?;
+    ensure(&expected)?;
+    if governance_fee != current.config.expected_icp_fee_e8s
+        || ledger_fee != current.config.expected_icp_fee_e8s
+        || governance_fee != ledger_fee
+    {
+        let mut latest = state::read();
+        if !matches!(latest.active_operation, Some(NnsOperation::Unwind(ref active)) if active == &expected)
+        {
+            return Err(ApiError::Busy);
+        }
+        latest.lifecycle = Lifecycle::Paused;
+        state::write(latest);
+        return Err(ApiError::Stuck(format!(
+            "Split fee parameter drift: approved {}, Governance {governance_fee}, Ledger {ledger_fee}; Split was not submitted",
+            current.config.expected_icp_fee_e8s
+        )));
+    }
+    operation.split_fee_e8s = governance_fee;
+    operation.committed_disbursement_fee_e8s = ledger_fee;
+    operation.parent_principal_before_split_e8s = parent_before.cached_stake_e8s;
+    operation.phase = UnwindPhase::SplitSubmitted;
+    replace(&expected, operation.clone())?;
     match execution::split_neuron(
         &current.config,
         parent,
         operation.gross_e8s,
         operation.generation,
     )
-    .await
+    .await?
     {
-        Ok(child) => {
+        execution::SplitCallOutcome::Created(child) => {
             ensure(&operation)?;
             let submitted = operation.clone();
             operation.child_neuron_id = child;
             operation.principal_e8s = io_nns_types::backing::expected_split_child_principal(
                 operation.gross_e8s,
-                current.config.expected_icp_fee_e8s,
+                operation.split_fee_e8s,
             )
             .map_err(|_| ApiError::Invalid("Split gross cannot cover the fee".into()))?;
             operation.phase = UnwindPhase::ChildIdentified;
             replace(&submitted, operation)?;
             Ok(UnwindProgress::Waiting)
         }
-        Err(error) => pause(
-            operation,
-            format!("Split outcome requires proof: {error:?}"),
-        ),
+        execution::SplitCallOutcome::RejectedNoEffect(reason) => {
+            ensure(&operation)?;
+            let submitted = operation.clone();
+            operation.phase = UnwindPhase::SplitPrepared;
+            operation.split_fee_e8s = 0;
+            operation.committed_disbursement_fee_e8s = 0;
+            operation.parent_principal_before_split_e8s = 0;
+            replace(&submitted, operation)?;
+            Err(ApiError::Pending(format!(
+                "{reason}; exact Split intent may be retried"
+            )))
+        }
+        execution::SplitCallOutcome::Ambiguous(reason) => {
+            ensure(&operation)?;
+            Err(ApiError::Pending(reason))
+        }
     }
+}
+
+async fn recover_split(operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
+    let snapshot = state::read();
+    let parent_id = snapshot
+        .pooled_parent_id
+        .ok_or_else(|| ApiError::Invalid("pooled parent is absent".into()))?;
+    let expected_principal = io_nns_types::backing::expected_split_child_principal(
+        operation.gross_e8s,
+        operation.split_fee_e8s,
+    )
+    .map_err(|_| ApiError::Invalid("Split gross cannot cover the frozen fee".into()))?;
+    let candidates = execution::controlled_neurons(&snapshot.config).await?;
+    ensure(&operation)?;
+    let expected_child_account =
+        execution::parent_staking_account(&snapshot.config, operation.generation);
+    let expected_child_subaccount = expected_child_account
+        .subaccount
+        .as_deref()
+        .ok_or_else(|| ApiError::Invalid("canonical Split subaccount is absent".into()))?;
+    let existing = |child_id| {
+        snapshot
+            .live_cohorts
+            .iter()
+            .any(|cohort| cohort.child_neuron_id == child_id)
+            || snapshot
+                .last_completed_unwind
+                .as_ref()
+                .is_some_and(|completed| completed.child_neuron_id == child_id)
+    };
+    let matches = candidates
+        .into_iter()
+        .filter(|candidate| {
+            candidate.neuron_id != snapshot.config.two_year_neuron_id
+                && candidate.neuron_id != parent_id
+                && !existing(candidate.neuron_id)
+                && candidate.controller == ic_cdk::api::canister_self()
+                && candidate.staking_subaccount == expected_child_subaccount
+                && candidate.physical_principal_e8s == expected_principal
+                && candidate.dissolve_state
+                    == Some(DissolveState::DissolveDelaySeconds(
+                        io_nns_types::backing::POOLED_PARENT_DELAY_SECONDS,
+                    ))
+        })
+        .collect::<Vec<_>>();
+    if matches.len() > 1 {
+        let mut latest = state::read();
+        ensure(&operation)?;
+        latest.lifecycle = Lifecycle::Paused;
+        state::write(latest);
+        return Err(ApiError::Stuck(
+            "ambiguous Split has multiple canonical child candidates".into(),
+        ));
+    }
+    let Some(candidate) = matches.into_iter().next() else {
+        return Err(ApiError::Pending(
+            "ambiguous Split has no canonical child candidate yet".into(),
+        ));
+    };
+    let parent = execution::query_neuron(&snapshot.config, parent_id).await?;
+    ensure(&operation)?;
+    let expected_parent = operation
+        .parent_principal_before_split_e8s
+        .checked_sub(operation.gross_e8s)
+        .ok_or_else(|| ApiError::Invalid("frozen parent Split principal underflow".into()))?;
+    if parent.cached_stake_e8s != expected_parent {
+        return Err(ApiError::Pending(
+            "ambiguous Split parent reduction is not canonically reflected".into(),
+        ));
+    }
+    let expected = operation.clone();
+    let mut identified = operation;
+    identified.child_neuron_id = candidate.neuron_id;
+    identified.principal_e8s = expected_principal;
+    identified.phase = UnwindPhase::ChildIdentified;
+    replace(&expected, identified)?;
+    Ok(UnwindProgress::Waiting)
 }
 
 async fn prove_split(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
@@ -171,7 +287,9 @@ async fn submit_disbursement(mut operation: UnwindOperation) -> Result<UnwindPro
         .await
         .map_err(ApiError::Pending)?;
     ensure(&expected)?;
-    if canonical_fee != current.config.expected_icp_fee_e8s {
+    if canonical_fee != current.config.expected_icp_fee_e8s
+        || canonical_fee != operation.committed_disbursement_fee_e8s
+    {
         let mut latest = state::read();
         if !matches!(latest.active_operation, Some(NnsOperation::Unwind(ref active)) if active == &expected)
         {
@@ -230,12 +348,12 @@ pub async fn prove(
         icp_account_identifier(&current.config.stream_liquid_account).map_err(ApiError::Invalid)?;
     let amount = operation
         .principal_e8s
-        .checked_sub(current.config.expected_icp_fee_e8s)
+        .checked_sub(operation.committed_disbursement_fee_e8s)
         .ok_or_else(|| ApiError::Invalid("child principal cannot cover fee".into()))?;
     if exact.from != from
         || exact.to != to
         || exact.amount_e8s != amount
-        || exact.fee_e8s != current.config.expected_icp_fee_e8s
+        || exact.fee_e8s != operation.committed_disbursement_fee_e8s
         || exact.native_memo_u64 < operation.submitted_at_seconds
     {
         return Err(ApiError::Invalid(
@@ -428,6 +546,7 @@ fn retire(operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {
     latest.last_completed_unwind = Some(state::CompletedUnwindReconciliation {
         generation: operation.generation,
         reconciliation_request_fingerprint: operation.reconciliation_request_fingerprint.clone(),
+        child_neuron_id: operation.child_neuron_id,
         physical_principal_e8s: operation.principal_e8s,
     });
     latest.live_cohorts.remove(index);
@@ -483,6 +602,9 @@ fn promote(cohort: PassiveCohort, phase: UnwindPhase) -> Result<(), ApiError> {
             .principal_e8s
             .checked_add(cohort.committed_fee_e8s)
             .ok_or_else(|| ApiError::Invalid("promoted unwind gross overflow".into()))?,
+        split_fee_e8s: 0,
+        committed_disbursement_fee_e8s: cohort.committed_fee_e8s,
+        parent_principal_before_split_e8s: 0,
         child_neuron_id: cohort.child_neuron_id,
         principal_e8s: cohort.principal_e8s,
         child_staking_subaccount: cohort.child_staking_subaccount,
@@ -502,10 +624,8 @@ fn promote(cohort: PassiveCohort, phase: UnwindPhase) -> Result<(), ApiError> {
 }
 
 pub(crate) fn committed_fee_basis(operation: &UnwindOperation) -> Result<u128, ApiError> {
-    operation
-        .gross_e8s
-        .checked_sub(operation.principal_e8s)
-        .filter(|fee| *fee > 0)
+    (operation.committed_disbursement_fee_e8s > 0)
+        .then_some(operation.committed_disbursement_fee_e8s)
         .ok_or_else(|| ApiError::Invalid("committed unwind fee basis is invalid".into()))
 }
 

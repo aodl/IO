@@ -5,6 +5,7 @@ use std::cell::RefCell;
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct MockNeuron {
     pub neuron_id: u64,
+    pub account: Vec<u8>,
     pub principal_e8s: u128,
     pub maturity_e8s: u128,
     pub dissolve_delay_seconds: u64,
@@ -13,6 +14,7 @@ pub struct MockNeuron {
     pub followee_id: Option<u64>,
     pub pending_refresh_credit_e8s: u128,
     pub voting_power_refreshed_timestamp_seconds: u64,
+    pub controller: candid::Principal,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -26,6 +28,18 @@ pub struct CreateNeuronArgs {
 pub struct NeuronAmountArgs {
     pub neuron_id: u64,
     pub amount_e8s: u128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SetNeuronAccountArgs {
+    pub neuron_id: u64,
+    pub account: Vec<u8>,
+}
+
+fn default_neuron_account(neuron_id: u64) -> Vec<u8> {
+    let mut account = vec![0_u8; 32];
+    account[24..].copy_from_slice(&neuron_id.to_be_bytes());
+    account
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -54,14 +68,17 @@ struct GovernanceState {
     pool_policy_valid: bool,
     command_controls: Vec<CommandControl>,
     command_calls: GovernanceCommandCounters,
+    split_trap_before_effect: bool,
+    transaction_fee_e8s: u64,
 }
 
 thread_local! {
-    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new(), two_week_target: None, maturity_preparation: None, reconcile_calls: 0, get_full_neuron_calls: 0, pooled_principal_e8s: 0, claim_asset_observation_calls: 0, pool_policy_observation_calls: 0, pool_policy_valid: true, command_controls: Vec::new(), command_calls: GovernanceCommandCounters::ZERO }) };
+    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new(), two_week_target: None, maturity_preparation: None, reconcile_calls: 0, get_full_neuron_calls: 0, pooled_principal_e8s: 0, claim_asset_observation_calls: 0, pool_policy_observation_calls: 0, pool_policy_valid: true, command_controls: Vec::new(), command_calls: GovernanceCommandCounters::ZERO, split_trap_before_effect: false, transaction_fee_e8s: 10_000 }) };
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum ControlledCommand {
+    Split,
     ClaimOrRefresh,
     IncreaseDissolveDelay,
     SetFollowing,
@@ -79,6 +96,7 @@ pub struct CommandControl {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
 pub struct GovernanceCommandCounters {
+    pub split: u64,
     pub claim_or_refresh: u64,
     pub increase_dissolve_delay: u64,
     pub set_following: u64,
@@ -89,6 +107,7 @@ pub struct GovernanceCommandCounters {
 
 impl GovernanceCommandCounters {
     const ZERO: Self = Self {
+        split: 0,
         claim_or_refresh: 0,
         increase_dissolve_delay: 0,
         set_following: 0,
@@ -99,6 +118,7 @@ impl GovernanceCommandCounters {
 
     fn increment(&mut self, command: ControlledCommand) {
         let counter = match command {
+            ControlledCommand::Split => &mut self.split,
             ControlledCommand::ClaimOrRefresh => &mut self.claim_or_refresh,
             ControlledCommand::IncreaseDissolveDelay => &mut self.increase_dissolve_delay,
             ControlledCommand::SetFollowing => &mut self.set_following,
@@ -167,8 +187,8 @@ pub fn observe_claim_assets() -> Result<io_nns_types::backing::ClaimAssetObserva
         live_child_physical_principal_e8s: 0,
         live_child_net_backing_e8s: 0,
         live_child_committed_fee_liability_e8s: 0,
+        transit_components: Vec::new(),
         transit_backing_e8s: 0,
-        transit_fee_basis_e8s: None,
         active_operation_sequence: 0,
         last_completed_pool_operation_sequence: None,
         control_epoch: 1,
@@ -332,6 +352,7 @@ pub struct MaturityDisbursement {
 #[derive(Clone, Debug, CandidType, Deserialize)]
 pub struct FullNeuron {
     pub id: Option<NnsNeuronId>,
+    pub controller: Option<candid::Principal>,
     pub account: Vec<u8>,
     pub cached_neuron_stake_e8s: u64,
     pub maturity_e8s_equivalent: u64,
@@ -407,7 +428,14 @@ pub struct Merge {
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct Split {
+    pub amount_e8s: u64,
+    pub memo: Option<u64>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
 pub enum ManageCommand {
+    Split(Split),
     ClaimOrRefresh(ClaimOrRefresh),
     Configure(Configure),
     Merge(Merge),
@@ -428,10 +456,16 @@ pub struct ClaimOrRefreshResponse {
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct SplitResponse {
+    pub created_neuron_id: Option<NnsNeuronId>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
 pub enum ManageCommandResponse {
     Error(GovernanceError),
     ClaimOrRefresh(ClaimOrRefreshResponse),
     Configure(candid::Reserved),
+    Split(SplitResponse),
     Merge(candid::Reserved),
     SetFollowing(candid::Reserved),
     RefreshVotingPower(candid::Reserved),
@@ -485,8 +519,48 @@ fn malformed_after_effect() -> ManageNeuronResponse {
     }
 }
 
+fn split_response(
+    state: &mut GovernanceState,
+    parent_id: u64,
+    split: Split,
+    controller: candid::Principal,
+) -> ManageCommandResponse {
+    let gross = u128::from(split.amount_e8s);
+    let delay = match neuron_mut(state, parent_id) {
+        Ok(parent) if parent.principal_e8s >= gross => {
+            parent.principal_e8s -= gross;
+            parent.dissolve_delay_seconds
+        }
+        _ => {
+            return ManageCommandResponse::Error(GovernanceError {
+                error_type: 5,
+                error_message: "controlled Split rejection".into(),
+            })
+        }
+    };
+    let child_id = state.next_neuron_id;
+    state.next_neuron_id = state.next_neuron_id.saturating_add(1);
+    state.neurons.push(MockNeuron {
+        neuron_id: child_id,
+        account: default_neuron_account(child_id),
+        principal_e8s: gross.saturating_sub(10_000),
+        maturity_e8s: 0,
+        dissolve_delay_seconds: delay,
+        is_dissolving: false,
+        dissolve_started_at_seconds: None,
+        followee_id: Some(43),
+        pending_refresh_credit_e8s: 0,
+        voting_power_refreshed_timestamp_seconds: 1,
+        controller,
+    });
+    ManageCommandResponse::Split(SplitResponse {
+        created_neuron_id: Some(NnsNeuronId { id: child_id }),
+    })
+}
+
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn manage_neuron(request: ManageNeuron) -> ManageNeuronResponse {
+    let caller = ic_cdk::api::msg_caller();
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         let neuron_id = managed_neuron_id(&request).unwrap_or_default();
@@ -494,6 +568,7 @@ pub fn manage_neuron(request: ManageNeuron) -> ManageNeuronResponse {
             return rejected(ControlledCommand::ClaimOrRefresh);
         };
         let kind = match &command {
+            ManageCommand::Split(_) => ControlledCommand::Split,
             ManageCommand::ClaimOrRefresh(_) => ControlledCommand::ClaimOrRefresh,
             ManageCommand::Configure(Configure {
                 operation: Some(ConfigureOperation::IncreaseDissolveDelay(_)),
@@ -507,10 +582,14 @@ pub fn manage_neuron(request: ManageNeuron) -> ManageNeuronResponse {
             ManageCommand::RefreshVotingPower(_) => ControlledCommand::RefreshVotingPower,
         };
         let (reject, malformed) = controlled_attempt(&mut state, kind);
+        if kind == ControlledCommand::Split && state.split_trap_before_effect {
+            ic_cdk::trap("controlled Split transport rejection before effect");
+        }
         if reject {
             return rejected(kind);
         }
         let response = match command {
+            ManageCommand::Split(split) => split_response(&mut state, neuron_id, split, caller),
             ManageCommand::ClaimOrRefresh(claim) => {
                 let id = match claim.by {
                     Some(ClaimBy::MemoAndController(from)) => from.memo,
@@ -589,57 +668,114 @@ pub fn manage_neuron(request: ManageNeuron) -> ManageNeuronResponse {
     })
 }
 
+fn full_neuron(neuron: &MockNeuron) -> FullNeuron {
+    FullNeuron {
+        id: Some(NnsNeuronId {
+            id: neuron.neuron_id,
+        }),
+        controller: Some(neuron.controller),
+        account: neuron.account.clone(),
+        cached_neuron_stake_e8s: neuron.principal_e8s.try_into().unwrap_or(u64::MAX),
+        maturity_e8s_equivalent: neuron.maturity_e8s.try_into().unwrap_or(u64::MAX),
+        staked_maturity_e8s_equivalent: Some(0),
+        auto_stake_maturity: Some(false),
+        maturity_disbursements_in_progress: Some(Vec::new()),
+        dissolve_state: Some(if neuron.is_dissolving {
+            NnsDissolveState::WhenDissolvedTimestampSeconds(
+                neuron.dissolve_started_at_seconds.unwrap_or_default(),
+            )
+        } else {
+            NnsDissolveState::DissolveDelaySeconds(neuron.dissolve_delay_seconds)
+        }),
+        followees: neuron
+            .followee_id
+            .map(|followee| {
+                [0, 4, 14]
+                    .into_iter()
+                    .map(|topic| {
+                        (
+                            topic,
+                            NnsFollowees {
+                                followees: vec![NnsNeuronId { id: followee }],
+                            },
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        voting_power_refreshed_timestamp_seconds: Some(
+            neuron.voting_power_refreshed_timestamp_seconds,
+        ),
+    }
+}
+
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn get_full_neuron(neuron_id: u64) -> Result<FullNeuron, GovernanceError> {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         state.get_full_neuron_calls += 1;
-        let neuron = state
+        state
             .neurons
             .iter()
             .find(|neuron| neuron.neuron_id == neuron_id)
+            .map(full_neuron)
             .ok_or_else(|| GovernanceError {
                 error_type: 1,
                 error_message: "mock neuron not found".into(),
-            })?;
-        let mut account = [0_u8; 32];
-        account[24..].copy_from_slice(&neuron_id.to_be_bytes());
-        Ok(FullNeuron {
-            id: Some(NnsNeuronId { id: neuron_id }),
-            account: account.to_vec(),
-            cached_neuron_stake_e8s: neuron.principal_e8s.try_into().unwrap_or(u64::MAX),
-            maturity_e8s_equivalent: neuron.maturity_e8s.try_into().unwrap_or(u64::MAX),
-            staked_maturity_e8s_equivalent: Some(0),
-            auto_stake_maturity: Some(false),
-            maturity_disbursements_in_progress: Some(Vec::new()),
-            dissolve_state: Some(if neuron.is_dissolving {
-                NnsDissolveState::WhenDissolvedTimestampSeconds(
-                    neuron.dissolve_started_at_seconds.unwrap_or_default(),
-                )
-            } else {
-                NnsDissolveState::DissolveDelaySeconds(neuron.dissolve_delay_seconds)
-            }),
-            followees: neuron
-                .followee_id
-                .map(|followee| {
-                    [0, 4, 14]
-                        .into_iter()
-                        .map(|topic| {
-                            (
-                                topic,
-                                NnsFollowees {
-                                    followees: vec![NnsNeuronId { id: followee }],
-                                },
-                            )
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-            voting_power_refreshed_timestamp_seconds: Some(
-                neuron.voting_power_refreshed_timestamp_seconds,
-            ),
-        })
+            })
     })
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct ListNeuronsRequest {
+    pub neuron_ids: Vec<u64>,
+    pub include_neurons_readable_by_caller: bool,
+    pub include_empty_neurons_readable_by_caller: Option<bool>,
+    pub include_public_neurons_in_full_neurons: Option<bool>,
+    pub page_number: Option<u64>,
+    pub page_size: Option<u64>,
+    pub neuron_subaccounts: Option<Vec<NeuronSubaccount>>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct NeuronSubaccount {
+    pub subaccount: Vec<u8>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct ListNeuronsResponse {
+    pub neuron_infos: Vec<(u64, candid::Reserved)>,
+    pub full_neurons: Vec<FullNeuron>,
+    pub total_pages_available: Option<u64>,
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn list_neurons(_request: ListNeuronsRequest) -> ListNeuronsResponse {
+    let caller = ic_cdk::api::msg_caller();
+    ListNeuronsResponse {
+        neuron_infos: Vec::new(),
+        full_neurons: STATE.with(|cell| {
+            cell.borrow()
+                .neurons
+                .iter()
+                .filter(|neuron| neuron.controller == caller)
+                .map(full_neuron)
+                .collect()
+        }),
+        total_pages_available: Some(1),
+    }
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct NetworkEconomics {
+    pub transaction_fee_e8s: u64,
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn get_network_economics_parameters() -> NetworkEconomics {
+    NetworkEconomics {
+        transaction_fee_e8s: STATE.with(|cell| cell.borrow().transaction_fee_e8s),
+    }
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
@@ -666,6 +802,16 @@ pub fn debug_set_command_control(control: CommandControl) {
             state.command_controls.push(control);
         }
     });
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_split_trap_before_effect(enabled: bool) {
+    STATE.with(|cell| cell.borrow_mut().split_trap_before_effect = enabled);
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_transaction_fee_e8s(fee_e8s: u64) {
+    STATE.with(|cell| cell.borrow_mut().transaction_fee_e8s = fee_e8s);
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -700,6 +846,7 @@ pub fn debug_create_neuron(args: CreateNeuronArgs) -> u64 {
         let mut state = cell.borrow_mut();
         state.neurons.push(MockNeuron {
             neuron_id: args.neuron_id,
+            account: default_neuron_account(args.neuron_id),
             principal_e8s: args.principal_e8s,
             maturity_e8s: 0,
             dissolve_delay_seconds: args.dissolve_delay_seconds,
@@ -708,8 +855,20 @@ pub fn debug_create_neuron(args: CreateNeuronArgs) -> u64 {
             followee_id: Some(43),
             pending_refresh_credit_e8s: 0,
             voting_power_refreshed_timestamp_seconds: 1,
+            controller: ic_cdk::api::msg_caller(),
         });
         args.neuron_id
+    })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_neuron_account(args: SetNeuronAccountArgs) -> Result<(), String> {
+    if args.account.len() != 32 {
+        return Err("neuron account must be 32 bytes".into());
+    }
+    STATE.with(|cell| {
+        neuron_mut(&mut cell.borrow_mut(), args.neuron_id)?.account = args.account;
+        Ok(())
     })
 }
 
@@ -759,6 +918,7 @@ pub fn debug_split(neuron_id: u64, amount_e8s: u128) -> Result<u64, String> {
         };
         state.neurons.push(MockNeuron {
             neuron_id: child_id,
+            account: default_neuron_account(child_id),
             principal_e8s: amount_e8s,
             maturity_e8s: 0,
             dissolve_delay_seconds,
@@ -767,6 +927,7 @@ pub fn debug_split(neuron_id: u64, amount_e8s: u128) -> Result<u64, String> {
             followee_id: Some(43),
             pending_refresh_credit_e8s: 0,
             voting_power_refreshed_timestamp_seconds: 1,
+            controller: ic_cdk::api::msg_caller(),
         });
         Ok(child_id)
     })

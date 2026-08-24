@@ -107,8 +107,32 @@ pub struct CohortObservation {
     pub child_neuron_id: u64,
     pub physical_principal_e8s: u128,
     pub net_backing_e8s: u128,
+    pub committed_fee_e8s: u128,
     pub ready_at_seconds: u64,
     pub proof: CohortProofState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, CandidType, Deserialize)]
+pub enum TransitComponentKind {
+    PoolTopUp,
+    ActiveUnwind,
+    ActiveJupiter,
+    ActiveMaturity,
+    PendingTwoYearMaturity,
+    PendingTwoWeekMaturity,
+}
+
+impl TransitComponentKind {
+    fn requires_fee_basis(self) -> bool {
+        !matches!(self, Self::PoolTopUp)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct TransitComponentObservation {
+    pub kind: TransitComponentKind,
+    pub backing_e8s: u128,
+    pub fee_basis_e8s: Option<u128>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -121,8 +145,8 @@ pub struct ClaimAssetObservation {
     pub live_child_physical_principal_e8s: u128,
     pub live_child_net_backing_e8s: u128,
     pub live_child_committed_fee_liability_e8s: u128,
+    pub transit_components: Vec<TransitComponentObservation>,
     pub transit_backing_e8s: u128,
-    pub transit_fee_basis_e8s: Option<u128>,
     pub active_operation_sequence: u64,
     pub last_completed_pool_operation_sequence: Option<u64>,
     pub control_epoch: u64,
@@ -138,14 +162,32 @@ impl ClaimAssetObservation {
             || self.last_completed_pool_operation_sequence == Some(0)
             || self.minimum_parent_stake_e8s == 0
             || self
-                .transit_fee_basis_e8s
-                .is_some_and(|fee| fee == 0 || self.transit_backing_e8s == 0)
-            || self
                 .parent
                 .as_ref()
                 .is_some_and(|parent| parent.staking_account != self.pool_staking_account)
         {
             return Err("claim-backing observation bounds are invalid".into());
+        }
+        let mut previous_component = None;
+        let transit = self
+            .transit_components
+            .iter()
+            .try_fold(0u128, |total, component| {
+                if component.backing_e8s == 0
+                    || previous_component
+                        .replace(component.kind)
+                        .is_some_and(|previous| previous >= component.kind)
+                    || component.kind.requires_fee_basis() != component.fee_basis_e8s.is_some()
+                    || component.fee_basis_e8s == Some(0)
+                {
+                    return Err("transit components are malformed or unsorted".to_string());
+                }
+                total
+                    .checked_add(component.backing_e8s)
+                    .ok_or_else(|| "transit component total overflow".to_string())
+            })?;
+        if transit != self.transit_backing_e8s {
+            return Err("transit component total is inconsistent".into());
         }
         if self
             .parent
@@ -168,6 +210,12 @@ impl ClaimAssetObservation {
                         || cohort.child_neuron_id == 0
                         || !child_ids.insert(cohort.child_neuron_id)
                         || cohort.net_backing_e8s > cohort.physical_principal_e8s
+                        || cohort.committed_fee_e8s == 0
+                        || (cohort.physical_principal_e8s > 0
+                            && cohort
+                                .physical_principal_e8s
+                                .checked_sub(cohort.net_backing_e8s)
+                                != Some(cohort.committed_fee_e8s))
                         || (cohort.physical_principal_e8s == 0
                             && matches!(
                                 cohort.proof,
@@ -562,6 +610,7 @@ mod tests {
                 child_neuron_id: 2,
                 physical_principal_e8s: 0,
                 net_backing_e8s: 0,
+                committed_fee_e8s: 10,
                 ready_at_seconds: 3,
                 proof: CohortProofState::PrincipalReturned,
             }],
@@ -569,7 +618,7 @@ mod tests {
             live_child_net_backing_e8s: 0,
             live_child_committed_fee_liability_e8s: 0,
             transit_backing_e8s: 0,
-            transit_fee_basis_e8s: None,
+            transit_components: Vec::new(),
             active_operation_sequence: 0,
             last_completed_pool_operation_sequence: None,
             control_epoch: 0,

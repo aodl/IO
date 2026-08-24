@@ -89,6 +89,7 @@ pub struct PendingMaturityDisbursement {
     pub scheduled_finalization_timestamp_seconds: u64,
     pub stake_evidence: StakeMaturitySucceeded,
     pub disburse_evidence: DisburseMaturitySucceeded,
+    pub committed_claim_transfer_fee_e8s: u128,
     pub mint_proof: MintProofState,
 }
 
@@ -238,9 +239,10 @@ impl PendingMaturityDisbursement {
             return Err("passive maturity disbursement is inconsistent".into());
         }
         match &self.mint_proof {
-            MintProofState::Awaiting => Ok(()),
+            MintProofState::Awaiting if self.committed_claim_transfer_fee_e8s == 0 => Ok(()),
             MintProofState::Proved(mint) | MintProofState::Delivering(mint)
                 if mint.actual_minted_icp_e8s > 0
+                    && self.committed_claim_transfer_fee_e8s > 0
                     && mint.native_memo_u64 >= self.scheduled_finalization_timestamp_seconds
                     && mint.created_at_time_nanos / 1_000_000_000 >= mint.native_memo_u64 =>
             {

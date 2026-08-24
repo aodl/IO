@@ -1085,4 +1085,58 @@ mod tests {
             state.prepared_exit_reconciliation
         );
     }
+
+    #[test]
+    fn claim_receipt_ownership_handoff_round_trips_before_and_after_liquid_proof() {
+        use sha2::Digest;
+
+        for liquid_block in [None, Some(7)] {
+            let (canister_self, mut state) = valid_state();
+            let request = io_receipt_types::PrepareClaimBackingReceiptArgs {
+                source_operation_id: vec![1],
+                kind: io_receipt_types::ClaimBackingReceiptKind::Jupiter,
+                source_account: state.config.jupiter_receipt_source.clone(),
+                source_block: 1,
+                net_liquid_credit_e8s: 60,
+                nns_fingerprint: vec![2; 32],
+            };
+            let fingerprint = sha2::Sha256::digest(candid::encode_one(&request).unwrap()).to_vec();
+            state.lifecycle = Lifecycle::Ready;
+            state.next_operation_sequence = OperationSequence(2);
+            state.active_operation = Some(StreamOperation::ClaimReceipt(Box::new(
+                crate::receipt::ClaimBackingReceipt {
+                    permit: io_receipt_types::ClaimBackingReceiptPermit {
+                        stream_operation_sequence: 1,
+                        destination: state.config.liquid_icp.clone(),
+                        amount_e8s: 60,
+                        memo: io_nns_types::receipt::receipt_memo(&request.source_operation_id),
+                        request_fingerprint: fingerprint.clone(),
+                    },
+                    request,
+                    request_fingerprint: fingerprint,
+                    economics: crate::receipt::FrozenClaimEconomics {
+                        pre_claim_backing_e8s: 100,
+                        pre_claim_supply_e8s: 100,
+                        liquid_credit_e8s: 60,
+                        io_fee_e8s: state.config.expected_io_fee_e8s,
+                        snapshot_fingerprint: vec![3; 32],
+                    },
+                    liquid_block,
+                    recipients: vec![crate::receipt::FrozenRecipient {
+                        sns_neuron_id: None,
+                        destination: state.config.jupiter_io_account.clone(),
+                        io_e8s: 30,
+                    }],
+                    recipient_cursor: 0,
+                    current_recipient: None,
+                    jupiter_recipient_block: None,
+                },
+            )));
+            initialize(state.clone(), canister_self).unwrap();
+            write(state.clone());
+            reopen(canister_self);
+            assert_eq!(read().active_operation, state.active_operation);
+            assert_eq!(read().lifecycle, Lifecycle::Paused);
+        }
+    }
 }

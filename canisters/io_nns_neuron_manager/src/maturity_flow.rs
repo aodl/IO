@@ -1,8 +1,7 @@
 use candid::Principal;
 use io_ledger_boundary::{exact_icp_transfer, icp_account_identifier, ExpectedQueryBlockTransfer};
 use io_receipt_types::{
-    ClaimBackingReceiptKind, ClaimBackingReceiptProgress, PrepareClaimBackingReceiptArgs,
-    ProveClaimBackingReceiptArgs,
+    ClaimBackingReceiptProgress, PrepareClaimBackingReceiptArgs, ProveClaimBackingReceiptArgs,
 };
 
 use crate::{
@@ -448,6 +447,7 @@ async fn canonicalize_disbursement(
             .scheduled_finalization_timestamp_seconds,
         stake_evidence: disbursement.submission.stake.clone(),
         disburse_evidence: disbursement,
+        committed_claim_transfer_fee_e8s: 0,
         mint_proof: MintProofState::Awaiting,
     };
     move_to_passive(&operation, passive)?;
@@ -500,12 +500,29 @@ async fn resume_claim_receipt_delivery(
         }
     };
     let config = state::read().config;
+    if crate::claim_assets::maturity_delivery_has_unpaid_fee(&delivery, operation.kind) {
+        let canonical_fee = io_ledger_boundary::icp_fee(config.icp_ledger)
+            .await
+            .map_err(ApiError::Pending)?;
+        ensure_exact(&operation)?;
+        if canonical_fee != delivery.pending.committed_claim_transfer_fee_e8s
+            || canonical_fee != config.expected_icp_fee_e8s
+        {
+            let mut latest = state::read();
+            latest.lifecycle = Lifecycle::Paused;
+            state::write(latest);
+            return Err(ApiError::Stuck(format!(
+                "maturity transit fee drift: frozen {}, canonical {canonical_fee}",
+                delivery.pending.committed_claim_transfer_fee_e8s
+            )));
+        }
+    }
     if operation.kind == MaturityKind::TwoWeek {
         let split = io_core_model::split_40_60(mint.actual_minted_icp_e8s)
             .map_err(|error| ApiError::Invalid(format!("maturity split failed: {error:?}")))?;
         let credit = split
             .permanent
-            .checked_sub(config.expected_icp_fee_e8s)
+            .checked_sub(delivery.pending.committed_claim_transfer_fee_e8s)
             .filter(|credit| *credit > 0)
             .ok_or_else(|| ApiError::Invalid("permanent maturity leg cannot pay its fee".into()))?;
         match delivery.permanent_credit.as_ref() {
@@ -519,7 +536,12 @@ async fn resume_claim_receipt_delivery(
                     state::write(latest);
                     return Err(ApiError::Invalid(reason));
                 }
-                return crate::permanent_credit::prepare(operation, permanent.snapshot, credit);
+                return crate::permanent_credit::prepare(
+                    operation,
+                    permanent.snapshot,
+                    credit,
+                    delivery.pending.committed_claim_transfer_fee_e8s,
+                );
             }
             Some(PermanentCreditState::Prepared { transfer, .. })
                 if !matches!(transfer.state, TransferState::Succeeded { .. }) =>
@@ -555,10 +577,9 @@ async fn resume_claim_receipt_delivery(
     let Some(permit) = delivery.permit.clone() else {
         let observation = crate::api::claim_asset_observation().await?;
         ensure_exact(&operation)?;
-        let (kind, claim_credit) = claim_receipt_economics(
+        let (kind, claim_credit) = crate::claim_assets::claim_receipt_economics(
             &delivery.pending,
             mint.actual_minted_icp_e8s,
-            config.expected_icp_fee_e8s,
         )?;
         let permit = execution::prepare_claim_receipt(
             &config,
@@ -615,46 +636,6 @@ async fn resume_claim_receipt_delivery(
     resume_stream_receipt(operation, progress).await
 }
 
-fn claim_receipt_economics(
-    pending: &PendingMaturityDisbursement,
-    mint: u128,
-    fee: u128,
-) -> Result<(ClaimBackingReceiptKind, u128), ApiError> {
-    Ok(match pending.kind {
-        MaturityKind::TwoYear => (
-            ClaimBackingReceiptKind::PermanentMaturity {
-                maturity_generation: pending.initiation_timestamp_seconds,
-            },
-            io_reward_policy::permanent_maturity_credit(mint, fee).map_err(|error| {
-                ApiError::Invalid(format!("permanent maturity credit failed: {error:?}"))
-            })?,
-        ),
-        MaturityKind::TwoWeek => {
-            let split = io_core_model::split_40_60(mint).map_err(|error| {
-                ApiError::Invalid(format!("pooled maturity split failed: {error:?}"))
-            })?;
-            let credit = split
-                .claim
-                .checked_sub(fee)
-                .filter(|credit| *credit > 0)
-                .ok_or_else(|| ApiError::Invalid("pooled claim leg cannot pay its fee".into()))?;
-            let generation = pending
-                .stake_evidence
-                .plan
-                .entitlement_batch_generation
-                .ok_or_else(|| {
-                    ApiError::Invalid("pooled maturity lost its entitlement generation".into())
-                })?;
-            (
-                ClaimBackingReceiptKind::PooledMaturity {
-                    entitlement_batch_generation: generation,
-                },
-                credit,
-            )
-        }
-    })
-}
-
 fn prepare_claim_transfer(
     operation: MaturityCommandOperation,
     destination: crate::state::Account,
@@ -676,7 +657,9 @@ fn prepare_claim_transfer(
             .subaccount,
         destination,
         amount_e8s: amount,
-        fee_e8s: config.expected_icp_fee_e8s,
+        fee_e8s: delivery_ref(&operation)
+            .pending
+            .committed_claim_transfer_fee_e8s,
         memo,
         created_at_time_nanos: now_nanos()?,
     })
@@ -705,6 +688,10 @@ async fn submit_maturity_transfer(
         | TransferState::Paused {
             epoch,
             first_submitted_at_nanos,
+            classification:
+                TransferOutcomeClassification::BadFee
+                | TransferOutcomeClassification::InsufficientFunds
+                | TransferOutcomeClassification::RejectedNoEffect,
             ..
         } => (
             epoch
@@ -712,6 +699,14 @@ async fn submit_maturity_transfer(
                 .ok_or_else(|| ApiError::Invalid("inflow retry epoch exhausted".into()))?,
             first_submitted_at_nanos,
         ),
+        TransferState::Paused {
+            classification: TransferOutcomeClassification::AmbiguousPossibleEffect,
+            ..
+        } => {
+            return Err(ApiError::Pending(
+                "ambiguous maturity transfer requires exact block proof".into(),
+            ))
+        }
         _ => return Err(ApiError::Busy),
     };
     attempt.state = TransferState::Submitted {

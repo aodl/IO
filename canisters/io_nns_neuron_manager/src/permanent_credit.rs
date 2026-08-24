@@ -39,6 +39,7 @@ pub(crate) fn prepare(
     operation: MaturityCommandOperation,
     before: NeuronSnapshot,
     amount: u128,
+    fee_e8s: u128,
 ) -> Result<MaturityProgress, ApiError> {
     let config = state::read().config;
     let transfer = NnsTransferAttempt::prepared(NnsTransferIntent {
@@ -50,7 +51,7 @@ pub(crate) fn prepare(
             .subaccount,
         destination: execution::staking_account(&config, &before),
         amount_e8s: amount,
-        fee_e8s: config.expected_icp_fee_e8s,
+        fee_e8s,
         memo: maturity_flow::maturity_transfer_memo(
             b"io-pooled-maturity-permanent-v1",
             operation.operation_sequence,

@@ -22,6 +22,12 @@ pub enum ExactTransferOutcome {
     Paused(TransferOutcomeClassification, String),
 }
 
+pub enum SplitCallOutcome {
+    Created(u64),
+    RejectedNoEffect(String),
+    Ambiguous(String),
+}
+
 pub fn parent_staking_account(config: &NnsConfig, memo: u64) -> Account {
     let controller = ic_cdk::api::canister_self();
     let mut hasher = Sha256::new();
@@ -146,8 +152,14 @@ struct GovernanceError {
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
+struct NetworkEconomics {
+    transaction_fee_e8s: u64,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
 struct Neuron {
     id: Option<NeuronId>,
+    controller: Option<Principal>,
     account: Vec<u8>,
     cached_neuron_stake_e8s: u64,
     maturity_e8s_equivalent: u64,
@@ -157,6 +169,37 @@ struct Neuron {
     dissolve_state: Option<DissolveState>,
     followees: Vec<(i32, Followees)>,
     voting_power_refreshed_timestamp_seconds: Option<u64>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct ListNeuronsRequest {
+    neuron_ids: Vec<u64>,
+    include_neurons_readable_by_caller: bool,
+    include_empty_neurons_readable_by_caller: Option<bool>,
+    include_public_neurons_in_full_neurons: Option<bool>,
+    page_number: Option<u64>,
+    page_size: Option<u64>,
+    neuron_subaccounts: Option<Vec<NeuronSubaccount>>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct NeuronSubaccount {
+    subaccount: Vec<u8>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct ListNeuronsResponse {
+    full_neurons: Vec<Neuron>,
+    total_pages_available: Option<u64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SplitCandidateObservation {
+    pub neuron_id: u64,
+    pub controller: Principal,
+    pub physical_principal_e8s: u128,
+    pub staking_subaccount: Vec<u8>,
+    pub dissolve_state: Option<DissolveState>,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -348,6 +391,61 @@ struct ManageNeuronResponse {
 
 pub async fn query_neuron(config: &NnsConfig, neuron_id: u64) -> Result<NeuronSnapshot, ApiError> {
     Ok(query_neuron_observation(config, neuron_id).await?.snapshot)
+}
+
+pub async fn controlled_neurons(
+    config: &NnsConfig,
+) -> Result<Vec<SplitCandidateObservation>, ApiError> {
+    let response: ListNeuronsResponse = Call::bounded_wait(config.nns_governance, "list_neurons")
+        .with_arg(ListNeuronsRequest {
+            neuron_ids: Vec::new(),
+            include_neurons_readable_by_caller: true,
+            include_empty_neurons_readable_by_caller: Some(false),
+            include_public_neurons_in_full_neurons: Some(false),
+            page_number: Some(0),
+            page_size: Some(100),
+            neuron_subaccounts: None,
+        })
+        .await
+        .map_err(|error| {
+            ApiError::Pending(format!("controlled-neuron discovery failed: {error:?}"))
+        })?
+        .candid()
+        .map_err(|error| {
+            ApiError::Pending(format!(
+                "controlled-neuron discovery decode failed: {error:?}"
+            ))
+        })?;
+    if response.total_pages_available.unwrap_or(1) > 1 {
+        return Err(ApiError::Pending(
+            "controlled-neuron discovery exceeds the bounded 100-neuron proof page".into(),
+        ));
+    }
+    let controller = ic_cdk::api::canister_self();
+    response
+        .full_neurons
+        .into_iter()
+        .filter(|neuron| neuron.controller == Some(controller))
+        .map(|neuron| {
+            let neuron_id = neuron
+                .id
+                .map(|id| id.id)
+                .filter(|id| *id > 0)
+                .ok_or_else(|| ApiError::Invalid("controlled neuron has no ID".into()))?;
+            if neuron.account.len() != 32 {
+                return Err(ApiError::Invalid(
+                    "controlled neuron staking subaccount is not 32 bytes".into(),
+                ));
+            }
+            Ok(SplitCandidateObservation {
+                neuron_id,
+                controller,
+                physical_principal_e8s: neuron.cached_neuron_stake_e8s.into(),
+                staking_subaccount: neuron.account,
+                dissolve_state: neuron.dissolve_state,
+            })
+        })
+        .collect()
 }
 
 pub async fn query_neuron_observation(
@@ -556,33 +654,66 @@ pub async fn disburse_maturity(
     }
 }
 
+pub async fn nns_transaction_fee(config: &NnsConfig) -> Result<u128, ApiError> {
+    let economics: NetworkEconomics =
+        Call::bounded_wait(config.nns_governance, "get_network_economics_parameters")
+            .with_arg(())
+            .await
+            .map_err(|error| ApiError::Pending(format!("NNS economics query failed: {error:?}")))?
+            .candid()
+            .map_err(|error| {
+                ApiError::Invalid(format!("NNS economics decode failed: {error:?}"))
+            })?;
+    Ok(economics.transaction_fee_e8s.into())
+}
+
 pub async fn split_neuron(
     config: &NnsConfig,
     parent_neuron_id: u64,
     amount_e8s: u128,
     memo: u64,
-) -> Result<u64, ApiError> {
+) -> Result<SplitCallOutcome, ApiError> {
     let amount_e8s = u64::try_from(amount_e8s)
         .map_err(|_| ApiError::Invalid("unwind excess does not fit NNS nat64".into()))?;
-    match manage(
-        config,
-        parent_neuron_id,
-        Command::Split(Split {
-            amount_e8s,
-            memo: Some(memo),
-        }),
-    )
-    .await?
-    {
-        Some(CommandResponse::Split(value)) => value
-            .created_neuron_id
-            .map(|id| id.id)
-            .ok_or_else(|| ApiError::Invalid("NNS Split returned no child neuron".into())),
-        Some(CommandResponse::Error(error)) => Err(governance_error("Split", error)),
-        _ => Err(ApiError::Invalid(
-            "Split returned the wrong command response".into(),
+    let response = Call::bounded_wait(config.nns_governance, "manage_neuron")
+        .with_arg(ManageNeuron {
+            id: None,
+            neuron_id_or_subaccount: Some(NeuronIdOrSubaccount::NeuronId(NeuronId {
+                id: parent_neuron_id,
+            })),
+            command: Some(Command::Split(Split {
+                amount_e8s,
+                memo: Some(memo),
+            })),
+        })
+        .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            return Ok(SplitCallOutcome::Ambiguous(format!(
+                "NNS Split transport outcome is ambiguous: {error:?}"
+            )))
+        }
+    };
+    let response = match response.candid::<ManageNeuronResponse>() {
+        Ok(response) => response,
+        Err(error) => {
+            return Ok(SplitCallOutcome::Ambiguous(format!(
+                "NNS Split response decode is ambiguous: {error:?}"
+            )))
+        }
+    };
+    Ok(match response.command {
+        Some(CommandResponse::Split(value)) => match value.created_neuron_id {
+            Some(id) if id.id > 0 => SplitCallOutcome::Created(id.id),
+            _ => SplitCallOutcome::Ambiguous("NNS Split response omitted the child ID".into()),
+        },
+        Some(CommandResponse::Error(error)) => SplitCallOutcome::RejectedNoEffect(format!(
+            "Split rejected ({}): {}",
+            error.error_type, error.error_message
         )),
-    }
+        _ => SplitCallOutcome::Ambiguous("NNS Split returned a malformed command response".into()),
+    })
 }
 
 pub async fn set_dissolving(

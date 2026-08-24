@@ -18,7 +18,7 @@ use {
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
 
-pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 7;
+pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct NnsConfig {
@@ -166,6 +166,7 @@ pub struct HeldReconciliation {
 pub struct CompletedUnwindReconciliation {
     pub generation: u64,
     pub reconciliation_request_fingerprint: Vec<u8>,
+    pub child_neuron_id: u64,
     pub physical_principal_e8s: u128,
 }
 
@@ -266,7 +267,7 @@ fn validate_claim_receipt_delivery(
         attempt.validate()?;
         if attempt.intent.ledger != config.icp_ledger
             || attempt.intent.source_subaccount != config.maturity_staging.canonical()?.subaccount
-            || attempt.intent.fee_e8s != config.expected_icp_fee_e8s
+            || attempt.intent.fee_e8s != delivery.pending.committed_claim_transfer_fee_e8s
         {
             return Err("maturity transfer differs from canonical staging policy".into());
         }
@@ -277,7 +278,7 @@ fn validate_claim_receipt_delivery(
             .map_err(|error| format!("maturity split failed: {error:?}"))?;
         let protocol_credit = split
             .permanent
-            .checked_sub(config.expected_icp_fee_e8s)
+            .checked_sub(delivery.pending.committed_claim_transfer_fee_e8s)
             .filter(|credit| *credit > 0)
             .ok_or("permanent maturity leg cannot pay its fee")?;
         if kind != crate::maturity::MaturityKind::TwoWeek {
@@ -413,6 +414,7 @@ impl NnsStateV1 {
                 completed.generation == 0
                     || completed.generation > self.latest_reconciliation_generation
                     || completed.reconciliation_request_fingerprint.len() != 32
+                    || completed.child_neuron_id == 0
                     || completed.physical_principal_e8s == 0
             })
         {
@@ -494,7 +496,7 @@ impl NnsStateV1 {
                         operation.phase,
                         crate::pool::UnwindPhase::SplitPrepared
                             | crate::pool::UnwindPhase::SplitSubmitted
-                    ) && operation.principal_e8s <= self.config.expected_icp_fee_e8s
+                    ) && operation.principal_e8s <= operation.committed_disbursement_fee_e8s
                     {
                         return Err(
                             "committed unwind principal cannot cover its disbursement fee".into(),
@@ -689,7 +691,7 @@ impl StableNnsState {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[derive(candid::CandidType)]
@@ -763,7 +765,7 @@ mod tests {
         Principal::from_slice(&[value; 29])
     }
 
-    fn valid_state() -> (Principal, NnsStateV1) {
+    pub(crate) fn valid_state() -> (Principal, NnsStateV1) {
         let canister_self = principal(1);
         let stream = principal(2);
         let jupiter = principal(3);
@@ -880,7 +882,65 @@ mod tests {
                 amount_disbursed_e8s: 200_000_000,
                 evidence_source: crate::maturity::MaturityEvidenceSource::CommandResponse,
             },
+            committed_claim_transfer_fee_e8s: if matches!(
+                &mint_proof,
+                crate::maturity::MintProofState::Awaiting
+            ) {
+                0
+            } else {
+                state.config.expected_icp_fee_e8s
+            },
             mint_proof,
+        }
+    }
+
+    fn pending_two_year_maturity(
+        state: &NnsStateV1,
+    ) -> crate::maturity::PendingMaturityDisbursement {
+        let plan = crate::maturity::MaturityPlan {
+            neuron: crate::jupiter::NeuronSnapshot {
+                neuron_id: state.config.two_year_neuron_id,
+                staking_subaccount: [1; 32],
+                cached_stake_e8s: 100_000_000,
+            },
+            original_maturity_e8s: 200_000_000,
+            original_staked_maturity_e8s: 0,
+            stake_maturity_e8s: 80_000_000,
+            remaining_maturity_e8s: 120_000_000,
+            destination: state.config.maturity_staging.clone(),
+            requested_at_seconds: 1,
+            entitlement_batch_generation: None,
+        };
+        let stake = crate::maturity::StakeMaturitySucceeded {
+            plan,
+            remaining_maturity_e8s: 120_000_000,
+            staked_maturity_e8s: 80_000_000,
+            evidence_source: crate::maturity::MaturityEvidenceSource::CommandResponse,
+        };
+        let submission = crate::maturity::DisburseMaturitySubmission {
+            stake: stake.clone(),
+            submitted_at_seconds: 1,
+        };
+        crate::maturity::PendingMaturityDisbursement {
+            kind: crate::maturity::MaturityKind::TwoYear,
+            neuron_id: state.config.two_year_neuron_id,
+            nominal_disbursed_maturity_e8s: 120_000_000,
+            destination: state.config.maturity_staging.clone(),
+            initiation_timestamp_seconds: 1,
+            scheduled_finalization_timestamp_seconds: 604_801,
+            stake_evidence: stake,
+            disburse_evidence: crate::maturity::DisburseMaturitySucceeded {
+                submission,
+                amount_disbursed_e8s: 120_000_000,
+                evidence_source: crate::maturity::MaturityEvidenceSource::CommandResponse,
+            },
+            committed_claim_transfer_fee_e8s: state.config.expected_icp_fee_e8s,
+            mint_proof: crate::maturity::MintProofState::Proved(crate::maturity::MintEvidence {
+                mint_block: 12,
+                actual_minted_icp_e8s: 120_000_000,
+                native_memo_u64: 604_801,
+                created_at_time_nanos: 604_801_000_000_000,
+            }),
         }
     }
 
@@ -989,6 +1049,7 @@ mod tests {
                 amount_disbursed_e8s: 120_000_000,
                 evidence_source: crate::maturity::MaturityEvidenceSource::CommandResponse,
             },
+            committed_claim_transfer_fee_e8s: 0,
             mint_proof: crate::maturity::MintProofState::Awaiting,
         });
         assert!(state.validate(canister_self).is_err());
@@ -1089,41 +1150,53 @@ mod tests {
     }
 
     #[test]
-    fn child_identified_survives_same_schema_upgrade_and_reopens_paused() {
-        let (canister_self, mut state) = valid_state();
-        state.lifecycle = Lifecycle::Ready;
-        state.latest_reconciliation_generation = 1;
-        state.pooled_parent_id = Some(2);
-        state.pooled_parent_staking_account = Some(Account {
-            owner: state.config.nns_governance,
-            subaccount: Some(vec![9; 32]),
-        });
-        state.latest_pooled_target = Some(PooledTarget {
-            target_e8s: 90,
-            status: PooledTargetStatus::OverTarget,
-        });
-        state.next_operation_sequence = 2;
-        state.active_operation = Some(NnsOperation::Unwind(UnwindOperation {
-            operation_sequence: 1,
-            generation: 1,
-            reconciliation_request_fingerprint: vec![1; 32],
-            target_e8s: 90,
-            gross_e8s: 30_000,
-            child_neuron_id: 3,
-            principal_e8s: 20_000,
-            child_staking_subaccount: Vec::new(),
-            submitted_at_seconds: 0,
-            expected_block_index: None,
-            child_maturity_e8s: 0,
-            parent_maturity_e8s: 0,
-            parent_principal_e8s: 0,
-            phase: crate::pool::UnwindPhase::ChildIdentified,
-        }));
-        initialize(state.clone(), canister_self).unwrap();
-        reopen(canister_self);
-        let reopened = read();
-        assert_eq!(reopened.lifecycle, Lifecycle::Paused);
-        assert_eq!(reopened.active_operation, state.active_operation);
+    fn ambiguous_and_identified_split_survive_same_schema_upgrade() {
+        for phase in [
+            crate::pool::UnwindPhase::SplitSubmitted,
+            crate::pool::UnwindPhase::ChildIdentified,
+        ] {
+            let (canister_self, mut state) = valid_state();
+            state.lifecycle = Lifecycle::Ready;
+            state.two_year_maturity_baseline_reconciled = true;
+            state.pending_two_year_maturity = Some(pending_two_year_maturity(&state));
+            state.latest_reconciliation_generation = 1;
+            state.pooled_parent_id = Some(2);
+            state.pooled_parent_staking_account = Some(Account {
+                owner: state.config.nns_governance,
+                subaccount: Some(vec![9; 32]),
+            });
+            state.latest_pooled_target = Some(PooledTarget {
+                target_e8s: 90,
+                status: PooledTargetStatus::OverTarget,
+            });
+            state.next_operation_sequence = 2;
+            let identified = phase == crate::pool::UnwindPhase::ChildIdentified;
+            state.active_operation = Some(NnsOperation::Unwind(UnwindOperation {
+                operation_sequence: 1,
+                generation: 1,
+                reconciliation_request_fingerprint: vec![1; 32],
+                target_e8s: 90,
+                gross_e8s: 30_000,
+                split_fee_e8s: 10_000,
+                committed_disbursement_fee_e8s: 10_000,
+                parent_principal_before_split_e8s: 100_000,
+                child_neuron_id: if identified { 3 } else { 0 },
+                principal_e8s: if identified { 20_000 } else { 0 },
+                child_staking_subaccount: Vec::new(),
+                submitted_at_seconds: 0,
+                expected_block_index: None,
+                child_maturity_e8s: 0,
+                parent_maturity_e8s: 0,
+                parent_principal_e8s: 0,
+                phase,
+            }));
+            initialize(state.clone(), canister_self).unwrap();
+            write(state.clone());
+            reopen(canister_self);
+            let reopened = read();
+            assert_eq!(reopened.lifecycle, Lifecycle::Paused);
+            assert_eq!(reopened.active_operation, state.active_operation);
+        }
     }
 
     #[test]
@@ -1179,6 +1252,8 @@ mod tests {
     fn jupiter_refresh_checkpoint_survives_same_schema_upgrade() {
         let (canister_self, mut state) = valid_state();
         state.lifecycle = Lifecycle::Ready;
+        state.two_year_maturity_baseline_reconciled = true;
+        state.pending_two_year_maturity = Some(pending_two_year_maturity(&state));
         state.next_operation_sequence = 2;
         state.active_operation = Some(NnsOperation::Jupiter(Box::new(
             crate::jupiter::JupiterOperation {
@@ -1213,10 +1288,12 @@ mod tests {
     }
 
     #[test]
-    fn pending_mint_and_ready_cohort_survive_same_schema_upgrade() {
+    fn both_pending_maturity_slots_and_ready_cohort_survive_same_schema_upgrade() {
         let (canister_self, mut state) = valid_state();
         configure_pooled_maturity(&mut state);
         state.lifecycle = Lifecycle::Ready;
+        state.two_year_maturity_baseline_reconciled = true;
+        state.pending_two_year_maturity = Some(pending_two_year_maturity(&state));
         state.pending_two_week_maturity = Some(pending_two_week_maturity(
             &state,
             crate::maturity::MintProofState::Awaiting,
@@ -1227,10 +1304,58 @@ mod tests {
         let reopened = read();
         assert_eq!(reopened.lifecycle, Lifecycle::Paused);
         assert_eq!(
+            reopened.pending_two_year_maturity,
+            state.pending_two_year_maturity
+        );
+        assert_eq!(
             reopened.pending_two_week_maturity,
             state.pending_two_week_maturity
         );
         assert_eq!(reopened.live_cohorts, state.live_cohorts);
+    }
+
+    #[test]
+    fn pending_permanent_yield_and_active_pool_survive_same_schema_upgrade() {
+        let (canister_self, mut state) = valid_state();
+        state.lifecycle = Lifecycle::Ready;
+        state.two_year_maturity_baseline_reconciled = true;
+        state.pending_two_year_maturity = Some(pending_two_year_maturity(&state));
+        state.pooled_parent_id = Some(2);
+        state.pooled_parent_staking_account = Some(Account {
+            owner: state.config.nns_governance,
+            subaccount: Some(vec![9; 32]),
+        });
+        state.latest_reconciliation_generation = 1;
+        state.latest_pooled_target = Some(PooledTarget {
+            target_e8s: 110_000_000,
+            status: PooledTargetStatus::UnderTarget,
+        });
+        state.next_operation_sequence = 2;
+        state.active_operation = Some(NnsOperation::Pool(io_nns_types::backing::PoolCommand {
+            kind: io_nns_types::backing::PoolCommandKind::TopUp,
+            permit: io_nns_types::backing::TopUpPermit {
+                generation: 1,
+                operation_sequence: 1,
+                expected_parent_principal_e8s: 100_000_000,
+                destination: state.pooled_parent_staking_account.clone().unwrap(),
+                expected_credit_e8s: 10_000_000,
+                fee_e8s: state.config.expected_icp_fee_e8s,
+                memo: vec![1],
+                prepared_at_nanos: 1,
+                snapshot_fingerprint: vec![2; 32],
+            },
+            transfer_block_index: None,
+            parent_neuron_id: Some(2),
+            phase: io_nns_types::backing::PoolCommandPhase::AwaitingTransfer,
+        }));
+        initialize(state.clone(), canister_self).unwrap();
+        write(state.clone());
+        reopen(canister_self);
+        assert_eq!(read().active_operation, state.active_operation);
+        assert_eq!(
+            read().pending_two_year_maturity,
+            state.pending_two_year_maturity
+        );
     }
 
     #[test]
