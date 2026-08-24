@@ -751,6 +751,7 @@ pub(crate) mod tests {
     }
 
     #[allow(dead_code)]
+    #[allow(clippy::large_enum_variant)]
     #[derive(candid::CandidType)]
     enum FcdMaturityCommandPhase {
         Observed(FcdMaturityPlan),

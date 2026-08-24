@@ -1176,6 +1176,9 @@ fn child_disbursement_state(fixture: &RecoveryFixture, child_neuron_id: u64) -> 
 
 #[test]
 fn child_disburse_decoded_rejection_retries_and_proves_exact_block() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        return;
+    }
     let fixture = RecoveryFixture::new();
     fixture.create_controlled_neuron(501, 110_000, 0);
     fixture.replace(child_disbursement_state(&fixture, 501));
@@ -1213,6 +1216,9 @@ fn child_disburse_decoded_rejection_retries_and_proves_exact_block() {
 
 #[test]
 fn child_disburse_malformed_after_effect_never_resubmits() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        return;
+    }
     let fixture = RecoveryFixture::new();
     fixture.create_controlled_neuron(502, 110_000, 0);
     fixture.replace(child_disbursement_state(&fixture, 502));
@@ -1239,6 +1245,9 @@ fn child_disburse_malformed_after_effect_never_resubmits() {
 
 #[test]
 fn child_disburse_checks_governance_and_ledger_fees_before_effect() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        return;
+    }
     let fixture = RecoveryFixture::new();
     fixture.create_controlled_neuron(503, 110_000, 0);
     fixture.replace(child_disbursement_state(&fixture, 503));
@@ -1260,6 +1269,9 @@ fn child_disburse_checks_governance_and_ledger_fees_before_effect() {
 
 #[test]
 fn two_week_maturity_captures_canonical_amount_after_intervening_reward_events() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        return;
+    }
     for reward_events in [1_u64, 3] {
         let fixture = RecoveryFixture::new();
         fixture.replace(ready_two_week_state(&fixture));
@@ -1315,6 +1327,9 @@ fn two_week_maturity_captures_canonical_amount_after_intervening_reward_events()
 
 #[test]
 fn permanent_maturity_uses_realised_mint_command_across_reward_accrual() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        return;
+    }
     let fixture = RecoveryFixture::new();
     fixture.replace(fixture.state());
     fixture.add_maturity(41, 200_000_000);
@@ -1349,6 +1364,9 @@ fn permanent_maturity_uses_realised_mint_command_across_reward_accrual() {
 
 #[test]
 fn disburse_maturity_decoded_rejection_retries_but_ambiguity_never_resubmits() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        return;
+    }
     let fixture = RecoveryFixture::new();
     fixture.replace(fixture.state());
     fixture.add_maturity(41, 200_000_000);
