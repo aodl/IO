@@ -17,6 +17,11 @@ struct DebugMintAccountArgs {
     amount_e8s: u128,
 }
 
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct DebugFeeArgs {
+    fee_e8s: u128,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
 struct LedgerCallCounters {
     fee: u64,
@@ -145,6 +150,15 @@ fn malformed_prepare_after_persistence_replays_and_quarantines_redemption() {
         .unwrap(),
         None,
     );
+    for ledger in [io_ledger, icp_ledger] {
+        let _: () = update(
+            &pic,
+            ledger,
+            Principal::anonymous(),
+            "debug_set_fee",
+            DebugFeeArgs { fee_e8s: 10_000 },
+        );
+    }
     for (ledger, to, amount_e8s) in [
         (io_ledger, reserve.clone(), 60_010_000),
         (
@@ -169,6 +183,52 @@ fn malformed_prepare_after_persistence_replays_and_quarantines_redemption() {
     let mut ready: StreamStateV1 = query(&pic, stream, "debug_get_state");
     ready.lifecycle = Lifecycle::Ready;
     replace_state(&pic, stream, ready);
+
+    let now = pic.get_time().as_nanos_since_unix_epoch();
+    assert_eq!(
+        update::<_, Result<RedemptionProgress, ApiError>>(
+            &pic,
+            stream,
+            user,
+            "redeem",
+            RedeemArgs {
+                from_subaccount: None,
+                io_amount_e8s: 10_000_000,
+                min_icp_out_e8s: 9_990_000,
+                max_io_fee_e8s: 10_000,
+                max_icp_fee_e8s: 10_000,
+                expires_at_nanos: now + 60_000_000_000,
+                nonce: 0,
+            }
+        ),
+        Ok(RedemptionProgress::IoInReserve)
+    );
+    assert_eq!(
+        update::<_, Result<io_stream_manager::StreamProgress, ApiError>>(
+            &pic,
+            stream,
+            Principal::anonymous(),
+            "resume",
+            (),
+        ),
+        Ok(io_stream_manager::StreamProgress::Redemption(
+            RedemptionProgress::PayoutSucceeded
+        ))
+    );
+    let completed = match update::<_, Result<io_stream_manager::StreamProgress, ApiError>>(
+        &pic,
+        stream,
+        Principal::anonymous(),
+        "resume",
+        (),
+    ) {
+        Ok(io_stream_manager::StreamProgress::Redemption(RedemptionProgress::Completed(
+            result,
+        ))) => result,
+        other => panic!("redemption did not complete after its payout: {other:?}"),
+    };
+    assert_eq!(completed.gross_icp_e8s, 10_000_000);
+    assert_eq!(completed.net_icp_e8s, 9_990_000);
 
     let request = PrepareClaimBackingReceiptArgs {
         source_operation_id: vec![1; 32],
@@ -216,7 +276,6 @@ fn malformed_prepare_after_persistence_replays_and_quarantines_redemption() {
         ledger_before_replay,
         "exact malformed-response replay must not rebuild the canonical snapshot"
     );
-    let now = pic.get_time().as_nanos_since_unix_epoch();
     assert_eq!(
         update::<_, Result<RedemptionProgress, ApiError>>(
             &pic,
@@ -230,7 +289,7 @@ fn malformed_prepare_after_persistence_replays_and_quarantines_redemption() {
                 max_io_fee_e8s: 10_000,
                 max_icp_fee_e8s: 10_000,
                 expires_at_nanos: now + 60_000_000_000,
-                nonce: 0,
+                nonce: 1,
             }
         ),
         Err(ApiError::Busy),

@@ -393,18 +393,33 @@ pub fn icrc2_transfer_from(args: TransferFromArg) -> Result<Nat, IcrcTransferErr
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         state.call_counters.transfer_from += 1;
+        if let Some(fee) = args.fee.as_ref() {
+            let fee = nat_to_u128(fee, "fee")?;
+            let current_fee = fee_e8s(&state);
+            if fee != current_fee {
+                return Err(IcrcTransferError::BadFee {
+                    expected_fee: Nat::from(current_fee),
+                });
+            }
+        }
         let from_account = account_from_icrc(args.from.clone())?;
         let to_account = account_from_icrc(args.to.clone())?;
         let from = mock_label_from_account(&from_account);
         let to = mock_label_from_account(&to_account);
         let amount_e8s = nat_to_u128(&args.amount, "amount")?;
+        let debit_e8s = amount_e8s.checked_add(fee_e8s(&state)).ok_or_else(|| {
+            IcrcTransferError::GenericError {
+                error_code: Nat::from(1_u64),
+                message: "transfer debit overflow".into(),
+            }
+        })?;
         let from_balance = balance_of(&state, &from);
-        if from_balance < amount_e8s {
+        if from_balance < debit_e8s {
             return Err(IcrcTransferError::InsufficientFunds {
                 balance: Nat::from(from_balance),
             });
         }
-        set_balance(&mut state, &from, from_balance - amount_e8s);
+        set_balance(&mut state, &from, from_balance - debit_e8s);
         let to_balance = balance_of(&state, &to);
         set_balance(&mut state, &to, to_balance.saturating_add(amount_e8s));
         Ok(Nat::from(record(
