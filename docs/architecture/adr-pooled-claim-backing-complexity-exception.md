@@ -6,6 +6,7 @@
 - Final-correction baseline: `221d8c7703d4ad4cf58c7c30ca07ed056663b369`
 - Cross-flow correction baseline: `0e7299eb43503351d80cbee933cfdab15f3b4f6b`
 - Source-local completion baseline: `4f56e48afa62dc1b775e85f420c3b71a376d2db2`
+- Production-final baseline: `7100aa4`
 
 ## Context
 
@@ -124,11 +125,39 @@ fee-debt scalar. The final measured delta is:
 | receipt types | 49 | 49 | 0 |
 | **Combined** | **13,977** | **14,420** | **+443** |
 
+The production-final tranche replaces controller-neuron scanning with the
+exact pinned `split-neuron` subaccount lookup, deletes the percentage-based
+StakeMaturity and maturity-drift machinery in favor of one realised-Mint
+40/60 flow, and shares guaranteed-no-effect versus possible-effect handling
+across persisted Governance commands. It also keeps normal reward work live by
+refreshing an otherwise exact pooled parent's aged voting power and binds every
+reconciliation retry to its immutable checkpoint time. These changes add no
+operation variant or persistent collection. The final normally formatted
+counts are:
+
+| Counted component | Review final | Production final | Delta |
+| --- | ---: | ---: | ---: |
+| Stream Manager | 5,452 | 5,452 | 0 |
+| NNS Manager | 6,109 | 6,024 | -85 |
+| pure economics | 220 | 220 | 0 |
+| ledger boundary | 528 | 528 | 0 |
+| reward policy | 282 | 282 | 0 |
+| SNS reward boundary | 457 | 457 | 0 |
+| accounts | 45 | 45 | 0 |
+| NNS types | 1,278 | 1,241 | -37 |
+| receipt types | 49 | 49 | 0 |
+| **Combined** | **14,420** | **14,298** | **-122** |
+
+The maximum encoded NNS state with all 32 live cohorts is 5,651 bytes against
+its 1,000,000-byte stable-cell bound. The maximum exercised Stream state with
+the full 1,000-record neuron registry is 111,342 bytes against its
+2,000,000-byte stable-cell bound.
+
 ## Decision
 
-The final ceilings are 5,600 Stream Manager lines, 6,260 NNS Manager lines,
-and 14,780 combined lines. Against the final measured counts these provide
-148 lines (2.71%), 151 lines (2.47%), and 360 lines (2.50%) of headroom. The
+The final ceilings are 5,600 Stream Manager lines, 6,180 NNS Manager lines,
+and 14,660 combined lines. Against the final measured counts these provide
+148 lines (2.71%), 156 lines (2.59%), and 362 lines (2.53%) of headroom. The
 pure-economics, reward-boundary, ledger-boundary, shared-type, and per-file
 ceilings do not change. In particular, every production file remains limited
 to 1,000 normally formatted lines.
