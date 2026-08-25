@@ -67,9 +67,9 @@ pub enum MaturityProgress {
     Observed,
     DisburseMaturitySubmitted,
     DisburseMaturitySucceeded,
-    AwaitingMintProof,
-    MintProved,
-    DeliveringClaimReceipt,
+    AwaitingCapture,
+    Captured { captured_e8s: u128 },
+    Delivering,
     Completed(Box<CompletedMaturity>),
     Stuck(String),
 }
@@ -158,20 +158,11 @@ async fn resume_passive_work(snapshot: crate::state::NnsStateV1) -> Result<NnsPr
             snapshot.pending_two_year_maturity.as_ref(),
         ),
     ] {
-        if pending.is_some_and(|pending| {
-            !matches!(
-                pending.mint_proof,
-                crate::maturity::MintProofState::Awaiting
-            )
-        }) {
+        if pending.is_some() {
             return crate::maturity_flow::resume_kind(kind)
                 .await
                 .map(NnsProgress::Maturity);
         }
-    }
-    if snapshot.pending_two_week_maturity.is_some() || snapshot.pending_two_year_maturity.is_some()
-    {
-        return Ok(NnsProgress::Maturity(MaturityProgress::AwaitingMintProof));
     }
     if snapshot.live_cohorts.is_empty() {
         Ok(NnsProgress::Idle)
@@ -230,15 +221,8 @@ pub async fn start_maturity(
 pub async fn prepare_two_week_maturity(
     caller: Principal,
     args: PrepareTwoWeekMaturityArgs,
-) -> Result<MaturityProgress, ApiError> {
+) -> Result<(), ApiError> {
     crate::two_week_binding::prepare(caller, args).await
-}
-
-pub async fn prove_maturity_mint(
-    kind: MaturityKind,
-    block_index: u128,
-) -> Result<MaturityProgress, ApiError> {
-    crate::maturity_mint::prove(kind, block_index).await
 }
 
 pub fn get_status() -> Status {
@@ -265,8 +249,8 @@ pub fn get_status() -> Status {
                 NnsOperation::Unwind(_) => "Unwind".into(),
             }),
         two_year_maturity_baseline_reconciled: current.two_year_maturity_baseline_reconciled,
-        latest_started_two_week_generation: current.latest_started_two_week_generation,
-        latest_completed_two_week_generation: current.latest_completed_two_week_generation,
+        latest_started_two_week_generation: current.latest_two_week_generation(),
+        latest_completed_two_week_generation: current.completed_two_week_generation(),
         latest_pooled_target: current.latest_pooled_target.clone(),
         live_child_physical_principal_e8s: physical,
         live_child_net_backing_e8s: net,
@@ -947,10 +931,8 @@ mod tests {
         let ready = body.find("resume_passive(ready)").unwrap();
         let two_week = body.find("MaturityKind::TwoWeek").unwrap();
         let two_year = body.find("MaturityKind::TwoYear").unwrap();
-        let awaiting = body.find("MaturityProgress::AwaitingMintProof").unwrap();
         let waiting = body.find("UnwindProgress::Waiting").unwrap();
-        assert!(ready < two_week && two_week < two_year && two_year < awaiting);
-        assert!(awaiting < waiting);
+        assert!(ready < two_week && two_week < two_year && two_year < waiting);
     }
 
     #[test]
@@ -969,7 +951,7 @@ mod tests {
     }
 
     #[test]
-    fn paired_mint_is_quarantined_until_permit_but_permanent_mint_is_not() {
+    fn paired_capture_is_quarantined_but_two_year_yield_is_not() {
         assert_eq!(
             maturity_ingress_transit(MaturityKind::TwoWeek, 200_000, 10_000, false),
             Ok(0)
@@ -1003,7 +985,6 @@ mod tests {
             },
             amount_e8s: 60,
             memo: vec![1],
-            request_fingerprint: vec![2; 32],
         };
         let mut attempt =
             crate::transfer::NnsTransferAttempt::prepared(crate::transfer::NnsTransferIntent {

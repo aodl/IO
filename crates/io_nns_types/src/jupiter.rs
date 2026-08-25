@@ -88,7 +88,6 @@ pub struct JupiterCompleted {
     pub backed_io_e8s: u128,
     pub io_transfer_block: u128,
     pub io_fee_e8s: u128,
-    pub stream_receipt_fingerprint: Vec<u8>,
     pub completed_at_nanos: u64,
 }
 
@@ -182,7 +181,13 @@ impl JupiterOperation {
             || self.deposit.block_index > u128::from(u64::MAX)
             || self.deposit.gross_e8s == 0
             || self.deposit.created_at_time_nanos == 0
-            || fee_reduced_split(self.deposit.gross_e8s, self.deposit.fee_e8s)?
+            || crate::maturity::capture_40_60(
+                self.deposit.gross_e8s,
+                self.deposit.fee_e8s,
+                self.deposit.fee_e8s,
+            )
+            .map(|split| (split.permanent_credit, split.claim_credit))
+            .map_err(|error| format!("paired inflow split failed: {error:?}"))?
                 != (self.deposit.stake_e8s, self.deposit.liquid_e8s)
         {
             return Err("Jupiter operation identity is malformed".into());
@@ -292,60 +297,15 @@ fn validate_stake_increase(
 }
 
 fn validate_permit(permit: &StreamReceiptPermit) -> Result<(), String> {
-    if permit.stream_operation_sequence == 0
-        || permit.amount_e8s == 0
-        || permit.memo.len() != 32
-        || permit.request_fingerprint.len() != 32
-    {
+    if permit.stream_operation_sequence == 0 || permit.amount_e8s == 0 || permit.memo.len() != 32 {
         return Err("stream receipt permit memo is malformed".into());
     }
     permit.destination.validate()
 }
 
-pub fn checked_split(gross_e8s: u128) -> Result<(u128, u128), String> {
-    let stake = gross_e8s.checked_mul(40).ok_or("Jupiter split overflow")? / 100;
-    let liquid = gross_e8s
-        .checked_sub(stake)
-        .ok_or("Jupiter split underflow")?;
-    if stake == 0 || liquid == 0 {
-        return Err("Jupiter deposit is too small for a nonzero 40/60 split".into());
-    }
-    Ok((stake, liquid))
-}
-
-pub fn fee_reduced_split(gross_e8s: u128, fee_e8s: u128) -> Result<(u128, u128), String> {
-    let (permanent_gross, claim_gross) = checked_split(gross_e8s)?;
-    let permanent_credit = permanent_gross
-        .checked_sub(fee_e8s)
-        .ok_or("Jupiter permanent gross cannot cover its fee")?;
-    let claim_credit = claim_gross
-        .checked_sub(fee_e8s)
-        .ok_or("Jupiter claim gross cannot cover its fee")?;
-    if permanent_credit == 0 || claim_credit == 0 {
-        return Err("Jupiter destination credit must be positive".into());
-    }
-    Ok((permanent_credit, claim_credit))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn exact_checked_40_60_split() {
-        assert_eq!(checked_split(101).unwrap(), (40, 61));
-        assert!(checked_split(1).is_err());
-        assert_eq!(
-            checked_split(u128::MAX),
-            Err("Jupiter split overflow".into())
-        );
-    }
-
-    #[test]
-    fn internal_fees_reduce_each_physical_credit() {
-        assert_eq!(fee_reduced_split(100_000, 10_000), Ok((30_000, 50_000)));
-        assert!(fee_reduced_split(20_000, 10_000).is_err());
-    }
 
     #[test]
     fn permanent_credit_proof_is_monotone_and_does_not_attribute_donations() {

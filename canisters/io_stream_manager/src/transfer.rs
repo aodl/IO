@@ -97,11 +97,6 @@ impl OwnTransferIntent {
             } => *created_at_time,
         }
     }
-
-    pub fn fingerprint(&self) -> Vec<u8> {
-        Sha256::digest(candid::encode_one(self).expect("typed transfer intent must encode"))
-            .to_vec()
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -123,17 +118,14 @@ pub enum TransferState {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct TransferAttempt {
     pub intent: OwnTransferIntent,
-    pub fingerprint: Vec<u8>,
     pub state: TransferState,
 }
 
 impl TransferAttempt {
     pub fn prepared(intent: OwnTransferIntent) -> Result<Self, String> {
         intent.validate()?;
-        let fingerprint = intent.fingerprint();
         Ok(Self {
             intent,
-            fingerprint,
             state: TransferState::Prepared,
         })
     }
@@ -147,9 +139,6 @@ impl TransferAttempt {
 
     pub fn validate(&self) -> Result<(), String> {
         self.intent.validate()?;
-        if self.fingerprint.len() != 32 || self.fingerprint != self.intent.fingerprint() {
-            return Err("transfer fingerprint is invalid".into());
-        }
         match &self.state {
             TransferState::Prepared => {}
             TransferState::Submitted {
@@ -271,27 +260,5 @@ mod tests {
             .unwrap(),
             ClassifiedResult::Succeeded(9)
         ));
-    }
-
-    #[test]
-    fn typed_fingerprint_changes_with_semantics() {
-        let principal = Principal::from_slice(&[1]);
-        let base = OwnTransferIntent::Icrc1 {
-            ledger: principal,
-            from_subaccount: [0; 32],
-            to: Account {
-                owner: principal,
-                subaccount: None,
-            },
-            amount: 10,
-            fee: 1,
-            memo: vec![1],
-            created_at_time: 1,
-        };
-        let mut changed = base.clone();
-        if let OwnTransferIntent::Icrc1 { amount, .. } = &mut changed {
-            *amount = 11;
-        }
-        assert_ne!(base.fingerprint(), changed.fingerprint());
     }
 }

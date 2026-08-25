@@ -631,10 +631,6 @@ mod tests {
             io_ledger: principal(2),
             icp_ledger: principal(3),
             nns_manager: principal(5),
-            jupiter_receipt_source: Account {
-                owner: principal(5),
-                subaccount: Some(vec![1; 32]),
-            },
             jupiter_io_account: Account {
                 owner: principal(7),
                 subaccount: None,
@@ -908,7 +904,6 @@ mod tests {
                 subaccount: None,
             };
         }
-        operation.io_pull.fingerprint = operation.io_pull.intent.fingerprint();
         assert!(operation.validate(&config).is_err());
     }
 }

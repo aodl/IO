@@ -5,7 +5,6 @@ pub use io_nns_types::{jupiter, maturity, maturity::MaturityKind, pool, transfer
 mod jupiter_flow;
 pub mod lifecycle;
 mod maturity_flow;
-mod maturity_mint;
 mod permanent_credit;
 mod pool_flow;
 pub mod state;
@@ -42,8 +41,6 @@ pub fn init(args: InitArgs) {
             latest_reconciliation_generation: 0,
             latest_pooled_target: None,
             two_year_maturity_baseline_reconciled: false,
-            latest_started_two_week_generation: 0,
-            latest_completed_two_week_generation: 0,
             pending_two_year_maturity: None,
             pending_two_week_maturity: None,
             last_two_year_maturity: None,
@@ -110,18 +107,8 @@ pub fn validate_start_maturity(kind: MaturityKind) -> Result<String, String> {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn prepare_two_week_maturity(
-    args: PrepareTwoWeekMaturityArgs,
-) -> Result<MaturityProgress, ApiError> {
+pub async fn prepare_two_week_maturity(args: PrepareTwoWeekMaturityArgs) -> Result<(), ApiError> {
     api::prepare_two_week_maturity(ic_cdk::api::msg_caller(), args).await
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn prove_maturity_mint(
-    kind: MaturityKind,
-    block_index: u128,
-) -> Result<MaturityProgress, ApiError> {
-    api::prove_maturity_mint(kind, block_index).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]

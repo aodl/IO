@@ -36,7 +36,6 @@ pub struct FrozenClaimEconomics {
     pub pre_claim_supply_e8s: u128,
     pub liquid_credit_e8s: u128,
     pub io_fee_e8s: u128,
-    pub snapshot_fingerprint: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -49,7 +48,6 @@ pub struct FrozenRecipient {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct ClaimBackingReceipt {
     pub request: PrepareClaimBackingReceiptArgs,
-    pub request_fingerprint: Vec<u8>,
     pub permit: ClaimBackingReceiptPermit,
     pub economics: FrozenClaimEconomics,
     pub liquid_block: Option<u128>,
@@ -61,24 +59,21 @@ pub struct ClaimBackingReceipt {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct CompletedClaimBackingReceipt {
+    pub request: PrepareClaimBackingReceiptArgs,
     pub stream_operation_sequence: u64,
-    pub request_fingerprint: Vec<u8>,
     pub result: ClaimBackingReceiptResult,
 }
 
 impl ClaimBackingReceipt {
     pub fn validate(&self, config: &state::StreamConfig) -> Result<(), String> {
         validate_request(&self.request, config)?;
-        if self.request_fingerprint != request_fingerprint(&self.request)
-            || self.permit.stream_operation_sequence == 0
+        if self.permit.stream_operation_sequence == 0
             || self.permit.destination != config.liquid_icp
             || self.permit.amount_e8s != self.request.net_liquid_credit_e8s
             || self.permit.memo
-                != io_nns_types::receipt::receipt_memo(&self.request.source_operation_id)
-            || self.permit.request_fingerprint != self.request_fingerprint
+                != io_nns_types::receipt::receipt_memo(self.request.nns_operation_sequence)
             || self.economics.liquid_credit_e8s != self.request.net_liquid_credit_e8s
             || self.economics.io_fee_e8s != config.expected_io_fee_e8s
-            || self.economics.snapshot_fingerprint.len() != 32
         {
             return Err("claim receipt identity or economics is malformed".into());
         }
@@ -124,21 +119,15 @@ impl ClaimBackingReceipt {
                     return Err("Jupiter receipt recipient is not canonical".into());
                 }
             }
-            ClaimBackingReceiptKind::PermanentMaturity { .. } if !self.recipients.is_empty() => {
-                return Err("permanent maturity must not release IO".into())
-            }
-            ClaimBackingReceiptKind::PermanentMaturity { .. }
-            | ClaimBackingReceiptKind::PooledMaturity { .. } => {}
+            ClaimBackingReceiptKind::TwoWeek { .. } => {}
         }
-        if matches!(
-            self.request.kind,
-            ClaimBackingReceiptKind::PooledMaturity { .. }
-        ) && self
-            .recipients
-            .iter()
-            .any(|recipient| recipient.sns_neuron_id.is_none())
+        if matches!(self.request.kind, ClaimBackingReceiptKind::TwoWeek { .. })
+            && self
+                .recipients
+                .iter()
+                .any(|recipient| recipient.sns_neuron_id.is_none())
         {
-            return Err("pooled maturity recipient lacks a neuron identity".into());
+            return Err("TwoWeek recipient lacks a neuron identity".into());
         }
         Ok(())
     }
@@ -147,9 +136,9 @@ impl ClaimBackingReceipt {
 impl CompletedClaimBackingReceipt {
     pub fn validate(&self) -> Result<(), String> {
         if self.stream_operation_sequence == 0
-            || self.request_fingerprint.len() != 32
-            || self.result.request_fingerprint != self.request_fingerprint
-            || self.result.source_operation_id.is_empty()
+            || self.request.nns_operation_sequence == 0
+            || self.result.nns_operation_sequence != self.request.nns_operation_sequence
+            || self.result.kind != self.request.kind
             || self.result.liquid_credit_e8s == 0
             || self.result.completed_at_nanos == 0
         {
@@ -163,8 +152,7 @@ impl CompletedClaimBackingReceipt {
             stream_operation_sequence: self.stream_operation_sequence,
             destination: liquid_account.clone(),
             amount_e8s: self.result.liquid_credit_e8s,
-            memo: io_nns_types::receipt::receipt_memo(&self.result.source_operation_id),
-            request_fingerprint: self.request_fingerprint.clone(),
+            memo: io_nns_types::receipt::receipt_memo(self.request.nns_operation_sequence),
         }
     }
 }
@@ -181,11 +169,10 @@ pub async fn prepare(
         return Err(ApiError::Paused);
     }
     validate_request(&request, &initial.config).map_err(ApiError::Invalid)?;
-    let fingerprint = request_fingerprint(&request);
     if let Some(StreamOperation::ClaimReceipt(active)) = &initial.active_operation {
-        return if active.request_fingerprint == fingerprint {
+        return if active.request == request {
             Ok(active.permit.clone())
-        } else if active.request.source_operation_id == request.source_operation_id {
+        } else if active.request.nns_operation_sequence == request.nns_operation_sequence {
             Err(ApiError::Invalid(
                 "claim receipt replay conflicts with its request".into(),
             ))
@@ -197,8 +184,8 @@ pub async fn prepare(
         return Err(ApiError::Busy);
     }
     if let Some(completed) = &initial.last_completed_claim_receipt {
-        if completed.result.source_operation_id == request.source_operation_id {
-            return if completed.request_fingerprint == fingerprint {
+        if completed.request.nns_operation_sequence == request.nns_operation_sequence {
+            return if completed.request == request {
                 Ok(completed.replay_permit(&initial.config.liquid_icp))
             } else {
                 Err(ApiError::Invalid(
@@ -210,11 +197,6 @@ pub async fn prepare(
     let snapshot = canonical::claim_snapshot(&initial.config)
         .await
         .map_err(ApiError::Ledger)?;
-    if snapshot.nns_fingerprint != request.nns_fingerprint {
-        return Err(ApiError::Pending(
-            "NNS observation changed before receipt commitment".into(),
-        ));
-    }
     let pre_backing = receipt_pre_backing(&request, snapshot.total_claim_backing_e8s)
         .map_err(ApiError::Invalid)?;
     let (recipients, pending_generation) =
@@ -224,19 +206,16 @@ pub async fn prepare(
         stream_operation_sequence: sequence,
         destination: initial.config.liquid_icp.clone(),
         amount_e8s: request.net_liquid_credit_e8s,
-        memo: io_nns_types::receipt::receipt_memo(&request.source_operation_id),
-        request_fingerprint: fingerprint.clone(),
+        memo: io_nns_types::receipt::receipt_memo(request.nns_operation_sequence),
     };
     let operation = ClaimBackingReceipt {
         request,
-        request_fingerprint: fingerprint,
         permit: permit.clone(),
         economics: FrozenClaimEconomics {
             pre_claim_backing_e8s: pre_backing,
             pre_claim_supply_e8s: snapshot.claim_supply_e8s,
             liquid_credit_e8s: permit.amount_e8s,
             io_fee_e8s: snapshot.io_fee_e8s,
-            snapshot_fingerprint: snapshot.observation_fingerprint,
         },
         liquid_block: None,
         recipients,
@@ -308,25 +287,15 @@ fn plan_recipients(
                 None,
             ))
         }
-        ClaimBackingReceiptKind::PermanentMaturity {
-            maturity_generation,
-        } => {
-            if *maturity_generation == 0 {
-                return Err(ApiError::Invalid(
-                    "permanent maturity generation is zero".into(),
-                ));
-            }
-            Ok((Vec::new(), None))
-        }
-        ClaimBackingReceiptKind::PooledMaturity {
-            entitlement_batch_generation,
+        ClaimBackingReceiptKind::TwoWeek {
+            entitlement_generation,
         } => {
             let batch = state
                 .pending_entitlement_batch
                 .as_ref()
-                .filter(|batch| batch.generation == *entitlement_batch_generation)
+                .filter(|batch| batch.generation == *entitlement_generation)
                 .ok_or_else(|| {
-                    ApiError::Invalid("pooled maturity has no matching entitlement batch".into())
+                    ApiError::Invalid("TwoWeek receipt has no matching entitlement batch".into())
                 })?;
             let entitlements = batch
                 .entries
@@ -363,23 +332,16 @@ fn plan_recipients(
                     io_e8s: allocation.io_e8s,
                 });
             }
-            Ok((recipients, Some(*entitlement_batch_generation)))
+            Ok((recipients, Some(*entitlement_generation)))
         }
     }
 }
 
 fn receipt_pre_backing(
-    request: &PrepareClaimBackingReceiptArgs,
+    _request: &PrepareClaimBackingReceiptArgs,
     current_backing_e8s: u128,
 ) -> Result<u128, String> {
-    match request.kind {
-        ClaimBackingReceiptKind::Jupiter | ClaimBackingReceiptKind::PooledMaturity { .. } => {
-            Ok(current_backing_e8s)
-        }
-        ClaimBackingReceiptKind::PermanentMaturity { .. } => current_backing_e8s
-            .checked_sub(request.net_liquid_credit_e8s)
-            .ok_or_else(|| "NNS transit omits the permanent-maturity claim ingress".into()),
-    }
+    Ok(current_backing_e8s)
 }
 
 pub async fn prove_liquid(
@@ -413,9 +375,8 @@ pub async fn prove_liquid(
     let exact = canonical::exact_icp_transfer(snapshot.config.icp_ledger, args.block_index)
         .await
         .map_err(ApiError::Ledger)?;
-    if exact.from
-        != canonical::icp_account_identifier(&operation.request.source_account)
-            .map_err(ApiError::Invalid)?
+    let source = receipt_source_account(&operation.request, snapshot.config.nns_manager);
+    if exact.from != canonical::icp_account_identifier(&source).map_err(ApiError::Invalid)?
         || exact.to
             != canonical::icp_account_identifier(&operation.permit.destination)
                 .map_err(ApiError::Invalid)?
@@ -506,25 +467,26 @@ async fn submit_recipient(
         first_submitted_at,
         last_submitted_at: now,
     };
-    let fingerprint = attempt.fingerprint.clone();
     let intent = attempt.intent.clone();
     persist(&operation, submitted.clone())?;
     let response = crate::api::submit(&intent).await;
-    apply_callback(submitted, fingerprint, epoch, response)
+    apply_callback(submitted, intent, epoch, response)
 }
 
 fn apply_callback(
     submitted: ClaimBackingReceipt,
-    fingerprint: Vec<u8>,
+    intent: OwnTransferIntent,
     epoch: DispatchEpoch,
     response: Result<crate::transfer::TransferResult, String>,
 ) -> Result<ClaimBackingReceiptProgress, ApiError> {
     let current = active()?;
-    if current.request_fingerprint != submitted.request_fingerprint {
+    if current.request != submitted.request
+        || current.permit.stream_operation_sequence != submitted.permit.stream_operation_sequence
+    {
         return Err(ApiError::Busy);
     }
     let attempt = current.current_recipient.as_ref().ok_or(ApiError::Busy)?;
-    if attempt.fingerprint != fingerprint
+    if attempt.intent != intent
         || !matches!(attempt.state, TransferState::Submitted { epoch: value, .. } if value == epoch)
     {
         return Err(ApiError::Busy);
@@ -640,8 +602,7 @@ fn complete(
         .try_fold(0u128, |sum, recipient| sum.checked_add(recipient.io_e8s))
         .ok_or_else(|| ApiError::Invalid("receipt distribution overflow".into()))?;
     let result = ClaimBackingReceiptResult {
-        source_operation_id: operation.request.source_operation_id.clone(),
-        request_fingerprint: operation.request_fingerprint.clone(),
+        nns_operation_sequence: operation.request.nns_operation_sequence,
         kind: operation.request.kind.clone(),
         liquid_credit_e8s: operation.request.net_liquid_credit_e8s,
         distributed_io_e8s: distributed,
@@ -650,8 +611,8 @@ fn complete(
         completed_at_nanos: now,
     };
     let completed = CompletedClaimBackingReceipt {
+        request: operation.request.clone(),
         stream_operation_sequence: operation.permit.stream_operation_sequence,
-        request_fingerprint: operation.request_fingerprint.clone(),
         result: result.clone(),
     };
     completed.validate().map_err(ApiError::Invalid)?;
@@ -692,7 +653,7 @@ fn recipient_intent(
     let config = state::read().config;
     let mut hasher = Sha256::new();
     hasher.update(b"io-claim-receipt-recipient-v1");
-    hasher.update(&operation.request.source_operation_id);
+    hasher.update(operation.request.nns_operation_sequence.to_be_bytes());
     hasher.update(operation.recipient_cursor.to_be_bytes());
     Ok(OwnTransferIntent::Icrc1 {
         ledger: config.io_ledger,
@@ -737,40 +698,36 @@ fn validate_recipient_transfer(
 
 fn validate_request(
     request: &PrepareClaimBackingReceiptArgs,
-    config: &state::StreamConfig,
+    _config: &state::StreamConfig,
 ) -> Result<(), String> {
-    request.source_account.validate()?;
-    if request.source_operation_id.is_empty()
-        || request.source_operation_id.len() > 64
-        || request.source_account.owner != config.nns_manager
-        || request.net_liquid_credit_e8s == 0
-        || request.nns_fingerprint.len() != 32
-    {
+    if request.nns_operation_sequence == 0 || request.net_liquid_credit_e8s == 0 {
         return Err("claim receipt request is malformed".into());
     }
     match &request.kind {
-        ClaimBackingReceiptKind::Jupiter => {
-            if !request
-                .source_account
-                .effective_eq(&config.jupiter_receipt_source)?
-            {
-                return Err("Jupiter receipt roles differ from configuration".into());
-            }
+        ClaimBackingReceiptKind::Jupiter => {}
+        ClaimBackingReceiptKind::TwoWeek {
+            entitlement_generation,
+        } if *entitlement_generation == 0 => {
+            return Err("two-week receipt generation is zero".into())
         }
-        ClaimBackingReceiptKind::PermanentMaturity {
-            maturity_generation,
-        }
-        | ClaimBackingReceiptKind::PooledMaturity {
-            entitlement_batch_generation: maturity_generation,
-        } if *maturity_generation == 0 => return Err("maturity receipt generation is zero".into()),
-        ClaimBackingReceiptKind::PermanentMaturity { .. }
-        | ClaimBackingReceiptKind::PooledMaturity { .. } => {}
+        ClaimBackingReceiptKind::TwoWeek { .. } => {}
     }
     Ok(())
 }
 
-fn request_fingerprint(request: &PrepareClaimBackingReceiptArgs) -> Vec<u8> {
-    Sha256::digest(candid::encode_one(request).expect("claim receipt request must encode")).to_vec()
+fn receipt_source_account(
+    request: &PrepareClaimBackingReceiptArgs,
+    nns_manager: Principal,
+) -> Account {
+    match request.kind {
+        ClaimBackingReceiptKind::Jupiter => Account {
+            owner: nns_manager,
+            subaccount: None,
+        },
+        ClaimBackingReceiptKind::TwoWeek { .. } => {
+            io_accounts::two_week_maturity_staging(nns_manager)
+        }
+    }
 }
 
 fn progress(operation: &ClaimBackingReceipt) -> ClaimBackingReceiptProgress {
@@ -816,15 +773,26 @@ mod tests {
             owner: Principal::from_slice(&[1; 29]),
             subaccount: Some(vec![2; 32]),
         };
-        let source_operation_id = vec![3; 32];
-        let completed = CompletedClaimBackingReceipt {
+        let request = PrepareClaimBackingReceiptArgs {
+            nns_operation_sequence: 3,
+            kind: ClaimBackingReceiptKind::TwoWeek {
+                entitlement_generation: 9,
+            },
+            net_liquid_credit_e8s: 100,
+        };
+        let permit = ClaimBackingReceiptPermit {
             stream_operation_sequence: 7,
-            request_fingerprint: vec![4; 32],
+            destination: liquid.clone(),
+            amount_e8s: 100,
+            memo: io_nns_types::receipt::receipt_memo(3),
+        };
+        let completed = CompletedClaimBackingReceipt {
+            request,
+            stream_operation_sequence: permit.stream_operation_sequence,
             result: ClaimBackingReceiptResult {
-                source_operation_id: source_operation_id.clone(),
-                request_fingerprint: vec![4; 32],
-                kind: ClaimBackingReceiptKind::PooledMaturity {
-                    entitlement_batch_generation: 9,
+                nns_operation_sequence: 3,
+                kind: ClaimBackingReceiptKind::TwoWeek {
+                    entitlement_generation: 9,
                 },
                 liquid_credit_e8s: 100,
                 distributed_io_e8s: 80,
@@ -834,31 +802,16 @@ mod tests {
             },
         };
         completed.validate().unwrap();
-        assert_eq!(
-            completed.replay_permit(&liquid),
-            ClaimBackingReceiptPermit {
-                stream_operation_sequence: 7,
-                destination: liquid,
-                amount_e8s: 100,
-                memo: io_nns_types::receipt::receipt_memo(&source_operation_id),
-                request_fingerprint: vec![4; 32],
-            }
-        );
+        assert_eq!(completed.replay_permit(&liquid), permit);
         assert!(candid::encode_one(completed).unwrap().len() < 512);
     }
 
     #[test]
     fn paired_ingress_preserves_pre_event_rate_until_permit() {
         let request = |kind| PrepareClaimBackingReceiptArgs {
-            source_operation_id: vec![1; 32],
+            nns_operation_sequence: 1,
             kind,
-            source_account: Account {
-                owner: Principal::from_slice(&[2; 29]),
-                subaccount: None,
-            },
-            source_block: 1,
             net_liquid_credit_e8s: 60,
-            nns_fingerprint: vec![3; 32],
         };
         assert_eq!(
             receipt_pre_backing(&request(ClaimBackingReceiptKind::Jupiter), 100),
@@ -866,19 +819,10 @@ mod tests {
         );
         assert_eq!(
             receipt_pre_backing(
-                &request(ClaimBackingReceiptKind::PooledMaturity {
-                    entitlement_batch_generation: 1,
+                &request(ClaimBackingReceiptKind::TwoWeek {
+                    entitlement_generation: 1,
                 }),
                 100,
-            ),
-            Ok(100)
-        );
-        assert_eq!(
-            receipt_pre_backing(
-                &request(ClaimBackingReceiptKind::PermanentMaturity {
-                    maturity_generation: 1,
-                }),
-                160,
             ),
             Ok(100)
         );

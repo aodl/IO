@@ -534,7 +534,6 @@ async fn dispatch_redemption_transfer(
         last_submitted_at: now,
     };
     let request_fingerprint = operation.request_fingerprint.clone();
-    let fingerprint = attempt.fingerprint.clone();
     let intent = attempt.intent.clone();
     operation.phase = if io_pull {
         RedemptionPhase::PullSubmitted
@@ -548,7 +547,7 @@ async fn dispatch_redemption_transfer(
         sequence,
         request_fingerprint,
         io_pull,
-        fingerprint,
+        intent,
         epoch,
         response,
     )
@@ -558,7 +557,7 @@ fn apply_transfer_callback(
     sequence: OperationSequence,
     request_fingerprint: Vec<u8>,
     io_pull: bool,
-    fingerprint: Vec<u8>,
+    intent: OwnTransferIntent,
     epoch: DispatchEpoch,
     response: Result<TransferResult, String>,
 ) -> Result<RedemptionProgress, ApiError> {
@@ -582,7 +581,7 @@ fn apply_transfer_callback(
             .as_mut()
             .ok_or_else(|| ApiError::Invalid("payout intent is missing".into()))?
     };
-    if attempt.fingerprint != fingerprint
+    if attempt.intent != intent
         || !matches!(attempt.state, TransferState::Submitted { epoch: current, .. } if current == epoch)
     {
         return Err(ApiError::Busy);
@@ -936,9 +935,7 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<(), ApiError> {
             .as_mut()
             .ok_or_else(|| ApiError::Invalid("payout intent is missing".into()))?
     };
-    if target.fingerprint != attempt.fingerprint
-        || !matches!(target.state, TransferState::Stuck { .. })
-    {
+    if target.intent != attempt.intent || !matches!(target.state, TransferState::Stuck { .. }) {
         return Err(ApiError::Busy);
     }
     target.state = TransferState::Succeeded { block: block_index };

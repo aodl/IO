@@ -23,11 +23,6 @@ struct PrepareMaturityArgs {
     target_e8s: u128,
 }
 
-#[derive(CandidType, Deserialize)]
-enum MaturityProgress {
-    Observed,
-}
-
 #[derive(Debug, CandidType, Deserialize)]
 enum NnsError {
     Unauthorized,
@@ -47,7 +42,7 @@ pub async fn prepare_maturity(
     generation: u64,
     target_e8s: u128,
 ) -> Result<(), CallError> {
-    nns_call::<_, MaturityProgress>(
+    nns_call::<_, ()>(
         manager,
         "prepare_two_week_maturity",
         PrepareMaturityArgs {
@@ -56,7 +51,6 @@ pub async fn prepare_maturity(
         },
     )
     .await
-    .map(|MaturityProgress::Observed| ())
 }
 
 async fn nns_call<A, R>(manager: Principal, method: &str, arg: A) -> Result<R, CallError>

@@ -179,7 +179,6 @@ mod tests {
             io_ledger: principal(2),
             icp_ledger: principal(3),
             nns_manager: principal(4),
-            jupiter_receipt_source: account(principal(4), 1),
             jupiter_io_account: account(principal(7), 3),
             sns_governance: governance,
             sns_root: principal(6),

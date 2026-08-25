@@ -4,7 +4,6 @@
     io_ledger = TODO_LOCAL_IO_LEDGER;
     icp_ledger = TODO_LOCAL_ICP_LEDGER;
     nns_manager = TODO_LOCAL_NNS_MANAGER;
-    jupiter_receipt_source = record { owner = TODO_LOCAL_NNS_MANAGER; subaccount = null };
     jupiter_io_account = record { owner = TODO_LOCAL_JUPITER; subaccount = opt TODO_LOCAL_JUPITER_IO_SUBACCOUNT };
     sns_governance = TODO_LOCAL_SNS_GOVERNANCE;
     sns_root = TODO_LOCAL_SNS_ROOT;

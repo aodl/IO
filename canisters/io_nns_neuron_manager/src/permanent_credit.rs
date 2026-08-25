@@ -44,11 +44,13 @@ pub(crate) fn prepare(
     let config = state::read().config;
     let transfer = NnsTransferAttempt::prepared(NnsTransferIntent {
         ledger: config.icp_ledger,
-        source_subaccount: config
-            .maturity_staging
-            .canonical()
-            .map_err(ApiError::Invalid)?
-            .subaccount,
+        source_subaccount: maturity_flow::staging_account(
+            ic_cdk::api::canister_self(),
+            operation.kind,
+        )
+        .canonical()
+        .map_err(ApiError::Invalid)?
+        .subaccount,
         destination: execution::staking_account(&config, &before),
         amount_e8s: amount,
         fee_e8s,
@@ -66,13 +68,13 @@ pub(crate) fn prepare(
             transfer: Box::new(transfer),
         });
     maturity_flow::write_exact(&operation, replacement, false)?;
-    Ok(MaturityProgress::DeliveringClaimReceipt)
+    Ok(MaturityProgress::Delivering)
 }
 
 pub(crate) async fn refresh(neuron_id: u64) -> Result<MaturityProgress, ApiError> {
     let result = execution::refresh_neuron(&state::read().config, neuron_id).await;
     Err(execution::command_pending(
-        "permanent maturity ClaimOrRefresh",
+        "permanent-leg ClaimOrRefresh",
         result,
     ))
 }
@@ -92,5 +94,5 @@ pub(crate) async fn prove_or_refresh(
     maturity_flow::delivery_mut(&mut replacement).permanent_credit =
         Some(PermanentCreditState::Proved(proof));
     maturity_flow::write_exact(&operation, replacement, false)?;
-    Ok(MaturityProgress::DeliveringClaimReceipt)
+    Ok(MaturityProgress::Delivering)
 }

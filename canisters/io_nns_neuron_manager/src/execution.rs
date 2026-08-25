@@ -941,19 +941,15 @@ pub async fn resume_claim_receipt(config: &NnsConfig) -> Result<StreamLiquidProg
 
 pub async fn prepare_jupiter_claim_receipt(
     config: &NnsConfig,
-    deposit_block: u128,
+    nns_operation_sequence: u64,
     liquid_e8s: u128,
 ) -> Result<StreamReceiptPermit, ApiError> {
-    let observation = crate::api::claim_asset_observation().await?;
     prepare_claim_receipt(
         config,
         PrepareClaimBackingReceiptArgs {
-            source_operation_id: deposit_block.to_be_bytes().to_vec(),
+            nns_operation_sequence,
             kind: ClaimBackingReceiptKind::Jupiter,
-            source_account: config.jupiter_staging.clone(),
-            source_block: deposit_block,
             net_liquid_credit_e8s: liquid_e8s,
-            nns_fingerprint: observation.fingerprint,
         },
     )
     .await

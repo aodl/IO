@@ -1,16 +1,13 @@
 use candid::Principal;
 
 use crate::{
-    api::{ApiError, MaturityProgress, PrepareTwoWeekMaturityArgs},
+    api::{ApiError, PrepareTwoWeekMaturityArgs},
     maturity::{MaturityKind, MaturityPlan},
     maturity_flow,
     state::{self, Lifecycle, NnsOperation, NnsStateV1},
 };
 
-pub async fn prepare(
-    caller: Principal,
-    args: PrepareTwoWeekMaturityArgs,
-) -> Result<MaturityProgress, ApiError> {
+pub async fn prepare(caller: Principal, args: PrepareTwoWeekMaturityArgs) -> Result<(), ApiError> {
     let initial = state::read();
     if caller != initial.config.stream_manager {
         return Err(ApiError::Unauthorized);
@@ -48,23 +45,23 @@ pub async fn prepare(
             "two-week maturity requires a proved pooled parent".into(),
         ));
     }
-    if args.entitlement_batch_generation == snapshot.latest_completed_two_week_generation {
+    if args.entitlement_batch_generation == snapshot.completed_two_week_generation() {
         return snapshot
             .last_two_week_maturity
-            .clone()
-            .map(|completed| MaturityProgress::Completed(Box::new(completed)))
+            .as_ref()
+            .map(|_| ())
             .ok_or_else(|| ApiError::Invalid("completed generation lacks evidence".into()));
     }
-    if args.entitlement_batch_generation == snapshot.latest_started_two_week_generation {
+    let latest_generation = snapshot.latest_two_week_generation();
+    if args.entitlement_batch_generation == latest_generation {
         if replay_matches(&snapshot, &args) {
-            return Ok(MaturityProgress::Observed);
+            return Ok(());
         }
         return Err(ApiError::Invalid(
             "two-week generation replay conflicts with stored evidence".into(),
         ));
     }
-    let expected_generation = snapshot
-        .latest_started_two_week_generation
+    let expected_generation = latest_generation
         .checked_add(1)
         .ok_or_else(|| ApiError::Invalid("two-week generation overflow".into()))?;
     if args.entitlement_batch_generation != expected_generation {
@@ -72,7 +69,14 @@ pub async fn prepare(
             "expected two-week maturity generation {expected_generation}"
         )));
     }
-    maturity_flow::start_observed(snapshot, MaturityKind::TwoWeek, Some(args)).await
+    maturity_flow::start_observed(snapshot, MaturityKind::TwoWeek, Some(args)).await?;
+    let operation = match state::read().active_operation {
+        Some(NnsOperation::Maturity(operation)) if operation.kind == MaturityKind::TwoWeek => {
+            *operation
+        }
+        _ => return Err(ApiError::Busy),
+    };
+    maturity_flow::resume_active(operation).await.map(|_| ())
 }
 
 fn replay_matches(state: &NnsStateV1, args: &PrepareTwoWeekMaturityArgs) -> bool {

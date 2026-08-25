@@ -4,7 +4,6 @@ export const idlFactory = ({ IDL }) => {
     'subaccount' : IDL.Opt(IDL.Vec(IDL.Nat8)),
   });
   const StreamConfig = IDL.Record({
-    'jupiter_receipt_source' : Account,
     'ledger_deduplication_window_nanos' : IDL.Nat64,
     'nns_manager' : IDL.Principal,
     'expected_sns_governance_module_hash' : IDL.Vec(IDL.Nat8),
@@ -116,23 +115,16 @@ export const idlFactory = ({ IDL }) => {
     'reward_processing_paused' : IDL.Bool,
   });
   const ClaimBackingReceiptKind = IDL.Variant({
-    'PooledMaturity' : IDL.Record({
-      'entitlement_batch_generation' : IDL.Nat64,
-    }),
-    'PermanentMaturity' : IDL.Record({ 'maturity_generation' : IDL.Nat64 }),
+    'TwoWeek' : IDL.Record({ 'entitlement_generation' : IDL.Nat64 }),
     'Jupiter' : IDL.Null,
   });
   const PrepareClaimBackingReceiptArgs = IDL.Record({
-    'nns_fingerprint' : IDL.Vec(IDL.Nat8),
+    'nns_operation_sequence' : IDL.Nat64,
     'kind' : ClaimBackingReceiptKind,
-    'source_block' : IDL.Nat,
-    'source_operation_id' : IDL.Vec(IDL.Nat8),
-    'source_account' : Account,
     'net_liquid_credit_e8s' : IDL.Nat,
   });
   const ClaimBackingReceiptPermit = IDL.Record({
     'destination' : Account,
-    'request_fingerprint' : IDL.Vec(IDL.Nat8),
     'memo' : IDL.Vec(IDL.Nat8),
     'amount_e8s' : IDL.Nat,
     'stream_operation_sequence' : IDL.Nat64,
@@ -142,9 +134,8 @@ export const idlFactory = ({ IDL }) => {
     'stream_operation_sequence' : IDL.Nat64,
   });
   const ClaimBackingReceiptResult = IDL.Record({
-    'request_fingerprint' : IDL.Vec(IDL.Nat8),
+    'nns_operation_sequence' : IDL.Nat64,
     'kind' : ClaimBackingReceiptKind,
-    'source_operation_id' : IDL.Vec(IDL.Nat8),
     'distributed_io_e8s' : IDL.Nat,
     'completed_at_nanos' : IDL.Nat64,
     'recipient_transfer_block' : IDL.Opt(IDL.Nat),
@@ -260,7 +251,6 @@ export const init = ({ IDL }) => {
     'subaccount' : IDL.Opt(IDL.Vec(IDL.Nat8)),
   });
   const StreamConfig = IDL.Record({
-    'jupiter_receipt_source' : Account,
     'ledger_deduplication_window_nanos' : IDL.Nat64,
     'nns_manager' : IDL.Principal,
     'expected_sns_governance_module_hash' : IDL.Vec(IDL.Nat8),

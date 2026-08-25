@@ -4,7 +4,6 @@ type StreamConfig = record {
   io_ledger : principal;
   icp_ledger : principal;
   nns_manager : principal;
-  jupiter_receipt_source : Account;
   jupiter_io_account : Account;
   sns_governance : principal;
   sns_root : principal;
@@ -58,31 +57,25 @@ type RedemptionProgress = variant {
 };
 type ClaimBackingReceiptKind = variant {
   Jupiter;
-  PermanentMaturity : record { maturity_generation : nat64 };
-  PooledMaturity : record { entitlement_batch_generation : nat64 };
+  TwoWeek : record { entitlement_generation : nat64 };
 };
 type PrepareClaimBackingReceiptArgs = record {
-  source_operation_id : blob;
+  nns_operation_sequence : nat64;
   kind : ClaimBackingReceiptKind;
-  source_account : Account;
-  source_block : nat;
   net_liquid_credit_e8s : nat;
-  nns_fingerprint : blob;
 };
 type ClaimBackingReceiptPermit = record {
   stream_operation_sequence : nat64;
   destination : Account;
   amount_e8s : nat;
   memo : blob;
-  request_fingerprint : blob;
 };
 type ProveClaimBackingReceiptArgs = record {
   stream_operation_sequence : nat64;
   block_index : nat;
 };
 type ClaimBackingReceiptResult = record {
-  source_operation_id : blob;
-  request_fingerprint : blob;
+  nns_operation_sequence : nat64;
   kind : ClaimBackingReceiptKind;
   liquid_credit_e8s : nat;
   distributed_io_e8s : nat;

@@ -12,7 +12,6 @@ type NnsConfig = record {
   minimum_parent_stake_e8s : nat;
   jupiter_account : Account;
   jupiter_staging : Account;
-  maturity_staging : Account;
   stream_liquid_account : Account;
   expected_io_fee_e8s : nat;
   expected_icp_fee_e8s : nat;
@@ -146,14 +145,6 @@ type ApiError = variant {
   Stuck : text;
   BelowMaturityThreshold : record { remaining_e8s : nat64; minimum_e8s : nat64 };
 };
-type PermanentNeuronCreditProof = record {
-  neuron_id : nat64;
-  staking_subaccount : blob;
-  before_cached_stake_e8s : nat;
-  protocol_credit_e8s : nat;
-  transfer_block : nat;
-  observed_after_cached_stake_e8s : nat;
-};
 type JupiterCompleted = record {
   deposit_block : nat;
   gross_e8s : nat;
@@ -166,7 +157,6 @@ type JupiterCompleted = record {
   backed_io_e8s : nat;
   io_transfer_block : nat;
   io_fee_e8s : nat;
-  stream_receipt_fingerprint : blob;
   completed_at_nanos : nat64;
 };
 type JupiterProgress = variant {
@@ -188,21 +178,19 @@ type JupiterProgress = variant {
 type MaturityKind = variant { TwoYear; TwoWeek };
 type CompletedMaturity = record {
   kind : MaturityKind;
-  neuron_id : nat64;
-  mint_block : nat;
-  nominal_disbursed_maturity_e8s : nat64;
-  actual_minted_icp_e8s : nat;
-  destination : Account;
-  permanent_credit_proof : opt PermanentNeuronCreditProof;
+  captured_e8s : nat;
+  permanent_credit_e8s : nat;
+  claim_credit_e8s : nat;
+  entitlement_batch_generation : opt nat64;
   completed_at_nanos : nat64;
 };
 type MaturityProgress = variant {
   Observed;
   DisburseMaturitySubmitted;
   DisburseMaturitySucceeded;
-  AwaitingMintProof;
-  MintProved;
-  DeliveringClaimReceipt;
+  AwaitingCapture;
+  Captured : record { captured_e8s : nat };
+  Delivering;
   Completed : CompletedMaturity;
   Stuck : text;
 };
@@ -239,8 +227,7 @@ service : (InitArgs) -> {
   observe_pool_policy : () -> (variant { Ok : PoolPolicyObservation; Err : ApiError });
   start_maturity : (MaturityKind) -> (variant { Ok : MaturityProgress; Err : ApiError });
   validate_start_maturity : (MaturityKind) -> (variant { Ok : text; Err : text }) query;
-  prepare_two_week_maturity : (PrepareTwoWeekMaturityArgs) -> (variant { Ok : MaturityProgress; Err : ApiError });
-  prove_maturity_mint : (MaturityKind, nat) -> (variant { Ok : MaturityProgress; Err : ApiError });
+  prepare_two_week_maturity : (PrepareTwoWeekMaturityArgs) -> (variant { Ok; Err : ApiError });
   set_paused : (bool) -> (variant { Ok; Err : ApiError });
   validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;
   get_status : () -> (Status) query;

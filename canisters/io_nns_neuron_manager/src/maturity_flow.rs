@@ -8,10 +8,9 @@ use crate::{
     api::{ApiError, MaturityProgress, PrepareTwoWeekMaturityArgs},
     execution,
     maturity::{
-        ClaimReceiptDeliveryOperation, DisburseMaturitySubmission, DisburseMaturitySucceeded,
-        MaturityCommandOperation, MaturityCommandPhase, MaturityEvidenceSource, MaturityKind,
-        MaturityPlan, MintProofState, PendingMaturityDisbursement, PermanentCreditState,
-        MINIMUM_DISBURSEMENT_E8S,
+        DisburseMaturitySubmission, DisburseMaturitySucceeded, MaturityCommandOperation,
+        MaturityCommandPhase, MaturityDeliveryOperation, MaturityKind, MaturityPlan,
+        PendingMaturityDisbursement, PermanentCreditState, MINIMUM_DISBURSEMENT_E8S,
     },
     state::{self, Lifecycle, NnsOperation},
     transfer::{
@@ -90,13 +89,13 @@ pub(crate) async fn start_observed(
     let entitlement_batch_generation = entitlement_batch
         .as_ref()
         .map(|value| value.entitlement_batch_generation);
+    let staging_balance_before_e8s = execution::icp_balance(&snapshot.config, &destination).await?;
 
     let mut latest = state::read();
     if latest != snapshot
         || latest.lifecycle != Lifecycle::Ready
         || (kind == MaturityKind::TwoWeek
-            && latest.latest_started_two_week_generation.checked_add(1)
-                != entitlement_batch_generation)
+            && latest.latest_two_week_generation().checked_add(1) != entitlement_batch_generation)
     {
         return Err(ApiError::Busy);
     }
@@ -111,22 +110,15 @@ pub(crate) async fn start_observed(
         phase: MaturityCommandPhase::Observed(MaturityPlan {
             neuron: observation.snapshot,
             observed_maturity_e8s: observation.maturity_e8s,
-            destination,
+            staging_balance_before_e8s,
             requested_at_seconds: now_seconds()?,
             entitlement_batch_generation,
         }),
     };
     operation
-        .validate(
-            latest.next_operation_sequence,
-            neuron_id,
-            &operation.plan().destination,
-        )
+        .validate(latest.next_operation_sequence, neuron_id)
         .map_err(ApiError::Invalid)?;
     latest.active_operation = Some(NnsOperation::Maturity(Box::new(operation)));
-    if let Some(generation) = entitlement_batch_generation {
-        latest.latest_started_two_week_generation = generation;
-    }
     state::write(latest);
     Ok(MaturityProgress::Observed)
 }
@@ -142,9 +134,7 @@ pub async fn resume_active(
         MaturityCommandPhase::DisburseMaturitySucceeded(disbursement) => {
             canonicalize_disbursement(operation, disbursement).await
         }
-        MaturityCommandPhase::ClaimReceiptDelivery(delivery) => {
-            resume_claim_receipt_delivery(operation, delivery).await
-        }
+        MaturityCommandPhase::Delivery(delivery) => resume_delivery(operation, delivery).await,
     }
 }
 
@@ -159,10 +149,9 @@ pub async fn resume_kind(kind: MaturityKind) -> Result<MaturityProgress, ApiErro
     }
     let pending = pending_from(&snapshot, kind)
         .ok_or_else(|| ApiError::Invalid("no maturity work exists for this kind".into()))?;
-    match &pending.mint_proof {
-        MintProofState::Awaiting => Ok(MaturityProgress::AwaitingMintProof),
-        MintProofState::Proved(_) => start_claim_receipt_delivery(pending),
-        MintProofState::Delivering(_) => Ok(MaturityProgress::DeliveringClaimReceipt),
+    match pending.captured_e8s {
+        None => capture_staging_balance(pending).await,
+        Some(_) => start_delivery(pending),
     }
 }
 
@@ -178,11 +167,11 @@ async fn submit_disburse(
     operation.dispatch_epoch = next_epoch(operation.dispatch_epoch)?;
     operation.phase = MaturityCommandPhase::DisburseMaturitySubmitted(submission.clone());
     write_exact(&expected, operation.clone(), false)?;
-    let submitted = operation;
+    let submitted = operation.clone();
     let result = execution::disburse_maturity(
         &state::read().config,
         submission.plan.neuron.neuron_id,
-        &submission.plan.destination,
+        &staging_account(ic_cdk::api::canister_self(), operation.kind),
     )
     .await;
     ensure_exact(&submitted)?;
@@ -193,7 +182,6 @@ async fn submit_disburse(
                 MaturityCommandPhase::DisburseMaturitySucceeded(DisburseMaturitySucceeded {
                     submission,
                     amount_disbursed_e8s: amount,
-                    evidence_source: MaturityEvidenceSource::CommandResponse,
                 });
             write_exact(&submitted, replacement, false)?;
             Ok(MaturityProgress::DisburseMaturitySucceeded)
@@ -227,7 +215,7 @@ async fn recover_disburse(
     ensure_exact(&operation)?;
     let canonical = match execution::exact_maturity_disbursement(
         &observation,
-        &submission.plan.destination,
+        &staging_account(ic_cdk::api::canister_self(), operation.kind),
         submission.submitted_at_seconds,
     ) {
         Ok(Some(canonical)) => canonical,
@@ -247,7 +235,6 @@ async fn recover_disburse(
         MaturityCommandPhase::DisburseMaturitySucceeded(DisburseMaturitySucceeded {
             amount_disbursed_e8s: canonical.amount_disbursed_e8s,
             submission,
-            evidence_source: MaturityEvidenceSource::CanonicalNeuronObservation,
         });
     write_exact(&operation, replacement, false)?;
     Ok(MaturityProgress::DisburseMaturitySucceeded)
@@ -263,7 +250,7 @@ async fn canonicalize_disbursement(
     ensure_exact(&operation)?;
     let canonical = execution::exact_maturity_disbursement(
         &observation,
-        &plan.destination,
+        &staging_account(ic_cdk::api::canister_self(), operation.kind),
         disbursement.submission.submitted_at_seconds,
     )?
     .ok_or_else(|| {
@@ -279,29 +266,71 @@ async fn canonicalize_disbursement(
     }
     let passive = PendingMaturityDisbursement {
         kind: operation.kind,
-        neuron_id: plan.neuron.neuron_id,
-        nominal_disbursed_maturity_e8s: canonical.amount_disbursed_e8s,
-        destination: plan.destination.clone(),
-        initiation_timestamp_seconds: canonical.initiated_at_seconds,
         scheduled_finalization_timestamp_seconds: canonical
             .scheduled_finalization_timestamp_seconds,
         disburse_evidence: disbursement,
-        committed_claim_transfer_fee_e8s: 0,
-        mint_proof: MintProofState::Awaiting,
+        captured_e8s: None,
     };
     move_to_passive(&operation, passive)?;
-    Ok(MaturityProgress::AwaitingMintProof)
+    Ok(MaturityProgress::AwaitingCapture)
 }
-pub(crate) fn start_claim_receipt_delivery(
+
+async fn capture_staging_balance(
     pending: PendingMaturityDisbursement,
 ) -> Result<MaturityProgress, ApiError> {
-    let MintProofState::Proved(mint) = pending.mint_proof.clone() else {
+    if now_seconds()? < pending.scheduled_finalization_timestamp_seconds {
+        return Err(ApiError::Pending(
+            "maturity finalization boundary has not elapsed".into(),
+        ));
+    }
+    let config = state::read().config;
+    let neuron_id = pending.disburse_evidence.submission.plan.neuron.neuron_id;
+    let observation = execution::query_neuron_observation(&config, neuron_id).await?;
+    ensure_pending(&pending)?;
+    let destination = staging_account(ic_cdk::api::canister_self(), pending.kind);
+    if execution::has_exact_maturity_disbursement(
+        &observation,
+        pending.disburse_evidence.amount_disbursed_e8s,
+        &destination,
+        pending
+            .scheduled_finalization_timestamp_seconds
+            .checked_sub(io_nns_types::maturity::DISBURSEMENT_DELAY_SECONDS)
+            .ok_or_else(|| ApiError::Invalid("maturity initiation underflow".into()))?,
+        pending.scheduled_finalization_timestamp_seconds,
+    ) {
+        return Err(ApiError::Pending(
+            "canonical neuron still contains the pending maturity disbursement".into(),
+        ));
+    }
+    let balance = execution::icp_balance(&config, &destination).await?;
+    ensure_pending(&pending)?;
+    let baseline = pending
+        .disburse_evidence
+        .submission
+        .plan
+        .staging_balance_before_e8s;
+    let captured_e8s =
+        io_nns_types::maturity::captured_balance(baseline, balance).ok_or_else(|| {
+            ApiError::Pending(format!(
+                "maturity staging balance {balance} has no positive delta above baseline {baseline}"
+            ))
+        })?;
+    let mut replacement = pending.clone();
+    replacement.captured_e8s = Some(captured_e8s);
+    replace_pending(&pending, replacement)?;
+    Ok(MaturityProgress::Captured { captured_e8s })
+}
+
+pub(crate) fn start_delivery(
+    pending: PendingMaturityDisbursement,
+) -> Result<MaturityProgress, ApiError> {
+    if pending.captured_e8s.is_none() {
         return Err(ApiError::Busy);
-    };
-    let mut delivering = pending.clone();
-    delivering.mint_proof = MintProofState::Delivering(mint);
+    }
     let mut latest = state::read();
-    if latest.active_operation.is_some() || pending_from(&latest, pending.kind) != Some(pending) {
+    if latest.active_operation.is_some()
+        || pending_from(&latest, pending.kind) != Some(pending.clone())
+    {
         return Err(ApiError::Busy);
     }
     let operation_sequence = latest.next_operation_sequence;
@@ -311,57 +340,49 @@ pub(crate) fn start_claim_receipt_delivery(
     let operation = MaturityCommandOperation {
         operation_sequence,
         dispatch_epoch: 0,
-        kind: delivering.kind,
-        phase: MaturityCommandPhase::ClaimReceiptDelivery(ClaimReceiptDeliveryOperation {
-            pending: delivering.clone(),
+        kind: pending.kind,
+        phase: MaturityCommandPhase::Delivery(MaturityDeliveryOperation {
+            pending: pending.clone(),
             permit: None,
             permanent_credit: None,
             claim_transfer: None,
         }),
     };
-    set_pending(&mut latest, delivering);
     latest.active_operation = Some(NnsOperation::Maturity(Box::new(operation)));
     state::write(latest);
-    Ok(MaturityProgress::DeliveringClaimReceipt)
+    Ok(MaturityProgress::Delivering)
 }
 
-async fn resume_claim_receipt_delivery(
+async fn resume_delivery(
     operation: MaturityCommandOperation,
-    delivery: ClaimReceiptDeliveryOperation,
+    delivery: MaturityDeliveryOperation,
 ) -> Result<MaturityProgress, ApiError> {
-    let mint = match &delivery.pending.mint_proof {
-        MintProofState::Delivering(mint) => mint.clone(),
-        _ => {
-            return Err(ApiError::Invalid(
-                "claim receipt lost exact Mint evidence".into(),
-            ))
-        }
-    };
+    let captured_e8s = delivery
+        .pending
+        .captured_e8s
+        .ok_or_else(|| ApiError::Invalid("maturity delivery lacks a frozen capture".into()))?;
     let config = state::read().config;
     if crate::claim_assets::maturity_delivery_has_unpaid_fee(&delivery) {
         let canonical_fee = io_ledger_boundary::icp_fee(config.icp_ledger)
             .await
             .map_err(ApiError::Pending)?;
         ensure_exact(&operation)?;
-        if canonical_fee != delivery.pending.committed_claim_transfer_fee_e8s
-            || canonical_fee != config.expected_icp_fee_e8s
-        {
+        if canonical_fee != config.expected_icp_fee_e8s {
             let mut latest = state::read();
             latest.lifecycle = Lifecycle::Paused;
             state::write(latest);
             return Err(ApiError::Stuck(format!(
-                "maturity transit fee drift: frozen {}, canonical {canonical_fee}",
-                delivery.pending.committed_claim_transfer_fee_e8s
+                "maturity transit fee drift: configured {}, canonical {canonical_fee}",
+                config.expected_icp_fee_e8s
             )));
         }
     }
-    let split = io_core_model::split_40_60(mint.actual_minted_icp_e8s)
-        .map_err(|error| ApiError::Invalid(format!("maturity split failed: {error:?}")))?;
-    let credit = split
-        .permanent
-        .checked_sub(delivery.pending.committed_claim_transfer_fee_e8s)
-        .filter(|credit| *credit > 0)
-        .ok_or_else(|| ApiError::Invalid("permanent maturity leg cannot pay its fee".into()))?;
+    let split = io_nns_types::maturity::capture_40_60(
+        captured_e8s,
+        config.expected_icp_fee_e8s,
+        config.expected_icp_fee_e8s,
+    )
+    .map_err(|error| ApiError::Invalid(format!("maturity capture split failed: {error:?}")))?;
     match delivery.permanent_credit.as_ref() {
         None => {
             let permanent =
@@ -376,8 +397,8 @@ async fn resume_claim_receipt_delivery(
             return crate::permanent_credit::prepare(
                 operation,
                 permanent.snapshot,
-                credit,
-                delivery.pending.committed_claim_transfer_fee_e8s,
+                split.permanent_credit,
+                config.expected_icp_fee_e8s,
             );
         }
         Some(PermanentCreditState::Prepared { transfer, .. })
@@ -404,50 +425,76 @@ async fn resume_claim_receipt_delivery(
                 operation,
                 before.clone(),
                 *transfer_block,
-                credit,
+                split.permanent_credit,
             )
             .await;
         }
         Some(PermanentCreditState::Proved(_)) => {}
     }
-    let Some(permit) = delivery.permit.clone() else {
-        let observation = crate::api::claim_asset_observation().await?;
-        ensure_exact(&operation)?;
-        let (kind, claim_credit) = crate::claim_assets::claim_receipt_economics(
-            &delivery.pending,
-            mint.actual_minted_icp_e8s,
-        )?;
-        let permit = execution::prepare_claim_receipt(
-            &config,
-            PrepareClaimBackingReceiptArgs {
-                source_operation_id: maturity_source_operation_id(&delivery.pending),
-                kind,
-                source_account: config.maturity_staging.clone(),
-                source_block: mint.mint_block,
-                net_liquid_credit_e8s: claim_credit,
-                nns_fingerprint: observation.fingerprint,
-            },
-        )
-        .await?;
-        ensure_exact(&operation)?;
-        if permit.amount_e8s != claim_credit
-            || !permit
-                .destination
-                .effective_eq(&config.stream_liquid_account)
-                .map_err(ApiError::Invalid)?
-        {
-            return Err(ApiError::Invalid(
-                "Stream claim permit differs from maturity economics".into(),
-            ));
+    let permit = match (operation.kind, delivery.permit.clone()) {
+        (MaturityKind::TwoWeek, None) => {
+            let generation = delivery
+                .pending
+                .disburse_evidence
+                .submission
+                .plan
+                .entitlement_batch_generation
+                .ok_or_else(|| {
+                    ApiError::Invalid("two-week capture lost its entitlement generation".into())
+                })?;
+            let permit = execution::prepare_claim_receipt(
+                &config,
+                PrepareClaimBackingReceiptArgs {
+                    nns_operation_sequence: operation.operation_sequence,
+                    kind: io_receipt_types::ClaimBackingReceiptKind::TwoWeek {
+                        entitlement_generation: generation,
+                    },
+                    net_liquid_credit_e8s: split.claim_credit,
+                },
+            )
+            .await?;
+            ensure_exact(&operation)?;
+            if permit.amount_e8s != split.claim_credit
+                || !permit
+                    .destination
+                    .effective_eq(&config.stream_liquid_account)
+                    .map_err(ApiError::Invalid)?
+            {
+                return Err(ApiError::Invalid(
+                    "Stream paired-inflow permit differs from frozen maturity economics".into(),
+                ));
+            }
+            let mut replacement = operation.clone();
+            delivery_mut(&mut replacement).permit = Some(permit);
+            write_exact(&operation, replacement, false)?;
+            return Ok(MaturityProgress::Delivering);
         }
-        let mut replacement = operation.clone();
-        delivery_mut(&mut replacement).permit = Some(permit);
-        write_exact(&operation, replacement, false)?;
-        return Ok(MaturityProgress::DeliveringClaimReceipt);
+        (MaturityKind::TwoWeek, Some(permit)) => Some(permit),
+        (MaturityKind::TwoYear, None) => None,
+        (MaturityKind::TwoYear, Some(_)) => {
+            return Err(ApiError::Invalid(
+                "two-year maturity must not contain paired issuance state".into(),
+            ))
+        }
     };
     match delivery.claim_transfer.as_ref() {
         None => {
-            return prepare_claim_transfer(operation, permit.destination.clone(), permit.amount_e8s)
+            let (destination, amount, memo) = match &permit {
+                Some(permit) => (
+                    permit.destination.clone(),
+                    permit.amount_e8s,
+                    permit.memo.clone(),
+                ),
+                None => (
+                    config.stream_liquid_account.clone(),
+                    split.claim_credit,
+                    maturity_transfer_memo(
+                        b"io-two-year-maturity-claim-v1",
+                        operation.operation_sequence,
+                    ),
+                ),
+            };
+            return prepare_claim_transfer(operation, destination, amount, memo);
         }
         Some(attempt) if !matches!(attempt.state, TransferState::Succeeded { .. }) => {
             return submit_maturity_transfer(operation, false).await;
@@ -460,6 +507,9 @@ async fn resume_claim_receipt_delivery(
         .ok_or(ApiError::Busy)?
         .succeeded_block()
         .map_err(ApiError::Invalid)?;
+    let Some(permit) = permit else {
+        return finish_inflow(operation, None);
+    };
     let progress = execution::prove_claim_receipt(
         &config,
         ProveClaimBackingReceiptArgs {
@@ -476,26 +526,18 @@ fn prepare_claim_transfer(
     operation: MaturityCommandOperation,
     destination: crate::state::Account,
     amount: u128,
+    memo: Vec<u8>,
 ) -> Result<MaturityProgress, ApiError> {
     let config = state::read().config;
-    let memo = delivery_ref(&operation)
-        .permit
-        .as_ref()
-        .ok_or(ApiError::Busy)?
-        .memo
-        .clone();
     let attempt = NnsTransferAttempt::prepared(NnsTransferIntent {
         ledger: config.icp_ledger,
-        source_subaccount: config
-            .maturity_staging
+        source_subaccount: staging_account(ic_cdk::api::canister_self(), operation.kind)
             .canonical()
             .map_err(ApiError::Invalid)?
             .subaccount,
         destination,
         amount_e8s: amount,
-        fee_e8s: delivery_ref(&operation)
-            .pending
-            .committed_claim_transfer_fee_e8s,
+        fee_e8s: config.expected_icp_fee_e8s,
         memo,
         created_at_time_nanos: now_nanos()?,
     })
@@ -503,7 +545,7 @@ fn prepare_claim_transfer(
     let mut replacement = operation.clone();
     delivery_mut(&mut replacement).claim_transfer = Some(attempt);
     write_exact(&operation, replacement, false)?;
-    Ok(MaturityProgress::DeliveringClaimReceipt)
+    Ok(MaturityProgress::Delivering)
 }
 
 async fn submit_maturity_transfer(
@@ -560,7 +602,7 @@ async fn submit_maturity_transfer(
         execution::ExactTransferOutcome::Succeeded(block) => {
             attempt.state = TransferState::Succeeded { block };
             write_exact(&operation, replacement, false)?;
-            Ok(MaturityProgress::DeliveringClaimReceipt)
+            Ok(MaturityProgress::Delivering)
         }
         execution::ExactTransferOutcome::Paused(classification, reason) => {
             attempt.state = TransferState::Paused {
@@ -636,7 +678,7 @@ pub async fn prove_active_transfer(
     transfer_mut(delivery_mut(&mut replacement), permanent)?.state =
         TransferState::Succeeded { block: block_index };
     write_exact(&operation, replacement, false)?;
-    Ok(MaturityProgress::DeliveringClaimReceipt)
+    Ok(MaturityProgress::Delivering)
 }
 
 pub(crate) async fn resume_stream_receipt(
@@ -644,30 +686,102 @@ pub(crate) async fn resume_stream_receipt(
     progress: ClaimBackingReceiptProgress,
 ) -> Result<MaturityProgress, ApiError> {
     match progress {
-        ClaimBackingReceiptProgress::AwaitingLiquidProof(_) => {
-            Ok(MaturityProgress::DeliveringClaimReceipt)
-        }
+        ClaimBackingReceiptProgress::AwaitingLiquidProof(_) => Ok(MaturityProgress::Delivering),
         ClaimBackingReceiptProgress::SettlingRecipients => {
             let progress = execution::resume_claim_receipt(&state::read().config).await?;
             ensure_exact(&operation)?;
             match progress {
-                ClaimBackingReceiptProgress::Completed(_) => finish_inflow(operation),
+                ClaimBackingReceiptProgress::Completed(result) => {
+                    finish_inflow(operation, Some(&result))
+                }
                 ClaimBackingReceiptProgress::Stuck(reason) => Err(ApiError::Stuck(reason)),
-                _ => Ok(MaturityProgress::DeliveringClaimReceipt),
+                _ => Ok(MaturityProgress::Delivering),
             }
         }
-        ClaimBackingReceiptProgress::Completed(_) => finish_inflow(operation),
+        ClaimBackingReceiptProgress::Completed(result) => finish_inflow(operation, Some(&result)),
         ClaimBackingReceiptProgress::Stuck(reason) => Err(ApiError::Stuck(reason)),
     }
 }
 
-fn finish_inflow(operation: MaturityCommandOperation) -> Result<MaturityProgress, ApiError> {
-    crate::maturity_mint::finish(operation)
-}
-
-pub(crate) fn maturity_source_operation_id(pending: &PendingMaturityDisbursement) -> Vec<u8> {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(candid::encode_one(pending).expect("maturity evidence must encode")).to_vec()
+fn finish_inflow(
+    operation: MaturityCommandOperation,
+    stream_result: Option<&io_receipt_types::ClaimBackingReceiptResult>,
+) -> Result<MaturityProgress, ApiError> {
+    let delivery = delivery_ref(&operation);
+    let captured_e8s = delivery
+        .pending
+        .captured_e8s
+        .ok_or_else(|| ApiError::Invalid("completed maturity lacks frozen capture".into()))?;
+    let config = state::read().config;
+    let split = io_nns_types::maturity::capture_40_60(
+        captured_e8s,
+        config.expected_icp_fee_e8s,
+        config.expected_icp_fee_e8s,
+    )
+    .map_err(|error| ApiError::Invalid(format!("completed maturity split failed: {error:?}")))?;
+    if !matches!(
+        delivery.permanent_credit,
+        Some(PermanentCreditState::Proved(_))
+    ) || !crate::claim_assets::claim_transfer_succeeded(delivery.claim_transfer.as_ref())
+    {
+        return Err(ApiError::Invalid(
+            "completed maturity lacks proved outgoing effects".into(),
+        ));
+    }
+    let entitlement_batch_generation = delivery
+        .pending
+        .disburse_evidence
+        .submission
+        .plan
+        .entitlement_batch_generation;
+    match (operation.kind, stream_result) {
+        (MaturityKind::TwoYear, None) => {}
+        (MaturityKind::TwoWeek, Some(result))
+            if result.nns_operation_sequence == operation.operation_sequence
+                && result.kind
+                    == io_receipt_types::ClaimBackingReceiptKind::TwoWeek {
+                        entitlement_generation: entitlement_batch_generation.ok_or_else(|| {
+                            ApiError::Invalid("two-week completion lost generation".into())
+                        })?,
+                    }
+                && result.liquid_credit_e8s == split.claim_credit => {}
+        (MaturityKind::TwoYear, Some(_)) => {
+            return Err(ApiError::Invalid(
+                "two-year maturity used paired issuance".into(),
+            ))
+        }
+        (MaturityKind::TwoWeek, _) => {
+            return Err(ApiError::Invalid(
+                "two-week Stream settlement differs from frozen capture".into(),
+            ))
+        }
+    }
+    let completed = crate::maturity::CompletedMaturity {
+        kind: operation.kind,
+        captured_e8s,
+        permanent_credit_e8s: split.permanent_credit,
+        claim_credit_e8s: split.claim_credit,
+        entitlement_batch_generation,
+        completed_at_nanos: now_nanos()?,
+    };
+    let mut latest = state::read();
+    if !matches!(&latest.active_operation, Some(NnsOperation::Maturity(active)) if **active == operation)
+    {
+        return Err(ApiError::Busy);
+    }
+    latest.active_operation = None;
+    match operation.kind {
+        MaturityKind::TwoYear => {
+            latest.pending_two_year_maturity = None;
+            latest.last_two_year_maturity = Some(completed.clone());
+        }
+        MaturityKind::TwoWeek => {
+            latest.pending_two_week_maturity = None;
+            latest.last_two_week_maturity = Some(completed.clone());
+        }
+    }
+    state::write(latest);
+    Ok(MaturityProgress::Completed(Box::new(completed)))
 }
 
 pub(crate) fn maturity_transfer_memo(domain: &[u8], sequence: u64) -> Vec<u8> {
@@ -678,24 +792,24 @@ pub(crate) fn maturity_transfer_memo(domain: &[u8], sequence: u64) -> Vec<u8> {
     hasher.finalize().to_vec()
 }
 
-pub(crate) fn delivery_ref(operation: &MaturityCommandOperation) -> &ClaimReceiptDeliveryOperation {
+pub(crate) fn delivery_ref(operation: &MaturityCommandOperation) -> &MaturityDeliveryOperation {
     match &operation.phase {
-        MaturityCommandPhase::ClaimReceiptDelivery(delivery) => delivery,
-        _ => panic!("validated claim-receipt phase"),
+        MaturityCommandPhase::Delivery(delivery) => delivery,
+        _ => panic!("validated maturity delivery phase"),
     }
 }
 
 pub(crate) fn delivery_mut(
     operation: &mut MaturityCommandOperation,
-) -> &mut ClaimReceiptDeliveryOperation {
+) -> &mut MaturityDeliveryOperation {
     match &mut operation.phase {
-        MaturityCommandPhase::ClaimReceiptDelivery(delivery) => delivery,
-        _ => panic!("validated claim-receipt phase"),
+        MaturityCommandPhase::Delivery(delivery) => delivery,
+        _ => panic!("validated maturity delivery phase"),
     }
 }
 
 fn transfer_mut(
-    delivery: &mut ClaimReceiptDeliveryOperation,
+    delivery: &mut MaturityDeliveryOperation,
     permanent: bool,
 ) -> Result<&mut NnsTransferAttempt, ApiError> {
     if permanent {
@@ -709,24 +823,6 @@ fn transfer_mut(
     .ok_or_else(|| ApiError::Invalid("claim-receipt transfer is not prepared".into()))
 }
 
-pub(crate) fn replay_proved(
-    pending: &PendingMaturityDisbursement,
-    block_index: u128,
-) -> Result<MaturityProgress, ApiError> {
-    let mint = match &pending.mint_proof {
-        MintProofState::Proved(mint) | MintProofState::Delivering(mint) => mint,
-        MintProofState::Awaiting => return Err(ApiError::Busy),
-    };
-    if mint.mint_block != block_index {
-        return Err(ApiError::Invalid("conflicting maturity Mint block".into()));
-    }
-    Ok(match pending.mint_proof {
-        MintProofState::Proved(_) => MaturityProgress::MintProved,
-        MintProofState::Delivering(_) => MaturityProgress::DeliveringClaimReceipt,
-        MintProofState::Awaiting => unreachable!(),
-    })
-}
-
 fn next_epoch(epoch: u64) -> Result<u64, ApiError> {
     epoch
         .checked_add(1)
@@ -738,14 +834,24 @@ fn identity(
     kind: MaturityKind,
 ) -> Result<(u64, crate::state::Account), ApiError> {
     Ok(match kind {
-        MaturityKind::TwoYear => (config.two_year_neuron_id, config.maturity_staging.clone()),
+        MaturityKind::TwoYear => (
+            config.two_year_neuron_id,
+            staging_account(ic_cdk::api::canister_self(), kind),
+        ),
         MaturityKind::TwoWeek => (
             state::read()
                 .pooled_parent_id
                 .ok_or_else(|| ApiError::Pending("pooled parent is absent".into()))?,
-            config.maturity_staging.clone(),
+            staging_account(ic_cdk::api::canister_self(), kind),
         ),
     })
+}
+
+pub(crate) fn staging_account(owner: Principal, kind: MaturityKind) -> crate::state::Account {
+    match kind {
+        MaturityKind::TwoYear => io_accounts::two_year_maturity_staging(owner),
+        MaturityKind::TwoWeek => io_accounts::two_week_maturity_staging(owner),
+    }
 }
 
 pub(crate) fn write_exact(
@@ -758,9 +864,9 @@ pub(crate) fn write_exact(
     {
         return Err(ApiError::Busy);
     }
-    let (neuron_id, destination) = identity(&latest.config, replacement.kind)?;
+    let (neuron_id, _) = identity(&latest.config, replacement.kind)?;
     replacement
-        .validate(latest.next_operation_sequence, neuron_id, &destination)
+        .validate(latest.next_operation_sequence, neuron_id)
         .map_err(ApiError::Invalid)?;
     latest.active_operation = Some(NnsOperation::Maturity(Box::new(replacement)));
     if pause {

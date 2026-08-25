@@ -1,7 +1,7 @@
 //! Pure allocation of one actually backed IO pool over cumulative entitlement credits.
 
 use candid::CandidType;
-use io_core_model::{backed_io, checked_add, split_40_60, EconomicsError};
+use io_core_model::{backed_io, checked_add, EconomicsError};
 use serde::Deserialize;
 
 pub const DAILY_EVENT_CREDIT: u128 = 1_000_000_000_000_000_000;
@@ -184,18 +184,10 @@ pub struct ClaimSettlementPlan {
     pub post_claims: u128,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct PooledMaturityPlan {
-    pub permanent_credit: u128,
-    pub claim: ClaimSettlementPlan,
-    pub snapshot_fingerprint: [u8; 32],
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlanningError {
     Economics(EconomicsError),
     Rewards(RewardPolicyError),
-    InsufficientPermanentCredit,
     InsufficientClaimCredit,
     InsufficientIoReserve,
 }
@@ -210,26 +202,6 @@ impl From<RewardPolicyError> for PlanningError {
     fn from(value: RewardPolicyError) -> Self {
         Self::Rewards(value)
     }
-}
-
-pub fn permanent_maturity_credit(actual_mint: u128, fee: u128) -> Result<u128, PlanningError> {
-    actual_mint
-        .checked_sub(fee)
-        .filter(|credit| *credit > 0)
-        .ok_or(PlanningError::InsufficientClaimCredit)
-}
-
-pub struct PooledMaturityInput<'a> {
-    pub pre_backing: u128,
-    pub pre_claims: u128,
-    pub actual_mint: u128,
-    pub permanent_transfer_fee: u128,
-    pub claim_transfer_fee: u128,
-    pub policy_credit_total: u128,
-    pub entitlements: &'a [EntitlementCredit],
-    pub reserve_io_capacity: u128,
-    pub io_fee: u128,
-    pub snapshot_fingerprint: [u8; 32],
 }
 
 pub fn plan_claim_settlement(
@@ -270,34 +242,6 @@ pub fn plan_claim_settlement(
         recipient_io_fees: recipient_fees,
         post_backing: checked_add(pre_backing, claim_credit)?,
         post_claims: checked_add(pre_claims, distributed)?,
-    })
-}
-
-pub fn plan_pooled_maturity(
-    input: PooledMaturityInput<'_>,
-) -> Result<PooledMaturityPlan, PlanningError> {
-    let split = split_40_60(input.actual_mint)?;
-    let permanent_credit = split
-        .permanent
-        .checked_sub(input.permanent_transfer_fee)
-        .ok_or(PlanningError::InsufficientPermanentCredit)?;
-    let claim_credit = split
-        .claim
-        .checked_sub(input.claim_transfer_fee)
-        .ok_or(PlanningError::InsufficientClaimCredit)?;
-    let claim = plan_claim_settlement(
-        input.pre_backing,
-        input.pre_claims,
-        claim_credit,
-        input.policy_credit_total,
-        input.entitlements,
-        input.reserve_io_capacity,
-        input.io_fee,
-    )?;
-    Ok(PooledMaturityPlan {
-        snapshot_fingerprint: input.snapshot_fingerprint,
-        permanent_credit,
-        claim,
     })
 }
 
@@ -405,51 +349,11 @@ mod tests {
     }
 
     #[test]
-    fn pooled_maturity_is_one_liquid_claim_credit_and_freezes_io_effects() {
-        let plan = plan_pooled_maturity(PooledMaturityInput {
-            pre_backing: 100_000_000_000,
-            pre_claims: 100_000_000_000,
-            actual_mint: 100_000_000,
-            permanent_transfer_fee: 10_000,
-            claim_transfer_fee: 10_000,
-            policy_credit_total: 2,
-            entitlements: &[credit(1, 1)],
-            reserve_io_capacity: 100_000_000,
-            io_fee: 1_000,
-            snapshot_fingerprint: [9; 32],
-        })
-        .unwrap();
-        assert_eq!(plan.permanent_credit, 39_990_000);
-        assert_eq!(plan.claim.claim_credit, 59_990_000);
-        assert_eq!(plan.claim.maximum_io_pool, 59_990_000);
-        assert_eq!(plan.claim.recipient_io_fees, 1_000);
-        assert_eq!(plan.snapshot_fingerprint, [9; 32]);
-        assert_eq!(
-            plan.claim.distributed_io
-                + plan.claim.rewards.forfeited_io_e8s
-                + plan.claim.rewards.rounding_dust_e8s,
-            plan.claim.maximum_io_pool
-        );
-    }
-
-    #[test]
     fn settlement_never_assumes_delivered_io_is_active() {
         let plan =
             plan_claim_settlement(100_000, 100_000, 1_000, 1, &[credit(1, 1)], 2_000, 10).unwrap();
         assert_eq!(plan.distributed_io, 1_000);
         assert_eq!(plan.post_claims, 101_000);
         assert_eq!(plan.post_backing, 101_000);
-    }
-
-    #[test]
-    fn permanent_maturity_has_exactly_one_liquid_transfer_fee() {
-        assert_eq!(
-            permanent_maturity_credit(100_000_000, 10_000),
-            Ok(99_990_000)
-        );
-        assert_eq!(
-            permanent_maturity_credit(10_000, 10_000),
-            Err(PlanningError::InsufficientClaimCredit)
-        );
     }
 }

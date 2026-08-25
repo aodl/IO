@@ -5,18 +5,14 @@ use serde::Deserialize;
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum ClaimBackingReceiptKind {
     Jupiter,
-    PermanentMaturity { maturity_generation: u64 },
-    PooledMaturity { entitlement_batch_generation: u64 },
+    TwoWeek { entitlement_generation: u64 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct PrepareClaimBackingReceiptArgs {
-    pub source_operation_id: Vec<u8>,
+    pub nns_operation_sequence: u64,
     pub kind: ClaimBackingReceiptKind,
-    pub source_account: Account,
-    pub source_block: u128,
     pub net_liquid_credit_e8s: u128,
-    pub nns_fingerprint: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -25,7 +21,6 @@ pub struct ClaimBackingReceiptPermit {
     pub destination: Account,
     pub amount_e8s: u128,
     pub memo: Vec<u8>,
-    pub request_fingerprint: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -36,8 +31,7 @@ pub struct ProveClaimBackingReceiptArgs {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct ClaimBackingReceiptResult {
-    pub source_operation_id: Vec<u8>,
-    pub request_fingerprint: Vec<u8>,
+    pub nns_operation_sequence: u64,
     pub kind: ClaimBackingReceiptKind,
     pub liquid_credit_e8s: u128,
     pub distributed_io_e8s: u128,

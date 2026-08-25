@@ -15,14 +15,13 @@ use crate::{
 pub use io_accounts::Account;
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
-pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 6;
+pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 7;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct StreamConfig {
     pub io_ledger: Principal,
     pub icp_ledger: Principal,
     pub nns_manager: Principal,
-    pub jupiter_receipt_source: Account,
     pub jupiter_io_account: Account,
     pub sns_governance: Principal,
     pub sns_root: Principal,
@@ -76,27 +75,20 @@ impl StreamConfig {
         if self.io_reserve.owner != canister_self || self.liquid_icp.owner != canister_self {
             return Err("reserve and liquid accounts must be owned by this canister".into());
         }
-        if self.jupiter_receipt_source.owner != self.nns_manager {
-            return Err("Jupiter receipt source owner must equal NNS manager".into());
-        }
         self.io_reserve.validate()?;
         self.liquid_icp.validate()?;
-        self.jupiter_receipt_source.validate()?;
         self.jupiter_io_account.validate()?;
         for (name, account) in [
             ("IO reserve", &self.io_reserve),
             ("liquid ICP", &self.liquid_icp),
-            ("Jupiter receipt source", &self.jupiter_receipt_source),
             ("Jupiter IO account", &self.jupiter_io_account),
         ] {
             if account.owner == Principal::anonymous() || account.owner == management {
                 return Err(format!("{name} owner is forbidden"));
             }
         }
-        if self.jupiter_receipt_source.effective_eq(&self.liquid_icp)?
-            || self.jupiter_io_account.effective_eq(&self.io_reserve)?
-        {
-            return Err("receipt sources, reserve and liquid accounts must be distinct".into());
+        if self.jupiter_io_account.effective_eq(&self.io_reserve)? {
+            return Err("Jupiter IO account and reserve must be distinct".into());
         }
         if self.nonredeemable_governance_io_accounts.len() > Self::MAX_EXCLUDED_ACCOUNTS {
             return Err("too many nonredeemable governance IO accounts".into());
@@ -364,7 +356,6 @@ impl StreamStateV1 {
                 io_ledger: anonymous,
                 icp_ledger: anonymous,
                 nns_manager: anonymous,
-                jupiter_receipt_source: account.clone(),
                 jupiter_io_account: account.clone(),
                 sns_governance: anonymous,
                 sns_root: anonymous,
@@ -889,7 +880,6 @@ mod tests {
                     io_ledger: principal(2),
                     icp_ledger: principal(3),
                     nns_manager,
-                    jupiter_receipt_source: account(nns_manager, 1),
                     jupiter_io_account: account(principal(7), 2),
                     sns_governance: principal(5),
                     sns_root: principal(6),
@@ -1088,19 +1078,13 @@ mod tests {
 
     #[test]
     fn claim_receipt_ownership_handoff_round_trips_before_and_after_liquid_proof() {
-        use sha2::Digest;
-
         for liquid_block in [None, Some(7)] {
             let (canister_self, mut state) = valid_state();
             let request = io_receipt_types::PrepareClaimBackingReceiptArgs {
-                source_operation_id: vec![1],
+                nns_operation_sequence: 1,
                 kind: io_receipt_types::ClaimBackingReceiptKind::Jupiter,
-                source_account: state.config.jupiter_receipt_source.clone(),
-                source_block: 1,
                 net_liquid_credit_e8s: 60,
-                nns_fingerprint: vec![2; 32],
             };
-            let fingerprint = sha2::Sha256::digest(candid::encode_one(&request).unwrap()).to_vec();
             state.lifecycle = Lifecycle::Ready;
             state.next_operation_sequence = OperationSequence(2);
             state.active_operation = Some(StreamOperation::ClaimReceipt(Box::new(
@@ -1109,17 +1093,14 @@ mod tests {
                         stream_operation_sequence: 1,
                         destination: state.config.liquid_icp.clone(),
                         amount_e8s: 60,
-                        memo: io_nns_types::receipt::receipt_memo(&request.source_operation_id),
-                        request_fingerprint: fingerprint.clone(),
+                        memo: io_nns_types::receipt::receipt_memo(request.nns_operation_sequence),
                     },
                     request,
-                    request_fingerprint: fingerprint,
                     economics: crate::receipt::FrozenClaimEconomics {
                         pre_claim_backing_e8s: 100,
                         pre_claim_supply_e8s: 100,
                         liquid_credit_e8s: 60,
                         io_fee_e8s: state.config.expected_io_fee_e8s,
-                        snapshot_fingerprint: vec![3; 32],
                     },
                     liquid_block,
                     recipients: vec![crate::receipt::FrozenRecipient {

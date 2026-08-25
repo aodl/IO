@@ -71,9 +71,13 @@ async fn lookup_and_begin(
             "exact block is not a canonical Jupiter raw-ICP deposit".into(),
         ));
     }
-    let (stake_e8s, liquid_e8s) =
-        jupiter::fee_reduced_split(transfer.amount_e8s, current.config.expected_icp_fee_e8s)
-            .map_err(ApiError::Invalid)?;
+    let split = io_nns_types::maturity::capture_40_60(
+        transfer.amount_e8s,
+        current.config.expected_icp_fee_e8s,
+        current.config.expected_icp_fee_e8s,
+    )
+    .map_err(|error| ApiError::Invalid(format!("Jupiter capture split failed: {error:?}")))?;
+    let (stake_e8s, liquid_e8s) = (split.permanent_credit, split.claim_credit);
     let staging_balance =
         execution::icp_balance(&current.config, &current.config.jupiter_staging).await?;
     if staging_balance < transfer.amount_e8s {
@@ -435,7 +439,7 @@ async fn prepare_receipt(
     let config = state::read().config;
     let permit = execution::prepare_jupiter_claim_receipt(
         &config,
-        operation.deposit.block_index,
+        operation.operation_sequence,
         operation.deposit.liquid_e8s,
     )
     .await?;
@@ -531,8 +535,7 @@ fn finish_jupiter(
     succeeded: LiquidTransferSucceeded,
     stream: io_receipt_types::ClaimBackingReceiptResult,
 ) -> Result<JupiterProgress, ApiError> {
-    if stream.request_fingerprint != succeeded.permit.request_fingerprint
-        || stream.source_operation_id != operation.deposit.block_index.to_be_bytes()
+    if stream.nns_operation_sequence != operation.operation_sequence
         || stream.kind != io_receipt_types::ClaimBackingReceiptKind::Jupiter
         || stream.liquid_credit_e8s != operation.deposit.liquid_e8s
         || stream.distributed_io_e8s == 0
@@ -559,7 +562,6 @@ fn finish_jupiter(
             .recipient_transfer_block
             .expect("validated Jupiter block"),
         io_fee_e8s: stream.io_fee_e8s,
-        stream_receipt_fingerprint: stream.request_fingerprint,
         completed_at_nanos: checked_now()?,
     };
     state::record_processed_jupiter(result.clone()).map_err(ApiError::Invalid)?;
@@ -718,10 +720,6 @@ mod tests {
 
     fn valid_test_state() -> (Principal, crate::state::NnsStateV1) {
         let principal = Principal::from_slice(&[1; 29]);
-        let account = |subaccount: u8| crate::state::Account {
-            owner: principal,
-            subaccount: Some(vec![subaccount; 32]),
-        };
         (
             principal,
             crate::state::NnsStateV1 {
@@ -744,7 +742,6 @@ mod tests {
                         owner: principal,
                         subaccount: None,
                     },
-                    maturity_staging: account(2),
                     stream_liquid_account: crate::state::Account {
                         owner: Principal::from_slice(&[6; 29]),
                         subaccount: Some(vec![3; 32]),
@@ -767,8 +764,6 @@ mod tests {
                 latest_reconciliation_generation: 0,
                 latest_pooled_target: None,
                 two_year_maturity_baseline_reconciled: true,
-                latest_started_two_week_generation: 0,
-                latest_completed_two_week_generation: 0,
                 pending_two_year_maturity: None,
                 pending_two_week_maturity: None,
                 last_two_year_maturity: None,
@@ -869,7 +864,6 @@ mod tests {
             destination: latest.config.stream_liquid_account.clone(),
             amount_e8s: 600,
             memo: vec![2],
-            request_fingerprint: vec![3; 32],
         };
         let liquid_attempt = NnsTransferAttempt::prepared(NnsTransferIntent {
             ledger: latest.config.icp_ledger,

@@ -331,6 +331,12 @@ mod tests {
     }
 
     #[test]
+    fn paired_inflow_issues_at_the_pre_inflow_rate() {
+        assert_eq!(backed_io(60, 100, 100), Ok(60));
+        assert_eq!(backed_io(60, 200, 100), Ok(30));
+    }
+
+    #[test]
     fn targets_and_reward_coverage_are_separate() {
         let mut value = state(500, 500, 1_000, 600);
         value.active_reward = 500;

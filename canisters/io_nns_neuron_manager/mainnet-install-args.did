@@ -13,7 +13,6 @@
     minimum_parent_stake_e8s = 100_000_000 : nat;
     jupiter_account = record { owner = TODO_JUPITER_PRINCIPAL; subaccount = opt TODO_JUPITER_SOURCE_SUBACCOUNT };
     jupiter_staging = record { owner = TODO_EXISTING_NNS_CONTROLLER_SELF; subaccount = null };
-    maturity_staging = record { owner = TODO_EXISTING_NNS_CONTROLLER_SELF; subaccount = opt TODO_MATURITY_STAGING };
     stream_liquid_account = record { owner = TODO_STREAM_MANAGER_PRINCIPAL; subaccount = opt TODO_STREAM_LIQUID_SUBACCOUNT };
     expected_io_fee_e8s = TODO_IO_FEE : nat;
     expected_icp_fee_e8s = TODO_ICP_FEE : nat;

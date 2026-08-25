@@ -73,9 +73,7 @@ pub(crate) fn transit_components(
     let (maturity, maturity_fee) = match &snapshot.active_operation {
         Some(NnsOperation::Maturity(command)) => {
             let delivery = match &command.phase {
-                crate::maturity::MaturityCommandPhase::ClaimReceiptDelivery(delivery) => {
-                    Some(delivery)
-                }
+                crate::maturity::MaturityCommandPhase::Delivery(delivery) => Some(delivery),
                 _ => None,
             };
             let backing = match delivery {
@@ -86,7 +84,11 @@ pub(crate) fn transit_components(
                 {
                     0
                 }
-                Some(delivery) => maturity_claim_transit(&delivery.pending, true)?,
+                Some(delivery) => maturity_claim_transit(
+                    &delivery.pending,
+                    snapshot.config.expected_icp_fee_e8s,
+                    true,
+                )?,
             };
             (
                 backing,
@@ -94,7 +96,9 @@ pub(crate) fn transit_components(
                     delivery
                         .expect("positive maturity transit has delivery evidence")
                         .pending
-                        .committed_claim_transfer_fee_e8s,
+                        .captured_e8s
+                        .map(|_| snapshot.config.expected_icp_fee_e8s)
+                        .unwrap_or_default(),
                 ),
             )
         }
@@ -103,9 +107,7 @@ pub(crate) fn transit_components(
     push(TransitComponentKind::ActiveMaturity, maturity, maturity_fee);
     let active_pending = match &snapshot.active_operation {
         Some(NnsOperation::Maturity(command)) => match &command.phase {
-            crate::maturity::MaturityCommandPhase::ClaimReceiptDelivery(delivery) => {
-                Some(&delivery.pending)
-            }
+            crate::maturity::MaturityCommandPhase::Delivery(delivery) => Some(&delivery.pending),
             _ => None,
         },
         _ => None,
@@ -122,7 +124,9 @@ pub(crate) fn transit_components(
     ] {
         let backing = pending
             .filter(|pending| active_pending != Some(*pending))
-            .map(|pending| maturity_claim_transit(pending, false))
+            .map(|pending| {
+                maturity_claim_transit(pending, snapshot.config.expected_icp_fee_e8s, false)
+            })
             .transpose()?
             .unwrap_or_default();
         push(
@@ -130,7 +134,7 @@ pub(crate) fn transit_components(
             backing,
             pending
                 .filter(|_| backing > 0)
-                .map(|pending| pending.committed_claim_transfer_fee_e8s),
+                .map(|_| snapshot.config.expected_icp_fee_e8s),
         );
     }
     Ok(components)
@@ -182,7 +186,7 @@ pub(crate) fn has_ambiguous_backing_effect(snapshot: &crate::state::NnsStateV1) 
             _ => false,
         },
         Some(NnsOperation::Maturity(command)) => match &command.phase {
-            crate::maturity::MaturityCommandPhase::ClaimReceiptDelivery(delivery) => {
+            crate::maturity::MaturityCommandPhase::Delivery(delivery) => {
                 ambiguous_claim_transfer(delivery.claim_transfer.as_ref())
             }
             _ => false,
@@ -232,7 +236,7 @@ pub(crate) fn insufficient_claim_asset_requirement(
             _ => None,
         },
         Some(NnsOperation::Maturity(command)) => match &command.phase {
-            crate::maturity::MaturityCommandPhase::ClaimReceiptDelivery(delivery) => {
+            crate::maturity::MaturityCommandPhase::Delivery(delivery) => {
                 delivery.claim_transfer.as_ref().filter(|attempt| {
                     matches!(
                         attempt.state,
@@ -267,93 +271,36 @@ pub(crate) fn insufficient_claim_asset_requirement(
 
 fn maturity_claim_transit(
     pending: &crate::maturity::PendingMaturityDisbursement,
+    fee_e8s: u128,
     paired_permitted: bool,
 ) -> Result<u128, ApiError> {
-    let mint = match &pending.mint_proof {
-        crate::maturity::MintProofState::Proved(mint)
-        | crate::maturity::MintProofState::Delivering(mint) => mint,
-        crate::maturity::MintProofState::Awaiting => return Ok(0),
+    let Some(captured_e8s) = pending.captured_e8s else {
+        return Ok(0);
     };
-    maturity_ingress_transit(
-        pending.kind,
-        mint.actual_minted_icp_e8s,
-        pending.committed_claim_transfer_fee_e8s,
-        paired_permitted,
-    )
+    maturity_ingress_transit(pending.kind, captured_e8s, fee_e8s, paired_permitted)
 }
 
 pub(crate) fn maturity_ingress_transit(
     kind: MaturityKind,
-    minted_e8s: u128,
+    captured_e8s: u128,
     fee_e8s: u128,
     paired_permitted: bool,
 ) -> Result<u128, ApiError> {
     match kind {
         MaturityKind::TwoWeek if !paired_permitted => Ok(0),
         MaturityKind::TwoYear | MaturityKind::TwoWeek => {
-            let claim = io_core_model::split_40_60(minted_e8s)
+            let claim = io_nns_types::maturity::capture_40_60(captured_e8s, fee_e8s, fee_e8s)
                 .map_err(|error| {
                     ApiError::Invalid(format!("maturity transit split failed: {error:?}"))
                 })?
-                .claim;
-            claim
-                .checked_sub(fee_e8s)
-                .filter(|credit| *credit > 0)
-                .ok_or_else(|| ApiError::Invalid("pooled claim transit cannot pay its fee".into()))
+                .claim_credit;
+            Ok(claim)
         }
     }
 }
 
-pub(crate) fn claim_receipt_economics(
-    pending: &crate::maturity::PendingMaturityDisbursement,
-    mint: u128,
-) -> Result<(io_receipt_types::ClaimBackingReceiptKind, u128), ApiError> {
-    let fee = pending.committed_claim_transfer_fee_e8s;
-    Ok(match pending.kind {
-        MaturityKind::TwoYear => (
-            io_receipt_types::ClaimBackingReceiptKind::PermanentMaturity {
-                maturity_generation: pending.initiation_timestamp_seconds,
-            },
-            io_core_model::split_40_60(mint)
-                .map_err(|error| {
-                    ApiError::Invalid(format!("permanent maturity split failed: {error:?}"))
-                })?
-                .claim
-                .checked_sub(fee)
-                .filter(|credit| *credit > 0)
-                .ok_or_else(|| {
-                    ApiError::Invalid("permanent claim leg cannot pay its fee".into())
-                })?,
-        ),
-        MaturityKind::TwoWeek => {
-            let split = io_core_model::split_40_60(mint).map_err(|error| {
-                ApiError::Invalid(format!("pooled maturity split failed: {error:?}"))
-            })?;
-            let credit = split
-                .claim
-                .checked_sub(fee)
-                .filter(|credit| *credit > 0)
-                .ok_or_else(|| ApiError::Invalid("pooled claim leg cannot pay its fee".into()))?;
-            let generation = pending
-                .disburse_evidence
-                .submission
-                .plan
-                .entitlement_batch_generation
-                .ok_or_else(|| {
-                    ApiError::Invalid("pooled maturity lost its entitlement generation".into())
-                })?;
-            (
-                io_receipt_types::ClaimBackingReceiptKind::PooledMaturity {
-                    entitlement_batch_generation: generation,
-                },
-                credit,
-            )
-        }
-    })
-}
-
 pub(crate) fn maturity_delivery_has_unpaid_fee(
-    delivery: &crate::maturity::ClaimReceiptDeliveryOperation,
+    delivery: &crate::maturity::MaturityDeliveryOperation,
 ) -> bool {
     let claim_unpaid = !matches!(
         delivery
@@ -380,9 +327,9 @@ mod tests {
     use crate::{
         jupiter::{JupiterDeposit, JupiterOperation, JupiterPhase, PermanentNeuronCreditProof},
         maturity::{
-            ClaimReceiptDeliveryOperation, DisburseMaturitySubmission, DisburseMaturitySucceeded,
-            MaturityCommandOperation, MaturityCommandPhase, MaturityEvidenceSource, MaturityPlan,
-            MintEvidence, MintProofState, PendingMaturityDisbursement,
+            DisburseMaturitySubmission, DisburseMaturitySucceeded, MaturityCommandOperation,
+            MaturityCommandPhase, MaturityDeliveryOperation, MaturityPlan,
+            PendingMaturityDisbursement,
         },
         pool::UnwindOperation,
     };
@@ -391,7 +338,7 @@ mod tests {
     const FEE: u128 = 10;
 
     fn pending(
-        state: &crate::state::NnsStateV1,
+        _state: &crate::state::NnsStateV1,
         kind: MaturityKind,
     ) -> PendingMaturityDisbursement {
         let (neuron_id, generation) = match kind {
@@ -404,8 +351,8 @@ mod tests {
                 staking_subaccount: [neuron_id as u8; 32],
                 cached_stake_e8s: 1_000,
             },
-            observed_maturity_e8s: 100,
-            destination: state.config.maturity_staging.clone(),
+            observed_maturity_e8s: 100_000_000,
+            staging_balance_before_e8s: 0,
             requested_at_seconds: 1,
             entitlement_batch_generation: generation,
         };
@@ -415,23 +362,12 @@ mod tests {
         };
         PendingMaturityDisbursement {
             kind,
-            neuron_id,
-            nominal_disbursed_maturity_e8s: 100,
-            destination: state.config.maturity_staging.clone(),
-            initiation_timestamp_seconds: 1,
             scheduled_finalization_timestamp_seconds: 604_801,
             disburse_evidence: DisburseMaturitySucceeded {
                 submission,
-                amount_disbursed_e8s: 100,
-                evidence_source: MaturityEvidenceSource::CommandResponse,
+                amount_disbursed_e8s: 100_000_000,
             },
-            committed_claim_transfer_fee_e8s: FEE,
-            mint_proof: MintProofState::Proved(MintEvidence {
-                mint_block: u128::from(neuron_id),
-                actual_minted_icp_e8s: 100,
-                native_memo_u64: 604_801,
-                created_at_time_nanos: 604_801_000_000_000,
-            }),
+            captured_e8s: Some(100_000_000),
         }
     }
 
@@ -443,8 +379,7 @@ mod tests {
             stream_operation_sequence: 1,
             destination: state.config.stream_liquid_account.clone(),
             amount_e8s,
-            memo: vec![1],
-            request_fingerprint: vec![2; 32],
+            memo: io_nns_types::receipt::receipt_memo(1),
         }
     }
 
@@ -455,9 +390,9 @@ mod tests {
             captured_control_epoch: 1,
             deposit: JupiterDeposit {
                 block_index: 1,
-                gross_e8s: 110,
-                stake_e8s: 40,
-                liquid_e8s: 60,
+                gross_e8s: 100,
+                stake_e8s: 30,
+                liquid_e8s: 50,
                 fee_e8s: FEE,
                 created_at_time_nanos: 1,
             },
@@ -466,11 +401,11 @@ mod tests {
                     neuron_id: 1,
                     staking_subaccount: [1; 32],
                     before_cached_stake_e8s: 1_000,
-                    protocol_credit_e8s: 40,
+                    protocol_credit_e8s: 30,
                     transfer_block: 2,
-                    observed_after_cached_stake_e8s: 1_040,
+                    observed_after_cached_stake_e8s: 1_030,
                 },
-                permit: permit(state, 60),
+                permit: permit(state, 50),
             },
         }))
     }
@@ -483,8 +418,8 @@ mod tests {
             operation_sequence: 1,
             dispatch_epoch: 1,
             kind: value.kind,
-            phase: MaturityCommandPhase::ClaimReceiptDelivery(ClaimReceiptDeliveryOperation {
-                permit: Some(permit(state, 50)),
+            phase: MaturityCommandPhase::Delivery(MaturityDeliveryOperation {
+                permit: Some(permit(state, 59_990_000)),
                 pending: value,
                 permanent_credit: None,
                 claim_transfer: None,
@@ -504,7 +439,7 @@ mod tests {
     }
 
     #[test]
-    fn permanent_yield_is_composed_with_each_independent_active_owner() {
+    fn two_year_yield_is_composed_with_each_independent_active_owner() {
         let (_, base) = crate::state::tests::valid_state();
         let permanent = pending(&base, MaturityKind::TwoYear);
 
@@ -514,8 +449,8 @@ mod tests {
         assert_eq!(
             component_values(&state, 0),
             vec![
-                (TransitComponentKind::ActiveJupiter, 60),
-                (TransitComponentKind::PendingTwoYearMaturity, 50),
+                (TransitComponentKind::ActiveJupiter, 50),
+                (TransitComponentKind::PendingTwoYearMaturity, 59_990_000),
             ]
         );
 
@@ -527,8 +462,8 @@ mod tests {
         assert_eq!(
             component_values(&state, 0),
             vec![
-                (TransitComponentKind::ActiveMaturity, 50),
-                (TransitComponentKind::PendingTwoYearMaturity, 50),
+                (TransitComponentKind::ActiveMaturity, 59_990_000),
+                (TransitComponentKind::PendingTwoYearMaturity, 59_990_000),
             ]
         );
 
@@ -540,7 +475,10 @@ mod tests {
                 generation: 1,
                 operation_sequence: 1,
                 expected_parent_principal_e8s: 100,
-                destination: state.config.maturity_staging.clone(),
+                destination: crate::state::Account {
+                    owner: state.config.nns_governance,
+                    subaccount: Some(vec![9; 32]),
+                },
                 expected_credit_e8s: 60,
                 fee_e8s: FEE,
                 memo: vec![1],
@@ -555,7 +493,7 @@ mod tests {
             component_values(&state, 100),
             vec![
                 (TransitComponentKind::PoolTopUp, 60),
-                (TransitComponentKind::PendingTwoYearMaturity, 50),
+                (TransitComponentKind::PendingTwoYearMaturity, 59_990_000),
             ]
         );
 
@@ -584,7 +522,7 @@ mod tests {
             component_values(&state, 100),
             vec![
                 (TransitComponentKind::ActiveUnwind, 100),
-                (TransitComponentKind::PendingTwoYearMaturity, 50),
+                (TransitComponentKind::PendingTwoYearMaturity, 59_990_000),
             ]
         );
     }
@@ -596,7 +534,7 @@ mod tests {
         state.pending_two_week_maturity = Some(pending(&state, MaturityKind::TwoWeek));
         assert_eq!(
             component_values(&state, 0),
-            vec![(TransitComponentKind::PendingTwoYearMaturity, 50)]
+            vec![(TransitComponentKind::PendingTwoYearMaturity, 59_990_000)]
         );
 
         let pooled = state.pending_two_week_maturity.clone().unwrap();
@@ -605,11 +543,14 @@ mod tests {
         assert_eq!(
             values,
             vec![
-                (TransitComponentKind::ActiveMaturity, 50),
-                (TransitComponentKind::PendingTwoYearMaturity, 50),
+                (TransitComponentKind::ActiveMaturity, 59_990_000),
+                (TransitComponentKind::PendingTwoYearMaturity, 59_990_000),
             ]
         );
-        assert_eq!(values.iter().map(|(_, value)| value).sum::<u128>(), 100);
+        assert_eq!(
+            values.iter().map(|(_, value)| value).sum::<u128>(),
+            119_980_000
+        );
     }
 
     #[test]
