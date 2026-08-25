@@ -33,12 +33,12 @@ const CURRENT_CANONICAL_SELECTOR: &str =
 const KNOWN_TWO_YEAR_NNS_NEURON_ID: u64 = PROTECTED_IO_NNS_NEURON_ID;
 const KNOWN_CONTROLLER_CANISTER_PRINCIPAL: &str = PROTECTED_IO_NEURON_OWNER_CANISTER;
 const PRODUCTION_CANISTER_IDS_PATH: &str = "deploy/production-wiring/canister-ids.toml";
-const NNS_GOVERNANCE_SOURCE_COMMIT: &str = "8aa4680e378f3248e7e7b9b8237915aded999bd9";
+const NNS_GOVERNANCE_SOURCE_COMMIT: &str = "c748b8e76b90ceef329c055e6f7b38a00aae8745";
 const ICP_LEDGER_SOURCE_COMMIT: &str = "021bf342f66296d5605b355a61b2430406a83783";
 const NNS_GOVERNANCE_SOURCE_SHA256: &str =
-    "b41a5add38d54751d53fb4f0c826b09aaee38e0c5bea632400f1dbaaa11cfd4b";
+    "e4e9e99730dbee3a6fb9a95b40b10b512ad4831c9d2f6efb51d3f0a5d243b503";
 const NNS_GOVERNANCE_WASM_SHA256: &str =
-    "eaa2da45722d980b25405525873571ab7dad426a93e1d4971f6b555d80906d85";
+    "573af1cde5bf55a5e4dbf2d47f8dd340f7a73a107eebbc645fe1202b97f61e85";
 const ICP_LEDGER_SOURCE_SHA256: &str =
     "5d69ec2e26e5546fe7e94bab721d6c4ed840106f9e2e69d11a8f3ee6e7721df0";
 const ICP_LEDGER_WASM_SHA256: &str =
@@ -245,7 +245,9 @@ fn check_obsolete_economics_guard_at(root: &Path) -> Result<(), String> {
         "canisters/frontend/public/generated/",
         "docs/research/",
         "docs/architecture/adr-protected-reward-backing-nns-neuron.md",
+        "docs/architecture/adr-pooled-claim-backing-allocation.md",
         "docs/operations/p0-simplified-composition-evidence.md",
+        "docs/testing/post-mission70-nns-candidate.md",
     ];
     let forbidden = [
         concat!("seeded_two_week", "_principal_e8s"),
@@ -276,6 +278,10 @@ fn check_obsolete_economics_guard_at(root: &Path) -> Result<(), String> {
         concat!("pub maturity", "_staging"),
         concat!("maturity_staging", " : Account"),
         concat!("maturity_staging", " ="),
+        concat!("maturity Mint", " block proof"),
+        concat!("proved Mint", " determines the backed IO pool"),
+        concat!("actual maturity", " Mint"),
+        concat!("staging_balance", "_before_e8s"),
     ];
     fn visit(
         root: &Path,
@@ -1184,12 +1190,12 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
             combined_lines += lines;
         }
     }
-    if stream_lines > 5_600 {
+    if stream_lines > 5_520 {
         return Err(format!(
             "stream-manager production Rust has {stream_lines} lines"
         ));
     }
-    if combined_lines > 14_660 {
+    if combined_lines > 14_485 {
         return Err(format!(
             "combined production Rust has {combined_lines} lines; simplified limit not met"
         ));
@@ -1201,7 +1207,7 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
                 .map(|text| sum + production_line_count(&text))
                 .map_err(|error| format!("{}: {error}", path.display()))
         })?;
-    if nns_lines > 6_180 {
+    if nns_lines > 6_125 {
         return Err(format!("NNS-manager production Rust has {nns_lines} lines"));
     }
     let tree = Command::new("cargo")

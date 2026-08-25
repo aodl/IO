@@ -8,9 +8,8 @@ use crate::{
     api::{ApiError, MaturityProgress, PrepareTwoWeekMaturityArgs},
     execution,
     maturity::{
-        DisburseMaturitySubmission, DisburseMaturitySucceeded, MaturityCommandOperation,
-        MaturityCommandPhase, MaturityDeliveryOperation, MaturityKind, MaturityPlan,
-        PendingMaturityDisbursement, PermanentCreditState, MINIMUM_DISBURSEMENT_E8S,
+        MaturityCommandOperation, MaturityCommandPhase, MaturityDeliveryOperation, MaturityIntent,
+        MaturityKind, PendingMaturityDisbursement, PermanentCreditState, MINIMUM_DISBURSEMENT_E8S,
     },
     state::{self, Lifecycle, NnsOperation},
     transfer::{
@@ -44,7 +43,7 @@ pub(crate) async fn start_observed(
     if snapshot.active_operation.is_some() || pending_from(&snapshot, kind).is_some() {
         return Err(ApiError::Busy);
     }
-    let (neuron_id, destination) = identity(&snapshot.config, kind)?;
+    let neuron_id = neuron_id(&snapshot, kind)?;
     let observation = execution::query_neuron_observation(&snapshot.config, neuron_id).await?;
     if state::read() != snapshot {
         return Err(ApiError::Busy);
@@ -89,7 +88,7 @@ pub(crate) async fn start_observed(
     let entitlement_batch_generation = entitlement_batch
         .as_ref()
         .map(|value| value.entitlement_batch_generation);
-    let staging_balance_before_e8s = execution::icp_balance(&snapshot.config, &destination).await?;
+    let two_week_target_e8s = entitlement_batch.as_ref().map(|value| value.target_e8s);
 
     let mut latest = state::read();
     if latest != snapshot
@@ -107,16 +106,13 @@ pub(crate) async fn start_observed(
         operation_sequence,
         dispatch_epoch: 0,
         kind,
-        phase: MaturityCommandPhase::Observed(MaturityPlan {
-            neuron: observation.snapshot,
-            observed_maturity_e8s: observation.maturity_e8s,
-            staging_balance_before_e8s,
-            requested_at_seconds: now_seconds()?,
+        phase: MaturityCommandPhase::Observed(MaturityIntent {
             entitlement_batch_generation,
+            two_week_target_e8s,
         }),
     };
     operation
-        .validate(latest.next_operation_sequence, neuron_id)
+        .validate(latest.next_operation_sequence)
         .map_err(ApiError::Invalid)?;
     latest.active_operation = Some(NnsOperation::Maturity(Box::new(operation)));
     state::write(latest);
@@ -128,11 +124,22 @@ pub async fn resume_active(
 ) -> Result<MaturityProgress, ApiError> {
     match operation.phase.clone() {
         MaturityCommandPhase::Observed(plan) => submit_disburse(operation, plan).await,
-        MaturityCommandPhase::DisburseMaturitySubmitted(submission) => {
-            recover_disburse(operation, submission).await
-        }
-        MaturityCommandPhase::DisburseMaturitySucceeded(disbursement) => {
-            canonicalize_disbursement(operation, disbursement).await
+        MaturityCommandPhase::DisburseMaturitySubmitted {
+            intent,
+            submitted_at_seconds,
+        } => recover_disburse(operation, intent, submitted_at_seconds).await,
+        MaturityCommandPhase::DisburseMaturitySucceeded {
+            intent,
+            submitted_at_seconds,
+            amount_disbursed_e8s,
+        } => {
+            canonicalize_disbursement(
+                operation,
+                intent,
+                submitted_at_seconds,
+                amount_disbursed_e8s,
+            )
+            .await
         }
         MaturityCommandPhase::Delivery(delivery) => resume_delivery(operation, delivery).await,
     }
@@ -150,27 +157,27 @@ pub async fn resume_kind(kind: MaturityKind) -> Result<MaturityProgress, ApiErro
     let pending = pending_from(&snapshot, kind)
         .ok_or_else(|| ApiError::Invalid("no maturity work exists for this kind".into()))?;
     match pending.captured_e8s {
-        None => capture_staging_balance(pending).await,
-        Some(_) => start_delivery(pending),
+        None => capture_staging_balance(kind, pending).await,
+        Some(_) => start_delivery(kind, pending),
     }
 }
 
 async fn submit_disburse(
     mut operation: MaturityCommandOperation,
-    plan: MaturityPlan,
+    intent: MaturityIntent,
 ) -> Result<MaturityProgress, ApiError> {
     let expected = operation.clone();
-    let submission = DisburseMaturitySubmission {
-        plan,
-        submitted_at_seconds: now_seconds()?,
-    };
+    let submitted_at_seconds = now_seconds()?;
     operation.dispatch_epoch = next_epoch(operation.dispatch_epoch)?;
-    operation.phase = MaturityCommandPhase::DisburseMaturitySubmitted(submission.clone());
+    operation.phase = MaturityCommandPhase::DisburseMaturitySubmitted {
+        intent,
+        submitted_at_seconds,
+    };
     write_exact(&expected, operation.clone(), false)?;
     let submitted = operation.clone();
     let result = execution::disburse_maturity(
         &state::read().config,
-        submission.plan.neuron.neuron_id,
+        neuron_id(&state::read(), operation.kind)?,
         &staging_account(ic_cdk::api::canister_self(), operation.kind),
     )
     .await;
@@ -178,17 +185,17 @@ async fn submit_disburse(
     match result {
         execution::GovernanceCallOutcome::Succeeded(amount) => {
             let mut replacement = submitted.clone();
-            replacement.phase =
-                MaturityCommandPhase::DisburseMaturitySucceeded(DisburseMaturitySucceeded {
-                    submission,
-                    amount_disbursed_e8s: amount,
-                });
+            replacement.phase = MaturityCommandPhase::DisburseMaturitySucceeded {
+                intent,
+                submitted_at_seconds,
+                amount_disbursed_e8s: amount,
+            };
             write_exact(&submitted, replacement, false)?;
             Ok(MaturityProgress::DisburseMaturitySucceeded)
         }
         execution::GovernanceCallOutcome::RejectedNoEffect(reason) => {
             let mut replacement = submitted.clone();
-            replacement.phase = MaturityCommandPhase::Observed(submission.plan);
+            replacement.phase = MaturityCommandPhase::Observed(intent);
             write_exact(&submitted, replacement, false)?;
             Err(ApiError::Pending(format!(
                 "{reason}; DisburseMaturity is prepared for deterministic retry"
@@ -205,18 +212,18 @@ async fn submit_disburse(
 
 async fn recover_disburse(
     operation: MaturityCommandOperation,
-    submission: DisburseMaturitySubmission,
+    intent: MaturityIntent,
+    submitted_at_seconds: u64,
 ) -> Result<MaturityProgress, ApiError> {
-    let observation = execution::query_neuron_observation(
-        &state::read().config,
-        submission.plan.neuron.neuron_id,
-    )
-    .await?;
+    let current = state::read();
+    let observation =
+        execution::query_neuron_observation(&current.config, neuron_id(&current, operation.kind)?)
+            .await?;
     ensure_exact(&operation)?;
     let canonical = match execution::exact_maturity_disbursement(
         &observation,
         &staging_account(ic_cdk::api::canister_self(), operation.kind),
-        submission.submitted_at_seconds,
+        submitted_at_seconds,
     ) {
         Ok(Some(canonical)) => canonical,
         Ok(None) => {
@@ -231,44 +238,49 @@ async fn recover_disburse(
         Err(error) => return Err(error),
     };
     let mut replacement = operation.clone();
-    replacement.phase =
-        MaturityCommandPhase::DisburseMaturitySucceeded(DisburseMaturitySucceeded {
-            amount_disbursed_e8s: canonical.amount_disbursed_e8s,
-            submission,
-        });
+    replacement.phase = MaturityCommandPhase::DisburseMaturitySucceeded {
+        intent,
+        submitted_at_seconds,
+        amount_disbursed_e8s: canonical.amount_disbursed_e8s,
+    };
     write_exact(&operation, replacement, false)?;
     Ok(MaturityProgress::DisburseMaturitySucceeded)
 }
 
 async fn canonicalize_disbursement(
     operation: MaturityCommandOperation,
-    disbursement: DisburseMaturitySucceeded,
+    intent: MaturityIntent,
+    submitted_at_seconds: u64,
+    amount_disbursed_e8s: u64,
 ) -> Result<MaturityProgress, ApiError> {
-    let plan = &disbursement.submission.plan;
+    let current = state::read();
     let observation =
-        execution::query_neuron_observation(&state::read().config, plan.neuron.neuron_id).await?;
+        execution::query_neuron_observation(&current.config, neuron_id(&current, operation.kind)?)
+            .await?;
     ensure_exact(&operation)?;
     let canonical = execution::exact_maturity_disbursement(
         &observation,
         &staging_account(ic_cdk::api::canister_self(), operation.kind),
-        disbursement.submission.submitted_at_seconds,
+        submitted_at_seconds,
     )?
     .ok_or_else(|| {
         ApiError::Pending("canonical maturity disbursement is not observable yet".into())
     })?;
-    if canonical.amount_disbursed_e8s != disbursement.amount_disbursed_e8s {
+    if canonical.amount_disbursed_e8s != amount_disbursed_e8s {
         let reason = format!(
             "DisburseMaturity response amount {} conflicts with canonical amount {}",
-            disbursement.amount_disbursed_e8s, canonical.amount_disbursed_e8s
+            amount_disbursed_e8s, canonical.amount_disbursed_e8s
         );
         write_exact(&operation, operation.clone(), true)?;
         return Err(ApiError::Stuck(reason));
     }
     let passive = PendingMaturityDisbursement {
-        kind: operation.kind,
+        nominal_disbursed_e8s: canonical.amount_disbursed_e8s,
+        initiated_at_seconds: canonical.initiated_at_seconds,
         scheduled_finalization_timestamp_seconds: canonical
             .scheduled_finalization_timestamp_seconds,
-        disburse_evidence: disbursement,
+        entitlement_batch_generation: intent.entitlement_batch_generation,
+        two_week_target_e8s: intent.two_week_target_e8s,
         captured_e8s: None,
     };
     move_to_passive(&operation, passive)?;
@@ -276,6 +288,7 @@ async fn canonicalize_disbursement(
 }
 
 async fn capture_staging_balance(
+    kind: MaturityKind,
     pending: PendingMaturityDisbursement,
 ) -> Result<MaturityProgress, ApiError> {
     if now_seconds()? < pending.scheduled_finalization_timestamp_seconds {
@@ -284,18 +297,16 @@ async fn capture_staging_balance(
         ));
     }
     let config = state::read().config;
-    let neuron_id = pending.disburse_evidence.submission.plan.neuron.neuron_id;
-    let observation = execution::query_neuron_observation(&config, neuron_id).await?;
-    ensure_pending(&pending)?;
-    let destination = staging_account(ic_cdk::api::canister_self(), pending.kind);
+    let current = state::read();
+    let observation =
+        execution::query_neuron_observation(&config, neuron_id(&current, kind)?).await?;
+    ensure_pending(kind, &pending)?;
+    let destination = staging_account(ic_cdk::api::canister_self(), kind);
     if execution::has_exact_maturity_disbursement(
         &observation,
-        pending.disburse_evidence.amount_disbursed_e8s,
+        pending.nominal_disbursed_e8s,
         &destination,
-        pending
-            .scheduled_finalization_timestamp_seconds
-            .checked_sub(io_nns_types::maturity::DISBURSEMENT_DELAY_SECONDS)
-            .ok_or_else(|| ApiError::Invalid("maturity initiation underflow".into()))?,
+        pending.initiated_at_seconds,
         pending.scheduled_finalization_timestamp_seconds,
     ) {
         return Err(ApiError::Pending(
@@ -303,34 +314,28 @@ async fn capture_staging_balance(
         ));
     }
     let balance = execution::icp_balance(&config, &destination).await?;
-    ensure_pending(&pending)?;
-    let baseline = pending
-        .disburse_evidence
-        .submission
-        .plan
-        .staging_balance_before_e8s;
-    let captured_e8s =
-        io_nns_types::maturity::captured_balance(baseline, balance).ok_or_else(|| {
-            ApiError::Pending(format!(
-                "maturity staging balance {balance} has no positive delta above baseline {baseline}"
-            ))
-        })?;
+    ensure_pending(kind, &pending)?;
+    if balance == 0 {
+        return Err(ApiError::Pending(
+            "maturity staging Account has no unprocessed semantic ICP".into(),
+        ));
+    }
+    let captured_e8s = balance;
     let mut replacement = pending.clone();
     replacement.captured_e8s = Some(captured_e8s);
-    replace_pending(&pending, replacement)?;
+    replace_pending(kind, &pending, replacement)?;
     Ok(MaturityProgress::Captured { captured_e8s })
 }
 
 pub(crate) fn start_delivery(
+    kind: MaturityKind,
     pending: PendingMaturityDisbursement,
 ) -> Result<MaturityProgress, ApiError> {
     if pending.captured_e8s.is_none() {
         return Err(ApiError::Busy);
     }
     let mut latest = state::read();
-    if latest.active_operation.is_some()
-        || pending_from(&latest, pending.kind) != Some(pending.clone())
-    {
+    if latest.active_operation.is_some() || pending_from(&latest, kind) != Some(pending.clone()) {
         return Err(ApiError::Busy);
     }
     let operation_sequence = latest.next_operation_sequence;
@@ -340,7 +345,7 @@ pub(crate) fn start_delivery(
     let operation = MaturityCommandOperation {
         operation_sequence,
         dispatch_epoch: 0,
-        kind: pending.kind,
+        kind,
         phase: MaturityCommandPhase::Delivery(MaturityDeliveryOperation {
             pending: pending.clone(),
             permit: None,
@@ -435,9 +440,6 @@ async fn resume_delivery(
         (MaturityKind::TwoWeek, None) => {
             let generation = delivery
                 .pending
-                .disburse_evidence
-                .submission
-                .plan
                 .entitlement_batch_generation
                 .ok_or_else(|| {
                     ApiError::Invalid("two-week capture lost its entitlement generation".into())
@@ -728,12 +730,7 @@ fn finish_inflow(
             "completed maturity lacks proved outgoing effects".into(),
         ));
     }
-    let entitlement_batch_generation = delivery
-        .pending
-        .disburse_evidence
-        .submission
-        .plan
-        .entitlement_batch_generation;
+    let entitlement_batch_generation = delivery.pending.entitlement_batch_generation;
     match (operation.kind, stream_result) {
         (MaturityKind::TwoYear, None) => {}
         (MaturityKind::TwoWeek, Some(result))
@@ -762,6 +759,7 @@ fn finish_inflow(
         permanent_credit_e8s: split.permanent_credit,
         claim_credit_e8s: split.claim_credit,
         entitlement_batch_generation,
+        two_week_target_e8s: delivery.pending.two_week_target_e8s,
         completed_at_nanos: now_nanos()?,
     };
     let mut latest = state::read();
@@ -829,22 +827,13 @@ fn next_epoch(epoch: u64) -> Result<u64, ApiError> {
         .ok_or_else(|| ApiError::Invalid("maturity dispatch epoch exhausted".into()))
 }
 
-fn identity(
-    config: &crate::state::NnsConfig,
-    kind: MaturityKind,
-) -> Result<(u64, crate::state::Account), ApiError> {
-    Ok(match kind {
-        MaturityKind::TwoYear => (
-            config.two_year_neuron_id,
-            staging_account(ic_cdk::api::canister_self(), kind),
-        ),
-        MaturityKind::TwoWeek => (
-            state::read()
-                .pooled_parent_id
-                .ok_or_else(|| ApiError::Pending("pooled parent is absent".into()))?,
-            staging_account(ic_cdk::api::canister_self(), kind),
-        ),
-    })
+fn neuron_id(state: &crate::state::NnsStateV1, kind: MaturityKind) -> Result<u64, ApiError> {
+    match kind {
+        MaturityKind::TwoYear => Ok(state.config.two_year_neuron_id),
+        MaturityKind::TwoWeek => state
+            .pooled_parent_id
+            .ok_or_else(|| ApiError::Pending("pooled parent is absent".into())),
+    }
 }
 
 pub(crate) fn staging_account(owner: Principal, kind: MaturityKind) -> crate::state::Account {
@@ -864,9 +853,8 @@ pub(crate) fn write_exact(
     {
         return Err(ApiError::Busy);
     }
-    let (neuron_id, _) = identity(&latest.config, replacement.kind)?;
     replacement
-        .validate(latest.next_operation_sequence, neuron_id)
+        .validate(latest.next_operation_sequence)
         .map_err(ApiError::Invalid)?;
     latest.active_operation = Some(NnsOperation::Maturity(Box::new(replacement)));
     if pause {
@@ -891,11 +879,11 @@ fn move_to_passive(
 ) -> Result<(), ApiError> {
     let mut latest = state::read();
     if !matches!(&latest.active_operation, Some(NnsOperation::Maturity(active)) if **active == *expected)
-        || pending_from(&latest, passive.kind).is_some()
+        || pending_from(&latest, expected.kind).is_some()
     {
         return Err(ApiError::Busy);
     }
-    set_pending(&mut latest, passive);
+    set_pending(&mut latest, expected.kind, passive);
     latest.active_operation = None;
     state::write(latest);
     Ok(())
@@ -911,15 +899,22 @@ pub(crate) fn pending_from(
     }
 }
 
-fn set_pending(state: &mut crate::state::NnsStateV1, pending: PendingMaturityDisbursement) {
-    match pending.kind {
+fn set_pending(
+    state: &mut crate::state::NnsStateV1,
+    kind: MaturityKind,
+    pending: PendingMaturityDisbursement,
+) {
+    match kind {
         MaturityKind::TwoYear => state.pending_two_year_maturity = Some(pending),
         MaturityKind::TwoWeek => state.pending_two_week_maturity = Some(pending),
     }
 }
 
-pub(crate) fn ensure_pending(expected: &PendingMaturityDisbursement) -> Result<(), ApiError> {
-    if pending_from(&state::read(), expected.kind).as_ref() == Some(expected) {
+pub(crate) fn ensure_pending(
+    kind: MaturityKind,
+    expected: &PendingMaturityDisbursement,
+) -> Result<(), ApiError> {
+    if pending_from(&state::read(), kind).as_ref() == Some(expected) {
         Ok(())
     } else {
         Err(ApiError::Busy)
@@ -927,14 +922,15 @@ pub(crate) fn ensure_pending(expected: &PendingMaturityDisbursement) -> Result<(
 }
 
 pub(crate) fn replace_pending(
+    kind: MaturityKind,
     expected: &PendingMaturityDisbursement,
     replacement: PendingMaturityDisbursement,
 ) -> Result<(), ApiError> {
     let mut latest = state::read();
-    if pending_from(&latest, expected.kind).as_ref() != Some(expected) {
+    if pending_from(&latest, kind).as_ref() != Some(expected) {
         return Err(ApiError::Busy);
     }
-    set_pending(&mut latest, replacement);
+    set_pending(&mut latest, kind, replacement);
     state::write(latest);
     Ok(())
 }

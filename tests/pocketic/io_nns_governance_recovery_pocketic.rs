@@ -5,8 +5,7 @@ use io_nns_neuron_manager::{
         JupiterDeposit, JupiterOperation, JupiterPhase, NeuronSnapshot, StakeTransferSucceeded,
     },
     maturity::{
-        DisburseMaturitySubmission, DisburseMaturitySucceeded, MaturityCommandOperation,
-        MaturityCommandPhase, MaturityDeliveryOperation, MaturityKind, MaturityPlan,
+        MaturityCommandOperation, MaturityCommandPhase, MaturityDeliveryOperation, MaturityKind,
         PendingMaturityDisbursement,
     },
     pool::{PassiveCohort, UnwindOperation, UnwindPhase},
@@ -64,6 +63,12 @@ struct DebugNnsDisbursementArgs {
     to: Account,
     amount_e8s: u128,
     native_memo_u64: u64,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct DebugMintAccountArgs {
+    to: Account,
+    amount_e8s: u128,
 }
 
 #[derive(Clone, Copy, Debug, CandidType, Deserialize)]
@@ -360,6 +365,64 @@ impl RecoveryFixture {
         .unwrap();
     }
 
+    fn mint_account(&self, account: Account, amount_e8s: u128) {
+        let _: u64 = update(
+            &self.pic,
+            self.ledger,
+            Principal::anonymous(),
+            "debug_mint_account",
+            DebugMintAccountArgs {
+                to: account,
+                amount_e8s,
+            },
+        );
+    }
+
+    fn balance(&self, account: Account) -> u128 {
+        let balance: candid::Nat = update(
+            &self.pic,
+            self.ledger,
+            Principal::anonymous(),
+            "icrc1_balance_of",
+            account,
+        );
+        balance.0.try_into().unwrap()
+    }
+
+    fn debit_maturity_capture(&self, kind: MaturityKind, captured_e8s: u128) {
+        let split = io_nns_types::maturity::capture_40_60(captured_e8s, 10_000, 10_000)
+            .expect("captured balance covers both fees");
+        let source = match kind {
+            MaturityKind::TwoYear => io_accounts::two_year_maturity_staging(self.manager),
+            MaturityKind::TwoWeek => io_accounts::two_week_maturity_staging(self.manager),
+        };
+        // This mock Ledger models the transfer argument as the entire source
+        // debit; use the two frozen gross legs to simulate completed delivery.
+        for (index, amount) in [split.permanent_gross, split.claim_gross]
+            .into_iter()
+            .enumerate()
+        {
+            let result: io_ledger_boundary::IcrcTransferResult = update(
+                &self.pic,
+                self.ledger,
+                self.manager,
+                "icrc1_transfer",
+                io_ledger_boundary::IcrcTransferArg {
+                    from_subaccount: source.subaccount.clone(),
+                    to: Account {
+                        owner: Principal::from_slice(&[60 + index as u8; 29]),
+                        subaccount: None,
+                    },
+                    amount: candid::Nat::from(amount),
+                    fee: Some(candid::Nat::from(10_000_u64)),
+                    memo: Some(vec![index as u8]),
+                    created_at_time: Some(10 + index as u64),
+                },
+            );
+            result.unwrap();
+        }
+    }
+
     fn create_split_child(&self, neuron_id: u64, principal_e8s: u128, delay: u64, memo: u64) {
         let _: u64 = update(
             &self.pic,
@@ -638,33 +701,133 @@ fn unwind_phase(state: &NnsStateV1) -> &UnwindPhase {
 }
 
 fn delivering_maturity(_state: &NnsStateV1, kind: MaturityKind) -> PendingMaturityDisbursement {
-    let (neuron_id, remaining, generation) = match kind {
-        MaturityKind::TwoYear => (41, 120_000_000, None),
-        MaturityKind::TwoWeek => (42, 200_000_000, Some(1)),
-    };
-    let plan = MaturityPlan {
-        neuron: NeuronSnapshot {
-            neuron_id,
-            staking_subaccount: [6; 32],
-            cached_stake_e8s: 1_000_000,
-        },
-        observed_maturity_e8s: 200_000_000,
-        staging_balance_before_e8s: 0,
-        requested_at_seconds: 1,
-        entitlement_batch_generation: generation,
-    };
-    let submission = DisburseMaturitySubmission {
-        plan,
-        submitted_at_seconds: 1,
+    let (remaining, generation, target) = match kind {
+        MaturityKind::TwoYear => (120_000_000, None, None),
+        MaturityKind::TwoWeek => (200_000_000, Some(1), Some(1_000_000)),
     };
     PendingMaturityDisbursement {
-        kind,
+        nominal_disbursed_e8s: remaining,
+        initiated_at_seconds: 1,
         scheduled_finalization_timestamp_seconds: 604_801,
-        disburse_evidence: DisburseMaturitySucceeded {
-            submission,
-            amount_disbursed_e8s: remaining,
-        },
+        entitlement_batch_generation: generation,
+        two_week_target_e8s: target,
         captured_e8s: Some(u128::from(remaining)),
+    }
+}
+
+fn uncaptured_maturity(
+    kind: MaturityKind,
+    nominal_disbursed_e8s: u64,
+    generation: u64,
+) -> PendingMaturityDisbursement {
+    let (entitlement_batch_generation, two_week_target_e8s) = match kind {
+        MaturityKind::TwoYear => (None, None),
+        MaturityKind::TwoWeek => (Some(generation), Some(1_000_000)),
+    };
+    PendingMaturityDisbursement {
+        nominal_disbursed_e8s,
+        initiated_at_seconds: 1,
+        scheduled_finalization_timestamp_seconds: 604_801,
+        entitlement_batch_generation,
+        two_week_target_e8s,
+        captured_e8s: None,
+    }
+}
+
+#[test]
+fn semantic_staging_carries_late_value_into_the_next_cycle_for_both_roles() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        return;
+    }
+    const UNIT: u128 = 2_000_000;
+    for kind in [MaturityKind::TwoYear, MaturityKind::TwoWeek] {
+        let fixture = RecoveryFixture::new();
+        let mut state = match kind {
+            MaturityKind::TwoYear => fixture.state(),
+            MaturityKind::TwoWeek => ready_two_week_state(&fixture),
+        };
+        let staging = match kind {
+            MaturityKind::TwoYear => io_accounts::two_year_maturity_staging(fixture.manager),
+            MaturityKind::TwoWeek => io_accounts::two_week_maturity_staging(fixture.manager),
+        };
+        let other_staging = match kind {
+            MaturityKind::TwoYear => io_accounts::two_week_maturity_staging(fixture.manager),
+            MaturityKind::TwoWeek => io_accounts::two_year_maturity_staging(fixture.manager),
+        };
+        assert_eq!(fixture.balance(staging.clone()), 0);
+        fixture.mint_account(other_staging.clone(), 33 * UNIT);
+
+        let first_capture = 100 * UNIT;
+        fixture.mint_account(staging.clone(), first_capture);
+        match kind {
+            MaturityKind::TwoYear => {
+                state.pending_two_year_maturity =
+                    Some(uncaptured_maturity(kind, first_capture as u64, 0));
+            }
+            MaturityKind::TwoWeek => {
+                state.pending_two_week_maturity =
+                    Some(uncaptured_maturity(kind, first_capture as u64, 1));
+            }
+        }
+        fixture.replace(state);
+        assert_eq!(
+            fixture.resume(),
+            Ok(NnsProgress::Maturity(MaturityProgress::Captured {
+                captured_e8s: first_capture,
+            }))
+        );
+
+        let late_donation = 20 * UNIT;
+        fixture.mint_account(staging.clone(), late_donation);
+        fixture.debit_maturity_capture(kind, first_capture);
+        assert_eq!(fixture.balance(staging.clone()), late_donation);
+
+        let split = io_nns_types::maturity::capture_40_60(first_capture, 10_000, 10_000).unwrap();
+        let mut next = fixture.state_from_canister();
+        next.active_operation = None;
+        let completed = io_nns_neuron_manager::maturity::CompletedMaturity {
+            kind,
+            captured_e8s: first_capture,
+            permanent_credit_e8s: split.permanent_credit,
+            claim_credit_e8s: split.claim_credit,
+            entitlement_batch_generation: (kind == MaturityKind::TwoWeek).then_some(1),
+            two_week_target_e8s: (kind == MaturityKind::TwoWeek).then_some(1_000_000),
+            completed_at_nanos: 1,
+        };
+        match kind {
+            MaturityKind::TwoYear => {
+                next.pending_two_year_maturity = None;
+                next.last_two_year_maturity = Some(completed);
+            }
+            MaturityKind::TwoWeek => {
+                next.pending_two_week_maturity = None;
+                next.last_two_week_maturity = Some(completed);
+            }
+        }
+
+        let second_maturity = 50 * UNIT;
+        fixture.mint_account(staging.clone(), second_maturity);
+        let expected_second_capture = late_donation + second_maturity;
+        match kind {
+            MaturityKind::TwoYear => {
+                next.pending_two_year_maturity =
+                    Some(uncaptured_maturity(kind, second_maturity as u64, 0));
+            }
+            MaturityKind::TwoWeek => {
+                next.pending_two_week_maturity =
+                    Some(uncaptured_maturity(kind, second_maturity as u64, 2));
+            }
+        }
+        fixture.replace(next);
+        assert_eq!(
+            fixture.resume(),
+            Ok(NnsProgress::Maturity(MaturityProgress::Captured {
+                captured_e8s: expected_second_capture,
+            }))
+        );
+        fixture.debit_maturity_capture(kind, expected_second_capture);
+        assert_eq!(fixture.balance(staging), 0);
+        assert_eq!(fixture.balance(other_staging), 33 * UNIT);
     }
 }
 
@@ -1288,15 +1451,8 @@ fn two_week_maturity_captures_canonical_amount_after_intervening_reward_events()
         let pending = state
             .pending_two_week_maturity
             .expect("canonical two-week maturity must become passive");
-        assert_eq!(
-            pending
-                .disburse_evidence
-                .submission
-                .plan
-                .observed_maturity_e8s,
-            200_000_000
-        );
-        assert_eq!(pending.disburse_evidence.amount_disbursed_e8s, 200_000_000);
+        assert_eq!(pending.nominal_disbursed_e8s, 200_000_000);
+        assert_eq!(pending.entitlement_batch_generation, Some(1));
         assert_eq!(fixture.governance_calls().disburse_maturity, 1);
     }
 }
@@ -1334,7 +1490,7 @@ fn two_year_maturity_uses_realised_disbursement_across_reward_accrual() {
         .state_from_canister()
         .pending_two_year_maturity
         .expect("two-year maturity must become passive");
-    assert_eq!(pending.disburse_evidence.amount_disbursed_e8s, 225_000_000);
+    assert_eq!(pending.nominal_disbursed_e8s, 225_000_000);
     assert_eq!(fixture.governance_calls().disburse_maturity, 1);
 }
 
@@ -1344,31 +1500,38 @@ fn disburse_maturity_decoded_rejection_retries_but_ambiguity_never_resubmits() {
         return;
     }
     let fixture = RecoveryFixture::new();
-    fixture.replace(fixture.state());
-    fixture.add_maturity(41, 200_000_000);
-    assert_eq!(
-        update::<_, Result<MaturityProgress, ApiError>>(
+    fixture.replace(ready_two_week_state(&fixture));
+    fixture.add_maturity(42, 200_000_000);
+    fixture.control(ControlledCommand::DisburseMaturity, 1, 0);
+    let args = PrepareTwoWeekMaturityArgs {
+        entitlement_batch_generation: 1,
+        target_e8s: 1_000_000,
+    };
+    assert!(matches!(
+        update::<_, Result<(), ApiError>>(
             &fixture.pic,
             fixture.manager,
-            fixture.sns_governance,
-            "start_maturity",
-            MaturityKind::TwoYear,
+            fixture.stream,
+            "prepare_two_week_maturity",
+            args.clone(),
         ),
-        Ok(MaturityProgress::Observed)
-    );
-    fixture.control(ControlledCommand::DisburseMaturity, 1, 0);
-    assert!(matches!(fixture.resume(), Err(ApiError::Pending(_))));
+        Err(ApiError::Pending(_))
+    ));
     assert!(matches!(
         fixture.state_from_canister().active_operation,
         Some(NnsOperation::Maturity(operation))
             if matches!(operation.phase, MaturityCommandPhase::Observed(_))
     ));
-    assert!(matches!(
-        fixture.resume(),
-        Ok(NnsProgress::Maturity(
-            MaturityProgress::DisburseMaturitySucceeded
-        ))
-    ));
+    assert_eq!(
+        update::<_, Result<(), ApiError>>(
+            &fixture.pic,
+            fixture.manager,
+            fixture.stream,
+            "prepare_two_week_maturity",
+            args,
+        ),
+        Ok(())
+    );
     assert_eq!(fixture.governance_calls().disburse_maturity, 2);
 
     let ambiguous = RecoveryFixture::new();

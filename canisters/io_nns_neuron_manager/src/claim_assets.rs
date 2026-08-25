@@ -76,20 +76,8 @@ pub(crate) fn transit_components(
                 crate::maturity::MaturityCommandPhase::Delivery(delivery) => Some(delivery),
                 _ => None,
             };
-            let backing = match delivery {
-                None => 0,
-                Some(delivery)
-                    if claim_transfer_succeeded(delivery.claim_transfer.as_ref())
-                        || (command.kind == MaturityKind::TwoWeek && delivery.permit.is_none()) =>
-                {
-                    0
-                }
-                Some(delivery) => maturity_claim_transit(
-                    &delivery.pending,
-                    snapshot.config.expected_icp_fee_e8s,
-                    true,
-                )?,
-            };
+            let backing =
+                active_maturity_claim_transit(command, snapshot.config.expected_icp_fee_e8s)?;
             (
                 backing,
                 (backing > 0).then_some(
@@ -112,25 +100,32 @@ pub(crate) fn transit_components(
         },
         _ => None,
     };
-    for (kind, pending) in [
+    for (component_kind, maturity_kind, pending) in [
         (
             TransitComponentKind::PendingTwoYearMaturity,
+            MaturityKind::TwoYear,
             snapshot.pending_two_year_maturity.as_ref(),
         ),
         (
             TransitComponentKind::PendingTwoWeekMaturity,
+            MaturityKind::TwoWeek,
             snapshot.pending_two_week_maturity.as_ref(),
         ),
     ] {
         let backing = pending
             .filter(|pending| active_pending != Some(*pending))
             .map(|pending| {
-                maturity_claim_transit(pending, snapshot.config.expected_icp_fee_e8s, false)
+                maturity_claim_transit(
+                    maturity_kind,
+                    pending,
+                    snapshot.config.expected_icp_fee_e8s,
+                    false,
+                )
             })
             .transpose()?
             .unwrap_or_default();
         push(
-            kind,
+            component_kind,
             backing,
             pending
                 .filter(|_| backing > 0)
@@ -138,6 +133,21 @@ pub(crate) fn transit_components(
         );
     }
     Ok(components)
+}
+
+pub(crate) fn active_maturity_claim_transit(
+    command: &crate::maturity::MaturityCommandOperation,
+    fee_e8s: u128,
+) -> Result<u128, ApiError> {
+    let crate::maturity::MaturityCommandPhase::Delivery(delivery) = &command.phase else {
+        return Ok(0);
+    };
+    if claim_transfer_succeeded(delivery.claim_transfer.as_ref())
+        || (command.kind == MaturityKind::TwoWeek && delivery.permit.is_none())
+    {
+        return Ok(0);
+    }
+    maturity_claim_transit(command.kind, &delivery.pending, fee_e8s, true)
 }
 
 pub(crate) fn jupiter_claim_transit(command: &crate::jupiter::JupiterOperation) -> Option<u128> {
@@ -270,6 +280,7 @@ pub(crate) fn insufficient_claim_asset_requirement(
 }
 
 fn maturity_claim_transit(
+    kind: MaturityKind,
     pending: &crate::maturity::PendingMaturityDisbursement,
     fee_e8s: u128,
     paired_permitted: bool,
@@ -277,7 +288,7 @@ fn maturity_claim_transit(
     let Some(captured_e8s) = pending.captured_e8s else {
         return Ok(0);
     };
-    maturity_ingress_transit(pending.kind, captured_e8s, fee_e8s, paired_permitted)
+    maturity_ingress_transit(kind, captured_e8s, fee_e8s, paired_permitted)
 }
 
 pub(crate) fn maturity_ingress_transit(
@@ -327,8 +338,7 @@ mod tests {
     use crate::{
         jupiter::{JupiterDeposit, JupiterOperation, JupiterPhase, PermanentNeuronCreditProof},
         maturity::{
-            DisburseMaturitySubmission, DisburseMaturitySucceeded, MaturityCommandOperation,
-            MaturityCommandPhase, MaturityDeliveryOperation, MaturityPlan,
+            MaturityCommandOperation, MaturityCommandPhase, MaturityDeliveryOperation,
             PendingMaturityDisbursement,
         },
         pool::UnwindOperation,
@@ -341,32 +351,16 @@ mod tests {
         _state: &crate::state::NnsStateV1,
         kind: MaturityKind,
     ) -> PendingMaturityDisbursement {
-        let (neuron_id, generation) = match kind {
-            MaturityKind::TwoYear => (1, None),
-            MaturityKind::TwoWeek => (2, Some(1)),
-        };
-        let plan = MaturityPlan {
-            neuron: crate::jupiter::NeuronSnapshot {
-                neuron_id,
-                staking_subaccount: [neuron_id as u8; 32],
-                cached_stake_e8s: 1_000,
-            },
-            observed_maturity_e8s: 100_000_000,
-            staging_balance_before_e8s: 0,
-            requested_at_seconds: 1,
-            entitlement_batch_generation: generation,
-        };
-        let submission = DisburseMaturitySubmission {
-            plan,
-            submitted_at_seconds: 1,
+        let (generation, target) = match kind {
+            MaturityKind::TwoYear => (None, None),
+            MaturityKind::TwoWeek => (Some(1), Some(1_000)),
         };
         PendingMaturityDisbursement {
-            kind,
+            nominal_disbursed_e8s: 100_000_000,
+            initiated_at_seconds: 1,
             scheduled_finalization_timestamp_seconds: 604_801,
-            disburse_evidence: DisburseMaturitySucceeded {
-                submission,
-                amount_disbursed_e8s: 100_000_000,
-            },
+            entitlement_batch_generation: generation,
+            two_week_target_e8s: target,
             captured_e8s: Some(100_000_000),
         }
     }
@@ -412,12 +406,13 @@ mod tests {
 
     fn active_maturity(
         state: &crate::state::NnsStateV1,
+        kind: MaturityKind,
         value: PendingMaturityDisbursement,
     ) -> NnsOperation {
         NnsOperation::Maturity(Box::new(MaturityCommandOperation {
             operation_sequence: 1,
             dispatch_epoch: 1,
-            kind: value.kind,
+            kind,
             phase: MaturityCommandPhase::Delivery(MaturityDeliveryOperation {
                 permit: Some(permit(state, 59_990_000)),
                 pending: value,
@@ -458,7 +453,7 @@ mod tests {
         state.pending_two_year_maturity = Some(permanent.clone());
         let pooled = pending(&state, MaturityKind::TwoWeek);
         state.pending_two_week_maturity = Some(pooled.clone());
-        state.active_operation = Some(active_maturity(&state, pooled));
+        state.active_operation = Some(active_maturity(&state, MaturityKind::TwoWeek, pooled));
         assert_eq!(
             component_values(&state, 0),
             vec![
@@ -538,7 +533,7 @@ mod tests {
         );
 
         let pooled = state.pending_two_week_maturity.clone().unwrap();
-        state.active_operation = Some(active_maturity(&state, pooled));
+        state.active_operation = Some(active_maturity(&state, MaturityKind::TwoWeek, pooled));
         let values = component_values(&state, 0);
         assert_eq!(
             values,

@@ -54,35 +54,16 @@ pub fn capture_40_60(
     })
 }
 
-pub fn captured_balance(before: u128, current: u128) -> Option<u128> {
-    current.checked_sub(before).filter(|captured| *captured > 0)
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum MaturityKind {
     TwoYear,
     TwoWeek,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct MaturityPlan {
-    pub neuron: NeuronSnapshot,
-    pub observed_maturity_e8s: u64,
-    pub staging_balance_before_e8s: u128,
-    pub requested_at_seconds: u64,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct MaturityIntent {
     pub entitlement_batch_generation: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct DisburseMaturitySubmission {
-    pub plan: MaturityPlan,
-    pub submitted_at_seconds: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct DisburseMaturitySucceeded {
-    pub submission: DisburseMaturitySubmission,
-    pub amount_disbursed_e8s: u64,
+    pub two_week_target_e8s: Option<u128>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -94,9 +75,11 @@ pub struct CanonicalDisbursementEvidence {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct PendingMaturityDisbursement {
-    pub kind: MaturityKind,
+    pub nominal_disbursed_e8s: u64,
+    pub initiated_at_seconds: u64,
     pub scheduled_finalization_timestamp_seconds: u64,
-    pub disburse_evidence: DisburseMaturitySucceeded,
+    pub entitlement_batch_generation: Option<u64>,
+    pub two_week_target_e8s: Option<u128>,
     pub captured_e8s: Option<u128>,
 }
 
@@ -124,9 +107,16 @@ pub struct MaturityDeliveryOperation {
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum MaturityCommandPhase {
-    Observed(MaturityPlan),
-    DisburseMaturitySubmitted(DisburseMaturitySubmission),
-    DisburseMaturitySucceeded(DisburseMaturitySucceeded),
+    Observed(MaturityIntent),
+    DisburseMaturitySubmitted {
+        intent: MaturityIntent,
+        submitted_at_seconds: u64,
+    },
+    DisburseMaturitySucceeded {
+        intent: MaturityIntent,
+        submitted_at_seconds: u64,
+        amount_disbursed_e8s: u64,
+    },
     Delivery(MaturityDeliveryOperation),
 }
 
@@ -145,63 +135,91 @@ pub struct CompletedMaturity {
     pub permanent_credit_e8s: u128,
     pub claim_credit_e8s: u128,
     pub entitlement_batch_generation: Option<u64>,
+    pub two_week_target_e8s: Option<u128>,
     pub completed_at_nanos: u64,
 }
 
 impl MaturityCommandOperation {
-    pub fn plan(&self) -> &MaturityPlan {
+    pub fn intent(&self) -> MaturityIntent {
         match &self.phase {
-            MaturityCommandPhase::Observed(plan) => plan,
-            MaturityCommandPhase::DisburseMaturitySubmitted(submission) => &submission.plan,
-            MaturityCommandPhase::DisburseMaturitySucceeded(value) => &value.submission.plan,
-            MaturityCommandPhase::Delivery(value) => {
-                &value.pending.disburse_evidence.submission.plan
-            }
+            MaturityCommandPhase::Observed(intent) => *intent,
+            MaturityCommandPhase::DisburseMaturitySubmitted { intent, .. }
+            | MaturityCommandPhase::DisburseMaturitySucceeded { intent, .. } => *intent,
+            MaturityCommandPhase::Delivery(value) => value.pending.intent(),
         }
     }
 
-    pub fn validate(
-        &self,
-        next_operation_sequence: u64,
-        expected_neuron_id: u64,
-    ) -> Result<(), String> {
+    pub fn validate(&self, next_operation_sequence: u64) -> Result<(), String> {
         if self.operation_sequence == 0 || self.operation_sequence >= next_operation_sequence {
             return Err("maturity command sequence is malformed".into());
         }
-        let plan = self.plan();
-        if plan.neuron.neuron_id != expected_neuron_id
-            || plan.observed_maturity_e8s < MINIMUM_DISBURSEMENT_E8S
-            || plan.requested_at_seconds == 0
-            || (self.kind == MaturityKind::TwoWeek) != plan.entitlement_batch_generation.is_some()
-        {
-            return Err("maturity command plan is inconsistent".into());
+        validate_intent(self.kind, &self.intent())?;
+        match &self.phase {
+            MaturityCommandPhase::Observed(_) => {}
+            MaturityCommandPhase::DisburseMaturitySubmitted {
+                submitted_at_seconds,
+                ..
+            } => validate_submission(*submitted_at_seconds)?,
+            MaturityCommandPhase::DisburseMaturitySucceeded {
+                submitted_at_seconds,
+                amount_disbursed_e8s,
+                ..
+            } => {
+                validate_submission(*submitted_at_seconds)?;
+                if *amount_disbursed_e8s < MINIMUM_DISBURSEMENT_E8S {
+                    return Err("maturity response amount is below the minimum".into());
+                }
+            }
+            MaturityCommandPhase::Delivery(delivery) => {
+                delivery.pending.validate(self.kind)?;
+            }
         }
         Ok(())
     }
 }
 
 impl PendingMaturityDisbursement {
-    pub fn validate(
-        &self,
-        expected_kind: MaturityKind,
-        expected_neuron_id: u64,
-    ) -> Result<(), String> {
-        let plan = &self.disburse_evidence.submission.plan;
-        if self.kind != expected_kind
-            || plan.neuron.neuron_id != expected_neuron_id
-            || self.disburse_evidence.amount_disbursed_e8s < MINIMUM_DISBURSEMENT_E8S
+    pub fn intent(&self) -> MaturityIntent {
+        MaturityIntent {
+            entitlement_batch_generation: self.entitlement_batch_generation,
+            two_week_target_e8s: self.two_week_target_e8s,
+        }
+    }
+
+    pub fn validate(&self, expected_kind: MaturityKind) -> Result<(), String> {
+        if self.nominal_disbursed_e8s < MINIMUM_DISBURSEMENT_E8S
+            || self.initiated_at_seconds == 0
             || self.scheduled_finalization_timestamp_seconds
                 < self
-                    .disburse_evidence
-                    .submission
-                    .submitted_at_seconds
+                    .initiated_at_seconds
                     .checked_add(DISBURSEMENT_DELAY_SECONDS)
                     .ok_or("maturity finalization overflow")?
             || self.captured_e8s == Some(0)
         {
             return Err("passive maturity disbursement is inconsistent".into());
         }
-        Ok(())
+        validate_intent(expected_kind, &self.intent())
+    }
+}
+
+fn validate_submission(submitted_at_seconds: u64) -> Result<(), String> {
+    if submitted_at_seconds == 0 {
+        return Err("maturity submission time is zero".into());
+    }
+    Ok(())
+}
+
+fn validate_intent(kind: MaturityKind, intent: &MaturityIntent) -> Result<(), String> {
+    match (
+        kind,
+        intent.entitlement_batch_generation,
+        intent.two_week_target_e8s,
+    ) {
+        (MaturityKind::TwoYear, None, None) => Ok(()),
+        (MaturityKind::TwoWeek, Some(generation), Some(target)) if generation > 0 && target > 0 => {
+            Ok(())
+        }
+        _ => Err("maturity intent is inconsistent with its role".into()),
     }
 }
 
@@ -238,13 +256,12 @@ mod tests {
     }
 
     #[test]
-    fn two_week_and_two_year_donations_follow_only_their_own_account() {
-        let two_week = super::captured_balance(10, 10 + 60 + 7);
-        let two_year = super::captured_balance(20, 20 + 40 + 3);
-        assert_eq!(two_week, Some(67));
-        assert_eq!(two_year, Some(43));
-        assert_ne!(two_week, two_year);
-        assert_eq!(super::captured_balance(10, 10), None);
-        assert_eq!(super::captured_balance(11, 10), None);
+    fn maturity_intent_is_only_role_binding() {
+        let two_week = super::MaturityIntent {
+            entitlement_batch_generation: Some(7),
+            two_week_target_e8s: Some(100),
+        };
+        assert!(super::validate_intent(super::MaturityKind::TwoWeek, &two_week).is_ok());
+        assert!(super::validate_intent(super::MaturityKind::TwoYear, &two_week).is_err());
     }
 }

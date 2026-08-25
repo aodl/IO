@@ -7,7 +7,7 @@ unwind cohorts.
 
 The permanent neuron retains its audited principal and exact post-Mission-70
 two-year maximum-delay configuration. Its maturity path disburses 100% into the
-fixed two-year staging Account, captures the post-finalization balance delta,
+fixed two-year staging Account, freezes the complete post-finalization balance,
 and sends 40% gross to permanent capital and 60% gross to Stream liquid. It
 issues no IO.
 
@@ -38,8 +38,9 @@ zero-principal maturity into the parent before retiring. Pending member reward
 re-entry never retains the child slot.
 
 Two-week maturity disburses 100% ordinary maturity into its distinct fixed
-staging Account. The balance delta, including any donation received before
-capture, uses the same checked 40/60 paired-inflow algebra as Jupiter. Stream
+staging Account. Its complete unprocessed balance, including value left after
+an earlier capture and any donation received before the next capture, uses the
+same checked 40/60 paired-inflow algebra as Jupiter. Stream
 freezes backed IO for the frozen entitlement generation before the claim leg
 can become redeemable. Neither maturity path accepts or stores a Mint block.
 

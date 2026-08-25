@@ -127,39 +127,42 @@ fee-debt scalar. The final measured delta is:
 | receipt types | 49 | 49 | 0 |
 | **Combined** | **13,977** | **14,420** | **+443** |
 
-The production-final tranche replaces controller-neuron scanning with the
-exact pinned `split-neuron` subaccount lookup, deletes the percentage-based
-StakeMaturity and maturity-drift machinery in favor of one realised-Mint
-40/60 flow, and shares guaranteed-no-effect versus possible-effect handling
-across persisted Governance commands. It also keeps normal reward work live by
-refreshing an otherwise exact pooled parent's aged voting power and binds every
-reconciliation retry to its immutable checkpoint time. These changes add no
-operation variant or persistent collection. The final normally formatted
-counts are:
+The account-semantic source closure removes maturity balance baselines and
+pre-effect neuron observations from durable intent, flattens passive maturity
+evidence, and makes exact TwoWeek replay advance the matching work. Passive
+selection examines both maturity slots and chooses captured delivery before a
+finalization-ready capture, then the earliest finalization and stable role
+order. It adds no operation variant or persistent collection. The final normally
+formatted counts are:
 
-| Counted component | Review final | Production final | Delta |
+| Counted component | Source-closure start | Source-closure final | Delta |
 | --- | ---: | ---: | ---: |
-| Stream Manager | 5,452 | 5,452 | 0 |
-| NNS Manager | 6,109 | 6,024 | -85 |
+| Stream Manager | 5,387 | 5,387 | 0 |
+| NNS Manager | 5,926 | 5,977 | +51 |
 | pure economics | 220 | 220 | 0 |
 | ledger boundary | 528 | 528 | 0 |
-| reward policy | 282 | 282 | 0 |
+| reward policy | 230 | 230 | 0 |
 | SNS reward boundary | 457 | 457 | 0 |
-| accounts | 45 | 45 | 0 |
-| NNS types | 1,278 | 1,241 | -37 |
-| receipt types | 49 | 49 | 0 |
-| **Combined** | **14,420** | **14,298** | **-122** |
+| accounts | 67 | 67 | 0 |
+| NNS types | 1,206 | 1,224 | +18 |
+| receipt types | 43 | 43 | 0 |
+| **Combined** | **14,064** | **14,133** | **+69** |
 
-The maximum encoded NNS state with all 32 live cohorts is 5,651 bytes against
+The 69-line closure cost is the explicit two-slot action selector and exact
+replay wake-up behavior; it replaces state rather than retaining the deleted
+baseline/provenance nesting. Relative to the preceding production-final source
+at 14,298 lines, the account-semantic architecture remains 165 lines smaller.
+
+The maximum encoded NNS state with all 32 live cohorts is 5,434 bytes against
 its 1,000,000-byte stable-cell bound. The maximum exercised Stream state with
-the full 1,000-record neuron registry is 111,342 bytes against its
+the full 1,000-record neuron registry is 111,209 bytes against its
 2,000,000-byte stable-cell bound.
 
 ## Decision
 
-The final ceilings are 5,600 Stream Manager lines, 6,180 NNS Manager lines,
-and 14,660 combined lines. Against the final measured counts these provide
-148 lines (2.71%), 156 lines (2.59%), and 362 lines (2.53%) of headroom. The
+The final ceilings are 5,520 Stream Manager lines, 6,125 NNS Manager lines,
+and 14,485 combined lines. Against the final measured counts these provide
+133 lines (2.47%), 148 lines (2.48%), and 352 lines (2.49%) of headroom. The
 pure-economics, reward-boundary, ledger-boundary, shared-type, and per-file
 ceilings do not change. In particular, every production file remains limited
 to 1,000 normally formatted lines.

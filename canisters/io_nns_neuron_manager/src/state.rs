@@ -18,7 +18,7 @@ use {
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
 
-pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 10;
+pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 11;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct NnsConfig {
@@ -366,7 +366,6 @@ impl NnsStateV1 {
             return Err("invalid NNS launch schema marker".into());
         }
         self.config.validate(canister_self)?;
-        let pooled_parent_id = self.pooled_parent_id.unwrap_or_default();
         if self.pooled_parent_id.is_some() != self.pooled_parent_staking_account.is_some()
             || self
                 .pooled_parent_staking_account
@@ -433,17 +432,14 @@ impl NnsStateV1 {
                 Some(NnsOperation::Maturity(operation))
                     if operation.kind == crate::maturity::MaturityKind::TwoWeek =>
                 {
-                    operation.plan().entitlement_batch_generation
+                    operation.intent().entitlement_batch_generation
                 }
                 _ => None,
             };
-            let pending_generation = self.pending_two_week_maturity.as_ref().and_then(|pending| {
-                pending
-                    .disburse_evidence
-                    .submission
-                    .plan
-                    .entitlement_batch_generation
-            });
+            let pending_generation = self
+                .pending_two_week_maturity
+                .as_ref()
+                .and_then(|pending| pending.entitlement_batch_generation);
             if active_generation != Some(latest_two_week_generation)
                 && pending_generation != Some(latest_two_week_generation)
             {
@@ -459,11 +455,7 @@ impl NnsStateV1 {
                     operation.validate(self.config.icp_ledger, self.config.nns_governance)?;
                 }
                 NnsOperation::Maturity(operation) => {
-                    let neuron_id = match operation.kind {
-                        crate::maturity::MaturityKind::TwoYear => self.config.two_year_neuron_id,
-                        crate::maturity::MaturityKind::TwoWeek => pooled_parent_id,
-                    };
-                    operation.validate(self.next_operation_sequence, neuron_id)?;
+                    operation.validate(self.next_operation_sequence)?;
                     if let crate::maturity::MaturityCommandPhase::Delivery(delivery) =
                         &operation.phase
                     {
@@ -505,20 +497,18 @@ impl NnsStateV1 {
                 }
             }
         }
-        for (pending, kind, neuron_id) in [
+        for (pending, kind) in [
             (
                 self.pending_two_year_maturity.as_ref(),
                 crate::maturity::MaturityKind::TwoYear,
-                self.config.two_year_neuron_id,
             ),
             (
                 self.pending_two_week_maturity.as_ref(),
                 crate::maturity::MaturityKind::TwoWeek,
-                pooled_parent_id,
             ),
         ] {
             let Some(pending) = pending else { continue };
-            pending.validate(kind, neuron_id)?;
+            pending.validate(kind)?;
         }
         for (completed, kind) in [
             (
@@ -538,6 +528,8 @@ impl NnsStateV1 {
                 || completed.completed_at_nanos == 0
                 || (kind == crate::maturity::MaturityKind::TwoWeek)
                     != completed.entitlement_batch_generation.is_some()
+                || (kind == crate::maturity::MaturityKind::TwoWeek)
+                    != completed.two_week_target_e8s.is_some()
             {
                 return Err("completed maturity result is inconsistent".into());
             }
@@ -557,17 +549,14 @@ impl NnsStateV1 {
             Some(NnsOperation::Maturity(operation))
                 if operation.kind == crate::maturity::MaturityKind::TwoWeek =>
             {
-                operation.plan().entitlement_batch_generation
+                operation.intent().entitlement_batch_generation
             }
             _ => None,
         };
-        let pending = self.pending_two_week_maturity.as_ref().and_then(|pending| {
-            pending
-                .disburse_evidence
-                .submission
-                .plan
-                .entitlement_batch_generation
-        });
+        let pending = self
+            .pending_two_week_maturity
+            .as_ref()
+            .and_then(|pending| pending.entitlement_batch_generation);
         [Some(self.completed_two_week_generation()), active, pending]
             .into_iter()
             .flatten()
@@ -859,57 +848,25 @@ pub(crate) mod tests {
         _state: &NnsStateV1,
         captured_e8s: Option<u128>,
     ) -> crate::maturity::PendingMaturityDisbursement {
-        let plan = crate::maturity::MaturityPlan {
-            neuron: crate::jupiter::NeuronSnapshot {
-                neuron_id: 2,
-                staking_subaccount: [9; 32],
-                cached_stake_e8s: 100_000_000,
-            },
-            observed_maturity_e8s: 200_000_000,
-            staging_balance_before_e8s: 0,
-            requested_at_seconds: 1,
-            entitlement_batch_generation: Some(1),
-        };
-        let submission = crate::maturity::DisburseMaturitySubmission {
-            plan,
-            submitted_at_seconds: 1,
-        };
         crate::maturity::PendingMaturityDisbursement {
-            kind: crate::maturity::MaturityKind::TwoWeek,
+            nominal_disbursed_e8s: 200_000_000,
+            initiated_at_seconds: 1,
             scheduled_finalization_timestamp_seconds: 604_801,
-            disburse_evidence: crate::maturity::DisburseMaturitySucceeded {
-                submission,
-                amount_disbursed_e8s: 200_000_000,
-            },
+            entitlement_batch_generation: Some(1),
+            two_week_target_e8s: Some(100_000_000),
             captured_e8s,
         }
     }
 
     fn pending_two_year_maturity(
-        state: &NnsStateV1,
+        _state: &NnsStateV1,
     ) -> crate::maturity::PendingMaturityDisbursement {
-        let plan = crate::maturity::MaturityPlan {
-            neuron: crate::jupiter::NeuronSnapshot {
-                neuron_id: state.config.two_year_neuron_id,
-                staking_subaccount: [1; 32],
-                cached_stake_e8s: 100_000_000,
-            },
-            observed_maturity_e8s: 200_000_000,
-            staging_balance_before_e8s: 0,
-            requested_at_seconds: 1,
-            entitlement_batch_generation: None,
-        };
-        let submission = crate::maturity::DisburseMaturitySubmission {
-            plan,
-            submitted_at_seconds: 1,
-        };
         crate::maturity::PendingMaturityDisbursement {
-            kind: crate::maturity::MaturityKind::TwoYear,
+            nominal_disbursed_e8s: 120_000_000,
+            initiated_at_seconds: 1,
             scheduled_finalization_timestamp_seconds: 604_801,
-            disburse_evidence: crate::maturity::DisburseMaturitySucceeded {
-                submission,
-                amount_disbursed_e8s: 120_000_000,
-            },
+            entitlement_batch_generation: None,
+            two_week_target_e8s: None,
             captured_e8s: Some(120_000_000),
         }
     }
@@ -972,28 +929,12 @@ pub(crate) mod tests {
         )));
         assert!(state.validate(canister_self).is_err());
         state.active_operation = None;
-        let plan = crate::maturity::MaturityPlan {
-            neuron: crate::jupiter::NeuronSnapshot {
-                neuron_id: 1,
-                staking_subaccount: [1; 32],
-                cached_stake_e8s: 1,
-            },
-            observed_maturity_e8s: 200_000_000,
-            staging_balance_before_e8s: 0,
-            requested_at_seconds: 1,
-            entitlement_batch_generation: None,
-        };
-        let submission = crate::maturity::DisburseMaturitySubmission {
-            plan,
-            submitted_at_seconds: 1,
-        };
         state.pending_two_year_maturity = Some(crate::maturity::PendingMaturityDisbursement {
-            kind: crate::maturity::MaturityKind::TwoYear,
+            nominal_disbursed_e8s: 120_000_000,
+            initiated_at_seconds: 1,
             scheduled_finalization_timestamp_seconds: 1,
-            disburse_evidence: crate::maturity::DisburseMaturitySucceeded {
-                submission,
-                amount_disbursed_e8s: 120_000_000,
-            },
+            entitlement_batch_generation: None,
+            two_week_target_e8s: None,
             captured_e8s: None,
         });
         assert!(state.validate(canister_self).is_err());
@@ -1231,6 +1172,45 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn compact_active_maturity_command_phases_survive_same_schema_upgrade() {
+        let intent = crate::maturity::MaturityIntent {
+            entitlement_batch_generation: None,
+            two_week_target_e8s: None,
+        };
+        for phase in [
+            crate::maturity::MaturityCommandPhase::Observed(intent),
+            crate::maturity::MaturityCommandPhase::DisburseMaturitySubmitted {
+                intent,
+                submitted_at_seconds: 1,
+            },
+            crate::maturity::MaturityCommandPhase::DisburseMaturitySucceeded {
+                intent,
+                submitted_at_seconds: 1,
+                amount_disbursed_e8s: 120_000_000,
+            },
+        ] {
+            let (canister_self, mut state) = valid_state();
+            state.lifecycle = Lifecycle::Ready;
+            state.two_year_maturity_baseline_reconciled = true;
+            state.next_operation_sequence = 2;
+            state.active_operation = Some(NnsOperation::Maturity(Box::new(
+                crate::maturity::MaturityCommandOperation {
+                    operation_sequence: 1,
+                    dispatch_epoch: 1,
+                    kind: crate::maturity::MaturityKind::TwoYear,
+                    phase,
+                },
+            )));
+            initialize(state.clone(), canister_self).unwrap();
+            write(state.clone());
+            reopen(canister_self);
+            let reopened = read();
+            assert_eq!(reopened.lifecycle, Lifecycle::Paused);
+            assert_eq!(reopened.active_operation, state.active_operation);
+        }
+    }
+
+    #[test]
     fn jupiter_refresh_checkpoint_survives_same_schema_upgrade() {
         let (canister_self, mut state) = valid_state();
         state.lifecycle = Lifecycle::Ready;
@@ -1363,6 +1343,7 @@ pub(crate) mod tests {
         let Bound::Bounded { max_size, .. } = <StableNnsState as Storable>::BOUND else {
             panic!("NNS state must remain bounded");
         };
+        eprintln!("maximum encoded NNS state: {} bytes", encoded.len());
         assert!(encoded.len() <= max_size as usize);
     }
 

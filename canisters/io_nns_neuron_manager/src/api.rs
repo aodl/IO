@@ -148,27 +148,57 @@ async fn resume_passive_work(snapshot: crate::state::NnsStateV1) -> Result<NnsPr
             .await
             .map(NnsProgress::Unwind);
     }
-    for (kind, pending) in [
-        (
-            MaturityKind::TwoWeek,
-            snapshot.pending_two_week_maturity.as_ref(),
-        ),
-        (
-            MaturityKind::TwoYear,
-            snapshot.pending_two_year_maturity.as_ref(),
-        ),
-    ] {
-        if pending.is_some() {
-            return crate::maturity_flow::resume_kind(kind)
-                .await
-                .map(NnsProgress::Maturity);
+    if let Some((kind, waiting)) = select_passive_maturity(&snapshot, now) {
+        if waiting {
+            return Ok(NnsProgress::Maturity(MaturityProgress::AwaitingCapture));
         }
+        return crate::maturity_flow::resume_kind(kind)
+            .await
+            .map(NnsProgress::Maturity);
     }
     if snapshot.live_cohorts.is_empty() {
         Ok(NnsProgress::Idle)
     } else {
         Ok(NnsProgress::Unwind(UnwindProgress::Waiting))
     }
+}
+
+fn select_passive_maturity(
+    snapshot: &crate::state::NnsStateV1,
+    now_seconds: u64,
+) -> Option<(MaturityKind, bool)> {
+    [
+        (
+            MaturityKind::TwoYear,
+            snapshot.pending_two_year_maturity.as_ref(),
+        ),
+        (
+            MaturityKind::TwoWeek,
+            snapshot.pending_two_week_maturity.as_ref(),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(kind, pending)| {
+        pending.map(|pending| {
+            let action_order = if pending.captured_e8s.is_some() {
+                0
+            } else if pending.scheduled_finalization_timestamp_seconds <= now_seconds {
+                1
+            } else {
+                2
+            };
+            (
+                (
+                    action_order,
+                    pending.scheduled_finalization_timestamp_seconds,
+                    u8::from(kind == MaturityKind::TwoWeek),
+                ),
+                kind,
+            )
+        })
+    })
+    .min_by_key(|(key, _)| *key)
+    .map(|((action_order, _, _), kind)| (kind, action_order == 2))
 }
 
 pub async fn prove_active_transfer(block_index: u128) -> Result<NnsProgress, ApiError> {
@@ -926,13 +956,49 @@ mod tests {
 
     #[test]
     fn passive_resume_prioritizes_actionable_work_deterministically() {
-        let source = include_str!("api.rs");
-        let body = source.split("async fn resume_passive_work").nth(1).unwrap();
-        let ready = body.find("resume_passive(ready)").unwrap();
-        let two_week = body.find("MaturityKind::TwoWeek").unwrap();
-        let two_year = body.find("MaturityKind::TwoYear").unwrap();
-        let waiting = body.find("UnwindProgress::Waiting").unwrap();
-        assert!(ready < two_week && two_week < two_year && two_year < waiting);
+        let (_, mut state) = crate::state::tests::valid_state();
+        let pending = |kind, finalization, captured| {
+            let (generation, target) = match kind {
+                MaturityKind::TwoYear => (None, None),
+                MaturityKind::TwoWeek => (Some(1), Some(100_000_000)),
+            };
+            crate::maturity::PendingMaturityDisbursement {
+                nominal_disbursed_e8s: 200_000_000,
+                initiated_at_seconds: 1,
+                scheduled_finalization_timestamp_seconds: finalization,
+                entitlement_batch_generation: generation,
+                two_week_target_e8s: target,
+                captured_e8s: captured,
+            }
+        };
+
+        state.pending_two_week_maturity = Some(pending(MaturityKind::TwoWeek, 200, None));
+        state.pending_two_year_maturity = Some(pending(MaturityKind::TwoYear, 100, None));
+        assert_eq!(
+            select_passive_maturity(&state, 150),
+            Some((MaturityKind::TwoYear, false))
+        );
+
+        state.pending_two_week_maturity = Some(pending(MaturityKind::TwoWeek, 100, None));
+        state.pending_two_year_maturity = Some(pending(MaturityKind::TwoYear, 200, None));
+        assert_eq!(
+            select_passive_maturity(&state, 150),
+            Some((MaturityKind::TwoWeek, false))
+        );
+
+        state.pending_two_year_maturity =
+            Some(pending(MaturityKind::TwoYear, 300, Some(200_000_000)));
+        assert_eq!(
+            select_passive_maturity(&state, 150),
+            Some((MaturityKind::TwoYear, false))
+        );
+
+        state.pending_two_year_maturity = Some(pending(MaturityKind::TwoYear, 200, None));
+        state.pending_two_week_maturity = None;
+        assert_eq!(
+            select_passive_maturity(&state, 150),
+            Some((MaturityKind::TwoYear, true))
+        );
     }
 
     #[test]

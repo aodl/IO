@@ -3,4 +3,4 @@ schema_version=1
 live_snapshot=false
 envelope=StableNnsState::V1
 lifecycle=Paused
-launch_marker=10
+launch_marker=11

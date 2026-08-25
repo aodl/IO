@@ -807,7 +807,7 @@ pub fn set_caller_state(caller: Principal, state: CallerRedemptionState) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[derive(CandidType)]
@@ -869,7 +869,7 @@ mod tests {
         }
     }
 
-    fn valid_state() -> (Principal, StreamStateV1) {
+    pub(crate) fn valid_state() -> (Principal, StreamStateV1) {
         let canister_self = principal(1);
         let nns_manager = principal(4);
         (
@@ -1001,6 +1001,7 @@ mod tests {
             .collect();
         assert_eq!(state.validate(canister_self), Ok(()));
         let encoded = candid::encode_one(StableStreamState::V1(state.clone())).unwrap();
+        eprintln!("maximum exercised Stream state: {} bytes", encoded.len());
         assert!(encoded.len() < 2_000_000);
 
         state

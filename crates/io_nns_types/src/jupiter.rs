@@ -8,7 +8,7 @@ use {
 use crate::transfer::NnsTransferAttempt;
 pub use io_receipt_types::ClaimBackingReceiptPermit as StreamReceiptPermit;
 
-pub const PINNED_NNS_GOVERNANCE_COMMIT: &str = "8aa4680e378f3248e7e7b9b8237915aded999bd9";
+pub const PINNED_NNS_GOVERNANCE_COMMIT: &str = "c748b8e76b90ceef329c055e6f7b38a00aae8745";
 pub const PINNED_ICP_LEDGER_COMMIT: &str = "021bf342f66296d5605b355a61b2430406a83783";
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]

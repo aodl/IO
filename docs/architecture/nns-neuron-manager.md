@@ -20,12 +20,12 @@ proved zero or merged to the parent with exact conservation, and the child
 record retires independently of generation-free member reward re-entry.
 
 Maturity uses two fixed, domain-separated subaccounts owned by this canister.
-Before `DisburseMaturity(100%)`, the manager persists the applicable Account's
-balance. After the canonical finalization boundary it freezes the positive
-balance delta once. The Account is the semantic authority: donations arriving
-before capture are intentionally included, and the other maturity Account can
-never satisfy the operation. No Mint block, source operation, or originating
-neuron attribution is stored after custody.
+After `DisburseMaturity(100%)` passes the canonical finalization boundary, the
+manager freezes the applicable Account's complete positive balance once. A
+completed delivery debits exactly that frozen capture, so any late arrival
+left in the Account is unprocessed semantic ICP for the next operation. The
+other maturity Account can never satisfy the operation. No Mint block, source
+operation, or originating-neuron attribution is stored after custody.
 
 Jupiter and two-week maturity use the same checked 40% permanent / 60% claim
 gross split. Their claim credit remains quarantined until Stream freezes the

@@ -13,7 +13,7 @@ not authorize mainnet work.
 3. The pooled parent follows the configured local followee, casts no manual
    vote, follows the leader ballot, earns maturity, and preserves that policy
    through the existing daily voting-power refresh.
-4. Two-week maturity captures its fixed semantic Account balance delta,
+4. Two-week maturity captures its complete fixed semantic Account balance,
    including donations, then uses the shared Jupiter 40/60 paired path with
    partial forfeiture/dust and sequential IO recipient settlement.
 5. Two-year maturity captures only its own semantic Account, applies the same

@@ -27,11 +27,12 @@ Jupiter neurons are excluded. The two-week duration is not an accounting epoch.
 When the pooled parent has sufficient ordinary maturity and no batch is
 pending, IO freezes the live accumulator into one immutable entitlement batch
 and persists a `DisburseMaturity(100%)` intent. The canonical NNS pending
-disbursement establishes the exact nominal amount captured by that command;
-later reward accrual belongs to a future batch. Daily observations continue in
-a fresh live accumulator while IO waits for the actual modulated ICP Mint.
-Only the proved Mint determines the backed IO pool. Its permanent credit is
-proved first and its claim leg then enters the common liquid-first receipt.
+disbursement fixes the entitlement boundary; later reward accrual belongs to a
+future batch. Daily observations continue in a fresh live accumulator while IO
+waits for finalization. After the pending record disappears, the complete
+semantic TwoWeek staging Account balance freezes once as controlled ICP. No
+Mint block is supplied or proved. The permanent credit is proved first and the
+claim leg then enters the common liquid-first receipt.
 Before recipient allocation, the batch's eligible-credit fraction determines
 the eligible pool; excluded, ineligible and unassigned fractions remain in
 reserve. A zero-eligible-credit batch completes without recipient transfers

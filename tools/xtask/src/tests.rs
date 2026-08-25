@@ -109,6 +109,10 @@ fn obsolete_economics_guard_rejects_old_terms_from_active_root_files() {
         concat!("source_operation", "_id"),
         concat!("stream_receipt", "_fingerprint"),
         concat!("maturity_staging", " : Account"),
+        concat!("maturity Mint", " block proof"),
+        concat!("proved Mint", " determines the backed IO pool"),
+        concat!("actual maturity", " Mint"),
+        concat!("staging_balance", "_before_e8s"),
     ]
     .into_iter()
     .enumerate()

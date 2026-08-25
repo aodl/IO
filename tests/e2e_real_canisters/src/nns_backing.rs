@@ -365,7 +365,7 @@ fn create_zero_maturity_protected_neuron_with_stake(
     let candidate = std::fs::read(candidate_path).expect("read exact post-Mission-70 Governance");
     assert_eq!(
         hex::encode(Sha256::digest(&candidate)),
-        "eaa2da45722d980b25405525873571ab7dad426a93e1d4971f6b555d80906d85"
+        "573af1cde5bf55a5e4dbf2d47f8dd340f7a73a107eebbc645fe1202b97f61e85"
     );
     pic.upgrade_canister(governance, candidate, Vec::new(), Some(root))
         .expect("activate exact post-Mission-70 Governance for controlled evidence");

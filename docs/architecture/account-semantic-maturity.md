@@ -13,11 +13,12 @@ domain-separated subaccounts:
 - `two_week_maturity_staging()`: paired backing for a frozen entitlement batch;
 - `two_year_maturity_staging()`: unpaired protocol yield.
 
-Before `DisburseMaturity(100%)`, the manager persists the relevant balance.
-After the canonical finalization boundary it freezes the positive balance delta
-once. Donations received between baseline and capture inherit the Account's
-semantics. Later receipts remain outside the frozen operation. The two Accounts
-cannot satisfy each other's work.
+After `DisburseMaturity(100%)` passes the canonical finalization boundary, the
+manager freezes the complete positive balance of the relevant Account once.
+Delivery debits exactly the frozen capture. Donations present before capture
+are included, while value arriving after capture remains in the Account and is
+consumed by the next operation together with its later maturity receipt. The
+two Accounts cannot satisfy each other's work.
 
 ## Economics
 
@@ -38,6 +39,13 @@ entitlement generation. Two-year maturity issues no IO and needs no paired
 receipt; its claim credit is ordinary liquid yield. Every claim increment enters
 liquid before ordinary pool reconciliation.
 
+If the maximum backed IO for a two-week capture exceeds the available protocol
+reserve, receipt preparation returns `InsufficientIoReserve`. No IO is issued,
+no partial recipient cursor is created, and the operation remains pending until
+redemption returns enough IO to reserve. The frozen ICP cannot become redeemable
+backing before that all-or-nothing obligation is persisted, so the pause cannot
+dilute existing claims.
+
 ## Proof budget
 
 IO proves ambiguous irreversible effects, not fungible-asset provenance after
@@ -48,11 +56,24 @@ and strict same-schema upgrade validation remain. Without those mechanisms an
 ambiguous retry could duplicate value, create a second child, settle a different
 recipient set, or decode an incompatible monetary state.
 
-Maturity Mint proof, Mint source attribution, cross-kind block replay, maturity
-source-operation identity, receipt source Account/block fields, broad receipt
-fingerprints, and two-year paired-receipt state do not remain. Canonical Account
-balance, semantic Account identity, exact operation sequence/amount/kind, and the
-outgoing-effect proofs supply all required safety facts.
+| Mechanism | Result | Concrete safety purpose |
+| --- | --- | --- |
+| Redemption request hash and exact transfer proofs | Keep | Bind a caller replay compactly and prevent ambiguous IO pull or ICP payout retries from transferring twice. |
+| Generic outgoing Ledger transfer proof | Keep | An ambiguous retry without the exact block can send controlled ICP or IO twice. |
+| Jupiter source proof | Keep | Preserve the external faucet authorization boundary before its ICP enters custody. |
+| Parent refresh proof | Keep | Prevent crediting a stake transfer until canonical cached stake reflects it. |
+| Split recovery | Keep | Prevent a possible-effect retry from creating a second child neuron. |
+| Child Disburse proof | Keep | Prevent a possible-effect retry from paying child principal twice. |
+| Entitlement generation and bounded settlement cursor | Keep | Prevent a receipt replay from changing the frozen recipients or settling one recipient twice. |
+| Same-schema stable-state proof | Keep | Reject incompatible launch state and preserve every irreversible-effect checkpoint across upgrade. |
+| Maturity Mint/source-operation proof | Delete | The semantic staging Account balance is already controlled monetary authority. |
+| Receipt source Account/block proof | Delete | Recipient policy, exact paired amount, operation ID, and exact outgoing transfer effects fully bind settlement. |
+| Broad provenance fingerprints | Delete | They duplicated small immutable intent or attributed fungible ICP after custody. |
+| Two-year paired receipt | Delete | Two-year claim credit is yield and creates no IO obligation. |
+
+Canonical Account balance, semantic Account identity, exact operation
+sequence/amount/kind, and the retained outgoing-effect proofs supply all required
+safety facts.
 
 Claim backing remains:
 

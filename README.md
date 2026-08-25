@@ -59,7 +59,7 @@ Root, and Governance services:
    required two-week backing target with the NNS Manager. Credits stay live
    while the protected backing position is under target or unwinding.
 5. The NNS Manager disburses maturity into one of two fixed semantic staging
-   Accounts and captures the post-finalization balance delta. Two-week maturity
+   Accounts and freezes the complete post-finalization Account balance. Two-week maturity
    and Jupiter share the checked 40% permanent / 60% claim paired-inflow path;
    two-year maturity uses the same physical split but issues no IO.
    Permissionless Jupiter notification additionally requires an exact routed

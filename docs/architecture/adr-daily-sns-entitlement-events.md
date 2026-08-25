@@ -78,8 +78,9 @@ two-week staging balance capture, common liquid-first claim receipt, and sequent
 payout. The entitlement generation is immutable, while the maturity observed
 before command submission is only a readiness observation. The canonical
 pending disbursement fixes the entitlement boundary; reward maturity accrued
-afterward belongs to the next batch. Only the frozen balance delta and
-fee-reduced claim credit determine the backed IO pool. At payout,
+afterward belongs to the next batch. After finalization, the complete positive
+semantic staging Account balance and its fee-reduced claim credit determine the
+backed IO pool. At payout,
 the backed pool is first reduced by the frozen batch's forfeited policy
 fraction; the eligible pool is then allocated over eligible credits. A frozen
 zero-eligible-credit batch completes without recipient transfers and leaves

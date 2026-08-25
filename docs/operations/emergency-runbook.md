@@ -29,7 +29,11 @@ No proof of absence exists. If the exact effect cannot be proved, retain Paused 
 
 ## Liquid receipts and rewards
 
-Only Jupiter and two-week maturity receipts exist. The active receipt binds one sequence, kind-specific source, source-operation ID, amount, destination and memo. The sequence advances only after settlement completes. Exact completed replay uses `LastCompletedReceipt`; a conflicting replay is rejected.
+Only Jupiter and two-week maturity receipts exist. The active receipt binds one
+sequence, recipient policy, paired amount, destination, memo, and frozen
+pre-inflow economics. The sequence advances only after settlement completes.
+Exact completed replay uses `LastCompletedReceipt`; a conflicting replay is
+rejected.
 
 Jupiter settlement transfers backed IO from reserve only after the exact liquid ICP receipt is proved. Two-week settlement must preserve the pending entitlement batch and recipient index across upgrades, transfer one recipient per resume, record one best-effort refresh attempt on the following resume, and retain forfeiture and rounding dust in reserve. The exact transfer is recipient completion; refresh rejection or transport failure must not hold the monetary slot.
 
@@ -37,7 +41,11 @@ Jupiter settlement transfers backed IO from reserve only after the exact liquid 
 
 The NNS manager owns governance proof. Jupiter and two-week sending staging accounts each have their own bounded pre-funded fee float. Two-year maturity and ready unwind principal go directly to the stream liquid account and issue no IO. Never add a general fee ledger, staging account for direct flows, ledger scanner, or stream-side governance proof.
 
-New NNS work requires Ready after the zero-maturity baseline and exact target reconciliation. Post-upgrade remains Paused, while already immutable unwind, maturity, Mint and receipt work resumes through its typed evidence. Any unproved prelaunch maturity remains Paused for a separately reviewed reconciliation decision.
+New NNS work requires Ready after the zero-maturity baseline and exact target
+reconciliation. Post-upgrade remains Paused, while already immutable unwind,
+maturity, outgoing-transfer and receipt work resumes through its typed evidence.
+The semantic maturity staging Account is controlled-value authority; callers do
+not supply upstream Mint evidence.
 
 ## Upgrade or stable-state failure
 

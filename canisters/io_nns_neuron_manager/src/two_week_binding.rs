@@ -2,7 +2,7 @@ use candid::Principal;
 
 use crate::{
     api::{ApiError, PrepareTwoWeekMaturityArgs},
-    maturity::{MaturityKind, MaturityPlan},
+    maturity::MaturityKind,
     maturity_flow,
     state::{self, Lifecycle, NnsOperation, NnsStateV1},
 };
@@ -20,6 +20,40 @@ pub async fn prepare(caller: Principal, args: PrepareTwoWeekMaturityArgs) -> Res
         return Err(ApiError::Invalid(
             "two-week maturity generation must be positive".into(),
         ));
+    }
+    if let Some(completed) = snapshot
+        .last_two_week_maturity
+        .as_ref()
+        .filter(|completed| {
+            completed.entitlement_batch_generation == Some(args.entitlement_batch_generation)
+        })
+    {
+        return if completed.two_week_target_e8s == Some(args.target_e8s) {
+            Ok(())
+        } else {
+            Err(ApiError::Invalid(
+                "completed two-week replay target differs".into(),
+            ))
+        };
+    }
+    let latest_generation = snapshot.latest_two_week_generation();
+    if args.entitlement_batch_generation == latest_generation {
+        if !replay_matches(&snapshot, &args) {
+            return Err(ApiError::Invalid(
+                "two-week generation replay conflicts with stored intent".into(),
+            ));
+        }
+        return match snapshot.active_operation {
+            Some(NnsOperation::Maturity(operation)) if operation.kind == MaturityKind::TwoWeek => {
+                maturity_flow::resume_active(*operation).await.map(|_| ())
+            }
+            None if snapshot.pending_two_week_maturity.is_some() => {
+                maturity_flow::resume_kind(MaturityKind::TwoWeek)
+                    .await
+                    .map(|_| ())
+            }
+            _ => Err(ApiError::Busy),
+        };
     }
     let target = snapshot
         .latest_pooled_target
@@ -45,22 +79,6 @@ pub async fn prepare(caller: Principal, args: PrepareTwoWeekMaturityArgs) -> Res
             "two-week maturity requires a proved pooled parent".into(),
         ));
     }
-    if args.entitlement_batch_generation == snapshot.completed_two_week_generation() {
-        return snapshot
-            .last_two_week_maturity
-            .as_ref()
-            .map(|_| ())
-            .ok_or_else(|| ApiError::Invalid("completed generation lacks evidence".into()));
-    }
-    let latest_generation = snapshot.latest_two_week_generation();
-    if args.entitlement_batch_generation == latest_generation {
-        if replay_matches(&snapshot, &args) {
-            return Ok(());
-        }
-        return Err(ApiError::Invalid(
-            "two-week generation replay conflicts with stored evidence".into(),
-        ));
-    }
     let expected_generation = latest_generation
         .checked_add(1)
         .ok_or_else(|| ApiError::Invalid("two-week generation overflow".into()))?;
@@ -80,15 +98,24 @@ pub async fn prepare(caller: Principal, args: PrepareTwoWeekMaturityArgs) -> Res
 }
 
 fn replay_matches(state: &NnsStateV1, args: &PrepareTwoWeekMaturityArgs) -> bool {
-    let plan_matches = |plan: &MaturityPlan| {
-        plan.entitlement_batch_generation == Some(args.entitlement_batch_generation)
+    let intent_matches = |generation: Option<u64>, target: Option<u128>| {
+        generation == Some(args.entitlement_batch_generation) && target == Some(args.target_e8s)
     };
     matches!(
         &state.active_operation,
         Some(NnsOperation::Maturity(operation))
-            if operation.kind == MaturityKind::TwoWeek && plan_matches(operation.plan())
+            if operation.kind == MaturityKind::TwoWeek
+                && intent_matches(
+                    operation.intent().entitlement_batch_generation,
+                    operation.intent().two_week_target_e8s,
+                )
     ) || state
         .pending_two_week_maturity
         .as_ref()
-        .is_some_and(|pending| plan_matches(&pending.disburse_evidence.submission.plan))
+        .is_some_and(|pending| {
+            intent_matches(
+                pending.entitlement_batch_generation,
+                pending.two_week_target_e8s,
+            )
+        })
 }

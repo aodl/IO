@@ -201,11 +201,17 @@ fn mock_label_from_account(account: &Account) -> String {
             }
         }
     }
-    account
-        .subaccount
-        .as_ref()
-        .and_then(mock_label_from_subaccount)
-        .unwrap_or_else(|| account.owner.to_text())
+    match account.subaccount.as_ref() {
+        Some(subaccount) => mock_label_from_subaccount(subaccount).unwrap_or_else(|| {
+            let bytes = subaccount
+                .0
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            format!("{}:{bytes}", account.owner.to_text())
+        }),
+        None => account.owner.to_text(),
+    }
 }
 
 fn account_from_icrc(account: IcrcAccount) -> Result<Account, IcrcTransferError> {

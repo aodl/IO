@@ -9,20 +9,19 @@ mainnet action.
 ## Official release lineage
 
 NNS proposal 141441 introduced Mission 70. The subsequently executed
-Governance `InstallCode` proposals inspected for this evidence were 141738,
-141771, 141779, 142447, 142679, 142936, 143410, and 143577. Proposal 143577,
-executed on 2026-08-17, remains the latest executed Governance `InstallCode`
-proposal found in the public official proposal metadata. A freshness check
-through proposal 143660 on 2026-08-22 found that later proposal open, not
-executed.
+Governance `InstallCode` proposals inspected for this evidence include 141738,
+141771, 141779, 142447, 142679, 142936, 143410, 143577, and 143660. Proposal
+143660 executed on 2026-08-24 and is the latest executed Governance
+`InstallCode` proposal found in the public official proposal metadata through
+proposal 143685 on 2026-08-25.
 
-The selected candidate is proposal 143577 at source commit
-`8aa4680e378f3248e7e7b9b8237915aded999bd9`, following
-`3ec5d044f5dc45a93943ec14258891a1c3c272be`. Its official compressed Wasm,
+The selected candidate is proposal 143660 at source commit
+`c748b8e76b90ceef329c055e6f7b38a00aae8745`, following
+`8aa4680e378f3248e7e7b9b8237915aded999bd9`. Its official compressed Wasm,
 reproduced raw Wasm, and source Governance DID identities are respectively:
 
-- `b41a5add38d54751d53fb4f0c826b09aaee38e0c5bea632400f1dbaaa11cfd4b`
-- `eaa2da45722d980b25405525873571ab7dad426a93e1d4971f6b555d80906d85`
+- `e4e9e99730dbee3a6fb9a95b40b10b512ad4831c9d2f6efb51d3f0a5d243b503`
+- `573af1cde5bf55a5e4dbf2d47f8dd340f7a73a107eebbc645fe1202b97f61e85`
 - `6e9a397f4bf0adc913980ef6c176e765534617d0ce59d52e7bcc66add2b0cd71`
 
 The compressed proposal artifact was downloaded from the official IC release

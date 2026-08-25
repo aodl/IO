@@ -24,14 +24,14 @@ use std::time::Duration;
 
 use crate::{icrc, nns_setup, pocketic_env};
 
-const CANDIDATE_COMMIT: &str = "8aa4680e378f3248e7e7b9b8237915aded999bd9";
+const CANDIDATE_COMMIT: &str = "c748b8e76b90ceef329c055e6f7b38a00aae8745";
 const CANDIDATE_COMPRESSED_SHA256: &str =
-    "b41a5add38d54751d53fb4f0c826b09aaee38e0c5bea632400f1dbaaa11cfd4b";
+    "e4e9e99730dbee3a6fb9a95b40b10b512ad4831c9d2f6efb51d3f0a5d243b503";
 const CANDIDATE_RAW_SHA256: &str =
-    "eaa2da45722d980b25405525873571ab7dad426a93e1d4971f6b555d80906d85";
+    "573af1cde5bf55a5e4dbf2d47f8dd340f7a73a107eebbc645fe1202b97f61e85";
 const CANDIDATE_DID_SHA256: &str =
     "6e9a397f4bf0adc913980ef6c176e765534617d0ce59d52e7bcc66add2b0cd71";
-const CANDIDATE_PROPOSAL_ID: u64 = 143_577;
+const CANDIDATE_PROPOSAL_ID: u64 = 143_660;
 const FOURTEEN_DAYS_SECONDS: u64 = 1_209_600;
 const BELOW_FOURTEEN_DAYS_SECONDS: u64 = FOURTEEN_DAYS_SECONDS - 1;
 const PROPOSAL_SUBMISSION_THRESHOLD_SECONDS: u64 = 15_778_800;
@@ -997,7 +997,7 @@ fn post_mission70_candidate_lock_is_self_consistent() {
         CANDIDATE_COMPRESSED_SHA256,
         CANDIDATE_RAW_SHA256,
         CANDIDATE_DID_SHA256,
-        "143577",
+        "143660",
         "exact_post_m70_upgrade_rewards_fourteen_day_boundary",
         "exact_post_m70_fourteen_day_parent_follows_and_earns_maturity",
         "exact_post_m70_minimum_stake_boundaries",

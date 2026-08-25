@@ -845,4 +845,124 @@ mod tests {
         .unwrap();
         assert_eq!(quote.gross_icp, 10, "paired credit must not front-run IO");
     }
+
+    #[test]
+    fn jupiter_and_two_week_share_rate_one_and_rate_two_backed_issuance() {
+        let (_, mut state) = crate::state::tests::valid_state();
+        state.pending_entitlement_batch = Some(crate::state::PendingEntitlementBatch {
+            generation: 1,
+            frozen_at_timestamp_seconds: 1,
+            through_event: crate::state::RewardEventId {
+                end_timestamp_seconds: 1,
+                round: 1,
+            },
+            target_icp_e8s: 100,
+            entries: vec![crate::state::FrozenEntitlement {
+                sns_neuron_id: vec![1; 32],
+                destination: Account {
+                    owner: Principal::from_slice(&[9; 29]),
+                    subaccount: None,
+                },
+                accumulated_eligible_credit: 1,
+            }],
+            eligible_credit_total: 1,
+            policy_credit_total: 1,
+            processed_event_count: 1,
+        });
+        for (backing, expected_io) in [(100, 60), (200, 30)] {
+            let snapshot = crate::redemption::ClaimSnapshot {
+                total_supply_e8s: 1_100,
+                reserve_io_e8s: 1_000,
+                claim_supply_e8s: 100,
+                total_claim_backing_e8s: backing,
+                io_fee_e8s: 10,
+                ..Default::default()
+            };
+            for kind in [
+                ClaimBackingReceiptKind::Jupiter,
+                ClaimBackingReceiptKind::TwoWeek {
+                    entitlement_generation: 1,
+                },
+            ] {
+                let request = PrepareClaimBackingReceiptArgs {
+                    nns_operation_sequence: 1,
+                    kind,
+                    net_liquid_credit_e8s: 60,
+                };
+                let (recipients, _) =
+                    plan_recipients(&state, &request, &snapshot, backing).unwrap();
+                assert_eq!(
+                    recipients.iter().map(|entry| entry.io_e8s).sum::<u128>(),
+                    expected_io
+                );
+                assert_eq!(
+                    recipients[0].sns_neuron_id.is_some(),
+                    matches!(request.kind, ClaimBackingReceiptKind::TwoWeek { .. })
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn oversized_two_week_donation_waits_without_partial_issuance() {
+        let (_, mut state) = crate::state::tests::valid_state();
+        state.pending_entitlement_batch = Some(crate::state::PendingEntitlementBatch {
+            generation: 1,
+            frozen_at_timestamp_seconds: 1,
+            through_event: crate::state::RewardEventId {
+                end_timestamp_seconds: 1,
+                round: 1,
+            },
+            target_icp_e8s: 100,
+            entries: vec![crate::state::FrozenEntitlement {
+                sns_neuron_id: vec![1; 32],
+                destination: Account {
+                    owner: Principal::from_slice(&[9; 29]),
+                    subaccount: None,
+                },
+                accumulated_eligible_credit: 1,
+            }],
+            eligible_credit_total: 1,
+            policy_credit_total: 1,
+            processed_event_count: 1,
+        });
+        let original = state.clone();
+        let request = PrepareClaimBackingReceiptArgs {
+            nns_operation_sequence: 1,
+            kind: ClaimBackingReceiptKind::TwoWeek {
+                entitlement_generation: 1,
+            },
+            net_liquid_credit_e8s: 1_000,
+        };
+        let snapshot = crate::redemption::ClaimSnapshot {
+            total_supply_e8s: 200,
+            reserve_io_e8s: 100,
+            claim_supply_e8s: 100,
+            total_claim_backing_e8s: 100,
+            io_fee_e8s: 10,
+            ..Default::default()
+        };
+        assert_eq!(
+            io_core_model::backed_io(
+                request.net_liquid_credit_e8s,
+                snapshot.total_claim_backing_e8s,
+                snapshot.claim_supply_e8s,
+            ),
+            Ok(1_000)
+        );
+        let error = plan_recipients(
+            &state,
+            &request,
+            &snapshot,
+            snapshot.total_claim_backing_e8s,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, ApiError::Invalid(message) if message.contains("InsufficientIoReserve"))
+        );
+        assert_eq!(
+            state, original,
+            "failed planning must consume no entitlement or reserve state"
+        );
+    }
 }
