@@ -53,7 +53,7 @@ impl PoolTopUpOperation {
     }
 }
 
-pub async fn ensure_latest(now: u64) -> Result<bool, ApiError> {
+pub async fn ensure_latest() -> Result<bool, ApiError> {
     let mut stream = state::read();
     if matches!(stream.active_operation, Some(StreamOperation::PoolTopUp(_))) {
         return Ok(false);
@@ -104,7 +104,7 @@ pub async fn ensure_latest(now: u64) -> Result<bool, ApiError> {
                     fee_e8s: canonical.icp_fee_e8s,
                     snapshot_fingerprint: canonical.nns_fingerprint,
                     memo: reconciliation_memo(checkpoint.generation),
-                    created_at_time_nanos: now,
+                    created_at_time_nanos: checkpoint.observed_at_nanos,
                 },
             )
             .await?;
@@ -132,7 +132,7 @@ pub async fn ensure_latest(now: u64) -> Result<bool, ApiError> {
                 fee_e8s: canonical.icp_fee_e8s,
                 snapshot_fingerprint: canonical.nns_fingerprint,
                 memo: reconciliation_memo(checkpoint.generation),
-                created_at_time_nanos: now,
+                created_at_time_nanos: checkpoint.observed_at_nanos,
             };
             prepare_exit_generation(&mut stream, request.clone())?;
             resolve_prepared_exit(&stream, request).await
@@ -156,7 +156,7 @@ pub async fn ensure_latest(now: u64) -> Result<bool, ApiError> {
                     fee_e8s: canonical.icp_fee_e8s,
                     snapshot_fingerprint: canonical.nns_fingerprint,
                     memo: reconciliation_memo(checkpoint.generation),
-                    created_at_time_nanos: now,
+                    created_at_time_nanos: checkpoint.observed_at_nanos,
                 },
             )
             .await?;

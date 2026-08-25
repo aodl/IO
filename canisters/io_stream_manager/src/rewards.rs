@@ -147,7 +147,7 @@ async fn observe_due(
         skipped,
         sequence,
     )?;
-    if let Err(error) = crate::pool_reconciliation::ensure_latest(now_nanos).await {
+    if let Err(error) = crate::pool_reconciliation::ensure_latest().await {
         ic_cdk::api::debug_print(format!(
             "daily pool reconciliation remains pending after observation: {error:?}"
         ));
@@ -315,12 +315,12 @@ pub async fn resume_backing(now_nanos: u64) -> Result<RewardBackingProgress, Api
     if snapshot.reward_checkpoint.reward_processing_paused
         || !snapshot.reward_checkpoint.governance_parameters_fresh
     {
-        let _ = crate::pool_reconciliation::ensure_latest(now_nanos).await;
+        let _ = crate::pool_reconciliation::ensure_latest().await;
         return Err(ApiError::Pending(
             "daily stake observation is not fresh".into(),
         ));
     }
-    if !crate::pool_reconciliation::ensure_latest(now_nanos).await? {
+    if !crate::pool_reconciliation::ensure_latest().await? {
         return Ok(RewardBackingProgress::Pending {
             reason: reward_nns::BackingNotReadyReason::ReconciliationPending,
         });

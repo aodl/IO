@@ -838,7 +838,8 @@ async fn pool_policy_observation(
 ) -> Result<PoolPolicyObservation, ApiError> {
     let parent = match snapshot.pooled_parent_id {
         Some(parent_id) => {
-            let observed = execution::query_neuron_observation(&snapshot.config, parent_id).await?;
+            let mut observed =
+                execution::query_neuron_observation(&snapshot.config, parent_id).await?;
             execution::validate_parent_configuration(
                 &observed,
                 FollowPolicy {
@@ -846,11 +847,28 @@ async fn pool_policy_observation(
                 },
             )
             .map_err(ApiError::Invalid)?;
+            let now = ic_cdk::api::time() / 1_000_000_000;
+            if !observed
+                .voting_power_refreshed_timestamp_seconds
+                .is_some_and(|refreshed_at| voting_power_refresh_is_current(refreshed_at, now))
+            {
+                execution::refresh_voting_power(&snapshot.config, parent_id).await?;
+                if state::read() != *snapshot {
+                    return Err(ApiError::Busy);
+                }
+                observed = execution::query_neuron_observation(&snapshot.config, parent_id).await?;
+                execution::validate_parent_configuration(
+                    &observed,
+                    FollowPolicy {
+                        followee_neuron_id: snapshot.config.pooled_parent_followee_id,
+                    },
+                )
+                .map_err(ApiError::Invalid)?;
+            }
             let refreshed_at = observed
                 .voting_power_refreshed_timestamp_seconds
                 .filter(|timestamp| *timestamp > 0)
                 .ok_or_else(|| ApiError::Pending("pooled parent voting power is stale".into()))?;
-            let now = ic_cdk::api::time() / 1_000_000_000;
             if !voting_power_refresh_is_current(refreshed_at, now) {
                 return Err(ApiError::Pending(format!(
                     "pooled parent voting power refresh is older than {MAX_VOTING_POWER_REFRESH_AGE_SECONDS} seconds"
