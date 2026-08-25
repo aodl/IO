@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted.
+Superseded for maturity custody, paired receipts, and proof state by
+[`account-semantic-maturity.md`](account-semantic-maturity.md). The remaining
+pool-allocation history is retained as design context.
 
 This ADR supersedes the separate-endowment design. It defines the production
 claim-backing economics and bounded orchestration model. Acceptance does not
@@ -144,7 +146,7 @@ batch. Delivery increases `C` but makes no immediate claim about
 `A_backing`. There is no maturity-specific parent destination or second
 maturity transfer.
 
-Both pooled maturity and Jupiter use one monotone permanent-neuron proof. The
+Both TwoWeek and Jupiter use one monotone permanent-neuron proof. The
 proof freezes the exact neuron ID, staking subaccount, cached stake before the
 protocol transfer, protocol credit, and transfer block. ClaimOrRefresh is
 retryable after callback loss. Receipt preparation waits until a canonical
@@ -249,16 +251,16 @@ Claim-receipt ownership is complete in every transfer phase:
 
 | Receipt kind / phase | Claim-backing owner |
 | --- | --- |
-| Jupiter or pooled maturity, before permit | NNS staging, excluded from `B` |
-| Jupiter or pooled maturity, permit persisted and transfer not effective | `T` |
+| Jupiter or TwoWeek, before permit | NNS staging, excluded from `B` |
+| Jupiter or TwoWeek, permit persisted and transfer not effective | `T` |
 | Any submitted transfer with ambiguous effect | observation is `Pending` |
 | Any exact no-effect, rejection or `BadFee` with staging value proved | `T` |
 | `InsufficientFunds` with expected staging value proved | `T` |
 | `InsufficientFunds` without expected staging value | explicit asset-deficiency error |
 | Exact liquid transfer success | `L` |
 | Supply-paired receipt completion | `L` plus the matching increase in `C` |
-| Permanent maturity, Mint proved through transfer no-effect | `T` |
-| Permanent maturity completion | `L`, with no increase in `C` |
+| TwoYear, outgoing claim transfer not proved | staging/transit, fail closed |
+| TwoYear claim transfer completion | `L`, with no increase in `C` |
 
 The same exact credit can be reported by Stream's persisted permit and NNS's
 post-permit operation during hand-off. Canonical observation accepts zero from

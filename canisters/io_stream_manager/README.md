@@ -45,13 +45,13 @@ is never inferred from an arbitrary active unwind. There is no target queue or
 second scheduler. Reward allocation is prospective
 and requires `P >= reward_target`.
 
-Jupiter and both maturity roles use one narrow claim-backing receipt. Every
-claim credit enters Stream liquid first. A permit freezes exact pre-inflow
-economics, the net liquid credit, fingerprint and, where IO is delivered, one
-recipient vector. Completion marks ordinary target reconciliation due; any
-later liquid-to-parent transfer is determined only from a fresh global target.
-This can cost one additional ICP fee, which reduces `B` exactly once under
-Policy A, in exchange for eliminating source-specific physical routes.
+Jupiter and two-week maturity use one narrow paired-backing receipt. Every
+paired claim credit enters Stream liquid first. A permit freezes exact
+pre-inflow economics, the net liquid credit, and one recipient vector. Its kind
+only selects the configured Jupiter Account or a frozen entitlement generation.
+Two-year maturity creates no matching IO and therefore uses no receipt.
+Completion marks ordinary target reconciliation due; any later liquid-to-parent
+transfer is determined only from a fresh global target.
 
 Production methods cover redeem/resume/proof, claim receipts, reward
 observation/backing, lifecycle, caller replay status, and public status. Callers

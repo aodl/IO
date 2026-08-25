@@ -22,7 +22,7 @@ No production principal or economic quantity may be inferred from the determinis
 | Project copyright notice | Do not invent the legal owner/name. Apache-2.0 license text is already canonical. | No local substitute. | Optional NOTICE/header attribution | Product/legal decision; no protocol effect |
 
 Frozen decisions are not reopened: reserve-transfer issuance, `B/C` redemption,
-Jupiter 40/60, permanent maturity, joint pooled maturity, daily reward policy,
+Jupiter/two-week paired 40/60, two-year unpaired maturity, daily reward policy,
 forfeiture/dust, Policy A fees, sticky cancellation, 32-cohort capacity,
 following/voting-power maintenance, ambiguity proofs, zero native SNS reward
 rates, 86,400-second rounds, and zero SNS dissolve-delay/age bonuses.

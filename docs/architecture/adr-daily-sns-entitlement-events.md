@@ -73,12 +73,12 @@ archive or a moving accounting window.
 
 Governance entitlement time and ICP-backing realization are intentionally
 asynchronous. Daily observations continue while one frozen entitlement batch
-awaits the pooled parent's canonical `DisburseMaturity(100%)` record, actual
-modulated ICP Mint, common liquid-first claim receipt, and sequential IO
+awaits the pooled parent's canonical `DisburseMaturity(100%)` record, semantic
+two-week staging balance capture, common liquid-first claim receipt, and sequential IO
 payout. The entitlement generation is immutable, while the maturity observed
 before command submission is only a readiness observation. The canonical
-pending disbursement establishes the exact nominal amount captured; reward
-maturity accrued afterward belongs to the next batch. Only the actual Mint and
+pending disbursement fixes the entitlement boundary; reward maturity accrued
+afterward belongs to the next batch. Only the frozen balance delta and
 fee-reduced claim credit determine the backed IO pool. At payout,
 the backed pool is first reduced by the frozen batch's forfeited policy
 fraction; the eligible pool is then allocated over eligible credits. A frozen

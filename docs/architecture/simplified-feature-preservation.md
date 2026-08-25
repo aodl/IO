@@ -7,8 +7,8 @@ IO remains not live and its reserved production canisters remain inert.
 | Claim rate | Stream computes `B/C`, where `B=L+P+U+T` |
 | Jupiter | 40% permanent, net 60% liquid claim backing; IO at the pre-event rate |
 | Initial staking | Existing liquid claim backing moves to the pooled parent; only fees reduce `B` |
-| Permanent maturity | Stake 40% of ordinary maturity; route the actual remaining Mint dynamically with no IO issuance |
-| Pooled maturity | Disburse 100%; split actual Mint 40/60; jointly plan claim route and backed IO allocation |
+| Two-year maturity | Capture its semantic staging balance delta; split 40/60 into permanent/liquid credits with no IO issuance |
+| Two-week maturity | Capture its distinct semantic staging balance delta; use the shared Jupiter paired-inflow split and allocate backed IO to the frozen batch |
 | Reconciliation | One daily generation, one immediate NNS command, up to 32 passive cohorts |
 | Sticky cancellation | Precommit cancels without a fee; postcommit child lifecycle continues independently |
 | Rewards | Exact daily entitlements with global pooled reward-coverage gating |

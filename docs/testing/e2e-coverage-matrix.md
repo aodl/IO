@@ -6,8 +6,8 @@
 | Jupiter 40/60 | Exact source block, fee-reduced permanent/liquid credits, pre-event rate, replay |
 | Initial pooled staking | 0/50/100% structural stake, lazy parent, no IO issuance |
 | Following rewards | Exact candidate follow ballot, nonzero maturity, voting-power refresh |
-| Joint pooled maturity | All-liquid/all-pool/mixed, fee boundaries, reward coverage, recipient settlement |
-| Permanent maturity | Stake 40%, actual Mint dynamic claim route, no IO |
+| Two-week paired maturity | Semantic balance capture, donation inclusion, 40/60 fees, pre-rate issuance, recipient settlement, Account isolation |
+| Two-year maturity | Semantic balance capture, donation inclusion, 40/60 fees, liquid yield, no paired receipt or IO issuance |
 | Sticky cohorts | Split/start separation, cancellation, readiness, return, maturity cleanup |
 | Capacity | 32 accepted, 33rd no effect, retirement permits later generation |
 | Redemption | `B/C` quote, liquid shortfall before IO pull, exact retry |

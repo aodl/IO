@@ -13,12 +13,12 @@ not authorize mainnet work.
 3. The pooled parent follows the configured local followee, casts no manual
    vote, follows the leader ballot, earns maturity, and preserves that policy
    through the existing daily voting-power refresh.
-4. Pooled maturity proves actual Mint, fee-reduced permanent credit, the joint
-   all-liquid/all-pool/mixed claim route, partial forfeiture/dust, and sequential
-   IO recipient settlement. There is no source-level pooled liquid receipt.
-5. Permanent maturity stakes 40% of ordinary maturity, disburses the remainder,
-   treats the actual Mint as entirely new claim backing, dynamically routes it,
-   and issues no IO.
+4. Two-week maturity captures its fixed semantic Account balance delta,
+   including donations, then uses the shared Jupiter 40/60 paired path with
+   partial forfeiture/dust and sequential IO recipient settlement.
+5. Two-year maturity captures only its own semantic Account, applies the same
+   physical 40/60 split, routes claim yield to Stream liquid, and issues no IO
+   or paired receipt.
 6. Dissolve/cancellation proves precommit netting, sticky postcommit lifecycle,
    exact readiness, principal return, maturity cleanup, prospective re-entry,
    and no duplicate child or retroactive reward.

@@ -22,10 +22,13 @@ Insufficient liquidity returns a typed shortfall before IO is pulled or a nonce
 is consumed. A valid operation retains exact allowance, transfer-intent,
 deduplication, replay, and postcondition proofs.
 
-Jupiter and NNS maturity enter through narrow source-specific protocols. Every
-route freezes its fees, destinations, recipient allocation, and snapshot before
-any monetary effect. IO-ledger staking balances remain authoritative when an
-ancillary SNS `ClaimOrRefresh` is delayed.
+Jupiter and two-week maturity enter through one paired-backing receipt. The
+receipt is identified by the authenticated NNS Manager's operation sequence,
+exact claim credit, and recipient policy: Jupiter or one frozen entitlement
+generation. It freezes pre-inflow economics and the bounded recipient vector
+before the credit becomes redeemable. Two-year maturity is ordinary unpaired
+yield and enters liquid backing without a receipt. IO-ledger staking balances
+remain authoritative when an ancillary SNS `ClaimOrRefresh` is delayed.
 
 Install and post-upgrade state are Paused. Reviewed unpause is required before
 the existing one-shot timer is armed. IO remains inert and prelaunch.

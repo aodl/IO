@@ -1,13 +1,15 @@
 # IO NNS Neuron Manager
 
-`io_nns_neuron_manager` is the narrow proof-oriented owner of the permanent NNS
-neuron, lazy pooled claim-backing parent, Jupiter staging, maturity staging, one
-immediate NNS command, and at most 32 passive unwind cohorts.
+`io_nns_neuron_manager` is the narrow effect-recovery owner of the permanent
+NNS neuron, lazy pooled claim-backing parent, Jupiter staging, two fixed semantic
+maturity staging Accounts, one immediate NNS command, and at most 32 passive
+unwind cohorts.
 
 The permanent neuron retains its audited principal and exact post-Mission-70
-two-year maximum-delay configuration. Its maturity path stakes 40% of observed ordinary maturity,
-disburses 100% of the remainder, and treats the actual delayed Mint as entirely
-new claim backing. It does not issue IO or split that Mint 40/60 again.
+two-year maximum-delay configuration. Its maturity path disburses 100% into the
+fixed two-year staging Account, captures the post-finalization balance delta,
+and sends 40% gross to permanent capital and 60% gross to Stream liquid. It
+issues no IO.
 
 The pooled parent is created only from existing Stream liquid claim backing
 when the canonical target reaches the NNS minimum. It uses one fixed memo,
@@ -35,12 +37,13 @@ cohort returns principal to Stream liquid, then proves zero maturity or merges
 zero-principal maturity into the parent before retiring. Pending member reward
 re-entry never retains the child slot.
 
-Pooled maturity disburses 100% ordinary maturity. The actual Mint is split into
-40% permanent gross and 60% claim gross. Stream freezes the finite joint route,
-fees, target, reward coverage, and recipient settlement before any effect. NNS
-then proves each permanent, liquid, or direct-parent effect one at a time.
+Two-week maturity disburses 100% ordinary maturity into its distinct fixed
+staging Account. The balance delta, including any donation received before
+capture, uses the same checked 40/60 paired-inflow algebra as Jupiter. Stream
+freezes backed IO for the frozen entitlement generation before the claim leg
+can become redeemable. Neither maturity path accepts or stores a Mint block.
 
-Production methods cover Jupiter notify, maturity start/prepare/resume/proof,
+Production methods cover Jupiter notify, maturity start/prepare/resume,
 pooled reconciliation/resume/proof, claim-backing observation, lifecycle, and
 status. Callers cannot choose a neuron, destination, amount, memo, followee, or
 vote. The existing daily reconciliation path refreshes voting power; there is

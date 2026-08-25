@@ -19,18 +19,21 @@ deterministic. Principal returns to Stream liquid, zero-principal maturity is
 proved zero or merged to the parent with exact conservation, and the child
 record retires independently of generation-free member reward re-entry.
 
-Permanent maturity stakes 40% first and disburses all remaining ordinary
-maturity. Its actual Mint is entirely new claim backing and issues no IO.
-Pooled-parent maturity disburses 100%, then splits the actual Mint into 40%
-permanent gross and 60% claim gross. The Stream jointly freezes the physical
-claim route and backed recipient settlement before effects.
+Maturity uses two fixed, domain-separated subaccounts owned by this canister.
+Before `DisburseMaturity(100%)`, the manager persists the applicable Account's
+balance. After the canonical finalization boundary it freezes the positive
+balance delta once. The Account is the semantic authority: donations arriving
+before capture are intentionally included, and the other maturity Account can
+never satisfy the operation. No Mint block, source operation, or originating
+neuron attribution is stored after custody.
 
-Jupiter and pooled-maturity claim credits remain in NNS staging and outside
-claim backing until Stream persists the matching receipt permit. From that
-point through any rejected, no-effect, `BadFee`, or canonically funded
-`InsufficientFunds` transfer, the exact credit remains in transit. Ambiguous
-submitted transfers make claim observation pending. Permanent-maturity Mint is
-unpaired yield and enters transit immediately; it never releases IO.
+Jupiter and two-week maturity use the same checked 40% permanent / 60% claim
+gross split. Their claim credit remains quarantined until Stream freezes the
+matching backed-IO obligation at the pre-inflow rate. The only recipient-policy
+difference is the configured Jupiter Account versus the frozen two-week
+entitlement generation. Two-year maturity uses the same physical split but
+issues no IO and transfers its claim credit directly to Stream liquid as
+ordinary yield.
 
 Every persisted non-monetary Governance command is recovered by observing
 canonical state before another command. Exact postcondition advances the same
@@ -51,3 +54,8 @@ No fee-debt scalar is introduced.
 
 One update submits at most one external effect. Install and upgrade reopen
 Paused; immutable submitted/proved operations remain resumable.
+
+The proof boundary is effect-based. Ambiguous outgoing Ledger transfers, Split,
+child Disburse, and parent cached-stake reflection remain exact because a retry
+could duplicate value or lose control. Provenance of fungible ICP already held
+in a semantic Account is not a protocol proof requirement.

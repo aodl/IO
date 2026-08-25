@@ -58,14 +58,15 @@ Root, and Governance services:
 4. Before freezing reward entitlements, the Stream Manager reconciles the
    required two-week backing target with the NNS Manager. Credits stay live
    while the protected backing position is under target or unwinding.
-5. The NNS Manager applies the fixed 40/60 maturity policy: 40% is staked and
-   the remaining maturity is disbursed. Only the actual ICP proved at the ICP
-   Ledger becomes maturity backing.
+5. The NNS Manager disburses maturity into one of two fixed semantic staging
+   Accounts and captures the post-finalization balance delta. Two-week maturity
+   and Jupiter share the checked 40% permanent / 60% claim paired-inflow path;
+   two-year maturity uses the same physical split but issues no IO.
    Permissionless Jupiter notification additionally requires an exact routed
    ICP block at or above the immutable launch activation floor and not already
    present in permanent replay state.
-6. A proof-bound receipt lets the Stream Manager settle the immutable backed
-   batch from the IO reserve. Later daily credit can continue accumulating
+6. A paired receipt lets the Stream Manager settle backed IO to either Jupiter
+   or the immutable two-week batch. Later daily credit can continue accumulating
    while that one batch is pending.
 7. The Historian periodically observes ledgers, indexes, SNS Root/Governance,
    both managers, and public NNS neuron information. The frontend renders that
@@ -93,10 +94,10 @@ observation only. The Historian never fills a missing observation with zero.
 ## Frozen design, launch constraints, and open configuration
 
 The frozen monetary design includes authenticated direct ICRC-2 redemption,
-canonical-ledger supply and balance authority, liquid ICP as the only
-redemption backing, exclusion of protected NNS principal from liquid backing,
-Jupiter 40/60, actual received ICP as maturity-backing authority, exact proof
-of immutable external effects, one active monetary operation, daily canonical
+canonical-ledger supply and balance authority, `B=L+P+U+T` claim backing with
+liquid ICP as the independent payout limit, Jupiter/two-week shared 40/60,
+semantic Account balances as custody authority, exact proof of immutable
+outgoing effects, one active monetary operation, daily canonical
 SNS participation-based entitlement, and one live accumulator plus at most one
 immutable pending batch. Ambiguity pauses for exact proof; it does not trigger
 global absence reconstruction.
@@ -162,7 +163,7 @@ pooled_target = floor(A_backing * B / C)
 reward_target = floor(A_reward * B / C)
 ```
 
-Permanent capital, ordinary/staked maturity before an actual Mint, cycles, and
+Permanent capital, uncaptured maturity, cycles, and
 operational balances are outside `B`. Live-child and committed active-unwind
 values are net of their exactly derived unavoidable future disbursement fees;
 physical principal remains separate for Governance commands and transfer
@@ -195,7 +196,7 @@ upgrade in `Paused`. `Paused` blocks new preparation; it does not erase an
 already immutable or in-flight monetary operation, which remains resumable.
 Activation is an SNS-governed transition whose asynchronous preflight binds the
 reviewed configuration to actual canister, ledger, Governance, fee, supply,
-staging-balance, and protected-neuron observations.
+semantic staging-balance, and protected-neuron observations.
 
 The Historian has a different lifecycle: `null` install configuration leaves
 sources `PrelaunchNotConfigured`; a validated install/upgrade configuration
@@ -220,9 +221,10 @@ transport outcome becomes `Stuck` rather than guessing whether value moved.
 `resume` advances an existing operation idempotently. `prove_active_transfer`
 accepts only an exact canonical ledger block for the active proof slot; it is
 not a manual balance rewrite or debug completion path. Stream proof slots cover
-redemption, the unified liquid claim receipt, pooled top-up, and reward
-transfers. The NNS Manager similarly proves exact staging, maturity, parent,
-and cohort effects. Upgrades preserve durable operation state and force
+redemption, the paired liquid claim receipt, pooled top-up, and reward
+transfers. The NNS Manager similarly proves exact outgoing maturity, parent,
+and cohort effects. It does not prove the provenance of fungible ICP already
+held in a semantic Account. Upgrades preserve durable operation state and force
 reviewed reactivation while allowing immutable work to resume.
 
 ## NNS terminology and production authority

@@ -1,6 +1,8 @@
 # ADR: Pooled claim-backing complexity exception
 
-- Status: accepted
+- Status: superseded for maturity/provenance machinery by
+  [`account-semantic-maturity.md`](account-semantic-maturity.md); historical
+  complexity evidence is retained.
 - Date: 2026-08-23
 - Baseline commit: `44c37cf7222b343dda9b7f63ac128a02614bcda7`
 - Final-correction baseline: `221d8c7703d4ad4cf58c7c30ca07ed056663b369`
@@ -82,7 +84,7 @@ second scheduler, migration, feature flag, packed source, or formatter
 exception is introduced.
 
 The final cross-flow correction replaces duplicate permanent-credit evidence
-with one monotone proof shared by Jupiter and pooled maturity, removes
+with one monotone proof shared by Jupiter and TwoWeek, removes
 per-cohort Governance reads from claim observation, and removes Split dispatch
 from unwind preparation. It adds durable permanent refresh checkpoints, one
 bounded full-snapshot retry for after-await generation drift, daily parent
