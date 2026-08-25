@@ -6,10 +6,8 @@ use io_sns_lifecycle::{
 #[test]
 fn pooled_claim_topology_requires_shared_account_tokens() {
     let stream = "nns_manager = TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL\n\
-                      jupiter_receipt_source = record { owner = TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL; subaccount = null }\n\
                       liquid_icp = TODO_STREAM_LIQUID_SUBACCOUNT";
     let nns = "jupiter_staging = record { owner = TODO_EXISTING_NNS_CONTROLLER_SELF; subaccount = null }\n\
-                   maturity_staging = record { owner = TODO_EXISTING_NNS_CONTROLLER_SELF; subaccount = opt TODO_MATURITY_STAGING }\n\
                    jupiter_activation_block_floor = TODO_JUPITER_ACTIVATION_BLOCK_FLOOR\n\
                    audited_permanent_principal_e8s = TODO_AUDITED_PERMANENT_PRINCIPAL_E8S\n\
                    pooled_parent_memo = TODO_POOLED_PARENT_MEMO\n\
@@ -17,8 +15,8 @@ fn pooled_claim_topology_requires_shared_account_tokens() {
                    stream_liquid_account = TODO_STREAM_LIQUID_SUBACCOUNT";
     validate_pooled_claim_topology(stream, nns).unwrap();
     assert!(validate_pooled_claim_topology(
-        &stream.replace("subaccount = null", "subaccount = opt TODO_WRONG",),
-        nns,
+        stream,
+        &nns.replace("subaccount = null", "subaccount = opt TODO_WRONG"),
     )
     .is_err());
     assert!(validate_pooled_claim_topology(
@@ -102,6 +100,15 @@ fn obsolete_economics_guard_rejects_old_terms_from_active_root_files() {
         concat!("NNS liquid maturity", " leg"),
         concat!("jointly frozen", " physical backing route"),
         concat!("finite joint route", "/reward planner"),
+        concat!("prove_maturity", "_mint"),
+        concat!("MintProof", "State"),
+        concat!("Mint", "Evidence"),
+        concat!("MaturityEvidence", "Source"),
+        concat!("Permanent", "Maturity"),
+        concat!("Pooled", "Maturity"),
+        concat!("source_operation", "_id"),
+        concat!("stream_receipt", "_fingerprint"),
+        concat!("maturity_staging", " : Account"),
     ]
     .into_iter()
     .enumerate()
@@ -604,7 +611,7 @@ fn write_did_surface_fixture(root: &Path) {
     write(
             root,
             "canisters/io_nns_neuron_manager/io_nns_neuron_manager.did",
-            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  notify_jupiter_deposit : () -> ();\n  prepare_pool_reconciliation : () -> ();\n  observe_claim_assets : () -> ();\n  observe_pool_policy : () -> ();\n  prepare_two_week_maturity : () -> ();\n  start_maturity : () -> ();\n  prove_maturity_mint : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;\n  get_status : () -> () query;\n}\n",
+            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  notify_jupiter_deposit : () -> ();\n  prepare_pool_reconciliation : () -> ();\n  observe_claim_assets : () -> ();\n  observe_pool_policy : () -> ();\n  prepare_two_week_maturity : () -> ();\n  start_maturity : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;\n  get_status : () -> () query;\n}\n",
         );
     write(
             root,

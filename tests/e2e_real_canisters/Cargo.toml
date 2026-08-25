@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 candid.workspace = true
 hex = "0.4.3"
+io-accounts = { version = "0.1.0", path = "../../crates/io_accounts" }
 io-governance-types.workspace = true
 io-historian = { version = "0.1.0", path = "../../canisters/io_historian" }
 io-ledger-types.workspace = true

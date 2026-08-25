@@ -120,7 +120,7 @@ fn malformed_prepare_after_persistence_replays_and_quarantines_redemption() {
     };
     let source = Account {
         owner: nns,
-        subaccount: Some(vec![7; 32]),
+        subaccount: None,
     };
     pic.install_canister(
         stream,
@@ -130,7 +130,6 @@ fn malformed_prepare_after_persistence_replays_and_quarantines_redemption() {
                 io_ledger,
                 icp_ledger,
                 nns_manager: nns,
-                jupiter_receipt_source: source.clone(),
                 jupiter_io_account: jupiter_io,
                 sns_governance: governance,
                 sns_root: root,
@@ -231,12 +230,9 @@ fn malformed_prepare_after_persistence_replays_and_quarantines_redemption() {
     assert_eq!(completed.net_icp_e8s, 9_990_000);
 
     let request = PrepareClaimBackingReceiptArgs {
-        source_operation_id: vec![1; 32],
+        nns_operation_sequence: 1,
         kind: ClaimBackingReceiptKind::Jupiter,
-        source_account: source.clone(),
-        source_block: 1,
         net_liquid_credit_e8s: 60_000_000,
-        nns_fingerprint: vec![42; 32],
     };
     let _: () = update(
         &pic,

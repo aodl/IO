@@ -9,4 +9,5 @@ path = "src/lib.rs"
 
 [dependencies]
 io-core-model.workspace = true
+io-nns-types.workspace = true
 io-reward-policy.workspace = true

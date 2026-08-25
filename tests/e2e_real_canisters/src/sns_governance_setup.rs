@@ -1364,10 +1364,6 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                 io_ledger,
                 icp_ledger,
                 nns_manager,
-                jupiter_receipt_source: StreamAccount {
-                    owner: nns_manager,
-                    subaccount: None,
-                },
                 jupiter_io_account: StreamAccount {
                     owner: controller,
                     subaccount: Some(vec![10; 32]),

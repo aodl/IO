@@ -456,10 +456,6 @@ pub fn run_installed_stream_redemption(required: bool) {
             io_ledger,
             icp_ledger,
             nns_manager,
-            jupiter_receipt_source: Account {
-                owner: nns_manager,
-                subaccount: None,
-            },
             jupiter_io_account: Account {
                 owner: nns_manager,
                 subaccount: Some(vec![10; 32]),

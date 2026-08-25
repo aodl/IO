@@ -148,10 +148,6 @@ fn simplified_stream_installs_paused_and_rejects_anonymous_before_funds_move() {
                 io_ledger,
                 icp_ledger,
                 nns_manager: manager,
-                jupiter_receipt_source: Account {
-                    owner: manager,
-                    subaccount: Some(vec![7; 32]),
-                },
                 jupiter_io_account: Account {
                     owner: manager,
                     subaccount: Some(vec![9; 32]),
@@ -353,10 +349,6 @@ fn liquidity_shortfall_uses_only_scalar_claim_reads_and_pulls_no_io() {
                 io_ledger,
                 icp_ledger,
                 nns_manager: nns,
-                jupiter_receipt_source: Account {
-                    owner: nns,
-                    subaccount: Some(vec![7; 32]),
-                },
                 jupiter_io_account: Account {
                     owner: Principal::from_slice(&[77; 29]),
                     subaccount: None,
@@ -659,10 +651,6 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
                 io_ledger,
                 icp_ledger,
                 nns_manager: nns,
-                jupiter_receipt_source: Account {
-                    owner: nns,
-                    subaccount: Some(vec![7; 32]),
-                },
                 jupiter_io_account: Account {
                     owner: Principal::from_slice(&[77; 29]),
                     subaccount: None,

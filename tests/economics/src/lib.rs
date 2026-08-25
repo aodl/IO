@@ -1199,24 +1199,22 @@ mod tests {
     }
 
     #[test]
-    fn production_pooled_maturity_enters_liquid_once() {
-        let plan = io_reward_policy::plan_pooled_maturity(io_reward_policy::PooledMaturityInput {
-            pre_backing: 100_000_000_000,
-            pre_claims: 100_000_000_000,
-            actual_mint: 100_000_000,
-            permanent_transfer_fee: 10_000,
-            claim_transfer_fee: 10_000,
-            policy_credit_total: 1,
-            entitlements: &[],
-            reserve_io_capacity: u128::MAX,
-            io_fee: 10_000,
-            snapshot_fingerprint: [1; 32],
-        })
+    fn production_paired_inflow_enters_liquid_once() {
+        let split = io_nns_types::maturity::capture_40_60(100_000_000, 10_000, 10_000).unwrap();
+        let claim = io_reward_policy::plan_claim_settlement(
+            100_000_000_000,
+            100_000_000_000,
+            split.claim_credit,
+            1,
+            &[],
+            u128::MAX,
+            10_000,
+        )
         .unwrap();
-        assert_eq!(plan.permanent_credit, 39_990_000);
-        assert_eq!(plan.claim.claim_credit, 59_990_000);
-        assert_eq!(plan.claim.maximum_io_pool, 59_990_000);
-        assert_eq!(plan.claim.post_backing, 100_059_990_000);
+        assert_eq!(split.permanent_credit, 39_990_000);
+        assert_eq!(split.claim_credit, 59_990_000);
+        assert_eq!(claim.maximum_io_pool, 59_990_000);
+        assert_eq!(claim.post_backing, 100_059_990_000);
     }
     const DAY: u64 = 86_400;
     const TWO_WEEK_DELAY: u64 = 14 * DAY;

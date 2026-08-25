@@ -29,7 +29,6 @@ struct NnsConfig {
     minimum_parent_stake_e8s: u128,
     jupiter_account: io_stream_manager::Account,
     jupiter_staging: io_stream_manager::Account,
-    maturity_staging: io_stream_manager::Account,
     stream_liquid_account: io_stream_manager::Account,
     expected_io_fee_e8s: u128,
     expected_icp_fee_e8s: u128,
@@ -145,10 +144,6 @@ fn setup() -> Fixture {
                 io_ledger,
                 icp_ledger,
                 nns_manager,
-                jupiter_receipt_source: io_stream_manager::Account {
-                    owner: nns_manager,
-                    subaccount: Some(vec![7; 32]),
-                },
                 jupiter_io_account: io_stream_manager::Account {
                     owner: jupiter,
                     subaccount: None,
@@ -195,10 +190,6 @@ fn setup() -> Fixture {
                 jupiter_staging: io_stream_manager::Account {
                     owner: nns_manager,
                     subaccount: None,
-                },
-                maturity_staging: io_stream_manager::Account {
-                    owner: nns_manager,
-                    subaccount: Some(vec![2; 32]),
                 },
                 stream_liquid_account: stream_liquid,
                 expected_io_fee_e8s: 10_000,

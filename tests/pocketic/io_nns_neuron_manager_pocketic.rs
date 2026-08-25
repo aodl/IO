@@ -1,6 +1,6 @@
 use candid::{decode_one, encode_one, CandidType, Principal};
 use io_nns_neuron_manager::{
-    state::Account, ApiError, InitArgs, JupiterProgress, Lifecycle, MaturityProgress, NnsConfig,
+    state::Account, ApiError, InitArgs, JupiterProgress, Lifecycle, NnsConfig,
     PrepareTwoWeekMaturityArgs, Status,
 };
 use pocket_ic::PocketIc;
@@ -93,10 +93,6 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
     let canister = pic.create_canister();
     pic.add_cycles(canister, CYCLES);
     let principal = Principal::from_slice(&[1; 29]);
-    let staging = |value: u8| Account {
-        owner: canister,
-        subaccount: Some(vec![value; 32]),
-    };
     pic.install_canister(
         canister,
         wasm.clone(),
@@ -119,7 +115,6 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
                     owner: canister,
                     subaccount: None,
                 },
-                maturity_staging: staging(2),
                 stream_liquid_account: Account {
                     owner: Principal::from_slice(&[3; 29]),
                     subaccount: None,
@@ -192,7 +187,7 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
         rendered_after_upgrade.unwrap(),
         "Set IO NNS manager paused: false"
     );
-    let result: Result<MaturityProgress, ApiError> = decode_one(
+    let result: Result<(), ApiError> = decode_one(
         &pic.update_call(
             canister,
             principal,
@@ -293,7 +288,6 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
         minimum_parent_stake_e8s: 100_000_000,
         jupiter_account,
         jupiter_staging: staging(0),
-        maturity_staging: staging(2),
         stream_liquid_account: Account {
             owner: stream,
             subaccount: None,

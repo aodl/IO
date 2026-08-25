@@ -5,9 +5,9 @@ use io_nns_neuron_manager::{
         JupiterDeposit, JupiterOperation, JupiterPhase, NeuronSnapshot, StakeTransferSucceeded,
     },
     maturity::{
-        ClaimReceiptDeliveryOperation, DisburseMaturitySubmission, DisburseMaturitySucceeded,
-        MaturityCommandOperation, MaturityCommandPhase, MaturityEvidenceSource, MaturityKind,
-        MaturityPlan, MintEvidence, MintProofState, PendingMaturityDisbursement,
+        DisburseMaturitySubmission, DisburseMaturitySucceeded, MaturityCommandOperation,
+        MaturityCommandPhase, MaturityDeliveryOperation, MaturityKind, MaturityPlan,
+        PendingMaturityDisbursement,
     },
     pool::{PassiveCohort, UnwindOperation, UnwindPhase},
     state::{Account, NnsOperation, NnsStateV1, PooledTarget},
@@ -218,7 +218,6 @@ impl RecoveryFixture {
                         subaccount: None,
                     },
                     jupiter_staging: staging(0),
-                    maturity_staging: staging(2),
                     stream_liquid_account: Account {
                         owner: stream,
                         subaccount: Some(vec![3; 32]),
@@ -260,8 +259,6 @@ impl RecoveryFixture {
         state.last_held_reconciliation = None;
         state.latest_reconciliation_generation = 0;
         state.latest_pooled_target = None;
-        state.latest_started_two_week_generation = 0;
-        state.latest_completed_two_week_generation = 0;
         state.pending_two_year_maturity = None;
         state.pending_two_week_maturity = None;
         state.last_two_year_maturity = None;
@@ -640,7 +637,7 @@ fn unwind_phase(state: &NnsStateV1) -> &UnwindPhase {
     &operation.phase
 }
 
-fn delivering_maturity(state: &NnsStateV1, kind: MaturityKind) -> PendingMaturityDisbursement {
+fn delivering_maturity(_state: &NnsStateV1, kind: MaturityKind) -> PendingMaturityDisbursement {
     let (neuron_id, remaining, generation) = match kind {
         MaturityKind::TwoYear => (41, 120_000_000, None),
         MaturityKind::TwoWeek => (42, 200_000_000, Some(1)),
@@ -652,7 +649,7 @@ fn delivering_maturity(state: &NnsStateV1, kind: MaturityKind) -> PendingMaturit
             cached_stake_e8s: 1_000_000,
         },
         observed_maturity_e8s: 200_000_000,
-        destination: state.config.maturity_staging.clone(),
+        staging_balance_before_e8s: 0,
         requested_at_seconds: 1,
         entitlement_batch_generation: generation,
     };
@@ -662,23 +659,12 @@ fn delivering_maturity(state: &NnsStateV1, kind: MaturityKind) -> PendingMaturit
     };
     PendingMaturityDisbursement {
         kind,
-        neuron_id,
-        nominal_disbursed_maturity_e8s: remaining,
-        destination: state.config.maturity_staging.clone(),
-        initiation_timestamp_seconds: 1,
         scheduled_finalization_timestamp_seconds: 604_801,
         disburse_evidence: DisburseMaturitySucceeded {
             submission,
             amount_disbursed_e8s: remaining,
-            evidence_source: MaturityEvidenceSource::CommandResponse,
         },
-        committed_claim_transfer_fee_e8s: 10_000,
-        mint_proof: MintProofState::Delivering(MintEvidence {
-            mint_block: 11,
-            actual_minted_icp_e8s: u128::from(remaining),
-            native_memo_u64: 604_801,
-            created_at_time_nanos: 604_801_000_000_000,
-        }),
+        captured_e8s: Some(u128::from(remaining)),
     }
 }
 
@@ -991,7 +977,6 @@ fn every_persisted_governance_phase_recovers_and_exact_replay_is_call_free() {
                 owner: fixture.governance,
                 subaccount: Some(vec![8; 32]),
             });
-            state.latest_started_two_week_generation = 1;
             state.latest_pooled_target = Some(PooledTarget {
                 target_e8s: 1_000_000,
                 status: PooledTargetStatus::AtTarget,
@@ -1004,7 +989,7 @@ fn every_persisted_governance_phase_recovers_and_exact_replay_is_call_free() {
             operation_sequence: 1,
             dispatch_epoch: 1,
             kind,
-            phase: MaturityCommandPhase::ClaimReceiptDelivery(ClaimReceiptDeliveryOperation {
+            phase: MaturityCommandPhase::Delivery(MaturityDeliveryOperation {
                 pending,
                 permit: None,
                 permanent_credit: None,
@@ -1277,7 +1262,7 @@ fn two_week_maturity_captures_canonical_amount_after_intervening_reward_events()
         fixture.replace(ready_two_week_state(&fixture));
         fixture.add_maturity(42, 200_000_000);
         assert_eq!(
-            update::<_, Result<MaturityProgress, ApiError>>(
+            update::<_, Result<(), ApiError>>(
                 &fixture.pic,
                 fixture.manager,
                 fixture.stream,
@@ -1287,7 +1272,7 @@ fn two_week_maturity_captures_canonical_amount_after_intervening_reward_events()
                     target_e8s: 1_000_000,
                 },
             ),
-            Ok(MaturityProgress::Observed)
+            Ok(())
         );
         for _ in 0..reward_events {
             fixture.add_maturity(42, 10_000_000);
@@ -1297,13 +1282,7 @@ fn two_week_maturity_captures_canonical_amount_after_intervening_reward_events()
         }
         assert_eq!(
             fixture.resume(),
-            Ok(NnsProgress::Maturity(
-                MaturityProgress::DisburseMaturitySucceeded
-            ))
-        );
-        assert_eq!(
-            fixture.resume(),
-            Ok(NnsProgress::Maturity(MaturityProgress::AwaitingMintProof))
+            Ok(NnsProgress::Maturity(MaturityProgress::AwaitingCapture))
         );
         let state = fixture.state_from_canister();
         let pending = state
@@ -1317,16 +1296,13 @@ fn two_week_maturity_captures_canonical_amount_after_intervening_reward_events()
                 .observed_maturity_e8s,
             200_000_000
         );
-        assert_eq!(
-            pending.nominal_disbursed_maturity_e8s,
-            200_000_000 + reward_events * 10_000_000
-        );
+        assert_eq!(pending.disburse_evidence.amount_disbursed_e8s, 200_000_000);
         assert_eq!(fixture.governance_calls().disburse_maturity, 1);
     }
 }
 
 #[test]
-fn permanent_maturity_uses_realised_mint_command_across_reward_accrual() {
+fn two_year_maturity_uses_realised_disbursement_across_reward_accrual() {
     if std::env::var_os("POCKET_IC_BIN").is_none() {
         return;
     }
@@ -1352,13 +1328,13 @@ fn permanent_maturity_uses_realised_mint_command_across_reward_accrual() {
     );
     assert_eq!(
         fixture.resume(),
-        Ok(NnsProgress::Maturity(MaturityProgress::AwaitingMintProof))
+        Ok(NnsProgress::Maturity(MaturityProgress::AwaitingCapture))
     );
     let pending = fixture
         .state_from_canister()
         .pending_two_year_maturity
-        .expect("permanent maturity must become passive");
-    assert_eq!(pending.nominal_disbursed_maturity_e8s, 225_000_000);
+        .expect("two-year maturity must become passive");
+    assert_eq!(pending.disburse_evidence.amount_disbursed_e8s, 225_000_000);
     assert_eq!(fixture.governance_calls().disburse_maturity, 1);
 }
 

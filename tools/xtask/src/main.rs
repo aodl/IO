@@ -116,6 +116,7 @@ const NNS_PRODUCTION_FORBIDDEN_DID: &[&str] = &[
     " advance_model_time :",
     "debug_",
     " get_events :",
+    " prove_maturity_mint :",
 ];
 
 const HISTORIAN_PRODUCTION_FORBIDDEN_DID: &[&str] = &[
@@ -262,6 +263,19 @@ fn check_obsolete_economics_guard_at(root: &Path) -> Result<(), String> {
         concat!("NNS liquid maturity", " leg"),
         concat!("jointly frozen", " physical backing route"),
         concat!("finite joint route", "/reward planner"),
+        concat!("prove_maturity", "_mint"),
+        concat!("MintProof", "State"),
+        concat!("Mint", "Evidence"),
+        concat!("MaturityEvidence", "Source"),
+        concat!("Permanent", "Maturity"),
+        concat!("Pooled", "Maturity"),
+        concat!("permanent", " maturity"),
+        concat!("pooled", " maturity"),
+        concat!("source_operation", "_id"),
+        concat!("stream_receipt", "_fingerprint"),
+        concat!("pub maturity", "_staging"),
+        concat!("maturity_staging", " : Account"),
+        concat!("maturity_staging", " ="),
     ];
     fn visit(
         root: &Path,
@@ -1297,7 +1311,6 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
             "  observe_pool_policy :",
             "  prepare_two_week_maturity :",
             "  start_maturity :",
-            "  prove_maturity_mint :",
             "  resume :",
             "  prove_active_transfer :",
             "  set_paused :",
@@ -2292,14 +2305,12 @@ fn validate_pooled_claim_topology(stream: &str, nns: &str) -> Result<(), String>
         }
         Ok(())
     }
-    for (text, field) in [(stream, "jupiter_receipt_source"), (nns, "jupiter_staging")] {
-        let line = text
-            .lines()
-            .find(|line| line.contains(field))
-            .ok_or_else(|| format!("missing topology field {field}"))?;
-        if !line.contains("subaccount = null") {
-            return Err(format!("{field} must use the NNS manager default Account"));
-        }
+    let jupiter_staging = nns
+        .lines()
+        .find(|line| line.contains("jupiter_staging"))
+        .ok_or_else(|| "missing topology field jupiter_staging".to_string())?;
+    if !jupiter_staging.contains("subaccount = null") {
+        return Err("jupiter_staging must use the NNS manager default Account".into());
     }
     for (text, field, token) in [
         (
@@ -2307,13 +2318,7 @@ fn validate_pooled_claim_topology(stream: &str, nns: &str) -> Result<(), String>
             "nns_manager",
             "TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL",
         ),
-        (
-            stream,
-            "jupiter_receipt_source",
-            "TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL",
-        ),
         (nns, "jupiter_staging", "TODO_EXISTING_NNS_CONTROLLER_SELF"),
-        (nns, "maturity_staging", "TODO_EXISTING_NNS_CONTROLLER_SELF"),
         (
             nns,
             "jupiter_activation_block_floor",

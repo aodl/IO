@@ -195,11 +195,6 @@ pub struct PrepareTwoWeekMaturityArgs {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum PreparedMaturityProgress {
-    Observed,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum NnsError {
     Invalid(String),
 }
@@ -325,9 +320,7 @@ pub fn prepare_pool_reconciliation(
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn prepare_two_week_maturity(
-    args: PrepareTwoWeekMaturityArgs,
-) -> Result<PreparedMaturityProgress, NnsError> {
+pub fn prepare_two_week_maturity(args: PrepareTwoWeekMaturityArgs) -> Result<(), NnsError> {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         if state
@@ -342,7 +335,7 @@ pub fn prepare_two_week_maturity(
         }
         if let Some(existing) = &state.maturity_preparation {
             if existing == &args {
-                return Ok(PreparedMaturityProgress::Observed);
+                return Ok(());
             }
             if existing.entitlement_batch_generation.checked_add(1)
                 != Some(args.entitlement_batch_generation)
@@ -353,7 +346,7 @@ pub fn prepare_two_week_maturity(
             }
         }
         state.maturity_preparation = Some(args);
-        Ok(PreparedMaturityProgress::Observed)
+        Ok(())
     })
 }
 
