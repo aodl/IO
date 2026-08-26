@@ -19,6 +19,10 @@ require_nat "PocketIC instance ID" "$instance_id"
 governance="$(sns_canister_id governance)"
 stream="$(toml_string "$(local_vars_file)" local io_stream_manager_canister)"
 historian="$(toml_string "$(local_vars_file)" local io_historian_canister)"
+proposer="$(runtime_value local operator_principal)"
+neuron_hex="$(runtime_value governance sns_neuron_subaccount_hex)"
+require_principal "SNS reward proposer principal" "$proposer"
+require_hex_32_bytes "SNS reward proposer neuron subaccount" "$neuron_hex"
 proposal_log="$(phase_log_file 17-reward-event-setup)"
 observation_log="$(phase_log_file 17-observe-one-day-reward)"
 touch "$proposal_log"
@@ -75,15 +79,23 @@ require_nat "reward proposal ID" "$proposal_id"
   IO_LOCAL_HISTORIAN_SETTLE_SECONDS=60 \
   IO_LOCAL_REWARD_ADVANCE_SECONDS=86400 \
   IO_LOCAL_REWARD_RESUME=1 \
+  IO_LOCAL_REWARD_CANONICAL_TWO_EVENT=1 \
+  IO_LOCAL_REWARD_PROPOSER_PRINCIPAL="$proposer" \
+  IO_LOCAL_REWARD_NEURON_SUBACCOUNT_HEX="$neuron_hex" \
   cargo run -p e2e-real-canisters --bin observe_existing_reward) || exit $?
 
 for expected in \
   'advanced_pocketic_seconds=86400' \
   "id: ${proposal_id}," \
   'reward_shares: Some' \
+  'ZeroEligibleParticipation' \
+  'canonical_reconciliation_idle_after_attempt=' \
+  'canonical_structural_refresh=Ok' \
+  'canonical_reward_proposal_id=' \
+  'canonical_reward_advanced_pocketic_seconds=86400' \
   'ProposalBearing' \
-  'processed_reward_event_count: 1' \
-  'accumulated_policy_credit: 1000000000000000000'; do
+  'processed_reward_event_count: 2' \
+  'accumulated_policy_credit: 2000000000000000000'; do
   if ! grep -Fq "$expected" "$observation_log"; then
     record_blocker "one-day reward observation lacks canonical evidence: ${expected}"
     exit 2
@@ -104,4 +116,4 @@ done
 event_round="$(sed -n 's/^[[:space:]]*round: \([0-9][0-9]*\),/\1/p' "$observation_log" | head -1)"
 require_nat "reward event round" "$event_round"
 mark_phase_done 17-one-day-reward-observed \
-  "proposal_id=${proposal_id} event_round=${event_round} classification=ProposalBearing processed_count=1 accumulated_policy_credit=1000000000000000000 historian_fresh=true monitoring_settle_seconds=60; see ${observation_log}"
+  "warmup_proposal_id=${proposal_id} event_round=${event_round} classification=ProposalBearing processed_count=2 accumulated_policy_credit=2000000000000000000 prospective_reentry=true lazy_parent_reconciled=true historian_fresh=true monitoring_settle_seconds=60; see ${observation_log}"

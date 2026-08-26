@@ -3082,12 +3082,13 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
         )?,
         &[
             "IO_LOCAL_REWARD_ADVANCE_SECONDS=86400",
+            "IO_LOCAL_REWARD_CANONICAL_TWO_EVENT=1",
             "IncreaseDissolveDelay",
             "DissolveDelaySeconds = 1209600",
             "resume_reward_work",
             "ProposalBearing",
-            "processed_reward_event_count: 1",
-            "accumulated_policy_credit: 1000000000000000000",
+            "processed_reward_event_count: 2",
+            "accumulated_policy_credit: 2000000000000000000",
         ],
     )?;
     validate_loopback_url_guardrails()?;

@@ -325,7 +325,10 @@ pub async fn resume(now: u64) -> Result<(), ApiError> {
         )),
         TransferState::Stuck { ref reason } => Err(ApiError::Stuck(reason.clone())),
         TransferState::Succeeded { block } if !operation.nns_transfer_proved => {
-            let progress = prove_nns(state::read().config.nns_manager, block).await?;
+            let progress = match prove_nns(state::read().config.nns_manager, block).await {
+                Err(ApiError::Busy) => replay_nns(&operation).await?,
+                result => result?,
+            };
             if matches!(progress, PoolProgress::Completed { .. }) {
                 clear(operation)?;
             } else {
@@ -334,7 +337,10 @@ pub async fn resume(now: u64) -> Result<(), ApiError> {
             Ok(())
         }
         TransferState::Succeeded { .. } => {
-            let progress = resume_nns(state::read().config.nns_manager).await?;
+            let progress = match resume_nns(state::read().config.nns_manager).await {
+                Err(ApiError::Busy) => replay_nns(&operation).await?,
+                result => result?,
+            };
             if matches!(progress, PoolProgress::Completed { .. }) {
                 clear(operation)?;
             }
@@ -465,6 +471,31 @@ async fn resume_nns(nns: candid::Principal) -> Result<PoolProgress, ApiError> {
     nns_progress_call(nns, "resume", ()).await
 }
 
+async fn replay_nns(operation: &PoolTopUpOperation) -> Result<PoolProgress, ApiError> {
+    prepare_nns(state::read().config.nns_manager, replay_request(operation)?).await
+}
+
+fn replay_request(
+    operation: &PoolTopUpOperation,
+) -> Result<PreparePoolReconciliationArgs, ApiError> {
+    let target_e8s = operation
+        .permit
+        .expected_parent_principal_e8s
+        .checked_add(operation.permit.expected_credit_e8s)
+        .ok_or_else(|| ApiError::Invalid("pool top-up replay target overflow".into()))?;
+    Ok(PreparePoolReconciliationArgs {
+        generation: operation.permit.generation,
+        target_e8s,
+        action: PoolReconciliationAction::TopUp {
+            expected_credit_e8s: operation.permit.expected_credit_e8s,
+        },
+        fee_e8s: operation.permit.fee_e8s,
+        snapshot_fingerprint: operation.permit.snapshot_fingerprint.clone(),
+        memo: operation.permit.memo.clone(),
+        created_at_time_nanos: operation.permit.prepared_at_nanos,
+    })
+}
+
 async fn wake_nns(nns: candid::Principal) -> Result<(), ApiError> {
     #[derive(CandidType, Deserialize)]
     enum NnsProgress {
@@ -561,6 +592,13 @@ fn persist(expected: &PoolTopUpOperation, replacement: PoolTopUpOperation) -> Re
 
 #[cfg(test)]
 mod tests {
+    use candid::Principal;
+    use io_nns_types::backing::{PoolReconciliationAction, TopUpPermit};
+
+    use crate::transfer::{OwnTransferIntent, TransferAttempt, TransferState};
+
+    use super::{replay_request, PoolTopUpOperation};
+
     #[test]
     fn malformed_and_transport_prepare_replies_are_ambiguous_not_rollback_authority() {
         let source = include_str!("pool_reconciliation.rs");
@@ -577,5 +615,54 @@ mod tests {
             .find("rollback_exit_generation(generation)?")
             .expect("decoded no-effect rollback");
         assert!(pending < rollback);
+    }
+
+    #[test]
+    fn completed_keeper_replay_reconstructs_the_exact_frozen_top_up() {
+        let destination = io_accounts::Account {
+            owner: Principal::from_slice(&[2; 29]),
+            subaccount: Some(vec![3; 32]),
+        };
+        let permit = TopUpPermit {
+            generation: 7,
+            operation_sequence: 9,
+            expected_parent_principal_e8s: 400_000_000,
+            destination: destination.clone(),
+            expected_credit_e8s: 100_000_000,
+            fee_e8s: 10_000,
+            memo: b"exact-pool-replay".to_vec(),
+            prepared_at_nanos: 123_000_000_000,
+            snapshot_fingerprint: vec![4; 32],
+        };
+        let operation = PoolTopUpOperation {
+            permit: permit.clone(),
+            transfer: TransferAttempt {
+                intent: OwnTransferIntent::Icrc1 {
+                    ledger: Principal::from_slice(&[1; 29]),
+                    from_subaccount: [5; 32],
+                    to: destination,
+                    amount: permit.expected_credit_e8s,
+                    fee: permit.fee_e8s,
+                    memo: permit.memo.clone(),
+                    created_at_time: permit.prepared_at_nanos,
+                },
+                state: TransferState::Succeeded { block: 11 },
+            },
+            nns_transfer_proved: true,
+        };
+
+        let request = replay_request(&operation).expect("exact replay request");
+        assert_eq!(request.generation, permit.generation);
+        assert_eq!(request.target_e8s, 500_000_000);
+        assert_eq!(
+            request.action,
+            PoolReconciliationAction::TopUp {
+                expected_credit_e8s: permit.expected_credit_e8s,
+            }
+        );
+        assert_eq!(request.fee_e8s, permit.fee_e8s);
+        assert_eq!(request.snapshot_fingerprint, permit.snapshot_fingerprint);
+        assert_eq!(request.memo, permit.memo);
+        assert_eq!(request.created_at_time_nanos, permit.prepared_at_nanos);
     }
 }

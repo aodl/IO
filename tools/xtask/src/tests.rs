@@ -531,7 +531,7 @@ fn write_local_sns_rehearsal_fixture(root: &Path) {
     write(
             root,
             "deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh",
-            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# IO_LOCAL_REWARD_ADVANCE_SECONDS=86400 IncreaseDissolveDelay DissolveDelaySeconds = 1209600 resume_reward_work ProposalBearing processed_reward_event_count: 1 accumulated_policy_credit: 1000000000000000000\n",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# IO_LOCAL_REWARD_ADVANCE_SECONDS=86400 IO_LOCAL_REWARD_CANONICAL_TWO_EVENT=1 IncreaseDissolveDelay DissolveDelaySeconds = 1209600 resume_reward_work ProposalBearing processed_reward_event_count: 2 accumulated_policy_credit: 2000000000000000000\n",
         );
     write(
             root,
