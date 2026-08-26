@@ -3074,15 +3074,18 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "obsolete_maturity_api",
         ],
     )?;
+    let reward_phase = require_file(
+        root,
+        "deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh",
+    )?;
     require_present(
         "deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh",
-        &require_file(
-            root,
-            "deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh",
-        )?,
+        &reward_phase,
         &[
             "IO_LOCAL_REWARD_ADVANCE_SECONDS=86400",
             "IO_LOCAL_REWARD_CANONICAL_TWO_EVENT=1",
+            "runtime_value accounts operator_principal",
+            "require_hex_32_bytes",
             "IncreaseDissolveDelay",
             "DissolveDelaySeconds = 1209600",
             "resume_reward_work",
@@ -3090,6 +3093,11 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "processed_reward_event_count: 2",
             "accumulated_policy_credit: 2000000000000000000",
         ],
+    )?;
+    require_absent(
+        "deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh",
+        &reward_phase,
+        &["require_principal"],
     )?;
     validate_loopback_url_guardrails()?;
 
