@@ -2926,6 +2926,8 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "pooled_parent_memo",
             "pooled_parent_followee_id",
             "minimum_parent_stake",
+            "rs/ledger_suite/icp/ledger.did",
+            "query_blocks",
         ],
     )?;
     require_absent(
