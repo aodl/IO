@@ -2928,6 +2928,7 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "minimum_parent_stake",
             "rs/ledger_suite/icp/ledger.did",
             "query_blocks",
+            "chain_length = \\([0-9_][0-9_]*\\)",
         ],
     )?;
     require_absent(

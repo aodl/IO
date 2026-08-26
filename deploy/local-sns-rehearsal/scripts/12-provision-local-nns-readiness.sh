@@ -171,8 +171,9 @@ two_year_neuron_id="$(claim_and_shape_neuron two-year "$two_year_nonce" "$two_ye
 ledger_tip="$(dfx canister call --network "$network_url" --identity "$identity" --query \
   --candid "$ledger_did" "$icp_ledger" query_blocks \
   '(record { start = 0 : nat64; length = 0 : nat64 })')"
-jupiter_activation_block_floor="$(printf '%s' "$ledger_tip" | tr -d '_' \
-  | sed -n 's/.*chain_length = \([0-9][0-9]*\) : nat64.*/\1/p')"
+jupiter_activation_block_floor="$(printf '%s' "$ledger_tip" \
+  | sed -n 's/.*chain_length = \([0-9_][0-9_]*\) : nat64.*/\1/p' \
+  | tr -d '_')"
 require_nat "Jupiter activation block floor" "$jupiter_activation_block_floor"
 if [ "$jupiter_activation_block_floor" = 0 ]; then
   record_blocker "local Jupiter activation block floor resolved to zero"
