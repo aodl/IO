@@ -178,7 +178,7 @@ fn main() {
                 status.permanent_maturity_baseline_reconciled,
                 status.latest_pooled_target.is_some()
             )),
-            Some((io_historian::Lifecycle::Ready, true, false)),
+            Some((io_historian::Lifecycle::Ready, true, true)),
         );
         assert_eq!(
             dashboard
