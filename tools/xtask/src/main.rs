@@ -6385,6 +6385,16 @@ fn validate_account_semantic_evidence(
     let scenario_path = format!("{package}/scenario-results.toml");
     let scenario_text = require_file(root, &scenario_path)?;
     let scenario = parse_simple_toml_document(&scenario_path, &scenario_text)?;
+    let dashboard_path = format!("{package}/historian-dashboard.log");
+    let dashboard = require_file(root, &dashboard_path)?;
+    require_present(
+        &dashboard_path,
+        &dashboard,
+        &[
+            "permanent_maturity_baseline_reconciled: true",
+            "latest_two_week_target: None",
+        ],
+    )?;
     if require_simple_string(&scenario_path, &scenario, "evidence", "schema")?
         != "account-semantic-v1"
         || require_simple_string(&scenario_path, &scenario, "backing", "identity")?

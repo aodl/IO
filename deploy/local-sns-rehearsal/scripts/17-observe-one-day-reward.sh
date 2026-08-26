@@ -105,7 +105,7 @@ for expected in \
   'historian_settle_seconds=60' \
   'freshness: Fresh' \
   'module_match: Matching' \
-  'two_week_maturity_baseline_reconciled: true' \
+  'permanent_maturity_baseline_reconciled: true' \
   'latest_two_week_target: None' \
   'nns_governance: Some'; do
   if ! grep -Fq "$expected" "$observation_log"; then
