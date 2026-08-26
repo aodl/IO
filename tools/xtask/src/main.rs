@@ -3086,6 +3086,7 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "IO_LOCAL_REWARD_CANONICAL_TWO_EVENT=1",
             "runtime_value accounts operator_principal",
             "require_hex_32_bytes",
+            "neuron_state=",
             "IncreaseDissolveDelay",
             "DissolveDelaySeconds = 1209600",
             "resume_reward_work",
@@ -3097,7 +3098,7 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
     require_absent(
         "deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh",
         &reward_phase,
-        &["require_principal"],
+        &["require_principal", "proposer=\"$(dfx canister call"],
     )?;
     validate_loopback_url_guardrails()?;
 

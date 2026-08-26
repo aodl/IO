@@ -40,12 +40,12 @@ if ! phase_is_done 17-reward-neuron-eligible; then
     record_blocker 'SNS reward proposer dissolve-delay adjustment did not return Configure success'
     exit 2
   }
-  proposer="$(dfx canister call --network "$(local_network_url)" \
+  neuron_state="$(dfx canister call --network "$(local_network_url)" \
     --identity "$(local_identity_name)" --query --candid "$governance_did" \
     "$governance" get_neuron \
     "(record { neuron_id = opt record { id = blob \"$(hex_blob_literal "$neuron_hex")\" } })")"
-  printf '%s\n' "$proposer" >> "$proposal_log"
-  printf '%s' "$proposer" | tr -d '_' | grep -q \
+  printf '%s\n' "$neuron_state" >> "$proposal_log"
+  printf '%s' "$neuron_state" | tr -d '_' | grep -q \
     'DissolveDelaySeconds = 1209600 : nat64' || {
     record_blocker 'SNS reward proposer is not at the exact frozen two-week eligibility duration'
     exit 2
