@@ -2,19 +2,19 @@
   "schema_version": 1,
   "build_profile": "release",
   "target": "wasm32-unknown-unknown",
-  "git_commit": "0c45b3c64819321e1ac519056cc95c65ea6b692f",
+  "git_commit": "60161f1b4335072a542d3dd45d75ec693d656f31",
   "artifacts": [
     {
       "canister": "io_stream_manager",
       "raw_wasm_path": "release-artifacts/io_stream_manager.wasm",
-      "raw_wasm_sha256": "8aff0eef95c52d265d35356f3506e61694bbe4446b46c3f12a564d14a67443cf",
-      "raw_wasm_bytes": 3086205,
+      "raw_wasm_sha256": "b4d9d9293a8ac3551e1b6dc76b7f3d3d1e5115ef66d907f58e21cdc81707131f",
+      "raw_wasm_bytes": 3092430,
       "gz_wasm_path": "release-artifacts/io_stream_manager.wasm.gz",
-      "gz_wasm_sha256": "b352937974c846290100e264ae72c5cd5f7f38c822d24f7f25205762f32a276d",
-      "gz_wasm_bytes": 758950,
+      "gz_wasm_sha256": "c1bf7ef05ee9c7c091a5b322924574883db0abe17a338db7f01902f0443fc2f4",
+      "gz_wasm_bytes": 760120,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "0c45b3c64819321e1ac519056cc95c65ea6b692f"
+      "git_commit": "60161f1b4335072a542d3dd45d75ec693d656f31"
     },
     {
       "canister": "io_nns_neuron_manager",
@@ -26,7 +26,7 @@
       "gz_wasm_bytes": 734374,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "0c45b3c64819321e1ac519056cc95c65ea6b692f"
+      "git_commit": "60161f1b4335072a542d3dd45d75ec693d656f31"
     },
     {
       "canister": "io_historian",
@@ -38,7 +38,7 @@
       "gz_wasm_bytes": 464501,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "0c45b3c64819321e1ac519056cc95c65ea6b692f"
+      "git_commit": "60161f1b4335072a542d3dd45d75ec693d656f31"
     },
     {
       "canister": "frontend",
@@ -50,7 +50,7 @@
       "gz_wasm_bytes": 12744085,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "0c45b3c64819321e1ac519056cc95c65ea6b692f"
+      "git_commit": "60161f1b4335072a542d3dd45d75ec693d656f31"
     }
   ]
 }
