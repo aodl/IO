@@ -207,8 +207,8 @@ EOF
 cat > "$stage/README.md" <<EOF
 # Account-semantic local release evidence
 
-This immutable package binds IO source `${source_commit}` to artifact commit
-`${artifact_commit}` and one fresh local SNS topology. The evidence is layered:
+This immutable package binds IO source ${source_commit} to artifact commit
+${artifact_commit} and one fresh local SNS topology. The evidence is layered:
 the source-built official SNS environment proves launch and wiring; the exact
 proposal-143660 PocketIC suite proves the active NNS Governance boundary; and
 the controlled current-IO fixture proves account-semantic orchestration.

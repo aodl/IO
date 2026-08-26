@@ -6173,7 +6173,11 @@ fn validate_local_sns_evidence_package_at(
             }
             let file_path = format!("{rel}/{file}");
             let text = require_file(root, &file_path)?;
-            if !(account_semantic && (file.ends_with(".log") || file == "README.md")) {
+            if !(account_semantic
+                && (file.ends_with(".log")
+                    || file == "README.md"
+                    || file == "release-manifest.json"))
+            {
                 reject_completed_evidence_placeholders(&file_path, &text)?;
             }
         }
