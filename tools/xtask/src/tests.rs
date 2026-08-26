@@ -2138,10 +2138,12 @@ fn icp_cli_provisioning_rejects_invalid_output_basename() {
 }
 
 #[test]
-fn local_sns_ledger_check_skips_without_completed_evidence() {
+fn local_sns_ledger_check_fails_without_selected_current_evidence() {
     let root = temp_root("local-sns-ledger-skip");
     write_local_sns_rehearsal_fixture(&root);
-    assert!(!check_local_sns_ledger_at(&root).unwrap());
+    assert!(check_local_sns_ledger_at(&root)
+        .unwrap_err()
+        .contains("required selector is missing"));
     let _ = fs::remove_dir_all(root);
 }
 
@@ -2151,7 +2153,7 @@ fn local_sns_ledger_check_rejects_old_completed_root_evidence() {
     write_local_sns_rehearsal_fixture(&root);
     write_completed_local_sns_evidence(&root);
     let error = check_local_sns_ledger_at(&root).unwrap_err();
-    assert!(error.contains("corrected pooled-claim-backing rehearsal evidence missing"));
+    assert!(error.contains("generated runtime evidence must not be treated as canonical"));
     let _ = fs::remove_dir_all(root);
 }
 
@@ -2167,7 +2169,7 @@ fn local_sns_ledger_check_rejects_placeholders() {
     fs::write(&path, text).unwrap();
     assert!(check_local_sns_ledger_at(&root)
         .unwrap_err()
-        .contains("corrected pooled-claim-backing rehearsal evidence missing"));
+        .contains("generated runtime evidence must not be treated as canonical"));
     let _ = fs::remove_dir_all(root);
 }
 

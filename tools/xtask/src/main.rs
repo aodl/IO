@@ -5786,25 +5786,19 @@ fn validate_local_principal_value(path: &str, field: &str, value: &str) -> Resul
 fn check_local_sns_ledger_at(root: &Path) -> Result<bool, String> {
     let path = "deploy/local-sns-rehearsal/canister-ids.local.toml";
     let full_path = root.join(path);
-    if !full_path.exists() {
-        return Ok(false);
+    if full_path.exists() {
+        return Err(format!(
+            "{path}: generated runtime evidence must not be treated as canonical; validate the immutable selected package"
+        ));
     }
-    let text = require_file(root, path)?;
-    for obsolete in [
-        concat!("production-", "redemption-v1"),
-        concat!("reward_backing", "_neuron_id"),
-        "252460800",
-        concat!("seeded", "_principal"),
-    ] {
-        if text.contains(obsolete) {
-            return Err(format!(
-                "{path}: obsolete pre-pool rehearsal evidence is not current authority ({obsolete}); corrected pooled-claim-backing rehearsal evidence missing"
-            ));
-        }
+    check_local_sns_committed_evidence_at(root)?;
+    let selector = read_current_canonical_selector(root)?;
+    if selector.version != 2 {
+        return Err(format!(
+            "{CURRENT_CANONICAL_SELECTOR}: local ledger validation requires selector schema 2 account-semantic evidence"
+        ));
     }
-    Err(format!(
-        "{path}: corrected pooled-claim-backing rehearsal evidence missing; no completed current schema is authorized"
-    ))
+    Ok(true)
 }
 
 fn validate_production_redemption_evidence(
@@ -8893,11 +8887,7 @@ fn main() -> ExitCode {
         },
         "validate_local_sns_ledger" => match check_local_sns_ledger_at(&root) {
             Ok(true) => eprintln!("✓ validate_local_sns_ledger"),
-            Ok(false) => {
-                eprintln!(
-                    "corrected pooled-claim-backing rehearsal evidence missing: deploy/local-sns-rehearsal/canister-ids.local.toml is absent"
-                );
-            }
+            Ok(false) => unreachable!("local SNS ledger validation has no skip path"),
             Err(err) => {
                 eprintln!("✗ validate_local_sns_ledger: {err}");
                 ok = false;
