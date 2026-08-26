@@ -3001,6 +3001,9 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "same_release=true",
             "get_public_status",
             "configured = true",
+            "gz_wasm_path",
+            "gz_wasm_sha256",
+            "transport=gzip",
         ],
     )?;
     require_absent(

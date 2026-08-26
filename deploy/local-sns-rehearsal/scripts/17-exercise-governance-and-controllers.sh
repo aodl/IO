@@ -130,21 +130,23 @@ EOF
 fi
 
 if ! phase_is_done 17-manager-upgrade-restart; then
-  manager_hash="$(manifest_artifact_value io_nns_neuron_manager raw_wasm_sha256)"
+  manager_raw_hash="$(manifest_artifact_value io_nns_neuron_manager raw_wasm_sha256)"
+  manager_payload_hash="$(manifest_artifact_value io_nns_neuron_manager gz_wasm_sha256)"
+  manager_payload_path="${REPO_ROOT}/$(manifest_artifact_value io_nns_neuron_manager gz_wasm_path)"
   manager_before="$(dfx canister info --network "$network_url" --identity "$identity" "$nns_manager" 2>&1 | sed -n 's/^Module hash: 0x//p')"
-  [ "$manager_before" = "$manager_hash" ] || {
+  [ "$manager_before" = "$manager_raw_hash" ] || {
     record_blocker "NNS manager before same-release upgrade does not match the exact release hash"
     exit 2
   }
   manager_upgrade_arg="$(didc encode '()')"
   manager_proposal_id="$(submit_inline_sns_upgrade "$log_file" \
     'Restart exact current IO NNS manager release' \
-    'Local-only same-release restart through SNS Governance and Root before authenticated activation.' \
-    "$nns_manager" "${REPO_ROOT}/release-artifacts/io_nns_neuron_manager.wasm" "$manager_upgrade_arg")"
+    'Local-only same-release deterministic gzip payload through SNS Governance and Root before authenticated activation. The installed module hash is the gzip payload hash; the release manifest independently binds it to the exact raw Wasm.' \
+    "$nns_manager" "$manager_payload_path" "$manager_upgrade_arg")"
   wait_sns_proposal "$log_file" "$manager_proposal_id"
   manager_after="$(dfx canister info --network "$network_url" --identity "$identity" "$nns_manager" 2>&1 | sed -n 's/^Module hash: 0x//p')"
-  [ "$manager_after" = "$manager_hash" ] || {
-    record_blocker "SNS-controlled NNS manager restart did not retain the exact current release module"
+  [ "$manager_after" = "$manager_payload_hash" ] || {
+    record_blocker "SNS-controlled NNS manager restart did not install the exact release gzip payload"
     exit 2
   }
   manager_status="$(dfx canister call --network "$network_url" --identity "$identity" --query --candid \
@@ -155,7 +157,7 @@ if ! phase_is_done 17-manager-upgrade-restart; then
     exit 2
   }
   mark_phase_done 17-manager-upgrade-restart \
-    "target=${nns_manager} path=inline-governance-root proposal_id=${manager_proposal_id} before=${manager_before} after=${manager_after} lifecycle=Paused exact_current_release=true"
+    "target=${nns_manager} path=inline-governance-root proposal_id=${manager_proposal_id} before_raw_module=${manager_before} payload_gzip_sha256=${manager_payload_hash} after_gzip_module=${manager_after} release_manifest_raw_sha256=${manager_raw_hash} transport=gzip lifecycle=Paused exact_current_release=true"
 fi
 
 # The Candid paths cannot be derived from principals, so register each manager explicitly.
