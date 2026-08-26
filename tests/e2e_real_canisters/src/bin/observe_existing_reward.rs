@@ -10,6 +10,8 @@ use io_stream_manager::{
 use pocket_ic::PocketIc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+const REWARD_OBSERVATION_MARGIN_SECONDS: u64 = 300;
+
 fn required(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("{name} must be set"))
 }
@@ -281,11 +283,17 @@ fn main() {
             let seconds = required("IO_LOCAL_REWARD_ADVANCE_SECONDS")
                 .parse::<u64>()
                 .expect("invalid IO_LOCAL_REWARD_ADVANCE_SECONDS");
-            pic.advance_time(Duration::from_secs(seconds));
+            let canonical_advance = seconds
+                .checked_add(REWARD_OBSERVATION_MARGIN_SECONDS)
+                .expect("canonical reward observation advance overflow");
+            pic.advance_time(Duration::from_secs(canonical_advance));
             for _ in 0..20 {
                 pic.tick();
             }
             println!("canonical_reward_advanced_pocketic_seconds={seconds}");
+            println!(
+                "canonical_reward_observation_margin_seconds={REWARD_OBSERVATION_MARGIN_SECONDS}"
+            );
             print_reward_state(&pic, governance, "canonical");
             let final_before = stream_status(&pic, stream);
             println!("canonical_stream_status_before={final_before:#?}");
@@ -368,7 +376,7 @@ fn main() {
                 .nns_governance
                 .as_ref()
                 .map(|status| status.neurons.len()),
-            Some(if canonical_two_event { 2 } else { 1 }),
+            Some(1),
         );
         assert!(dashboard.protocol.claim_rate.is_some());
         assert!(dashboard

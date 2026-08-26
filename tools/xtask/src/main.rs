@@ -3084,6 +3084,7 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
         &[
             "IO_LOCAL_REWARD_ADVANCE_SECONDS=86400",
             "IO_LOCAL_REWARD_CANONICAL_TWO_EVENT=1",
+            "canonical_reward_observation_margin_seconds=300",
             "runtime_value accounts operator_principal",
             "require_hex_32_bytes",
             "neuron_state=",

@@ -92,6 +92,7 @@ for expected in \
   'canonical_structural_refresh=Ok' \
   'canonical_reward_proposal_id=' \
   'canonical_reward_advanced_pocketic_seconds=86400' \
+  'canonical_reward_observation_margin_seconds=300' \
   'ProposalBearing' \
   'processed_reward_event_count: 2' \
   'accumulated_policy_credit: 2000000000000000000'; do
