@@ -6392,7 +6392,7 @@ fn validate_account_semantic_evidence(
         &dashboard,
         &[
             "permanent_maturity_baseline_reconciled: true",
-            "latest_two_week_target: None",
+            "latest_pooled_target: Some",
         ],
     )?;
     if require_simple_string(&scenario_path, &scenario, "evidence", "schema")?

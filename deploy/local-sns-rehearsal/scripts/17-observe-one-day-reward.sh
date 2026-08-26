@@ -106,7 +106,7 @@ for expected in \
   'freshness: Fresh' \
   'module_match: Matching' \
   'permanent_maturity_baseline_reconciled: true' \
-  'latest_two_week_target: None' \
+  'latest_pooled_target: Some' \
   'nns_governance: Some'; do
   if ! grep -Fq "$expected" "$observation_log"; then
     record_blocker "one-day historian convergence lacks canonical evidence: ${expected}"
