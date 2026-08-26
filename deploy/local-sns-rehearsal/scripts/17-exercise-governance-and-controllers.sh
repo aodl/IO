@@ -60,6 +60,7 @@ if ! phase_is_done 17-upgrade-attempted; then
   fixture="${GENERATED_DIR}/nns-readiness-fixture.toml"
   require_file "$fixture"
   two_year_neuron_id="$(toml_number "$fixture" two_year_neuron id)"
+  historian_nns_manager_expected_hash="$(manifest_artifact_value io_nns_neuron_manager gz_wasm_sha256)"
   config_file="${GENERATED_DIR}/historian-observation-config.did"
   cat > "$config_file" <<EOF
 (opt record {
@@ -79,11 +80,12 @@ if ! phase_is_done 17-upgrade-attempted; then
     record { name = "protocol-reserve"; account = record { owner = principal "${stream}"; subaccount = opt blob "$(hex_blob_literal "$reserve_subaccount")" } };
     record { name = "sns-treasury"; account = record { owner = principal "${governance}"; subaccount = opt blob "$(hex_blob_literal "$treasury_subaccount")" } };
   };
-  // IO dapps are installed from raw release Wasm. SNS-W publishes and installs
-  // the compressed source payload, which is the module hash Root observes.
+  // IO dapps are installed from raw release Wasm, except that this phase later
+  // restarts NNS Manager through Root with the deterministic gzip payload.
+  // SNS-W likewise publishes and installs compressed source payloads.
   expected_modules = vec {
     record { role = variant { StreamManager }; canister_id = principal "${stream}"; wasm_sha256 = blob "$(hex_blob_literal "$(manifest_artifact_value io_stream_manager raw_wasm_sha256)")" };
-    record { role = variant { NnsManager }; canister_id = principal "${nns_manager}"; wasm_sha256 = blob "$(hex_blob_literal "$(manifest_artifact_value io_nns_neuron_manager raw_wasm_sha256)")" };
+    record { role = variant { NnsManager }; canister_id = principal "${nns_manager}"; wasm_sha256 = blob "$(hex_blob_literal "$historian_nns_manager_expected_hash")" };
     record { role = variant { Historian }; canister_id = principal "${historian}"; wasm_sha256 = blob "$(hex_blob_literal "$raw_hash")" };
     record { role = variant { Frontend }; canister_id = principal "${frontend}"; wasm_sha256 = blob "$(hex_blob_literal "$(manifest_artifact_value frontend raw_wasm_sha256)")" };
     record { role = variant { SnsGovernance }; canister_id = principal "${governance}"; wasm_sha256 = blob "$(hex_blob_literal "$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_governance_source_sha256)")" };

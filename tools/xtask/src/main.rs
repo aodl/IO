@@ -3005,6 +3005,8 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "gz_wasm_sha256",
             "transport=gzip",
             "latest_pooled_target = null",
+            "historian_nns_manager_expected_hash=\"$(manifest_artifact_value io_nns_neuron_manager gz_wasm_sha256)\"",
+            "hex_blob_literal \"$historian_nns_manager_expected_hash\"",
         ],
     )?;
     require_absent(
