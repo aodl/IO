@@ -43,6 +43,10 @@ if ! phase_is_done 17-upgrade-attempted; then
   raw_hash="$(manifest_artifact_value io_historian raw_wasm_sha256)"
   payload_hash="$raw_hash"
   before_hash="$(dfx canister info --network "$network_url" --identity "$identity" "$historian" 2>&1 | sed -n 's/^Module hash: 0x//p')"
+  if [ "$before_hash" != "$raw_hash" ]; then
+    record_blocker "historian before same-release upgrade does not match the exact current release module: before=${before_hash} expected=${raw_hash}"
+    exit 2
+  fi
   bundle_dir="${IO_LOCAL_SNS_BUNDLE_DIR:-}"
   require_file "${bundle_dir}/manifest.toml"
   root="$(sns_canister_id root)"
@@ -94,8 +98,8 @@ if ! phase_is_done 17-upgrade-attempted; then
 EOF
   upgrade_arg_hex="$(didc encode --defs "${REPO_ROOT}/canisters/io_historian/io_historian.did" --types '(opt ObservationConfig)' < "$config_file")"
   inline_proposal_id="$(submit_inline_sns_upgrade "$log_file" \
-    'Upgrade and configure IO historian' \
-    'Local-only exact raw release Wasm plus typed observation configuration through SNS Governance and Root. Inline payload avoids only the unavailable chunk-store bootstrap and remains an authentic governance proposal.' \
+    'Configure and restart exact current IO historian release' \
+    'Local-only same-release raw Wasm restart plus typed observation configuration through SNS Governance and Root. Inline payload avoids only the unavailable chunk-store bootstrap and remains an authentic governance proposal.' \
     "$historian" "${REPO_ROOT}/release-artifacts/io_historian.wasm" "$upgrade_arg_hex")"
   wait_sns_proposal "$log_file" "$inline_proposal_id"
   after_hash=""
@@ -106,16 +110,23 @@ EOF
     fi
     sleep 1
   done
-  if [ "$before_hash" = "$after_hash" ] || [ "$after_hash" != "$raw_hash" ]; then
-    record_blocker "SNS-controlled historian upgrade did not change to the exact current release module: before=${before_hash} after=${after_hash} expected=${raw_hash}"
+  if [ "$after_hash" != "$raw_hash" ]; then
+    record_blocker "SNS-controlled historian same-release upgrade did not retain the exact current release module: before=${before_hash} after=${after_hash} expected=${raw_hash}"
     exit 2
   fi
+  historian_status="$(dfx canister call --network "$network_url" --identity "$identity" --query \
+    --candid "${REPO_ROOT}/canisters/io_historian/io_historian.did" "$historian" get_public_status '()')"
+  printf '%s\n' "$historian_status" >> "$log_file"
+  printf '%s' "$historian_status" | grep -q 'configured = true' || {
+    record_blocker 'same-release historian restart did not apply the typed observation configuration'
+    exit 2
+  }
   final_controllers="$(dfx canister info --network "$network_url" --identity "$identity" "$historian" 2>&1 | sed -n 's/^Controllers: //p' | xargs)"
   if [ "$final_controllers" != "$root" ]; then
     record_blocker "historian controllers changed during SNS-governed upgrade: ${final_controllers}"
     exit 2
   fi
-  mark_phase_done 17-upgrade-attempted "target=${historian} path=inline-governance-root proposal_id=${inline_proposal_id} before=${before_hash} payload_wasm_sha256=${payload_hash} after=${after_hash} release_manifest_raw_sha256=${raw_hash} typed_observation_config=true controllers=${final_controllers}; see ${log_file}"
+  mark_phase_done 17-upgrade-attempted "target=${historian} path=inline-governance-root proposal_id=${inline_proposal_id} before=${before_hash} payload_wasm_sha256=${payload_hash} after=${after_hash} release_manifest_raw_sha256=${raw_hash} same_release=true typed_observation_config=true configured=true controllers=${final_controllers}; see ${log_file}"
 fi
 
 if ! phase_is_done 17-manager-upgrade-restart; then

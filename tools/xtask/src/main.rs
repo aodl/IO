@@ -2998,12 +2998,24 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "sns_ledger_source_sha256",
             "sns_index_source_sha256",
             "sns_swap_source_sha256",
+            "same_release=true",
+            "get_public_status",
+            "configured = true",
         ],
     )?;
     require_absent(
         "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
         &governance_phase,
         &["dfx canister install"],
+    )?;
+    let deploy_phase = require_file(
+        root,
+        "deploy/local-sns-rehearsal/scripts/12-deploy-local-dapps.sh",
+    )?;
+    require_absent(
+        "deploy/local-sns-rehearsal/scripts/12-deploy-local-dapps.sh",
+        &deploy_phase,
+        &["prior_historian", "provenance-correct prior historian"],
     )?;
     let exact_release_phase = require_file(
         root,
