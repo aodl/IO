@@ -1,0 +1,52 @@
+[evidence]
+schema = "account-semantic-v1"
+source_commit = "716d51e912e82c0af87890e42885376059cf9f59"
+artifact_commit = "abf65a067bbfa0cb367ec92bb7cba720403dfce9"
+release_manifest_sha256 = "8b205e023326db5d14bfcd8b30bff9a56221082eb41f5caa7a53375bd91182e3"
+official_sns_layer_complete = true
+exact_nns_boundary_layer_complete = true
+controlled_orchestration_layer_complete = true
+
+[backing]
+identity = "B = L + P + U + T"
+identity_checked = true
+liquid_first = true
+ordinary_reconciliation = true
+lazy_pooled_parent = true
+
+[jupiter]
+authorized_source_block_required = true
+unauthorized_rejected = true
+paired_settlement = true
+empty_genesis_one_to_one = true
+provenance_after_custody = false
+
+[two_week]
+fixed_semantic_account = true
+paired_settlement = true
+mint_provenance_api_absent = true
+frozen_staker_settlement = true
+
+[two_year]
+fixed_semantic_account = true
+paired_receipt = false
+io_issuance = false
+claim_credit_increases_backing = true
+
+[carry_forward]
+g1_capture_units = 100
+late_units = 20
+g2_maturity_units = 50
+g2_capture_units = 70
+two_week_final_staging_e8s = 0
+two_year_final_staging_e8s = 0
+cross_account_isolation = true
+
+[liveness]
+no_effect_retry_exactly_once = true
+ambiguous_effect_never_resubmitted = true
+liquidity_shortfall_pulls_io = false
+request_retryable = true
+cohort_unwind_complete = true
+upgrade_restart_exact = true
+receipt_replay_exact = true

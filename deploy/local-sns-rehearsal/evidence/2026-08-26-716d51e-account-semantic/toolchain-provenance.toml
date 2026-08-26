@@ -1,0 +1,7 @@
+[official_sns]
+source_commit = "4320fdf2e613844eabae1927b1a23b98da3a7bc6"
+clean_checkout = true
+
+[release]
+source_commit = "716d51e912e82c0af87890e42885376059cf9f59"
+artifact_recording_commit = "abf65a067bbfa0cb367ec92bb7cba720403dfce9"
