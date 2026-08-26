@@ -526,7 +526,7 @@ fn write_local_sns_rehearsal_fixture(root: &Path) {
     write(
             root,
             "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
-            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# upgrade-sns-controlled-canister submit_inline_sns_upgrade AddGenericNervousSystemFunction validate_set_paused ExecuteGenericNervousSystemFunction sns_governance_source_sha256 sns_root_source_sha256 sns_ledger_source_sha256 sns_index_source_sha256 sns_swap_source_sha256 same_release=true get_public_status configured = true gz_wasm_path gz_wasm_sha256 transport=gzip\n",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# upgrade-sns-controlled-canister submit_inline_sns_upgrade AddGenericNervousSystemFunction validate_set_paused ExecuteGenericNervousSystemFunction sns_governance_source_sha256 sns_root_source_sha256 sns_ledger_source_sha256 sns_index_source_sha256 sns_swap_source_sha256 same_release=true get_public_status configured = true gz_wasm_path gz_wasm_sha256 transport=gzip latest_pooled_target = null\n",
         );
     write(
             root,

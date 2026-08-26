@@ -224,12 +224,12 @@ if ! phase_is_done 17-nns-activated; then
   }
   fixture="${GENERATED_DIR}/nns-readiness-fixture.toml"
   require_file "$fixture"
-  observation="$(dfx canister call --network "$network_url" --identity "$identity" --candid \
-    "${REPO_ROOT}/canisters/io_nns_neuron_manager/io_nns_neuron_manager.did" \
-    "$nns_manager" observe_claim_assets '()')"
-  printf '%s\n' "$observation" >> "$log_file"
-  printf '%s' "$observation" | grep -q 'parent_exists = false' || {
-    record_blocker 'pooled parent must remain absent until existing liquid backing bootstraps it'
+  grep -Fq 'exists = false' "$fixture" || {
+    record_blocker 'source-shaped NNS readiness fixture unexpectedly created a pooled parent'
+    exit 2
+  }
+  printf '%s' "$status" | grep -q 'latest_pooled_target = null' || {
+    record_blocker 'NNS manager unexpectedly recorded a pooled target before existing liquid backing bootstrapped it'
     exit 2
   }
   mark_phase_done 17-nns-activated "function_id=${function_id} proposal_id=${proposal_id} lifecycle=Ready permanent_baseline_reconciled=true pooled_parent=absent"

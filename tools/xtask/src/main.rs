@@ -3004,6 +3004,7 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "gz_wasm_path",
             "gz_wasm_sha256",
             "transport=gzip",
+            "latest_pooled_target = null",
         ],
     )?;
     require_absent(
