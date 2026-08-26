@@ -106,6 +106,33 @@ fn main() {
     println!("stream_status_before={before:#?}");
 
     if std::env::var_os("IO_LOCAL_REWARD_RESUME").is_some() {
+        if before.reward_processing_paused {
+            let paused: Result<(), ApiError> = decode_one(
+                &pic.update_call(
+                    stream,
+                    governance,
+                    "set_paused",
+                    encode_one(true).expect("encode controlled reward recovery pause"),
+                )
+                .expect("pause stream for controlled reward recovery"),
+            )
+            .expect("decode controlled reward recovery pause");
+            println!("controlled_reward_recovery_pause={paused:#?}");
+            assert_eq!(paused, Ok(()));
+
+            let ready: Result<(), ApiError> = decode_one(
+                &pic.update_call(
+                    stream,
+                    governance,
+                    "set_paused",
+                    encode_one(false).expect("encode controlled reward recovery readiness"),
+                )
+                .expect("restore stream readiness for controlled reward recovery"),
+            )
+            .expect("decode controlled reward recovery readiness");
+            println!("controlled_reward_recovery_ready={ready:#?}");
+            assert_eq!(ready, Ok(()));
+        }
         let result: Result<RewardEventObservation, ApiError> = decode_one(
             &pic.update_call(
                 stream,
