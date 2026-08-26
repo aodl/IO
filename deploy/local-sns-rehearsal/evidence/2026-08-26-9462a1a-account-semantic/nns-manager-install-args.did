@@ -1,0 +1,22 @@
+(record {
+  config = record {
+    sns_governance = principal "7uieb-cx777-77776-qaaaq-cai";
+    stream_manager = principal "lxzze-o7777-77777-aaaaa-cai";
+    jupiter = principal "amzih-bssz4-twanl-zf6nr-bqsnn-d7rlt-eerbc-oe7vv-uggn5-3naqo-3ae";
+    icp_ledger = principal "ryjl3-tyaaa-aaaaa-aaaba-cai";
+    nns_governance = principal "rrkah-fqaaa-aaaaa-aaaaq-cai";
+    two_year_neuron_id = 18261782480786375607 : nat64;
+    pooled_parent_memo = 42001 : nat64;
+    pooled_parent_followee_id = 18261782480786375607 : nat64;
+    minimum_parent_stake_e8s = 100000000 : nat;
+    jupiter_account = record { owner = principal "amzih-bssz4-twanl-zf6nr-bqsnn-d7rlt-eerbc-oe7vv-uggn5-3naqo-3ae"; subaccount = null };
+    jupiter_staging = record { owner = principal "lqy7q-dh777-77777-aaaaq-cai"; subaccount = null };
+    stream_liquid_account = record { owner = principal "lxzze-o7777-77777-aaaaa-cai"; subaccount = opt blob "\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02" };
+    expected_io_fee_e8s = 10_000 : nat;
+    expected_icp_fee_e8s = 10_000 : nat;
+    jupiter_activation_block_floor = 7 : nat;
+    audited_permanent_principal_e8s = 100000000 : nat;
+    transfer_retry_delay_nanos = 1_000_000_000 : nat64;
+    ledger_deduplication_window_nanos = 86_400_000_000_000 : nat64;
+  };
+})

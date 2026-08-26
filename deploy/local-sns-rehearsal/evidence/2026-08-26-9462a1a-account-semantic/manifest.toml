@@ -1,0 +1,13 @@
+[provenance]
+evidence_schema = "account-semantic-v1"
+official_ic_repository = "dfinity/ic"
+official_ic_source_commit = "4320fdf2e613844eabae1927b1a23b98da3a7bc6"
+sns_testing_source_path = "rs/sns/testing"
+io_release_source_commit = "9462a1a0df602f06fa845bd31f9fcd0adf80067a"
+io_artifact_recording_commit = "46713f8499cf9a63a6cd4879b1fff9c1f9ef0be5"
+release_manifest_sha256 = "011113d83510e66976f5d3eabefc57ef30ba44fc49a8973fad29be043b374431"
+complete = true
+monitoring = true
+canonical_redemption_economics = true
+account_semantic_economics = true
+network = "local"

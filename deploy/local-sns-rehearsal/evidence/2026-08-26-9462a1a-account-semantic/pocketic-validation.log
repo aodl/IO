@@ -1,0 +1,297 @@
+evidence_layer=B/C controlled PocketIC and exact proposal boundary
+source_commit=9462a1a0df602f06fa845bd31f9fcd0adf80067a
+artifact_commit=46713f8499cf9a63a6cd4879b1fff9c1f9ef0be5
+release_manifest_sha256=011113d83510e66976f5d3eabefc57ef30ba44fc49a8973fad29be043b374431
+stream_release_wasm_sha256=b4d9d9293a8ac3551e1b6dc76b7f3d3d1e5115ef66d907f58e21cdc81707131f
+nns_release_wasm_sha256=119b94fc7910d7f8212cad152e3e346dece64fe5ff088de6f1716bef07a58986
+
+=== case build-controlled-fixtures ===
++ env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo build -p mock-icp-ledger -p mock-io-ledger -p mock-nns-governance -p mock-nns-xrc -p mock-nns-candidate-actor -p mock-sns-governance -p mock-sns-root -p io-stream-manager -p io-nns-neuron-manager --target wasm32-unknown-unknown
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.00s
+command: env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo build -p mock-icp-ledger -p mock-io-ledger -p mock-nns-governance -p mock-nns-xrc -p mock-nns-candidate-actor -p mock-sns-governance -p mock-sns-root -p io-stream-manager -p io-nns-neuron-manager --target wasm32-unknown-unknown
+exit_status=0
+
+=== case semantic-carry-forward ===
++ env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p io-nns-neuron-manager --test io_nns_governance_recovery_pocketic semantic_staging_carries_late_value_into_the_next_cycle_for_both_roles -- --exact --nocapture --test-threads=1
+   Compiling ring v0.17.14
+   Compiling rustls v0.23.40
+   Compiling rustls-webpki v0.103.13
+   Compiling tokio-rustls v0.26.4
+   Compiling hyper-rustls v0.27.9
+   Compiling reqwest v0.12.28
+   Compiling pocket-ic v14.0.0
+   Compiling io-nns-neuron-manager v0.1.0 (/home/codexdev/src/IO/canisters/io_nns_neuron_manager)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 31.22s
+     Running ../../tests/pocketic/io_nns_governance_recovery_pocketic.rs (target/debug/deps/io_nns_governance_recovery_pocketic-7fe44c089320f54e)
+
+running 1 test
+test semantic_staging_carries_late_value_into_the_next_cycle_for_both_roles ... account_semantic_carry_forward kind=TwoYear unit_e8s=2000000 g1_capture_units=100 late_units=20 g2_maturity_units=50 g2_capture_units=70 final_staging_e8s=0 isolated_other_e8s=66000000
+account_semantic_carry_forward kind=TwoWeek unit_e8s=2000000 g1_capture_units=100 late_units=20 g2_maturity_units=50 g2_capture_units=70 final_staging_e8s=0 isolated_other_e8s=66000000
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 41.06s
+
+command: env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p io-nns-neuron-manager --test io_nns_governance_recovery_pocketic semantic_staging_carries_late_value_into_the_next_cycle_for_both_roles -- --exact --nocapture --test-threads=1
+exit_status=0
+
+=== case no-effect-and-ambiguous-maturity ===
++ env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p io-nns-neuron-manager --test io_nns_governance_recovery_pocketic disburse_maturity_decoded_rejection_retries_but_ambiguity_never_resubmits -- --exact --nocapture --test-threads=1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
+     Running ../../tests/pocketic/io_nns_governance_recovery_pocketic.rs (target/debug/deps/io_nns_governance_recovery_pocketic-7fe44c089320f54e)
+
+running 1 test
+test disburse_maturity_decoded_rejection_retries_but_ambiguity_never_resubmits ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 43.85s
+
+command: env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p io-nns-neuron-manager --test io_nns_governance_recovery_pocketic disburse_maturity_decoded_rejection_retries_but_ambiguity_never_resubmits -- --exact --nocapture --test-threads=1
+exit_status=0
+
+=== case ambiguous-split ===
++ env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p io-nns-neuron-manager --test io_nns_governance_recovery_pocketic ambiguous_split_is_discovered_after_upgrade_without_a_second_call -- --exact --nocapture --test-threads=1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.13s
+     Running ../../tests/pocketic/io_nns_governance_recovery_pocketic.rs (target/debug/deps/io_nns_governance_recovery_pocketic-7fe44c089320f54e)
+
+running 1 test
+test ambiguous_split_is_discovered_after_upgrade_without_a_second_call ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 24.51s
+
+command: env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p io-nns-neuron-manager --test io_nns_governance_recovery_pocketic ambiguous_split_is_discovered_after_upgrade_without_a_second_call -- --exact --nocapture --test-threads=1
+exit_status=0
+
+=== case split-embryo-and-phase-recovery ===
++ env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p io-nns-neuron-manager --test io_nns_governance_recovery_pocketic every_persisted_governance_phase_recovers_and_exact_replay_is_call_free -- --exact --nocapture --test-threads=1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.15s
+     Running ../../tests/pocketic/io_nns_governance_recovery_pocketic.rs (target/debug/deps/io_nns_governance_recovery_pocketic-7fe44c089320f54e)
+
+running 1 test
+test every_persisted_governance_phase_recovers_and_exact_replay_is_call_free ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 59.92s
+
+command: env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p io-nns-neuron-manager --test io_nns_governance_recovery_pocketic every_persisted_governance_phase_recovers_and_exact_replay_is_call_free -- --exact --nocapture --test-threads=1
+exit_status=0
+
+=== case child-disburse-lost-callback ===
++ env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p io-nns-neuron-manager --test io_nns_governance_recovery_pocketic child_disburse_malformed_after_effect_never_resubmits -- --exact --nocapture --test-threads=1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
+     Running ../../tests/pocketic/io_nns_governance_recovery_pocketic.rs (target/debug/deps/io_nns_governance_recovery_pocketic-7fe44c089320f54e)
+
+running 1 test
+test child_disburse_malformed_after_effect_never_resubmits ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 23.96s
+
+command: env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p io-nns-neuron-manager --test io_nns_governance_recovery_pocketic child_disburse_malformed_after_effect_never_resubmits -- --exact --nocapture --test-threads=1
+exit_status=0
+
+=== case paired-receipt-replay ===
++ env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p io-stream-manager --test io_paired_receipt_recovery_pocketic malformed_prepare_after_persistence_replays_and_quarantines_redemption -- --exact --nocapture --test-threads=1
+   Compiling io-stream-manager v0.1.0 (/home/codexdev/src/IO/canisters/io_stream_manager)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.18s
+     Running ../../tests/pocketic/io_paired_receipt_recovery_pocketic.rs (target/debug/deps/io_paired_receipt_recovery_pocketic-908a446ac35d81ee)
+
+running 1 test
+test malformed_prepare_after_persistence_replays_and_quarantines_redemption ... account_semantic_receipt_recovery malformed_after_persist=true exact_replay=true quarantined_redemption=true same_wasm_upgrade=true duplicate_transfer=false stream_operation_sequence=2 proof_block=3
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 35.31s
+
+command: env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p io-stream-manager --test io_paired_receipt_recovery_pocketic malformed_prepare_after_persistence_replays_and_quarantines_redemption -- --exact --nocapture --test-threads=1
+exit_status=0
+
+=== case liquidity-shortfall ===
++ env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p io-stream-manager --test io_stream_manager_pocketic liquidity_shortfall_uses_only_scalar_claim_reads_and_pulls_no_io -- --exact --nocapture --test-threads=1
+   Compiling io-stream-manager v0.1.0 (/home/codexdev/src/IO/canisters/io_stream_manager)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.76s
+     Running ../../tests/pocketic/io_stream_manager_pocketic.rs (target/debug/deps/io_stream_manager_pocketic-e3687b534f83e125)
+
+running 1 test
+test liquidity_shortfall_uses_only_scalar_claim_reads_and_pulls_no_io ... account_semantic_liquidity_shortfall available_liquid_e8s=100000 claim_snapshot_reads=2 io_pulled=false request_nonce_consumed=false retryable=true
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 38.48s
+
+command: env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p io-stream-manager --test io_stream_manager_pocketic liquidity_shortfall_uses_only_scalar_claim_reads_and_pulls_no_io -- --exact --nocapture --test-threads=1
+exit_status=0
+
+=== case exact_post_m70_upgrade_rewards_fourteen_day_boundary ===
++ env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p e2e-real-canisters post_mission70_nns_candidate::exact_post_m70_upgrade_rewards_fourteen_day_boundary -- --ignored --exact --nocapture --test-threads=1
+   Compiling e2e-real-canisters v0.1.0 (/home/codexdev/src/IO/tests/e2e_real_canisters)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.72s
+     Running unittests src/lib.rs (target/debug/deps/e2e_real_canisters-a2e00715188b1e84)
+
+running 1 test
+test post_mission70_nns_candidate::exact_post_m70_upgrade_rewards_fourteen_day_boundary ... post_m70_ballot_diagnostic exact_state=Some(DissolveDelaySeconds(1209600)) below_state=Some(DissolveDelaySeconds(1209599)) ballots=[(17372447287900150045, BallotProbe { vote: 0, voting_power: 10214584143996766 })]
+post_m70_reward_diagnostic day=5 maturity_before=0 maturity_now=0 latest_reward_day=126 proposal_reward_round=126 settled=true
+post_m70_reward_diagnostic day=6 maturity_before=0 maturity_now=6411740158210222 latest_reward_day=127 proposal_reward_round=126 settled=false
+post_m70_reward_diagnostic day=5 maturity_before=76944727 maturity_now=76944727 latest_reward_day=132 proposal_reward_round=132 settled=true
+post_m70_reward_diagnostic day=6 maturity_before=76944727 maturity_now=82914450 latest_reward_day=133 proposal_reward_round=132 settled=false
+post_m70_evidence old_threshold=15778800 new_threshold=1209600 exact_neuron=17372447287900150045 below_neuron=8253832833715429030 proposer=15706612134661687787 proposal=1 reward_round=126 maturity_before=0 maturity_after=6411740158210222 top_up_amount=200000000 top_up_fee=10000 top_up_block=7 cached_before=10000000000000000 cached_after=10000000200000000 parent_ordinary_before_split=3847044094926134 parent_staked_before_split=2564696063284088 children=[6670980498903551809, 17951363335400986306, 1238449259371036481] split_gross=200010000 child_credited=200000000 selected_child=17951363335400986306 inherited_child_ordinary=76944727 inherited_child_staked=51296484 merge_child_started_at=1631608226 merge_parent_before=9999999599970000 merge_parent_after=9999999799960000 split_submission=1631608226 start_effective=1631608263 disburse_child_started_at=1631608263 continuing_child_started_at=1631608264 readiness=1632817863 child_reward_proposal=2 child_ordinary_after_reward=82914450 early_error=NnsGovernanceErrorRecord { error_type: 11, error_message: "Neuron 17951363335400986306 has NOT been dissolved. It is in state Dissolving" } disbursement_block=12 zero_principal_ordinary=134210934 converted_ordinary=134210934 cleanup_stop=true cleanup_delay=true cleanup_direct_error=Some("Only two non-dissolving neurons with a dissolve delay greater than 0 can be merged.") cleanup_stop_error=Some("") cleanup_fee=0 child_retained_after_cleanup=true nominal_maturity=3847044075247614 finalization_delay=604800 modulation=0 actual_mint=3847044075247614 mint_block=13 spend_block=14
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 172 filtered out; finished in 236.64s
+
+     Running unittests src/bin/observe_existing_reward.rs (target/debug/deps/observe_existing_reward-b2f2d4dc36a076b6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+command: env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p e2e-real-canisters post_mission70_nns_candidate::exact_post_m70_upgrade_rewards_fourteen_day_boundary -- --ignored --exact --nocapture --test-threads=1
+exit_status=0
+
+=== case exact_post_m70_fourteen_day_parent_follows_and_earns_maturity ===
++ env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p e2e-real-canisters post_mission70_nns_candidate::exact_post_m70_fourteen_day_parent_follows_and_earns_maturity -- --ignored --exact --nocapture --test-threads=1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.75s
+     Running unittests src/lib.rs (target/debug/deps/e2e_real_canisters-a2e00715188b1e84)
+
+running 1 test
+test post_mission70_nns_candidate::exact_post_m70_fourteen_day_parent_follows_and_earns_maturity ... post_m70_reward_diagnostic day=5 maturity_before=0 maturity_now=0 latest_reward_day=126 proposal_reward_round=126 settled=true
+post_m70_reward_diagnostic day=6 maturity_before=0 maturity_now=2566551485528232 latest_reward_day=127 proposal_reward_round=126 settled=false
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 172 filtered out; finished in 132.64s
+
+     Running unittests src/bin/observe_existing_reward.rs (target/debug/deps/observe_existing_reward-b2f2d4dc36a076b6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+command: env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p e2e-real-canisters post_mission70_nns_candidate::exact_post_m70_fourteen_day_parent_follows_and_earns_maturity -- --ignored --exact --nocapture --test-threads=1
+exit_status=0
+
+=== case exact_post_m70_split_child_subaccount_lookup_matches_io_recovery ===
++ env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p e2e-real-canisters post_mission70_nns_candidate::exact_post_m70_split_child_subaccount_lookup_matches_io_recovery -- --ignored --exact --nocapture --test-threads=1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+     Running unittests src/lib.rs (target/debug/deps/e2e_real_canisters-a2e00715188b1e84)
+
+running 1 test
+test post_mission70_nns_candidate::exact_post_m70_split_child_subaccount_lookup_matches_io_recovery ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 172 filtered out; finished in 63.50s
+
+     Running unittests src/bin/observe_existing_reward.rs (target/debug/deps/observe_existing_reward-b2f2d4dc36a076b6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+command: env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p e2e-real-canisters post_mission70_nns_candidate::exact_post_m70_split_child_subaccount_lookup_matches_io_recovery -- --ignored --exact --nocapture --test-threads=1
+exit_status=0
+
+=== case exact_post_m70_minimum_stake_boundaries ===
++ env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p e2e-real-canisters post_mission70_nns_candidate::exact_post_m70_minimum_stake_boundaries -- --ignored --exact --nocapture --test-threads=1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running unittests src/lib.rs (target/debug/deps/e2e_real_canisters-a2e00715188b1e84)
+
+running 1 test
+test post_mission70_nns_candidate::exact_post_m70_minimum_stake_boundaries ... post_m70_minimum_evidence below_balance=99999999 below_creation_error=NnsGovernanceErrorRecord { error_type: 14, error_message: "Account does not have enough funds to stake a neuron. Please make sure that account has at least 100000000 e8s (was 99999999 e8s)" } exact_balance=100000000 exact_neuron=17047225741041935755 source_gross=100010000 transfer_amount=100000000 transfer_fee=10000 fee_separate_neuron=6003521757219431476 below_split_gross=100009999 below_split_error=NnsGovernanceErrorRecord { error_type: 14, error_message: "Trying to split a neuron with argument 100009999 e8s. This is too little: at the minimum, one needs the minimum neuron stake, which is 100000000 e8s, plus the transaction fee, which is 10000. Hence the minimum split amount is 100010000." } exact_split_gross=100010000 exact_child=7051052760892872357 exact_child_stake=100000000 parent_after_exact=300010000 retain_attempt=200010001 retain_error=NnsGovernanceErrorRecord { error_type: 14, error_message: "Trying to split 200010001 e8s out of neuron 15279734383015107012. This is not allowed, because the parent has stake 300010000 e8s. If the requested amount was subtracted from it, there would be less than the minimum allowed stake, which is 100000000 e8s. " } complete_attempt=300010000 complete_error=NnsGovernanceErrorRecord { error_type: 14, error_message: "Trying to split 300010000 e8s out of neuron 15279734383015107012. This is not allowed, because the parent has stake 300010000 e8s. If the requested amount was subtracted from it, there would be less than the minimum allowed stake, which is 100000000 e8s. " }
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 172 filtered out; finished in 63.59s
+
+     Running unittests src/bin/observe_existing_reward.rs (target/debug/deps/observe_existing_reward-b2f2d4dc36a076b6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+command: env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p e2e-real-canisters post_mission70_nns_candidate::exact_post_m70_minimum_stake_boundaries -- --ignored --exact --nocapture --test-threads=1
+exit_status=0
+
+=== case controlled_jupiter_uses_real_nns_and_exact_production_receipts ===
++ env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p e2e-real-canisters nns_backing::tests::controlled_jupiter_uses_real_nns_and_exact_production_receipts -- --ignored --exact --nocapture --test-threads=1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running unittests src/lib.rs (target/debug/deps/e2e_real_canisters-a2e00715188b1e84)
+
+running 1 test
+test nns_backing::tests::controlled_jupiter_uses_real_nns_and_exact_production_receipts ... account_semantic_release_wasm role=io_nns_neuron_manager sha256=119b94fc7910d7f8212cad152e3e346dece64fe5ff088de6f1716bef07a58986
+account_semantic_release_wasm role=io_stream_manager sha256=b4d9d9293a8ac3551e1b6dc76b7f3d3d1e5115ef66d907f58e21cdc81707131f
+account_semantic_jupiter gross_e8s=1000000000 permanent_credit_e8s=399990000 claim_credit_e8s=599990000 backed_io_e8s=3599 io_fee_e8s=10000 deposit_block=10 unauthorized_rejected=true wrong_block_rejected=true receipt_sequence=1
+controlled_jupiter_phases=["Ok(Jupiter(StakeTransferPrepared))", "Ok(Jupiter(StakeTransferSucceeded))", "Err(Pending(\"Jupiter ClaimOrRefresh awaits canonical proof after command result Ok(())\"))", "Ok(Jupiter(StakeIncreaseProved))", "Ok(Jupiter(ReceiptPermitPrepared))", "Ok(Jupiter(LiquidTransferPrepared))", "Ok(Jupiter(LiquidTransferSucceeded))", "Ok(Jupiter(AwaitingStreamSettlement))", "Ok(Jupiter(AwaitingStreamSettlement))", "Ok(Jupiter(AwaitingStreamSettlement))", "Ok(Jupiter(Completed(ManagerJupiterCompleted { deposit_block: 10, gross_e8s: 1000000000, stake_e8s: 399990000, observed_after_cached_stake_e8s: 10399990000, liquid_e8s: 599990000, stake_transfer_block: 11, liquid_transfer_block: 12, stream_receipt_sequence: 1, backed_io_e8s: 3599, io_transfer_block: 2, io_fee_e8s: 10000, completed_at_nanos: 1620633602000000267 })))"]
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 172 filtered out; finished in 83.86s
+
+     Running unittests src/bin/observe_existing_reward.rs (target/debug/deps/observe_existing_reward-b2f2d4dc36a076b6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+command: env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p e2e-real-canisters nns_backing::tests::controlled_jupiter_uses_real_nns_and_exact_production_receipts -- --ignored --exact --nocapture --test-threads=1
+exit_status=0
+
+=== case controlled_two_year_compounds_real_maturity_without_io_issuance ===
++ env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p e2e-real-canisters nns_backing::tests::controlled_two_year_compounds_real_maturity_without_io_issuance -- --ignored --exact --nocapture --test-threads=1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.16s
+     Running unittests src/lib.rs (target/debug/deps/e2e_real_canisters-a2e00715188b1e84)
+
+running 1 test
+test nns_backing::tests::controlled_two_year_compounds_real_maturity_without_io_issuance ... account_semantic_release_wasm role=io_nns_neuron_manager sha256=119b94fc7910d7f8212cad152e3e346dece64fe5ff088de6f1716bef07a58986
+account_semantic_release_wasm role=io_stream_manager sha256=b4d9d9293a8ac3551e1b6dc76b7f3d3d1e5115ef66d907f58e21cdc81707131f
+account_semantic_two_year cycle=0 captured_e8s=19221043206 permanent_credit_e8s=7688407282 claim_credit_e8s=11532615924 no_issuance=true supply_unchanged=true reserve_unchanged=true
+controlled_two_year_cycle=0 phases=["Ok(Maturity(DisburseMaturitySucceeded))", "Ok(Maturity(AwaitingCapture))", "Ok(Maturity(Captured { captured_e8s: 19221043206 }))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Err(Pending(\"permanent-leg ClaimOrRefresh awaits canonical proof after command result Ok(())\"))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Completed(ManagerCompletedMaturity { kind: TwoYear, captured_e8s: 19221043206, permanent_credit_e8s: 7688407282, claim_credit_e8s: 11532615924, entitlement_batch_generation: None, completed_at_nanos: 1632213027000002568 })))"] completed=ManagerCompletedMaturity { kind: TwoYear, captured_e8s: 19221043206, permanent_credit_e8s: 7688407282, claim_credit_e8s: 11532615924, entitlement_batch_generation: None, completed_at_nanos: 1632213027000002568 }
+account_semantic_two_year cycle=1 captured_e8s=34256000123 permanent_credit_e8s=13702390049 claim_credit_e8s=20553590074 no_issuance=true supply_unchanged=true reserve_unchanged=true
+controlled_two_year_cycle=1 phases=["Ok(Maturity(DisburseMaturitySucceeded))", "Ok(Maturity(AwaitingCapture))", "Ok(Maturity(Captured { captured_e8s: 34256000123 }))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Err(Pending(\"permanent-leg ClaimOrRefresh awaits canonical proof after command result Ok(())\"))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Completed(ManagerCompletedMaturity { kind: TwoYear, captured_e8s: 34256000123, permanent_credit_e8s: 13702390049, claim_credit_e8s: 20553590074, entitlement_batch_generation: None, completed_at_nanos: 1643790628000003461 })))"] completed=ManagerCompletedMaturity { kind: TwoYear, captured_e8s: 34256000123, permanent_credit_e8s: 13702390049, claim_credit_e8s: 20553590074, entitlement_batch_generation: None, completed_at_nanos: 1643790628000003461 }
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 172 filtered out; finished in 268.23s
+
+     Running unittests src/bin/observe_existing_reward.rs (target/debug/deps/observe_existing_reward-b2f2d4dc36a076b6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+command: env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p e2e-real-canisters nns_backing::tests::controlled_two_year_compounds_real_maturity_without_io_issuance -- --ignored --exact --nocapture --test-threads=1
+exit_status=0
+
+=== case combined_real_sns_nns_io_lifecycle_reconciles_maturity_and_redemption ===
++ env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p e2e-real-canisters nns_backing::tests::combined_real_sns_nns_io_lifecycle_reconciles_maturity_and_redemption -- --ignored --exact --nocapture --test-threads=1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.84s
+     Running unittests src/lib.rs (target/debug/deps/e2e_real_canisters-a2e00715188b1e84)
+
+running 1 test
+test nns_backing::tests::combined_real_sns_nns_io_lifecycle_reconciles_maturity_and_redemption ... account_semantic_release_wasm role=io_stream_manager sha256=b4d9d9293a8ac3551e1b6dc76b7f3d3d1e5115ef66d907f58e21cdc81707131f
+account_semantic_release_wasm role=io_nns_neuron_manager sha256=119b94fc7910d7f8212cad152e3e346dece64fe5ff088de6f1716bef07a58986
+combined_real_summary event_round=129 ordinary_maturity=208211550226322 actual_mint=208211550226322 reward_recipients=3 redemption=RedemptionResult { request_fingerprint: [237, 205, 37, 181, 81, 43, 136, 73, 88, 226, 213, 51, 216, 133, 196, 211, 66, 94, 116, 251, 25, 243, 180, 242, 180, 99, 255, 23, 171, 188, 179, 116], nonce: 0, io_block: 10, icp_block: 19, net_icp_e8s: 228591925, gross_icp_e8s: 228601925, io_fee_e8s: 10000, icp_fee_e8s: 10000, completed_at_nanos: 1643358930000003492 } phases=["Ok(Maturity(AwaitingCapture))", "Ok(Maturity(Captured { captured_e8s: 208211552226322 }))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Err(Pending(\"permanent-leg ClaimOrRefresh awaits canonical proof after command result Ok(())\"))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Completed(ManagerCompletedMaturity { kind: TwoWeek, captured_e8s: 208211552226322, permanent_credit_e8s: 83284620880528, claim_credit_e8s: 124926931325794, entitlement_batch_generation: Some(1), completed_at_nanos: 1632386130000002730 })))"]
+account_semantic_combined jupiter_before_maturity=false two_week_captured_e8s=208211552226322 permanent_credit_e8s=83284620880528 claim_credit_e8s=124926931325794 actual_nns_maturity_e8s=208211550226322 staging_donation_e8s=2000000 recipient_count=3 redemption_gross_e8s=228601925 redemption_net_e8s=228591925 pooled_before_top_up_e8s=6000991428 top_up_credit_e8s=100000000 top_up_donation_e8s=1000000
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 172 filtered out; finished in 242.17s
+
+     Running unittests src/bin/observe_existing_reward.rs (target/debug/deps/observe_existing_reward-b2f2d4dc36a076b6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+command: env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p e2e-real-canisters nns_backing::tests::combined_real_sns_nns_io_lifecycle_reconciles_maturity_and_redemption -- --ignored --exact --nocapture --test-threads=1
+exit_status=0
+
+=== case combined_real_jupiter_then_two_week_maturity_accepts_donations ===
++ env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p e2e-real-canisters nns_backing::tests::combined_real_jupiter_then_two_week_maturity_accepts_donations -- --ignored --exact --nocapture --test-threads=1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.16s
+     Running unittests src/lib.rs (target/debug/deps/e2e_real_canisters-a2e00715188b1e84)
+
+running 1 test
+test nns_backing::tests::combined_real_jupiter_then_two_week_maturity_accepts_donations ... account_semantic_release_wasm role=io_stream_manager sha256=b4d9d9293a8ac3551e1b6dc76b7f3d3d1e5115ef66d907f58e21cdc81707131f
+account_semantic_release_wasm role=io_nns_neuron_manager sha256=119b94fc7910d7f8212cad152e3e346dece64fe5ff088de6f1716bef07a58986
+combined_real_summary event_round=129 ordinary_maturity=206876227034221 actual_mint=206876227034221 reward_recipients=3 redemption=RedemptionResult { request_fingerprint: [13, 117, 8, 216, 77, 5, 160, 248, 227, 55, 232, 73, 127, 183, 213, 146, 192, 169, 64, 33, 142, 36, 107, 148, 188, 6, 216, 221, 47, 54, 212, 102], nonce: 0, io_block: 10, icp_block: 20, net_icp_e8s: 228591755, gross_icp_e8s: 228601755, io_fee_e8s: 10000, icp_fee_e8s: 10000, completed_at_nanos: 1632386130000002793 } phases=["Ok(Maturity(AwaitingCapture))", "Ok(Maturity(Captured { captured_e8s: 206876229034221 }))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Err(Pending(\"permanent-leg ClaimOrRefresh awaits canonical proof after command result Ok(())\"))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Delivering))", "Ok(Maturity(Completed(ManagerCompletedMaturity { kind: TwoWeek, captured_e8s: 206876229034221, permanent_credit_e8s: 82750491603688, claim_credit_e8s: 124125737410533, entitlement_batch_generation: Some(1), completed_at_nanos: 1632386130000002761 })))"]
+account_semantic_combined jupiter_before_maturity=true two_week_captured_e8s=206876229034221 permanent_credit_e8s=82750491603688 claim_credit_e8s=124125737410533 actual_nns_maturity_e8s=206876227034221 staging_donation_e8s=2000000 recipient_count=3 redemption_gross_e8s=228601755 redemption_net_e8s=228591755 pooled_before_top_up_e8s=6000991428 top_up_credit_e8s=100000000 top_up_donation_e8s=1000000
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 172 filtered out; finished in 216.26s
+
+     Running unittests src/bin/observe_existing_reward.rs (target/debug/deps/observe_existing_reward-b2f2d4dc36a076b6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+command: env RUST_TEST_THREADS=1 POCKET_IC_MUTE_SERVER=1 POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server IO_REAL_SNS_WASM_DIR=/home/codexdev/src/IO/.real-canister-wasms IO_REAL_SNS_WASM_MANIFEST=/home/codexdev/src/IO/tests/e2e_real_canisters/wasms.local.toml IO_POST_M70_NNS_GOVERNANCE_WASM=/home/codexdev/.cache/io/post-mission70-nns-candidate/c748b8e76b90ceef329c055e6f7b38a00aae8745/governance-canister.wasm IO_POST_M70_XRC_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_xrc.wasm IO_POST_M70_ACTOR_WASM=/home/codexdev/src/IO/target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm IO_ACCOUNT_SEMANTIC_STREAM_WASM=/home/codexdev/src/IO/release-artifacts/io_stream_manager.wasm IO_ACCOUNT_SEMANTIC_NNS_WASM=/home/codexdev/src/IO/release-artifacts/io_nns_neuron_manager.wasm cargo test -p e2e-real-canisters nns_backing::tests::combined_real_jupiter_then_two_week_maturity_accepts_donations -- --ignored --exact --nocapture --test-threads=1
+exit_status=0
