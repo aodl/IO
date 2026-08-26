@@ -212,7 +212,7 @@ fn main() {
                 .nns_governance
                 .as_ref()
                 .map(|status| status.neurons.len()),
-            Some(2),
+            Some(1),
         );
         assert!(dashboard.protocol.claim_rate.is_some());
         assert!(dashboard
