@@ -361,16 +361,18 @@ sns_treasury_subaccount_hex() {
 render_local_account_map() {
   local output="$1"
   local governance="$2"
-  local stream nns_manager jupiter treasury reserve liquid jupiter_io two_week
+  local stream nns_manager jupiter treasury reserve liquid jupiter_io
+  local two_week two_year
   stream="$(toml_string "$(local_vars_file)" local io_stream_manager_canister)"
   nns_manager="$(toml_string "$(local_vars_file)" local io_nns_neuron_manager_canister)"
   jupiter="$(runtime_value accounts operator_principal)"
   reserve="$(runtime_value accounts reserve_subaccount_hex)"
   liquid="$(runtime_value accounts liquid_icp_subaccount_hex)"
   jupiter_io="$(runtime_value accounts jupiter_io_subaccount_hex)"
-  two_week="$(runtime_value accounts two_week_staging_subaccount_hex)"
+  two_week="f2a8f595dfb105f2c3134b466f6e8b5102752ba2505b0ee5cb7d7e3de1d57266"
+  two_year="daa2f749bb8f8998f94ee65e1871dc84444db38965123889f3cad6bc521ba5a1"
   treasury="$(sns_treasury_subaccount_hex "$governance")"
-  for entry in "$reserve" "$liquid" "$jupiter_io" "$two_week" "$treasury"; do
+  for entry in "$reserve" "$liquid" "$jupiter_io" "$two_week" "$two_year" "$treasury"; do
     require_hex_32_bytes "local Account subaccount" "$entry"
   done
   {
@@ -380,6 +382,7 @@ render_local_account_map() {
     printf '[jupiter_io]\nowner = "%s"\nsubaccount_hex = "%s"\nledger = "sns"\n\n' "$jupiter" "$jupiter_io"
     printf '[jupiter_icp_staging]\nowner = "%s"\nsubaccount = "none"\nledger = "icp"\n\n' "$nns_manager"
     printf '[two_week_maturity_staging]\nowner = "%s"\nsubaccount_hex = "%s"\nledger = "icp"\n\n' "$nns_manager" "$two_week"
+    printf '[two_year_maturity_staging]\nowner = "%s"\nsubaccount_hex = "%s"\nledger = "icp"\n\n' "$nns_manager" "$two_year"
     printf '[excluded_sns_treasury]\nname = "sns-treasury"\nowner = "%s"\nsubaccount_hex = "%s"\ndistribution_nonce = 0\ndomain = "token-distribution"\nexpected_nonzero = true\n' "$governance" "$treasury"
   } > "$output"
 }

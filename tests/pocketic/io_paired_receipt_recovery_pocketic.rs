@@ -371,4 +371,9 @@ fn malformed_prepare_after_persistence_replays_and_quarantines_redemption() {
         submitted,
         "submitted claim transfer identity must survive same-Wasm upgrade"
     );
+    eprintln!(
+        "account_semantic_receipt_recovery malformed_after_persist=true exact_replay=true quarantined_redemption=true same_wasm_upgrade=true duplicate_transfer=false stream_operation_sequence={} proof_block={}",
+        permit.stream_operation_sequence,
+        block,
+    );
 }

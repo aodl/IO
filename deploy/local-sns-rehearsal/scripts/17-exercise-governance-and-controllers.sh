@@ -118,6 +118,35 @@ EOF
   mark_phase_done 17-upgrade-attempted "target=${historian} path=inline-governance-root proposal_id=${inline_proposal_id} before=${before_hash} payload_wasm_sha256=${payload_hash} after=${after_hash} release_manifest_raw_sha256=${raw_hash} typed_observation_config=true controllers=${final_controllers}; see ${log_file}"
 fi
 
+if ! phase_is_done 17-manager-upgrade-restart; then
+  manager_hash="$(manifest_artifact_value io_nns_neuron_manager raw_wasm_sha256)"
+  manager_before="$(dfx canister info --network "$network_url" --identity "$identity" "$nns_manager" 2>&1 | sed -n 's/^Module hash: 0x//p')"
+  [ "$manager_before" = "$manager_hash" ] || {
+    record_blocker "NNS manager before same-release upgrade does not match the exact release hash"
+    exit 2
+  }
+  manager_upgrade_arg="$(didc encode '()')"
+  manager_proposal_id="$(submit_inline_sns_upgrade "$log_file" \
+    'Restart exact current IO NNS manager release' \
+    'Local-only same-release restart through SNS Governance and Root before authenticated activation.' \
+    "$nns_manager" "${REPO_ROOT}/release-artifacts/io_nns_neuron_manager.wasm" "$manager_upgrade_arg")"
+  wait_sns_proposal "$log_file" "$manager_proposal_id"
+  manager_after="$(dfx canister info --network "$network_url" --identity "$identity" "$nns_manager" 2>&1 | sed -n 's/^Module hash: 0x//p')"
+  [ "$manager_after" = "$manager_hash" ] || {
+    record_blocker "SNS-controlled NNS manager restart did not retain the exact current release module"
+    exit 2
+  }
+  manager_status="$(dfx canister call --network "$network_url" --identity "$identity" --query --candid \
+    "${REPO_ROOT}/canisters/io_nns_neuron_manager/io_nns_neuron_manager.did" "$nns_manager" get_status '()')"
+  printf '%s\n' "$manager_status" >> "$log_file"
+  printf '%s' "$manager_status" | grep -q Paused || {
+    record_blocker 'same-release NNS manager restart did not reopen Paused'
+    exit 2
+  }
+  mark_phase_done 17-manager-upgrade-restart \
+    "target=${nns_manager} path=inline-governance-root proposal_id=${manager_proposal_id} before=${manager_before} after=${manager_after} lifecycle=Paused exact_current_release=true"
+fi
+
 # The Candid paths cannot be derived from principals, so register each manager explicitly.
 if ! phase_is_done 17-stream-function-registered; then
   function_id="$(runtime_value governance stream_lifecycle_function_id)"

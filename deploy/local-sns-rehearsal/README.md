@@ -37,9 +37,13 @@ execution canister `oae4c-3iaaa-aaaar-qb5qq-cai` or the two-year protected NNS n
 - `scripts/16-exercise-index-and-archives.sh`: captures index synchronization, exact Account histories and canonical ledger/Root archive discovery.
 - `scripts/17-exercise-governance-and-controllers.sh`: records controller and hash-changing upgrade evidence, registers lifecycle functions, and requires both managers to activate through signed SNS Governance proposals.
 - `scripts/17-observe-one-day-reward.sh`: advances only the attached local PocketIC instance by exactly one day and records the proposal-bearing production reward observation and permissionless keeper result.
-- `scripts/18-package-evidence.sh`: fails closed until a complete fresh pooled
-  claim-backing rehearsal is implemented, executed, and reviewed; historical
-  evidence is never rebound.
+- `scripts/18-exercise-account-semantic-protocol.sh`: serially executes the
+  exact proposal-143660 boundary and controlled current-IO account-semantic,
+  carry-forward, liquidity and irreversible-effect recovery cases.
+- `scripts/18-package-evidence.sh`: packages a new immutable layered evidence
+  directory only after every required official and controlled checkpoint,
+  self-verifies its checksum inventory, validates the candidate package, and
+  updates the canonical selector only after candidate validation succeeds.
 - `scripts/19-cleanup-official-network.sh`: scoped cleanup reminder for local-only processes.
 
 `canister-ids.local.toml` is the operator-filled local evidence file and should not be treated as production config.
@@ -80,7 +84,12 @@ Manual sequence:
 12. Verify SNS governance/root/swap availability and dapp controller state.
 13. Test an SNS-governance-controlled dapp upgrade proposal and lifecycle proposal without direct management-canister substitution.
 14. Run `runbook.sh validate` and `cargo run -p xtask -- validate_local_sns_ledger`.
-15. Run `runbook.sh package-evidence` to create sanitized committed evidence or a blocker report.
+15. Run `runbook.sh exercise-account-semantic-protocol` with the exact pinned
+    PocketIC, proposal-143660 Governance artifact, real SNS bundle and current
+    release Wasms.
+16. Run `runbook.sh package-evidence` to create a new sanitized immutable
+    package. Packaging refuses missing checkpoints and never edits an earlier
+    dated package.
 
 After advancing PocketIC beyond signed-ingress time, use the repository observer instead of weakening ingress validation:
 
@@ -122,6 +131,17 @@ its current source/artifact lineage.
 The current canonical shape additionally preserves exact Stream/NNS/historian Candid inputs, the typed Account map, checked redemption economics and the treasury Account history. It independently calculates excluded total, redeemable supply, gross and net, verifies ledger balance identities and requires the historian rate to agree. It also requires canonical historian supply/reserve/liquid/rate,
 module/controller, lifecycle, Governance, index and archive observations to be
 fresh and complete. No completed package may contain blocker/placeholder text.
+
+The account-semantic shape adds a fixed Account map, source-built official SNS
+binary hashes, exact NNS boundary identity, phase inventory, structured
+scenario results, controlled PocketIC log and explicit proof-layer map. It
+requires distinct fixed TwoWeek and TwoYear maturity Accounts, no maturity
+Mint-provenance surface, Jupiter/TwoWeek paired settlement, TwoYear
+no-issuance treatment, `B = L + P + U + T`, 100/20/50/70 carry-forward,
+cross-Account isolation, global-rate redemption and exact replay/recovery.
+Official SNS observations, exact NNS Governance mechanics and controlled IO
+orchestration remain separate claims in the package rather than being
+presented as one environment.
 
 Both package forms reject unexpected or uncovered files, duplicate checksum entries, path traversal, symlinks, non-regular files, secret/private-key markers, and mainnet endpoint or network arguments.
 
@@ -168,5 +188,9 @@ The local SNS rehearsal is complete only when:
 - SNS governance/root/swap availability was observed;
 - dapp controller state was checked;
 - `cargo run -p xtask -- validate_local_sns_ledger` passes against the filled local evidence file.
+- the account-semantic driver has passed all Layer B/C cases against the exact
+  recorded release;
+- the new package validates before and after its exact selector binding;
+- no maturity Mint block or provenance endpoint was used.
 
 This still does not prove mainnet SNS launch readiness, final tokenomics, final SNS config, mainnet testflight, audit readiness, production adapter activation, or that IO is live.

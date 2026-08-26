@@ -58,6 +58,9 @@ case "$subcommand" in
   observe-one-day-reward)
     "${SCRIPT_DIR}/scripts/17-observe-one-day-reward.sh" "$@"
     ;;
+  exercise-account-semantic-protocol)
+    "${SCRIPT_DIR}/scripts/18-exercise-account-semantic-protocol.sh" "$@"
+    ;;
   package-evidence)
     "${SCRIPT_DIR}/scripts/18-package-evidence.sh" "$@"
     ;;
@@ -75,16 +78,17 @@ Local-only official SNS rehearsal flow:
 6. Run runbook.sh capture-evidence to print local ledger/index/governance/root calls.
 7. Paste observed evidence into canister-ids.local.toml.
 8. Run runbook.sh validate and cargo run -p xtask -- validate_local_sns_ledger.
-9. `package-evidence` intentionally returns a blocker until the complete fresh
-   pooled claim-backing rehearsal is implemented and reviewed. Do not bind the
-   historical packages to this source.
+9. Run `exercise-account-semantic-protocol` to execute the exact proposal-143660
+   and controlled account-semantic PocketIC evidence layers.
+10. Run `package-evidence` only after every official and controlled phase has an
+    exact successful checkpoint.
 
 No mainnet commands are part of this runbook.
 EOF
     ;;
   *)
     printf 'unknown subcommand: %s\n' "$subcommand" >&2
-    printf 'known: check, render-sns-init, record-ids, capture-evidence, render-wiring, validate, bootstrap-official-network, build-local-io-canisters, deploy-local-dapps, propose-and-finalize-sns, discover-sns-canisters, exercise-ledger, exercise-index-and-archives, exercise-governance-and-controllers, observe-one-day-reward, package-evidence, cleanup-official-network, print-next-steps\n' >&2
+    printf 'known: check, render-sns-init, record-ids, capture-evidence, render-wiring, validate, bootstrap-official-network, build-local-io-canisters, deploy-local-dapps, propose-and-finalize-sns, discover-sns-canisters, exercise-ledger, exercise-index-and-archives, exercise-governance-and-controllers, observe-one-day-reward, exercise-account-semantic-protocol, package-evidence, cleanup-official-network, print-next-steps\n' >&2
     exit 2
     ;;
 esac

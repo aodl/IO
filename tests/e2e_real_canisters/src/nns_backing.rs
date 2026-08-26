@@ -1160,6 +1160,24 @@ fn debug_wasm(name: &str) -> Vec<u8> {
     .unwrap_or_else(|error| panic!("build {name} debug Wasm before controlled evidence: {error}"))
 }
 
+fn current_io_wasm(name: &str) -> Vec<u8> {
+    let env_name = match name {
+        "io_stream_manager" => "IO_ACCOUNT_SEMANTIC_STREAM_WASM",
+        "io_nns_neuron_manager" => "IO_ACCOUNT_SEMANTIC_NNS_WASM",
+        _ => panic!("unsupported current IO Wasm role: {name}"),
+    };
+    let path = std::env::var_os(env_name).unwrap_or_else(|| {
+        panic!("{env_name} must name the exact current release Wasm for canonical evidence")
+    });
+    let wasm = std::fs::read(&path)
+        .unwrap_or_else(|error| panic!("read exact current {name} Wasm {path:?}: {error}"));
+    eprintln!(
+        "account_semantic_release_wasm role={name} sha256={}",
+        hex::encode(Sha256::digest(&wasm))
+    );
+    wasm
+}
+
 fn sns_neuron_subaccount(neuron_id: u64) -> Vec<u8> {
     let mut subaccount = vec![0; 32];
     subaccount[24..].copy_from_slice(&neuron_id.to_be_bytes());
@@ -1535,7 +1553,7 @@ fn install_combined_real_sns(fixture: &ControlledNnsNeuron) -> CombinedRealSns {
 
 fn install_combined_stream(fixture: &ControlledNnsNeuron, sns: &CombinedRealSns) -> Vec<u8> {
     use io_stream_manager::{InitArgs, StreamConfig};
-    let wasm = debug_wasm("io_stream_manager");
+    let wasm = current_io_wasm("io_stream_manager");
     fixture.pic.install_canister(
         sns.stream,
         wasm.clone(),
@@ -1619,16 +1637,16 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires pinned real NNS Governance/ICP ledger, candidate SNS ledger, current IO debug Wasms, and POCKET_IC_BIN"]
+    #[ignore = "requires pinned real NNS Governance/ICP ledger, candidate SNS ledger, current IO release Wasms, and POCKET_IC_BIN"]
     fn controlled_jupiter_uses_real_nns_and_exact_production_receipts() {
         let _guard = crate::lock_test_env();
         let fixture = super::create_zero_maturity_protected_neuron();
         let stream = crate::pocketic_env::create_empty_application_canister(&fixture.pic);
-        let manager_wasm = super::debug_wasm("io_nns_neuron_manager");
+        let manager_wasm = super::current_io_wasm("io_nns_neuron_manager");
         let controlled_stream = super::install_controlled_stream(
             &fixture,
             stream,
-            super::debug_wasm("io_stream_manager"),
+            super::current_io_wasm("io_stream_manager"),
         );
         super::fund_manager_staging(&fixture);
         let jupiter = super::install_manager(
@@ -1898,6 +1916,15 @@ mod tests {
             supply_before.0 - supply_after.0,
             completed.io_fee_e8s.into()
         );
+        eprintln!(
+            "account_semantic_jupiter gross_e8s={} permanent_credit_e8s={} claim_credit_e8s={} backed_io_e8s={} io_fee_e8s={} deposit_block={} unauthorized_rejected=true wrong_block_rejected=true receipt_sequence=1",
+            gross_e8s,
+            completed.stake_e8s,
+            completed.liquid_e8s,
+            completed.backed_io_e8s,
+            completed.io_fee_e8s,
+            deposit_block,
+        );
 
         let replay: Result<ManagerJupiterProgress, ManagerApiError> = super::update(
             &fixture.pic,
@@ -1913,17 +1940,17 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires pinned real NNS Governance/ICP ledger, candidate SNS ledger, current IO debug Wasms, and POCKET_IC_BIN"]
+    #[ignore = "requires pinned real NNS Governance/ICP ledger, candidate SNS ledger, current IO release Wasms, and POCKET_IC_BIN"]
     fn controlled_two_year_compounds_real_maturity_without_io_issuance() {
         let _guard = crate::lock_test_env();
         let fixture = super::create_zero_maturity_protected_neuron();
         let real_sns_trigger = super::install_real_sns_maturity_trigger(&fixture);
         let stream = crate::pocketic_env::create_empty_application_canister(&fixture.pic);
-        let manager_wasm = super::debug_wasm("io_nns_neuron_manager");
+        let manager_wasm = super::current_io_wasm("io_nns_neuron_manager");
         let controlled_stream = super::install_controlled_stream(
             &fixture,
             stream,
-            super::debug_wasm("io_stream_manager"),
+            super::current_io_wasm("io_stream_manager"),
         );
         super::fund_manager_staging(&fixture);
         let _ = super::install_manager(
@@ -2164,6 +2191,13 @@ mod tests {
             );
             assert_eq!(supply_after, supply_before);
             assert_eq!(reserve_after, reserve_before);
+            eprintln!(
+                "account_semantic_two_year cycle={} captured_e8s={} permanent_credit_e8s={} claim_credit_e8s={} no_issuance=true supply_unchanged=true reserve_unchanged=true",
+                cycle,
+                completed.captured_e8s,
+                completed.permanent_credit_e8s,
+                completed.claim_credit_e8s,
+            );
             actual_mints.push(completed.captured_e8s);
             fixture
                 .pic
@@ -2273,7 +2307,7 @@ mod tests {
         let mut fixture = super::create_zero_maturity_protected_neuron_with_stake(0);
         let sns = super::install_combined_real_sns(&fixture);
         let stream_wasm = super::install_combined_stream(&fixture, &sns);
-        let manager_wasm = super::debug_wasm("io_nns_neuron_manager");
+        let manager_wasm = super::current_io_wasm("io_nns_neuron_manager");
         super::fund_manager_staging(&fixture);
         let jupiter = super::install_manager(
             &fixture,
@@ -3468,16 +3502,31 @@ mod tests {
             actual_minted_e8s,
             recipient_after.len(),
         );
+        eprintln!(
+            "account_semantic_combined jupiter_before_maturity={} two_week_captured_e8s={} permanent_credit_e8s={} claim_credit_e8s={} actual_nns_maturity_e8s={} staging_donation_e8s={} recipient_count={} redemption_gross_e8s={} redemption_net_e8s={} pooled_before_top_up_e8s={} top_up_credit_e8s={} top_up_donation_e8s={}",
+            jupiter_before_maturity,
+            completed.captured_e8s,
+            completed.permanent_credit_e8s,
+            completed.claim_credit_e8s,
+            actual_minted_e8s,
+            maturity_donation,
+            recipient_after.len(),
+            redemption.gross_icp_e8s,
+            redemption.net_icp_e8s,
+            before_top_up.pooled_parent_principal_e8s,
+            top_up_credit,
+            top_up_donation,
+        );
     }
 
     #[test]
-    #[ignore = "requires candidate SNS Governance/Root/ledger, pinned real NNS Governance/ICP ledger, current IO debug Wasms, and POCKET_IC_BIN"]
+    #[ignore = "requires candidate SNS Governance/Root/ledger, pinned real NNS Governance/ICP ledger, current IO release Wasms, and POCKET_IC_BIN"]
     fn combined_real_sns_nns_io_lifecycle_reconciles_maturity_and_redemption() {
         run_combined_real_sns_nns_io_lifecycle(false);
     }
 
     #[test]
-    #[ignore = "requires candidate SNS Governance/Root/ledger, pinned real NNS Governance/ICP ledger, current IO debug Wasms, and POCKET_IC_BIN"]
+    #[ignore = "requires candidate SNS Governance/Root/ledger, pinned real NNS Governance/ICP ledger, current IO release Wasms, and POCKET_IC_BIN"]
     fn combined_real_jupiter_then_two_week_maturity_accepts_donations() {
         run_combined_real_sns_nns_io_lifecycle(true);
     }

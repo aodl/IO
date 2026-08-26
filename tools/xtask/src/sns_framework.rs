@@ -1259,6 +1259,7 @@ const LIFECYCLE_PHASES: &[&str] = &[
     "exercise-ledger",
     "exercise-index-and-archives",
     "observe-one-day-reward",
+    "exercise-account-semantic-protocol",
     "package-evidence",
 ];
 
@@ -1465,6 +1466,15 @@ fn run_lifecycle_profile(
         "lifecycle requires IO_LOCAL_SNS_TOPOLOGY_FILE from the uniquely owned sns-testing-init state"
             .to_string()
     })?;
+    let official_checkout = env::var("IO_LOCAL_SNS_IC_CHECKOUT")
+        .map(PathBuf::from)
+        .map_err(|_| {
+            "lifecycle requires IO_LOCAL_SNS_IC_CHECKOUT naming the isolated clean pinned checkout"
+                .to_string()
+        })?;
+    if !official_checkout.is_absolute() {
+        return Err("IO_LOCAL_SNS_IC_CHECKOUT must be absolute".into());
+    }
     let preflight = Command::new("cargo")
         .current_dir(io_root)
         .args([
@@ -1572,7 +1582,7 @@ fn run_lifecycle_profile(
                 "IO_LOCAL_SNS_CANISTER_EVIDENCE_FILE",
                 inputs.join("canister-ids.local.toml"),
             )
-            .env("IO_LOCAL_SNS_IC_CHECKOUT", io_root.join("../ic"))
+            .env("IO_LOCAL_SNS_IC_CHECKOUT", &official_checkout)
             .status()
             .map_err(|err| format!("failed to run lifecycle phase {phase}: {err}"))?;
         if !status.success() {
@@ -2402,8 +2412,12 @@ mod tests {
     fn lifecycle_orders_every_host_signed_phase_before_reward_time_advance() {
         assert_eq!(LIFECYCLE_PHASES.last(), Some(&"package-evidence"));
         assert_eq!(
-            &LIFECYCLE_PHASES[LIFECYCLE_PHASES.len() - 2..],
-            &["observe-one-day-reward", "package-evidence"]
+            &LIFECYCLE_PHASES[LIFECYCLE_PHASES.len() - 3..],
+            &[
+                "observe-one-day-reward",
+                "exercise-account-semantic-protocol",
+                "package-evidence"
+            ]
         );
         for phase in [
             "bootstrap-official-network",

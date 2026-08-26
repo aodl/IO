@@ -552,6 +552,7 @@ type SimpleTomlDocument = BTreeMap<String, BTreeMap<String, SimpleTomlValue>>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CurrentCanonicalSelector {
+    version: u64,
     package: String,
     io_release_source_commit: String,
     io_artifact_recording_commit: String,
@@ -565,6 +566,7 @@ struct ValidatedEvidencePackage {
     complete: bool,
     monitoring: bool,
     canonical_economics: bool,
+    account_semantic: bool,
     io_release_source_commit: Option<String>,
     io_artifact_recording_commit: Option<String>,
 }
@@ -765,7 +767,8 @@ fn parse_current_canonical_selector(
     if schema.keys().map(String::as_str).collect::<Vec<_>>() != ["version"] {
         return Err(format!("{path}: [schema] fields must be exactly version"));
     }
-    if require_simple_u64(path, &doc, "schema", "version")? != 1 {
+    let version = require_simple_u64(path, &doc, "schema", "version")?;
+    if !matches!(version, 1 | 2) {
         return Err(format!("{path}: unsupported selector schema version"));
     }
     let expected_current_fields = [
@@ -783,6 +786,7 @@ fn parse_current_canonical_selector(
         ));
     }
     let selector = CurrentCanonicalSelector {
+        version,
         package: require_simple_string(path, &doc, "current", "package")?,
         io_release_source_commit: require_simple_string(
             path,
@@ -2825,6 +2829,7 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
         "deploy/local-sns-rehearsal/scripts/16-exercise-index-and-archives.sh",
         "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
         "deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh",
+        "deploy/local-sns-rehearsal/scripts/18-exercise-account-semantic-protocol.sh",
         "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
         "deploy/local-sns-rehearsal/scripts/19-cleanup-official-network.sh",
     ] {
@@ -3015,28 +3020,39 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
         root,
         "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
     )?;
-    if packaging_phase.contains("corrected pooled claim-backing canonical evidence is missing") {
-        require_present(
-            "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
-            &packaging_phase,
-            &["record_blocker", "exit 2"],
-        )?;
-    } else {
-        require_present(
-            "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
-            &packaging_phase,
-            &[
-                "mktemp -d",
-                "validate_local_sns_evidence_package",
-                "current-canonical.toml",
-                "mv \"$selector_temporary\" \"$selector_path\"",
-                "preceding selector restored and candidate removed",
-                "after_module_sha256",
-                "proposal_adopted = true",
-                "proposal_executed = true",
-            ],
-        )?;
-    }
+    require_present(
+        "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
+        &packaging_phase,
+        &[
+            "mktemp -d",
+            "validate_local_sns_evidence_package",
+            "validate_local_sns_committed_evidence",
+            "current-canonical.toml",
+            "mv \"$selector_temporary\" \"$selector_path\"",
+            "preceding selector restored and candidate removed",
+            "account_semantic_economics = true",
+            "phase-inventory.toml",
+            "source-built-tools.toml",
+            "sha256sum -c SHA256SUMS",
+        ],
+    )?;
+    let account_semantic_phase = require_file(
+        root,
+        "deploy/local-sns-rehearsal/scripts/18-exercise-account-semantic-protocol.sh",
+    )?;
+    require_present(
+        "deploy/local-sns-rehearsal/scripts/18-exercise-account-semantic-protocol.sh",
+        &account_semantic_phase,
+        &[
+            "semantic_staging_carries_late_value_into_the_next_cycle_for_both_roles",
+            "controlled_jupiter_uses_real_nns_and_exact_production_receipts",
+            "controlled_two_year_compounds_real_maturity_without_io_issuance",
+            "exact_post_m70_upgrade_rewards_fourteen_day_boundary",
+            "account_semantic_carry_forward kind=TwoWeek",
+            "account_semantic_carry_forward kind=TwoYear",
+            "obsolete_maturity_api",
+        ],
+    )?;
     require_present(
         "deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh",
         &require_file(
@@ -6000,6 +6016,10 @@ fn validate_local_sns_evidence_package_at(
         .get("provenance")
         .and_then(|section| section.get("canonical_redemption_economics"))
         == Some(&SimpleTomlValue::Bool(true));
+    let account_semantic = doc
+        .get("provenance")
+        .and_then(|section| section.get("account_semantic_economics"))
+        == Some(&SimpleTomlValue::Bool(true));
     if selected_current && (!complete || !monitoring || !canonical_economics) {
         return Err(format!(
                 "{manifest_path}: selected current package must be complete, monitoring, and canonical-redemption-economics evidence"
@@ -6016,7 +6036,34 @@ fn validate_local_sns_evidence_package_at(
             "{manifest_path}: official_ic_source_commit must be exact 40-hex commit"
         ));
     }
-    let expected_files: BTreeSet<String> = if complete {
+    let expected_files: BTreeSet<String> = if complete && account_semantic {
+        [
+            "README.md",
+            "SHA256SUMS",
+            "account-map.toml",
+            "canister-ids.local.toml",
+            "evidence-layers.toml",
+            "historian-dashboard.log",
+            "local-vars.sanitized.toml",
+            "manifest.toml",
+            "nns-boundary.toml",
+            "nns-manager-install-args.did",
+            "official-sns.log",
+            "phase-inventory.toml",
+            "pocketic-validation.log",
+            "release-evidence.toml",
+            "release-manifest.json",
+            "runtime.sanitized.toml",
+            "scenario-results.toml",
+            "sns_init.local.yaml",
+            "source-built-tools.toml",
+            "stream-install-args.did",
+            "toolchain-provenance.toml",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+    } else if complete {
         let mut files = [
             "manifest.toml",
             "toolchain-provenance.toml",
@@ -6037,7 +6084,7 @@ fn validate_local_sns_evidence_package_at(
             files.insert("release-evidence.toml".into());
             files.insert("historian-dashboard.log".into());
         }
-        if canonical_economics {
+        if canonical_economics && !account_semantic {
             for file in [
                 "stream-install-args.did",
                 "nns-manager-install-args.did",
@@ -6094,21 +6141,37 @@ fn validate_local_sns_evidence_package_at(
             }
             let file_path = format!("{rel}/{file}");
             let text = require_file(root, &file_path)?;
-            reject_completed_evidence_placeholders(&file_path, &text)?;
+            if !(account_semantic && (file.ends_with(".log") || file == "README.md")) {
+                reject_completed_evidence_placeholders(&file_path, &text)?;
+            }
         }
         let toolchain_path = format!("{rel}/toolchain-provenance.toml");
         let toolchain = require_file(root, &toolchain_path)?;
-        validate_completed_toolchain_provenance(&toolchain_path, &toolchain)?;
-        if monitoring {
-            validate_monitoring_evidence(root, rel, &doc, selected_current)?;
+        if !account_semantic {
+            validate_completed_toolchain_provenance(&toolchain_path, &toolchain)?;
         }
-        if canonical_economics {
+        if monitoring {
+            if account_semantic {
+                validate_account_semantic_monitoring(root, rel, &doc, selected_current)?;
+            } else {
+                validate_monitoring_evidence(root, rel, &doc, selected_current)?;
+            }
+        }
+        if canonical_economics && !account_semantic {
             if !monitoring {
                 return Err(format!(
                         "{manifest_path}: canonical redemption economics must be release-bound monitoring evidence"
                     ));
             }
             validate_canonical_redemption_evidence(root, rel)?;
+        }
+        if account_semantic {
+            if !monitoring || !canonical_economics {
+                return Err(format!(
+                    "{manifest_path}: account-semantic evidence must be release-bound monitoring canonical evidence"
+                ));
+            }
+            validate_account_semantic_evidence(root, rel, &doc, selected_current)?;
         }
     } else {
         let blocker_report =
@@ -6134,6 +6197,7 @@ fn validate_local_sns_evidence_package_at(
         complete,
         monitoring,
         canonical_economics,
+        account_semantic,
         io_release_source_commit: if monitoring {
             Some(require_simple_string(
                 &manifest_path,
@@ -6166,6 +6230,11 @@ fn validate_current_selector_binding(
     if !validated.complete || !validated.monitoring || !validated.canonical_economics {
         return Err(format!(
             "{package}: selected current package is not complete monitoring canonical evidence"
+        ));
+    }
+    if selector.version == 2 && !validated.account_semantic {
+        return Err(format!(
+            "{package}: selector schema 2 requires current account-semantic evidence"
         ));
     }
     if validated.io_release_source_commit.as_deref()
@@ -6203,6 +6272,363 @@ fn validate_current_selector_binding(
         if hex_sha256(&bytes) != expected {
             return Err(format!(
                 "{CURRENT_CANONICAL_SELECTOR}: current.{field} does not match {path}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_account_semantic_evidence(
+    root: &Path,
+    package: &str,
+    manifest: &SimpleTomlDocument,
+    selected_current: bool,
+) -> Result<(), String> {
+    let account_path = format!("{package}/account-map.toml");
+    let account_text = require_file(root, &account_path)?;
+    let accounts = parse_simple_toml_document(&account_path, &account_text)?;
+    let two_week = require_simple_string(
+        &account_path,
+        &accounts,
+        "two_week_maturity_staging",
+        "subaccount_hex",
+    )?;
+    let two_year = require_simple_string(
+        &account_path,
+        &accounts,
+        "two_year_maturity_staging",
+        "subaccount_hex",
+    )?;
+    validate_lower_hex(
+        &account_path,
+        "two_week_maturity_staging.subaccount_hex",
+        &two_week,
+        64,
+    )?;
+    validate_lower_hex(
+        &account_path,
+        "two_year_maturity_staging.subaccount_hex",
+        &two_year,
+        64,
+    )?;
+    if two_week != "f2a8f595dfb105f2c3134b466f6e8b5102752ba2505b0ee5cb7d7e3de1d57266"
+        || two_year != "daa2f749bb8f8998f94ee65e1871dc84444db38965123889f3cad6bc521ba5a1"
+        || two_week == two_year
+        || require_simple_string(
+            &account_path,
+            &accounts,
+            "two_week_maturity_staging",
+            "owner",
+        )? != require_simple_string(
+            &account_path,
+            &accounts,
+            "two_year_maturity_staging",
+            "owner",
+        )?
+    {
+        return Err(format!(
+            "{account_path}: maturity staging Accounts are not the two fixed, distinct manager-owned semantic Accounts"
+        ));
+    }
+
+    let stream_path = format!("{package}/stream-install-args.did");
+    let stream = require_file(root, &stream_path)?;
+    let nns_path = format!("{package}/nns-manager-install-args.did");
+    let nns = require_file(root, &nns_path)?;
+    for forbidden in [
+        "prove_maturity_mint",
+        "MintProofState",
+        "MintEvidence",
+        "two_week_maturity_staging =",
+        "two_year_maturity_staging =",
+        "maturity_staging =",
+    ] {
+        if stream.contains(forbidden) || nns.contains(forbidden) {
+            return Err(format!(
+                "{package}: active install/Candid evidence contains forbidden provenance/config surface {forbidden:?}"
+            ));
+        }
+    }
+
+    let scenario_path = format!("{package}/scenario-results.toml");
+    let scenario_text = require_file(root, &scenario_path)?;
+    let scenario = parse_simple_toml_document(&scenario_path, &scenario_text)?;
+    if require_simple_string(&scenario_path, &scenario, "evidence", "schema")?
+        != "account-semantic-v1"
+        || require_simple_string(&scenario_path, &scenario, "backing", "identity")?
+            != "B = L + P + U + T"
+    {
+        return Err(format!(
+            "{scenario_path}: account-semantic schema or backing identity mismatch"
+        ));
+    }
+    for (section, key) in [
+        ("evidence", "official_sns_layer_complete"),
+        ("evidence", "exact_nns_boundary_layer_complete"),
+        ("evidence", "controlled_orchestration_layer_complete"),
+        ("backing", "identity_checked"),
+        ("backing", "liquid_first"),
+        ("backing", "ordinary_reconciliation"),
+        ("backing", "lazy_pooled_parent"),
+        ("jupiter", "authorized_source_block_required"),
+        ("jupiter", "unauthorized_rejected"),
+        ("jupiter", "paired_settlement"),
+        ("two_week", "fixed_semantic_account"),
+        ("two_week", "paired_settlement"),
+        ("two_week", "mint_provenance_api_absent"),
+        ("two_year", "fixed_semantic_account"),
+        ("two_year", "claim_credit_increases_backing"),
+        ("carry_forward", "cross_account_isolation"),
+        ("liveness", "no_effect_retry_exactly_once"),
+        ("liveness", "ambiguous_effect_never_resubmitted"),
+        ("liveness", "request_retryable"),
+        ("liveness", "cohort_unwind_complete"),
+        ("liveness", "upgrade_restart_exact"),
+        ("liveness", "receipt_replay_exact"),
+    ] {
+        if !require_simple_bool(&scenario_path, &scenario, section, key)? {
+            return Err(format!("{scenario_path}: {section}.{key} must be true"));
+        }
+    }
+    if require_simple_bool(
+        &scenario_path,
+        &scenario,
+        "jupiter",
+        "provenance_after_custody",
+    )? || require_simple_bool(&scenario_path, &scenario, "two_year", "paired_receipt")?
+        || require_simple_bool(&scenario_path, &scenario, "two_year", "io_issuance")?
+        || require_simple_bool(
+            &scenario_path,
+            &scenario,
+            "liveness",
+            "liquidity_shortfall_pulls_io",
+        )?
+        || require_simple_u64(
+            &scenario_path,
+            &scenario,
+            "carry_forward",
+            "g1_capture_units",
+        )? != 100
+        || require_simple_u64(&scenario_path, &scenario, "carry_forward", "late_units")? != 20
+        || require_simple_u64(
+            &scenario_path,
+            &scenario,
+            "carry_forward",
+            "g2_maturity_units",
+        )? != 50
+        || require_simple_u64(
+            &scenario_path,
+            &scenario,
+            "carry_forward",
+            "g2_capture_units",
+        )? != 70
+        || require_simple_u64(
+            &scenario_path,
+            &scenario,
+            "carry_forward",
+            "two_week_final_staging_e8s",
+        )? != 0
+        || require_simple_u64(
+            &scenario_path,
+            &scenario,
+            "carry_forward",
+            "two_year_final_staging_e8s",
+        )? != 0
+    {
+        return Err(format!(
+            "{scenario_path}: issuance, provenance, liquidity, or carry-forward invariant failed"
+        ));
+    }
+
+    let layers_path = format!("{package}/evidence-layers.toml");
+    let layers = parse_simple_toml_document(&layers_path, &require_file(root, &layers_path)?)?;
+    for (section, source) in [
+        ("official_sns", "source-built-official-sns"),
+        ("exact_nns", "proposal-143660-pocketic"),
+        ("orchestration", "controlled-current-io-pocketic"),
+    ] {
+        if require_simple_string(&layers_path, &layers, section, "source")? != source
+            || !require_simple_bool(&layers_path, &layers, section, "complete")?
+        {
+            return Err(format!(
+                "{layers_path}: incomplete or misclassified {section} evidence"
+            ));
+        }
+    }
+
+    let tools_path = format!("{package}/source-built-tools.toml");
+    let tools = parse_simple_toml_document(&tools_path, &require_file(root, &tools_path)?)?;
+    if require_simple_string(&tools_path, &tools, "source", "commit")?
+        != "4320fdf2e613844eabae1927b1a23b98da3a7bc6"
+        || !require_simple_bool(&tools_path, &tools, "source", "clean")?
+    {
+        return Err(format!(
+            "{tools_path}: official SNS source identity mismatch"
+        ));
+    }
+    for key in [
+        "sns_sha256",
+        "sns_testing_sha256",
+        "sns_testing_init_sha256",
+    ] {
+        validate_lower_hex(
+            &tools_path,
+            &format!("tools.{key}"),
+            &require_simple_string(&tools_path, &tools, "tools", key)?,
+            64,
+        )?;
+    }
+
+    let boundary_path = format!("{package}/nns-boundary.toml");
+    let boundary =
+        parse_simple_toml_document(&boundary_path, &require_file(root, &boundary_path)?)?;
+    if require_simple_u64(&boundary_path, &boundary, "governance", "proposal")? != 143_660
+        || require_simple_string(&boundary_path, &boundary, "governance", "source_commit")?
+            != "c748b8e76b90ceef329c055e6f7b38a00aae8745"
+        || !require_simple_bool(
+            &boundary_path,
+            &boundary,
+            "governance",
+            "exact_candidate_passed",
+        )?
+        || require_simple_string(&boundary_path, &boundary, "ledger", "pin_scope")? != "independent"
+    {
+        return Err(format!(
+            "{boundary_path}: exact NNS boundary identity mismatch"
+        ));
+    }
+
+    let inventory_path = format!("{package}/phase-inventory.toml");
+    let inventory =
+        parse_simple_toml_document(&inventory_path, &require_file(root, &inventory_path)?)?;
+    for key in [
+        "official_bootstrap",
+        "release_identity",
+        "sns_finalized",
+        "canisters_discovered",
+        "ledger_redemption",
+        "index_archive",
+        "governance_controllers",
+        "manager_upgrade_restart",
+        "daily_reward",
+        "account_semantic_protocol",
+    ] {
+        if !require_simple_bool(&inventory_path, &inventory, "phases", key)? {
+            return Err(format!("{inventory_path}: phases.{key} must be true"));
+        }
+    }
+
+    let release_source = require_simple_string(
+        &format!("{package}/manifest.toml"),
+        manifest,
+        "provenance",
+        "io_release_source_commit",
+    )?;
+    if require_simple_string(&scenario_path, &scenario, "evidence", "source_commit")?
+        != release_source
+    {
+        return Err(format!(
+            "{scenario_path}: source commit does not match package manifest"
+        ));
+    }
+    if selected_current {
+        let recorded = fs::read(root.join(format!("{package}/release-manifest.json")))
+            .map_err(|error| format!("{package}/release-manifest.json: {error}"))?;
+        let current = fs::read(root.join(MANIFEST_PATH))
+            .map_err(|error| format!("{MANIFEST_PATH}: {error}"))?;
+        if recorded != current {
+            return Err(format!("{package}/release-manifest.json: selected package is not bound to the current exact release manifest"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_account_semantic_monitoring(
+    root: &Path,
+    package: &str,
+    package_manifest: &SimpleTomlDocument,
+    selected_current: bool,
+) -> Result<(), String> {
+    let manifest_path = format!("{package}/manifest.toml");
+    let source_commit = require_simple_string(
+        &manifest_path,
+        package_manifest,
+        "provenance",
+        "io_release_source_commit",
+    )?;
+    let artifact_commit = require_simple_string(
+        &manifest_path,
+        package_manifest,
+        "provenance",
+        "io_artifact_recording_commit",
+    )?;
+    validate_release_source_ancestor(root, &source_commit)?;
+    validate_release_source_ancestor(root, &artifact_commit)?;
+    let recorded_manifest = Command::new("git")
+        .current_dir(root)
+        .args(["show", &format!("{artifact_commit}:{MANIFEST_PATH}")])
+        .output()
+        .map_err(|error| format!("git show account-semantic artifact manifest: {error}"))?;
+    if !recorded_manifest.status.success() {
+        return Err(format!(
+            "{package}: artifact-recording commit does not contain a release manifest"
+        ));
+    }
+    let release_manifest: ArtifactManifest = serde_json::from_slice(&recorded_manifest.stdout)
+        .map_err(|error| format!("{package}: recorded release manifest is invalid: {error}"))?;
+    if release_manifest.git_commit.as_deref() != Some(&source_commit) {
+        return Err(format!(
+            "{package}: artifact-recording manifest source does not match package source commit"
+        ));
+    }
+    let packaged_manifest = fs::read(root.join(format!("{package}/release-manifest.json")))
+        .map_err(|error| format!("{package}/release-manifest.json: {error}"))?;
+    if packaged_manifest != recorded_manifest.stdout {
+        return Err(format!(
+            "{package}/release-manifest.json: package does not contain the artifact commit's exact manifest"
+        ));
+    }
+    if selected_current
+        && packaged_manifest
+            != fs::read(root.join(MANIFEST_PATH))
+                .map_err(|error| format!("{MANIFEST_PATH}: {error}"))?
+    {
+        return Err(format!(
+            "{package}: selected account-semantic evidence does not bind the current release manifest"
+        ));
+    }
+    let release_path = format!("{package}/release-evidence.toml");
+    let release = parse_simple_toml_document(&release_path, &require_file(root, &release_path)?)?;
+    if require_simple_string(&release_path, &release, "release", "source_commit")? != source_commit
+        || require_simple_string(
+            &release_path,
+            &release,
+            "release",
+            "artifact_recording_commit",
+        )? != artifact_commit
+        || require_simple_string(&release_path, &release, "release", "manifest_sha256")?
+            != hex_sha256(&recorded_manifest.stdout)
+    {
+        return Err(format!("{release_path}: release identity mismatch"));
+    }
+    for (canister, section) in [
+        ("io_stream_manager", "io_stream_manager"),
+        ("io_nns_neuron_manager", "io_nns_neuron_manager"),
+        ("io_historian", "io_historian"),
+        ("frontend", "io_frontend"),
+    ] {
+        let expected = release_manifest
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.canister == canister)
+            .ok_or_else(|| format!("{MANIFEST_PATH}: missing {canister}"))?;
+        if require_simple_string(&release_path, &release, section, "raw_wasm_sha256")?
+            != expected.raw_wasm_sha256
+            || require_simple_string(&release_path, &release, section, "gzip_wasm_sha256")?
+                != expected.gz_wasm_sha256
+        {
+            return Err(format!(
+                "{release_path}: {section} hashes do not match the recorded manifest"
             ));
         }
     }
@@ -8440,13 +8866,14 @@ fn main() -> ExitCode {
                 Ok(validated)
                     if validated.complete
                         && validated.monitoring
-                        && validated.canonical_economics =>
+                        && validated.canonical_economics
+                        && validated.account_semantic =>
                 {
                     eprintln!("✓ validate_local_sns_evidence_package")
                 }
                 Ok(_) => {
                     eprintln!(
-                        "✗ validate_local_sns_evidence_package: candidate must be complete monitoring canonical evidence"
+                        "✗ validate_local_sns_evidence_package: candidate must be complete monitoring account-semantic canonical evidence"
                     );
                     ok = false;
                 }

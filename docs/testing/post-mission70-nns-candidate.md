@@ -13,7 +13,7 @@ Governance `InstallCode` proposals inspected for this evidence include 141738,
 141771, 141779, 142447, 142679, 142936, 143410, 143577, and 143660. Proposal
 143660 executed on 2026-08-24 and is the latest executed Governance
 `InstallCode` proposal found in the public official proposal metadata through
-proposal 143685 on 2026-08-25.
+proposal 143685 on 2026-08-26.
 
 The selected candidate is proposal 143660 at source commit
 `c748b8e76b90ceef329c055e6f7b38a00aae8745`, following

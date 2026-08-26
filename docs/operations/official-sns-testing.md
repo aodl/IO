@@ -31,7 +31,16 @@ This optional layer follows the current official ICP/DFINITY SNS testing documen
 
 This layer is not required CI, not part of `verify_release`, not run by `test_ci`, and not a substitute for security review or tokenomics decisions.
 
-The local package lives in `deploy/local-sns-rehearsal/`. It renders a local SNS init file from ignored inputs and implements restartable phases 12–17 for exact release dapp installation, NNS Root preparation, same-source Governance/Root publication, SNS-W creation and finalization, canonical discovery, treasury funding, ledger/index/archive evidence, controller and upgrade checks, lifecycle registration/activation, and production redemption. The upgrade phase can fall back from the maintained chunk-store CLI to an inline exact-Wasm SNS Governance proposal; Root still performs the upgrade and no direct management-canister substitution is used. Every phase remains guarded, loopback-only and evidence-producing; the automation itself is not proof of successful execution.
+The local package lives in `deploy/local-sns-rehearsal/`. It renders a local SNS init file from ignored inputs and implements restartable phases 12–18 for exact release dapp installation, NNS Root preparation, same-source Governance/Root publication, SNS-W creation and finalization, canonical discovery, treasury funding, ledger/index/archive evidence, controller and upgrade checks, lifecycle registration/activation, production redemption, exact NNS boundary tests and account-semantic IO orchestration. The upgrade phase can fall back from the maintained chunk-store CLI to an inline exact-Wasm SNS Governance proposal; Root still performs the upgrade and no direct management-canister substitution is used. Every phase remains guarded, loopback-only and evidence-producing; the automation itself is not proof of successful execution.
+
+Canonical packages classify conclusions into three layers. Source-built official
+SNS tooling proves the local SNS topology and governance/controller/ledger
+observations. The exact proposal-143660 PocketIC suite proves the active NNS
+Governance mechanics. Controlled current-IO PocketIC fixtures prove paired
+issuance, TwoYear no issuance, full semantic-Account capture, donation
+carry-forward and exact recovery. The official SNS topology is not presented
+as proof that it installed proposal 143660, and controlled failure injection is
+not presented as a live-local observation.
 
 The repository validator `cargo run -p xtask -- validate_local_sns_rehearsal` is no-network and may run in normal checks. `cargo run -p xtask -- validate_local_sns_ledger` reports that corrected pooled-claim-backing rehearsal evidence is missing until a fresh authorized run supplies the ignored root file. Dated historical packages remain immutable records of their own runs, not active pooled-economics readiness authority.
 

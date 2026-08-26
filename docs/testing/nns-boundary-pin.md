@@ -12,7 +12,7 @@ acceptable substitute for its own reproduced source and artifact identity.
 | ICP Ledger | `021bf342f66296d5605b355a61b2430406a83783` | `5d69ec2e26e5546fe7e94bab721d6c4ed840106f9e2e69d11a8f3ee6e7721df0` | `9c1ff658635daabb7a3e9dcc5dca337eee5008bc2033d0e929c3fae53814f91c` | `45a6f13779ead0f7247b728f7a8953d649173863fea1f01fbf7c04f30589aad7` |
 
 NNS proposal 143660 is the active Governance source. Public proposal metadata
-was checked through proposal 143685 on 2026-08-25; no later executed Governance
+was checked through proposal 143685 on 2026-08-26; no later executed Governance
 upgrade superseded 143660.
 
 ## Bound behavior

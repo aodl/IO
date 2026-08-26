@@ -503,6 +503,7 @@ fn write_local_sns_rehearsal_fixture(root: &Path) {
         "deploy/local-sns-rehearsal/scripts/16-exercise-index-and-archives.sh",
         "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
         "deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh",
+        "deploy/local-sns-rehearsal/scripts/18-exercise-account-semantic-protocol.sh",
         "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
         "deploy/local-sns-rehearsal/scripts/19-cleanup-official-network.sh",
     ] {
@@ -539,8 +540,13 @@ fn write_local_sns_rehearsal_fixture(root: &Path) {
         );
     write(
             root,
+            "deploy/local-sns-rehearsal/scripts/18-exercise-account-semantic-protocol.sh",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n# semantic_staging_carries_late_value_into_the_next_cycle_for_both_roles controlled_jupiter_uses_real_nns_and_exact_production_receipts controlled_two_year_compounds_real_maturity_without_io_issuance exact_post_m70_upgrade_rewards_fourteen_day_boundary account_semantic_carry_forward kind=TwoWeek account_semantic_carry_forward kind=TwoYear obsolete_maturity_api\n",
+        );
+    write(
+            root,
             "deploy/local-sns-rehearsal/scripts/18-package-evidence.sh",
-            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\nrecord_blocker \"corrected pooled claim-backing canonical evidence is missing\"\nexit 2\n",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\nstage=$(mktemp -d)\n# validate_local_sns_evidence_package validate_local_sns_committed_evidence current-canonical.toml\n# mv \"$selector_temporary\" \"$selector_path\"\n# preceding selector restored and candidate removed\n# account_semantic_economics = true phase-inventory.toml source-built-tools.toml sha256sum -c SHA256SUMS\n",
         );
     write(
             root,
@@ -1570,13 +1576,23 @@ fn local_sns_rehearsal_rejects_logo_hash_mismatch() {
 }
 
 #[test]
-fn current_canonical_selector_accepts_only_the_closed_v1_shape() {
+fn current_canonical_selector_accepts_only_closed_versioned_shapes() {
     let good = dummy_selector_text("2026-08-14-4320fdf-canonical-economics");
     let parsed = parse_current_canonical_selector(CURRENT_CANONICAL_SELECTOR, &good).unwrap();
     assert_eq!(parsed.package, "2026-08-14-4320fdf-canonical-economics");
+    assert_eq!(parsed.version, 1);
+    assert_eq!(
+        parse_current_canonical_selector(
+            CURRENT_CANONICAL_SELECTOR,
+            &good.replace("version = 1", "version = 2")
+        )
+        .unwrap()
+        .version,
+        2
+    );
 
     for bad in [
-        good.replace("version = 1", "version = 2"),
+        good.replace("version = 1", "version = 3"),
         format!("{good}\nunexpected = \"field\"\n"),
         good.replace("[current]", "[current]\nunexpected = \"field\""),
         format!("{good}\n[current]\n"),
@@ -1621,10 +1637,12 @@ fn current_selector_binding_checks_every_release_and_package_identity() {
         complete: true,
         monitoring: true,
         canonical_economics: true,
+        account_semantic: false,
         io_release_source_commit: Some(source_commit.clone()),
         io_artifact_recording_commit: Some(artifact_commit.clone()),
     };
     let selector = CurrentCanonicalSelector {
+        version: 1,
         package: "current-package".into(),
         io_release_source_commit: source_commit,
         io_artifact_recording_commit: artifact_commit,
@@ -1637,6 +1655,16 @@ fn current_selector_binding_checks_every_release_and_package_identity() {
         ),
     };
     validate_current_selector_binding(&root, package, &validated, &selector).unwrap();
+    let mut account_semantic_selector = selector.clone();
+    account_semantic_selector.version = 2;
+    assert!(validate_current_selector_binding(
+        &root,
+        package,
+        &validated,
+        &account_semantic_selector
+    )
+    .unwrap_err()
+    .contains("requires current account-semantic evidence"));
 
     let mut wrong = selector.clone();
     wrong.io_release_source_commit = "a".repeat(40);

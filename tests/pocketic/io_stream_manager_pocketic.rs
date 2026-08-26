@@ -514,6 +514,9 @@ fn liquidity_shortfall_uses_only_scalar_claim_reads_and_pulls_no_io() {
     let restored: Status = query(&pic, stream, "get_status");
     assert!(!restored.reward_processing_paused);
     assert!(restored.governance_parameters_fresh);
+    eprintln!(
+        "account_semantic_liquidity_shortfall available_liquid_e8s=100000 claim_snapshot_reads=2 io_pulled=false request_nonce_consumed=false retryable=true"
+    );
 }
 
 #[test]

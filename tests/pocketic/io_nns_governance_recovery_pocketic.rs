@@ -828,6 +828,10 @@ fn semantic_staging_carries_late_value_into_the_next_cycle_for_both_roles() {
         fixture.debit_maturity_capture(kind, expected_second_capture);
         assert_eq!(fixture.balance(staging), 0);
         assert_eq!(fixture.balance(other_staging), 33 * UNIT);
+        eprintln!(
+            "account_semantic_carry_forward kind={kind:?} unit_e8s={UNIT} g1_capture_units=100 late_units=20 g2_maturity_units=50 g2_capture_units=70 final_staging_e8s=0 isolated_other_e8s={}",
+            33 * UNIT
+        );
     }
 }
 
