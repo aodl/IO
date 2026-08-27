@@ -22,6 +22,19 @@ the two-year protected NNS neuron `10292412127977304661`.
 - `deploy/local-sns-rehearsal/scripts/03-capture-ledger-evidence.sh`
 - `deploy/local-sns-rehearsal/scripts/04-render-local-wiring.sh`
 - `deploy/local-sns-rehearsal/scripts/05-validate-evidence.sh`
+- `deploy/local-sns-rehearsal/scripts/10-bootstrap-official-network.sh`
+- `deploy/local-sns-rehearsal/scripts/11-build-local-io-canisters.sh`
+- `deploy/local-sns-rehearsal/scripts/12-deploy-local-dapps.sh`
+- `deploy/local-sns-rehearsal/scripts/12-provision-local-nns-readiness.sh`
+- `deploy/local-sns-rehearsal/scripts/13-propose-and-finalize-sns.sh`
+- `deploy/local-sns-rehearsal/scripts/14-discover-sns-canisters.sh`
+- `deploy/local-sns-rehearsal/scripts/15-exercise-ledger.sh`
+- `deploy/local-sns-rehearsal/scripts/16-exercise-index-and-archives.sh`
+- `deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh`
+- `deploy/local-sns-rehearsal/scripts/17-observe-one-day-reward.sh`
+- `deploy/local-sns-rehearsal/scripts/18-exercise-account-semantic-protocol.sh`
+- `deploy/local-sns-rehearsal/scripts/18-package-evidence.sh`
+- `deploy/local-sns-rehearsal/scripts/19-cleanup-official-network.sh`
 
 The rendered local `sns_init.local.yaml` is not final tokenomics and is not a mainnet SNS proposal. It exists only to create a real local SNS ledger/index/governance/root stack for integration testing.
 
@@ -39,14 +52,20 @@ observed SHA-256 is
 `5a408715e932c0250d28bd84555f12edbf70117de42f9181691c736eacc4a992`.
 It is installed as `/home/codexdev/.local/bin/bazelisk` with a local `bazel`
 symlink. No system package or elevated privilege is used. The maintained source
-flow was reproduced from the clean sibling checkout at
+flow was reproduced from an isolated clean checkout at
 `4320fdf2e613844eabae1927b1a23b98da3a7bc6`: NNS bootstrap, SNS-W candidate
 publication, CreateServiceNervousSystem, swap participation/finalization,
 canister discovery, Governance treasury funding, ledger/index evidence and
-controller handoff all succeeded locally. The immutable completed sanitized
-historical package is `deploy/local-sns-rehearsal/evidence/2026-08-11-4320fdf/`. Its mechanics observations remain valid; its redemption-rate/excluded-Account evidence is superseded as described in `local-sns-evidence-disposition.md`.
+controller handoff all succeeded locally. The current immutable sanitized
+package is
+`deploy/local-sns-rehearsal/evidence/2026-08-26-9462a1a-account-semantic`.
+It is bound to source `9462a1a0df602f06fa845bd31f9fcd0adf80067a`,
+immediate artifact child `46713f8499cf9a63a6cd4879b1fff9c1f9ef0be5`, and
+canonical evidence commit `1ed1399130358ed5788cae99f3d65d82cbbc70a9`.
+Earlier packages remain historical as described in
+`local-sns-evidence-disposition.md`.
 
-The committed package includes a renderable local `sns_init` candidate, per-run runtime inputs, evidence capture helpers, no-network validators, and restartable phases 12–17. Those phases verify exact IO release provenance, install Paused dapps, provision canonical staging fee floats and two source-shaped local NNS neurons, publish a reviewed Governance/Root bundle through executed local NNS Governance proposals into SNS-W, verify its exact compressed hashes, finalize and discover the SNS, submit real treasury and lifecycle proposals, exercise production redemption, and capture index/archive/controller evidence. The prior one-component candidate-Governance/official-Root `unit_variant` incompatibility is historical; same-source candidate Governance/Root compatibility is proved. If the maintained chunk-store CLI route fails before execution, phase 17 submits the exact release Wasm inline through a signed SNS Governance proposal and Root. The inline payload avoids only the unavailable upload store; it does not bypass Governance. The strict pre-launch Historian schema is exercised through a same-release upgrade with typed configuration: both module observations must equal the exact release-manifest raw hash, and the post-upgrade public status must report the configuration as active. The larger NNS Manager uses its deterministic release gzip payload, so the recorded proposal and installed module hash equal the manifest gzip hash while the manifest independently binds that payload to the exact raw Wasm; its same-release post-upgrade state must reopen Paused. The phases fail closed and persist checkpoints. The completed historical package records one clean run; the thin lifecycle source profile is separate runner coverage and does not retroactively qualify or invalidate that package.
+The maintained package includes a renderable local `sns_init` candidate, per-run runtime inputs, evidence capture helpers, no-network validators, and restartable phases 10–19. Those phases verify exact IO release provenance, install Paused dapps, provision canonical staging fee floats and source-shaped local NNS neurons, publish a reviewed Governance/Root bundle through executed local NNS Governance proposals into SNS-W, verify exact compressed hashes, finalize and discover the SNS, submit real treasury and lifecycle proposals, exercise production redemption, capture index/archive/controller evidence, observe one reward event, run the layered account-semantic protocol cases and package evidence fail closed. The prior one-component candidate-Governance/official-Root `unit_variant` incompatibility is historical; same-source candidate Governance/Root compatibility is proved. If the maintained chunk-store CLI route fails before execution, phase 17 submits the exact release Wasm inline through a signed SNS Governance proposal and Root. The inline payload avoids only the unavailable upload store; it does not bypass Governance. Same-release manager upgrades must reopen Paused and resume exact retained operations after authenticated readiness restoration. The current package records one coherent fresh run and restart-safe phase recovery; the thin lifecycle source profile is separate runner coverage and does not retroactively qualify or invalidate any package.
 
 ## Manual Flow
 
@@ -59,22 +78,25 @@ The committed package includes a renderable local `sns_init` candidate, per-run 
 7. Validate `deploy/local-sns-rehearsal/sns_init.local.yaml` with local SNS tooling.
 8. Submit the local SNS proposal through the local SNS testing flow.
 9. Let SNS-W deploy local SNS canisters.
-10. Run `runbook.sh record-ids` during a new rehearsal and record root, governance, ledger, index, swap, and archive observations. The root `deploy/local-sns-rehearsal/canister-ids.local.toml` remains ignored run-local evidence; corrected pooled-claim-backing evidence is missing until a fresh authorized package is reviewed.
-11. Run `runbook.sh capture-evidence` and the command templates to observe ledger/index/governance/root behavior.
-12. Run no-network repository validation:
+10. For the next package, run `runbook.sh record-ids` and record root,
+    governance, ledger, index, swap, and archive observations. The root
+    `deploy/local-sns-rehearsal/canister-ids.local.toml` remains ignored
+    run-local input; it does not replace the selected immutable package.
+11. Run `runbook.sh capture-evidence`, the maintained lifecycle phases, and
+    `runbook.sh exercise-account-semantic-protocol` to observe every mandatory
+    Layer A/B/C conclusion.
+12. Run `runbook.sh package-evidence` only after every required phase checkpoint
+    passes, then run no-network repository validation:
 
 ```bash
 cargo run -p xtask -- validate_local_sns_rehearsal
 cargo run -p xtask -- validate_local_sns_ledger
 ```
 
-The second command checks only the recorded local evidence file. It does not call canisters.
-
-`validate_local_sns_ledger` reports the corrected pooled-claim-backing evidence
-as missing until a fresh authorized run fills the ignored root file. A later
-reviewed package must create a new immutable evidence directory; it must not
-overwrite the 2026-08-11 package or relabel it as evidence for later source
-commits.
+The second command checks selector-bound recorded evidence. It does not call
+canisters. It passes for the current package. A future reviewed run must create
+a new immutable evidence directory and validate it before selector review; it
+must not overwrite or relabel any existing package.
 
 ## Ledger Assumptions to Prove Manually
 
@@ -109,32 +131,30 @@ The local rehearsal must prove:
 
 ## What Remains Unproven
 
-The immutable `2026-08-12-4320fdf-canonical-economics` package proves same-source candidate Governance/Root compatibility for its recorded historical release pair,
-authentic inline SNS-controlled hash-changing historian upgrade,
-Governance-authorized stream and NNS-manager activation using the source-shaped
-local NNS fixture, production ICRC-2 redemption, canonical ledger/index
-histories, and one exact proposal-bearing daily reward event. The separate
-`2026-08-12-4320fdf-monitoring` package preserves historical mechanics and historian connectivity. The corrected historical package uses the derived Governance treasury distribution Account in both Stream and historian configuration and passes the independent checked-arithmetic evidence validator.
+The schema-v2 `2026-08-26-9462a1a-account-semantic` package closes the current
+local rehearsal item. Layer A proves source-built official SNS launch/wiring;
+Layer B proves the exact proposal-143660 NNS boundary; Layer C proves current IO
+account-semantic orchestration and controlled recovery. The intermediate
+`2026-08-26-716d51e-account-semantic` package and all earlier packages remain
+historical and were not rebound.
 
-The immutable 2026-08-12 and 2026-08-14 packages remain bound to their recorded
-releases and were not rebound. This includes the authority, final-readme, and
-final-validator packages produced on the diverged historical `misc` lineage.
-The explicit `current-canonical.toml` selector must name a newly generated
-package and bind its release manifest, package manifest, checksum inventory,
-source-finalization commit, and immediate artifact-recording child to the exact
-master-descended release. It names
-`2026-08-14-master-descended-4320fdf-canonical-economics`, whose fresh isolated
-run closes the current local rehearsal item without changing any historical
-package.
-
-Completed local proof does not prove official SNS reward-share release adoption,
-final SNS configuration/tokenomics/controllers, external audit, or mainnet
-testflight and activation.
+Completed local proof does not prove official SNS reward-share release adoption.
+Source-built revision `4320fdf2e613844eabae1927b1a23b98da3a7bc6`
+contains and locally proves the capability, while the separately reviewed
+official lock remains `b904c9dd1bdef8841bd12f03efbc71180a015e25`.
+Final SNS configuration/tokenomics/controllers, external audit, protected
+mainnet review, mainnet testflight and activation also remain unproved.
 
 IO protocol remains not live. The canonical SNS IO ledger remains not launched on mainnet.
 
 ## Completion Checklist
 
-The rehearsal is complete only when official local SNS tooling was run locally; local SNS root/governance/ledger/index/swap IDs were recorded; local SNS ledger fee disposition, total-supply deltas, and reserve balance were observed; reserve-to-user and direct user-to-reserve transfers were observed separately; bad fee, insufficient funds, duplicate behavior, duplicate block proof, and index account history were observed; SNS governance/root/swap availability and dapp controller state were checked; and `cargo run -p xtask -- validate_local_sns_ledger` passes against the filled evidence file.
+The current release satisfies this completion checklist. A future replacement
+package is complete only when official local SNS tooling was run locally; local
+SNS root/governance/ledger/index/swap IDs were recorded; local SNS ledger fee
+disposition, total-supply deltas, reserve balance, transfer/error/replay and
+index observations were captured; Governance/Root/controller state was checked;
+all exact NNS and account-semantic phases passed; and both candidate-package and
+selected committed-evidence validation pass.
 
 Passing this local evidence gate still does not prove mainnet SNS launch readiness, final tokenomics, final SNS config, mainnet testflight, audit readiness, or production adapter activation.

@@ -4,7 +4,20 @@ This is the handoff index for an independent auditor. It is not a self-audit and
 
 ## Release identity
 
-- Final source and artifact-recording commits: `release-artifacts/manifest.json` and the final tranche report.
+- Source-finalization commit:
+  `9462a1a0df602f06fa845bd31f9fcd0adf80067a`.
+- Immediate artifact-recording commit:
+  `46713f8499cf9a63a6cd4879b1fff9c1f9ef0be5`.
+- Canonical evidence commit:
+  `1ed1399130358ed5788cae99f3d65d82cbbc70a9`.
+- Current schema-v2 package:
+  `deploy/local-sns-rehearsal/evidence/2026-08-26-9462a1a-account-semantic`.
+- Release-manifest SHA-256:
+  `011113d83510e66976f5d3eabefc57ef30ba44fc49a8973fad29be043b374431`.
+- Package-manifest SHA-256:
+  `254e8866394d62ba9fbe2b0290709d2c9dbaeb8ed84c8b3446b9a1912af0eb78`.
+- Package `SHA256SUMS` SHA-256:
+  `a1915cef319b569955c5d75ad88c4a3715af8483573d2cf9b3a2af108d6bea29`.
 - Raw/gzip Wasm hashes and exact-source equality: `release-artifacts/manifest.json` and `docs/operations/reproducible-builds.md`.
 - Production interfaces: the four production DIDs under `canisters/`.
 - Dependency/tooling evidence: `Cargo.lock`, `package-lock.json`, `deny.toml`, and `docs/security/dependency-and-supply-chain.md`.
@@ -37,11 +50,30 @@ This is the handoff index for an independent auditor. It is not a self-audit and
 
 | Classification | Evidence |
 | --- | --- |
-| Proved locally | `docs/testing/e2e-coverage-matrix.md`; exact-source release verification for each recorded lineage; immutable 2026-08-12 and 2026-08-14 canonical packages as evidence for their own releases; and historical mechanics/connectivity packages 2026-08-11 and 2026-08-12-monitoring, whose redemption economics are superseded under `docs/operations/local-sns-evidence-disposition.md`. The selector-bound master-descended package remains truthful for its recorded pair, but a later hardening release needs fresh current evidence rather than rebinding it. |
-| Candidate-only | Same-source SNS Governance/Root at IC `4320fdf2e613844eabae1927b1a23b98da3a7bc6`, including reward-share capability and Governance → Root compatibility. |
+| Proved locally | The current selector-bound `2026-08-26-9462a1a-account-semantic` package first: Layer A source-built official SNS launch/wiring and live-local observations, Layer B exact proposal-143660 NNS mechanics, and Layer C current IO account semantics and controlled recovery. `docs/testing/e2e-coverage-matrix.md`, exact-source release verification, and the package's manifest/checksum inventory provide the cross-checks. Earlier 2026-08-11, 2026-08-12, 2026-08-14 and intermediate `2026-08-26-716d51e-account-semantic` packages are secondary immutable historical evidence for their own releases only. |
+| Candidate-only | Same-source SNS Governance/Root at IC `4320fdf2e613844eabae1927b1a23b98da3a7bc6`, including reward-share capability and Governance → Root compatibility. The separately reviewed official lock remains `b904c9dd1bdef8841bd12f03efbc71180a015e25`; local source proof does not establish official adoption. |
 | Officially available | Pinned official baseline artifacts/tooling in `tests/e2e_real_canisters/wasms.example.toml`; these do not imply official reward-share adoption. |
 | External fixture gaps | Real transport-fault injection and non-1.0 maturity modulation, classified in `docs/operations/remaining-work.md`. |
 | Not yet audited | Final source/artifacts, launch configuration, dependencies/licenses, controller recovery, and all local evidence require independent review. |
 | Mainnet-only | Protected-position audit, production IDs/config, testflight, install/controller handoff, funding, and activation; each requires separate authorization. |
 
-Auditors should run `docs/operations/release-checklist.md`, independently rebuild the recorded source, confirm production Rust is at most 11,100 lines, verify all required workflows belong to the exact reviewed head, and verify the final local package is byte-bound to the manifest. Internal validation is not external approval.
+## Current simplicity criterion
+
+The active executable ceilings are:
+
+| Component | Measured | Ceiling | Headroom |
+| --- | ---: | ---: | ---: |
+| Stream Manager | 5,416 | 5,520 | 104 lines / ~1.88% |
+| NNS Manager | 5,977 | 6,125 | 148 lines / ~2.42% |
+| Combined governed production | 14,162 | 14,485 | 323 lines / ~2.23% |
+
+`docs/architecture/adr-pooled-claim-backing-complexity-exception.md` and
+`cargo run -p xtask -- simplicity_check` are current authority. The older
+11,100-line recalibration ADR remains a historical decision record and is not
+the current audit criterion.
+
+Auditors should run `docs/operations/release-checklist.md`, independently
+rebuild the recorded source, run the executable simplicity check, verify all
+required workflows belong to the exact reviewed head, and verify the selected
+local package is byte-bound to the release manifest. Internal validation is not
+external approval.

@@ -1,21 +1,27 @@
 # Local SNS Testing
 
 Required CI uses SNS-shaped mock/PocketIC tests. The maintained official SNS
-launch rehearsal is an optional local operator layer. The immutable 2026-08-11
-and 2026-08-12-monitoring packages remain historical mechanics/connectivity
-evidence, but their redemption-rate evidence is superseded because they queried
-the Governance default Account instead of the canonical treasury distribution
-subaccount. The immutable 2026-08-12 and 2026-08-14 canonical packages remain
-historical evidence for their recorded releases. The three packages named
+launch rehearsal is an optional local operator layer. The current local
+authority is the schema-v2 package
+`2026-08-26-9462a1a-account-semantic`, selected only by
+`deploy/local-sns-rehearsal/evidence/current-canonical.toml` and bound to source
+`9462a1a0df602f06fa845bd31f9fcd0adf80067a` and immediate artifact child
+`46713f8499cf9a63a6cd4879b1fff9c1f9ef0be5`. It records completed official
+source-built SNS launch/wiring, exact proposal-143660 NNS evidence and current
+IO account-semantic orchestration. The intermediate
+`2026-08-26-716d51e-account-semantic` package and all 2026-08-11 through
+2026-08-14 packages remain immutable historical evidence for their recorded
+releases. In particular, the early packages that queried the Governance
+default Account are superseded for redemption-rate authority. The three
+packages named
 `2026-08-14-authority-4320fdf-canonical-economics`,
 `2026-08-14-final-readme-4320fdf-canonical-economics`, and
 `2026-08-14-final-validator-4320fdf-canonical-economics` belong to the diverged
 historical `misc` lineage and cannot be selected for a different release pair.
 They remain available on that untouched branch rather than being copied into
 the master-descended history. The explicit selector is the sole
-machine-readable source of currentness and names
-`2026-08-14-master-descended-4320fdf-canonical-economics` for the reconciled
-release. No local package is official release adoption or mainnet evidence.
+machine-readable source of currentness. No local package is official
+reward-share release adoption or mainnet evidence.
 
 IO uses local SNS compatibility testing as an additional safety layer. It does not replace typed-operation, retry, artifact, DID, stable-state or release guardrails.
 
@@ -39,7 +45,7 @@ Official SNS testing is optional and heavier. Follow the current official ICP/DF
 
 The maintained official local SNS flow uses the source-built `sns` CLI; any `dfx`-based SNS testing for IO is optional, local-only, and not part of `test_ci` or `verify_release`. Required repository workflows must not depend on `dfx`.
 
-The official local SNS rehearsal package lives under `deploy/local-sns-rehearsal/`. It provides a local `sns_init` candidate, local evidence template, no-network validators, and manual runbook for creating a real SNS-created local ledger/index/governance/root stack and recording local evidence in `canister-ids.local.toml`. The no-network package validator is:
+The official local SNS rehearsal package lives under `deploy/local-sns-rehearsal/`. It provides a local `sns_init` candidate, no-network validators, restart-safe protocol phases and a runbook for producing the next immutable real SNS-created local ledger/index/governance/root package. The current release already has a completed selected package; these instructions describe how to produce its successor. The no-network package validator is:
 
 ```bash
 cargo run -p xtask -- validate_local_sns_rehearsal

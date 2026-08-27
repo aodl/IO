@@ -1,14 +1,16 @@
 # ADR: Pooled claim-backing complexity exception
 
-- Status: superseded for maturity/provenance machinery by
-  [`account-semantic-maturity.md`](account-semantic-maturity.md); historical
-  complexity evidence is retained.
+- Status: the maturity/provenance machinery described historically is
+  superseded by [`account-semantic-maturity.md`](account-semantic-maturity.md).
+  The final measurement and ceilings in this ADR remain the active executable
+  production-complexity budget.
 - Date: 2026-08-23
 - Baseline commit: `44c37cf7222b343dda9b7f63ac128a02614bcda7`
 - Final-correction baseline: `221d8c7703d4ad4cf58c7c30ca07ed056663b369`
 - Cross-flow correction baseline: `0e7299eb43503351d80cbee933cfdab15f3b4f6b`
 - Source-local completion baseline: `4f56e48afa62dc1b775e85f420c3b71a376d2db2`
 - Production-final baseline: `7100aa4`
+- Current release source: `9462a1a0df602f06fa845bd31f9fcd0adf80067a`
 
 ## Context
 
@@ -137,7 +139,7 @@ formatted counts are:
 
 | Counted component | Source-closure start | Source-closure final | Delta |
 | --- | ---: | ---: | ---: |
-| Stream Manager | 5,387 | 5,387 | 0 |
+| Stream Manager | 5,387 | 5,416 | +29 |
 | NNS Manager | 5,926 | 5,977 | +51 |
 | pure economics | 220 | 220 | 0 |
 | ledger boundary | 528 | 528 | 0 |
@@ -146,12 +148,17 @@ formatted counts are:
 | accounts | 67 | 67 | 0 |
 | NNS types | 1,206 | 1,224 | +18 |
 | receipt types | 43 | 43 | 0 |
-| **Combined** | **14,064** | **14,133** | **+69** |
+| **Combined** | **14,064** | **14,162** | **+98** |
 
-The 69-line closure cost is the explicit two-slot action selector and exact
-replay wake-up behavior; it replaces state rather than retaining the deleted
-baseline/provenance nesting. Relative to the preceding production-final source
-at 14,298 lines, the account-semantic architecture remains 165 lines smaller.
+The source closure added 69 lines for the explicit two-slot action selector and
+exact replay wake-up behavior; it replaces state rather than retaining the
+deleted baseline/provenance nesting. The maintained rehearsal then exposed one
+narrow liveness defect: an NNS reconciliation could complete through a
+permissionless keeper before Stream observed its frozen request. The exact
+completed-NNS reconciliation replay recovery adds 29 Stream lines and no NNS or
+shared-component lines. The final account-semantic release is therefore 98
+lines above the source-closure start and remains 136 lines smaller than the
+preceding 14,298-line production-final source.
 
 The maximum encoded NNS state with all 32 live cohorts is 5,434 bytes against
 its 1,000,000-byte stable-cell bound. The maximum exercised Stream state with
@@ -161,8 +168,9 @@ the full 1,000-record neuron registry is 111,209 bytes against its
 ## Decision
 
 The final ceilings are 5,520 Stream Manager lines, 6,125 NNS Manager lines,
-and 14,485 combined lines. Against the final measured counts these provide
-133 lines (2.47%), 148 lines (2.48%), and 352 lines (2.49%) of headroom. The
+and 14,485 combined lines. Against the current final measurements of 5,416,
+5,977 and 14,162, these provide 104 lines (~1.88%), 148 lines (~2.42%), and
+323 lines (~2.23%) of headroom. The
 pure-economics, reward-boundary, ledger-boundary, shared-type, and per-file
 ceilings do not change. In particular, every production file remains limited
 to 1,000 normally formatted lines.

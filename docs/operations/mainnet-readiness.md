@@ -1,13 +1,55 @@
 # Mainnet readiness
 
-IO is not live. Production activation, mainnet calls, controllers, funding,
-identities, release artifacts, and canonical evidence are outside this source
-tranche.
+IO is not live. Production activation, mainnet calls, controllers, funding and
+identities remain outside this local release closure.
 
-The source implements pooled claim backing, but launch remains blocked on final
-production SNS identities, the pooled-parent memo and followee, fresh
-source/artifact lineage, fresh corrected local-SNS evidence, hosted exact-head
-CI, mainnet testflight, controllers/cycles/domain work, and independent review.
+## Current local release
+
+The completed account-semantic release is bound to:
+
+- source-finalization commit
+  `9462a1a0df602f06fa845bd31f9fcd0adf80067a`;
+- immediate artifact-recording commit
+  `46713f8499cf9a63a6cd4879b1fff9c1f9ef0be5`;
+- canonical evidence commit
+  `1ed1399130358ed5788cae99f3d65d82cbbc70a9`;
+- schema-v2 package
+  `deploy/local-sns-rehearsal/evidence/2026-08-26-9462a1a-account-semantic`;
+- release-manifest SHA-256
+  `011113d83510e66976f5d3eabefc57ef30ba44fc49a8973fad29be043b374431`;
+- package-manifest SHA-256
+  `254e8866394d62ba9fbe2b0290709d2c9dbaeb8ed84c8b3446b9a1912af0eb78`;
+- package `SHA256SUMS` SHA-256
+  `a1915cef319b569955c5d75ad88c4a3715af8483573d2cf9b3a2af108d6bea29`.
+
+Local source validation, repeated exact-source reproducible builds, canonical
+account-semantic evidence, `test_ci`, and `verify_release` are complete. The
+dated packages that precede the selected package remain immutable historical
+evidence for their own releases and were not rebound.
+
+The exact `9462a1a` → `46713f8` → `1ed1399` history must remain intact. After
+hosted exact-head CI and explicit integration authorization, use a direct
+fast-forward only; do not squash, rebase or create a merge commit for this
+release tail.
+
+## Remaining launch blockers
+
+Local completion does not establish mainnet readiness. Launch remains blocked
+on:
+
+- an officially reviewed SNS release containing
+  `latest_reward_event_participation`, with refreshed official Wasm and DID
+  pins;
+- final production SNS/tokenomics/configuration values and identities;
+- the production pooled-parent memo and followee if the product decision
+  remains unresolved;
+- hosted test, security and reproducible-build CI on the exact documentation
+  tail head;
+- independent external security review;
+- separately authorized review of protected/mainnet positions where required;
+- mainnet testflight; and
+- production controller, cycles, domain and funding work.
+
 Production templates deliberately retain unresolved values and cannot be used
 as install arguments.
 
@@ -24,10 +66,9 @@ The pooled parent does not exist until canonical liquid backing reaches the
 minimum and the reviewed bootstrap protocol creates it with an exact 14-day
 delay and fixed following policy.
 
-Historical local rehearsal and release evidence describes the superseded
-economics and remains immutable. Readiness must report that corrected-economics
-evidence is missing; it must never reinterpret old evidence as proof of the
-pooled model.
+The selected package is current local authority for the account-semantic
+release. Historical local rehearsal and release evidence remains immutable and
+is not reinterpreted as proof of this release.
 
 Local rehearsal uses a real SNS-created stack installed through SNS-W. Its
 `IO_TEST` ledger and protocol reserve are non-canonical local evidence; IO is
