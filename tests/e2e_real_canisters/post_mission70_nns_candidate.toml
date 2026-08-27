@@ -1,0 +1,47 @@
+[candidate]
+status = "active_boundary"
+production_active_pin = true
+selected_at_utc = "2026-08-24T12:54:27Z"
+proposal_id = 143660
+source_commit = "c748b8e76b90ceef329c055e6f7b38a00aae8745"
+predecessor_source_commit = "8aa4680e378f3248e7e7b9b8237915aded999bd9"
+mission_70_enabled = true
+voting_threshold_seconds = 1209600
+proposal_submission_threshold_seconds = 15778800
+
+[governance_artifact]
+source_kind = "official_executed_nns_proposal"
+compressed_sha256 = "e4e9e99730dbee3a6fb9a95b40b10b512ad4831c9d2f6efb51d3f0a5d243b503"
+raw_sha256 = "573af1cde5bf55a5e4dbf2d47f8dd340f7a73a107eebbc645fe1202b97f61e85"
+did_sha256 = "6e9a397f4bf0adc913980ef6c176e765534617d0ce59d52e7bcc66add2b0cd71"
+
+[build]
+official_build_image = "ghcr.io/dfinity/ic-build@sha256:6002fe4444d6761b59522d453734bd337736c0a21fdaff57fac6bc98530e05af"
+official_build_image_digest = "sha256:6002fe4444d6761b59522d453734bd337736c0a21fdaff57fac6bc98530e05af"
+build_profile = "production local+stamped"
+test_feature_enabled = false
+
+[proved_mechanics]
+old_state_upgrade_to_fourteen_day_threshold = true
+fourteen_day_ballot = true
+below_fourteen_day_excluded = true
+fourteen_day_nonzero_maturity = true
+fourteen_day_following_ballot = true
+following_survives_voting_power_refresh = true
+direct_stream_owned_topup = true
+claim_or_refresh_cached_stake_proof = true
+split = true
+inherited_fourteen_day_delay = true
+concurrent_children = true
+stop_dissolve = true
+merge_back = true
+exact_disbursement_boundary = true
+actual_maturity_mint = true
+split_and_start_dissolving_are_distinct = true
+child_maturity_accrues_while_dissolving = true
+staked_maturity_converts_at_dissolution = true
+zero_principal_child_maturity_merge = true
+zero_principal_cleanup_has_no_ledger_fee = true
+
+[active]
+reason = "The pooled parent uses the exact 14-day boundary, explicit following, refresh, bounded children, and direct Stream-owned top-up mechanics proved by this candidate."

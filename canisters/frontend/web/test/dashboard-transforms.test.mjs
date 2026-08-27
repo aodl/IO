@@ -3,11 +3,13 @@ import test from "node:test";
 import { artifactSummary, sourceHealthSummary, transformDashboard } from "../src/data/dashboard-transforms.js";
 
 const complete = {
-  liquid_icp_reserve: true,
-  excluded_io: true,
+  claim_io_supply: true,
+  claim_backing: true,
+  active_backing_io: true,
+  active_reward_io: true,
+  nonredeemable_governance_io: true,
   protocol_reserve_io: true,
-  redeemable_io_supply: true,
-  redemption_rate: true,
+  claim_rate: true,
   total_io_supply: true,
 };
 
@@ -22,14 +24,15 @@ test("production transform displays one coherent observation, not invented histo
       protocol: {
         completeness: complete,
         total_io_supply_e8s: [200_000_000n],
-        redemption_rate: [{ liquid_icp_e8s: 50n, redeemable_io_e8s: 100n }],
+        claim_rate: [{ backing_numerator_e8s: 50n, claim_denominator_e8s: 100n, available_liquid_e8s: 20n }],
       },
       index: [],
       canisters: [],
     },
   });
   assert.equal(view.charts.supply.length, 1);
-  assert.equal(view.metrics.redemptionRate, "0.5");
+  assert.equal(view.metrics.claimRate, "0.5");
+  assert.equal(view.metrics.availableLiquid, "0");
 });
 
 test("incomplete protocol snapshot is surfaced and never displayed as zero", () => {
@@ -42,7 +45,7 @@ test("incomplete protocol snapshot is surfaced and never displayed as zero", () 
     dashboard: { protocol: { completeness: { ...complete, total_io_supply: false } } },
   });
   assert.equal(view.warnings.some((warning) => warning.includes("Incomplete data")), true);
-  assert.equal(view.metrics.redeemableSupply, "-");
+  assert.equal(view.metrics.claimSupply, "-");
 });
 
 test("source health surfaces stale, missing and retryable errors honestly", () => {

@@ -8,7 +8,9 @@ license.workspace = true
 candid.workspace = true
 ic-stable-structures.workspace = true
 ic-cdk.workspace = true
-io-accounts = { path = "../io_accounts" }
+io-accounts = { version = "0.1.0", path = "../io_accounts" }
+io-core-model = { version = "0.1.0", path = "../io_core_model" }
 io-receipt-types.workspace = true
+io-reward-policy.workspace = true
 serde.workspace = true
 sha2 = "0.10.9"

@@ -1,5 +1,12 @@
 # Governance boundaries
 
-The stream manager authenticates SNS governance only for pause/readiness control and authenticates the configured NNS manager for liquid receipts. It does not re-prove NNS neuron internals.
+The Stream Manager authenticates SNS governance for lifecycle control and
+canonical reward observations, and authenticates the configured NNS Manager
+for exact backing inflows. It never accepts caller-supplied monetary facts.
 
-The NNS manager alone submits commands concerning protected NNS neurons. Every governance effect is a typed persisted phase, and one update invocation submits at most one effect. Historian observations are advisory only.
+The NNS Manager alone submits commands for the permanent neuron, pooled
+exact-14-day parent, and bounded passive unwind children. The parent has one
+fixed configured following policy; readiness verifies it and daily
+reconciliation refreshes voting power without another timer. Every governance
+effect is a typed persisted phase, and one update submits at most one effect.
+Historian observations are advisory only.

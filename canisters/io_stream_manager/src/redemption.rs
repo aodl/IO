@@ -2,7 +2,7 @@ use candid::{CandidType, Principal};
 use serde::Deserialize;
 
 use crate::{
-    state::{Account, OperationSequence, RedemptionResult, StreamConfig},
+    state::{Account, OperationSequence, RedemptionResult, StreamConfig, StructuralStakeState},
     transfer::{deterministic_memo, OwnTransferIntent, TransferAttempt},
 };
 
@@ -104,11 +104,77 @@ impl RedemptionPreparation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct CanonicalRedemptionSnapshot {
+pub struct ClaimSnapshot {
     pub total_supply_e8s: u128,
     pub reserve_io_e8s: u128,
     pub excluded_io_balances: Vec<(Account, u128)>,
+    pub claim_supply_e8s: u128,
     pub liquid_icp_e8s: u128,
+    pub pooled_principal_e8s: u128,
+    pub unwinding_net_backing_e8s: u128,
+    pub transit_backing_e8s: u128,
+    pub total_claim_backing_e8s: u128,
+    pub nns_control_epoch: u64,
+    pub nns_operation_sequence: u64,
+    pub last_completed_pool_operation_sequence: Option<u64>,
+    pub nns_fingerprint: Vec<u8>,
+    pub pool_staking_account: Account,
+    pub minimum_parent_stake_e8s: u128,
+    pub pooled_parent_exists: bool,
+    pub stream_control_epoch: u64,
+    pub observation_fingerprint: Vec<u8>,
+    pub io_fee_e8s: u128,
+    pub icp_fee_e8s: u128,
+}
+
+impl Default for ClaimSnapshot {
+    fn default() -> Self {
+        let empty = Account {
+            owner: Principal::anonymous(),
+            subaccount: None,
+        };
+        Self {
+            total_supply_e8s: 0,
+            reserve_io_e8s: 0,
+            excluded_io_balances: Vec::new(),
+            claim_supply_e8s: 0,
+            liquid_icp_e8s: 0,
+            pooled_principal_e8s: 0,
+            unwinding_net_backing_e8s: 0,
+            transit_backing_e8s: 0,
+            total_claim_backing_e8s: 0,
+            nns_control_epoch: 0,
+            nns_operation_sequence: 0,
+            last_completed_pool_operation_sequence: None,
+            nns_fingerprint: Vec::new(),
+            pool_staking_account: empty,
+            minimum_parent_stake_e8s: 0,
+            pooled_parent_exists: false,
+            stream_control_epoch: 0,
+            observation_fingerprint: Vec::new(),
+            io_fee_e8s: 0,
+            icp_fee_e8s: 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct StructuralStakeObservation {
+    pub sns_neuron_id: Vec<u8>,
+    pub staking_account: Account,
+    pub state: StructuralStakeState,
+    pub ledger_balance_e8s: u128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct FrozenRedemptionEconomics {
+    pub total_supply_e8s: u128,
+    pub reserve_io_e8s: u128,
+    pub excluded_io_balances: Vec<(Account, u128)>,
+    pub claim_supply_e8s: u128,
+    pub liquid_icp_e8s: u128,
+    pub total_claim_backing_e8s: u128,
+    pub observation_fingerprint: Vec<u8>,
     pub io_fee_e8s: u128,
     pub icp_fee_e8s: u128,
 }
@@ -123,7 +189,7 @@ pub struct RedemptionOperation {
     pub io_amount_e8s: u128,
     pub gross_icp_e8s: u128,
     pub net_icp_e8s: u128,
-    pub snapshot: CanonicalRedemptionSnapshot,
+    pub snapshot: FrozenRedemptionEconomics,
     pub io_pull: TransferAttempt,
     pub icp_payout: Option<TransferAttempt>,
     pub completion_result: Option<RedemptionResult>,
@@ -147,9 +213,30 @@ impl RedemptionOperation {
         {
             return Err("redemption economics do not match approved configuration".into());
         }
+        let quote = io_core_model::redemption_quote(
+            io_core_model::EconomicState {
+                backing: io_core_model::Backing {
+                    liquid: self.snapshot.total_claim_backing_e8s,
+                    ..Default::default()
+                },
+                claims: self.snapshot.claim_supply_e8s,
+                active_backing: 0,
+                active_reward: 0,
+            },
+            self.io_amount_e8s,
+            self.snapshot.io_fee_e8s,
+            self.snapshot.icp_fee_e8s,
+        )
+        .map_err(|error| format!("frozen redemption quote is invalid: {error:?}"))?;
+        if quote.gross_icp != self.gross_icp_e8s
+            || quote.net_icp != self.net_icp_e8s
+            || self.snapshot.observation_fingerprint.len() != 32
+        {
+            return Err("redemption quote differs from frozen economics".into());
+        }
         if self.account.effective_eq(&config.io_reserve)?
             || config
-                .excluded_io_accounts
+                .nonredeemable_governance_io_accounts
                 .iter()
                 .try_fold(false, |matched, account| {
                     self.account
@@ -159,12 +246,13 @@ impl RedemptionOperation {
         {
             return Err("redemption source has a forbidden account role".into());
         }
-        if self.snapshot.excluded_io_balances.len() != config.excluded_io_accounts.len()
+        if self.snapshot.excluded_io_balances.len()
+            != config.nonredeemable_governance_io_accounts.len()
             || self
                 .snapshot
                 .excluded_io_balances
                 .iter()
-                .zip(&config.excluded_io_accounts)
+                .zip(&config.nonredeemable_governance_io_accounts)
                 .any(|((actual, _), expected)| !actual.effective_eq(expected).unwrap_or(false))
         {
             return Err("redemption snapshot excluded accounts do not match configuration".into());
@@ -292,7 +380,7 @@ impl RedemptionOperation {
 
 pub fn calculate(
     preparation: &RedemptionPreparation,
-    snapshot: CanonicalRedemptionSnapshot,
+    snapshot: ClaimSnapshot,
     config: &StreamConfig,
 ) -> Result<RedemptionOperation, String> {
     preparation.validate()?;
@@ -314,7 +402,7 @@ pub fn calculate(
         return Err("reserve account cannot redeem".into());
     }
     if config
-        .excluded_io_accounts
+        .nonredeemable_governance_io_accounts
         .iter()
         .any(|excluded| account.effective_eq(excluded).unwrap_or(false))
     {
@@ -323,22 +411,37 @@ pub fn calculate(
     if snapshot.io_fee_e8s > args.max_io_fee_e8s || snapshot.icp_fee_e8s > args.max_icp_fee_e8s {
         return Err("current ledger fee exceeds caller maximum".into());
     }
-    let excluded = snapshot
-        .excluded_io_balances
-        .iter()
-        .try_fold(0u128, |total, (_, balance)| total.checked_add(*balance))
-        .ok_or("excluded balance sum overflow")?;
+    if snapshot.observation_fingerprint.len() != 32 {
+        return Err("canonical redemption fingerprint is malformed".into());
+    }
+    let economic_state = io_core_model::EconomicState {
+        backing: io_core_model::Backing {
+            liquid: snapshot.liquid_icp_e8s,
+            pooled: snapshot.pooled_principal_e8s,
+            unwinding: snapshot.unwinding_net_backing_e8s,
+            transit: snapshot.transit_backing_e8s,
+        },
+        claims: snapshot.claim_supply_e8s,
+        active_backing: 0,
+        active_reward: 0,
+    };
+    if snapshot.total_claim_backing_e8s != 0
+        && io_core_model::claim_backing(economic_state.backing)
+            .map_err(|error| format!("claim backing failed: {error:?}"))?
+            != snapshot.total_claim_backing_e8s
+    {
+        return Err("canonical total claim backing is inconsistent".into());
+    }
     let quote = io_core_model::redemption_quote(
+        economic_state,
         args.io_amount_e8s,
         snapshot.io_fee_e8s,
-        snapshot.total_supply_e8s,
-        snapshot.reserve_io_e8s,
-        excluded,
-        snapshot.liquid_icp_e8s,
         snapshot.icp_fee_e8s,
     )
     .map_err(|error| format!("redemption quote failed: {error:?}"))?;
-    if quote.net_icp_e8s < args.min_icp_out_e8s {
+    io_core_model::require_liquidity(quote, snapshot.liquid_icp_e8s)
+        .map_err(|error| format!("redemption liquidity failed: {error:?}"))?;
+    if quote.net_icp < args.min_icp_out_e8s {
         return Err("minimum ICP output not met".into());
     }
     let io_memo = deterministic_memo(b"io-redemption-pull-v1", caller, args.nonce);
@@ -359,14 +462,49 @@ pub fn calculate(
         nonce: args.nonce,
         account,
         io_amount_e8s: args.io_amount_e8s,
-        gross_icp_e8s: quote.gross_icp_e8s,
-        net_icp_e8s: quote.net_icp_e8s,
-        snapshot,
+        gross_icp_e8s: quote.gross_icp,
+        net_icp_e8s: quote.net_icp,
+        snapshot: FrozenRedemptionEconomics {
+            total_supply_e8s: snapshot.total_supply_e8s,
+            reserve_io_e8s: snapshot.reserve_io_e8s,
+            excluded_io_balances: snapshot.excluded_io_balances,
+            claim_supply_e8s: snapshot.claim_supply_e8s,
+            liquid_icp_e8s: snapshot.liquid_icp_e8s,
+            total_claim_backing_e8s: snapshot.total_claim_backing_e8s,
+            observation_fingerprint: snapshot.observation_fingerprint,
+            io_fee_e8s: snapshot.io_fee_e8s,
+            icp_fee_e8s: snapshot.icp_fee_e8s,
+        },
         io_pull,
         icp_payout: None,
         completion_result: None,
         phase: RedemptionPhase::Prepared,
     })
+}
+
+pub fn quote_for(
+    preparation: &RedemptionPreparation,
+    snapshot: &ClaimSnapshot,
+) -> Result<io_core_model::RedemptionQuote, io_core_model::EconomicsError> {
+    let state = io_core_model::EconomicState {
+        backing: io_core_model::Backing {
+            liquid: snapshot.liquid_icp_e8s,
+            pooled: snapshot.pooled_principal_e8s,
+            unwinding: snapshot.unwinding_net_backing_e8s,
+            transit: snapshot.transit_backing_e8s,
+        },
+        claims: snapshot.claim_supply_e8s,
+        active_backing: 0,
+        active_reward: 0,
+    };
+    let quote = io_core_model::redemption_quote(
+        state,
+        preparation.request.io_amount_e8s,
+        snapshot.io_fee_e8s,
+        snapshot.icp_fee_e8s,
+    )?;
+    io_core_model::require_liquidity(quote, snapshot.liquid_icp_e8s)?;
+    Ok(quote)
 }
 
 pub fn request_fingerprint(caller: Principal, request: &CanonicalRedeemRequestV1) -> Vec<u8> {
@@ -379,7 +517,7 @@ pub fn request_fingerprint(caller: Principal, request: &CanonicalRedeemRequestV1
 
 pub fn verify_postconditions(
     operation: &RedemptionOperation,
-    post: &CanonicalRedemptionSnapshot,
+    post: &ClaimSnapshot,
 ) -> Result<(), String> {
     let minimum_reserve = operation
         .snapshot
@@ -418,6 +556,65 @@ pub fn verify_postconditions(
     if post.liquid_icp_e8s < minimum_liquid {
         return Err("liquid ICP decreased beyond the persisted payout".into());
     }
+    let minimum_backing = operation
+        .snapshot
+        .total_claim_backing_e8s
+        .checked_sub(operation.gross_icp_e8s)
+        .ok_or("backing postcondition underflow")?;
+    if post.total_claim_backing_e8s < minimum_backing {
+        return Err("claim backing decreased beyond the persisted payout".into());
+    }
+    Ok(())
+}
+
+pub fn verify_pre_payout_conditions(
+    operation: &RedemptionOperation,
+    fresh: &ClaimSnapshot,
+) -> Result<(), String> {
+    if fresh.io_fee_e8s != operation.snapshot.io_fee_e8s {
+        return Err("IO fee changed before redemption payout".into());
+    }
+    if fresh.icp_fee_e8s != operation.snapshot.icp_fee_e8s {
+        return Err("ICP fee changed before redemption payout".into());
+    }
+    let minimum_reserve = operation
+        .snapshot
+        .reserve_io_e8s
+        .checked_add(operation.io_amount_e8s)
+        .ok_or("reserve pre-payout check overflow")?;
+    if fresh.reserve_io_e8s < minimum_reserve {
+        return Err("IO reserve does not reflect the exact redemption pull".into());
+    }
+    let maximum_supply = operation
+        .snapshot
+        .total_supply_e8s
+        .checked_sub(operation.snapshot.io_fee_e8s)
+        .ok_or("supply pre-payout check underflow")?;
+    if fresh.total_supply_e8s > maximum_supply {
+        return Err("IO total supply increased or did not reflect the pull fee burn".into());
+    }
+    if fresh.excluded_io_balances.len() != operation.snapshot.excluded_io_balances.len() {
+        return Err("excluded IO account set changed before payout".into());
+    }
+    for ((expected_account, expected_balance), (fresh_account, fresh_balance)) in operation
+        .snapshot
+        .excluded_io_balances
+        .iter()
+        .zip(&fresh.excluded_io_balances)
+    {
+        if !expected_account.effective_eq(fresh_account)? {
+            return Err("excluded IO account identity/order changed before payout".into());
+        }
+        if fresh_balance < expected_balance {
+            return Err("excluded IO balance decreased before payout".into());
+        }
+    }
+    if fresh.liquid_icp_e8s < operation.snapshot.liquid_icp_e8s {
+        return Err("liquid ICP backing decreased before payout".into());
+    }
+    if fresh.total_claim_backing_e8s < operation.snapshot.total_claim_backing_e8s {
+        return Err("total claim backing decreased before payout".into());
+    }
     Ok(())
 }
 
@@ -434,14 +631,6 @@ mod tests {
             io_ledger: principal(2),
             icp_ledger: principal(3),
             nns_manager: principal(5),
-            jupiter_receipt_source: Account {
-                owner: principal(5),
-                subaccount: Some(vec![1; 32]),
-            },
-            two_week_receipt_source: Account {
-                owner: principal(5),
-                subaccount: Some(vec![2; 32]),
-            },
             jupiter_io_account: Account {
                 owner: principal(7),
                 subaccount: None,
@@ -458,7 +647,7 @@ mod tests {
                 owner: principal(4),
                 subaccount: liquid_subaccount,
             },
-            excluded_io_accounts: Vec::new(),
+            nonredeemable_governance_io_accounts: Vec::new(),
             minimum_redemption_io_e8s: 1,
             expected_io_fee_e8s: 2,
             expected_icp_fee_e8s: 10,
@@ -494,7 +683,7 @@ mod tests {
         };
         let operation = calculate(
             &preparation(&args),
-            CanonicalRedemptionSnapshot {
+            ClaimSnapshot {
                 total_supply_e8s: 1_000,
                 reserve_io_e8s: 400,
                 excluded_io_balances: vec![(
@@ -505,8 +694,12 @@ mod tests {
                     100,
                 )],
                 liquid_icp_e8s: 1_000,
+                claim_supply_e8s: 500,
+                total_claim_backing_e8s: 1_000,
+                observation_fingerprint: vec![1; 32],
                 io_fee_e8s: 2,
                 icp_fee_e8s: 10,
+                ..Default::default()
             },
             &config(Some(vec![9; 32])),
         )
@@ -528,7 +721,7 @@ mod tests {
             expires_at_nanos: 2,
             nonce: 0,
         };
-        let snapshot = CanonicalRedemptionSnapshot {
+        let snapshot = ClaimSnapshot {
             total_supply_e8s: 1_000,
             reserve_io_e8s: 400,
             excluded_io_balances: vec![(
@@ -539,11 +732,15 @@ mod tests {
                 100,
             )],
             liquid_icp_e8s: 1_000,
+            claim_supply_e8s: 500,
+            total_claim_backing_e8s: 1_000,
+            observation_fingerprint: vec![1; 32],
             io_fee_e8s: 2,
             icp_fee_e8s: 10,
+            ..Default::default()
         };
         let operation = calculate(&preparation(&args), snapshot, &config(None)).unwrap();
-        let post = CanonicalRedemptionSnapshot {
+        let post = ClaimSnapshot {
             total_supply_e8s: 997,
             reserve_io_e8s: 501,
             excluded_io_balances: vec![(
@@ -554,13 +751,93 @@ mod tests {
                 100,
             )],
             liquid_icp_e8s: 800,
+            claim_supply_e8s: 396,
+            total_claim_backing_e8s: 800,
+            observation_fingerprint: vec![2; 32],
             io_fee_e8s: 2,
             icp_fee_e8s: 10,
+            ..Default::default()
         };
         assert_eq!(verify_postconditions(&operation, &post), Ok(()));
         let mut adverse = post;
         adverse.reserve_io_e8s = 499;
         assert!(verify_postconditions(&operation, &adverse).is_err());
+    }
+
+    #[test]
+    fn pre_payout_conditions_reject_adverse_and_accept_conservative_drift() {
+        let args = RedeemArgs {
+            from_subaccount: None,
+            io_amount_e8s: 100,
+            min_icp_out_e8s: 1,
+            max_io_fee_e8s: 2,
+            max_icp_fee_e8s: 10,
+            expires_at_nanos: 2,
+            nonce: 0,
+        };
+        let excluded = Account {
+            owner: principal(8),
+            subaccount: None,
+        };
+        let snapshot = ClaimSnapshot {
+            total_supply_e8s: 1_000,
+            reserve_io_e8s: 400,
+            excluded_io_balances: vec![(excluded.clone(), 100)],
+            liquid_icp_e8s: 1_000,
+            claim_supply_e8s: 500,
+            total_claim_backing_e8s: 1_000,
+            observation_fingerprint: vec![1; 32],
+            io_fee_e8s: 2,
+            icp_fee_e8s: 10,
+            ..Default::default()
+        };
+        let operation = calculate(&preparation(&args), snapshot, &config(None)).unwrap();
+        let valid = ClaimSnapshot {
+            total_supply_e8s: 998,
+            reserve_io_e8s: 500,
+            excluded_io_balances: vec![(excluded.clone(), 100)],
+            liquid_icp_e8s: 1_000,
+            claim_supply_e8s: 398,
+            total_claim_backing_e8s: 1_000,
+            observation_fingerprint: vec![2; 32],
+            io_fee_e8s: 2,
+            icp_fee_e8s: 10,
+            ..Default::default()
+        };
+        assert_eq!(verify_pre_payout_conditions(&operation, &valid), Ok(()));
+
+        let mut cases = Vec::new();
+        let mut value = valid.clone();
+        value.excluded_io_balances[0].1 = 99;
+        cases.push(value);
+        let mut value = valid.clone();
+        value.excluded_io_balances[0].0.owner = principal(9);
+        cases.push(value);
+        let mut value = valid.clone();
+        value.total_supply_e8s = 999;
+        cases.push(value);
+        let mut value = valid.clone();
+        value.liquid_icp_e8s = 999;
+        cases.push(value);
+        let mut value = valid.clone();
+        value.io_fee_e8s = 3;
+        cases.push(value);
+        let mut value = valid.clone();
+        value.icp_fee_e8s = 11;
+        cases.push(value);
+        let mut value = valid.clone();
+        value.reserve_io_e8s = 499;
+        cases.push(value);
+        for adverse in cases {
+            assert!(verify_pre_payout_conditions(&operation, &adverse).is_err());
+        }
+
+        let mut favorable = valid.clone();
+        favorable.liquid_icp_e8s += 1;
+        favorable.excluded_io_balances[0].1 += 1;
+        favorable.reserve_io_e8s += 1;
+        favorable.total_supply_e8s -= 1;
+        assert_eq!(verify_pre_payout_conditions(&operation, &favorable), Ok(()));
     }
 
     #[test]
@@ -602,13 +879,17 @@ mod tests {
         let config = config(None);
         let mut operation = calculate(
             &preparation(&args),
-            CanonicalRedemptionSnapshot {
+            ClaimSnapshot {
                 total_supply_e8s: 1_000,
                 reserve_io_e8s: 400,
                 excluded_io_balances: Vec::new(),
                 liquid_icp_e8s: 1_000,
+                claim_supply_e8s: 600,
+                total_claim_backing_e8s: 1_000,
+                observation_fingerprint: vec![1; 32],
                 io_fee_e8s: 2,
                 icp_fee_e8s: 10,
+                ..Default::default()
             },
             &config,
         )
@@ -623,7 +904,6 @@ mod tests {
                 subaccount: None,
             };
         }
-        operation.io_pull.fingerprint = operation.io_pull.intent.fingerprint();
         assert!(operation.validate(&config).is_err());
     }
 }

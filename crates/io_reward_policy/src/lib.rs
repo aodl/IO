@@ -1,8 +1,12 @@
 //! Pure allocation of one actually backed IO pool over cumulative entitlement credits.
 
+use candid::CandidType;
+use io_core_model::{backed_io, checked_add, EconomicsError};
+use serde::Deserialize;
+
 pub const DAILY_EVENT_CREDIT: u128 = 1_000_000_000_000_000_000;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct EntitlementCredit {
     pub sns_neuron_id: Vec<u8>,
     pub accumulated_eligible_credit: u128,
@@ -18,13 +22,13 @@ pub fn entitlement_credit_from_bytes(
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct RewardAllocation {
     pub sns_neuron_id: Vec<u8>,
     pub io_e8s: u128,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct AllocationOutcome {
     pub allocations: Vec<RewardAllocation>,
     pub forfeited_io_e8s: u128,
@@ -169,6 +173,78 @@ pub fn allocate_rewards(
     })
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct ClaimSettlementPlan {
+    pub claim_credit: u128,
+    pub maximum_io_pool: u128,
+    pub rewards: AllocationOutcome,
+    pub distributed_io: u128,
+    pub recipient_io_fees: u128,
+    pub post_backing: u128,
+    pub post_claims: u128,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanningError {
+    Economics(EconomicsError),
+    Rewards(RewardPolicyError),
+    InsufficientClaimCredit,
+    InsufficientIoReserve,
+}
+
+impl From<EconomicsError> for PlanningError {
+    fn from(value: EconomicsError) -> Self {
+        Self::Economics(value)
+    }
+}
+
+impl From<RewardPolicyError> for PlanningError {
+    fn from(value: RewardPolicyError) -> Self {
+        Self::Rewards(value)
+    }
+}
+
+pub fn plan_claim_settlement(
+    pre_backing: u128,
+    pre_claims: u128,
+    claim_credit: u128,
+    policy_credit_total: u128,
+    entitlements: &[EntitlementCredit],
+    reserve_io_capacity: u128,
+    io_fee: u128,
+) -> Result<ClaimSettlementPlan, PlanningError> {
+    if claim_credit == 0 {
+        return Err(PlanningError::InsufficientClaimCredit);
+    }
+    let maximum_io_pool = backed_io(claim_credit, pre_backing, pre_claims)?;
+    let rewards = allocate_rewards(maximum_io_pool, policy_credit_total, entitlements)?;
+    let distributed = rewards.allocations.iter().try_fold(0u128, |sum, item| {
+        sum.checked_add(item.io_e8s).ok_or(PlanningError::Rewards(
+            RewardPolicyError::ArithmeticOverflow,
+        ))
+    })?;
+    let recipients = u128::try_from(rewards.allocations.len())
+        .map_err(|_| PlanningError::InsufficientIoReserve)?;
+    let recipient_fees = io_fee
+        .checked_mul(recipients)
+        .ok_or(PlanningError::InsufficientIoReserve)?;
+    let reserve_debit = distributed
+        .checked_add(recipient_fees)
+        .ok_or(PlanningError::InsufficientIoReserve)?;
+    if reserve_debit > reserve_io_capacity {
+        return Err(PlanningError::InsufficientIoReserve);
+    }
+    Ok(ClaimSettlementPlan {
+        claim_credit,
+        maximum_io_pool,
+        rewards,
+        distributed_io: distributed,
+        recipient_io_fees: recipient_fees,
+        post_backing: checked_add(pre_backing, claim_credit)?,
+        post_claims: checked_add(pre_claims, distributed)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,5 +346,14 @@ mod tests {
         assert_eq!(outcome.rounding_dust_e8s, 1);
         assert_eq!(sum_allocations(&outcome), 49);
         assert_eq!(49 + 51 + 1, 101);
+    }
+
+    #[test]
+    fn settlement_never_assumes_delivered_io_is_active() {
+        let plan =
+            plan_claim_settlement(100_000, 100_000, 1_000, 1, &[credit(1, 1)], 2_000, 10).unwrap();
+        assert_eq!(plan.distributed_io, 1_000);
+        assert_eq!(plan.post_claims, 101_000);
+        assert_eq!(plan.post_backing, 101_000);
     }
 }

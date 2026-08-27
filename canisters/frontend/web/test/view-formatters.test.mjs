@@ -10,7 +10,10 @@ test("missing values render as dash", () => {
 
 test("formats token e8s and ratios", () => {
   assert.equal(formatTokenE8s(123_456_789n, "IO"), "1.2346 IO");
-  assert.equal(formatRatio({ liquid_icp_per_io_e8s_numerator: 150n, liquid_icp_per_io_e8s_denominator: 100n }), "1.5");
+  assert.equal(
+    formatRatio({ backing_numerator_e8s: 150n, claim_denominator_e8s: 100n }),
+    "1.5",
+  );
 });
 
 test("variant labels are human readable", () => {

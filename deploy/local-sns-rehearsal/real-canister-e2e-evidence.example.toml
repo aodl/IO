@@ -162,7 +162,6 @@ historian_canister = "local-application-subnet-canister-id"
 installed_against_finalized_sns_ids = false
 local_only_install_args_checked = false
 production_fiduciary_install_args_rejected = false
-devmainnet_install_args_rejected = false
 protected_target_install_args_rejected = false
 finalized_governance_active_stake_refresh_observed = false
 finalized_governance_topup_refresh_delta_e8s = 50_000_000

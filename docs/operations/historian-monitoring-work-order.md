@@ -14,4 +14,14 @@ Implemented canonical adapters, in refresh order:
 
 Frozen-cohort, proposal-ratio, generic ingestion and scanner presentation fields are deleted from the current model. Mainnet configuration/activation remains separate authorized work.
 
-Completion evidence is the immutable `deploy/local-sns-rehearsal/evidence/2026-08-12-4320fdf-monitoring/` package: source-shaped adapter tests; an authentic prior-to-current, hash-changing SNS Governance → Root historian upgrade carrying typed configuration; fresh observations against compatible SNS/NNS topology; production DID/debug separation; and passing `did_surface`, `validate_historian_freshness`, `validate_stable_storage`, and all four local evidence validators.
+Current completion evidence is the selector-bound schema-v2
+`deploy/local-sns-rehearsal/evidence/2026-08-26-9462a1a-account-semantic`
+package. It records the current historian configuration/module identity,
+canonical Account map, fresh ledger/index/Governance/Root observations, and
+convergence with `L=25,000,274,858,627`, `P=74,999,625,131,873`, `U=0`,
+`T=0`, `B=99,999,899,990,500`, and `C=14,999,999,990,000`, while preserving
+production DID/debug separation and passing historian, stable-storage and
+committed-evidence validators. The immutable
+`2026-08-12-4320fdf-monitoring` package remains secondary historical evidence
+for its own prior-to-current hash-changing historian upgrade and recorded
+release; it was not rebound.

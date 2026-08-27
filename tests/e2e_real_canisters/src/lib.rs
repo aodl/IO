@@ -11,6 +11,7 @@ pub mod icrc;
 pub mod nns_backing;
 pub mod nns_setup;
 pub mod pocketic_env;
+pub mod post_mission70_nns_candidate;
 pub mod sns_governance_setup;
 pub mod sns_ledger_index;
 pub mod sns_lifecycle;

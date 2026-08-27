@@ -1,52 +1,38 @@
 # Pinned NNS execution boundary
 
-IO's NNS command DTOs and real PocketIC execution tests are bound to one exact
-DFINITY source revision:
+IO pins NNS Governance and the ICP Ledger independently. Sharing the
+`dfinity/ic` repository does not make an unrelated component revision an
+acceptable substitute for its own reproduced source and artifact identity.
 
-`021bf342f66296d5605b355a61b2430406a83783`
+## Active component pins
 
-The Wasm metadata section `git_commit_id` in both artifacts contains that exact
-revision.
-
-## Artifacts
-
-| Artifact | Official source artifact | Compressed SHA-256 | Raw Wasm SHA-256 | Candid DID SHA-256 |
+| Component | Source revision | Official compressed SHA-256 | Raw Wasm SHA-256 | Candid DID SHA-256 |
 | --- | --- | --- | --- | --- |
-| NNS Governance | `canisters/governance-canister.wasm.gz` | `c66ff7d948ff79a826e61eab9e11714082d93a45e42f3b7deec1c2377341285f` | `0a341fd53eba8cdfdd2330f968758bab2858fe7a26bbe1bc6a55320c23ba0ec5` | `edbbc660d8a819ac4c400296d444f3caf01b21fed3680d0defc099bac3d02c84` |
-| ICP ledger | `canisters/ledger-canister_notify-method.wasm.gz` | `5d69ec2e26e5546fe7e94bab721d6c4ed840106f9e2e69d11a8f3ee6e7721df0` | `9c1ff658635daabb7a3e9dcc5dca337eee5008bc2033d0e929c3fae53814f91c` | `45a6f13779ead0f7247b728f7a8953d649173863fea1f01fbf7c04f30589aad7` |
+| NNS Governance | `c748b8e76b90ceef329c055e6f7b38a00aae8745` | `e4e9e99730dbee3a6fb9a95b40b10b512ad4831c9d2f6efb51d3f0a5d243b503` | `573af1cde5bf55a5e4dbf2d47f8dd340f7a73a107eebbc645fe1202b97f61e85` | `6e9a397f4bf0adc913980ef6c176e765534617d0ce59d52e7bcc66add2b0cd71` |
+| ICP Ledger | `021bf342f66296d5605b355a61b2430406a83783` | `5d69ec2e26e5546fe7e94bab721d6c4ed840106f9e2e69d11a8f3ee6e7721df0` | `9c1ff658635daabb7a3e9dcc5dca337eee5008bc2033d0e929c3fae53814f91c` | `45a6f13779ead0f7247b728f7a8953d649173863fea1f01fbf7c04f30589aad7` |
 
-The Candid hash is SHA-256 over the exact public `candid:service` metadata text
-extracted from the corresponding raw Wasm by `ic-wasm`.
+NNS proposal 143660 is the active Governance source. Public proposal metadata
+was checked through proposal 143685 on 2026-08-26; no later executed Governance
+upgrade superseded 143660.
 
-## Source paths and behavior
+## Bound behavior
 
-The local NNS DTOs are checked against these exact source paths at the pinned
-revision:
+The Governance boundary includes the production `ClaimOrRefresh`,
+`IncreaseDissolveDelay`, `SetFollowing`, `RefreshVotingPower`, `Split`,
+`StartDissolving`, `Disburse`, maturity, and merge response shapes. The pooled
+parent is non-dissolving at exactly 1,209,600 seconds, has auto-stake disabled,
+and follows one configured neuron for topics 0, 4, and 14. The exact candidate
+tests prove the 14-day voting threshold, follow-based voting and maturity,
+direct top-up, concurrent children, separate split/start, principal return,
+and zero-principal maturity cleanup.
 
-- `rs/nns/governance/proto/ic_nns_governance/pb/v1/governance.proto`
-- `rs/nns/governance/src/governance/disburse_maturity.rs`
-- `rs/nns/governance/src/governance/ledger_helper.rs`
-- `rs/nervous_system/canisters/src/ledger.rs`
-- `rs/ledger_suite/icp/ledger/src/main.rs`
-- `rs/ledger_suite/icp/src/lib.rs`
-- `rs/ledger_suite/icp/ledger.did`
+The ICP Ledger pin independently fixes exact transfer, fee, and block recovery.
+Ambiguous outgoing-transfer recovery binds the destination, amount, fee,
+native memo, and creation timestamp; there is no ICRC memo on this ICP path.
+The minimum Governance stake is `100_000_000` e8s and maturity finalization is
+scheduled after `604_800` seconds. IO treats the role staging Account balance as
+controlled-value authority and supplies no maturity Mint block to its protocol.
 
-The pinned behavior is:
-
-- `StakeMaturityResponse` returns exact `maturity_e8s` and
-  `staked_maturity_e8s` values.
-- `DisburseMaturityResponse` returns optional `amount_disbursed_e8s`.
-- the minimum maturity disbursement is `100_000_000` e8s;
-- finalization is scheduled exactly `604_800` seconds after initiation;
-- finalization applies the cached daily maturity modulation to the nominal
-  maturity before minting ICP;
-- the resulting Mint uses legacy ICP ledger `transfer` with fee zero, no source
-  subaccount, native memo equal to the NNS Governance finalization
-  `now_seconds`, no ICRC memo, and no caller-provided `created_at_time`;
-- the ICP ledger therefore records its own processing time as the transaction
-  `created_at_time`.
-
-`cargo run -p xtask -- validate_nns_boundary_pin` rejects any difference among
-the implementation source pin, NNS Governance artifact revision, NNS/ICP ledger
-artifact revision, hashes, and this evidence record. Real NNS compatibility is
-not established unless that validator and the pinned real PocketIC tests pass.
+`cargo run -p xtask -- validate_nns_boundary_pin` rejects drift in either
+component revision, its artifact hashes, or this record. The exact candidate
+lock and PocketIC tests are required in addition to the static validator.

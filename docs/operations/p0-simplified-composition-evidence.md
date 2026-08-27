@@ -1,5 +1,10 @@
 # P0 simplified composition evidence
 
+> Historical evidence for the superseded separate-endowment economics. This
+> document is immutable in meaning and is not an active production requirement
+> or corrected-economics readiness claim. A fresh pooled claim-backing rehearsal
+> and evidence package are still required.
+
 This document records the deterministic composition defects reproduced from the simplified-execution baseline and the launch invariant that replaces each defect. It is normative for the simplified protocol; scanner-era recovery remains non-normative research history.
 
 | Item | Baseline reproduction | Positive invariant and regression |

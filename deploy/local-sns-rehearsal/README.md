@@ -5,7 +5,7 @@ This package is local-only. It provides rehearsal scaffolding and evidence valid
 It is not production launch configuration, not final tokenomics, not a mainnet SNS proposal, not required CI, and not proof that IO is live.
 
 Do not use `--network ic`. Do not call mainnet. Do not touch NNS Manager
-execution canister `oae4c-3iaaa-aaaar-qb5qq-cai` or protected IO NNS neuron
+execution canister `oae4c-3iaaa-aaaar-qb5qq-cai` or the two-year protected NNS neuron
 `10292412127977304661`.
 
 ## Files
@@ -27,14 +27,23 @@ execution canister `oae4c-3iaaa-aaaar-qb5qq-cai` or protected IO NNS neuron
 - `scripts/10-bootstrap-official-network.sh`: checks pinned `dfinity/ic` `rs/sns/testing` provenance and local SNS tooling prerequisites.
 - `scripts/11-build-local-io-canisters.sh`: verifies every exact-source release artifact and hash used by the rehearsal.
 - `scripts/12-deploy-local-dapps.sh`: creates the per-run planned local dapp IDs, installs exact release Wasms Paused, and adds NNS Root through the maintained SNS CLI.
-- `scripts/12-provision-local-nns-readiness.sh`: canonically funds both staging Accounts, claims two distinct local NNS neurons, shapes them through the pinned test-enabled NNS Governance bootstrap surface, and renders their actual IDs into the ignored NNS-manager install args.
+- `scripts/12-provision-local-nns-readiness.sh`: claims and shapes the permanent
+  local NNS neuron, records a deterministic local pooled-parent memo/followee,
+  and leaves the pooled parent absent for lazy creation from Stream liquid
+  claim backing.
 - `scripts/13-propose-and-finalize-sns.sh`: publishes the reviewed same-source candidate Governance/Root bundle through executed local NNS Governance proposals into SNS-W, verifies the exact compressed hashes, submits CreateServiceNervousSystem, and completes the swap.
 - `scripts/14-discover-sns-canisters.sh`: discovers the real SNS canonically and rejects any mismatch with the per-run plan.
 - `scripts/15-exercise-ledger.sh`: submits signed treasury proposals, records duplicate/negative ledger behavior, funds liquid ICP, and runs the production ICRC-2 redemption after activation.
 - `scripts/16-exercise-index-and-archives.sh`: captures index synchronization, exact Account histories and canonical ledger/Root archive discovery.
 - `scripts/17-exercise-governance-and-controllers.sh`: records controller and hash-changing upgrade evidence, registers lifecycle functions, and requires both managers to activate through signed SNS Governance proposals.
 - `scripts/17-observe-one-day-reward.sh`: advances only the attached local PocketIC instance by exactly one day and records the proposal-bearing production reward observation and permissionless keeper result.
-- `scripts/18-package-evidence.sh`: packages only a completed, release-bound canonical-economics run, including the exact rendered install/config inputs and Account histories.
+- `scripts/18-exercise-account-semantic-protocol.sh`: serially executes the
+  exact proposal-143660 boundary and controlled current-IO account-semantic,
+  carry-forward, liquidity and irreversible-effect recovery cases.
+- `scripts/18-package-evidence.sh`: packages a new immutable layered evidence
+  directory only after every required official and controlled checkpoint,
+  self-verifies its checksum inventory, validates the candidate package, and
+  updates the canonical selector only after candidate validation succeeds.
 - `scripts/19-cleanup-official-network.sh`: scoped cleanup reminder for local-only processes.
 
 `canister-ids.local.toml` is the operator-filled local evidence file and should not be treated as production config.
@@ -67,7 +76,7 @@ Manual sequence:
 4. Run `runbook.sh bootstrap-official-network` against an isolated pinned clean `dfinity/ic` checkout and loopback endpoint.
 5. Write ignored `install-args.local/io_stream_manager.did` and `install-args.local/io_nns_neuron_manager.did` for the reviewed local Accounts. The thin lifecycle adapter reads the uniquely owned `sns-testing-init` `topology.json`, rewrites only its isolated input copies with that topology's NNS/SNS allocation IDs, and derives the canonical Governance-owned treasury distribution subaccount for nonce `0`. Phase 12 re-derives and renders that one exact excluded Account plus the reviewed bundle's compressed/source Governance hash before installation. Manual runs use the same helper and fail if the excluded assignment is missing or duplicated. Run `runbook.sh build-local-io-canisters` to verify the exact release provenance and hashes.
 6. Set `IO_LOCAL_SNS_BUNDLE_DIR` to the reviewed same-source Governance/Root resolver output, then run the restartable `deploy-local-dapps`, `propose-and-finalize-sns`, and `discover-sns-canisters` phases.
-7. Run `exercise-ledger`, `exercise-index-and-archives`, `exercise-governance-and-controllers`, and `observe-one-day-reward` after their canonical prerequisites exist. The governance phase submits the current exact raw historian Wasm inline through the signed SNS Governance proposal and Root execution path. The inline payload avoids only the unavailable chunk-store upload path and does not bypass Governance. The phase requires a transition from a provenance-correct prior historian hash to the current release-manifest raw hash.
+7. Run `exercise-ledger`, `exercise-index-and-archives`, `exercise-governance-and-controllers`, and `observe-one-day-reward` after their canonical prerequisites exist. The governance phase submits the current exact raw historian Wasm inline through the signed SNS Governance proposal and Root execution path. The inline payload avoids only the unavailable chunk-store upload path and does not bypass Governance. The strict pre-launch schema is exercised through a same-release upgrade: before and after module hashes must equal the release-manifest raw hash, and the post-upgrade public status must confirm that the typed observation configuration was applied. The larger NNS Manager same-release restart uses its deterministic release `.wasm.gz`; the evidence binds the pre-upgrade raw module hash, gzip proposal/module hash, and release-manifest raw hash before proving that the manager reopens Paused.
 8. Run `runbook.sh record-ids` and record the canonically discovered IDs in ignored `canister-ids.local.toml`.
 9. Run `runbook.sh capture-evidence` and the command templates in `commands.local.example.md`.
 10. Observe the treasury-transfer fee burn and capture the canonical activation baseline after the real SNS-governance reserve-funding proposal.
@@ -75,7 +84,12 @@ Manual sequence:
 12. Verify SNS governance/root/swap availability and dapp controller state.
 13. Test an SNS-governance-controlled dapp upgrade proposal and lifecycle proposal without direct management-canister substitution.
 14. Run `runbook.sh validate` and `cargo run -p xtask -- validate_local_sns_ledger`.
-15. Run `runbook.sh package-evidence` to create sanitized committed evidence or a blocker report.
+15. Run `runbook.sh exercise-account-semantic-protocol` with the exact pinned
+    PocketIC, proposal-143660 Governance artifact, real SNS bundle and current
+    release Wasms.
+16. Run `runbook.sh package-evidence` to create a new sanitized immutable
+    package. Packaging refuses missing checkpoints and never edits an earlier
+    dated package.
 
 After advancing PocketIC beyond signed-ingress time, use the repository observer instead of weakening ingress validation:
 
@@ -101,7 +115,7 @@ cargo run -p xtask -- validate_local_sns_scripts
 
 `validate_local_sns_rehearsal` checks the package structure and local-only guardrails.
 
-`validate_local_sns_ledger` checks the committed completed local evidence file. The `production-redemption-v1` schema binds the canonical SNS/dapp IDs, exact source and module hashes, reserve/redemption identities and blocks, ledger negative behavior, index histories, explicit no-archive observation, governance proposal IDs, two-neuron readiness fixture, lifecycle results and one-day reward observation. The older detailed transfer-cycle schema remains accepted for historical packages.
+`validate_local_sns_ledger` reports `corrected pooled-claim-backing rehearsal evidence missing` until a fresh authorized rehearsal produces the ignored root evidence file. The incomplete example uses the pooled architecture and cannot validate as completed evidence. Old `production-redemption-v1`, seeded-principal, 252,460,800-second reward-backing evidence remains immutable only under dated `evidence/` history and is not active readiness authority.
 
 `validate_local_sns_scripts` copies the operator scripts to a temp directory, writes fixture local variables and completed local evidence, runs the no-network executable paths, and checks positive and negative guardrails. It does not call canisters and does not require the dfx SNS extension.
 
@@ -117,6 +131,17 @@ its current source/artifact lineage.
 The current canonical shape additionally preserves exact Stream/NNS/historian Candid inputs, the typed Account map, checked redemption economics and the treasury Account history. It independently calculates excluded total, redeemable supply, gross and net, verifies ledger balance identities and requires the historian rate to agree. It also requires canonical historian supply/reserve/liquid/rate,
 module/controller, lifecycle, Governance, index and archive observations to be
 fresh and complete. No completed package may contain blocker/placeholder text.
+
+The account-semantic shape adds a fixed Account map, source-built official SNS
+binary hashes, exact NNS boundary identity, phase inventory, structured
+scenario results, controlled PocketIC log and explicit proof-layer map. It
+requires distinct fixed TwoWeek and TwoYear maturity Accounts, no maturity
+Mint-provenance surface, Jupiter/TwoWeek paired settlement, TwoYear
+no-issuance treatment, `B = L + P + U + T`, 100/20/50/70 carry-forward,
+cross-Account isolation, global-rate redemption and exact replay/recovery.
+Official SNS observations, exact NNS Governance mechanics and controlled IO
+orchestration remain separate claims in the package rather than being
+presented as one environment.
 
 Both package forms reject unexpected or uncovered files, duplicate checksum entries, path traversal, symlinks, non-regular files, secret/private-key markers, and mainnet endpoint or network arguments.
 
@@ -163,5 +188,9 @@ The local SNS rehearsal is complete only when:
 - SNS governance/root/swap availability was observed;
 - dapp controller state was checked;
 - `cargo run -p xtask -- validate_local_sns_ledger` passes against the filled local evidence file.
+- the account-semantic driver has passed all Layer B/C cases against the exact
+  recorded release;
+- the new package validates before and after its exact selector binding;
+- no maturity Mint block or provenance endpoint was used.
 
 This still does not prove mainnet SNS launch readiness, final tokenomics, final SNS config, mainnet testflight, audit readiness, production adapter activation, or that IO is live.

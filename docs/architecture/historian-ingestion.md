@@ -21,4 +21,4 @@ Index canisters are the normal account-history abstraction. Ledgers remain canon
 
 Expected release identities are typed `(role, canister, raw Wasm SHA-256)` entries. Observations distinguish matching, mismatch, unavailable, and unknown. Inability to observe is not a mismatch. Reward-share availability is an optional exact capability-bearing Governance hash that must equal the expected Governance hash. The reviewed local candidate supplies it; an official module without the reviewed field leaves it absent and is reported capability unavailable. Matching the candidate hash does not claim an official capability-bearing release exists.
 
-Frozen-cohort totals, proposal participation ratios, generic ingestion traits, generic cursors, and scanner-era histories were removed from the current model. A narrow legacy decoder exists only for stable upgrade compatibility.
+Frozen-cohort totals, proposal participation ratios, generic ingestion traits, generic cursors, scanner-era histories, and pre-launch compatibility decoders are absent from the launch model.

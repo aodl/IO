@@ -1,0 +1,16 @@
+[package]
+name = "mock-nns-candidate-actor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+candid.workspace = true
+ic-cdk.workspace = true
+io-governance-types.workspace = true
+io-ledger-types.workspace = true
+serde.workspace = true

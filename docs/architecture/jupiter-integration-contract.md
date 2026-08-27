@@ -31,9 +31,23 @@ is the configured Jupiter Faucet default Account and whose destination is the
 NNS manager default Account. Amount and operation kind come from that block,
 not the notifier.
 
+Launch authority is the conjunction of the canonical exact ICP block, the
+exact configured route, the immutable `jupiter_activation_block_floor`, and
+permanent completed-block replay state. Blocks below the floor are rejected
+locally before any Ledger or archive call; the first block at the floor and
+later blocks remain eligible for normal exact proof. The production value is
+an audited launch input and remains an unresolved TODO in the non-runnable
+mainnet template.
+
 The NNS manager keeps a narrowly scoped stable set of completed Jupiter ICP
 block indexes for permanent replay protection. This set is not a source-event
 journal, account-history cursor, scanner, or proof-of-absence mechanism.
+Processed-block replay and activation-floor rejection are always local. New
+at-or-above-floor block indexes perform one bounded canonical Ledger/archive
+lookup and create no negative-cache or throttle state. Because the Faucet does
+not call IO, there is no configured-caller priority path. Repeated invalid
+permissionless lookups remain a monitored cycles/liveness risk; they cannot
+fabricate a deposit or bypass exact proof.
 
 ## Route that does not issue IO
 

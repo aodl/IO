@@ -3,18 +3,30 @@ use crate::{
     execution::{self, ExactTransferOutcome, StreamLiquidProgress},
     jupiter::{
         self, JupiterCompleted, JupiterDeposit, JupiterOperation, JupiterPauseReason, JupiterPhase,
-        JupiterStuckTransfer, LiquidTransferSucceeded, StakeIncreaseProof, StakeTransferSucceeded,
+        JupiterStuckTransfer, LiquidTransferSucceeded, PermanentNeuronCreditProof,
+        StakeTransferSucceeded,
     },
     state::{self, Lifecycle, NnsOperation},
     transfer::{
         NnsTransferAttempt, NnsTransferIntent, TransferOutcomeClassification, TransferState,
     },
 };
-use candid::Principal;
 use io_ledger_boundary::{exact_icp_transfer, icp_account_identifier, ExpectedQueryBlockTransfer};
 
+fn enforce_activation_floor(
+    current: &state::NnsStateV1,
+    block_index: u128,
+) -> Result<(), ApiError> {
+    if block_index < current.config.jupiter_activation_block_floor {
+        return Err(ApiError::Invalid(format!(
+            "Jupiter block {block_index} predates activation floor {}",
+            current.config.jupiter_activation_block_floor
+        )));
+    }
+    Ok(())
+}
+
 pub async fn notify_jupiter_deposit(
-    _caller: Principal,
     args: NotifyJupiterDepositArgs,
 ) -> Result<JupiterProgress, ApiError> {
     if let Some(completed) =
@@ -23,6 +35,7 @@ pub async fn notify_jupiter_deposit(
         return Ok(JupiterProgress::Completed(completed));
     }
     let current = crate::api::ready()?;
+    enforce_activation_floor(&current, args.block_index)?;
     if let Some(NnsOperation::Jupiter(operation)) = &current.active_operation {
         if operation.deposit.block_index == args.block_index {
             return Ok(jupiter_progress(operation));
@@ -33,7 +46,14 @@ pub async fn notify_jupiter_deposit(
         return Err(ApiError::Busy);
     }
 
-    let transfer = exact_icp_transfer(current.config.icp_ledger, args.block_index)
+    lookup_and_begin(current, args.block_index).await
+}
+
+async fn lookup_and_begin(
+    current: state::NnsStateV1,
+    block_index: u128,
+) -> Result<JupiterProgress, ApiError> {
+    let transfer = exact_icp_transfer(current.config.icp_ledger, block_index)
         .await
         .map_err(ApiError::Invalid)?;
     let source =
@@ -51,17 +71,19 @@ pub async fn notify_jupiter_deposit(
             "exact block is not a canonical Jupiter raw-ICP deposit".into(),
         ));
     }
-    let (stake_e8s, liquid_e8s) =
-        jupiter::checked_split(transfer.amount_e8s).map_err(ApiError::Invalid)?;
+    let split = io_nns_types::maturity::capture_40_60(
+        transfer.amount_e8s,
+        current.config.expected_icp_fee_e8s,
+        current.config.expected_icp_fee_e8s,
+    )
+    .map_err(|error| ApiError::Invalid(format!("Jupiter capture split failed: {error:?}")))?;
+    let (stake_e8s, liquid_e8s) = (split.permanent_credit, split.claim_credit);
     let staging_balance =
         execution::icp_balance(&current.config, &current.config.jupiter_staging).await?;
-    let required_staging = transfer
-        .amount_e8s
-        .checked_add(current.config.jupiter_fee_float_e8s)
-        .ok_or_else(|| ApiError::Invalid("Jupiter staging preflight overflow".into()))?;
-    if staging_balance < required_staging {
+    if staging_balance < transfer.amount_e8s {
         return Err(ApiError::Invalid(format!(
-            "Jupiter staging balance {staging_balance} is below gross deposit plus fee float {required_staging}"
+            "Jupiter staging balance {staging_balance} is below the exact deposit {}",
+            transfer.amount_e8s
         )));
     }
 
@@ -81,10 +103,11 @@ pub async fn notify_jupiter_deposit(
         dispatch_epoch: 0,
         captured_control_epoch: latest.control_epoch,
         deposit: JupiterDeposit {
-            block_index: args.block_index,
+            block_index,
             gross_e8s: transfer.amount_e8s,
             stake_e8s,
             liquid_e8s,
+            fee_e8s: current.config.expected_icp_fee_e8s,
             created_at_time_nanos: transfer.created_at_time,
         },
         phase: JupiterPhase::DepositProved,
@@ -118,13 +141,7 @@ pub async fn resume(operation: JupiterOperation) -> Result<JupiterProgress, ApiE
             permit,
             attempt,
         } => {
-            submit_jupiter_transfer(
-                operation,
-                proof.before.clone(),
-                Some((proof, permit)),
-                attempt,
-            )
-            .await
+            submit_jupiter_transfer(operation, proof.before(), Some((proof, permit)), attempt).await
         }
         JupiterPhase::LiquidTransferSucceeded(succeeded) => {
             complete_receipt(operation, succeeded).await
@@ -229,7 +246,7 @@ async fn prepare_stake_transfer(
 async fn submit_jupiter_transfer(
     mut operation: JupiterOperation,
     before: jupiter::NeuronSnapshot,
-    liquid: Option<(StakeIncreaseProof, jupiter::StreamReceiptPermit)>,
+    liquid: Option<(PermanentNeuronCreditProof, jupiter::StreamReceiptPermit)>,
     mut attempt: NnsTransferAttempt,
 ) -> Result<JupiterProgress, ApiError> {
     let expected = operation.clone();
@@ -384,13 +401,7 @@ async fn refresh(
     if ensure_exact_jupiter(&submitted, &state::read()).is_err() {
         return Err(ApiError::Busy);
     }
-    if let Err(error) = result {
-        pause_exact_jupiter(&submitted)?;
-        return Err(ApiError::Pending(format!(
-            "claim/refresh outcome requires canonical neuron observation: {error:?}"
-        )));
-    }
-    Ok(JupiterProgress::RefreshSubmitted)
+    Err(execution::command_pending("Jupiter ClaimOrRefresh", result))
 }
 
 async fn prove_stake_increase(
@@ -401,40 +412,34 @@ async fn prove_stake_increase(
     let snapshot = state::read();
     let after = execution::query_neuron(&snapshot.config, succeeded.before.neuron_id).await?;
     ensure_exact_jupiter(&operation, &state::read())?;
-    if after.staking_subaccount != succeeded.before.staking_subaccount
-        || after
-            .cached_stake_e8s
-            .checked_sub(succeeded.before.cached_stake_e8s)
-            != Some(operation.deposit.stake_e8s)
-    {
-        let reason: String =
-            "protected neuron cached stake did not increase by the exact 40% deposit".into();
-        operation.phase = JupiterPhase::Stuck {
-            reason: reason.clone(),
-            pause_reason: JupiterPauseReason::RefreshUnconfirmed,
-            transfer: None,
-        };
-        pause_and_replace_jupiter(&expected, operation)?;
-        return Err(ApiError::Stuck(reason));
-    }
-    operation.phase = JupiterPhase::StakeIncreaseProved(StakeIncreaseProof {
-        before: succeeded.before,
-        after_cached_stake_e8s: after.cached_stake_e8s,
-        stake_transfer_block: succeeded.block_index,
-    });
+    let proof = crate::permanent_credit::observe_credit(
+        &succeeded.before,
+        succeeded.block_index,
+        operation.deposit.stake_e8s,
+        &after,
+    )?;
+    let Some(proof) = proof else {
+        let result = execution::refresh_neuron(&snapshot.config, succeeded.before.neuron_id).await;
+        ensure_exact_jupiter(&expected, &state::read())?;
+        return Err(execution::command_pending(
+            "Jupiter ClaimOrRefresh retry",
+            result,
+        ));
+    };
+    operation.phase = JupiterPhase::StakeIncreaseProved(proof);
     replace_jupiter(&expected, operation.clone())?;
     Ok(JupiterProgress::StakeIncreaseProved)
 }
 
 async fn prepare_receipt(
     mut operation: JupiterOperation,
-    proof: StakeIncreaseProof,
+    proof: PermanentNeuronCreditProof,
 ) -> Result<JupiterProgress, ApiError> {
     let expected = operation.clone();
     let config = state::read().config;
-    let permit = execution::prepare_jupiter_receipt(
+    let permit = execution::prepare_jupiter_claim_receipt(
         &config,
-        operation.deposit.block_index,
+        operation.operation_sequence,
         operation.deposit.liquid_e8s,
     )
     .await?;
@@ -443,6 +448,7 @@ async fn prepare_receipt(
         .destination
         .effective_eq(&config.stream_liquid_account)
         .map_err(ApiError::Invalid)?
+        || permit.amount_e8s != operation.deposit.liquid_e8s
     {
         return Err(ApiError::Invalid(
             "stream returned the wrong liquid destination".into(),
@@ -455,7 +461,7 @@ async fn prepare_receipt(
 
 fn prepare_liquid_transfer(
     mut operation: JupiterOperation,
-    proof: StakeIncreaseProof,
+    proof: PermanentNeuronCreditProof,
     permit: jupiter::StreamReceiptPermit,
 ) -> Result<JupiterProgress, ApiError> {
     let expected = operation.clone();
@@ -527,25 +533,13 @@ async fn observe_stream_settlement(
 fn finish_jupiter(
     operation: JupiterOperation,
     succeeded: LiquidTransferSucceeded,
-    completed: execution::CompletedReceiptResult,
+    stream: io_receipt_types::ClaimBackingReceiptResult,
 ) -> Result<JupiterProgress, ApiError> {
-    let stream = match completed {
-        execution::CompletedReceiptResult::Jupiter(result) => result,
-        execution::CompletedReceiptResult::TwoWeek(_) => {
-            return Err(ApiError::Invalid(
-                "stream completed the wrong receipt kind for Jupiter".into(),
-            ))
-        }
-    };
-    let expected_fingerprint = execution::jupiter_receipt_fingerprint(
-        succeeded.permit.sequence,
-        operation.deposit.block_index,
-        operation.deposit.liquid_e8s,
-    );
-    if stream.request_fingerprint != expected_fingerprint
-        || stream.receipt_block != succeeded.block_index
-        || stream.backed_io_e8s == 0
-        || stream.io_transfer_block == 0
+    if stream.nns_operation_sequence != operation.operation_sequence
+        || stream.kind != io_receipt_types::ClaimBackingReceiptKind::Jupiter
+        || stream.liquid_credit_e8s != operation.deposit.liquid_e8s
+        || stream.distributed_io_e8s == 0
+        || stream.recipient_transfer_block.is_none()
         || stream.io_fee_e8s != state::read().config.expected_io_fee_e8s
         || stream.completed_at_nanos == 0
     {
@@ -558,14 +552,16 @@ fn finish_jupiter(
         deposit_block: operation.deposit.block_index,
         gross_e8s: operation.deposit.gross_e8s,
         stake_e8s: operation.deposit.stake_e8s,
+        observed_after_cached_stake_e8s: succeeded.proof.observed_after_cached_stake_e8s,
         liquid_e8s: operation.deposit.liquid_e8s,
-        stake_transfer_block: succeeded.proof.stake_transfer_block,
+        stake_transfer_block: succeeded.proof.transfer_block,
         liquid_transfer_block: succeeded.block_index,
-        stream_receipt_sequence: succeeded.permit.sequence,
-        backed_io_e8s: stream.backed_io_e8s,
-        io_transfer_block: stream.io_transfer_block,
+        stream_receipt_sequence: succeeded.permit.stream_operation_sequence,
+        backed_io_e8s: stream.distributed_io_e8s,
+        io_transfer_block: stream
+            .recipient_transfer_block
+            .expect("validated Jupiter block"),
         io_fee_e8s: stream.io_fee_e8s,
-        stream_receipt_fingerprint: stream.request_fingerprint,
         completed_at_nanos: checked_now()?,
     };
     state::record_processed_jupiter(result.clone()).map_err(ApiError::Invalid)?;
@@ -597,7 +593,7 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<JupiterProgress,
                 proof,
                 permit,
                 attempt,
-            } => (Some((proof.clone(), permit)), (proof.before, attempt)),
+            } => (Some((proof.clone(), permit)), (proof.before(), attempt)),
         },
         _ => {
             return Err(ApiError::Invalid(
@@ -698,17 +694,6 @@ fn pause_and_replace_jupiter(
     Ok(())
 }
 
-fn pause_exact_jupiter(expected: &JupiterOperation) -> Result<(), ApiError> {
-    let mut latest = state::read();
-    match &latest.active_operation {
-        Some(NnsOperation::Jupiter(active)) if **active == *expected => {}
-        _ => return Err(ApiError::Busy),
-    }
-    latest.lifecycle = Lifecycle::Paused;
-    state::write(latest);
-    Ok(())
-}
-
 fn jupiter_progress(operation: &JupiterOperation) -> JupiterProgress {
     match &operation.phase {
         JupiterPhase::DepositProved => JupiterProgress::DepositProved,
@@ -730,25 +715,25 @@ fn jupiter_progress(operation: &JupiterOperation) -> JupiterProgress {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TwoWeekTargetStatus;
+    use crate::PooledTargetStatus;
+    use candid::Principal;
 
     fn valid_test_state() -> (Principal, crate::state::NnsStateV1) {
         let principal = Principal::from_slice(&[1; 29]);
-        let account = |subaccount: u8| crate::state::Account {
-            owner: principal,
-            subaccount: Some(vec![subaccount; 32]),
-        };
         (
             principal,
             crate::state::NnsStateV1 {
+                launch_schema_marker: crate::state::LAUNCH_SCHEMA_MARKER,
                 config: crate::state::NnsConfig {
                     sns_governance: Principal::from_slice(&[2; 29]),
-                    stream_manager: principal,
+                    stream_manager: Principal::from_slice(&[6; 29]),
                     jupiter: Principal::from_slice(&[3; 29]),
                     icp_ledger: Principal::from_slice(&[4; 29]),
                     nns_governance: Principal::from_slice(&[5; 29]),
                     two_year_neuron_id: 1,
-                    two_week_neuron_id: 2,
+                    pooled_parent_memo: 2,
+                    pooled_parent_followee_id: 3,
+                    minimum_parent_stake_e8s: 100_000_000,
                     jupiter_account: crate::state::Account {
                         owner: Principal::from_slice(&[3; 29]),
                         subaccount: None,
@@ -757,28 +742,30 @@ mod tests {
                         owner: principal,
                         subaccount: None,
                     },
-                    two_week_maturity_staging: account(2),
                     stream_liquid_account: crate::state::Account {
-                        owner: principal,
+                        owner: Principal::from_slice(&[6; 29]),
                         subaccount: Some(vec![3; 32]),
                     },
                     expected_io_fee_e8s: 10_000,
                     expected_icp_fee_e8s: 10_000,
-                    jupiter_fee_float_e8s: 20_000,
-                    two_week_fee_float_e8s: 10_000,
-                    seeded_two_week_principal_e8s: 1,
+                    jupiter_activation_block_floor: 1,
+                    audited_permanent_principal_e8s: 1,
                     transfer_retry_delay_nanos: 1_000_000_000,
                     ledger_deduplication_window_nanos: 86_400_000_000_000,
                 },
                 lifecycle: Lifecycle::Ready,
                 active_operation: None,
-                latest_two_week_target: None,
-                two_week_maturity_baseline_reconciled: false,
-                latest_started_two_week_generation: 0,
-                latest_completed_two_week_generation: 0,
+                pooled_parent_id: None,
+                pooled_parent_staking_account: None,
+                live_cohorts: Vec::new(),
+                last_completed_pool: None,
+                last_completed_unwind: None,
+                last_held_reconciliation: None,
+                latest_reconciliation_generation: 0,
+                latest_pooled_target: None,
+                two_year_maturity_baseline_reconciled: true,
                 pending_two_year_maturity: None,
                 pending_two_week_maturity: None,
-                pending_unwind: None,
                 last_two_year_maturity: None,
                 last_two_week_maturity: None,
                 next_operation_sequence: 1,
@@ -793,20 +780,39 @@ mod tests {
         crate::state::initialize(state, principal).unwrap();
         assert_eq!(
             crate::state::target_status(9, 10, 1),
-            TwoWeekTargetStatus::UnderTarget
+            PooledTargetStatus::UnderTarget
         );
         assert_eq!(
             crate::state::target_status(10, 10, 1),
-            TwoWeekTargetStatus::AtTarget
+            PooledTargetStatus::AtTarget
         );
         assert_eq!(
             crate::state::target_status(11, 10, 1),
-            TwoWeekTargetStatus::AtTargetWithinUnwindTolerance
+            PooledTargetStatus::AtTargetWithinUnwindTolerance
         );
         assert_eq!(
             crate::state::target_status(12, 10, 1),
-            TwoWeekTargetStatus::OverTarget
+            PooledTargetStatus::OverTarget
         );
+    }
+
+    #[test]
+    fn activation_floor_fails_before_ledger_work() {
+        let (_, mut state) = valid_test_state();
+        state.config.jupiter_activation_block_floor = 50;
+        assert!(matches!(
+            enforce_activation_floor(&state, 49),
+            Err(ApiError::Invalid(message)) if message.contains("predates activation floor")
+        ));
+        enforce_activation_floor(&state, 50).unwrap();
+        enforce_activation_floor(&state, 51).unwrap();
+
+        // A later balance change cannot affect this local immutable boundary.
+        state.config.minimum_parent_stake_e8s = u128::MAX;
+        assert!(matches!(
+            enforce_activation_floor(&state, 49),
+            Err(ApiError::Invalid(_))
+        ));
     }
 
     #[test]
@@ -845,14 +851,18 @@ mod tests {
             before: neuron.clone(),
             block_index: 10,
         };
-        let proof = StakeIncreaseProof {
-            before: neuron,
-            after_cached_stake_e8s: 1_400,
-            stake_transfer_block: 10,
+        let proof = PermanentNeuronCreditProof {
+            neuron_id: neuron.neuron_id,
+            staking_subaccount: neuron.staking_subaccount,
+            before_cached_stake_e8s: neuron.cached_stake_e8s,
+            protocol_credit_e8s: 400,
+            transfer_block: 10,
+            observed_after_cached_stake_e8s: 1_400,
         };
         let permit = jupiter::StreamReceiptPermit {
-            sequence: 11,
+            stream_operation_sequence: 11,
             destination: latest.config.stream_liquid_account.clone(),
+            amount_e8s: 600,
             memo: vec![2],
         };
         let liquid_attempt = NnsTransferAttempt::prepared(NnsTransferIntent {
@@ -879,6 +889,7 @@ mod tests {
                 gross_e8s: 1_000,
                 stake_e8s: 400,
                 liquid_e8s: 600,
+                fee_e8s: 0,
                 created_at_time_nanos: 1,
             },
             phase,
@@ -908,8 +919,12 @@ mod tests {
             (
                 "stake increase query",
                 operation(JupiterPhase::RefreshSubmitted(StakeTransferSucceeded {
-                    before: proof.before.clone(),
-                    block_index: proof.stake_transfer_block,
+                    before: jupiter::NeuronSnapshot {
+                        neuron_id: proof.neuron_id,
+                        staking_subaccount: proof.staking_subaccount,
+                        cached_stake_e8s: proof.before_cached_stake_e8s,
+                    },
+                    block_index: proof.transfer_block,
                 })),
                 operation(JupiterPhase::StakeIncreaseProved(proof.clone())),
             ),

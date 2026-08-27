@@ -1,10 +1,10 @@
 [schema]
-version = 1
+version = 2
 
 [current]
-package = "2026-08-14-master-descended-4320fdf-canonical-economics"
-io_release_source_commit = "23fbc4f62863f421803cc49c34aa8c5c576b4d89"
-io_artifact_recording_commit = "2d28f84a4d36e8e9fd17d019478a0ae432d55838"
-release_manifest_sha256 = "144bd505bab85b05ac5f3e89c11276d21c55260b39b7076cd227a9143f1c1fc3"
-package_manifest_sha256 = "8e99919a6ed0c93c5db328b07182c07182faba947709192406ccee6d172ae7bb"
-package_sha256s_sha256 = "11f92f48bcbfab56be360f67da74f975917e242c2ad29c404b0c841ec925c292"
+package = "2026-08-26-9462a1a-account-semantic"
+io_release_source_commit = "9462a1a0df602f06fa845bd31f9fcd0adf80067a"
+io_artifact_recording_commit = "46713f8499cf9a63a6cd4879b1fff9c1f9ef0be5"
+release_manifest_sha256 = "011113d83510e66976f5d3eabefc57ef30ba44fc49a8973fad29be043b374431"
+package_manifest_sha256 = "254e8866394d62ba9fbe2b0290709d2c9dbaeb8ed84c8b3446b9a1912af0eb78"
+package_sha256s_sha256 = "a1915cef319b569955c5d75ad88c4a3715af8483573d2cf9b3a2af108d6bea29"

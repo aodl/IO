@@ -25,19 +25,6 @@ export async function connectWalletAdapter(adapter, expectedNetwork) {
   return requireSession(await adapter.connect(), expectedNetwork);
 }
 
-export function injectedTestingAdapter(window, expectedNetwork) {
-  const injected = window.ioRedemptionSession;
-  if (!injected) return null;
-  return {
-    connect: async () => requireSession({
-      ...injected,
-      network: injected.network || expectedNetwork,
-      adapterKind: "injected-local-testing",
-    }, expectedNetwork),
-  };
-}
-
 export async function resolveWalletSession(window, expectedNetwork) {
-  const adapter = window.ioWalletAdapter || injectedTestingAdapter(window, expectedNetwork);
-  return connectWalletAdapter(adapter, expectedNetwork);
+  return connectWalletAdapter(window.ioWalletAdapter, expectedNetwork);
 }

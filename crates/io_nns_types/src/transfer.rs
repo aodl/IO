@@ -1,6 +1,8 @@
-#[rustfmt::skip]
-use {candid::{CandidType, Principal}, io_accounts::Account, serde::Deserialize};
-use sha2::{Digest, Sha256};
+use {
+    candid::{CandidType, Principal},
+    io_accounts::Account,
+    serde::Deserialize,
+};
 
 pub const MAX_MEMO_BYTES: usize = 32;
 
@@ -27,10 +29,6 @@ impl NnsTransferIntent {
             return Err("NNS transfer intent is malformed".into());
         }
         self.destination.validate()
-    }
-
-    pub fn fingerprint(&self) -> Vec<u8> {
-        Sha256::digest(candid::encode_one(self).expect("NNS transfer intent must encode")).to_vec()
     }
 }
 
@@ -68,7 +66,6 @@ pub enum TransferOutcomeClassification {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct NnsTransferAttempt {
     pub intent: NnsTransferIntent,
-    pub fingerprint: Vec<u8>,
     pub state: TransferState,
 }
 
@@ -76,7 +73,6 @@ impl NnsTransferAttempt {
     pub fn prepared(intent: NnsTransferIntent) -> Result<Self, String> {
         intent.validate()?;
         Ok(Self {
-            fingerprint: intent.fingerprint(),
             intent,
             state: TransferState::Prepared,
         })
@@ -84,9 +80,6 @@ impl NnsTransferAttempt {
 
     pub fn validate(&self) -> Result<(), String> {
         self.intent.validate()?;
-        if self.fingerprint.len() != 32 || self.fingerprint != self.intent.fingerprint() {
-            return Err("NNS transfer fingerprint is invalid".into());
-        }
         match &self.state {
             TransferState::Prepared | TransferState::Succeeded { .. } => Ok(()),
             TransferState::Submitted {

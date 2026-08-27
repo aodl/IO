@@ -1,12 +1,46 @@
 # Local SNS evidence disposition
 
+The sole current local authority is the schema-v2 package
+`deploy/local-sns-rehearsal/evidence/2026-08-26-9462a1a-account-semantic`.
+`deploy/local-sns-rehearsal/evidence/current-canonical.toml` is the sole
+selector and binds:
+
+- source-finalization commit
+  `9462a1a0df602f06fa845bd31f9fcd0adf80067a`;
+- immediate artifact-recording commit
+  `46713f8499cf9a63a6cd4879b1fff9c1f9ef0be5`;
+- canonical evidence commit
+  `1ed1399130358ed5788cae99f3d65d82cbbc70a9`;
+- release-manifest SHA-256
+  `011113d83510e66976f5d3eabefc57ef30ba44fc49a8973fad29be043b374431`;
+- package-manifest SHA-256
+  `254e8866394d62ba9fbe2b0290709d2c9dbaeb8ed84c8b3446b9a1912af0eb78`;
+- package `SHA256SUMS` SHA-256
+  `a1915cef319b569955c5d75ad88c4a3715af8483573d2cf9b3a2af108d6bea29`.
+
+That package is current evidence for `B=L+P+U+T`, the exact 14-day pooled
+parent, bounded cohorts, fixed TwoWeek and TwoYear semantic Accounts, paired
+Jupiter/TwoWeek settlement, TwoYear no issuance, donation carry-forward,
+liquidity-shortfall recovery and same-release upgrade/restart. No earlier
+package has been deleted, rewritten, rebound or reinterpreted as proof of this
+release.
+
+Its evidence layers are intentionally distinct:
+
+- Layer A uses source-built official SNS tooling for local launch, wiring,
+  Governance, Root, Ledger, Index, Swap, controllers and reward observation.
+- Layer B uses exact proposal-143660 PocketIC evidence for the active NNS
+  Governance boundary.
+- Layer C uses current-release controlled IO fixtures for account-semantic
+  orchestration and induced failure/recovery cases.
+
 The immutable packages `deploy/local-sns-rehearsal/evidence/2026-08-11-4320fdf/` and `deploy/local-sns-rehearsal/evidence/2026-08-12-4320fdf-monitoring/` retain valid checksums and historical observations. Their bytes are preserved.
 
 They remain valid evidence for SNS-W mechanics, controller handoff, lifecycle authority, transfer mechanics, upgrade mechanics, replay behavior, reward observation, and historian connectivity.
 
 They are superseded as current redemption-rate and excluded-Account evidence. Both runs configured the SNS Governance default Account as excluded, while the pinned DFINITY SNS implementation holds treasury genesis tokens in the Governance-owned `token-distribution` subaccount with nonce `0`. A successful zero balance for the Governance default Account did not prove economic completeness.
 
-`canonical_redemption_economics = true` identifies the complete canonical proof shape; it does not mean that every such historical package must match the repository's checked-in release. Current launch readiness instead requires the closed `deploy/local-sns-rehearsal/evidence/current-canonical.toml` selector to name exactly one later immutable package and bind its source, artifact commit, release manifest, package manifest and checksum inventory. The selected package must preserve the exact Stream, NNS-manager, historian, SNS-init and Account-map inputs; prove the derived treasury Account and nonzero observed balance; and pass checked cross-consistency for the Stream quote, both ledgers and the historian snapshot against the selected current release. Historical package integrity remains independently verifiable against its recorded release pair and is not described as corruption.
+`canonical_redemption_economics = true` identifies the complete canonical proof shape; it does not mean that every historical package matches the current release. The selected package preserves the exact Stream, NNS Manager, historian, SNS-init and Account-map inputs; proves the derived treasury Account and nonzero observed balance; and passes checked cross-consistency for the Stream quote, both ledgers and the historian snapshot. Historical package integrity remains independently verifiable against its recorded release pair and is not described as corruption.
 
 The preceding selection, which remains an immutable historical record, is:
 
@@ -40,7 +74,8 @@ authority, final-readme, and final-validator packages from `misc` remain bound
 to their recorded commits and must not be rebound. They are retained on the
 untouched `misc` branch, not copied into the master-descended history.
 
-The selected master-descended evidence is:
+The preceding master-descended selection is immutable historical evidence for
+its own release:
 
 - package: `2026-08-14-master-descended-4320fdf-canonical-economics`
 - source: `23fbc4f62863f421803cc49c34aa8c5c576b4d89`
@@ -49,6 +84,11 @@ The selected master-descended evidence is:
 - release-manifest SHA-256: `144bd505bab85b05ac5f3e89c11276d21c55260b39b7076cd227a9143f1c1fc3`
 - package-manifest SHA-256: `8e99919a6ed0c93c5db328b07182c07182faba947709192406ccee6d172ae7bb`
 - package `SHA256SUMS` SHA-256: `11f92f48bcbfab56be360f67da74f975917e242c2ad29c404b0c841ec925c292`
+
+The immutable
+`2026-08-26-716d51e-account-semantic` package is a non-current intermediate
+package from the final rehearsal/tooling closure. It remains historical
+evidence for its recorded source/artifact pair and is not selected or rebound.
 
 Package names and local fixture values are not production configuration,
 candidate upstream is not an official release, and no local package is mainnet

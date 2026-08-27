@@ -4,8 +4,6 @@ type StreamConfig = record {
   io_ledger : principal;
   icp_ledger : principal;
   nns_manager : principal;
-  jupiter_receipt_source : Account;
-  two_week_receipt_source : Account;
   jupiter_io_account : Account;
   sns_governance : principal;
   sns_root : principal;
@@ -13,7 +11,7 @@ type StreamConfig = record {
   approved_reward_event_duration_seconds : nat64;
   io_reserve : Account;
   liquid_icp : Account;
-  excluded_io_accounts : vec Account;
+  nonredeemable_governance_io_accounts : vec Account;
   minimum_redemption_io_e8s : nat;
   expected_io_fee_e8s : nat;
   expected_icp_fee_e8s : nat;
@@ -57,16 +55,40 @@ type RedemptionProgress = variant {
   Completed : RedemptionResult;
   Stuck : text;
 };
-type ReceiptKind = variant { Jupiter; TwoWeekMaturity };
-type PrepareLiquidReceiptArgs = record {
-  receipt_sequence : nat64;
-  receipt_kind : ReceiptKind;
-  source_operation_id : blob;
-  liquid_amount_e8s : nat;
-  entitlement_batch_generation : opt nat64;
+type ClaimBackingReceiptKind = variant {
+  Jupiter;
+  TwoWeek : record { entitlement_generation : nat64 };
 };
-type LiquidReceiptPermit = record { sequence : nat64; destination : Account; memo : blob };
-type CompleteLiquidReceiptArgs = record { receipt_sequence : nat64; block_index : nat };
+type PrepareClaimBackingReceiptArgs = record {
+  nns_operation_sequence : nat64;
+  kind : ClaimBackingReceiptKind;
+  net_liquid_credit_e8s : nat;
+};
+type ClaimBackingReceiptPermit = record {
+  stream_operation_sequence : nat64;
+  destination : Account;
+  amount_e8s : nat;
+  memo : blob;
+};
+type ProveClaimBackingReceiptArgs = record {
+  stream_operation_sequence : nat64;
+  block_index : nat;
+};
+type ClaimBackingReceiptResult = record {
+  nns_operation_sequence : nat64;
+  kind : ClaimBackingReceiptKind;
+  liquid_credit_e8s : nat;
+  distributed_io_e8s : nat;
+  recipient_transfer_block : opt nat;
+  io_fee_e8s : nat;
+  completed_at_nanos : nat64;
+};
+type ClaimBackingReceiptProgress = variant {
+  AwaitingLiquidProof : ClaimBackingReceiptPermit;
+  SettlingRecipients;
+  Completed : ClaimBackingReceiptResult;
+  Stuck : text;
+};
 type RewardEventId = record {
   end_timestamp_seconds : nat64;
   round : nat64;
@@ -76,13 +98,9 @@ type RewardEventClassification = variant {
   NoProposalFallback;
   ZeroEligibleParticipation;
   MissedSkipped;
+  StructuralOnly;
 };
-type RewardEventCredit = record {
-  sns_neuron_id : blob;
-  destination : Account;
-  event_credit : nat;
-};
-type RewardEntitlementEntry = record {
+type FrozenEntitlement = record {
   sns_neuron_id : blob;
   destination : Account;
   accumulated_eligible_credit : nat;
@@ -91,7 +109,6 @@ type RewardEventObservation = record {
   event : RewardEventId;
   proposal_count : nat64;
   classification : RewardEventClassification;
-  credits : vec RewardEventCredit;
   policy_credit : nat;
   eligible_credit_total : nat;
   observed_at_nanos : nat64;
@@ -99,46 +116,17 @@ type RewardEventObservation = record {
 type BackingNotReadyReason = variant {
   Paused;
   Busy;
-  BaselineUnreconciled;
-  UnderTarget;
-  OverTarget;
+  ReconciliationPending;
   BelowThreshold;
 };
 type RewardBackingProgress = variant {
   Pending : record { reason : BackingNotReadyReason };
   MaturityPrepared : record { generation : nat64 };
 };
-type JupiterReceiptResult = record {
-  request_fingerprint : blob;
-  receipt_block : nat;
-  backed_io_e8s : nat;
-  io_transfer_block : nat;
-  io_fee_e8s : nat;
-  completed_at_nanos : nat64;
-};
-type TwoWeekReceiptResult = record {
-  request_fingerprint : blob;
-  receipt_block : nat;
-  backed_io_pool_e8s : nat;
-  distributed_io_e8s : nat;
-  forfeited_io_e8s : nat;
-  rounding_dust_io_e8s : nat;
-  completed_at_nanos : nat64;
-};
-type CompletedReceiptResult = variant {
-  Jupiter : JupiterReceiptResult;
-  TwoWeek : TwoWeekReceiptResult;
-};
-type LiquidReceiptProgress = variant {
-  AwaitingReceipt;
-  ReceiptProved;
-  Settling;
-  Completed : CompletedReceiptResult;
-  Stuck : text;
-};
 type StreamProgress = variant {
   Redemption : RedemptionProgress;
-  LiquidReceipt : LiquidReceiptProgress;
+  ClaimReceipt : ClaimBackingReceiptProgress;
+  BackingReconciliation;
   Idle;
 };
 type ApiError = variant {
@@ -152,16 +140,21 @@ type ApiError = variant {
   Ledger : text;
   Pending : text;
   Stuck : text;
+  LiquidityShortfall : record {
+    gross_icp_e8s : nat;
+    net_icp_e8s : nat;
+    available_liquid_e8s : nat;
+  };
 };
 type Status = record {
   lifecycle : Lifecycle;
   operation_kind : opt text;
   operation_phase : opt text;
-  next_nns_receipt_sequence : nat64;
+  next_operation_sequence : nat64;
   latest_entitlement_batch_generation : nat64;
   latest_processed_reward_event : opt RewardEventId;
   latest_reward_event_classification : opt RewardEventClassification;
-  accumulated_entitlements : vec RewardEntitlementEntry;
+  accumulated_entitlements : vec FrozenEntitlement;
   accumulated_eligible_credit : nat;
   accumulated_policy_credit : nat;
   processed_reward_event_count : nat64;
@@ -171,11 +164,33 @@ type Status = record {
   governance_parameters_fresh : bool;
   pending_entitlement_batch_eligible_credit : opt nat;
   pending_entitlement_batch_policy_credit : opt nat;
+  latest_reconciliation_checkpoint : opt ReconciliationCheckpoint;
+  prepared_exit_generation : opt nat64;
+  prepared_exit_member_count : nat32;
+  committed_exit_member_count : nat32;
+};
+type ReconciliationCheckpoint = record {
+  generation : nat64;
+  event_marker : nat64;
+  observed_at_nanos : nat64;
+  claim_supply_e8s : nat;
+  liquid_backing_e8s : nat;
+  pooled_backing_e8s : nat;
+  unwinding_backing_e8s : nat;
+  transit_backing_e8s : nat;
+  total_claim_backing_e8s : nat;
+  active_backing_io_e8s : nat;
+  active_reward_io_e8s : nat;
+  live_cohort_count : nat32;
+  oldest_ready_at_seconds : opt nat64;
+  pooled_target_e8s : nat;
+  observed_pooled_e8s : nat;
+  snapshot_fingerprint : blob;
 };
 service : (InitArgs) -> {
   redeem : (RedeemArgs) -> (variant { Ok : RedemptionProgress; Err : ApiError });
-  prepare_liquid_receipt : (PrepareLiquidReceiptArgs) -> (variant { Ok : LiquidReceiptPermit; Err : ApiError });
-  complete_liquid_receipt : (CompleteLiquidReceiptArgs) -> (variant { Ok : LiquidReceiptProgress; Err : ApiError });
+  prepare_claim_backing_receipt : (PrepareClaimBackingReceiptArgs) -> (variant { Ok : ClaimBackingReceiptPermit; Err : ApiError });
+  prove_claim_backing_receipt : (ProveClaimBackingReceiptArgs) -> (variant { Ok : ClaimBackingReceiptProgress; Err : ApiError });
   resume : () -> (variant { Ok : StreamProgress; Err : ApiError });
   prove_active_transfer : (nat) -> (variant { Ok; Err : ApiError });
   resume_reward_work : () -> (variant { Ok : RewardEventObservation; Err : ApiError });

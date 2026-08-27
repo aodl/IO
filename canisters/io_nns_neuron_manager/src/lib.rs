@@ -1,9 +1,12 @@
 pub mod api;
+mod claim_assets;
 mod execution;
 pub use io_nns_types::{jupiter, maturity, maturity::MaturityKind, pool, transfer};
 mod jupiter_flow;
 pub mod lifecycle;
 mod maturity_flow;
+mod permanent_credit;
+mod pool_flow;
 pub mod state;
 mod two_week_binding;
 mod unwind_flow;
@@ -11,11 +14,10 @@ mod unwind_flow;
 use {candid::CandidType, serde::Deserialize};
 
 pub use api::{
-    ApiError, BackingNotReadyReason, JupiterProgress, MaturityProgress, NnsProgress,
-    NotifyJupiterDepositArgs, PrepareTwoWeekMaturityArgs, ReconcileTwoWeekBackingReadinessArgs,
-    Status, TwoWeekBackingReadiness,
+    ApiError, JupiterProgress, MaturityProgress, NnsProgress, NotifyJupiterDepositArgs,
+    PoolProgress, PreparePoolReconciliationArgs, PrepareTwoWeekMaturityArgs, Status,
 };
-pub use state::{Lifecycle, NnsConfig, NnsStateV1, TwoWeekTargetStatus};
+pub use state::{Lifecycle, NnsConfig, NnsStateV1, PooledTargetStatus};
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 pub struct InitArgs {
@@ -26,16 +28,21 @@ pub struct InitArgs {
 pub fn init(args: InitArgs) {
     state::initialize(
         NnsStateV1 {
+            launch_schema_marker: state::LAUNCH_SCHEMA_MARKER,
             config: args.config,
             lifecycle: Lifecycle::Paused,
             active_operation: None,
-            latest_two_week_target: None,
-            two_week_maturity_baseline_reconciled: false,
-            latest_started_two_week_generation: 0,
-            latest_completed_two_week_generation: 0,
+            pooled_parent_id: None,
+            pooled_parent_staking_account: None,
+            live_cohorts: Vec::new(),
+            last_completed_pool: None,
+            last_completed_unwind: None,
+            last_held_reconciliation: None,
+            latest_reconciliation_generation: 0,
+            latest_pooled_target: None,
+            two_year_maturity_baseline_reconciled: false,
             pending_two_year_maturity: None,
             pending_two_week_maturity: None,
-            pending_unwind: None,
             last_two_year_maturity: None,
             last_two_week_maturity: None,
             next_operation_sequence: 1,
@@ -55,7 +62,7 @@ pub fn post_upgrade() {
 pub async fn notify_jupiter_deposit(
     args: NotifyJupiterDepositArgs,
 ) -> Result<JupiterProgress, ApiError> {
-    api::notify_jupiter_deposit(ic_cdk::api::msg_caller(), args).await
+    api::notify_jupiter_deposit(args).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -66,6 +73,25 @@ pub async fn resume() -> Result<NnsProgress, ApiError> {
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub async fn prove_active_transfer(block_index: u128) -> Result<NnsProgress, ApiError> {
     api::prove_active_transfer(block_index).await
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn prepare_pool_reconciliation(
+    args: PreparePoolReconciliationArgs,
+) -> Result<PoolProgress, ApiError> {
+    api::prepare_pool_reconciliation(ic_cdk::api::msg_caller(), args).await
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn observe_claim_assets() -> Result<io_nns_types::backing::ClaimAssetObservation, ApiError>
+{
+    api::observe_claim_assets(ic_cdk::api::msg_caller()).await
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn observe_pool_policy() -> Result<io_nns_types::backing::PoolPolicyObservation, ApiError>
+{
+    api::observe_pool_policy(ic_cdk::api::msg_caller()).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -81,25 +107,8 @@ pub fn validate_start_maturity(kind: MaturityKind) -> Result<String, String> {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn prepare_two_week_maturity(
-    args: PrepareTwoWeekMaturityArgs,
-) -> Result<MaturityProgress, ApiError> {
+pub async fn prepare_two_week_maturity(args: PrepareTwoWeekMaturityArgs) -> Result<(), ApiError> {
     api::prepare_two_week_maturity(ic_cdk::api::msg_caller(), args).await
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn reconcile_two_week_backing_readiness(
-    args: ReconcileTwoWeekBackingReadinessArgs,
-) -> Result<TwoWeekBackingReadiness, ApiError> {
-    api::reconcile_two_week_backing_readiness(ic_cdk::api::msg_caller(), args).await
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn prove_maturity_mint(
-    kind: MaturityKind,
-    block_index: u128,
-) -> Result<MaturityProgress, ApiError> {
-    api::prove_maturity_mint(kind, block_index).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
@@ -127,6 +136,20 @@ pub fn get_status() -> Status {
     api::get_status()
 }
 
+#[cfg(debug_assertions)]
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn debug_get_state() -> NnsStateV1 {
+    state::read()
+}
+
+#[cfg(debug_assertions)]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_replace_state(replacement: NnsStateV1) -> Result<(), String> {
+    replacement.validate(ic_cdk::api::canister_self())?;
+    state::write(replacement);
+    Ok(())
+}
+
 ic_cdk::export_candid!();
 
 #[cfg(test)]
@@ -149,5 +172,12 @@ mod tests {
             validate_set_paused(false).unwrap(),
             "Set IO NNS manager paused: false"
         );
+    }
+
+    #[test]
+    fn candid_surface_is_exportable() {
+        let candid = __export_service();
+        assert!(!candid.is_empty());
+        println!("{candid}");
     }
 }

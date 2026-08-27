@@ -12,4 +12,6 @@ crate-type = ["rlib", "cdylib"]
 candid.workspace = true
 ic-cdk.workspace = true
 io-ledger-types.workspace = true
+io-ledger-boundary.workspace = true
+io-accounts = { version = "0.1.0", path = "../../../crates/io_accounts" }
 serde.workspace = true

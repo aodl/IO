@@ -1,6 +1,7 @@
 use candid::{decode_one, encode_one};
 use ic_http_certification::{HttpRequest, HttpResponse, StatusCode};
 use pocket_ic::PocketIc;
+use std::path::{Path, PathBuf};
 
 const CYCLES: u128 = 2_000_000_000_000;
 
@@ -8,11 +9,20 @@ fn pocketic_available() -> bool {
     std::env::var_os("POCKET_IC_BIN").is_some()
 }
 
-fn required_wasm(path: &str) -> Option<Vec<u8>> {
+fn workspace_path(path: impl AsRef<Path>) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(path)
+}
+
+fn required_wasm(path: &Path) -> Option<Vec<u8>> {
     match std::fs::read(path) {
         Ok(bytes) => Some(bytes),
         Err(_) => {
-            eprintln!("skipping frontend PocketIC test because {path} is missing");
+            eprintln!(
+                "skipping frontend PocketIC test because {} is missing",
+                path.display()
+            );
             None
         }
     }
@@ -37,7 +47,8 @@ fn pocketic_frontend_serves_certified_assets_and_404() {
         return;
     }
 
-    let wasm = match required_wasm("target/wasm32-unknown-unknown/debug/io_frontend.wasm") {
+    let wasm_path = workspace_path("target/wasm32-unknown-unknown/debug/io_frontend.wasm");
+    let wasm = match required_wasm(&wasm_path) {
         Some(wasm) => wasm,
         None => return,
     };
@@ -46,7 +57,8 @@ fn pocketic_frontend_serves_certified_assets_and_404() {
         "canisters/io_stream_manager/io_stream_manager.did",
         "canisters/io_nns_neuron_manager/io_nns_neuron_manager.did",
     ] {
-        let did = std::fs::read_to_string(path).expect("value-moving DID should be readable");
+        let did = std::fs::read_to_string(workspace_path(path))
+            .expect("value-moving DID should be readable");
         assert!(did.contains("service : (InitArgs) -> {"));
         assert!(did.contains(" get_status :"));
         assert!(!did.contains("debug_"));

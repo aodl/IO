@@ -1,5 +1,9 @@
 # Simplified execution evidence
 
+> Historical evidence for the pre-replacement execution tranche. It is not a
+> description of the accepted pooled claim-backing implementation or its
+> current simplicity result.
+
 Recorded 2026-07-31 on branch `p0-simplified-execution`.
 
 ## Deletion and complexity

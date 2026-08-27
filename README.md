@@ -48,7 +48,9 @@ Root, and Governance services:
    allowance on the SNS IO Ledger and submits an exact redemption intent.
 2. The Stream Manager reads canonical supply, reserve, excluded-account,
    liquid-ICP, and fee values. It pulls the user's IO into the protocol reserve
-   and pays net ICP to the same principal and selected subaccount.
+   and then re-reads the canonical economics before creating any payout. An
+   adverse supply, exclusion, fee, reserve-reflection, or liquid-backing change
+   pauses before ICP can be sent.
 3. Once per exact SNS reward event, the Stream Manager converts eligible
    proposal-bearing reward shares into policy credit. A genuinely
    no-proposal event uses the defined eligible-stake fallback; an ambiguous
@@ -56,11 +58,15 @@ Root, and Governance services:
 4. Before freezing reward entitlements, the Stream Manager reconciles the
    required two-week backing target with the NNS Manager. Credits stay live
    while the protected backing position is under target or unwinding.
-5. The NNS Manager applies the fixed 40/60 maturity policy: 40% is staked and
-   the remaining maturity is disbursed. Only the actual ICP proved at the ICP
-   Ledger becomes maturity backing.
-6. A proof-bound receipt lets the Stream Manager settle the immutable backed
-   batch from the IO reserve. Later daily credit can continue accumulating
+5. The NNS Manager disburses maturity into one of two fixed semantic staging
+   Accounts and freezes the complete post-finalization Account balance. Two-week maturity
+   and Jupiter share the checked 40% permanent / 60% claim paired-inflow path;
+   two-year maturity uses the same physical split but issues no IO.
+   Permissionless Jupiter notification additionally requires an exact routed
+   ICP block at or above the immutable launch activation floor and not already
+   present in permanent replay state.
+6. A paired receipt lets the Stream Manager settle backed IO to either Jupiter
+   or the immutable two-week batch. Later daily credit can continue accumulating
    while that one batch is pending.
 7. The Historian periodically observes ledgers, indexes, SNS Root/Governance,
    both managers, and public NNS neuron information. The frontend renders that
@@ -88,10 +94,10 @@ observation only. The Historian never fills a missing observation with zero.
 ## Frozen design, launch constraints, and open configuration
 
 The frozen monetary design includes authenticated direct ICRC-2 redemption,
-canonical-ledger supply and balance authority, liquid ICP as the only
-redemption backing, exclusion of protected NNS principal from liquid backing,
-Jupiter 40/60, actual received ICP as maturity-backing authority, exact proof
-of immutable external effects, one active monetary operation, daily canonical
+canonical-ledger supply and balance authority, `B=L+P+U+T` claim backing with
+liquid ICP as the independent payout limit, Jupiter/two-week shared 40/60,
+semantic Account balances as custody authority, exact proof of immutable
+outgoing effects, one active monetary operation, daily canonical
 SNS participation-based entitlement, and one live accumulator plus at most one
 immutable pending batch. Ambiguity pauses for exact proof; it does not trigger
 global absence reconstruction.
@@ -135,44 +141,53 @@ justification under the
 
 ## Core economics
 
-The SNS Ledger is the canonical IO total-supply authority; the Stream Manager
-does not maintain a second supply ledger. IO release uses explicit transfers
-from the protocol reserve, not arbitrary Stream Manager minting. Configured
-reserve IO and excluded IO Accounts are distinct denominator terms, and ICP
-principal held in protected NNS positions is not liquid redemption backing.
-Ordinary IO transfer fees follow the configured SNS Ledger fee/burn policy.
+The SNS Ledger is the canonical IO supply and staking-balance authority. The
+Stream Manager does not maintain a second supply or backing scalar. Reserve IO
+and genuinely nonredeemable governance staking Accounts are distinct
+denominator terms. Ordinary liquid, active-staked, and dissolving user IO is
+claim-bearing; the Jupiter IO recipient is not implicitly excluded.
 
 All token quantities are integer e8s. Checked multiplication is performed
 before integer division, so ratios round down; overflow, underflow, a zero
 denominator, or a payout that cannot cover the current fee rejects or pauses the
 operation rather than approximating it.
 
-For redemption:
+Canonical claim accounting is:
 
 ```text
-redeemable_io = total_io_supply - reserve_io - excluded_io
-gross_icp = redeemed_io * liquid_icp / redeemable_io
+C = total_io_supply - protocol_reserve_io - nonredeemable_governance_io
+B = liquid_icp + pooled_parent_principal + net_live_child_backing + net_in_transit_backing
+gross_icp = redeemed_io * B / C
 net_icp = gross_icp - current_icp_payout_fee
+pooled_target = floor(A_backing * B / C)
+reward_target = floor(A_reward * B / C)
 ```
 
-The Stream Manager also requires the redeemed amount plus the current IO
-`transfer_from` fee to fit within redeemable supply. IO issuance is a transfer
-from the reviewed reserve, not arbitrary application minting.
+Permanent capital, uncaptured maturity, cycles, and
+operational balances are outside `B`. Live-child and committed active-unwind
+values are net of their exactly derived unavoidable future disbursement fees;
+physical principal remains separate for Governance commands and transfer
+proof. Each e8s of claim backing exists in exactly one of its four buckets.
+Exact internal fees reduce backing once. IO issuance is an explicit reserve
+transfer, not application minting.
 
-The backing target for the two-week beneficiary policy is:
+Redemption uses `B/C` for its immutable quote and spendable liquid ICP for the
+independent availability check. An illiquid quote is not discounted: the
+caller receives a typed shortfall before IO is pulled or its nonce consumed.
 
-```text
-two_week_target = active_eligible_io * liquid_icp / redeemable_io_supply
-```
+After the IO pull, a fresh pre-payout snapshot must still support the persisted
+quote: fees and excluded Account identities are unchanged, reserve and supply
+reflect the pull conservatively, no excluded balance fell, and liquid ICP did
+not fall. Favorable drift may make the user's fixed quote more conservative;
+adverse drift cannot make IO overpay.
 
-The protected reward-backing NNS parent is an eight-year, non-dissolving
-position with `auto_stake_maturity = false`; “14-day” describes ordinary IO SNS
-neuron eligibility, not that parent's dissolve delay. Daily proposal-bearing
-allocations normalize canonical current-event shares. Excluded or ineligible
-shares are forfeited, not redistributed. A true no-proposal event uses the
-defined eligible-stake fallback. A skipped or ambiguous sequence is recorded
-as `MissedSkipped`, receives zero policy credit, and is never interpolated into
-a synthetic event.
+`A_backing` is structurally active ordinary SNS IO; `A_reward` is its currently
+prospective reward-eligible subset. Rewards require pooled principal to cover
+`reward_target`. The lazily created pooled parent has an exact 1,209,600-second
+delay, auto-stake off, and a fixed configured following policy. Daily
+proposal-bearing allocations normalize canonical current-event shares;
+ineligible shares are forfeited, not redistributed. A true no-proposal event
+uses eligible stake, and ambiguous skipped events receive no synthetic credit.
 
 ## Lifecycle and readiness
 
@@ -181,7 +196,7 @@ upgrade in `Paused`. `Paused` blocks new preparation; it does not erase an
 already immutable or in-flight monetary operation, which remains resumable.
 Activation is an SNS-governed transition whose asynchronous preflight binds the
 reviewed configuration to actual canister, ledger, Governance, fee, supply,
-staging-balance, and protected-neuron observations.
+semantic staging-balance, and protected-neuron observations.
 
 The Historian has a different lifecycle: `null` install configuration leaves
 sources `PrelaunchNotConfigured`; a validated install/upgrade configuration
@@ -206,28 +221,28 @@ transport outcome becomes `Stuck` rather than guessing whether value moved.
 `resume` advances an existing operation idempotently. `prove_active_transfer`
 accepts only an exact canonical ledger block for the active proof slot; it is
 not a manual balance rewrite or debug completion path. Stream proof slots cover
-ambiguous redemption pull/payout and reward/liquid-receipt transfers. The NNS
-Manager similarly proves its exact staging and maturity effects. Upgrades
-preserve durable operation state and force reviewed reactivation while allowing
-immutable work to resume.
+redemption, the paired liquid claim receipt, pooled top-up, and reward
+transfers. The NNS Manager similarly proves exact outgoing maturity, parent,
+and cohort effects. It does not prove the provenance of fungible ICP already
+held in a semantic Account. Upgrades preserve durable operation state and force
+reviewed reactivation while allowing immutable work to resume.
 
 ## NNS terminology and production authority
 
 The NNS Manager directly calls NNS Governance, and its configuration requires
-both staging Accounts to be owned by the executing canister. Protected IO NNS
-neuron `10292412127977304661` has controller authority at
+its staging Accounts to be owned by the executing canister. The two-year
+protected NNS neuron `10292412127977304661` has controller authority at
 `oae4c-3iaaa-aaaar-qb5qq-cai`; therefore the accepted production model places
 the manager at that existing controller. Static wiring permits that principal
 only as the NNS Manager authority target. Any inspection, installation,
 upgrade, controller change, or neuron action requires a separate audit and
 explicit mainnet authorization.
 
-This protected IO NNS neuron is distinct from the protected reward-backing NNS
-parent used for the 14-day SNS reward product. That parent has the accepted
-baseline `non-dissolving`, dissolve delay `252460800` seconds, and
-`auto_stake_maturity = false`. Both are distinct from ordinary eligible IO SNS
-neurons, which have positive stake, are non-dissolving, and have an exact
-`1209600`-second eligibility delay.
+The two-year protected neuron is distinct from the lazy pooled claim-backing
+parent. The pooled parent is created only from existing liquid backing, uses an
+exact `1209600`-second non-dissolving delay, has auto-stake off, and follows one
+fixed configured neuron. Ordinary eligible IO SNS neurons have positive ledger
+stake, are non-dissolving, and have the same exact eligibility delay.
 
 | Role | Identifier | Status |
 | --- | --- | --- |
@@ -236,11 +251,6 @@ neurons, which have positive stake, are non-dissolving, and have an exact
 | Historian | `tjqj3-uaaaa-aaaar-qb7xa-cai` | Fiduciary reservation, `ReservedNotLive` |
 | Frontend | `torpp-zyaaa-aaaar-qb7xq-cai` | Fiduciary reservation, `ReservedNotLive` |
 | SNS IO Ledger/Index/Governance/Root/Swap | not assigned | Final production SNS configuration is incomplete |
-
-The earlier public-shell frontend `6h2pa-qiaaa-aaaao-qp4fa-cai` and Historian
-`yo47z-piaaa-aaaac-qg3xa-cai` are historical `DevMainnet` canisters, not
-production IO protocol targets. See the
-[legacy record](deploy/mainnet-dev/legacy-phase1/README.md).
 
 ## Source, build, and release verification
 
@@ -258,6 +268,9 @@ Reproducibility checks also cover pinned compiler/toolchain paths, absolute
 source and Cargo-home path remapping, clean frontend generation, deterministic
 compression, manifest contents, and complete artifact inventories. Later
 evidence/documentation tails do not become artifact-recording commits.
+Hosted test, security, and reproducible-build results count only when all three
+ran against the exact reviewed release-tail SHA; a green ancestor is not
+current-head evidence.
 
 ```bash
 cargo run -p xtask -- verify_artifacts
@@ -348,11 +361,12 @@ Maintained integration and operations material:
 - [Stable-state fixtures](tests/fixtures/stable-state/README.md)
 - [Testing guide](docs/development/testing.md)
 - [Release checklist](docs/operations/release-checklist.md)
+- [Cycles operations](docs/operations/cycles-management.md)
+- [Threat model](docs/security/threat-model.md)
 - [Audit-readiness index](docs/security/audit-readiness.md)
 
 Historical material is explicitly labelled and is not current deployment
 instruction:
 
-- [Legacy Phase 1 DevMainnet public shell](deploy/mainnet-dev/legacy-phase1/README.md)
 - [`docs/research/pre-simplification/`](docs/research/pre-simplification/) — superseded, non-normative research
 - [Historical research-branch disposition](docs/operations/p0-research-branch-disposition-2026-07-29.md)

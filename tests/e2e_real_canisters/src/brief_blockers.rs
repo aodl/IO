@@ -365,8 +365,8 @@ mod frontend_honesty {
     fn frontend_real_status_shows_local_evidence_as_local_only() {
         let readme = read("canisters/frontend/README.md");
 
-        assert!(readme.contains("`DevMainnet` only"));
-        assert!(readme.contains("not a production IO protocol canister"));
+        assert!(readme.contains("pre-launch"));
+        assert!(readme.contains("Local fixture deployments are test evidence only"));
         assert!(readme.contains("not protocol truth"));
         assert!(readme.contains("Historian data is rebuildable, not canonical protocol truth"));
     }

@@ -182,8 +182,8 @@ impl Neuron {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-struct NeuronId {
-    id: Vec<u8>,
+pub struct SnsNeuronIdRecord {
+    pub id: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -194,7 +194,7 @@ enum DissolveStateRecord {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 struct NeuronRecord {
-    id: Option<NeuronId>,
+    id: Option<SnsNeuronIdRecord>,
     cached_neuron_stake_e8s: u64,
     dissolve_state: Option<DissolveStateRecord>,
     latest_reward_event_participation: Option<RewardEventParticipation>,
@@ -232,12 +232,50 @@ impl TryFrom<NeuronRecord> for Neuron {
 struct ListNeuronsRequest {
     of_principal: Option<Principal>,
     limit: u32,
-    start_page_at: Option<NeuronId>,
+    start_page_at: Option<SnsNeuronIdRecord>,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 struct ListNeuronsResponse {
     neurons: Vec<NeuronRecord>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SnsProductionManageNeuronRequest {
+    pub subaccount: Vec<u8>,
+    pub command: Option<SnsManageNeuronCommand>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum SnsManageNeuronCommand {
+    ClaimOrRefresh(SnsClaimOrRefresh),
+}
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SnsClaimOrRefresh {
+    pub by: Option<SnsClaimOrRefreshBy>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum SnsClaimOrRefreshBy {
+    NeuronId(EmptyRecord),
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct EmptyRecord {}
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SnsProductionManageNeuronResponse {
+    pub command: Option<SnsManageNeuronCommandResponse>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum SnsManageNeuronCommandResponse {
+    Error(SnsGovernanceErrorRecord),
+    ClaimOrRefresh(SnsClaimOrRefreshResponse),
+}
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SnsGovernanceErrorRecord {
+    pub error_type: i32,
+    pub error_message: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SnsClaimOrRefreshResponse {
+    pub refreshed_neuron_id: Option<SnsNeuronIdRecord>,
 }
 
 #[derive(Clone, Debug, CandidType)]
@@ -373,7 +411,7 @@ pub async fn list_neurons(
         ListNeuronsRequest {
             of_principal: None,
             limit,
-            start_page_at: start_page_at.map(|id| NeuronId { id }),
+            start_page_at: start_page_at.map(|id| SnsNeuronIdRecord { id }),
         },
     )
     .await?;
@@ -486,12 +524,12 @@ mod tests {
     fn old_neuron_without_additive_field_decodes() {
         #[derive(CandidType)]
         struct OldNeuron {
-            id: Option<NeuronId>,
+            id: Option<SnsNeuronIdRecord>,
             cached_neuron_stake_e8s: u64,
             dissolve_state: Option<DissolveStateRecord>,
         }
         let bytes = candid::encode_one(OldNeuron {
-            id: Some(NeuronId { id: vec![1; 32] }),
+            id: Some(SnsNeuronIdRecord { id: vec![1; 32] }),
             cached_neuron_stake_e8s: 10,
             dissolve_state: Some(DissolveStateRecord::DissolveDelaySeconds(10)),
         })

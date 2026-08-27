@@ -17,7 +17,7 @@ Testflight does not prove the NNS proposal path, SNS-W deployment, decentralizat
 
 Manual dangerous mainnet actions must be reviewed outside repo automation.
 Required scripts must not execute those actions. NNS Manager execution canister
-`oae4c-3iaaa-aaaar-qb5qq-cai` and protected IO NNS neuron
+`oae4c-3iaaa-aaaar-qb5qq-cai` and the two-year protected NNS neuron
 `10292412127977304661` are not touched.
 
 Files:

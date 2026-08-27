@@ -19,9 +19,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.102"
+version = "1.0.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "ar_archive_writer"
@@ -337,10 +337,12 @@ version = "0.1.0"
 dependencies = [
  "candid",
  "hex",
+ "io-accounts",
  "io-core-model",
  "io-governance-types",
  "io-historian",
  "io-ledger-types",
+ "io-nns-types",
  "io-production-wiring",
  "io-receipt-types",
  "io-reward-policy",
@@ -380,7 +382,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -552,9 +554,9 @@ dependencies = [
 
 [[package]]
 name = "h2"
-version = "0.4.14"
+version = "0.4.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "171fefbc92fe4a4de27e0698d6a5b392d6a0e333506bc49133760b3bcf948733"
+checksum = "a9f37a958b41b3b19ee2707c06439c0e9e547e847223eb791ecb0cb821c65e27"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -1069,6 +1071,7 @@ dependencies = [
  "ic-cdk",
  "io-core-model",
  "io-ledger-types",
+ "io-sns-reward-boundary",
  "serde",
 ]
 
@@ -1121,9 +1124,11 @@ dependencies = [
  "ic-stable-structures",
  "io-accounts",
  "io-build-support",
+ "io-core-model",
  "io-ledger-boundary",
  "io-nns-types",
  "io-receipt-types",
+ "io-reward-policy",
  "pocket-ic",
  "serde",
  "sha2",
@@ -1137,7 +1142,9 @@ dependencies = [
  "ic-cdk",
  "ic-stable-structures",
  "io-accounts",
+ "io-core-model",
  "io-receipt-types",
+ "io-reward-policy",
  "serde",
  "sha2",
 ]
@@ -1148,6 +1155,15 @@ version = "0.1.0"
 dependencies = [
  "candid",
  "serde",
+]
+
+[[package]]
+name = "io-proposed-economics-tests"
+version = "0.1.0"
+dependencies = [
+ "io-core-model",
+ "io-nns-types",
+ "io-reward-policy",
 ]
 
 [[package]]
@@ -1162,6 +1178,11 @@ dependencies = [
 [[package]]
 name = "io-reward-policy"
 version = "0.1.0"
+dependencies = [
+ "candid",
+ "io-core-model",
+ "serde",
+]
 
 [[package]]
 name = "io-sns-lifecycle"
@@ -1363,6 +1384,8 @@ version = "0.1.0"
 dependencies = [
  "candid",
  "ic-cdk",
+ "io-accounts",
+ "io-ledger-boundary",
  "io-ledger-types",
  "serde",
 ]
@@ -1383,6 +1406,8 @@ version = "0.1.0"
 dependencies = [
  "candid",
  "ic-cdk",
+ "io-accounts",
+ "io-ledger-boundary",
  "io-ledger-types",
  "serde",
 ]
@@ -1398,12 +1423,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "mock-nns-candidate-actor"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "ic-cdk",
+ "io-governance-types",
+ "io-ledger-types",
+ "serde",
+]
+
+[[package]]
 name = "mock-nns-governance"
 version = "0.1.0"
 dependencies = [
  "candid",
  "ic-cdk",
- "io-receipt-types",
+ "io-accounts",
+ "io-nns-types",
+ "serde",
+ "sha2",
+]
+
+[[package]]
+name = "mock-nns-xrc"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "ic-cdk",
  "serde",
 ]
 
@@ -1436,7 +1483,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1869,7 +1916,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2191,7 +2238,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2210,7 +2257,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "psm",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2305,7 +2352,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

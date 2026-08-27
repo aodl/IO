@@ -7,8 +7,11 @@ use std::convert::TryFrom;
 use std::future::Future;
 use std::pin::Pin;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct EmptyRecord {}
+pub use io_sns_reward_boundary::{
+    EmptyRecord, SnsClaimOrRefresh, SnsClaimOrRefreshBy, SnsClaimOrRefreshResponse,
+    SnsGovernanceErrorRecord, SnsManageNeuronCommand, SnsManageNeuronCommandResponse,
+    SnsNeuronIdRecord, SnsProductionManageNeuronRequest, SnsProductionManageNeuronResponse,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Deserialize)]
 pub struct NnsNeuronId(pub u64);
@@ -154,6 +157,7 @@ pub struct NnsDisburse {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct NnsSplit {
     pub amount_e8s: u64,
+    pub memo: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -745,6 +749,7 @@ pub fn nns_split_request(
                     field: "split.amount_e8s".to_string(),
                 }
             })?,
+            memo: None,
         }),
     ))
 }
@@ -1349,12 +1354,6 @@ pub trait SnsGovernanceClient {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct SnsGovernanceErrorRecord {
-    pub error_message: String,
-    pub error_type: i32,
-}
-
 impl From<SnsGovernanceErrorRecord> for SnsGovernanceError {
     fn from(value: SnsGovernanceErrorRecord) -> Self {
         match value.error_type {
@@ -1465,43 +1464,6 @@ pub enum SnsGetNeuronResult {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct SnsProductionManageNeuronRequest {
-    pub subaccount: Vec<u8>,
-    pub command: Option<SnsManageNeuronCommand>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum SnsManageNeuronCommand {
-    ClaimOrRefresh(SnsClaimOrRefresh),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct SnsClaimOrRefresh {
-    pub by: Option<SnsClaimOrRefreshBy>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum SnsClaimOrRefreshBy {
-    NeuronId(EmptyRecord),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct SnsProductionManageNeuronResponse {
-    pub command: Option<SnsManageNeuronCommandResponse>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum SnsManageNeuronCommandResponse {
-    Error(SnsGovernanceErrorRecord),
-    ClaimOrRefresh(SnsClaimOrRefreshResponse),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct SnsClaimOrRefreshResponse {
-    pub refreshed_neuron_id: Option<SnsNeuronIdRecord>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct SnsProductionListProposalsRequest {
     pub include_reward_status: Vec<i32>,
     pub before_proposal: Option<SnsProposalIdRecord>,
@@ -1569,11 +1531,6 @@ pub struct SnsNeuronRecord {
     pub permissions: Vec<SnsNeuronPermissionRecord>,
     pub topic_followees: Option<SnsTopicFollowees>,
     pub latest_reward_event_participation: Option<SnsRewardEventParticipation>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct SnsNeuronIdRecord {
-    pub id: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -2604,7 +2561,10 @@ mod tests {
     fn nns_manage_neuron_fixtures_round_trip_and_map_split_child() {
         let request = NnsManageNeuron {
             id: Some(NnsNeuronIdRecord { id: 2 }),
-            command: Some(NnsManageNeuronCommand::Split(NnsSplit { amount_e8s: 100 })),
+            command: Some(NnsManageNeuronCommand::Split(NnsSplit {
+                amount_e8s: 100,
+                memo: None,
+            })),
         };
         let bytes = Encode!(&request).unwrap();
         assert_eq!(Decode!(&bytes, NnsManageNeuron).unwrap(), request);

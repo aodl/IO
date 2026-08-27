@@ -1,33 +1,44 @@
-# Simplified production wiring
+# Pooled claim-backing production wiring
 
-Production wiring remains a non-runnable plan. Stream reserve and liquid Accounts must be owned by the installed stream manager. NNS staging and fee Accounts must be owned by the installed manager, while the stream liquid destination is owned by the configured stream manager.
+Production wiring is a non-runnable plan. Stream explicitly configures the IO
+and ICP ledgers, NNS Manager, Jupiter receipt source, Jupiter claim-bearing IO
+recipient, IO reserve, liquid ICP Account, SNS Governance/Root, exact fees and
+retry windows. A distinct bounded list contains genuinely nonredeemable
+governance staking Accounts; it must not contain the Jupiter recipient.
+The corresponding value-moving source is `io_stream_manager`.
 
-The NNS implementation executes at existing protected-neuron controller
-`oae4c-3iaaa-aaaar-qb5qq-cai`. Any mainnet audit, installation, or controller
-action requires separate explicit approval.
+NNS explicitly configures the ICP ledger, Governance, permanent neuron,
+maturity and Jupiter staging Accounts, Stream liquid destination, one fixed
+pooled-parent memo, one fixed followee, exact parent minimum, fees, and retry
+windows. There is no separately funded pooled parent, separate pooled fee
+float, or caller-selected destination.
+The corresponding NNS control source is `io_nns_neuron_manager`.
 
 ## Role identity record
 
-- `io_stream_manager` `thset-pqaaa-aaaar-qb7wa-cai`
-- `io_nns_neuron_manager` `oae4c-3iaaa-aaaar-qb5qq-cai` — existing protected execution identity, not a reservation or general mutation target
-- `io_historian` `tjqj3-uaaaa-aaaar-qb7xa-cai`
-- `frontend` `torpp-zyaaa-aaaar-qb7xq-cai`
+- Stream Manager: `thset-pqaaa-aaaar-qb7wa-cai`
+- NNS Manager: `oae4c-3iaaa-aaaar-qb5qq-cai`
+- Historian: `tjqj3-uaaaa-aaaar-qb7xa-cai`
+- Frontend: `torpp-zyaaa-aaaar-qb7xq-cai`
 
-This remains dry-run/config validation only. No production execution is active;
-IO protocol remains not live; SNS IO ledger is not launched. Production
-activation is a later audited milestone. Required workflows use `icp-cli`
-convention and required workflows do not use `dfx`. The IO_TEST ledger is
-non-canonical. The Stream Manager, Historian, and frontend values are planned
-reserved placeholders only: `ReservedNotLive`, empty/inert, and not live, with
-no value-moving Wasm installed. The NNS Manager entry identifies its existing
-protected authority rather than reserving a fourth canister. No production
-activation has happened and no IO issuance/redemption is enabled.
+Their non-authoritative source roles remain `io_historian` and `io_frontend`.
+
+Two-year protected neuron `10292412127977304661` remains a protected reference
+and is never a mutation target outside the installed NNS Manager. The pooled
+parent is lazy: its final memo and followee are unresolved TODO values, and no
+production neuron ID is invented.
+
+All production files remain dry-run validation inputs. IO issuance/redemption
+is inactive, and this document authorizes no inspection, installation,
+controller change, funding, or mainnet operation.
 
 ## Production Wiring Checklist
 
-The checked-in dry-run target for `io_nns_neuron_manager` is the existing
-controller `oae4c-3iaaa-aaaar-qb5qq-cai`. Static validation allows `oae4c`
-only in this one field and rejects it as the Stream Manager or a general
-mutation target. Protected IO NNS neuron `10292412127977304661` remains a
-protected reference and is never a mutation target. This static plan
-authorizes no inspection or mainnet action.
+This is dry-run/config validation only: No production execution is active, the
+IO protocol remains not live, the SNS IO ledger is not launched,
+no value-moving Wasm installed, no production activation has happened, and no IO
+issuance/redemption is enabled. Production activation is a later audited
+milestone. The reserved IDs and `ReservedNotLive` entries are planned wiring
+placeholders only; every target is reserved, empty/inert, and not live. The
+IO_TEST ledger is non-canonical. Validation follows the `icp-cli` convention,
+and required workflows do not use `dfx`.

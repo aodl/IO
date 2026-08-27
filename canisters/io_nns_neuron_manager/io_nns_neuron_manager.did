@@ -7,16 +7,16 @@ type NnsConfig = record {
   icp_ledger : principal;
   nns_governance : principal;
   two_year_neuron_id : nat64;
-  two_week_neuron_id : nat64;
+  pooled_parent_memo : nat64;
+  pooled_parent_followee_id : nat64;
+  minimum_parent_stake_e8s : nat;
   jupiter_account : Account;
   jupiter_staging : Account;
-  two_week_maturity_staging : Account;
   stream_liquid_account : Account;
   expected_io_fee_e8s : nat;
   expected_icp_fee_e8s : nat;
-  jupiter_fee_float_e8s : nat;
-  two_week_fee_float_e8s : nat;
-  seeded_two_week_principal_e8s : nat;
+  jupiter_activation_block_floor : nat;
+  audited_permanent_principal_e8s : nat;
   transfer_retry_delay_nanos : nat64;
   ledger_deduplication_window_nanos : nat64;
 };
@@ -26,30 +26,115 @@ type PrepareTwoWeekMaturityArgs = record {
   entitlement_batch_generation : nat64;
   target_e8s : nat;
 };
-type ReconcileTwoWeekBackingReadinessArgs = record { target_e8s : nat };
-type TwoWeekTargetStatus = variant {
+type PoolReconciliationAction = variant {
+  Hold;
+  TopUp : record { expected_credit_e8s : nat };
+  Unwind : record { expected_gross_e8s : nat };
+};
+type PreparePoolReconciliationArgs = record {
+  generation : nat64;
+  target_e8s : nat;
+  action : PoolReconciliationAction;
+  fee_e8s : nat;
+  snapshot_fingerprint : blob;
+  memo : blob;
+  created_at_time_nanos : nat64;
+};
+type TopUpPermit = record {
+  generation : nat64;
+  operation_sequence : nat64;
+  expected_parent_principal_e8s : nat;
+  destination : Account;
+  expected_credit_e8s : nat;
+  fee_e8s : nat;
+  memo : blob;
+  prepared_at_nanos : nat64;
+  snapshot_fingerprint : blob;
+};
+type PoolProgress = variant {
+  Held : record { principal_e8s : nat };
+  AwaitingTransfer : TopUpPermit;
+  UnwindPrepared : record { generation : nat64; gross_e8s : nat };
+  UnwindCommitted : record { generation : nat64; principal_e8s : nat };
+  AwaitingProof;
+  Completed : record {
+    parent_neuron_id : nat64;
+    principal_e8s : nat;
+    target_status : PoolTargetResult;
+  };
+  CapacityPending;
+};
+type PoolTargetResult = variant { AtTarget; OverTarget };
+type FollowPolicy = record { followee_neuron_id : nat64 };
+type CohortProofState = variant {
+  Dissolving;
+  DisbursementSubmitted;
+  PrincipalReturned;
+  MaturityHandled;
+  CleanupComplete;
+};
+type ParentAssetObservation = record {
+  neuron_id : nat64;
+  staking_account : Account;
+  physical_principal_e8s : nat;
+};
+type ParentPolicyObservation = record {
+  neuron_id : nat64;
+  dissolve_delay_seconds : nat64;
+  auto_stake_maturity : bool;
+  follow_policy : FollowPolicy;
+  voting_power_refreshed_at_seconds : nat64;
+};
+type CohortObservation = record {
+  generation : nat64;
+  child_neuron_id : nat64;
+  physical_principal_e8s : nat;
+  net_backing_e8s : nat;
+  committed_fee_e8s : nat;
+  ready_at_seconds : nat64;
+  proof : CohortProofState;
+};
+type TransitComponentKind = variant {
+  PoolTopUp;
+  ActiveUnwind;
+  ActiveJupiter;
+  ActiveMaturity;
+  PendingTwoYearMaturity;
+  PendingTwoWeekMaturity;
+};
+type TransitComponentObservation = record {
+  kind : TransitComponentKind;
+  backing_e8s : nat;
+  fee_basis_e8s : opt nat;
+};
+type ClaimAssetObservation = record {
+  parent : opt ParentAssetObservation;
+  pool_staking_account : Account;
+  minimum_parent_stake_e8s : nat;
+  pooled_parent_principal_e8s : nat;
+  live_cohorts : vec CohortObservation;
+  live_child_physical_principal_e8s : nat;
+  live_child_net_backing_e8s : nat;
+  live_child_committed_fee_liability_e8s : nat;
+  transit_components : vec TransitComponentObservation;
+  transit_backing_e8s : nat;
+  active_operation_sequence : nat64;
+  last_completed_pool_operation_sequence : opt nat64;
+  control_epoch : nat64;
+  fingerprint : blob;
+  oldest_ready_at_seconds : opt nat64;
+};
+type PoolPolicyObservation = record {
+  parent : opt ParentPolicyObservation;
+  control_epoch : nat64;
+  active_operation_sequence : nat64;
+  fingerprint : blob;
+};
+type PooledTargetStatus = variant {
   UnderTarget;
   AtTarget;
   AtTargetWithinUnwindTolerance;
   OverTarget;
-};
-type BackingNotReadyReason = variant {
-  Paused;
-  Busy;
-  BaselineUnreconciled;
-  UnderTarget;
-  OverTarget;
-  BelowThreshold;
-};
-type TwoWeekBackingReadiness = variant {
-  Ready : record {
-    target_status : TwoWeekTargetStatus;
-    ordinary_maturity_e8s : nat64;
-    retained_maturity_e8s : nat64;
-    liquid_maturity_e8s : nat64;
-    minimum_disbursement_e8s : nat64;
-  };
-  NotReady : BackingNotReadyReason;
 };
 type ApiError = variant {
   Unauthorized;
@@ -64,6 +149,7 @@ type JupiterCompleted = record {
   deposit_block : nat;
   gross_e8s : nat;
   stake_e8s : nat;
+  observed_after_cached_stake_e8s : nat;
   liquid_e8s : nat;
   stake_transfer_block : nat;
   liquid_transfer_block : nat;
@@ -71,7 +157,6 @@ type JupiterCompleted = record {
   backed_io_e8s : nat;
   io_transfer_block : nat;
   io_fee_e8s : nat;
-  stream_receipt_fingerprint : blob;
   completed_at_nanos : nat64;
 };
 type JupiterProgress = variant {
@@ -93,22 +178,19 @@ type JupiterProgress = variant {
 type MaturityKind = variant { TwoYear; TwoWeek };
 type CompletedMaturity = record {
   kind : MaturityKind;
-  neuron_id : nat64;
-  mint_block : nat;
-  nominal_disbursed_maturity_e8s : nat64;
-  actual_minted_e8s : nat;
-  destination : Account;
+  captured_e8s : nat;
+  permanent_credit_e8s : nat;
+  claim_credit_e8s : nat;
+  entitlement_batch_generation : opt nat64;
   completed_at_nanos : nat64;
 };
 type MaturityProgress = variant {
   Observed;
-  StakeMaturitySubmitted;
-  StakeMaturitySucceeded;
   DisburseMaturitySubmitted;
   DisburseMaturitySucceeded;
-  AwaitingMintProof;
-  MintProved;
-  DeliveringTwoWeekReceipt;
+  AwaitingCapture;
+  Captured : record { captured_e8s : nat };
+  Delivering;
   Completed : CompletedMaturity;
   Stuck : text;
 };
@@ -122,26 +204,30 @@ type NnsProgress = variant {
   Jupiter : JupiterProgress;
   Maturity : MaturityProgress;
   Unwind : UnwindProgress;
+  Pool : PoolProgress;
   Idle;
 };
 type Status = record {
   lifecycle : Lifecycle;
   active_operation : opt text;
-  two_week_maturity_baseline_reconciled : bool;
+  two_year_maturity_baseline_reconciled : bool;
   latest_started_two_week_generation : nat64;
   latest_completed_two_week_generation : nat64;
-  latest_two_week_target : opt record { target_e8s : nat; status : TwoWeekTargetStatus };
-  unwinding_child_principal_e8s : nat;
+  latest_pooled_target : opt record { target_e8s : nat; status : PooledTargetStatus };
+  live_child_physical_principal_e8s : nat;
+  live_child_net_backing_e8s : nat;
+  live_child_committed_fee_liability_e8s : nat;
 };
 service : (InitArgs) -> {
   notify_jupiter_deposit : (NotifyJupiterDepositArgs) -> (variant { Ok : JupiterProgress; Err : ApiError });
   resume : () -> (variant { Ok : NnsProgress; Err : ApiError });
   prove_active_transfer : (nat) -> (variant { Ok : NnsProgress; Err : ApiError });
+  prepare_pool_reconciliation : (PreparePoolReconciliationArgs) -> (variant { Ok : PoolProgress; Err : ApiError });
+  observe_claim_assets : () -> (variant { Ok : ClaimAssetObservation; Err : ApiError });
+  observe_pool_policy : () -> (variant { Ok : PoolPolicyObservation; Err : ApiError });
   start_maturity : (MaturityKind) -> (variant { Ok : MaturityProgress; Err : ApiError });
   validate_start_maturity : (MaturityKind) -> (variant { Ok : text; Err : text }) query;
-  prepare_two_week_maturity : (PrepareTwoWeekMaturityArgs) -> (variant { Ok : MaturityProgress; Err : ApiError });
-  reconcile_two_week_backing_readiness : (ReconcileTwoWeekBackingReadinessArgs) -> (variant { Ok : TwoWeekBackingReadiness; Err : ApiError });
-  prove_maturity_mint : (MaturityKind, nat) -> (variant { Ok : MaturityProgress; Err : ApiError });
+  prepare_two_week_maturity : (PrepareTwoWeekMaturityArgs) -> (variant { Ok; Err : ApiError });
   set_paused : (bool) -> (variant { Ok; Err : ApiError });
   validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;
   get_status : () -> (Status) query;

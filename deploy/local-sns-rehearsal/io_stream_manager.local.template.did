@@ -1,0 +1,22 @@
+// LOCAL-ONLY TEMPLATE. Copy to install-args.local/ and replace every TODO.
+(record {
+  config = record {
+    io_ledger = TODO_LOCAL_IO_LEDGER;
+    icp_ledger = TODO_LOCAL_ICP_LEDGER;
+    nns_manager = TODO_LOCAL_NNS_MANAGER;
+    jupiter_io_account = record { owner = TODO_LOCAL_JUPITER; subaccount = opt TODO_LOCAL_JUPITER_IO_SUBACCOUNT };
+    sns_governance = TODO_LOCAL_SNS_GOVERNANCE;
+    sns_root = TODO_LOCAL_SNS_ROOT;
+    expected_sns_governance_module_hash = TODO_LOCAL_GOVERNANCE_HASH;
+    approved_reward_event_duration_seconds = 86_400 : nat64;
+    io_reserve = record { owner = TODO_LOCAL_STREAM_MANAGER_SELF; subaccount = opt TODO_LOCAL_RESERVE_SUBACCOUNT };
+    liquid_icp = record { owner = TODO_LOCAL_STREAM_MANAGER_SELF; subaccount = opt TODO_LOCAL_LIQUID_SUBACCOUNT };
+    nonredeemable_governance_io_accounts = vec { TODO_LOCAL_NONREDEEMABLE_ACCOUNTS };
+    minimum_redemption_io_e8s = 20_000 : nat;
+    expected_io_fee_e8s = 10_000 : nat;
+    expected_icp_fee_e8s = 10_000 : nat;
+    maximum_request_lifetime_nanos = 900_000_000_000 : nat64;
+    retry_delay_nanos = 1_000_000_000 : nat64;
+    ledger_deduplication_window_nanos = 86_400_000_000_000 : nat64;
+  };
+})

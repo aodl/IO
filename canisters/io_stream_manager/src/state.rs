@@ -8,20 +8,20 @@ use serde::Deserialize;
 use std::{borrow::Cow, cell::RefCell};
 
 use crate::{
-    receipt::{LastCompletedReceipt, LiquidReceiptOperation, ReceiptPreparation},
+    pool_reconciliation::PoolTopUpOperation,
+    receipt::{ClaimBackingReceipt, CompletedClaimBackingReceipt},
     redemption::{RedemptionOperation, RedemptionPreparation},
 };
 pub use io_accounts::Account;
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
+pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 7;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct StreamConfig {
     pub io_ledger: Principal,
     pub icp_ledger: Principal,
     pub nns_manager: Principal,
-    pub jupiter_receipt_source: Account,
-    pub two_week_receipt_source: Account,
     pub jupiter_io_account: Account,
     pub sns_governance: Principal,
     pub sns_root: Principal,
@@ -29,7 +29,7 @@ pub struct StreamConfig {
     pub approved_reward_event_duration_seconds: u64,
     pub io_reserve: Account,
     pub liquid_icp: Account,
-    pub excluded_io_accounts: Vec<Account>,
+    pub nonredeemable_governance_io_accounts: Vec<Account>,
     pub minimum_redemption_io_e8s: u128,
     pub expected_io_fee_e8s: u128,
     pub expected_icp_fee_e8s: u128,
@@ -44,23 +44,27 @@ impl StreamConfig {
 
     pub fn validate(&self, canister_self: Principal) -> Result<(), String> {
         let management = Principal::management_canister();
-        for (name, principal) in [
+        let principals = [
             ("canister self", canister_self),
             ("IO ledger", self.io_ledger),
             ("ICP ledger", self.icp_ledger),
             ("NNS manager", self.nns_manager),
             ("SNS governance", self.sns_governance),
-        ] {
+            ("SNS root", self.sns_root),
+        ];
+        for (name, principal) in principals {
             if principal == Principal::anonymous() || principal == management {
                 return Err(format!("{name} principal is forbidden"));
             }
         }
-        if self.sns_root == Principal::anonymous()
-            || self.sns_root == management
-            || self.sns_root == self.sns_governance
-            || self.sns_root == self.nns_manager
-        {
-            return Err("SNS Root principal is forbidden or aliases another boundary".into());
+        for (index, (left_name, left)) in principals.iter().enumerate() {
+            for (right_name, right) in principals.iter().skip(index + 1) {
+                if left == right {
+                    return Err(format!(
+                        "{left_name} and {right_name} principals must be distinct"
+                    ));
+                }
+            }
         }
         if self.expected_sns_governance_module_hash.len() != 32 {
             return Err("expected SNS Governance module hash must contain 32 bytes".into());
@@ -68,62 +72,32 @@ impl StreamConfig {
         if self.approved_reward_event_duration_seconds != 86_400 {
             return Err("approved reward-event duration must equal one day".into());
         }
-        if self.io_ledger == self.icp_ledger {
-            return Err("IO and ICP ledgers must be distinct".into());
-        }
-        if self.nns_manager == self.sns_governance {
-            return Err("NNS manager and SNS governance must be distinct".into());
-        }
         if self.io_reserve.owner != canister_self || self.liquid_icp.owner != canister_self {
             return Err("reserve and liquid accounts must be owned by this canister".into());
         }
-        if self.jupiter_receipt_source.owner != self.nns_manager
-            || self.two_week_receipt_source.owner != self.nns_manager
-        {
-            return Err("receipt source owners must equal NNS manager".into());
-        }
         self.io_reserve.validate()?;
         self.liquid_icp.validate()?;
-        self.jupiter_receipt_source.validate()?;
-        self.two_week_receipt_source.validate()?;
         self.jupiter_io_account.validate()?;
         for (name, account) in [
             ("IO reserve", &self.io_reserve),
             ("liquid ICP", &self.liquid_icp),
-            ("Jupiter receipt source", &self.jupiter_receipt_source),
-            ("two-week receipt source", &self.two_week_receipt_source),
             ("Jupiter IO account", &self.jupiter_io_account),
         ] {
             if account.owner == Principal::anonymous() || account.owner == management {
                 return Err(format!("{name} owner is forbidden"));
             }
         }
-        if self.io_reserve.effective_eq(&self.liquid_icp)? {
-            return Err("reserve and liquid accounts must be distinct".into());
+        if self.jupiter_io_account.effective_eq(&self.io_reserve)? {
+            return Err("Jupiter IO account and reserve must be distinct".into());
         }
-        if self
-            .jupiter_receipt_source
-            .effective_eq(&self.two_week_receipt_source)?
-            || self.jupiter_receipt_source.effective_eq(&self.io_reserve)?
-            || self.jupiter_receipt_source.effective_eq(&self.liquid_icp)?
-            || self
-                .two_week_receipt_source
-                .effective_eq(&self.io_reserve)?
-            || self
-                .two_week_receipt_source
-                .effective_eq(&self.liquid_icp)?
-            || self.jupiter_io_account.effective_eq(&self.io_reserve)?
-        {
-            return Err("receipt sources, reserve and liquid accounts must be distinct".into());
-        }
-        if self.excluded_io_accounts.len() > Self::MAX_EXCLUDED_ACCOUNTS {
-            return Err("too many excluded IO accounts".into());
+        if self.nonredeemable_governance_io_accounts.len() > Self::MAX_EXCLUDED_ACCOUNTS {
+            return Err("too many nonredeemable governance IO accounts".into());
         }
         let mut canonical_excluded = std::collections::BTreeSet::new();
-        for account in &self.excluded_io_accounts {
+        for account in &self.nonredeemable_governance_io_accounts {
             account.validate()?;
             if account.owner == Principal::anonymous() || account.owner == management {
-                return Err("excluded IO account owner is forbidden".into());
+                return Err("nonredeemable governance IO account owner is forbidden".into());
             }
             if account.effective_eq(&self.io_reserve)? {
                 return Err("reserve account cannot be excluded".into());
@@ -132,7 +106,7 @@ impl StreamConfig {
                 return Err("Jupiter IO account cannot be excluded".into());
             }
             if !canonical_excluded.insert(account.canonical()?) {
-                return Err("excluded IO accounts must be unique".into());
+                return Err("nonredeemable governance IO accounts must be unique".into());
             }
         }
         if self.minimum_redemption_io_e8s <= self.expected_io_fee_e8s {
@@ -169,7 +143,8 @@ pub struct DispatchEpoch(pub u64);
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum StreamOperation {
     Redemption(Box<RedemptionStreamOperation>),
-    LiquidReceipt(Box<LiquidReceiptStreamOperation>),
+    ClaimReceipt(Box<ClaimBackingReceipt>),
+    PoolTopUp(Box<PoolTopUpOperation>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -179,13 +154,7 @@ pub enum RedemptionStreamOperation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum LiquidReceiptStreamOperation {
-    Preparing(Box<ReceiptPreparation>),
-    Active(Box<LiquidReceiptOperation>),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct RewardEntitlementEntry {
+pub struct FrozenEntitlement {
     pub sns_neuron_id: Vec<u8>,
     pub destination: Account,
     pub accumulated_eligible_credit: u128,
@@ -197,6 +166,7 @@ pub enum RewardEventClassification {
     NoProposalFallback,
     ZeroEligibleParticipation,
     MissedSkipped,
+    StructuralOnly,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -211,7 +181,6 @@ pub struct RewardEventObservation {
     pub event: RewardEventId,
     pub proposal_count: u64,
     pub classification: RewardEventClassification,
-    pub credits: Vec<RewardEventCredit>,
     pub policy_credit: u128,
     pub eligible_credit_total: u128,
     pub observed_at_nanos: u64,
@@ -227,10 +196,8 @@ pub struct SkippedRewardEvent {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct RewardEntitlementAccumulator {
+pub struct RewardCheckpoint {
     pub last_processed_event: Option<RewardEventId>,
-    pub entries: Vec<RewardEntitlementEntry>,
-    #[serde(default)]
     pub accumulated_policy_credit: u128,
     pub processed_event_count: u64,
     pub missed_event_count: u64,
@@ -241,11 +208,10 @@ pub struct RewardEntitlementAccumulator {
     pub governance_parameters_fresh: bool,
 }
 
-impl Default for RewardEntitlementAccumulator {
+impl Default for RewardCheckpoint {
     fn default() -> Self {
         Self {
             last_processed_event: None,
-            entries: Vec::new(),
             accumulated_policy_credit: 0,
             processed_event_count: 0,
             missed_event_count: 0,
@@ -264,10 +230,87 @@ pub struct PendingEntitlementBatch {
     pub frozen_at_timestamp_seconds: u64,
     pub through_event: RewardEventId,
     pub target_icp_e8s: u128,
-    pub entries: Vec<RewardEntitlementEntry>,
+    pub entries: Vec<FrozenEntitlement>,
     pub eligible_credit_total: u128,
     pub policy_credit_total: u128,
     pub processed_event_count: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum StructuralStakeState {
+    Active,
+    IneligibleActive,
+    Dissolving,
+    LiquidOrDissolved,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum BackingRewardStatus {
+    ActiveEligible { eligible_from_event: u64 },
+    ActiveIneligible,
+    ExitPrepared { generation: u64 },
+    ExitCommitted { generation: u64 },
+    ExitObserved,
+    ReentryPending { eligible_from_event: u64 },
+    Inactive,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct BackingRewardRecord {
+    pub sns_neuron_id: Vec<u8>,
+    pub staking_account: Account,
+    pub accumulated_eligible_credit: u128,
+    pub latest_structural_state: StructuralStakeState,
+    pub status: BackingRewardStatus,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct ReconciliationCheckpoint {
+    pub generation: u64,
+    pub event_marker: u64,
+    pub observed_at_nanos: u64,
+    pub claim_supply_e8s: u128,
+    pub liquid_backing_e8s: u128,
+    pub pooled_backing_e8s: u128,
+    pub unwinding_backing_e8s: u128,
+    pub transit_backing_e8s: u128,
+    pub total_claim_backing_e8s: u128,
+    pub active_backing_io_e8s: u128,
+    pub active_reward_io_e8s: u128,
+    pub live_cohort_count: u32,
+    pub oldest_ready_at_seconds: Option<u64>,
+    pub pooled_target_e8s: u128,
+    pub observed_pooled_e8s: u128,
+    pub snapshot_fingerprint: Vec<u8>,
+}
+
+pub fn validate_backing_registry(
+    records: &[BackingRewardRecord],
+    config: &StreamConfig,
+) -> Result<(), String> {
+    if records.len() > 1_000 {
+        return Err("backing/reward registry exceeds 1,000 entries".into());
+    }
+    let mut previous: Option<&[u8]> = None;
+    let mut accounts = std::collections::BTreeSet::new();
+    for record in records {
+        let account = record.staking_account.canonical()?;
+        if record.sns_neuron_id.len() != 32
+            || previous.is_some_and(|value| value >= record.sns_neuron_id.as_slice())
+            || account.owner != config.sns_governance
+            || account.subaccount.as_slice() != record.sns_neuron_id
+            || !accounts.insert(account)
+            || matches!(
+                record.status,
+                BackingRewardStatus::ExitPrepared { generation: 0 }
+                    | BackingRewardStatus::ExitCommitted { generation: 0 }
+            )
+        {
+            return Err("backing/reward registry is malformed or unsorted".into());
+        }
+        previous = Some(&record.sns_neuron_id);
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -278,19 +321,21 @@ pub struct RewardEventId {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct StreamStateV1 {
+    pub launch_schema_marker: u8,
     pub config: StreamConfig,
     pub lifecycle: Lifecycle,
     pub active_operation: Option<StreamOperation>,
-    #[serde(default)]
-    pub reward_entitlements: RewardEntitlementAccumulator,
-    #[serde(default)]
+    pub reward_checkpoint: RewardCheckpoint,
     pub pending_entitlement_batch: Option<PendingEntitlementBatch>,
-    #[serde(default)]
+    pub neuron_registry: Vec<BackingRewardRecord>,
+    pub stake_observation_due: bool,
+    pub latest_reconciliation_checkpoint: Option<ReconciliationCheckpoint>,
+    pub prepared_exit_reconciliation: Option<io_nns_types::backing::PreparePoolReconciliationArgs>,
+    pub latest_reconciliation_generation: u64,
     pub latest_entitlement_batch_generation: u64,
-    pub next_nns_receipt_sequence: u64,
     pub next_operation_sequence: OperationSequence,
     pub control_epoch: u64,
-    pub last_completed_receipt: Option<LastCompletedReceipt>,
+    pub last_completed_claim_receipt: Option<CompletedClaimBackingReceipt>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -306,12 +351,11 @@ impl StreamStateV1 {
             subaccount: None,
         };
         Self {
+            launch_schema_marker: LAUNCH_SCHEMA_MARKER,
             config: StreamConfig {
                 io_ledger: anonymous,
                 icp_ledger: anonymous,
                 nns_manager: anonymous,
-                jupiter_receipt_source: account.clone(),
-                two_week_receipt_source: account.clone(),
                 jupiter_io_account: account.clone(),
                 sns_governance: anonymous,
                 sns_root: anonymous,
@@ -319,7 +363,7 @@ impl StreamStateV1 {
                 approved_reward_event_duration_seconds: 0,
                 io_reserve: account.clone(),
                 liquid_icp: account,
-                excluded_io_accounts: Vec::new(),
+                nonredeemable_governance_io_accounts: Vec::new(),
                 minimum_redemption_io_e8s: 1,
                 expected_io_fee_e8s: 0,
                 expected_icp_fee_e8s: 0,
@@ -329,19 +373,26 @@ impl StreamStateV1 {
             },
             lifecycle: Lifecycle::Paused,
             active_operation: None,
-            reward_entitlements: RewardEntitlementAccumulator::default(),
+            reward_checkpoint: RewardCheckpoint::default(),
             pending_entitlement_batch: None,
+            neuron_registry: Vec::new(),
+            stake_observation_due: true,
+            latest_reconciliation_checkpoint: None,
+            prepared_exit_reconciliation: None,
+            latest_reconciliation_generation: 0,
             latest_entitlement_batch_generation: 0,
-            next_nns_receipt_sequence: 0,
             next_operation_sequence: OperationSequence(0),
             control_epoch: 0,
-            last_completed_receipt: None,
+            last_completed_claim_receipt: None,
         }
     }
 }
 
 impl StreamStateV1 {
     pub fn validate(&self, canister_self: Principal) -> Result<(), String> {
+        if self.launch_schema_marker != LAUNCH_SCHEMA_MARKER {
+            return Err("invalid Stream launch schema marker".into());
+        }
         self.config.validate(canister_self)?;
         match &self.active_operation {
             Some(StreamOperation::Redemption(operation)) => match operation.as_ref() {
@@ -360,15 +411,16 @@ impl StreamStateV1 {
                                 lifetime > self.config.maximum_request_lifetime_nanos
                             })
                         || value.account.effective_eq(&self.config.io_reserve)?
-                        || self.config.excluded_io_accounts.iter().try_fold(
-                            false,
-                            |matched, account| {
+                        || self
+                            .config
+                            .nonredeemable_governance_io_accounts
+                            .iter()
+                            .try_fold(false, |matched, account| {
                                 value
                                     .account
                                     .effective_eq(account)
                                     .map(|same| matched || same)
-                            },
-                        )?
+                            })?
                     {
                         return Err("redemption preparation does not match stream state".into());
                     }
@@ -380,46 +432,103 @@ impl StreamStateV1 {
                     }
                 }
             },
-            Some(StreamOperation::LiquidReceipt(operation)) => match operation.as_ref() {
-                LiquidReceiptStreamOperation::Preparing(value) => {
-                    value.validate(&self.config)?;
-                    if value.captured_control_epoch != self.control_epoch {
-                        return Err("receipt preparation control epoch is stale".into());
-                    }
+            Some(StreamOperation::ClaimReceipt(operation)) => {
+                operation.validate(&self.config)?;
+                if operation.permit.stream_operation_sequence >= self.next_operation_sequence.0 {
+                    return Err("active claim-receipt sequence was not reserved".into());
                 }
-                LiquidReceiptStreamOperation::Active(value) => value.validate(&self.config)?,
-            },
+            }
+            Some(StreamOperation::PoolTopUp(operation)) => operation.validate(&self.config)?,
             None => {}
         }
-        self.reward_entitlements.validate(&self.config)?;
+        self.reward_checkpoint.validate(&self.config)?;
+        validate_backing_registry(&self.neuron_registry, &self.config)?;
+        let prepared_generations = self
+            .neuron_registry
+            .iter()
+            .filter_map(|record| match record.status {
+                BackingRewardStatus::ExitPrepared { generation } => Some(generation),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        match &self.prepared_exit_reconciliation {
+            Some(request)
+                if request.generation == 0
+                    || request.snapshot_fingerprint.len() != 32
+                    || request.fee_e8s != self.config.expected_icp_fee_e8s
+                    || request.memo.is_empty()
+                    || request.memo.len() > 32
+                    || request.created_at_time_nanos == 0
+                    || self.latest_reconciliation_checkpoint.as_ref().is_none_or(
+                        |checkpoint| {
+                            checkpoint.generation != request.generation
+                                || checkpoint.pooled_target_e8s != request.target_e8s
+                        },
+                    )
+                    || !matches!(
+                        request.action,
+                        io_nns_types::backing::PoolReconciliationAction::Unwind {
+                            expected_gross_e8s
+                        } if expected_gross_e8s > 0
+                    )
+                    || prepared_generations
+                        .iter()
+                        .any(|generation| *generation != request.generation) =>
+            {
+                return Err("prepared exit reconciliation is inconsistent".into());
+            }
+            None if !prepared_generations.is_empty() => {
+                return Err("prepared exit members lack their exact NNS request".into());
+            }
+            _ => {}
+        }
+        if self
+            .latest_reconciliation_checkpoint
+            .as_ref()
+            .is_some_and(|checkpoint| {
+                checkpoint.generation == 0
+                    || checkpoint.generation > self.latest_reconciliation_generation
+                    || checkpoint.event_marker == 0
+                    || checkpoint.observed_at_nanos == 0
+                    || checkpoint.snapshot_fingerprint.len() != 32
+                    || checkpoint.live_cohort_count
+                        > io_nns_types::backing::MAX_LIVE_UNWIND_COHORTS as u32
+                    || io_core_model::claim_backing(io_core_model::Backing {
+                        liquid: checkpoint.liquid_backing_e8s,
+                        pooled: checkpoint.pooled_backing_e8s,
+                        unwinding: checkpoint.unwinding_backing_e8s,
+                        transit: checkpoint.transit_backing_e8s,
+                    }) != Ok(checkpoint.total_claim_backing_e8s)
+                    || io_core_model::target(
+                        checkpoint.active_backing_io_e8s,
+                        checkpoint.total_claim_backing_e8s,
+                        checkpoint.claim_supply_e8s,
+                    ) != Ok(checkpoint.pooled_target_e8s)
+            })
+        {
+            return Err("reconciliation checkpoint fingerprint is malformed".into());
+        }
         if let Some(batch) = &self.pending_entitlement_batch {
             batch.validate(&self.config)?;
             if batch.generation != self.latest_entitlement_batch_generation {
                 return Err("pending entitlement batch generation is inconsistent".into());
             }
         }
-        if let Some(completed) = &self.last_completed_receipt {
-            completed.validate(&self.config, self.next_nns_receipt_sequence)?;
+        if let Some(completed) = &self.last_completed_claim_receipt {
+            completed.validate()?;
+            if completed.stream_operation_sequence >= self.next_operation_sequence.0 {
+                return Err("completed claim-receipt sequence was not reserved".into());
+            }
         }
         Ok(())
     }
 }
 
-impl RewardEntitlementAccumulator {
+impl RewardCheckpoint {
     pub const MAX_ENTRIES: usize = 1_000;
 
     pub fn validate(&self, config: &StreamConfig) -> Result<(), String> {
-        validate_entitlement_entries(&self.entries, config)?;
-        let eligible_credit_total = self
-            .entries
-            .iter()
-            .try_fold(0u128, |sum, entry| {
-                sum.checked_add(entry.accumulated_eligible_credit)
-            })
-            .ok_or("entitlement accumulator total overflow")?;
-        if eligible_credit_total > self.accumulated_policy_credit {
-            return Err("eligible entitlement credit exceeds policy credit".into());
-        }
+        let _ = config;
         if self
             .last_processed_event
             .is_some_and(|event| event.end_timestamp_seconds == 0 || event.round == 0)
@@ -454,25 +563,18 @@ impl RewardEventObservation {
         {
             return Err("latest reward observation is invalid".into());
         }
-        let entries = self
-            .credits
-            .iter()
-            .map(|weight| RewardEntitlementEntry {
-                sns_neuron_id: weight.sns_neuron_id.clone(),
-                destination: weight.destination.clone(),
-                accumulated_eligible_credit: weight.event_credit,
-            })
-            .collect::<Vec<_>>();
-        validate_entitlement_entries(&entries, config)?;
-        let eligible_credit_total = entries.iter().try_fold(0u128, |sum, entry| {
-            sum.checked_add(entry.accumulated_eligible_credit)
-        });
-        if eligible_credit_total != Some(self.eligible_credit_total)
-            || self.eligible_credit_total > self.policy_credit
-            || (self.classification == RewardEventClassification::MissedSkipped
-                && (self.policy_credit != 0 || self.eligible_credit_total != 0))
-            || (self.classification != RewardEventClassification::MissedSkipped
-                && self.policy_credit != io_reward_policy::DAILY_EVENT_CREDIT)
+        let _ = config;
+        if self.eligible_credit_total > self.policy_credit
+            || (matches!(
+                self.classification,
+                RewardEventClassification::MissedSkipped
+                    | RewardEventClassification::StructuralOnly
+            ) && (self.policy_credit != 0 || self.eligible_credit_total != 0))
+            || (!matches!(
+                self.classification,
+                RewardEventClassification::MissedSkipped
+                    | RewardEventClassification::StructuralOnly
+            ) && self.policy_credit != io_reward_policy::DAILY_EVENT_CREDIT)
         {
             return Err("latest reward observation credit totals are inconsistent".into());
         }
@@ -505,10 +607,10 @@ impl PendingEntitlementBatch {
 }
 
 fn validate_entitlement_entries(
-    entries: &[RewardEntitlementEntry],
+    entries: &[FrozenEntitlement],
     config: &StreamConfig,
 ) -> Result<(), String> {
-    if entries.len() > RewardEntitlementAccumulator::MAX_ENTRIES {
+    if entries.len() > RewardCheckpoint::MAX_ENTRIES {
         return Err("entitlement accumulator exceeds 1,000 entries".into());
     }
     let mut previous_id: Option<&[u8]> = None;
@@ -522,7 +624,7 @@ fn validate_entitlement_entries(
             || account.subaccount.as_slice() != entry.sns_neuron_id
             || entry.accumulated_eligible_credit == 0
             || config
-                .excluded_io_accounts
+                .nonredeemable_governance_io_accounts
                 .iter()
                 .try_fold(false, |matched, excluded| {
                     entry
@@ -644,10 +746,6 @@ pub fn reopen(canister_self: Principal) {
         &reopened.active_operation,
         Some(StreamOperation::Redemption(operation))
             if matches!(operation.as_ref(), RedemptionStreamOperation::Preparing(_))
-    ) || matches!(
-        &reopened.active_operation,
-        Some(StreamOperation::LiquidReceipt(operation))
-            if matches!(operation.as_ref(), LiquidReceiptStreamOperation::Preparing(_))
     ) {
         reopened.active_operation = None;
     }
@@ -709,8 +807,56 @@ pub fn set_caller_state(caller: Principal, state: CallerRedemptionState) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    #[derive(CandidType)]
+    enum PriorStableStreamState {
+        V1(PriorStreamState),
+    }
+
+    #[derive(CandidType)]
+    struct PriorStreamState {
+        launch_schema_marker: u8,
+        config: StreamConfig,
+        lifecycle: Lifecycle,
+        active_operation: Option<StreamOperation>,
+        reward_checkpoint: RewardCheckpoint,
+        pending_entitlement_batch: Option<PendingEntitlementBatch>,
+        neuron_registry: Vec<PriorBackingRewardRecord>,
+        stake_observation_due: bool,
+        latest_reconciliation_checkpoint: Option<ReconciliationCheckpoint>,
+        latest_reconciliation_generation: u64,
+        latest_entitlement_batch_generation: u64,
+        next_operation_sequence: OperationSequence,
+        control_epoch: u64,
+        last_completed_claim_receipt: Option<CompletedClaimBackingReceipt>,
+    }
+
+    #[derive(CandidType)]
+    struct PriorBackingRewardRecord {
+        sns_neuron_id: Vec<u8>,
+        staking_account: Account,
+        accumulated_eligible_credit: u128,
+        latest_structural_state: StructuralStakeState,
+        status: PriorBackingRewardStatus,
+        unresolved_cohort_generation: Option<u64>,
+    }
+
+    #[derive(CandidType)]
+    enum PriorBackingRewardStatus {
+        ActiveEligible { eligible_from_event: u64 },
+        ActiveIneligible,
+        ExitCommitted { generation: u64 },
+        ExitObserved,
+        ReentryPending { eligible_from_event: u64 },
+        Inactive,
+    }
+
+    #[derive(CandidType)]
+    enum FutureStableStreamState {
+        V2(StreamStateV1),
+    }
 
     fn principal(value: u8) -> Principal {
         Principal::from_slice(&[value; 29])
@@ -723,248 +869,256 @@ mod tests {
         }
     }
 
-    fn valid_state() -> (Principal, StreamStateV1) {
+    pub(crate) fn valid_state() -> (Principal, StreamStateV1) {
         let canister_self = principal(1);
-        let governance = principal(5);
-        let entry = RewardEntitlementEntry {
-            sns_neuron_id: vec![1; 32],
-            destination: account(governance, 1),
-            accumulated_eligible_credit: 100,
-        };
-        let event = RewardEventId {
-            end_timestamp_seconds: 86_400,
-            round: 1,
-        };
+        let nns_manager = principal(4);
         (
             canister_self,
             StreamStateV1 {
+                launch_schema_marker: LAUNCH_SCHEMA_MARKER,
                 config: StreamConfig {
                     io_ledger: principal(2),
                     icp_ledger: principal(3),
-                    nns_manager: principal(4),
-                    jupiter_receipt_source: account(principal(4), 1),
-                    two_week_receipt_source: account(principal(4), 2),
-                    jupiter_io_account: account(principal(7), 3),
-                    sns_governance: governance,
+                    nns_manager,
+                    jupiter_io_account: account(principal(7), 2),
+                    sns_governance: principal(5),
                     sns_root: principal(6),
                     expected_sns_governance_module_hash: vec![8; 32],
                     approved_reward_event_duration_seconds: 86_400,
-                    io_reserve: account(canister_self, 4),
-                    liquid_icp: account(canister_self, 5),
-                    excluded_io_accounts: vec![account(governance, 9)],
-                    minimum_redemption_io_e8s: 20_000,
-                    expected_io_fee_e8s: 10_000,
-                    expected_icp_fee_e8s: 10_000,
-                    maximum_request_lifetime_nanos: 1_000_000,
-                    retry_delay_nanos: 1,
-                    ledger_deduplication_window_nanos: 2_000_000,
+                    io_reserve: account(canister_self, 3),
+                    liquid_icp: account(canister_self, 4),
+                    nonredeemable_governance_io_accounts: vec![account(principal(5), 5)],
+                    minimum_redemption_io_e8s: 100,
+                    expected_io_fee_e8s: 10,
+                    expected_icp_fee_e8s: 10,
+                    maximum_request_lifetime_nanos: 1_000,
+                    retry_delay_nanos: 10,
+                    ledger_deduplication_window_nanos: 2_000,
                 },
-                lifecycle: Lifecycle::Ready,
+                lifecycle: Lifecycle::Paused,
                 active_operation: None,
-                reward_entitlements: RewardEntitlementAccumulator {
-                    last_processed_event: Some(event),
-                    entries: vec![entry.clone()],
-                    accumulated_policy_credit: io_reward_policy::DAILY_EVENT_CREDIT,
-                    processed_event_count: 1,
-                    missed_event_count: 0,
-                    reward_work_due: false,
-                    reward_processing_paused: false,
-                    latest_observation: Some(RewardEventObservation {
-                        event,
-                        proposal_count: 1,
-                        classification: RewardEventClassification::ProposalBearing,
-                        credits: vec![RewardEventCredit {
-                            sns_neuron_id: entry.sns_neuron_id,
-                            destination: entry.destination,
-                            event_credit: 100,
-                        }],
-                        policy_credit: io_reward_policy::DAILY_EVENT_CREDIT,
-                        eligible_credit_total: 100,
-                        observed_at_nanos: 1,
-                    }),
-                    latest_skipped_event: None,
-                    governance_parameters_fresh: true,
-                },
+                reward_checkpoint: RewardCheckpoint::default(),
                 pending_entitlement_batch: None,
+                neuron_registry: Vec::new(),
+                stake_observation_due: true,
+                latest_reconciliation_checkpoint: None,
+                prepared_exit_reconciliation: None,
+                latest_reconciliation_generation: 0,
                 latest_entitlement_batch_generation: 0,
-                next_nns_receipt_sequence: 0,
                 next_operation_sequence: OperationSequence(1),
                 control_epoch: 0,
-                last_completed_receipt: None,
+                last_completed_claim_receipt: None,
             },
         )
     }
 
-    #[test]
-    fn daily_reward_configuration_is_required() {
-        let (canister_self, mut state) = valid_state();
-        state.validate(canister_self).unwrap();
-        state.config.approved_reward_event_duration_seconds = io_core_model::TWO_WEEK_SECONDS;
-        assert!(state
-            .validate(canister_self)
-            .unwrap_err()
-            .contains("one day"));
-    }
-
-    #[test]
-    fn accumulator_requires_sorted_unique_neurons_and_destinations() {
-        let (canister_self, mut state) = valid_state();
-        let entry = state.reward_entitlements.entries[0].clone();
-        state.reward_entitlements.entries.push(entry);
-        assert!(state.validate(canister_self).is_err());
-
-        let (_, mut state) = valid_state();
-        let governance = state.config.sns_governance;
-        state.reward_entitlements.entries = vec![
-            RewardEntitlementEntry {
-                sns_neuron_id: vec![2; 32],
-                destination: account(governance, 2),
-                accumulated_eligible_credit: 1,
+    fn registry_record(governance: Principal, index: u32) -> BackingRewardRecord {
+        let mut id = vec![0; 32];
+        id[28..].copy_from_slice(&index.to_be_bytes());
+        BackingRewardRecord {
+            sns_neuron_id: id.clone(),
+            staking_account: Account {
+                owner: governance,
+                subaccount: Some(id),
             },
-            RewardEntitlementEntry {
-                sns_neuron_id: vec![1; 32],
-                destination: account(governance, 1),
-                accumulated_eligible_credit: 1,
+            accumulated_eligible_credit: 1,
+            latest_structural_state: StructuralStakeState::Active,
+            status: BackingRewardStatus::ActiveEligible {
+                eligible_from_event: 1,
             },
-        ];
-        assert!(state.validate(canister_self).is_err());
+        }
     }
 
     #[test]
-    fn one_zero_credit_pending_batch_is_valid_without_a_parallel_status_machine() {
-        let (canister_self, mut state) = valid_state();
-        state.reward_entitlements.entries.clear();
-        state.reward_entitlements.accumulated_policy_credit = 0;
-        state.pending_entitlement_batch = Some(PendingEntitlementBatch {
-            generation: 1,
-            frozen_at_timestamp_seconds: 1,
-            through_event: state.reward_entitlements.last_processed_event.unwrap(),
-            target_icp_e8s: 0,
-            entries: Vec::new(),
-            eligible_credit_total: 0,
-            policy_credit_total: io_reward_policy::DAILY_EVENT_CREDIT,
-            processed_event_count: 1,
-        });
-        state.latest_entitlement_batch_generation = 1;
-        state.validate(canister_self).unwrap();
-        state.pending_entitlement_batch = None;
-        state.validate(canister_self).unwrap();
-    }
-
-    #[test]
-    fn frozen_batch_and_later_live_entitlements_coexist() {
-        let (canister_self, mut state) = valid_state();
-        let governance = state.config.sns_governance;
-        let first_event = state.reward_entitlements.last_processed_event.unwrap();
-        let frozen_entry = state.reward_entitlements.entries[0].clone();
-        state.pending_entitlement_batch = Some(PendingEntitlementBatch {
-            generation: 1,
-            frozen_at_timestamp_seconds: first_event.end_timestamp_seconds,
-            through_event: first_event,
-            target_icp_e8s: 1,
-            entries: vec![frozen_entry],
-            eligible_credit_total: 100,
-            policy_credit_total: io_reward_policy::DAILY_EVENT_CREDIT,
-            processed_event_count: 1,
-        });
-        state.latest_entitlement_batch_generation = 1;
-        state.reward_entitlements.processed_event_count = 2;
-        state.reward_entitlements.last_processed_event = Some(RewardEventId {
-            end_timestamp_seconds: 172_800,
-            round: 2,
-        });
-        state.reward_entitlements.entries = vec![RewardEntitlementEntry {
-            sns_neuron_id: vec![2; 32],
-            destination: account(governance, 2),
-            accumulated_eligible_credit: 200,
-        }];
-        state.reward_entitlements.latest_observation = None;
-        state.validate(canister_self).unwrap();
-    }
-
-    #[test]
-    fn skipped_event_evidence_is_bounded_and_cumulative() {
-        let (canister_self, mut state) = valid_state();
-        let skipped = SkippedRewardEvent {
-            previous_event: state.reward_entitlements.last_processed_event,
-            observed_event: RewardEventId {
-                end_timestamp_seconds: 259_200,
-                round: 3,
-            },
-            ambiguous_event_count: 2,
-            rounds_since_last_distribution: 1,
-            observed_at_nanos: 2,
-        };
-        state.reward_entitlements.last_processed_event = Some(skipped.observed_event);
-        state.reward_entitlements.missed_event_count = 2;
-        state.reward_entitlements.latest_skipped_event = Some(skipped.clone());
-        state.reward_entitlements.latest_observation = Some(RewardEventObservation {
-            event: skipped.observed_event,
-            proposal_count: 0,
-            classification: RewardEventClassification::MissedSkipped,
-            credits: Vec::new(),
-            policy_credit: 0,
-            eligible_credit_total: 0,
-            observed_at_nanos: 2,
-        });
-        state.validate(canister_self).unwrap();
-    }
-
-    #[test]
-    fn stable_reopen_preserves_entitlements_and_forces_paused() {
+    fn current_launch_state_round_trips_and_validates() {
         let (canister_self, state) = valid_state();
-        let expected = state.reward_entitlements.clone();
-        initialize(state, canister_self).unwrap();
+        assert_eq!(state.validate(canister_self), Ok(()));
+        let bytes = candid::encode_one(StableStreamState::V1(state.clone())).unwrap();
+        let decoded: StableStreamState = candid::decode_one(&bytes).unwrap();
+        assert_eq!(decoded, StableStreamState::V1(state));
+    }
+
+    #[test]
+    fn prior_and_future_launch_shapes_are_rejected() {
+        let _complete_prior_status_shape = (
+            PriorBackingRewardStatus::ActiveEligible {
+                eligible_from_event: 1,
+            },
+            PriorBackingRewardStatus::ActiveIneligible,
+            PriorBackingRewardStatus::ExitObserved,
+            PriorBackingRewardStatus::ReentryPending {
+                eligible_from_event: 1,
+            },
+            PriorBackingRewardStatus::Inactive,
+        );
+        let (_, state) = valid_state();
+        let prior = PriorStableStreamState::V1(PriorStreamState {
+            launch_schema_marker: LAUNCH_SCHEMA_MARKER - 1,
+            config: state.config.clone(),
+            lifecycle: Lifecycle::Paused,
+            active_operation: state.active_operation.clone(),
+            reward_checkpoint: state.reward_checkpoint.clone(),
+            pending_entitlement_batch: state.pending_entitlement_batch.clone(),
+            neuron_registry: vec![PriorBackingRewardRecord {
+                sns_neuron_id: vec![1; 32],
+                staking_account: Account {
+                    owner: state.config.sns_governance,
+                    subaccount: Some(vec![1; 32]),
+                },
+                accumulated_eligible_credit: 0,
+                latest_structural_state: StructuralStakeState::Dissolving,
+                status: PriorBackingRewardStatus::ExitCommitted { generation: 1 },
+                unresolved_cohort_generation: Some(1),
+            }],
+            stake_observation_due: state.stake_observation_due,
+            latest_reconciliation_checkpoint: state.latest_reconciliation_checkpoint.clone(),
+            latest_reconciliation_generation: state.latest_reconciliation_generation,
+            latest_entitlement_batch_generation: state.latest_entitlement_batch_generation,
+            next_operation_sequence: state.next_operation_sequence,
+            control_epoch: state.control_epoch,
+            last_completed_claim_receipt: state.last_completed_claim_receipt.clone(),
+        });
+        let prior = candid::encode_one(prior).unwrap();
+        let prior_is_rejected = match candid::decode_one::<StableStreamState>(&prior) {
+            Err(_) => true,
+            Ok(decoded) => decoded
+                .into_v1()
+                .validate(state.config.io_reserve.owner)
+                .is_err(),
+        };
+        assert!(prior_is_rejected);
+        let future = FutureStableStreamState::V2(state);
+        assert!(
+            candid::decode_one::<StableStreamState>(&candid::encode_one(future).unwrap()).is_err()
+        );
+    }
+
+    #[test]
+    fn registry_is_sorted_unique_and_bounded() {
+        let (canister_self, mut state) = valid_state();
+        state.neuron_registry = (0..1_000)
+            .map(|index| registry_record(state.config.sns_governance, index))
+            .collect();
+        assert_eq!(state.validate(canister_self), Ok(()));
+        let encoded = candid::encode_one(StableStreamState::V1(state.clone())).unwrap();
+        eprintln!("maximum exercised Stream state: {} bytes", encoded.len());
+        assert!(encoded.len() < 2_000_000);
+
+        state
+            .neuron_registry
+            .push(registry_record(state.config.sns_governance, 1_000));
+        assert!(state.validate(canister_self).is_err());
+        state.neuron_registry.truncate(1_000);
+        state.neuron_registry[1].sns_neuron_id = state.neuron_registry[0].sns_neuron_id.clone();
+        assert!(state.validate(canister_self).is_err());
+    }
+
+    #[test]
+    fn upgrade_policy_reopens_paused() {
+        let (_, mut state) = valid_state();
+        state.lifecycle = Lifecycle::Ready;
+        state.lifecycle = Lifecycle::Paused;
+        assert_eq!(state.lifecycle, Lifecycle::Paused);
+    }
+
+    #[test]
+    fn prepared_exit_generation_round_trips_upgrade_and_reopens_paused() {
+        let (canister_self, mut state) = valid_state();
+        state.lifecycle = Lifecycle::Ready;
+        state.latest_reconciliation_generation = 1;
+        state.latest_reconciliation_checkpoint = Some(ReconciliationCheckpoint {
+            generation: 1,
+            event_marker: 1,
+            observed_at_nanos: 1,
+            claim_supply_e8s: 100,
+            liquid_backing_e8s: 100,
+            pooled_backing_e8s: 0,
+            unwinding_backing_e8s: 0,
+            transit_backing_e8s: 0,
+            total_claim_backing_e8s: 100,
+            active_backing_io_e8s: 50,
+            active_reward_io_e8s: 0,
+            live_cohort_count: 0,
+            oldest_ready_at_seconds: None,
+            pooled_target_e8s: 50,
+            observed_pooled_e8s: 100,
+            snapshot_fingerprint: vec![1; 32],
+        });
+        state.neuron_registry = vec![BackingRewardRecord {
+            sns_neuron_id: vec![1; 32],
+            staking_account: Account {
+                owner: state.config.sns_governance,
+                subaccount: Some(vec![1; 32]),
+            },
+            accumulated_eligible_credit: 7,
+            latest_structural_state: StructuralStakeState::Dissolving,
+            status: BackingRewardStatus::ExitPrepared { generation: 1 },
+        }];
+        state.prepared_exit_reconciliation =
+            Some(io_nns_types::backing::PreparePoolReconciliationArgs {
+                generation: 1,
+                target_e8s: 50,
+                action: io_nns_types::backing::PoolReconciliationAction::Unwind {
+                    expected_gross_e8s: 50,
+                },
+                fee_e8s: state.config.expected_icp_fee_e8s,
+                snapshot_fingerprint: vec![2; 32],
+                memo: vec![3],
+                created_at_time_nanos: 1,
+            });
+        initialize(state.clone(), canister_self).unwrap();
         reopen(canister_self);
         let reopened = read();
         assert_eq!(reopened.lifecycle, Lifecycle::Paused);
-        assert_eq!(reopened.reward_entitlements, expected);
-        assert!(reopened.active_operation.is_none());
+        assert_eq!(reopened.neuron_registry, state.neuron_registry);
+        assert_eq!(
+            reopened.prepared_exit_reconciliation,
+            state.prepared_exit_reconciliation
+        );
     }
 
     #[test]
-    fn maximum_accumulator_and_pending_batch_fit_the_stable_cell_bound() {
-        let (canister_self, mut state) = valid_state();
-        let governance = state.config.sns_governance;
-        let entries = (0..RewardEntitlementAccumulator::MAX_ENTRIES)
-            .map(|index| {
-                let mut id = [0_u8; 32];
-                id[24..].copy_from_slice(&(index as u64 + 1).to_be_bytes());
-                RewardEntitlementEntry {
-                    sns_neuron_id: id.to_vec(),
-                    destination: Account {
-                        owner: governance,
-                        subaccount: Some(id.to_vec()),
+    fn claim_receipt_ownership_handoff_round_trips_before_and_after_liquid_proof() {
+        for liquid_block in [None, Some(7)] {
+            let (canister_self, mut state) = valid_state();
+            let request = io_receipt_types::PrepareClaimBackingReceiptArgs {
+                nns_operation_sequence: 1,
+                kind: io_receipt_types::ClaimBackingReceiptKind::Jupiter,
+                net_liquid_credit_e8s: 60,
+            };
+            state.lifecycle = Lifecycle::Ready;
+            state.next_operation_sequence = OperationSequence(2);
+            state.active_operation = Some(StreamOperation::ClaimReceipt(Box::new(
+                crate::receipt::ClaimBackingReceipt {
+                    permit: io_receipt_types::ClaimBackingReceiptPermit {
+                        stream_operation_sequence: 1,
+                        destination: state.config.liquid_icp.clone(),
+                        amount_e8s: 60,
+                        memo: io_nns_types::receipt::receipt_memo(request.nns_operation_sequence),
                     },
-                    accumulated_eligible_credit: 1,
-                }
-            })
-            .collect::<Vec<_>>();
-        state.reward_entitlements.entries = entries.clone();
-        state.reward_entitlements.accumulated_policy_credit = io_reward_policy::DAILY_EVENT_CREDIT;
-        state.reward_entitlements.latest_observation = None;
-        state.pending_entitlement_batch = Some(PendingEntitlementBatch {
-            generation: 1,
-            frozen_at_timestamp_seconds: 1,
-            through_event: state.reward_entitlements.last_processed_event.unwrap(),
-            target_icp_e8s: 1,
-            entries,
-            eligible_credit_total: RewardEntitlementAccumulator::MAX_ENTRIES as u128,
-            policy_credit_total: io_reward_policy::DAILY_EVENT_CREDIT,
-            processed_event_count: 1,
-        });
-        state.latest_entitlement_batch_generation = 1;
-        state.validate(canister_self).unwrap();
-        let stable = StableStreamState::V1(state);
-        let encoded = stable.to_bytes();
-        let Bound::Bounded { max_size, .. } = <StableStreamState as Storable>::BOUND else {
-            panic!("stream state must remain bounded");
-        };
-        eprintln!(
-            "maximum accumulator plus pending batch encodes to {} bytes of the {}-byte stable bound",
-            encoded.len(),
-            max_size
-        );
-        assert!(encoded.len() <= max_size as usize);
+                    request,
+                    economics: crate::receipt::FrozenClaimEconomics {
+                        pre_claim_backing_e8s: 100,
+                        pre_claim_supply_e8s: 100,
+                        liquid_credit_e8s: 60,
+                        io_fee_e8s: state.config.expected_io_fee_e8s,
+                    },
+                    liquid_block,
+                    recipients: vec![crate::receipt::FrozenRecipient {
+                        sns_neuron_id: None,
+                        destination: state.config.jupiter_io_account.clone(),
+                        io_e8s: 30,
+                    }],
+                    recipient_cursor: 0,
+                    current_recipient: None,
+                    jupiter_recipient_block: None,
+                },
+            )));
+            initialize(state.clone(), canister_self).unwrap();
+            write(state.clone());
+            reopen(canister_self);
+            assert_eq!(read().active_operation, state.active_operation);
+            assert_eq!(read().lifecycle, Lifecycle::Paused);
+        }
     }
 }

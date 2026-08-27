@@ -12,8 +12,8 @@ export function formatTokenE8s(value, symbol = "") {
 }
 
 export function formatRatio(rate) {
-  const rawNumerator = rate?.liquid_icp_e8s ?? rate?.liquid_icp_per_io_e8s_numerator;
-  const rawDenominator = rate?.redeemable_io_e8s ?? rate?.liquid_icp_per_io_e8s_denominator;
+  const rawNumerator = rate?.backing_numerator_e8s;
+  const rawDenominator = rate?.claim_denominator_e8s;
   if (rawNumerator === undefined || rawDenominator === undefined || rawDenominator === 0n) return MISSING;
   const numerator = Number(rawNumerator);
   const denominator = Number(rawDenominator);

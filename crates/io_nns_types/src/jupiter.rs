@@ -1,11 +1,15 @@
-#[rustfmt::skip]
-use {candid::{CandidType, Principal}, serde::Deserialize, std::borrow::Cow};
 use ic_stable_structures::{storable::Bound, Storable};
+use {
+    candid::{CandidType, Principal},
+    serde::Deserialize,
+    std::borrow::Cow,
+};
 
 use crate::transfer::NnsTransferAttempt;
-pub use io_receipt_types::LiquidReceiptPermit as StreamReceiptPermit;
+pub use io_receipt_types::ClaimBackingReceiptPermit as StreamReceiptPermit;
 
-pub const PINNED_DFINITY_IC_COMMIT: &str = "021bf342f66296d5605b355a61b2430406a83783";
+pub const PINNED_NNS_GOVERNANCE_COMMIT: &str = "c748b8e76b90ceef329c055e6f7b38a00aae8745";
+pub const PINNED_ICP_LEDGER_COMMIT: &str = "021bf342f66296d5605b355a61b2430406a83783";
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct JupiterDeposit {
@@ -13,6 +17,7 @@ pub struct JupiterDeposit {
     pub gross_e8s: u128,
     pub stake_e8s: u128,
     pub liquid_e8s: u128,
+    pub fee_e8s: u128,
     pub created_at_time_nanos: u64,
 }
 
@@ -30,15 +35,42 @@ pub struct StakeTransferSucceeded {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct StakeIncreaseProof {
-    pub before: NeuronSnapshot,
-    pub after_cached_stake_e8s: u128,
-    pub stake_transfer_block: u128,
+pub struct PermanentNeuronCreditProof {
+    pub neuron_id: u64,
+    pub staking_subaccount: [u8; 32],
+    pub before_cached_stake_e8s: u128,
+    pub protocol_credit_e8s: u128,
+    pub transfer_block: u128,
+    pub observed_after_cached_stake_e8s: u128,
+}
+
+impl PermanentNeuronCreditProof {
+    pub fn before(&self) -> NeuronSnapshot {
+        NeuronSnapshot {
+            neuron_id: self.neuron_id,
+            staking_subaccount: self.staking_subaccount,
+            cached_stake_e8s: self.before_cached_stake_e8s,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        let expected_after = self
+            .before_cached_stake_e8s
+            .checked_add(self.protocol_credit_e8s)
+            .ok_or("permanent credit expectation overflow")?;
+        if self.neuron_id == 0
+            || self.protocol_credit_e8s == 0
+            || self.observed_after_cached_stake_e8s < expected_after
+        {
+            return Err("permanent neuron protocol credit is not proved".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct LiquidTransferSucceeded {
-    pub proof: StakeIncreaseProof,
+    pub proof: PermanentNeuronCreditProof,
     pub permit: StreamReceiptPermit,
     pub block_index: u128,
 }
@@ -48,6 +80,7 @@ pub struct JupiterCompleted {
     pub deposit_block: u128,
     pub gross_e8s: u128,
     pub stake_e8s: u128,
+    pub observed_after_cached_stake_e8s: u128,
     pub liquid_e8s: u128,
     pub stake_transfer_block: u128,
     pub liquid_transfer_block: u128,
@@ -55,7 +88,6 @@ pub struct JupiterCompleted {
     pub backed_io_e8s: u128,
     pub io_transfer_block: u128,
     pub io_fee_e8s: u128,
-    pub stream_receipt_fingerprint: Vec<u8>,
     pub completed_at_nanos: u64,
 }
 
@@ -82,7 +114,7 @@ pub enum JupiterStuckTransfer {
         attempt: NnsTransferAttempt,
     },
     Liquid {
-        proof: StakeIncreaseProof,
+        proof: PermanentNeuronCreditProof,
         permit: StreamReceiptPermit,
         attempt: NnsTransferAttempt,
     },
@@ -93,8 +125,6 @@ pub enum JupiterPauseReason {
     AmbiguousPossibleEffect,
     InsufficientFunds,
     BadFee,
-    RefreshUnconfirmed,
-    StakeIncreaseMismatch,
     Other,
 }
 
@@ -111,18 +141,18 @@ pub enum JupiterPhase {
     },
     StakeTransferSucceeded(StakeTransferSucceeded),
     RefreshSubmitted(StakeTransferSucceeded),
-    StakeIncreaseProved(StakeIncreaseProof),
+    StakeIncreaseProved(PermanentNeuronCreditProof),
     ReceiptPermitPrepared {
-        proof: StakeIncreaseProof,
+        proof: PermanentNeuronCreditProof,
         permit: StreamReceiptPermit,
     },
     LiquidTransferPrepared {
-        proof: StakeIncreaseProof,
+        proof: PermanentNeuronCreditProof,
         permit: StreamReceiptPermit,
         attempt: NnsTransferAttempt,
     },
     LiquidTransferSubmitted {
-        proof: StakeIncreaseProof,
+        proof: PermanentNeuronCreditProof,
         permit: StreamReceiptPermit,
         attempt: NnsTransferAttempt,
     },
@@ -151,7 +181,13 @@ impl JupiterOperation {
             || self.deposit.block_index > u128::from(u64::MAX)
             || self.deposit.gross_e8s == 0
             || self.deposit.created_at_time_nanos == 0
-            || checked_split(self.deposit.gross_e8s)?
+            || crate::maturity::capture_40_60(
+                self.deposit.gross_e8s,
+                self.deposit.fee_e8s,
+                self.deposit.fee_e8s,
+            )
+            .map(|split| (split.permanent_credit, split.claim_credit))
+            .map_err(|error| format!("paired inflow split failed: {error:?}"))?
                 != (self.deposit.stake_e8s, self.deposit.liquid_e8s)
         {
             return Err("Jupiter operation identity is malformed".into());
@@ -188,13 +224,13 @@ impl JupiterOperation {
                 validate_neuron(&value.before)
             }
             JupiterPhase::StakeIncreaseProved(proof) => {
-                validate_neuron(&proof.before)?;
+                validate_neuron(&proof.before())?;
                 validate_stake_increase(proof, self.deposit.stake_e8s)
             }
             JupiterPhase::ReceiptPermitPrepared { proof, permit }
             | JupiterPhase::LiquidTransferPrepared { proof, permit, .. }
             | JupiterPhase::LiquidTransferSubmitted { proof, permit, .. } => {
-                validate_neuron(&proof.before)?;
+                validate_neuron(&proof.before())?;
                 validate_stake_increase(proof, self.deposit.stake_e8s)?;
                 validate_permit(permit)?;
                 if let JupiterPhase::LiquidTransferPrepared { attempt, .. }
@@ -215,7 +251,7 @@ impl JupiterOperation {
             JupiterPhase::LiquidTransferSucceeded(value)
             | JupiterPhase::ReceiptCompletionSubmitted(value)
             | JupiterPhase::AwaitingStreamSettlement(value) => {
-                validate_neuron(&value.proof.before)?;
+                validate_neuron(&value.proof.before())?;
                 validate_stake_increase(&value.proof, self.deposit.stake_e8s)?;
                 validate_permit(&value.permit)
             }
@@ -236,7 +272,7 @@ impl JupiterOperation {
                             permit,
                             attempt,
                         } => {
-                            validate_neuron(&proof.before)?;
+                            validate_neuron(&proof.before())?;
                             validate_stake_increase(proof, self.deposit.stake_e8s)?;
                             validate_permit(permit)?;
                             validate_attempt(attempt)?;
@@ -249,33 +285,22 @@ impl JupiterOperation {
     }
 }
 
-fn validate_stake_increase(proof: &StakeIncreaseProof, stake_e8s: u128) -> Result<(), String> {
-    if proof
-        .after_cached_stake_e8s
-        .checked_sub(proof.before.cached_stake_e8s)
-        != Some(stake_e8s)
-    {
-        return Err("protected neuron stake increase is not exact".into());
+fn validate_stake_increase(
+    proof: &PermanentNeuronCreditProof,
+    stake_e8s: u128,
+) -> Result<(), String> {
+    proof.validate()?;
+    if proof.protocol_credit_e8s != stake_e8s {
+        return Err("Jupiter proof attributes the wrong protocol credit".into());
     }
     Ok(())
 }
 
 fn validate_permit(permit: &StreamReceiptPermit) -> Result<(), String> {
-    if permit.memo.is_empty() || permit.memo.len() > 32 {
+    if permit.stream_operation_sequence == 0 || permit.amount_e8s == 0 || permit.memo.len() != 32 {
         return Err("stream receipt permit memo is malformed".into());
     }
     permit.destination.validate()
-}
-
-pub fn checked_split(gross_e8s: u128) -> Result<(u128, u128), String> {
-    let stake = gross_e8s.checked_mul(40).ok_or("Jupiter split overflow")? / 100;
-    let liquid = gross_e8s
-        .checked_sub(stake)
-        .ok_or("Jupiter split underflow")?;
-    if stake == 0 || liquid == 0 {
-        return Err("Jupiter deposit is too small for a nonzero 40/60 split".into());
-    }
-    Ok((stake, liquid))
 }
 
 #[cfg(test)]
@@ -283,12 +308,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exact_checked_40_60_split() {
-        assert_eq!(checked_split(101).unwrap(), (40, 61));
-        assert!(checked_split(1).is_err());
-        assert_eq!(
-            checked_split(u128::MAX),
-            Err("Jupiter split overflow".into())
-        );
+    fn permanent_credit_proof_is_monotone_and_does_not_attribute_donations() {
+        let proof = PermanentNeuronCreditProof {
+            neuron_id: 7,
+            staking_subaccount: [8; 32],
+            before_cached_stake_e8s: 1_000,
+            protocol_credit_e8s: 400,
+            transfer_block: 9,
+            observed_after_cached_stake_e8s: 1_500,
+        };
+        proof.validate().unwrap();
+        assert_eq!(proof.protocol_credit_e8s, 400);
+        assert_eq!(proof.observed_after_cached_stake_e8s, 1_500);
+
+        let mut pending = proof;
+        pending.observed_after_cached_stake_e8s = 1_399;
+        assert!(pending.validate().is_err());
     }
 }

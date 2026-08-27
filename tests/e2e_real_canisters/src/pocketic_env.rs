@@ -46,6 +46,21 @@ pub fn new_pic_with_nns_governance_features() -> PocketIc {
         .build()
 }
 
+pub fn new_pic_with_nns_governance_and_fiduciary_features() -> PocketIc {
+    with_optional_server_url(PocketIcBuilder::new())
+        .with_sns_subnet()
+        .with_fiduciary_subnet()
+        .with_application_subnet()
+        .with_icp_features(IcpFeatures {
+            registry: Some(IcpFeaturesConfig::DefaultConfig),
+            cycles_minting: Some(IcpFeaturesConfig::DefaultConfig),
+            icp_token: Some(IcpFeaturesConfig::DefaultConfig),
+            nns_governance: Some(IcpFeaturesConfig::DefaultConfig),
+            ..Default::default()
+        })
+        .build()
+}
+
 fn with_optional_server_url(builder: PocketIcBuilder) -> PocketIcBuilder {
     let builder = builder.with_max_request_time_ms(Some(900_000));
     match std::env::var("POCKET_IC_SERVER_URL") {

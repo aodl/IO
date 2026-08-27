@@ -43,6 +43,10 @@ if ! phase_is_done 17-upgrade-attempted; then
   raw_hash="$(manifest_artifact_value io_historian raw_wasm_sha256)"
   payload_hash="$raw_hash"
   before_hash="$(dfx canister info --network "$network_url" --identity "$identity" "$historian" 2>&1 | sed -n 's/^Module hash: 0x//p')"
+  if [ "$before_hash" != "$raw_hash" ]; then
+    record_blocker "historian before same-release upgrade does not match the exact current release module: before=${before_hash} expected=${raw_hash}"
+    exit 2
+  fi
   bundle_dir="${IO_LOCAL_SNS_BUNDLE_DIR:-}"
   require_file "${bundle_dir}/manifest.toml"
   root="$(sns_canister_id root)"
@@ -55,8 +59,8 @@ if ! phase_is_done 17-upgrade-attempted; then
   treasury_subaccount="$(sns_treasury_subaccount_hex "$governance")"
   fixture="${GENERATED_DIR}/nns-readiness-fixture.toml"
   require_file "$fixture"
-  reward_backing_neuron_id="$(toml_number "$fixture" reward_backing_neuron id)"
   two_year_neuron_id="$(toml_number "$fixture" two_year_neuron id)"
+  historian_nns_manager_expected_hash="$(manifest_artifact_value io_nns_neuron_manager gz_wasm_sha256)"
   config_file="${GENERATED_DIR}/historian-observation-config.did"
   cat > "$config_file" <<EOF
 (opt record {
@@ -68,20 +72,20 @@ if ! phase_is_done 17-upgrade-attempted; then
   sns_index = principal "${index}";
   icp_ledger = principal "$(runtime_value nns icp_ledger)";
   nns_governance = principal "$(runtime_value nns governance)";
-  reward_backing_neuron_id = ${reward_backing_neuron_id} : nat64;
   two_year_neuron_id = ${two_year_neuron_id} : nat64;
   protocol_io_reserve = record { owner = principal "${stream}"; subaccount = opt blob "$(hex_blob_literal "$reserve_subaccount")" };
   liquid_icp_reserve = record { owner = principal "${stream}"; subaccount = opt blob "$(hex_blob_literal "$liquid_subaccount")" };
-  excluded_io_accounts = vec { record { name = "sns-treasury"; account = record { owner = principal "${governance}"; subaccount = opt blob "$(hex_blob_literal "$treasury_subaccount")" } } };
+  nonredeemable_governance_io_accounts = vec { record { name = "sns-treasury"; account = record { owner = principal "${governance}"; subaccount = opt blob "$(hex_blob_literal "$treasury_subaccount")" } } };
   history_accounts = vec {
     record { name = "protocol-reserve"; account = record { owner = principal "${stream}"; subaccount = opt blob "$(hex_blob_literal "$reserve_subaccount")" } };
     record { name = "sns-treasury"; account = record { owner = principal "${governance}"; subaccount = opt blob "$(hex_blob_literal "$treasury_subaccount")" } };
   };
-  // IO dapps are installed from raw release Wasm. SNS-W publishes and installs
-  // the compressed source payload, which is the module hash Root observes.
+  // IO dapps are installed from raw release Wasm, except that this phase later
+  // restarts NNS Manager through Root with the deterministic gzip payload.
+  // SNS-W likewise publishes and installs compressed source payloads.
   expected_modules = vec {
     record { role = variant { StreamManager }; canister_id = principal "${stream}"; wasm_sha256 = blob "$(hex_blob_literal "$(manifest_artifact_value io_stream_manager raw_wasm_sha256)")" };
-    record { role = variant { NnsManager }; canister_id = principal "${nns_manager}"; wasm_sha256 = blob "$(hex_blob_literal "$(manifest_artifact_value io_nns_neuron_manager raw_wasm_sha256)")" };
+    record { role = variant { NnsManager }; canister_id = principal "${nns_manager}"; wasm_sha256 = blob "$(hex_blob_literal "$historian_nns_manager_expected_hash")" };
     record { role = variant { Historian }; canister_id = principal "${historian}"; wasm_sha256 = blob "$(hex_blob_literal "$raw_hash")" };
     record { role = variant { Frontend }; canister_id = principal "${frontend}"; wasm_sha256 = blob "$(hex_blob_literal "$(manifest_artifact_value frontend raw_wasm_sha256)")" };
     record { role = variant { SnsGovernance }; canister_id = principal "${governance}"; wasm_sha256 = blob "$(hex_blob_literal "$(toml_string "${bundle_dir}/manifest.toml" artifacts sns_governance_source_sha256)")" };
@@ -96,8 +100,8 @@ if ! phase_is_done 17-upgrade-attempted; then
 EOF
   upgrade_arg_hex="$(didc encode --defs "${REPO_ROOT}/canisters/io_historian/io_historian.did" --types '(opt ObservationConfig)' < "$config_file")"
   inline_proposal_id="$(submit_inline_sns_upgrade "$log_file" \
-    'Upgrade and configure IO historian' \
-    'Local-only exact raw release Wasm plus typed observation configuration through SNS Governance and Root. Inline payload avoids only the unavailable chunk-store bootstrap and remains an authentic governance proposal.' \
+    'Configure and restart exact current IO historian release' \
+    'Local-only same-release raw Wasm restart plus typed observation configuration through SNS Governance and Root. Inline payload avoids only the unavailable chunk-store bootstrap and remains an authentic governance proposal.' \
     "$historian" "${REPO_ROOT}/release-artifacts/io_historian.wasm" "$upgrade_arg_hex")"
   wait_sns_proposal "$log_file" "$inline_proposal_id"
   after_hash=""
@@ -108,16 +112,54 @@ EOF
     fi
     sleep 1
   done
-  if [ "$before_hash" = "$after_hash" ] || [ "$after_hash" != "$raw_hash" ]; then
-    record_blocker "SNS-controlled historian upgrade did not change to the exact current release module: before=${before_hash} after=${after_hash} expected=${raw_hash}"
+  if [ "$after_hash" != "$raw_hash" ]; then
+    record_blocker "SNS-controlled historian same-release upgrade did not retain the exact current release module: before=${before_hash} after=${after_hash} expected=${raw_hash}"
     exit 2
   fi
+  historian_status="$(dfx canister call --network "$network_url" --identity "$identity" --query \
+    --candid "${REPO_ROOT}/canisters/io_historian/io_historian.did" "$historian" get_public_status '()')"
+  printf '%s\n' "$historian_status" >> "$log_file"
+  printf '%s' "$historian_status" | grep -q 'configured = true' || {
+    record_blocker 'same-release historian restart did not apply the typed observation configuration'
+    exit 2
+  }
   final_controllers="$(dfx canister info --network "$network_url" --identity "$identity" "$historian" 2>&1 | sed -n 's/^Controllers: //p' | xargs)"
   if [ "$final_controllers" != "$root" ]; then
     record_blocker "historian controllers changed during SNS-governed upgrade: ${final_controllers}"
     exit 2
   fi
-  mark_phase_done 17-upgrade-attempted "target=${historian} path=inline-governance-root proposal_id=${inline_proposal_id} before=${before_hash} payload_wasm_sha256=${payload_hash} after=${after_hash} release_manifest_raw_sha256=${raw_hash} typed_observation_config=true controllers=${final_controllers}; see ${log_file}"
+  mark_phase_done 17-upgrade-attempted "target=${historian} path=inline-governance-root proposal_id=${inline_proposal_id} before=${before_hash} payload_wasm_sha256=${payload_hash} after=${after_hash} release_manifest_raw_sha256=${raw_hash} same_release=true typed_observation_config=true configured=true controllers=${final_controllers}; see ${log_file}"
+fi
+
+if ! phase_is_done 17-manager-upgrade-restart; then
+  manager_raw_hash="$(manifest_artifact_value io_nns_neuron_manager raw_wasm_sha256)"
+  manager_payload_hash="$(manifest_artifact_value io_nns_neuron_manager gz_wasm_sha256)"
+  manager_payload_path="${REPO_ROOT}/$(manifest_artifact_value io_nns_neuron_manager gz_wasm_path)"
+  manager_before="$(dfx canister info --network "$network_url" --identity "$identity" "$nns_manager" 2>&1 | sed -n 's/^Module hash: 0x//p')"
+  [ "$manager_before" = "$manager_raw_hash" ] || {
+    record_blocker "NNS manager before same-release upgrade does not match the exact release hash"
+    exit 2
+  }
+  manager_upgrade_arg="$(didc encode '()')"
+  manager_proposal_id="$(submit_inline_sns_upgrade "$log_file" \
+    'Restart exact current IO NNS manager release' \
+    'Local-only same-release deterministic gzip payload through SNS Governance and Root before authenticated activation. The installed module hash is the gzip payload hash; the release manifest independently binds it to the exact raw Wasm.' \
+    "$nns_manager" "$manager_payload_path" "$manager_upgrade_arg")"
+  wait_sns_proposal "$log_file" "$manager_proposal_id"
+  manager_after="$(dfx canister info --network "$network_url" --identity "$identity" "$nns_manager" 2>&1 | sed -n 's/^Module hash: 0x//p')"
+  [ "$manager_after" = "$manager_payload_hash" ] || {
+    record_blocker "SNS-controlled NNS manager restart did not install the exact release gzip payload"
+    exit 2
+  }
+  manager_status="$(dfx canister call --network "$network_url" --identity "$identity" --query --candid \
+    "${REPO_ROOT}/canisters/io_nns_neuron_manager/io_nns_neuron_manager.did" "$nns_manager" get_status '()')"
+  printf '%s\n' "$manager_status" >> "$log_file"
+  printf '%s' "$manager_status" | grep -q Paused || {
+    record_blocker 'same-release NNS manager restart did not reopen Paused'
+    exit 2
+  }
+  mark_phase_done 17-manager-upgrade-restart \
+    "target=${nns_manager} path=inline-governance-root proposal_id=${manager_proposal_id} before_raw_module=${manager_before} payload_gzip_sha256=${manager_payload_hash} after_gzip_module=${manager_after} release_manifest_raw_sha256=${manager_raw_hash} transport=gzip lifecycle=Paused exact_current_release=true"
 fi
 
 # The Candid paths cannot be derived from principals, so register each manager explicitly.
@@ -178,43 +220,21 @@ if ! phase_is_done 17-nns-activated; then
     record_blocker 'NNS manager activation proposal executed through SNS Governance but readiness remained Paused despite the source-shaped staging and protected-neuron fixture; inspect the canonical readiness error'
     exit 2
   }
-  printf '%s' "$status" | grep -q 'two_week_maturity_baseline_reconciled = true' || {
-    record_blocker 'NNS manager entered Ready without the required recorded reward-backing baseline'
+  printf '%s' "$status" | grep -q 'two_year_maturity_baseline_reconciled = true' || {
+    record_blocker 'NNS manager entered Ready without the permanent-neuron baseline'
     exit 2
   }
   fixture="${GENERATED_DIR}/nns-readiness-fixture.toml"
   require_file "$fixture"
-  two_week_neuron_id="$(toml_number "$fixture" reward_backing_neuron id)"
-  seeded_principal="$(toml_number "$fixture" reward_backing_neuron seeded_principal_e8s)"
-  approved_delay="$(toml_number "$fixture" reward_backing_neuron dissolve_delay_seconds)"
-  icp_ledger="$(runtime_value nns icp_ledger)"
-  checkout="$(official_checkout)"
-  ledger_did="${checkout}/rs/ledger_suite/icrc1/ledger/ledger.did"
-  governance_did="${checkout}/rs/nns/governance/canister/governance.did"
-  jupiter_balance="$(dfx canister call --network "$network_url" --identity "$identity" --query \
-    --candid "$ledger_did" "$icp_ledger" icrc1_balance_of \
-    "(record { owner = principal \"${nns_manager}\"; subaccount = null })" | tr -d '()_ :nat[:space:]')"
-  two_week_balance="$(dfx canister call --network "$network_url" --identity "$identity" --query \
-    --candid "$ledger_did" "$icp_ledger" icrc1_balance_of \
-    "(record { owner = principal \"${nns_manager}\"; subaccount = opt blob \"$(hex_blob_literal 0303030303030303030303030303030303030303030303030303030303030303)\" })" | tr -d '()_ :nat[:space:]')"
-  if [ "$jupiter_balance" -lt 20000 ] || [ "$two_week_balance" -lt 10000 ]; then
-    record_blocker "NNS manager Ready observation has insufficient staging balances: Jupiter=${jupiter_balance} two-week=${two_week_balance}"
-    exit 2
-  fi
-  neuron_info="$(dfx canister call --network "$network_url" --identity "$identity" --query \
-    --candid "$governance_did" "$(runtime_value nns governance)" get_neuron_info \
-    "(${two_week_neuron_id} : nat64)")"
-  printf '%s\n' "$neuron_info" >> "$log_file"
-  neuron_info_compact="$(printf '%s' "$neuron_info" | tr -d '_')"
-  printf '%s' "$neuron_info_compact" | grep -q "stakee8s = ${seeded_principal}" || {
-    record_blocker 'reward-backing neuron observation no longer matches seeded principal'
+  grep -Fq 'exists = false' "$fixture" || {
+    record_blocker 'source-shaped NNS readiness fixture unexpectedly created a pooled parent'
     exit 2
   }
-  printf '%s' "$neuron_info_compact" | grep -q "dissolvedelayseconds = ${approved_delay}" || {
-    record_blocker 'reward-backing neuron observation no longer matches approved dissolve delay'
+  printf '%s' "$status" | grep -q 'latest_pooled_target = null' || {
+    record_blocker 'NNS manager unexpectedly recorded a pooled target before existing liquid backing bootstrapped it'
     exit 2
   }
-  mark_phase_done 17-nns-activated "function_id=${function_id} proposal_id=${proposal_id} lifecycle=Ready baseline_reconciled=true reward_backing_neuron_id=${two_week_neuron_id} seeded_principal_e8s=${seeded_principal} dissolve_delay_seconds=${approved_delay} jupiter_staging_e8s=${jupiter_balance} two_week_staging_e8s=${two_week_balance}"
+  mark_phase_done 17-nns-activated "function_id=${function_id} proposal_id=${proposal_id} lifecycle=Ready permanent_baseline_reconciled=true pooled_parent=absent"
 fi
 
 mark_phase_done 17-exercise-governance-and-controllers "controllers checked; upgrade result and authenticated lifecycle proposals recorded"

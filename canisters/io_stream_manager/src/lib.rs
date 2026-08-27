@@ -1,33 +1,34 @@
 pub mod api;
+mod backing_registry;
 pub mod canonical;
-mod completed_receipt;
+mod daily_stake;
 pub mod lifecycle;
+mod pool_reconciliation;
 pub mod receipt;
-mod receipt_preparation;
 pub mod redemption;
 mod reward_evidence;
-mod reward_settlement;
 mod reward_timer;
 pub mod rewards;
 pub mod state;
+mod status;
 pub mod transfer;
 
 use candid::CandidType;
 use serde::Deserialize;
 
-pub use api::{ApiError, LiquidReceiptProgress, RedemptionProgress, Status, StreamProgress};
+pub use api::{ApiError, RedemptionProgress, Status, StreamProgress};
 pub use io_nns_types::reward_boundary::BackingNotReadyReason;
-pub use receipt::{
-    CompleteLiquidReceiptArgs, CompletedReceiptResult, LiquidReceiptPermit,
-    PrepareLiquidReceiptArgs, ReceiptKind,
+pub use io_receipt_types::{
+    ClaimBackingReceiptPermit, ClaimBackingReceiptProgress, PrepareClaimBackingReceiptArgs,
+    ProveClaimBackingReceiptArgs,
 };
 pub use redemption::RedeemArgs;
 pub use rewards::RewardBackingProgress;
 pub use state::CallerRedemptionState;
 pub use state::{
-    Account, Lifecycle, PendingEntitlementBatch, RewardEntitlementAccumulator,
-    RewardEntitlementEntry, RewardEventClassification, RewardEventCredit, RewardEventId,
-    RewardEventObservation, SkippedRewardEvent, StreamConfig, StreamStateV1,
+    Account, Lifecycle, PendingEntitlementBatch, RewardCheckpoint, RewardEventClassification,
+    RewardEventCredit, RewardEventId, RewardEventObservation, SkippedRewardEvent, StreamConfig,
+    StreamStateV1,
 };
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -39,16 +40,21 @@ pub struct InitArgs {
 pub fn init(args: InitArgs) {
     // Launch stays inert; reviewed unpause installs at most one reward-event timer.
     let state = StreamStateV1 {
+        launch_schema_marker: state::LAUNCH_SCHEMA_MARKER,
         config: args.config,
         lifecycle: Lifecycle::Paused,
         active_operation: None,
-        reward_entitlements: RewardEntitlementAccumulator::default(),
+        reward_checkpoint: RewardCheckpoint::default(),
         pending_entitlement_batch: None,
+        neuron_registry: Vec::new(),
+        stake_observation_due: true,
+        latest_reconciliation_checkpoint: None,
+        prepared_exit_reconciliation: None,
+        latest_reconciliation_generation: 0,
         latest_entitlement_batch_generation: 0,
-        next_nns_receipt_sequence: 0,
-        next_operation_sequence: state::OperationSequence(0),
+        next_operation_sequence: state::OperationSequence(1),
         control_epoch: 0,
-        last_completed_receipt: None,
+        last_completed_claim_receipt: None,
     };
     state::initialize(state, ic_cdk::api::canister_self())
         .unwrap_or_else(|error| ic_cdk::trap(&error));
@@ -65,17 +71,17 @@ pub async fn redeem(args: RedeemArgs) -> Result<RedemptionProgress, ApiError> {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn prepare_liquid_receipt(
-    args: PrepareLiquidReceiptArgs,
-) -> Result<LiquidReceiptPermit, ApiError> {
-    receipt::prepare_liquid_receipt(ic_cdk::api::msg_caller(), args, ic_cdk::api::time()).await
+pub async fn prepare_claim_backing_receipt(
+    args: PrepareClaimBackingReceiptArgs,
+) -> Result<ClaimBackingReceiptPermit, ApiError> {
+    receipt::prepare(ic_cdk::api::msg_caller(), args).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn complete_liquid_receipt(
-    args: CompleteLiquidReceiptArgs,
-) -> Result<LiquidReceiptProgress, ApiError> {
-    receipt::complete_liquid_receipt(ic_cdk::api::msg_caller(), args).await
+pub async fn prove_claim_backing_receipt(
+    args: ProveClaimBackingReceiptArgs,
+) -> Result<ClaimBackingReceiptProgress, ApiError> {
+    receipt::prove_liquid(ic_cdk::api::msg_caller(), args).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -123,7 +129,27 @@ pub async fn set_paused(paused: bool) -> Result<(), ApiError> {
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn get_status() -> Status {
-    api::get_status()
+    status::get_status()
+}
+
+#[cfg(debug_assertions)]
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn debug_get_state() -> StreamStateV1 {
+    state::read()
+}
+
+#[cfg(debug_assertions)]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_replace_state(replacement: StreamStateV1) -> Result<(), String> {
+    replacement.validate(ic_cdk::api::canister_self())?;
+    state::write(replacement);
+    Ok(())
+}
+
+#[cfg(debug_assertions)]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_fail_malformed_prepare_after_persist(enabled: bool) {
+    receipt::debug_fail_malformed_prepare_after_persist(enabled);
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
@@ -153,5 +179,12 @@ mod tests {
             validate_set_paused(false).unwrap(),
             "Set IO stream paused: false"
         );
+    }
+
+    #[test]
+    fn candid_surface_is_exportable() {
+        let candid = __export_service();
+        assert!(!candid.is_empty());
+        println!("{candid}");
     }
 }

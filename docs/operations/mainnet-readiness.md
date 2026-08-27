@@ -1,30 +1,80 @@
 # Mainnet readiness
 
-IO is not live. ProductionActive is unavailable and no production timer exists. Reserved production canisters are not deployment targets in this work.
+IO is not live. Production activation, mainnet calls, controllers, funding and
+identities remain outside this local release closure.
 
-The `io_nns_neuron_manager` execution identity is existing protected-neuron
-controller `oae4c-3iaaa-aaaar-qb5qq-cai`. A later explicitly approved audit
-must inspect module/controllers/stable state and authorize any clean install or
-upgrade.
+## Current local release
 
-Launch readiness requires all simplified execution, installed real-ledger, NNS authority, upgrade/failure, official SNS evidence and GitHub CI gates to pass. Unsupported transfers remain unsupported by design.
+The completed account-semantic release is bound to:
 
-Controlled PocketIC evidence reaches the two-week-staker reward-backing path
-through an eight-year, non-dissolving NNS parent, a complete zero-maturity
-launch baseline, independent target reconciliation, one direct/passive unwind,
-StakeMaturity, DisburseMaturity, delayed exact Mint, proof-bound stream receipt
-and recipient settlement using pinned official NNS Governance and ICP ledger
-Wasms. The exact two-week rule belongs to the SNS beneficiary product, not the
-protected NNS parent's dissolve delay. This is local evidence only and grants no
-mainnet authority. Production installation remains Paused and requires a
-separate reviewed launch decision.
+- source-finalization commit
+  `9462a1a0df602f06fa845bd31f9fcd0adf80067a`;
+- immediate artifact-recording commit
+  `46713f8499cf9a63a6cd4879b1fff9c1f9ef0be5`;
+- canonical evidence commit
+  `1ed1399130358ed5788cae99f3d65d82cbbc70a9`;
+- schema-v2 package
+  `deploy/local-sns-rehearsal/evidence/2026-08-26-9462a1a-account-semantic`;
+- release-manifest SHA-256
+  `011113d83510e66976f5d3eabefc57ef30ba44fc49a8973fad29be043b374431`;
+- package-manifest SHA-256
+  `254e8866394d62ba9fbe2b0290709d2c9dbaeb8ed84c8b3446b9a1912af0eb78`;
+- package `SHA256SUMS` SHA-256
+  `a1915cef319b569955c5d75ad88c4a3715af8483573d2cf9b3a2af108d6bea29`.
 
-Local rehearsal evidence concerns a real SNS-created stack installed through SNS-W with the local-only test symbol `IOLO`. Its `IO_TEST` ledger is non-canonical evidence for a local protocol reserve; IO is not launched on mainnet. The pinned SNS implementation requires a 3–10 character symbol, so final production naming remains a product/upstream decision.
+Local source validation, repeated exact-source reproducible builds, canonical
+account-semantic evidence, `test_ci`, and `verify_release` are complete. The
+dated packages that precede the selected package remain immutable historical
+evidence for their own releases and were not rebound.
 
-Reserved mapping record: `io_stream_manager`
-`thset-pqaaa-aaaar-qb7wa-cai`; `io_historian`
-`tjqj3-uaaaa-aaaar-qb7xa-cai`; `frontend`
-`torpp-zyaaa-aaaar-qb7xq-cai`. The NNS Manager execution identity is not part
-of this reservation inventory.
+The exact `9462a1a` → `46713f8` → `1ed1399` history must remain intact. After
+hosted exact-head CI and explicit integration authorization, use a direct
+fast-forward only; do not squash, rebase or create a merge commit for this
+release tail.
 
-Historian remains a public read model: rebuildable, not canonical protocol truth, and not a value-moving authority. IO protocol is not live; SNS IO ledger remains not launched. `missing/stale/error` observations remain explicit, and index canisters are historian inputs only.
+## Remaining launch blockers
+
+Local completion does not establish mainnet readiness. Launch remains blocked
+on:
+
+- an officially reviewed SNS release containing
+  `latest_reward_event_participation`, with refreshed official Wasm and DID
+  pins;
+- final production SNS/tokenomics/configuration values and identities;
+- the production pooled-parent memo and followee if the product decision
+  remains unresolved;
+- hosted test, security and reproducible-build CI on the exact documentation
+  tail head;
+- independent external security review;
+- separately authorized review of protected/mainnet positions where required;
+- mainnet testflight; and
+- production controller, cycles, domain and funding work.
+
+Production templates deliberately retain unresolved values and cannot be used
+as install arguments.
+
+The source roles are `io_stream_manager`, `io_nns_neuron_manager`,
+`io_historian`, and `io_frontend`; naming them here records wiring identity and
+does not activate any canister.
+Their reserved production IDs are `thset-pqaaa-aaaar-qb7wa-cai`,
+`oae4c-3iaaa-aaaar-qb5qq-cai`, `tjqj3-uaaaa-aaaar-qb7xa-cai`, and
+`torpp-zyaaa-aaaar-qb7xq-cai`, respectively.
+
+The NNS Manager execution identity is the existing protected-neuron controller
+`oae4c-3iaaa-aaaar-qb5qq-cai`. The permanent neuron remains protected input.
+The pooled parent does not exist until canonical liquid backing reaches the
+minimum and the reviewed bootstrap protocol creates it with an exact 14-day
+delay and fixed following policy.
+
+The selected package is current local authority for the account-semantic
+release. Historical local rehearsal and release evidence remains immutable and
+is not reinterpreted as proof of this release.
+
+Local rehearsal uses a real SNS-created stack installed through SNS-W. Its
+`IO_TEST` ledger and protocol reserve are non-canonical local evidence; IO is
+not launched on mainnet.
+
+Historian remains a rebuildable public read model. It is not canonical protocol truth
+and not a value-moving authority. The IO protocol is not live and the
+SNS IO ledger remains not launched. The missing/stale/error observations remain
+explicit inputs to freshness, as do the index canisters.

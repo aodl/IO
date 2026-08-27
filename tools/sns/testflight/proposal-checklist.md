@@ -14,4 +14,4 @@ Manual/mainnet only. Not CI. Not a real launch. No real swap.
 - [ ] SNS root controls intended dapp canisters after registration.
 - [ ] Upgrade proposal tested through SNS governance.
 - [ ] NNS Manager execution canister `oae4c-3iaaa-aaaar-qb5qq-cai` and
-      protected IO NNS neuron `10292412127977304661` remain untouched.
+      the two-year protected NNS neuron `10292412127977304661` remain untouched.

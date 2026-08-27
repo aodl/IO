@@ -18,7 +18,9 @@ operator_principal = "TODO_LOCAL_OPERATOR_PRINCIPAL"
 reserve_subaccount_hex = "TODO_LOCAL_64_HEX_RESERVE_SUBACCOUNT"
 liquid_icp_subaccount_hex = "TODO_LOCAL_64_HEX_LIQUID_ICP_SUBACCOUNT"
 jupiter_io_subaccount_hex = "0404040404040404040404040404040404040404040404040404040404040404"
-two_week_staging_subaccount_hex = "0303030303030303030303030303030303030303030303030303030303030303"
+
+# Maturity staging subaccounts are fixed domain-separated protocol constants;
+# they are deliberately absent from per-run configuration.
 
 [nns]
 # This is the standard NNS ledger principal on the isolated loopback topology.

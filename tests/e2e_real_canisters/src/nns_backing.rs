@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use candid::{decode_one, encode_args, encode_one, CandidType, Principal, Reserved};
+use candid::{decode_one, encode_one, CandidType, Principal, Reserved};
 use io_governance_types::{
     nns_refresh_voting_power_request, EmptyRecord, NnsAccount, NnsChangeAutoStakeMaturity,
     NnsClaimOrRefresh, NnsClaimOrRefreshBy, NnsClaimOrRefreshNeuronFromAccount,
@@ -9,7 +9,7 @@ use io_governance_types::{
     NnsProductionConfigure, NnsProductionConfigureOperation, NnsProductionDisburseMaturity,
     NnsProductionListNeuronsRequest, NnsProductionListNeuronsResponse,
     NnsProductionManageNeuronRequest, NnsProductionManageNeuronResponse, NnsRegisterVote,
-    NnsStakeMaturity,
+    NnsSetVisibility, NnsStakeMaturity,
 };
 use io_ledger_types::{
     Account as IcpAccount, IcpTokens, IcpTransferArgs, IcpTransferError, Subaccount,
@@ -27,9 +27,10 @@ const PROTECTED_STAKE_E8S: u64 = 100_000_000 * 100_000_000;
 const PROTECTED_MEMO: u64 = 8_002;
 const PROPOSER_MEMO: u64 = 8_003;
 const TWO_YEAR_MEMO: u64 = 8_004;
-const EIGHT_YEARS_SECONDS: u32 = 252_460_800;
+const PERMANENT_DELAY_SECONDS: u32 = 63_115_200;
+const POOLED_PARENT_DELAY_SECONDS: u32 = 1_209_600;
 const ONE_YEAR_SECONDS: u32 = 365 * 24 * 60 * 60;
-const NNS_MINIMUM_DISSOLVE_DELAY_TO_VOTE_SECONDS: u64 = 6 * 30 * 24 * 60 * 60;
+const XRC_CANISTER_ID: &str = "uf6dk-hyaaa-aaaaq-qaaaq-cai";
 const UNWIND_EXCESS_E8S: u64 = 10 * 100_000_000;
 const RECONCILED_TARGET_E8S: u64 = PROTECTED_STAKE_E8S - UNWIND_EXCESS_E8S;
 const ACTIVE_IO_E8S: u128 = 600 * 100_000_000;
@@ -47,12 +48,16 @@ struct MockSnsNeuron {
 }
 
 #[derive(Clone, Debug, CandidType)]
-struct LatestRewardEventFixture {
-    round: u64,
-    rounds_since_last_distribution: u64,
-    end_timestamp_seconds: u64,
-    settled_proposal_ids: Vec<u64>,
-    neuron_reward_shares: Vec<(u64, io_governance_types::SnsUint128)>,
+struct GetMaturityModulationRequest {}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct MaturityModulationResponse {
+    maturity_modulation: Option<MaturityModulationProbe>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct MaturityModulationProbe {
+    updated_at_timestamp_seconds: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -79,10 +84,27 @@ enum ManagerLifecycle {
 struct ManagerStatus {
     lifecycle: ManagerLifecycle,
     active_operation: Option<String>,
-    two_week_maturity_baseline_reconciled: bool,
+    two_year_maturity_baseline_reconciled: bool,
     latest_started_two_week_generation: u64,
     latest_completed_two_week_generation: u64,
-    unwinding_child_principal_e8s: u128,
+    latest_pooled_target: Option<ManagerPooledTarget>,
+    live_child_physical_principal_e8s: u128,
+    live_child_net_backing_e8s: u128,
+    live_child_committed_fee_liability_e8s: u128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+struct ManagerPooledTarget {
+    target_e8s: u128,
+    status: ManagerPooledTargetStatus,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+enum ManagerPooledTargetStatus {
+    UnderTarget,
+    AtTarget,
+    AtTargetWithinUnwindTolerance,
+    OverTarget,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -94,25 +116,22 @@ enum ManagerMaturityKind {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 struct ManagerCompletedMaturity {
     kind: ManagerMaturityKind,
-    neuron_id: u64,
-    mint_block: u128,
-    nominal_disbursed_maturity_e8s: u64,
-    actual_minted_icp_e8s: u128,
-    destination: ManagerAccount,
+    captured_e8s: u128,
+    permanent_credit_e8s: u128,
+    claim_credit_e8s: u128,
+    entitlement_batch_generation: Option<u64>,
     completed_at_nanos: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 enum ManagerMaturityProgress {
     Observed,
-    StakeMaturitySubmitted,
-    StakeMaturitySucceeded,
     DisburseMaturitySubmitted,
     DisburseMaturitySucceeded,
-    AwaitingMintProof,
-    MintProved,
-    DeliveringTwoWeekReceipt,
-    Completed(ManagerCompletedMaturity),
+    AwaitingCapture,
+    Captured { captured_e8s: u128 },
+    Delivering,
+    Completed(Box<ManagerCompletedMaturity>),
     Stuck(String),
 }
 
@@ -120,6 +139,7 @@ enum ManagerMaturityProgress {
 enum ManagerNnsProgress {
     Jupiter(ManagerJupiterProgress),
     Maturity(ManagerMaturityProgress),
+    Pool(io_nns_types::backing::PoolProgress),
     Unwind(ManagerUnwindProgress),
     Idle,
 }
@@ -146,16 +166,16 @@ struct ManagerConfig {
     icp_ledger: Principal,
     nns_governance: Principal,
     two_year_neuron_id: u64,
-    two_week_neuron_id: u64,
+    pooled_parent_memo: u64,
+    pooled_parent_followee_id: u64,
+    minimum_parent_stake_e8s: u128,
     jupiter_account: ManagerAccount,
     jupiter_staging: ManagerAccount,
-    two_week_maturity_staging: ManagerAccount,
     stream_liquid_account: ManagerAccount,
     expected_io_fee_e8s: u128,
     expected_icp_fee_e8s: u128,
-    jupiter_fee_float_e8s: u128,
-    two_week_fee_float_e8s: u128,
-    seeded_two_week_principal_e8s: u128,
+    jupiter_activation_block_floor: u128,
+    audited_permanent_principal_e8s: u128,
     transfer_retry_delay_nanos: u64,
     ledger_deduplication_window_nanos: u64,
 }
@@ -163,11 +183,6 @@ struct ManagerConfig {
 #[derive(Clone, Debug, CandidType)]
 struct ManagerInitArgs {
     config: ManagerConfig,
-}
-
-#[derive(Clone, Debug, CandidType)]
-struct ReconcileTwoWeekBackingReadinessArgs {
-    target_e8s: u128,
 }
 
 #[derive(Clone, Debug, CandidType)]
@@ -180,6 +195,7 @@ struct ManagerJupiterCompleted {
     deposit_block: u128,
     gross_e8s: u128,
     stake_e8s: u128,
+    observed_after_cached_stake_e8s: u128,
     liquid_e8s: u128,
     stake_transfer_block: u128,
     liquid_transfer_block: u128,
@@ -187,7 +203,6 @@ struct ManagerJupiterCompleted {
     backed_io_e8s: u128,
     io_transfer_block: u128,
     io_fee_e8s: u128,
-    stream_receipt_fingerprint: Vec<u8>,
     completed_at_nanos: u64,
 }
 
@@ -296,6 +311,7 @@ pub struct ControlledNnsNeuron {
     pub two_year_neuron_id: u64,
     pub proposer_neuron_id: u64,
     pub protected_principal_e8s: u64,
+    pub two_year_principal_e8s: u64,
 }
 
 pub fn create_zero_maturity_protected_neuron() -> ControlledNnsNeuron {
@@ -305,19 +321,16 @@ pub fn create_zero_maturity_protected_neuron() -> ControlledNnsNeuron {
 fn create_zero_maturity_protected_neuron_with_stake(
     protected_principal_e8s: u64,
 ) -> ControlledNnsNeuron {
-    let pic = Rc::new(nns_setup::controlled_pinned_nns(true).unwrap());
+    let pic = Rc::new(nns_setup::controlled_pinned_nns_with_fiduciary(true).unwrap());
+    let xrc = Principal::from_text(XRC_CANISTER_ID).unwrap();
+    let created = pic
+        .create_canister_with_id(None, None, xrc)
+        .expect("source-shaped XRC fixture should use the canonical XRC principal");
+    assert_eq!(created, xrc);
+    pic.install_canister(xrc, debug_wasm("mock_nns_xrc"), Vec::new(), None);
     let governance = Principal::from_text(nns_setup::install_nns_governance().canister_id).unwrap();
     let ledger = Principal::from_text(nns_setup::install_nns_ledger().canister_id).unwrap();
     let controller = pocketic_env::create_empty_application_canister(&pic);
-    let neuron_id = stake_neuron(
-        &pic,
-        governance,
-        ledger,
-        controller,
-        PROTECTED_MEMO,
-        protected_principal_e8s,
-        EIGHT_YEARS_SECONDS,
-    );
     let proposer_neuron_id = stake_neuron(
         &pic,
         governance,
@@ -327,25 +340,59 @@ fn create_zero_maturity_protected_neuron_with_stake(
         1_000 * 100_000_000,
         ONE_YEAR_SECONDS,
     );
+    configure_neuron(
+        &pic,
+        governance,
+        Principal::anonymous(),
+        proposer_neuron_id,
+        NnsProductionConfigureOperation::SetVisibility(NnsSetVisibility {
+            visibility: Some(2),
+        }),
+    );
+    let two_year_principal_e8s = 100 * 100_000_000;
     let two_year_neuron_id = stake_neuron(
         &pic,
         governance,
         ledger,
         controller,
         TWO_YEAR_MEMO,
-        100 * 100_000_000,
-        EIGHT_YEARS_SECONDS,
+        two_year_principal_e8s,
+        PERMANENT_DELAY_SECONDS,
     );
-    let neuron = neuron(&pic, governance, controller, neuron_id);
-    assert_eq!(neuron.cached_neuron_stake_e8s, protected_principal_e8s);
-    assert_eq!(neuron.maturity_e8s_equivalent, 0);
-    assert!(!neuron.auto_stake_maturity.unwrap_or(false));
+    let root = Principal::from_text(nns_setup::install_nns_root().canister_id).unwrap();
+    let candidate_path = std::env::var_os("IO_POST_M70_NNS_GOVERNANCE_WASM")
+        .expect("IO_POST_M70_NNS_GOVERNANCE_WASM is required for controlled IO/NNS evidence");
+    let candidate = std::fs::read(candidate_path).expect("read exact post-Mission-70 Governance");
     assert_eq!(
-        neuron.dissolve_state,
-        Some(NnsDissolveStateRecord::DissolveDelaySeconds(
-            EIGHT_YEARS_SECONDS.into()
-        ))
+        hex::encode(Sha256::digest(&candidate)),
+        "573af1cde5bf55a5e4dbf2d47f8dd340f7a73a107eebbc645fe1202b97f61e85"
     );
+    pic.upgrade_canister(governance, candidate, Vec::new(), Some(root))
+        .expect("activate exact post-Mission-70 Governance for controlled evidence");
+    let neuron_id = if protected_principal_e8s == 0 {
+        0
+    } else {
+        let neuron_id = stake_neuron(
+            &pic,
+            governance,
+            ledger,
+            controller,
+            PROTECTED_MEMO,
+            protected_principal_e8s,
+            POOLED_PARENT_DELAY_SECONDS,
+        );
+        let neuron = neuron(&pic, governance, controller, neuron_id);
+        assert_eq!(neuron.cached_neuron_stake_e8s, protected_principal_e8s);
+        assert_eq!(neuron.maturity_e8s_equivalent, 0);
+        assert!(!neuron.auto_stake_maturity.unwrap_or(false));
+        assert_eq!(
+            neuron.dissolve_state,
+            Some(NnsDissolveStateRecord::DissolveDelaySeconds(
+                POOLED_PARENT_DELAY_SECONDS.into()
+            ))
+        );
+        neuron_id
+    };
     ControlledNnsNeuron {
         pic,
         governance,
@@ -355,6 +402,7 @@ fn create_zero_maturity_protected_neuron_with_stake(
         two_year_neuron_id,
         proposer_neuron_id,
         protected_principal_e8s,
+        two_year_principal_e8s,
     }
 }
 
@@ -409,6 +457,14 @@ fn stake_neuron(
         }
         other => panic!("controlled claim failed: {other:?}"),
     };
+    let initial_delay = match neuron(pic, governance, controller, neuron_id).dissolve_state {
+        Some(NnsDissolveStateRecord::DissolveDelaySeconds(seconds)) => seconds,
+        other => panic!("fresh controlled neuron has unexpected dissolve state: {other:?}"),
+    };
+    let additional_dissolve_delay_seconds = u64::from(dissolve_delay_seconds)
+        .checked_sub(initial_delay)
+        .and_then(|seconds| u32::try_from(seconds).ok())
+        .expect("requested controlled delay must not precede the canonical initial delay");
     let configured = manage(
         pic,
         governance,
@@ -421,7 +477,7 @@ fn stake_neuron(
                 NnsProductionConfigure {
                     operation: Some(NnsProductionConfigureOperation::IncreaseDissolveDelay(
                         NnsIncreaseDissolveDelay {
-                            additional_dissolve_delay_seconds: dissolve_delay_seconds,
+                            additional_dissolve_delay_seconds,
                         },
                     )),
                 },
@@ -479,16 +535,51 @@ fn configure_neuron(
 }
 
 pub fn earn_maturity(fixture: &ControlledNnsNeuron) -> u64 {
-    earn_maturity_for(fixture, fixture.neuron_id)
+    earn_maturity_with_daily(fixture, || {})
+}
+
+fn earn_maturity_with_daily(fixture: &ControlledNnsNeuron, after_daily_tick: impl FnMut()) -> u64 {
+    earn_maturity_for_with_daily(fixture, fixture.neuron_id, after_daily_tick)
 }
 
 pub fn earn_maturity_for(fixture: &ControlledNnsNeuron, neuron_id: u64) -> u64 {
+    earn_maturity_for_with_daily(fixture, neuron_id, || {})
+}
+
+fn earn_maturity_for_with_daily(
+    fixture: &ControlledNnsNeuron,
+    neuron_id: u64,
+    mut after_daily_tick: impl FnMut(),
+) -> u64 {
     // The production spike guard intentionally uses a prior voting-power
     // snapshot. Age that bootstrapped snapshot out, then let the pinned timer
     // record this controlled population before creating the proposal.
     fixture.pic.advance_time(Duration::from_secs(121 * 86_400));
     for _ in 0..100 {
         fixture.pic.tick();
+    }
+    for attempt in 0..500 {
+        let modulation: MaturityModulationResponse = query(
+            &fixture.pic,
+            fixture.governance,
+            Principal::anonymous(),
+            "get_maturity_modulation",
+            GetMaturityModulationRequest {},
+        );
+        if modulation
+            .maturity_modulation
+            .is_some_and(|value| value.updated_at_timestamp_seconds.is_some())
+        {
+            break;
+        }
+        assert!(
+            attempt < 499,
+            "candidate maturity modulation did not settle"
+        );
+        fixture.pic.advance_time(Duration::from_secs(5));
+        for _ in 0..5 {
+            fixture.pic.tick();
+        }
     }
     for (caller, neuron_id) in [
         (Principal::anonymous(), fixture.proposer_neuron_id),
@@ -558,6 +649,8 @@ pub fn earn_maturity_for(fixture: &ControlledNnsNeuron, neuron_id: u64) -> u64 {
     );
     match vote.command {
         Some(NnsManageNeuronResponseCommandRecord::RegisterVote(EmptyRecord {})) => {}
+        Some(NnsManageNeuronResponseCommandRecord::Error(error))
+            if error.error_type == 19 && error.error_message.contains("already voted") => {}
         other => panic!("controlled vote failed: {other:?}"),
     }
     let before: RewardEvent = query(
@@ -573,6 +666,7 @@ pub fn earn_maturity_for(fixture: &ControlledNnsNeuron, neuron_id: u64) -> u64 {
         for _ in 0..100 {
             fixture.pic.tick();
         }
+        after_daily_tick();
         maturity = neuron(
             &fixture.pic,
             fixture.governance,
@@ -707,6 +801,11 @@ pub fn execute_maturity(fixture: &ControlledNnsNeuron) -> ControlledMaturityEvid
 }
 
 fn find_mint(fixture: &ControlledNnsNeuron, destination: &[u8]) -> (u64, u64) {
+    maybe_find_mint(fixture, destination)
+        .expect("delayed maturity Mint must be present in the pinned ICP ledger")
+}
+
+fn maybe_find_mint(fixture: &ControlledNnsNeuron, destination: &[u8]) -> Option<(u64, u64)> {
     let blocks: QueryBlocksResponse = query(
         &fixture.pic,
         fixture.ledger,
@@ -717,7 +816,7 @@ fn find_mint(fixture: &ControlledNnsNeuron, destination: &[u8]) -> (u64, u64) {
             length: 100,
         },
     );
-    let (offset, amount) = blocks
+    blocks
         .blocks
         .iter()
         .enumerate()
@@ -728,8 +827,7 @@ fn find_mint(fixture: &ControlledNnsNeuron, destination: &[u8]) -> (u64, u64) {
             }
             _ => None,
         })
-        .expect("delayed maturity Mint must be present in the pinned ICP ledger");
-    (blocks.first_block_index + offset, amount)
+        .map(|(offset, amount)| (blocks.first_block_index + offset, amount))
 }
 
 fn manage(
@@ -836,12 +934,173 @@ fn fund_manager_staging(fixture: &ControlledNnsNeuron) {
     }
 }
 
-fn manager_wasm() -> Vec<u8> {
-    std::fs::read(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/wasm32-unknown-unknown/debug/io_nns_neuron_manager.wasm"),
-    )
-    .expect("build the debug NNS manager Wasm before running controlled evidence")
+fn run_jupiter_credit(
+    fixture: &ControlledNnsNeuron,
+    stream: Principal,
+    stream_governance: Principal,
+    jupiter: Principal,
+    gross_e8s: u64,
+    memo: u64,
+    donation_before_refresh_e8s: u64,
+) -> ManagerJupiterCompleted {
+    for _ in 0..16 {
+        let status: ManagerStatus = query(
+            &fixture.pic,
+            fixture.controller,
+            Principal::anonymous(),
+            "get_status",
+            (),
+        );
+        if status.active_operation.is_none() {
+            break;
+        }
+        let _: Result<ManagerNnsProgress, ManagerApiError> = update(
+            &fixture.pic,
+            fixture.controller,
+            Principal::anonymous(),
+            "resume",
+            (),
+        );
+    }
+    assert!(
+        query::<ManagerStatus>(
+            &fixture.pic,
+            fixture.controller,
+            Principal::anonymous(),
+            "get_status",
+            (),
+        )
+        .active_operation
+        .is_none(),
+        "Jupiter must not overlap an earlier NNS operation"
+    );
+    let manager_status: ManagerStatus = query(
+        &fixture.pic,
+        fixture.controller,
+        Principal::anonymous(),
+        "get_status",
+        (),
+    );
+    if manager_status.lifecycle == ManagerLifecycle::Paused {
+        let manager_ready: Result<(), ManagerApiError> = update(
+            &fixture.pic,
+            fixture.controller,
+            stream_governance,
+            "set_paused",
+            false,
+        );
+        manager_ready.unwrap();
+    }
+    let stream_status: io_stream_manager::Status = query(
+        &fixture.pic,
+        stream,
+        Principal::anonymous(),
+        "get_status",
+        (),
+    );
+    if stream_status.lifecycle == io_stream_manager::Lifecycle::Paused {
+        let stream_ready: Result<(), io_stream_manager::ApiError> =
+            update(&fixture.pic, stream, stream_governance, "set_paused", false);
+        stream_ready.unwrap();
+    }
+
+    let jupiter_account = IcpAccount::new(jupiter, None).icp_account_identifier_bytes();
+    let funding: Result<u64, IcpTransferError> = icrc::update_one(
+        &fixture.pic,
+        fixture.ledger,
+        Principal::anonymous(),
+        "transfer",
+        IcpTransferArgs {
+            memo,
+            amount: IcpTokens {
+                e8s: gross_e8s + ICP_FEE_E8S,
+            },
+            fee: IcpTokens { e8s: ICP_FEE_E8S },
+            from_subaccount: None,
+            to: jupiter_account.to_vec(),
+            created_at_time: None,
+        },
+    );
+    funding.unwrap();
+    let manager_account = IcpAccount::new(fixture.controller, None).icp_account_identifier_bytes();
+    let deposit: Result<u64, IcpTransferError> = icrc::update_one(
+        &fixture.pic,
+        fixture.ledger,
+        jupiter,
+        "transfer",
+        IcpTransferArgs {
+            memo: memo + 1,
+            amount: IcpTokens { e8s: gross_e8s },
+            fee: IcpTokens { e8s: ICP_FEE_E8S },
+            from_subaccount: None,
+            to: manager_account.to_vec(),
+            created_at_time: None,
+        },
+    );
+    let deposit_block = deposit.unwrap();
+    let notified: Result<ManagerJupiterProgress, ManagerApiError> = update(
+        &fixture.pic,
+        fixture.controller,
+        jupiter,
+        "notify_jupiter_deposit",
+        NotifyJupiterDepositArgs {
+            block_index: deposit_block.into(),
+        },
+    );
+    assert_eq!(notified, Ok(ManagerJupiterProgress::DepositProved));
+
+    let mut donated = false;
+    for _ in 0..24 {
+        let progress: Result<ManagerNnsProgress, ManagerApiError> = update(
+            &fixture.pic,
+            fixture.controller,
+            Principal::anonymous(),
+            "resume",
+            (),
+        );
+        if progress
+            == Ok(ManagerNnsProgress::Jupiter(
+                ManagerJupiterProgress::StakeTransferSucceeded,
+            ))
+            && donation_before_refresh_e8s > 0
+        {
+            let staking = IcpAccount::new(
+                fixture.governance,
+                Some(Subaccount(neuron_subaccount(
+                    fixture.controller,
+                    TWO_YEAR_MEMO,
+                ))),
+            )
+            .icp_account_identifier_bytes();
+            let donation: Result<u64, IcpTransferError> = icrc::update_one(
+                &fixture.pic,
+                fixture.ledger,
+                Principal::anonymous(),
+                "transfer",
+                IcpTransferArgs {
+                    memo: memo + 2,
+                    amount: IcpTokens {
+                        e8s: donation_before_refresh_e8s,
+                    },
+                    fee: IcpTokens { e8s: ICP_FEE_E8S },
+                    from_subaccount: None,
+                    to: staking.to_vec(),
+                    created_at_time: None,
+                },
+            );
+            donation.unwrap();
+            donated = true;
+        }
+        if let Ok(ManagerNnsProgress::Jupiter(ManagerJupiterProgress::Completed(completed))) =
+            progress
+        {
+            assert_eq!(completed.deposit_block, u128::from(deposit_block));
+            assert_eq!(completed.gross_e8s, u128::from(gross_e8s));
+            assert_eq!(donated, donation_before_refresh_e8s > 0);
+            return completed;
+        }
+    }
+    panic!("Jupiter credit did not complete within its bounded phase count")
 }
 
 fn install_manager(
@@ -866,7 +1125,9 @@ fn install_manager(
                 icp_ledger: fixture.ledger,
                 nns_governance: fixture.governance,
                 two_year_neuron_id: fixture.two_year_neuron_id,
-                two_week_neuron_id: fixture.neuron_id,
+                pooled_parent_memo: PROTECTED_MEMO,
+                pooled_parent_followee_id: fixture.proposer_neuron_id,
+                minimum_parent_stake_e8s: 100_000_000,
                 jupiter_account: ManagerAccount {
                     owner: jupiter,
                     subaccount: None,
@@ -875,13 +1136,11 @@ fn install_manager(
                     owner: fixture.controller,
                     subaccount: None,
                 },
-                two_week_maturity_staging: account(fixture.controller, 2),
                 stream_liquid_account: account(stream, 3),
                 expected_io_fee_e8s: 10_000,
                 expected_icp_fee_e8s: ICP_FEE_E8S.into(),
-                jupiter_fee_float_e8s: 20_000,
-                two_week_fee_float_e8s: 20_000,
-                seeded_two_week_principal_e8s: fixture.protected_principal_e8s.into(),
+                jupiter_activation_block_floor: 1,
+                audited_permanent_principal_e8s: fixture.two_year_principal_e8s.into(),
                 transfer_retry_delay_nanos: 1_000_000_000,
                 ledger_deduplication_window_nanos: 86_400_000_000_000,
             },
@@ -901,13 +1160,22 @@ fn debug_wasm(name: &str) -> Vec<u8> {
     .unwrap_or_else(|error| panic!("build {name} debug Wasm before controlled evidence: {error}"))
 }
 
-fn production_wasm(name: &str) -> Vec<u8> {
-    std::fs::read(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/wasm32-unknown-unknown/release")
-            .join(format!("{name}.wasm")),
-    )
-    .unwrap_or_else(|error| panic!("build {name} release Wasm before controlled evidence: {error}"))
+fn current_io_wasm(name: &str) -> Vec<u8> {
+    let env_name = match name {
+        "io_stream_manager" => "IO_ACCOUNT_SEMANTIC_STREAM_WASM",
+        "io_nns_neuron_manager" => "IO_ACCOUNT_SEMANTIC_NNS_WASM",
+        _ => panic!("unsupported current IO Wasm role: {name}"),
+    };
+    let path = std::env::var_os(env_name).unwrap_or_else(|| {
+        panic!("{env_name} must name the exact current release Wasm for canonical evidence")
+    });
+    let wasm = std::fs::read(&path)
+        .unwrap_or_else(|error| panic!("read exact current {name} Wasm {path:?}: {error}"));
+    eprintln!(
+        "account_semantic_release_wasm role={name} sha256={}",
+        hex::encode(Sha256::digest(&wasm))
+    );
+    wasm
 }
 
 fn sns_neuron_subaccount(neuron_id: u64) -> Vec<u8> {
@@ -920,7 +1188,6 @@ struct ControlledStream {
     governance: Principal,
     io_ledger: Principal,
     stream_wasm: Vec<u8>,
-    neuron_destination: io_stream_manager::Account,
     jupiter_destination: io_stream_manager::Account,
     reserve: io_stream_manager::Account,
 }
@@ -944,10 +1211,6 @@ fn install_controlled_stream(
         pocketic_env::create_application_canister(&fixture.pic, governance_wasm, vec![]);
     let root = pocketic_env::create_application_canister(&fixture.pic, root_wasm, vec![]);
     let reserve_subaccount = icrc::subaccount("controlled-nns-reserve");
-    let neuron_destination = Account {
-        owner: governance,
-        subaccount: Some(sns_neuron_subaccount(1)),
-    };
     let io_ledger = pocketic_env::create_sns_canister(
         &fixture.pic,
         io_ledger_wasm,
@@ -1022,14 +1285,6 @@ fn install_controlled_stream(
                 io_ledger,
                 icp_ledger: fixture.ledger,
                 nns_manager: fixture.controller,
-                jupiter_receipt_source: Account {
-                    owner: fixture.controller,
-                    subaccount: None,
-                },
-                two_week_receipt_source: Account {
-                    owner: fixture.controller,
-                    subaccount: Some(vec![2; 32]),
-                },
                 jupiter_io_account: jupiter_destination.clone(),
                 sns_governance: governance,
                 sns_root: root,
@@ -1040,7 +1295,7 @@ fn install_controlled_stream(
                     owner: stream,
                     subaccount: Some(vec![3; 32]),
                 },
-                excluded_io_accounts: vec![],
+                nonredeemable_governance_io_accounts: vec![],
                 minimum_redemption_io_e8s: 20_000,
                 expected_io_fee_e8s: ICP_FEE_E8S.into(),
                 expected_icp_fee_e8s: ICP_FEE_E8S.into(),
@@ -1056,7 +1311,6 @@ fn install_controlled_stream(
         governance,
         io_ledger,
         stream_wasm,
-        neuron_destination,
         jupiter_destination,
         reserve,
     }
@@ -1299,7 +1553,7 @@ fn install_combined_real_sns(fixture: &ControlledNnsNeuron) -> CombinedRealSns {
 
 fn install_combined_stream(fixture: &ControlledNnsNeuron, sns: &CombinedRealSns) -> Vec<u8> {
     use io_stream_manager::{InitArgs, StreamConfig};
-    let wasm = production_wasm("io_stream_manager");
+    let wasm = current_io_wasm("io_stream_manager");
     fixture.pic.install_canister(
         sns.stream,
         wasm.clone(),
@@ -1308,16 +1562,6 @@ fn install_combined_stream(fixture: &ControlledNnsNeuron, sns: &CombinedRealSns)
                 io_ledger: sns.governance.ledger,
                 icp_ledger: fixture.ledger,
                 nns_manager: fixture.controller,
-                jupiter_receipt_source: ManagerAccount {
-                    owner: fixture.controller,
-                    subaccount: None,
-                }
-                .into(),
-                two_week_receipt_source: ManagerAccount {
-                    owner: fixture.controller,
-                    subaccount: Some(vec![2; 32]),
-                }
-                .into(),
                 jupiter_io_account: io_stream_manager::Account {
                     owner: fixture.controller,
                     subaccount: Some(vec![4; 32]),
@@ -1328,7 +1572,7 @@ fn install_combined_stream(fixture: &ControlledNnsNeuron, sns: &CombinedRealSns)
                 approved_reward_event_duration_seconds: 86_400,
                 io_reserve: sns.reserve.clone(),
                 liquid_icp: sns.liquid.clone(),
-                excluded_io_accounts: vec![],
+                nonredeemable_governance_io_accounts: vec![],
                 minimum_redemption_io_e8s: 20_000,
                 expected_io_fee_e8s: ICP_FEE_E8S.into(),
                 expected_icp_fee_e8s: ICP_FEE_E8S.into(),
@@ -1357,22 +1601,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn protected_nns_policy_contradiction_is_recorded_before_correction() {
-        assert_eq!(u64::from(EIGHT_YEARS_SECONDS), 252_460_800);
-        assert_eq!(NNS_MINIMUM_DISSOLVE_DELAY_TO_VOTE_SECONDS, 15_552_000);
+    fn pooled_parent_and_permanent_delays_are_role_specific() {
+        assert_eq!(u64::from(PERMANENT_DELAY_SECONDS), 63_115_200);
+        assert_eq!(u64::from(POOLED_PARENT_DELAY_SECONDS), 1_209_600);
         assert_eq!(io_core_model::TWO_WEEK_SECONDS, 1_209_600);
 
         let manager = include_str!("../../../canisters/io_nns_neuron_manager/src/execution.rs");
-        assert!(manager.contains("APPROVED_REWARD_BACKING_DISSOLVE_DELAY_SECONDS"));
+        assert!(manager.contains("POOLED_PARENT_DELAY_SECONDS"));
         let harness = include_str!("nns_backing.rs");
-        assert!(harness.contains("EIGHT_YEARS_SECONDS"));
+        assert!(harness.contains("POOLED_PARENT_DELAY_SECONDS"));
     }
 
     #[test]
-    fn remaining_real_vertical_gaps_are_recorded_before_correction() {
+    fn real_vertical_sources_stay_explicit_and_bounded() {
         let all = include_str!("nns_backing.rs");
         let harness = &all[..all.find("\nmod tests").unwrap()];
-        assert!(!harness.contains("\"notify_jupiter_deposit\""));
+        assert_eq!(harness.matches("\"notify_jupiter_deposit\"").count(), 1);
         assert!(all.contains("debug_set_latest_reward_event"));
         assert!(!harness.contains("real SNS Governance generic function"));
         assert!(!harness.contains("merge-back interruption"));
@@ -1393,16 +1637,16 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires pinned real NNS Governance/ICP ledger, candidate SNS ledger, production IO Wasms, and POCKET_IC_BIN"]
+    #[ignore = "requires pinned real NNS Governance/ICP ledger, candidate SNS ledger, current IO release Wasms, and POCKET_IC_BIN"]
     fn controlled_jupiter_uses_real_nns_and_exact_production_receipts() {
         let _guard = crate::lock_test_env();
         let fixture = super::create_zero_maturity_protected_neuron();
         let stream = crate::pocketic_env::create_empty_application_canister(&fixture.pic);
-        let manager_wasm = super::production_wasm("io_nns_neuron_manager");
+        let manager_wasm = super::current_io_wasm("io_nns_neuron_manager");
         let controlled_stream = super::install_controlled_stream(
             &fixture,
             stream,
-            super::production_wasm("io_stream_manager"),
+            super::current_io_wasm("io_stream_manager"),
         );
         super::fund_manager_staging(&fixture);
         let jupiter = super::install_manager(
@@ -1461,6 +1705,18 @@ mod tests {
             IcpAccount::new(fixture.controller, None).icp_account_identifier_bytes();
         let deposit_block = transfer(jupiter, manager_account.to_vec(), gross_e8s, 21);
 
+        let pre_activation: Result<ManagerJupiterProgress, ManagerApiError> = super::update(
+            &fixture.pic,
+            fixture.controller,
+            Principal::anonymous(),
+            "notify_jupiter_deposit",
+            NotifyJupiterDepositArgs { block_index: 0 },
+        );
+        assert!(matches!(
+            pre_activation,
+            Err(ManagerApiError::Invalid(message)) if message.contains("predates activation floor")
+        ));
+
         let wrong: Result<ManagerJupiterProgress, ManagerApiError> = super::update(
             &fixture.pic,
             fixture.controller,
@@ -1471,6 +1727,7 @@ mod tests {
             },
         );
         assert!(matches!(wrong, Err(ManagerApiError::Invalid(_))));
+        fixture.pic.advance_time(std::time::Duration::from_secs(1));
 
         let before_neuron = super::neuron(
             &fixture.pic,
@@ -1590,13 +1847,19 @@ mod tests {
         assert!(stream_upgraded, "{phases:?}");
         assert_eq!(completed.deposit_block, u128::from(deposit_block));
         assert_eq!(completed.gross_e8s, u128::from(gross_e8s));
-        assert_eq!(completed.stake_e8s, u128::from(gross_e8s * 40 / 100));
-        assert_eq!(completed.liquid_e8s, u128::from(gross_e8s * 60 / 100));
+        assert_eq!(
+            completed.stake_e8s,
+            u128::from(gross_e8s * 40 / 100 - super::ICP_FEE_E8S)
+        );
+        assert_eq!(
+            completed.liquid_e8s,
+            u128::from(gross_e8s * 60 / 100 - super::ICP_FEE_E8S)
+        );
         assert_ne!(
             completed.stake_transfer_block,
             completed.liquid_transfer_block
         );
-        assert_eq!(completed.stream_receipt_sequence, 0);
+        assert_eq!(completed.stream_receipt_sequence, 1);
         assert_eq!(completed.io_fee_e8s, 10_000);
 
         let after_neuron = super::neuron(
@@ -1653,6 +1916,15 @@ mod tests {
             supply_before.0 - supply_after.0,
             completed.io_fee_e8s.into()
         );
+        eprintln!(
+            "account_semantic_jupiter gross_e8s={} permanent_credit_e8s={} claim_credit_e8s={} backed_io_e8s={} io_fee_e8s={} deposit_block={} unauthorized_rejected=true wrong_block_rejected=true receipt_sequence=1",
+            gross_e8s,
+            completed.stake_e8s,
+            completed.liquid_e8s,
+            completed.backed_io_e8s,
+            completed.io_fee_e8s,
+            deposit_block,
+        );
 
         let replay: Result<ManagerJupiterProgress, ManagerApiError> = super::update(
             &fixture.pic,
@@ -1668,17 +1940,17 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires pinned real NNS Governance/ICP ledger, candidate SNS ledger, production IO Wasms, and POCKET_IC_BIN"]
+    #[ignore = "requires pinned real NNS Governance/ICP ledger, candidate SNS ledger, current IO release Wasms, and POCKET_IC_BIN"]
     fn controlled_two_year_compounds_real_maturity_without_io_issuance() {
         let _guard = crate::lock_test_env();
         let fixture = super::create_zero_maturity_protected_neuron();
         let real_sns_trigger = super::install_real_sns_maturity_trigger(&fixture);
         let stream = crate::pocketic_env::create_empty_application_canister(&fixture.pic);
-        let manager_wasm = super::production_wasm("io_nns_neuron_manager");
+        let manager_wasm = super::current_io_wasm("io_nns_neuron_manager");
         let controlled_stream = super::install_controlled_stream(
             &fixture,
             stream,
-            super::production_wasm("io_stream_manager"),
+            super::current_io_wasm("io_stream_manager"),
         );
         super::fund_manager_staging(&fixture);
         let _ = super::install_manager(
@@ -1689,8 +1961,16 @@ mod tests {
         );
         super::register_real_two_year_function(&real_sns_trigger, fixture.controller);
         super::fund_stream_liquidity(&fixture, stream, 0);
+        let stream_unpause: Result<(), io_stream_manager::ApiError> = super::update(
+            &fixture.pic,
+            stream,
+            controlled_stream.governance,
+            "set_paused",
+            false,
+        );
+        assert_eq!(stream_unpause, Ok(()));
 
-        let mut prior_staked_maturity = 0;
+        let prior_staked_maturity = 0;
         let mut actual_mints = Vec::new();
         for cycle in 0..2 {
             let unpause: Result<(), ManagerApiError> = super::update(
@@ -1702,8 +1982,6 @@ mod tests {
             );
             assert_eq!(unpause, Ok(()));
             let ordinary_maturity = super::earn_maturity_for(&fixture, fixture.two_year_neuron_id);
-            let expected_staked = ordinary_maturity.checked_mul(40).unwrap() / 100;
-            let expected_disbursed = ordinary_maturity - expected_staked;
             let before = super::neuron(
                 &fixture.pic,
                 fixture.governance,
@@ -1818,7 +2096,7 @@ mod tests {
                     .unwrap();
                 if progress
                     == Ok(ManagerNnsProgress::Maturity(
-                        ManagerMaturityProgress::AwaitingMintProof,
+                        ManagerMaturityProgress::AwaitingCapture,
                     ))
                 {
                     break;
@@ -1843,67 +2121,35 @@ mod tests {
             for _ in 0..100 {
                 fixture.pic.tick();
             }
-            let destination =
-                IcpAccount::new(stream, Some(Subaccount([3; 32]))).icp_account_identifier_bytes();
-            let (mint_block, actual_minted_e8s) = super::find_mint(&fixture, &destination);
-            for invalid_block in [0_u128, u128::MAX] {
-                let rejected: Result<ManagerMaturityProgress, ManagerApiError> = decode_one(
-                    &fixture
-                        .pic
-                        .update_call(
-                            fixture.controller,
-                            Principal::anonymous(),
-                            "prove_maturity_mint",
-                            encode_args((ManagerMaturityKind::TwoYear, invalid_block)).unwrap(),
-                        )
-                        .unwrap(),
-                )
-                .unwrap();
-                assert!(matches!(rejected, Err(ManagerApiError::Invalid(_))));
-            }
-            let proved: Result<ManagerMaturityProgress, ManagerApiError> = decode_one(
-                &fixture
-                    .pic
-                    .update_call(
-                        fixture.controller,
-                        Principal::anonymous(),
-                        "prove_maturity_mint",
-                        encode_args((ManagerMaturityKind::TwoYear, u128::from(mint_block)))
-                            .unwrap(),
-                    )
-                    .unwrap(),
-            )
-            .unwrap();
-            let completed = match proved {
-                Ok(ManagerMaturityProgress::Completed(completed)) => completed,
-                other => panic!("cycle={cycle} unexpected two-year proof: {other:?}"),
+            let completed = loop {
+                let progress: Result<ManagerNnsProgress, ManagerApiError> = super::update(
+                    &fixture.pic,
+                    fixture.controller,
+                    Principal::anonymous(),
+                    "resume",
+                    (),
+                );
+                phases.push(format!("{progress:?}"));
+                if let Ok(ManagerNnsProgress::Maturity(ManagerMaturityProgress::Completed(
+                    completed,
+                ))) = progress
+                {
+                    break completed;
+                }
+                assert!(phases.len() < 24, "cycle={cycle} {phases:?}");
             };
-            assert_eq!(completed.neuron_id, fixture.two_year_neuron_id);
-            assert_eq!(completed.nominal_disbursed_maturity_e8s, expected_disbursed);
-            assert_eq!(
-                completed.actual_minted_icp_e8s,
-                u128::from(actual_minted_e8s)
-            );
-            assert!(completed.actual_minted_icp_e8s > 0);
-            assert!(completed.actual_minted_icp_e8s <= u128::from(expected_disbursed));
-            let replayed: Result<ManagerMaturityProgress, ManagerApiError> = decode_one(
-                &fixture
-                    .pic
-                    .update_call(
-                        fixture.controller,
-                        Principal::anonymous(),
-                        "prove_maturity_mint",
-                        encode_args((ManagerMaturityKind::TwoYear, u128::from(mint_block)))
-                            .unwrap(),
-                    )
-                    .unwrap(),
+            let split = io_nns_types::maturity::capture_40_60(
+                completed.captured_e8s,
+                u128::from(super::ICP_FEE_E8S),
+                u128::from(super::ICP_FEE_E8S),
             )
             .unwrap();
-            assert_eq!(
-                replayed,
-                Ok(ManagerMaturityProgress::Completed(completed.clone()))
-            );
-            prior_staked_maturity = prior_staked_maturity.checked_add(expected_staked).unwrap();
+            assert_eq!(completed.kind, ManagerMaturityKind::TwoYear);
+            assert_eq!(completed.permanent_credit_e8s, split.permanent_credit);
+            assert_eq!(completed.claim_credit_e8s, split.claim_credit);
+            assert_eq!(completed.entitlement_batch_generation, None);
+            assert!(completed.captured_e8s > 0);
+            assert!(completed.captured_e8s <= u128::from(ordinary_maturity));
             let after = super::neuron(
                 &fixture.pic,
                 fixture.governance,
@@ -1914,6 +2160,10 @@ mod tests {
                 after.staked_maturity_e8s_equivalent.unwrap_or(0),
                 prior_staked_maturity
             );
+            assert_eq!(
+                u128::from(after.cached_neuron_stake_e8s),
+                u128::from(before.cached_neuron_stake_e8s) + completed.permanent_credit_e8s
+            );
             let liquid_after: candid::Nat = super::query(
                 &fixture.pic,
                 fixture.ledger,
@@ -1923,7 +2173,7 @@ mod tests {
             );
             assert_eq!(
                 liquid_after.0 - liquid_before.0,
-                completed.actual_minted_icp_e8s.into()
+                completed.claim_credit_e8s.into()
             );
             let supply_after: candid::Nat = super::query(
                 &fixture.pic,
@@ -1941,7 +2191,14 @@ mod tests {
             );
             assert_eq!(supply_after, supply_before);
             assert_eq!(reserve_after, reserve_before);
-            actual_mints.push(completed.actual_minted_icp_e8s);
+            eprintln!(
+                "account_semantic_two_year cycle={} captured_e8s={} permanent_credit_e8s={} claim_credit_e8s={} no_issuance=true supply_unchanged=true reserve_unchanged=true",
+                cycle,
+                completed.captured_e8s,
+                completed.permanent_credit_e8s,
+                completed.claim_credit_e8s,
+            );
+            actual_mints.push(completed.captured_e8s);
             fixture
                 .pic
                 .upgrade_canister(
@@ -2039,148 +2296,7 @@ mod tests {
         assert!(drifted_status.active_operation.is_none());
     }
 
-    #[test]
-    #[ignore = "requires pinned real NNS Governance/ICP ledger, production NNS manager Wasm, and POCKET_IC_BIN"]
-    fn controlled_target_rise_merge_back_survives_manager_upgrade() {
-        let _guard = crate::lock_test_env();
-        let fixture = super::create_zero_maturity_protected_neuron();
-        let stream = pocketic_env::create_empty_application_canister(&fixture.pic);
-        let governance = pocketic_env::create_empty_application_canister(&fixture.pic);
-        let manager_wasm = super::production_wasm("io_nns_neuron_manager");
-        super::fund_manager_staging(&fixture);
-        super::install_manager(&fixture, stream, governance, manager_wasm.clone());
-        let unpause: Result<(), ManagerApiError> = super::update(
-            &fixture.pic,
-            fixture.controller,
-            governance,
-            "set_paused",
-            false,
-        );
-        assert_eq!(unpause, Ok(()));
-        let lowered: Result<io_receipt_types::TwoWeekBackingReadiness, ManagerApiError> =
-            super::update(
-                &fixture.pic,
-                fixture.controller,
-                stream,
-                "reconcile_two_week_backing_readiness",
-                ReconcileTwoWeekBackingReadinessArgs {
-                    target_e8s: RECONCILED_TARGET_E8S.into(),
-                },
-            );
-        assert_eq!(
-            lowered,
-            Ok(io_receipt_types::TwoWeekBackingReadiness::NotReady(
-                io_receipt_types::BackingNotReadyReason::OverTarget
-            ))
-        );
-        for _ in 0..2 {
-            let _: Result<ManagerNnsProgress, ManagerApiError> = super::update(
-                &fixture.pic,
-                fixture.controller,
-                Principal::anonymous(),
-                "resume",
-                (),
-            );
-        }
-        let passive: ManagerStatus = super::query(
-            &fixture.pic,
-            fixture.controller,
-            Principal::anonymous(),
-            "get_status",
-            (),
-        );
-        assert!(passive.active_operation.is_none());
-        assert!(passive.unwinding_child_principal_e8s > 0);
-
-        let raised: Result<io_receipt_types::TwoWeekBackingReadiness, ManagerApiError> =
-            super::update(
-                &fixture.pic,
-                fixture.controller,
-                stream,
-                "reconcile_two_week_backing_readiness",
-                ReconcileTwoWeekBackingReadinessArgs {
-                    target_e8s: PROTECTED_STAKE_E8S.into(),
-                },
-            );
-        assert_eq!(
-            raised,
-            Ok(io_receipt_types::TwoWeekBackingReadiness::NotReady(
-                io_receipt_types::BackingNotReadyReason::UnderTarget
-            ))
-        );
-        let stopped: Result<ManagerNnsProgress, ManagerApiError> = super::update(
-            &fixture.pic,
-            fixture.controller,
-            Principal::anonymous(),
-            "resume",
-            (),
-        );
-        assert_eq!(
-            stopped,
-            Ok(ManagerNnsProgress::Unwind(ManagerUnwindProgress::Waiting))
-        );
-        let merging: ManagerStatus = super::query(
-            &fixture.pic,
-            fixture.controller,
-            Principal::anonymous(),
-            "get_status",
-            (),
-        );
-        assert_eq!(merging.active_operation.as_deref(), Some("Unwind"));
-        assert_eq!(
-            merging.unwinding_child_principal_e8s,
-            passive.unwinding_child_principal_e8s
-        );
-        fixture
-            .pic
-            .upgrade_canister(
-                fixture.controller,
-                manager_wasm,
-                encode_one(()).unwrap(),
-                None,
-            )
-            .unwrap();
-        let merged: Result<ManagerNnsProgress, ManagerApiError> = super::update(
-            &fixture.pic,
-            fixture.controller,
-            Principal::anonymous(),
-            "resume",
-            (),
-        );
-        assert_eq!(
-            merged,
-            Ok(ManagerNnsProgress::Unwind(ManagerUnwindProgress::Waiting))
-        );
-        let final_status: ManagerStatus = super::query(
-            &fixture.pic,
-            fixture.controller,
-            Principal::anonymous(),
-            "get_status",
-            (),
-        );
-        assert_eq!(final_status.lifecycle, ManagerLifecycle::Paused);
-        assert!(final_status.active_operation.is_none());
-        assert_eq!(final_status.unwinding_child_principal_e8s, 0);
-        let parent = super::neuron(
-            &fixture.pic,
-            fixture.governance,
-            fixture.controller,
-            fixture.neuron_id,
-        );
-        assert_eq!(
-            parent.cached_neuron_stake_e8s,
-            RECONCILED_TARGET_E8S + u64::try_from(passive.unwinding_child_principal_e8s).unwrap()
-                - ICP_FEE_E8S
-        );
-        eprintln!(
-            "controlled_merge_back parent={} passive_child={}",
-            parent.cached_neuron_stake_e8s, passive.unwinding_child_principal_e8s
-        );
-    }
-
-    #[test]
-    #[ignore = "requires candidate SNS Governance/Root/ledger, pinned real NNS Governance/ICP ledger, production IO Wasms, and POCKET_IC_BIN"]
-    fn combined_real_sns_nns_io_lifecycle_reconciles_maturity_and_redemption() {
+    fn run_combined_real_sns_nns_io_lifecycle(jupiter_before_maturity: bool) {
         use candid::Nat;
         use io_stream_manager::{
             ApiError as StreamApiError, RedeemArgs, RedemptionProgress, RewardBackingProgress,
@@ -2188,12 +2304,12 @@ mod tests {
         };
 
         let _guard = crate::lock_test_env();
-        let fixture = super::create_zero_maturity_protected_neuron_with_stake(6_000_000_000);
+        let mut fixture = super::create_zero_maturity_protected_neuron_with_stake(0);
         let sns = super::install_combined_real_sns(&fixture);
         let stream_wasm = super::install_combined_stream(&fixture, &sns);
-        let manager_wasm = super::production_wasm("io_nns_neuron_manager");
+        let manager_wasm = super::current_io_wasm("io_nns_neuron_manager");
         super::fund_manager_staging(&fixture);
-        super::install_manager(
+        let jupiter = super::install_manager(
             &fixture,
             sns.stream,
             sns.governance.governance,
@@ -2224,9 +2340,6 @@ mod tests {
             false,
         );
         assert_eq!(manager_unpause, Ok(()));
-        let ordinary_maturity = super::earn_maturity(&fixture);
-        assert!(ordinary_maturity >= 200_000_000);
-
         let stream_unpause: Result<(), StreamApiError> = super::update(
             &fixture.pic,
             sns.stream,
@@ -2235,26 +2348,255 @@ mod tests {
             false,
         );
         assert_eq!(stream_unpause, Ok(()));
-        let baseline: StreamStatus = super::query(
+        let _initial_event =
+            crate::sns_governance_setup::advance_until_reward_event(&sns.governance, 0, 0);
+        let mut initial_status: StreamStatus = super::query(
             &fixture.pic,
             sns.stream,
             Principal::anonymous(),
             "get_status",
             (),
         );
-        let baseline_round = baseline.latest_processed_reward_event.unwrap().round;
-        let mut event = crate::sns_governance_setup::advance_until_reward_event(
-            &sns.governance,
-            0,
-            baseline_round,
-        );
-        let mut reward_observations = 0;
-        let accumulated = loop {
-            reward_observations += 1;
-            assert!(
-                reward_observations <= 4,
-                "candidate reward event did not converge"
+        for _ in 0..20 {
+            if initial_status.latest_reconciliation_checkpoint.is_some() {
+                break;
+            }
+            fixture.pic.tick();
+            initial_status = super::query(
+                &fixture.pic,
+                sns.stream,
+                Principal::anonymous(),
+                "get_status",
+                (),
             );
+        }
+        if initial_status.latest_reconciliation_checkpoint.is_none() {
+            let initial_observation: Result<
+                io_stream_manager::RewardEventObservation,
+                StreamApiError,
+            > = super::update(
+                &fixture.pic,
+                sns.stream,
+                Principal::anonymous(),
+                "resume_reward_work",
+                (),
+            );
+            assert_eq!(initial_observation.unwrap().eligible_credit_total, 0);
+            initial_status = super::query(
+                &fixture.pic,
+                sns.stream,
+                Principal::anonymous(),
+                "get_status",
+                (),
+            );
+        }
+        assert!(initial_status.latest_reconciliation_checkpoint.is_some());
+        let first_reconciliation: Result<RewardBackingProgress, StreamApiError> = super::update(
+            &fixture.pic,
+            sns.stream,
+            Principal::anonymous(),
+            "resume_reward_backing",
+            (),
+        );
+        assert!(
+            matches!(
+                first_reconciliation,
+                Ok(RewardBackingProgress::Pending { .. }) | Err(StreamApiError::Pending(_))
+            ),
+            "{first_reconciliation:?}"
+        );
+        let mut pool_steps = Vec::new();
+        let mut stream_pool_upgraded = false;
+        let mut manager_pool_upgraded = false;
+        let mut bootstrap_donation_sent = false;
+        for _ in 0..24 {
+            let status: StreamStatus = super::query(
+                &fixture.pic,
+                sns.stream,
+                Principal::anonymous(),
+                "get_status",
+                (),
+            );
+            if status.operation_kind.is_none() {
+                break;
+            }
+            if !bootstrap_donation_sent
+                && status.operation_kind.as_deref() == Some("BackingReconciliation")
+            {
+                let staking = IcpAccount::new(
+                    fixture.governance,
+                    Some(Subaccount(super::neuron_subaccount(
+                        fixture.controller,
+                        PROTECTED_MEMO,
+                    ))),
+                )
+                .icp_account_identifier_bytes();
+                let donation: Result<u64, IcpTransferError> = icrc::update_one(
+                    &fixture.pic,
+                    fixture.ledger,
+                    Principal::anonymous(),
+                    "transfer",
+                    IcpTransferArgs {
+                        memo: 32,
+                        amount: IcpTokens { e8s: 1_000_000 },
+                        fee: IcpTokens { e8s: ICP_FEE_E8S },
+                        from_subaccount: None,
+                        to: staking.to_vec(),
+                        created_at_time: None,
+                    },
+                );
+                donation.unwrap();
+                bootstrap_donation_sent = true;
+            }
+            if !stream_pool_upgraded
+                && status.operation_kind.as_deref() == Some("BackingReconciliation")
+            {
+                fixture
+                    .pic
+                    .upgrade_canister(
+                        sns.stream,
+                        stream_wasm.clone(),
+                        encode_one(()).unwrap(),
+                        None,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    super::query::<StreamStatus>(
+                        &fixture.pic,
+                        sns.stream,
+                        Principal::anonymous(),
+                        "get_status",
+                        (),
+                    )
+                    .lifecycle,
+                    io_stream_manager::Lifecycle::Paused
+                );
+                stream_pool_upgraded = true;
+            }
+            let manager_status: ManagerStatus = super::query(
+                &fixture.pic,
+                fixture.controller,
+                Principal::anonymous(),
+                "get_status",
+                (),
+            );
+            if !manager_pool_upgraded && manager_status.active_operation.as_deref() == Some("Pool")
+            {
+                fixture
+                    .pic
+                    .upgrade_canister(
+                        fixture.controller,
+                        manager_wasm.clone(),
+                        encode_one(()).unwrap(),
+                        None,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    super::query::<ManagerStatus>(
+                        &fixture.pic,
+                        fixture.controller,
+                        Principal::anonymous(),
+                        "get_status",
+                        (),
+                    )
+                    .lifecycle,
+                    ManagerLifecycle::Paused
+                );
+                manager_pool_upgraded = true;
+            }
+            let progress: Result<StreamProgress, StreamApiError> = super::update(
+                &fixture.pic,
+                sns.stream,
+                Principal::anonymous(),
+                "resume",
+                (),
+            );
+            pool_steps.push((status.operation_phase, format!("{progress:?}")));
+        }
+        assert!(stream_pool_upgraded, "pool_steps={pool_steps:?}");
+        assert!(manager_pool_upgraded, "pool_steps={pool_steps:?}");
+        assert!(bootstrap_donation_sent, "pool_steps={pool_steps:?}");
+        assert!(
+            super::query::<StreamStatus>(
+                &fixture.pic,
+                sns.stream,
+                Principal::anonymous(),
+                "get_status",
+                (),
+            )
+            .operation_kind
+            .is_none(),
+            "pool_steps={pool_steps:?}"
+        );
+        super::update::<Result<(), ManagerApiError>>(
+            &fixture.pic,
+            fixture.controller,
+            sns.governance.governance,
+            "set_paused",
+            false,
+        )
+        .unwrap();
+        super::update::<Result<(), StreamApiError>>(
+            &fixture.pic,
+            sns.stream,
+            sns.governance.governance,
+            "set_paused",
+            false,
+        )
+        .unwrap();
+        let backing: Result<io_nns_types::backing::ClaimAssetObservation, ManagerApiError> =
+            super::update(
+                &fixture.pic,
+                fixture.controller,
+                sns.stream,
+                "observe_claim_assets",
+                (),
+            );
+        let parent = backing
+            .unwrap()
+            .parent
+            .expect("lazy pooled parent must be proved");
+        let manager_status: ManagerStatus = super::query(
+            &fixture.pic,
+            fixture.controller,
+            Principal::anonymous(),
+            "get_status",
+            (),
+        );
+        assert!(matches!(
+            manager_status.latest_pooled_target,
+            Some(ManagerPooledTarget {
+                status: ManagerPooledTargetStatus::OverTarget,
+                ..
+            })
+        ));
+        if jupiter_before_maturity {
+            let permanent_before_jupiter = super::neuron(
+                &fixture.pic,
+                fixture.governance,
+                fixture.controller,
+                fixture.two_year_neuron_id,
+            );
+            let jupiter_donation = 1_000_000_u64;
+            let first_jupiter = super::run_jupiter_credit(
+                &fixture,
+                sns.stream,
+                sns.governance.governance,
+                jupiter,
+                10 * 100_000_000,
+                40,
+                jupiter_donation,
+            );
+            assert_eq!(
+                first_jupiter.observed_after_cached_stake_e8s,
+                u128::from(permanent_before_jupiter.cached_neuron_stake_e8s)
+                    + first_jupiter.stake_e8s
+                    + u128::from(jupiter_donation)
+            );
+        }
+        fixture.neuron_id = parent.neuron_id;
+        fixture.protected_principal_e8s = u64::try_from(parent.physical_principal_e8s).unwrap();
+        let ordinary_maturity = super::earn_maturity_with_daily(&fixture, || {
             let _: Result<io_stream_manager::RewardEventObservation, StreamApiError> =
                 super::update(
                     &fixture.pic,
@@ -2263,17 +2605,158 @@ mod tests {
                     "resume_reward_work",
                     (),
                 );
-            let status: StreamStatus = super::query(
+        });
+        assert!(ordinary_maturity >= 200_000_000);
+        let baseline: StreamStatus = super::query(
+            &fixture.pic,
+            sns.stream,
+            Principal::anonymous(),
+            "get_status",
+            (),
+        );
+        let baseline_round = baseline.latest_processed_reward_event.unwrap().round;
+        let baseline_policy_credit = baseline.accumulated_policy_credit;
+        let mut event = crate::sns_governance_setup::advance_until_reward_event(
+            &sns.governance,
+            0,
+            baseline_round,
+        );
+        let mut reward_observations = 0;
+        let mut reward_steps = Vec::new();
+        let accumulated = loop {
+            reward_observations += 1;
+            assert!(
+                reward_observations <= 10,
+                "candidate reward event did not converge: {reward_steps:?}"
+            );
+            fixture.pic.advance_time(Duration::from_secs(301));
+            for _ in 0..100 {
+                let timer_status: StreamStatus = super::query(
+                    &fixture.pic,
+                    sns.stream,
+                    Principal::anonymous(),
+                    "get_status",
+                    (),
+                );
+                if timer_status
+                    .latest_processed_reward_event
+                    .is_some_and(|processed| processed.round >= event.round)
+                {
+                    break;
+                }
+                fixture.pic.tick();
+            }
+            let mut observation: Result<io_stream_manager::RewardEventObservation, StreamApiError> =
+                super::update(
+                    &fixture.pic,
+                    sns.stream,
+                    Principal::anonymous(),
+                    "resume_reward_work",
+                    (),
+                );
+            let mut status: StreamStatus = super::query(
                 &fixture.pic,
                 sns.stream,
                 Principal::anonymous(),
                 "get_status",
                 (),
             );
+            if matches!(
+                &observation,
+                Err(StreamApiError::Pending(reason)) if reason.contains("not due")
+            ) {
+                super::update::<Result<(), StreamApiError>>(
+                    &fixture.pic,
+                    sns.stream,
+                    sns.governance.governance,
+                    "set_paused",
+                    true,
+                )
+                .unwrap();
+                super::update::<Result<(), StreamApiError>>(
+                    &fixture.pic,
+                    sns.stream,
+                    sns.governance.governance,
+                    "set_paused",
+                    false,
+                )
+                .unwrap();
+                observation = super::update(
+                    &fixture.pic,
+                    sns.stream,
+                    Principal::anonymous(),
+                    "resume_reward_work",
+                    (),
+                );
+                status = super::query(
+                    &fixture.pic,
+                    sns.stream,
+                    Principal::anonymous(),
+                    "get_status",
+                    (),
+                );
+            }
+            if status.reward_processing_paused {
+                let _: Result<RewardBackingProgress, StreamApiError> = super::update(
+                    &fixture.pic,
+                    sns.stream,
+                    Principal::anonymous(),
+                    "resume_reward_backing",
+                    (),
+                );
+                super::update::<Result<(), StreamApiError>>(
+                    &fixture.pic,
+                    sns.stream,
+                    sns.governance.governance,
+                    "set_paused",
+                    true,
+                )
+                .unwrap();
+                super::update::<Result<(), StreamApiError>>(
+                    &fixture.pic,
+                    sns.stream,
+                    sns.governance.governance,
+                    "set_paused",
+                    false,
+                )
+                .unwrap();
+                observation = super::update(
+                    &fixture.pic,
+                    sns.stream,
+                    Principal::anonymous(),
+                    "resume_reward_work",
+                    (),
+                );
+                status = super::query(
+                    &fixture.pic,
+                    sns.stream,
+                    Principal::anonymous(),
+                    "get_status",
+                    (),
+                );
+            }
+            reward_steps.push(format!(
+                "event={} observation={observation:?} classification={:?} eligible={} policy={} paused={} checkpoint={:?}",
+                event.round,
+                status.latest_reward_event_classification,
+                status.accumulated_eligible_credit,
+                status.accumulated_policy_credit,
+                status.reward_processing_paused,
+                status.latest_reconciliation_checkpoint
+            ));
             match status.latest_reward_event_classification {
-                Some(RewardEventClassification::NoProposalFallback) => break status,
+                Some(RewardEventClassification::NoProposalFallback) => {
+                    if status.accumulated_eligible_credit > 0 {
+                        break status;
+                    }
+                    event = crate::sns_governance_setup::advance_until_reward_event(
+                        &sns.governance,
+                        0,
+                        event.round,
+                    );
+                }
                 Some(RewardEventClassification::MissedSkipped) => {
-                    assert_eq!(status.accumulated_policy_credit, 0);
+                    assert_eq!(status.accumulated_policy_credit, baseline_policy_credit);
                     event = crate::sns_governance_setup::advance_until_reward_event(
                         &sns.governance,
                         0,
@@ -2287,28 +2770,44 @@ mod tests {
             accumulated.latest_reward_event_classification,
             Some(RewardEventClassification::NoProposalFallback)
         );
-        assert_eq!(
-            accumulated.accumulated_policy_credit,
-            io_reward_policy::DAILY_EVENT_CREDIT
+        assert!(
+            accumulated.accumulated_policy_credit > accumulated.accumulated_eligible_credit,
+            "the frozen batch must retain partial forfeiture"
         );
         assert_eq!(accumulated.accumulated_entitlements.len(), 3);
-        let expected_credits = [100_000_000_u128, 200_000_000, 300_000_000].map(|stake| {
-            io_reward_policy::mul_div_floor(
-                io_reward_policy::DAILY_EVENT_CREDIT,
-                stake,
-                600_000_000,
-            )
-            .unwrap()
-        });
-        assert_eq!(
-            accumulated.accumulated_eligible_credit,
-            expected_credits.into_iter().sum::<u128>()
-        );
-        assert_eq!(
-            accumulated.accumulated_eligible_credit + 1,
-            io_reward_policy::DAILY_EVENT_CREDIT
-        );
+        let eligible_event_counts = sns
+            .neurons
+            .iter()
+            .zip([100_000_000_u128, 200_000_000, 300_000_000])
+            .map(|(neuron, stake)| {
+                let daily = io_reward_policy::mul_div_floor(
+                    io_reward_policy::DAILY_EVENT_CREDIT,
+                    stake,
+                    600_000_000,
+                )
+                .unwrap();
+                let accumulated_credit = accumulated
+                    .accumulated_entitlements
+                    .iter()
+                    .find(|credit| credit.sns_neuron_id == neuron.id)
+                    .unwrap()
+                    .accumulated_eligible_credit;
+                assert_eq!(accumulated_credit % daily, 0);
+                accumulated_credit / daily
+            })
+            .collect::<Vec<_>>();
+        assert!(eligible_event_counts[0] > 0);
+        assert!(eligible_event_counts
+            .windows(2)
+            .all(|pair| pair[0] == pair[1]));
         let frozen_credits = accumulated.accumulated_entitlements.clone();
+        let manager_before_maturity: ManagerStatus = super::query(
+            &fixture.pic,
+            fixture.controller,
+            Principal::anonymous(),
+            "get_status",
+            (),
+        );
         let prepared: Result<RewardBackingProgress, StreamApiError> = super::update(
             &fixture.pic,
             sns.stream,
@@ -2318,7 +2817,8 @@ mod tests {
         );
         assert_eq!(
             prepared,
-            Ok(RewardBackingProgress::MaturityPrepared { generation: 1 })
+            Ok(RewardBackingProgress::MaturityPrepared { generation: 1 }),
+            "manager={manager_before_maturity:?} stream={accumulated:?}"
         );
 
         let recipient_accounts = sns
@@ -2374,7 +2874,7 @@ mod tests {
                 .unwrap();
             if progress
                 == Ok(ManagerNnsProgress::Maturity(
-                    ManagerMaturityProgress::AwaitingMintProof,
+                    ManagerMaturityProgress::AwaitingCapture,
                 ))
             {
                 break;
@@ -2394,27 +2894,86 @@ mod tests {
         fixture
             .pic
             .advance_time(Duration::from_secs(finalization - now + 1));
-        for _ in 0..100 {
-            fixture.pic.tick();
-        }
-        let staging = IcpAccount::new(fixture.controller, Some(Subaccount([2; 32])))
+        let semantic_staging = io_accounts::two_week_maturity_staging(fixture.controller);
+        let staging_subaccount: [u8; 32] = semantic_staging
+            .subaccount
+            .clone()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let staging = IcpAccount::new(fixture.controller, Some(Subaccount(staging_subaccount)))
             .icp_account_identifier_bytes();
-        let (mint_block, actual_minted_e8s) = super::find_mint(&fixture, &staging);
-        let proved: Result<ManagerMaturityProgress, ManagerApiError> = decode_one(
-            &fixture
-                .pic
-                .update_call(
-                    fixture.controller,
-                    Principal::anonymous(),
-                    "prove_maturity_mint",
-                    encode_args((ManagerMaturityKind::TwoWeek, u128::from(mint_block))).unwrap(),
-                )
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(proved, Ok(ManagerMaturityProgress::MintProved));
+        let mut mint = None;
+        for day in 0..7 {
+            for _ in 0..100 {
+                fixture.pic.tick();
+            }
+            mint = super::maybe_find_mint(&fixture, &staging);
+            if mint.is_some() {
+                break;
+            }
+            if day < 6 {
+                fixture.pic.advance_time(Duration::from_secs(86_400));
+            }
+        }
+        let (_mint_block, actual_minted_e8s) = mint.unwrap_or_else(|| {
+            let settled = super::neuron(
+                &fixture.pic,
+                fixture.governance,
+                fixture.controller,
+                fixture.neuron_id,
+            );
+            let blocks: QueryBlocksResponse = super::query(
+                &fixture.pic,
+                fixture.ledger,
+                Principal::anonymous(),
+                "query_blocks",
+                GetBlocksArgs {
+                    start: 0,
+                    length: 100,
+                },
+            );
+            let mints = blocks
+                .blocks
+                .iter()
+                .filter_map(|block| match &block.transaction.operation {
+                    Some(IcpOperation::Mint { to, amount }) => Some((hex::encode(to), amount.e8s)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            panic!("two-week maturity Mint did not settle: neuron={settled:?} mints={mints:?}")
+        });
+        let staging_donation_e8s = 2_000_000_u64;
+        let staging_donation: Result<u64, IcpTransferError> = icrc::update_one(
+            &fixture.pic,
+            fixture.ledger,
+            Principal::anonymous(),
+            "transfer",
+            IcpTransferArgs {
+                memo: 42,
+                amount: IcpTokens {
+                    e8s: staging_donation_e8s,
+                },
+                fee: IcpTokens { e8s: ICP_FEE_E8S },
+                from_subaccount: None,
+                to: staging.to_vec(),
+                created_at_time: None,
+            },
+        );
+        staging_donation.unwrap();
 
-        let mut stream_upgraded = false;
+        let permanent_before_maturity = super::neuron(
+            &fixture.pic,
+            fixture.governance,
+            fixture.controller,
+            fixture.two_year_neuron_id,
+        );
+        let permanent_subaccount = super::neuron_subaccount(fixture.controller, TWO_YEAR_MEMO);
+        let permanent_staking =
+            IcpAccount::new(fixture.governance, Some(Subaccount(permanent_subaccount)))
+                .icp_account_identifier_bytes();
+        let maturity_donation = 2_000_000_u64;
+        let mut maturity_donation_sent = false;
         let completed = loop {
             let progress: Result<ManagerNnsProgress, ManagerApiError> = super::update(
                 &fixture.pic,
@@ -2424,25 +2983,43 @@ mod tests {
                 (),
             );
             maturity_phases.push(format!("{progress:?}"));
-            let stream_status: StreamStatus = super::query(
-                &fixture.pic,
-                sns.stream,
-                Principal::anonymous(),
-                "get_status",
-                (),
-            );
-            if !stream_upgraded && stream_status.operation_phase.as_deref() == Some("ReceiptProved")
-            {
-                fixture
-                    .pic
-                    .upgrade_canister(
-                        sns.stream,
-                        stream_wasm.clone(),
-                        encode_one(()).unwrap(),
-                        None,
-                    )
-                    .unwrap();
-                stream_upgraded = true;
+            if !maturity_donation_sent {
+                let permanent = super::neuron(
+                    &fixture.pic,
+                    fixture.governance,
+                    fixture.controller,
+                    fixture.two_year_neuron_id,
+                );
+                let ledger_stake = super::query::<Nat>(
+                    &fixture.pic,
+                    fixture.ledger,
+                    Principal::anonymous(),
+                    "icrc1_balance_of",
+                    ManagerAccount {
+                        owner: fixture.governance,
+                        subaccount: Some(permanent_subaccount.to_vec()),
+                    },
+                );
+                if ledger_stake > permanent.cached_neuron_stake_e8s {
+                    let donation: Result<u64, IcpTransferError> = icrc::update_one(
+                        &fixture.pic,
+                        fixture.ledger,
+                        Principal::anonymous(),
+                        "transfer",
+                        IcpTransferArgs {
+                            memo: 43,
+                            amount: IcpTokens {
+                                e8s: maturity_donation,
+                            },
+                            fee: IcpTokens { e8s: ICP_FEE_E8S },
+                            from_subaccount: None,
+                            to: permanent_staking.to_vec(),
+                            created_at_time: None,
+                        },
+                    );
+                    donation.unwrap();
+                    maturity_donation_sent = true;
+                }
             }
             if let Ok(ManagerNnsProgress::Maturity(ManagerMaturityProgress::Completed(completed))) =
                 progress
@@ -2451,10 +3028,32 @@ mod tests {
             }
             assert!(maturity_phases.len() < 40, "{maturity_phases:?}");
         };
-        assert!(stream_upgraded, "{maturity_phases:?}");
+        assert!(maturity_donation_sent, "{maturity_phases:?}");
         assert_eq!(
-            completed.actual_minted_icp_e8s,
-            u128::from(actual_minted_e8s)
+            completed.captured_e8s,
+            u128::from(actual_minted_e8s) + u128::from(staging_donation_e8s)
+        );
+        let split = io_nns_types::maturity::capture_40_60(
+            completed.captured_e8s,
+            u128::from(ICP_FEE_E8S),
+            u128::from(ICP_FEE_E8S),
+        )
+        .unwrap();
+        assert_eq!(completed.kind, ManagerMaturityKind::TwoWeek);
+        assert_eq!(completed.permanent_credit_e8s, split.permanent_credit);
+        assert_eq!(completed.claim_credit_e8s, split.claim_credit);
+        assert!(completed.entitlement_batch_generation.is_some());
+        let permanent_after_maturity = super::neuron(
+            &fixture.pic,
+            fixture.governance,
+            fixture.controller,
+            fixture.two_year_neuron_id,
+        );
+        assert_eq!(
+            u128::from(permanent_after_maturity.cached_neuron_stake_e8s),
+            u128::from(permanent_before_maturity.cached_neuron_stake_e8s)
+                + completed.permanent_credit_e8s
+                + u128::from(maturity_donation)
         );
         let recipient_after = recipient_accounts
             .iter()
@@ -2473,12 +3072,20 @@ mod tests {
             .zip(&recipient_before)
             .all(|(after, before)| after > before));
         assert_eq!(frozen_credits.len(), recipient_after.len());
-        let backed_io_pool =
-            io_core_model::backed_io(u128::from(actual_minted_e8s), 7_000_000_000, 700_000_000)
-                .unwrap();
+        let claim_credit = completed.claim_credit_e8s;
+        let pre_inflow = accumulated
+            .latest_reconciliation_checkpoint
+            .as_ref()
+            .unwrap();
+        let backed_io_pool = io_core_model::backed_io(
+            claim_credit,
+            pre_inflow.total_claim_backing_e8s,
+            pre_inflow.claim_supply_e8s,
+        )
+        .unwrap();
         let allocation = io_reward_policy::allocate_rewards(
             backed_io_pool,
-            io_reward_policy::DAILY_EVENT_CREDIT,
+            accumulated.accumulated_policy_credit,
             &frozen_credits
                 .iter()
                 .map(|credit| {
@@ -2530,14 +3137,58 @@ mod tests {
             (3 * u128::from(ICP_FEE_E8S)).into()
         );
 
-        let resumed: Result<(), StreamApiError> = super::update(
+        if !jupiter_before_maturity {
+            let permanent_before_second_jupiter = super::neuron(
+                &fixture.pic,
+                fixture.governance,
+                fixture.controller,
+                fixture.two_year_neuron_id,
+            );
+            let second_jupiter = super::run_jupiter_credit(
+                &fixture,
+                sns.stream,
+                sns.governance.governance,
+                jupiter,
+                12 * 100_000_000,
+                50,
+                0,
+            );
+            assert_eq!(
+                second_jupiter.observed_after_cached_stake_e8s,
+                u128::from(permanent_before_second_jupiter.cached_neuron_stake_e8s)
+                    + second_jupiter.stake_e8s
+            );
+            let maturity_before_reward = super::neuron(
+                &fixture.pic,
+                fixture.governance,
+                fixture.controller,
+                fixture.two_year_neuron_id,
+            )
+            .maturity_e8s_equivalent;
+            let maturity_after_reward =
+                super::earn_maturity_for(&fixture, fixture.two_year_neuron_id);
+            assert!(maturity_after_reward > maturity_before_reward);
+        }
+
+        if super::query::<StreamStatus>(
             &fixture.pic,
             sns.stream,
-            sns.governance.governance,
-            "set_paused",
-            false,
-        );
-        assert_eq!(resumed, Ok(()));
+            Principal::anonymous(),
+            "get_status",
+            (),
+        )
+        .lifecycle
+            == io_stream_manager::Lifecycle::Paused
+        {
+            let resumed: Result<(), StreamApiError> = super::update(
+                &fixture.pic,
+                sns.stream,
+                sns.governance.governance,
+                "set_paused",
+                false,
+            );
+            assert_eq!(resumed, Ok(()));
+        }
         let redemption_amount = 20_000_000_u64;
         let now = fixture.pic.get_time().as_nanos_since_unix_epoch();
         icrc::icrc2_approve(
@@ -2584,13 +3235,31 @@ mod tests {
             .0,
         )
         .unwrap();
+        let redemption_backing: Result<
+            io_nns_types::backing::ClaimAssetObservation,
+            ManagerApiError,
+        > = super::update(
+            &fixture.pic,
+            fixture.controller,
+            sns.stream,
+            "observe_claim_assets",
+            (),
+        );
+        let redemption_backing = redemption_backing.unwrap();
         let quote = io_core_model::redemption_quote(
+            io_core_model::EconomicState {
+                backing: io_core_model::Backing {
+                    liquid: liquid_before,
+                    pooled: redemption_backing.pooled_parent_principal_e8s,
+                    unwinding: redemption_backing.live_child_net_backing_e8s,
+                    transit: redemption_backing.transit_backing_e8s,
+                },
+                claims: supply_before - reserve_before,
+                active_backing: 0,
+                active_reward: 0,
+            },
             redemption_amount.into(),
             ICP_FEE_E8S.into(),
-            supply_before,
-            reserve_before,
-            0,
-            liquid_before,
             ICP_FEE_E8S.into(),
         )
         .unwrap();
@@ -2612,7 +3281,7 @@ mod tests {
             RedeemArgs {
                 from_subaccount: None,
                 io_amount_e8s: redemption_amount.into(),
-                min_icp_out_e8s: quote.net_icp_e8s,
+                min_icp_out_e8s: quote.net_icp,
                 max_io_fee_e8s: ICP_FEE_E8S.into(),
                 max_icp_fee_e8s: ICP_FEE_E8S.into(),
                 expires_at_nanos: now + 800_000_000_000,
@@ -2638,8 +3307,8 @@ mod tests {
                 break completed;
             }
         };
-        assert_eq!(redemption.gross_icp_e8s, quote.gross_icp_e8s);
-        assert_eq!(redemption.net_icp_e8s, quote.net_icp_e8s);
+        assert_eq!(redemption.gross_icp_e8s, quote.gross_icp);
+        assert_eq!(redemption.net_icp_e8s, quote.net_icp);
         let icp_after = super::query::<Nat>(
             &fixture.pic,
             fixture.ledger,
@@ -2650,7 +3319,7 @@ mod tests {
                 subaccount: None,
             },
         );
-        assert_eq!(icp_after.0 - icp_before.0, quote.net_icp_e8s.into());
+        assert_eq!(icp_after.0 - icp_before.0, quote.net_icp.into());
         assert_eq!(
             icrc::icrc1_total_supply(&fixture.pic, sns.governance.ledger),
             Nat::from(supply_before - u128::from(ICP_FEE_E8S))
@@ -2679,8 +3348,153 @@ mod tests {
             "get_status",
             (),
         );
-        assert_eq!(final_manager.lifecycle, ManagerLifecycle::Paused);
+        assert_eq!(
+            final_manager.lifecycle,
+            if jupiter_before_maturity {
+                ManagerLifecycle::Paused
+            } else {
+                ManagerLifecycle::Ready
+            }
+        );
         assert_eq!(final_stream.lifecycle, io_stream_manager::Lifecycle::Paused);
+
+        if final_manager.lifecycle == ManagerLifecycle::Paused {
+            super::update::<Result<(), ManagerApiError>>(
+                &fixture.pic,
+                fixture.controller,
+                sns.governance.governance,
+                "set_paused",
+                false,
+            )
+            .unwrap();
+        }
+        let before_top_up: io_nns_types::backing::ClaimAssetObservation =
+            super::update::<Result<_, ManagerApiError>>(
+                &fixture.pic,
+                fixture.controller,
+                sns.stream,
+                "observe_claim_assets",
+                (),
+            )
+            .unwrap();
+        let top_up_generation = final_stream
+            .latest_reconciliation_checkpoint
+            .as_ref()
+            .unwrap()
+            .generation
+            .checked_add(1)
+            .unwrap();
+        let top_up_credit = 100_000_000_u128;
+        let top_up_created_at = fixture.pic.get_time().as_nanos_since_unix_epoch();
+        let top_up_request = io_nns_types::backing::PreparePoolReconciliationArgs {
+            generation: top_up_generation,
+            target_e8s: before_top_up.pooled_parent_principal_e8s + top_up_credit,
+            action: io_nns_types::backing::PoolReconciliationAction::TopUp {
+                expected_credit_e8s: top_up_credit,
+            },
+            fee_e8s: ICP_FEE_E8S.into(),
+            snapshot_fingerprint: before_top_up.fingerprint,
+            memo: b"io-top-up-donation".to_vec(),
+            created_at_time_nanos: top_up_created_at,
+        };
+        let prepared: io_nns_types::backing::PoolProgress =
+            super::update::<Result<_, ManagerApiError>>(
+                &fixture.pic,
+                fixture.controller,
+                sns.stream,
+                "prepare_pool_reconciliation",
+                top_up_request,
+            )
+            .unwrap();
+        let io_nns_types::backing::PoolProgress::AwaitingTransfer(permit) = prepared else {
+            panic!("top-up did not return its exact permit: {prepared:?}");
+        };
+        let top_up_donation = 1_000_000_u128;
+        let donation_to_parent: Result<u64, IcpTransferError> = icrc::update_one(
+            &fixture.pic,
+            fixture.ledger,
+            Principal::anonymous(),
+            "transfer",
+            IcpTransferArgs {
+                memo: 33,
+                amount: IcpTokens {
+                    e8s: u64::try_from(top_up_donation).unwrap(),
+                },
+                fee: IcpTokens { e8s: ICP_FEE_E8S },
+                from_subaccount: None,
+                to: IcpAccount::new(
+                    permit.destination.owner,
+                    permit
+                        .destination
+                        .subaccount
+                        .clone()
+                        .map(|bytes| Subaccount(bytes.try_into().unwrap())),
+                )
+                .icp_account_identifier_bytes()
+                .to_vec(),
+                created_at_time: None,
+            },
+        );
+        donation_to_parent.unwrap();
+        let transfer: Result<candid::Nat, io_ledger_types::IcrcTransferError> = super::update(
+            &fixture.pic,
+            fixture.ledger,
+            sns.stream,
+            "icrc1_transfer",
+            io_ledger_types::IcrcTransferArg {
+                from_subaccount: Some(vec![3; 32]),
+                to: io_ledger_types::IcrcAccount {
+                    owner: permit.destination.owner,
+                    subaccount: permit.destination.subaccount.clone(),
+                },
+                amount: candid::Nat::from(top_up_credit),
+                fee: Some(candid::Nat::from(ICP_FEE_E8S)),
+                memo: Some(permit.memo.clone()),
+                created_at_time: Some(permit.prepared_at_nanos),
+            },
+        );
+        let top_up_block: u128 = transfer.unwrap().0.try_into().unwrap();
+        let _: Result<ManagerNnsProgress, ManagerApiError> = super::update(
+            &fixture.pic,
+            fixture.controller,
+            Principal::anonymous(),
+            "prove_active_transfer",
+            top_up_block,
+        );
+        let mut completed_top_up = None;
+        for _ in 0..8 {
+            let progress: Result<ManagerNnsProgress, ManagerApiError> = super::update(
+                &fixture.pic,
+                fixture.controller,
+                Principal::anonymous(),
+                "resume",
+                (),
+            );
+            if let Ok(ManagerNnsProgress::Pool(io_nns_types::backing::PoolProgress::Completed {
+                principal_e8s,
+                target_status,
+                ..
+            })) = progress
+            {
+                completed_top_up = Some((principal_e8s, target_status));
+                break;
+            }
+        }
+        assert_eq!(
+            completed_top_up,
+            Some((
+                before_top_up.pooled_parent_principal_e8s + top_up_credit + top_up_donation,
+                io_nns_types::backing::PoolTargetResult::OverTarget,
+            ))
+        );
+        super::update::<Result<(), ManagerApiError>>(
+            &fixture.pic,
+            fixture.controller,
+            sns.governance.governance,
+            "set_paused",
+            true,
+        )
+        .unwrap();
         eprintln!(
             "combined_real_summary event_round={} ordinary_maturity={} actual_mint={} reward_recipients={} redemption={redemption:?} phases={maturity_phases:?}",
             event.round,
@@ -2688,548 +3502,32 @@ mod tests {
             actual_minted_e8s,
             recipient_after.len(),
         );
+        eprintln!(
+            "account_semantic_combined jupiter_before_maturity={} two_week_captured_e8s={} permanent_credit_e8s={} claim_credit_e8s={} actual_nns_maturity_e8s={} staging_donation_e8s={} recipient_count={} redemption_gross_e8s={} redemption_net_e8s={} pooled_before_top_up_e8s={} top_up_credit_e8s={} top_up_donation_e8s={}",
+            jupiter_before_maturity,
+            completed.captured_e8s,
+            completed.permanent_credit_e8s,
+            completed.claim_credit_e8s,
+            actual_minted_e8s,
+            maturity_donation,
+            recipient_after.len(),
+            redemption.gross_icp_e8s,
+            redemption.net_icp_e8s,
+            before_top_up.pooled_parent_principal_e8s,
+            top_up_credit,
+            top_up_donation,
+        );
     }
 
     #[test]
-    #[ignore = "requires pinned real NNS Governance/ICP ledger, NNS manager Wasm, and POCKET_IC_BIN"]
-    fn controlled_manager_proves_baseline_target_and_maturity_through_exact_mint() {
-        use io_stream_manager::{
-            Lifecycle as StreamLifecycle, RewardBackingProgress, RewardEventClassification,
-            RewardEventObservation, Status as StreamStatus,
-        };
-        let _guard = crate::lock_test_env();
-        let fixture = super::create_zero_maturity_protected_neuron();
-        let stream = crate::pocketic_env::create_empty_application_canister(&fixture.pic);
-        let controlled_stream = super::install_controlled_stream(
-            &fixture,
-            stream,
-            super::debug_wasm("io_stream_manager"),
-        );
-        super::fund_manager_staging(&fixture);
-        let _ = super::install_manager(
-            &fixture,
-            stream,
-            controlled_stream.governance,
-            super::manager_wasm(),
-        );
+    #[ignore = "requires candidate SNS Governance/Root/ledger, pinned real NNS Governance/ICP ledger, current IO release Wasms, and POCKET_IC_BIN"]
+    fn combined_real_sns_nns_io_lifecycle_reconciles_maturity_and_redemption() {
+        run_combined_real_sns_nns_io_lifecycle(false);
+    }
 
-        let unpause: Result<(), ManagerApiError> = super::update(
-            &fixture.pic,
-            fixture.controller,
-            controlled_stream.governance,
-            "set_paused",
-            false,
-        );
-        assert_eq!(unpause, Ok(()));
-        let status: ManagerStatus = super::query(
-            &fixture.pic,
-            fixture.controller,
-            Principal::anonymous(),
-            "get_status",
-            (),
-        );
-        assert_eq!(status.lifecycle, ManagerLifecycle::Ready);
-        assert!(status.two_week_maturity_baseline_reconciled);
-
-        fixture
-            .pic
-            .upgrade_canister(
-                fixture.controller,
-                super::manager_wasm(),
-                encode_one(()).unwrap(),
-                None,
-            )
-            .unwrap();
-        let status: ManagerStatus = super::query(
-            &fixture.pic,
-            fixture.controller,
-            Principal::anonymous(),
-            "get_status",
-            (),
-        );
-        assert_eq!(status.lifecycle, ManagerLifecycle::Paused);
-        assert!(status.two_week_maturity_baseline_reconciled);
-        let unpause: Result<(), ManagerApiError> = super::update(
-            &fixture.pic,
-            fixture.controller,
-            controlled_stream.governance,
-            "set_paused",
-            false,
-        );
-        assert_eq!(unpause, Ok(()));
-
-        let under_target: Result<io_receipt_types::TwoWeekBackingReadiness, ManagerApiError> =
-            super::update(
-                &fixture.pic,
-                fixture.controller,
-                stream,
-                "reconcile_two_week_backing_readiness",
-                ReconcileTwoWeekBackingReadinessArgs {
-                    target_e8s: u128::from(super::PROTECTED_STAKE_E8S + 100_000_000),
-                },
-            );
-        assert_eq!(
-            under_target,
-            Ok(io_receipt_types::TwoWeekBackingReadiness::NotReady(
-                io_receipt_types::BackingNotReadyReason::UnderTarget
-            ))
-        );
-        let readiness: Result<io_receipt_types::TwoWeekBackingReadiness, ManagerApiError> =
-            super::update(
-                &fixture.pic,
-                fixture.controller,
-                stream,
-                "reconcile_two_week_backing_readiness",
-                ReconcileTwoWeekBackingReadinessArgs {
-                    target_e8s: super::PROTECTED_STAKE_E8S.into(),
-                },
-            );
-        assert_eq!(
-            readiness,
-            Ok(io_receipt_types::TwoWeekBackingReadiness::NotReady(
-                io_receipt_types::BackingNotReadyReason::BelowThreshold
-            ))
-        );
-
-        let over_target: Result<io_receipt_types::TwoWeekBackingReadiness, ManagerApiError> =
-            super::update(
-                &fixture.pic,
-                fixture.controller,
-                stream,
-                "reconcile_two_week_backing_readiness",
-                ReconcileTwoWeekBackingReadinessArgs {
-                    target_e8s: super::RECONCILED_TARGET_E8S.into(),
-                },
-            );
-        assert_eq!(
-            over_target,
-            Ok(io_receipt_types::TwoWeekBackingReadiness::NotReady(
-                io_receipt_types::BackingNotReadyReason::OverTarget
-            ))
-        );
-        let status: ManagerStatus = super::query(
-            &fixture.pic,
-            fixture.controller,
-            Principal::anonymous(),
-            "get_status",
-            (),
-        );
-        assert_eq!(status.latest_started_two_week_generation, 0);
-        assert_eq!(status.active_operation.as_deref(), Some("Unwind"));
-        assert_eq!(status.unwinding_child_principal_e8s, 0);
-
-        let mut unwind_phases = Vec::new();
-        for step in 0..2 {
-            let progress: Result<ManagerNnsProgress, ManagerApiError> = super::update(
-                &fixture.pic,
-                fixture.controller,
-                Principal::anonymous(),
-                "resume",
-                (),
-            );
-            let unwind_status: ManagerStatus = super::query(
-                &fixture.pic,
-                fixture.controller,
-                Principal::anonymous(),
-                "get_status",
-                (),
-            );
-            unwind_phases.push(format!("{progress:?}; {unwind_status:?}"));
-            if step == 0 {
-                assert_eq!(
-                    super::neuron(
-                        &fixture.pic,
-                        fixture.governance,
-                        fixture.controller,
-                        fixture.neuron_id,
-                    )
-                    .cached_neuron_stake_e8s,
-                    super::RECONCILED_TARGET_E8S,
-                    "{unwind_phases:?}"
-                );
-            }
-            fixture
-                .pic
-                .upgrade_canister(
-                    fixture.controller,
-                    super::manager_wasm(),
-                    encode_one(()).unwrap(),
-                    None,
-                )
-                .unwrap();
-        }
-        let status: ManagerStatus = super::query(
-            &fixture.pic,
-            fixture.controller,
-            Principal::anonymous(),
-            "get_status",
-            (),
-        );
-        assert!(status.active_operation.is_none(), "{unwind_phases:?}");
-        assert!(
-            status.unwinding_child_principal_e8s > 0,
-            "{unwind_phases:?}"
-        );
-        assert_eq!(
-            super::neuron(
-                &fixture.pic,
-                fixture.governance,
-                fixture.controller,
-                fixture.neuron_id,
-            )
-            .cached_neuron_stake_e8s,
-            super::RECONCILED_TARGET_E8S
-        );
-        super::fund_stream_liquidity(&fixture, stream, 0);
-        let unpause: Result<(), ManagerApiError> = super::update(
-            &fixture.pic,
-            fixture.controller,
-            controlled_stream.governance,
-            "set_paused",
-            false,
-        );
-        assert_eq!(unpause, Ok(()));
-        let lower_target: Result<io_receipt_types::TwoWeekBackingReadiness, ManagerApiError> =
-            super::update(
-                &fixture.pic,
-                fixture.controller,
-                stream,
-                "reconcile_two_week_backing_readiness",
-                ReconcileTwoWeekBackingReadinessArgs {
-                    target_e8s: u128::from(super::RECONCILED_TARGET_E8S - 100_000_000),
-                },
-            );
-        assert_eq!(
-            lower_target,
-            Ok(io_receipt_types::TwoWeekBackingReadiness::NotReady(
-                io_receipt_types::BackingNotReadyReason::OverTarget
-            ))
-        );
-        let status: ManagerStatus = super::query(
-            &fixture.pic,
-            fixture.controller,
-            Principal::anonymous(),
-            "get_status",
-            (),
-        );
-        assert!(status.active_operation.is_none());
-        assert!(status.unwinding_child_principal_e8s > 0);
-        let readiness: Result<io_receipt_types::TwoWeekBackingReadiness, ManagerApiError> =
-            super::update(
-                &fixture.pic,
-                fixture.controller,
-                stream,
-                "reconcile_two_week_backing_readiness",
-                ReconcileTwoWeekBackingReadinessArgs {
-                    target_e8s: super::RECONCILED_TARGET_E8S.into(),
-                },
-            );
-        assert_eq!(
-            readiness,
-            Ok(io_receipt_types::TwoWeekBackingReadiness::NotReady(
-                io_receipt_types::BackingNotReadyReason::BelowThreshold
-            ))
-        );
-
-        let stream_unpause: Result<(), io_stream_manager::ApiError> = super::update(
-            &fixture.pic,
-            stream,
-            controlled_stream.governance,
-            "set_paused",
-            false,
-        );
-        assert_eq!(stream_unpause, Ok(()));
-        let baseline: StreamStatus = super::query(
-            &fixture.pic,
-            stream,
-            Principal::anonymous(),
-            "get_status",
-            (),
-        );
-        assert_eq!(baseline.lifecycle, StreamLifecycle::Ready);
-        assert_eq!(baseline.processed_reward_event_count, 0);
-        let event_set: Result<(), String> = super::update(
-            &fixture.pic,
-            controlled_stream.governance,
-            Principal::anonymous(),
-            "debug_set_latest_reward_event",
-            LatestRewardEventFixture {
-                round: 2,
-                rounds_since_last_distribution: 1,
-                end_timestamp_seconds: 86_401,
-                settled_proposal_ids: vec![],
-                neuron_reward_shares: vec![],
-            },
-        );
-        event_set.unwrap();
-        let observation: Result<RewardEventObservation, io_stream_manager::ApiError> =
-            super::update(
-                &fixture.pic,
-                stream,
-                Principal::anonymous(),
-                "resume_reward_work",
-                (),
-            );
-        match observation {
-            Ok(observation) => assert_eq!(
-                observation.classification,
-                RewardEventClassification::NoProposalFallback
-            ),
-            Err(io_stream_manager::ApiError::Pending(message))
-                if message == "SNS reward event has not advanced" =>
-            {
-                let status: StreamStatus = super::query(
-                    &fixture.pic,
-                    stream,
-                    Principal::anonymous(),
-                    "get_status",
-                    (),
-                );
-                assert_eq!(status.processed_reward_event_count, 1);
-                assert_eq!(
-                    status.latest_reward_event_classification,
-                    Some(RewardEventClassification::NoProposalFallback)
-                );
-            }
-            other => panic!("controlled entitlement observation failed: {other:?}"),
-        }
-
-        let maturity = super::earn_maturity(&fixture);
-        assert!(maturity >= 200_000_000);
-        let prepared: Result<RewardBackingProgress, io_stream_manager::ApiError> = super::update(
-            &fixture.pic,
-            stream,
-            Principal::anonymous(),
-            "resume_reward_backing",
-            (),
-        );
-        assert_eq!(
-            prepared,
-            Ok(RewardBackingProgress::MaturityPrepared { generation: 1 })
-        );
-
-        let mut seen = Vec::new();
-        for _ in 0..12 {
-            let progress: Result<ManagerNnsProgress, ManagerApiError> = super::update(
-                &fixture.pic,
-                fixture.controller,
-                Principal::anonymous(),
-                "resume",
-                (),
-            );
-            seen.push(format!("{progress:?}"));
-            if progress
-                == Ok(ManagerNnsProgress::Maturity(
-                    ManagerMaturityProgress::AwaitingMintProof,
-                ))
-            {
-                break;
-            }
-            fixture
-                .pic
-                .upgrade_canister(
-                    fixture.controller,
-                    super::manager_wasm(),
-                    encode_one(()).unwrap(),
-                    None,
-                )
-                .unwrap();
-        }
-        assert!(
-            seen.last()
-                .is_some_and(|value| value.contains("AwaitingMintProof")),
-            "{seen:?}"
-        );
-        let pending = super::neuron(
-            &fixture.pic,
-            fixture.governance,
-            fixture.controller,
-            fixture.neuron_id,
-        );
-        let disbursements = pending.maturity_disbursements_in_progress.unwrap();
-        assert_eq!(disbursements.len(), 1);
-        let finalization = disbursements[0]
-            .finalize_disbursement_timestamp_seconds
-            .unwrap();
-        let now = fixture.pic.get_time().as_nanos_since_unix_epoch() / 1_000_000_000;
-        fixture
-            .pic
-            .advance_time(Duration::from_secs(finalization - now + 1));
-        for _ in 0..100 {
-            fixture.pic.tick();
-        }
-        let destination = IcpAccount::new(fixture.controller, Some(Subaccount([2; 32])))
-            .icp_account_identifier_bytes();
-        let (mint_block, actual_minted_e8s) = super::find_mint(&fixture, &destination);
-        let proved: Result<ManagerMaturityProgress, ManagerApiError> = decode_one(
-            &fixture
-                .pic
-                .update_call(
-                    fixture.controller,
-                    Principal::anonymous(),
-                    "prove_maturity_mint",
-                    encode_args((ManagerMaturityKind::TwoWeek, u128::from(mint_block))).unwrap(),
-                )
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(proved, Ok(ManagerMaturityProgress::MintProved));
-
-        let before: candid::Nat = super::query(
-            &fixture.pic,
-            controlled_stream.io_ledger,
-            Principal::anonymous(),
-            "icrc1_balance_of",
-            controlled_stream.neuron_destination.clone(),
-        );
-        let mut delivery = Vec::new();
-        let mut stream_upgraded = false;
-        for _ in 0..24 {
-            let progress: Result<ManagerNnsProgress, ManagerApiError> = super::update(
-                &fixture.pic,
-                fixture.controller,
-                Principal::anonymous(),
-                "resume",
-                (),
-            );
-            delivery.push(format!("{progress:?}"));
-            let after: candid::Nat = super::query(
-                &fixture.pic,
-                controlled_stream.io_ledger,
-                Principal::anonymous(),
-                "icrc1_balance_of",
-                controlled_stream.neuron_destination.clone(),
-            );
-            if !stream_upgraded && after > before {
-                fixture
-                    .pic
-                    .upgrade_canister(
-                        stream,
-                        controlled_stream.stream_wasm.clone(),
-                        encode_one(()).unwrap(),
-                        None,
-                    )
-                    .unwrap();
-                stream_upgraded = true;
-            }
-            if matches!(
-                progress,
-                Ok(ManagerNnsProgress::Maturity(
-                    ManagerMaturityProgress::Completed(_)
-                ))
-            ) {
-                break;
-            }
-            fixture
-                .pic
-                .upgrade_canister(
-                    fixture.controller,
-                    super::manager_wasm(),
-                    encode_one(()).unwrap(),
-                    None,
-                )
-                .unwrap();
-        }
-        let after: candid::Nat = super::query(
-            &fixture.pic,
-            controlled_stream.io_ledger,
-            Principal::anonymous(),
-            "icrc1_balance_of",
-            controlled_stream.neuron_destination,
-        );
-        assert!(after > before, "{delivery:?}");
-        assert!(stream_upgraded, "{delivery:?}");
-        let status: ManagerStatus = super::query(
-            &fixture.pic,
-            fixture.controller,
-            Principal::anonymous(),
-            "get_status",
-            (),
-        );
-        assert_eq!(
-            status.latest_completed_two_week_generation, 1,
-            "{delivery:?}"
-        );
-        assert_eq!(status.latest_started_two_week_generation, 1);
-
-        let stream_unpause: Result<(), io_stream_manager::ApiError> = super::update(
-            &fixture.pic,
-            stream,
-            controlled_stream.governance,
-            "set_paused",
-            false,
-        );
-        assert_eq!(stream_unpause, Ok(()));
-        let event_set: Result<(), String> = super::update(
-            &fixture.pic,
-            controlled_stream.governance,
-            Principal::anonymous(),
-            "debug_set_latest_reward_event",
-            LatestRewardEventFixture {
-                round: 3,
-                rounds_since_last_distribution: 1,
-                end_timestamp_seconds: 172_801,
-                settled_proposal_ids: vec![],
-                neuron_reward_shares: vec![],
-            },
-        );
-        event_set.unwrap();
-        let _: Result<RewardEventObservation, io_stream_manager::ApiError> = super::update(
-            &fixture.pic,
-            stream,
-            Principal::anonymous(),
-            "resume_reward_work",
-            (),
-        );
-        let next: StreamStatus = super::query(
-            &fixture.pic,
-            stream,
-            Principal::anonymous(),
-            "get_status",
-            (),
-        );
-        assert_eq!(next.latest_entitlement_batch_generation, 1);
-        assert_eq!(
-            next.accumulated_policy_credit,
-            io_reward_policy::DAILY_EVENT_CREDIT
-        );
-        assert!(next.pending_entitlement_batch_policy_credit.is_none());
-        assert_eq!(next.next_nns_receipt_sequence, 1);
-
-        fixture.pic.advance_time(Duration::from_secs(
-            u64::from(super::EIGHT_YEARS_SECONDS) + 30 * 24 * 60 * 60,
-        ));
-        for _ in 0..20 {
-            fixture.pic.tick();
-        }
-        for _ in 0..3 {
-            let _: Result<ManagerNnsProgress, ManagerApiError> = super::update(
-                &fixture.pic,
-                fixture.controller,
-                Principal::anonymous(),
-                "resume",
-                (),
-            );
-            fixture
-                .pic
-                .upgrade_canister(
-                    fixture.controller,
-                    super::manager_wasm(),
-                    encode_one(()).unwrap(),
-                    None,
-                )
-                .unwrap();
-        }
-        let status: ManagerStatus = super::query(
-            &fixture.pic,
-            fixture.controller,
-            Principal::anonymous(),
-            "get_status",
-            (),
-        );
-        assert_eq!(status.unwinding_child_principal_e8s, 0);
-        eprintln!(
-            "controlled_unwind_phases={unwind_phases:?} controlled_manager_phases={seen:?} controlled_delivery={delivery:?} mint_block={mint_block} actual_minted_e8s={actual_minted_e8s}"
-        );
+    #[test]
+    #[ignore = "requires candidate SNS Governance/Root/ledger, pinned real NNS Governance/ICP ledger, current IO release Wasms, and POCKET_IC_BIN"]
+    fn combined_real_jupiter_then_two_week_maturity_accepts_donations() {
+        run_combined_real_sns_nns_io_lifecycle(true);
     }
 }

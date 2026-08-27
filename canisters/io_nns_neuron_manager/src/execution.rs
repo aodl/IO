@@ -1,22 +1,51 @@
 use crate::{
     api::ApiError,
     jupiter::{NeuronSnapshot, StreamReceiptPermit},
-    maturity::{
-        CanonicalDisbursementEvidence, PendingMaturityDisbursement, DISBURSEMENT_DELAY_SECONDS,
-    },
+    maturity::{CanonicalDisbursementEvidence, DISBURSEMENT_DELAY_SECONDS},
     state::{Account, NnsConfig},
     transfer::{NnsTransferIntent, TransferOutcomeClassification},
 };
 use candid::{CandidType, Nat, Principal, Reserved};
 use ic_cdk::call::Call;
 use io_ledger_boundary::{IcrcTransferArg, IcrcTransferError, IcrcTransferResult};
-use io_receipt_types::{CompleteLiquidReceiptArgs, PrepareLiquidReceiptArgs, ReceiptKind};
-pub use io_receipt_types::{CompletedReceiptResult, LiquidReceiptProgress as StreamLiquidProgress};
+pub use io_nns_types::backing::split_child_subaccount;
+use io_nns_types::backing::{FollowPolicy, POOLED_PARENT_DELAY_SECONDS};
+pub use io_receipt_types::ClaimBackingReceiptProgress as StreamLiquidProgress;
+use io_receipt_types::{
+    ClaimBackingReceiptKind, ClaimBackingReceiptPermit, PrepareClaimBackingReceiptArgs,
+    ProveClaimBackingReceiptArgs,
+};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 pub enum ExactTransferOutcome {
     Succeeded(u128),
     Paused(TransferOutcomeClassification, String),
+}
+
+pub enum SplitCallOutcome {
+    Created(u64),
+    RejectedNoEffect(String),
+    Ambiguous(String),
+}
+
+pub enum GovernanceCallOutcome<T> {
+    Succeeded(T),
+    RejectedNoEffect(String),
+    Ambiguous(String),
+}
+
+pub fn parent_staking_account(config: &NnsConfig, memo: u64) -> Account {
+    let controller = ic_cdk::api::canister_self();
+    let mut hasher = Sha256::new();
+    hasher.update([0x0c]);
+    hasher.update(b"neuron-stake");
+    hasher.update(controller.as_slice());
+    hasher.update(memo.to_be_bytes());
+    Account {
+        owner: config.nns_governance,
+        subaccount: Some(hasher.finalize().to_vec()),
+    }
 }
 
 pub fn classify_transfer(
@@ -59,21 +88,68 @@ pub struct NeuronObservation {
     pub auto_stake_maturity: bool,
     pub maturity_disbursements: Vec<MaturityDisbursement>,
     pub dissolve_state: Option<DissolveState>,
+    pub followees: Vec<(i32, Vec<u64>)>,
+    pub voting_power_refreshed_timestamp_seconds: Option<u64>,
 }
 
-pub const APPROVED_REWARD_BACKING_DISSOLVE_DELAY_SECONDS: u64 = 252_460_800;
+pub const APPROVED_PERMANENT_DISSOLVE_DELAY_SECONDS: u64 = 63_115_200;
 
-pub fn validate_maturity_configuration(observation: &NeuronObservation) -> Result<(), String> {
+pub fn validate_permanent_configuration(observation: &NeuronObservation) -> Result<(), String> {
     if !observation.auto_stake_maturity
         && observation.dissolve_state
             == Some(DissolveState::DissolveDelaySeconds(
-                APPROVED_REWARD_BACKING_DISSOLVE_DELAY_SECONDS,
+                APPROVED_PERMANENT_DISSOLVE_DELAY_SECONDS,
             ))
     {
         Ok(())
     } else {
-        Err("protected NNS neuron auto-stake or approved dissolve configuration drifted".into())
+        Err("configured NNS neuron auto-stake or approved dissolve configuration drifted".into())
     }
+}
+
+pub fn validate_parent_configuration(
+    observation: &NeuronObservation,
+    policy: FollowPolicy,
+) -> Result<(), String> {
+    let expected = [0, 4, 14];
+    let exact_following = observation.followees.len() == expected.len()
+        && expected.iter().all(|topic| {
+            observation
+                .followees
+                .iter()
+                .any(|(actual, ids)| actual == topic && ids == &[policy.followee_neuron_id])
+        });
+    if !observation.auto_stake_maturity
+        && observation.dissolve_state
+            == Some(DissolveState::DissolveDelaySeconds(
+                POOLED_PARENT_DELAY_SECONDS,
+            ))
+        && exact_following
+        && observation
+            .voting_power_refreshed_timestamp_seconds
+            .is_some_and(|timestamp| timestamp > 0)
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "pooled parent configuration drifted: dissolve_state={:?}, auto_stake={}, followees={:?}, voting_power_refreshed_at={:?}",
+            observation.dissolve_state,
+            observation.auto_stake_maturity,
+            observation.followees,
+            observation.voting_power_refreshed_timestamp_seconds
+        ))
+    }
+}
+
+pub fn has_follow_policy(observation: &NeuronObservation, policy: FollowPolicy) -> bool {
+    let expected = [0, 4, 14];
+    observation.followees.len() == expected.len()
+        && expected.iter().all(|topic| {
+            observation
+                .followees
+                .iter()
+                .any(|(actual, ids)| actual == topic && ids == &[policy.followee_neuron_id])
+        })
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -83,8 +159,14 @@ struct GovernanceError {
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
+struct NetworkEconomics {
+    transaction_fee_e8s: u64,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
 struct Neuron {
     id: Option<NeuronId>,
+    controller: Option<Principal>,
     account: Vec<u8>,
     cached_neuron_stake_e8s: u64,
     maturity_e8s_equivalent: u64,
@@ -92,6 +174,13 @@ struct Neuron {
     auto_stake_maturity: Option<bool>,
     maturity_disbursements_in_progress: Option<Vec<MaturityDisbursement>>,
     dissolve_state: Option<DissolveState>,
+    followees: Vec<(i32, Followees)>,
+    voting_power_refreshed_timestamp_seconds: Option<u64>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct Followees {
+    followees: Vec<NeuronId>,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -132,10 +221,22 @@ struct ClaimOrRefresh {
 #[derive(Clone, Debug, CandidType, Deserialize)]
 enum ClaimBy {
     NeuronIdOrSubaccount(Empty),
+    MemoAndController(ClaimFromAccount),
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct ClaimFromAccount {
+    controller: Option<Principal>,
+    memo: u64,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 struct Empty {}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct ClaimOrRefreshResponse {
+    refreshed_neuron_id: Option<NeuronId>,
+}
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 enum Command {
@@ -144,8 +245,9 @@ enum Command {
     Split(Split),
     Merge(Merge),
     Disburse(Disburse),
-    StakeMaturity(StakeMaturity),
     DisburseMaturity(DisburseMaturity),
+    SetFollowing(SetFollowing),
+    RefreshVotingPower(Empty),
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -157,6 +259,23 @@ struct Configure {
 enum ConfigureOperation {
     StopDissolving(Empty),
     StartDissolving(Empty),
+    IncreaseDissolveDelay(IncreaseDissolveDelay),
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct IncreaseDissolveDelay {
+    additional_dissolve_delay_seconds: u32,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct SetFollowing {
+    topic_following: Option<Vec<FolloweesForTopic>>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct FolloweesForTopic {
+    followees: Option<Vec<NeuronId>>,
+    topic: Option<i32>,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -187,11 +306,6 @@ struct AccountIdentifier {
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct StakeMaturity {
-    percentage_to_stake: Option<u32>,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
 struct DisburseMaturity {
     percentage_to_disburse: u32,
     to_account: Option<NnsAccount>,
@@ -201,13 +315,14 @@ struct DisburseMaturity {
 #[derive(Clone, Debug, CandidType, Deserialize)]
 enum CommandResponse {
     Error(GovernanceError),
-    ClaimOrRefresh(Reserved),
+    ClaimOrRefresh(ClaimOrRefreshResponse),
     Configure(Reserved),
     Split(SpawnResponse),
     Merge(Reserved),
     Disburse(DisburseResponse),
-    StakeMaturity(StakeMaturityResponse),
     DisburseMaturity(DisburseMaturityResponse),
+    SetFollowing(Reserved),
+    RefreshVotingPower(Reserved),
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -218,12 +333,6 @@ struct SpawnResponse {
 #[derive(Clone, Debug, CandidType, Deserialize)]
 struct DisburseResponse {
     transfer_block_height: u64,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-struct StakeMaturityResponse {
-    maturity_e8s: u64,
-    staked_maturity_e8s: u64,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -285,7 +394,98 @@ pub async fn query_neuron_observation(
             .maturity_disbursements_in_progress
             .unwrap_or_default(),
         dissolve_state: neuron.dissolve_state,
+        followees: neuron
+            .followees
+            .into_iter()
+            .map(|(topic, followees)| {
+                (
+                    topic,
+                    followees.followees.into_iter().map(|id| id.id).collect(),
+                )
+            })
+            .collect(),
+        voting_power_refreshed_timestamp_seconds: neuron.voting_power_refreshed_timestamp_seconds,
     })
+}
+
+pub async fn claim_parent(config: &NnsConfig, memo: u64) -> Result<u64, ApiError> {
+    let response = manage(
+        config,
+        0,
+        Command::ClaimOrRefresh(ClaimOrRefresh {
+            by: Some(ClaimBy::MemoAndController(ClaimFromAccount {
+                controller: Some(ic_cdk::api::canister_self()),
+                memo,
+            })),
+        }),
+    )
+    .await?;
+    match response {
+        Some(CommandResponse::ClaimOrRefresh(value)) => value
+            .refreshed_neuron_id
+            .map(|id| id.id)
+            .ok_or_else(|| ApiError::Invalid("ClaimOrRefresh returned no parent ID".into())),
+        Some(CommandResponse::Error(error)) => Err(governance_error("ClaimOrRefresh", error)),
+        _ => Err(ApiError::Invalid(
+            "parent claim returned the wrong response".into(),
+        )),
+    }
+}
+
+pub async fn increase_delay(
+    config: &NnsConfig,
+    neuron_id: u64,
+    additional_seconds: u32,
+) -> Result<(), ApiError> {
+    configure(
+        config,
+        neuron_id,
+        ConfigureOperation::IncreaseDissolveDelay(IncreaseDissolveDelay {
+            additional_dissolve_delay_seconds: additional_seconds,
+        }),
+    )
+    .await
+}
+
+pub async fn set_following(
+    config: &NnsConfig,
+    neuron_id: u64,
+    policy: FollowPolicy,
+) -> Result<(), ApiError> {
+    let topic_following = [0, 4, 14]
+        .into_iter()
+        .map(|topic| FolloweesForTopic {
+            followees: Some(vec![NeuronId {
+                id: policy.followee_neuron_id,
+            }]),
+            topic: Some(topic),
+        })
+        .collect();
+    match manage(
+        config,
+        neuron_id,
+        Command::SetFollowing(SetFollowing {
+            topic_following: Some(topic_following),
+        }),
+    )
+    .await?
+    {
+        Some(CommandResponse::SetFollowing(_)) => Ok(()),
+        Some(CommandResponse::Error(error)) => Err(governance_error("SetFollowing", error)),
+        _ => Err(ApiError::Invalid(
+            "SetFollowing returned the wrong response".into(),
+        )),
+    }
+}
+
+pub async fn refresh_voting_power(config: &NnsConfig, neuron_id: u64) -> Result<(), ApiError> {
+    match manage(config, neuron_id, Command::RefreshVotingPower(Empty {})).await? {
+        Some(CommandResponse::RefreshVotingPower(_)) => Ok(()),
+        Some(CommandResponse::Error(error)) => Err(governance_error("RefreshVotingPower", error)),
+        _ => Err(ApiError::Invalid(
+            "RefreshVotingPower returned the wrong response".into(),
+        )),
+    }
 }
 
 pub async fn refresh_neuron(config: &NnsConfig, neuron_id: u64) -> Result<(), ApiError> {
@@ -312,54 +512,74 @@ pub async fn refresh_neuron(config: &NnsConfig, neuron_id: u64) -> Result<(), Ap
     }
 }
 
-pub async fn stake_maturity(config: &NnsConfig, neuron_id: u64) -> Result<(u64, u64), ApiError> {
-    let response = manage(
-        config,
-        neuron_id,
-        Command::StakeMaturity(StakeMaturity {
-            percentage_to_stake: Some(40),
-        }),
-    )
-    .await?;
-    match response {
-        Some(CommandResponse::StakeMaturity(value)) => {
-            Ok((value.maturity_e8s, value.staked_maturity_e8s))
-        }
-        Some(CommandResponse::Error(error)) => Err(governance_error("StakeMaturity", error)),
-        _ => Err(ApiError::Invalid(
-            "StakeMaturity returned the wrong command response".into(),
-        )),
-    }
-}
-
 pub async fn disburse_maturity(
     config: &NnsConfig,
     neuron_id: u64,
     destination: &Account,
-) -> Result<u64, ApiError> {
-    let response = manage(
-        config,
-        neuron_id,
-        Command::DisburseMaturity(DisburseMaturity {
-            percentage_to_disburse: 100,
-            to_account: Some(NnsAccount {
-                owner: Some(destination.owner),
-                subaccount: destination.subaccount.clone(),
-            }),
-            to_account_identifier: None,
-        }),
-    )
-    .await?;
-    match response {
+) -> GovernanceCallOutcome<u64> {
+    let response = Call::bounded_wait(config.nns_governance, "manage_neuron")
+        .with_arg(ManageNeuron {
+            id: None,
+            neuron_id_or_subaccount: Some(NeuronIdOrSubaccount::NeuronId(NeuronId {
+                id: neuron_id,
+            })),
+            command: Some(Command::DisburseMaturity(DisburseMaturity {
+                percentage_to_disburse: 100,
+                to_account: Some(NnsAccount {
+                    owner: Some(destination.owner),
+                    subaccount: destination.subaccount.clone(),
+                }),
+                to_account_identifier: None,
+            })),
+        })
+        .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            return GovernanceCallOutcome::Ambiguous(format!(
+                "DisburseMaturity transport outcome is ambiguous: {error:?}"
+            ))
+        }
+    };
+    let response = match response.candid::<ManageNeuronResponse>() {
+        Ok(response) => response,
+        Err(error) => {
+            return GovernanceCallOutcome::Ambiguous(format!(
+                "DisburseMaturity response decode is ambiguous: {error:?}"
+            ))
+        }
+    };
+    match response.command {
         Some(CommandResponse::DisburseMaturity(value)) => value
             .amount_disbursed_e8s
             .filter(|amount| *amount > 0)
-            .ok_or_else(|| ApiError::Invalid("DisburseMaturity returned no amount".into())),
-        Some(CommandResponse::Error(error)) => Err(governance_error("DisburseMaturity", error)),
-        _ => Err(ApiError::Invalid(
-            "DisburseMaturity returned the wrong command response".into(),
+            .map(GovernanceCallOutcome::Succeeded)
+            .unwrap_or_else(|| {
+                GovernanceCallOutcome::Ambiguous(
+                    "DisburseMaturity response omitted the effected amount".into(),
+                )
+            }),
+        Some(CommandResponse::Error(error)) => GovernanceCallOutcome::RejectedNoEffect(format!(
+            "DisburseMaturity rejected ({}): {}",
+            error.error_type, error.error_message
         )),
+        _ => GovernanceCallOutcome::Ambiguous(
+            "DisburseMaturity returned a malformed command response".into(),
+        ),
     }
+}
+
+pub async fn nns_transaction_fee(config: &NnsConfig) -> Result<u128, ApiError> {
+    let economics: NetworkEconomics =
+        Call::bounded_wait(config.nns_governance, "get_network_economics_parameters")
+            .with_arg(())
+            .await
+            .map_err(|error| ApiError::Pending(format!("NNS economics query failed: {error:?}")))?
+            .candid()
+            .map_err(|error| {
+                ApiError::Invalid(format!("NNS economics decode failed: {error:?}"))
+            })?;
+    Ok(economics.transaction_fee_e8s.into())
 }
 
 pub async fn split_neuron(
@@ -367,28 +587,48 @@ pub async fn split_neuron(
     parent_neuron_id: u64,
     amount_e8s: u128,
     memo: u64,
-) -> Result<u64, ApiError> {
+) -> Result<SplitCallOutcome, ApiError> {
     let amount_e8s = u64::try_from(amount_e8s)
         .map_err(|_| ApiError::Invalid("unwind excess does not fit NNS nat64".into()))?;
-    match manage(
-        config,
-        parent_neuron_id,
-        Command::Split(Split {
-            amount_e8s,
-            memo: Some(memo),
-        }),
-    )
-    .await?
-    {
-        Some(CommandResponse::Split(value)) => value
-            .created_neuron_id
-            .map(|id| id.id)
-            .ok_or_else(|| ApiError::Invalid("NNS Split returned no child neuron".into())),
-        Some(CommandResponse::Error(error)) => Err(governance_error("Split", error)),
-        _ => Err(ApiError::Invalid(
-            "Split returned the wrong command response".into(),
+    let response = Call::bounded_wait(config.nns_governance, "manage_neuron")
+        .with_arg(ManageNeuron {
+            id: None,
+            neuron_id_or_subaccount: Some(NeuronIdOrSubaccount::NeuronId(NeuronId {
+                id: parent_neuron_id,
+            })),
+            command: Some(Command::Split(Split {
+                amount_e8s,
+                memo: Some(memo),
+            })),
+        })
+        .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            return Ok(SplitCallOutcome::Ambiguous(format!(
+                "NNS Split transport outcome is ambiguous: {error:?}"
+            )))
+        }
+    };
+    let response = match response.candid::<ManageNeuronResponse>() {
+        Ok(response) => response,
+        Err(error) => {
+            return Ok(SplitCallOutcome::Ambiguous(format!(
+                "NNS Split response decode is ambiguous: {error:?}"
+            )))
+        }
+    };
+    Ok(match response.command {
+        Some(CommandResponse::Split(value)) => match value.created_neuron_id {
+            Some(id) if id.id > 0 => SplitCallOutcome::Created(id.id),
+            _ => SplitCallOutcome::Ambiguous("NNS Split response omitted the child ID".into()),
+        },
+        Some(CommandResponse::Error(error)) => SplitCallOutcome::RejectedNoEffect(format!(
+            "Split rejected ({}): {}",
+            error.error_type, error.error_message
         )),
-    }
+        _ => SplitCallOutcome::Ambiguous("NNS Split returned a malformed command response".into()),
+    })
 }
 
 pub async fn set_dissolving(
@@ -401,6 +641,14 @@ pub async fn set_dissolving(
     } else {
         ConfigureOperation::StopDissolving(Empty {})
     };
+    configure(config, neuron_id, operation).await
+}
+
+async fn configure(
+    config: &NnsConfig,
+    neuron_id: u64,
+    operation: ConfigureOperation,
+) -> Result<(), ApiError> {
     match manage(
         config,
         neuron_id,
@@ -446,25 +694,49 @@ pub async fn disburse_neuron(
     config: &NnsConfig,
     child_neuron_id: u64,
     destination: &Account,
-) -> Result<u128, ApiError> {
+) -> Result<GovernanceCallOutcome<u128>, ApiError> {
     let hash =
         io_ledger_boundary::icp_account_identifier(destination).map_err(ApiError::Invalid)?;
-    match manage(
-        config,
-        child_neuron_id,
-        Command::Disburse(Disburse {
-            to_account: Some(AccountIdentifier { hash }),
-            amount: None,
-        }),
-    )
-    .await?
-    {
-        Some(CommandResponse::Disburse(value)) => Ok(value.transfer_block_height.into()),
-        Some(CommandResponse::Error(error)) => Err(governance_error("Disburse", error)),
-        _ => Err(ApiError::Invalid(
-            "Disburse returned the wrong command response".into(),
+    let response = Call::bounded_wait(config.nns_governance, "manage_neuron")
+        .with_arg(ManageNeuron {
+            id: None,
+            neuron_id_or_subaccount: Some(NeuronIdOrSubaccount::NeuronId(NeuronId {
+                id: child_neuron_id,
+            })),
+            command: Some(Command::Disburse(Disburse {
+                to_account: Some(AccountIdentifier { hash }),
+                amount: None,
+            })),
+        })
+        .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            return Ok(GovernanceCallOutcome::Ambiguous(format!(
+                "NNS Disburse transport outcome is ambiguous: {error:?}"
+            )))
+        }
+    };
+    let response = match response.candid::<ManageNeuronResponse>() {
+        Ok(response) => response,
+        Err(error) => {
+            return Ok(GovernanceCallOutcome::Ambiguous(format!(
+                "NNS Disburse response decode is ambiguous: {error:?}"
+            )))
+        }
+    };
+    Ok(match response.command {
+        Some(CommandResponse::Disburse(value)) => {
+            GovernanceCallOutcome::Succeeded(value.transfer_block_height.into())
+        }
+        Some(CommandResponse::Error(error)) => GovernanceCallOutcome::RejectedNoEffect(format!(
+            "Disburse rejected ({}): {}",
+            error.error_type, error.error_message
         )),
-    }
+        _ => GovernanceCallOutcome::Ambiguous(
+            "NNS Disburse returned a malformed command response".into(),
+        ),
+    })
 }
 
 async fn manage(
@@ -494,17 +766,22 @@ fn governance_error(method: &str, error: GovernanceError) -> ApiError {
     ))
 }
 
+pub fn command_pending(label: &str, result: Result<(), ApiError>) -> ApiError {
+    ApiError::Pending(format!(
+        "{label} awaits canonical proof after command result {result:?}"
+    ))
+}
+
 pub fn exact_maturity_disbursement(
     observation: &NeuronObservation,
-    amount_e8s: u64,
     destination: &Account,
     submitted_at_seconds: u64,
-) -> Result<CanonicalDisbursementEvidence, ApiError> {
+) -> Result<Option<CanonicalDisbursementEvidence>, ApiError> {
     let matching = observation
         .maturity_disbursements
         .iter()
         .filter(|entry| {
-            entry.amount_e8s == Some(amount_e8s)
+            entry.amount_e8s.is_some_and(|amount| amount > 0)
                 && entry
                     .timestamp_of_disbursement_seconds
                     .is_some_and(|timestamp| timestamp >= submitted_at_seconds)
@@ -522,12 +799,18 @@ pub fn exact_maturity_disbursement(
                     })
         })
         .collect::<Vec<_>>();
+    if matching.is_empty() {
+        return Ok(None);
+    }
     if matching.len() != 1 {
         return Err(ApiError::Invalid(
-            "NNS neuron lacks one exact pending maturity disbursement".into(),
+            "NNS neuron has conflicting pending maturity disbursements".into(),
         ));
     }
     let entry = matching[0];
+    let amount_disbursed_e8s = entry
+        .amount_e8s
+        .ok_or_else(|| ApiError::Invalid("maturity disbursement amount is absent".into()))?;
     let initiated_at_seconds = entry
         .timestamp_of_disbursement_seconds
         .ok_or_else(|| ApiError::Invalid("maturity initiation timestamp is absent".into()))?;
@@ -544,10 +827,11 @@ pub fn exact_maturity_disbursement(
             "maturity finalization is not the pinned seven-day delay".into(),
         ));
     }
-    Ok(CanonicalDisbursementEvidence {
+    Ok(Some(CanonicalDisbursementEvidence {
+        amount_disbursed_e8s,
         initiated_at_seconds,
         scheduled_finalization_timestamp_seconds,
-    })
+    }))
 }
 
 pub fn has_exact_maturity_disbursement(
@@ -593,142 +877,82 @@ pub async fn submit_transfer(intent: &NnsTransferIntent) -> Result<IcrcTransferR
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct StreamStatus {
-    next_nns_receipt_sequence: u64,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
 enum StreamProgress {
     Redemption(Reserved),
-    LiquidReceipt(StreamLiquidProgress),
+    ClaimReceipt(StreamLiquidProgress),
+    BackingReconciliation,
     Idle,
 }
 
-pub async fn prepare_jupiter_receipt(
+pub async fn prepare_claim_receipt(
     config: &NnsConfig,
-    deposit_block: u128,
+    args: PrepareClaimBackingReceiptArgs,
+) -> Result<ClaimBackingReceiptPermit, ApiError> {
+    let result: Result<ClaimBackingReceiptPermit, Reserved> =
+        Call::bounded_wait(config.stream_manager, "prepare_claim_backing_receipt")
+            .with_arg(args)
+            .await
+            .map_err(|error| {
+                ApiError::Pending(format!("claim-receipt prepare ambiguous: {error:?}"))
+            })?
+            .candid()
+            .map_err(|error| {
+                ApiError::Invalid(format!("claim-receipt permit decode failed: {error:?}"))
+            })?;
+    result.map_err(|_| ApiError::Invalid("Stream rejected claim receipt".into()))
+}
+
+pub async fn prove_claim_receipt(
+    config: &NnsConfig,
+    args: ProveClaimBackingReceiptArgs,
+) -> Result<StreamLiquidProgress, ApiError> {
+    let result: Result<StreamLiquidProgress, Reserved> =
+        Call::bounded_wait(config.stream_manager, "prove_claim_backing_receipt")
+            .with_arg(args)
+            .await
+            .map_err(|error| {
+                ApiError::Pending(format!("claim-receipt proof ambiguous: {error:?}"))
+            })?
+            .candid()
+            .map_err(|error| {
+                ApiError::Invalid(format!("claim-receipt proof decode failed: {error:?}"))
+            })?;
+    result.map_err(|_| ApiError::Invalid("Stream rejected claim-receipt proof".into()))
+}
+
+pub async fn resume_claim_receipt(config: &NnsConfig) -> Result<StreamLiquidProgress, ApiError> {
+    let result: Result<StreamProgress, Reserved> =
+        Call::bounded_wait(config.stream_manager, "resume")
+            .with_arg(())
+            .await
+            .map_err(|error| ApiError::Pending(format!("Stream resume ambiguous: {error:?}")))?
+            .candid()
+            .map_err(|error| {
+                ApiError::Invalid(format!("Stream resume decode failed: {error:?}"))
+            })?;
+    match result.map_err(|_| ApiError::Invalid("Stream resume rejected".into()))? {
+        StreamProgress::ClaimReceipt(progress) => Ok(progress),
+        StreamProgress::Redemption(_) | StreamProgress::BackingReconciliation => {
+            Err(ApiError::Busy)
+        }
+        StreamProgress::Idle => Err(ApiError::Invalid("Stream lost the claim receipt".into())),
+    }
+}
+
+pub async fn prepare_jupiter_claim_receipt(
+    config: &NnsConfig,
+    nns_operation_sequence: u64,
     liquid_e8s: u128,
 ) -> Result<StreamReceiptPermit, ApiError> {
-    let sequence = next_receipt_sequence(config).await?;
-    prepare_receipt(
+    prepare_claim_receipt(
         config,
-        PrepareLiquidReceiptArgs {
-            receipt_sequence: sequence,
-            receipt_kind: ReceiptKind::Jupiter,
-            source_operation_id: deposit_block.to_be_bytes().to_vec(),
-            liquid_amount_e8s: liquid_e8s,
-            entitlement_batch_generation: None,
+        PrepareClaimBackingReceiptArgs {
+            nns_operation_sequence,
+            kind: ClaimBackingReceiptKind::Jupiter,
+            net_liquid_credit_e8s: liquid_e8s,
         },
     )
     .await
-}
-
-fn two_week_source_operation_id(pending: &PendingMaturityDisbursement) -> Vec<u8> {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(
-        candid::encode_one((
-            pending.neuron_id,
-            pending.initiation_timestamp_seconds,
-            pending.scheduled_finalization_timestamp_seconds,
-            pending.nominal_disbursed_maturity_e8s,
-            &pending.destination,
-        ))
-        .expect("two-week source operation must encode"),
-    )
-    .to_vec()
-}
-
-fn two_week_request(
-    sequence: u64,
-    pending: &PendingMaturityDisbursement,
-    actual_minted_e8s: u128,
-) -> Result<PrepareLiquidReceiptArgs, ApiError> {
-    Ok(PrepareLiquidReceiptArgs {
-        receipt_sequence: sequence,
-        receipt_kind: ReceiptKind::TwoWeekMaturity,
-        source_operation_id: two_week_source_operation_id(pending),
-        liquid_amount_e8s: actual_minted_e8s,
-        entitlement_batch_generation: Some(
-            pending
-                .stake_evidence
-                .plan
-                .entitlement_batch_generation
-                .ok_or_else(|| {
-                    ApiError::Invalid("two-week maturity lacks entitlement batch generation".into())
-                })?,
-        ),
-    })
-}
-
-pub async fn prepare_two_week_receipt(
-    config: &NnsConfig,
-    pending: &PendingMaturityDisbursement,
-    actual_minted_e8s: u128,
-) -> Result<StreamReceiptPermit, ApiError> {
-    let sequence = next_receipt_sequence(config).await?;
-    prepare_receipt(
-        config,
-        two_week_request(sequence, pending, actual_minted_e8s)?,
-    )
-    .await
-}
-
-async fn next_receipt_sequence(config: &NnsConfig) -> Result<u64, ApiError> {
-    let status: StreamStatus = Call::bounded_wait(config.stream_manager, "get_status")
-        .with_arg(())
-        .await
-        .map_err(|error| ApiError::Pending(format!("stream status query failed: {error:?}")))?
-        .candid()
-        .map_err(|error| ApiError::Invalid(format!("stream status decode failed: {error:?}")))?;
-    Ok(status.next_nns_receipt_sequence)
-}
-
-async fn prepare_receipt(
-    config: &NnsConfig,
-    request: PrepareLiquidReceiptArgs,
-) -> Result<StreamReceiptPermit, ApiError> {
-    let result: Result<StreamReceiptPermit, Reserved> =
-        Call::bounded_wait(config.stream_manager, "prepare_liquid_receipt")
-            .with_arg(request)
-            .await
-            .map_err(|error| ApiError::Pending(format!("receipt prepare ambiguous: {error:?}")))?
-            .candid()
-            .map_err(|error| {
-                ApiError::Invalid(format!("receipt permit decode failed: {error:?}"))
-            })?;
-    result.map_err(|error| ApiError::Invalid(format!("stream rejected receipt: {error:?}")))
-}
-
-pub fn two_week_receipt_fingerprint(
-    sequence: u64,
-    pending: &PendingMaturityDisbursement,
-    actual_minted_e8s: u128,
-) -> Result<Vec<u8>, ApiError> {
-    let request = two_week_request(sequence, pending, actual_minted_e8s)?;
-    Ok(request_fingerprint(request))
-}
-
-pub fn jupiter_receipt_fingerprint(
-    sequence: u64,
-    deposit_block: u128,
-    liquid_e8s: u128,
-) -> Vec<u8> {
-    let request = PrepareLiquidReceiptArgs {
-        receipt_sequence: sequence,
-        receipt_kind: ReceiptKind::Jupiter,
-        source_operation_id: deposit_block.to_be_bytes().to_vec(),
-        liquid_amount_e8s: liquid_e8s,
-        entitlement_batch_generation: None,
-    };
-    request_fingerprint(request)
-}
-
-fn request_fingerprint(request: PrepareLiquidReceiptArgs) -> Vec<u8> {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(b"io-liquid-receipt-request-v1\0");
-    hasher.update(candid::encode_one(request).expect("receipt request must encode"));
-    hasher.finalize().to_vec()
 }
 
 pub async fn icp_balance(config: &NnsConfig, account: &Account) -> Result<u128, ApiError> {
@@ -750,9 +974,9 @@ pub async fn complete_jupiter_receipt(
     block_index: u128,
 ) -> Result<StreamLiquidProgress, ApiError> {
     let result: Result<StreamLiquidProgress, Reserved> =
-        Call::bounded_wait(config.stream_manager, "complete_liquid_receipt")
-            .with_arg(CompleteLiquidReceiptArgs {
-                receipt_sequence: permit.sequence,
+        Call::bounded_wait(config.stream_manager, "prove_claim_backing_receipt")
+            .with_arg(ProveClaimBackingReceiptArgs {
+                stream_operation_sequence: permit.stream_operation_sequence,
                 block_index,
             })
             .await
@@ -777,9 +1001,10 @@ pub async fn resume_stream(config: &NnsConfig) -> Result<StreamLiquidProgress, A
                 ApiError::Invalid(format!("stream resume decode failed: {error:?}"))
             })?;
     match result.map_err(|error| ApiError::Invalid(format!("stream resume failed: {error:?}")))? {
-        StreamProgress::LiquidReceipt(progress) => Ok(progress),
+        StreamProgress::ClaimReceipt(progress) => Ok(progress),
         StreamProgress::Idle => Err(ApiError::Invalid("stream lost the Jupiter receipt".into())),
         StreamProgress::Redemption(_) => Err(ApiError::Busy),
+        StreamProgress::BackingReconciliation => Err(ApiError::Busy),
     }
 }
 
@@ -816,8 +1041,10 @@ mod tests {
             auto_stake_maturity: false,
             maturity_disbursements: vec![],
             dissolve_state: Some(DissolveState::DissolveDelaySeconds(
-                APPROVED_REWARD_BACKING_DISSOLVE_DELAY_SECONDS,
+                APPROVED_PERMANENT_DISSOLVE_DELAY_SECONDS,
             )),
+            followees: vec![],
+            voting_power_refreshed_timestamp_seconds: None,
         }
     }
 
@@ -846,12 +1073,40 @@ mod tests {
     #[test]
     fn later_retained_staked_maturity_is_valid_but_configuration_drift_is_not() {
         let valid = observation();
-        assert_eq!(validate_maturity_configuration(&valid), Ok(()));
+        assert_eq!(validate_permanent_configuration(&valid), Ok(()));
         let mut auto = valid.clone();
         auto.auto_stake_maturity = true;
-        assert!(validate_maturity_configuration(&auto).is_err());
+        assert!(validate_permanent_configuration(&auto).is_err());
         let mut dissolving = valid;
         dissolving.dissolve_state = Some(DissolveState::WhenDissolvedTimestampSeconds(u64::MAX));
-        assert!(validate_maturity_configuration(&dissolving).is_err());
+        assert!(validate_permanent_configuration(&dissolving).is_err());
+    }
+
+    #[test]
+    fn split_child_subaccount_matches_pinned_ic_vectors_and_not_staking_domain() {
+        let controller = Principal::from_slice(&[1, 2, 3, 4]);
+        assert_eq!(
+            split_child_subaccount(controller, 42),
+            [
+                0x11, 0x46, 0xba, 0x68, 0x2f, 0xcd, 0xe6, 0x09, 0x30, 0xfe, 0xc5, 0x68, 0xc2, 0xcc,
+                0x9c, 0x1c, 0x68, 0x5b, 0x4d, 0xce, 0xd2, 0x87, 0x7c, 0x05, 0xfe, 0x68, 0xa8, 0x9f,
+                0x30, 0xab, 0x42, 0xcc,
+            ]
+        );
+        assert_eq!(
+            split_child_subaccount(controller, u64::MAX),
+            [
+                0x61, 0x70, 0xd6, 0x59, 0xb4, 0x40, 0x51, 0x20, 0xc2, 0x06, 0x8c, 0x7f, 0xa9, 0x10,
+                0xe0, 0xeb, 0xb9, 0xb2, 0xad, 0x32, 0xaa, 0x1f, 0x93, 0xa8, 0xbf, 0xed, 0x40, 0x42,
+                0x18, 0x41, 0xb8, 0x05,
+            ]
+        );
+        let mut staking_hasher = Sha256::new();
+        staking_hasher.update([b"neuron-stake".len() as u8]);
+        staking_hasher.update(b"neuron-stake");
+        staking_hasher.update(controller.as_slice());
+        staking_hasher.update(42_u64.to_be_bytes());
+        let staking_subaccount: [u8; 32] = staking_hasher.finalize().into();
+        assert_ne!(split_child_subaccount(controller, 42), staking_subaccount);
     }
 }

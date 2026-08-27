@@ -1,23 +1,13 @@
 # Production API surface
 
-The stream manager exposes `redeem`, `prepare_liquid_receipt`,
-`complete_liquid_receipt`, `resume`, `prove_active_transfer`,
-`resume_reward_work`, `resume_reward_backing`, `set_paused`, and `get_status`.
-Reward observation is permissionless, non-monetary, and idempotent. Reward
-backing revalidates reviewed SNS Governance, reconciles the NNS target, freezes at most one
-entitlement batch only when preparation can start, and advances the
-authenticated two-week NNS path independently of later daily observations.
+Stream exposes narrow redemption/resume/proof, unified claim-receipt,
+reward-observation/backing, lifecycle, and status methods. NNS exposes narrow
+Jupiter, maturity, pooled reconciliation, resume/proof, lifecycle, status, and
+claim-backing observation methods.
 
-The NNS manager exposes `notify_jupiter_deposit`,
-`reconcile_two_week_backing_readiness`, `prepare_two_week_maturity`,
-`start_maturity`, `validate_start_maturity`,
-`prove_maturity_mint`, `resume`, `prove_active_transfer`, `set_paused`, and
-`get_status`. Two-week maturity preparation authenticates only the configured
-stream manager and binds one frozen entitlement-batch generation and exact
-target. Reconciliation is authenticated and idempotently persists target
-changes; its generation is independent of entitlement-batch generation. The
-generic maturity start is limited to two-year work.
-The validator is a query that renders only the reviewed two-year payload for an
-SNS generic-function proposal; it does not execute or authorize maturity.
-
-Commands authenticate authority or carry an exact canonical proof. No caller chooses a payout destination or asserts completion. Production DIDs exclude ticks, event processors, state dumps, forced success and debug methods.
+Callers never choose a monetary destination, parent memo, followee, neuron, or
+transfer amount. Permissionless `resume` calls can wake already-defined maturity
+work and read the relevant semantic staging balance, but callers provide no Mint
+block or source identity. External proof arguments remain only for genuinely
+ambiguous outgoing transfers. Production DIDs exclude ticks, forced outcomes,
+state dumps, generic voting, and debug methods.

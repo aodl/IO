@@ -1,9 +1,16 @@
 use candid::{decode_one, encode_args, encode_one, Principal};
-use e2e_real_canisters::sns_governance_setup::{ListNeurons, ListNeuronsResponse};
+use e2e_real_canisters::sns_governance_setup::{
+    Action, Command, CommandResponse, ListNeurons, ListNeuronsResponse, ManageNeuron,
+    ManageNeuronResponse, Motion, Proposal,
+};
 use io_governance_types::SnsRewardEvent;
-use io_stream_manager::{ApiError, RewardEventObservation, Status};
+use io_stream_manager::{
+    ApiError, RewardEventClassification, RewardEventObservation, Status, StreamProgress,
+};
 use pocket_ic::PocketIc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const REWARD_OBSERVATION_MARGIN_SECONDS: u64 = 300;
 
 fn required(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("{name} must be set"))
@@ -11,6 +18,184 @@ fn required(name: &str) -> String {
 
 fn principal(name: &str) -> Principal {
     Principal::from_text(required(name)).unwrap_or_else(|error| panic!("invalid {name}: {error}"))
+}
+
+fn stream_status(pic: &PocketIc, stream: Principal) -> Status {
+    decode_one(
+        &pic.query_call(
+            stream,
+            Principal::anonymous(),
+            "get_status",
+            encode_args(()).expect("encode get_status request"),
+        )
+        .expect("query stream status"),
+    )
+    .expect("decode stream status")
+}
+
+fn restore_stream_readiness(pic: &PocketIc, stream: Principal, governance: Principal) {
+    let paused: Result<(), ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            governance,
+            "set_paused",
+            encode_one(true).expect("encode controlled reward recovery pause"),
+        )
+        .expect("pause stream for controlled reward recovery"),
+    )
+    .expect("decode controlled reward recovery pause");
+    println!("controlled_reward_recovery_pause={paused:#?}");
+    assert_eq!(paused, Ok(()));
+
+    let ready: Result<(), ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            governance,
+            "set_paused",
+            encode_one(false).expect("encode controlled reward recovery readiness"),
+        )
+        .expect("restore stream readiness for controlled reward recovery"),
+    )
+    .expect("decode controlled reward recovery readiness");
+    println!("controlled_reward_recovery_ready={ready:#?}");
+    assert_eq!(ready, Ok(()));
+}
+
+fn resume_reward(pic: &PocketIc, stream: Principal) -> Result<RewardEventObservation, ApiError> {
+    decode_one(
+        &pic.update_call(
+            stream,
+            Principal::anonymous(),
+            "resume_reward_work",
+            encode_args(()).expect("encode resume_reward_work request"),
+        )
+        .expect("resume reward work"),
+    )
+    .expect("decode reward observation")
+}
+
+fn drive_reconciliation(pic: &PocketIc, stream: Principal) {
+    for attempt in 0..32 {
+        let status = stream_status(pic, stream);
+        if status.operation_kind.is_none() {
+            println!("canonical_reconciliation_idle_after_attempt={attempt}");
+            return;
+        }
+        assert_eq!(
+            status.operation_kind.as_deref(),
+            Some("BackingReconciliation"),
+            "canonical reward warm-up left an unrelated operation active: {status:#?}"
+        );
+        let result: Result<StreamProgress, ApiError> = decode_one(
+            &pic.update_call(
+                stream,
+                Principal::anonymous(),
+                "resume",
+                encode_args(()).expect("encode reconciliation resume"),
+            )
+            .expect("resume canonical reconciliation"),
+        )
+        .expect("decode reconciliation resume");
+        println!("canonical_reconciliation_resume[{attempt}]={result:#?}");
+        match result {
+            Ok(StreamProgress::BackingReconciliation) | Err(ApiError::Pending(_)) => {}
+            Err(ApiError::Invalid(reason)) if reason == "NNS resume rejected" => {
+                println!("canonical_reconciliation_retryable_nns_rejection={reason}");
+            }
+            other => panic!("canonical reconciliation returned an unexpected result: {other:#?}"),
+        }
+        for _ in 0..10 {
+            pic.tick();
+        }
+    }
+    panic!("canonical reconciliation did not become idle within 32 attempts");
+}
+
+fn submit_canonical_motion(pic: &PocketIc, governance: Principal) -> u64 {
+    let proposer = principal("IO_LOCAL_REWARD_PROPOSER_PRINCIPAL");
+    let subaccount = hex::decode(required("IO_LOCAL_REWARD_NEURON_SUBACCOUNT_HEX"))
+        .expect("invalid IO_LOCAL_REWARD_NEURON_SUBACCOUNT_HEX");
+    assert_eq!(
+        subaccount.len(),
+        32,
+        "SNS proposer subaccount must be 32 bytes"
+    );
+    let response: ManageNeuronResponse = decode_one(
+        &pic.update_call(
+            governance,
+            proposer,
+            "manage_neuron",
+            encode_one(ManageNeuron {
+                subaccount,
+                command: Some(Command::MakeProposal(Proposal {
+                    url: "https://forum.dfinity.org/t/io-local-rehearsal/0".into(),
+                    title: "Prospective IO reward eligibility observation".into(),
+                    summary: "Local-only proposal after exact lazy-parent reconciliation.".into(),
+                    action: Some(Action::Motion(Motion {
+                        motion_text: "Observe one proposal-bearing eligible IO reward event."
+                            .into(),
+                    })),
+                })),
+            })
+            .expect("encode canonical reward proposal"),
+        )
+        .expect("submit canonical reward proposal through real SNS Governance"),
+    )
+    .expect("decode canonical reward proposal response");
+    match response.command {
+        Some(CommandResponse::MakeProposal(response)) => {
+            response
+                .proposal_id
+                .expect("canonical reward proposal response lacks proposal ID")
+                .id
+        }
+        other => panic!("canonical reward proposal failed: {other:#?}"),
+    }
+}
+
+fn print_reward_state(pic: &PocketIc, governance: Principal, label: &str) -> SnsRewardEvent {
+    let caller = Principal::anonymous();
+    let event: SnsRewardEvent = decode_one(
+        &pic.query_call(
+            governance,
+            caller,
+            "get_latest_reward_event",
+            encode_one(()).expect("encode reward event request"),
+        )
+        .expect("query latest reward event"),
+    )
+    .expect("decode latest reward event");
+    println!("{label}_latest_reward_event={event:#?}");
+
+    let neurons: ListNeuronsResponse = decode_one(
+        &pic.query_call(
+            governance,
+            caller,
+            "list_neurons",
+            encode_one(ListNeurons {
+                of_principal: None,
+                limit: 1_000,
+                start_page_at: None,
+            })
+            .expect("encode list_neurons request"),
+        )
+        .expect("query neurons"),
+    )
+    .expect("decode neurons");
+    for neuron in neurons.neurons {
+        println!(
+            "{label}_neuron={} stake_e8s={} maturity_e8s={} dissolve_state={:?} participation={:?}",
+            neuron
+                .id
+                .map(|id| hex::encode(id.id))
+                .unwrap_or_else(|| "missing".into()),
+            neuron.cached_neuron_stake_e8s,
+            neuron.maturity_e8s_equivalent,
+            neuron.dissolve_state,
+            neuron.latest_reward_event_participation,
+        );
+    }
+    event
 }
 
 fn main() {
@@ -40,95 +225,101 @@ fn main() {
     let governance = principal("IO_LOCAL_SNS_GOVERNANCE_ID");
     let stream = principal("IO_LOCAL_STREAM_MANAGER_ID");
     let caller = Principal::anonymous();
+    let canonical_two_event = std::env::var_os("IO_LOCAL_REWARD_CANONICAL_TWO_EVENT").is_some();
+    let initial_status = stream_status(&pic, stream);
 
     if let Ok(seconds) = std::env::var("IO_LOCAL_REWARD_ADVANCE_SECONDS") {
         let seconds = seconds
             .parse::<u64>()
             .expect("invalid IO_LOCAL_REWARD_ADVANCE_SECONDS");
-        pic.advance_time(Duration::from_secs(seconds));
-        for _ in 0..20 {
-            pic.tick();
+        if !canonical_two_event || initial_status.processed_reward_event_count == 0 {
+            pic.advance_time(Duration::from_secs(seconds));
+            for _ in 0..20 {
+                pic.tick();
+            }
+            println!("advanced_pocketic_seconds={seconds}");
+        } else {
+            println!("canonical_reward_warmup_reused=true");
         }
-        println!("advanced_pocketic_seconds={seconds}");
     }
 
-    let event: SnsRewardEvent = decode_one(
-        &pic.query_call(
-            governance,
-            caller,
-            "get_latest_reward_event",
-            encode_one(()).expect("encode reward event request"),
-        )
-        .expect("query latest reward event"),
-    )
-    .expect("decode latest reward event");
-    println!("latest_reward_event={event:#?}");
+    print_reward_state(&pic, governance, "warmup");
 
-    let neurons: ListNeuronsResponse = decode_one(
-        &pic.query_call(
-            governance,
-            caller,
-            "list_neurons",
-            encode_one(ListNeurons {
-                of_principal: None,
-                limit: 1_000,
-                start_page_at: None,
-            })
-            .expect("encode list_neurons request"),
-        )
-        .expect("query neurons"),
-    )
-    .expect("decode neurons");
-    for neuron in neurons.neurons {
-        println!(
-            "neuron={} stake_e8s={} maturity_e8s={} dissolve_state={:?} participation={:?}",
-            neuron
-                .id
-                .map(|id| hex::encode(id.id))
-                .unwrap_or_else(|| "missing".into()),
-            neuron.cached_neuron_stake_e8s,
-            neuron.maturity_e8s_equivalent,
-            neuron.dissolve_state,
-            neuron.latest_reward_event_participation,
-        );
-    }
-
-    let before: Status = decode_one(
-        &pic.query_call(
-            stream,
-            caller,
-            "get_status",
-            encode_args(()).expect("encode get_status request"),
-        )
-        .expect("query stream status"),
-    )
-    .expect("decode stream status");
+    let before = stream_status(&pic, stream);
     println!("stream_status_before={before:#?}");
 
     if std::env::var_os("IO_LOCAL_REWARD_RESUME").is_some() {
-        let result: Result<RewardEventObservation, ApiError> = decode_one(
-            &pic.update_call(
-                stream,
-                caller,
-                "resume_reward_work",
-                encode_args(()).expect("encode resume_reward_work request"),
-            )
-            .expect("resume reward work"),
-        )
-        .expect("decode reward observation");
-        println!("resume_reward_work={result:#?}");
+        if before.reward_processing_paused {
+            restore_stream_readiness(&pic, stream, governance);
+        }
+        if !canonical_two_event || before.processed_reward_event_count == 0 {
+            let result = resume_reward(&pic, stream);
+            println!("resume_reward_work={result:#?}");
+            if canonical_two_event {
+                assert!(matches!(
+                    result,
+                    Ok(RewardEventObservation {
+                        classification: RewardEventClassification::ZeroEligibleParticipation,
+                        ..
+                    })
+                ));
+            }
+        }
+
+        if canonical_two_event {
+            drive_reconciliation(&pic, stream);
+            restore_stream_readiness(&pic, stream, governance);
+            let structural = resume_reward(&pic, stream);
+            println!("canonical_structural_refresh={structural:#?}");
+            assert!(matches!(
+                structural,
+                Ok(RewardEventObservation {
+                    classification: RewardEventClassification::StructuralOnly,
+                    ..
+                })
+            ));
+            let proposal_id = submit_canonical_motion(&pic, governance);
+            println!("canonical_reward_proposal_id={proposal_id}");
+            let seconds = required("IO_LOCAL_REWARD_ADVANCE_SECONDS")
+                .parse::<u64>()
+                .expect("invalid IO_LOCAL_REWARD_ADVANCE_SECONDS");
+            let canonical_advance = seconds
+                .checked_add(REWARD_OBSERVATION_MARGIN_SECONDS)
+                .expect("canonical reward observation advance overflow");
+            pic.advance_time(Duration::from_secs(canonical_advance));
+            for _ in 0..20 {
+                pic.tick();
+            }
+            println!("canonical_reward_advanced_pocketic_seconds={seconds}");
+            println!(
+                "canonical_reward_observation_margin_seconds={REWARD_OBSERVATION_MARGIN_SECONDS}"
+            );
+            print_reward_state(&pic, governance, "canonical");
+            let final_before = stream_status(&pic, stream);
+            println!("canonical_stream_status_before={final_before:#?}");
+            if final_before.reward_processing_paused {
+                restore_stream_readiness(&pic, stream, governance);
+            }
+            if final_before.processed_reward_event_count >= 2
+                && final_before.latest_reward_event_classification
+                    == Some(RewardEventClassification::ProposalBearing)
+            {
+                assert!(final_before.accumulated_eligible_credit > 0);
+                println!("canonical_reward_already_processed=true");
+            } else {
+                let result =
+                    resume_reward(&pic, stream).expect("canonical reward observation failed");
+                println!("canonical_resume_reward_work={result:#?}");
+                assert_eq!(
+                    result.classification,
+                    RewardEventClassification::ProposalBearing
+                );
+                assert!(result.eligible_credit_total > 0);
+            }
+        }
     }
 
-    let after: Status = decode_one(
-        &pic.query_call(
-            stream,
-            caller,
-            "get_status",
-            encode_args(()).expect("encode get_status request"),
-        )
-        .expect("query stream status"),
-    )
-    .expect("decode stream status");
+    let after = stream_status(&pic, stream);
     println!("stream_status_after={after:#?}");
 
     if let Ok(historian) = std::env::var("IO_LOCAL_HISTORIAN_ID") {
@@ -175,19 +366,19 @@ fn main() {
         assert_eq!(
             dashboard.nns_manager.as_ref().map(|status| (
                 status.lifecycle,
-                status.two_week_maturity_baseline_reconciled,
-                status.latest_two_week_target.is_some()
+                status.permanent_maturity_baseline_reconciled,
+                status.latest_pooled_target.is_some()
             )),
-            Some((io_historian::Lifecycle::Ready, true, false)),
+            Some((io_historian::Lifecycle::Ready, true, true)),
         );
         assert_eq!(
             dashboard
                 .nns_governance
                 .as_ref()
                 .map(|status| status.neurons.len()),
-            Some(2),
+            Some(1),
         );
-        assert!(dashboard.protocol.redemption_rate.is_some());
+        assert!(dashboard.protocol.claim_rate.is_some());
         assert!(dashboard
             .index
             .as_ref()

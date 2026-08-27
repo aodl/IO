@@ -1,16 +1,27 @@
-# Simplified E2E coverage matrix
+# Pooled claim-backing E2E coverage matrix
 
-| Behavior | Current gate | Remaining |
-|---|---|---|
-| Paused install and narrow APIs | Stream/NNS PocketIC smoke, query-only lifecycle validator rendering, invalid-payload rejection, same-Wasm Paused upgrade preservation, authenticated execution rejection; real SNS-W function `1000` and stream activation proposal `6` | NNS-manager source-shaped readiness fixture |
-| Real SNS ICRC-2 primitives | Pinned real SNS ledger test plus SNS-W-created ledger blocks `9`–`11` | Committed sanitized package |
-| Installed direct-reserve redemption | Pinned real IO ledger + canonical local ICP ledger; SNS-W production redemption nonce `0`, IO/ICP blocks `11`, identical retry | Upgrade, stale callback and exact-proof cases remain in focused harnesses |
-| Exact one-day reward observation | Candidate Governance round `1`, one-round span, settled proposal `9`, canonical shares, fixed normalized credit, zero native maturity and explicit ineligible-neuron forfeiture | Committed sanitized package |
-| Exact reward allocation | All 18 `io_reward_policy` tests | Installed serialized fan-out |
-| Jupiter 40/60 | Release IO Wasms + pinned real NNS Governance/ICP ledger: exact deposit, stake/refresh, liquid receipt, fixed IO settlement, fee and replay | Real transport-ambiguity injection |
-| Direct maturity | Release manager + pinned real NNS Governance: two compounded StakeMaturity/DisburseMaturity cycles, delayed exact Mint, wrong/malformed/replay proof handling, unchanged IO supply, and real auto-stake/dissolve drift rejection; pinned real SNS generic-function proposal trigger with replay rejection; stable validation accepts positive adverse modulation below nominal | An artifact or fixture that makes pinned Governance apply adverse modulation |
-| Target/unwind | Pinned real split/passive dissolve/maturity/direct disburse proof with upgrades; real target-rise stop/merge survives an upgrade at `MergePrepared` and proves the fee-adjusted parent | Injected real Governance transport ambiguity for split, merge, and direct disbursement |
-| Combined reward lifecycle | Candidate real SNS Governance/Root/ledger + pinned real NNS Governance/ICP ledger + release IO Wasms: skipped-event fail-closed checkpoint, exact no-proposal credit, protected maturity/Mint, three recipients, fees, supply, redemption and upgrades | No monetary-truth mock remains in this composition path |
-| Historian separation | DID and source guardrails | Simplified status ingestion |
+| Behavior | Required gate |
+|---|---|
+| Paused install and strict launch state | Stream/NNS same-Wasm PocketIC upgrades plus old-state rejection |
+| Jupiter 40/60 | Exact source block, fee-reduced permanent/liquid credits, pre-event rate, replay |
+| Initial pooled staking | 0/50/100% structural stake, lazy parent, no IO issuance |
+| Following rewards | Exact candidate follow ballot, nonzero maturity, voting-power refresh |
+| Two-week paired maturity | Semantic balance capture, donation inclusion, 40/60 fees, pre-rate issuance, recipient settlement, Account isolation |
+| Two-year maturity | Semantic balance capture, donation inclusion, 40/60 fees, liquid yield, no paired receipt or IO issuance |
+| Sticky cohorts | Split/start separation, cancellation, readiness, return, maturity cleanup |
+| Capacity | 32 accepted, 33rd no effect, retirement permits later generation |
+| Redemption | `B/C` quote, liquid shortfall before IO pull, exact retry |
+| Refresh lag | Ledger stake authoritative despite ancillary refresh failure |
+| Failure/upgrade | Submitted/proved phases, ambiguous effects, expired deduplication, exact proof |
+| Boundary | Independent Governance/Ledger pins and exact candidate behavior |
+| Observability | Historian/frontend distinguish rate, liquidity, pool, unwind, and permanent capital |
 
-Scanner-era tests are historical and are not launch coverage.
+The checked-in historical SNS evidence remains proof of the superseded model.
+Corrected-economics canonical evidence is intentionally absent until a separately
+authorized complete rehearsal succeeds.
+
+Historical compatibility inventory still names the real SNS ledger and these
+labels: Installed direct-reserve redemption, Exact reward allocation, and
+Historian separation.
+Scanner-era tests are historical; these labels keep coverage provenance visible
+without making the superseded economics normative.

@@ -1,13 +1,57 @@
-use {candid::CandidType, io_accounts::Account, serde::Deserialize};
-#[rustfmt::skip]
-use crate::{jupiter::{NeuronSnapshot, StreamReceiptPermit}, transfer::NnsTransferAttempt};
+use crate::{
+    jupiter::{NeuronSnapshot, PermanentNeuronCreditProof},
+    receipt::ClaimBackingReceiptPermit,
+    transfer::NnsTransferAttempt,
+};
+use {candid::CandidType, serde::Deserialize};
 
 pub const MINIMUM_DISBURSEMENT_E8S: u64 = 100_000_000;
 pub const DISBURSEMENT_DELAY_SECONDS: u64 = 7 * 24 * 60 * 60;
 
-pub fn split_maturity(maturity_e8s: u64) -> Option<(u64, u64)> {
-    let retained = maturity_e8s.checked_mul(40)? / 100;
-    Some((retained, maturity_e8s - retained))
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CaptureSplit {
+    pub captured: u128,
+    pub permanent_gross: u128,
+    pub permanent_credit: u128,
+    pub permanent_fee: u128,
+    pub claim_gross: u128,
+    pub claim_credit: u128,
+    pub claim_fee: u128,
+}
+
+pub fn capture_40_60(
+    captured: u128,
+    permanent_fee: u128,
+    claim_fee: u128,
+) -> Result<CaptureSplit, io_core_model::EconomicsError> {
+    use io_core_model::{checked_add, EconomicsError};
+    let split = io_core_model::split_40_60(captured)?;
+    let permanent_credit = split
+        .permanent
+        .checked_sub(permanent_fee)
+        .filter(|credit| *credit > 0)
+        .ok_or(EconomicsError::PayoutDoesNotCoverFee)?;
+    let claim_credit = split
+        .claim
+        .checked_sub(claim_fee)
+        .filter(|credit| *credit > 0)
+        .ok_or(EconomicsError::PayoutDoesNotCoverFee)?;
+    let accounted = checked_add(
+        checked_add(permanent_credit, permanent_fee)?,
+        checked_add(claim_credit, claim_fee)?,
+    )?;
+    if accounted != captured {
+        return Err(EconomicsError::ArithmeticOverflow);
+    }
+    Ok(CaptureSplit {
+        captured,
+        permanent_gross: split.permanent,
+        permanent_credit,
+        permanent_fee,
+        claim_gross: split.claim,
+        claim_credit,
+        claim_fee,
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -16,106 +60,64 @@ pub enum MaturityKind {
     TwoWeek,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct MaturityPlan {
-    pub neuron: NeuronSnapshot,
-    pub original_maturity_e8s: u64,
-    pub original_staked_maturity_e8s: u64,
-    pub stake_maturity_e8s: u64,
-    pub remaining_maturity_e8s: u64,
-    pub destination: Account,
-    pub requested_at_seconds: u64,
-    pub entitlement_batch_generation: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct StakeMaturitySucceeded {
-    pub plan: MaturityPlan,
-    pub remaining_maturity_e8s: u64,
-    pub staked_maturity_e8s: u64,
-    pub evidence_source: MaturityEvidenceSource,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum MaturityEvidenceSource {
-    CommandResponse,
-    CanonicalNeuronObservation,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct DisburseMaturitySubmission {
-    pub stake: StakeMaturitySucceeded,
-    pub submitted_at_seconds: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct DisburseMaturitySucceeded {
-    pub submission: DisburseMaturitySubmission,
-    pub amount_disbursed_e8s: u64,
-    pub evidence_source: MaturityEvidenceSource,
+pub struct MaturityIntent {
+    pub entitlement_batch_generation: Option<u64>,
+    pub two_week_target_e8s: Option<u128>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct CanonicalDisbursementEvidence {
+    pub amount_disbursed_e8s: u64,
     pub initiated_at_seconds: u64,
     pub scheduled_finalization_timestamp_seconds: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct MintEvidence {
-    pub mint_block: u128,
-    pub actual_minted_icp_e8s: u128,
-    pub native_memo_u64: u64,
-    pub created_at_time_nanos: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum MintProofState {
-    Awaiting,
-    Proved(MintEvidence),
-    Delivering(MintEvidence),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct PendingMaturityDisbursement {
-    pub kind: MaturityKind,
-    pub neuron_id: u64,
-    pub nominal_disbursed_maturity_e8s: u64,
-    pub destination: Account,
-    pub initiation_timestamp_seconds: u64,
+    pub nominal_disbursed_e8s: u64,
+    pub initiated_at_seconds: u64,
     pub scheduled_finalization_timestamp_seconds: u64,
-    pub stake_evidence: StakeMaturitySucceeded,
-    pub disburse_evidence: DisburseMaturitySucceeded,
-    pub mint_proof: MintProofState,
+    pub entitlement_batch_generation: Option<u64>,
+    pub two_week_target_e8s: Option<u128>,
+    pub captured_e8s: Option<u128>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct TwoWeekDeliveryOperation {
+pub enum PermanentCreditState {
+    Prepared {
+        before: NeuronSnapshot,
+        transfer: Box<NnsTransferAttempt>,
+    },
+    RefreshSubmitted {
+        before: NeuronSnapshot,
+        transfer_block: u128,
+    },
+    Proved(PermanentNeuronCreditProof),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct MaturityDeliveryOperation {
     pub pending: PendingMaturityDisbursement,
-    pub permit: Option<StreamReceiptPermit>,
-    pub transfer: Option<NnsTransferAttempt>,
-    pub receipt_completed: bool,
+    pub permit: Option<ClaimBackingReceiptPermit>,
+    pub permanent_credit: Option<PermanentCreditState>,
+    pub claim_transfer: Option<NnsTransferAttempt>,
 }
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum MaturityCommandPhase {
-    Observed(MaturityPlan),
-    StakeMaturitySubmitted(MaturityPlan),
-    StakeMaturitySucceeded(StakeMaturitySucceeded),
-    ReadyToDisburse(DisburseMaturitySubmission),
-    DisburseMaturitySubmitted(DisburseMaturitySubmission),
-    DisburseMaturitySucceeded(DisburseMaturitySucceeded),
-    TwoWeekDelivery(TwoWeekDeliveryOperation),
-    MaturityDrift {
-        reason: String,
-        stake: StakeMaturitySucceeded,
+    Observed(MaturityIntent),
+    DisburseMaturitySubmitted {
+        intent: MaturityIntent,
+        submitted_at_seconds: u64,
     },
-    DisburseMaturityMismatch {
-        reason: String,
-        submission: DisburseMaturitySubmission,
-        observed_amount_e8s: u64,
+    DisburseMaturitySucceeded {
+        intent: MaturityIntent,
+        submitted_at_seconds: u64,
+        amount_disbursed_e8s: u64,
     },
+    Delivery(MaturityDeliveryOperation),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -129,117 +131,137 @@ pub struct MaturityCommandOperation {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct CompletedMaturity {
     pub kind: MaturityKind,
-    pub neuron_id: u64,
-    pub mint_block: u128,
-    pub nominal_disbursed_maturity_e8s: u64,
-    pub actual_minted_icp_e8s: u128,
-    pub destination: Account,
+    pub captured_e8s: u128,
+    pub permanent_credit_e8s: u128,
+    pub claim_credit_e8s: u128,
+    pub entitlement_batch_generation: Option<u64>,
+    pub two_week_target_e8s: Option<u128>,
     pub completed_at_nanos: u64,
 }
 
 impl MaturityCommandOperation {
-    pub fn plan(&self) -> &MaturityPlan {
+    pub fn intent(&self) -> MaturityIntent {
         match &self.phase {
-            MaturityCommandPhase::Observed(plan)
-            | MaturityCommandPhase::StakeMaturitySubmitted(plan) => plan,
-            MaturityCommandPhase::StakeMaturitySucceeded(stake)
-            | MaturityCommandPhase::MaturityDrift { stake, .. } => &stake.plan,
-            MaturityCommandPhase::ReadyToDisburse(submission)
-            | MaturityCommandPhase::DisburseMaturitySubmitted(submission) => &submission.stake.plan,
-            MaturityCommandPhase::DisburseMaturityMismatch { submission, .. } => {
-                &submission.stake.plan
-            }
-            MaturityCommandPhase::DisburseMaturitySucceeded(value) => &value.submission.stake.plan,
-            MaturityCommandPhase::TwoWeekDelivery(value) => &value.pending.stake_evidence.plan,
+            MaturityCommandPhase::Observed(intent) => *intent,
+            MaturityCommandPhase::DisburseMaturitySubmitted { intent, .. }
+            | MaturityCommandPhase::DisburseMaturitySucceeded { intent, .. } => *intent,
+            MaturityCommandPhase::Delivery(value) => value.pending.intent(),
         }
     }
 
-    pub fn validate(
-        &self,
-        next_operation_sequence: u64,
-        expected_neuron_id: u64,
-        expected_destination: &Account,
-    ) -> Result<(), String> {
+    pub fn validate(&self, next_operation_sequence: u64) -> Result<(), String> {
         if self.operation_sequence == 0 || self.operation_sequence >= next_operation_sequence {
             return Err("maturity command sequence is malformed".into());
         }
-        let plan = self.plan();
-        let expected_stake = plan
-            .original_maturity_e8s
-            .checked_mul(40)
-            .ok_or("maturity stake calculation overflow")?
-            / 100;
-        if plan.neuron.neuron_id != expected_neuron_id
-            || plan.stake_maturity_e8s != expected_stake
-            || plan.remaining_maturity_e8s
-                != plan
-                    .original_maturity_e8s
-                    .checked_sub(plan.stake_maturity_e8s)
-                    .ok_or("maturity split underflow")?
-            || plan.remaining_maturity_e8s < MINIMUM_DISBURSEMENT_E8S
-            || plan.requested_at_seconds == 0
-            || !plan.destination.effective_eq(expected_destination)?
-            || (self.kind == MaturityKind::TwoWeek) != plan.entitlement_batch_generation.is_some()
-        {
-            return Err("maturity command plan is inconsistent".into());
+        validate_intent(self.kind, &self.intent())?;
+        match &self.phase {
+            MaturityCommandPhase::Observed(_) => {}
+            MaturityCommandPhase::DisburseMaturitySubmitted {
+                submitted_at_seconds,
+                ..
+            } => validate_submission(*submitted_at_seconds)?,
+            MaturityCommandPhase::DisburseMaturitySucceeded {
+                submitted_at_seconds,
+                amount_disbursed_e8s,
+                ..
+            } => {
+                validate_submission(*submitted_at_seconds)?;
+                if *amount_disbursed_e8s < MINIMUM_DISBURSEMENT_E8S {
+                    return Err("maturity response amount is below the minimum".into());
+                }
+            }
+            MaturityCommandPhase::Delivery(delivery) => {
+                delivery.pending.validate(self.kind)?;
+            }
         }
         Ok(())
     }
 }
 
 impl PendingMaturityDisbursement {
-    pub fn validate(
-        &self,
-        expected_kind: MaturityKind,
-        expected_neuron_id: u64,
-        expected_destination: &Account,
-    ) -> Result<(), String> {
-        if self.kind != expected_kind
-            || self.neuron_id != expected_neuron_id
-            || self.stake_evidence.plan.neuron.neuron_id != self.neuron_id
-            || self.disburse_evidence.submission.stake != self.stake_evidence
-            || self.nominal_disbursed_maturity_e8s < MINIMUM_DISBURSEMENT_E8S
-            || self.nominal_disbursed_maturity_e8s != self.stake_evidence.remaining_maturity_e8s
-            || self.nominal_disbursed_maturity_e8s != self.disburse_evidence.amount_disbursed_e8s
-            || self.initiation_timestamp_seconds == 0
+    pub fn intent(&self) -> MaturityIntent {
+        MaturityIntent {
+            entitlement_batch_generation: self.entitlement_batch_generation,
+            two_week_target_e8s: self.two_week_target_e8s,
+        }
+    }
+
+    pub fn validate(&self, expected_kind: MaturityKind) -> Result<(), String> {
+        if self.nominal_disbursed_e8s < MINIMUM_DISBURSEMENT_E8S
+            || self.initiated_at_seconds == 0
             || self.scheduled_finalization_timestamp_seconds
-                != self
-                    .initiation_timestamp_seconds
+                < self
+                    .initiated_at_seconds
                     .checked_add(DISBURSEMENT_DELAY_SECONDS)
                     .ok_or("maturity finalization overflow")?
-            || !self.destination.effective_eq(expected_destination)?
-            || !self
-                .stake_evidence
-                .plan
-                .destination
-                .effective_eq(&self.destination)?
+            || self.captured_e8s == Some(0)
         {
             return Err("passive maturity disbursement is inconsistent".into());
         }
-        match &self.mint_proof {
-            MintProofState::Awaiting => Ok(()),
-            MintProofState::Proved(mint) | MintProofState::Delivering(mint)
-                if mint.actual_minted_icp_e8s > 0
-                    && mint.native_memo_u64 >= self.scheduled_finalization_timestamp_seconds
-                    && mint.created_at_time_nanos / 1_000_000_000 >= mint.native_memo_u64 =>
-            {
-                Ok(())
-            }
-            _ => Err("maturity Mint evidence is inconsistent".into()),
-        }
+        validate_intent(expected_kind, &self.intent())
     }
 }
 
-pub fn commands() -> (u32, u32) {
-    (40, 100)
+fn validate_submission(submitted_at_seconds: u64) -> Result<(), String> {
+    if submitted_at_seconds == 0 {
+        return Err("maturity submission time is zero".into());
+    }
+    Ok(())
+}
+
+fn validate_intent(kind: MaturityKind, intent: &MaturityIntent) -> Result<(), String> {
+    match (
+        kind,
+        intent.entitlement_batch_generation,
+        intent.two_week_target_e8s,
+    ) {
+        (MaturityKind::TwoYear, None, None) => Ok(()),
+        (MaturityKind::TwoWeek, Some(generation), Some(target)) if generation > 0 && target > 0 => {
+            Ok(())
+        }
+        _ => Err("maturity intent is inconsistent with its role".into()),
+    }
+}
+
+pub fn disburse_percentage() -> u32 {
+    100
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn direct_policy_is_stake_40_then_disburse_all_remaining() {
-        assert_eq!(super::commands(), (40, 100));
+    fn account_capture_policy_disburses_all_without_staking_maturity() {
+        assert_eq!(super::disburse_percentage(), 100);
         assert_eq!(super::MINIMUM_DISBURSEMENT_E8S, 100_000_000);
         assert_eq!(super::DISBURSEMENT_DELAY_SECONDS, 604_800);
+    }
+
+    #[test]
+    fn both_roles_use_the_same_command() {
+        assert_ne!(super::MaturityKind::TwoYear, super::MaturityKind::TwoWeek);
+    }
+
+    #[test]
+    fn capture_split_debits_exactly_the_frozen_amount() {
+        let split = super::capture_40_60(100_000, 10_000, 10_000).unwrap();
+        assert_eq!(split.permanent_gross, 40_000);
+        assert_eq!(split.permanent_credit, 30_000);
+        assert_eq!(split.claim_gross, 60_000);
+        assert_eq!(split.claim_credit, 50_000);
+        assert_eq!(
+            split.permanent_credit + split.permanent_fee + split.claim_credit + split.claim_fee,
+            split.captured
+        );
+        assert!(super::capture_40_60(20_000, 10_000, 10_000).is_err());
+    }
+
+    #[test]
+    fn maturity_intent_is_only_role_binding() {
+        let two_week = super::MaturityIntent {
+            entitlement_batch_generation: Some(7),
+            two_week_target_e8s: Some(100),
+        };
+        assert!(super::validate_intent(super::MaturityKind::TwoWeek, &two_week).is_ok());
+        assert!(super::validate_intent(super::MaturityKind::TwoYear, &two_week).is_err());
     }
 }

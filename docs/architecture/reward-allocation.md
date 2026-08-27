@@ -24,13 +24,19 @@ Eligibility remains an exact staking-product rule: positive stake,
 non-dissolving, and exactly 1,209,600 seconds of dissolve delay. Protocol and
 Jupiter neurons are excluded. The two-week duration is not an accounting epoch.
 
-When the NNS liquid maturity leg is ready and no batch is pending, IO freezes
-the live accumulator into one immutable entitlement batch. Daily observations
-continue in a fresh live accumulator while IO waits for actual modulated ICP.
-Only received ICP determines the backed IO pool. Before recipient allocation,
-the batch's eligible-credit fraction determines the eligible pool; excluded,
-ineligible and unassigned fractions remain in reserve. A zero-eligible-credit
-batch completes without recipient transfers and forfeits the whole backed pool.
+When the pooled parent has sufficient ordinary maturity and no batch is
+pending, IO freezes the live accumulator into one immutable entitlement batch
+and persists a `DisburseMaturity(100%)` intent. The canonical NNS pending
+disbursement fixes the entitlement boundary; later reward accrual belongs to a
+future batch. Daily observations continue in a fresh live accumulator while IO
+waits for finalization. After the pending record disappears, the complete
+semantic TwoWeek staging Account balance freezes once as controlled ICP. No
+Mint block is supplied or proved. The permanent credit is proved first and the
+claim leg then enters the common liquid-first receipt.
+Before recipient allocation, the batch's eligible-credit fraction determines
+the eligible pool; excluded, ineligible and unassigned fractions remain in
+reserve. A zero-eligible-credit batch completes without recipient transfers
+and forfeits the whole backed pool.
 
 Allocations use checked integer arithmetic. Deterministic rounding dust remains
 in reserve, and recipient transfers progress sequentially with upgrade-safe
@@ -45,13 +51,18 @@ participation.
 The economics remain:
 
 ```text
-redeemable_io_supply =
+claim_bearing_io_supply =
   total_io_supply
   - protocol_reserve_io
   - non_redeemable_governance_io
 
-redemption_rate =
-  liquid_icp_reserve / redeemable_io_supply
+claim_backing =
+  L + P + U + T
+
+claim_rate =
+  claim_backing / claim_bearing_io_supply
 ```
 
-Only liquid ICP counts as redemption NAV.
+`L` is available redemption liquidity. A redemption quote uses the global
+claim rate but separately requires enough `L` to settle the requested ICP;
+permanent productive capital remains outside claim backing.

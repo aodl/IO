@@ -1,98 +1,177 @@
-use {candid::CandidType, serde::Deserialize};
+use candid::CandidType;
+use serde::Deserialize;
+
+use crate::backing::{CohortProofState, MAX_LIVE_UNWIND_COHORTS};
+
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum UnwindPhase {
     SplitPrepared,
     SplitSubmitted,
-    ChildCreated,
+    ChildIdentified,
+    SplitProved,
     StartDissolvingSubmitted,
-    Dissolving,
-    StopDissolvingSubmitted,
+    StartDissolvingProved,
+    DisbursementPrepared,
+    DisbursementSubmitted,
+    PrincipalReturned,
+    DelayIncreaseSubmitted,
+    DelayIncreaseProved,
     MergePrepared,
     MergeSubmitted,
-    ReadyToDisburse,
-    DisburseSubmitted,
-    AwaitingTransferProof {
-        block_index: Option<u128>,
-        submitted_at_seconds: u64,
-    },
+    MergeProved,
+    CleanupProved,
     Stuck(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct UnwindOperation {
     pub operation_sequence: u64,
+    pub generation: u64,
+    pub reconciliation_request_fingerprint: Vec<u8>,
     pub target_e8s: u128,
-    pub excess_e8s: u128,
+    pub gross_e8s: u128,
+    pub split_fee_e8s: u128,
+    pub committed_disbursement_fee_e8s: u128,
+    pub parent_principal_before_split_e8s: u128,
     pub child_neuron_id: u64,
     pub principal_e8s: u128,
     pub child_staking_subaccount: Vec<u8>,
+    pub submitted_at_seconds: u64,
+    pub expected_block_index: Option<u128>,
+    pub child_maturity_e8s: u128,
+    pub parent_maturity_e8s: u128,
+    pub parent_principal_e8s: u128,
     pub phase: UnwindPhase,
 }
 
 impl UnwindOperation {
     pub fn validate(&self, next_operation_sequence: u64) -> Result<(), String> {
-        if self.operation_sequence == 0
-            || self.operation_sequence >= next_operation_sequence
-            || self.excess_e8s == 0
-        {
-            return Err("direct unwind operation is inconsistent".into());
-        }
         let before_child = matches!(
             self.phase,
             UnwindPhase::SplitPrepared | UnwindPhase::SplitSubmitted
         );
-        if (before_child && (self.child_neuron_id != 0 || self.principal_e8s != 0))
-            || (!before_child && (self.child_neuron_id == 0 || self.principal_e8s == 0))
-            || (self.child_staking_subaccount.len() != 32
-                && !(self.child_staking_subaccount.is_empty()
-                    && (before_child || self.phase == UnwindPhase::ChildCreated)))
+        let before_submission = self.phase == UnwindPhase::SplitPrepared;
+        let split_lifecycle = matches!(
+            self.phase,
+            UnwindPhase::SplitSubmitted
+                | UnwindPhase::ChildIdentified
+                | UnwindPhase::SplitProved
+                | UnwindPhase::StartDissolvingSubmitted
+                | UnwindPhase::StartDissolvingProved
+        );
+        let identified = self.phase == UnwindPhase::ChildIdentified;
+        let maturity_cleanup = matches!(
+            self.phase,
+            UnwindPhase::DelayIncreaseSubmitted
+                | UnwindPhase::DelayIncreaseProved
+                | UnwindPhase::MergePrepared
+                | UnwindPhase::MergeSubmitted
+                | UnwindPhase::MergeProved
+        );
+        let cleanup_with_maturity = self.phase == UnwindPhase::CleanupProved
+            && self.child_maturity_e8s > 0
+            && self.parent_principal_e8s > 0;
+        let no_maturity_evidence = self.child_maturity_e8s == 0
+            && self.parent_maturity_e8s == 0
+            && self.parent_principal_e8s == 0;
+        if self.operation_sequence == 0
+            || self.operation_sequence >= next_operation_sequence
+            || self.generation == 0
+            || self.reconciliation_request_fingerprint.len() != 32
+            || self.gross_e8s == 0
+            || self.gross_e8s > u128::from(u64::MAX)
+            || (before_submission
+                && (self.split_fee_e8s != 0
+                    || self.committed_disbursement_fee_e8s != 0
+                    || self.parent_principal_before_split_e8s != 0))
+            || (split_lifecycle
+                && (self.split_fee_e8s == 0
+                    || self.committed_disbursement_fee_e8s == 0
+                    || self.parent_principal_before_split_e8s < self.gross_e8s))
+            || self.principal_e8s > u128::from(u64::MAX)
+            || (self.phase == UnwindPhase::DisbursementSubmitted && self.submitted_at_seconds == 0)
+            || (before_child && (self.child_neuron_id != 0 || self.principal_e8s != 0))
+            || (identified
+                && (self.child_neuron_id == 0
+                    || self.principal_e8s == 0
+                    || !self.child_staking_subaccount.is_empty()))
+            || (!before_child
+                && !identified
+                && (self.child_neuron_id == 0 || self.principal_e8s == 0))
+            || (!before_child && !identified && self.child_staking_subaccount.len() != 32)
+            || (maturity_cleanup
+                && (self.child_maturity_e8s == 0 || self.parent_principal_e8s == 0))
+            || (!maturity_cleanup && !cleanup_with_maturity && !no_maturity_evidence)
         {
-            return Err("direct unwind child evidence is inconsistent".into());
+            return Err("unwind command evidence is inconsistent".into());
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct PassiveCohort {
+    pub generation: u64,
+    pub reconciliation_request_fingerprint: Vec<u8>,
+    pub child_neuron_id: u64,
+    pub principal_e8s: u128,
+    pub committed_fee_e8s: u128,
+    pub child_staking_subaccount: Vec<u8>,
+    pub ready_at_seconds: u64,
+    pub proof: CohortProofState,
+    pub disbursement_block: Option<u128>,
+}
+
+pub fn validate_cohorts(cohorts: &[PassiveCohort]) -> Result<(), String> {
+    if cohorts.len() > MAX_LIVE_UNWIND_COHORTS {
+        return Err("live unwind cohort capacity exceeded".into());
+    }
+    let mut previous = None;
+    for cohort in cohorts {
+        if cohort.generation == 0
+            || cohort.reconciliation_request_fingerprint.len() != 32
+            || cohort.child_neuron_id == 0
+            || cohort.principal_e8s == 0
+            || cohort.committed_fee_e8s == 0
+            || cohort.principal_e8s <= cohort.committed_fee_e8s
+            || cohort.principal_e8s > u128::from(u64::MAX)
+            || cohort.child_staking_subaccount.len() != 32
+            || previous
+                .replace(cohort.generation)
+                .is_some_and(|value| value >= cohort.generation)
+        {
+            return Err("live unwind cohorts are malformed or unsorted".into());
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn operation(phase: UnwindPhase) -> UnwindOperation {
-        UnwindOperation {
-            operation_sequence: 1,
-            target_e8s: 1_000_000,
-            excess_e8s: 300_000,
-            child_neuron_id: 7,
-            principal_e8s: 290_000,
-            child_staking_subaccount: vec![9; 32],
-            phase,
+    fn cohort(generation: u64) -> PassiveCohort {
+        PassiveCohort {
+            generation,
+            reconciliation_request_fingerprint: vec![generation as u8; 32],
+            child_neuron_id: generation + 100,
+            principal_e8s: 100,
+            committed_fee_e8s: 10,
+            child_staking_subaccount: vec![generation as u8; 32],
+            ready_at_seconds: generation + 1_000,
+            proof: CohortProofState::Dissolving,
+            disbursement_block: None,
         }
     }
 
     #[test]
-    fn split_phases_have_no_child_and_later_phases_have_exact_child_evidence() {
-        let mut split = operation(UnwindPhase::SplitPrepared);
-        split.child_neuron_id = 0;
-        split.principal_e8s = 0;
-        split.child_staking_subaccount.clear();
-        assert_eq!(split.validate(2), Ok(()));
-        assert_eq!(operation(UnwindPhase::Dissolving).validate(2), Ok(()));
-    }
-
-    #[test]
-    fn malformed_child_evidence_is_rejected() {
-        let mut missing = operation(UnwindPhase::Dissolving);
-        missing.child_neuron_id = 0;
-        assert!(missing.validate(2).is_err());
-        let mut wrong_account = operation(UnwindPhase::ReadyToDisburse);
-        wrong_account.child_staking_subaccount.pop();
-        assert!(wrong_account.validate(2).is_err());
-    }
-
-    #[test]
-    fn passive_child_has_only_the_canonical_dissolving_phase() {
-        let child = operation(UnwindPhase::Dissolving);
-        assert_eq!(child.validate(2), Ok(()));
-        assert!(matches!(child.phase, UnwindPhase::Dissolving));
+    fn live_cohorts_are_sorted_unique_and_bounded() {
+        let mut cohorts = (1..=MAX_LIVE_UNWIND_COHORTS as u64)
+            .map(cohort)
+            .collect::<Vec<_>>();
+        assert_eq!(validate_cohorts(&cohorts), Ok(()));
+        cohorts.push(cohort(33));
+        assert!(validate_cohorts(&cohorts).is_err());
+        assert!(validate_cohorts(&[cohort(2), cohort(1)]).is_err());
     }
 }

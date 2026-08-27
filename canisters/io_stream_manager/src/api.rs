@@ -1,6 +1,6 @@
 use candid::{CandidType, Nat, Principal};
 use ic_cdk::call::Call;
-pub use io_receipt_types::LiquidReceiptProgress;
+pub use io_receipt_types::ClaimBackingReceiptProgress;
 use serde::Deserialize;
 
 use crate::{
@@ -10,8 +10,8 @@ use crate::{
         RedemptionPreparation,
     },
     state::{
-        self, Account, DispatchEpoch, Lifecycle, LiquidReceiptStreamOperation, OperationSequence,
-        RedemptionResult, RedemptionStreamOperation, StreamOperation, StreamStateV1,
+        self, Account, DispatchEpoch, Lifecycle, OperationSequence, RedemptionResult,
+        RedemptionStreamOperation, StreamOperation, StreamStateV1,
     },
     transfer::{
         classify_result, ClassifiedResult, IcrcTransferArg, IcrcTransferFromArg, OwnTransferIntent,
@@ -25,12 +25,19 @@ pub enum ApiError {
     Unauthorized,
     Paused,
     Busy,
-    WrongNonce { expected: u64 },
+    WrongNonce {
+        expected: u64,
+    },
     NonceAlreadyUsed,
     Invalid(String),
     Ledger(String),
     Pending(String),
     Stuck(String),
+    LiquidityShortfall {
+        gross_icp_e8s: u128,
+        net_icp_e8s: u128,
+        available_liquid_e8s: u128,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -48,7 +55,8 @@ pub enum RedemptionProgress {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum StreamProgress {
     Redemption(RedemptionProgress),
-    LiquidReceipt(LiquidReceiptProgress),
+    ClaimReceipt(ClaimBackingReceiptProgress),
+    BackingReconciliation,
     Idle,
 }
 
@@ -57,11 +65,11 @@ pub struct Status {
     pub lifecycle: Lifecycle,
     pub operation_kind: Option<String>,
     pub operation_phase: Option<String>,
-    pub next_nns_receipt_sequence: u64,
+    pub next_operation_sequence: u64,
     pub latest_entitlement_batch_generation: u64,
     pub latest_processed_reward_event: Option<crate::state::RewardEventId>,
     pub latest_reward_event_classification: Option<crate::state::RewardEventClassification>,
-    pub accumulated_entitlements: Vec<crate::state::RewardEntitlementEntry>,
+    pub accumulated_entitlements: Vec<crate::state::FrozenEntitlement>,
     pub accumulated_eligible_credit: u128,
     pub accumulated_policy_credit: u128,
     pub processed_reward_event_count: u64,
@@ -71,68 +79,10 @@ pub struct Status {
     pub governance_parameters_fresh: bool,
     pub pending_entitlement_batch_eligible_credit: Option<u128>,
     pub pending_entitlement_batch_policy_credit: Option<u128>,
-}
-
-pub fn get_status() -> Status {
-    let state = state::read();
-    let (operation_kind, operation_phase) = match state.active_operation {
-        Some(StreamOperation::Redemption(operation)) => match *operation {
-            RedemptionStreamOperation::Preparing(_) => {
-                (Some("Redemption".into()), Some("Preparing".into()))
-            }
-            RedemptionStreamOperation::Active(operation) => (
-                Some("Redemption".into()),
-                Some(format!("{:?}", operation.phase)),
-            ),
-        },
-        Some(StreamOperation::LiquidReceipt(operation)) => match *operation {
-            LiquidReceiptStreamOperation::Preparing(_) => {
-                (Some("LiquidReceipt".into()), Some("Preparing".into()))
-            }
-            LiquidReceiptStreamOperation::Active(operation) => (
-                Some("LiquidReceipt".into()),
-                Some(format!("{:?}", operation.phase())),
-            ),
-        },
-        None => (None, None),
-    };
-    let accumulated_eligible_credit = state
-        .reward_entitlements
-        .entries
-        .iter()
-        .try_fold(0u128, |sum, entry| {
-            sum.checked_add(entry.accumulated_eligible_credit)
-        })
-        .expect("validated entitlement accumulator total");
-    Status {
-        lifecycle: state.lifecycle,
-        operation_kind,
-        operation_phase,
-        next_nns_receipt_sequence: state.next_nns_receipt_sequence,
-        latest_entitlement_batch_generation: state.latest_entitlement_batch_generation,
-        latest_processed_reward_event: state.reward_entitlements.last_processed_event,
-        latest_reward_event_classification: state
-            .reward_entitlements
-            .latest_observation
-            .as_ref()
-            .map(|observation| observation.classification),
-        accumulated_entitlements: state.reward_entitlements.entries,
-        accumulated_eligible_credit,
-        accumulated_policy_credit: state.reward_entitlements.accumulated_policy_credit,
-        processed_reward_event_count: state.reward_entitlements.processed_event_count,
-        missed_reward_event_count: state.reward_entitlements.missed_event_count,
-        reward_work_due: state.reward_entitlements.reward_work_due,
-        reward_processing_paused: state.reward_entitlements.reward_processing_paused,
-        governance_parameters_fresh: state.reward_entitlements.governance_parameters_fresh,
-        pending_entitlement_batch_eligible_credit: state
-            .pending_entitlement_batch
-            .as_ref()
-            .map(|batch| batch.eligible_credit_total),
-        pending_entitlement_batch_policy_credit: state
-            .pending_entitlement_batch
-            .as_ref()
-            .map(|batch| batch.policy_credit_total),
-    }
+    pub latest_reconciliation_checkpoint: Option<crate::state::ReconciliationCheckpoint>,
+    pub prepared_exit_generation: Option<u64>,
+    pub prepared_exit_member_count: u32,
+    pub committed_exit_member_count: u32,
 }
 
 pub(crate) fn require_ready(state: &StreamStateV1) -> Result<(), ApiError> {
@@ -290,7 +240,7 @@ pub async fn redeem(
     }
     if initial
         .config
-        .excluded_io_accounts
+        .nonredeemable_governance_io_accounts
         .iter()
         .try_fold(false, |matched, excluded| {
             account.effective_eq(excluded).map(|same| matched || same)
@@ -354,7 +304,7 @@ pub async fn redeem(
     )));
     state::write(latest);
 
-    let snapshot = match canonical::redemption_snapshot(&initial.config).await {
+    let snapshot = match canonical::claim_snapshot(&initial.config).await {
         Ok(snapshot) => snapshot,
         Err(error) => {
             clear_matching_preparation(&preparation);
@@ -368,6 +318,21 @@ pub async fn redeem(
         return Err(ApiError::Invalid(
             "canonical fee differs from approved config".into(),
         ));
+    }
+    if let Err(error) = redemption::quote_for(&preparation, &snapshot) {
+        clear_matching_preparation(&preparation);
+        return match error {
+            io_core_model::EconomicsError::InsufficientLiquidity(shortfall) => {
+                Err(ApiError::LiquidityShortfall {
+                    gross_icp_e8s: shortfall.gross_icp,
+                    net_icp_e8s: shortfall.net_icp,
+                    available_liquid_e8s: shortfall.available_liquid,
+                })
+            }
+            error => Err(ApiError::Invalid(format!(
+                "redemption quote failed: {error:?}"
+            ))),
+        };
     }
     let operation = match redemption::calculate(&preparation, snapshot, &initial.config) {
         Ok(operation) => operation,
@@ -470,7 +435,7 @@ async fn dispatch_redemption_transfer(
     }
     if !io_pull && operation.icp_payout.is_none() {
         let config = state::read().config;
-        let current_fee = canonical::fee(config.icp_ledger)
+        let fresh = canonical::claim_snapshot(&config)
             .await
             .map_err(ApiError::Ledger)?;
         let latest = active_redemption()?;
@@ -481,11 +446,9 @@ async fn dispatch_redemption_transfer(
         {
             return Err(ApiError::Busy);
         }
-        if current_fee != latest.snapshot.icp_fee_e8s || current_fee > config.expected_icp_fee_e8s {
+        if let Err(error) = redemption::verify_pre_payout_conditions(&latest, &fresh) {
             pause();
-            return Err(ApiError::Invalid(
-                "current ICP fee differs from approved redemption fee".into(),
-            ));
+            return Err(ApiError::Stuck(error));
         }
         now.checked_add(config.ledger_deduplication_window_nanos)
             .ok_or_else(|| ApiError::Invalid("payout deduplication deadline overflow".into()))?;
@@ -498,7 +461,7 @@ async fn dispatch_redemption_transfer(
                 .subaccount,
             to: latest.account.clone(),
             amount: latest.net_icp_e8s,
-            fee: current_fee,
+            fee: fresh.icp_fee_e8s,
             memo: crate::transfer::deterministic_memo(
                 b"io-redemption-pay-v1",
                 latest.caller,
@@ -571,7 +534,6 @@ async fn dispatch_redemption_transfer(
         last_submitted_at: now,
     };
     let request_fingerprint = operation.request_fingerprint.clone();
-    let fingerprint = attempt.fingerprint.clone();
     let intent = attempt.intent.clone();
     operation.phase = if io_pull {
         RedemptionPhase::PullSubmitted
@@ -585,7 +547,7 @@ async fn dispatch_redemption_transfer(
         sequence,
         request_fingerprint,
         io_pull,
-        fingerprint,
+        intent,
         epoch,
         response,
     )
@@ -595,7 +557,7 @@ fn apply_transfer_callback(
     sequence: OperationSequence,
     request_fingerprint: Vec<u8>,
     io_pull: bool,
-    fingerprint: Vec<u8>,
+    intent: OwnTransferIntent,
     epoch: DispatchEpoch,
     response: Result<TransferResult, String>,
 ) -> Result<RedemptionProgress, ApiError> {
@@ -619,7 +581,7 @@ fn apply_transfer_callback(
             .as_mut()
             .ok_or_else(|| ApiError::Invalid("payout intent is missing".into()))?
     };
-    if attempt.fingerprint != fingerprint
+    if attempt.intent != intent
         || !matches!(attempt.state, TransferState::Submitted { epoch: current, .. } if current == epoch)
     {
         return Err(ApiError::Busy);
@@ -708,7 +670,7 @@ async fn commit_redemption(
     mut operation: RedemptionOperation,
     now: u64,
 ) -> Result<RedemptionProgress, ApiError> {
-    let post = canonical::redemption_snapshot(&state::read().config)
+    let post = canonical::claim_snapshot(&state::read().config)
         .await
         .map_err(ApiError::Ledger)?;
     if let Err(error) = redemption::verify_postconditions(&operation, &post) {
@@ -841,35 +803,30 @@ pub async fn resume_stream(now: u64) -> Result<StreamProgress, ApiError> {
                 resume(now).await.map(StreamProgress::Redemption)
             }
         },
-        Some(StreamOperation::LiquidReceipt(operation)) => match *operation {
-            LiquidReceiptStreamOperation::Preparing(_) => Err(ApiError::Pending(
-                "no-effect receipt preparation must be retried by the NNS manager".into(),
-            )),
-            LiquidReceiptStreamOperation::Active(operation) => {
-                receipt::resume_liquid_receipt(*operation, now)
-                    .await
-                    .map(StreamProgress::LiquidReceipt)
-            }
-        },
+        Some(StreamOperation::ClaimReceipt(_)) => {
+            receipt::resume(now).await.map(StreamProgress::ClaimReceipt)
+        }
+        Some(StreamOperation::PoolTopUp(_)) => {
+            crate::pool_reconciliation::resume(now).await?;
+            Ok(StreamProgress::BackingReconciliation)
+        }
         None => Ok(StreamProgress::Idle),
     }
 }
 
 pub async fn prove_active_transfer(block_index: u128) -> Result<(), ApiError> {
-    if let Some(StreamOperation::LiquidReceipt(operation)) = state::read().active_operation {
-        return match *operation {
-            LiquidReceiptStreamOperation::Active(operation) => match *operation {
-                crate::receipt::LiquidReceiptOperation::Jupiter(_) => {
-                    receipt::prove_jupiter_settlement(block_index).await
-                }
-                crate::receipt::LiquidReceiptOperation::TwoWeek(_) => {
-                    crate::rewards::prove_recipient_transfer(block_index).await
-                }
-            },
-            LiquidReceiptStreamOperation::Preparing(_) => Err(ApiError::Invalid(
-                "receipt preparation has no active transfer".into(),
-            )),
-        };
+    if matches!(
+        state::read().active_operation,
+        Some(StreamOperation::ClaimReceipt(_))
+    ) {
+        receipt::prove_recipient(block_index).await?;
+        return Ok(());
+    }
+    if matches!(
+        state::read().active_operation,
+        Some(StreamOperation::PoolTopUp(_))
+    ) {
+        return crate::pool_reconciliation::prove_transfer(block_index).await;
     }
     let operation = active_redemption()?;
     if operation.phase != RedemptionPhase::Stuck {
@@ -978,9 +935,7 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<(), ApiError> {
             .as_mut()
             .ok_or_else(|| ApiError::Invalid("payout intent is missing".into()))?
     };
-    if target.fingerprint != attempt.fingerprint
-        || !matches!(target.state, TransferState::Stuck { .. })
-    {
+    if target.intent != attempt.intent || !matches!(target.state, TransferState::Stuck { .. }) {
         return Err(ApiError::Busy);
     }
     target.state = TransferState::Succeeded { block: block_index };
@@ -991,36 +946,4 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<(), ApiError> {
     };
     persist_redemption(latest);
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn status_does_not_claim_canonical_balances() {
-        assert!(!format!("{:?}", std::any::type_name::<Status>()).contains("balance"));
-    }
-
-    #[test]
-    fn retry_expiry_is_anchored_to_immutable_intent_time() {
-        let owner = Principal::from_slice(&[1]);
-        let intent = OwnTransferIntent::Icrc1 {
-            ledger: Principal::from_slice(&[2]),
-            from_subaccount: [0; 32],
-            to: Account {
-                owner,
-                subaccount: None,
-            },
-            amount: 10,
-            fee: 1,
-            memo: vec![1],
-            created_at_time: 100,
-        };
-        let deadline = intent.created_at_time().checked_add(50).unwrap();
-        let misleading_first_submission = 140;
-        assert_eq!(deadline, 150);
-        assert!(151u64.saturating_sub(misleading_first_submission) < 50);
-        assert!(151 >= deadline);
-    }
 }

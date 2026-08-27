@@ -1,6 +1,8 @@
 # SNS Testing Layers
 
-IO has four SNS-related test layers. They are intentionally separate because each proves a different claim.
+IO has four SNS-related test layers. They are intentionally separate because each proves a different claim. A canonical local package further labels its
+official-SNS, exact-NNS-boundary and controlled-IO observations so evidence from
+one environment is never attributed to another.
 
 ## Layer 1: Mock and Local Ledger/Index/Governance Tests
 
@@ -57,6 +59,15 @@ What it does not prove:
 
 This layer is optional/manual and local-only. It follows the current official ICP/DFINITY SNS testing documentation as the source of truth and must use the source-built `sns` CLI with `sns-testing` to create a real local SNS root, governance, ledger, index, swap, and archive stack from a local `sns_init` candidate. The historical standalone `dfinity/sns-testing` repository is deprecated; if the official docs reference successor tooling or a new repository/location, use that current official location.
 
+The current release completed this layer in schema-v2 package
+`deploy/local-sns-rehearsal/evidence/2026-08-26-9462a1a-account-semantic`,
+bound to source `9462a1a0df602f06fa845bd31f9fcd0adf80067a` and immediate
+artifact child `46713f8499cf9a63a6cd4879b1fff9c1f9ef0be5`. The run used
+source-built revision `4320fdf2e613844eabae1927b1a23b98da3a7bc6` from an
+isolated clean checkout. The package and instructions below remain the process
+for producing a future replacement package; they do not imply current evidence
+is absent.
+
 Package:
 
 - `deploy/local-sns-rehearsal/README.md`
@@ -78,18 +89,20 @@ What it proves after a completed local run:
 
 What it does not prove:
 
-- Before a completed local run, it does not prove real SNS ledger/index/governance/root behavior.
+- A future uncompleted run does not prove real SNS ledger/index/governance/root behavior or replace the selected package.
 - It does not prove final tokenomics.
 - It does not prove mainnet launch readiness.
 - It does not activate production adapters.
 - It does not make IO issuance or redemption live.
 
-Current package status:
+The maintained runbook contains the complete restart-safe driver and a
+fail-closed account-semantic package schema. A dated successor package is
+evidence only after a fresh run creates every phase checkpoint,
+candidate-package validation passes, and the selector is reviewed against its
+exact source/artifact/checksum identity. Historical packages remain bound to
+their own runs.
 
-- Package/scaffolding exists: renderable local `sns_init` template, local variables template, evidence capture helpers, local command templates, no-network validators, and operator runbook.
-- Real proof is not completed: no local SNS ledger evidence file is committed, no local SNS canister IDs are recorded, no real SNS ledger/index/governance/root behavior has been observed, and `validate_local_sns_ledger` skips until evidence exists.
-
-Done criteria for this layer are intentionally concrete: official local SNS tooling must run locally; local SNS root/governance/ledger/index/swap IDs must be recorded; ledger fee disposition, total-supply deltas, reserve balance, reserve-to-user transfer, user-to-redemption transfer, redemption-to-reserve transfer, bad fee, insufficient funds, duplicate proof, and index account history must be observed; governance/root/swap availability and dapp controller state must be checked; and `cargo run -p xtask -- validate_local_sns_ledger` must pass against the filled local evidence file.
+Done criteria for this layer are intentionally concrete: official local SNS tooling must run locally; local SNS root/governance/ledger/index/swap IDs must be recorded; ledger fee disposition, total-supply deltas, reserve balance, reserve-to-user transfer, user-to-redemption transfer, redemption-to-reserve transfer, bad fee, insufficient funds, duplicate proof, and index account history must be observed; governance/root/swap availability and dapp controller state must be checked; exact NNS and controlled account-semantic cases must pass serially; and the candidate and selected committed evidence validators must both pass.
 
 ## Layer 4: Mainnet SNS Testflight
 
@@ -106,8 +119,8 @@ What it does not prove:
 - It does not run a real swap.
 - It does not mean the canonical SNS IO ledger exists on mainnet.
 
-## Current Gap Closed by the Local Rehearsal Package
+## Current Local Closure
 
-Before the official local rehearsal package, IO had strong mock/PocketIC coverage but no required artifact describing how to create and validate a real SNS-created local IO ledger/index/governance/root stack. The package closes the scaffolding and evidence-validation gap while keeping the dfx SNS extension outside required CI.
+Before the official local rehearsal package, IO had strong mock/PocketIC coverage but no required artifact describing how to create and validate a real SNS-created local IO ledger/index/governance/root stack. The selected schema-v2 package closes that current local gap with three explicit proof layers: source-built official SNS launch/wiring, exact proposal-143660 NNS mechanics, and controlled current-IO account-semantic orchestration. The intermediate `2026-08-26-716d51e-account-semantic` and all earlier packages are historical only. The dfx SNS extension remains outside required CI.
 
 IO_TEST ledgers remain non-canonical staging tools. The canonical IO ledger is intended to be the SNS ledger, and that ledger has not launched on mainnet.

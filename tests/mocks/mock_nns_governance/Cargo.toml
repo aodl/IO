@@ -11,5 +11,7 @@ crate-type = ["rlib", "cdylib"]
 [dependencies]
 candid.workspace = true
 ic-cdk.workspace = true
-io-receipt-types.workspace = true
+io-accounts = { version = "=0.1.0", path = "../../../crates/io_accounts" }
+io-nns-types = { version = "=0.1.0", path = "../../../crates/io_nns_types" }
 serde.workspace = true
+sha2 = "0.10.9"

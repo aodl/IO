@@ -1,9 +1,8 @@
 use candid::{decode_one, encode_one, CandidType, Principal};
 use io_sns_lifecycle::{
-    read_manifest, resolve_manifest_entry, ExpectedModuleHashRequest, RegisterDappCanisterRequest,
-    RootUpgradeAttempt, RootUpgradeAttemptStatus, RootUpgradeIntent, RootUpgradeOutcomeRequest,
-    RootUpgradeRequest, UpgradeProposal, UpgradeProposalRequest, UpgradeProposalStatus,
-    UpgradeVote,
+    ExpectedModuleHashRequest, RegisterDappCanisterRequest, RootUpgradeAttempt,
+    RootUpgradeAttemptStatus, RootUpgradeIntent, RootUpgradeOutcomeRequest, RootUpgradeRequest,
+    UpgradeProposal, UpgradeProposalRequest, UpgradeProposalStatus, UpgradeVote,
 };
 use pocket_ic::PocketIc;
 use serde::Deserialize;
@@ -25,16 +24,16 @@ struct NnsConfig {
     icp_ledger: Principal,
     nns_governance: Principal,
     two_year_neuron_id: u64,
-    two_week_neuron_id: u64,
+    pooled_parent_memo: u64,
+    pooled_parent_followee_id: u64,
+    minimum_parent_stake_e8s: u128,
     jupiter_account: io_stream_manager::Account,
     jupiter_staging: io_stream_manager::Account,
-    two_week_maturity_staging: io_stream_manager::Account,
     stream_liquid_account: io_stream_manager::Account,
     expected_io_fee_e8s: u128,
     expected_icp_fee_e8s: u128,
-    jupiter_fee_float_e8s: u128,
-    two_week_fee_float_e8s: u128,
-    seeded_two_week_principal_e8s: u128,
+    jupiter_activation_block_floor: u128,
+    audited_permanent_principal_e8s: u128,
     transfer_retry_delay_nanos: u64,
     ledger_deduplication_window_nanos: u64,
 }
@@ -145,14 +144,6 @@ fn setup() -> Fixture {
                 io_ledger,
                 icp_ledger,
                 nns_manager,
-                jupiter_receipt_source: io_stream_manager::Account {
-                    owner: nns_manager,
-                    subaccount: Some(vec![7; 32]),
-                },
-                two_week_receipt_source: io_stream_manager::Account {
-                    owner: nns_manager,
-                    subaccount: Some(vec![8; 32]),
-                },
                 jupiter_io_account: io_stream_manager::Account {
                     owner: jupiter,
                     subaccount: None,
@@ -166,7 +157,7 @@ fn setup() -> Fixture {
                     subaccount: None,
                 },
                 liquid_icp: stream_liquid.clone(),
-                excluded_io_accounts: Vec::new(),
+                nonredeemable_governance_io_accounts: Vec::new(),
                 minimum_redemption_io_e8s: 20_000,
                 expected_io_fee_e8s: 10_000,
                 expected_icp_fee_e8s: 10_000,
@@ -189,7 +180,9 @@ fn setup() -> Fixture {
                 icp_ledger,
                 nns_governance,
                 two_year_neuron_id: 42,
-                two_week_neuron_id: 43,
+                pooled_parent_memo: 43,
+                pooled_parent_followee_id: 44,
+                minimum_parent_stake_e8s: 100_000_000,
                 jupiter_account: io_stream_manager::Account {
                     owner: jupiter,
                     subaccount: None,
@@ -198,16 +191,11 @@ fn setup() -> Fixture {
                     owner: nns_manager,
                     subaccount: None,
                 },
-                two_week_maturity_staging: io_stream_manager::Account {
-                    owner: nns_manager,
-                    subaccount: Some(vec![2; 32]),
-                },
                 stream_liquid_account: stream_liquid,
                 expected_io_fee_e8s: 10_000,
                 expected_icp_fee_e8s: 10_000,
-                jupiter_fee_float_e8s: 20_000,
-                two_week_fee_float_e8s: 10_000,
-                seeded_two_week_principal_e8s: 1,
+                jupiter_activation_block_floor: 1,
+                audited_permanent_principal_e8s: 1,
                 transfer_retry_delay_nanos: 1_000_000_000,
                 ledger_deduplication_window_nanos: 86_400_000_000_000,
             },
@@ -270,24 +258,7 @@ fn submit(
     .unwrap()
 }
 
-fn proposal_request(
-    artifact: &str,
-    target: Principal,
-    expected_module_hash: String,
-) -> UpgradeProposalRequest {
-    let manifest = read_manifest(workspace_path("release-artifacts/manifest.json")).unwrap();
-    let entry = resolve_manifest_entry(&manifest, artifact).unwrap();
-    UpgradeProposalRequest {
-        target_canister: target,
-        wasm_sha256: entry.raw_wasm_sha256.clone(),
-        wasm_gz_sha256: entry.gz_wasm_sha256.clone(),
-        artifact_name: artifact.to_string(),
-        artifact_path: entry.raw_wasm_path.clone(),
-        expected_module_hash: Some(expected_module_hash),
-    }
-}
-
-fn execute_release_upgrade(fixture: &Fixture, artifact: &str, target: Principal) {
+fn execute_same_schema_upgrade(fixture: &Fixture, artifact: &str, target: Principal) {
     let before = fixture
         .pic
         .canister_status(target, Some(fixture.root))
@@ -306,7 +277,19 @@ fn execute_release_upgrade(fixture: &Fixture, artifact: &str, target: Principal)
         })
         .unwrap(),
     );
-    let request = proposal_request(artifact, target, before_hex);
+    let current_wasm = required_wasm(&format!(
+        "target/wasm32-unknown-unknown/debug/{artifact}.wasm"
+    ));
+    let current_hash = hex_encode(Sha256::digest(&current_wasm));
+    assert_eq!(before_hex, current_hash);
+    let request = UpgradeProposalRequest {
+        target_canister: target,
+        wasm_sha256: current_hash.clone(),
+        wasm_gz_sha256: current_hash,
+        artifact_name: artifact.to_string(),
+        artifact_path: format!("debug/{artifact}.wasm"),
+        expected_module_hash: Some(before_hex),
+    };
     let expected_raw_hash = request.wasm_sha256.clone();
     let proposal = submit(&fixture.pic, fixture.governance, request);
     let _: Result<UpgradeProposal, String> = decode_one(&update(
@@ -337,13 +320,11 @@ fn execute_release_upgrade(fixture: &Fixture, artifact: &str, target: Principal)
     let intent = intent.unwrap();
     assert_eq!(intent.wasm_sha256, expected_raw_hash);
 
-    let release_wasm = required_wasm(&format!("release-artifacts/{artifact}.wasm"));
-    assert_eq!(hex_encode(Sha256::digest(&release_wasm)), expected_raw_hash);
     fixture
         .pic
         .upgrade_canister(
             target,
-            release_wasm,
+            current_wasm,
             encode_one(()).unwrap(),
             Some(fixture.root),
         )
@@ -369,7 +350,7 @@ fn execute_release_upgrade(fixture: &Fixture, artifact: &str, target: Principal)
         .unwrap()
         .module_hash
         .unwrap();
-    assert_ne!(before, after);
+    assert_eq!(before, after);
     assert_eq!(hex_encode(after), expected_raw_hash);
     assert_eq!(fixture.pic.get_controllers(target), vec![fixture.root]);
     assert_eq!(lifecycle(&fixture.pic, target), Lifecycle::Paused);
@@ -405,7 +386,7 @@ fn execute_release_upgrade(fixture: &Fixture, artifact: &str, target: Principal)
 }
 
 #[test]
-fn pocketic_sns_root_changes_both_io_module_hashes_to_checked_in_release() {
+fn pocketic_sns_root_preserves_both_current_launch_states_on_same_schema_upgrade() {
     if std::env::var_os("POCKET_IC_BIN").is_none() {
         eprintln!("skipping SNS Root lifecycle PocketIC test because POCKET_IC_BIN is not set");
         return;
@@ -416,8 +397,8 @@ fn pocketic_sns_root_changes_both_io_module_hashes_to_checked_in_release() {
         lifecycle(&fixture.pic, fixture.nns_manager),
         Lifecycle::Paused
     );
-    execute_release_upgrade(&fixture, "io_stream_manager", fixture.stream);
-    execute_release_upgrade(&fixture, "io_nns_neuron_manager", fixture.nns_manager);
+    execute_same_schema_upgrade(&fixture, "io_stream_manager", fixture.stream);
+    execute_same_schema_upgrade(&fixture, "io_nns_neuron_manager", fixture.nns_manager);
 }
 
 #[test]
@@ -433,14 +414,20 @@ fn pocketic_sns_root_rejects_unknown_dapp_and_unauthorized_caller() {
         .unwrap()
         .module_hash
         .unwrap();
+    let current_hash = hex_encode(Sha256::digest(required_wasm(
+        "target/wasm32-unknown-unknown/debug/io_stream_manager.wasm",
+    )));
     let proposal = submit(
         &fixture.pic,
         fixture.governance,
-        proposal_request(
-            "io_stream_manager",
-            Principal::from_slice(&[42; 29]),
-            hex_encode(before),
-        ),
+        UpgradeProposalRequest {
+            target_canister: Principal::from_slice(&[42; 29]),
+            wasm_sha256: current_hash.clone(),
+            wasm_gz_sha256: current_hash,
+            artifact_name: "io_stream_manager".to_string(),
+            artifact_path: "debug/io_stream_manager.wasm".to_string(),
+            expected_module_hash: Some(hex_encode(before)),
+        },
     );
     let _: Result<UpgradeProposal, String> = decode_one(&update(
         &fixture.pic,

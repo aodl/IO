@@ -5,7 +5,7 @@ pub async fn readiness_preflight(
     captured_control_epoch: u64,
 ) -> Result<(), crate::api::ApiError> {
     let snapshot = state::read();
-    if snapshot.active_operation.is_some() {
+    if snapshot.active_operation.is_some() || snapshot.prepared_exit_reconciliation.is_some() {
         return Err(crate::api::ApiError::Busy);
     }
     snapshot
@@ -26,7 +26,7 @@ pub async fn readiness_preflight(
         )),
     })?;
     validate_installed_governance(&snapshot.config, &installed)?;
-    let activation_baseline = if snapshot.reward_entitlements.last_processed_event.is_none() {
+    let activation_baseline = if snapshot.reward_checkpoint.last_processed_event.is_none() {
         let event =
             crate::reward_evidence::latest_reward_event(snapshot.config.sns_governance).await?;
         Some(crate::reward_evidence::event_id(&event)?)
@@ -57,9 +57,19 @@ pub async fn readiness_preflight(
             "ICP ledger lacks ICRC-1".into(),
         ));
     }
-    let canonical = crate::canonical::redemption_snapshot(&snapshot.config)
+    let canonical = crate::canonical::claim_snapshot(&snapshot.config)
         .await
         .map_err(crate::api::ApiError::Ledger)?;
+    let policy = crate::canonical::pool_policy_observation(snapshot.config.nns_manager)
+        .await
+        .map_err(|error| {
+            crate::api::ApiError::Invalid(format!("pool policy is not ready: {error}"))
+        })?;
+    if policy.control_epoch != canonical.nns_control_epoch
+        || policy.active_operation_sequence != canonical.nns_operation_sequence
+    {
+        return Err(crate::api::ApiError::Busy);
+    }
     if canonical.io_fee_e8s != snapshot.config.expected_io_fee_e8s
         || canonical.icp_fee_e8s != snapshot.config.expected_icp_fee_e8s
     {
@@ -83,20 +93,22 @@ pub async fn readiness_preflight(
     }
     let mut latest = state::read();
     if latest.active_operation.is_some()
+        || latest.prepared_exit_reconciliation.is_some()
         || latest.lifecycle != Lifecycle::Paused
         || latest.control_epoch != captured_control_epoch
-        || latest.reward_entitlements.last_processed_event
-            != snapshot.reward_entitlements.last_processed_event
+        || latest.reward_checkpoint.last_processed_event
+            != snapshot.reward_checkpoint.last_processed_event
     {
         return Err(crate::api::ApiError::Busy);
     }
     latest.lifecycle = Lifecycle::Ready;
     if let Some(event) = activation_baseline {
-        latest.reward_entitlements.last_processed_event = Some(event);
+        latest.reward_checkpoint.last_processed_event = Some(event);
     }
-    latest.reward_entitlements.reward_processing_paused = false;
-    latest.reward_entitlements.reward_work_due = activation_baseline.is_none();
-    latest.reward_entitlements.governance_parameters_fresh = true;
+    latest.reward_checkpoint.reward_processing_paused = false;
+    latest.reward_checkpoint.reward_work_due = activation_baseline.is_none();
+    latest.reward_checkpoint.governance_parameters_fresh = true;
+    latest.stake_observation_due = true;
     state::write(latest);
     Ok(())
 }
@@ -142,10 +154,6 @@ pub fn set_paused() {
         &state.active_operation,
         Some(crate::state::StreamOperation::Redemption(operation))
             if matches!(operation.as_ref(), crate::state::RedemptionStreamOperation::Preparing(_))
-    ) || matches!(
-        &state.active_operation,
-        Some(crate::state::StreamOperation::LiquidReceipt(operation))
-            if matches!(operation.as_ref(), crate::state::LiquidReceiptStreamOperation::Preparing(_))
     ) {
         state.active_operation = None;
     }
@@ -171,8 +179,6 @@ mod tests {
             io_ledger: principal(2),
             icp_ledger: principal(3),
             nns_manager: principal(4),
-            jupiter_receipt_source: account(principal(4), 1),
-            two_week_receipt_source: account(principal(4), 2),
             jupiter_io_account: account(principal(7), 3),
             sns_governance: governance,
             sns_root: principal(6),
@@ -180,7 +186,7 @@ mod tests {
             approved_reward_event_duration_seconds: 86_400,
             io_reserve: account(principal(1), 4),
             liquid_icp: account(principal(1), 5),
-            excluded_io_accounts: vec![account(governance, 9)],
+            nonredeemable_governance_io_accounts: vec![account(governance, 9)],
             minimum_redemption_io_e8s: 20_000,
             expected_io_fee_e8s: 10_000,
             expected_icp_fee_e8s: 10_000,

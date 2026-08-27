@@ -2,9 +2,15 @@
 
 ## Status
 
-Accepted.
+Superseded by
+[`adr-pooled-claim-backing-allocation.md`](adr-pooled-claim-backing-allocation.md).
 
-## Decision
+## Historical decision
+
+This ADR records the replaced separate-endowment model. It is not an active
+source of production requirements. The active design uses a lazily created,
+exactly 1,209,600-second pooled claim-backing parent with a fixed following
+policy and a bounded collection of passive unwind children.
 
 The protected NNS parent that backs rewards for eligible two-week SNS stakers
 is an NNS-voting neuron. Its launch-approved dissolve delay is exactly

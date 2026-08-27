@@ -86,4 +86,6 @@ if [ -f "$rendered_sns" ]; then
   }
 fi
 
+mark_phase_done 10-bootstrap-official-network \
+  "official_ic_commit=${actual_commit}; checkout=${checkout}; clean=true; sns_cli_sha256=$(sha256sum "$checkout/bazel-bin/rs/sns/cli/sns" | awk '{print $1}'); sns_testing_sha256=$(sha256sum "$checkout/bazel-bin/rs/sns/testing/sns-testing" | awk '{print $1}'); sns_testing_init_sha256=$(sha256sum "$checkout/bazel-bin/rs/sns/testing/sns-testing-init" | awk '{print $1}')"
 printf 'official local SNS bootstrap prerequisites passed; start maintained SNS testing tooling manually or through reviewed follow-up driver\n'
