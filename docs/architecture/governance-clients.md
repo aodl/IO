@@ -17,6 +17,6 @@ dependent work. Historian observations are advisory only.
 
 Production pins that parent policy to permanent IO two-year neuron
 `10_292_412_127_977_304_661`, never alpha-vote directly. The permanent neuron
-is operationally expected to retain its separately audited following of
-alpha-vote neuron `2_947_465_672_511_369`; IO code does not change the
-permanent neuron's followees.
+is recorded and operationally expected to follow alpha-vote neuron
+`2_947_465_672_511_369`. This remains subject to separately authorized mainnet
+verification; IO code does not change the permanent neuron's followees.

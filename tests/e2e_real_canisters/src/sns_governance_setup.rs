@@ -1588,7 +1588,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     let mut expected_live = std::collections::BTreeMap::<Vec<u8>, u128>::new();
     let frozen_batch_total: Option<u128> = None;
     let mut redemption = None;
-    let mut redemption_icp_before = None;
+    let mut redemption_result = None;
     for day in 4_u64..=15 {
         let (expected_settled, expected_weights, expected_classification) = match day {
             4 => {
@@ -1889,71 +1889,70 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                 expires_at_nanos: now + 800_000_000_000,
                 nonce: 0,
             };
-            redemption_icp_before = Some(icrc::icrc1_balance_of(
-                &pic,
-                icp_ledger,
-                icrc::account(controller, None),
-            ));
-            let pulled: Result<RedemptionProgress, ApiError> = decode_one(
+            let redemption_icp_before =
+                icrc::icrc1_balance_of(&pic, icp_ledger, icrc::account(controller, None));
+            let initial: Result<RedemptionProgress, ApiError> = decode_one(
                 &pic.update_call(stream, controller, "redeem", encode_one(args).unwrap())
                     .unwrap(),
             )
             .unwrap();
-            assert!(matches!(
-                pulled,
-                Ok(RedemptionProgress::Pending | RedemptionProgress::Completed(_))
-            ));
-            assert_eq!(
-                stream_status().operation_kind.as_deref(),
-                Some("Redemption")
-            );
-            redemption = Some(quote);
-        }
-        if day == 11 {
-            let paid: Result<StreamProgress, ApiError> = decode_one(
-                &pic.update_call(
-                    stream,
-                    Principal::anonymous(),
-                    "resume",
-                    encode_one(()).unwrap(),
-                )
-                .unwrap(),
-            )
-            .unwrap();
-            assert_eq!(
-                paid,
-                Ok(StreamProgress::Redemption(RedemptionProgress::Pending))
-            );
-        }
-        if day == 12 {
-            let completed: Result<StreamProgress, ApiError> = decode_one(
-                &pic.update_call(
-                    stream,
-                    Principal::anonymous(),
-                    "resume",
-                    encode_one(()).unwrap(),
-                )
-                .unwrap(),
-            )
-            .unwrap();
-            let result = match completed {
-                Ok(StreamProgress::Redemption(RedemptionProgress::Completed(result))) => result,
-                other => panic!("pending-batch redemption did not complete: {other:?}"),
+            let result = match initial {
+                Ok(RedemptionProgress::Completed(result)) => {
+                    assert!(stream_status().operation_kind.is_none());
+                    result
+                }
+                Ok(RedemptionProgress::Pending) => {
+                    let pending_status = stream_status();
+                    assert_eq!(pending_status.operation_kind.as_deref(), Some("Redemption"));
+                    assert!(pending_status.operation_phase.is_some());
+                    let mut completed = None;
+                    for _ in 0..8 {
+                        let progress: Result<StreamProgress, ApiError> = decode_one(
+                            &pic.update_call(
+                                stream,
+                                Principal::anonymous(),
+                                "resume",
+                                encode_one(()).unwrap(),
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap();
+                        match progress {
+                            Ok(StreamProgress::Redemption(RedemptionProgress::Pending))
+                            | Err(ApiError::Pending(_)) => {}
+                            Ok(StreamProgress::Redemption(RedemptionProgress::Completed(
+                                result,
+                            ))) => {
+                                completed = Some(result);
+                                break;
+                            }
+                            other => {
+                                panic!("pending-batch redemption failed to progress: {other:?}")
+                            }
+                        }
+                    }
+                    completed.expect("pending-batch redemption exceeded eight resume attempts")
+                }
+                other => panic!("pending-batch redemption failed initially: {other:?}"),
             };
-            let quote = redemption.expect("redemption quote was captured");
             assert_eq!(result.gross_icp_e8s, quote.gross_icp);
             assert_eq!(result.net_icp_e8s, quote.net_icp);
             assert_eq!(
                 icrc::icrc1_balance_of(&pic, icp_ledger, icrc::account(controller, None)),
-                redemption_icp_before.as_ref().unwrap().clone() + Nat::from(quote.net_icp)
+                redemption_icp_before + Nat::from(quote.net_icp)
             );
             assert_eq!(
                 stream_status().pending_entitlement_batch_eligible_credit,
                 frozen_batch_total
             );
+            assert!(stream_status().operation_kind.is_none());
+            redemption = Some(quote);
+            redemption_result = Some(result);
         }
         previous_round = event.round;
     }
+    assert!(redemption.is_some());
+    assert!(redemption_result.is_some());
     let after_fifteen = stream_status();
     assert_eq!(after_fifteen.processed_reward_event_count, 15);
     assert_eq!(entry_map(&after_fifteen), expected_live);

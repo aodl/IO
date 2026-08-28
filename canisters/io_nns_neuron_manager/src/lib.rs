@@ -150,6 +150,22 @@ pub fn debug_replace_state(replacement: NnsStateV1) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(debug_assertions)]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_yield_before_jupiter_refresh_once() {
+    jupiter_flow::debug_yield_before_refresh_once();
+}
+
+#[cfg(debug_assertions)]
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn debug_jupiter_refresh_boundary_ready() -> bool {
+    matches!(
+        state::read().active_operation,
+        Some(state::NnsOperation::Jupiter(operation))
+            if matches!(operation.phase, jupiter::JupiterPhase::StakeTransferSucceeded(_))
+    )
+}
+
 ic_cdk::export_candid!();
 
 #[cfg(test)]

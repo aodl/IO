@@ -22,8 +22,9 @@ The resolved production policy is:
   configured protected two-year neuron ID;
 - permanent-neuron controller/NNS Manager
   `oae4c-3iaaa-aaaar-qb5qq-cai`;
-- permanent-neuron audited following remains alpha-vote neuron
-  `2_947_465_672_511_369`; deployment does not change it.
+- the permanent neuron is recorded and operationally expected to follow
+  alpha-vote neuron `2_947_465_672_511_369`; this remains subject to separately
+  authorized mainnet verification, and deployment does not change it.
 
 Readiness and bootstrap compare the candidate pooled-parent staking Account
 with the permanent neuron's observed canonical Account and reject equality

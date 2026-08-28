@@ -194,8 +194,8 @@ async fn recover_split(operation: UnwindOperation) -> Result<UnwindProgress, Api
     identified.child_neuron_id = candidate.neuron_id;
     identified.principal_e8s = expected_principal;
     identified.phase = UnwindPhase::ChildIdentified;
-    replace(&expected, identified)?;
-    Ok(UnwindProgress::Pending)
+    replace(&expected, identified.clone())?;
+    prove_split(identified).await
 }
 
 #[derive(CandidType, Deserialize)]
@@ -482,8 +482,8 @@ pub async fn prove(
     )?;
     let expected = operation.clone();
     operation.phase = UnwindPhase::PrincipalReturned;
-    replace(&expected, operation)?;
-    Ok(UnwindProgress::Completed)
+    replace(&expected, operation.clone())?;
+    observe_cleanup(operation).await
 }
 
 async fn observe_cleanup(mut operation: UnwindOperation) -> Result<UnwindProgress, ApiError> {

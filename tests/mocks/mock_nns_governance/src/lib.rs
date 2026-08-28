@@ -1058,6 +1058,15 @@ pub fn debug_add_maturity(args: NeuronAmountArgs) -> Result<u128, String> {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_principal(args: NeuronAmountArgs) -> Result<(), String> {
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        neuron_mut(&mut state, args.neuron_id)?.principal_e8s = args.amount_e8s;
+        Ok(())
+    })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn debug_set_next_disburse_block(args: SetNextDisburseBlockArgs) {
     STATE.with(|cell| cell.borrow_mut().next_disburse_block = Some(args.block_index));
 }

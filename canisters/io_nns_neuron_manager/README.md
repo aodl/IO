@@ -10,11 +10,10 @@ two-year maximum-delay configuration. Its maturity path disburses 100% into the
 fixed two-year staging Account, freezes the complete post-finalization balance,
 and sends 40% gross to permanent capital and 60% gross to Stream liquid. It
 issues no IO. Production identifies it as neuron
-`10_292_412_127_977_304_661`, controlled by this manager. Its audited prelaunch
-following policy points to alpha-vote neuron `2_947_465_672_511_369`. The
-separately authorized protected-neuron audit owns verification of that
-operational fact; this component never changes the permanent neuron's
-followees.
+`10_292_412_127_977_304_661`, controlled by this manager. It is recorded and
+operationally expected to follow alpha-vote neuron `2_947_465_672_511_369`.
+This remains subject to separately authorized mainnet verification; this
+component never changes the permanent neuron's followees.
 
 The pooled parent is created only from existing Stream liquid claim backing
 when the canonical target reaches the NNS minimum. It uses one fixed memo,

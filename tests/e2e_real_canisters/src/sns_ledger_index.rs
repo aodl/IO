@@ -405,13 +405,51 @@ pub fn run_installed_stream_redemption(required: bool) {
             stream_wasm_path.display()
         )
     });
+    let debug_wasm = |name: &str| {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/wasm32-unknown-unknown/debug")
+            .join(format!("{name}.wasm"));
+        std::fs::read(&path)
+            .unwrap_or_else(|error| panic!("build {name} debug Wasm before this test: {error}"))
+    };
     let ledger_wasm = artifacts.load_required("sns_ledger").unwrap();
     let pic = pocketic_env::new_pic_with_icp_sns_features();
     let stream = pocketic_env::create_empty_application_canister(&pic);
     let user = Principal::from_slice(&[21; 29]);
     let excluded_user = Principal::from_slice(&[25; 29]);
-    let governance = Principal::from_slice(&[22; 29]);
-    let nns_manager = Principal::from_slice(&[23; 29]);
+    let governance = pocketic_env::create_application_canister(
+        &pic,
+        debug_wasm("mock_sns_governance"),
+        Vec::new(),
+    );
+    let nns_manager = pocketic_env::create_application_canister(
+        &pic,
+        debug_wasm("mock_nns_governance"),
+        Vec::new(),
+    );
+    let sns_root =
+        pocketic_env::create_application_canister(&pic, debug_wasm("mock_sns_root"), Vec::new());
+    let _: () = decode_one(
+        &pic.update_call(
+            sns_root,
+            Principal::anonymous(),
+            "debug_set_governance_principal",
+            encode_one(governance).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let configured_hash: Result<(), String> = decode_one(
+        &pic.update_call(
+            sns_root,
+            Principal::anonymous(),
+            "debug_set_governance_module_hash",
+            encode_one(vec![0_u8; 32]).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    configured_hash.unwrap();
     let minting = icrc::account(Principal::from_slice(&[24; 29]), None);
     let reserve_subaccount = icrc::subaccount("simplified-io-reserve");
     let liquid_subaccount = icrc::subaccount("simplified-liquid-icp");
@@ -461,7 +499,7 @@ pub fn run_installed_stream_redemption(required: bool) {
                 subaccount: Some(vec![10; 32]),
             },
             sns_governance: governance,
-            sns_root: Principal::from_slice(&[6; 29]),
+            sns_root,
             expected_sns_governance_module_hash: vec![0; 32],
             approved_reward_event_duration_seconds: 86_400,
             io_reserve: Account {
@@ -598,88 +636,112 @@ pub fn run_installed_stream_redemption(required: bool) {
         expires_at_nanos: now + 800_000_000_000,
         nonce: 0,
     };
-    let pulled: Result<RedemptionProgress, ApiError> = decode_one(
+    let assert_final_balances = || {
+        assert_eq!(
+            icrc::icrc1_balance_of(&pic, io_ledger, reserve.clone()),
+            Nat::from(io_reserve_e8s + amount),
+        );
+        assert_eq!(
+            icrc::icrc1_total_supply(&pic, io_ledger),
+            Nat::from(supply_before - icrc::FEE_E8S as u128)
+        );
+        assert_eq!(
+            icrc::icrc1_balance_of(&pic, icp_ledger, user_account.clone()),
+            Nat::from(quote.net_icp)
+        );
+        assert_eq!(
+            icrc::icrc1_balance_of(&pic, icp_ledger, liquid.clone()),
+            Nat::from(liquid_before - quote.gross_icp)
+        );
+    };
+    let initial: Result<RedemptionProgress, ApiError> = decode_one(
         &pic.update_call(stream, user, "redeem", encode_one(args.clone()).unwrap())
             .unwrap(),
     )
     .unwrap();
-    assert!(matches!(
-        pulled,
-        Ok(RedemptionProgress::Pending | RedemptionProgress::Completed(_))
-    ));
-    assert_eq!(
-        icrc::icrc1_balance_of(&pic, io_ledger, reserve.clone()),
-        Nat::from(io_reserve_e8s + amount),
-    );
-    assert_eq!(
-        icrc::icrc1_total_supply(&pic, io_ledger),
-        Nat::from(supply_before - icrc::FEE_E8S as u128)
-    );
-    assert_eq!(
-        icrc::icrc1_balance_of(&pic, icp_ledger, user_account.clone()),
-        Nat::from(0u8)
-    );
-    pocketic_env::upgrade_canister(&pic, stream, stream_wasm.clone(), encode_one(()).unwrap());
-    let paused_after_pull_upgrade: Status = decode_one(
+    let initial_status: Status = decode_one(
         &pic.query_call(stream, user, "get_status", encode_one(()).unwrap())
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(paused_after_pull_upgrade.lifecycle, Lifecycle::Paused);
+    let mut result = match initial {
+        Ok(RedemptionProgress::Completed(result)) => {
+            assert!(initial_status.operation_kind.is_none());
+            assert!(initial_status.operation_phase.is_none());
+            assert_eq!(result.gross_icp_e8s, quote.gross_icp);
+            assert_eq!(result.net_icp_e8s, quote.net_icp);
+            assert_final_balances();
+            Some(result)
+        }
+        Ok(RedemptionProgress::Pending) => {
+            assert_eq!(initial_status.operation_kind.as_deref(), Some("Redemption"));
+            let phase = initial_status
+                .operation_phase
+                .as_deref()
+                .expect("Pending redemption must expose its exact diagnostic phase");
+            assert!(matches!(
+                phase,
+                "Preparing"
+                    | "Prepared"
+                    | "IoPullSubmitted"
+                    | "IoInReserve"
+                    | "PayoutSubmitted"
+                    | "PayoutSucceeded"
+                    | "Stuck"
+            ));
+            None
+        }
+        other => panic!("unexpected initial redemption result: {other:?}"),
+    };
+    pocketic_env::upgrade_canister(&pic, stream, stream_wasm.clone(), encode_one(()).unwrap());
+    let paused_after_upgrade: Status = decode_one(
+        &pic.query_call(stream, user, "get_status", encode_one(()).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(paused_after_upgrade.lifecycle, Lifecycle::Paused);
     pic.advance_time(Duration::from_secs(2 * 60 * 60));
     assert!(pic.get_time().as_nanos_since_unix_epoch() > args.expires_at_nanos);
-
-    let paid: Result<StreamProgress, ApiError> = decode_one(
-        &pic.update_call(
-            stream,
-            Principal::anonymous(),
-            "resume",
-            encode_one(()).unwrap(),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        paid,
-        Ok(StreamProgress::Redemption(RedemptionProgress::Pending))
-    );
-    assert_eq!(
-        icrc::icrc1_balance_of(&pic, icp_ledger, user_account),
-        Nat::from(quote.net_icp)
-    );
-    assert_eq!(
-        icrc::icrc1_balance_of(&pic, icp_ledger, liquid.clone()),
-        Nat::from(liquid_before - quote.gross_icp)
-    );
-    pocketic_env::upgrade_canister(&pic, stream, stream_wasm.clone(), encode_one(()).unwrap());
-    let paused_after_payout_upgrade: Status = decode_one(
+    if result.is_none() {
+        for _ in 0..8 {
+            let progress: Result<StreamProgress, ApiError> = decode_one(
+                &pic.update_call(
+                    stream,
+                    Principal::anonymous(),
+                    "resume",
+                    encode_one(()).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            match progress {
+                Ok(StreamProgress::Redemption(RedemptionProgress::Pending))
+                | Err(ApiError::Pending(_)) => {}
+                Ok(StreamProgress::Redemption(RedemptionProgress::Completed(completed))) => {
+                    result = Some(completed);
+                    break;
+                }
+                other => panic!("pending redemption failed to progress: {other:?}"),
+            }
+        }
+    }
+    let result = result.expect("redemption did not complete within eight resume attempts");
+    assert_eq!(result.gross_icp_e8s, quote.gross_icp);
+    assert_eq!(result.net_icp_e8s, quote.net_icp);
+    assert_final_balances();
+    let completed_status: Status = decode_one(
         &pic.query_call(stream, user, "get_status", encode_one(()).unwrap())
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(paused_after_payout_upgrade.lifecycle, Lifecycle::Paused);
-    let completed: Result<StreamProgress, ApiError> = decode_one(
-        &pic.update_call(
-            stream,
-            Principal::anonymous(),
-            "resume",
-            encode_one(()).unwrap(),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let result = match completed {
-        Ok(StreamProgress::Redemption(RedemptionProgress::Completed(result))) => result,
-        other => panic!("expected completion, got {other:?}"),
-    };
-    assert_eq!(result.gross_icp_e8s, quote.gross_icp);
-    assert_eq!(result.net_icp_e8s, quote.net_icp);
+    assert!(completed_status.operation_kind.is_none());
+    assert!(completed_status.operation_phase.is_none());
     let replay: Result<RedemptionProgress, ApiError> = decode_one(
         &pic.update_call(stream, user, "redeem", encode_one(args.clone()).unwrap())
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(replay, Ok(RedemptionProgress::Completed(result)));
+    assert_eq!(replay, Ok(RedemptionProgress::Completed(result.clone())));
     let zero_subaccount_replay: Result<RedemptionProgress, ApiError> = decode_one(
         &pic.update_call(
             stream,

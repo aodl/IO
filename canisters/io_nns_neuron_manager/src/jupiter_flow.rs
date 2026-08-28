@@ -13,6 +13,24 @@ use crate::{
 };
 use io_ledger_boundary::{exact_icp_transfer, icp_account_identifier, ExpectedQueryBlockTransfer};
 
+#[cfg(debug_assertions)]
+use std::cell::Cell;
+
+#[cfg(debug_assertions)]
+thread_local! {
+    static DEBUG_YIELD_BEFORE_REFRESH_ONCE: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(debug_assertions)]
+pub(crate) fn debug_yield_before_refresh_once() {
+    DEBUG_YIELD_BEFORE_REFRESH_ONCE.with(|enabled| enabled.set(true));
+}
+
+#[cfg(debug_assertions)]
+fn take_debug_yield_before_refresh() -> bool {
+    DEBUG_YIELD_BEFORE_REFRESH_ONCE.with(|enabled| enabled.replace(false))
+}
+
 fn enforce_activation_floor(
     current: &state::NnsStateV1,
     block_index: u128,
@@ -386,6 +404,11 @@ async fn refresh(
     mut operation: JupiterOperation,
     succeeded: StakeTransferSucceeded,
 ) -> Result<JupiterProgress, ApiError> {
+    #[cfg(debug_assertions)]
+    if take_debug_yield_before_refresh() {
+        ensure_exact_jupiter(&operation, &state::read())?;
+        return Ok(JupiterProgress::Pending);
+    }
     let expected = operation.clone();
     operation.dispatch_epoch = operation
         .dispatch_epoch
@@ -644,7 +667,7 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<JupiterProgress,
         }),
     };
     replace_jupiter(&expected, operation.clone())?;
-    Ok(jupiter_progress(&operation))
+    resume(operation).await
 }
 
 fn checked_now() -> Result<u64, ApiError> {

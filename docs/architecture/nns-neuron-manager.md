@@ -7,9 +7,10 @@ Production memo `0` is only the fixed nonce for deterministic NNS staking-
 subaccount derivation, not application metadata. The pooled parent follows the
 permanent IO two-year neuron `10_292_412_127_977_304_661`, and validation
 requires `pooled_parent_followee_id == two_year_neuron_id`. The permanent
-neuron is operationally expected to retain its audited following of alpha-vote
-neuron `2_947_465_672_511_369`; IO does not mutate that following. No external
-capital seeds the parent.
+neuron is recorded and operationally expected to follow alpha-vote neuron
+`2_947_465_672_511_369`. This remains subject to separately authorized mainnet
+verification; IO does not mutate that following. No external capital seeds the
+parent.
 
 Before readiness or runtime bootstrap can create a monetary permit, IO derives
 the memo-bound candidate staking Account and compares it with the canonical

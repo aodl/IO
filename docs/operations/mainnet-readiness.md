@@ -73,12 +73,13 @@ The pooled parent does not exist until canonical liquid backing reaches the
 minimum and the reviewed bootstrap protocol creates it with an exact 14-day
 delay and fixed following policy. Its production memo is `0`, used only as the
 deterministic staking nonce, and it follows permanent IO two-year neuron
-`10_292_412_127_977_304_661`. The permanent neuron is operationally expected to
-retain its audited alpha-vote `2_947_465_672_511_369` following; IO does not
-change that policy. Readiness rejects a memo-derived Account collision before
-bootstrap. Unsolicited ICP at a distinct candidate Account is treated as
-unattributed pooled surplus and ordinary reconciliation unwinds any
-`OverTarget` amount.
+`10_292_412_127_977_304_661`. The permanent neuron is recorded and
+operationally expected to follow alpha-vote neuron
+`2_947_465_672_511_369`; IO does not change that policy. This remains subject
+to separately authorized mainnet verification. Readiness rejects a
+memo-derived Account collision before bootstrap. Unsolicited ICP at a distinct
+candidate Account is treated as unattributed pooled surplus and ordinary
+reconciliation unwinds any `OverTarget` amount.
 
 Daily pool-policy observation makes independent best-effort voting-power
 refresh attempts for the permanent neuron and pooled parent. Timestamp age and

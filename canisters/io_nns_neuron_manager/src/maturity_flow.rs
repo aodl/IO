@@ -114,9 +114,9 @@ pub(crate) async fn start_observed(
     operation
         .validate(latest.next_operation_sequence)
         .map_err(ApiError::Invalid)?;
-    latest.active_operation = Some(NnsOperation::Maturity(Box::new(operation)));
+    latest.active_operation = Some(NnsOperation::Maturity(Box::new(operation.clone())));
     state::write(latest);
-    Ok(MaturityProgress::Pending)
+    resume_active(operation).await
 }
 
 pub async fn resume_active(
