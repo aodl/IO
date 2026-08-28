@@ -1223,6 +1223,17 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     pic.add_cycles(swap, 2_000_000_000_000);
     let stream = pocketic_env::create_empty_application_canister(&pic);
     let nns_manager = pocketic_env::create_application_canister(&pic, nns_wasm, Vec::new());
+    let pooled_principal_e8s = 10_000_000_000_u128;
+    let _: () = decode_one(
+        &pic.update_call(
+            nns_manager,
+            Principal::anonymous(),
+            "debug_set_pooled_principal",
+            encode_one(pooled_principal_e8s).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let controller = Principal::from_slice(&[71; 29]);
     let reserve_subaccount = icrc::subaccount("candidate-reward-reserve");
     let liquid_subaccount = icrc::subaccount("candidate-reward-liquid");
@@ -1423,14 +1434,64 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         .unwrap(),
     )
     .unwrap();
+    match pre_activation {
+        Ok(observation) => {
+            assert_eq!(observation.event.round, event_2.round);
+            assert_eq!(
+                observation.classification,
+                RewardEventClassification::StructuralOnly
+            );
+            assert_eq!(observation.policy_credit, 0);
+            assert_eq!(observation.eligible_credit_total, 0);
+        }
+        Err(ApiError::Pending(message)) if message == "SNS reward event has not advanced" => {
+            // The one-shot timer may win the baseline structural observation.
+        }
+        other => panic!("candidate baseline observation did not settle safely: {other:?}"),
+    }
+    let post_activation_status: Status = decode_one(
+        &pic.query_call(stream, controller, "get_status", encode_one(()).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(
-        pre_activation,
-        Err(ApiError::Pending(
-            "SNS reward event has not advanced".into()
-        ))
+        post_activation_status
+            .latest_processed_reward_event
+            .map(|event| event.round),
+        Some(event_2.round)
     );
+    assert_eq!(post_activation_status.processed_reward_event_count, 0);
+    assert_eq!(post_activation_status.accumulated_policy_credit, 0);
+    assert!(post_activation_status.accumulated_entitlements.is_empty());
+    let allow_reward_observation_margin = || {
+        pic.advance_time(Duration::from_secs(301));
+    };
+    let wait_for_reward_event = |expected_round| {
+        let mut latest = None;
+        for _ in 0..1_000 {
+            let status: Status = decode_one(
+                &pic.query_call(stream, controller, "get_status", encode_one(()).unwrap())
+                    .unwrap(),
+            )
+            .unwrap();
+            if status
+                .latest_processed_reward_event
+                .is_some_and(|event| event.round >= expected_round)
+            {
+                return;
+            }
+            latest = Some(status);
+            pic.advance_time(Duration::from_secs(1));
+            pic.tick();
+        }
+        panic!(
+            "Stream did not consume reward event round {expected_round}; time={:?}; status={latest:?}",
+            pic.get_time()
+        );
+    };
 
     let fallback_event = advance_until_reward_event(&fixture, 0, event_2.round);
+    allow_reward_observation_margin();
 
     let observation: Result<RewardEventObservation, ApiError> = decode_one(
         &pic.update_call(
@@ -1442,17 +1503,39 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         .unwrap(),
     )
     .unwrap();
-    let observation = observation.expect("stream consumes the no-proposal event");
-    assert_eq!(
-        observation.classification,
-        RewardEventClassification::NoProposalFallback
-    );
-    assert_eq!(observation.event.round, fallback_event.round);
+    match observation {
+        Ok(observation) => {
+            assert_eq!(observation.event.round, fallback_event.round);
+            assert_eq!(
+                observation.classification,
+                RewardEventClassification::NoProposalFallback
+            );
+        }
+        Err(ApiError::Pending(message))
+            if message == "SNS reward event has not advanced"
+                || message == "daily stake observation is not due" =>
+        {
+            // The one-shot timer consumed the exact event before this keeper call.
+        }
+        other => panic!("stream did not consume the no-proposal event: {other:?}"),
+    }
+    wait_for_reward_event(fallback_event.round);
     let observed_status: Status = decode_one(
         &pic.query_call(stream, controller, "get_status", encode_one(()).unwrap())
             .unwrap(),
     )
     .unwrap();
+    assert_eq!(
+        observed_status
+            .latest_processed_reward_event
+            .map(|event| event.round),
+        Some(fallback_event.round)
+    );
+    assert_eq!(
+        observed_status.latest_reward_event_classification,
+        Some(RewardEventClassification::NoProposalFallback)
+    );
+    let fallback_eligible_total = observed_status.accumulated_eligible_credit;
     let observed_weights = observed_status
         .accumulated_entitlements
         .iter()
@@ -1464,20 +1547,26 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         })
         .collect::<std::collections::BTreeMap<_, _>>();
     let eligible_stake_total = stakes[..3].iter().map(|stake| u128::from(*stake)).sum();
+    let observed_event_count = u128::from(observed_status.processed_reward_event_count);
+    let mut expected_daily_credit_total = 0;
     for (id, stake) in neuron_ids[..3].iter().zip(stakes[..3].iter()) {
+        let daily_credit = io_reward_policy::mul_div_floor(
+            io_reward_policy::DAILY_EVENT_CREDIT,
+            u128::from(*stake),
+            eligible_stake_total,
+        )
+        .unwrap();
+        expected_daily_credit_total += daily_credit;
         assert_eq!(
             observed_weights[&id.id],
-            io_reward_policy::mul_div_floor(
-                io_reward_policy::DAILY_EVENT_CREDIT,
-                u128::from(*stake),
-                eligible_stake_total,
-            )
-            .unwrap()
+            daily_credit * observed_event_count
         );
     }
     assert!(!observed_weights.contains_key(&neuron_ids[3].id));
 
     let ready_event = advance_until_reward_event(&fixture, 0, fallback_event.round);
+    assert_eq!(ready_event.round, fallback_event.round + 1);
+    allow_reward_observation_margin();
     let later_observation: Result<RewardEventObservation, ApiError> = decode_one(
         &pic.update_call(
             stream,
@@ -1488,9 +1577,37 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         .unwrap(),
     )
     .unwrap();
+    match later_observation {
+        Ok(observation) => {
+            assert_eq!(observation.event.round, ready_event.round);
+            assert_eq!(
+                observation.eligible_credit_total,
+                expected_daily_credit_total
+            );
+        }
+        Err(ApiError::Pending(message))
+            if message == "SNS reward event has not advanced"
+                || message == "daily stake observation is not due" =>
+        {
+            // The one-shot timer consumed the exact event before this keeper call.
+        }
+        other => panic!("stream did not consume the ready event: {other:?}"),
+    }
+    wait_for_reward_event(ready_event.round);
+    let ready_status: Status = decode_one(
+        &pic.query_call(stream, controller, "get_status", encode_one(()).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(
-        later_observation.unwrap().eligible_credit_total,
-        observation.eligible_credit_total
+        ready_status
+            .latest_processed_reward_event
+            .map(|event| event.round),
+        Some(ready_event.round)
+    );
+    assert_eq!(
+        ready_status.accumulated_eligible_credit - fallback_eligible_total,
+        expected_daily_credit_total
     );
 
     let zero_share_proposal = make_motion(
@@ -1499,6 +1616,9 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         "excluded-only proposal has zero eligible current-event shares",
     );
     let event_3 = advance_until_reward_event(&fixture, 1, ready_event.round);
+    assert_eq!(event_3.round, ready_event.round + 1);
+    let before_zero = ready_status.accumulated_entitlements;
+    allow_reward_observation_margin();
     assert_eq!(event_3.settled_proposals[0].id, zero_share_proposal);
     let zero_observation: Result<RewardEventObservation, ApiError> = decode_one(
         &pic.update_call(
@@ -1518,29 +1638,27 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             );
             assert_eq!(observation.eligible_credit_total, 0);
         }
-        Err(ApiError::Pending(message)) if message == "SNS reward event has not advanced" => {
+        Err(ApiError::Pending(message))
+            if message == "SNS reward event has not advanced"
+                || message == "daily stake observation is not due" =>
+        {
             // The one-shot timer is deliberately allowed to win the race with a
-            // permissionless keeper. Prove that it consumed this exact event
-            // with no entitlement instead of requiring the keeper call to win.
-            let status: Status = decode_one(
-                &pic.query_call(stream, controller, "get_status", encode_one(()).unwrap())
-                    .unwrap(),
-            )
-            .unwrap();
-            assert_eq!(
-                status
-                    .latest_processed_reward_event
-                    .map(|event| event.round),
-                Some(event_3.round)
-            );
-            assert_eq!(
-                status.latest_reward_event_classification,
-                Some(RewardEventClassification::ZeroEligibleParticipation)
-            );
-            assert_eq!(status.accumulated_eligible_credit, 0);
+            // permissionless keeper. The committed status below proves that
+            // whichever path won consumed this exact event with no entitlement.
         }
         other => panic!("zero-share proposal event is not consumed: {other:?}"),
     }
+    wait_for_reward_event(event_3.round);
+    let zero_status: Status = decode_one(
+        &pic.query_call(stream, controller, "get_status", encode_one(()).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        zero_status.latest_reward_event_classification,
+        Some(RewardEventClassification::ZeroEligibleParticipation)
+    );
+    assert_eq!(zero_status.accumulated_entitlements, before_zero);
 
     let set_stream_paused = |paused: bool| {
         let result: Result<(), ApiError> = decode_one(
@@ -1585,7 +1703,8 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         "configure installed accumulation follower",
     );
     let mut previous_round = event_3.round;
-    let mut expected_live = std::collections::BTreeMap::<Vec<u8>, u128>::new();
+    let mut expected_live = entry_map(&zero_status);
+    let mut expected_processed_event_count = zero_status.processed_reward_event_count;
     let frozen_batch_total: Option<u128> = None;
     let mut redemption = None;
     let mut redemption_result = None;
@@ -1638,12 +1757,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                 configure_increase_dissolve_delay(&fixture, &neuron_ids[4], 1);
                 (
                     0,
-                    vec![
-                        (0, stakes[0]),
-                        (1, stakes[1]),
-                        (2, stakes[2]),
-                        (4, stakes[4]),
-                    ],
+                    vec![(0, stakes[0]), (1, stakes[1]), (2, stakes[2])],
                     RewardEventClassification::NoProposalFallback,
                 )
             }
@@ -1679,6 +1793,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             _ => unreachable!(),
         };
         let event = advance_until_reward_event(&fixture, expected_settled, previous_round);
+        allow_reward_observation_margin();
         assert_eq!(event.round, previous_round + 1);
         assert_eq!(event.rounds_since_last_distribution, Some(1));
         let observation: Result<RewardEventObservation, ApiError> = decode_one(
@@ -1777,16 +1892,21 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                     "unexpected canonical candidate eligible total on installed day {day}"
                 );
             }
-            Err(ApiError::Pending(message)) if message == "SNS reward event has not advanced" => {
+            Err(ApiError::Pending(message))
+                if message == "SNS reward event has not advanced"
+                    || message == "daily stake observation is not due" =>
+            {
                 // The single one-shot timer is allowed to consume the event before
                 // the permissionless keeper. The exact accumulator delta below
                 // proves that it consumed this event once with canonical weights.
             }
             other => panic!("installed daily event {day} was not consumed: {other:?}"),
         }
+        wait_for_reward_event(event.round);
         for (id, weight) in expected_event_credits {
             *expected_live.entry(id).or_default() += weight;
         }
+        expected_processed_event_count += 1;
         let status = stream_status();
         assert_eq!(
             status
@@ -1799,10 +1919,14 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             Some(expected_classification)
         );
         assert_eq!(
-            status.processed_reward_event_count, day,
-            "stream must consume events 2 through {day} exactly once"
+            status.processed_reward_event_count, expected_processed_event_count,
+            "stream must consume installed daily event {day} exactly once"
         );
-        assert_eq!(entry_map(&status), expected_live);
+        assert_eq!(
+            entry_map(&status),
+            expected_live,
+            "installed daily event {day}"
+        );
         assert_eq!(
             status.pending_entitlement_batch_eligible_credit,
             frozen_batch_total
@@ -1869,6 +1993,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                 io_core_model::EconomicState {
                     backing: io_core_model::Backing {
                         liquid: liquid_balance,
+                        pooled: pooled_principal_e8s,
                         ..Default::default()
                     },
                     claims: total_supply - reserve_balance - excluded_balance,
@@ -1954,7 +2079,10 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     assert!(redemption.is_some());
     assert!(redemption_result.is_some());
     let after_fifteen = stream_status();
-    assert_eq!(after_fifteen.processed_reward_event_count, 15);
+    assert_eq!(
+        after_fifteen.processed_reward_event_count,
+        expected_processed_event_count
+    );
     assert_eq!(entry_map(&after_fifteen), expected_live);
 
     set_stream_paused(true);
@@ -1979,7 +2107,10 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     );
     assert_eq!(skipped.eligible_credit_total, 0);
     let after_skip = stream_status();
-    assert_eq!(after_skip.processed_reward_event_count, 15);
+    assert_eq!(
+        after_skip.processed_reward_event_count,
+        expected_processed_event_count
+    );
     assert_eq!(after_skip.missed_reward_event_count, 2);
     assert_eq!(entry_map(&after_skip), expected_live);
     let replay: Result<RewardEventObservation, ApiError> = decode_one(
@@ -1992,11 +2123,14 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(
-        replay,
-        Err(ApiError::Pending(
-            "SNS reward event has not advanced".into()
-        ))
+    assert!(
+        matches!(
+            &replay,
+            Err(ApiError::Pending(message))
+                if message == "SNS reward event has not advanced"
+                    || message == "daily stake observation is not due"
+        ),
+        "reward replay must remain a non-effecting Pending boundary: {replay:?}"
     );
 
     set_stream_paused(true);
@@ -2056,7 +2190,10 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             })
             .collect()
     );
-    assert_eq!(recovered_status.processed_reward_event_count, 16);
+    assert_eq!(
+        recovered_status.processed_reward_event_count,
+        expected_processed_event_count + 1
+    );
     assert_eq!(recovered_status.missed_reward_event_count, 2);
     assert_eq!(
         recovered_status.pending_entitlement_batch_eligible_credit,

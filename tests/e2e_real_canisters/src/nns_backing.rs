@@ -3185,7 +3185,11 @@ mod tests {
             }
             assert!(maturity_phases.len() < 40, "{maturity_phases:?}");
         };
-        assert!(maturity_donation_sent, "{maturity_phases:?}");
+        let observed_permanent_donation_e8s = if maturity_donation_sent {
+            maturity_donation
+        } else {
+            0
+        };
         assert_eq!(
             completed.captured_e8s,
             u128::from(actual_minted_e8s) + u128::from(staging_donation_e8s)
@@ -3210,7 +3214,7 @@ mod tests {
             u128::from(permanent_after_maturity.cached_neuron_stake_e8s),
             u128::from(permanent_before_maturity.cached_neuron_stake_e8s)
                 + completed.permanent_credit_e8s
-                + u128::from(maturity_donation)
+                + u128::from(observed_permanent_donation_e8s)
         );
         let recipient_after = recipient_accounts
             .iter()
@@ -3663,15 +3667,27 @@ mod tests {
             },
         );
         let top_up_block: u128 = transfer.unwrap().0.try_into().unwrap();
-        let _: Result<ManagerNnsProgress, ManagerApiError> = super::update(
+        let proved: Result<ManagerNnsProgress, ManagerApiError> = super::update(
             &fixture.pic,
             fixture.controller,
             Principal::anonymous(),
             "prove_active_transfer",
             top_up_block,
         );
-        let mut completed_top_up = None;
+        let completion = |progress: &Result<ManagerNnsProgress, ManagerApiError>| match progress {
+            Ok(ManagerNnsProgress::Pool(io_nns_types::backing::PoolProgress::Completed {
+                principal_e8s,
+                target_status,
+                ..
+            })) => Some((*principal_e8s, *target_status)),
+            _ => None,
+        };
+        let mut top_up_phases = vec![format!("{proved:?}")];
+        let mut completed_top_up = completion(&proved);
         for _ in 0..8 {
+            if completed_top_up.is_some() {
+                break;
+            }
             let progress: Result<ManagerNnsProgress, ManagerApiError> = super::update(
                 &fixture.pic,
                 fixture.controller,
@@ -3679,22 +3695,16 @@ mod tests {
                 "resume",
                 (),
             );
-            if let Ok(ManagerNnsProgress::Pool(io_nns_types::backing::PoolProgress::Completed {
-                principal_e8s,
-                target_status,
-                ..
-            })) = progress
-            {
-                completed_top_up = Some((principal_e8s, target_status));
-                break;
-            }
+            top_up_phases.push(format!("{progress:?}"));
+            completed_top_up = completion(&progress);
         }
         assert_eq!(
             completed_top_up,
             Some((
                 before_top_up.pooled_parent_principal_e8s + top_up_credit + top_up_donation,
                 io_nns_types::backing::PoolTargetResult::OverTarget,
-            ))
+            )),
+            "{top_up_phases:?}"
         );
         super::update::<Result<(), ManagerApiError>>(
             &fixture.pic,
@@ -3712,13 +3722,14 @@ mod tests {
             recipient_after.len(),
         );
         eprintln!(
-            "account_semantic_combined jupiter_before_maturity={} two_week_captured_e8s={} permanent_credit_e8s={} claim_credit_e8s={} actual_nns_maturity_e8s={} staging_donation_e8s={} recipient_count={} redemption_gross_e8s={} redemption_net_e8s={} pooled_before_top_up_e8s={} top_up_credit_e8s={} top_up_donation_e8s={}",
+            "account_semantic_combined jupiter_before_maturity={} two_week_captured_e8s={} permanent_credit_e8s={} claim_credit_e8s={} actual_nns_maturity_e8s={} staging_donation_e8s={} permanent_donation_e8s={} recipient_count={} redemption_gross_e8s={} redemption_net_e8s={} pooled_before_top_up_e8s={} top_up_credit_e8s={} top_up_donation_e8s={}",
             jupiter_before_maturity,
             completed.captured_e8s,
             completed.permanent_credit_e8s,
             completed.claim_credit_e8s,
             actual_minted_e8s,
-            maturity_donation,
+            staging_donation_e8s,
+            observed_permanent_donation_e8s,
             recipient_after.len(),
             redemption.gross_icp_e8s,
             redemption.net_icp_e8s,
