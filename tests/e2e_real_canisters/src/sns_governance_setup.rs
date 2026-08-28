@@ -1899,7 +1899,10 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                     .unwrap(),
             )
             .unwrap();
-            assert_eq!(pulled, Ok(RedemptionProgress::IoInReserve));
+            assert!(matches!(
+                pulled,
+                Ok(RedemptionProgress::Pending | RedemptionProgress::Completed(_))
+            ));
             assert_eq!(
                 stream_status().operation_kind.as_deref(),
                 Some("Redemption")
@@ -1919,9 +1922,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             .unwrap();
             assert_eq!(
                 paid,
-                Ok(StreamProgress::Redemption(
-                    RedemptionProgress::PayoutSucceeded
-                ))
+                Ok(StreamProgress::Redemption(RedemptionProgress::Pending))
             );
         }
         if day == 12 {

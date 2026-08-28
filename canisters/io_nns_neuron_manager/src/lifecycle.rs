@@ -71,6 +71,7 @@ pub async fn readiness_preflight(
         )
         .map_err(crate::api::ApiError::Invalid)?;
     }
+    crate::api::best_effort_voting_power_maintenance(&snapshot).await?;
     let latest = state::read();
     if latest.active_operation.is_some()
         || latest.pending_two_year_maturity.is_some()
@@ -125,7 +126,6 @@ mod tests {
                 crate::execution::APPROVED_PERMANENT_DISSOLVE_DELAY_SECONDS,
             )),
             followees: vec![],
-            voting_power_refreshed_timestamp_seconds: None,
         }
     }
 

@@ -20,7 +20,7 @@ pub fn get_status() -> Status {
             Some(if operation.liquid_block.is_none() {
                 "AwaitingLiquidProof".into()
             } else {
-                "SettlingRecipients".into()
+                "RecipientSettlement".into()
             }),
         ),
         Some(StreamOperation::PoolTopUp(_)) => {

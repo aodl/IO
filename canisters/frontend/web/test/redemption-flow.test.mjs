@@ -32,7 +32,7 @@ test("redemption uses wallet-selected canonical subaccount, exact nonce and allo
   assert.equal(request.redeem.nonce, 9n);
   assert.equal(request.approval.amount, 1_010_000n);
   assert.deepEqual(request.approval.expected_allowance, [5n]);
-  assert.equal(progressLabel({ IoInReserve: null }), "IO in reserve");
+  assert.equal(progressLabel({ Pending: null }), "Pending external proof or retry");
 });
 
 test("arbitrary text and malformed wallet subaccounts are rejected", () => {
@@ -53,7 +53,7 @@ test("exact flow orders queries, consent, approval and redemption", async () => 
       order.push("nonce");
       return { Ok: { next_nonce: 2n, last_request_fingerprint: [], last_result: [] } };
     },
-    redeem: async () => { order.push("redeem"); return { Ok: { IoPullSubmitted: null } }; },
+    redeem: async () => { order.push("redeem"); return { Ok: { Pending: null } }; },
   };
   const request = await prepareRedemption({
     ledger,

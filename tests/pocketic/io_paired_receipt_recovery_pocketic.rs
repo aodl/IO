@@ -1,10 +1,11 @@
 use candid::{decode_one, encode_one, CandidType, Principal};
 use io_receipt_types::{ClaimBackingReceiptKind, PrepareClaimBackingReceiptArgs};
 use io_stream_manager::{
+    redemption::RedemptionPhase,
     state::{DispatchEpoch, StreamOperation},
     transfer::TransferState,
-    Account, ApiError, ClaimBackingReceiptPermit, InitArgs, Lifecycle, RedeemArgs,
-    RedemptionProgress, StreamConfig, StreamStateV1,
+    Account, ApiError, CallerRedemptionState, ClaimBackingReceiptPermit, InitArgs, Lifecycle,
+    RedeemArgs, RedemptionProgress, StreamConfig, StreamStateV1,
 };
 use pocket_ic::PocketIc;
 use serde::Deserialize;
@@ -76,6 +77,19 @@ fn query<R: for<'de> Deserialize<'de> + CandidType>(
             encode_one(()).unwrap(),
         )
         .unwrap_or_else(|error| panic!("{method}: {error}")),
+    )
+    .unwrap()
+}
+
+fn query_as<R: for<'de> Deserialize<'de> + CandidType>(
+    pic: &PocketIc,
+    canister: Principal,
+    caller: Principal,
+    method: &str,
+) -> R {
+    decode_one(
+        &pic.query_call(canister, caller, method, encode_one(()).unwrap())
+            .unwrap_or_else(|error| panic!("{method}: {error}")),
     )
     .unwrap()
 }
@@ -184,37 +198,97 @@ fn malformed_prepare_after_persistence_replays_and_quarantines_redemption() {
     replace_state(&pic, stream, ready);
 
     let now = pic.get_time().as_nanos_since_unix_epoch();
+    let completed = match update::<_, Result<RedemptionProgress, ApiError>>(
+        &pic,
+        stream,
+        user,
+        "redeem",
+        RedeemArgs {
+            from_subaccount: None,
+            io_amount_e8s: 10_000_000,
+            min_icp_out_e8s: 9_990_000,
+            max_io_fee_e8s: 10_000,
+            max_icp_fee_e8s: 10_000,
+            expires_at_nanos: now + 60_000_000_000,
+            nonce: 0,
+        },
+    ) {
+        Ok(RedemptionProgress::Completed(result)) => result,
+        other => panic!("all-success redemption did not complete in one invocation: {other:?}"),
+    };
+    assert_eq!(completed.gross_icp_e8s, 10_000_000);
+    assert_eq!(completed.net_icp_e8s, 9_990_000);
+
+    let replay_before: Result<CallerRedemptionState, ApiError> =
+        query_as(&pic, stream, user, "get_caller_redemption_state");
+    let ledger_before_trap = (
+        query::<LedgerCallCounters>(&pic, io_ledger, "debug_get_call_counters"),
+        query::<LedgerCallCounters>(&pic, icp_ledger, "debug_get_call_counters"),
+    );
+    let _: () = update(
+        &pic,
+        stream,
+        Principal::anonymous(),
+        "debug_trap_after_caller_result_write",
+        true,
+    );
+    let trapped_args = RedeemArgs {
+        from_subaccount: None,
+        io_amount_e8s: 10_000_000,
+        min_icp_out_e8s: 9_990_000,
+        max_io_fee_e8s: 10_000,
+        max_icp_fee_e8s: 10_000,
+        expires_at_nanos: now + 60_000_000_000,
+        nonce: 1,
+    };
+    let trapped = pic.update_call(
+        stream,
+        user,
+        "redeem",
+        encode_one(trapped_args.clone()).unwrap(),
+    );
+    assert!(trapped
+        .unwrap_err()
+        .to_string()
+        .contains("debug trap after caller redemption result write"));
     assert_eq!(
-        update::<_, Result<RedemptionProgress, ApiError>>(
+        query_as::<Result<CallerRedemptionState, ApiError>>(
             &pic,
             stream,
             user,
-            "redeem",
-            RedeemArgs {
-                from_subaccount: None,
-                io_amount_e8s: 10_000_000,
-                min_icp_out_e8s: 9_990_000,
-                max_io_fee_e8s: 10_000,
-                max_icp_fee_e8s: 10_000,
-                expires_at_nanos: now + 60_000_000_000,
-                nonce: 0,
-            }
+            "get_caller_redemption_state",
         ),
-        Ok(RedemptionProgress::IoInReserve)
+        replay_before,
+        "the trapped local completion must roll back the caller record write"
+    );
+    let trapped_state: StreamStateV1 = query(&pic, stream, "debug_get_state");
+    assert!(matches!(
+        trapped_state.active_operation,
+        Some(StreamOperation::Redemption(operation))
+            if matches!(operation.as_ref(), io_stream_manager::state::RedemptionStreamOperation::Active(active)
+                if active.phase == RedemptionPhase::PayoutSucceeded)
+    ));
+    let ledger_after_trap = (
+        query::<LedgerCallCounters>(&pic, io_ledger, "debug_get_call_counters"),
+        query::<LedgerCallCounters>(&pic, icp_ledger, "debug_get_call_counters"),
     );
     assert_eq!(
-        update::<_, Result<io_stream_manager::StreamProgress, ApiError>>(
-            &pic,
-            stream,
-            Principal::anonymous(),
-            "resume",
-            (),
-        ),
-        Ok(io_stream_manager::StreamProgress::Redemption(
-            RedemptionProgress::PayoutSucceeded
-        ))
+        ledger_after_trap.0.transfer_from,
+        ledger_before_trap.0.transfer_from + 1
     );
-    let completed = match update::<_, Result<io_stream_manager::StreamProgress, ApiError>>(
+    assert_eq!(
+        ledger_after_trap.1.transfer,
+        ledger_before_trap.1.transfer + 1
+    );
+
+    let _: () = update(
+        &pic,
+        stream,
+        Principal::anonymous(),
+        "debug_trap_after_caller_result_write",
+        false,
+    );
+    let recovered = match update::<_, Result<io_stream_manager::StreamProgress, ApiError>>(
         &pic,
         stream,
         Principal::anonymous(),
@@ -224,10 +298,41 @@ fn malformed_prepare_after_persistence_replays_and_quarantines_redemption() {
         Ok(io_stream_manager::StreamProgress::Redemption(RedemptionProgress::Completed(
             result,
         ))) => result,
-        other => panic!("redemption did not complete after its payout: {other:?}"),
+        other => panic!("trapped redemption did not recover: {other:?}"),
     };
-    assert_eq!(completed.gross_icp_e8s, 10_000_000);
-    assert_eq!(completed.net_icp_e8s, 9_990_000);
+    assert_eq!(
+        update::<_, Result<RedemptionProgress, ApiError>>(
+            &pic,
+            stream,
+            user,
+            "redeem",
+            trapped_args,
+        ),
+        Ok(RedemptionProgress::Completed(recovered.clone()))
+    );
+    assert_eq!(
+        query_as::<Result<CallerRedemptionState, ApiError>>(
+            &pic,
+            stream,
+            user,
+            "get_caller_redemption_state",
+        )
+        .unwrap()
+        .next_nonce,
+        2
+    );
+    let ledger_after_recovery = (
+        query::<LedgerCallCounters>(&pic, io_ledger, "debug_get_call_counters"),
+        query::<LedgerCallCounters>(&pic, icp_ledger, "debug_get_call_counters"),
+    );
+    assert_eq!(
+        ledger_after_recovery.0.transfer_from, ledger_after_trap.0.transfer_from,
+        "resume and completed replay must not repeat the IO pull"
+    );
+    assert_eq!(
+        ledger_after_recovery.1.transfer, ledger_after_trap.1.transfer,
+        "resume and completed replay must not repeat the ICP payout"
+    );
 
     let request = PrepareClaimBackingReceiptArgs {
         nns_operation_sequence: 1,
@@ -285,7 +390,7 @@ fn malformed_prepare_after_persistence_replays_and_quarantines_redemption() {
                 max_io_fee_e8s: 10_000,
                 max_icp_fee_e8s: 10_000,
                 expires_at_nanos: now + 60_000_000_000,
-                nonce: 1,
+                nonce: 2,
             }
         ),
         Err(ApiError::Busy),

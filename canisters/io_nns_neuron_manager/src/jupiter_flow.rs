@@ -98,7 +98,7 @@ async fn lookup_and_begin(
     latest.next_operation_sequence = operation_sequence
         .checked_add(1)
         .ok_or_else(|| ApiError::Invalid("operation sequence exhausted".into()))?;
-    latest.active_operation = Some(NnsOperation::Jupiter(Box::new(JupiterOperation {
+    let operation = JupiterOperation {
         operation_sequence,
         dispatch_epoch: 0,
         captured_control_epoch: latest.control_epoch,
@@ -111,9 +111,10 @@ async fn lookup_and_begin(
             created_at_time_nanos: transfer.created_at_time,
         },
         phase: JupiterPhase::DepositProved,
-    })));
+    };
+    latest.active_operation = Some(NnsOperation::Jupiter(Box::new(operation.clone())));
     state::write(latest);
-    Ok(JupiterProgress::DepositProved)
+    resume(operation).await
 }
 
 pub async fn resume(operation: JupiterOperation) -> Result<JupiterProgress, ApiError> {
@@ -125,11 +126,11 @@ pub async fn resume(operation: JupiterOperation) -> Result<JupiterProgress, ApiE
         }
         JupiterPhase::StakeTransferSucceeded(succeeded) => refresh(operation, succeeded).await,
         JupiterPhase::RefreshSubmitted(succeeded) => {
-            prove_stake_increase(operation, succeeded).await
+            prove_stake_increase(operation, succeeded, true).await
         }
         JupiterPhase::StakeIncreaseProved(proof) => prepare_receipt(operation, proof).await,
         JupiterPhase::ReceiptPermitPrepared { proof, permit } => {
-            prepare_liquid_transfer(operation, proof, permit)
+            prepare_liquid_transfer(operation, proof, permit).await
         }
         JupiterPhase::LiquidTransferPrepared {
             proof,
@@ -207,7 +208,7 @@ async fn resume_insufficient_transfer(
         }
     };
     replace_jupiter(&expected, operation.clone())?;
-    Ok(jupiter_progress(&operation))
+    Box::pin(resume(operation)).await
 }
 
 async fn prepare_stake_transfer(
@@ -235,12 +236,13 @@ async fn prepare_stake_transfer(
         memo: b"IO:JUPITER:STAKE".to_vec(),
         created_at_time_nanos: checked_now()?,
     };
+    let attempt = NnsTransferAttempt::prepared(intent).map_err(ApiError::Invalid)?;
     operation.phase = JupiterPhase::StakeTransferPrepared {
-        before,
-        attempt: NnsTransferAttempt::prepared(intent).map_err(ApiError::Invalid)?,
+        before: before.clone(),
+        attempt: attempt.clone(),
     };
-    replace_jupiter(&expected, operation)?;
-    Ok(JupiterProgress::StakeTransferPrepared)
+    replace_jupiter(&expected, operation.clone())?;
+    submit_jupiter_transfer(operation, before, None, attempt).await
 }
 
 async fn submit_jupiter_transfer(
@@ -298,11 +300,7 @@ async fn submit_jupiter_transfer(
         ));
     }
     if !can_submit {
-        return Ok(if liquid.is_some() {
-            JupiterProgress::LiquidTransferSubmitted
-        } else {
-            JupiterProgress::StakeTransferSubmitted
-        });
+        return Ok(JupiterProgress::Pending);
     }
     operation.dispatch_epoch = operation
         .dispatch_epoch
@@ -381,7 +379,7 @@ async fn submit_jupiter_transfer(
         }),
     };
     replace_jupiter(&submitted, operation.clone())?;
-    Ok(jupiter_progress(&operation))
+    Box::pin(resume(operation)).await
 }
 
 async fn refresh(
@@ -395,20 +393,20 @@ async fn refresh(
         .ok_or_else(|| ApiError::Invalid("dispatch epoch exhausted".into()))?;
     operation.phase = JupiterPhase::RefreshSubmitted(succeeded.clone());
     replace_jupiter(&expected, operation.clone())?;
-    let submitted = operation.clone();
     let config = state::read().config;
     let result = execution::refresh_neuron(&config, succeeded.before.neuron_id).await;
-    if ensure_exact_jupiter(&submitted, &state::read()).is_err() {
+    if ensure_exact_jupiter(&operation, &state::read()).is_err() {
         return Err(ApiError::Busy);
     }
-    Err(execution::command_pending("Jupiter ClaimOrRefresh", result))
+    result?;
+    prove_stake_increase(operation, succeeded, false).await
 }
 
 async fn prove_stake_increase(
-    mut operation: JupiterOperation,
+    operation: JupiterOperation,
     succeeded: StakeTransferSucceeded,
+    retry_missing: bool,
 ) -> Result<JupiterProgress, ApiError> {
-    let expected = operation.clone();
     let snapshot = state::read();
     let after = execution::query_neuron(&snapshot.config, succeeded.before.neuron_id).await?;
     ensure_exact_jupiter(&operation, &state::read())?;
@@ -419,16 +417,21 @@ async fn prove_stake_increase(
         &after,
     )?;
     let Some(proof) = proof else {
+        if !retry_missing {
+            return Err(ApiError::Pending(
+                "Jupiter ClaimOrRefresh awaits canonical stake reflection".into(),
+            ));
+        }
         let result = execution::refresh_neuron(&snapshot.config, succeeded.before.neuron_id).await;
-        ensure_exact_jupiter(&expected, &state::read())?;
-        return Err(execution::command_pending(
-            "Jupiter ClaimOrRefresh retry",
-            result,
-        ));
+        ensure_exact_jupiter(&operation, &state::read())?;
+        result?;
+        return Box::pin(prove_stake_increase(operation, succeeded, false)).await;
     };
-    operation.phase = JupiterPhase::StakeIncreaseProved(proof);
+    let mut operation = operation;
+    let expected = operation.clone();
+    operation.phase = JupiterPhase::StakeIncreaseProved(proof.clone());
     replace_jupiter(&expected, operation.clone())?;
-    Ok(JupiterProgress::StakeIncreaseProved)
+    prepare_receipt(operation, proof).await
 }
 
 async fn prepare_receipt(
@@ -454,12 +457,15 @@ async fn prepare_receipt(
             "stream returned the wrong liquid destination".into(),
         ));
     }
-    operation.phase = JupiterPhase::ReceiptPermitPrepared { proof, permit };
+    operation.phase = JupiterPhase::ReceiptPermitPrepared {
+        proof: proof.clone(),
+        permit: permit.clone(),
+    };
     replace_jupiter(&expected, operation.clone())?;
-    Ok(JupiterProgress::ReceiptPermitPrepared)
+    prepare_liquid_transfer(operation, proof, permit).await
 }
 
-fn prepare_liquid_transfer(
+async fn prepare_liquid_transfer(
     mut operation: JupiterOperation,
     proof: PermanentNeuronCreditProof,
     permit: jupiter::StreamReceiptPermit,
@@ -479,13 +485,14 @@ fn prepare_liquid_transfer(
         memo: permit.memo.clone(),
         created_at_time_nanos: checked_now()?,
     };
+    let attempt = NnsTransferAttempt::prepared(intent).map_err(ApiError::Invalid)?;
     operation.phase = JupiterPhase::LiquidTransferPrepared {
-        proof,
-        permit,
-        attempt: NnsTransferAttempt::prepared(intent).map_err(ApiError::Invalid)?,
+        proof: proof.clone(),
+        permit: permit.clone(),
+        attempt: attempt.clone(),
     };
     replace_jupiter(&expected, operation.clone())?;
-    Ok(JupiterProgress::LiquidTransferPrepared)
+    submit_jupiter_transfer(operation, proof.before(), Some((proof, permit)), attempt).await
 }
 
 async fn complete_receipt(
@@ -513,7 +520,7 @@ async fn complete_receipt(
     replace_jupiter(&submitted, operation.clone())?;
     match progress {
         StreamLiquidProgress::Completed(result) => finish_jupiter(operation, succeeded, result),
-        _ => Ok(JupiterProgress::AwaitingStreamSettlement),
+        _ => Ok(JupiterProgress::Pending),
     }
 }
 
@@ -526,7 +533,7 @@ async fn observe_stream_settlement(
     match progress {
         StreamLiquidProgress::Completed(result) => finish_jupiter(operation, succeeded, result),
         StreamLiquidProgress::Stuck(reason) => Err(ApiError::Stuck(reason)),
-        _ => Ok(JupiterProgress::AwaitingStreamSettlement),
+        _ => Ok(JupiterProgress::Pending),
     }
 }
 
@@ -695,21 +702,10 @@ fn pause_and_replace_jupiter(
 }
 
 fn jupiter_progress(operation: &JupiterOperation) -> JupiterProgress {
-    match &operation.phase {
-        JupiterPhase::DepositProved => JupiterProgress::DepositProved,
-        JupiterPhase::StakeTransferPrepared { .. } => JupiterProgress::StakeTransferPrepared,
-        JupiterPhase::StakeTransferSubmitted { .. } => JupiterProgress::StakeTransferSubmitted,
-        JupiterPhase::StakeTransferSucceeded(_) => JupiterProgress::StakeTransferSucceeded,
-        JupiterPhase::RefreshSubmitted(_) => JupiterProgress::RefreshSubmitted,
-        JupiterPhase::StakeIncreaseProved(_) => JupiterProgress::StakeIncreaseProved,
-        JupiterPhase::ReceiptPermitPrepared { .. } => JupiterProgress::ReceiptPermitPrepared,
-        JupiterPhase::LiquidTransferPrepared { .. } => JupiterProgress::LiquidTransferPrepared,
-        JupiterPhase::LiquidTransferSubmitted { .. } => JupiterProgress::LiquidTransferSubmitted,
-        JupiterPhase::LiquidTransferSucceeded(_) => JupiterProgress::LiquidTransferSucceeded,
-        JupiterPhase::ReceiptCompletionSubmitted(_) => JupiterProgress::ReceiptCompletionSubmitted,
-        JupiterPhase::AwaitingStreamSettlement(_) => JupiterProgress::AwaitingStreamSettlement,
-        JupiterPhase::Stuck { reason, .. } => JupiterProgress::Stuck(reason.clone()),
+    if let JupiterPhase::Stuck { reason, .. } = &operation.phase {
+        return JupiterProgress::Stuck(reason.clone());
     }
+    JupiterProgress::Pending
 }
 
 #[cfg(test)]

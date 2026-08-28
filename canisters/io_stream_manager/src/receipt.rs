@@ -421,7 +421,7 @@ pub async fn resume(now: u64) -> Result<ClaimBackingReceiptProgress, ApiError> {
             last_submitted_at,
         }) => {
             if now.saturating_sub(last_submitted_at) < state::read().config.retry_delay_nanos {
-                return Ok(ClaimBackingReceiptProgress::SettlingRecipients);
+                return Ok(ClaimBackingReceiptProgress::Pending);
             }
             let deadline = first_submitted_at
                 .checked_add(state::read().config.ledger_deduplication_window_nanos)
@@ -513,7 +513,7 @@ fn apply_callback(
         }
     }
     persist(&current, replacement)?;
-    Ok(ClaimBackingReceiptProgress::SettlingRecipients)
+    Ok(ClaimBackingReceiptProgress::Pending)
 }
 
 fn advance_recipient(
@@ -530,7 +530,7 @@ fn advance_recipient(
         .ok_or_else(|| ApiError::Invalid("recipient cursor exhausted".into()))?;
     replacement.current_recipient = None;
     persist(&operation, replacement)?;
-    Ok(ClaimBackingReceiptProgress::SettlingRecipients)
+    Ok(ClaimBackingReceiptProgress::Pending)
 }
 
 pub async fn prove_recipient(block_index: u128) -> Result<ClaimBackingReceiptProgress, ApiError> {
@@ -589,7 +589,7 @@ pub async fn prove_recipient(block_index: u128) -> Result<ClaimBackingReceiptPro
         .expect("validated recipient")
         .state = TransferState::Succeeded { block: block_index };
     persist(&operation, replacement)?;
-    Ok(ClaimBackingReceiptProgress::SettlingRecipients)
+    Ok(ClaimBackingReceiptProgress::Pending)
 }
 
 fn complete(
@@ -734,7 +734,7 @@ fn progress(operation: &ClaimBackingReceipt) -> ClaimBackingReceiptProgress {
     if operation.liquid_block.is_none() {
         ClaimBackingReceiptProgress::AwaitingLiquidProof(operation.permit.clone())
     } else {
-        ClaimBackingReceiptProgress::SettlingRecipients
+        ClaimBackingReceiptProgress::Pending
     }
 }
 

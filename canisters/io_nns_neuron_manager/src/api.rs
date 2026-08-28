@@ -17,8 +17,6 @@ use crate::{
     state::{self, Lifecycle, NnsOperation, PooledTarget, PooledTargetStatus},
 };
 
-pub const MAX_VOTING_POWER_REFRESH_AGE_SECONDS: u64 = 7 * 24 * 60 * 60;
-
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum ApiError {
     Unauthorized,
@@ -46,39 +44,23 @@ pub struct PrepareTwoWeekMaturityArgs {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum JupiterProgress {
-    DepositProved,
-    StakeTransferPrepared,
-    StakeTransferSubmitted,
-    StakeTransferSucceeded,
-    RefreshSubmitted,
-    StakeIncreaseProved,
-    ReceiptPermitPrepared,
-    LiquidTransferPrepared,
-    LiquidTransferSubmitted,
-    LiquidTransferSucceeded,
-    ReceiptCompletionSubmitted,
-    AwaitingStreamSettlement,
+    Pending,
     Completed(JupiterCompleted),
     Stuck(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum MaturityProgress {
-    Observed,
-    DisburseMaturitySubmitted,
-    DisburseMaturitySucceeded,
-    AwaitingCapture,
-    Captured { captured_e8s: u128 },
-    Delivering,
+    Pending,
     Completed(Box<CompletedMaturity>),
     Stuck(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum UnwindProgress {
-    Waiting,
+    Pending,
     AwaitingTransferProof,
-    Completed { block_index: u128, liquid_e8s: u128 },
+    Completed,
     Stuck(String),
 }
 
@@ -150,7 +132,7 @@ async fn resume_passive_work(snapshot: crate::state::NnsStateV1) -> Result<NnsPr
     }
     if let Some((kind, waiting)) = select_passive_maturity(&snapshot, now) {
         if waiting {
-            return Ok(NnsProgress::Maturity(MaturityProgress::AwaitingCapture));
+            return Ok(NnsProgress::Maturity(MaturityProgress::Pending));
         }
         return crate::maturity_flow::resume_kind(kind)
             .await
@@ -159,7 +141,7 @@ async fn resume_passive_work(snapshot: crate::state::NnsStateV1) -> Result<NnsPr
     if snapshot.live_cohorts.is_empty() {
         Ok(NnsProgress::Idle)
     } else {
-        Ok(NnsProgress::Unwind(UnwindProgress::Waiting))
+        Ok(NnsProgress::Unwind(UnwindProgress::Pending))
     }
 }
 
@@ -416,7 +398,6 @@ pub async fn prepare_pool_reconciliation(
         ));
     }
     observe_permanent_policy(&snapshot).await?;
-    refresh_parent_for_reconciliation(&snapshot).await?;
     require_pool_policy(&snapshot).await?;
     let actual = observation.pooled_parent_principal_e8s;
     match args.action {
@@ -591,18 +572,6 @@ fn prepare_top_up(
     latest.active_operation = Some(NnsOperation::Pool(operation));
     state::write(latest);
     Ok(PoolProgress::AwaitingTransfer(permit))
-}
-
-async fn refresh_parent_for_reconciliation(
-    snapshot: &crate::state::NnsStateV1,
-) -> Result<(), ApiError> {
-    if let Some(parent) = snapshot.pooled_parent_id {
-        execution::refresh_voting_power(&snapshot.config, parent).await?;
-        if state::read() != *snapshot {
-            return Err(ApiError::Busy);
-        }
-    }
-    Ok(())
 }
 
 pub(crate) async fn observe_permanent_policy(
@@ -846,7 +815,9 @@ pub async fn observe_pool_policy(caller: Principal) -> Result<PoolPolicyObservat
         return Err(ApiError::Unauthorized);
     }
     let snapshot = state::read();
-    pool_policy_observation(&snapshot).await
+    let observation = pool_policy_observation(&snapshot).await?;
+    best_effort_voting_power_maintenance(&snapshot).await?;
+    Ok(observation)
 }
 
 async fn require_pool_policy(snapshot: &crate::state::NnsStateV1) -> Result<(), ApiError> {
@@ -868,8 +839,7 @@ async fn pool_policy_observation(
 ) -> Result<PoolPolicyObservation, ApiError> {
     let parent = match snapshot.pooled_parent_id {
         Some(parent_id) => {
-            let mut observed =
-                execution::query_neuron_observation(&snapshot.config, parent_id).await?;
+            let observed = execution::query_neuron_observation(&snapshot.config, parent_id).await?;
             execution::validate_parent_configuration(
                 &observed,
                 FollowPolicy {
@@ -877,33 +847,6 @@ async fn pool_policy_observation(
                 },
             )
             .map_err(ApiError::Invalid)?;
-            let now = ic_cdk::api::time() / 1_000_000_000;
-            if !observed
-                .voting_power_refreshed_timestamp_seconds
-                .is_some_and(|refreshed_at| voting_power_refresh_is_current(refreshed_at, now))
-            {
-                execution::refresh_voting_power(&snapshot.config, parent_id).await?;
-                if state::read() != *snapshot {
-                    return Err(ApiError::Busy);
-                }
-                observed = execution::query_neuron_observation(&snapshot.config, parent_id).await?;
-                execution::validate_parent_configuration(
-                    &observed,
-                    FollowPolicy {
-                        followee_neuron_id: snapshot.config.pooled_parent_followee_id,
-                    },
-                )
-                .map_err(ApiError::Invalid)?;
-            }
-            let refreshed_at = observed
-                .voting_power_refreshed_timestamp_seconds
-                .filter(|timestamp| *timestamp > 0)
-                .ok_or_else(|| ApiError::Pending("pooled parent voting power is stale".into()))?;
-            if !voting_power_refresh_is_current(refreshed_at, now) {
-                return Err(ApiError::Pending(format!(
-                    "pooled parent voting power refresh is older than {MAX_VOTING_POWER_REFRESH_AGE_SECONDS} seconds"
-                )));
-            }
             Some(ParentPolicyObservation {
                 neuron_id: parent_id,
                 dissolve_delay_seconds: POOLED_PARENT_DELAY_SECONDS,
@@ -911,7 +854,6 @@ async fn pool_policy_observation(
                 follow_policy: FollowPolicy {
                     followee_neuron_id: snapshot.config.pooled_parent_followee_id,
                 },
-                voting_power_refreshed_at_seconds: refreshed_at,
             })
         }
         None => None,
@@ -932,10 +874,26 @@ async fn pool_policy_observation(
     Ok(result)
 }
 
-fn voting_power_refresh_is_current(refreshed_at: u64, now: u64) -> bool {
-    refreshed_at > 0
-        && refreshed_at <= now
-        && now - refreshed_at <= MAX_VOTING_POWER_REFRESH_AGE_SECONDS
+pub(crate) async fn best_effort_voting_power_maintenance(
+    snapshot: &crate::state::NnsStateV1,
+) -> Result<(), ApiError> {
+    for neuron_id in [
+        Some(snapshot.config.two_year_neuron_id),
+        snapshot.pooled_parent_id,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Err(error) = execution::refresh_voting_power(&snapshot.config, neuron_id).await {
+            ic_cdk::println!(
+                "best-effort RefreshVotingPower({neuron_id}) did not complete: {error:?}"
+            );
+        }
+        if state::read() != *snapshot {
+            return Err(ApiError::Busy);
+        }
+    }
+    Ok(())
 }
 
 fn active_operation_sequence(snapshot: &crate::state::NnsStateV1) -> u64 {
@@ -1015,21 +973,6 @@ mod tests {
             select_passive_maturity(&state, 150),
             Some((MaturityKind::TwoYear, true))
         );
-    }
-
-    #[test]
-    fn voting_power_refresh_age_is_conservatively_bounded() {
-        let now = 10 * 24 * 60 * 60;
-        assert!(voting_power_refresh_is_current(
-            now - MAX_VOTING_POWER_REFRESH_AGE_SECONDS,
-            now
-        ));
-        assert!(!voting_power_refresh_is_current(
-            now - MAX_VOTING_POWER_REFRESH_AGE_SECONDS - 1,
-            now
-        ));
-        assert!(!voting_power_refresh_is_current(0, now));
-        assert!(!voting_power_refresh_is_current(now + 1, now));
     }
 
     #[test]

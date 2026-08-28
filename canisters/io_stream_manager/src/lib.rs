@@ -152,6 +152,12 @@ pub fn debug_fail_malformed_prepare_after_persist(enabled: bool) {
     receipt::debug_fail_malformed_prepare_after_persist(enabled);
 }
 
+#[cfg(debug_assertions)]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_trap_after_caller_result_write(enabled: bool) {
+    api::debug_trap_after_caller_result_write(enabled);
+}
+
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn get_caller_redemption_state() -> Result<CallerRedemptionState, ApiError> {
     let caller = ic_cdk::api::msg_caller();

@@ -59,12 +59,17 @@ can become redeemable. Neither maturity path accepts or stores a Mint block.
 Production methods cover Jupiter notify, maturity start/prepare/resume,
 pooled reconciliation/resume/proof, claim-backing observation, lifecycle, and
 status. Callers cannot choose a neuron, destination, amount, memo, followee, or
-vote. The existing daily reconciliation path refreshes pooled-parent voting
-power; there is no extra scheduler.
+vote. The daily pool-policy observation makes independent best-effort
+`RefreshVotingPower` attempts for the permanent neuron and, when it exists, the
+pooled parent. Either attempt may fail without blocking the other or any
+monetary path. Neither changes followees, and there is no extra scheduler.
 
 Stable state is a strict prelaunch launch schema. Install and upgrade reopen
 Paused, old development states are rejected, and exact submitted/proved work
-remains resumable. One invocation performs at most one external effect.
+remains resumable. Every potentially irreversible effect has persisted exact
+intent before submission. A later dependent effect waits on ambiguity or a
+missing canonical postcondition, but definitively successful and proved fixed
+steps may continue in the same invocation.
 
 Useful checks:
 

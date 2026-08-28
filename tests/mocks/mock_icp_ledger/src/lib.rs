@@ -193,6 +193,9 @@ fn mock_label_from_subaccount(subaccount: &Subaccount) -> Option<String> {
 
 fn mock_label_from_account(account: &Account) -> String {
     if let Some(subaccount) = account.subaccount.as_ref() {
+        if subaccount.0.iter().all(|byte| *byte == 0) {
+            return account.owner.to_text();
+        }
         if subaccount.0[..24].iter().all(|byte| *byte == 0) {
             let mut id = [0_u8; 8];
             id.copy_from_slice(&subaccount.0[24..]);
@@ -212,6 +215,24 @@ fn mock_label_from_account(account: &Account) -> String {
             format!("{}:{bytes}", account.owner.to_text())
         }),
         None => account.owner.to_text(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn null_and_zero_subaccounts_share_one_mock_account_label() {
+        let owner = candid::Principal::from_slice(&[7; 29]);
+        assert_eq!(
+            mock_label_from_account(&Account::new(owner, None)),
+            mock_label_from_account(&Account::new(owner, Some(Subaccount([0; 32]))))
+        );
+        assert_ne!(
+            mock_label_from_account(&Account::new(owner, None)),
+            mock_label_from_account(&Account::new(owner, Some(Subaccount([8; 32]))))
+        );
     }
 }
 

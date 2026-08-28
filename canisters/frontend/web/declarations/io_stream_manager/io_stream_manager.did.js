@@ -145,7 +145,7 @@ export const idlFactory = ({ IDL }) => {
   const ClaimBackingReceiptProgress = IDL.Variant({
     'Stuck' : IDL.Text,
     'AwaitingLiquidProof' : ClaimBackingReceiptPermit,
-    'SettlingRecipients' : IDL.Null,
+    'Pending' : IDL.Null,
     'Completed' : ClaimBackingReceiptResult,
   });
   const RedeemArgs = IDL.Record({
@@ -158,14 +158,9 @@ export const idlFactory = ({ IDL }) => {
     'max_io_fee_e8s' : IDL.Nat,
   });
   const RedemptionProgress = IDL.Variant({
-    'IoPullSubmitted' : IDL.Null,
-    'IoInReserve' : IDL.Null,
+    'Pending' : IDL.Null,
     'Stuck' : IDL.Text,
-    'PayoutSucceeded' : IDL.Null,
-    'PayoutSubmitted' : IDL.Null,
-    'Preparing' : IDL.Null,
     'Completed' : RedemptionResult,
-    'Completing' : IDL.Null,
   });
   const StreamProgress = IDL.Variant({
     'BackingReconciliation' : IDL.Null,

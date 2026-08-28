@@ -20,7 +20,11 @@ principal covers `floor(A_reward*B/C)`.
 Redemption quotes `floor(user_io*B/C)` and separately requires spendable `L`.
 Insufficient liquidity returns a typed shortfall before IO is pulled or a nonce
 is consumed. A valid operation retains exact allowance, transfer-intent,
-deduplication, replay, and postcondition proofs.
+deduplication, replay, and postcondition proofs. Definite Ledger success may
+continue after its canonical postcondition in the same invocation; ambiguity
+retains the exact phase and stops the dependent payout. After payout
+postconditions, caller replay and active-operation clearing are one atomic
+no-`await` local transition.
 
 Jupiter and two-week maturity enter through one paired-backing receipt. The
 receipt is identified by the authenticated NNS Manager's operation sequence,
@@ -29,6 +33,9 @@ generation. It freezes pre-inflow economics and the bounded recipient vector
 before the credit becomes redeemable. Two-year maturity is ordinary unpaired
 yield and enters liquid backing without a receipt. IO-ledger staking balances
 remain authoritative when an ancillary SNS `ClaimOrRefresh` is delayed.
+Public progress is coarse and action-oriented. Internal phase names remain
+operator diagnostics, and multi-recipient settlement stays bounded to one
+recipient transfer per resume.
 
 Install and post-upgrade state are Paused. Reviewed unpause is required before
 the existing one-shot timer is armed. IO remains inert and prelaunch.

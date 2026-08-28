@@ -88,6 +88,12 @@ pub struct SetFolloweeArgs {
     pub followee: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SetVotingPowerTimestampArgs {
+    pub neuron_id: u64,
+    pub timestamp_seconds: u64,
+}
+
 #[derive(Default)]
 struct GovernanceState {
     now_seconds: u64,
@@ -257,7 +263,6 @@ pub fn observe_pool_policy() -> Result<io_nns_types::backing::PoolPolicyObservat
             follow_policy: FollowPolicy {
                 followee_neuron_id: 2,
             },
-            voting_power_refreshed_at_seconds: 1,
         }),
         control_epoch: 1,
         active_operation_sequence: 0,
@@ -955,6 +960,15 @@ pub fn debug_set_followee(args: SetFolloweeArgs) -> Result<(), String> {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         neuron_mut(&mut state, args.neuron_id)?.followee_id = args.followee;
+        Ok(())
+    })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_voting_power_timestamp(args: SetVotingPowerTimestampArgs) -> Result<(), String> {
+    STATE.with(|cell| {
+        neuron_mut(&mut cell.borrow_mut(), args.neuron_id)?
+            .voting_power_refreshed_timestamp_seconds = args.timestamp_seconds;
         Ok(())
     })
 }

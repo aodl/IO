@@ -8,6 +8,11 @@ Pause through the reviewed governance command, preserve the exact active operati
 
 Inspect `get_status`, the caller-visible progress, the exact transfer intent and the canonical ledger block named by the operation. Historian output is observation only and cannot classify or complete monetary work.
 
+Caller-visible redemption progress is deliberately coarse: `Pending`,
+`Completed(result)`, or `Stuck(text)`. `get_status.operation_phase` supplies the
+diagnostic internal phase names below; those names are not a public workflow
+contract.
+
 ## Redemption phases
 
 - `Preparing`: the exact normalized request owns the one operation slot. No monetary effect exists. A failed canonical read may clear only this matching preparation.
@@ -15,9 +20,13 @@ Inspect `get_status`, the caller-visible progress, the exact transfer intent and
 - `IoInReserve`: the exact IO pull succeeded. IO is in reserve and no ICP payout intent existed before this point.
 - `PayoutSubmitted`: the immutable ICP payout was created at its first submission. Retry only the identical intent within its deduplication window.
 - `PayoutSucceeded`: the canonical payout block is persisted and conservative postconditions still require confirmation.
-- `CompletionPrepared`: the exact replay result is durable. Resume applies the caller record idempotently.
-- `CallerResultApplied`: the caller nonce/result is durable. Resume may clear only the matching active operation.
 - `Stuck`: automated retry is not safe. Keep Paused and prove the exact named block through the ledger's canonical current/archive interface or ship a reviewed forward fix.
+
+After the `PayoutSucceeded` postcondition is observed, the exact result, caller
+replacement state, and cleared Stream replacement state are fully validated.
+The caller replay record and active-operation clear are then written in one
+no-`await` message transition. There is no separate local completion phase; a
+trap rolls back both writes.
 
 Never mark completion by assertion, change a payout destination, recreate an intent with a new timestamp, infer a user account from text, or attempt a global proof that a transfer is absent.
 
@@ -36,6 +45,12 @@ Exact completed replay uses `LastCompletedReceipt`; a conflicting replay is
 rejected.
 
 Jupiter settlement transfers backed IO from reserve only after the exact liquid ICP receipt is proved. Two-week settlement must preserve the pending entitlement batch and recipient index across upgrades, transfer one recipient per resume, record one best-effort refresh attempt on the following resume, and retain forfeiture and rounding dust in reserve. The exact transfer is recipient completion; refresh rejection or transport failure must not hold the monetary slot.
+
+For all potentially irreversible effects, immutable intent is durable before
+submission. Definite success is immediately re-observed once and fixed-size
+work may continue when proved. Ambiguity or an absent required postcondition
+stops dependent effects. One-recipient settlement remains a deliberate
+per-flow bounded-work limit.
 
 ## NNS operations
 

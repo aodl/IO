@@ -50,26 +50,35 @@ issues no IO and transfers its claim credit directly to Stream liquid as
 ordinary yield.
 
 Every persisted non-monetary Governance command is recovered by observing
-canonical state before another command. Exact postcondition advances the same
-immutable operation; a safely earlier state reissues the idempotent command,
-keeps the persisted phase and returns Pending; contradictory identity or
-monotonicity is Stuck. This applies to Jupiter and pooled-parent refresh,
+canonical state before a dependent command. Exact postcondition advances the
+same immutable operation; a safely earlier state may reissue the idempotent
+command under its recovery policy. Definite success triggers one immediate
+canonical reread and continues in the same invocation when proved. Ambiguity or
+a postcondition not yet visible retains the submitted phase and returns
+`Pending`; a definitive rejection is propagated rather than disguised as
+`Pending`, and contradictory identity or monotonicity is `Stuck`. This applies
+to Jupiter and pooled-parent refresh,
 remaining delay increase, fixed following policy, child StartDissolving, and
 zero-principal delay/merge cleanup. These retries never repeat an ICP transfer.
 
 Exact pool-reconciliation replay is resolved locally before lifecycle, asset,
-voting-power, or policy work. Completed, passive, and active replay therefore
-makes zero Governance calls even while Paused or policy refresh is rejected.
+or policy work. Completed, passive, and active replay cannot initiate, repeat,
+or duplicate its monetary or Governance effect and remains available while
+Paused. A harmless canonical query or independent best-effort voting-power
+maintenance call is outside that replay correctness contract.
 
 Each committed unwind and passive cohort retains its exact ICP fee basis.
 Claim observation compares it with the canonical current fee and rejects new
 monetary quotes on drift while continuing to report physical child principal.
 No fee-debt scalar is introduced.
 
-One update submits at most one external effect. Install and upgrade reopen
-Paused; immutable submitted/proved operations remain resumable.
+Before every potentially irreversible effect, the exact immutable intent is
+persisted. A later dependent effect is never submitted while an earlier effect
+is ambiguous or lacks its canonical postcondition. Once that proof exists, a
+fixed-size flow may continue to another step in the same update. Install and
+upgrade reopen Paused; immutable submitted/proved operations remain resumable.
 
-The proof boundary is effect-based. Ambiguous outgoing Ledger transfers, Split,
+The stop boundary is effect-based, not a global call count. Ambiguous outgoing Ledger transfers, Split,
 child Disburse, and parent cached-stake reflection remain exact because a retry
 could duplicate value or lose control. Provenance of fungible ICP already held
 in a semantic Account is not a protocol proof requirement.

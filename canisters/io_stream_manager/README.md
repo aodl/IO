@@ -22,10 +22,11 @@ persisted in-transit phase. Physical child principal is retained separately for
 Governance commands; `U/T` deduct the exactly derived unavoidable future
 disbursement fee once sticky child commitment is proved. Permanent capital,
 unminted maturity, cycles, and operational balances are excluded. The separate
-bounded daily observation lists SNS neurons once. Pool policy readiness is a
-separate observation used by daily reward and reconciliation work, so
-following, voting-power or permanent-neuron query failures cannot erase
-existing claim assets or block a liquid redemption. Governance supplies
+bounded daily observation lists SNS neurons once. Pool policy is a separate
+canonical observation used by daily reward and reconciliation work. Following
+or permanent-neuron query failures cannot erase existing claim assets or block
+a liquid redemption. Voting-power refresh is best-effort housekeeping and
+never gates money. Governance supplies
 neuron identity/state; each distinct exact IO
 Ledger staking Account is read at most once and supplies `A_backing`. A delayed
 ancillary SNS `ClaimOrRefresh` cannot hide a successful reward transfer.
@@ -35,6 +36,11 @@ the gross quote. A liquidity shortfall returns gross, net, and available liquid
 before pulling IO, consuming the nonce, or retaining the active slot. A valid
 operation preserves exact allowance/account proof, adverse-drift reread,
 transfer intent, deduplication, replay, and postcondition verification.
+On the all-success path the IO pull, proved ICP payout, conservative
+postcondition read, caller replay update, and active-operation clear complete in
+one invocation. The final two local writes form one no-`await` atomic message
+transition; durable phases remain only around genuine external proof
+boundaries.
 
 Each successful daily observation updates the sorted registry and one latest
 no-effect reconciliation checkpoint. The existing durable one-shot reward timer
@@ -52,10 +58,15 @@ only selects the configured Jupiter Account or a frozen entitlement generation.
 Two-year maturity creates no matching IO and therefore uses no receipt.
 Completion marks ordinary target reconciliation due; any later liquid-to-parent
 transfer is determined only from a fresh global target.
+Recipient settlement deliberately handles one recipient transfer per resume;
+that is a bounded per-flow work limit, not a protocol-wide effect-count rule.
 
 Production methods cover redeem/resume/proof, claim receipts, reward
 observation/backing, lifecycle, caller replay status, and public status. Callers
-never provide monetary facts or destinations.
+never provide monetary facts or destinations. Public progress reports only
+real action boundaries (`Pending`, `Completed`, and `Stuck`, plus the exact
+receipt permit another canister must satisfy); operator status retains
+diagnostic internal phase text.
 
 Stable state is a strict prelaunch launch schema with one monetary slot, bounded
 registry, latest checkpoint, accumulator, pending batch, and caller replay map.

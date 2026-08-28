@@ -603,7 +603,10 @@ pub fn run_installed_stream_redemption(required: bool) {
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(pulled, Ok(RedemptionProgress::IoInReserve));
+    assert!(matches!(
+        pulled,
+        Ok(RedemptionProgress::Pending | RedemptionProgress::Completed(_))
+    ));
     assert_eq!(
         icrc::icrc1_balance_of(&pic, io_ledger, reserve.clone()),
         Nat::from(io_reserve_e8s + amount),
@@ -638,9 +641,7 @@ pub fn run_installed_stream_redemption(required: bool) {
     .unwrap();
     assert_eq!(
         paid,
-        Ok(StreamProgress::Redemption(
-            RedemptionProgress::PayoutSucceeded
-        ))
+        Ok(StreamProgress::Redemption(RedemptionProgress::Pending))
     );
     assert_eq!(
         icrc::icrc1_balance_of(&pic, icp_ledger, user_account),

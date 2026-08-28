@@ -116,7 +116,7 @@ pub(crate) async fn start_observed(
         .map_err(ApiError::Invalid)?;
     latest.active_operation = Some(NnsOperation::Maturity(Box::new(operation)));
     state::write(latest);
-    Ok(MaturityProgress::Observed)
+    Ok(MaturityProgress::Pending)
 }
 
 pub async fn resume_active(
@@ -158,7 +158,7 @@ pub async fn resume_kind(kind: MaturityKind) -> Result<MaturityProgress, ApiErro
         .ok_or_else(|| ApiError::Invalid("no maturity work exists for this kind".into()))?;
     match pending.captured_e8s {
         None => capture_staging_balance(kind, pending).await,
-        Some(_) => start_delivery(kind, pending),
+        Some(_) => start_delivery(kind, pending).await,
     }
 }
 
@@ -190,8 +190,8 @@ async fn submit_disburse(
                 submitted_at_seconds,
                 amount_disbursed_e8s: amount,
             };
-            write_exact(&submitted, replacement, false)?;
-            Ok(MaturityProgress::DisburseMaturitySucceeded)
+            write_exact(&submitted, replacement.clone(), false)?;
+            canonicalize_disbursement(replacement, intent, submitted_at_seconds, amount).await
         }
         execution::GovernanceCallOutcome::RejectedNoEffect(reason) => {
             let mut replacement = submitted.clone();
@@ -243,8 +243,8 @@ async fn recover_disburse(
         submitted_at_seconds,
         amount_disbursed_e8s: canonical.amount_disbursed_e8s,
     };
-    write_exact(&operation, replacement, false)?;
-    Ok(MaturityProgress::DisburseMaturitySucceeded)
+    write_exact(&operation, replacement.clone(), false)?;
+    finish_disbursement(replacement, intent, canonical)
 }
 
 async fn canonicalize_disbursement(
@@ -267,13 +267,20 @@ async fn canonicalize_disbursement(
         ApiError::Pending("canonical maturity disbursement is not observable yet".into())
     })?;
     if canonical.amount_disbursed_e8s != amount_disbursed_e8s {
-        let reason = format!(
+        write_exact(&operation, operation.clone(), true)?;
+        return Err(ApiError::Stuck(format!(
             "DisburseMaturity response amount {} conflicts with canonical amount {}",
             amount_disbursed_e8s, canonical.amount_disbursed_e8s
-        );
-        write_exact(&operation, operation.clone(), true)?;
-        return Err(ApiError::Stuck(reason));
+        )));
     }
+    finish_disbursement(operation, intent, canonical)
+}
+
+fn finish_disbursement(
+    operation: MaturityCommandOperation,
+    intent: MaturityIntent,
+    canonical: io_nns_types::maturity::CanonicalDisbursementEvidence,
+) -> Result<MaturityProgress, ApiError> {
     let passive = PendingMaturityDisbursement {
         nominal_disbursed_e8s: canonical.amount_disbursed_e8s,
         initiated_at_seconds: canonical.initiated_at_seconds,
@@ -284,7 +291,7 @@ async fn canonicalize_disbursement(
         captured_e8s: None,
     };
     move_to_passive(&operation, passive)?;
-    Ok(MaturityProgress::AwaitingCapture)
+    Ok(MaturityProgress::Pending)
 }
 
 async fn capture_staging_balance(
@@ -323,11 +330,11 @@ async fn capture_staging_balance(
     let captured_e8s = balance;
     let mut replacement = pending.clone();
     replacement.captured_e8s = Some(captured_e8s);
-    replace_pending(kind, &pending, replacement)?;
-    Ok(MaturityProgress::Captured { captured_e8s })
+    replace_pending(kind, &pending, replacement.clone())?;
+    start_delivery(kind, replacement).await
 }
 
-pub(crate) fn start_delivery(
+pub(crate) async fn start_delivery(
     kind: MaturityKind,
     pending: PendingMaturityDisbursement,
 ) -> Result<MaturityProgress, ApiError> {
@@ -353,9 +360,9 @@ pub(crate) fn start_delivery(
             claim_transfer: None,
         }),
     };
-    latest.active_operation = Some(NnsOperation::Maturity(Box::new(operation)));
+    latest.active_operation = Some(NnsOperation::Maturity(Box::new(operation.clone())));
     state::write(latest);
-    Ok(MaturityProgress::Delivering)
+    Box::pin(resume_active(operation)).await
 }
 
 async fn resume_delivery(
@@ -404,7 +411,8 @@ async fn resume_delivery(
                 permanent.snapshot,
                 split.permanent_credit,
                 config.expected_icp_fee_e8s,
-            );
+            )
+            .await;
         }
         Some(PermanentCreditState::Prepared { transfer, .. })
             if !matches!(transfer.state, TransferState::Succeeded { .. }) =>
@@ -419,8 +427,14 @@ async fn resume_delivery(
                     before: before.clone(),
                     transfer_block,
                 });
-            write_exact(&operation, replacement, false)?;
-            return crate::permanent_credit::refresh(before.neuron_id).await;
+            write_exact(&operation, replacement.clone(), false)?;
+            return crate::permanent_credit::refresh(
+                replacement,
+                before.clone(),
+                transfer_block,
+                split.permanent_credit,
+            )
+            .await;
         }
         Some(PermanentCreditState::RefreshSubmitted {
             before,
@@ -431,6 +445,7 @@ async fn resume_delivery(
                 before.clone(),
                 *transfer_block,
                 split.permanent_credit,
+                true,
             )
             .await;
         }
@@ -468,8 +483,8 @@ async fn resume_delivery(
             }
             let mut replacement = operation.clone();
             delivery_mut(&mut replacement).permit = Some(permit);
-            write_exact(&operation, replacement, false)?;
-            return Ok(MaturityProgress::Delivering);
+            write_exact(&operation, replacement.clone(), false)?;
+            return Box::pin(resume_active(replacement)).await;
         }
         (MaturityKind::TwoWeek, Some(permit)) => Some(permit),
         (MaturityKind::TwoYear, None) => None,
@@ -496,7 +511,7 @@ async fn resume_delivery(
                     ),
                 ),
             };
-            return prepare_claim_transfer(operation, destination, amount, memo);
+            return prepare_claim_transfer(operation, destination, amount, memo).await;
         }
         Some(attempt) if !matches!(attempt.state, TransferState::Succeeded { .. }) => {
             return submit_maturity_transfer(operation, false).await;
@@ -524,7 +539,7 @@ async fn resume_delivery(
     resume_stream_receipt(operation, progress).await
 }
 
-fn prepare_claim_transfer(
+async fn prepare_claim_transfer(
     operation: MaturityCommandOperation,
     destination: crate::state::Account,
     amount: u128,
@@ -546,8 +561,8 @@ fn prepare_claim_transfer(
     .map_err(ApiError::Invalid)?;
     let mut replacement = operation.clone();
     delivery_mut(&mut replacement).claim_transfer = Some(attempt);
-    write_exact(&operation, replacement, false)?;
-    Ok(MaturityProgress::Delivering)
+    write_exact(&operation, replacement.clone(), false)?;
+    Box::pin(resume_active(replacement)).await
 }
 
 async fn submit_maturity_transfer(
@@ -603,8 +618,8 @@ async fn submit_maturity_transfer(
     match execution::classify_transfer(result)? {
         execution::ExactTransferOutcome::Succeeded(block) => {
             attempt.state = TransferState::Succeeded { block };
-            write_exact(&operation, replacement, false)?;
-            Ok(MaturityProgress::Delivering)
+            write_exact(&operation, replacement.clone(), false)?;
+            Box::pin(resume_active(replacement)).await
         }
         execution::ExactTransferOutcome::Paused(classification, reason) => {
             attempt.state = TransferState::Paused {
@@ -679,8 +694,8 @@ pub async fn prove_active_transfer(
     let mut replacement = operation.clone();
     transfer_mut(delivery_mut(&mut replacement), permanent)?.state =
         TransferState::Succeeded { block: block_index };
-    write_exact(&operation, replacement, false)?;
-    Ok(MaturityProgress::Delivering)
+    write_exact(&operation, replacement.clone(), false)?;
+    Box::pin(resume_active(replacement)).await
 }
 
 pub(crate) async fn resume_stream_receipt(
@@ -688,8 +703,8 @@ pub(crate) async fn resume_stream_receipt(
     progress: ClaimBackingReceiptProgress,
 ) -> Result<MaturityProgress, ApiError> {
     match progress {
-        ClaimBackingReceiptProgress::AwaitingLiquidProof(_) => Ok(MaturityProgress::Delivering),
-        ClaimBackingReceiptProgress::SettlingRecipients => {
+        ClaimBackingReceiptProgress::AwaitingLiquidProof(_) => Ok(MaturityProgress::Pending),
+        ClaimBackingReceiptProgress::Pending => {
             let progress = execution::resume_claim_receipt(&state::read().config).await?;
             ensure_exact(&operation)?;
             match progress {
@@ -697,7 +712,7 @@ pub(crate) async fn resume_stream_receipt(
                     finish_inflow(operation, Some(&result))
                 }
                 ClaimBackingReceiptProgress::Stuck(reason) => Err(ApiError::Stuck(reason)),
-                _ => Ok(MaturityProgress::Delivering),
+                _ => Ok(MaturityProgress::Pending),
             }
         }
         ClaimBackingReceiptProgress::Completed(result) => finish_inflow(operation, Some(&result)),

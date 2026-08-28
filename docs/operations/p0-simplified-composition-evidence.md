@@ -3,14 +3,15 @@
 > Historical evidence for the superseded separate-endowment economics. This
 > document is immutable in meaning and is not an active production requirement
 > or corrected-economics readiness claim. A fresh pooled claim-backing rehearsal
-> and evidence package are still required.
+> and evidence package are required for any source that supersedes the selected
+> account-semantic release.
 
 This document records the deterministic composition defects reproduced from the simplified-execution baseline and the launch invariant that replaces each defect. It is normative for the simplified protocol; scanner-era recovery remains non-normative research history.
 
 | Item | Baseline reproduction | Positive invariant and regression |
 | --- | --- | --- |
 | A | Canonical pricing ran before any active-operation reservation, so two `redeem` messages could interleave and an older callback could install its operation after a newer redemption. | Caller balance and allowance are read first; the exact caller nonce and fingerprint are re-read; `RedemptionPreparation` then exclusively reserves the one operation slot before global pricing. Only the byte-for-byte matching preparation may become executable. |
-| B | Completion wrote `CallerRedemptionState` before rechecking the active sequence, permitting two completion callbacks to advance caller state. | `CompletionPrepared` durably stores the exact result. Caller state accepts only `nonce` once or the exact already-applied `nonce + 1` replay. `CallerResultApplied` is persisted before the exact operation is cleared. |
+| B | Completion wrote `CallerRedemptionState` before rechecking the active sequence, permitting two completion callbacks to advance caller state. | The historical correction introduced `CompletionPrepared` and `CallerResultApplied` so the exact result and caller replay application survived separate messages. The current prelaunch source supersedes those phases as described below. |
 | C | A failed postcondition callback called an unconditional persistence helper and could overwrite a newer operation. | The callback compares sequence, variant, phase and request fingerprint after the await and before mutation. A stale callback returns `Busy` without writing. |
 | D | The ICP payout intent inherited the initial `redeem` timestamp and could be `TooOld` before its first submission. | Preparation creates only the IO pull. The ICP intent and checked deduplication deadline are created with the current time only on the first resume from `IoInReserve`. |
 | E | The request fingerprint encoded the caller's raw optional subaccount, so `null` and 32 zero bytes differed. | `CanonicalRedeemRequestV1` fingerprints one fixed effective `[u8; 32]` subaccount under a domain-separated hash. `null_and_zero_subaccounts_have_one_request_identity` proves equality. |
@@ -21,8 +22,22 @@ This document records the deterministic composition defects reproduced from the 
 | J | Clearing a completed receipt discarded all exact replay evidence. | `LastCompletedReceipt` stores the request fingerprint, permit, exact ICP block, settlement result and completion time. Exact preparation replay returns the durable permit; a conflicting sequence is rejected. |
 | K | `two_week_target` returned eligible IO e8s directly. | The pure target is `floor(active eligible IO * liquid ICP / redeemable IO supply)`, without subtracting a payout fee. Tests cover backing rates below, equal to and above one. |
 | L | Stable reopening validated only configuration and accepted inconsistent active work. | `StreamStateV1::validate` and `NnsStateV1::validate` validate typed active work, transfer attempts, fingerprints, bounded fields and pending maturity identities before reopening. Caller replay records validate whenever read or written. |
-| M | `progress_for` mapped durable `Stuck` to `PayoutSubmitted`. | Public progress has an explicit `Stuck(text)` state and preparation has explicit `Preparing`. |
+| M | `progress_for` mapped durable `Stuck` to `PayoutSubmitted`. | The historical correction exposed the internal preparation/submission phases and explicit `Stuck(text)`. The current prelaunch API retains `Stuck(text)` but collapses non-actionable choreography to coarse `Pending`. |
 | N | A transport rejection returned `ApiError::Stuck` while the durable transfer remained safely retryable `Submitted`. | Transport and ledger ambiguity return `ApiError::Pending`; only an explicit durable transition may report `Stuck` and pause.
+
+### Current atomic redemption completion
+
+The marker-8 Stream state removes `CompletionPrepared`,
+`CallerResultApplied`, and the stored completion result. After the final
+asynchronous postcondition, the implementation rechecks the exact
+`PayoutSucceeded` operation and caller replay state, constructs and validates
+both complete replacement states, then writes the caller result and clears the
+active operation without an `await` or fallible return between the writes. An
+installed debug-only trap between those writes proves message rollback leaves
+the caller record unchanged and the active operation exactly
+`PayoutSucceeded`; retry then completes once without another Ledger transfer.
+This supersedes the earlier local-phase mechanism without changing its
+historical evidence.
 
 ## Remaining stream composition reproductions
 

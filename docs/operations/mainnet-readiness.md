@@ -27,12 +27,12 @@ account-semantic evidence, `test_ci`, and `verify_release` are complete. The
 dated packages that precede the selected package remain immutable historical
 evidence for their own releases and were not rebound.
 
-The pooled-parent policy and permanent-neuron voting-power hardening source
-postdates that completed release. Its focused and repository validation is
-local source evidence only: the checked-in artifacts and selected package have
-not been regenerated or rebound to this source tail. Before launch, finalize a
-new exact source/artifact pair and obtain fresh canonical rehearsal evidence
-for that pair through the normal release process.
+The pooled-parent identity hardening and the subsequent execution/API
+simplification postdate that completed release. Their validation is local
+source evidence only: the checked-in artifacts and selected package have not
+been regenerated or rebound to this source tail. Before launch, finalize a new
+exact source/artifact pair and obtain fresh canonical rehearsal evidence for
+that pair through the normal release process.
 
 The exact `9462a1a` → `46713f8` → `1ed1399` history must remain intact. After
 hosted exact-head CI and explicit integration authorization, use a direct
@@ -49,7 +49,7 @@ on:
   pins;
 - final production SNS/tokenomics/configuration values and identities;
 - fresh source/artifact finalization and canonical rehearsal evidence for the
-  pooled-parent and permanent-neuron hardening tail;
+  pooled-parent hardening and execution/API simplification tail;
 - hosted test, security and reproducible-build CI on the exact documentation
   tail head;
 - independent external security review;
@@ -79,6 +79,13 @@ change that policy. Readiness rejects a memo-derived Account collision before
 bootstrap. Unsolicited ICP at a distinct candidate Account is treated as
 unattributed pooled surplus and ordinary reconciliation unwinds any
 `OverTarget` amount.
+
+Daily pool-policy observation makes independent best-effort voting-power
+refresh attempts for the permanent neuron and pooled parent. Timestamp age and
+refresh failure are advisory governance-maintenance facts, not monetary
+readiness, reconciliation, maturity, issuance, or redemption gates. No
+additional timer or stable scheduler exists, and IO never changes the
+permanent neuron's followees.
 
 The selected package is current local authority for the account-semantic
 release. Historical local rehearsal and release evidence remains immutable and

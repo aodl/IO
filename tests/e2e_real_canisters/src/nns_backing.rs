@@ -125,12 +125,7 @@ struct ManagerCompletedMaturity {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 enum ManagerMaturityProgress {
-    Observed,
-    DisburseMaturitySubmitted,
-    DisburseMaturitySucceeded,
-    AwaitingCapture,
-    Captured { captured_e8s: u128 },
-    Delivering,
+    Pending,
     Completed(Box<ManagerCompletedMaturity>),
     Stuck(String),
 }
@@ -146,9 +141,9 @@ enum ManagerNnsProgress {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 enum ManagerUnwindProgress {
-    Waiting,
+    Pending,
     AwaitingTransferProof,
-    Completed { block_index: u128, liquid_e8s: u128 },
+    Completed,
     Stuck(String),
 }
 
@@ -208,18 +203,7 @@ struct ManagerJupiterCompleted {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 enum ManagerJupiterProgress {
-    DepositProved,
-    StakeTransferPrepared,
-    StakeTransferSubmitted,
-    StakeTransferSucceeded,
-    RefreshSubmitted,
-    StakeIncreaseProved,
-    ReceiptPermitPrepared,
-    LiquidTransferPrepared,
-    LiquidTransferSubmitted,
-    LiquidTransferSucceeded,
-    ReceiptCompletionSubmitted,
-    AwaitingStreamSettlement,
+    Pending,
     Completed(ManagerJupiterCompleted),
     Stuck(String),
 }
@@ -1047,7 +1031,7 @@ fn run_jupiter_credit(
             block_index: deposit_block.into(),
         },
     );
-    assert_eq!(notified, Ok(ManagerJupiterProgress::DepositProved));
+    assert_eq!(notified, Ok(ManagerJupiterProgress::Pending));
 
     let mut donated = false;
     for _ in 0..24 {
@@ -1058,10 +1042,7 @@ fn run_jupiter_credit(
             "resume",
             (),
         );
-        if progress
-            == Ok(ManagerNnsProgress::Jupiter(
-                ManagerJupiterProgress::StakeTransferSucceeded,
-            ))
+        if progress == Ok(ManagerNnsProgress::Jupiter(ManagerJupiterProgress::Pending))
             && donation_before_refresh_e8s > 0
         {
             let staking = IcpAccount::new(
@@ -1777,7 +1758,7 @@ mod tests {
                 block_index: deposit_block.into(),
             },
         );
-        assert_eq!(notified, Ok(ManagerJupiterProgress::DepositProved));
+        assert_eq!(notified, Ok(ManagerJupiterProgress::Pending));
         let duplicate: Result<ManagerJupiterProgress, ManagerApiError> = super::update(
             &fixture.pic,
             fixture.controller,
@@ -2096,7 +2077,7 @@ mod tests {
                     .unwrap();
                 if progress
                     == Ok(ManagerNnsProgress::Maturity(
-                        ManagerMaturityProgress::AwaitingCapture,
+                        ManagerMaturityProgress::Pending,
                     ))
                 {
                     break;
@@ -2874,7 +2855,7 @@ mod tests {
                 .unwrap();
             if progress
                 == Ok(ManagerNnsProgress::Maturity(
-                    ManagerMaturityProgress::AwaitingCapture,
+                    ManagerMaturityProgress::Pending,
                 ))
             {
                 break;
@@ -3288,7 +3269,10 @@ mod tests {
                 nonce: 0,
             },
         );
-        assert_eq!(pulled, Ok(RedemptionProgress::IoInReserve));
+        assert!(matches!(
+            pulled,
+            Ok(RedemptionProgress::Pending | RedemptionProgress::Completed(_))
+        ));
         fixture
             .pic
             .upgrade_canister(sns.stream, stream_wasm, encode_one(()).unwrap(), None)

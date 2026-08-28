@@ -455,7 +455,13 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
             block_index: valid_block,
         },
     );
-    assert_eq!(legitimate, Ok(JupiterProgress::DepositProved));
+    assert!(
+        matches!(
+            legitimate,
+            Err(ApiError::Pending(_)) | Ok(JupiterProgress::Pending)
+        ),
+        "valid deposit did not stop at a real canonical or Stream boundary: {legitimate:?}"
+    );
     assert_eq!(
         query::<LedgerCallCounters>(&pic, ledger, "debug_get_call_counters").query_blocks,
         after_public + 2

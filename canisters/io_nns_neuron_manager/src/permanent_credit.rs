@@ -35,7 +35,7 @@ pub(crate) fn observe_credit(
     }
 }
 
-pub(crate) fn prepare(
+pub(crate) async fn prepare(
     operation: MaturityCommandOperation,
     before: NeuronSnapshot,
     amount: u128,
@@ -67,16 +67,28 @@ pub(crate) fn prepare(
             before,
             transfer: Box::new(transfer),
         });
-    maturity_flow::write_exact(&operation, replacement, false)?;
-    Ok(MaturityProgress::Delivering)
+    maturity_flow::write_exact(&operation, replacement.clone(), false)?;
+    Box::pin(maturity_flow::resume_active(replacement)).await
 }
 
-pub(crate) async fn refresh(neuron_id: u64) -> Result<MaturityProgress, ApiError> {
+pub(crate) async fn refresh(
+    operation: MaturityCommandOperation,
+    before: NeuronSnapshot,
+    transfer_block: u128,
+    protocol_credit_e8s: u128,
+) -> Result<MaturityProgress, ApiError> {
+    let neuron_id = before.neuron_id;
     let result = execution::refresh_neuron(&state::read().config, neuron_id).await;
-    Err(execution::command_pending(
-        "permanent-leg ClaimOrRefresh",
-        result,
+    maturity_flow::ensure_exact(&operation)?;
+    result?;
+    Box::pin(prove_or_refresh(
+        operation,
+        before,
+        transfer_block,
+        protocol_credit_e8s,
+        false,
     ))
+    .await
 }
 
 pub(crate) async fn prove_or_refresh(
@@ -84,15 +96,21 @@ pub(crate) async fn prove_or_refresh(
     before: NeuronSnapshot,
     transfer_block: u128,
     protocol_credit_e8s: u128,
+    retry_missing: bool,
 ) -> Result<MaturityProgress, ApiError> {
     let after = execution::query_neuron(&state::read().config, before.neuron_id).await?;
     maturity_flow::ensure_exact(&operation)?;
     let Some(proof) = observe_credit(&before, transfer_block, protocol_credit_e8s, &after)? else {
-        return refresh(before.neuron_id).await;
+        if !retry_missing {
+            return Err(ApiError::Pending(
+                "permanent-leg ClaimOrRefresh awaits canonical stake reflection".into(),
+            ));
+        }
+        return refresh(operation, before, transfer_block, protocol_credit_e8s).await;
     };
     let mut replacement = operation.clone();
     maturity_flow::delivery_mut(&mut replacement).permanent_credit =
         Some(PermanentCreditState::Proved(proof));
-    maturity_flow::write_exact(&operation, replacement, false)?;
-    Ok(MaturityProgress::Delivering)
+    maturity_flow::write_exact(&operation, replacement.clone(), false)?;
+    Box::pin(maturity_flow::resume_active(replacement)).await
 }

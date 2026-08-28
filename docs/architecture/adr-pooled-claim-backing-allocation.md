@@ -210,8 +210,9 @@ A `ClaimSnapshot` reads only scalar IO supply/reserve/exclusions, liquid ICP,
 NNS asset `P/U/T`, fees, epochs, operation sequence and fingerprints. It does
 not read permanent-neuron policy, parent following/delay policy, SNS neurons or
 SNS staking Accounts. A separate bounded policy observation verifies parent
-delay, following, auto-stake and voting-power readiness before daily reward,
-maturity, lifecycle or new reconciliation work. Redemption uses the fixed-size
+delay, following, and auto-stake before daily reward, maturity, lifecycle or new
+reconciliation work. Voting-power refresh is best-effort housekeeping and does
+not enter that monetary validity decision. Redemption uses the fixed-size
 asset path and freezes only the exact quote scalars and adverse postcondition
 floors.
 
@@ -681,17 +682,19 @@ adds no general scheduler.
 An authenticated reconciliation request first computes its fingerprint and
 resolves exact completed, passive or active replay entirely from local state.
 Conflicting replay is rejected. Exact replay works while Paused, after a child
-becomes passive, and while voting-power refresh or policy validation would
-fail; it issues zero Governance calls. Only new work requires Ready, an empty
-active slot, fresh asset observation and policy validation.
+becomes passive, and while policy validation would fail. Replay cannot initiate,
+repeat, or duplicate the operation's monetary or Governance effect. Only new
+work requires Ready, an empty active slot, fresh asset observation and policy
+validation.
 
-New reconciliation work refreshes pooled-parent voting power before it is
-persisted. The policy timestamp is accepted for at most seven days. A stale
-timestamp pauses new reward, maturity and reconciliation work without removing
-`P` from claim assets or blocking liquid redemption. The existing
-permissionless reward-backing wake-up attempts the same reconciliation refresh
-while reward work is paused; reviewed lifecycle reopening restores fresh
-policy after canonical proof.
+The authenticated daily pool-policy observation first validates the canonical
+parent identity, exact delay, auto-stake setting, and fixed following. It then
+makes independent best-effort `RefreshVotingPower` attempts for the permanent
+neuron and, when present, the pooled parent. Zero, missing, future-dated, or old
+refresh timestamps are advisory only. Rejection, malformed response, or
+transport ambiguity is logged and does not block policy observation or
+monetary work; failure of one attempt does not suppress the other. No timer or
+stable refresh scheduler is added, and neither neuron's followees are changed.
 
 That mechanism does not yet prove a maximum detection/reconciliation interval:
 reviewed pause, unavailable dependencies, repeated retryable failures, and

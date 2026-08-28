@@ -4,6 +4,25 @@ use io_sns_lifecycle::{
 };
 
 #[test]
+fn simplicity_normative_guard_rejects_accidental_execution_promises() {
+    for phrase in [
+        "At most one external effect per invocation.",
+        "One update submits at most one effect.",
+        "Voting-power staleness pauses monetary work.",
+        "Replay makes zero Governance calls.",
+    ] {
+        assert!(
+            stale_normative_phrase(phrase).is_some(),
+            "guard missed {phrase:?}"
+        );
+    }
+    assert!(stale_normative_phrase(
+        "Ambiguity stops dependent effects; voting-power refresh is best-effort housekeeping."
+    )
+    .is_none());
+}
+
+#[test]
 fn pooled_claim_topology_requires_pinned_policy_and_shared_unresolved_accounts() {
     let stream = format!(
         "icp_ledger = principal \"{ICP_LEDGER_PRINCIPAL}\"\n\

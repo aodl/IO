@@ -75,7 +75,6 @@ pub struct ParentPolicyObservation {
     pub dissolve_delay_seconds: u64,
     pub auto_stake_maturity: bool,
     pub follow_policy: FollowPolicy,
-    pub voting_power_refreshed_at_seconds: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -94,7 +93,6 @@ impl PoolPolicyObservation {
                     || parent.dissolve_delay_seconds != POOLED_PARENT_DELAY_SECONDS
                     || parent.auto_stake_maturity
                     || parent.follow_policy.followee_neuron_id == 0
-                    || parent.voting_power_refreshed_at_seconds == 0
             })
         {
             return Err("pool policy observation is invalid".into());

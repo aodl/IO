@@ -2,7 +2,7 @@
 
 This is the handoff index for an independent auditor. It is not a self-audit and does not claim external approval. IO remains prelaunch, Paused/inert where applicable, and not live.
 
-## Release identity
+## Recorded release identity and source-only successor
 
 - Source-finalization commit:
   `9462a1a0df602f06fa845bd31f9fcd0adf80067a`.
@@ -23,6 +23,12 @@ This is the handoff index for an independent auditor. It is not a self-audit and
 - Dependency/tooling evidence: `Cargo.lock`, `package-lock.json`, `deny.toml`, and `docs/security/dependency-and-supply-chain.md`.
 - Source-open package: `LICENSE` and `docs/security/source-open-package.md`.
 
+Those hashes remain the last immutable recorded release/evidence identity. The
+pooled-parent identity hardening and execution/API simplification on this branch
+postdate it. They deliberately do not regenerate or rebind artifacts or the
+canonical package; a new exact source-finalization, artifact-only child, and
+fresh rehearsal/evidence tail are required after this source is accepted.
+
 ## Normative architecture and invariants
 
 - Simplicity and authority: `docs/architecture/simplicity-constitution.md`, `canister-roles.md`, and `api-surface.md`.
@@ -32,6 +38,10 @@ This is the handoff index for an independent auditor. It is not a self-audit and
   `adr-nns-authority-location.md`. The separate-endowment ADR is superseded.
 - Monetary policy: `monetary-policy.md`, `fee-dust-accounting.md`, `reward-allocation.md`, and `sns-eligibility.md`.
 - Redemption/idempotency/ambiguity: `stream-manager.md`, `docs/operations/p0-simplified-composition-evidence.md`, and `docs/security/threat-model.md`.
+- Effect ordering: immutable intent precedes every potentially irreversible
+  effect; definite success is canonically re-observed and may continue;
+  ambiguity or an absent required postcondition stops dependent work. Public
+  progress exposes real action boundaries rather than internal phases.
 - Jupiter activation/replay boundary and residual lookup risk, the permanent
   launch baseline, lazy pooled parent, maturity, and bounded passive unwind:
   `jupiter-integration-contract.md`,
@@ -57,20 +67,22 @@ This is the handoff index for an independent auditor. It is not a self-audit and
 | Not yet audited | Final source/artifacts, launch configuration, dependencies/licenses, controller recovery, and all local evidence require independent review. |
 | Mainnet-only | Protected-position audit, production IDs/config, testflight, install/controller handoff, funding, and activation; each requires separate authorization. |
 
-## Current simplicity criterion
+## Current simplicity diagnostics
 
-The active executable ceilings are:
+The current source-only successor measures:
 
-| Component | Measured | Ceiling | Headroom |
+| Component | Hardened pre-refactor | Current | Change |
 | --- | ---: | ---: | ---: |
-| Stream Manager | 5,416 | 5,520 | 104 lines / ~1.88% |
-| NNS Manager | 5,977 | 6,125 | 148 lines / ~2.42% |
-| Combined governed production | 14,162 | 14,485 | 323 lines / ~2.23% |
+| Stream Manager | 5,416 | 5,390 | -26 |
+| NNS Manager | 6,002 | 6,020 | +18 |
+| Combined governed production | 14,187 | 14,177 | -10 |
 
 `docs/architecture/adr-pooled-claim-backing-complexity-exception.md` and
-`cargo run -p xtask -- simplicity_check` are current authority. The older
-11,100-line recalibration ADR remains a historical decision record and is not
-the current audit criterion.
+`cargo run -p xtask -- simplicity_check` are current authority. The command
+prints raw LOC as diagnostic review information and continues to enforce
+semantic architecture boundaries. The former 5,520 / 6,125 / 14,485 ceilings
+and older 11,100-line recalibration ADR remain historical review records, not
+launch correctness criteria.
 
 Auditors should run `docs/operations/release-checklist.md`, independently
 rebuild the recorded source, run the executable simplicity check, verify all

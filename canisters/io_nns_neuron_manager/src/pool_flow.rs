@@ -45,7 +45,7 @@ pub async fn prove_transfer(
     operation.phase = PoolCommandPhase::TransferProved { block_index };
     operation.transfer_block_index = Some(block_index);
     replace(operation.clone())?;
-    Ok(progress(&operation))
+    Box::pin(resume(operation)).await
 }
 
 pub async fn resume(mut operation: PoolCommand) -> Result<PoolProgress, ApiError> {
@@ -67,7 +67,7 @@ pub async fn resume(mut operation: PoolCommand) -> Result<PoolProgress, ApiError
                 operation.parent_neuron_id = Some(parent_id);
                 operation.phase = PoolCommandPhase::ClaimSubmitted { block_index };
                 replace(operation.clone())?;
-                Ok(progress(&operation))
+                prove_parent(operation).await
             }
             PoolCommandKind::TopUp => submit_refresh(operation).await,
         },
@@ -75,9 +75,9 @@ pub async fn resume(mut operation: PoolCommand) -> Result<PoolProgress, ApiError
         PoolCommandPhase::ParentIdentified => configure_delay(operation).await,
         PoolCommandPhase::DelaySubmitted {
             expected_delay_seconds,
-        } => prove_delay(operation, expected_delay_seconds).await,
-        PoolCommandPhase::FollowingSubmitted => prove_following(operation).await,
-        PoolCommandPhase::RefreshSubmitted => complete_refresh(operation).await,
+        } => prove_delay(operation, expected_delay_seconds, true).await,
+        PoolCommandPhase::FollowingSubmitted => prove_following(operation, true).await,
+        PoolCommandPhase::RefreshSubmitted => complete_refresh(operation, true).await,
     }
 }
 
@@ -95,7 +95,7 @@ async fn prove_parent(mut operation: PoolCommand) -> Result<PoolProgress, ApiErr
     }
     operation.phase = PoolCommandPhase::ParentIdentified;
     replace(operation.clone())?;
-    Ok(progress(&operation))
+    configure_delay(operation).await
 }
 
 async fn configure_delay(mut operation: PoolCommand) -> Result<PoolProgress, ApiError> {
@@ -126,15 +126,14 @@ async fn configure_delay(mut operation: PoolCommand) -> Result<PoolProgress, Api
         execution::increase_delay(&current.config, parent_id, additional).await
     };
     ensure(&operation)?;
-    Err(execution::command_pending(
-        "pooled parent delay submission",
-        result,
-    ))
+    result?;
+    prove_delay(operation, POOLED_PARENT_DELAY_SECONDS, false).await
 }
 
 async fn prove_delay(
-    mut operation: PoolCommand,
+    operation: PoolCommand,
     expected_delay_seconds: u64,
+    retry_missing: bool,
 ) -> Result<PoolProgress, ApiError> {
     let parent_id = operation.parent_neuron_id.ok_or(ApiError::Busy)?;
     let current = state::read();
@@ -158,26 +157,39 @@ async fn prove_delay(
         );
     }
     if delay < expected_delay_seconds {
+        if !retry_missing {
+            return Err(ApiError::Pending(
+                "pooled parent delay command awaits canonical reflection".into(),
+            ));
+        }
         let remaining = u32::try_from(expected_delay_seconds - delay)
             .map_err(|_| ApiError::Invalid("pooled parent delay retry does not fit u32".into()))?;
         let result = execution::increase_delay(&current.config, parent_id, remaining).await;
         ensure(&operation)?;
-        return Err(execution::command_pending(
-            "pooled parent delay retry",
-            result,
-        ));
+        result?;
+        return Box::pin(prove_delay(operation, expected_delay_seconds, false)).await;
     }
+    submit_following(operation, follow_policy).await
+}
+
+async fn submit_following(
+    mut operation: PoolCommand,
+    follow_policy: FollowPolicy,
+) -> Result<PoolProgress, ApiError> {
+    let parent_id = operation.parent_neuron_id.ok_or(ApiError::Busy)?;
+    let current = state::read();
     operation.phase = PoolCommandPhase::FollowingSubmitted;
     replace(operation.clone())?;
     let result = execution::set_following(&current.config, parent_id, follow_policy).await;
     ensure(&operation)?;
-    Err(execution::command_pending(
-        "pooled parent following submission",
-        result,
-    ))
+    result?;
+    prove_following(operation, false).await
 }
 
-async fn prove_following(operation: PoolCommand) -> Result<PoolProgress, ApiError> {
+async fn prove_following(
+    operation: PoolCommand,
+    retry_missing: bool,
+) -> Result<PoolProgress, ApiError> {
     let parent_id = operation.parent_neuron_id.ok_or(ApiError::Busy)?;
     let current = state::read();
     let observed = execution::query_neuron_observation(&current.config, parent_id).await?;
@@ -187,12 +199,15 @@ async fn prove_following(operation: PoolCommand) -> Result<PoolProgress, ApiErro
     if execution::has_follow_policy(&observed, policy) {
         return submit_refresh(operation).await;
     }
+    if !retry_missing {
+        return Err(ApiError::Pending(
+            "pooled parent following command awaits canonical reflection".into(),
+        ));
+    }
     let result = execution::set_following(&current.config, parent_id, policy).await;
     ensure(&operation)?;
-    Err(execution::command_pending(
-        "pooled parent following retry",
-        result,
-    ))
+    result?;
+    Box::pin(prove_following(operation, false)).await
 }
 
 async fn submit_refresh(mut operation: PoolCommand) -> Result<PoolProgress, ApiError> {
@@ -201,13 +216,14 @@ async fn submit_refresh(mut operation: PoolCommand) -> Result<PoolProgress, ApiE
     replace(operation.clone())?;
     let result = execution::refresh_neuron(&state::read().config, parent_id).await;
     ensure(&operation)?;
-    Err(execution::command_pending(
-        "pooled parent ClaimOrRefresh submission",
-        result,
-    ))
+    result?;
+    complete_refresh(operation, false).await
 }
 
-async fn complete_refresh(operation: PoolCommand) -> Result<PoolProgress, ApiError> {
+async fn complete_refresh(
+    operation: PoolCommand,
+    retry_missing: bool,
+) -> Result<PoolProgress, ApiError> {
     let parent_id = operation.parent_neuron_id.ok_or(ApiError::Busy)?;
     let current = state::read();
     let observed = execution::query_neuron_observation(&current.config, parent_id).await?;
@@ -218,13 +234,26 @@ async fn complete_refresh(operation: PoolCommand) -> Result<PoolProgress, ApiErr
         .checked_add(operation.permit.expected_credit_e8s)
         .ok_or_else(|| ApiError::Invalid("pooled parent proof overflow".into()))?;
     if observed.snapshot.cached_stake_e8s < expected {
+        if !retry_missing {
+            return Err(ApiError::Pending(
+                "pooled parent ClaimOrRefresh awaits canonical stake reflection".into(),
+            ));
+        }
         let result = execution::refresh_neuron(&current.config, parent_id).await;
         ensure(&operation)?;
-        return Err(execution::command_pending(
-            "pooled parent ClaimOrRefresh retry",
-            result,
-        ));
+        result?;
+        return Box::pin(complete_refresh(operation, false)).await;
     }
+    finish_refresh(operation, observed, expected)
+}
+
+fn finish_refresh(
+    operation: PoolCommand,
+    observed: execution::NeuronObservation,
+    expected: u128,
+) -> Result<PoolProgress, ApiError> {
+    let parent_id = operation.parent_neuron_id.ok_or(ApiError::Busy)?;
+    let current = state::read();
     if operation.kind == PoolCommandKind::Bootstrap {
         execution::validate_parent_configuration(
             &observed,

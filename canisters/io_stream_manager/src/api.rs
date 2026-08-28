@@ -19,6 +19,25 @@ use crate::{
     },
 };
 
+#[cfg(debug_assertions)]
+thread_local! {
+    static TRAP_AFTER_CALLER_RESULT_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(debug_assertions)]
+pub fn debug_trap_after_caller_result_write(enabled: bool) {
+    TRAP_AFTER_CALLER_RESULT_WRITE.with(|value| value.set(enabled));
+}
+
+fn maybe_trap_after_caller_result_write() {
+    #[cfg(debug_assertions)]
+    TRAP_AFTER_CALLER_RESULT_WRITE.with(|value| {
+        if value.get() {
+            ic_cdk::trap("debug trap after caller redemption result write");
+        }
+    });
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum ApiError {
     Anonymous,
@@ -42,12 +61,7 @@ pub enum ApiError {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum RedemptionProgress {
-    Preparing,
-    IoPullSubmitted,
-    IoInReserve,
-    PayoutSubmitted,
-    PayoutSucceeded,
-    Completing,
+    Pending,
     Completed(RedemptionResult),
     Stuck(String),
 }
@@ -161,7 +175,7 @@ pub async fn redeem(
                 if active.request_fingerprint != request_fingerprint {
                     return Err(ApiError::NonceAlreadyUsed);
                 }
-                return Ok(RedemptionProgress::Preparing);
+                return Ok(RedemptionProgress::Pending);
             }
         }
     }
@@ -364,7 +378,7 @@ pub async fn redeem(
         RedemptionStreamOperation::Active(Box::new(operation)),
     )));
     state::write(latest);
-    dispatch_redemption_transfer(sequence, true, reservation_time).await
+    dispatch_pull_and_continue(sequence, reservation_time).await
 }
 
 fn clear_matching_preparation(expected: &RedemptionPreparation) {
@@ -381,18 +395,10 @@ fn clear_matching_preparation(expected: &RedemptionPreparation) {
 
 fn progress_for(operation: &RedemptionOperation) -> RedemptionProgress {
     match operation.phase {
-        RedemptionPhase::Prepared | RedemptionPhase::PullSubmitted => {
-            RedemptionProgress::IoPullSubmitted
-        }
-        RedemptionPhase::IoInReserve => RedemptionProgress::IoInReserve,
-        RedemptionPhase::PayoutSubmitted => RedemptionProgress::PayoutSubmitted,
-        RedemptionPhase::PayoutSucceeded => RedemptionProgress::PayoutSucceeded,
-        RedemptionPhase::CompletionPrepared | RedemptionPhase::CallerResultApplied => {
-            RedemptionProgress::Completing
-        }
         RedemptionPhase::Stuck => {
             RedemptionProgress::Stuck("exact block proof or governance upgrade required".into())
         }
+        _ => RedemptionProgress::Pending,
     }
 }
 
@@ -602,11 +608,7 @@ fn apply_transfer_callback(
                 RedemptionPhase::PayoutSucceeded
             };
             persist_redemption(operation);
-            Ok(if io_pull {
-                RedemptionProgress::IoInReserve
-            } else {
-                RedemptionProgress::PayoutSucceeded
-            })
+            Ok(RedemptionProgress::Pending)
         }
         ClassifiedResult::NoEffect(error) if io_pull => {
             let mut state = state::read();
@@ -633,21 +635,46 @@ fn apply_transfer_callback(
 pub async fn resume(now: u64) -> Result<RedemptionProgress, ApiError> {
     let operation = active_redemption()?;
     match operation.phase {
-        RedemptionPhase::IoInReserve => {
-            dispatch_redemption_transfer(operation.sequence, false, now).await
-        }
+        RedemptionPhase::IoInReserve => dispatch_payout_and_complete(operation.sequence, now).await,
         RedemptionPhase::PayoutSucceeded => commit_redemption(operation, now).await,
         RedemptionPhase::PullSubmitted => retry_submitted(operation, true, now).await,
         RedemptionPhase::PayoutSubmitted => retry_submitted(operation, false, now).await,
         RedemptionPhase::Stuck => Err(ApiError::Stuck(
             "exact block proof or governance upgrade required".into(),
         )),
-        RedemptionPhase::CompletionPrepared | RedemptionPhase::CallerResultApplied => {
-            finish_redemption(operation)
+        RedemptionPhase::Prepared => dispatch_pull_and_continue(operation.sequence, now).await,
+    }
+}
+
+async fn dispatch_pull_and_continue(
+    sequence: OperationSequence,
+    now: u64,
+) -> Result<RedemptionProgress, ApiError> {
+    let progress = dispatch_redemption_transfer(sequence, true, now).await?;
+    match active_redemption() {
+        Ok(operation)
+            if operation.sequence == sequence
+                && operation.phase == RedemptionPhase::IoInReserve =>
+        {
+            dispatch_payout_and_complete(sequence, ic_cdk::api::time()).await
         }
-        RedemptionPhase::Prepared => {
-            dispatch_redemption_transfer(operation.sequence, true, now).await
+        _ => Ok(progress),
+    }
+}
+
+async fn dispatch_payout_and_complete(
+    sequence: OperationSequence,
+    now: u64,
+) -> Result<RedemptionProgress, ApiError> {
+    let progress = dispatch_redemption_transfer(sequence, false, now).await?;
+    match active_redemption() {
+        Ok(operation)
+            if operation.sequence == sequence
+                && operation.phase == RedemptionPhase::PayoutSucceeded =>
+        {
+            commit_redemption(operation, ic_cdk::api::time()).await
         }
+        _ => Ok(progress),
     }
 }
 
@@ -663,7 +690,11 @@ async fn retry_submitted(
     };
     let sequence = operation.sequence;
     persist_redemption(operation);
-    dispatch_redemption_transfer(sequence, io_pull, now).await
+    if io_pull {
+        dispatch_pull_and_continue(sequence, now).await
+    } else {
+        dispatch_payout_and_complete(sequence, now).await
+    }
 }
 
 async fn commit_redemption(
@@ -704,10 +735,7 @@ async fn commit_redemption(
     if !active_matches(&operation, RedemptionPhase::PayoutSucceeded) {
         return Err(ApiError::Busy);
     }
-    operation.completion_result = Some(result.clone());
-    operation.phase = RedemptionPhase::CompletionPrepared;
-    persist_redemption(operation.clone());
-    finish_redemption(operation)
+    finish_redemption(operation, result)
 }
 
 fn active_matches(operation: &RedemptionOperation, phase: RedemptionPhase) -> bool {
@@ -719,26 +747,25 @@ fn active_matches(operation: &RedemptionOperation, phase: RedemptionPhase) -> bo
     )
 }
 
-fn finish_redemption(mut operation: RedemptionOperation) -> Result<RedemptionProgress, ApiError> {
-    let result = operation
-        .completion_result
-        .clone()
-        .ok_or_else(|| ApiError::Invalid("completion result is missing".into()))?;
-    let mut caller_state = state::caller_state(operation.caller);
-    match caller_state.next_nonce {
+fn finish_redemption(
+    operation: RedemptionOperation,
+    result: RedemptionResult,
+) -> Result<RedemptionProgress, ApiError> {
+    let mut next_caller_state = state::caller_state(operation.caller);
+    match next_caller_state.next_nonce {
         nonce if nonce == operation.nonce => {
-            caller_state.next_nonce = nonce
+            next_caller_state.next_nonce = nonce
                 .checked_add(1)
                 .ok_or_else(|| ApiError::Invalid("caller nonce overflow".into()))?;
-            caller_state.last_request_fingerprint = Some(operation.request_fingerprint.clone());
-            caller_state.last_result = Some(result.clone());
-            state::set_caller_state(operation.caller, caller_state);
+            next_caller_state.last_request_fingerprint =
+                Some(operation.request_fingerprint.clone());
+            next_caller_state.last_result = Some(result.clone());
         }
         nonce
             if Some(nonce) == operation.nonce.checked_add(1)
-                && caller_state.last_request_fingerprint.as_ref()
+                && next_caller_state.last_request_fingerprint.as_ref()
                     == Some(&operation.request_fingerprint)
-                && caller_state.last_result.as_ref() == Some(&result) => {}
+                && next_caller_state.last_result.as_ref() == Some(&result) => {}
         _ => {
             pause();
             return Err(ApiError::Stuck(
@@ -746,44 +773,22 @@ fn finish_redemption(mut operation: RedemptionOperation) -> Result<RedemptionPro
             ));
         }
     }
-    let mut state = state::read();
-    match &state.active_operation {
-        Some(StreamOperation::Redemption(current))
-            if matches!(current.as_ref(), RedemptionStreamOperation::Active(value)
-                if value.sequence == operation.sequence
-                    && value.request_fingerprint == operation.request_fingerprint
-                    && value.phase == RedemptionPhase::CompletionPrepared) =>
-        {
-            operation.phase = RedemptionPhase::CallerResultApplied;
-            state.active_operation = Some(StreamOperation::Redemption(Box::new(
-                RedemptionStreamOperation::Active(Box::new(operation.clone())),
-            )));
-            state::write(state);
-        }
-        Some(StreamOperation::Redemption(current))
-            if matches!(current.as_ref(), RedemptionStreamOperation::Active(value)
-                if value.sequence == operation.sequence
-                    && value.request_fingerprint == operation.request_fingerprint
-                    && value.phase == RedemptionPhase::CallerResultApplied) => {}
-        _ => {
-            pause();
-            return Err(ApiError::Stuck(
-                "active operation conflicts with caller result".into(),
-            ));
-        }
-    }
-    let mut state = state::read();
-    if !matches!(&state.active_operation, Some(StreamOperation::Redemption(current))
+    next_caller_state.validate().map_err(ApiError::Invalid)?;
+    let mut next_stream_state = state::read();
+    if !matches!(&next_stream_state.active_operation, Some(StreamOperation::Redemption(current))
         if matches!(current.as_ref(), RedemptionStreamOperation::Active(value)
-            if value.sequence == operation.sequence
-                && value.request_fingerprint == operation.request_fingerprint
-                && value.phase == RedemptionPhase::CallerResultApplied
-                && value.completion_result.as_ref() == Some(&result)))
+            if **value == operation && value.phase == RedemptionPhase::PayoutSucceeded))
     {
         return Err(ApiError::Busy);
     }
-    state.active_operation = None;
-    state::write(state);
+    next_stream_state.active_operation = None;
+    next_stream_state
+        .validate(ic_cdk::api::canister_self())
+        .map_err(ApiError::Invalid)?;
+
+    state::set_caller_state(operation.caller, next_caller_state);
+    maybe_trap_after_caller_result_write();
+    state::write(next_stream_state);
     Ok(RedemptionProgress::Completed(result))
 }
 
@@ -797,7 +802,7 @@ pub async fn resume_stream(now: u64) -> Result<StreamProgress, ApiError> {
     match state::read().active_operation {
         Some(StreamOperation::Redemption(operation)) => match *operation {
             RedemptionStreamOperation::Preparing(_) => {
-                Ok(StreamProgress::Redemption(RedemptionProgress::Preparing))
+                Ok(StreamProgress::Redemption(RedemptionProgress::Pending))
             }
             RedemptionStreamOperation::Active(_) => {
                 resume(now).await.map(StreamProgress::Redemption)

@@ -15,7 +15,7 @@ use crate::{
 pub use io_accounts::Account;
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
-pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 7;
+pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct StreamConfig {

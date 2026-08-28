@@ -11,12 +11,7 @@ export function canonicalSubaccount(value) {
 export function progressLabel(progress) {
   const key = Object.keys(progress ?? {})[0];
   return ({
-    Preparing: "Preparing canonical snapshot",
-    IoPullSubmitted: "IO pull submitted",
-    IoInReserve: "IO in reserve",
-    PayoutSubmitted: "ICP payout submitted",
-    PayoutSucceeded: "ICP payout succeeded",
-    Completing: "Committing canonical result",
+    Pending: "Pending external proof or retry",
     Completed: "Completed",
     Stuck: "Stuck — submit the exact transfer block proof",
   })[key] ?? key ?? "Unknown";

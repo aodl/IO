@@ -46,12 +46,7 @@ type CallerRedemptionState = record {
   last_result : opt RedemptionResult;
 };
 type RedemptionProgress = variant {
-  Preparing;
-  IoPullSubmitted;
-  IoInReserve;
-  PayoutSubmitted;
-  PayoutSucceeded;
-  Completing;
+  Pending;
   Completed : RedemptionResult;
   Stuck : text;
 };
@@ -85,7 +80,7 @@ type ClaimBackingReceiptResult = record {
 };
 type ClaimBackingReceiptProgress = variant {
   AwaitingLiquidProof : ClaimBackingReceiptPermit;
-  SettlingRecipients;
+  Pending;
   Completed : ClaimBackingReceiptResult;
   Stuck : text;
 };

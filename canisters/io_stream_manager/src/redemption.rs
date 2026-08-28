@@ -2,7 +2,7 @@ use candid::{CandidType, Principal};
 use serde::Deserialize;
 
 use crate::{
-    state::{Account, OperationSequence, RedemptionResult, StreamConfig, StructuralStakeState},
+    state::{Account, OperationSequence, StreamConfig, StructuralStakeState},
     transfer::{deterministic_memo, OwnTransferIntent, TransferAttempt},
 };
 
@@ -24,8 +24,6 @@ pub enum RedemptionPhase {
     IoInReserve,
     PayoutSubmitted,
     PayoutSucceeded,
-    CompletionPrepared,
-    CallerResultApplied,
     Stuck,
 }
 
@@ -192,7 +190,6 @@ pub struct RedemptionOperation {
     pub snapshot: FrozenRedemptionEconomics,
     pub io_pull: TransferAttempt,
     pub icp_payout: Option<TransferAttempt>,
-    pub completion_result: Option<RedemptionResult>,
     pub phase: RedemptionPhase,
 }
 
@@ -304,20 +301,10 @@ impl RedemptionOperation {
         }
         if matches!(
             self.phase,
-            RedemptionPhase::PayoutSubmitted
-                | RedemptionPhase::PayoutSucceeded
-                | RedemptionPhase::CompletionPrepared
-                | RedemptionPhase::CallerResultApplied
+            RedemptionPhase::PayoutSubmitted | RedemptionPhase::PayoutSucceeded
         ) && self.icp_payout.is_none()
         {
             return Err("payout phase requires an immutable payout intent".into());
-        }
-        if matches!(
-            self.phase,
-            RedemptionPhase::CompletionPrepared | RedemptionPhase::CallerResultApplied
-        ) != self.completion_result.is_some()
-        {
-            return Err("completion phase/result mismatch".into());
         }
         let io_succeeded = self.io_pull.succeeded_block().ok();
         let payout_succeeded = self
@@ -352,27 +339,11 @@ impl RedemptionOperation {
                 return Err("payout-submitted redemption has incompatible transfer state".into())
             }
             RedemptionPhase::PayoutSucceeded
-            | RedemptionPhase::CompletionPrepared
-            | RedemptionPhase::CallerResultApplied
                 if io_succeeded.is_none() || payout_succeeded.is_none() =>
             {
                 return Err("completed-effect redemption lacks exact transfer success".into())
             }
             _ => {}
-        }
-        if let Some(result) = &self.completion_result {
-            if result.request_fingerprint != self.request_fingerprint
-                || result.nonce != self.nonce
-                || Some(result.io_block) != io_succeeded
-                || Some(result.icp_block) != payout_succeeded
-                || result.net_icp_e8s != self.net_icp_e8s
-                || result.gross_icp_e8s != self.gross_icp_e8s
-                || result.io_fee_e8s != self.snapshot.io_fee_e8s
-                || result.icp_fee_e8s != self.snapshot.icp_fee_e8s
-                || result.completed_at_nanos == 0
-            {
-                return Err("redemption completion result does not match operation".into());
-            }
         }
         Ok(())
     }
@@ -477,7 +448,6 @@ pub fn calculate(
         },
         io_pull,
         icp_payout: None,
-        completion_result: None,
         phase: RedemptionPhase::Prepared,
     })
 }

@@ -41,6 +41,14 @@ unresolved result outside that window becomes `Stuck` and pauses execution.
 Permissionless proof accepts only an exact block matching the persisted intent.
 No global absence proof is attempted.
 
+The same ordering applies to Governance effects: exact immutable intent is
+durable before submission, and a later dependent irreversible effect is never
+submitted while the earlier outcome is ambiguous or lacks its required
+canonical postcondition. Definite success is immediately re-observed once and
+fixed-size work may continue when proved. `Pending` denotes a real external or
+bounded-work boundary, not an arbitrary per-invocation call count. Variable
+fan-out remains explicitly bounded.
+
 Exact current/archive retrieval is limited to external Jupiter deposits,
 NNS-generated receipts, and proof of a stuck active transfer. Index scanning and
 global reconciliation belong to the historian and cannot authorize value

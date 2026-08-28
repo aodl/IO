@@ -8,7 +8,7 @@ governance canisters remain the sources of truth, while the Historian and
 frontend provide a rebuildable public view.
 
 IO exists to keep the monetary path small and reviewable: reserve transfers,
-checked integer economics, explicit authority, serialized external effects,
+checked integer economics, explicit authority, proof-ordered external effects,
 and exact ledger/governance proof when a callback is ambiguous. The governing
 constraints are enforced by the implementation and by the
 [simplicity check](docs/architecture/simplicity-constitution.md), not by this
@@ -212,11 +212,20 @@ in [launch readiness](tools/sns/launch-readiness.toml),
 
 ## Failure, recovery, and exact proof
 
-Each value-moving invocation attempts at most one external ledger or governance
-effect. Before that call, the canister persists the exact accounts, amount,
-fee, memo, timestamp, sequence, and operation fingerprint. A definitive reject
-can be retried according to the ledger deduplication window. An ambiguous
-transport outcome becomes `Stuck` rather than guessing whether value moved.
+Before every potentially irreversible external effect, the canister persists
+its exact immutable intent. It never submits a later dependent effect while an
+earlier effect is ambiguous or lacks its required canonical postcondition.
+Once success is definitive and canonically proved, a fixed-size flow may
+continue to its next step in the same invocation. A definitive no-effect result
+is retried or aborted under that operation's rules and is never treated as
+success. Variable fan-out, including recipient settlement, remains explicitly
+bounded across invocations.
+
+Transport ambiguity retains the exact submitted phase and stops dependent
+effects until canonical proof or safe recovery is available. Other real stop
+boundaries include a postcondition not yet visible after one immediate reread,
+ledger retry delay, maturity finalization time, external exact-block proof,
+insufficient liquidity, bounded cohort capacity, and durable `Stuck` state.
 
 `resume` advances an existing operation idempotently. `prove_active_transfer`
 accepts only an exact canonical ledger block for the active proof slot; it is

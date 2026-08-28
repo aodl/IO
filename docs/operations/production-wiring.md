@@ -32,6 +32,13 @@ Account is recorded only as canonical pooled principal and any surplus is
 handled by ordinary `OverTarget` reconciliation; it creates no issuance or
 entitlement.
 
+The daily authenticated pool-policy observation independently attempts
+`RefreshVotingPower` for the permanent neuron and the pooled parent when it
+exists. These are best-effort governance-maintenance calls: timestamp age and
+refresh failure do not gate monetary work, one failed attempt does not suppress
+the other, no followees are changed, and no additional timer or stable
+scheduler exists.
+
 ## Role identity record
 
 - Stream Manager: `thset-pqaaa-aaaar-qb7wa-cai`

@@ -83,7 +83,6 @@ type ParentPolicyObservation = record {
   dissolve_delay_seconds : nat64;
   auto_stake_maturity : bool;
   follow_policy : FollowPolicy;
-  voting_power_refreshed_at_seconds : nat64;
 };
 type CohortObservation = record {
   generation : nat64;
@@ -160,18 +159,7 @@ type JupiterCompleted = record {
   completed_at_nanos : nat64;
 };
 type JupiterProgress = variant {
-  DepositProved;
-  StakeTransferPrepared;
-  StakeTransferSubmitted;
-  StakeTransferSucceeded;
-  RefreshSubmitted;
-  StakeIncreaseProved;
-  ReceiptPermitPrepared;
-  LiquidTransferPrepared;
-  LiquidTransferSubmitted;
-  LiquidTransferSucceeded;
-  ReceiptCompletionSubmitted;
-  AwaitingStreamSettlement;
+  Pending;
   Completed : JupiterCompleted;
   Stuck : text;
 };
@@ -185,19 +173,14 @@ type CompletedMaturity = record {
   completed_at_nanos : nat64;
 };
 type MaturityProgress = variant {
-  Observed;
-  DisburseMaturitySubmitted;
-  DisburseMaturitySucceeded;
-  AwaitingCapture;
-  Captured : record { captured_e8s : nat };
-  Delivering;
+  Pending;
   Completed : CompletedMaturity;
   Stuck : text;
 };
 type UnwindProgress = variant {
-  Waiting;
+  Pending;
   AwaitingTransferProof;
-  Completed : record { block_index : nat; liquid_e8s : nat };
+  Completed;
   Stuck : text;
 };
 type NnsProgress = variant {

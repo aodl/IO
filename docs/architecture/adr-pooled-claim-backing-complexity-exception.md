@@ -1,9 +1,10 @@
 # ADR: Pooled claim-backing complexity exception
 
-- Status: the maturity/provenance machinery described historically is
-  superseded by [`account-semantic-maturity.md`](account-semantic-maturity.md).
-  The final measurement and ceilings in this ADR remain the active executable
-  production-complexity budget.
+- Status: historical review baseline with current diagnostic measurements. The
+  maturity/provenance machinery described historically is superseded by
+  [`account-semantic-maturity.md`](account-semantic-maturity.md). Numerical
+  ceilings in this ADR are no longer launch correctness conditions; executable
+  semantic architecture checks remain mandatory.
 - Date: 2026-08-23
 - Baseline commit: `44c37cf7222b343dda9b7f63ac128a02614bcda7`
 - Final-correction baseline: `221d8c7703d4ad4cf58c7c30ca07ed056663b369`
@@ -37,7 +38,7 @@ The exact component change from the feature checkpoint is:
 | receipt types | 37 | 49 | +12 |
 | **Combined** | **14,542** | **12,815** | **-1,727** |
 
-The remaining state is required to prove one monetary effect at a time:
+The remaining state is required to prove one active monetary operation at a time:
 
 - Stream retains one active operation, one bounded 1,000-record neuron
   registry, one pending entitlement batch, compact caller replay records, and
@@ -167,19 +168,32 @@ the full 1,000-record neuron registry is 111,209 bytes against its
 
 ## Decision
 
-The final ceilings are 5,520 Stream Manager lines, 6,125 NNS Manager lines,
-and 14,485 combined lines. Against the current final measurements of 5,416,
-5,977 and 14,162, these provide 104 lines (~1.88%), 148 lines (~2.42%), and
-323 lines (~2.23%) of headroom. The
-pure-economics, reward-boundary, ledger-boundary, shared-type, and per-file
-ceilings do not change. In particular, every production file remains limited
-to 1,000 normally formatted lines.
+The account-semantic release used 5,520 Stream Manager lines, 6,125 NNS Manager
+lines, and 14,485 combined lines as review ceilings. Its recorded measurements
+were 5,416, 5,977 and 14,162, leaving 104 lines (~1.88%), 148 lines (~2.42%),
+and 323 lines (~2.23%) of historical review headroom.
 
-This exception applies only after the deletion-first replacement described
-above. It does not authorize source packing, `rustfmt` suppression, hidden
-production paths, a second operation slot, a new scheduler, or old/new feature
-flags. Future growth beyond either revised ceiling requires another accepted
-exception with new measured need and deletion evidence.
+The source-only pooled-parent hardening and execution simplification that
+postdate that release measure 5,390 Stream Manager lines, 6,020 NNS Manager
+lines, and 14,177 combined lines. Relative to the hardened pre-refactor
+worktree (5,416 / 6,002 / 14,187), the execution simplification changes those
+counts by -26 / +18 / -10. It also removes two durable redemption phases, one
+stable field, and 21 public progress variants without adding a timer, stable
+scheduler, or active-operation slot.
+
+`xtask simplicity_check` continues to print these and the pure-economics,
+reward-boundary, ledger-boundary, shared-type, and per-file measurements as
+review diagnostics. Raw line-count thresholds are not correctness failures.
+Hard failures remain for semantic regressions such as scanners, generic
+journals, obsolete intake/refund paths, monetary execution driven by timers,
+forbidden dependencies, runnable unresolved production templates, and stale
+normative economic or execution promises.
+
+The historical review ceilings do not authorize source packing, `rustfmt`
+suppression, hidden production paths, a second operation slot, a new scheduler,
+or old/new feature flags. Material growth still requires explicit review with
+measured need and deletion evidence, but crossing a raw count does not by
+itself establish a protocol correctness failure.
 
 ## Consequences
 

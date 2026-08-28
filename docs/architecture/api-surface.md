@@ -11,3 +11,11 @@ work and read the relevant semantic staging balance, but callers provide no Mint
 block or source identity. External proof arguments remain only for genuinely
 ambiguous outgoing transfers. Production DIDs exclude ticks, forced outcomes,
 state dumps, generic voting, and debug methods.
+
+Public progress describes real caller action and blocking boundaries rather
+than durable internal choreography. Stream redemption and NNS Jupiter/maturity
+flows expose `Pending`, `Completed`, and `Stuck`; unwind additionally exposes
+`AwaitingTransferProof`. Claim receipts retain `AwaitingLiquidProof` because it
+carries the exact cross-canister permit, while bounded recipient settlement is
+coarse `Pending`. Detailed phase names remain diagnostic status text and are
+not workflow compatibility types.
