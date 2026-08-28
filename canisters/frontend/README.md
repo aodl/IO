@@ -80,10 +80,12 @@ burns its own IO fee. The subsequent `redeem` request uses the same canonical
 subaccount, a two-minute request expiry, minimum ICP output, and IO and ICP fee
 maxima.
 
-The UI renders preparation, IO-pull, IO-in-reserve, payout, completion, and
-`Stuck` progress. Anyone may call the canister's permissionless `resume`; the
-connected UI exposes that operation. For a `Stuck` own transfer, the user may
-submit the exact canonical ledger block to `prove_active_transfer`, then resume.
+The public UI renders coarse `Pending`, `Completed`, and `Stuck` workflow
+progress. Detailed durable phase names remain operator diagnostics exposed by
+status rather than public workflow compatibility variants. Anyone may call the
+canister's permissionless `resume`; the connected UI exposes that operation.
+For a `Stuck` own transfer, the user may submit the exact canonical ledger block
+to `prove_active_transfer`, then resume.
 The canister exact-matches the active persisted intent. Direct IO transfer is
 unsupported and cannot create a redemption intent.
 
