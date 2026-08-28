@@ -1,9 +1,10 @@
 use candid::Principal;
 use io_production_wiring::{
-    template_paths, validate_template_text, PRODUCTION_FRONTEND_CANISTER_ID,
+    template_paths, validate_template_text, ICP_LEDGER_PRINCIPAL, ICP_TRANSFER_FEE_E8S,
+    JUPITER_FAUCET_CANISTER_ID, NNS_GOVERNANCE_PRINCIPAL, PRODUCTION_FRONTEND_CANISTER_ID,
     PRODUCTION_IO_HISTORIAN_CANISTER_ID, PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID,
-    PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID, PROTECTED_IO_NEURON_OWNER_CANISTER,
-    PROTECTED_IO_NNS_NEURON_ID,
+    PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID, PRODUCTION_POOLED_PARENT_MEMO,
+    PROTECTED_IO_NEURON_OWNER_CANISTER, PROTECTED_IO_NNS_NEURON_ID,
 };
 use io_stable_schema::{accepts_schema_version, STABLE_SCHEMA_REGISTRY};
 use serde::{Deserialize, Serialize};
@@ -2315,20 +2316,108 @@ fn validate_pooled_claim_topology(stream: &str, nns: &str) -> Result<(), String>
         }
         Ok(())
     }
-    let jupiter_staging = nns
-        .lines()
-        .find(|line| line.contains("jupiter_staging"))
-        .ok_or_else(|| "missing topology field jupiter_staging".to_string())?;
-    if !jupiter_staging.contains("subaccount = null") {
-        return Err("jupiter_staging must use the NNS manager default Account".into());
+    fn require_exact_u128(text: &str, field: &str, expected: u128) -> Result<(), String> {
+        let line = text
+            .lines()
+            .find(|line| line.contains(field))
+            .ok_or_else(|| format!("missing topology field {field}"))?;
+        let value = line
+            .split_once('=')
+            .map(|(_, value)| value)
+            .and_then(|value| value.split([':', ';']).next())
+            .map(str::trim)
+            .map(|value| value.replace('_', ""))
+            .ok_or_else(|| format!("{field} has no numeric value"))?;
+        let actual = value
+            .parse::<u128>()
+            .map_err(|_| format!("{field} must use exact numeric value {expected}"))?;
+        if actual != expected {
+            return Err(format!(
+                "{field} must use exact numeric value {expected}, got {actual}"
+            ));
+        }
+        Ok(())
     }
-    for (text, field, token) in [
+    fn require_exact_principal(text: &str, field: &str, expected: &str) -> Result<(), String> {
+        let line = text
+            .lines()
+            .find(|line| line.contains(field))
+            .ok_or_else(|| format!("missing topology field {field}"))?;
+        let marker = "principal \"";
+        let value = line
+            .find(marker)
+            .map(|start| &line[start + marker.len()..])
+            .and_then(|suffix| suffix.split_once('"').map(|(value, _)| value))
+            .ok_or_else(|| format!("{field} must use principal \"{expected}\""))?;
+        if value != expected {
+            return Err(format!(
+                "{field} must use exact principal {expected}, got {value}"
+            ));
+        }
+        Ok(())
+    }
+    for (text, field, value) in [
+        (stream, "icp_ledger", ICP_LEDGER_PRINCIPAL),
         (
             stream,
             "nns_manager",
-            "TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL",
+            PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID,
         ),
-        (nns, "jupiter_staging", "TODO_EXISTING_NNS_CONTROLLER_SELF"),
+        (stream, "jupiter_io_account", JUPITER_FAUCET_CANISTER_ID),
+        (
+            stream,
+            "io_reserve",
+            PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID,
+        ),
+        (
+            stream,
+            "liquid_icp",
+            PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID,
+        ),
+        (
+            nns,
+            "stream_manager",
+            PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID,
+        ),
+        (nns, "jupiter =", JUPITER_FAUCET_CANISTER_ID),
+        (nns, "icp_ledger", ICP_LEDGER_PRINCIPAL),
+        (nns, "nns_governance", NNS_GOVERNANCE_PRINCIPAL),
+        (nns, "jupiter_account", JUPITER_FAUCET_CANISTER_ID),
+        (
+            nns,
+            "jupiter_staging",
+            PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID,
+        ),
+        (
+            nns,
+            "stream_liquid_account",
+            PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID,
+        ),
+    ] {
+        require_exact_principal(text, field, value)?;
+    }
+    require_field_token(nns, "jupiter_account", "subaccount = null")?;
+    require_field_token(nns, "jupiter_staging", "subaccount = null")?;
+    require_exact_u128(
+        nns,
+        "two_year_neuron_id",
+        u128::from(PROTECTED_IO_NNS_NEURON_ID),
+    )?;
+    require_exact_u128(
+        nns,
+        "pooled_parent_memo",
+        u128::from(PRODUCTION_POOLED_PARENT_MEMO),
+    )?;
+    require_exact_u128(
+        nns,
+        "pooled_parent_followee_id",
+        u128::from(PROTECTED_IO_NNS_NEURON_ID),
+    )?;
+    require_exact_u128(nns, "expected_icp_fee_e8s", ICP_TRANSFER_FEE_E8S)?;
+    require_exact_u128(stream, "expected_icp_fee_e8s", ICP_TRANSFER_FEE_E8S)?;
+    require_field_token(stream, "jupiter_io_account", "TODO_JUPITER_IO_SUBACCOUNT")?;
+    require_field_token(stream, "io_reserve", "TODO_IO_RESERVE_SUBACCOUNT")?;
+    for (text, field, token) in [
         (
             nns,
             "jupiter_activation_block_floor",
@@ -2338,12 +2427,6 @@ fn validate_pooled_claim_topology(stream: &str, nns: &str) -> Result<(), String>
             nns,
             "audited_permanent_principal_e8s",
             "TODO_AUDITED_PERMANENT_PRINCIPAL_E8S",
-        ),
-        (nns, "pooled_parent_memo", "TODO_POOLED_PARENT_MEMO"),
-        (
-            nns,
-            "pooled_parent_followee_id",
-            "TODO_POOLED_PARENT_FOLLOWEE_ID",
         ),
     ] {
         require_field_token(text, field, token)?;

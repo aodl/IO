@@ -48,6 +48,19 @@ pub fn parent_staking_account(config: &NnsConfig, memo: u64) -> Account {
     }
 }
 
+pub fn validate_candidate_parent_staking_account(
+    config: &NnsConfig,
+    permanent: &NeuronObservation,
+) -> Result<Account, String> {
+    let candidate = parent_staking_account(config, config.pooled_parent_memo);
+    if candidate == staking_account(config, &permanent.snapshot) {
+        return Err(
+            "pooled-parent staking Account collides with the protected two-year neuron".into(),
+        );
+    }
+    Ok(candidate)
+}
+
 pub fn classify_transfer(
     result: Result<IcrcTransferResult, String>,
 ) -> Result<ExactTransferOutcome, ApiError> {

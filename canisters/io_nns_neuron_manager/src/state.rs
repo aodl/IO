@@ -69,12 +69,14 @@ impl NnsConfig {
                 }
             }
         }
-        if self.two_year_neuron_id == 0
-            || self.pooled_parent_memo == 0
-            || self.pooled_parent_followee_id == 0
-            || self.minimum_parent_stake_e8s <= self.expected_icp_fee_e8s
-        {
-            return Err("protected neuron and pooled-parent policy must be non-zero".into());
+        if self.two_year_neuron_id == 0 || self.pooled_parent_followee_id == 0 {
+            return Err("protected neuron IDs must be non-zero".into());
+        }
+        if self.minimum_parent_stake_e8s <= self.expected_icp_fee_e8s {
+            return Err("minimum parent stake must exceed the ICP fee".into());
+        }
+        if self.pooled_parent_followee_id != self.two_year_neuron_id {
+            return Err("pooled parent must follow the protected two-year neuron".into());
         }
         if self.stream_liquid_account.owner != self.stream_manager {
             return Err("stream liquid account must be owned by stream manager".into());
@@ -791,7 +793,7 @@ pub(crate) mod tests {
                     nns_governance: principal(6),
                     two_year_neuron_id: 1,
                     pooled_parent_memo: 2,
-                    pooled_parent_followee_id: 3,
+                    pooled_parent_followee_id: 1,
                     minimum_parent_stake_e8s: 100_000_000,
                     jupiter_account: Account {
                         owner: jupiter,
@@ -905,6 +907,19 @@ pub(crate) mod tests {
             .unwrap();
         transfer.state = TransferState::Succeeded { block: 12 };
         transfer
+    }
+
+    #[test]
+    fn pooled_parent_memo_zero_is_valid_but_followee_must_be_protected_neuron() {
+        let (canister_self, mut state) = valid_state();
+        state.config.pooled_parent_memo = 0;
+        assert_eq!(state.validate(canister_self), Ok(()));
+
+        state.config.pooled_parent_followee_id = state.config.two_year_neuron_id + 1;
+        assert_eq!(
+            state.validate(canister_self),
+            Err("pooled parent must follow the protected two-year neuron".into())
+        );
     }
 
     #[test]

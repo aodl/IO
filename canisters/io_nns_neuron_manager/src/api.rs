@@ -415,6 +415,7 @@ pub async fn prepare_pool_reconciliation(
             "pool reconciliation snapshot or intent is invalid".into(),
         ));
     }
+    observe_permanent_policy(&snapshot).await?;
     refresh_parent_for_reconciliation(&snapshot).await?;
     require_pool_policy(&snapshot).await?;
     let actual = observation.pooled_parent_principal_e8s;
@@ -602,6 +603,21 @@ async fn refresh_parent_for_reconciliation(
         }
     }
     Ok(())
+}
+
+pub(crate) async fn observe_permanent_policy(
+    snapshot: &crate::state::NnsStateV1,
+) -> Result<execution::NeuronObservation, ApiError> {
+    let observation =
+        execution::query_neuron_observation(&snapshot.config, snapshot.config.two_year_neuron_id)
+            .await?;
+    execution::validate_permanent_configuration(&observation).map_err(ApiError::Invalid)?;
+    execution::validate_candidate_parent_staking_account(&snapshot.config, &observation)
+        .map_err(ApiError::Invalid)?;
+    if state::read() != *snapshot {
+        return Err(ApiError::Busy);
+    }
+    Ok(observation)
 }
 
 fn commit_reconciliation_generation(

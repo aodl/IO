@@ -287,7 +287,7 @@ fn fail_self_follow(operation: PoolCommand, parent_id: u64) -> Result<PoolProgre
         state::write(latest);
     }
     Err(ApiError::Invalid(format!(
-        "pooled parent {parent_id} equals the configured followee; choose a different pre-launch memo or followee"
+        "pooled parent {parent_id} collides with the fixed protected followee; production identity audit failed"
     )))
 }
 
@@ -305,7 +305,7 @@ fn stuck(operation: &PoolCommand, reason: &str) -> Result<PoolProgress, ApiError
 fn validate_follow_target(parent_id: u64, followee_id: u64) -> Result<(), String> {
     if parent_id == followee_id {
         Err(format!(
-            "pooled parent {parent_id} equals the configured followee; choose a different pre-launch memo or followee"
+            "pooled parent {parent_id} collides with the fixed protected followee; production identity audit failed"
         ))
     } else {
         Ok(())
@@ -357,7 +357,7 @@ mod tests {
     fn pooled_parent_self_follow_is_rejected_before_following() {
         assert!(validate_follow_target(42, 42)
             .unwrap_err()
-            .contains("different pre-launch memo or followee"));
+            .contains("production identity audit failed"));
         assert_eq!(validate_follow_target(42, 43), Ok(()));
     }
 

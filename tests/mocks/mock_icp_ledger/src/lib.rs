@@ -141,6 +141,7 @@ struct RecordTransfer {
     memo: String,
     memo_bytes: Option<Vec<u8>>,
     native_memo_u64: u64,
+    created_at_time: Option<u64>,
 }
 
 fn record(state: &mut LedgerState, transfer: RecordTransfer) -> u64 {
@@ -154,7 +155,7 @@ fn record(state: &mut LedgerState, transfer: RecordTransfer) -> u64 {
         memo: transfer.memo,
         memo_bytes: transfer.memo_bytes,
         block_index,
-        timestamp: now(),
+        timestamp: transfer.created_at_time.unwrap_or_else(now),
         native_memo_u64: transfer.native_memo_u64,
     });
     block_index
@@ -361,6 +362,7 @@ pub fn icrc1_transfer(args: IcrcTransferArg) -> Result<Nat, IcrcTransferError> {
         let from = label_from_from_subaccount(args.from_subaccount)?;
         let to = mock_label_from_account(&to_account);
         let amount_e8s = nat_to_u128(&args.amount, "amount")?;
+        let created_at_time = args.created_at_time;
         let memo_bytes = args.memo;
         let memo = memo_to_string(memo_bytes.clone());
         if state
@@ -390,6 +392,7 @@ pub fn icrc1_transfer(args: IcrcTransferArg) -> Result<Nat, IcrcTransferError> {
                 memo,
                 memo_bytes,
                 native_memo_u64: 0,
+                created_at_time,
             },
         )))
     })
@@ -425,6 +428,7 @@ pub fn icrc2_transfer_from(args: TransferFromArg) -> Result<Nat, IcrcTransferErr
         let from = mock_label_from_account(&from_account);
         let to = mock_label_from_account(&to_account);
         let amount_e8s = nat_to_u128(&args.amount, "amount")?;
+        let created_at_time = args.created_at_time;
         let debit_e8s = amount_e8s.checked_add(fee_e8s(&state)).ok_or_else(|| {
             IcrcTransferError::GenericError {
                 error_code: Nat::from(1_u64),
@@ -451,6 +455,7 @@ pub fn icrc2_transfer_from(args: TransferFromArg) -> Result<Nat, IcrcTransferErr
                 memo: memo_to_string(args.memo.clone()),
                 memo_bytes: args.memo,
                 native_memo_u64: 0,
+                created_at_time,
             },
         )))
     })
@@ -521,6 +526,7 @@ pub fn debug_mint_account(args: DebugMintAccountArgs) -> u64 {
                 memo: "debug mint".into(),
                 memo_bytes: None,
                 native_memo_u64: 0,
+                created_at_time: None,
             },
         )
     })
@@ -543,6 +549,7 @@ pub fn debug_record_nns_disbursement(args: DebugNnsDisbursementArgs) -> u64 {
                 memo: args.native_memo_u64.to_string(),
                 memo_bytes: None,
                 native_memo_u64: args.native_memo_u64,
+                created_at_time: None,
             },
         )
     })
@@ -690,6 +697,7 @@ pub fn debug_mint(args: DebugMintArgs) -> u64 {
                 memo: args.memo,
                 memo_bytes: None,
                 native_memo_u64: 0,
+                created_at_time: None,
             },
         )
     })

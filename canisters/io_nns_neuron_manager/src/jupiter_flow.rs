@@ -732,7 +732,7 @@ mod tests {
                     nns_governance: Principal::from_slice(&[5; 29]),
                     two_year_neuron_id: 1,
                     pooled_parent_memo: 2,
-                    pooled_parent_followee_id: 3,
+                    pooled_parent_followee_id: 1,
                     minimum_parent_stake_e8s: 100_000_000,
                     jupiter_account: crate::state::Account {
                         owner: Principal::from_slice(&[3; 29]),

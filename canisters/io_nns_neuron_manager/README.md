@@ -9,15 +9,27 @@ The permanent neuron retains its audited principal and exact post-Mission-70
 two-year maximum-delay configuration. Its maturity path disburses 100% into the
 fixed two-year staging Account, freezes the complete post-finalization balance,
 and sends 40% gross to permanent capital and 60% gross to Stream liquid. It
-issues no IO.
+issues no IO. Production identifies it as neuron
+`10_292_412_127_977_304_661`, controlled by this manager. Its audited prelaunch
+following policy points to alpha-vote neuron `2_947_465_672_511_369`. The
+separately authorized protected-neuron audit owns verification of that
+operational fact; this component never changes the permanent neuron's
+followees.
 
 The pooled parent is created only from existing Stream liquid claim backing
 when the canonical target reaches the NNS minimum. It uses one fixed memo,
 exact 1,209,600-second delay, auto-stake off, and one fixed following policy.
-Production memo/followee values remain unresolved TODOs in deliberately
-non-runnable install arguments. Parent creation proves the staking transfer,
-claimed neuron ID, cached stake, delay, following, dissolve state, and
-auto-stake state before recording the parent.
+Production uses memo `0` solely as the fixed deterministic NNS staking nonce;
+it carries no application metadata. The parent follows the protected two-year
+neuron, never alpha-vote directly, and configuration validation requires the
+followee ID to equal `two_year_neuron_id`. Before any bootstrap permit exists,
+readiness and runtime derive the candidate Account and prove it differs from
+the permanent neuron's canonical staking Account. Unsolicited ICP at a
+non-colliding candidate Account is harmless surplus: parent creation proves the
+exact Stream transfer and records the canonical actual principal as
+`OverTarget` when necessary. It then proves the claimed neuron ID, cached
+stake, delay, following, dissolve state, and auto-stake state before recording
+the parent.
 
 Stream owns under-target source transfers. NNS freezes a typed permit bound to
 the reconciliation generation, expected parent principal, destination, credit,
@@ -47,8 +59,8 @@ can become redeemable. Neither maturity path accepts or stores a Mint block.
 Production methods cover Jupiter notify, maturity start/prepare/resume,
 pooled reconciliation/resume/proof, claim-backing observation, lifecycle, and
 status. Callers cannot choose a neuron, destination, amount, memo, followee, or
-vote. The existing daily reconciliation path refreshes voting power; there is
-no extra scheduler.
+vote. The existing daily reconciliation path refreshes pooled-parent voting
+power; there is no extra scheduler.
 
 Stable state is a strict prelaunch launch schema. Install and upgrade reopen
 Paused, old development states are rejected, and exact submitted/proved work

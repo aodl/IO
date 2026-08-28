@@ -105,7 +105,7 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
                 nns_governance: Principal::from_slice(&[5; 29]),
                 two_year_neuron_id: 1,
                 pooled_parent_memo: 2,
-                pooled_parent_followee_id: 3,
+                pooled_parent_followee_id: 1,
                 minimum_parent_stake_e8s: 100_000_000,
                 jupiter_account: Account {
                     owner: Principal::from_slice(&[4; 29]),
@@ -284,7 +284,7 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
         nns_governance: governance,
         two_year_neuron_id: 41,
         pooled_parent_memo: 42,
-        pooled_parent_followee_id: 43,
+        pooled_parent_followee_id: 41,
         minimum_parent_stake_e8s: 100_000_000,
         jupiter_account,
         jupiter_staging: staging(0),

@@ -1126,7 +1126,7 @@ fn install_manager(
                 nns_governance: fixture.governance,
                 two_year_neuron_id: fixture.two_year_neuron_id,
                 pooled_parent_memo: PROTECTED_MEMO,
-                pooled_parent_followee_id: fixture.proposer_neuron_id,
+                pooled_parent_followee_id: fixture.two_year_neuron_id,
                 minimum_parent_stake_e8s: 100_000_000,
                 jupiter_account: ManagerAccount {
                     owner: jupiter,

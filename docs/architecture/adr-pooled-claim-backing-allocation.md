@@ -821,5 +821,7 @@ The controlled evidence above resolves the child-maturity accounting and
 realization route. Production uses the canonical daily reward checkpoint as
 the reconciliation generation, permits at most one committed cohort per
 generation, and bounds live cohorts at 32. Release artifacts, corrected local
-SNS evidence, final production memo/followee values, and deployment remain
-separate reviewed work.
+SNS evidence and deployment remain separate reviewed work. Production uses
+pooled-parent memo `0` as a deterministic staking nonce and requires the parent
+to follow protected two-year neuron `10_292_412_127_977_304_661`; those values
+are not inferred from the historical local memo.

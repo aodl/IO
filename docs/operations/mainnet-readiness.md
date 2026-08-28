@@ -27,6 +27,13 @@ account-semantic evidence, `test_ci`, and `verify_release` are complete. The
 dated packages that precede the selected package remain immutable historical
 evidence for their own releases and were not rebound.
 
+The pooled-parent policy and permanent-neuron voting-power hardening source
+postdates that completed release. Its focused and repository validation is
+local source evidence only: the checked-in artifacts and selected package have
+not been regenerated or rebound to this source tail. Before launch, finalize a
+new exact source/artifact pair and obtain fresh canonical rehearsal evidence
+for that pair through the normal release process.
+
 The exact `9462a1a` → `46713f8` → `1ed1399` history must remain intact. After
 hosted exact-head CI and explicit integration authorization, use a direct
 fast-forward only; do not squash, rebase or create a merge commit for this
@@ -41,8 +48,8 @@ on:
   `latest_reward_event_participation`, with refreshed official Wasm and DID
   pins;
 - final production SNS/tokenomics/configuration values and identities;
-- the production pooled-parent memo and followee if the product decision
-  remains unresolved;
+- fresh source/artifact finalization and canonical rehearsal evidence for the
+  pooled-parent and permanent-neuron hardening tail;
 - hosted test, security and reproducible-build CI on the exact documentation
   tail head;
 - independent external security review;
@@ -64,7 +71,14 @@ The NNS Manager execution identity is the existing protected-neuron controller
 `oae4c-3iaaa-aaaar-qb5qq-cai`. The permanent neuron remains protected input.
 The pooled parent does not exist until canonical liquid backing reaches the
 minimum and the reviewed bootstrap protocol creates it with an exact 14-day
-delay and fixed following policy.
+delay and fixed following policy. Its production memo is `0`, used only as the
+deterministic staking nonce, and it follows permanent IO two-year neuron
+`10_292_412_127_977_304_661`. The permanent neuron is operationally expected to
+retain its audited alpha-vote `2_947_465_672_511_369` following; IO does not
+change that policy. Readiness rejects a memo-derived Account collision before
+bootstrap. Unsolicited ICP at a distinct candidate Account is treated as
+unattributed pooled surplus and ordinary reconciliation unwinds any
+`OverTarget` amount.
 
 The selected package is current local authority for the account-semantic
 release. Historical local rehearsal and release evidence remains immutable and

@@ -210,7 +210,7 @@ fn pocketic_live_sns_topology_installs_io_canisters_with_local_principals() {
                 nns_governance,
                 two_year_neuron_id: 42,
                 pooled_parent_memo: 43,
-                pooled_parent_followee_id: 44,
+                pooled_parent_followee_id: 42,
                 minimum_parent_stake_e8s: 100_000_000,
                 jupiter_account: io_stream_manager::Account {
                     owner: sns_root,

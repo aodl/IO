@@ -4,27 +4,52 @@ use io_sns_lifecycle::{
 };
 
 #[test]
-fn pooled_claim_topology_requires_shared_account_tokens() {
-    let stream = "nns_manager = TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL\n\
-                      liquid_icp = TODO_STREAM_LIQUID_SUBACCOUNT";
-    let nns = "jupiter_staging = record { owner = TODO_EXISTING_NNS_CONTROLLER_SELF; subaccount = null }\n\
-                   jupiter_activation_block_floor = TODO_JUPITER_ACTIVATION_BLOCK_FLOOR\n\
-                   audited_permanent_principal_e8s = TODO_AUDITED_PERMANENT_PRINCIPAL_E8S\n\
-                   pooled_parent_memo = TODO_POOLED_PARENT_MEMO\n\
-                   pooled_parent_followee_id = TODO_POOLED_PARENT_FOLLOWEE_ID\n\
-                   stream_liquid_account = TODO_STREAM_LIQUID_SUBACCOUNT";
-    validate_pooled_claim_topology(stream, nns).unwrap();
+fn pooled_claim_topology_requires_pinned_policy_and_shared_unresolved_accounts() {
+    let stream = format!(
+        "icp_ledger = principal \"{ICP_LEDGER_PRINCIPAL}\"\n\
+         nns_manager = principal \"{PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID}\"\n\
+         jupiter_io_account = record {{ owner = principal \"{JUPITER_FAUCET_CANISTER_ID}\"; subaccount = opt TODO_JUPITER_IO_SUBACCOUNT }}\n\
+         io_reserve = record {{ owner = principal \"{PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID}\"; subaccount = opt TODO_IO_RESERVE_SUBACCOUNT }}\n\
+         liquid_icp = record {{ owner = principal \"{PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID}\"; subaccount = opt TODO_STREAM_LIQUID_SUBACCOUNT }}\n\
+         expected_icp_fee_e8s = {ICP_TRANSFER_FEE_E8S} : nat"
+    );
+    let nns = format!(
+        "stream_manager = principal \"{PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID}\"\n\
+         jupiter = principal \"{JUPITER_FAUCET_CANISTER_ID}\"\n\
+         icp_ledger = principal \"{ICP_LEDGER_PRINCIPAL}\"\n\
+         nns_governance = principal \"{NNS_GOVERNANCE_PRINCIPAL}\"\n\
+         two_year_neuron_id = {PROTECTED_IO_NNS_NEURON_ID} : nat64\n\
+         pooled_parent_memo = {PRODUCTION_POOLED_PARENT_MEMO} : nat64\n\
+         pooled_parent_followee_id = {PROTECTED_IO_NNS_NEURON_ID} : nat64\n\
+         jupiter_account = record {{ owner = principal \"{JUPITER_FAUCET_CANISTER_ID}\"; subaccount = null }}\n\
+         jupiter_staging = record {{ owner = principal \"{PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID}\"; subaccount = null }}\n\
+         stream_liquid_account = record {{ owner = principal \"{PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID}\"; subaccount = opt TODO_STREAM_LIQUID_SUBACCOUNT }}\n\
+         expected_icp_fee_e8s = {ICP_TRANSFER_FEE_E8S} : nat\n\
+         jupiter_activation_block_floor = TODO_JUPITER_ACTIVATION_BLOCK_FLOOR\n\
+         audited_permanent_principal_e8s = TODO_AUDITED_PERMANENT_PRINCIPAL_E8S"
+    );
+    validate_pooled_claim_topology(&stream, &nns).unwrap();
     assert!(validate_pooled_claim_topology(
-        stream,
+        &stream,
         &nns.replace("subaccount = null", "subaccount = opt TODO_WRONG"),
     )
     .is_err());
     assert!(validate_pooled_claim_topology(
-        &stream.replace(
-            "nns_manager = TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL",
-            "nns_manager = TODO_OBSOLETE_MANAGER",
+        &stream.replace(PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID, "aaaaa-aa"),
+        &nns,
+    )
+    .is_err());
+    assert!(validate_pooled_claim_topology(
+        &stream,
+        &nns.replace("pooled_parent_memo = 0", "pooled_parent_memo = 1"),
+    )
+    .is_err());
+    assert!(validate_pooled_claim_topology(
+        &stream,
+        &nns.replace(
+            &format!("pooled_parent_followee_id = {PROTECTED_IO_NNS_NEURON_ID}"),
+            "pooled_parent_followee_id = 1",
         ),
-        nns,
     )
     .is_err());
 }

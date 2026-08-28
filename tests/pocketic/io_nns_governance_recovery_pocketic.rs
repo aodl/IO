@@ -71,6 +71,20 @@ struct DebugMintAccountArgs {
     amount_e8s: u128,
 }
 
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct DebugLedgerTransaction {
+    from: String,
+    to: String,
+    from_account: Option<Account>,
+    to_account: Option<Account>,
+    amount_e8s: u128,
+    memo: String,
+    memo_bytes: Option<Vec<u8>>,
+    block_index: u64,
+    timestamp: u64,
+    native_memo_u64: u64,
+}
+
 #[derive(Clone, Copy, Debug, CandidType, Deserialize)]
 struct SetNextDisburseBlockArgs {
     block_index: u64,
@@ -186,6 +200,10 @@ struct RecoveryFixture {
 
 impl RecoveryFixture {
     fn new() -> Self {
+        Self::new_with_policy(42, false)
+    }
+
+    fn new_with_policy(pooled_parent_memo: u64, permanent_collision: bool) -> Self {
         let pic = PocketIc::new();
         let install = |name: &str| {
             let canister = pic.create_canister();
@@ -215,8 +233,8 @@ impl RecoveryFixture {
                     icp_ledger: ledger,
                     nns_governance: governance,
                     two_year_neuron_id: 41,
-                    pooled_parent_memo: 42,
-                    pooled_parent_followee_id: 43,
+                    pooled_parent_memo,
+                    pooled_parent_followee_id: 41,
                     minimum_parent_stake_e8s: 100_000_000,
                     jupiter_account: Account {
                         owner: jupiter,
@@ -246,8 +264,17 @@ impl RecoveryFixture {
             stream,
             sns_governance,
         };
-        fixture.create_neuron(41, 1_000_000, 63_115_200);
-        fixture.create_staking_neuron(42, 1_000_000, POOLED_PARENT_DELAY_SECONDS, 42);
+        if permanent_collision {
+            fixture.create_staking_neuron(41, 1_000_000, 63_115_200, pooled_parent_memo);
+        } else {
+            fixture.create_neuron(41, 1_000_000, 63_115_200);
+        }
+        if pooled_parent_memo == 42 {
+            fixture.create_staking_neuron(42, 1_000_000, POOLED_PARENT_DELAY_SECONDS, 42);
+        }
+        if pooled_parent_memo == 42 {
+            fixture.followee(42, Some(41));
+        }
         fixture
     }
 
@@ -732,6 +759,206 @@ fn uncaptured_maturity(
         two_week_target_e8s,
         captured_e8s: None,
     }
+}
+
+fn claim_assets(fixture: &RecoveryFixture) -> ClaimAssetObservation {
+    update::<_, Result<ClaimAssetObservation, ApiError>>(
+        &fixture.pic,
+        fixture.manager,
+        fixture.stream,
+        "observe_claim_assets",
+        (),
+    )
+    .unwrap()
+}
+
+fn reconciliation_args(
+    observation: &ClaimAssetObservation,
+    action: PoolReconciliationAction,
+    target_e8s: u128,
+) -> PreparePoolReconciliationArgs {
+    PreparePoolReconciliationArgs {
+        generation: 1,
+        target_e8s,
+        action,
+        fee_e8s: 10_000,
+        snapshot_fingerprint: observation.fingerprint.clone(),
+        memo: vec![1; 32],
+        created_at_time_nanos: 1,
+    }
+}
+
+#[test]
+fn zero_memo_bootstrap_rejects_permanent_collision_and_accepts_candidate_dust() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        return;
+    }
+    let collision = RecoveryFixture::new_with_policy(0, true);
+    let readiness = update::<_, Result<(), ApiError>>(
+        &collision.pic,
+        collision.manager,
+        collision.sns_governance,
+        "set_paused",
+        false,
+    );
+    assert!(matches!(readiness, Err(ApiError::Invalid(message)) if message.contains("collides")));
+    collision.replace(collision.state());
+    let observation = claim_assets(&collision);
+    let args = reconciliation_args(
+        &observation,
+        PoolReconciliationAction::TopUp {
+            expected_credit_e8s: 100_000_000,
+        },
+        100_000_000,
+    );
+    let ledger_before: LedgerCallCounters =
+        query(&collision.pic, collision.ledger, "debug_get_call_counters");
+    let rejected = update::<_, Result<PoolProgress, ApiError>>(
+        &collision.pic,
+        collision.manager,
+        collision.stream,
+        "prepare_pool_reconciliation",
+        args,
+    );
+    assert!(matches!(rejected, Err(ApiError::Invalid(message)) if message.contains("collides")));
+    assert!(collision.state_from_canister().active_operation.is_none());
+    let ledger_after: LedgerCallCounters =
+        query(&collision.pic, collision.ledger, "debug_get_call_counters");
+    assert_eq!(ledger_after.transfer, ledger_before.transfer);
+    assert_eq!(ledger_after.transfer_from, ledger_before.transfer_from);
+
+    const CREDIT_E8S: u128 = 100_000_000;
+    const UNSOLICITED_E8S: u128 = 50_000_000;
+    let occupied = RecoveryFixture::new_with_policy(0, false);
+    let candidate = Account {
+        owner: occupied.governance,
+        subaccount: Some(parent_staking_subaccount(occupied.manager, 0)),
+    };
+    occupied.mint_account(candidate.clone(), UNSOLICITED_E8S);
+    let readiness = update::<_, Result<(), ApiError>>(
+        &occupied.pic,
+        occupied.manager,
+        occupied.sns_governance,
+        "set_paused",
+        false,
+    );
+    readiness.expect("publicly derivable candidate-account dust must not block readiness");
+    let observation = claim_assets(&occupied);
+    let mut args = reconciliation_args(
+        &observation,
+        PoolReconciliationAction::TopUp {
+            expected_credit_e8s: CREDIT_E8S,
+        },
+        CREDIT_E8S,
+    );
+    args.created_at_time_nanos = occupied.pic.get_time().as_nanos_since_unix_epoch() as u64;
+    let progress = update::<_, Result<PoolProgress, ApiError>>(
+        &occupied.pic,
+        occupied.manager,
+        occupied.stream,
+        "prepare_pool_reconciliation",
+        args.clone(),
+    )
+    .unwrap();
+    let PoolProgress::AwaitingTransfer(permit) = progress else {
+        panic!("expected bootstrap permit, got {progress:?}")
+    };
+    assert_eq!(permit.expected_credit_e8s, CREDIT_E8S);
+    assert_eq!(permit.destination, candidate);
+    assert_eq!(occupied.state_from_canister().config.pooled_parent_memo, 0);
+
+    let stream_liquid = occupied.state_from_canister().config.stream_liquid_account;
+    occupied.mint_account(
+        stream_liquid.clone(),
+        CREDIT_E8S + u128::from(permit.fee_e8s),
+    );
+    let transfer: io_ledger_boundary::IcrcTransferResult = update(
+        &occupied.pic,
+        occupied.ledger,
+        occupied.stream,
+        "icrc1_transfer",
+        io_ledger_boundary::IcrcTransferArg {
+            from_subaccount: stream_liquid.subaccount,
+            to: permit.destination.clone(),
+            amount: candid::Nat::from(CREDIT_E8S),
+            fee: Some(candid::Nat::from(permit.fee_e8s)),
+            memo: Some(permit.memo.clone()),
+            created_at_time: Some(permit.prepared_at_nanos),
+        },
+    );
+    let transfer_block: u128 = transfer.unwrap().0.try_into().unwrap();
+    let transactions: Vec<DebugLedgerTransaction> = update(
+        &occupied.pic,
+        occupied.ledger,
+        Principal::anonymous(),
+        "debug_get_transactions",
+        (),
+    );
+    assert_eq!(
+        transactions[transfer_block as usize].timestamp,
+        permit.prepared_at_nanos
+    );
+    occupied.create_staking_neuron(0, CREDIT_E8S + UNSOLICITED_E8S, 0, 0);
+    let proved = update::<_, Result<NnsProgress, ApiError>>(
+        &occupied.pic,
+        occupied.manager,
+        occupied.stream,
+        "prove_active_transfer",
+        transfer_block,
+    )
+    .unwrap();
+    assert!(matches!(proved, NnsProgress::Pool(_)));
+
+    let completed = (0..8)
+        .find_map(|_| match occupied.resume() {
+            Ok(NnsProgress::Pool(PoolProgress::Completed {
+                parent_neuron_id,
+                principal_e8s,
+                target_status,
+            })) => Some((parent_neuron_id, principal_e8s, target_status)),
+            Ok(NnsProgress::Pool(_)) | Err(ApiError::Pending(_)) => None,
+            other => panic!("unexpected bootstrap result: {other:?}"),
+        })
+        .expect("bootstrap must complete through its restart-safe phases");
+    assert_eq!(completed.0, 0);
+    assert_eq!(completed.1, CREDIT_E8S + UNSOLICITED_E8S);
+    assert_eq!(
+        completed.2,
+        io_nns_types::backing::PoolTargetResult::OverTarget
+    );
+    let final_state = occupied.state_from_canister();
+    assert!(final_state.active_operation.is_none());
+    assert_eq!(
+        final_state.latest_pooled_target,
+        Some(PooledTarget {
+            target_e8s: CREDIT_E8S,
+            status: PooledTargetStatus::OverTarget,
+        })
+    );
+    assert_eq!(occupied.balance(candidate), CREDIT_E8S + UNSOLICITED_E8S);
+    let ledger_calls: LedgerCallCounters =
+        query(&occupied.pic, occupied.ledger, "debug_get_call_counters");
+    assert_eq!(ledger_calls.transfer, 1);
+    assert_eq!(ledger_calls.transfer_from, 0);
+
+    assert_eq!(
+        update::<_, Result<PoolProgress, ApiError>>(
+            &occupied.pic,
+            occupied.manager,
+            occupied.stream,
+            "prepare_pool_reconciliation",
+            args,
+        ),
+        Ok(PoolProgress::Completed {
+            parent_neuron_id: 0,
+            principal_e8s: CREDIT_E8S + UNSOLICITED_E8S,
+            target_status: io_nns_types::backing::PoolTargetResult::OverTarget,
+        })
+    );
+    let replay_calls: LedgerCallCounters =
+        query(&occupied.pic, occupied.ledger, "debug_get_call_counters");
+    assert_eq!(replay_calls.transfer, ledger_calls.transfer);
+    assert_eq!(replay_calls.transfer_from, ledger_calls.transfer_from);
 }
 
 #[test]

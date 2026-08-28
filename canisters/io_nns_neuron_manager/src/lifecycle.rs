@@ -52,16 +52,12 @@ pub async fn readiness_preflight(
             "canonical ICP fee differs from approved config".into(),
         ));
     }
+    let permanent = crate::api::observe_permanent_policy(&snapshot).await?;
     if two_year_baseline_needed {
-        let observation = crate::execution::query_neuron_observation(
-            &snapshot.config,
-            snapshot.config.two_year_neuron_id,
-        )
-        .await?;
         validate_prelaunch_baseline(
             "two-year protected NNS neuron",
             snapshot.config.audited_permanent_principal_e8s,
-            &observation,
+            &permanent,
         )?;
     }
     if let Some(parent_id) = snapshot.pooled_parent_id {

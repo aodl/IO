@@ -3,8 +3,22 @@
 The manager controls one audited permanent neuron and a lazily created pooled
 parent. The pooled parent uses a fixed memo, exact 1,209,600-second
 non-dissolving delay, auto-stake off, and a fixed configured following policy.
-Production memo and followee values remain unresolved non-runnable template
-inputs. No external capital seeds the parent.
+Production memo `0` is only the fixed nonce for deterministic NNS staking-
+subaccount derivation, not application metadata. The pooled parent follows the
+permanent IO two-year neuron `10_292_412_127_977_304_661`, and validation
+requires `pooled_parent_followee_id == two_year_neuron_id`. The permanent
+neuron is operationally expected to retain its audited following of alpha-vote
+neuron `2_947_465_672_511_369`; IO does not mutate that following. No external
+capital seeds the parent.
+
+Before readiness or runtime bootstrap can create a monetary permit, IO derives
+the memo-bound candidate staking Account and compares it with the canonical
+staking Account observed for the permanent neuron. Equality is a configuration
+failure. A positive balance at a distinct candidate Account is accepted as
+unattributed surplus: IO proves only the exact Stream transfer, requires the
+claimed neuron to use that Account and to cover the exact credit, records the
+canonical actual principal, and lets ordinary reconciliation unwind any
+`OverTarget` amount.
 
 Under target, Stream owns the liquid-to-staking transfer and NNS freezes a
 permit bound to the reconciliation generation, operation sequence, parent

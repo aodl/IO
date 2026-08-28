@@ -14,6 +14,24 @@ windows. There is no separately funded pooled parent, separate pooled fee
 float, or caller-selected destination.
 The corresponding NNS control source is `io_nns_neuron_manager`.
 
+The resolved production policy is:
+
+- pooled-parent memo `0`, used only as the fixed deterministic NNS staking
+  nonce and not as application metadata;
+- pooled-parent followee `10_292_412_127_977_304_661`, exactly equal to the
+  configured protected two-year neuron ID;
+- permanent-neuron controller/NNS Manager
+  `oae4c-3iaaa-aaaar-qb5qq-cai`;
+- permanent-neuron audited following remains alpha-vote neuron
+  `2_947_465_672_511_369`; deployment does not change it.
+
+Readiness and bootstrap compare the candidate pooled-parent staking Account
+with the permanent neuron's observed canonical Account and reject equality
+before a transfer permit exists. Unsolicited ICP at a distinct candidate
+Account is recorded only as canonical pooled principal and any surplus is
+handled by ordinary `OverTarget` reconciliation; it creates no issuance or
+entitlement.
+
 ## Role identity record
 
 - Stream Manager: `thset-pqaaa-aaaar-qb7wa-cai`
@@ -25,8 +43,8 @@ Their non-authoritative source roles remain `io_historian` and `io_frontend`.
 
 Two-year protected neuron `10292412127977304661` remains a protected reference
 and is never a mutation target outside the installed NNS Manager. The pooled
-parent is lazy: its final memo and followee are unresolved TODO values, and no
-production neuron ID is invented.
+parent remains lazy; memo and followee are fixed as above, but no production
+pooled-parent neuron ID is invented before canonical bootstrap.
 
 All production files remain dry-run validation inputs. IO issuance/redemption
 is inactive, and this document authorizes no inspection, installation,
