@@ -151,7 +151,9 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(rendered.unwrap(), "Set IO NNS manager paused: true");
+    let rendered = rendered.unwrap();
+    assert!(rendered.contains("Set IO NNS manager paused: true"));
+    assert!(rendered.contains("Current lifecycle: Paused"));
     assert!(pic
         .query_call(
             canister,
@@ -183,10 +185,40 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(
-        rendered_after_upgrade.unwrap(),
-        "Set IO NNS manager paused: false"
-    );
+    let rendered_after_upgrade = rendered_after_upgrade.unwrap();
+    assert!(rendered_after_upgrade.contains("Set IO NNS manager paused: false"));
+    assert!(rendered_after_upgrade.contains("Current lifecycle: Paused"));
+    let unauthorized: Result<(), ApiError> = decode_one(
+        &pic.update_call(
+            canister,
+            principal,
+            "set_paused",
+            encode_one(false).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(unauthorized, Err(ApiError::Unauthorized));
+    let rejected = pic
+        .update_call(
+            canister,
+            Principal::from_slice(&[2; 29]),
+            "set_paused",
+            encode_one(false).unwrap(),
+        )
+        .expect_err("SNS readiness with unavailable dependencies must reject");
+    assert!(format!("{rejected:?}").contains("NNS lifecycle action not accepted"));
+    let still_paused: Status = decode_one(
+        &pic.query_call(
+            canister,
+            Principal::anonymous(),
+            "get_status",
+            encode_one(()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(still_paused.lifecycle, Lifecycle::Paused);
     let result: Result<(), ApiError> = decode_one(
         &pic.update_call(
             canister,

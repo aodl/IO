@@ -3,7 +3,7 @@ use crate::{
     state::{self, Lifecycle, RedemptionStreamOperation, StreamOperation},
 };
 
-fn is_readiness_resumable_operation(operation: &Option<StreamOperation>) -> bool {
+pub(crate) fn is_readiness_resumable_operation(operation: &Option<StreamOperation>) -> bool {
     operation.is_none()
         || matches!(operation, Some(StreamOperation::Redemption(redemption))
             if matches!(redemption.as_ref(), RedemptionStreamOperation::Active(active)

@@ -1414,6 +1414,211 @@ fn propose_real_two_year_start(trigger: &RealSnsMaturityTrigger, title: &str) ->
     )
 }
 
+fn propose_real_two_year_start_result(
+    trigger: &RealSnsMaturityTrigger,
+    title: &str,
+) -> Result<u64, crate::sns_governance_setup::GovernanceError> {
+    use crate::sns_governance_setup::{
+        Action, Command, CommandResponse, ExecuteGenericNervousSystemFunction, ManageNeuron,
+        ManageNeuronResponse, Proposal,
+    };
+    let response: ManageNeuronResponse = update(
+        &trigger.governance.pic,
+        trigger.governance.governance,
+        trigger.governance.controller,
+        "manage_neuron",
+        ManageNeuron {
+            subaccount: trigger.neuron_id.id.clone(),
+            command: Some(Command::MakeProposal(Proposal {
+                url: String::new(),
+                title: title.into(),
+                summary: title.into(),
+                action: Some(Action::ExecuteGenericNervousSystemFunction(
+                    ExecuteGenericNervousSystemFunction {
+                        function_id: 1_001,
+                        payload: encode_one(ManagerMaturityKind::TwoYear).unwrap(),
+                    },
+                )),
+            })),
+        },
+    );
+    match response.command {
+        Some(CommandResponse::MakeProposal(response)) => Ok(response
+            .proposal_id
+            .expect("accepted proposal must return an id")
+            .id),
+        Some(CommandResponse::Error(error)) => Err(error),
+        other => panic!("unexpected maturity proposal response: {other:?}"),
+    }
+}
+
+fn assert_real_sns_proposal_executed(trigger: &RealSnsMaturityTrigger, proposal_id: u64) {
+    use crate::sns_governance_setup::{ListProposals, ListProposalsResponse};
+    let proposals: ListProposalsResponse = query(
+        &trigger.governance.pic,
+        trigger.governance.governance,
+        Principal::anonymous(),
+        "list_proposals",
+        ListProposals {
+            include_reward_status: vec![],
+            before_proposal: None,
+            limit: 100,
+            exclude_type: vec![],
+            include_status: vec![],
+            include_topics: None,
+        },
+    );
+    let proposal = proposals
+        .proposals
+        .into_iter()
+        .find(|proposal| proposal.id.as_ref().is_some_and(|id| id.id == proposal_id))
+        .expect("maturity proposal must remain queryable");
+    assert!(proposal.executed_timestamp_seconds > 0, "{proposal:?}");
+    assert_eq!(proposal.failed_timestamp_seconds, 0, "{proposal:?}");
+}
+
+fn settle_controlled_genesis_pool(
+    fixture: &ControlledNnsNeuron,
+    trigger: &RealSnsMaturityTrigger,
+    stream: Principal,
+    require_pool: bool,
+) -> Vec<String> {
+    let mut steps = Vec::new();
+    let observation: Result<
+        io_stream_manager::RewardEventObservation,
+        io_stream_manager::ApiError,
+    > = update(
+        &fixture.pic,
+        stream,
+        Principal::anonymous(),
+        "resume_reward_work",
+        (),
+    );
+    steps.push(format!("reward={observation:?}"));
+    let backing: Result<io_stream_manager::RewardBackingProgress, io_stream_manager::ApiError> =
+        update(
+            &fixture.pic,
+            stream,
+            Principal::anonymous(),
+            "resume_reward_backing",
+            (),
+        );
+    steps.push(format!("backing={backing:?}"));
+
+    let mut saw_pool = false;
+    for attempt in 0..32 {
+        let manager: ManagerStatus = query(
+            &fixture.pic,
+            fixture.controller,
+            Principal::anonymous(),
+            "get_status",
+            (),
+        );
+        let stream_status: io_stream_manager::Status = query(
+            &fixture.pic,
+            stream,
+            Principal::anonymous(),
+            "get_status",
+            (),
+        );
+        if manager.active_operation.as_deref() == Some("Pool") && !saw_pool {
+            saw_pool = true;
+            let validation: Result<String, String> = query(
+                &fixture.pic,
+                fixture.controller,
+                Principal::anonymous(),
+                "validate_start_maturity",
+                ManagerMaturityKind::TwoYear,
+            );
+            assert!(matches!(validation, Err(message) if message.contains("busy with Pool")));
+            let rejected = propose_real_two_year_start_result(
+                trigger,
+                "Maturity must not be admitted while genesis Pool is active",
+            )
+            .expect_err("real SNS validator must reject the contended proposal");
+            assert!(
+                rejected.error_message.contains("busy with Pool"),
+                "{rejected:?}"
+            );
+        }
+        if manager.active_operation.as_deref() != Some("Pool")
+            && stream_status.operation_kind.is_none()
+        {
+            break;
+        }
+        let stream_resume: Result<io_stream_manager::StreamProgress, io_stream_manager::ApiError> =
+            update(&fixture.pic, stream, Principal::anonymous(), "resume", ());
+        let backing_resume: Result<
+            io_stream_manager::RewardBackingProgress,
+            io_stream_manager::ApiError,
+        > = update(
+            &fixture.pic,
+            stream,
+            Principal::anonymous(),
+            "resume_reward_backing",
+            (),
+        );
+        let manager_resume: Result<ManagerNnsProgress, ManagerApiError> = update(
+            &fixture.pic,
+            fixture.controller,
+            Principal::anonymous(),
+            "resume",
+            (),
+        );
+        steps.push(format!(
+            "attempt={attempt} stream={stream_resume:?} backing={backing_resume:?} manager={manager_resume:?}"
+        ));
+        fixture.pic.tick();
+    }
+    let final_manager: ManagerStatus = query(
+        &fixture.pic,
+        fixture.controller,
+        Principal::anonymous(),
+        "get_status",
+        (),
+    );
+    let final_stream: io_stream_manager::Status = query(
+        &fixture.pic,
+        stream,
+        Principal::anonymous(),
+        "get_status",
+        (),
+    );
+    assert_eq!(final_manager.active_operation.as_deref(), None, "{steps:?}");
+    assert!(final_stream.operation_kind.is_none(), "{steps:?}");
+    assert!(!require_pool || saw_pool, "{steps:?}");
+    if saw_pool {
+        let backing: io_nns_types::backing::ClaimAssetObservation =
+            update::<Result<_, ManagerApiError>>(
+                &fixture.pic,
+                fixture.controller,
+                stream,
+                "observe_claim_assets",
+                (),
+            )
+            .unwrap();
+        let parent = backing.parent.expect("completed Pool must have a parent");
+        let target = final_manager
+            .latest_pooled_target
+            .expect("completed Pool must retain its canonical target");
+        match target.status {
+            ManagerPooledTargetStatus::AtTarget => {
+                assert_eq!(parent.physical_principal_e8s, target.target_e8s)
+            }
+            ManagerPooledTargetStatus::OverTarget => {
+                assert!(parent.physical_principal_e8s > target.target_e8s)
+            }
+            ManagerPooledTargetStatus::AtTargetWithinUnwindTolerance => {
+                assert!(parent.physical_principal_e8s >= target.target_e8s)
+            }
+            ManagerPooledTargetStatus::UnderTarget => {
+                panic!("completed Pool remained under target: {parent:?} {target:?}")
+            }
+        }
+    }
+    steps
+}
+
 struct CombinedRealSns {
     governance: crate::sns_governance_setup::GovernanceLedgerFixture,
     root: Principal,
@@ -1977,6 +2182,23 @@ mod tests {
                 false,
             );
             assert_eq!(unpause, Ok(()));
+            let pool_steps = super::settle_controlled_genesis_pool(
+                &fixture,
+                &real_sns_trigger,
+                stream,
+                cycle == 0,
+            );
+            let maturity_validation: Result<String, String> = super::query(
+                &fixture.pic,
+                fixture.controller,
+                Principal::anonymous(),
+                "validate_start_maturity",
+                ManagerMaturityKind::TwoYear,
+            );
+            assert!(
+                maturity_validation.is_ok(),
+                "cycle={cycle} pool_steps={pool_steps:?} validation={maturity_validation:?}"
+            );
             let ordinary_maturity = super::earn_maturity_for(&fixture, fixture.two_year_neuron_id);
             let before = super::neuron(
                 &fixture.pic,
@@ -2029,6 +2251,7 @@ mod tests {
             for _ in 0..20 {
                 fixture.pic.tick();
             }
+            super::assert_real_sns_proposal_executed(&real_sns_trigger, proposal_id);
             let started: ManagerStatus = super::query(
                 &fixture.pic,
                 fixture.controller,
@@ -2036,23 +2259,48 @@ mod tests {
                 "get_status",
                 (),
             );
-            assert_eq!(started.active_operation.as_deref(), Some("Maturity"));
-            let replay: Result<ManagerMaturityProgress, ManagerApiError> = super::update(
-                &fixture.pic,
-                fixture.controller,
-                real_sns_trigger.governance.governance,
-                "start_maturity",
-                ManagerMaturityKind::TwoYear,
+            assert!(
+                matches!(started.active_operation.as_deref(), Some("Maturity") | None),
+                "an accepted proposal may expose immediate or passive maturity, never another operation: {started:?}"
             );
-            assert_eq!(replay, Err(ManagerApiError::Busy));
-            let replay_proposal_id = super::propose_real_two_year_start(
+            let accepted_neuron = super::neuron(
+                &fixture.pic,
+                fixture.governance,
+                fixture.controller,
+                fixture.two_year_neuron_id,
+            );
+            assert_eq!(
+                accepted_neuron
+                    .maturity_disbursements_in_progress
+                    .as_ref()
+                    .map(Vec::len),
+                Some(1),
+                "executed SNS proposal must have durably accepted real NNS maturity work"
+            );
+            let replay = fixture
+                .pic
+                .update_call(
+                    fixture.controller,
+                    real_sns_trigger.governance.governance,
+                    "start_maturity",
+                    encode_one(ManagerMaturityKind::TwoYear).unwrap(),
+                )
+                .expect_err("accepted maturity work must reject a second SNS target call");
+            let replay = format!("{replay:?}");
+            assert!(
+                replay.contains("busy with Maturity") || replay.contains("already pending"),
+                "{replay}"
+            );
+            let replay_error = super::propose_real_two_year_start_result(
                 &real_sns_trigger,
                 &format!("Replay controlled two-year maturity cycle {cycle}"),
+            )
+            .expect_err("validator must reject a second maturity proposal");
+            assert!(
+                replay_error.error_message.contains("busy with Maturity")
+                    || replay_error.error_message.contains("already pending"),
+                "{replay_error:?}"
             );
-            for _ in 0..20 {
-                fixture.pic.tick();
-            }
-            assert_ne!(replay_proposal_id, proposal_id);
             let replayed: ManagerStatus = super::query(
                 &fixture.pic,
                 fixture.controller,
@@ -2060,7 +2308,17 @@ mod tests {
                 "get_status",
                 (),
             );
-            assert_eq!(replayed.active_operation.as_deref(), Some("Maturity"));
+            assert_eq!(replayed, started);
+            assert_eq!(
+                super::neuron(
+                    &fixture.pic,
+                    fixture.governance,
+                    fixture.controller,
+                    fixture.two_year_neuron_id,
+                ),
+                accepted_neuron,
+                "rejected replay must not submit or mutate maturity"
+            );
             fixture
                 .pic
                 .upgrade_canister(
@@ -2211,6 +2469,14 @@ mod tests {
         assert_eq!(actual_mints.len(), 2);
         assert!(actual_mints.iter().all(|amount| *amount > 0));
 
+        let unpause: Result<(), ManagerApiError> = super::update(
+            &fixture.pic,
+            fixture.controller,
+            real_sns_trigger.governance.governance,
+            "set_paused",
+            false,
+        );
+        assert_eq!(unpause, Ok(()));
         super::configure_neuron(
             &fixture.pic,
             fixture.governance,
@@ -2220,14 +2486,6 @@ mod tests {
                 requested_setting_for_auto_stake_maturity: true,
             }),
         );
-        let unpause: Result<(), ManagerApiError> = super::update(
-            &fixture.pic,
-            fixture.controller,
-            real_sns_trigger.governance.governance,
-            "set_paused",
-            false,
-        );
-        assert_eq!(unpause, Ok(()));
         let auto_stake_drift: Result<ManagerMaturityProgress, ManagerApiError> = super::update(
             &fixture.pic,
             fixture.controller,
@@ -2248,13 +2506,6 @@ mod tests {
                 requested_setting_for_auto_stake_maturity: false,
             }),
         );
-        super::configure_neuron(
-            &fixture.pic,
-            fixture.governance,
-            fixture.controller,
-            fixture.two_year_neuron_id,
-            NnsProductionConfigureOperation::StartDissolving(EmptyRecord {}),
-        );
         let unpause: Result<(), ManagerApiError> = super::update(
             &fixture.pic,
             fixture.controller,
@@ -2263,6 +2514,13 @@ mod tests {
             false,
         );
         assert_eq!(unpause, Ok(()));
+        super::configure_neuron(
+            &fixture.pic,
+            fixture.governance,
+            fixture.controller,
+            fixture.two_year_neuron_id,
+            NnsProductionConfigureOperation::StartDissolving(EmptyRecord {}),
+        );
         let dissolve_state_drift: Result<ManagerMaturityProgress, ManagerApiError> = super::update(
             &fixture.pic,
             fixture.controller,

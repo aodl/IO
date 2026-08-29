@@ -63,6 +63,20 @@ vote. The daily pool-policy observation makes independent best-effort
 pooled parent. Either attempt may fail without blocking the other or any
 monetary path. Neither changes followees, and there is no extra scheduler.
 
+SNS custom-proposal validation is a pure submission-time preflight, not a
+reservation of the single immediate-operation slot. Execution revalidates
+Ready lifecycle, the launch baseline, local idleness, pending two-year work,
+and the canonical protected neuron. The reviewed SNS Governance execution path
+counts any normal target reply as success without interpreting the target's
+Candid `Result`; therefore `start_maturity` and lifecycle control reject at the
+transport boundary when an SNS request has not been durably accepted. An
+active Pool remains intact and is never preempted. Once exact TwoYear work is
+persisted, later `Pending` is normal recoverable continuation. A configuration
+contradiction that deliberately commits Paused returns its typed error so the
+safety state is not rolled back. This uses the existing operation sequence,
+active operation, passive maturity, and lifecycle fields—there is no governance
+queue or second monetary slot.
+
 Stable state is a strict prelaunch launch schema. Install and upgrade reopen
 Paused, old development states are rejected, and exact submitted/proved work
 remains resumable. Every potentially irreversible effect has persisted exact

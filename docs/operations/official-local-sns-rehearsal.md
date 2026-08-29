@@ -77,6 +77,18 @@ the one-day phase advance Governance to round one and require exactly one reward
 credit. No rehearsal phase fabricates round one or delays activation to avoid
 the genesis event.
 
+That structural observation also runs ordinary pooled reconciliation. If it
+legitimately occupies the NNS Manager's single immediate slot, the maintained
+order does not suppress, cancel, or preempt Pool. The two-year maturity
+validator must reject proposal submission while Pool is visible. After bounded
+production `resume_reward_backing`, Stream `resume`, NNS `resume`, and any exact
+transfer proof settle the canonical target, a fresh proposal is submitted and
+must be recorded executed only when exact TwoYear work is actually durable.
+Execution repeats the same acceptance checks to cover a validator/execution
+race. The reviewed SNS target boundary regards any normal reply as success, so
+an unaccepted IO generic action must reject at transport level rather than rely
+on a Candid `Err` payload.
+
 ## Manual Flow
 
 1. Prepare a clean local SNS testing environment using the current official ICP/DFINITY SNS testing documentation.

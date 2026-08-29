@@ -19,3 +19,13 @@ flows expose `Pending`, `Completed`, and `Stuck`; unwind additionally exposes
 carries the exact cross-canister permit, while bounded recipient settlement is
 coarse `Pending`. Detailed phase names remain diagnostic status text and are
 not workflow compatibility types.
+
+The validator/update pairs registered as SNS generic functions share payloads
+but have different roles. A validator is a pure, local submission-time
+preflight. The update revalidates at execution time and uses a transport reject
+when an authenticated governance request was not durably accepted, because the
+reviewed SNS implementation treats every normal reply as execution success
+without decoding the target's application-level `Result`. Typed unauthorized
+responses remain part of the ordinary public API. Exact accepted work may
+return `Pending` and continue through the existing permissionless resume
+surface; no public governance queue or internal-choreography API is added.

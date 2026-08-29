@@ -187,10 +187,17 @@ phase. The observed Mints were 6,031,272,089 e8s and 8,672,771,618 e8s under
 the fixture's 1.0 modulation. Retained staked maturity compounds canonically;
 SNS IO total supply and reserve remain unchanged while liquid ICP and the
 redemption rate increase. An ordinary caller is rejected and configured
-Governance replay during the active operation is Busy. Pinned real SNS
-Governance registers the production manager's `validate_start_maturity` query
-and `start_maturity` update as one generic function, executes the TwoYear
-payload by proposal, and cannot create a second operation by a replay proposal.
+Governance replay during active or passive accepted work is rejected at the
+target transport boundary, and a replay proposal is rejected by validation.
+Pinned real SNS Governance registers the production manager's
+`validate_start_maturity` query and `start_maturity` update as one generic
+function. The canonical genesis structural observation may first start a
+legitimate Pool operation; validation rejects a maturity proposal during that
+contention, production resume/proof paths settle Pool without preemption, and a
+fresh TwoYear proposal records execution success only after exact maturity work
+is durable. A later `Pending` remains recoverable continuation and cannot create
+a second operation. This distinguishes SNS's any-normal-reply success rule from
+IO's application-level `Result`.
 
 ## Combined candidate-SNS, pinned-NNS, and IO lifecycle result
 

@@ -922,6 +922,172 @@ pub(crate) mod tests {
         );
     }
 
+    fn validator_operation(state: &NnsStateV1, kind: &str) -> NnsOperation {
+        match kind {
+            "Jupiter" => NnsOperation::Jupiter(Box::new(crate::jupiter::JupiterOperation {
+                operation_sequence: 1,
+                dispatch_epoch: 0,
+                captured_control_epoch: 0,
+                deposit: crate::jupiter::JupiterDeposit {
+                    block_index: 1,
+                    gross_e8s: 100,
+                    stake_e8s: 39,
+                    liquid_e8s: 51,
+                    fee_e8s: 10,
+                    created_at_time_nanos: 1,
+                },
+                phase: crate::jupiter::JupiterPhase::DepositProved,
+            })),
+            "Maturity" => {
+                NnsOperation::Maturity(Box::new(crate::maturity::MaturityCommandOperation {
+                    operation_sequence: 1,
+                    dispatch_epoch: 0,
+                    kind: crate::maturity::MaturityKind::TwoYear,
+                    phase: crate::maturity::MaturityCommandPhase::Observed(
+                        crate::maturity::MaturityIntent {
+                            entitlement_batch_generation: None,
+                            two_week_target_e8s: None,
+                        },
+                    ),
+                }))
+            }
+            "Pool" => NnsOperation::Pool(io_nns_types::backing::PoolCommand {
+                kind: io_nns_types::backing::PoolCommandKind::Bootstrap,
+                permit: io_nns_types::backing::TopUpPermit {
+                    generation: 1,
+                    operation_sequence: 1,
+                    expected_parent_principal_e8s: 0,
+                    destination: Account {
+                        owner: state.config.nns_governance,
+                        subaccount: Some(vec![9; 32]),
+                    },
+                    expected_credit_e8s: 100_000_000,
+                    fee_e8s: state.config.expected_icp_fee_e8s,
+                    memo: vec![1; 32],
+                    prepared_at_nanos: 1,
+                    snapshot_fingerprint: vec![2; 32],
+                },
+                transfer_block_index: None,
+                parent_neuron_id: None,
+                phase: io_nns_types::backing::PoolCommandPhase::AwaitingTransfer,
+            }),
+            "Unwind" => NnsOperation::Unwind(UnwindOperation {
+                operation_sequence: 1,
+                generation: 1,
+                reconciliation_request_fingerprint: vec![3; 32],
+                target_e8s: 1,
+                gross_e8s: 1,
+                split_fee_e8s: 0,
+                committed_disbursement_fee_e8s: 0,
+                parent_principal_before_split_e8s: 0,
+                child_neuron_id: 0,
+                principal_e8s: 0,
+                child_staking_subaccount: Vec::new(),
+                submitted_at_seconds: 0,
+                expected_block_index: None,
+                child_maturity_e8s: 0,
+                parent_maturity_e8s: 0,
+                parent_principal_e8s: 0,
+                phase: crate::pool::UnwindPhase::SplitPrepared,
+            }),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn sns_maturity_validator_is_pure_and_requires_ready_idle_reconciled_state() {
+        let (_, mut state) = valid_state();
+        state.lifecycle = Lifecycle::Ready;
+        state.two_year_maturity_baseline_reconciled = true;
+        let ready = state.clone();
+        let rendered =
+            crate::validate_start_maturity_state(&state, crate::maturity::MaturityKind::TwoYear)
+                .unwrap();
+        assert!(rendered.contains("currently Ready and locally idle"));
+        assert!(rendered.contains("revalidated at execution time"));
+        assert_eq!(state, ready, "the query validator must not mutate state");
+        assert!(crate::validate_start_maturity_state(
+            &state,
+            crate::maturity::MaturityKind::TwoWeek
+        )
+        .unwrap_err()
+        .contains("two-week"));
+
+        let mut paused = state.clone();
+        paused.lifecycle = Lifecycle::Paused;
+        assert!(crate::validate_start_maturity_state(
+            &paused,
+            crate::maturity::MaturityKind::TwoYear
+        )
+        .unwrap_err()
+        .contains("Paused"));
+
+        let mut unreconciled = state.clone();
+        unreconciled.two_year_maturity_baseline_reconciled = false;
+        assert!(crate::validate_start_maturity_state(
+            &unreconciled,
+            crate::maturity::MaturityKind::TwoYear
+        )
+        .unwrap_err()
+        .contains("unreconciled"));
+
+        for kind in ["Pool", "Jupiter", "Unwind", "Maturity"] {
+            let mut busy = state.clone();
+            busy.active_operation = Some(validator_operation(&busy, kind));
+            let error =
+                crate::validate_start_maturity_state(&busy, crate::maturity::MaturityKind::TwoYear)
+                    .unwrap_err();
+            assert!(error.contains(kind), "{kind}: {error}");
+        }
+
+        let mut pending = state;
+        pending.pending_two_year_maturity = Some(pending_two_year_maturity(&pending));
+        assert!(crate::validate_start_maturity_state(
+            &pending,
+            crate::maturity::MaturityKind::TwoYear
+        )
+        .unwrap_err()
+        .contains("already pending"));
+    }
+
+    #[test]
+    fn sns_maturity_acceptance_uses_existing_exact_state_only() {
+        let (_, mut before) = valid_state();
+        before.lifecycle = Lifecycle::Ready;
+        before.two_year_maturity_baseline_reconciled = true;
+
+        let mut active = before.clone();
+        active.next_operation_sequence = 2;
+        active.active_operation = Some(validator_operation(&active, "Maturity"));
+        assert!(crate::two_year_maturity_was_durably_accepted(
+            &before, &active
+        ));
+
+        let mut pending = before.clone();
+        pending.next_operation_sequence = 2;
+        pending.pending_two_year_maturity = Some(pending_two_year_maturity(&pending));
+        assert!(crate::two_year_maturity_was_durably_accepted(
+            &before, &pending
+        ));
+
+        let mut competing = before.clone();
+        competing.next_operation_sequence = 2;
+        competing.active_operation = Some(validator_operation(&competing, "Pool"));
+        assert!(!crate::two_year_maturity_was_durably_accepted(
+            &before, &competing
+        ));
+
+        let mut safety = before.clone();
+        safety.lifecycle = Lifecycle::Paused;
+        assert!(crate::two_year_maturity_committed_safety_pause(
+            &before, &safety
+        ));
+        safety.control_epoch = 1;
+        assert!(!crate::two_year_maturity_committed_safety_pause(
+            &before, &safety
+        ));
+    }
+
     #[test]
     fn semantic_validation_rejects_corrupt_active_and_pending_state() {
         let (canister_self, mut state) = valid_state();

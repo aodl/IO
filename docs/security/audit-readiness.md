@@ -56,6 +56,13 @@ fresh rehearsal/evidence tail are required after this source is accepted.
   is frozen as a zero-credit baseline. Its exact replay is structural only;
   advancing and credit-bearing events require the ordinary positive-span and
   nonzero-round proofs. Redemption remains available before round one.
+- SNS generic execution: validators are pure submission preflight and do not
+  reserve the serialized NNS slot. The reviewed SNS implementation treats any
+  normal target reply as execution success, so Stream/NNS lifecycle and
+  two-year maturity targets transport-reject nonacceptance, retain an exact
+  durable Paused/Stuck safety response, and return normal `Pending` only after
+  exact continuation state exists. A legitimate genesis Pool is settled rather
+  than suppressed or preempted before a fresh maturity proposal.
 - Timers/upgrades: `scheduler.md`, `upgrades.md`, `stable-storage.md`, and `journal-compaction.md`.
 - SNS authority/controllers: `sns-root-lifecycle.md`, `docs/security/controller-and-recovery.md`, and `docs/operations/production-wiring.md`.
 - Historian non-authority: `historian.md`, `historian-ingestion.md`, and `docs/operations/historian-freshness.md`.

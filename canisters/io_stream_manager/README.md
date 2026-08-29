@@ -76,6 +76,17 @@ real action boundaries (`Pending`, `Completed`, and `Stuck`, plus the exact
 receipt permit another canister must satisfy); operator status retains
 diagnostic internal phase text.
 
+SNS lifecycle proposal validation is a pure local submission-time preflight.
+Execution remains authoritative because readiness conditions can change while
+a proposal is voting. The reviewed SNS Governance implementation treats every
+normal target reply as successful execution without decoding an
+application-level `Err`, so an authenticated `set_paused` call replies normally
+only when the requested durable lifecycle state is reached (or was already
+reached). Unaccepted pause/readiness requests reject at the transport boundary;
+unauthorized callers retain the ordinary typed error. Exact resumable monetary
+state, including a proved redemption payout awaiting local completion, keeps
+its existing readiness and recovery semantics.
+
 Stable state is a strict prelaunch launch schema with one monetary slot, bounded
 registry, latest checkpoint, accumulator, pending batch, and caller replay map.
 Install and upgrade reopen Paused; old states are rejected and immutable work

@@ -277,6 +277,20 @@ fn query<R: for<'de> Deserialize<'de> + CandidType>(
     .unwrap()
 }
 
+fn rejected_update<A: CandidType>(
+    pic: &PocketIc,
+    canister: Principal,
+    caller: Principal,
+    method: &str,
+    arg: A,
+) -> String {
+    format!(
+        "{:?}",
+        pic.update_call(canister, caller, method, encode_one(arg).unwrap())
+            .expect_err("SNS target call must reject at the transport boundary")
+    )
+}
+
 fn parent_staking_subaccount(manager: Principal, memo: u64) -> Vec<u8> {
     let mut hasher = Sha256::new();
     hasher.update([0x0c]);
@@ -2272,6 +2286,173 @@ fn two_year_maturity_starts_immediately_and_freezes_realised_disbursement() {
         .expect("two-year maturity must become passive");
     assert_eq!(pending.nominal_disbursed_e8s, 200_000_000);
     assert_eq!(fixture.governance_calls().disburse_maturity, 1);
+}
+
+#[test]
+fn sns_two_year_target_rejects_nonacceptance_and_preserves_competing_pool() {
+    let _serial = lock_recovery_test();
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        return;
+    }
+    let fixture = RecoveryFixture::new();
+    let active_pool = pool_state(
+        &fixture,
+        42,
+        1_000_000,
+        100_000_000,
+        PoolCommandPhase::RefreshSubmitted,
+    );
+    fixture.replace(active_pool.clone());
+
+    let validation: Result<String, String> = decode_one(
+        &fixture
+            .pic
+            .query_call(
+                fixture.manager,
+                Principal::anonymous(),
+                "validate_start_maturity",
+                encode_one(MaturityKind::TwoYear).unwrap(),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(validation, Err(message) if message.contains("busy with Pool")));
+    let calls_before = fixture.governance_calls();
+    let rejection = rejected_update(
+        &fixture.pic,
+        fixture.manager,
+        fixture.sns_governance,
+        "start_maturity",
+        MaturityKind::TwoYear,
+    );
+    assert!(rejection.contains("busy with Pool"), "{rejection}");
+    assert_eq!(fixture.state_from_canister(), active_pool);
+    assert_eq!(
+        fixture.governance_calls().disburse_maturity,
+        calls_before.disburse_maturity,
+        "rejected maturity must submit no NNS maturity command"
+    );
+
+    let mut paused_pool = active_pool.clone();
+    paused_pool.lifecycle = Lifecycle::Paused;
+    fixture.replace(paused_pool.clone());
+    let lifecycle_validation: Result<String, String> = decode_one(
+        &fixture
+            .pic
+            .query_call(
+                fixture.manager,
+                Principal::anonymous(),
+                "validate_set_paused",
+                encode_one(false).unwrap(),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(lifecycle_validation, Err(message) if message.contains("busy with Pool")));
+    let lifecycle_rejection = rejected_update(
+        &fixture.pic,
+        fixture.manager,
+        fixture.sns_governance,
+        "set_paused",
+        false,
+    );
+    assert!(lifecycle_rejection.contains("busy with Pool"));
+    assert_eq!(fixture.state_from_canister(), paused_pool);
+
+    fixture.replace(active_pool);
+
+    fixture.refresh_credit(42, 100_000_000);
+    assert!(matches!(
+        fixture.resume(),
+        Ok(NnsProgress::Pool(PoolProgress::Completed { .. }))
+    ));
+    let accepted_validation: Result<String, String> = decode_one(
+        &fixture
+            .pic
+            .query_call(
+                fixture.manager,
+                Principal::anonymous(),
+                "validate_start_maturity",
+                encode_one(MaturityKind::TwoYear).unwrap(),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(accepted_validation.is_ok(), "{accepted_validation:?}");
+    fixture.add_maturity(41, 200_000_000);
+    let accepted: Result<MaturityProgress, ApiError> = update(
+        &fixture.pic,
+        fixture.manager,
+        fixture.sns_governance,
+        "start_maturity",
+        MaturityKind::TwoYear,
+    );
+    assert_eq!(accepted, Ok(MaturityProgress::Pending));
+    assert!(
+        matches!(
+            fixture.state_from_canister().active_operation,
+            Some(NnsOperation::Maturity(operation)) if operation.kind == MaturityKind::TwoYear
+        ) || fixture
+            .state_from_canister()
+            .pending_two_year_maturity
+            .is_some()
+    );
+}
+
+#[test]
+fn sns_two_year_target_rejects_below_threshold_and_validation_is_not_a_lock() {
+    let _serial = lock_recovery_test();
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        return;
+    }
+    let fixture = RecoveryFixture::new();
+    let idle = fixture.state();
+    fixture.replace(idle.clone());
+    let validation: Result<String, String> = decode_one(
+        &fixture
+            .pic
+            .query_call(
+                fixture.manager,
+                Principal::anonymous(),
+                "validate_start_maturity",
+                encode_one(MaturityKind::TwoYear).unwrap(),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(validation.is_ok());
+    let calls_before = fixture.governance_calls();
+    let rejection = rejected_update(
+        &fixture.pic,
+        fixture.manager,
+        fixture.sns_governance,
+        "start_maturity",
+        MaturityKind::TwoYear,
+    );
+    assert!(rejection.contains("BelowMaturityThreshold"), "{rejection}");
+    assert_eq!(fixture.state_from_canister(), idle);
+    assert_eq!(
+        fixture.governance_calls().disburse_maturity,
+        calls_before.disburse_maturity
+    );
+
+    let competing = pool_state(
+        &fixture,
+        42,
+        1_000_000,
+        100_000_000,
+        PoolCommandPhase::RefreshSubmitted,
+    );
+    fixture.replace(competing.clone());
+    let raced = rejected_update(
+        &fixture.pic,
+        fixture.manager,
+        fixture.sns_governance,
+        "start_maturity",
+        MaturityKind::TwoYear,
+    );
+    assert!(raced.contains("busy with Pool"), "{raced}");
+    assert_eq!(fixture.state_from_canister(), competing);
 }
 
 #[test]
