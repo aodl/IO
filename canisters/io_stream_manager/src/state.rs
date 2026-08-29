@@ -443,6 +443,19 @@ impl StreamStateV1 {
         }
         self.reward_checkpoint.validate(&self.config)?;
         validate_backing_registry(&self.neuron_registry, &self.config)?;
+        let genesis_baseline = self
+            .reward_checkpoint
+            .last_processed_event
+            .is_some_and(RewardEventId::is_canonical_sns_genesis_baseline);
+        if genesis_baseline
+            && (self.pending_entitlement_batch.is_some()
+                || self
+                    .neuron_registry
+                    .iter()
+                    .any(|record| record.accumulated_eligible_credit > 0))
+        {
+            return Err("canonical SNS genesis baseline contains reward credit".into());
+        }
         let prepared_generations = self
             .neuron_registry
             .iter()
@@ -482,31 +495,39 @@ impl StreamStateV1 {
             }
             _ => {}
         }
-        if self
-            .latest_reconciliation_checkpoint
-            .as_ref()
-            .is_some_and(|checkpoint| {
-                checkpoint.generation == 0
-                    || checkpoint.generation > self.latest_reconciliation_generation
-                    || checkpoint.event_marker == 0
-                    || checkpoint.observed_at_nanos == 0
-                    || checkpoint.snapshot_fingerprint.len() != 32
-                    || checkpoint.live_cohort_count
-                        > io_nns_types::backing::MAX_LIVE_UNWIND_COHORTS as u32
-                    || io_core_model::claim_backing(io_core_model::Backing {
-                        liquid: checkpoint.liquid_backing_e8s,
-                        pooled: checkpoint.pooled_backing_e8s,
-                        unwinding: checkpoint.unwinding_backing_e8s,
-                        transit: checkpoint.transit_backing_e8s,
-                    }) != Ok(checkpoint.total_claim_backing_e8s)
-                    || io_core_model::target(
-                        checkpoint.active_backing_io_e8s,
-                        checkpoint.total_claim_backing_e8s,
-                        checkpoint.claim_supply_e8s,
-                    ) != Ok(checkpoint.pooled_target_e8s)
-            })
-        {
-            return Err("reconciliation checkpoint fingerprint is malformed".into());
+        if let Some(checkpoint) = &self.latest_reconciliation_checkpoint {
+            let Some(last_event) = self.reward_checkpoint.last_processed_event else {
+                return Err("reconciliation checkpoint lacks a reward event marker".into());
+            };
+            let canonical_genesis_checkpoint = last_event.is_canonical_sns_genesis_baseline()
+                && self
+                    .reward_checkpoint
+                    .latest_observation
+                    .as_ref()
+                    .is_some_and(|observation| observation.is_canonical_sns_genesis_baseline())
+                && checkpoint.active_reward_io_e8s == 0;
+            if checkpoint.generation == 0
+                || checkpoint.generation != self.latest_reconciliation_generation
+                || checkpoint.event_marker != last_event.round
+                || (checkpoint.event_marker == 0 && !canonical_genesis_checkpoint)
+                || checkpoint.observed_at_nanos == 0
+                || checkpoint.snapshot_fingerprint.len() != 32
+                || checkpoint.live_cohort_count
+                    > io_nns_types::backing::MAX_LIVE_UNWIND_COHORTS as u32
+                || io_core_model::claim_backing(io_core_model::Backing {
+                    liquid: checkpoint.liquid_backing_e8s,
+                    pooled: checkpoint.pooled_backing_e8s,
+                    unwinding: checkpoint.unwinding_backing_e8s,
+                    transit: checkpoint.transit_backing_e8s,
+                }) != Ok(checkpoint.total_claim_backing_e8s)
+                || io_core_model::target(
+                    checkpoint.active_backing_io_e8s,
+                    checkpoint.total_claim_backing_e8s,
+                    checkpoint.claim_supply_e8s,
+                ) != Ok(checkpoint.pooled_target_e8s)
+            {
+                return Err("reconciliation checkpoint fingerprint is malformed".into());
+            }
         }
         if let Some(batch) = &self.pending_entitlement_batch {
             batch.validate(&self.config)?;
@@ -528,12 +549,28 @@ impl RewardCheckpoint {
     pub const MAX_ENTRIES: usize = 1_000;
 
     pub fn validate(&self, config: &StreamConfig) -> Result<(), String> {
-        let _ = config;
-        if self
-            .last_processed_event
-            .is_some_and(|event| event.end_timestamp_seconds == 0 || event.round == 0)
-        {
-            return Err("entitlement checkpoint is invalid".into());
+        match self.last_processed_event {
+            Some(event) if event.end_timestamp_seconds == 0 => {
+                return Err("entitlement checkpoint is invalid".into());
+            }
+            Some(event) if event.is_canonical_sns_genesis_baseline() => {
+                if self.processed_event_count != 0
+                    || self.missed_event_count != 0
+                    || self.accumulated_policy_credit != 0
+                    || self.latest_skipped_event.is_some()
+                {
+                    return Err("canonical SNS genesis baseline contains reward results".into());
+                }
+            }
+            None if self.latest_observation.is_some()
+                || self.latest_skipped_event.is_some()
+                || self.processed_event_count != 0
+                || self.missed_event_count != 0
+                || self.accumulated_policy_credit != 0 =>
+            {
+                return Err("reward results lack a canonical event checkpoint".into());
+            }
+            _ => {}
         }
         if let Some(observation) = &self.latest_observation {
             observation.validate(config)?;
@@ -544,9 +581,16 @@ impl RewardCheckpoint {
         if let Some(skipped) = &self.latest_skipped_event {
             if skipped.observed_at_nanos == 0
                 || skipped.observed_event.end_timestamp_seconds == 0
+                || skipped.observed_event.round == 0
                 || skipped.ambiguous_event_count == 0
                 || skipped.rounds_since_last_distribution == 0
                 || self.missed_event_count < skipped.ambiguous_event_count
+                || skipped.previous_event.is_some_and(|previous| {
+                    previous.end_timestamp_seconds == 0
+                        || previous.round >= skipped.observed_event.round
+                        || previous.end_timestamp_seconds
+                            >= skipped.observed_event.end_timestamp_seconds
+                })
             {
                 return Err("latest skipped reward event is invalid".into());
             }
@@ -556,12 +600,24 @@ impl RewardCheckpoint {
 }
 
 impl RewardEventObservation {
+    fn is_canonical_sns_genesis_baseline(&self) -> bool {
+        self.event.is_canonical_sns_genesis_baseline()
+            && self.classification == RewardEventClassification::StructuralOnly
+            && self.proposal_count == 0
+            && self.policy_credit == 0
+            && self.eligible_credit_total == 0
+            && self.observed_at_nanos > 0
+    }
+
     fn validate(&self, config: &StreamConfig) -> Result<(), String> {
-        if self.event.end_timestamp_seconds == 0
-            || self.event.round == 0
-            || self.observed_at_nanos == 0
-        {
+        if self.event.end_timestamp_seconds == 0 || self.observed_at_nanos == 0 {
             return Err("latest reward observation is invalid".into());
+        }
+        if self.event.round == 0 {
+            return self
+                .is_canonical_sns_genesis_baseline()
+                .then_some(())
+                .ok_or_else(|| "canonical SNS genesis observation is not structural".into());
         }
         let _ = config;
         if self.eligible_credit_total > self.policy_credit
@@ -579,6 +635,14 @@ impl RewardEventObservation {
             return Err("latest reward observation credit totals are inconsistent".into());
         }
         Ok(())
+    }
+}
+
+impl RewardEventId {
+    /// The reviewed SNS Governance dummy origin event. It is an activation
+    /// identity only and can never represent a credit-bearing distribution.
+    pub fn is_canonical_sns_genesis_baseline(self) -> bool {
+        self.end_timestamp_seconds > 0 && self.round == 0
     }
 }
 
@@ -929,6 +993,70 @@ pub(crate) mod tests {
         }
     }
 
+    fn genesis_event() -> RewardEventId {
+        RewardEventId {
+            end_timestamp_seconds: 100,
+            round: 0,
+        }
+    }
+
+    fn structural_genesis_observation() -> RewardEventObservation {
+        RewardEventObservation {
+            event: genesis_event(),
+            proposal_count: 0,
+            classification: RewardEventClassification::StructuralOnly,
+            policy_credit: 0,
+            eligible_credit_total: 0,
+            observed_at_nanos: 200,
+        }
+    }
+
+    fn genesis_reconciliation_checkpoint() -> ReconciliationCheckpoint {
+        ReconciliationCheckpoint {
+            generation: 1,
+            event_marker: 0,
+            observed_at_nanos: 200,
+            claim_supply_e8s: 100,
+            liquid_backing_e8s: 100,
+            pooled_backing_e8s: 0,
+            unwinding_backing_e8s: 0,
+            transit_backing_e8s: 0,
+            total_claim_backing_e8s: 100,
+            active_backing_io_e8s: 50,
+            active_reward_io_e8s: 0,
+            live_cohort_count: 0,
+            oldest_ready_at_seconds: None,
+            pooled_target_e8s: 50,
+            observed_pooled_e8s: 0,
+            snapshot_fingerprint: vec![1; 32],
+        }
+    }
+
+    fn genesis_state(structurally_observed: bool) -> (Principal, StreamStateV1) {
+        let (canister_self, mut state) = valid_state();
+        state.reward_checkpoint.last_processed_event = Some(genesis_event());
+        state.reward_checkpoint.reward_work_due = false;
+        state.reward_checkpoint.governance_parameters_fresh = true;
+        if structurally_observed {
+            state.reward_checkpoint.latest_observation = Some(structural_genesis_observation());
+            state.latest_reconciliation_generation = 1;
+            state.latest_reconciliation_checkpoint = Some(genesis_reconciliation_checkpoint());
+            state.neuron_registry = vec![BackingRewardRecord {
+                sns_neuron_id: vec![1; 32],
+                staking_account: Account {
+                    owner: state.config.sns_governance,
+                    subaccount: Some(vec![1; 32]),
+                },
+                accumulated_eligible_credit: 0,
+                latest_structural_state: StructuralStakeState::Active,
+                status: BackingRewardStatus::ActiveEligible {
+                    eligible_from_event: 1,
+                },
+            }];
+        }
+        (canister_self, state)
+    }
+
     #[test]
     fn current_launch_state_round_trips_and_validates() {
         let (canister_self, state) = valid_state();
@@ -936,6 +1064,116 @@ pub(crate) mod tests {
         let bytes = candid::encode_one(StableStreamState::V1(state.clone())).unwrap();
         let decoded: StableStreamState = candid::decode_one(&bytes).unwrap();
         assert_eq!(decoded, StableStreamState::V1(state));
+    }
+
+    #[test]
+    fn marker_eight_genesis_baselines_round_trip_and_reopen_paused_without_loss() {
+        for structurally_observed in [false, true] {
+            let (canister_self, mut state) = genesis_state(structurally_observed);
+            state.lifecycle = Lifecycle::Ready;
+            assert_eq!(state.validate(canister_self), Ok(()));
+            let bytes = candid::encode_one(StableStreamState::V1(state.clone())).unwrap();
+            let decoded: StableStreamState = candid::decode_one(&bytes).unwrap();
+            assert_eq!(decoded, StableStreamState::V1(state.clone()));
+
+            initialize(state.clone(), canister_self).unwrap();
+            write(state.clone());
+            reopen(canister_self);
+            let mut expected = state;
+            expected.lifecycle = Lifecycle::Paused;
+            assert_eq!(read(), expected);
+        }
+    }
+
+    #[test]
+    fn genesis_baseline_rejects_every_credit_bearing_or_inconsistent_shape() {
+        let (canister_self, baseline) = genesis_state(false);
+
+        let mut invalid = baseline.clone();
+        invalid.reward_checkpoint.processed_event_count = 1;
+        assert!(invalid.validate(canister_self).is_err());
+
+        let mut invalid = baseline.clone();
+        invalid.reward_checkpoint.accumulated_policy_credit = 1;
+        assert!(invalid.validate(canister_self).is_err());
+
+        let mut invalid = baseline.clone();
+        invalid.neuron_registry = vec![registry_record(invalid.config.sns_governance, 1)];
+        assert!(invalid.validate(canister_self).is_err());
+
+        let mut invalid = genesis_state(true).1;
+        invalid
+            .reward_checkpoint
+            .latest_observation
+            .as_mut()
+            .unwrap()
+            .classification = RewardEventClassification::ProposalBearing;
+        assert!(invalid.validate(canister_self).is_err());
+
+        let mut invalid = genesis_state(true).1;
+        invalid
+            .reward_checkpoint
+            .latest_observation
+            .as_mut()
+            .unwrap()
+            .proposal_count = 1;
+        assert!(invalid.validate(canister_self).is_err());
+
+        let mut invalid = genesis_state(true).1;
+        invalid
+            .latest_reconciliation_checkpoint
+            .as_mut()
+            .unwrap()
+            .active_reward_io_e8s = 1;
+        assert!(invalid.validate(canister_self).is_err());
+
+        let mut invalid = genesis_state(true).1;
+        invalid
+            .latest_reconciliation_checkpoint
+            .as_mut()
+            .unwrap()
+            .event_marker = 1;
+        assert!(invalid.validate(canister_self).is_err());
+    }
+
+    #[test]
+    fn skipped_real_event_may_follow_the_genesis_baseline() {
+        let (canister_self, mut state) = valid_state();
+        state.reward_checkpoint.last_processed_event = Some(RewardEventId {
+            end_timestamp_seconds: 300,
+            round: 2,
+        });
+        state.reward_checkpoint.missed_event_count = 2;
+        state.reward_checkpoint.latest_skipped_event = Some(SkippedRewardEvent {
+            previous_event: Some(genesis_event()),
+            observed_event: RewardEventId {
+                end_timestamp_seconds: 300,
+                round: 2,
+            },
+            ambiguous_event_count: 2,
+            rounds_since_last_distribution: 2,
+            observed_at_nanos: 400,
+        });
+        assert_eq!(state.validate(canister_self), Ok(()));
+    }
+
+    #[test]
+    fn pending_entitlement_batch_can_never_freeze_genesis() {
+        let (_, state) = valid_state();
+        let mut batch = PendingEntitlementBatch {
+            generation: 1,
+            frozen_at_timestamp_seconds: 1,
+            through_event: genesis_event(),
+            target_icp_e8s: 1,
+            entries: Vec::new(),
+            eligible_credit_total: 0,
+            policy_credit_total: 1,
+            processed_event_count: 1,
+        };
+        assert!(batch.validate(&state.config).is_err());
+        batch.through_event.round = 1;
+        batch.processed_event_count = 0;
+        assert!(batch.validate(&state.config).is_err());
     }
 
     #[test]
@@ -1025,6 +1263,10 @@ pub(crate) mod tests {
     fn prepared_exit_generation_round_trips_upgrade_and_reopens_paused() {
         let (canister_self, mut state) = valid_state();
         state.lifecycle = Lifecycle::Ready;
+        state.reward_checkpoint.last_processed_event = Some(RewardEventId {
+            end_timestamp_seconds: 1,
+            round: 1,
+        });
         state.latest_reconciliation_generation = 1;
         state.latest_reconciliation_checkpoint = Some(ReconciliationCheckpoint {
             generation: 1,

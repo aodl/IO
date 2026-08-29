@@ -111,7 +111,12 @@ policy total; excluded, ineligible, zero-share, no-eligible, and fixed-point
 remainder fractions are forfeited and remain in reserve.
 
 First readiness stores the already completed event only as a zero-credit
-baseline. A new batch cannot freeze until authenticated no-effect NNS evidence
+baseline. For the official SNS dummy genesis event this means the exact
+round-zero, nonzero-end-timestamp identity. Re-observing it is structural and
+non-crediting; positive span metadata is required only after the event advances,
+and the first round-one event can be credited exactly once. Production
+redemption is valid between activation and that first distribution. A new batch
+cannot freeze until authenticated no-effect NNS evidence
 says the exact target is ready and its liquid 60% leg meets the canonical
 minimum. An exact recipient transfer is monetary completion; one persisted
 best-effort refresh attempt cannot strand the active monetary slot. Governance

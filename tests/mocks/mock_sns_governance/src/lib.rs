@@ -388,11 +388,18 @@ pub fn debug_advance_reward_event(settled_proposal_ids: Vec<u64>) {
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn debug_set_latest_reward_event(fixture: LatestRewardEventFixture) -> Result<(), String> {
+    if fixture.end_timestamp_seconds == 0 {
+        return Err("reward-event fixture end timestamp must be nonzero".into());
+    }
     if fixture.round == 0
-        || fixture.rounds_since_last_distribution == 0
-        || fixture.end_timestamp_seconds == 0
+        && (fixture.rounds_since_last_distribution != 0
+            || !fixture.settled_proposal_ids.is_empty()
+            || !fixture.neuron_reward_shares.is_empty())
     {
-        return Err("reward-event fixture identifiers must be nonzero".into());
+        return Err("round-zero reward-event fixture must be the zero-credit genesis event".into());
+    }
+    if fixture.round > 0 && fixture.rounds_since_last_distribution == 0 {
+        return Err("advancing reward-event fixture span must be nonzero".into());
     }
     let mut shares = BTreeMap::new();
     for (neuron_id, reward_shares) in fixture.neuron_reward_shares {

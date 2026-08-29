@@ -52,6 +52,10 @@ fresh rehearsal/evidence tail are required after this source is accepted.
 - Reward settlement: the Stream Manager README and daily-entitlement ADR
   distinguish exact IO ledger delivery from one bounded, observable,
   best-effort SNS `ClaimOrRefresh` attempt.
+- Reward activation: official SNS Governance's round-zero dummy genesis event
+  is frozen as a zero-credit baseline. Its exact replay is structural only;
+  advancing and credit-bearing events require the ordinary positive-span and
+  nonzero-round proofs. Redemption remains available before round one.
 - Timers/upgrades: `scheduler.md`, `upgrades.md`, `stable-storage.md`, and `journal-compaction.md`.
 - SNS authority/controllers: `sns-root-lifecycle.md`, `docs/security/controller-and-recovery.md`, and `docs/operations/production-wiring.md`.
 - Historian non-authority: `historian.md`, `historian-ingestion.md`, and `docs/operations/historian-freshness.md`.

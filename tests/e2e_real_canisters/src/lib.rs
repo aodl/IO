@@ -81,6 +81,12 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires reviewed SNS Governance/Root/Ledger Wasms, stream/mock NNS Wasms, and POCKET_IC_BIN"]
+    fn real_sns_genesis_round_stream_regression() {
+        crate::sns_governance_setup::run_real_sns_genesis_round_stream_regression(true).unwrap();
+    }
+
+    #[test]
     #[ignore = "requires official and candidate Governance, ledger, stream, and POCKET_IC_BIN"]
     fn official_to_candidate_reward_participation_upgrade() {
         crate::sns_governance_setup::run_official_to_candidate_reward_participation_upgrade(true)

@@ -23,6 +23,21 @@ struct DebugFeeArgs {
     fee_e8s: u128,
 }
 
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct LatestRewardEventFixture {
+    round: u64,
+    rounds_since_last_distribution: u64,
+    end_timestamp_seconds: u64,
+    settled_proposal_ids: Vec<u64>,
+    neuron_reward_shares: Vec<(u64, SnsUint128)>,
+}
+
+#[derive(Clone, Copy, Debug, CandidType, Deserialize)]
+struct SnsUint128 {
+    high: u64,
+    low: u64,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
 struct LedgerCallCounters {
     fee: u64,
@@ -117,8 +132,8 @@ fn malformed_prepare_after_persistence_replays_and_quarantines_redemption() {
     let nns = install(&pic, "mock_nns_governance");
     let stream = pic.create_canister();
     pic.add_cycles(stream, CYCLES);
-    let governance = Principal::from_slice(&[51; 29]);
-    let root = Principal::from_slice(&[52; 29]);
+    let governance = install(&pic, "mock_sns_governance");
+    let root = install(&pic, "mock_sns_root");
     let user = Principal::from_slice(&[53; 29]);
     let jupiter_io = Account {
         owner: Principal::from_slice(&[54; 29]),
@@ -136,6 +151,47 @@ fn malformed_prepare_after_persistence_replays_and_quarantines_redemption() {
         owner: nns,
         subaccount: None,
     };
+    let governance_hash = pic
+        .canister_status(governance, None)
+        .unwrap()
+        .module_hash
+        .unwrap();
+    let _: () = update(
+        &pic,
+        root,
+        Principal::anonymous(),
+        "debug_set_governance_principal",
+        governance,
+    );
+    update::<_, Result<(), String>>(
+        &pic,
+        root,
+        Principal::anonymous(),
+        "debug_set_governance_module_hash",
+        governance_hash.clone(),
+    )
+    .unwrap();
+    let _: () = update(
+        &pic,
+        governance,
+        Principal::anonymous(),
+        "debug_set_io_ledger_principal",
+        io_ledger,
+    );
+    update::<_, Result<(), String>>(
+        &pic,
+        governance,
+        Principal::anonymous(),
+        "debug_set_latest_reward_event",
+        LatestRewardEventFixture {
+            round: 0,
+            rounds_since_last_distribution: 0,
+            end_timestamp_seconds: 1,
+            settled_proposal_ids: Vec::new(),
+            neuron_reward_shares: Vec::new(),
+        },
+    )
+    .unwrap();
     pic.install_canister(
         stream,
         wasm("io_stream_manager"),
@@ -147,7 +203,7 @@ fn malformed_prepare_after_persistence_replays_and_quarantines_redemption() {
                 jupiter_io_account: jupiter_io,
                 sns_governance: governance,
                 sns_root: root,
-                expected_sns_governance_module_hash: vec![9; 32],
+                expected_sns_governance_module_hash: governance_hash,
                 approved_reward_event_duration_seconds: 86_400,
                 io_reserve: reserve.clone(),
                 liquid_icp: liquid.clone(),
@@ -193,9 +249,17 @@ fn malformed_prepare_after_persistence_replays_and_quarantines_redemption() {
             DebugMintAccountArgs { to, amount_e8s },
         );
     }
-    let mut ready: StreamStateV1 = query(&pic, stream, "debug_get_state");
-    ready.lifecycle = Lifecycle::Ready;
-    replace_state(&pic, stream, ready);
+    update::<_, Result<(), ApiError>>(&pic, stream, governance, "set_paused", false).unwrap();
+    let activated: StreamStateV1 = query(&pic, stream, "debug_get_state");
+    assert_eq!(activated.lifecycle, Lifecycle::Ready);
+    assert_eq!(
+        activated
+            .reward_checkpoint
+            .last_processed_event
+            .as_ref()
+            .map(|event| event.round),
+        Some(0)
+    );
 
     let now = pic.get_time().as_nanos_since_unix_epoch();
     let completed = match update::<_, Result<RedemptionProgress, ApiError>>(
@@ -280,13 +344,26 @@ fn malformed_prepare_after_persistence_replays_and_quarantines_redemption() {
         ledger_after_trap.1.transfer,
         ledger_before_trap.1.transfer + 1
     );
-
-    let _: () = update(
-        &pic,
+    let before_upgrade: StreamStateV1 = query(&pic, stream, "debug_get_state");
+    pic.upgrade_canister(
         stream,
-        Principal::anonymous(),
-        "debug_trap_after_caller_result_write",
-        false,
+        wasm("io_stream_manager"),
+        encode_one(()).unwrap(),
+        None,
+    )
+    .unwrap();
+    let mut expected_after_upgrade = before_upgrade;
+    expected_after_upgrade.lifecycle = Lifecycle::Paused;
+    assert_eq!(
+        query::<StreamStateV1>(&pic, stream, "debug_get_state"),
+        expected_after_upgrade,
+        "round-zero PayoutSucceeded state must reopen Paused without loss"
+    );
+    update::<_, Result<(), ApiError>>(&pic, stream, governance, "set_paused", false).unwrap();
+    assert_eq!(
+        query::<StreamStateV1>(&pic, stream, "debug_get_state").lifecycle,
+        Lifecycle::Ready,
+        "authenticated readiness restoration must accept the resumable checkpoint"
     );
     let recovered = match update::<_, Result<io_stream_manager::StreamProgress, ApiError>>(
         &pic,
@@ -397,7 +474,7 @@ fn malformed_prepare_after_persistence_replays_and_quarantines_redemption() {
         "permit persistence must occupy the Stream monetary slot"
     );
 
-    let before_upgrade: StreamStateV1 = query(&pic, stream, "debug_get_state");
+    let before_receipt_upgrade: StreamStateV1 = query(&pic, stream, "debug_get_state");
     pic.upgrade_canister(
         stream,
         wasm("io_stream_manager"),
@@ -405,7 +482,7 @@ fn malformed_prepare_after_persistence_replays_and_quarantines_redemption() {
         None,
     )
     .unwrap();
-    let mut expected = before_upgrade;
+    let mut expected = before_receipt_upgrade;
     expected.lifecycle = Lifecycle::Paused;
     assert_eq!(
         query::<StreamStateV1>(&pic, stream, "debug_get_state"),

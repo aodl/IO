@@ -70,7 +70,7 @@ async fn observe_due(
         &expected.config,
     )
     .map_err(ApiError::Invalid)?;
-    let active_reward = active_reward_total(&records, &daily)?;
+    let active_reward = active_reward_total(&records, &daily, event.round)?;
     validate_coverage(&daily, active_reward)?;
     let proposal_count = daily
         .reward_event
@@ -159,6 +159,7 @@ async fn observe_due(
 fn active_reward_total(
     records: &[BackingRewardRecord],
     daily: &DailyStakeObservation,
+    event_marker: u64,
 ) -> Result<u128, ApiError> {
     daily.stakes.iter().try_fold(0u128, |sum, stake| {
         let eligible = stake.state == StructuralStakeState::Active
@@ -168,7 +169,8 @@ fn active_reward_total(
                 .is_some_and(|index| {
                     matches!(
                         records[index].status,
-                        BackingRewardStatus::ActiveEligible { .. }
+                        BackingRewardStatus::ActiveEligible { eligible_from_event }
+                            if eligible_from_event <= event_marker
                     )
                 });
         if eligible {
@@ -255,7 +257,8 @@ fn commit(
         daily.claim.claim_supply_e8s,
     )
     .map_err(|error| ApiError::Invalid(format!("pooled target failed: {error:?}")))?;
-    let active_reward = active_reward_total(&latest.neuron_registry, &daily)?;
+    let active_reward =
+        active_reward_total(&latest.neuron_registry, &daily, observation.event.round)?;
     let generation = latest
         .latest_reconciliation_generation
         .checked_add(1)
@@ -281,8 +284,7 @@ fn commit(
         snapshot_fingerprint: daily.claim.observation_fingerprint,
     });
     latest
-        .reward_checkpoint
-        .validate(&latest.config)
+        .validate(ic_cdk::api::canister_self())
         .map_err(ApiError::Invalid)?;
     state::write(latest);
     Ok(())

@@ -37,3 +37,12 @@ canonical `settled_proposals` list; zero proposal shares never trigger it. For
 a proposal-bearing event, current-event shares from excluded and ineligible
 neurons remain in the canonical denominator, so their fractions are forfeited
 rather than redistributed.
+
+SNS Governance's canonical dummy genesis event has round zero, a nonzero end
+timestamp, zero `rounds_since_last_distribution`, no settled proposals, and no
+distributed reward. Readiness records that identity as the zero-credit
+activation baseline. Re-observing the identical identity is structural rather
+than credit-bearing and makes active records eligible prospectively from round
+one. Sequence-span metadata is required to prove an advancing event or gap, not
+to prove an exact replay. A changed timestamp at the same round remains invalid,
+and no credit-bearing observation or entitlement batch may use round zero.

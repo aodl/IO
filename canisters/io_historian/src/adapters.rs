@@ -1,4 +1,5 @@
-#![cfg(target_family = "wasm")]
+#![cfg(any(target_family = "wasm", test, debug_assertions))]
+#![cfg_attr(any(test, debug_assertions), allow(dead_code))]
 
 use crate::model::*;
 use candid::{CandidType, Nat, Principal};
@@ -77,7 +78,7 @@ struct RawStreamStatus {
     operation_phase: Option<String>,
     latest_entitlement_batch_generation: u64,
     latest_processed_reward_event: Option<RewardEventId>,
-    latest_reward_event_classification: Option<RewardEventClassification>,
+    latest_reward_event_classification: Option<RawRewardEventClassification>,
     accumulated_eligible_credit: u128,
     accumulated_policy_credit: u128,
     processed_reward_event_count: u64,
@@ -90,35 +91,74 @@ struct RawStreamStatus {
     latest_reconciliation_checkpoint: Option<ReconciliationProjection>,
 }
 
-pub async fn stream(config: &ObservationConfig, now: u64) -> Result<StreamStatus, String> {
-    let raw: RawStreamStatus = call(config.stream_manager, "get_status", ()).await?;
-    for value in [&raw.operation_kind, &raw.operation_phase]
-        .into_iter()
-        .flatten()
-    {
-        if value.len() > 128 {
-            return Err("stream operation label exceeds 128 bytes".into());
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+enum RawRewardEventClassification {
+    ProposalBearing,
+    NoProposalFallback,
+    ZeroEligibleParticipation,
+    MissedSkipped,
+    StructuralOnly,
+}
+
+impl RawRewardEventClassification {
+    fn public(self) -> Option<RewardEventClassification> {
+        match self {
+            Self::ProposalBearing => Some(RewardEventClassification::ProposalBearing),
+            Self::NoProposalFallback => Some(RewardEventClassification::NoProposalFallback),
+            Self::ZeroEligibleParticipation => {
+                Some(RewardEventClassification::ZeroEligibleParticipation)
+            }
+            Self::MissedSkipped => Some(RewardEventClassification::MissedSkipped),
+            Self::StructuralOnly => None,
         }
     }
-    Ok(StreamStatus {
-        lifecycle: raw.lifecycle,
-        operation_kind: raw.operation_kind,
-        operation_phase: raw.operation_phase,
-        latest_entitlement_batch_generation: raw.latest_entitlement_batch_generation,
-        latest_processed_reward_event: raw.latest_processed_reward_event,
-        latest_reward_event_classification: raw.latest_reward_event_classification,
-        accumulated_eligible_credit: raw.accumulated_eligible_credit,
-        accumulated_policy_credit: raw.accumulated_policy_credit,
-        processed_reward_event_count: raw.processed_reward_event_count,
-        missed_reward_event_count: raw.missed_reward_event_count,
-        reward_work_due: raw.reward_work_due,
-        reward_processing_paused: raw.reward_processing_paused,
-        governance_parameters_fresh: raw.governance_parameters_fresh,
-        pending_entitlement_batch_eligible_credit: raw.pending_entitlement_batch_eligible_credit,
-        pending_entitlement_batch_policy_credit: raw.pending_entitlement_batch_policy_credit,
-        latest_reconciliation_checkpoint: raw.latest_reconciliation_checkpoint,
-        observed_at_timestamp_nanos: now,
-    })
+}
+
+impl RawStreamStatus {
+    fn public(self, now: u64) -> Result<StreamStatus, String> {
+        for value in [&self.operation_kind, &self.operation_phase]
+            .into_iter()
+            .flatten()
+        {
+            if value.len() > 128 {
+                return Err("stream operation label exceeds 128 bytes".into());
+            }
+        }
+        Ok(StreamStatus {
+            lifecycle: self.lifecycle,
+            operation_kind: self.operation_kind,
+            operation_phase: self.operation_phase,
+            latest_entitlement_batch_generation: self.latest_entitlement_batch_generation,
+            latest_processed_reward_event: self.latest_processed_reward_event,
+            latest_reward_event_classification: self
+                .latest_reward_event_classification
+                .and_then(RawRewardEventClassification::public),
+            accumulated_eligible_credit: self.accumulated_eligible_credit,
+            accumulated_policy_credit: self.accumulated_policy_credit,
+            processed_reward_event_count: self.processed_reward_event_count,
+            missed_reward_event_count: self.missed_reward_event_count,
+            reward_work_due: self.reward_work_due,
+            reward_processing_paused: self.reward_processing_paused,
+            governance_parameters_fresh: self.governance_parameters_fresh,
+            pending_entitlement_batch_eligible_credit: self
+                .pending_entitlement_batch_eligible_credit,
+            pending_entitlement_batch_policy_credit: self.pending_entitlement_batch_policy_credit,
+            latest_reconciliation_checkpoint: self.latest_reconciliation_checkpoint,
+            observed_at_timestamp_nanos: now,
+        })
+    }
+}
+
+pub async fn stream(config: &ObservationConfig, now: u64) -> Result<StreamStatus, String> {
+    let raw: RawStreamStatus = call(config.stream_manager, "get_status", ()).await?;
+    raw.public(now)
+}
+
+#[cfg(debug_assertions)]
+pub fn debug_decode_stream_status(bytes: &[u8], now: u64) -> Result<StreamStatus, String> {
+    candid::decode_one::<RawStreamStatus>(bytes)
+        .map_err(|error| format!("Stream status response decode failed: {error}"))?
+        .public(now)
 }
 
 #[derive(CandidType, Deserialize)]
@@ -537,4 +577,50 @@ pub async fn index(config: &ObservationConfig, now: u64) -> Result<IndexStatus, 
         accounts,
         observed_at_timestamp_nanos: now,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use candid::{decode_one, encode_one};
+
+    #[test]
+    fn structural_stream_status_decodes_and_maps_to_no_public_reward_distribution() {
+        let encoded = encode_one(RawStreamStatus {
+            lifecycle: Lifecycle::Ready,
+            operation_kind: Some("Redemption".into()),
+            operation_phase: Some("PayoutSucceeded".into()),
+            latest_entitlement_batch_generation: 0,
+            latest_processed_reward_event: Some(RewardEventId {
+                end_timestamp_seconds: 123,
+                round: 0,
+            }),
+            latest_reward_event_classification: Some(RawRewardEventClassification::StructuralOnly),
+            accumulated_eligible_credit: 0,
+            accumulated_policy_credit: 0,
+            processed_reward_event_count: 0,
+            missed_reward_event_count: 0,
+            reward_work_due: false,
+            reward_processing_paused: false,
+            governance_parameters_fresh: true,
+            pending_entitlement_batch_eligible_credit: None,
+            pending_entitlement_batch_policy_credit: None,
+            latest_reconciliation_checkpoint: None,
+        })
+        .unwrap();
+        let decoded: RawStreamStatus = decode_one(&encoded).unwrap();
+        let public = decoded.public(456).unwrap();
+
+        assert_eq!(public.lifecycle, Lifecycle::Ready);
+        assert_eq!(
+            public.latest_processed_reward_event,
+            Some(RewardEventId {
+                end_timestamp_seconds: 123,
+                round: 0,
+            })
+        );
+        assert_eq!(public.latest_reward_event_classification, None);
+        assert_eq!(public.operation_phase.as_deref(), Some("PayoutSucceeded"));
+        assert_eq!(public.observed_at_timestamp_nanos, 456);
+    }
 }

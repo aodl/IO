@@ -67,6 +67,16 @@ Earlier packages remain historical as described in
 
 The maintained package includes a renderable local `sns_init` candidate, per-run runtime inputs, evidence capture helpers, no-network validators, and restartable phases 10–19. Those phases verify exact IO release provenance, install Paused dapps, provision canonical staging fee floats and source-shaped local NNS neurons, publish a reviewed Governance/Root bundle through executed local NNS Governance proposals into SNS-W, verify exact compressed hashes, finalize and discover the SNS, submit real treasury and lifecycle proposals, exercise production redemption, capture index/archive/controller evidence, observe one reward event, run the layered account-semantic protocol cases and package evidence fail closed. The prior one-component candidate-Governance/official-Root `unit_variant` incompatibility is historical; same-source candidate Governance/Root compatibility is proved. If the maintained chunk-store CLI route fails before execution, phase 17 submits the exact release Wasm inline through a signed SNS Governance proposal and Root. The inline payload avoids only the unavailable upload store; it does not bypass Governance. Same-release manager upgrades must reopen Paused and resume exact retained operations after authenticated readiness restoration. The current package records one coherent fresh run and restart-safe phase recovery; the thin lifecycle source profile is separate runner coverage and does not retroactively qualify or invalidate any package.
 
+The maintained phase order intentionally activates Stream while SNS Governance
+still exposes its canonical dummy genesis reward event: round zero, nonzero end
+timestamp, zero span, no proposals, and zero distributed reward. Readiness
+freezes that event as a zero-credit baseline; the immediate observation is
+structural and may record reconciliation marker zero. Production redemption is
+then exercised before the first real distribution. Only after that proof does
+the one-day phase advance Governance to round one and require exactly one reward
+credit. No rehearsal phase fabricates round one or delays activation to avoid
+the genesis event.
+
 ## Manual Flow
 
 1. Prepare a clean local SNS testing environment using the current official ICP/DFINITY SNS testing documentation.

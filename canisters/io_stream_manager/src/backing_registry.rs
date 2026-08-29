@@ -557,4 +557,32 @@ mod tests {
         assert!(reward_eligible_ids(&records, 10).is_empty());
         assert_eq!(reward_eligible_ids(&records, 11).len(), 2);
     }
+
+    #[test]
+    fn genesis_structural_observation_creates_prospective_round_one_eligibility() {
+        let template = record(
+            1,
+            StructuralStakeState::Active,
+            BackingRewardStatus::Inactive,
+        );
+        let mut records = reconcile(
+            &[],
+            &daily(
+                vec![stake(&template, StructuralStakeState::Active)],
+                Vec::new(),
+            ),
+            0,
+            &config(),
+        )
+        .unwrap();
+        assert_eq!(
+            records[0].status,
+            BackingRewardStatus::ReentryPending {
+                eligible_from_event: 1
+            }
+        );
+        assert!(promote_pending(&mut records, 0, 600, 1_000, 1_000, 600).unwrap());
+        assert!(reward_eligible_ids(&records, 0).is_empty());
+        assert_eq!(reward_eligible_ids(&records, 1).len(), 1);
+    }
 }

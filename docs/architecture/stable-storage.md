@@ -26,6 +26,15 @@ operation clear then occur with no `await` or fallible return between them, so a
 trap rolls back the whole message. Marker 7 is deliberately rejected; no
 migration or fallback decoder is retained.
 
+Marker 8 already contains the fields needed for the canonical SNS genesis
+baseline. A round-zero last event is valid only as a zero-credit activation
+baseline, optionally with its exact `StructuralOnly` observation and a
+fingerprinted reconciliation checkpoint whose event marker is zero. No new
+stable field or schema marker is needed. Both baseline forms round-trip and
+reopen Paused without loss; malformed marker-8 states and marker 7 remain
+rejected. Pending entitlement batches and credit-bearing observations still
+require a nonzero event round.
+
 The NNS maturity state stores the semantic role, compact command intent,
 canonical pending-disbursement facts, frozen capture, and outgoing effect
 recovery. It stores neither a staging-balance baseline nor Mint provenance.

@@ -1,7 +1,7 @@
 use candid::{decode_one, encode_one, CandidType, Principal};
 use io_stream_manager::{
-    Account, ApiError, InitArgs, Lifecycle, RedeemArgs, RedemptionProgress, RewardEventObservation,
-    Status, StreamConfig,
+    Account, ApiError, InitArgs, Lifecycle, RedeemArgs, RedemptionProgress,
+    RewardEventClassification, RewardEventObservation, Status, StreamConfig,
 };
 use pocket_ic::PocketIc;
 use serde::Deserialize;
@@ -599,8 +599,8 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
         Principal::anonymous(),
         "debug_set_latest_reward_event",
         LatestRewardEventFixture {
-            round: 1,
-            rounds_since_last_distribution: 1,
+            round: 0,
+            rounds_since_last_distribution: 0,
             end_timestamp_seconds: baseline_end,
             settled_proposal_ids: Vec::new(),
             neuron_reward_shares: Vec::new(),
@@ -610,6 +610,7 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
 
     let stream = pic.create_canister();
     pic.add_cycles(stream, CYCLES);
+    let user = Principal::from_slice(&[99; 29]);
     let reserve = Account {
         owner: stream,
         subaccount: None,
@@ -627,7 +628,7 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
         (
             io_ledger,
             Account {
-                owner: Principal::from_slice(&[99; 29]),
+                owner: user,
                 subaccount: None,
             },
             200_000_000,
@@ -680,6 +681,14 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
     unpaused.unwrap();
     let initial: Status = query(&pic, stream, "get_status");
     assert!(initial.reward_work_due);
+    assert_eq!(
+        initial
+            .latest_processed_reward_event
+            .map(|event| event.round),
+        Some(0)
+    );
+    assert_eq!(initial.processed_reward_event_count, 0);
+    assert_eq!(initial.accumulated_policy_credit, 0);
     let initial_observation: Result<RewardEventObservation, ApiError> = update(
         &pic,
         stream,
@@ -687,8 +696,76 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
         "resume_reward_work",
         (),
     );
-    initial_observation.unwrap();
-    assert!(!query::<Status>(&pic, stream, "get_status").reward_work_due);
+    let genesis = initial_observation.unwrap();
+    assert_eq!(genesis.event.round, 0);
+    assert_eq!(
+        genesis.classification,
+        RewardEventClassification::StructuralOnly
+    );
+    assert_eq!(genesis.policy_credit, 0);
+    assert_eq!(genesis.eligible_credit_total, 0);
+    let genesis_status = query::<Status>(&pic, stream, "get_status");
+    assert!(!genesis_status.reward_work_due);
+    assert_eq!(genesis_status.processed_reward_event_count, 0);
+    assert_eq!(genesis_status.accumulated_policy_credit, 0);
+    assert_eq!(
+        genesis_status
+            .latest_reconciliation_checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.event_marker),
+        Some(0)
+    );
+    let ledger_before_redemption = (
+        query::<LedgerCallCounters>(&pic, io_ledger, "debug_get_call_counters"),
+        query::<LedgerCallCounters>(&pic, icp_ledger, "debug_get_call_counters"),
+    );
+    let redemption_args = RedeemArgs {
+        from_subaccount: None,
+        io_amount_e8s: 100_000_000,
+        min_icp_out_e8s: 1,
+        max_io_fee_e8s: 10_000,
+        max_icp_fee_e8s: 10_000,
+        expires_at_nanos: pic.get_time().as_nanos_since_unix_epoch() + 60_000_000_000,
+        nonce: 0,
+    };
+    let completed = update::<_, Result<RedemptionProgress, ApiError>>(
+        &pic,
+        stream,
+        user,
+        "redeem",
+        redemption_args.clone(),
+    );
+    assert!(matches!(completed, Ok(RedemptionProgress::Completed(_))));
+    let ledger_after_redemption = (
+        query::<LedgerCallCounters>(&pic, io_ledger, "debug_get_call_counters"),
+        query::<LedgerCallCounters>(&pic, icp_ledger, "debug_get_call_counters"),
+    );
+    assert_eq!(
+        update::<_, Result<RedemptionProgress, ApiError>>(
+            &pic,
+            stream,
+            user,
+            "redeem",
+            redemption_args,
+        ),
+        completed
+    );
+    assert_eq!(
+        query::<LedgerCallCounters>(&pic, io_ledger, "debug_get_call_counters").transfer_from,
+        ledger_after_redemption.0.transfer_from
+    );
+    assert_eq!(
+        query::<LedgerCallCounters>(&pic, icp_ledger, "debug_get_call_counters").transfer,
+        ledger_after_redemption.1.transfer
+    );
+    assert_eq!(
+        ledger_after_redemption.0.transfer_from,
+        ledger_before_redemption.0.transfer_from + 1
+    );
+    assert_eq!(
+        ledger_after_redemption.1.transfer,
+        ledger_before_redemption.1.transfer + 1
+    );
     assert_eq!(
         query::<u64>(&pic, nns, "debug_get_reconcile_call_count"),
         1,
@@ -747,7 +824,7 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
         Principal::anonymous(),
         "debug_set_latest_reward_event",
         LatestRewardEventFixture {
-            round: 2,
+            round: 1,
             rounds_since_last_distribution: 1,
             end_timestamp_seconds: baseline_end + 86_400,
             settled_proposal_ids: vec![1],
@@ -761,7 +838,29 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
     for _ in 0..3 {
         pic.tick();
     }
-    assert!(!query::<Status>(&pic, stream, "get_status").reward_work_due);
+    let first_real_status = query::<Status>(&pic, stream, "get_status");
+    assert!(!first_real_status.reward_work_due);
+    assert_eq!(
+        first_real_status
+            .latest_processed_reward_event
+            .map(|event| event.round),
+        Some(1)
+    );
+    assert_eq!(first_real_status.processed_reward_event_count, 1);
+    assert!(first_real_status.accumulated_policy_credit > 0);
+    let credited_once = first_real_status.accumulated_policy_credit;
+    let replay: Result<RewardEventObservation, ApiError> = update(
+        &pic,
+        stream,
+        Principal::anonymous(),
+        "resume_reward_work",
+        (),
+    );
+    assert!(matches!(replay, Err(ApiError::Pending(_))));
+    assert_eq!(
+        query::<Status>(&pic, stream, "get_status").accumulated_policy_credit,
+        credited_once
+    );
 
     let transport_event: Result<(), String> = update(
         &pic,
@@ -769,7 +868,7 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
         Principal::anonymous(),
         "debug_set_latest_reward_event",
         LatestRewardEventFixture {
-            round: 3,
+            round: 2,
             rounds_since_last_distribution: 1,
             end_timestamp_seconds: baseline_end + 172_800,
             settled_proposal_ids: vec![2],
@@ -836,7 +935,7 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
         pic.tick();
     }
     let recovered = query::<Status>(&pic, stream, "get_status");
-    assert_eq!(recovered.latest_processed_reward_event.unwrap().round, 3);
+    assert_eq!(recovered.latest_processed_reward_event.unwrap().round, 2);
     assert!(!recovered.reward_work_due);
     assert!(!recovered.reward_processing_paused);
 }

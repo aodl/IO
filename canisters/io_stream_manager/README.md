@@ -45,6 +45,14 @@ boundaries.
 Each successful daily observation updates the sorted registry and one latest
 no-effect reconciliation checkpoint. The existing durable one-shot reward timer
 wakes the same work. At most one cohort may be committed per daily generation.
+SNS Governance initializes a canonical dummy genesis reward event at round zero
+with a nonzero end timestamp, zero span, no settled proposals, and no rewards.
+First readiness freezes that identity as a zero-credit activation baseline. An
+observation of the identical event is `StructuralOnly`: it may establish
+prospective eligibility and a valid reconciliation marker zero, but it cannot
+increase reward counters or credit. Positive sequence-span metadata is required
+only when the event advances; credit-bearing events and pending entitlement
+batches always use nonzero rounds. Redemption remains valid before round one.
 Exit membership moves through exact `ExitPrepared { generation }` and
 `ExitCommitted { generation }` states resolved by the matching NNS request; it
 is never inferred from an arbitrary active unwind. There is no target queue or

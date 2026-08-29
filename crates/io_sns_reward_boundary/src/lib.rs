@@ -108,47 +108,58 @@ pub fn classify_event_sequence(
     next: &RewardEvent,
 ) -> Result<EventSequence, EventSequenceError> {
     let next_id = event_id(next)?;
+    if let Some(previous) = previous {
+        let delta = next_id
+            .round
+            .checked_sub(previous.round)
+            .ok_or(EventSequenceError::Invalid("round regressed"))?;
+        if delta == 0 {
+            return if next_id.end_timestamp_seconds == previous.end_timestamp_seconds {
+                Ok(EventSequence::Same)
+            } else {
+                Err(EventSequenceError::Invalid(
+                    "unchanged round changed end timestamp",
+                ))
+            };
+        }
+        if next_id.end_timestamp_seconds <= previous.end_timestamp_seconds {
+            return Err(EventSequenceError::Invalid("end timestamp did not advance"));
+        }
+        let span = next
+            .rounds_since_last_distribution
+            .filter(|span| *span > 0)
+            .ok_or(EventSequenceError::Invalid(
+                "rounds_since_last_distribution is missing or zero",
+            ))?;
+        return if delta == 1 && span == 1 {
+            Ok(EventSequence::Next)
+        } else {
+            Ok(EventSequence::Skipped {
+                previous: Some(previous),
+                next: next_id,
+                ambiguous_event_count: delta.max(span),
+                rounds_since_last_distribution: span,
+            })
+        };
+    }
+    if next_id.round == 0 {
+        return Err(EventSequenceError::Invalid(
+            "genesis reward event must be frozen as an activation baseline",
+        ));
+    }
     let span = next
         .rounds_since_last_distribution
         .filter(|span| *span > 0)
         .ok_or(EventSequenceError::Invalid(
             "rounds_since_last_distribution is missing or zero",
         ))?;
-    let Some(previous) = previous else {
-        return if span == 1 {
-            Ok(EventSequence::First)
-        } else {
-            Ok(EventSequence::Skipped {
-                previous: None,
-                next: next_id,
-                ambiguous_event_count: span,
-                rounds_since_last_distribution: span,
-            })
-        };
-    };
-    let delta = next_id
-        .round
-        .checked_sub(previous.round)
-        .ok_or(EventSequenceError::Invalid("round regressed"))?;
-    if delta == 0 {
-        return if next_id.end_timestamp_seconds == previous.end_timestamp_seconds {
-            Ok(EventSequence::Same)
-        } else {
-            Err(EventSequenceError::Invalid(
-                "unchanged round changed end timestamp",
-            ))
-        };
-    }
-    if next_id.end_timestamp_seconds <= previous.end_timestamp_seconds {
-        return Err(EventSequenceError::Invalid("end timestamp did not advance"));
-    }
-    if delta == 1 && span == 1 {
-        Ok(EventSequence::Next)
+    if span == 1 {
+        Ok(EventSequence::First)
     } else {
         Ok(EventSequence::Skipped {
-            previous: Some(previous),
+            previous: None,
             next: next_id,
-            ambiguous_event_count: delta.max(span),
+            ambiguous_event_count: span,
             rounds_since_last_distribution: span,
         })
     }
@@ -544,6 +555,42 @@ mod tests {
             classify_event_sequence(Some(previous()), &event(1, Some(10), Some(1))),
             Ok(EventSequence::Same)
         );
+        assert_eq!(
+            classify_event_sequence(Some(previous()), &event(1, Some(10), Some(0))),
+            Ok(EventSequence::Same)
+        );
+        assert_eq!(
+            classify_event_sequence(Some(previous()), &event(1, Some(10), None)),
+            Ok(EventSequence::Same)
+        );
+    }
+
+    #[test]
+    fn canonical_genesis_baseline_replay_is_same_without_positive_span() {
+        let genesis = EventId {
+            end_timestamp_seconds: 5,
+            round: 0,
+        };
+        assert_eq!(
+            classify_event_sequence(Some(genesis), &event(0, Some(5), Some(0))),
+            Ok(EventSequence::Same)
+        );
+        assert_eq!(
+            classify_event_sequence(Some(genesis), &event(0, Some(5), None)),
+            Ok(EventSequence::Same)
+        );
+        assert_eq!(
+            classify_event_sequence(Some(genesis), &event(1, Some(10), Some(1))),
+            Ok(EventSequence::Next)
+        );
+        assert!(matches!(
+            classify_event_sequence(Some(genesis), &event(2, Some(20), Some(2))),
+            Ok(EventSequence::Skipped {
+                ambiguous_event_count: 2,
+                rounds_since_last_distribution: 2,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -608,6 +655,20 @@ mod tests {
         ));
         assert!(matches!(
             classify_event_sequence(Some(previous()), &event(2, Some(20), None)),
+            Err(EventSequenceError::Invalid(_))
+        ));
+        assert!(matches!(
+            classify_event_sequence(Some(previous()), &event(1, Some(11), Some(0))),
+            Err(EventSequenceError::Invalid(
+                "unchanged round changed end timestamp"
+            ))
+        ));
+        assert!(matches!(
+            classify_event_sequence(None, &event(0, Some(5), Some(0))),
+            Err(EventSequenceError::Invalid(_))
+        ));
+        assert!(matches!(
+            classify_event_sequence(None, &event(0, Some(5), Some(1))),
             Err(EventSequenceError::Invalid(_))
         ));
     }
