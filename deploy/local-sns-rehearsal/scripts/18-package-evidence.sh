@@ -196,11 +196,11 @@ account_semantic_protocol = true
 EOF
 
 {
-  printf '[release]\nsource_commit = "%s"\nartifact_recording_commit = "%s"\nmanifest_sha256 = "%s"\n\n' "$source_commit" "$artifact_commit" "$manifest_sha256"
+  printf '[release]\nsource_commit = "%s"\nartifact_recording_commit = "%s"\nmanifest_sha256 = "%s"\n' "$source_commit" "$artifact_commit" "$manifest_sha256"
   while IFS=$'\t' read -r canister raw gzip; do
     section="$canister"
     [ "$canister" != frontend ] || section=io_frontend
-    printf '[%s]\nraw_wasm_sha256 = "%s"\ngzip_wasm_sha256 = "%s"\n\n' "$section" "$raw" "$gzip"
+    printf '\n[%s]\nraw_wasm_sha256 = "%s"\ngzip_wasm_sha256 = "%s"\n' "$section" "$raw" "$gzip"
   done < <(jq -r '.artifacts[] | [.canister, .raw_wasm_sha256, .gz_wasm_sha256] | @tsv' "${REPO_ROOT}/release-artifacts/manifest.json")
 } > "$stage/release-evidence.toml"
 
