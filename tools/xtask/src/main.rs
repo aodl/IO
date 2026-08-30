@@ -1338,6 +1338,7 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
             "  notify_jupiter_deposit :",
             "  prepare_pool_reconciliation :",
             "  observe_claim_assets :",
+            "  observe_dynamic_backing_status :",
             "  observe_pool_policy :",
             "  prepare_two_week_maturity :",
             "  start_maturity :",
@@ -3110,6 +3111,7 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "latest_pooled_target = null",
             "dynamic_parent=present",
             "excluded_dynamic_surplus_e8s",
+            "observe_dynamic_backing_status",
             "historian_nns_manager_expected_hash=\"$(manifest_artifact_value io_nns_neuron_manager gz_wasm_sha256)\"",
             "hex_blob_literal \"$historian_nns_manager_expected_hash\"",
         ],
@@ -3117,7 +3119,11 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
     require_absent(
         "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
         &governance_phase,
-        &["dfx canister install"],
+        &[
+            "dfx canister install",
+            "\"$nns_manager\" observe_claim_assets",
+            "\"$nns_manager\" observe_pool_policy",
+        ],
     )?;
     let nns_activation = governance_phase
         .find("if ! phase_is_done 17-nns-activated; then")

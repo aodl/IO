@@ -3,7 +3,11 @@
 Stream exposes narrow redemption/resume/proof, unified claim-receipt,
 reward-observation/backing, lifecycle, and status methods. NNS exposes narrow
 Jupiter, maturity, pooled reconciliation, resume/proof, lifecycle, status, and
-claim-backing observation methods.
+claim-backing observation methods. The Stream-only claim-asset and pool-policy
+observations retain their caller authorization. A separate permissionless
+Dynamic-backing status update performs canonical reads and exposes only the
+redacted parent partition and policy; it has no monetary effect or durable
+phase.
 
 Callers never choose a monetary destination, parent memo, followee, neuron, or
 transfer amount. Permissionless `resume` calls can wake already-defined maturity

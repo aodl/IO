@@ -67,6 +67,14 @@ vote. The daily pool-policy observation makes independent best-effort
 Either attempt may fail without blocking the other or any
 monetary path. Neither changes followees, and there is no extra scheduler.
 
+`observe_claim_assets` and `observe_pool_policy` remain Stream-authorized
+protocol boundaries. The separate permissionless
+`observe_dynamic_backing_status` update performs the same canonical parent
+observation but returns only the redacted physical/economic partition and
+verified delay/follow/auto-stake policy needed for operational status and
+release evidence. It creates no permit, performs no monetary effect, and adds
+no stable state.
+
 SNS custom-proposal validation is a pure submission-time preflight, not a
 reservation of the single immediate-operation slot. Execution revalidates
 Ready lifecycle, the launch baseline, local idleness, pending two-year work,

@@ -160,6 +160,11 @@ pub async fn observe_claim_assets() -> Result<io_nns_types::backing::ClaimAssetO
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn observe_dynamic_backing_status() -> Result<api::DynamicBackingStatus, ApiError> {
+    api::observe_dynamic_backing_status().await
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub async fn observe_pool_policy() -> Result<io_nns_types::backing::PoolPolicyObservation, ApiError>
 {
     api::observe_pool_policy(ic_cdk::api::msg_caller()).await

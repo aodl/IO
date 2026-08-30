@@ -1,7 +1,7 @@
 use candid::{decode_one, encode_one, CandidType, Principal};
 use io_nns_neuron_manager::{
-    state::Account, ApiError, InitArgs, JupiterProgress, Lifecycle, NnsConfig,
-    PrepareTwoWeekMaturityArgs, Status,
+    api::DynamicBackingStatus, state::Account, ApiError, InitArgs, JupiterProgress, Lifecycle,
+    NnsConfig, PrepareTwoWeekMaturityArgs, Status,
 };
 use pocket_ic::PocketIc;
 use serde::Deserialize;
@@ -365,6 +365,25 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
     ready.unwrap();
     let ready_status: Status = query(&pic, manager, "get_status");
     assert!(ready_status.two_year_maturity_baseline_reconciled);
+
+    let public_dynamic: Result<DynamicBackingStatus, ApiError> = update(
+        &pic,
+        manager,
+        Principal::anonymous(),
+        "observe_dynamic_backing_status",
+        (),
+    );
+    let public_dynamic = public_dynamic.unwrap();
+    let parent = public_dynamic.parent.unwrap();
+    assert_eq!(parent.physical_principal_e8s, 1_000_000_000);
+    assert_eq!(parent.dissolve_delay_seconds, 1_209_600);
+    assert!(!parent.auto_stake_maturity);
+    assert_eq!(parent.followee_neuron_id, 41);
+    assert_eq!(public_dynamic.claim_bearing_dynamic_principal_e8s, 0);
+    assert_eq!(public_dynamic.anchor_target_e8s, 1_000_000_000);
+    assert_eq!(public_dynamic.anchor_available_e8s, 1_000_000_000);
+    assert_eq!(public_dynamic.excluded_dynamic_surplus_e8s, 0);
+    assert_eq!(public_dynamic.permanent_fee_shortfall_e8s, 0);
 
     let governance_calls_before_unauthorized: u64 =
         query(&pic, governance, "debug_get_full_neuron_call_count");

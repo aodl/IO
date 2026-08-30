@@ -233,26 +233,22 @@ if ! phase_is_done 17-nns-activated; then
   anchor_target="$(toml_number "$fixture" dynamic_parent_seed anchor_target_e8s)"
   expected_surplus="$(toml_number "$fixture" dynamic_parent_seed expected_excluded_surplus_e8s)"
   expected_followee="$(toml_number "$fixture" dynamic_parent_seed followee_neuron_id)"
-  assets="$(dfx canister call --network "$network_url" --identity "$identity" \
+  dynamic_backing="$(dfx canister call --network "$network_url" --identity "$identity" \
     --candid "${REPO_ROOT}/canisters/io_nns_neuron_manager/io_nns_neuron_manager.did" \
-    "$nns_manager" observe_claim_assets '()')"
-  policy="$(dfx canister call --network "$network_url" --identity "$identity" \
-    --candid "${REPO_ROOT}/canisters/io_nns_neuron_manager/io_nns_neuron_manager.did" \
-    "$nns_manager" observe_pool_policy '()')"
-  printf 'dynamic_assets=%s\ndynamic_policy=%s\n' "$assets" "$policy" >> "$log_file"
-  assets_compact="$(printf '%s' "$assets" | tr -d '_[:space:]')"
-  policy_compact="$(printf '%s' "$policy" | tr -d '_[:space:]')"
-  printf '%s' "$assets_compact" | grep -q 'parent=optrecord' \
-    && printf '%s' "$assets_compact" | grep -q 'claimbearingdynamicprincipale8s=0' \
-    && printf '%s' "$assets_compact" | grep -q "anchortargete8s=${anchor_target}" \
-    && printf '%s' "$assets_compact" | grep -q "anchoravailablee8s=${anchor_target}" \
-    && printf '%s' "$assets_compact" | grep -q "excludeddynamicsurpluse8s=${expected_surplus}" || {
+    "$nns_manager" observe_dynamic_backing_status '()')"
+  printf 'dynamic_backing_status=%s\n' "$dynamic_backing" >> "$log_file"
+  dynamic_compact="$(printf '%s' "$dynamic_backing" | tr -d '_[:space:]')"
+  printf '%s' "$dynamic_compact" | grep -q 'parent=optrecord' \
+    && printf '%s' "$dynamic_compact" | grep -q 'claimbearingdynamicprincipale8s=0' \
+    && printf '%s' "$dynamic_compact" | grep -q "anchortargete8s=${anchor_target}" \
+    && printf '%s' "$dynamic_compact" | grep -q "anchoravailablee8s=${anchor_target}" \
+    && printf '%s' "$dynamic_compact" | grep -q "excludeddynamicsurpluse8s=${expected_surplus}" || {
       record_blocker 'NNS manager Ready state lacks the exact Dynamic anchor/surplus partition'
       exit 2
     }
-  printf '%s' "$policy_compact" | grep -q 'dissolvedelayseconds=1209600' \
-    && printf '%s' "$policy_compact" | grep -q 'autostakematurity=false' \
-    && printf '%s' "$policy_compact" | grep -q "followeeneuronid=${expected_followee}" || {
+  printf '%s' "$dynamic_compact" | grep -q 'dissolvedelayseconds=1209600' \
+    && printf '%s' "$dynamic_compact" | grep -q 'autostakematurity=false' \
+    && printf '%s' "$dynamic_compact" | grep -q "followeeneuronid=${expected_followee}" || {
       record_blocker 'NNS manager Ready state lacks the exact Dynamic delay/follow/auto-stake policy'
       exit 2
     }

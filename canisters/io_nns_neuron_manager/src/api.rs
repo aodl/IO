@@ -86,6 +86,26 @@ pub struct Status {
     pub live_child_committed_fee_liability_e8s: u128,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct DynamicParentStatus {
+    pub neuron_id: u64,
+    pub staking_account: io_accounts::Account,
+    pub physical_principal_e8s: u128,
+    pub dissolve_delay_seconds: u64,
+    pub auto_stake_maturity: bool,
+    pub followee_neuron_id: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct DynamicBackingStatus {
+    pub parent: Option<DynamicParentStatus>,
+    pub claim_bearing_dynamic_principal_e8s: u128,
+    pub anchor_target_e8s: u128,
+    pub anchor_available_e8s: u128,
+    pub excluded_dynamic_surplus_e8s: u128,
+    pub permanent_fee_shortfall_e8s: u128,
+}
+
 pub(crate) fn ready() -> Result<crate::state::NnsStateV1, ApiError> {
     let state = state::read();
     let is_ready = state.lifecycle == Lifecycle::Ready;
@@ -675,6 +695,53 @@ pub async fn observe_claim_assets(caller: Principal) -> Result<ClaimAssetObserva
     claim_asset_observation().await
 }
 
+pub async fn observe_dynamic_backing_status() -> Result<DynamicBackingStatus, ApiError> {
+    let before = state::read();
+    let assets = claim_asset_observation().await?;
+    if state::read() != before {
+        return Err(ApiError::Busy);
+    }
+    let policy = pool_policy_observation(&before).await?;
+    if state::read() != before {
+        return Err(ApiError::Busy);
+    }
+    dynamic_backing_status(&assets, &policy)
+}
+
+fn dynamic_backing_status(
+    assets: &ClaimAssetObservation,
+    policy: &PoolPolicyObservation,
+) -> Result<DynamicBackingStatus, ApiError> {
+    assets.validate().map_err(ApiError::Invalid)?;
+    policy.validate().map_err(ApiError::Invalid)?;
+    let parent = match (assets.parent.as_ref(), policy.parent.as_ref()) {
+        (Some(asset), Some(policy)) if asset.neuron_id == policy.neuron_id => {
+            Some(DynamicParentStatus {
+                neuron_id: asset.neuron_id,
+                staking_account: asset.staking_account.clone(),
+                physical_principal_e8s: asset.physical_principal_e8s,
+                dissolve_delay_seconds: policy.dissolve_delay_seconds,
+                auto_stake_maturity: policy.auto_stake_maturity,
+                followee_neuron_id: policy.follow_policy.followee_neuron_id,
+            })
+        }
+        (None, None) => None,
+        _ => {
+            return Err(ApiError::Invalid(
+                "Dynamic parent asset and policy observations disagree".into(),
+            ));
+        }
+    };
+    Ok(DynamicBackingStatus {
+        parent,
+        claim_bearing_dynamic_principal_e8s: assets.claim_bearing_dynamic_principal_e8s,
+        anchor_target_e8s: assets.anchor_target_e8s,
+        anchor_available_e8s: assets.anchor_available_e8s,
+        excluded_dynamic_surplus_e8s: assets.excluded_dynamic_surplus_e8s,
+        permanent_fee_shortfall_e8s: assets.permanent_fee_shortfall_e8s,
+    })
+}
+
 pub(crate) async fn claim_asset_observation() -> Result<ClaimAssetObservation, ApiError> {
     let snapshot = state::read();
     if crate::claim_assets::has_ambiguous_backing_effect(&snapshot) {
@@ -1143,5 +1210,87 @@ mod tests {
         assert_eq!(body.matches("query_neuron_observation").count(), 1);
         assert!(!body.contains("cohort.child_neuron_id).await"));
         assert!(body.contains("Vec::with_capacity(snapshot.live_cohorts.len())"));
+    }
+
+    fn dynamic_observations(
+        policy_neuron_id: u64,
+    ) -> (ClaimAssetObservation, PoolPolicyObservation) {
+        let staking_account = io_accounts::Account {
+            owner: Principal::from_slice(&[1; 29]),
+            subaccount: Some(vec![2; 32]),
+        };
+        (
+            ClaimAssetObservation {
+                parent: Some(ParentAssetObservation {
+                    neuron_id: 7,
+                    staking_account: staking_account.clone(),
+                    physical_principal_e8s: 1_000_012_345,
+                }),
+                pool_staking_account: staking_account,
+                claim_bearing_dynamic_principal_e8s: 0,
+                anchor_target_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+                anchor_available_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+                excluded_dynamic_surplus_e8s: 12_345,
+                permanent_fee_shortfall_e8s: 0,
+                live_cohorts: Vec::new(),
+                live_child_physical_principal_e8s: 0,
+                live_child_net_backing_e8s: 0,
+                live_child_committed_fee_liability_e8s: 0,
+                transit_components: Vec::new(),
+                transit_backing_e8s: 0,
+                active_operation_sequence: 0,
+                last_completed_pool_operation_sequence: None,
+                control_epoch: 1,
+                fingerprint: vec![3; 32],
+                oldest_ready_at_seconds: None,
+            },
+            PoolPolicyObservation {
+                parent: Some(ParentPolicyObservation {
+                    neuron_id: policy_neuron_id,
+                    dissolve_delay_seconds: NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS,
+                    auto_stake_maturity: false,
+                    follow_policy: FollowPolicy {
+                        followee_neuron_id: 9,
+                    },
+                }),
+                control_epoch: 1,
+                active_operation_sequence: 0,
+                fingerprint: vec![4; 32],
+            },
+        )
+    }
+
+    #[test]
+    fn public_dynamic_status_is_a_redacted_exact_partition_and_policy() {
+        let (assets, policy) = dynamic_observations(7);
+        assert_eq!(
+            dynamic_backing_status(&assets, &policy).unwrap(),
+            DynamicBackingStatus {
+                parent: Some(DynamicParentStatus {
+                    neuron_id: 7,
+                    staking_account: assets.pool_staking_account.clone(),
+                    physical_principal_e8s: 1_000_012_345,
+                    dissolve_delay_seconds: NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS,
+                    auto_stake_maturity: false,
+                    followee_neuron_id: 9,
+                }),
+                claim_bearing_dynamic_principal_e8s: 0,
+                anchor_target_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+                anchor_available_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+                excluded_dynamic_surplus_e8s: 12_345,
+                permanent_fee_shortfall_e8s: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn public_dynamic_status_rejects_asset_policy_identity_disagreement() {
+        let (assets, policy) = dynamic_observations(8);
+        assert_eq!(
+            dynamic_backing_status(&assets, &policy),
+            Err(ApiError::Invalid(
+                "Dynamic parent asset and policy observations disagree".into()
+            ))
+        );
     }
 }
