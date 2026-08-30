@@ -89,7 +89,11 @@ genesis event.
 
 That structural observation also runs ordinary pooled reconciliation. It may
 commit the next structural event marker before reward credit is due; the reward
-observer must first prove `Pending` before the canonical event-end `+300s`
+observer boundedly resolves that exact reconciliation generation before testing
+the reward deadline, so an unrelated `Busy` result cannot stand in for the
+deadline proof. A remaining same-baseline structural pass is accepted only when
+it is exactly zero-credit and leaves the processed-event count unchanged. The
+observer must then prove `Pending` before the canonical event-end `+300s`
 margin and then advance the exact remaining simulated margin plus one second so
 the one-shot timer can wake. The proof accepts either the timer or the
 permissionless keeper as the winner but requires the same one-time committed

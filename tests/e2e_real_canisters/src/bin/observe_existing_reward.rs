@@ -234,11 +234,39 @@ fn advance_to_reward_observation_margin(pic: &PocketIc, stream: Principal, event
     let advance_seconds = reward_scheduler_advance_seconds(now, event_end);
 
     if wait_seconds > 0 {
-        let early = resume_reward(pic, stream);
-        println!("pre_margin_resume_reward_work={early:#?}");
+        let processed_before = stream_status(pic, stream).processed_reward_event_count;
+        let mut pending_proved = false;
+        for attempt in 0..4 {
+            let early = resume_reward(pic, stream);
+            println!("pre_margin_resume_reward_work={early:#?}");
+            match early {
+                Err(ApiError::Pending(_)) => {
+                    println!("pre_margin_pending_proved_after_attempt={attempt}");
+                    pending_proved = true;
+                    break;
+                }
+                Ok(RewardEventObservation {
+                    classification: RewardEventClassification::StructuralOnly,
+                    proposal_count: 0,
+                    policy_credit: 0,
+                    eligible_credit_total: 0,
+                    ..
+                }) => {
+                    let status = stream_status(pic, stream);
+                    assert_eq!(
+                        status.processed_reward_event_count, processed_before,
+                        "pre-margin structural work must not consume a reward event"
+                    );
+                    println!("pre_margin_structural_only_attempt={attempt}");
+                }
+                other => panic!(
+                    "reward processing must remain zero-credit structural or Pending before the canonical event margin: {other:#?}"
+                ),
+            }
+        }
         assert!(
-            matches!(early, Err(ApiError::Pending(_))),
-            "reward processing must remain Pending before the canonical event margin: {early:#?}"
+            pending_proved,
+            "reward processing did not prove Pending before the canonical event margin"
         );
     }
     if advance_seconds > 0 {
@@ -308,6 +336,17 @@ fn main() {
             restore_stream_readiness(&pic, stream, governance);
         }
         if !canonical_two_event || before.processed_reward_event_count == 0 {
+            // A structural observation is allowed to start ordinary backing
+            // reconciliation independently of reward credit. Resolve that exact
+            // generation first so the pre-margin call proves the reward deadline,
+            // rather than merely observing an unrelated Busy operation.
+            drive_reconciliation(&pic, stream);
+            let margin_ready = stream_status(&pic, stream);
+            assert_eq!(
+                margin_ready.operation_kind, None,
+                "reward-margin proof requires canonical structural reconciliation to be idle"
+            );
+            println!("stream_status_before_reward_margin={margin_ready:#?}");
             advance_to_reward_observation_margin(&pic, stream, &warmup_event);
             let post_margin = stream_status(&pic, stream);
             println!("stream_status_after_warmup_margin={post_margin:#?}");
