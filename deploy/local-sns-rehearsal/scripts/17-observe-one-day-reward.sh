@@ -30,28 +30,44 @@ if ! phase_is_done 17-reward-neuron-eligible; then
   neuron_hex="$(runtime_value governance sns_neuron_subaccount_hex)"
   require_hex_32_bytes "SNS reward proposer neuron subaccount" "$neuron_hex"
   governance_did="$(official_checkout)/rs/sns/governance/canister/governance.did"
-  eligibility_args="$(mktemp "${GENERATED_DIR}/reward-neuron-eligibility.XXXXXX.did")"
-  printf '(record { subaccount = blob "%s"; command = opt variant { Configure = record { operation = opt variant { IncreaseDissolveDelay = record { additional_dissolve_delay_seconds = 1 : nat32 } } } } })\n' \
-    "$(hex_blob_literal "$neuron_hex")" > "$eligibility_args"
-  run_logged "$proposal_log" dfx canister call --network "$(local_network_url)" \
-    --identity "$(local_identity_name)" --candid "$governance_did" "$governance" \
-    manage_neuron --argument-file "$eligibility_args"
-  tail -20 "$proposal_log" | grep -q 'Configure' || {
-    record_blocker 'SNS reward proposer dissolve-delay adjustment did not return Configure success'
-    exit 2
-  }
+  sns_eligibility_delay_seconds=1296060
   neuron_state="$(dfx canister call --network "$(local_network_url)" \
     --identity "$(local_identity_name)" --query --candid "$governance_did" \
     "$governance" get_neuron \
     "(record { neuron_id = opt record { id = blob \"$(hex_blob_literal "$neuron_hex")\" } })")"
   printf '%s\n' "$neuron_state" >> "$proposal_log"
+  current_delay_seconds="$(printf '%s' "$neuron_state" | tr -d '_' | \
+    sed -n 's/.*DissolveDelaySeconds = \([0-9][0-9]*\) : nat64.*/\1/p' | head -1)"
+  require_nat "SNS reward proposer current dissolve delay" "$current_delay_seconds"
+  if ((current_delay_seconds > sns_eligibility_delay_seconds)); then
+    record_blocker 'SNS reward proposer already exceeds the exact 15-day-plus-one-minute eligibility duration'
+    exit 2
+  fi
+  additional_delay_seconds=$((sns_eligibility_delay_seconds - current_delay_seconds))
+  if ((additional_delay_seconds > 0)); then
+    eligibility_args="$(mktemp "${GENERATED_DIR}/reward-neuron-eligibility.XXXXXX.did")"
+    printf '(record { subaccount = blob "%s"; command = opt variant { Configure = record { operation = opt variant { IncreaseDissolveDelay = record { additional_dissolve_delay_seconds = %s : nat32 } } } } })\n' \
+      "$(hex_blob_literal "$neuron_hex")" "$additional_delay_seconds" > "$eligibility_args"
+    run_logged "$proposal_log" dfx canister call --network "$(local_network_url)" \
+      --identity "$(local_identity_name)" --candid "$governance_did" "$governance" \
+      manage_neuron --argument-file "$eligibility_args"
+    tail -20 "$proposal_log" | grep -q 'Configure' || {
+      record_blocker 'SNS reward proposer dissolve-delay adjustment did not return Configure success'
+      exit 2
+    }
+    neuron_state="$(dfx canister call --network "$(local_network_url)" \
+      --identity "$(local_identity_name)" --query --candid "$governance_did" \
+      "$governance" get_neuron \
+      "(record { neuron_id = opt record { id = blob \"$(hex_blob_literal "$neuron_hex")\" } })")"
+    printf '%s\n' "$neuron_state" >> "$proposal_log"
+  fi
   printf '%s' "$neuron_state" | tr -d '_' | grep -q \
-    'DissolveDelaySeconds = 1209600 : nat64' || {
-    record_blocker 'SNS reward proposer is not at the exact frozen two-week eligibility duration'
+    'DissolveDelaySeconds = 1296060 : nat64' || {
+    record_blocker 'SNS reward proposer is not at the exact 15-day-plus-one-minute eligibility duration'
     exit 2
   }
   mark_phase_done 17-reward-neuron-eligible \
-    "neuron=${neuron_hex} dissolve_delay_seconds=1209600 additional_seconds=1"
+    "neuron=${neuron_hex} dissolve_delay_seconds=${sns_eligibility_delay_seconds} additional_seconds=${additional_delay_seconds}"
 fi
 
 if ! phase_is_done 17-reward-event-setup; then

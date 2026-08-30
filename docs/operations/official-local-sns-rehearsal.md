@@ -76,10 +76,13 @@ then exercised before the first real distribution. If preparation observes the
 legitimate genesis Pool as Busy, phase 15 boundedly continues that same
 structural generation through Stream `resume`, `resume_reward_backing`, and NNS
 `resume` before retrying; it never suppresses the observation or creates a new
-generation merely for redemption. Only after that proof does
-the one-day phase advance Governance to round one and require exactly one reward
-credit. No rehearsal phase fabricates round one or delays activation to avoid
-the genesis event.
+generation merely for redemption. Only after that proof does the reward phase
+raise its locally controlled proposer from the SNS fixture's initial delay to
+the exact product eligibility duration of 1,296,060 seconds. Round one records
+prospective eligibility without retroactive credit; the phase then submits a
+new proposal and requires round two to add exactly one eligible reward credit.
+No rehearsal phase fabricates a reward round or delays activation to avoid the
+genesis event.
 
 That structural observation also runs ordinary pooled reconciliation. It may
 commit the next structural event marker before reward credit is due; the reward
