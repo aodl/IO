@@ -3088,6 +3088,32 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
         root,
         "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
     )?;
+    let ledger_phase = require_file(
+        root,
+        "deploy/local-sns-rehearsal/scripts/15-exercise-ledger.sh",
+    )?;
+    require_present(
+        "deploy/local-sns-rehearsal/scripts/15-exercise-ledger.sh",
+        &ledger_phase,
+        &[
+            "Err = variant { Busy }",
+            "resume_reward_backing",
+            "io_nns_neuron_manager.did",
+            "prepared redemption remained Busy after bounded production reconciliation recovery",
+        ],
+    )?;
+    let prepare_call = ledger_phase
+        .find("prepare_redemption \"$redeem_args\"")
+        .ok_or_else(|| "ledger rehearsal omits production redemption preparation".to_string())?;
+    let backing_recovery = ledger_phase
+        .find("\"$stream\" resume_reward_backing '()'")
+        .ok_or_else(|| "ledger rehearsal omits transient Pool recovery".to_string())?;
+    if prepare_call >= backing_recovery {
+        return Err(
+            "ledger rehearsal must observe prepare Busy before driving the same structural reconciliation generation"
+                .to_string(),
+        );
+    }
     require_present(
         "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
         &governance_phase,

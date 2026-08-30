@@ -72,7 +72,11 @@ still exposes its canonical dummy genesis reward event: round zero, nonzero end
 timestamp, zero span, no proposals, and zero distributed reward. Readiness
 freezes that event as a zero-credit baseline; the immediate observation is
 structural and may record reconciliation marker zero. Production redemption is
-then exercised before the first real distribution. Only after that proof does
+then exercised before the first real distribution. If preparation observes the
+legitimate genesis Pool as Busy, phase 15 boundedly continues that same
+structural generation through Stream `resume`, `resume_reward_backing`, and NNS
+`resume` before retrying; it never suppresses the observation or creates a new
+generation merely for redemption. Only after that proof does
 the one-day phase advance Governance to round one and require exactly one reward
 credit. No rehearsal phase fabricates round one or delays activation to avoid
 the genesis event.

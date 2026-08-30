@@ -20,6 +20,7 @@ checkout="$(official_checkout)"
 ledger="$(sns_canister_id ledger)"
 icp_ledger="$(runtime_value nns icp_ledger)"
 stream="$(toml_string "$(local_vars_file)" local io_stream_manager_canister)"
+nns_manager="$(toml_string "$(local_vars_file)" local io_nns_neuron_manager_canister)"
 operator="$(runtime_value accounts operator_principal)"
 governance="$(sns_canister_id governance)"
 treasury_hex="$(sns_treasury_subaccount_hex "$governance")"
@@ -221,9 +222,37 @@ EOF
     redeem_args="(record { from_subaccount = null; io_amount_e8s = ${redeem_amount} : nat; min_icp_out_e8s = 0 : nat; max_io_fee_e8s = 10000 : nat; max_icp_fee_e8s = 10000 : nat; expires_at_nanos = ${expires_nanos} : nat64; nonce = 0 : nat64 })"
     push_block="$(toml_number "$pre_snapshot" redemption push_block)"
     if [ "$push_block" -eq 0 ]; then
-      prepare_response="$(dfx canister call --network "$network_url" --identity "$identity" \
-        --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" prepare_redemption "$redeem_args")"
-      printf 'prepare_redemption_response=%s\n' "$prepare_response" >> "$log_file"
+      prepare_response=''
+      for _prepare_attempt in $(seq 1 32); do
+        prepare_response="$(dfx canister call --network "$network_url" --identity "$identity" \
+          --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" prepare_redemption "$redeem_args")"
+        printf 'prepare_redemption_attempt=%s response=%s\n' \
+          "$_prepare_attempt" "$prepare_response" >> "$log_file"
+        if printf '%s' "$prepare_response" | grep -q 'Ok = record'; then
+          break
+        fi
+        if ! printf '%s' "$prepare_response" | grep -q 'Err = variant { Busy }'; then
+          record_blocker "prepared redemption was rejected before durable acceptance: ${prepare_response}"
+          exit 2
+        fi
+        # A canonical genesis structural observation may legitimately start Pool
+        # reconciliation before this phase prepares redemption. Continue that exact
+        # generation through the production permissionless recovery endpoints; do
+        # not suppress the observation, cancel Pool, or manufacture a new generation.
+        run_logged "$log_file" dfx canister call --network "$network_url" --identity "$identity" \
+          --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" \
+          "$stream" resume '()'
+        run_logged "$log_file" dfx canister call --network "$network_url" --identity "$identity" \
+          --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" \
+          "$stream" resume_reward_backing '()'
+        run_logged "$log_file" dfx canister call --network "$network_url" --identity "$identity" \
+          --candid "${REPO_ROOT}/canisters/io_nns_neuron_manager/io_nns_neuron_manager.did" \
+          "$nns_manager" resume '()'
+      done
+      if ! printf '%s' "$prepare_response" | grep -q 'Ok = record'; then
+        record_blocker 'prepared redemption remained Busy after bounded production reconciliation recovery'
+        exit 2
+      fi
       prepare_compact="$(printf '%s' "$prepare_response" | tr '\n' ' ')"
       prepared_at_nanos="$(printf '%s' "$prepare_compact" | sed -n 's/.*prepared_at_nanos = \([0-9_][0-9_]*\).*/\1/p' | tr -d '_')"
       push_memo="$(printf '%s' "$prepare_compact" | sed -n 's/.*push_memo = blob "\([^"]*\)".*/\1/p')"
