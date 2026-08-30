@@ -1445,6 +1445,15 @@ fn rewrite_lifecycle_allocations(inputs: &Path, topology_path: &Path) -> Result<
     Ok(())
 }
 
+fn lifecycle_input_source(rehearsal: &Path, relative: &str) -> PathBuf {
+    let requested = rehearsal.join(relative);
+    if relative == "canister-ids.local.toml" && !requested.is_file() {
+        rehearsal.join("canister-ids.local.example.toml")
+    } else {
+        requested
+    }
+}
+
 fn run_lifecycle_profile(
     io_root: &Path,
     bundle: &ResolvedBundle,
@@ -1540,7 +1549,7 @@ fn run_lifecycle_profile(
         ("canister-ids.local.toml", "canister-ids.local.toml"),
     ];
     for (source, destination) in copied_inputs {
-        let source = rehearsal.join(source);
+        let source = lifecycle_input_source(&rehearsal, source);
         let destination = inputs.join(destination);
         fs::copy(&source, &destination).map_err(|error| {
             format!(
@@ -2437,6 +2446,33 @@ mod tests {
                         .position(|candidate| candidate == &"observe-one-day-reward")
             );
         }
+    }
+
+    #[test]
+    fn lifecycle_evidence_input_falls_back_only_to_the_maintained_example() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let rehearsal = env::temp_dir().join(format!(
+            "io-lifecycle-evidence-input-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&rehearsal).unwrap();
+        let example = rehearsal.join("canister-ids.local.example.toml");
+        fs::write(&example, "example").unwrap();
+        assert_eq!(
+            lifecycle_input_source(&rehearsal, "canister-ids.local.toml"),
+            example
+        );
+
+        let local = rehearsal.join("canister-ids.local.toml");
+        fs::write(&local, "local").unwrap();
+        assert_eq!(
+            lifecycle_input_source(&rehearsal, "canister-ids.local.toml"),
+            local
+        );
+        fs::remove_dir_all(rehearsal).unwrap();
     }
 
     #[test]

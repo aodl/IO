@@ -3119,6 +3119,18 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
         &governance_phase,
         &["dfx canister install"],
     )?;
+    let nns_activation = governance_phase
+        .find("if ! phase_is_done 17-nns-activated; then")
+        .ok_or_else(|| "governance rehearsal omits NNS activation".to_string())?;
+    let stream_activation = governance_phase
+        .find("if ! phase_is_done 17-stream-activated; then")
+        .ok_or_else(|| "governance rehearsal omits Stream activation".to_string())?;
+    if nns_activation >= stream_activation {
+        return Err(
+            "governance rehearsal must establish NNS readiness before Stream readiness observes it"
+                .to_string(),
+        );
+    }
     let deploy_phase = require_file(
         root,
         "deploy/local-sns-rehearsal/scripts/12-deploy-local-dapps.sh",
