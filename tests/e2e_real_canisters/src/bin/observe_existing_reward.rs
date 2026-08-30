@@ -11,12 +11,28 @@ use pocket_ic::PocketIc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const REWARD_OBSERVATION_MARGIN_SECONDS: u64 = 300;
+const REWARD_SCHEDULER_WAKE_EPSILON_SECONDS: u64 = 1;
 
 fn reward_margin_wait_seconds(now_seconds: u64, event_end_seconds: u64) -> u64 {
     event_end_seconds
         .checked_add(REWARD_OBSERVATION_MARGIN_SECONDS)
         .expect("canonical reward observation deadline overflow")
         .saturating_sub(now_seconds)
+}
+
+fn reward_scheduler_advance_seconds(now_seconds: u64, event_end_seconds: u64) -> u64 {
+    let wait = reward_margin_wait_seconds(now_seconds, event_end_seconds);
+    if wait > 0
+        || now_seconds
+            == event_end_seconds
+                .checked_add(REWARD_OBSERVATION_MARGIN_SECONDS)
+                .expect("canonical reward observation deadline overflow")
+    {
+        wait.checked_add(REWARD_SCHEDULER_WAKE_EPSILON_SECONDS)
+            .expect("canonical reward scheduler advance overflow")
+    } else {
+        0
+    }
 }
 
 fn required(name: &str) -> String {
@@ -215,6 +231,7 @@ fn advance_to_reward_observation_margin(pic: &PocketIc, stream: Principal, event
         .expect("canonical reward observation deadline overflow");
     let now = pic.get_time().as_nanos_since_unix_epoch() / 1_000_000_000;
     let wait_seconds = reward_margin_wait_seconds(now, event_end);
+    let advance_seconds = reward_scheduler_advance_seconds(now, event_end);
 
     if wait_seconds > 0 {
         let early = resume_reward(pic, stream);
@@ -223,13 +240,16 @@ fn advance_to_reward_observation_margin(pic: &PocketIc, stream: Principal, event
             matches!(early, Err(ApiError::Pending(_))),
             "reward processing must remain Pending before the canonical event margin: {early:#?}"
         );
-        pic.advance_time(Duration::from_secs(wait_seconds));
+    }
+    if advance_seconds > 0 {
+        pic.advance_time(Duration::from_secs(advance_seconds));
         for _ in 0..20 {
             pic.tick();
         }
     }
 
     println!("warmup_reward_margin_wait_seconds={wait_seconds}");
+    println!("warmup_reward_scheduler_epsilon_seconds={REWARD_SCHEDULER_WAKE_EPSILON_SECONDS}");
     println!("warmup_reward_observation_deadline_seconds={deadline}");
 }
 
@@ -289,15 +309,33 @@ fn main() {
         }
         if !canonical_two_event || before.processed_reward_event_count == 0 {
             advance_to_reward_observation_margin(&pic, stream, &warmup_event);
-            let result = resume_reward(&pic, stream);
-            println!("resume_reward_work={result:#?}");
+            let post_margin = stream_status(&pic, stream);
+            println!("stream_status_after_warmup_margin={post_margin:#?}");
+            if canonical_two_event
+                && post_margin.processed_reward_event_count == 1
+                && post_margin.latest_reward_event_classification
+                    == Some(RewardEventClassification::ZeroEligibleParticipation)
+            {
+                println!("warmup_reward_processed_by_timer=true");
+            } else {
+                let result = resume_reward(&pic, stream);
+                println!("resume_reward_work={result:#?}");
+                if canonical_two_event {
+                    assert!(matches!(
+                        result,
+                        Ok(RewardEventObservation {
+                            classification: RewardEventClassification::ZeroEligibleParticipation,
+                            ..
+                        })
+                    ));
+                }
+            }
             if canonical_two_event {
+                let committed = stream_status(&pic, stream);
+                assert_eq!(committed.processed_reward_event_count, 1);
                 assert!(matches!(
-                    result,
-                    Ok(RewardEventObservation {
-                        classification: RewardEventClassification::ZeroEligibleParticipation,
-                        ..
-                    })
+                    committed.latest_reward_event_classification,
+                    Some(RewardEventClassification::ZeroEligibleParticipation)
                 ));
             }
         }
@@ -433,5 +471,8 @@ mod tests {
         assert_eq!(reward_margin_wait_seconds(1_220, 1_000), 80);
         assert_eq!(reward_margin_wait_seconds(1_300, 1_000), 0);
         assert_eq!(reward_margin_wait_seconds(1_301, 1_000), 0);
+        assert_eq!(reward_scheduler_advance_seconds(1_220, 1_000), 81);
+        assert_eq!(reward_scheduler_advance_seconds(1_300, 1_000), 1);
+        assert_eq!(reward_scheduler_advance_seconds(1_301, 1_000), 0);
     }
 }

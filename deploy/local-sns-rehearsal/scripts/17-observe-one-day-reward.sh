@@ -87,7 +87,9 @@ for expected in \
   'advanced_pocketic_seconds=86400' \
   'pre_margin_resume_reward_work=Err(' \
   'warmup_reward_margin_wait_seconds=' \
+  'warmup_reward_scheduler_epsilon_seconds=1' \
   'warmup_reward_observation_deadline_seconds=' \
+  'stream_status_after_warmup_margin=' \
   "id: ${proposal_id}," \
   'reward_shares: Some' \
   'ZeroEligibleParticipation' \
