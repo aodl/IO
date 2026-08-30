@@ -231,18 +231,22 @@ fn advance_to_reward_observation_margin(pic: &PocketIc, stream: Principal, event
         .expect("canonical reward observation deadline overflow");
     let now = pic.get_time().as_nanos_since_unix_epoch() / 1_000_000_000;
     let wait_seconds = reward_margin_wait_seconds(now, event_end);
-    let advance_seconds = reward_scheduler_advance_seconds(now, event_end);
 
     if wait_seconds > 0 {
         let processed_before = stream_status(pic, stream).processed_reward_event_count;
-        let mut pending_proved = false;
+        let mut safe_pre_margin_result_proved = false;
         for attempt in 0..4 {
+            let before_call = pic.get_time().as_nanos_since_unix_epoch() / 1_000_000_000;
+            assert!(
+                before_call < deadline,
+                "pre-margin probe reached the canonical reward deadline unexpectedly"
+            );
             let early = resume_reward(pic, stream);
             println!("pre_margin_resume_reward_work={early:#?}");
             match early {
                 Err(ApiError::Pending(_)) => {
                     println!("pre_margin_pending_proved_after_attempt={attempt}");
-                    pending_proved = true;
+                    safe_pre_margin_result_proved = true;
                     break;
                 }
                 Ok(RewardEventObservation {
@@ -258,6 +262,7 @@ fn advance_to_reward_observation_margin(pic: &PocketIc, stream: Principal, event
                         "pre-margin structural work must not consume a reward event"
                     );
                     println!("pre_margin_structural_only_attempt={attempt}");
+                    safe_pre_margin_result_proved = true;
                 }
                 other => panic!(
                     "reward processing must remain zero-credit structural or Pending before the canonical event margin: {other:#?}"
@@ -265,10 +270,12 @@ fn advance_to_reward_observation_margin(pic: &PocketIc, stream: Principal, event
             }
         }
         assert!(
-            pending_proved,
-            "reward processing did not prove Pending before the canonical event margin"
+            safe_pre_margin_result_proved,
+            "reward processing did not prove a safe zero-credit result before the canonical event margin"
         );
     }
+    let after_probe = pic.get_time().as_nanos_since_unix_epoch() / 1_000_000_000;
+    let advance_seconds = reward_scheduler_advance_seconds(after_probe, event_end);
     if advance_seconds > 0 {
         pic.advance_time(Duration::from_secs(advance_seconds));
         for _ in 0..20 {

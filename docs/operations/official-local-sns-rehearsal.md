@@ -93,12 +93,14 @@ observer boundedly resolves that exact reconciliation generation before testing
 the reward deadline, so an unrelated `Busy` result cannot stand in for the
 deadline proof. A remaining same-baseline structural pass is accepted only when
 it is exactly zero-credit and leaves the processed-event count unchanged. The
-observer must then prove `Pending` before the canonical event-end `+300s`
-margin and then advance the exact remaining simulated margin plus one second so
-the one-shot timer can wake. The proof accepts either the timer or the
-permissionless keeper as the winner but requires the same one-time committed
-checkpoint. Structural work does not consume the reward event or increment
-reward credit. If it
+observer requires either that exact zero-credit structural result or `Pending`
+while the clock is still before the canonical event-end `+300s` margin; an
+unresolved reconciliation generation is not required to manufacture a
+`Pending` reply merely to prove the reward boundary. It then recomputes and
+advances the exact remaining simulated margin plus one second so the one-shot
+timer can wake. The proof accepts either the timer or the permissionless keeper
+as the winner but requires the same one-time committed checkpoint. Structural
+work does not consume the reward event or increment reward credit. If it
 legitimately occupies the NNS Manager's single immediate slot, the maintained
 order does not suppress, cancel, or preempt Pool. The two-year maturity
 validator must reject proposal submission while Pool is visible. After bounded
