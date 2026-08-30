@@ -2,7 +2,7 @@
   "schema_version": 1,
   "build_profile": "release",
   "target": "wasm32-unknown-unknown",
-  "git_commit": "4774ec4ca8f69af337eca5e42d8cd781d1fe2b10",
+  "git_commit": "6c090a95805e9c2cbbbed0e8b650c7400b8669ca",
   "artifacts": [
     {
       "canister": "io_stream_manager",
@@ -14,7 +14,7 @@
       "gz_wasm_bytes": 750394,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "4774ec4ca8f69af337eca5e42d8cd781d1fe2b10"
+      "git_commit": "6c090a95805e9c2cbbbed0e8b650c7400b8669ca"
     },
     {
       "canister": "io_nns_neuron_manager",
@@ -26,7 +26,7 @@
       "gz_wasm_bytes": 888460,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "4774ec4ca8f69af337eca5e42d8cd781d1fe2b10"
+      "git_commit": "6c090a95805e9c2cbbbed0e8b650c7400b8669ca"
     },
     {
       "canister": "io_historian",
@@ -38,19 +38,19 @@
       "gz_wasm_bytes": 466149,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "4774ec4ca8f69af337eca5e42d8cd781d1fe2b10"
+      "git_commit": "6c090a95805e9c2cbbbed0e8b650c7400b8669ca"
     },
     {
       "canister": "frontend",
       "raw_wasm_path": "release-artifacts/io_frontend.wasm",
-      "raw_wasm_sha256": "9ea0c2698579d0e2b70bb19372317a048e2651666795c2d3940e9ec7422262b5",
-      "raw_wasm_bytes": 14287647,
+      "raw_wasm_sha256": "41dbea9c7cd097d01c36a7e359da20bf5c649f7b6a734af81ee0451a1b7a9e58",
+      "raw_wasm_bytes": 14287772,
       "gz_wasm_path": "release-artifacts/io_frontend.wasm.gz",
-      "gz_wasm_sha256": "aee2015527a000bf0514f4f6a197ff14f3f0301e2c81014934d746d2db42d0ae",
-      "gz_wasm_bytes": 12743959,
+      "gz_wasm_sha256": "ecae6356615da4da5506b6100acec378c4199467127695a05b89700493df5792",
+      "gz_wasm_bytes": 12743963,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "4774ec4ca8f69af337eca5e42d8cd781d1fe2b10"
+      "git_commit": "6c090a95805e9c2cbbbed0e8b650c7400b8669ca"
     }
   ]
 }
