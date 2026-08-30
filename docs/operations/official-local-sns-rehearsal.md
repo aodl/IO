@@ -78,7 +78,10 @@ structural generation through Stream `resume`, `resume_reward_backing`, and NNS
 `resume` before retrying; it never suppresses the observation or creates a new
 generation merely for redemption. Only after that proof does the reward phase
 raise its locally controlled proposer from the SNS fixture's initial delay to
-the exact product eligibility duration of 1,296,060 seconds. Round one records
+the exact product eligibility duration of 1,296,060 seconds. The rendered local
+SNS config sets the Governance maximum dissolve-delay duration to that same
+value; retaining a 14-day maximum would silently cap the adjustment below the
+product eligibility boundary. Round one records
 prospective eligibility without retroactive credit; the phase then submits a
 new proposal and requires round two to add exactly one eligible reward credit.
 No rehearsal phase fabricates a reward round or delays activation to avoid the

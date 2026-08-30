@@ -501,7 +501,7 @@ fn write_local_sns_rehearsal_fixture(root: &Path) {
     write(
             root,
             "deploy/local-sns-rehearsal/sns_init.local.template.yaml",
-            "Local-only\nNot final tokenomics\nNot a mainnet SNS proposal\nfallback_controller_principals\n{{fallback_controller_principal}}\ndapp_canisters\nToken:\nsymbol: \"IOLO\"\ntransaction_fee\nDistribution:\ntreasury: \"800_000 tokens\"\nswap: \"100_000 tokens\"\nSwap:\n  start_time: null\nNnsProposal:\nTODO_LOCAL\n",
+            "Local-only\nNot final tokenomics\nNot a mainnet SNS proposal\nfallback_controller_principals\n{{fallback_controller_principal}}\ndapp_canisters\nToken:\nsymbol: \"IOLO\"\ntransaction_fee\n  MaximumVotingPowerBonuses:\n    DissolveDelay:\n      duration: \"1296060 seconds\"\nDistribution:\ntreasury: \"800_000 tokens\"\nswap: \"100_000 tokens\"\nSwap:\n  start_time: null\nNnsProposal:\nTODO_LOCAL\n",
         );
     write(
         root,
@@ -1610,6 +1610,23 @@ fn local_sns_rehearsal_rejects_non_null_local_start_time() {
     assert!(check_local_sns_rehearsal_at(&root)
         .unwrap_err()
         .contains("Swap.start_time"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn local_sns_rehearsal_rejects_obsolete_fourteen_day_voting_power_cap() {
+    let root = temp_root("local-sns-rehearsal-obsolete-voting-cap");
+    write_local_sns_rehearsal_fixture(&root);
+    let path = root.join("deploy/local-sns-rehearsal/sns_init.local.template.yaml");
+    let text = fs::read_to_string(&path)
+        .unwrap()
+        .replace("duration: \"1296060 seconds\"", "duration: \"14 days\"");
+    fs::write(path, text).unwrap();
+    let err = check_local_sns_rehearsal_at(&root).unwrap_err();
+    assert!(
+        err.contains("1296060 seconds"),
+        "unexpected validation error: {err}"
+    );
     let _ = fs::remove_dir_all(root);
 }
 

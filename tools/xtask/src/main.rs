@@ -2806,6 +2806,7 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "Token:",
             "symbol: \"IOLO\"",
             "transaction_fee",
+            "duration: \"1296060 seconds\"",
             "Distribution:",
             "treasury: \"800_000 tokens\"",
             "swap: \"100_000 tokens\"",
