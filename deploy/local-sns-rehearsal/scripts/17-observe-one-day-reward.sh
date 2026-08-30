@@ -101,7 +101,7 @@ require_nat "reward proposal ID" "$proposal_id"
 
 for expected in \
   'advanced_pocketic_seconds=86400' \
-  'pre_margin_resume_reward_work=Err(' \
+  'pre_margin_resume_reward_work=' \
   'warmup_reward_margin_wait_seconds=' \
   'warmup_reward_scheduler_epsilon_seconds=1' \
   'warmup_reward_observation_deadline_seconds=' \
@@ -122,6 +122,12 @@ for expected in \
     exit 2
   fi
 done
+if ! grep -Fq 'pre_margin_pending_proved_after_attempt=' "$observation_log" && \
+   ! grep -Fq 'pre_margin_structural_only_attempt=' "$observation_log"; then
+  record_blocker \
+    'one-day reward observation lacks a safe pre-margin Pending or zero-credit StructuralOnly result'
+  exit 2
+fi
 for expected in \
   'historian_settle_seconds=60' \
   'freshness: Fresh' \
