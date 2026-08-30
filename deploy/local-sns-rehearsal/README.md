@@ -36,7 +36,7 @@ execution canister `oae4c-3iaaa-aaaar-qb5qq-cai` or the two-year protected NNS n
 - `scripts/15-exercise-ledger.sh`: submits signed treasury proposals, records duplicate/negative ledger behavior, funds liquid ICP, and runs the production prepared ICRC-1 push redemption after activation.
 - `scripts/16-exercise-index-and-archives.sh`: captures index synchronization, exact Account histories and canonical ledger/Root archive discovery.
 - `scripts/17-exercise-governance-and-controllers.sh`: records controller and hash-changing upgrade evidence, registers lifecycle functions, establishes Dynamic-parent/NNS readiness first, and then requires Stream readiness through signed SNS Governance proposals.
-- `scripts/17-observe-one-day-reward.sh`: advances only the attached local PocketIC instance by exactly one day and records the proposal-bearing production reward observation and permissionless keeper result.
+- `scripts/17-observe-one-day-reward.sh`: advances only the attached local PocketIC instance by one reward day, proves that an independently committed structural marker does not make reward credit due before the canonical event-end `+300s` margin, advances the exact remaining simulated margin, and records the proposal-bearing permissionless keeper result.
 - `scripts/18-exercise-account-semantic-protocol.sh`: serially executes the
   exact proposal-143660 boundary and controlled current-IO anchored-dynamic,
   carry-forward, liquidity and irreversible-effect recovery cases.

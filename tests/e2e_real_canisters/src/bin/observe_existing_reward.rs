@@ -12,6 +12,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const REWARD_OBSERVATION_MARGIN_SECONDS: u64 = 300;
 
+fn reward_margin_wait_seconds(now_seconds: u64, event_end_seconds: u64) -> u64 {
+    event_end_seconds
+        .checked_add(REWARD_OBSERVATION_MARGIN_SECONDS)
+        .expect("canonical reward observation deadline overflow")
+        .saturating_sub(now_seconds)
+}
+
 fn required(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("{name} must be set"))
 }
@@ -199,6 +206,33 @@ fn print_reward_state(pic: &PocketIc, governance: Principal, label: &str) -> Sns
     event
 }
 
+fn advance_to_reward_observation_margin(pic: &PocketIc, stream: Principal, event: &SnsRewardEvent) {
+    let event_end = event
+        .end_timestamp_seconds
+        .expect("canonical reward event lacks an end timestamp");
+    let deadline = event_end
+        .checked_add(REWARD_OBSERVATION_MARGIN_SECONDS)
+        .expect("canonical reward observation deadline overflow");
+    let now = pic.get_time().as_nanos_since_unix_epoch() / 1_000_000_000;
+    let wait_seconds = reward_margin_wait_seconds(now, event_end);
+
+    if wait_seconds > 0 {
+        let early = resume_reward(pic, stream);
+        println!("pre_margin_resume_reward_work={early:#?}");
+        assert!(
+            matches!(early, Err(ApiError::Pending(_))),
+            "reward processing must remain Pending before the canonical event margin: {early:#?}"
+        );
+        pic.advance_time(Duration::from_secs(wait_seconds));
+        for _ in 0..20 {
+            pic.tick();
+        }
+    }
+
+    println!("warmup_reward_margin_wait_seconds={wait_seconds}");
+    println!("warmup_reward_observation_deadline_seconds={deadline}");
+}
+
 fn main() {
     let pic = PocketIc::new_from_existing_instance(
         required("IO_POCKET_IC_SERVER_URL")
@@ -244,7 +278,7 @@ fn main() {
         }
     }
 
-    print_reward_state(&pic, governance, "warmup");
+    let warmup_event = print_reward_state(&pic, governance, "warmup");
 
     let before = stream_status(&pic, stream);
     println!("stream_status_before={before:#?}");
@@ -254,6 +288,7 @@ fn main() {
             restore_stream_readiness(&pic, stream, governance);
         }
         if !canonical_two_event || before.processed_reward_event_count == 0 {
+            advance_to_reward_observation_margin(&pic, stream, &warmup_event);
             let result = resume_reward(&pic, stream);
             println!("resume_reward_work={result:#?}");
             if canonical_two_event {
@@ -386,5 +421,17 @@ fn main() {
             .is_some_and(|status| !status.accounts.is_empty()));
         println!("historian_settle_seconds={settle_seconds}");
         println!("historian_dashboard={dashboard:#?}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reward_margin_waits_only_for_the_exact_remaining_margin() {
+        assert_eq!(reward_margin_wait_seconds(1_220, 1_000), 80);
+        assert_eq!(reward_margin_wait_seconds(1_300, 1_000), 0);
+        assert_eq!(reward_margin_wait_seconds(1_301, 1_000), 0);
     }
 }

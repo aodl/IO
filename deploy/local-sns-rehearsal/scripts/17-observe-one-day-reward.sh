@@ -85,6 +85,9 @@ require_nat "reward proposal ID" "$proposal_id"
 
 for expected in \
   'advanced_pocketic_seconds=86400' \
+  'pre_margin_resume_reward_work=Err(' \
+  'warmup_reward_margin_wait_seconds=' \
+  'warmup_reward_observation_deadline_seconds=' \
   "id: ${proposal_id}," \
   'reward_shares: Some' \
   'ZeroEligibleParticipation' \

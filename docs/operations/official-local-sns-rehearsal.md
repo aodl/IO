@@ -81,7 +81,11 @@ the one-day phase advance Governance to round one and require exactly one reward
 credit. No rehearsal phase fabricates round one or delays activation to avoid
 the genesis event.
 
-That structural observation also runs ordinary pooled reconciliation. If it
+That structural observation also runs ordinary pooled reconciliation. It may
+commit the next structural event marker before reward credit is due; the reward
+observer must first prove `Pending` before the canonical event-end `+300s`
+margin and then advance the exact remaining simulated margin. Structural work
+does not consume the reward event or increment reward credit. If it
 legitimately occupies the NNS Manager's single immediate slot, the maintained
 order does not suppress, cancel, or preempt Pool. The two-year maturity
 validator must reject proposal submission while Pool is visible. After bounded
