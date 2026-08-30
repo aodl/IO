@@ -15,6 +15,12 @@ Eligibility rules:
 - protocol-owned neurons are excluded;
 - zero-stake neurons are excluded.
 
+The SNS nervous-system parameter templates set
+`max_dissolve_delay_seconds` to the same 1,296,060-second product value. A
+lower maximum would cause Governance to cap an otherwise valid configuration
+command below IO's exact eligibility duration. The separate local voting
+minimum remains fixture policy and does not redefine IO reward eligibility.
+
 Normal user-staked IO remains redeemable supply even while locked in SNS neurons. Eligibility affects reward allocation and 2-week pool targeting; it does not remove user IO from redeemable supply.
 
 The pure allocator owns only its tiny canonical SNS neuron-ID value. The SNS
