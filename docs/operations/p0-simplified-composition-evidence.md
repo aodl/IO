@@ -2,7 +2,7 @@
 
 > Historical evidence for the superseded separate-endowment economics. This
 > document is immutable in meaning and is not an active production requirement
-> or corrected-economics readiness claim. A fresh pooled claim-backing rehearsal
+> or corrected-economics readiness claim. A fresh anchored-dynamic rehearsal
 > and evidence package are required for any source that supersedes the selected
 > account-semantic release.
 
@@ -25,19 +25,20 @@ This document records the deterministic composition defects reproduced from the 
 | M | `progress_for` mapped durable `Stuck` to `PayoutSubmitted`. | The historical correction exposed the internal preparation/submission phases and explicit `Stuck(text)`. The current prelaunch API retains `Stuck(text)` but collapses non-actionable choreography to coarse `Pending`. |
 | N | A transport rejection returned `ApiError::Stuck` while the durable transfer remained safely retryable `Submitted`. | Transport and ledger ambiguity return `ApiError::Pending`; only an explicit durable transition may report `Stuck` and pause.
 
-### Current atomic redemption completion
+### Current prepared-push redemption completion
 
-The marker-8 Stream state removes `CompletionPrepared`,
-`CallerResultApplied`, and the stored completion result. After the final
-asynchronous postcondition, the implementation rechecks the exact
-`PayoutSucceeded` operation and caller replay state, constructs and validates
-both complete replacement states, then writes the caller result and clears the
-active operation without an `await` or fallible return between the writes. An
+The marker-9 Stream state replaces the pull preparation and allowance phases
+with a per-caller prepared ICRC-1 push intent. The caller transfers the exact
+prepared amount directly to the protocol reserve using the exact memo, then
+`settle_redemption` proves that immutable ledger block before creating the ICP
+payout obligation. After payout proof, the implementation rechecks the exact
+operation and caller replay state, constructs and validates both complete
+replacement states, then writes the caller result and clears the active
+operation without an `await` or fallible return between the writes. An
 installed debug-only trap between those writes proves message rollback leaves
-the caller record unchanged and the active operation exactly
-`PayoutSucceeded`; retry then completes once without another Ledger transfer.
-This supersedes the earlier local-phase mechanism without changing its
-historical evidence.
+the caller record unchanged and the payout obligation intact; retry completes
+once without another ledger transfer. This supersedes the earlier pull and
+local-phase mechanisms without changing their historical evidence.
 
 ## Remaining stream composition reproductions
 
@@ -55,7 +56,7 @@ historical evidence.
 
 ## Installed composition evidence
 
-`installed_stream_real_sns_icrc2_redemption` installs the stream-manager debug Wasm with the pinned real SNS ledger as IO and PocketIC's official ICP ledger canister as ICP. It proves Paused installation, readiness, excluded/reserve Account rejection, ICRC-2 approval/pull, exact IO fee burn, upgrade after the pull, a delayed first payout whose timestamp is not inherited from the redeem request, exact ICP movement, upgrade after payout, a separate canonical commit, null/zero normalization, durable exact redemption replay, and conflicting-nonce rejection.
+`installed_stream_real_sns_icrc1_push_redemption` installs the stream-manager debug Wasm with the pinned real SNS ledger as IO and PocketIC's official ICP ledger canister as ICP. It proves Paused installation, readiness, excluded/reserve Account rejection, exact prepared ICRC-1 push into reserve, exact IO fee burn, upgrade after push proof, a durable delayed-liquidity payout obligation, exact ICP movement, upgrade after payout, atomic canonical completion, null/zero normalization, durable exact redemption replay, and conflicting-nonce rejection.
 
 The same installed test prepares a Jupiter receipt, transfers ICP from the exact configured NNS source, proves that block through the official ledger's `query_blocks` shape, settles backed IO from reserve to the fixed Jupiter Account, checks the exact fee burn, upgrades, and replays the durable receipt permit while Paused. The test therefore composes both payout and receipt proof against the production-shaped ICP interface rather than a second SNS ledger substitute.
 

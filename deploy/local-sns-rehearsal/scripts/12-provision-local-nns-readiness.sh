@@ -2,8 +2,9 @@
 set -euo pipefail
 
 # Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.
-# Provisions the permanent local NNS neuron and fixed pooled-parent policy.
-# The pooled parent remains absent and is created lazily from Stream liquid backing.
+# Provisions the permanent local NNS neuron and externally seeds the fixed
+# Dynamic-parent staking Account. The NNS Manager owns ClaimOrRefresh and the
+# exact policy transition during authenticated readiness.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib-local-sns.sh"
 require_local_script_guard "$@"
@@ -40,7 +41,8 @@ two_year_stake=100000000
 two_year_nonce=42002
 approved_delay=63115200
 pooled_parent_memo=42001
-minimum_parent_stake=100000000
+dynamic_anchor_target=1000000000
+hostile_dust_e8s=12345
 
 observed_fee="$(dfx canister call --network "$network_url" --identity "$identity" --query \
   --candid "$ledger_did" "$icp_ledger" icrc1_fee '()' | tr -d '()_ :nat[:space:]')"
@@ -167,6 +169,22 @@ claim_and_shape_neuron() {
 }
 
 two_year_neuron_id="$(claim_and_shape_neuron two-year "$two_year_nonce" "$two_year_stake")"
+two_year_subaccount="$(cd "$REPO_ROOT" && cargo run -q -p xtask -- nns_neuron_staking_subaccount "$operator" "$two_year_nonce")"
+dynamic_subaccount="$(cd "$REPO_ROOT" && cargo run -q -p xtask -- nns_neuron_staking_subaccount "$nns_manager" "$pooled_parent_memo")"
+require_hex_32_bytes "two-year staking subaccount" "$two_year_subaccount"
+require_hex_32_bytes "Dynamic staking subaccount" "$dynamic_subaccount"
+if [ "$dynamic_subaccount" = "$two_year_subaccount" ]; then
+  record_blocker "Dynamic staking Account collides with the permanent-neuron staking Account"
+  exit 2
+fi
+dynamic_seed_total="$((dynamic_anchor_target + hostile_dust_e8s))"
+transfer_delta "Dynamic anchor seed plus hostile dust" "$nns_governance" "$dynamic_subaccount" "$dynamic_seed_total"
+dynamic_observed_seed="$(query_balance "$nns_governance" "$dynamic_subaccount")"
+if [ "$dynamic_observed_seed" -lt "$dynamic_anchor_target" ]; then
+  record_blocker "Dynamic seed remains below the exact 10 ICP anchor target"
+  exit 2
+fi
+dynamic_expected_surplus="$((dynamic_observed_seed - dynamic_anchor_target))"
 
 ledger_tip="$(dfx canister call --network "$network_url" --identity "$identity" --query \
   --candid "$ledger_did" "$icp_ledger" query_blocks \
@@ -208,14 +226,18 @@ auto_stake_maturity = false
 ordinary_maturity_e8s = 0
 staked_maturity_e8s = 0
 
-[pooled_parent]
+[dynamic_parent_seed]
 exists = false
 memo = ${pooled_parent_memo}
 followee_neuron_id = ${two_year_neuron_id}
-minimum_stake_e8s = ${minimum_parent_stake}
+staking_subaccount_hex = "${dynamic_subaccount}"
+anchor_target_e8s = ${dynamic_anchor_target}
+observed_seed_e8s = ${dynamic_observed_seed}
+expected_excluded_surplus_e8s = ${dynamic_expected_surplus}
 dissolve_delay_seconds = 1209600
 auto_stake_maturity = false
+claim_authority = "io-nns-neuron-manager-readiness"
 EOF
 
 mark_phase_done 12-provision-local-nns-readiness \
-  "two_year_neuron_id=${two_year_neuron_id} pooled_parent=absent pooled_parent_memo=${pooled_parent_memo} pooled_parent_followee_id=${two_year_neuron_id} controller=${nns_manager} canonical_fee=${expected_fee} jupiter_activation_block_floor=${jupiter_activation_block_floor}"
+  "two_year_neuron_id=${two_year_neuron_id} dynamic_parent=seeded-unclaimed dynamic_parent_memo=${pooled_parent_memo} dynamic_parent_followee_id=${two_year_neuron_id} anchor_target_e8s=${dynamic_anchor_target} observed_seed_e8s=${dynamic_observed_seed} excluded_surplus_e8s=${dynamic_expected_surplus} controller=${nns_manager} canonical_fee=${expected_fee} jupiter_activation_block_floor=${jupiter_activation_block_floor}"

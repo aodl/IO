@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.
-# Packages one new immutable, layered account-semantic evidence directory only
+# Packages one new immutable, layered anchored-dynamic evidence directory only
 # after every official and controlled phase has an exact checkpoint.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib-local-sns.sh"
@@ -51,7 +51,7 @@ if ! printf '%s' "$evidence_date" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'; the
   record_blocker "IO_LOCAL_SNS_EVIDENCE_DATE must be YYYY-MM-DD"
   exit 2
 fi
-package_name="${evidence_date}-${source_commit:0:7}-account-semantic"
+package_name="${evidence_date}-${source_commit:0:7}-anchored-dynamic"
 package_root="${REHEARSAL_DIR}/evidence"
 package_path="${package_root}/${package_name}"
 if [ -e "$package_path" ]; then
@@ -59,7 +59,7 @@ if [ -e "$package_path" ]; then
   exit 2
 fi
 
-stage="$(mktemp -d "${GENERATED_DIR}/account-semantic-package.XXXXXX")"
+stage="$(mktemp -d "${GENERATED_DIR}/anchored-dynamic-package.XXXXXX")"
 selector_path="${package_root}/current-canonical.toml"
 selector_backup="$(mktemp "${GENERATED_DIR}/current-canonical.XXXXXX.toml")"
 cp "$selector_path" "$selector_backup"
@@ -113,7 +113,7 @@ render_local_account_map "$stage/account-map.toml" "$(sns_canister_id governance
 
 cat > "$stage/manifest.toml" <<EOF
 [provenance]
-evidence_schema = "account-semantic-v1"
+evidence_schema = "anchored-dynamic-v1"
 official_ic_repository = "dfinity/ic"
 official_ic_source_commit = "${official_commit}"
 sns_testing_source_path = "rs/sns/testing"
@@ -205,13 +205,13 @@ EOF
 } > "$stage/release-evidence.toml"
 
 cat > "$stage/README.md" <<EOF
-# Account-semantic local release evidence
+# Anchored-dynamic local release evidence
 
 This immutable package binds IO source ${source_commit} to artifact commit
 ${artifact_commit} and one fresh local SNS topology. The evidence is layered:
 the source-built official SNS environment proves launch and wiring; the exact
 proposal-143660 PocketIC suite proves the active NNS Governance boundary; and
-the controlled current-IO fixture proves account-semantic orchestration.
+the controlled current-IO fixture proves anchored-dynamic orchestration.
 
 Fungible ICP provenance is not tracked after custody. The fixed TwoWeek and
 TwoYear staging Accounts determine treatment. Ambiguous irreversible outgoing

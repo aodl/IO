@@ -496,7 +496,7 @@ fn write_local_sns_rehearsal_fixture(root: &Path) {
     write(
             root,
             "deploy/local-sns-rehearsal/README.md",
-            "local-only real SNS-created IO ledger/index/governance/root stack not final tokenomics not a mainnet SNS proposal not required CI Do not use `--network ic` protocol reserve reserve-to-user transfer user-to-redemption transfer redemption-to-reserve transfer validate_local_sns_rehearsal validate_local_sns_ledger validate_local_sns_scripts Human-readable local evidence-derived wiring Not accepted by production wiring validators Do not use as install args\n",
+            "local-only real SNS-created IO ledger/index/governance/root stack not final tokenomics not a mainnet SNS proposal not required CI Do not use `--network ic` protocol reserve reserve-to-user transfer prepared user-to-reserve redemption push validate_local_sns_rehearsal validate_local_sns_ledger validate_local_sns_scripts Human-readable local evidence-derived wiring Not accepted by production wiring validators Do not use as install args\n",
         );
     write(
             root,
@@ -526,7 +526,7 @@ fn write_local_sns_rehearsal_fixture(root: &Path) {
     write(
             root,
             "deploy/local-sns-rehearsal/canister-ids.local.example.toml",
-            "network = \"local\"\nsource = \"official-local-sns-rehearsal\"\nofficial_tooling = \"manual-local-only\"\n[toolchain_provenance]\nofficial_ic_source_commit = \"0123456789abcdef0123456789abcdef01234567\"\nsns_testing_source_path = \"rs/sns/testing\"\noperator_identity_principal = \"bd3sg-teaaa-aaaaa-qaaba-cai\"\nlocal_network_url = \"http://127.0.0.1:8080\"\nsns_cli_sha256 = \"TODO\"\nsns_testing_init_sha256 = \"TODO\"\nsns_testing_cli_sha256 = \"TODO\"\n[sns_canisters]\nroot = \"TODO\"\ngovernance = \"TODO\"\nledger = \"TODO\"\nindex = \"TODO\"\nswap = \"TODO\"\narchive = \"TODO\"\n[expected_local_sns_config]\ntoken_symbol = \"IOLO\"\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\nprotocol_reserve_funding_amount_e8s = 1\n[ledger_evidence]\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\nprotocol_reserve_balance_e8s = 1\nreserve_transfer_amount_e8s = 1\nredemption_return_amount_e8s = 1\nbad_fee_error_observed = true\ninsufficient_funds_error_observed = true\nduplicate_tested_transfer = \"transfer_reserve_to_user\"\nindex_account_history_observed = true\n[reserve_funding_transfer]\nsns_proposal_id = 1\nproposal_adopted = true\nproposal_executed = true\ncreated_at_time_nanos = \"none\"\nmemo_hex = \"none\"\nproof_source = \"SnsLedgerBlock\"\nproof_source_canister = \"TODO\"\nproof_method = \"Icrc3GetBlocks\"\narchive_canister = \"none\"\n[transfer_reserve_to_user]\nfrom_owner = \"TODO\"\nfrom_subaccount_hex = \"none\"\nto_owner = \"TODO\"\nto_subaccount_hex = \"none\"\nfee_disposition = \"burned\"\nsender_balance_before_e8s = 1\nrecipient_balance_after_e8s = 1\ntotal_supply_before_e8s = 1\ntotal_supply_after_e8s = 1\nproof_source = \"SnsIndexAccountHistory\"\nproof_source_canister = \"TODO\"\nproof_method = \"IcrcIndexGetAccountTransactions\"\narchive_canister = \"none\"\n[transfer_user_to_redemption]\nfrom_owner = \"TODO\"\nfrom_subaccount_hex = \"none\"\nto_owner = \"TODO\"\nto_subaccount_hex = \"none\"\nfee_disposition = \"burned\"\nsender_balance_before_e8s = 1\nrecipient_balance_after_e8s = 1\ntotal_supply_before_e8s = 1\ntotal_supply_after_e8s = 1\nproof_source = \"SnsIndexAccountHistory\"\nproof_source_canister = \"TODO\"\nproof_method = \"IcrcIndexGetAccountTransactions\"\narchive_canister = \"none\"\n[transfer_redemption_to_reserve]\nfrom_owner = \"TODO\"\nfrom_subaccount_hex = \"none\"\nto_owner = \"TODO\"\nto_subaccount_hex = \"none\"\nfee_disposition = \"burned\"\nsender_balance_before_e8s = 1\nrecipient_balance_after_e8s = 1\ntotal_supply_before_e8s = 1\ntotal_supply_after_e8s = 1\nproof_source = \"SnsIndexAccountHistory\"\nproof_source_canister = \"TODO\"\nproof_method = \"IcrcIndexGetAccountTransactions\"\narchive_canister = \"none\"\n[duplicate_test]\n[issuance_model]\nresolved_as = \"protocol_reserve_transfer\"\nminting_assumed = false\ntreasury_transfer_assumed = true\nfee_disposition_mode = \"burned\"\ntotal_supply_changes_explained = true\n",
+            "network = \"local\"\nsource = \"official-local-sns-rehearsal\"\nofficial_tooling = \"manual-local-only\"\n[toolchain_provenance]\nofficial_ic_source_commit = \"0123456789abcdef0123456789abcdef01234567\"\nsns_testing_source_path = \"rs/sns/testing\"\noperator_identity_principal = \"bd3sg-teaaa-aaaaa-qaaba-cai\"\nlocal_network_url = \"http://127.0.0.1:8080\"\nsns_cli_sha256 = \"TODO\"\nsns_testing_init_sha256 = \"TODO\"\nsns_testing_cli_sha256 = \"TODO\"\n[sns_canisters]\nroot = \"TODO\"\ngovernance = \"TODO\"\nledger = \"TODO\"\nindex = \"TODO\"\nswap = \"TODO\"\narchive = \"TODO\"\n[expected_local_sns_config]\ntoken_symbol = \"IOLO\"\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\nprotocol_reserve_funding_amount_e8s = 1\n[ledger_evidence]\ntransaction_fee_e8s = 10_000\ntotal_supply_e8s = 1\nprotocol_reserve_balance_e8s = 1\nreserve_transfer_amount_e8s = 1\nredemption_push_amount_e8s = 1\nbad_fee_error_observed = true\ninsufficient_funds_error_observed = true\nduplicate_tested_transfer = \"transfer_reserve_to_user\"\nindex_account_history_observed = true\n[reserve_funding_transfer]\nsns_proposal_id = 1\nproposal_adopted = true\nproposal_executed = true\ncreated_at_time_nanos = \"none\"\nmemo_hex = \"none\"\nproof_source = \"SnsLedgerBlock\"\nproof_source_canister = \"TODO\"\nproof_method = \"Icrc3GetBlocks\"\narchive_canister = \"none\"\n[transfer_reserve_to_user]\nfrom_owner = \"TODO\"\nfrom_subaccount_hex = \"none\"\nto_owner = \"TODO\"\nto_subaccount_hex = \"none\"\nfee_disposition = \"burned\"\nsender_balance_before_e8s = 1\nrecipient_balance_after_e8s = 1\ntotal_supply_before_e8s = 1\ntotal_supply_after_e8s = 1\nproof_source = \"SnsIndexAccountHistory\"\nproof_source_canister = \"TODO\"\nproof_method = \"IcrcIndexGetAccountTransactions\"\narchive_canister = \"none\"\n[transfer_user_to_reserve]\nfrom_owner = \"TODO\"\nfrom_subaccount_hex = \"none\"\nto_owner = \"TODO\"\nto_subaccount_hex = \"none\"\nfee_disposition = \"burned\"\nsender_balance_before_e8s = 1\nrecipient_balance_after_e8s = 1\ntotal_supply_before_e8s = 1\ntotal_supply_after_e8s = 1\nproof_source = \"SnsIndexAccountHistory\"\nproof_source_canister = \"TODO\"\nproof_method = \"IcrcIndexGetAccountTransactions\"\narchive_canister = \"none\"\n[duplicate_test]\n[issuance_model]\nresolved_as = \"protocol_reserve_transfer\"\nminting_assumed = false\ntreasury_transfer_assumed = true\nfee_disposition_mode = \"burned\"\ntotal_supply_changes_explained = true\n",
         );
     for path in [
         "deploy/local-sns-rehearsal/runbook.sh",
@@ -565,12 +565,12 @@ fn write_local_sns_rehearsal_fixture(root: &Path) {
     write(
             root,
             "deploy/local-sns-rehearsal/scripts/12-provision-local-nns-readiness.sh",
-            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# rs/ledger_suite/icp/ledger.did query_blocks chain_length = \\([0-9_][0-9_]*\\) icrc1_transfer claim_or_refresh_neuron_from_account update_neuron 63115200 auto_stake_maturity = opt false maturity_disbursements_in_progress = opt vec {} two_year_neuron_id pooled_parent_memo pooled_parent_followee_id minimum_parent_stake\n",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# rs/ledger_suite/icp/ledger.did query_blocks chain_length = \\([0-9_][0-9_]*\\) icrc1_transfer claim_or_refresh_neuron_from_account update_neuron 63115200 auto_stake_maturity = opt false maturity_disbursements_in_progress = opt vec {} two_year_neuron_id pooled_parent_memo pooled_parent_followee_id dynamic_anchor_target hostile_dust_e8s Dynamic staking subaccount dynamic_parent=seeded-unclaimed\n",
         );
     write(
             root,
             "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
-            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# upgrade-sns-controlled-canister submit_inline_sns_upgrade AddGenericNervousSystemFunction validate_set_paused ExecuteGenericNervousSystemFunction sns_governance_source_sha256 sns_root_source_sha256 sns_ledger_source_sha256 sns_index_source_sha256 sns_swap_source_sha256 same_release=true get_public_status configured = true gz_wasm_path gz_wasm_sha256 transport=gzip latest_pooled_target = null\nhistorian_nns_manager_expected_hash=\"$(manifest_artifact_value io_nns_neuron_manager gz_wasm_sha256)\"\nhex_blob_literal \"$historian_nns_manager_expected_hash\"\n",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\n# upgrade-sns-controlled-canister submit_inline_sns_upgrade AddGenericNervousSystemFunction validate_set_paused ExecuteGenericNervousSystemFunction sns_governance_source_sha256 sns_root_source_sha256 sns_ledger_source_sha256 sns_index_source_sha256 sns_swap_source_sha256 same_release=true get_public_status configured = true gz_wasm_path gz_wasm_sha256 transport=gzip latest_pooled_target = null dynamic_parent=present excluded_dynamic_surplus_e8s\nhistorian_nns_manager_expected_hash=\"$(manifest_artifact_value io_nns_neuron_manager gz_wasm_sha256)\"\nhex_blob_literal \"$historian_nns_manager_expected_hash\"\n",
         );
     write(
             root,
@@ -2311,7 +2311,7 @@ fn local_sns_ledger_check_rejects_zero_reserve_balance() {
     assert_local_sns_evidence_rejects(
         |text| {
             text.replace(
-                "protocol_reserve_balance_e8s = 59999999970000",
+                "protocol_reserve_balance_e8s = 59999999980000",
                 "protocol_reserve_balance_e8s = 0",
             )
         },
@@ -2324,8 +2324,8 @@ fn local_sns_ledger_check_rejects_fee_mismatch() {
     assert_local_sns_evidence_rejects(
         |text| {
             text.replace(
-                    "transaction_fee_e8s = 10000\ntotal_supply_e8s = 99999999960000\nprotocol_reserve_account_owner",
-                    "transaction_fee_e8s = 10001\ntotal_supply_e8s = 99999999960000\nprotocol_reserve_account_owner",
+                    "transaction_fee_e8s = 10000\ntotal_supply_e8s = 99999999970000\nprotocol_reserve_account_owner",
+                    "transaction_fee_e8s = 10001\ntotal_supply_e8s = 99999999970000\nprotocol_reserve_account_owner",
                 )
         },
         "transaction_fee_e8s",
@@ -2350,8 +2350,8 @@ fn local_sns_ledger_check_rejects_stale_index_evidence() {
     assert_local_sns_evidence_rejects(
         |text| {
             text.replacen(
-                "index_synced_through_block_index = 13",
                 "index_synced_through_block_index = 12",
+                "index_synced_through_block_index = 11",
                 1,
             )
         },
@@ -2490,7 +2490,7 @@ fn local_sns_ledger_check_rejects_non_monotonic_timestamp() {
     assert_local_sns_evidence_rejects(
         |text| {
             text.replace(
-                "observation_timestamp = \"2026-07-28T00:00:01Z\"",
+                "observation_timestamp = \"2026-07-28T00:00:02Z\"",
                 "observation_timestamp = \"2026-07-27T23:59:59Z\"",
             )
         },
@@ -2527,29 +2527,16 @@ fn local_sns_ledger_check_rejects_reserve_owner_not_stream_manager() {
 }
 
 #[test]
-fn local_sns_ledger_check_rejects_exact_reserve_redemption_collision() {
-    assert_local_sns_evidence_rejects(
-        |text| {
-            text.replace(
-                "2222222222222222222222222222222222222222222222222222222222222222",
-                "3333333333333333333333333333333333333333333333333333333333333333",
-            )
-        },
-        "must not collide",
-    );
-}
-
-#[test]
-fn local_sns_ledger_check_accepts_same_owner_distinct_subaccounts() {
+fn local_sns_ledger_check_accepts_exact_user_to_reserve_push() {
     let evidence = completed_local_sns_evidence();
     let parsed = parse_local_sns_evidence("fixture", &evidence).unwrap();
     assert_eq!(
-        parsed.ledger.protocol_reserve_account_owner,
-        parsed.user_to_redemption_transfer.to_account.owner
+        parsed.user_to_reserve_transfer.to_account.owner,
+        parsed.ledger.protocol_reserve_account_owner
     );
-    assert_ne!(
-        parsed.ledger.protocol_reserve_subaccount_hex,
-        parsed.user_to_redemption_transfer.to_account.subaccount_hex
+    assert_eq!(
+        parsed.user_to_reserve_transfer.to_account.subaccount_hex,
+        parsed.ledger.protocol_reserve_subaccount_hex
     );
 }
 

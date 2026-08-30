@@ -486,14 +486,15 @@ mod frontend_honesty {
     }
 
     #[test]
-    fn frontend_exposes_only_the_simplified_redemption_action() {
+    fn frontend_exposes_only_the_prepared_push_redemption_action() {
         let source = web_source();
         let template = read("canisters/frontend/web/index.template.html");
         let combined = format!("{source}\n{template}");
 
         assert!(combined.contains("<form"));
         assert!(combined.contains("type=\"submit\""));
-        assert!(combined.contains("Sending IO directly is unsupported"));
+        assert!(combined.contains("arbitrary unprepared transfers remain unsupported"));
+        assert!(combined.contains("protocol reserve with the prepared memo"));
         assert!(combined.contains("canonicalSubaccount"));
         assert!(combined.contains("icrc1_transfer"));
         assert!(combined.contains("prepare_redemption"));

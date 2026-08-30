@@ -2779,8 +2779,7 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "Do not use `--network ic`",
             "protocol reserve",
             "reserve-to-user transfer",
-            "user-to-redemption transfer",
-            "redemption-to-reserve transfer",
+            "prepared user-to-reserve redemption push",
             "validate_local_sns_rehearsal",
             "validate_local_sns_ledger",
             "validate_local_sns_scripts",
@@ -2870,7 +2869,7 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "total_supply_e8s",
             "protocol_reserve_balance_e8s",
             "reserve_transfer_amount_e8s",
-            "redemption_return_amount_e8s",
+            "redemption_push_amount_e8s",
             "bad_fee_error_observed = true",
             "insufficient_funds_error_observed = true",
             "duplicate_tested_transfer",
@@ -2882,8 +2881,7 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "created_at_time_nanos",
             "memo_hex",
             "[transfer_reserve_to_user]",
-            "[transfer_user_to_redemption]",
-            "[transfer_redemption_to_reserve]",
+            "[transfer_user_to_reserve]",
             "from_owner",
             "from_subaccount_hex",
             "to_owner",
@@ -3027,7 +3025,10 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "two_year_neuron_id",
             "pooled_parent_memo",
             "pooled_parent_followee_id",
-            "minimum_parent_stake",
+            "dynamic_anchor_target",
+            "hostile_dust_e8s",
+            "Dynamic staking subaccount",
+            "dynamic_parent=seeded-unclaimed",
             "rs/ledger_suite/icp/ledger.did",
             "query_blocks",
             "chain_length = \\([0-9_][0-9_]*\\)",
@@ -3107,6 +3108,8 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "gz_wasm_sha256",
             "transport=gzip",
             "latest_pooled_target = null",
+            "dynamic_parent=present",
+            "excluded_dynamic_surplus_e8s",
             "historian_nns_manager_expected_hash=\"$(manifest_artifact_value io_nns_neuron_manager gz_wasm_sha256)\"",
             "hex_blob_literal \"$historian_nns_manager_expected_hash\"",
         ],
@@ -3530,14 +3533,14 @@ range_end = 100
 [ledger_evidence]
 token_symbol = "IOLO"
 transaction_fee_e8s = 10000
-total_supply_e8s = 99999999960000
+total_supply_e8s = 99999999970000
 protocol_reserve_account_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
 protocol_reserve_subaccount_hex = "3333333333333333333333333333333333333333333333333333333333333333"
-protocol_reserve_balance_e8s = 59999999970000
+protocol_reserve_balance_e8s = 59999999980000
 reserve_transfer_block_index = 11
-redemption_return_block_index = 13
+redemption_push_block_index = 12
 reserve_transfer_amount_e8s = 100000000
-redemption_return_amount_e8s = 99980000
+redemption_push_amount_e8s = 99990000
 bad_fee_error_observed = true
 insufficient_funds_error_observed = true
 duplicate_of_block_index = 11
@@ -3619,19 +3622,19 @@ archive_range_end = "none"
 archive_involvement = "none"
 observation_timestamp = "2026-07-28T00:00:00Z"
 
-[transfer_user_to_redemption]
+[transfer_user_to_reserve]
 block_index = 12
 from_owner = "bd3sg-teaaa-aaaaa-qaaba-cai"
 from_subaccount_hex = "1111111111111111111111111111111111111111111111111111111111111111"
 to_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
-to_subaccount_hex = "2222222222222222222222222222222222222222222222222222222222222222"
+to_subaccount_hex = "3333333333333333333333333333333333333333333333333333333333333333"
 requested_amount_e8s = 99990000
 observed_fee_e8s = 10000
 fee_disposition = "burned"
 sender_balance_before_e8s = 100000000
 sender_balance_after_e8s = 0
-recipient_balance_before_e8s = 0
-recipient_balance_after_e8s = 99990000
+recipient_balance_before_e8s = 59999899990000
+recipient_balance_after_e8s = 59999999980000
 fee_collector_owner = "none"
 fee_collector_subaccount_hex = "none"
 fee_collector_balance_before_e8s = "none"
@@ -3639,7 +3642,7 @@ fee_collector_balance_after_e8s = "none"
 total_supply_before_e8s = 99999999980000
 total_supply_after_e8s = 99999999970000
 reserve_balance_before_e8s = 59999899990000
-reserve_balance_after_e8s = 59999899990000
+reserve_balance_after_e8s = 59999999980000
 ledger_tip_block_index = 12
 index_synced_through_block_index = 12
 proof_source = "SnsIndexAccountHistory"
@@ -3647,40 +3650,6 @@ proof_source_canister = "be2us-64aaa-aaaaa-qaabq-cai"
 proof_method = "IcrcIndexGetAccountTransactions"
 proof_account_owner = "bd3sg-teaaa-aaaaa-qaaba-cai"
 proof_account_subaccount_hex = "1111111111111111111111111111111111111111111111111111111111111111"
-archive_canister = "none"
-archive_range_start = "none"
-archive_range_end = "none"
-archive_involvement = "none"
-observation_timestamp = "2026-07-28T00:00:01Z"
-
-[transfer_redemption_to_reserve]
-block_index = 13
-from_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
-from_subaccount_hex = "2222222222222222222222222222222222222222222222222222222222222222"
-to_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
-to_subaccount_hex = "3333333333333333333333333333333333333333333333333333333333333333"
-requested_amount_e8s = 99980000
-observed_fee_e8s = 10000
-fee_disposition = "burned"
-sender_balance_before_e8s = 99990000
-sender_balance_after_e8s = 0
-recipient_balance_before_e8s = 59999899990000
-recipient_balance_after_e8s = 59999999970000
-fee_collector_owner = "none"
-fee_collector_subaccount_hex = "none"
-fee_collector_balance_before_e8s = "none"
-fee_collector_balance_after_e8s = "none"
-total_supply_before_e8s = 99999999970000
-total_supply_after_e8s = 99999999960000
-reserve_balance_before_e8s = 59999899990000
-reserve_balance_after_e8s = 59999999970000
-ledger_tip_block_index = 13
-index_synced_through_block_index = 13
-proof_source = "SnsIndexAccountHistory"
-proof_source_canister = "be2us-64aaa-aaaaa-qaabq-cai"
-proof_method = "IcrcIndexGetAccountTransactions"
-proof_account_owner = "avqkn-guaaa-aaaaa-qaaea-cai"
-proof_account_subaccount_hex = "2222222222222222222222222222222222222222222222222222222222222222"
 archive_canister = "none"
 archive_range_start = "none"
 archive_range_end = "none"
@@ -3879,8 +3848,7 @@ struct LocalSnsEvidence {
     ledger: LocalSnsLedgerEvidence,
     reserve_funding_transfer: LocalSnsReserveFundingEvidence,
     reserve_to_user_transfer: LocalSnsTransferEvidence,
-    user_to_redemption_transfer: LocalSnsTransferEvidence,
-    redemption_to_reserve_transfer: LocalSnsTransferEvidence,
+    user_to_reserve_transfer: LocalSnsTransferEvidence,
     duplicate_test: LocalSnsDuplicateTestEvidence,
     governance: LocalSnsGovernanceEvidence,
     issuance: LocalSnsIssuanceModel,
@@ -3969,9 +3937,9 @@ struct LocalSnsLedgerEvidence {
     protocol_reserve_subaccount_hex: Option<String>,
     protocol_reserve_balance_e8s: u128,
     reserve_transfer_block_index: u64,
-    redemption_return_block_index: u64,
+    redemption_push_block_index: u64,
     reserve_transfer_amount_e8s: u128,
-    redemption_return_amount_e8s: u128,
+    redemption_push_amount_e8s: u128,
     bad_fee_error_observed: bool,
     insufficient_funds_error_observed: bool,
     duplicate_of_block_index: Option<u64>,
@@ -4095,8 +4063,7 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
             | "ledger_evidence"
             | "reserve_funding_transfer"
             | "transfer_reserve_to_user"
-            | "transfer_user_to_redemption"
-            | "transfer_redemption_to_reserve"
+            | "transfer_user_to_reserve"
             | "duplicate_test"
             | "governance_evidence"
             | "issuance_model"
@@ -4349,11 +4316,11 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
                 "ledger_evidence",
                 "reserve_transfer_block_index",
             )?,
-            redemption_return_block_index: require_simple_u64(
+            redemption_push_block_index: require_simple_u64(
                 path,
                 &doc,
                 "ledger_evidence",
-                "redemption_return_block_index",
+                "redemption_push_block_index",
             )?,
             reserve_transfer_amount_e8s: require_simple_u128(
                 path,
@@ -4361,11 +4328,11 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
                 "ledger_evidence",
                 "reserve_transfer_amount_e8s",
             )?,
-            redemption_return_amount_e8s: require_simple_u128(
+            redemption_push_amount_e8s: require_simple_u128(
                 path,
                 &doc,
                 "ledger_evidence",
-                "redemption_return_amount_e8s",
+                "redemption_push_amount_e8s",
             )?,
             bad_fee_error_observed: require_simple_bool(
                 path,
@@ -4443,15 +4410,10 @@ fn parse_local_sns_evidence(path: &str, text: &str) -> Result<LocalSnsEvidence, 
             &doc,
             "transfer_reserve_to_user",
         )?,
-        user_to_redemption_transfer: parse_local_sns_transfer_evidence(
+        user_to_reserve_transfer: parse_local_sns_transfer_evidence(
             path,
             &doc,
-            "transfer_user_to_redemption",
-        )?,
-        redemption_to_reserve_transfer: parse_local_sns_transfer_evidence(
-            path,
-            &doc,
-            "transfer_redemption_to_reserve",
+            "transfer_user_to_reserve",
         )?,
         duplicate_test: LocalSnsDuplicateTestEvidence {
             original_transfer: require_simple_string(
@@ -4929,12 +4891,6 @@ fn validate_local_sns_evidence(
             "{path}: protocol reserve account requires an exact configured subaccount"
         ));
     }
-    let redemption_account = &evidence.user_to_redemption_transfer.to_account;
-    if redemption_account == &reserve_account {
-        return Err(format!(
-            "{path}: protocol reserve Account must not collide with redemption Account"
-        ));
-    }
     validate_local_sns_transfer(
         path,
         "reserve_funding_transfer",
@@ -4950,14 +4906,8 @@ fn validate_local_sns_evidence(
     )?;
     validate_local_sns_transfer(
         path,
-        "transfer_user_to_redemption",
-        &evidence.user_to_redemption_transfer,
-        &reserve_account,
-    )?;
-    validate_local_sns_transfer(
-        path,
-        "transfer_redemption_to_reserve",
-        &evidence.redemption_to_reserve_transfer,
+        "transfer_user_to_reserve",
+        &evidence.user_to_reserve_transfer,
         &reserve_account,
     )?;
     for (section, transfer) in [
@@ -4970,31 +4920,22 @@ fn validate_local_sns_evidence(
             &evidence.reserve_to_user_transfer,
         ),
         (
-            "transfer_user_to_redemption",
-            &evidence.user_to_redemption_transfer,
-        ),
-        (
-            "transfer_redemption_to_reserve",
-            &evidence.redemption_to_reserve_transfer,
+            "transfer_user_to_reserve",
+            &evidence.user_to_reserve_transfer,
         ),
     ] {
         validate_local_sns_transfer_proof(path, section, transfer, evidence)?;
     }
     validate_local_sns_transfer_sequence(path, evidence, &reserve_account)?;
     validate_local_sns_duplicate_test(path, evidence)?;
-    if evidence.ledger.total_supply_e8s
-        != evidence
-            .redemption_to_reserve_transfer
-            .total_supply_after_e8s
+    if evidence.ledger.total_supply_e8s != evidence.user_to_reserve_transfer.total_supply_after_e8s
     {
         return Err(format!(
             "{path}: ledger_evidence.total_supply_e8s must match the final observed transfer supply"
         ));
     }
     if evidence.ledger.protocol_reserve_balance_e8s
-        != evidence
-            .redemption_to_reserve_transfer
-            .reserve_balance_after_e8s
+        != evidence.user_to_reserve_transfer.reserve_balance_after_e8s
     {
         return Err(format!(
             "{path}: ledger_evidence.protocol_reserve_balance_e8s must match final observed reserve balance"
@@ -5011,12 +4952,8 @@ fn validate_local_sns_evidence(
             &evidence.reserve_to_user_transfer,
         ),
         (
-            "transfer_user_to_redemption",
-            &evidence.user_to_redemption_transfer,
-        ),
-        (
-            "transfer_redemption_to_reserve",
-            &evidence.redemption_to_reserve_transfer,
+            "transfer_user_to_reserve",
+            &evidence.user_to_reserve_transfer,
         ),
     ] {
         if transfer.fee_disposition != evidence.issuance.fee_disposition_mode {
@@ -5034,7 +4971,7 @@ fn validate_local_sns_evidence(
         return Err(format!("{path}: protocol reserve balance must be nonzero"));
     }
     if evidence.ledger.reserve_transfer_amount_e8s == 0
-        || evidence.ledger.redemption_return_amount_e8s == 0
+        || evidence.ledger.redemption_push_amount_e8s == 0
     {
         return Err(format!(
             "{path}: issuance and redemption rehearsal transfer amounts must be nonzero"
@@ -5095,7 +5032,7 @@ fn validate_local_sns_evidence(
         ));
     }
     let _ = evidence.ledger.reserve_transfer_block_index;
-    let _ = evidence.ledger.redemption_return_block_index;
+    let _ = evidence.ledger.redemption_push_block_index;
     Ok(())
 }
 
@@ -5322,59 +5259,31 @@ fn validate_local_sns_transfer_sequence(
     reserve_account: &LocalSnsAccountEvidence,
 ) -> Result<(), String> {
     let t1 = &evidence.reserve_to_user_transfer;
-    let t2 = &evidence.user_to_redemption_transfer;
-    let t3 = &evidence.redemption_to_reserve_transfer;
-    if t1.block_index >= t2.block_index || t2.block_index >= t3.block_index {
+    let t2 = &evidence.user_to_reserve_transfer;
+    if t1.block_index >= t2.block_index {
         return Err(format!(
             "{path}: transfer block indexes must strictly increase"
         ));
     }
-    if !timestamp_leq(&t1.observation_timestamp, &t2.observation_timestamp)
-        || !timestamp_leq(&t2.observation_timestamp, &t3.observation_timestamp)
-    {
+    if !timestamp_leq(&t1.observation_timestamp, &t2.observation_timestamp) {
         return Err(format!(
             "{path}: transfer observation timestamps must be parseable RFC3339 UTC and non-decreasing"
         ));
     }
     if t1.to_account != t2.from_account {
         return Err(format!(
-            "{path}: reserve-to-user.to must equal user-to-redemption.from"
+            "{path}: reserve-to-user.to must equal user-to-reserve.from"
         ));
     }
-    if t2.to_account != t3.from_account {
-        return Err(format!(
-            "{path}: user-to-redemption.to must equal redemption-to-reserve.from"
-        ));
-    }
-    if &t1.from_account != reserve_account || &t3.to_account != reserve_account {
+    if &t1.from_account != reserve_account || &t2.to_account != reserve_account {
         return Err(format!(
             "{path}: reserve transfer endpoints must match configured protocol reserve account"
         ));
     }
-    let redemption_account = &t2.to_account;
-    if redemption_account != &t3.from_account {
-        return Err(format!(
-            "{path}: exact redemption account must be stable across intake and return"
-        ));
-    }
-    if redemption_account.owner != evidence.io_dapp_canisters.io_stream_manager {
-        return Err(format!(
-            "{path}: redemption account owner must equal io_dapp_canisters.io_stream_manager"
-        ));
-    }
-    if redemption_account == reserve_account {
-        return Err(format!(
-            "{path}: protocol reserve Account must not collide with redemption Account"
-        ));
-    }
-    if t1.total_supply_after_e8s != t2.total_supply_before_e8s
-        || t2.total_supply_after_e8s != t3.total_supply_before_e8s
-    {
+    if t1.total_supply_after_e8s != t2.total_supply_before_e8s {
         return Err(format!("{path}: transfer total supply continuity failed"));
     }
-    if t1.reserve_balance_after_e8s != t2.reserve_balance_before_e8s
-        || t2.reserve_balance_after_e8s != t3.reserve_balance_before_e8s
-    {
+    if t1.reserve_balance_after_e8s != t2.reserve_balance_before_e8s {
         return Err(format!(
             "{path}: transfer reserve balance continuity failed"
         ));
@@ -5382,15 +5291,10 @@ fn validate_local_sns_transfer_sequence(
     if t1.recipient_balance_after_e8s != t2.sender_balance_before_e8s {
         return Err(format!("{path}: user account balance continuity failed"));
     }
-    if t2.recipient_balance_after_e8s != t3.sender_balance_before_e8s {
-        return Err(format!(
-            "{path}: redemption account balance continuity failed"
-        ));
-    }
     if evidence.ledger.reserve_transfer_block_index != t1.block_index
-        || evidence.ledger.redemption_return_block_index != t3.block_index
+        || evidence.ledger.redemption_push_block_index != t2.block_index
         || evidence.ledger.reserve_transfer_amount_e8s != t1.requested_amount_e8s
-        || evidence.ledger.redemption_return_amount_e8s != t3.requested_amount_e8s
+        || evidence.ledger.redemption_push_amount_e8s != t2.requested_amount_e8s
     {
         return Err(format!(
             "{path}: top-level ledger evidence must match detailed transfer records"
@@ -5402,9 +5306,8 @@ fn validate_local_sns_transfer_sequence(
         .checked_sub(evidence.reserve_funding_transfer.transfer.observed_fee_e8s)
         .and_then(|value| value.checked_sub(t1.observed_fee_e8s))
         .and_then(|value| value.checked_sub(t2.observed_fee_e8s))
-        .and_then(|value| value.checked_sub(t3.observed_fee_e8s))
         .ok_or_else(|| format!("{path}: total-supply fee-burn equation underflow"))?;
-    if t3.total_supply_after_e8s != expected_final_supply {
+    if t2.total_supply_after_e8s != expected_final_supply {
         return Err(format!(
             "{path}: final supply must equal genesis supply minus reserve-funding and subsequent transfer fees"
         ));
@@ -5475,8 +5378,7 @@ fn detailed_transfer_by_name<'a>(
     match name {
         "reserve_funding_transfer" => Some(&evidence.reserve_funding_transfer.transfer),
         "transfer_reserve_to_user" => Some(&evidence.reserve_to_user_transfer),
-        "transfer_user_to_redemption" => Some(&evidence.user_to_redemption_transfer),
-        "transfer_redemption_to_reserve" => Some(&evidence.redemption_to_reserve_transfer),
+        "transfer_user_to_reserve" => Some(&evidence.user_to_reserve_transfer),
         _ => None,
     }
 }
@@ -6496,11 +6398,18 @@ fn validate_account_semantic_evidence(
         ],
     )?;
     let evidence_schema = require_simple_string(&scenario_path, &scenario, "evidence", "schema")?;
+    let manifest_schema = require_simple_string(
+        &format!("{package}/manifest.toml"),
+        manifest,
+        "provenance",
+        "evidence_schema",
+    )?;
     if !matches!(
         evidence_schema.as_str(),
         "account-semantic-v1" | "anchored-dynamic-v1"
-    ) || require_simple_string(&scenario_path, &scenario, "backing", "identity")?
-        != "B = L + P + U + T"
+    ) || manifest_schema != evidence_schema
+        || require_simple_string(&scenario_path, &scenario, "backing", "identity")?
+            != "B = L + P + U + T"
     {
         return Err(format!(
             "{scenario_path}: account-semantic schema or backing identity mismatch"

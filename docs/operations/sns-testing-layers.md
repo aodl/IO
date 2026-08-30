@@ -102,7 +102,7 @@ candidate-package validation passes, and the selector is reviewed against its
 exact source/artifact/checksum identity. Historical packages remain bound to
 their own runs.
 
-Done criteria for this layer are intentionally concrete: official local SNS tooling must run locally; local SNS root/governance/ledger/index/swap IDs must be recorded; ledger fee disposition, total-supply deltas, reserve balance, reserve-to-user transfer, user-to-redemption transfer, redemption-to-reserve transfer, bad fee, insufficient funds, duplicate proof, and index account history must be observed; governance/root/swap availability and dapp controller state must be checked; exact NNS and controlled account-semantic cases must pass serially; and the candidate and selected committed evidence validators must both pass.
+Done criteria for this layer are intentionally concrete: official local SNS tooling must run locally; local SNS root/governance/ledger/index/swap IDs must be recorded; ledger fee disposition, total-supply deltas, reserve balance, reserve-to-user issuance, the exact prepared user-to-reserve redemption push, bad fee, insufficient funds, duplicate proof, and index account history must be observed; governance/root/swap availability and dapp controller state must be checked; exact NNS and controlled anchored-dynamic cases must pass serially; and the candidate and selected committed evidence validators must both pass.
 
 ## Layer 4: Mainnet SNS Testflight
 
