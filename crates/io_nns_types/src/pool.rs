@@ -1,7 +1,7 @@
 use candid::CandidType;
 use serde::Deserialize;
 
-use crate::backing::{CohortProofState, MAX_LIVE_UNWIND_COHORTS};
+use crate::backing::CohortProofState;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum UnwindPhase {
@@ -123,9 +123,6 @@ pub struct PassiveCohort {
 }
 
 pub fn validate_cohorts(cohorts: &[PassiveCohort]) -> Result<(), String> {
-    if cohorts.len() > MAX_LIVE_UNWIND_COHORTS {
-        return Err("live unwind cohort capacity exceeded".into());
-    }
     let mut previous = None;
     for cohort in cohorts {
         if cohort.generation == 0
@@ -165,13 +162,11 @@ mod tests {
     }
 
     #[test]
-    fn live_cohorts_are_sorted_unique_and_bounded() {
-        let mut cohorts = (1..=MAX_LIVE_UNWIND_COHORTS as u64)
-            .map(cohort)
-            .collect::<Vec<_>>();
+    fn historical_generations_are_not_a_product_capacity_limit() {
+        let mut cohorts = (1..=64).map(cohort).collect::<Vec<_>>();
         assert_eq!(validate_cohorts(&cohorts), Ok(()));
-        cohorts.push(cohort(33));
-        assert!(validate_cohorts(&cohorts).is_err());
+        cohorts.push(cohort(65));
+        assert_eq!(validate_cohorts(&cohorts), Ok(()));
         assert!(validate_cohorts(&[cohort(2), cohort(1)]).is_err());
     }
 }

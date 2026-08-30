@@ -42,7 +42,7 @@ cargo build \
   --target wasm32-unknown-unknown
 
 tests=(
-  "installed_stream_real_sns_icrc2_redemption"
+  "installed_stream_real_sns_icrc1_push_redemption"
 )
 
 ran=()

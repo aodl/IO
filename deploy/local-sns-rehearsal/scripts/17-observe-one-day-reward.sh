@@ -116,4 +116,4 @@ done
 event_round="$(sed -n 's/^[[:space:]]*round: \([0-9][0-9]*\),/\1/p' "$observation_log" | head -1)"
 require_nat "reward event round" "$event_round"
 mark_phase_done 17-one-day-reward-observed \
-  "warmup_proposal_id=${proposal_id} event_round=${event_round} classification=ProposalBearing processed_count=2 accumulated_policy_credit=2000000000000000000 prospective_reentry=true lazy_parent_reconciled=true historian_fresh=true monitoring_settle_seconds=60; see ${observation_log}"
+  "warmup_proposal_id=${proposal_id} event_round=${event_round} classification=ProposalBearing processed_count=2 accumulated_policy_credit=2000000000000000000 prospective_reentry=true dynamic_parent_reconciled=true historian_fresh=true monitoring_settle_seconds=60; see ${observation_log}"

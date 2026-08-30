@@ -4,7 +4,10 @@
 
 Superseded for maturity custody, paired receipts, and proof state by
 [`account-semantic-maturity.md`](account-semantic-maturity.md). The remaining
-pool-allocation history is retained as design context.
+pool-allocation history is retained as design context. Policy A, lazy parent
+bootstrap, the parent claim floor, and the 32-cohort product behavior are also
+superseded by [`adr-anchored-dynamic-backing.md`](adr-anchored-dynamic-backing.md)
+and are not normative for the anchored candidate.
 
 This ADR supersedes the separate-endowment design. It defines the production
 claim-backing economics and bounded orchestration model. Acceptance does not

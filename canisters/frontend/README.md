@@ -60,25 +60,16 @@ For the connected principal and selected subaccount, the client queries in
 parallel:
 
 - IO Ledger `icrc1_fee`;
-- IO Ledger `icrc2_allowance` for the Stream Manager spender; and
 - Stream Manager `get_caller_redemption_state` for the next nonce, last request
   fingerprint, and last completed result.
 
-It constructs the exact allowance and redemption requests before consent. The
-wallet receives the IO amount, Stream Manager spender, selected source
-subaccount, exact allowance, current IO fee, observed existing allowance,
-approval expiry/memo/timestamp, request nonce, minimum ICP output, maximum ICP
-fee, redemption expiry, and exact network. Only affirmative consent permits
-`icrc2_approve`; only a successful approval permits `redeem`. The ordering is
-queries, exact construction, consent, approve, redeem. Denial performs no
-monetary call.
-
-The allowance is `io_amount + current transfer_from fee`, uses the exact
-observed allowance as `expected_allowance`, includes a deterministic
-nonce-bound memo/timestamp, and expires after five minutes. The approval itself
-burns its own IO fee. The subsequent `redeem` request uses the same canonical
-subaccount, a two-minute request expiry, minimum ICP output, and IO and ICP fee
-maxima.
+The Stream Manager prepares an exact frozen quote and deterministic memo before
+consent. The wallet receives the IO amount, selected source subaccount, reserve
+destination, exact IO fee, memo, gross/net ICP quote, request nonce, transfer
+expiry, and exact network. Only affirmative consent permits one `icrc1_transfer`
+to the reserve. Its returned block index is then exact-matched by
+`settle_redemption`; no allowance or spender authority exists. Denial performs
+no monetary call.
 
 The public UI renders coarse `Pending`, `Completed`, and `Stuck` workflow
 progress. Detailed durable phase names remain operator diagnostics exposed by
@@ -86,8 +77,9 @@ status rather than public workflow compatibility variants. Anyone may call the
 canister's permissionless `resume`; the connected UI exposes that operation.
 For a `Stuck` own transfer, the user may submit the exact canonical ledger block
 to `prove_active_transfer`, then resume.
-The canister exact-matches the active persisted intent. Direct IO transfer is
-unsupported and cannot create a redemption intent.
+The canister exact-matches the active persisted intent. An arbitrary IO transfer
+without a matching prepared memo/window is unsupported and cannot create a
+redemption intent.
 
 ## Certified assets, initialization, and cache policy
 

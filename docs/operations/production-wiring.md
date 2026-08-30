@@ -1,4 +1,4 @@
-# Pooled claim-backing production wiring
+# Anchored dynamic-backing production wiring
 
 Production wiring is a non-runnable plan. Stream explicitly configures the IO
 and ICP ledgers, NNS Manager, Jupiter receipt source, Jupiter claim-bearing IO
@@ -9,16 +9,17 @@ The corresponding value-moving source is `io_stream_manager`.
 
 NNS explicitly configures the ICP ledger, Governance, permanent neuron,
 maturity and Jupiter staging Accounts, Stream liquid destination, one fixed
-pooled-parent memo, one fixed followee, exact parent minimum, fees, and retry
-windows. There is no separately funded pooled parent, separate pooled fee
-float, or caller-selected destination.
+Dynamic-neuron memo, one fixed followee, exact 10 ICP anchor target, fees, and
+retry windows. The Dynamic neuron is deliberately preseeded protocol capital;
+there is no claim-funded lazy bootstrap, caller-selected destination, or
+separate pooled fee float.
 The corresponding NNS control source is `io_nns_neuron_manager`.
 
 The resolved production policy is:
 
-- pooled-parent memo `0`, used only as the fixed deterministic NNS staking
+- Dynamic-neuron memo `0`, used only as the fixed deterministic NNS staking
   nonce and not as application metadata;
-- pooled-parent followee `10_292_412_127_977_304_661`, exactly equal to the
+- Dynamic-neuron followee `10_292_412_127_977_304_661`, exactly equal to the
   configured protected two-year neuron ID;
 - permanent-neuron controller/NNS Manager
   `oae4c-3iaaa-aaaar-qb5qq-cai`;
@@ -26,19 +27,20 @@ The resolved production policy is:
   alpha-vote neuron `2_947_465_672_511_369`; this remains subject to separately
   authorized mainnet verification, and deployment does not change it.
 
-Readiness and bootstrap compare the candidate pooled-parent staking Account
-with the permanent neuron's observed canonical Account and reject equality
-before a transfer permit exists. Unsolicited ICP at a distinct candidate
-Account is recorded only as canonical pooled principal and any surplus is
-handled by ordinary `OverTarget` reconciliation; it creates no issuance or
-entitlement.
+Before Ready, bootstrap compares the deterministic Dynamic staking Account
+with the permanent neuron's canonical Account and rejects equality. It requires
+a canonical balance of at least 10 ICP, claims or refreshes the neuron, and
+proves exact 14-day non-dissolving delay, auto-stake off, fixed following, and
+identity. Exactly 10 ICP initializes excluded anchor; any positive residual is
+excluded unattributed surplus. Neither category enters claim backing or issues
+IO, and excess cannot block bootstrap or prove a later exact transfer.
 
-The daily authenticated pool-policy observation independently attempts
-`RefreshVotingPower` for the permanent neuron and the pooled parent when it
-exists. These are best-effort governance-maintenance calls: timestamp age and
-refresh failure do not gate monetary work, one failed attempt does not suppress
-the other, no followees are changed, and no additional timer or stable
-scheduler exists.
+Authenticated policy observation independently attempts `RefreshVotingPower`
+for the permanent and Dynamic neurons. These remain best-effort governance
+maintenance: timestamp age and refresh failure do not gate monetary work, one
+failed attempt does not suppress the other, and no followees are changed. The
+12-hour Stream structural scheduler and the NNS recovery/ready-child timer are
+separate one-shot scheduling mechanisms with no stable timer timestamp.
 
 ## Role identity record
 
@@ -50,9 +52,10 @@ scheduler exists.
 Their non-authoritative source roles remain `io_historian` and `io_frontend`.
 
 Two-year protected neuron `10292412127977304661` remains a protected reference
-and is never a mutation target outside the installed NNS Manager. The pooled
-parent remains lazy; memo and followee are fixed as above, but no production
-pooled-parent neuron ID is invented before canonical bootstrap.
+and is never a mutation target outside the installed NNS Manager. The Dynamic
+neuron ID is discovered and recorded only through canonical pre-Ready
+bootstrap; configuration does not invent it. Physical principal is partitioned
+as claim-bearing principal plus excluded anchor plus excluded surplus.
 
 All production files remain dry-run validation inputs. IO issuance/redemption
 is inactive, and this document authorizes no inspection, installation,

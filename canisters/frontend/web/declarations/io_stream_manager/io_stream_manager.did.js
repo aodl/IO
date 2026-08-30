@@ -23,6 +23,47 @@ export const idlFactory = ({ IDL }) => {
     'io_reserve' : Account,
   });
   const InitArgs = IDL.Record({ 'config' : StreamConfig });
+  const FrozenRedemptionEconomics = IDL.Record({
+    'icp_fee_e8s' : IDL.Nat,
+    'total_supply_e8s' : IDL.Nat,
+    'claim_supply_e8s' : IDL.Nat,
+    'excluded_io_balances' : IDL.Vec(IDL.Tuple(Account, IDL.Nat)),
+    'total_claim_backing_e8s' : IDL.Nat,
+    'liquid_icp_e8s' : IDL.Nat,
+    'observation_fingerprint' : IDL.Vec(IDL.Nat8),
+    'reserve_io_e8s' : IDL.Nat,
+    'io_fee_e8s' : IDL.Nat,
+  });
+  const CanonicalRedeemRequestV1 = IDL.Record({
+    'effective_subaccount' : IDL.Vec(IDL.Nat8),
+    'expires_at_nanos' : IDL.Nat64,
+    'min_icp_out_e8s' : IDL.Nat,
+    'max_icp_fee_e8s' : IDL.Nat,
+    'io_amount_e8s' : IDL.Nat,
+    'nonce' : IDL.Nat64,
+    'max_io_fee_e8s' : IDL.Nat,
+  });
+  const PreparedRedemption = IDL.Record({
+    'snapshot' : FrozenRedemptionEconomics,
+    'request_fingerprint' : IDL.Vec(IDL.Nat8),
+    'request' : CanonicalRedeemRequestV1,
+    'reserve' : Account,
+    'net_icp_e8s' : IDL.Nat,
+    'account' : Account,
+    'push_memo' : IDL.Vec(IDL.Nat8),
+    'caller' : IDL.Principal,
+    'gross_icp_e8s' : IDL.Nat,
+    'prepared_at_nanos' : IDL.Nat64,
+  });
+  const PushedRedemption = IDL.Record({
+    'io_block' : IDL.Nat,
+    'transfer_created_at_nanos' : IDL.Nat64,
+    'prepared' : PreparedRedemption,
+  });
+  const CallerRedemptionPending = IDL.Variant({
+    'Prepared' : PreparedRedemption,
+    'Pushed' : PushedRedemption,
+  });
   const RedemptionResult = IDL.Record({
     'icp_fee_e8s' : IDL.Nat,
     'io_block' : IDL.Nat,
@@ -36,6 +77,7 @@ export const idlFactory = ({ IDL }) => {
   });
   const CallerRedemptionState = IDL.Record({
     'next_nonce' : IDL.Nat64,
+    'pending' : IDL.Opt(CallerRedemptionPending),
     'last_result' : IDL.Opt(RedemptionResult),
     'last_request_fingerprint' : IDL.Opt(IDL.Vec(IDL.Nat8)),
   });
@@ -48,11 +90,6 @@ export const idlFactory = ({ IDL }) => {
     'WrongNonce' : IDL.Record({ 'expected' : IDL.Nat64 }),
     'Unauthorized' : IDL.Null,
     'Ledger' : IDL.Text,
-    'LiquidityShortfall' : IDL.Record({
-      'net_icp_e8s' : IDL.Nat,
-      'available_liquid_e8s' : IDL.Nat,
-      'gross_icp_e8s' : IDL.Nat,
-    }),
     'NonceAlreadyUsed' : IDL.Null,
     'Pending' : IDL.Text,
   });
@@ -94,15 +131,14 @@ export const idlFactory = ({ IDL }) => {
   const Status = IDL.Record({
     'accumulated_policy_credit' : IDL.Nat,
     'accumulated_entitlements' : IDL.Vec(FrozenEntitlement),
+    'prepared_exit_generation' : IDL.Opt(IDL.Nat64),
+    'prepared_exit_member_count' : IDL.Nat32,
     'operation_kind' : IDL.Opt(IDL.Text),
     'processed_reward_event_count' : IDL.Nat64,
     'pending_entitlement_batch_policy_credit' : IDL.Opt(IDL.Nat),
     'reward_work_due' : IDL.Bool,
     'operation_phase' : IDL.Opt(IDL.Text),
     'latest_reconciliation_checkpoint' : IDL.Opt(ReconciliationCheckpoint),
-    'prepared_exit_generation' : IDL.Opt(IDL.Nat64),
-    'prepared_exit_member_count' : IDL.Nat32,
-    'committed_exit_member_count' : IDL.Nat32,
     'governance_parameters_fresh' : IDL.Bool,
     'latest_processed_reward_event' : IDL.Opt(RewardEventId),
     'lifecycle' : Lifecycle,
@@ -110,6 +146,7 @@ export const idlFactory = ({ IDL }) => {
     'pending_entitlement_batch_eligible_credit' : IDL.Opt(IDL.Nat),
     'next_operation_sequence' : IDL.Nat64,
     'latest_reward_event_classification' : IDL.Opt(RewardEventClassification),
+    'committed_exit_member_count' : IDL.Nat32,
     'missed_reward_event_count' : IDL.Nat64,
     'latest_entitlement_batch_generation' : IDL.Nat64,
     'reward_processing_paused' : IDL.Bool,
@@ -119,34 +156,15 @@ export const idlFactory = ({ IDL }) => {
     'Jupiter' : IDL.Null,
   });
   const PrepareClaimBackingReceiptArgs = IDL.Record({
-    'nns_operation_sequence' : IDL.Nat64,
     'kind' : ClaimBackingReceiptKind,
     'net_liquid_credit_e8s' : IDL.Nat,
+    'nns_operation_sequence' : IDL.Nat64,
   });
   const ClaimBackingReceiptPermit = IDL.Record({
     'destination' : Account,
     'memo' : IDL.Vec(IDL.Nat8),
     'amount_e8s' : IDL.Nat,
     'stream_operation_sequence' : IDL.Nat64,
-  });
-  const ProveClaimBackingReceiptArgs = IDL.Record({
-    'block_index' : IDL.Nat,
-    'stream_operation_sequence' : IDL.Nat64,
-  });
-  const ClaimBackingReceiptResult = IDL.Record({
-    'nns_operation_sequence' : IDL.Nat64,
-    'kind' : ClaimBackingReceiptKind,
-    'distributed_io_e8s' : IDL.Nat,
-    'completed_at_nanos' : IDL.Nat64,
-    'recipient_transfer_block' : IDL.Opt(IDL.Nat),
-    'io_fee_e8s' : IDL.Nat,
-    'liquid_credit_e8s' : IDL.Nat,
-  });
-  const ClaimBackingReceiptProgress = IDL.Variant({
-    'Stuck' : IDL.Text,
-    'AwaitingLiquidProof' : ClaimBackingReceiptPermit,
-    'Pending' : IDL.Null,
-    'Completed' : ClaimBackingReceiptResult,
   });
   const RedeemArgs = IDL.Record({
     'expires_at_nanos' : IDL.Nat64,
@@ -157,10 +175,29 @@ export const idlFactory = ({ IDL }) => {
     'nonce' : IDL.Nat64,
     'max_io_fee_e8s' : IDL.Nat,
   });
-  const RedemptionProgress = IDL.Variant({
+  const ProveClaimBackingReceiptArgs = IDL.Record({
+    'block_index' : IDL.Nat,
+    'stream_operation_sequence' : IDL.Nat64,
+  });
+  const ClaimBackingReceiptResult = IDL.Record({
+    'kind' : ClaimBackingReceiptKind,
+    'distributed_io_e8s' : IDL.Nat,
+    'completed_at_nanos' : IDL.Nat64,
+    'recipient_transfer_block' : IDL.Opt(IDL.Nat),
+    'nns_operation_sequence' : IDL.Nat64,
+    'io_fee_e8s' : IDL.Nat,
+    'liquid_credit_e8s' : IDL.Nat,
+  });
+  const ClaimBackingReceiptProgress = IDL.Variant({
+    'Stuck' : IDL.Text,
+    'AwaitingLiquidProof' : ClaimBackingReceiptPermit,
+    'Completed' : ClaimBackingReceiptResult,
     'Pending' : IDL.Null,
+  });
+  const RedemptionProgress = IDL.Variant({
     'Stuck' : IDL.Text,
     'Completed' : RedemptionResult,
+    'Pending' : IDL.Null,
   });
   const StreamProgress = IDL.Variant({
     'BackingReconciliation' : IDL.Null,
@@ -198,6 +235,11 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Variant({ 'Ok' : ClaimBackingReceiptPermit, 'Err' : ApiError })],
         [],
       ),
+    'prepare_redemption' : IDL.Func(
+        [RedeemArgs],
+        [IDL.Variant({ 'Ok' : PreparedRedemption, 'Err' : ApiError })],
+        [],
+      ),
     'prove_active_transfer' : IDL.Func(
         [IDL.Nat],
         [IDL.Variant({ 'Ok' : IDL.Null, 'Err' : ApiError })],
@@ -208,14 +250,14 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Variant({ 'Ok' : ClaimBackingReceiptProgress, 'Err' : ApiError })],
         [],
       ),
-    'redeem' : IDL.Func(
-        [RedeemArgs],
-        [IDL.Variant({ 'Ok' : RedemptionProgress, 'Err' : ApiError })],
-        [],
-      ),
     'resume' : IDL.Func(
         [],
         [IDL.Variant({ 'Ok' : StreamProgress, 'Err' : ApiError })],
+        [],
+      ),
+    'resume_redemption' : IDL.Func(
+        [IDL.Principal],
+        [IDL.Variant({ 'Ok' : RedemptionProgress, 'Err' : ApiError })],
         [],
       ),
     'resume_reward_backing' : IDL.Func(
@@ -231,6 +273,11 @@ export const idlFactory = ({ IDL }) => {
     'set_paused' : IDL.Func(
         [IDL.Bool],
         [IDL.Variant({ 'Ok' : IDL.Null, 'Err' : ApiError })],
+        [],
+      ),
+    'settle_redemption' : IDL.Func(
+        [IDL.Nat],
+        [IDL.Variant({ 'Ok' : RedemptionProgress, 'Err' : ApiError })],
         [],
       ),
     'validate_set_paused' : IDL.Func(

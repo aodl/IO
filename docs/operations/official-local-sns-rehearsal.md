@@ -141,7 +141,12 @@ Run local canister calls against the local SNS ledger/index principals recorded 
 
 IO issuance is resolved conservatively as a transfer from a protocol reserve account/subaccount funded after SNS finalization and before activation by an executed SNS-governance treasury-transfer proposal.
 
-Redemption uses an authenticated ICRC-2 pull directly into the protocol reserve. IO must not assume arbitrary post-launch minting unless final SNS ledger configuration and governance policy explicitly support it and a later audited milestone changes this model.
+Redemption uses an exact prepared ICRC-1 push into the protocol reserve. The
+caller sends the prepared amount and memo, then supplies the block for exact
+proof; no allowance or spender authority exists. A proved push creates a
+durable ICP payout obligation. IO must not assume arbitrary post-launch minting
+unless final SNS ledger configuration and governance policy explicitly support
+it and a later audited milestone changes this model.
 
 The local rehearsal must prove:
 

@@ -558,10 +558,7 @@ pub async fn prove_recipient(block_index: u128) -> Result<ClaimBackingReceiptPro
         memo,
         created_at_time,
         ..
-    } = &attempt.intent
-    else {
-        return Err(ApiError::Invalid("recipient intent is not ICRC-1".into()));
-    };
+    } = &attempt.intent;
     let source = Account {
         owner: ic_cdk::api::canister_self(),
         subaccount: (*from_subaccount != [0; 32]).then(|| from_subaccount.to_vec()),
@@ -625,6 +622,7 @@ fn complete(
     latest.last_completed_claim_receipt = Some(completed);
     latest.stake_observation_due = true;
     state::write(latest);
+    crate::reward_timer::install_for_ready_state();
     Ok(ClaimBackingReceiptProgress::Completed(result))
 }
 

@@ -1,5 +1,5 @@
 use candid::{CandidType, Nat, Principal};
-use io_core_model::TWO_WEEK_SECONDS;
+use io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS;
 use io_ledger_types::Account;
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -1383,7 +1383,7 @@ impl Default for SnsEligibilityPolicy {
         Self {
             protocol_neuron_ids: BTreeSet::new(),
             jupiter_governance_neuron_ids: BTreeSet::new(),
-            required_dissolve_delay_seconds: TWO_WEEK_SECONDS,
+            required_dissolve_delay_seconds: SNS_USER_DISSOLVE_DELAY_SECONDS,
         }
     }
 }
@@ -1413,9 +1413,9 @@ pub fn snapshot_sns_eligibility(
             } else if !is_non_dissolving {
                 Some("neuron is dissolving".to_string())
             } else if neuron.dissolve_delay_seconds < policy.required_dissolve_delay_seconds {
-                Some("dissolve delay below two weeks".to_string())
+                Some("dissolve delay below the approved IO SNS delay".to_string())
             } else if neuron.dissolve_delay_seconds > policy.required_dissolve_delay_seconds {
-                Some("dissolve delay above two weeks".to_string())
+                Some("dissolve delay above the approved IO SNS delay".to_string())
             } else {
                 None
             };
@@ -2355,7 +2355,7 @@ mod tests {
             auto_stake_maturity: None,
             aging_since_timestamp_seconds: 1,
             dissolve_state: Some(SnsDissolveStateRecord::DissolveDelaySeconds(
-                TWO_WEEK_SECONDS,
+                SNS_USER_DISSOLVE_DELAY_SECONDS,
             )),
             voting_power_percentage_multiplier: 100,
             vesting_period_seconds: None,
@@ -2372,7 +2372,7 @@ mod tests {
         let mut candidate = sns_neuron_record(
             vec![8; 32],
             456,
-            SnsDissolveStateRecord::DissolveDelaySeconds(TWO_WEEK_SECONDS),
+            SnsDissolveStateRecord::DissolveDelaySeconds(SNS_USER_DISSOLVE_DELAY_SECONDS),
         );
         candidate.latest_reward_event_participation = Some(SnsRewardEventParticipation {
             reward_event_end_timestamp_seconds: 1_209_600,
@@ -2857,7 +2857,9 @@ mod tests {
             source_nns_neuron_id: None,
             auto_stake_maturity: Some(false),
             aging_since_timestamp_seconds: 1,
-            dissolve_state: Some(SnsDissolveStateRecord::DissolveDelaySeconds(1_209_600)),
+            dissolve_state: Some(SnsDissolveStateRecord::DissolveDelaySeconds(
+                SNS_USER_DISSOLVE_DELAY_SECONDS,
+            )),
             voting_power_percentage_multiplier: 100,
             vesting_period_seconds: None,
             disburse_maturity_in_progress: Vec::new(),
@@ -2896,7 +2898,7 @@ mod tests {
         let policy = SnsEligibilityPolicy {
             protocol_neuron_ids: BTreeSet::new(),
             jupiter_governance_neuron_ids: BTreeSet::new(),
-            required_dissolve_delay_seconds: TWO_WEEK_SECONDS,
+            required_dissolve_delay_seconds: SNS_USER_DISSOLVE_DELAY_SECONDS,
         };
         let eligibility = snapshot_sns_eligibility(&[neuron], &policy);
         assert_eq!(eligibility[0].owner, Some(controller));
@@ -3049,26 +3051,26 @@ mod tests {
 
     #[test]
     fn sns_eligibility_excludes_expected_neurons() {
-        let mut protocol = sns_neuron(2, 10_000, 1_209_600);
+        let mut protocol = sns_neuron(2, 10_000, SNS_USER_DISSOLVE_DELAY_SECONDS);
         protocol.is_io_protocol_neuron = true;
-        let mut jupiter = sns_neuron(3, 10_000, 1_209_600);
+        let mut jupiter = sns_neuron(3, 10_000, SNS_USER_DISSOLVE_DELAY_SECONDS);
         jupiter.is_jupiter_governance_neuron = true;
-        let mut dissolving = sns_neuron(4, 10_000, 1_209_600);
+        let mut dissolving = sns_neuron(4, 10_000, SNS_USER_DISSOLVE_DELAY_SECONDS);
         dissolving.dissolve_state = SnsDissolveState::Dissolving {
             when_dissolved_timestamp_seconds: 999,
         };
         let neurons = vec![
-            sns_neuron(1, 10_000, 1_209_600),
+            sns_neuron(1, 10_000, SNS_USER_DISSOLVE_DELAY_SECONDS),
             protocol,
             jupiter,
             dissolving,
             sns_neuron(5, 10_000, 1),
-            sns_neuron(6, 0, 1_209_600),
+            sns_neuron(6, 0, SNS_USER_DISSOLVE_DELAY_SECONDS),
         ];
         let policy = SnsEligibilityPolicy {
             protocol_neuron_ids: BTreeSet::new(),
             jupiter_governance_neuron_ids: BTreeSet::new(),
-            required_dissolve_delay_seconds: TWO_WEEK_SECONDS,
+            required_dissolve_delay_seconds: SNS_USER_DISSOLVE_DELAY_SECONDS,
         };
         let out = snapshot_sns_eligibility(&neurons, &policy);
         assert_eq!(out[0].excluded_reason, None);
@@ -3087,7 +3089,7 @@ mod tests {
         );
         assert_eq!(
             out[4].excluded_reason.as_deref(),
-            Some("dissolve delay below two weeks")
+            Some("dissolve delay below the approved IO SNS delay")
         );
         assert_eq!(out[5].excluded_reason.as_deref(), Some("zero stake"));
     }

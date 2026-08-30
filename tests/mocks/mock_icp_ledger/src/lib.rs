@@ -28,6 +28,7 @@ pub struct LedgerTransaction {
     pub from_account: Option<Account>,
     pub to_account: Option<Account>,
     pub amount_e8s: u128,
+    pub fee_e8s: Option<u128>,
     pub memo: String,
     pub memo_bytes: Option<Vec<u8>>,
     pub block_index: u64,
@@ -53,9 +54,7 @@ pub struct LedgerCallCounters {
     pub fee: u64,
     pub total_supply: u64,
     pub balance: u64,
-    pub allowance: u64,
     pub transfer: u64,
-    pub transfer_from: u64,
     pub query_blocks: u64,
 }
 
@@ -138,6 +137,7 @@ struct RecordTransfer {
     from_account: Option<Account>,
     to_account: Option<Account>,
     amount_e8s: u128,
+    fee_e8s: Option<u128>,
     memo: String,
     memo_bytes: Option<Vec<u8>>,
     native_memo_u64: u64,
@@ -152,6 +152,7 @@ fn record(state: &mut LedgerState, transfer: RecordTransfer) -> u64 {
         from_account: transfer.from_account,
         to_account: transfer.to_account,
         amount_e8s: transfer.amount_e8s,
+        fee_e8s: transfer.fee_e8s,
         memo: transfer.memo,
         memo_bytes: transfer.memo_bytes,
         block_index,
@@ -333,27 +334,6 @@ pub fn icrc1_balance_of(account: IcrcAccount) -> Nat {
     })
 }
 
-#[derive(Clone, Debug, CandidType, Deserialize)]
-pub struct AllowanceArgs {
-    pub account: IcrcAccount,
-    pub spender: IcrcAccount,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-pub struct Allowance {
-    pub allowance: Nat,
-    pub expires_at: Option<u64>,
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::query)]
-pub fn icrc2_allowance(_args: AllowanceArgs) -> Allowance {
-    STATE.with(|cell| cell.borrow_mut().call_counters.allowance += 1);
-    Allowance {
-        allowance: Nat::from(u128::MAX),
-        expires_at: None,
-    }
-}
-
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn icrc1_transfer(args: IcrcTransferArg) -> Result<Nat, IcrcTransferError> {
     STATE.with(|cell| {
@@ -393,64 +373,22 @@ pub fn icrc1_transfer(args: IcrcTransferArg) -> Result<Nat, IcrcTransferError> {
         {
             return Err(IcrcTransferError::TemporarilyUnavailable);
         }
-        let from_balance = balance_of(&state, &from);
-        if from_balance < amount_e8s {
-            return Err(IcrcTransferError::InsufficientFunds {
-                balance: Nat::from(from_balance),
-            });
-        }
-        let to_balance = balance_of(&state, &to);
-        set_balance(&mut state, &from, from_balance - amount_e8s);
-        set_balance(&mut state, &to, to_balance.saturating_add(amount_e8s));
-        Ok(Nat::from(record(
-            &mut state,
-            RecordTransfer {
-                from,
-                to,
-                from_account: Some(from_account),
-                to_account: Some(to_account),
-                amount_e8s,
-                memo,
-                memo_bytes,
-                native_memo_u64: 0,
-                created_at_time,
-            },
-        )))
-    })
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-pub struct TransferFromArg {
-    pub spender_subaccount: Option<Vec<u8>>,
-    pub from: IcrcAccount,
-    pub to: IcrcAccount,
-    pub amount: Nat,
-    pub fee: Option<Nat>,
-    pub memo: Option<Vec<u8>>,
-    pub created_at_time: Option<u64>,
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn icrc2_transfer_from(args: TransferFromArg) -> Result<Nat, IcrcTransferError> {
-    STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
-        state.call_counters.transfer_from += 1;
-        if let Some(fee) = args.fee.as_ref() {
-            let fee = nat_to_u128(fee, "fee")?;
-            let current_fee = fee_e8s(&state);
-            if fee != current_fee {
-                return Err(IcrcTransferError::BadFee {
-                    expected_fee: Nat::from(current_fee),
+        let transfer_fee_e8s = fee_e8s(&state);
+        if created_at_time.is_some() {
+            if let Some(transaction) = state.transactions.iter().find(|transaction| {
+                transaction.from_account.as_ref() == Some(&from_account)
+                    && transaction.to_account.as_ref() == Some(&to_account)
+                    && transaction.amount_e8s == amount_e8s
+                    && transaction.fee_e8s == Some(transfer_fee_e8s)
+                    && transaction.memo_bytes == memo_bytes
+                    && transaction.timestamp == created_at_time.expect("checked")
+            }) {
+                return Err(IcrcTransferError::Duplicate {
+                    duplicate_of: Nat::from(transaction.block_index),
                 });
             }
         }
-        let from_account = account_from_icrc(args.from.clone())?;
-        let to_account = account_from_icrc(args.to.clone())?;
-        let from = mock_label_from_account(&from_account);
-        let to = mock_label_from_account(&to_account);
-        let amount_e8s = nat_to_u128(&args.amount, "amount")?;
-        let created_at_time = args.created_at_time;
-        let debit_e8s = amount_e8s.checked_add(fee_e8s(&state)).ok_or_else(|| {
+        let debit_e8s = amount_e8s.checked_add(transfer_fee_e8s).ok_or_else(|| {
             IcrcTransferError::GenericError {
                 error_code: Nat::from(1_u64),
                 message: "transfer debit overflow".into(),
@@ -462,8 +400,8 @@ pub fn icrc2_transfer_from(args: TransferFromArg) -> Result<Nat, IcrcTransferErr
                 balance: Nat::from(from_balance),
             });
         }
-        set_balance(&mut state, &from, from_balance - debit_e8s);
         let to_balance = balance_of(&state, &to);
+        set_balance(&mut state, &from, from_balance - debit_e8s);
         set_balance(&mut state, &to, to_balance.saturating_add(amount_e8s));
         Ok(Nat::from(record(
             &mut state,
@@ -473,8 +411,9 @@ pub fn icrc2_transfer_from(args: TransferFromArg) -> Result<Nat, IcrcTransferErr
                 from_account: Some(from_account),
                 to_account: Some(to_account),
                 amount_e8s,
-                memo: memo_to_string(args.memo.clone()),
-                memo_bytes: args.memo,
+                fee_e8s: Some(transfer_fee_e8s),
+                memo,
+                memo_bytes,
                 native_memo_u64: 0,
                 created_at_time,
             },
@@ -544,6 +483,7 @@ pub fn debug_mint_account(args: DebugMintAccountArgs) -> u64 {
                 from_account: None,
                 to_account: Some(account),
                 amount_e8s: args.amount_e8s,
+                fee_e8s: None,
                 memo: "debug mint".into(),
                 memo_bytes: None,
                 native_memo_u64: 0,
@@ -559,6 +499,7 @@ pub fn debug_record_nns_disbursement(args: DebugNnsDisbursementArgs) -> u64 {
     let to = account_from_icrc(args.to).expect("debug NNS destination Account must be canonical");
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
+        let transfer_fee_e8s = fee_e8s(&state);
         record(
             &mut state,
             RecordTransfer {
@@ -567,6 +508,7 @@ pub fn debug_record_nns_disbursement(args: DebugNnsDisbursementArgs) -> u64 {
                 from_account: Some(from),
                 to_account: Some(to),
                 amount_e8s: args.amount_e8s,
+                fee_e8s: Some(transfer_fee_e8s),
                 memo: args.native_memo_u64.to_string(),
                 memo_bytes: None,
                 native_memo_u64: args.native_memo_u64,
@@ -574,6 +516,93 @@ pub fn debug_record_nns_disbursement(args: DebugNnsDisbursementArgs) -> u64 {
             },
         )
     })
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct GetTransactionsRequest {
+    pub start: Nat,
+    pub length: Nat,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct IcrcHistoryTransfer {
+    pub to: IcrcAccount,
+    pub fee: Option<Nat>,
+    pub from: IcrcAccount,
+    pub memo: Option<Vec<u8>>,
+    pub created_at_time: Option<u64>,
+    pub amount: Nat,
+    pub spender: Option<IcrcAccount>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct IcrcHistoryTransaction {
+    pub kind: String,
+    pub transfer: Option<IcrcHistoryTransfer>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct TransactionRange {
+    pub transactions: Vec<IcrcHistoryTransaction>,
+}
+
+candid::define_function!(IcrcArchiveCallback : (GetTransactionsRequest) -> (TransactionRange) query);
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct ArchivedTransactions {
+    pub start: Nat,
+    pub length: Nat,
+    callback: IcrcArchiveCallback,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+pub struct GetTransactionsResponse {
+    pub transactions: Vec<IcrcHistoryTransaction>,
+    pub first_index: Nat,
+    pub archived_transactions: Vec<ArchivedTransactions>,
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn get_transactions(args: GetTransactionsRequest) -> GetTransactionsResponse {
+    let index = args.start.0.to_str_radix(10).parse::<usize>().ok();
+    let requested = args.length != 0_u8;
+    let transactions = STATE.with(|cell| {
+        let state = cell.borrow();
+        index
+            .filter(|_| requested)
+            .and_then(|index| state.transactions.get(index))
+            .map(|transaction| {
+                let transfer = transaction
+                    .from_account
+                    .as_ref()
+                    .zip(transaction.to_account.as_ref())
+                    .map(|(from, to)| IcrcHistoryTransfer {
+                        to: to.to_icrc_account(),
+                        fee: transaction.fee_e8s.map(Nat::from),
+                        from: from.to_icrc_account(),
+                        memo: transaction.memo_bytes.clone(),
+                        created_at_time: Some(transaction.timestamp.max(1)),
+                        amount: Nat::from(transaction.amount_e8s),
+                        spender: None,
+                    });
+                IcrcHistoryTransaction {
+                    kind: if transfer.is_some() {
+                        "transfer"
+                    } else {
+                        "mint"
+                    }
+                    .into(),
+                    transfer,
+                }
+            })
+            .into_iter()
+            .collect()
+    });
+    GetTransactionsResponse {
+        transactions,
+        first_index: args.start,
+        archived_transactions: Vec::new(),
+    }
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -715,6 +744,7 @@ pub fn debug_mint(args: DebugMintArgs) -> u64 {
                 from_account: None,
                 to_account: None,
                 amount_e8s: args.amount_e8s,
+                fee_e8s: None,
                 memo: args.memo,
                 memo_bytes: None,
                 native_memo_u64: 0,

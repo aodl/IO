@@ -42,8 +42,50 @@ type RedemptionResult = record {
 };
 type CallerRedemptionState = record {
   next_nonce : nat64;
+  pending : opt CallerRedemptionPending;
   last_request_fingerprint : opt blob;
   last_result : opt RedemptionResult;
+};
+type CanonicalRedeemRequestV1 = record {
+  effective_subaccount : blob;
+  io_amount_e8s : nat;
+  min_icp_out_e8s : nat;
+  max_io_fee_e8s : nat;
+  max_icp_fee_e8s : nat;
+  expires_at_nanos : nat64;
+  nonce : nat64;
+};
+type FrozenRedemptionEconomics = record {
+  total_supply_e8s : nat;
+  reserve_io_e8s : nat;
+  excluded_io_balances : vec record { Account; nat };
+  claim_supply_e8s : nat;
+  liquid_icp_e8s : nat;
+  total_claim_backing_e8s : nat;
+  observation_fingerprint : blob;
+  io_fee_e8s : nat;
+  icp_fee_e8s : nat;
+};
+type PreparedRedemption = record {
+  request_fingerprint : blob;
+  caller : principal;
+  account : Account;
+  request : CanonicalRedeemRequestV1;
+  prepared_at_nanos : nat64;
+  push_memo : blob;
+  reserve : Account;
+  gross_icp_e8s : nat;
+  net_icp_e8s : nat;
+  snapshot : FrozenRedemptionEconomics;
+};
+type PushedRedemption = record {
+  prepared : PreparedRedemption;
+  io_block : nat;
+  transfer_created_at_nanos : nat64;
+};
+type CallerRedemptionPending = variant {
+  Prepared : PreparedRedemption;
+  Pushed : PushedRedemption;
 };
 type RedemptionProgress = variant {
   Pending;
@@ -135,11 +177,6 @@ type ApiError = variant {
   Ledger : text;
   Pending : text;
   Stuck : text;
-  LiquidityShortfall : record {
-    gross_icp_e8s : nat;
-    net_icp_e8s : nat;
-    available_liquid_e8s : nat;
-  };
 };
 type Status = record {
   lifecycle : Lifecycle;
@@ -183,7 +220,9 @@ type ReconciliationCheckpoint = record {
   snapshot_fingerprint : blob;
 };
 service : (InitArgs) -> {
-  redeem : (RedeemArgs) -> (variant { Ok : RedemptionProgress; Err : ApiError });
+  prepare_redemption : (RedeemArgs) -> (variant { Ok : PreparedRedemption; Err : ApiError });
+  settle_redemption : (nat) -> (variant { Ok : RedemptionProgress; Err : ApiError });
+  resume_redemption : (principal) -> (variant { Ok : RedemptionProgress; Err : ApiError });
   prepare_claim_backing_receipt : (PrepareClaimBackingReceiptArgs) -> (variant { Ok : ClaimBackingReceiptPermit; Err : ApiError });
   prove_claim_backing_receipt : (ProveClaimBackingReceiptArgs) -> (variant { Ok : ClaimBackingReceiptProgress; Err : ApiError });
   resume : () -> (variant { Ok : StreamProgress; Err : ApiError });

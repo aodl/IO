@@ -8,14 +8,14 @@ function requireSession(session, expectedNetwork) {
   if (typeof session.network !== "string" || session.network !== expectedNetwork) {
     throw new Error("wallet adapter network does not match the configured network");
   }
-  if (typeof session.requestApprovalConsent !== "function") {
-    throw new Error("wallet adapter must supply explicit approval consent");
+  if (typeof session.requestTransferConsent !== "function") {
+    throw new Error("wallet adapter must supply explicit transfer consent");
   }
   return Object.freeze({
     identity: session.identity,
     selectedSubaccount: new Uint8Array(session.selectedSubaccount),
     network: session.network,
-    requestApprovalConsent: session.requestApprovalConsent.bind(session),
+    requestTransferConsent: session.requestTransferConsent.bind(session),
     adapterKind: session.adapterKind || "wallet",
   });
 }

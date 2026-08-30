@@ -10,12 +10,12 @@ use std::{borrow::Cow, cell::RefCell};
 use crate::{
     pool_reconciliation::PoolTopUpOperation,
     receipt::{ClaimBackingReceipt, CompletedClaimBackingReceipt},
-    redemption::{RedemptionOperation, RedemptionPreparation},
+    redemption::RedemptionOperation,
 };
 pub use io_accounts::Account;
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
-pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 8;
+pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 9;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct StreamConfig {
@@ -149,7 +149,6 @@ pub enum StreamOperation {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum RedemptionStreamOperation {
-    Preparing(Box<RedemptionPreparation>),
     Active(Box<RedemptionOperation>),
 }
 
@@ -260,6 +259,9 @@ pub struct BackingRewardRecord {
     pub sns_neuron_id: Vec<u8>,
     pub staking_account: Account,
     pub accumulated_eligible_credit: u128,
+    /// Final already-completed reward round retained across a structural exit.
+    /// This is an event-identity fence, not a wall-clock eligibility rule.
+    pub reward_eligible_through_event: Option<u64>,
     pub latest_structural_state: StructuralStakeState,
     pub status: BackingRewardStatus,
 }
@@ -300,6 +302,7 @@ pub fn validate_backing_registry(
             || account.owner != config.sns_governance
             || account.subaccount.as_slice() != record.sns_neuron_id
             || !accounts.insert(account)
+            || record.reward_eligible_through_event == Some(0)
             || matches!(
                 record.status,
                 BackingRewardStatus::ExitPrepared { generation: 0 }
@@ -329,6 +332,7 @@ pub struct StreamStateV1 {
     pub pending_entitlement_batch: Option<PendingEntitlementBatch>,
     pub neuron_registry: Vec<BackingRewardRecord>,
     pub stake_observation_due: bool,
+    pub structural_reconciliation_due: bool,
     pub latest_reconciliation_checkpoint: Option<ReconciliationCheckpoint>,
     pub prepared_exit_reconciliation: Option<io_nns_types::backing::PreparePoolReconciliationArgs>,
     pub latest_reconciliation_generation: u64,
@@ -377,6 +381,7 @@ impl StreamStateV1 {
             pending_entitlement_batch: None,
             neuron_registry: Vec::new(),
             stake_observation_due: true,
+            structural_reconciliation_due: false,
             latest_reconciliation_checkpoint: None,
             prepared_exit_reconciliation: None,
             latest_reconciliation_generation: 0,
@@ -396,35 +401,6 @@ impl StreamStateV1 {
         self.config.validate(canister_self)?;
         match &self.active_operation {
             Some(StreamOperation::Redemption(operation)) => match operation.as_ref() {
-                RedemptionStreamOperation::Preparing(value) => {
-                    value.validate()?;
-                    if value.sequence.0 >= self.next_operation_sequence.0
-                        || value.captured_control_epoch != self.control_epoch
-                        || value.request.io_amount_e8s < self.config.minimum_redemption_io_e8s
-                        || value.request.max_io_fee_e8s < self.config.expected_io_fee_e8s
-                        || value.request.max_icp_fee_e8s < self.config.expected_icp_fee_e8s
-                        || value
-                            .request
-                            .expires_at_nanos
-                            .checked_sub(value.prepared_at_nanos)
-                            .is_none_or(|lifetime| {
-                                lifetime > self.config.maximum_request_lifetime_nanos
-                            })
-                        || value.account.effective_eq(&self.config.io_reserve)?
-                        || self
-                            .config
-                            .nonredeemable_governance_io_accounts
-                            .iter()
-                            .try_fold(false, |matched, account| {
-                                value
-                                    .account
-                                    .effective_eq(account)
-                                    .map(|same| matched || same)
-                            })?
-                    {
-                        return Err("redemption preparation does not match stream state".into());
-                    }
-                }
                 RedemptionStreamOperation::Active(value) => {
                     value.validate(&self.config)?;
                     if value.sequence.0 >= self.next_operation_sequence.0 {
@@ -499,34 +475,53 @@ impl StreamStateV1 {
             let Some(last_event) = self.reward_checkpoint.last_processed_event else {
                 return Err("reconciliation checkpoint lacks a reward event marker".into());
             };
-            let canonical_genesis_checkpoint = last_event.is_canonical_sns_genesis_baseline()
-                && self
-                    .reward_checkpoint
-                    .latest_observation
-                    .as_ref()
-                    .is_some_and(|observation| observation.is_canonical_sns_genesis_baseline())
+            let canonical_genesis_event = last_event.is_canonical_sns_genesis_baseline();
+            let canonical_genesis_observation = self
+                .reward_checkpoint
+                .latest_observation
+                .as_ref()
+                .is_some_and(|observation| observation.is_canonical_sns_genesis_baseline());
+            let canonical_genesis_checkpoint = canonical_genesis_event
+                && canonical_genesis_observation
                 && checkpoint.active_reward_io_e8s == 0;
             if checkpoint.generation == 0
                 || checkpoint.generation != self.latest_reconciliation_generation
-                || checkpoint.event_marker != last_event.round
-                || (checkpoint.event_marker == 0 && !canonical_genesis_checkpoint)
-                || checkpoint.observed_at_nanos == 0
-                || checkpoint.snapshot_fingerprint.len() != 32
-                || checkpoint.live_cohort_count
-                    > io_nns_types::backing::MAX_LIVE_UNWIND_COHORTS as u32
-                || io_core_model::claim_backing(io_core_model::Backing {
-                    liquid: checkpoint.liquid_backing_e8s,
-                    pooled: checkpoint.pooled_backing_e8s,
-                    unwinding: checkpoint.unwinding_backing_e8s,
-                    transit: checkpoint.transit_backing_e8s,
-                }) != Ok(checkpoint.total_claim_backing_e8s)
-                || io_core_model::target(
-                    checkpoint.active_backing_io_e8s,
-                    checkpoint.total_claim_backing_e8s,
-                    checkpoint.claim_supply_e8s,
-                ) != Ok(checkpoint.pooled_target_e8s)
             {
+                return Err("reconciliation checkpoint generation is inconsistent".into());
+            }
+            if checkpoint.event_marker < last_event.round {
+                return Err(
+                    "reconciliation checkpoint regresses the processed reward event".into(),
+                );
+            }
+            if checkpoint.event_marker == 0 && !canonical_genesis_checkpoint {
+                return Err(format!(
+                    "round-zero reconciliation checkpoint is not the structural genesis baseline (event={canonical_genesis_event}, observation={canonical_genesis_observation}, active_reward={})",
+                    checkpoint.active_reward_io_e8s
+                ));
+            }
+            if checkpoint.observed_at_nanos == 0 {
+                return Err("reconciliation checkpoint observation time is missing".into());
+            }
+            if checkpoint.snapshot_fingerprint.len() != 32 {
                 return Err("reconciliation checkpoint fingerprint is malformed".into());
+            }
+            if io_core_model::claim_backing(io_core_model::Backing {
+                liquid: checkpoint.liquid_backing_e8s,
+                pooled: checkpoint.pooled_backing_e8s,
+                unwinding: checkpoint.unwinding_backing_e8s,
+                transit: checkpoint.transit_backing_e8s,
+            }) != Ok(checkpoint.total_claim_backing_e8s)
+            {
+                return Err("reconciliation checkpoint backing partition is inconsistent".into());
+            }
+            if io_core_model::target(
+                checkpoint.active_backing_io_e8s,
+                checkpoint.total_claim_backing_e8s,
+                checkpoint.claim_supply_e8s,
+            ) != Ok(checkpoint.pooled_target_e8s)
+            {
+                return Err("reconciliation checkpoint target is inconsistent".into());
             }
         }
         if let Some(batch) = &self.pending_entitlement_batch {
@@ -707,8 +702,15 @@ fn validate_entitlement_entries(
 #[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
 pub struct CallerRedemptionState {
     pub next_nonce: u64,
+    pub pending: Option<CallerRedemptionPending>,
     pub last_request_fingerprint: Option<Vec<u8>>,
     pub last_result: Option<RedemptionResult>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub enum CallerRedemptionPending {
+    Prepared(Box<crate::redemption::PreparedRedemption>),
+    Pushed(Box<crate::redemption::PushedRedemption>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -735,6 +737,31 @@ impl CallerRedemptionState {
                     && result.nonce.checked_add(1) == Some(self.next_nonce)
                     && result.completed_at_nanos > 0 => {}
             _ => return Err("caller redemption replay state is inconsistent".into()),
+        }
+        if self.pending.as_ref().is_some_and(|pending| match pending {
+            CallerRedemptionPending::Prepared(value) => {
+                value.request.nonce != self.next_nonce
+                    || value.request_fingerprint.len() != 32
+                    || value.caller == Principal::anonymous()
+            }
+            CallerRedemptionPending::Pushed(value) => {
+                value.prepared.request.nonce != self.next_nonce
+                    || value.prepared.request_fingerprint.len() != 32
+                    || value.prepared.caller == Principal::anonymous()
+            }
+        }) {
+            return Err("caller pending redemption is inconsistent".into());
+        }
+        Ok(())
+    }
+
+    pub fn validate_with_config(&self, config: &StreamConfig) -> Result<(), String> {
+        self.validate()?;
+        if let Some(pending) = &self.pending {
+            match pending {
+                CallerRedemptionPending::Prepared(value) => value.validate(config)?,
+                CallerRedemptionPending::Pushed(value) => value.validate(config)?,
+            }
         }
         Ok(())
     }
@@ -764,7 +791,7 @@ macro_rules! candid_storable {
 }
 
 candid_storable!(StableStreamState, 2_000_000);
-candid_storable!(CallerRedemptionState, 1_024);
+candid_storable!(CallerRedemptionState, 8_192);
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -806,13 +833,6 @@ pub fn reopen(canister_self: Principal) {
         .validate(canister_self)
         .unwrap_or_else(|error| panic!("invalid stable stream V1 state: {error}"));
     reopened.lifecycle = Lifecycle::Paused;
-    if matches!(
-        &reopened.active_operation,
-        Some(StreamOperation::Redemption(operation))
-            if matches!(operation.as_ref(), RedemptionStreamOperation::Preparing(_))
-    ) {
-        reopened.active_operation = None;
-    }
     write(reopened);
 }
 
@@ -853,14 +873,14 @@ pub fn caller_state(caller: Principal) -> CallerRedemptionState {
             .unwrap_or_default()
     });
     value
-        .validate()
+        .validate_with_config(&read().config)
         .unwrap_or_else(|error| panic!("invalid caller redemption state: {error}"));
     value
 }
 
 pub fn set_caller_state(caller: Principal, state: CallerRedemptionState) {
     state
-        .validate()
+        .validate_with_config(&read().config)
         .unwrap_or_else(|error| panic!("invalid caller redemption state write: {error}"));
     REDEMPTIONS.with(|slot| {
         slot.borrow_mut()
@@ -965,6 +985,7 @@ pub(crate) mod tests {
                 pending_entitlement_batch: None,
                 neuron_registry: Vec::new(),
                 stake_observation_due: true,
+                structural_reconciliation_due: false,
                 latest_reconciliation_checkpoint: None,
                 prepared_exit_reconciliation: None,
                 latest_reconciliation_generation: 0,
@@ -986,6 +1007,7 @@ pub(crate) mod tests {
                 subaccount: Some(id),
             },
             accumulated_eligible_credit: 1,
+            reward_eligible_through_event: None,
             latest_structural_state: StructuralStakeState::Active,
             status: BackingRewardStatus::ActiveEligible {
                 eligible_from_event: 1,
@@ -1048,6 +1070,7 @@ pub(crate) mod tests {
                     subaccount: Some(vec![1; 32]),
                 },
                 accumulated_eligible_credit: 0,
+                reward_eligible_through_event: None,
                 latest_structural_state: StructuralStakeState::Active,
                 status: BackingRewardStatus::ActiveEligible {
                     eligible_from_event: 1,
@@ -1067,7 +1090,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn marker_eight_genesis_baselines_round_trip_and_reopen_paused_without_loss() {
+    fn current_marker_genesis_baselines_round_trip_and_reopen_paused_without_loss() {
         for structurally_observed in [false, true] {
             let (canister_self, mut state) = genesis_state(structurally_observed);
             state.lifecycle = Lifecycle::Ready;
@@ -1127,13 +1150,32 @@ pub(crate) mod tests {
             .active_reward_io_e8s = 1;
         assert!(invalid.validate(canister_self).is_err());
 
-        let mut invalid = genesis_state(true).1;
-        invalid
+        let mut structural_leads_reward = genesis_state(true).1;
+        structural_leads_reward
             .latest_reconciliation_checkpoint
             .as_mut()
             .unwrap()
             .event_marker = 1;
-        assert!(invalid.validate(canister_self).is_err());
+        assert_eq!(structural_leads_reward.validate(canister_self), Ok(()));
+
+        let mut regressed = genesis_state(true).1;
+        let processed = RewardEventId {
+            end_timestamp_seconds: 300,
+            round: 1,
+        };
+        regressed.reward_checkpoint.last_processed_event = Some(processed);
+        regressed.reward_checkpoint.latest_observation = Some(RewardEventObservation {
+            event: processed,
+            proposal_count: 0,
+            classification: RewardEventClassification::StructuralOnly,
+            policy_credit: 0,
+            eligible_credit_total: 0,
+            observed_at_nanos: 400,
+        });
+        assert_eq!(
+            regressed.validate(canister_self),
+            Err("reconciliation checkpoint regresses the processed reward event".into())
+        );
     }
 
     #[test]
@@ -1293,6 +1335,7 @@ pub(crate) mod tests {
                 subaccount: Some(vec![1; 32]),
             },
             accumulated_eligible_credit: 7,
+            reward_eligible_through_event: Some(1),
             latest_structural_state: StructuralStakeState::Dissolving,
             status: BackingRewardStatus::ExitPrepared { generation: 1 },
         }];

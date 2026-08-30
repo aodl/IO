@@ -503,7 +503,7 @@ pub fn install_real_sns_governance_empty_state(
             mode: 1,
             parameters: Some(NervousSystemParameters {
                 default_followees: Some(DefaultFollowees { followees: vec![] }),
-                max_dissolve_delay_seconds: Some(io_core_model::TWO_WEEK_SECONDS),
+                max_dissolve_delay_seconds: Some(io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS),
                 max_dissolve_delay_bonus_percentage: Some(0),
                 max_followees_per_function: Some(15),
                 neuron_claimer_permissions: Some(NeuronPermissionList {
@@ -513,7 +513,7 @@ pub fn install_real_sns_governance_empty_state(
                 max_neuron_age_for_age_bonus: Some(0),
                 initial_voting_period_seconds: Some(86_400),
                 neuron_minimum_dissolve_delay_to_vote_seconds: Some(
-                    io_core_model::TWO_WEEK_SECONDS - 1,
+                    io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS - 1,
                 ),
                 reject_cost_e8s: Some(10_000_000_000),
                 max_proposals_to_keep_per_action: Some(100),
@@ -648,9 +648,16 @@ pub fn install_real_sns_governance_and_observe_dissolve_delay_boundaries(
     let initial_neuron = listed_neuron(&fixture, &neuron_id);
     assert_eq!(dissolve_delay_seconds(&initial_neuron), 0);
 
-    configure_increase_dissolve_delay(&fixture, &neuron_id, 1_209_600);
+    configure_increase_dissolve_delay(
+        &fixture,
+        &neuron_id,
+        u32::try_from(io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS).unwrap(),
+    );
     let eligible_neuron = listed_neuron(&fixture, &neuron_id);
-    assert_eq!(dissolve_delay_seconds(&eligible_neuron), 1_209_600);
+    assert_eq!(
+        dissolve_delay_seconds(&eligible_neuron),
+        io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS
+    );
     Ok(())
 }
 
@@ -681,7 +688,7 @@ pub fn run_candidate_reward_event_participation_contract(
                 configure_increase_dissolve_delay(
                     &fixture,
                     &id,
-                    u32::try_from(io_core_model::TWO_WEEK_SECONDS).unwrap(),
+                    u32::try_from(io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS).unwrap(),
                 );
             }
             id
@@ -1172,8 +1179,9 @@ pub fn run_real_sns_genesis_round_stream_regression(
     use crate::sns_root_setup::SnsRootCanister;
     use candid::{decode_one, encode_one, Nat};
     use io_stream_manager::{
-        Account as StreamAccount, ApiError, InitArgs, RedeemArgs, RedemptionProgress,
-        RewardEventClassification, RewardEventObservation, Status, StreamConfig,
+        Account as StreamAccount, ApiError, InitArgs, PreparedRedemption, RedeemArgs,
+        RedemptionProgress, RewardEventClassification, RewardEventObservation, Status,
+        StreamConfig,
     };
     use pocket_ic::CanisterSettings;
 
@@ -1300,7 +1308,7 @@ pub fn run_real_sns_genesis_round_stream_regression(
     configure_increase_dissolve_delay(
         &fixture,
         &neuron_id,
-        u32::try_from(io_core_model::TWO_WEEK_SECONDS).unwrap(),
+        u32::try_from(io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS).unwrap(),
     );
     let genesis = latest_reward_event(&fixture);
     assert_eq!(genesis.round, 0);
@@ -1393,22 +1401,6 @@ pub fn run_real_sns_genesis_round_stream_regression(
 
     let amount = 20_000_000_u64;
     let now = pic.get_time().as_nanos_since_unix_epoch();
-    icrc::icrc2_approve(
-        &pic,
-        io_ledger,
-        controller,
-        icrc::ApproveArgs {
-            from_subaccount: None,
-            spender: icrc::account(stream, None),
-            amount: Nat::from(amount + FEE_E8S),
-            expected_allowance: Some(Nat::from(0_u8)),
-            expires_at: Some(now + 800_000_000_000),
-            fee: Some(Nat::from(FEE_E8S)),
-            memo: Some(b"genesis-round-redemption".to_vec()),
-            created_at_time: Some(now),
-        },
-    )
-    .expect("controller approves pre-round-one redemption");
     let args = RedeemArgs {
         from_subaccount: None,
         io_amount_e8s: u128::from(amount),
@@ -1420,12 +1412,49 @@ pub fn run_real_sns_genesis_round_stream_regression(
     };
     let io_before = icrc::icrc1_balance_of(&pic, io_ledger, icrc::account(controller, None));
     let icp_before = icrc::icrc1_balance_of(&pic, icp_ledger, icrc::account(controller, None));
+    let prepared: Result<PreparedRedemption, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            controller,
+            "prepare_redemption",
+            encode_one(args).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let prepared = prepared.expect("pre-round-one redemption prepares an exact push");
+    let pushed = icrc::icrc1_transfer(
+        &pic,
+        io_ledger,
+        controller,
+        icrc::transfer_arg(
+            prepared
+                .account
+                .subaccount
+                .as_deref()
+                .map(|value| value.try_into().unwrap()),
+            icrc::account(
+                prepared.reserve.owner,
+                prepared
+                    .reserve
+                    .subaccount
+                    .as_deref()
+                    .map(|value| value.try_into().unwrap()),
+            ),
+            prepared.request.io_amount_e8s.try_into().unwrap(),
+            Some(prepared.snapshot.io_fee_e8s.try_into().unwrap()),
+            Some(&prepared.push_memo),
+            Some(prepared.prepared_at_nanos),
+        ),
+    )
+    .expect("controller sends the exact pre-round-one redemption push");
+    let push_block = u128::try_from(pushed.0).unwrap();
     let completed: Result<RedemptionProgress, ApiError> = decode_one(
         &pic.update_call(
             stream,
             controller,
-            "redeem",
-            encode_one(args.clone()).unwrap(),
+            "settle_redemption",
+            encode_one(push_block).unwrap(),
         )
         .unwrap(),
     )
@@ -1443,8 +1472,13 @@ pub fn run_real_sns_genesis_round_stream_regression(
         "the real ICP payout must match the completed result"
     );
     let replay: Result<RedemptionProgress, ApiError> = decode_one(
-        &pic.update_call(stream, controller, "redeem", encode_one(args).unwrap())
-            .unwrap(),
+        &pic.update_call(
+            stream,
+            controller,
+            "settle_redemption",
+            encode_one(push_block).unwrap(),
+        )
+        .unwrap(),
     )
     .unwrap();
     assert_eq!(replay, completed);
@@ -1522,8 +1556,9 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     use crate::sns_root_setup::SnsRootCanister;
     use candid::{decode_one, encode_one, Nat};
     use io_stream_manager::{
-        Account as StreamAccount, ApiError, InitArgs, Lifecycle, RedeemArgs, RedemptionProgress,
-        RewardEventClassification, RewardEventObservation, Status, StreamConfig, StreamProgress,
+        Account as StreamAccount, ApiError, InitArgs, Lifecycle, PreparedRedemption, RedeemArgs,
+        RedemptionProgress, RewardEventClassification, RewardEventObservation, Status,
+        StreamConfig, StreamProgress,
     };
     use pocket_ic::CanisterSettings;
 
@@ -1683,9 +1718,9 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             )
             .expect("candidate neuron claim succeeds");
             let delay = if index == 4 {
-                io_core_model::TWO_WEEK_SECONDS - 1
+                io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS - 1
             } else {
-                io_core_model::TWO_WEEK_SECONDS
+                io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS
             };
             configure_increase_dissolve_delay(&fixture, &id, u32::try_from(delay).unwrap());
             id
@@ -2305,22 +2340,6 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         if day == 10 {
             let amount = 20_000_000_u64;
             let now = pic.get_time().as_nanos_since_unix_epoch();
-            icrc::icrc2_approve(
-                &pic,
-                io_ledger,
-                controller,
-                icrc::ApproveArgs {
-                    from_subaccount: None,
-                    spender: icrc::account(stream, None),
-                    amount: Nat::from(amount + FEE_E8S),
-                    expected_allowance: Some(Nat::from(0_u8)),
-                    expires_at: Some(now + 800_000_000_000),
-                    fee: Some(Nat::from(FEE_E8S)),
-                    memo: Some(b"pending-batch-redemption".to_vec()),
-                    created_at_time: Some(now),
-                },
-            )
-            .expect("controller approves redemption while backing is pending");
             let total_supply = u128::try_from(icrc::icrc1_total_supply(&pic, io_ledger).0).unwrap();
             let reserve_balance =
                 u128::try_from(icrc::icrc1_balance_of(&pic, io_ledger, reserve.clone()).0).unwrap();
@@ -2366,9 +2385,51 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             };
             let redemption_icp_before =
                 icrc::icrc1_balance_of(&pic, icp_ledger, icrc::account(controller, None));
+            let prepared: Result<PreparedRedemption, ApiError> = decode_one(
+                &pic.update_call(
+                    stream,
+                    controller,
+                    "prepare_redemption",
+                    encode_one(args).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let prepared = prepared.expect("pending-batch redemption prepares an exact push");
+            let push_block = icrc::icrc1_transfer(
+                &pic,
+                io_ledger,
+                controller,
+                icrc::transfer_arg(
+                    prepared
+                        .account
+                        .subaccount
+                        .as_deref()
+                        .map(|value| value.try_into().unwrap()),
+                    icrc::account(
+                        prepared.reserve.owner,
+                        prepared
+                            .reserve
+                            .subaccount
+                            .as_deref()
+                            .map(|value| value.try_into().unwrap()),
+                    ),
+                    prepared.request.io_amount_e8s.try_into().unwrap(),
+                    Some(prepared.snapshot.io_fee_e8s.try_into().unwrap()),
+                    Some(&prepared.push_memo),
+                    Some(prepared.prepared_at_nanos),
+                ),
+            )
+            .expect("controller sends the exact pending-batch redemption push");
+            let push_block = u128::try_from(push_block.0).unwrap();
             let initial: Result<RedemptionProgress, ApiError> = decode_one(
-                &pic.update_call(stream, controller, "redeem", encode_one(args).unwrap())
-                    .unwrap(),
+                &pic.update_call(
+                    stream,
+                    controller,
+                    "settle_redemption",
+                    encode_one(push_block).unwrap(),
+                )
+                .unwrap(),
             )
             .unwrap();
             let result = match initial {
@@ -2616,7 +2677,7 @@ pub fn run_official_to_candidate_reward_participation_upgrade(
     configure_increase_dissolve_delay(
         &fixture,
         &neuron_id,
-        u32::try_from(io_core_model::TWO_WEEK_SECONDS).unwrap(),
+        u32::try_from(io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS).unwrap(),
     );
     assert_eq!(
         listed_neuron(&fixture, &neuron_id).latest_reward_event_participation,
@@ -2888,7 +2949,7 @@ pub fn governance_init_arg(ledger: Option<Principal>, root: Option<Principal>) -
 pub fn test_nervous_system_parameters() -> NervousSystemParameters {
     NervousSystemParameters {
         default_followees: Some(DefaultFollowees { followees: vec![] }),
-        max_dissolve_delay_seconds: Some(io_core_model::TWO_WEEK_SECONDS),
+        max_dissolve_delay_seconds: Some(io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS),
         max_dissolve_delay_bonus_percentage: Some(0),
         max_followees_per_function: Some(15),
         neuron_claimer_permissions: Some(NeuronPermissionList {
@@ -2897,7 +2958,9 @@ pub fn test_nervous_system_parameters() -> NervousSystemParameters {
         neuron_minimum_stake_e8s: Some(100_000_000),
         max_neuron_age_for_age_bonus: Some(0),
         initial_voting_period_seconds: Some(86_400),
-        neuron_minimum_dissolve_delay_to_vote_seconds: Some(io_core_model::TWO_WEEK_SECONDS - 1),
+        neuron_minimum_dissolve_delay_to_vote_seconds: Some(
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS - 1,
+        ),
         reject_cost_e8s: Some(100_000_000),
         max_proposals_to_keep_per_action: Some(100),
         wait_for_quiet_deadline_increase_seconds: Some(1),

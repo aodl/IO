@@ -33,7 +33,7 @@ pub const STABLE_SCHEMA_REGISTRY: &[StableSchemaEntry] = &[
         lossless: true,
         pre_production_only: true,
         fixture_files: IO_STREAM_MANAGER_FIXTURES,
-        size_bounds_summary: "one typed active operation, one bounded live entitlement accumulator, one pending batch and bounded per-caller nonce/results",
+        size_bounds_summary: "one typed active operation, one bounded live entitlement accumulator, one pending batch and bounded per-caller prepared-push nonce/results",
         compaction_policy_summary: "launch V1 has no historical execution collection to compact",
     },
     StableSchemaEntry {
@@ -42,7 +42,7 @@ pub const STABLE_SCHEMA_REGISTRY: &[StableSchemaEntry] = &[
         lossless: true,
         pre_production_only: true,
         fixture_files: IO_NNS_NEURON_MANAGER_FIXTURES,
-        size_bounds_summary: "one immediate operation and fixed maturity/unwind slots",
+        size_bounds_summary: "one immediate operation, aggregate Dynamic fee scalars, semantic maturity state, and generation-based passive cohorts",
         compaction_policy_summary: "launch V1 has no historical execution collection to compact",
     },
     StableSchemaEntry {

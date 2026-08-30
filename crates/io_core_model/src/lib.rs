@@ -1,6 +1,8 @@
 //! Checked, stateless launch economics for IO claim backing.
 
-pub const TWO_WEEK_SECONDS: u64 = 1_209_600;
+pub const NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS: u64 = 1_209_600;
+pub const SNS_USER_DISSOLVE_DELAY_SECONDS: u64 = 1_296_060;
+pub const STRUCTURAL_SYNC_INTERVAL_SECONDS: u64 = 43_200;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Backing {
@@ -32,13 +34,6 @@ pub struct RedemptionQuote {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LiquidityShortfall {
-    pub gross_icp: u128,
-    pub net_icp: u128,
-    pub available_liquid: u128,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Split {
     pub permanent: u128,
     pub claim: u128,
@@ -51,8 +46,8 @@ pub enum ReconcilePlan {
     },
     TopUp {
         target: u128,
-        credit: u128,
-        debit: u128,
+        transfer: u128,
+        claim_credit: u128,
     },
     Unwind {
         target: u128,
@@ -72,8 +67,7 @@ pub enum EconomicsError {
     RedemptionExceedsSupply,
     PayoutDoesNotCoverFee,
     InsufficientBacking,
-    InsufficientLiquidity(LiquidityShortfall),
-    RewardBackingUnderTarget,
+    InsufficientFeeCapacity { required: u128, available: u128 },
 }
 
 pub fn checked_add(a: u128, b: u128) -> Result<u128, EconomicsError> {
@@ -109,7 +103,7 @@ pub fn claim_backing(backing: Backing) -> Result<u128, EconomicsError> {
 
 pub fn claim_rate(state: EconomicState) -> Result<ClaimRate, EconomicsError> {
     let backing = claim_backing(state.backing)?;
-    if state.active_reward > state.active_backing {
+    if state.active_reward > state.claims {
         return Err(EconomicsError::RewardActiveExceedsBacking);
     }
     if state.active_backing > state.claims {
@@ -119,6 +113,7 @@ pub fn claim_rate(state: EconomicState) -> Result<ClaimRate, EconomicsError> {
         (0, 0, 0) => Ok(ClaimRate::EmptyGenesis),
         (_, 0, 0) => Ok(ClaimRate::BackingWithoutClaims),
         (0, _, _) => Err(EconomicsError::UncoveredClaims),
+        (backing, claims, _) if backing < claims => Err(EconomicsError::UncoveredClaims),
         _ => Ok(ClaimRate::Ratio {
             backing,
             claims: state.claims,
@@ -144,17 +139,6 @@ pub fn redemption_quote(
         .filter(|value| *value > 0)
         .ok_or(EconomicsError::PayoutDoesNotCoverFee)?;
     Ok(RedemptionQuote { gross_icp, net_icp })
-}
-
-pub fn require_liquidity(quote: RedemptionQuote, liquid: u128) -> Result<(), EconomicsError> {
-    if liquid >= quote.gross_icp {
-        return Ok(());
-    }
-    Err(EconomicsError::InsufficientLiquidity(LiquidityShortfall {
-        gross_icp: quote.gross_icp,
-        net_icp: quote.net_icp,
-        available_liquid: liquid,
-    }))
 }
 
 pub fn backed_io(increment: u128, backing: u128, claims: u128) -> Result<u128, EconomicsError> {
@@ -185,9 +169,8 @@ pub fn reward_target(state: EconomicState) -> Result<u128, EconomicsError> {
 }
 
 pub fn rewards_covered(state: EconomicState) -> Result<(), EconomicsError> {
-    (state.backing.pooled >= reward_target(state)?)
-        .then_some(())
-        .ok_or(EconomicsError::RewardBackingUnderTarget)
+    let _ = reward_target(state)?;
+    Ok(())
 }
 
 pub fn split_40_60(amount: u128) -> Result<Split, EconomicsError> {
@@ -201,43 +184,48 @@ pub fn split_40_60(amount: u128) -> Result<Split, EconomicsError> {
 pub fn reconcile(
     state: EconomicState,
     fee: u128,
-    minimum_parent: u128,
-    minimum_child_gross: u128,
+    anchor_available: u128,
+    minimum_child_net: u128,
 ) -> Result<ReconcilePlan, EconomicsError> {
     let backing = claim_backing(state.backing)?;
     let raw = target(state.active_backing, backing, state.claims)?;
     if state.backing.pooled == raw {
         return Ok(ReconcilePlan::Hold { target: raw });
     }
-    if state.backing.pooled == 0 && raw < minimum_parent {
-        return Ok(ReconcilePlan::Hold { target: raw });
-    }
-    let floor = if state.backing.pooled > 0 {
-        minimum_parent
-    } else {
-        0
-    };
-    let post_fee = target(state.active_backing, sub(backing, fee)?, state.claims)?.max(floor);
-    if state.backing.pooled < post_fee {
-        let credit = post_fee - state.backing.pooled;
-        return if credit <= fee || (state.backing.pooled == 0 && credit < minimum_parent) {
+    if state.backing.pooled < raw {
+        let claim_credit = raw - state.backing.pooled;
+        return if claim_credit <= fee {
             Ok(ReconcilePlan::Hold { target: raw })
+        } else if anchor_available < fee {
+            Err(EconomicsError::InsufficientFeeCapacity {
+                required: fee,
+                available: anchor_available,
+            })
         } else {
             Ok(ReconcilePlan::TopUp {
-                target: post_fee,
-                credit,
-                debit: checked_add(credit, fee)?,
+                target: raw,
+                transfer: sub(claim_credit, fee)?,
+                claim_credit,
             })
         };
     }
-    let gross = state.backing.pooled - post_fee;
-    if gross < minimum_child_gross {
+    let expected_credit = state.backing.pooled - raw;
+    if expected_credit < minimum_child_net {
         Ok(ReconcilePlan::Hold { target: raw })
     } else {
+        let required = fee
+            .checked_mul(2)
+            .ok_or(EconomicsError::ArithmeticOverflow)?;
+        if anchor_available < required {
+            return Err(EconomicsError::InsufficientFeeCapacity {
+                required,
+                available: anchor_available,
+            });
+        }
         Ok(ReconcilePlan::Unwind {
-            target: post_fee,
-            gross,
-            expected_credit: sub(gross, fee)?,
+            target: raw,
+            gross: checked_add(expected_credit, required)?,
+            expected_credit,
         })
     }
 }
@@ -285,6 +273,10 @@ mod tests {
             Err(EconomicsError::UncoveredClaims)
         );
         assert_eq!(
+            claim_rate(state(99, 0, 100, 0)),
+            Err(EconomicsError::UncoveredClaims)
+        );
+        assert_eq!(
             claim_rate(state(1, 0, 1, 2)),
             Err(EconomicsError::ActiveExceedsClaims)
         );
@@ -305,18 +297,9 @@ mod tests {
     }
 
     #[test]
-    fn redemption_uses_total_backing_and_gates_on_liquid() {
+    fn redemption_uses_total_backing_without_a_pre_push_liquidity_gate() {
         let quote = redemption_quote(state(100, 900, 500, 0), 100, 2, 10).unwrap();
         assert_eq!((quote.gross_icp, quote.net_icp), (200, 190));
-        assert_eq!(require_liquidity(quote, 200), Ok(()));
-        assert_eq!(
-            require_liquidity(quote, 100),
-            Err(EconomicsError::InsufficientLiquidity(LiquidityShortfall {
-                gross_icp: 200,
-                net_icp: 190,
-                available_liquid: 100
-            }))
-        );
     }
 
     #[test]
@@ -337,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn targets_and_reward_coverage_are_separate() {
+    fn event_fenced_reward_coverage_survives_backing_location_changes() {
         let mut value = state(500, 500, 1_000, 600);
         value.active_reward = 500;
         assert_eq!(target(600, 1_000, 1_000), Ok(600));
@@ -345,10 +328,9 @@ mod tests {
         assert_eq!(rewards_covered(value), Ok(()));
         value.backing.pooled = 499;
         value.backing.liquid = 501;
-        assert_eq!(
-            rewards_covered(value),
-            Err(EconomicsError::RewardBackingUnderTarget)
-        );
+        assert_eq!(rewards_covered(value), Ok(()));
+        value.active_backing = 0;
+        assert_eq!(rewards_covered(value), Ok(()));
     }
 
     #[test]
@@ -361,20 +343,38 @@ mod tests {
             })
         );
         assert_eq!(
-            reconcile(state(1_000, 0, 1_000, 50), 10, 100, 110),
-            Ok(ReconcilePlan::Hold { target: 50 })
+            reconcile(state(1_000, 0, 1_000, 50), 10, 100, 100),
+            Ok(ReconcilePlan::TopUp {
+                target: 50,
+                transfer: 40,
+                claim_credit: 50
+            })
         );
         assert_eq!(
-            reconcile(state(400, 600, 1_000, 600), 10, 100, 110),
+            reconcile(state(400, 600, 1_000, 600), 10, 100, 100),
             Ok(ReconcilePlan::Hold { target: 600 })
         );
         assert!(matches!(
-            reconcile(state(600, 400, 1_000, 500), 10, 100, 110),
+            reconcile(state(600, 400, 1_000, 500), 10, 100, 100),
             Ok(ReconcilePlan::TopUp { .. })
         ));
         assert!(matches!(
-            reconcile(state(100, 900, 1_000, 500), 10, 100, 110),
+            reconcile(state(100, 900, 1_000, 500), 10, 100, 100),
             Ok(ReconcilePlan::Unwind { .. })
         ));
+        assert_eq!(
+            reconcile(state(600, 400, 1_000, 500), 10, 9, 100),
+            Err(EconomicsError::InsufficientFeeCapacity {
+                required: 10,
+                available: 9
+            })
+        );
+        assert_eq!(
+            reconcile(state(100, 900, 1_000, 500), 10, 19, 100),
+            Err(EconomicsError::InsufficientFeeCapacity {
+                required: 20,
+                available: 19
+            })
+        );
     }
 }

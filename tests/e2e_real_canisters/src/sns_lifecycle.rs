@@ -1610,7 +1610,7 @@ fn finalized_neuron_reward_eligibility(
         &io_governance_types::SnsEligibilityPolicy {
             protocol_neuron_ids: BTreeSet::new(),
             jupiter_governance_neuron_ids: BTreeSet::new(),
-            required_dissolve_delay_seconds: io_core_model::TWO_WEEK_SECONDS,
+            required_dissolve_delay_seconds: io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
         },
     )
     .pop()
@@ -1735,7 +1735,7 @@ pub fn build_io_test_create_service_nervous_system(now_seconds: u64) -> SnsInitP
     const E8S: u64 = 100_000_000;
     SnsInitPayload {
         url: Some(format!("{}://example.invalid/io-local-sns", "https")),
-        max_dissolve_delay_seconds: Some(io_core_model::TWO_WEEK_SECONDS),
+        max_dissolve_delay_seconds: Some(io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS),
         max_dissolve_delay_bonus_percentage: Some(0),
         nns_proposal_id: Some(1),
         neurons_fund_participation: Some(false),
@@ -1755,7 +1755,9 @@ pub fn build_io_test_create_service_nervous_system(now_seconds: u64) -> SnsInitP
         swap_start_timestamp_seconds: Some(now_seconds.saturating_add(1)),
         swap_due_timestamp_seconds: Some(now_seconds.saturating_add(3_600)),
         initial_voting_period_seconds: Some(86_401),
-        neuron_minimum_dissolve_delay_to_vote_seconds: Some(io_core_model::TWO_WEEK_SECONDS - 1),
+        neuron_minimum_dissolve_delay_to_vote_seconds: Some(
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS - 1,
+        ),
         description: Some("Local-only IO SNS lifecycle test.".to_string()),
         max_neuron_age_seconds_for_age_bonus: Some(0),
         min_participants: Some(1),
@@ -1773,7 +1775,7 @@ pub fn build_io_test_create_service_nervous_system(now_seconds: u64) -> SnsInitP
                 developer_distribution: Some(DeveloperDistribution {
                     developer_neurons: vec![NeuronDistribution {
                         controller: Some(Principal::anonymous()),
-                        dissolve_delay_seconds: io_core_model::TWO_WEEK_SECONDS - 1,
+                        dissolve_delay_seconds: io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS - 1,
                         memo: 10_001,
                         stake_e8s: 1_000 * E8S,
                         vesting_period_seconds: Some(0),
@@ -2215,7 +2217,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires pinned real NNS/SNS-W/SNS artifacts and POCKET_IC_BIN"]
-    fn real_sns_dissolve_delay_below_two_weeks_is_ineligible_after_finalization() {
+    fn real_sns_dissolve_delay_below_product_threshold_is_ineligible_after_finalization() {
         let participant = Principal::from_slice(&[103; 29]);
         let fixture =
             deploy_finalized_sns_lifecycle_fixture_for_test(true, participant, PARTICIPANT_ICP_E8S)
@@ -2238,14 +2240,14 @@ mod tests {
         let eligibility = finalized_neuron_reward_eligibility(participant, &neuron_id, &neuron);
         assert_eq!(
             eligibility.excluded_reason.as_deref(),
-            Some("dissolve delay below two weeks")
+            Some("dissolve delay below the approved IO SNS delay")
         );
         assert_eq!(eligibility.eligible_stake_e8s, 0);
     }
 
     #[test]
     #[ignore = "requires pinned real NNS/SNS-W/SNS artifacts and POCKET_IC_BIN"]
-    fn real_sns_dissolve_delay_at_two_weeks_is_eligible_after_finalization() {
+    fn real_sns_dissolve_delay_at_product_threshold_is_eligible_after_finalization() {
         let participant = Principal::from_slice(&[99; 29]);
         let fixture =
             deploy_finalized_sns_lifecycle_fixture_for_test(true, participant, PARTICIPANT_ICP_E8S)
@@ -2261,19 +2263,19 @@ mod tests {
             &fixture,
             participant,
             &neuron_id,
-            1_209_600,
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS as u32,
         )
-        .expect("finalized governance should accept two-week dissolve delay");
+        .expect("finalized governance should accept the product dissolve delay");
         let eligible = finalized_neuron_for_participant(&fixture, participant, &neuron_id).unwrap();
         assert_eq!(
             finalized_neuron_dissolve_delay_seconds(&eligible),
-            1_209_600
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS
         );
     }
 
     #[test]
     #[ignore = "requires pinned real NNS/SNS-W/SNS artifacts and POCKET_IC_BIN"]
-    fn real_sns_dissolve_delay_above_two_weeks_cannot_be_applied_after_finalization() {
+    fn real_sns_dissolve_delay_above_product_threshold_is_not_required_after_finalization() {
         let participant = Principal::from_slice(&[98; 29]);
         let fixture =
             deploy_finalized_sns_lifecycle_fixture_for_test(true, participant, PARTICIPANT_ICP_E8S)
@@ -2288,13 +2290,13 @@ mod tests {
             &fixture,
             participant,
             &neuron_id,
-            io_core_model::TWO_WEEK_SECONDS as u32,
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS as u32,
         )
-        .expect("finalized governance should accept the exact two-week dissolve delay");
+        .expect("finalized governance should accept the exact product dissolve delay");
         let exact = finalized_neuron_for_participant(&fixture, participant, &neuron_id).unwrap();
         assert_eq!(
             finalized_neuron_dissolve_delay_seconds(&exact),
-            io_core_model::TWO_WEEK_SECONDS
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS
         );
 
         let response: crate::sns_governance_setup::ManageNeuronResponse = crate::icrc::update_one(
@@ -2321,15 +2323,15 @@ mod tests {
         match response.command {
             Some(crate::sns_governance_setup::CommandResponse::Configure(_)) => {}
             Some(crate::sns_governance_setup::CommandResponse::Error(err)) => panic!(
-                "unexpected above-two-week rejection: type={} message={}",
+                "unexpected above-threshold rejection: type={} message={}",
                 err.error_type, err.error_message
             ),
-            other => panic!("unexpected above-two-week response classification: {other:?}"),
+            other => panic!("unexpected above-threshold response classification: {other:?}"),
         }
         assert_eq!(
             finalized_neuron_dissolve_delay_seconds(&after),
-            io_core_model::TWO_WEEK_SECONDS,
-            "above-two-week configure response must leave the neuron at the exact product delay"
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
+            "above-threshold configure response must leave the neuron at the exact product delay"
         );
     }
 
@@ -2349,9 +2351,9 @@ mod tests {
             &fixture,
             participant,
             &neuron_id,
-            1_209_600,
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS as u32,
         )
-        .expect("finalized governance should accept two-week dissolve delay");
+        .expect("finalized governance should accept the product dissolve delay");
         let frozen = finalized_neuron_for_participant(&fixture, participant, &neuron_id)
             .expect("eligible neuron should be observable before payout");
         start_finalized_neuron_dissolving_for_test(&fixture, participant, &neuron_id)
@@ -2391,9 +2393,9 @@ mod tests {
             &fixture,
             participant,
             &neuron_id,
-            1_209_600,
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS as u32,
         )
-        .expect("finalized governance should accept two-week dissolve delay");
+        .expect("finalized governance should accept the product dissolve delay");
         start_finalized_neuron_dissolving_for_test(&fixture, participant, &neuron_id)
             .expect("finalized governance should accept start dissolving");
         fixture.pic.advance_time(Duration::from_secs(1_800));
@@ -2410,17 +2412,17 @@ mod tests {
             "finalized neuron should stop dissolving after StopDissolving: {neuron:?}"
         );
         assert!(
-            finalized_neuron_dissolve_delay_seconds(&neuron) < io_core_model::TWO_WEEK_SECONDS,
-            "stop dissolving should preserve the remaining delay rather than restoring two weeks: {neuron:?}"
+            finalized_neuron_dissolve_delay_seconds(&neuron) < io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
+            "stop dissolving should preserve the remaining delay rather than restoring the product threshold: {neuron:?}"
         );
         let eligibility = finalized_neuron_reward_eligibility(participant, &neuron_id, &neuron);
         assert_eq!(
             eligibility.excluded_reason.as_deref(),
-            Some("dissolve delay below two weeks")
+            Some("dissolve delay below the approved IO SNS delay")
         );
         assert_eq!(eligibility.eligible_stake_e8s, 0);
 
-        let missing = io_core_model::TWO_WEEK_SECONDS
+        let missing = io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS
             .checked_sub(finalized_neuron_dissolve_delay_seconds(&neuron))
             .expect("stopped neuron should be below exact delay");
         configure_finalized_neuron_dissolve_delay_for_test(
@@ -2433,7 +2435,7 @@ mod tests {
         let relocked = finalized_neuron_for_participant(&fixture, participant, &neuron_id).unwrap();
         assert_eq!(
             finalized_neuron_dissolve_delay_seconds(&relocked),
-            io_core_model::TWO_WEEK_SECONDS
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS
         );
         let relocked_eligibility =
             finalized_neuron_reward_eligibility(participant, &neuron_id, &relocked);
@@ -2460,9 +2462,9 @@ mod tests {
             &fixture,
             participant,
             &neuron_id,
-            1_209_600,
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS as u32,
         )
-        .expect("finalized governance should accept two-week dissolve delay");
+        .expect("finalized governance should accept the product dissolve delay");
 
         let proposals = list_finalized_sns_proposals(&fixture, 100)
             .expect("finalized governance list_proposals should decode");
@@ -2505,7 +2507,7 @@ mod tests {
             &fixture,
             participant,
             &proposer_neuron,
-            1_209_600,
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS as u32,
         )
         .expect("finalized governance should accept proposer dissolve delay");
 
@@ -2579,14 +2581,14 @@ mod tests {
             &fixture,
             proposer,
             &proposer_neuron,
-            1_209_600,
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS as u32,
         )
         .expect("finalized governance should accept proposer dissolve delay");
         configure_finalized_neuron_dissolve_delay_for_test(
             &fixture,
             voter,
             &voter_neuron,
-            1_209_600,
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS as u32,
         )
         .expect("finalized governance should accept voter dissolve delay");
 
@@ -2656,14 +2658,14 @@ mod tests {
             &fixture,
             proposer,
             &proposer_neuron_id,
-            1_209_600,
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS as u32,
         )
         .expect("finalized governance should accept proposer dissolve delay");
         configure_finalized_neuron_dissolve_delay_for_test(
             &fixture,
             non_voter,
             &non_voter_neuron_id,
-            1_209_600,
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS as u32,
         )
         .expect("finalized governance should accept non-voter dissolve delay");
 
@@ -2756,7 +2758,10 @@ mod tests {
             (follower, &follower_neuron),
         ] {
             configure_finalized_neuron_dissolve_delay_for_test(
-                &fixture, principal, neuron, 1_209_600,
+                &fixture,
+                principal,
+                neuron,
+                io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS as u32,
             )
             .expect("finalized governance should accept dissolve delay");
         }
@@ -2840,9 +2845,9 @@ mod tests {
             &fixture,
             participant,
             &proposer_neuron_id,
-            io_core_model::TWO_WEEK_SECONDS as u32,
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS as u32,
         )
-        .expect("finalized governance should accept exact two-week proposal neuron delay");
+        .expect("finalized governance should accept the exact product proposal-neuron delay");
         let proposal_id = make_finalized_motion_proposal_for_test(
             &fixture,
             participant,
@@ -3000,7 +3005,7 @@ mod tests {
             &fixture,
             participant,
             &proposer_neuron,
-            1_209_600,
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS as u32,
         )
         .expect("finalized governance should accept proposer dissolve delay");
         let proposal_id = make_finalized_proposal_for_test(

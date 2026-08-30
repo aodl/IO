@@ -9,7 +9,6 @@ type NnsConfig = record {
   two_year_neuron_id : nat64;
   pooled_parent_memo : nat64;
   pooled_parent_followee_id : nat64;
-  minimum_parent_stake_e8s : nat;
   jupiter_account : Account;
   jupiter_staging : Account;
   stream_liquid_account : Account;
@@ -28,7 +27,10 @@ type PrepareTwoWeekMaturityArgs = record {
 };
 type PoolReconciliationAction = variant {
   Hold;
-  TopUp : record { expected_credit_e8s : nat };
+  TopUp : record {
+    expected_transfer_e8s : nat;
+    expected_claim_credit_e8s : nat;
+  };
   Unwind : record { expected_gross_e8s : nat };
 };
 type PreparePoolReconciliationArgs = record {
@@ -44,8 +46,10 @@ type TopUpPermit = record {
   generation : nat64;
   operation_sequence : nat64;
   expected_parent_principal_e8s : nat;
+  expected_parent_physical_e8s : nat;
   destination : Account;
   expected_credit_e8s : nat;
+  claim_credit_e8s : nat;
   fee_e8s : nat;
   memo : blob;
   prepared_at_nanos : nat64;
@@ -62,7 +66,6 @@ type PoolProgress = variant {
     principal_e8s : nat;
     target_status : PoolTargetResult;
   };
-  CapacityPending;
 };
 type PoolTargetResult = variant { AtTarget; OverTarget };
 type FollowPolicy = record { followee_neuron_id : nat64 };
@@ -109,8 +112,11 @@ type TransitComponentObservation = record {
 type ClaimAssetObservation = record {
   parent : opt ParentAssetObservation;
   pool_staking_account : Account;
-  minimum_parent_stake_e8s : nat;
-  pooled_parent_principal_e8s : nat;
+  claim_bearing_dynamic_principal_e8s : nat;
+  anchor_target_e8s : nat;
+  anchor_available_e8s : nat;
+  excluded_dynamic_surplus_e8s : nat;
+  permanent_fee_shortfall_e8s : nat;
   live_cohorts : vec CohortObservation;
   live_child_physical_principal_e8s : nat;
   live_child_net_backing_e8s : nat;
@@ -167,9 +173,14 @@ type MaturityKind = variant { TwoYear; TwoWeek };
 type CompletedMaturity = record {
   kind : MaturityKind;
   captured_e8s : nat;
+  anchor_reimbursement_e8s : nat;
+  permanent_reimbursement_e8s : nat;
+  reimbursement_transfer_fees_e8s : nat;
+  carried_e8s : nat;
   permanent_credit_e8s : nat;
   claim_credit_e8s : nat;
   entitlement_batch_generation : opt nat64;
+  two_week_target_e8s : opt nat;
   completed_at_nanos : nat64;
 };
 type MaturityProgress = variant {

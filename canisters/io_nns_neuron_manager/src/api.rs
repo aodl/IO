@@ -3,7 +3,7 @@ use io_nns_types::backing::{
     ClaimAssetObservation, CohortObservation, CohortProofState, FollowPolicy,
     ParentAssetObservation, ParentPolicyObservation, PoolCommand, PoolCommandKind,
     PoolCommandPhase, PoolPolicyObservation, PoolReconciliationAction, TopUpPermit,
-    POOLED_PARENT_DELAY_SECONDS,
+    NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS,
 };
 pub use io_nns_types::backing::{PoolProgress, PreparePoolReconciliationArgs};
 use serde::Deserialize;
@@ -206,16 +206,7 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<NnsProgress, Api
                 Ok(NnsProgress::Pool(PoolProgress::Completed {
                     parent_neuron_id: completed.parent_neuron_id,
                     principal_e8s: completed.principal_e8s,
-                    target_status: if completed.principal_e8s
-                        == completed
-                            .permit
-                            .expected_parent_principal_e8s
-                            .saturating_add(completed.permit.expected_credit_e8s)
-                    {
-                        io_nns_types::backing::PoolTargetResult::AtTarget
-                    } else {
-                        io_nns_types::backing::PoolTargetResult::OverTarget
-                    },
+                    target_status: io_nns_types::backing::PoolTargetResult::AtTarget,
                 }))
             }
             _ => Err(ApiError::Invalid("no active transfer proof slot".into())),
@@ -322,11 +313,9 @@ pub async fn prepare_pool_reconciliation(
         return Ok(PoolProgress::Completed {
             parent_neuron_id: completed.parent_neuron_id,
             principal_e8s: completed.principal_e8s,
-            target_status: if completed.principal_e8s == args.target_e8s {
-                io_nns_types::backing::PoolTargetResult::AtTarget
-            } else {
-                io_nns_types::backing::PoolTargetResult::OverTarget
-            },
+            // Completion proves the exact claim-bearing target. Physical
+            // principal may additionally contain excluded anchor or surplus.
+            target_status: io_nns_types::backing::PoolTargetResult::AtTarget,
         });
     }
     if let Some(NnsOperation::Unwind(operation)) = &snapshot.active_operation {
@@ -399,10 +388,10 @@ pub async fn prepare_pool_reconciliation(
     }
     observe_permanent_policy(&snapshot).await?;
     require_pool_policy(&snapshot).await?;
-    let actual = observation.pooled_parent_principal_e8s;
+    let actual = observation.claim_bearing_dynamic_principal_e8s;
     match args.action {
         PoolReconciliationAction::Hold => {
-            validate_hold(&snapshot, actual, args.target_e8s, args.fee_e8s)?;
+            validate_hold(actual, args.target_e8s, args.fee_e8s)?;
             commit_reconciliation_generation(
                 &snapshot,
                 args.generation,
@@ -416,30 +405,59 @@ pub async fn prepare_pool_reconciliation(
             })
         }
         PoolReconciliationAction::TopUp {
-            expected_credit_e8s,
+            expected_transfer_e8s,
+            expected_claim_credit_e8s,
         } => {
-            let expected_credit = args
+            let expected_claim_credit = args
                 .target_e8s
                 .checked_sub(actual)
                 .ok_or_else(|| ApiError::Invalid("pool reconciliation is not a top-up".into()))?;
-            if expected_credit == 0 || expected_credit != expected_credit_e8s {
+            if expected_claim_credit == 0
+                || expected_claim_credit != expected_claim_credit_e8s
+                || expected_transfer_e8s.checked_add(args.fee_e8s) != Some(expected_claim_credit)
+            {
                 return Err(ApiError::Invalid(
-                    "pool top-up credit does not match the target".into(),
+                    "Dynamic top-up transfer and anchor credit do not match the target".into(),
                 ));
             }
-            prepare_top_up(snapshot, observation, args, expected_credit)
+            prepare_top_up(
+                snapshot,
+                observation,
+                args,
+                expected_transfer_e8s,
+                expected_claim_credit,
+            )
         }
         PoolReconciliationAction::Unwind { expected_gross_e8s } => {
-            let expected_gross = actual
+            let expected_claim_return = actual
                 .checked_sub(args.target_e8s)
                 .ok_or_else(|| ApiError::Invalid("pool reconciliation is not an unwind".into()))?;
+            let required_anchor = args
+                .fee_e8s
+                .checked_mul(2)
+                .ok_or_else(|| ApiError::Invalid("unwind fee capacity overflow".into()))?;
+            let expected_gross = expected_claim_return
+                .checked_add(required_anchor)
+                .ok_or_else(|| ApiError::Invalid("unwind gross overflow".into()))?;
             if expected_gross == 0 || expected_gross != expected_gross_e8s {
                 return Err(ApiError::Invalid(
                     "pool unwind gross does not match the target".into(),
                 ));
             }
-            if snapshot.live_cohorts.len() >= io_nns_types::backing::MAX_LIVE_UNWIND_COHORTS {
-                return Ok(PoolProgress::CapacityPending);
+            if snapshot.anchor_available_e8s < required_anchor {
+                return Err(ApiError::Pending(
+                    "Dynamic anchor cannot fund Split and committed Disburse fees".into(),
+                ));
+            }
+            let now_seconds = ic_cdk::api::time() / 1_000_000_000;
+            if snapshot
+                .live_cohorts
+                .iter()
+                .any(|cohort| cohort.ready_at_seconds <= now_seconds)
+            {
+                return Err(ApiError::Pending(
+                    "a ready unwind child must be serviced before another Split".into(),
+                ));
             }
             let mut latest = state::read();
             if latest != snapshot || latest.active_operation.is_some() {
@@ -503,12 +521,15 @@ fn pool_permit_matches(permit: &TopUpPermit, args: &PreparePoolReconciliationArg
         && permit.snapshot_fingerprint == args.snapshot_fingerprint
         && permit
             .expected_parent_principal_e8s
-            .checked_add(permit.expected_credit_e8s)
+            .checked_add(permit.claim_credit_e8s)
             == Some(args.target_e8s)
         && matches!(
             args.action,
-            PoolReconciliationAction::TopUp { expected_credit_e8s }
-                if expected_credit_e8s == permit.expected_credit_e8s
+            PoolReconciliationAction::TopUp {
+                expected_transfer_e8s,
+                expected_claim_credit_e8s,
+            } if expected_transfer_e8s == permit.expected_credit_e8s
+                && expected_claim_credit_e8s == permit.claim_credit_e8s
         )
 }
 
@@ -516,24 +537,24 @@ fn prepare_top_up(
     snapshot: crate::state::NnsStateV1,
     observation: ClaimAssetObservation,
     args: PreparePoolReconciliationArgs,
-    expected_credit: u128,
+    expected_transfer: u128,
+    expected_claim_credit: u128,
 ) -> Result<PoolProgress, ApiError> {
-    let kind = if snapshot.pooled_parent_id.is_some() {
-        PoolCommandKind::TopUp
-    } else {
-        if expected_credit < snapshot.config.minimum_parent_stake_e8s {
-            return Err(ApiError::Pending(
-                "pooled parent minimum is not reached".into(),
-            ));
-        }
-        PoolCommandKind::Bootstrap
-    };
+    if snapshot.pooled_parent_id.is_none() || snapshot.pooled_parent_staking_account.is_none() {
+        return Err(ApiError::Invalid(
+            "Dynamic parent must be launch-bootstrapped before reconciliation".into(),
+        ));
+    }
+    if snapshot.anchor_available_e8s < args.fee_e8s {
+        return Err(ApiError::Pending(
+            "Dynamic anchor fee capacity is exhausted".into(),
+        ));
+    }
+    let kind = PoolCommandKind::TopUp;
     let destination = snapshot
         .pooled_parent_staking_account
         .clone()
-        .unwrap_or_else(|| {
-            execution::parent_staking_account(&snapshot.config, snapshot.config.pooled_parent_memo)
-        });
+        .expect("Dynamic parent presence checked");
     let mut latest = state::read();
     if latest != snapshot || latest.active_operation.is_some() {
         return Err(ApiError::Busy);
@@ -545,9 +566,14 @@ fn prepare_top_up(
     let permit = TopUpPermit {
         generation: args.generation,
         operation_sequence,
-        expected_parent_principal_e8s: observation.pooled_parent_principal_e8s,
+        expected_parent_principal_e8s: observation.claim_bearing_dynamic_principal_e8s,
+        expected_parent_physical_e8s: observation
+            .parent
+            .as_ref()
+            .map_or(0, |parent| parent.physical_principal_e8s),
         destination,
-        expected_credit_e8s: expected_credit,
+        expected_credit_e8s: expected_transfer,
+        claim_credit_e8s: expected_claim_credit,
         fee_e8s: args.fee_e8s,
         memo: args.memo,
         prepared_at_nanos: args.created_at_time_nanos,
@@ -621,18 +647,10 @@ fn commit_reconciliation_generation(
     Ok(())
 }
 
-fn validate_hold(
-    snapshot: &crate::state::NnsStateV1,
-    actual_e8s: u128,
-    target_e8s: u128,
-    fee_e8s: u128,
-) -> Result<(), ApiError> {
+fn validate_hold(actual_e8s: u128, target_e8s: u128, fee_e8s: u128) -> Result<(), ApiError> {
     let delta = actual_e8s.abs_diff(target_e8s);
     let valid = actual_e8s == target_e8s
-        || (actual_e8s < target_e8s
-            && (delta <= fee_e8s
-                || (snapshot.pooled_parent_id.is_none()
-                    && target_e8s < snapshot.config.minimum_parent_stake_e8s)))
+        || (actual_e8s < target_e8s && delta <= fee_e8s)
         || (actual_e8s > target_e8s && delta <= hold_excess_tolerance(fee_e8s)?);
     if valid {
         Ok(())
@@ -750,11 +768,13 @@ pub(crate) async fn claim_asset_observation() -> Result<ClaimAssetObservation, A
     let live_child_committed_fee_liability_e8s = live_child_physical_principal_e8s
         .checked_sub(live_child_net_backing_e8s)
         .ok_or_else(|| ApiError::Invalid("cohort fee liability underflow".into()))?;
-    let pooled_parent_principal_e8s = parent
+    let dynamic_parent_physical_e8s = parent
         .as_ref()
         .map_or(0, |value| value.physical_principal_e8s);
-    let transit_components =
-        crate::claim_assets::transit_components(&snapshot, pooled_parent_principal_e8s)?;
+    let transit_components = crate::claim_assets::transit_components(
+        &snapshot,
+        snapshot.claim_bearing_dynamic_principal_e8s,
+    )?;
     let transit_backing_e8s = transit_components
         .iter()
         .try_fold(0u128, |total, component| {
@@ -770,8 +790,9 @@ pub(crate) async fn claim_asset_observation() -> Result<ClaimAssetObservation, A
     let encoded = candid::encode_one((
         &parent,
         &pool_staking_account,
-        snapshot.config.minimum_parent_stake_e8s,
-        pooled_parent_principal_e8s,
+        snapshot.claim_bearing_dynamic_principal_e8s,
+        snapshot.anchor_available_e8s,
+        snapshot.permanent_fee_shortfall_e8s,
         &live_cohorts,
         live_child_physical_principal_e8s,
         live_child_net_backing_e8s,
@@ -786,11 +807,25 @@ pub(crate) async fn claim_asset_observation() -> Result<ClaimAssetObservation, A
         snapshot.control_epoch,
     ))
     .map_err(|error| ApiError::Invalid(format!("observation fingerprint failed: {error}")))?;
+    let accounted_parent = snapshot
+        .claim_bearing_dynamic_principal_e8s
+        .checked_add(snapshot.anchor_available_e8s)
+        .ok_or_else(|| ApiError::Invalid("Dynamic parent accounting overflow".into()))?;
+    let excluded_dynamic_surplus_e8s = dynamic_parent_physical_e8s
+        .checked_sub(accounted_parent)
+        .ok_or_else(|| {
+            ApiError::Invalid(
+                "Dynamic parent physical principal is below claim plus anchor accounting".into(),
+            )
+        })?;
     let result = ClaimAssetObservation {
         parent,
         pool_staking_account,
-        minimum_parent_stake_e8s: snapshot.config.minimum_parent_stake_e8s,
-        pooled_parent_principal_e8s,
+        claim_bearing_dynamic_principal_e8s: snapshot.claim_bearing_dynamic_principal_e8s,
+        anchor_target_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+        anchor_available_e8s: snapshot.anchor_available_e8s,
+        excluded_dynamic_surplus_e8s,
+        permanent_fee_shortfall_e8s: snapshot.permanent_fee_shortfall_e8s,
         live_cohorts,
         live_child_physical_principal_e8s,
         live_child_net_backing_e8s,
@@ -849,7 +884,7 @@ async fn pool_policy_observation(
             .map_err(ApiError::Invalid)?;
             Some(ParentPolicyObservation {
                 neuron_id: parent_id,
-                dissolve_delay_seconds: POOLED_PARENT_DELAY_SECONDS,
+                dissolve_delay_seconds: NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS,
                 auto_stake_maturity: observed.auto_stake_maturity,
                 follow_policy: FollowPolicy {
                     followee_neuron_id: snapshot.config.pooled_parent_followee_id,
@@ -983,11 +1018,11 @@ mod tests {
         );
         assert_eq!(
             maturity_ingress_transit(MaturityKind::TwoWeek, 200_000, 10_000, true),
-            Ok(110_000)
+            Ok(120_000)
         );
         assert_eq!(
             maturity_ingress_transit(MaturityKind::TwoYear, 200_000, 10_000, false),
-            Ok(110_000)
+            Ok(120_000)
         );
     }
 

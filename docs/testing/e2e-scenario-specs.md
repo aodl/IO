@@ -7,31 +7,38 @@ not authorize mainnet work.
    minus its exact fee, credits liquid claim backing with 60% gross minus its
    exact fee, and releases IO at the pre-event `B/C` rate (1:1 only at true
    empty genesis).
-2. Ordinary IO stakes at 0%, 50%, and 100%. Existing liquid backing moves to a
-   lazy exact-14-day parent; `C` is unchanged and only transfer fees reduce
-   `B`.
-3. The pooled parent follows the configured local followee, casts no manual
-   vote, follows the leader ballot, earns maturity, and preserves that policy
-   through the existing daily voting-power refresh.
+2. Readiness proves the memo-0 Dynamic parent, fixed followee, exact 14-day
+   delay, 10 ICP anchor, and dust-tolerant physical/economic partition before
+   ordinary IO stakes at 0%, 50%, and 100%.
+3. Dynamic top-up, Split, and committed child-disbursement fees consume exact
+   anchor capacity once, preserve `B`, and stop before effect when capacity is
+   insufficient. The parent follows the configured local followee and retains
+   best-effort voting-power refresh.
 4. Two-week maturity captures its complete fixed semantic Account balance,
    including donations, then uses the shared Jupiter 40/60 paired path with
    partial forfeiture/dust and sequential IO recipient settlement.
-5. Two-year maturity captures only its own semantic Account, applies the same
-   physical 40/60 split, routes claim yield to Stream liquid, and issues no IO
-   or paired receipt.
+5. Two-year maturity captures only its own semantic Account, restores anchor
+   deficit then permanent fee shortfall without recursive debt, applies 40/60
+   only to the usable remainder, routes claim yield to Stream liquid, and
+   issues no IO or paired receipt.
 6. Dissolve/cancellation proves precommit netting, sticky postcommit lifecycle,
    exact readiness, principal return, maturity cleanup, prospective re-entry,
    and no duplicate child or retroactive reward.
-7. Three overlapping daily cohorts complete independently. Thirty-two live
-   cohorts fit; a thirty-third creates no effect, and retirement frees capacity.
-8. Redemption quotes `L+P+U+T` but spends only `L`. A shortfall pulls no IO;
-   retry after child return succeeds exactly once.
+7. More than 32 historical structural generations complete without a product
+   cap. One aggregate child is created per generation, and an overdue or
+   ambiguous ready child is serviced before another Split.
+8. Redemption prepares an exact monotone-rate quote, accepts one exact timely
+   ICRC-1 push into reserve, persists `PayoutOwed`, and pays ICP exactly once.
+   Unexpected delayed liquidity preserves the obligation until child recovery.
 9. Successful reward IO transfer plus failed SNS refresh still increases
    `A_backing` through the authoritative staking-account ledger balance.
 10. Upgrades and lost callbacks at every submitted/proved phase preserve exact
     intents, permit canonical proof, and never double count or transfer.
-11. Exact candidate tests prove component hashes, 14-day threshold, following,
-    maturity, minimum stake, child lifecycle, and cleanup.
+11. Independent 12-hour structural synchronization and daily reward processing
+    preserve event-fenced eligibility; exact child-ready and 60-second recovery
+    timers reconstruct across upgrade. Exact candidate tests prove component
+    hashes, 14-day NNS threshold, 15-day-plus-one-minute SNS product delay,
+    following, maturity, minimum stake, child lifecycle, and cleanup.
 
 Historical inventory aliases retained by the coverage guard are:
 Serialized redemption; Jupiter 40/60; Direct maturity; Exact rewards;

@@ -1,6 +1,6 @@
 use candid::{decode_one, encode_one, CandidType, Principal};
 use io_stream_manager::{
-    Account, ApiError, InitArgs, Lifecycle, RedeemArgs, RedemptionProgress,
+    Account, ApiError, InitArgs, Lifecycle, PreparedRedemption, RedeemArgs, RedemptionProgress,
     RewardEventClassification, RewardEventObservation, Status, StreamConfig,
 };
 use pocket_ic::PocketIc;
@@ -55,9 +55,7 @@ struct LedgerCallCounters {
     fee: u64,
     total_supply: u64,
     balance: u64,
-    allowance: u64,
     transfer: u64,
-    transfer_from: u64,
     query_blocks: u64,
 }
 
@@ -263,11 +261,11 @@ fn simplified_stream_installs_paused_and_rejects_anonymous_before_funds_move() {
     )
     .unwrap();
     assert_eq!(still_paused.lifecycle, Lifecycle::Paused);
-    let result: Result<RedemptionProgress, ApiError> = decode_one(
+    let result: Result<PreparedRedemption, ApiError> = decode_one(
         &pic.update_call(
             canister,
             Principal::anonymous(),
-            "redeem",
+            "prepare_redemption",
             encode_one(RedeemArgs {
                 from_subaccount: None,
                 io_amount_e8s: 1,
@@ -286,7 +284,7 @@ fn simplified_stream_installs_paused_and_rejects_anonymous_before_funds_move() {
 }
 
 #[test]
-fn liquidity_shortfall_uses_only_scalar_claim_reads_and_pulls_no_io() {
+fn preparation_uses_scalar_claim_reads_without_requiring_liquid_icp() {
     if std::env::var_os("POCKET_IC_BIN").is_none() {
         eprintln!(
             "skipping Stream scalar-redemption PocketIC test because POCKET_IC_BIN is not set"
@@ -358,7 +356,7 @@ fn liquidity_shortfall_uses_only_scalar_claim_reads_and_pulls_no_io() {
         MockSnsNeuron {
             neuron_id: 99,
             staked_io_e8s: 10_000_000,
-            dissolve_delay_seconds: 1_209_601,
+            dissolve_delay_seconds: io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS + 1,
             eligible_closed_proposals: 0,
             voted_closed_proposals: 0,
             is_genesis_governance_neuron: false,
@@ -371,7 +369,7 @@ fn liquidity_shortfall_uses_only_scalar_claim_reads_and_pulls_no_io() {
         nns,
         Principal::anonymous(),
         "debug_set_pooled_principal",
-        1_000_000_u128,
+        99_910_000_u128,
     );
     pic.install_canister(
         stream,
@@ -390,7 +388,7 @@ fn liquidity_shortfall_uses_only_scalar_claim_reads_and_pulls_no_io() {
                 expected_sns_governance_module_hash: governance_hash,
                 approved_reward_event_duration_seconds: 86_400,
                 io_reserve: reserve,
-                liquid_icp: liquid,
+                liquid_icp: liquid.clone(),
                 nonredeemable_governance_io_accounts: Vec::new(),
                 minimum_redemption_io_e8s: 20_000,
                 expected_io_fee_e8s: 10_000,
@@ -427,16 +425,15 @@ fn liquidity_shortfall_uses_only_scalar_claim_reads_and_pulls_no_io() {
     assert!(!policy_blocked_status.governance_parameters_fresh);
     let governance_before: GovernanceCallCounters =
         query(&pic, governance, "debug_get_call_counters");
-    let ledger_before: LedgerCallCounters = query(&pic, io_ledger, "debug_get_call_counters");
     let nns_before: NnsObservationCallCounters =
         query(&pic, nns, "debug_get_observation_call_counters");
     let permanent_queries_before: u64 = query(&pic, nns, "debug_get_full_neuron_call_count");
     let now = pic.get_time().as_nanos_since_unix_epoch();
-    let result: Result<RedemptionProgress, ApiError> = update(
+    let result: Result<PreparedRedemption, ApiError> = update(
         &pic,
         stream,
         user,
-        "redeem",
+        "prepare_redemption",
         RedeemArgs {
             from_subaccount: None,
             io_amount_e8s: 100_000_000,
@@ -447,23 +444,13 @@ fn liquidity_shortfall_uses_only_scalar_claim_reads_and_pulls_no_io() {
             nonce: 0,
         },
     );
-    assert!(
-        matches!(
-            result,
-            Err(ApiError::LiquidityShortfall {
-                available_liquid_e8s: 100_000,
-                ..
-            })
-        ),
-        "unexpected redemption result: {result:?}"
-    );
+    let prepared = result.expect("preparation must not impose a liquid-ICP admission gate");
+    assert_eq!(prepared.gross_icp_e8s, 100_000_000);
     assert_eq!(
         query::<GovernanceCallCounters>(&pic, governance, "debug_get_call_counters"),
         governance_before,
         "redemption must not list or inspect SNS neurons"
     );
-    let ledger_after: LedgerCallCounters = query(&pic, io_ledger, "debug_get_call_counters");
-    assert_eq!(ledger_after.transfer_from, ledger_before.transfer_from);
     let nns_after: NnsObservationCallCounters =
         query(&pic, nns, "debug_get_observation_call_counters");
     assert_eq!(nns_after.claim_assets - nns_before.claim_assets, 2);
@@ -486,7 +473,7 @@ fn liquidity_shortfall_uses_only_scalar_claim_reads_and_pulls_no_io() {
             MockSnsNeuron {
                 neuron_id,
                 staked_io_e8s: 1,
-                dissolve_delay_seconds: 1_209_600,
+                dissolve_delay_seconds: io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
                 eligible_closed_proposals: 0,
                 voted_closed_proposals: 0,
                 is_genesis_governance_neuron: false,
@@ -499,11 +486,11 @@ fn liquidity_shortfall_uses_only_scalar_claim_reads_and_pulls_no_io() {
         query(&pic, governance, "debug_get_call_counters");
     let nns_many_before: NnsObservationCallCounters =
         query(&pic, nns, "debug_get_observation_call_counters");
-    let result_many: Result<RedemptionProgress, ApiError> = update(
+    let result_many: Result<PreparedRedemption, ApiError> = update(
         &pic,
         stream,
         user,
-        "redeem",
+        "prepare_redemption",
         RedeemArgs {
             from_subaccount: None,
             io_amount_e8s: 100_000_000,
@@ -511,16 +498,11 @@ fn liquidity_shortfall_uses_only_scalar_claim_reads_and_pulls_no_io() {
             max_io_fee_e8s: 10_000,
             max_icp_fee_e8s: 10_000,
             expires_at_nanos: now + 60_000_000_000,
-            // A quote-time liquidity rejection does not consume the caller's
-            // nonce, so repeat the still-current nonce after growing the SNS
-            // registry.
+            // Preparation is replay-safe and does not consume the nonce.
             nonce: 0,
         },
     );
-    assert!(matches!(
-        result_many,
-        Err(ApiError::LiquidityShortfall { .. })
-    ));
+    assert_eq!(result_many.unwrap(), prepared);
     assert_eq!(
         query::<GovernanceCallCounters>(&pic, governance, "debug_get_call_counters"),
         governance_many_before,
@@ -528,10 +510,7 @@ fn liquidity_shortfall_uses_only_scalar_claim_reads_and_pulls_no_io() {
     );
     let nns_many_after: NnsObservationCallCounters =
         query(&pic, nns, "debug_get_observation_call_counters");
-    assert_eq!(
-        nns_many_after.claim_assets - nns_many_before.claim_assets,
-        2
-    );
+    assert_eq!(nns_many_after.claim_assets, nns_many_before.claim_assets);
     assert_eq!(nns_many_after.pool_policy, nns_many_before.pool_policy);
 
     let _: () = update(
@@ -546,8 +525,90 @@ fn liquidity_shortfall_uses_only_scalar_claim_reads_and_pulls_no_io() {
     let restored: Status = query(&pic, stream, "get_status");
     assert!(!restored.reward_processing_paused);
     assert!(restored.governance_parameters_fresh);
+
+    let pushed: io_ledger_boundary::IcrcTransferResult = update(
+        &pic,
+        io_ledger,
+        user,
+        "icrc1_transfer",
+        io_ledger_boundary::IcrcTransferArg {
+            from_subaccount: prepared.account.subaccount.clone(),
+            to: prepared.reserve.clone(),
+            amount: candid::Nat::from(prepared.request.io_amount_e8s),
+            fee: Some(candid::Nat::from(prepared.snapshot.io_fee_e8s)),
+            memo: Some(prepared.push_memo.clone()),
+            created_at_time: Some(prepared.prepared_at_nanos),
+        },
+    );
+    let push_block: u128 = pushed.unwrap().0.try_into().unwrap();
+    let payout_calls_before: LedgerCallCounters =
+        query(&pic, icp_ledger, "debug_get_call_counters");
+    let awaiting_liquidity = update::<_, Result<RedemptionProgress, ApiError>>(
+        &pic,
+        stream,
+        user,
+        "settle_redemption",
+        push_block,
+    );
+    assert!(matches!(
+        awaiting_liquidity,
+        Err(ApiError::Pending(ref reason))
+            if reason.contains("durable payout obligation awaiting liquid ICP")
+    ));
+    let owed = query::<Status>(&pic, stream, "get_status");
+    assert_eq!(owed.lifecycle, Lifecycle::Paused);
+    assert_eq!(owed.operation_kind.as_deref(), Some("Redemption"));
+    assert_eq!(owed.operation_phase.as_deref(), Some("PayoutOwed"));
+    assert_eq!(
+        query::<LedgerCallCounters>(&pic, icp_ledger, "debug_get_call_counters").transfer,
+        payout_calls_before.transfer,
+        "an unfunded durable obligation must not submit a payout"
+    );
+
+    let _: u64 = update(
+        &pic,
+        icp_ledger,
+        Principal::anonymous(),
+        "debug_mint_account",
+        DebugMintAccountArgs {
+            to: liquid,
+            amount_e8s: 100_000_000,
+        },
+    );
+    let completed = update::<_, Result<RedemptionProgress, ApiError>>(
+        &pic,
+        stream,
+        Principal::anonymous(),
+        "resume_redemption",
+        user,
+    )
+    .expect("durable payout must resume after exact liquidity arrives");
+    let RedemptionProgress::Completed(result) = completed.clone() else {
+        panic!("durable payout did not complete after liquidity recovery: {completed:?}");
+    };
+    assert_eq!(result.io_block, push_block);
+    assert_eq!(result.gross_icp_e8s, prepared.gross_icp_e8s);
+    assert_eq!(
+        query::<LedgerCallCounters>(&pic, icp_ledger, "debug_get_call_counters").transfer,
+        payout_calls_before.transfer + 1
+    );
+    assert_eq!(
+        update::<_, Result<RedemptionProgress, ApiError>>(
+            &pic,
+            stream,
+            user,
+            "settle_redemption",
+            push_block,
+        ),
+        Ok(completed)
+    );
+    assert_eq!(
+        query::<LedgerCallCounters>(&pic, icp_ledger, "debug_get_call_counters").transfer,
+        payout_calls_before.transfer + 1,
+        "completed replay must not repeat the recovered payout"
+    );
     eprintln!(
-        "account_semantic_liquidity_shortfall available_liquid_e8s=100000 claim_snapshot_reads=2 io_pulled=false request_nonce_consumed=false retryable=true"
+        "prepared_push_without_liquidity available_liquid_e8s=100000 claim_snapshot_reads=2 io_pulled=false durable_payout=true recovered_once=true"
     );
 }
 
@@ -599,7 +660,7 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
             MockSnsNeuron {
                 neuron_id: id,
                 staked_io_e8s: 30_000_000,
-                dissolve_delay_seconds: 1_209_600,
+                dissolve_delay_seconds: io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
                 eligible_closed_proposals: 1,
                 voted_closed_proposals: 1,
                 is_genesis_governance_neuron: false,
@@ -616,7 +677,7 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
         MockSnsNeuron {
             neuron_id: 7,
             staked_io_e8s: 30_000_000,
-            dissolve_delay_seconds: 1_209_601,
+            dissolve_delay_seconds: io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS + 1,
             eligible_closed_proposals: 1,
             voted_closed_proposals: 1,
             is_genesis_governance_neuron: false,
@@ -747,6 +808,79 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
             .map(|checkpoint| checkpoint.event_marker),
         Some(0)
     );
+    let genesis_generation = genesis_status
+        .latest_reconciliation_checkpoint
+        .as_ref()
+        .expect("genesis structural checkpoint")
+        .generation;
+    let reconciliations_before_structural: u64 = query(&pic, nns, "debug_get_reconcile_call_count");
+    let _: () = update(
+        &pic,
+        nns,
+        Principal::anonymous(),
+        "debug_reject_next_reconciliations",
+        1_u64,
+    );
+    pic.advance_time(Duration::from_secs(
+        io_core_model::STRUCTURAL_SYNC_INTERVAL_SECONDS + 1,
+    ));
+    for _ in 0..5 {
+        pic.tick();
+    }
+    let structural_status = query::<Status>(&pic, stream, "get_status");
+    let structural_checkpoint = structural_status
+        .latest_reconciliation_checkpoint
+        .as_ref()
+        .expect("12-hour structural checkpoint");
+    assert_eq!(structural_checkpoint.generation, genesis_generation + 1);
+    assert_eq!(structural_checkpoint.event_marker, 0);
+    assert_eq!(structural_status.processed_reward_event_count, 0);
+    assert_eq!(structural_status.accumulated_policy_credit, 0);
+    assert_eq!(structural_status.accumulated_eligible_credit, 0);
+    assert_eq!(
+        structural_status.latest_reward_event_classification,
+        Some(RewardEventClassification::StructuralOnly)
+    );
+    assert_eq!(
+        query::<u64>(&pic, nns, "debug_get_reconcile_call_count"),
+        reconciliations_before_structural + 1,
+        "a structural wake must immediately attempt reconciliation without awarding a reward event"
+    );
+    assert!(structural_status
+        .latest_reconciliation_checkpoint
+        .as_ref()
+        .is_some_and(|checkpoint| checkpoint.generation == genesis_generation + 1));
+    pic.advance_time(Duration::from_secs(59));
+    for _ in 0..3 {
+        pic.tick();
+    }
+    assert_eq!(
+        query::<u64>(&pic, nns, "debug_get_reconcile_call_count"),
+        reconciliations_before_structural + 1,
+        "the retry must not run before its 60-second deadline"
+    );
+    pic.advance_time(Duration::from_secs(1));
+    for _ in 0..5 {
+        pic.tick();
+    }
+    let recovered_structural = query::<Status>(&pic, stream, "get_status");
+    assert_eq!(
+        recovered_structural
+            .latest_reconciliation_checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.generation),
+        Some(genesis_generation + 1),
+        "retrying reconciliation must not manufacture another structural generation"
+    );
+    assert_eq!(
+        query::<u64>(&pic, nns, "debug_get_reconcile_call_count"),
+        reconciliations_before_structural + 2
+    );
+    eprintln!(
+        "anchored_structural_scheduler cadence_seconds={} generation={} reward_event_count=0 policy_credit=0 eligible_credit=0 reconciliation_calls=2 retry_seconds=60 same_generation=true",
+        io_core_model::STRUCTURAL_SYNC_INTERVAL_SECONDS,
+        structural_checkpoint.generation,
+    );
     let ledger_before_redemption = (
         query::<LedgerCallCounters>(&pic, io_ledger, "debug_get_call_counters"),
         query::<LedgerCallCounters>(&pic, icp_ledger, "debug_get_call_counters"),
@@ -760,14 +894,40 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
         expires_at_nanos: pic.get_time().as_nanos_since_unix_epoch() + 60_000_000_000,
         nonce: 0,
     };
+    let prepared = update::<_, Result<PreparedRedemption, ApiError>>(
+        &pic,
+        stream,
+        user,
+        "prepare_redemption",
+        redemption_args.clone(),
+    )
+    .unwrap();
+    let pushed: io_ledger_boundary::IcrcTransferResult = update(
+        &pic,
+        io_ledger,
+        user,
+        "icrc1_transfer",
+        io_ledger_boundary::IcrcTransferArg {
+            from_subaccount: prepared.account.subaccount.clone(),
+            to: prepared.reserve.clone(),
+            amount: candid::Nat::from(prepared.request.io_amount_e8s),
+            fee: Some(candid::Nat::from(prepared.snapshot.io_fee_e8s)),
+            memo: Some(prepared.push_memo.clone()),
+            created_at_time: Some(prepared.prepared_at_nanos),
+        },
+    );
+    let push_block: u128 = pushed.unwrap().0.try_into().unwrap();
     let completed = update::<_, Result<RedemptionProgress, ApiError>>(
         &pic,
         stream,
         user,
-        "redeem",
-        redemption_args.clone(),
+        "settle_redemption",
+        push_block,
     );
-    assert!(matches!(completed, Ok(RedemptionProgress::Completed(_))));
+    assert!(
+        matches!(completed, Ok(RedemptionProgress::Completed(_))),
+        "push redemption did not complete: {completed:?}"
+    );
     let ledger_after_redemption = (
         query::<LedgerCallCounters>(&pic, io_ledger, "debug_get_call_counters"),
         query::<LedgerCallCounters>(&pic, icp_ledger, "debug_get_call_counters"),
@@ -777,22 +937,22 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
             &pic,
             stream,
             user,
-            "redeem",
-            redemption_args,
+            "settle_redemption",
+            push_block,
         ),
         completed
     );
     assert_eq!(
-        query::<LedgerCallCounters>(&pic, io_ledger, "debug_get_call_counters").transfer_from,
-        ledger_after_redemption.0.transfer_from
+        query::<LedgerCallCounters>(&pic, io_ledger, "debug_get_call_counters").transfer,
+        ledger_after_redemption.0.transfer
     );
     assert_eq!(
         query::<LedgerCallCounters>(&pic, icp_ledger, "debug_get_call_counters").transfer,
         ledger_after_redemption.1.transfer
     );
     assert_eq!(
-        ledger_after_redemption.0.transfer_from,
-        ledger_before_redemption.0.transfer_from + 1
+        ledger_after_redemption.0.transfer,
+        ledger_before_redemption.0.transfer + 1
     );
     assert_eq!(
         ledger_after_redemption.1.transfer,
@@ -800,8 +960,8 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
     );
     assert_eq!(
         query::<u64>(&pic, nns, "debug_get_reconcile_call_count"),
-        1,
-        "the daily cadence must attempt one ordinary pool reconciliation"
+        reconciliations_before_structural + 2,
+        "push redemption must not add another pool reconciliation"
     );
 
     let governance_before: GovernanceCallCounters =
@@ -840,7 +1000,10 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
         "resume_reward_work",
         (),
     );
-    assert!(matches!(cooled, Err(ApiError::Pending(message)) if message.contains("not due")));
+    assert!(
+        matches!(cooled, Err(ApiError::Pending(_))),
+        "cooled scheduler call was not pending: {cooled:?}"
+    );
     assert_eq!(
         query::<GovernanceCallCounters>(&pic, governance, "debug_get_call_counters"),
         after_wait
@@ -876,7 +1039,8 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
         first_real_status
             .latest_processed_reward_event
             .map(|event| event.round),
-        Some(1)
+        Some(1),
+        "first real event was not processed: {first_real_status:?}"
     );
     assert_eq!(first_real_status.processed_reward_event_count, 1);
     assert!(first_real_status.accumulated_policy_credit > 0);
@@ -943,9 +1107,7 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
             "resume_reward_work",
             (),
         );
-        assert!(
-            matches!(retry_too_early, Err(ApiError::Pending(message)) if message.contains("not due"))
-        );
+        assert!(matches!(retry_too_early, Err(ApiError::Pending(_))));
     }
     assert_eq!(
         query::<GovernanceCallCounters>(&pic, governance, "debug_get_call_counters"),

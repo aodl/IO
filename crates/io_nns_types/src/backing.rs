@@ -3,8 +3,6 @@ use io_accounts::Account;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-pub const MAX_LIVE_UNWIND_COHORTS: usize = 32;
-
 /// Reproduces the exact pinned NNS Governance Split memo subaccount domain.
 pub fn split_child_subaccount(controller: Principal, generation: u64) -> [u8; 32] {
     let mut hasher = Sha256::new();
@@ -55,7 +53,8 @@ pub fn remaining_parent_transit(
     }
     Ok(expected_after.saturating_sub(observed_parent))
 }
-pub const POOLED_PARENT_DELAY_SECONDS: u64 = 1_209_600;
+pub const NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS: u64 = 1_209_600;
+pub const DYNAMIC_ANCHOR_TARGET_E8S: u128 = 1_000_000_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct FollowPolicy {
@@ -90,7 +89,7 @@ impl PoolPolicyObservation {
         if self.fingerprint.len() != 32
             || self.parent.as_ref().is_some_and(|parent| {
                 parent.neuron_id == 0
-                    || parent.dissolve_delay_seconds != POOLED_PARENT_DELAY_SECONDS
+                    || parent.dissolve_delay_seconds != NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS
                     || parent.auto_stake_maturity
                     || parent.follow_policy.followee_neuron_id == 0
             })
@@ -148,8 +147,11 @@ pub struct TransitComponentObservation {
 pub struct ClaimAssetObservation {
     pub parent: Option<ParentAssetObservation>,
     pub pool_staking_account: Account,
-    pub minimum_parent_stake_e8s: u128,
-    pub pooled_parent_principal_e8s: u128,
+    pub claim_bearing_dynamic_principal_e8s: u128,
+    pub anchor_target_e8s: u128,
+    pub anchor_available_e8s: u128,
+    pub excluded_dynamic_surplus_e8s: u128,
+    pub permanent_fee_shortfall_e8s: u128,
     pub live_cohorts: Vec<CohortObservation>,
     pub live_child_physical_principal_e8s: u128,
     pub live_child_net_backing_e8s: u128,
@@ -167,9 +169,9 @@ impl ClaimAssetObservation {
     pub fn validate(&self) -> Result<(), String> {
         self.pool_staking_account.validate()?;
         if self.fingerprint.len() != 32
-            || self.live_cohorts.len() > MAX_LIVE_UNWIND_COHORTS
             || self.last_completed_pool_operation_sequence == Some(0)
-            || self.minimum_parent_stake_e8s == 0
+            || self.anchor_target_e8s != DYNAMIC_ANCHOR_TARGET_E8S
+            || self.anchor_available_e8s > self.anchor_target_e8s
             || self
                 .parent
                 .as_ref()
@@ -198,16 +200,16 @@ impl ClaimAssetObservation {
         if transit != self.transit_backing_e8s {
             return Err("transit component total is inconsistent".into());
         }
-        if self
-            .parent
-            .as_ref()
-            .map_or(self.pooled_parent_principal_e8s != 0, |parent| {
-                parent.neuron_id == 0
-                    || parent.physical_principal_e8s != self.pooled_parent_principal_e8s
-                    || parent.physical_principal_e8s < self.minimum_parent_stake_e8s
-            })
-        {
-            return Err("pooled parent observation is invalid".into());
+        let Some(parent) = self.parent.as_ref() else {
+            return Err("Dynamic parent observation is missing".into());
+        };
+        let accounted_parent = self
+            .claim_bearing_dynamic_principal_e8s
+            .checked_add(self.anchor_available_e8s)
+            .and_then(|value| value.checked_add(self.excluded_dynamic_surplus_e8s))
+            .ok_or("Dynamic parent partition overflow")?;
+        if parent.neuron_id == 0 || parent.physical_principal_e8s != accounted_parent {
+            return Err("Dynamic parent physical/economic partition is invalid".into());
         }
         let mut previous = None;
         let mut child_ids = std::collections::BTreeSet::new();
@@ -266,8 +268,10 @@ pub struct TopUpPermit {
     pub generation: u64,
     pub operation_sequence: u64,
     pub expected_parent_principal_e8s: u128,
+    pub expected_parent_physical_e8s: u128,
     pub destination: Account,
     pub expected_credit_e8s: u128,
+    pub claim_credit_e8s: u128,
     pub fee_e8s: u128,
     pub memo: Vec<u8>,
     pub prepared_at_nanos: u64,
@@ -288,8 +292,13 @@ pub struct PreparePoolReconciliationArgs {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum PoolReconciliationAction {
     Hold,
-    TopUp { expected_credit_e8s: u128 },
-    Unwind { expected_gross_e8s: u128 },
+    TopUp {
+        expected_transfer_e8s: u128,
+        expected_claim_credit_e8s: u128,
+    },
+    Unwind {
+        expected_gross_e8s: u128,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -312,7 +321,6 @@ pub enum PoolProgress {
         principal_e8s: u128,
         target_status: PoolTargetResult,
     },
-    CapacityPending,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -329,9 +337,10 @@ pub enum PoolCommandKind {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum PoolCommandPhase {
+    SeedObserved,
     AwaitingTransfer,
     TransferProved { block_index: u128 },
-    ClaimSubmitted { block_index: u128 },
+    ClaimSubmitted,
     ParentIdentified,
     DelaySubmitted { expected_delay_seconds: u64 },
     FollowingSubmitted,
@@ -358,22 +367,37 @@ pub struct CompletedPoolCommand {
 impl PoolCommand {
     pub fn validate(&self, next_operation_sequence: u64) -> Result<(), String> {
         self.permit.destination.validate()?;
+        let bootstrap = self.kind == PoolCommandKind::Bootstrap;
+        let bootstrap_shape = self.permit.expected_parent_principal_e8s == 0
+            && self.permit.expected_parent_physical_e8s >= DYNAMIC_ANCHOR_TARGET_E8S
+            && self.permit.expected_credit_e8s == 0
+            && self.permit.claim_credit_e8s == 0
+            && self.transfer_block_index.is_none()
+            && !matches!(
+                self.phase,
+                PoolCommandPhase::AwaitingTransfer | PoolCommandPhase::TransferProved { .. }
+            );
+        let top_up_shape = self.permit.expected_parent_physical_e8s > 0
+            && self.permit.expected_credit_e8s > 0
+            && self.permit.claim_credit_e8s
+                == self
+                    .permit
+                    .expected_credit_e8s
+                    .checked_add(self.permit.fee_e8s)
+                    .ok_or("pool claim credit overflow")?
+            && self.parent_neuron_id.is_some()
+            && self.transfer_block_index.is_some()
+                == !matches!(self.phase, PoolCommandPhase::AwaitingTransfer);
         if self.permit.generation == 0
             || self.permit.operation_sequence == 0
             || self.permit.operation_sequence >= next_operation_sequence
-            || self.permit.expected_credit_e8s == 0
             || self.permit.fee_e8s == 0
             || self.permit.memo.is_empty()
             || self.permit.memo.len() > 32
             || self.permit.prepared_at_nanos == 0
             || self.permit.snapshot_fingerprint.len() != 32
-            || (self.kind == PoolCommandKind::Bootstrap
-                && self.permit.expected_parent_principal_e8s != 0)
-            || (self.kind == PoolCommandKind::TopUp
-                && (self.permit.expected_parent_principal_e8s == 0
-                    || self.parent_neuron_id.is_none()))
-            || self.transfer_block_index.is_some()
-                != !matches!(self.phase, PoolCommandPhase::AwaitingTransfer)
+            || (bootstrap && !bootstrap_shape)
+            || (!bootstrap && !top_up_shape)
         {
             return Err("pooled-parent command is inconsistent".into());
         }
@@ -388,18 +412,14 @@ impl CompletedPoolCommand {
             || self.principal_e8s
                 < self
                     .permit
-                    .expected_parent_principal_e8s
+                    .expected_parent_physical_e8s
                     .checked_add(self.permit.expected_credit_e8s)
                     .ok_or("completed pool principal overflow")?
         {
             return Err("completed pool command evidence is inconsistent".into());
         }
         PoolCommand {
-            kind: if self.permit.expected_parent_principal_e8s == 0 {
-                PoolCommandKind::Bootstrap
-            } else {
-                PoolCommandKind::TopUp
-            },
+            kind: PoolCommandKind::TopUp,
             permit: self.permit.clone(),
             transfer_block_index: Some(self.transfer_block_index),
             parent_neuron_id: Some(self.parent_neuron_id),
@@ -470,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn frozen_redemption_quote_survives_net_child_return_without_a_donation() {
+    fn frozen_push_quote_survives_net_child_return_without_a_donation() {
         let physical_child = 120;
         let fee = 10;
         let net_child = net_committed_child_backing(physical_child, fee).unwrap();
@@ -486,12 +506,9 @@ mod tests {
             active_reward: 0,
         };
         let frozen = io_core_model::redemption_quote(before, 100, 0, fee).unwrap();
-        assert!(matches!(
-            io_core_model::require_liquidity(frozen, before.backing.liquid),
-            Err(io_core_model::EconomicsError::InsufficientLiquidity(_))
-        ));
+        assert!(before.backing.liquid < frozen.gross_icp);
 
-        // The immutable IO pull/quote is still valid when the committed physical child
+        // The immutable push quote is still valid when the committed physical child
         // returns exactly its already-net claim value; no protocol donation is needed.
         let after_return = io_core_model::EconomicState {
             backing: io_core_model::Backing {
@@ -510,10 +527,7 @@ mod tests {
             io_core_model::redemption_quote(after_return, 100, 0, fee),
             Ok(frozen)
         );
-        assert_eq!(
-            io_core_model::require_liquidity(frozen, after_return.backing.liquid),
-            Ok(())
-        );
+        assert!(after_return.backing.liquid >= frozen.gross_icp);
         assert_eq!(
             after_return.backing.liquid.checked_sub(frozen.gross_icp),
             Some(10)
@@ -555,8 +569,10 @@ mod tests {
                 generation: 7,
                 operation_sequence: 2,
                 expected_parent_principal_e8s: 0,
+                expected_parent_physical_e8s: DYNAMIC_ANCHOR_TARGET_E8S + 777,
                 destination: account(1),
-                expected_credit_e8s: 100_000_000,
+                expected_credit_e8s: 0,
+                claim_credit_e8s: 0,
                 fee_e8s: 10_000,
                 memo: b"IO:POOL:7".to_vec(),
                 prepared_at_nanos: 1,
@@ -564,7 +580,7 @@ mod tests {
             },
             transfer_block_index: None,
             parent_neuron_id: None,
-            phase: PoolCommandPhase::AwaitingTransfer,
+            phase: PoolCommandPhase::SeedObserved,
         };
         assert_eq!(command.validate(3), Ok(()));
         let mut invalid = command;
@@ -578,8 +594,10 @@ mod tests {
             generation: 7,
             operation_sequence: 2,
             expected_parent_principal_e8s: 1_000,
+            expected_parent_physical_e8s: 1_000,
             destination: account(1),
             expected_credit_e8s: 100,
+            claim_credit_e8s: 110,
             fee_e8s: 10,
             memo: b"IO:POOL:7".to_vec(),
             prepared_at_nanos: 1,
@@ -610,10 +628,17 @@ mod tests {
     #[test]
     fn returned_principal_is_not_counted_while_cleanup_remains_live() {
         let observation = ClaimAssetObservation {
-            parent: None,
+            parent: Some(ParentAssetObservation {
+                neuron_id: 1,
+                staking_account: account(9),
+                physical_principal_e8s: DYNAMIC_ANCHOR_TARGET_E8S,
+            }),
             pool_staking_account: account(9),
-            minimum_parent_stake_e8s: 100_000_000,
-            pooled_parent_principal_e8s: 0,
+            claim_bearing_dynamic_principal_e8s: 0,
+            anchor_target_e8s: DYNAMIC_ANCHOR_TARGET_E8S,
+            anchor_available_e8s: DYNAMIC_ANCHOR_TARGET_E8S,
+            excluded_dynamic_surplus_e8s: 0,
+            permanent_fee_shortfall_e8s: 0,
             live_cohorts: vec![CohortObservation {
                 generation: 1,
                 child_neuron_id: 2,

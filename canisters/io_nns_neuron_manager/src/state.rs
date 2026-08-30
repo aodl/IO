@@ -18,7 +18,7 @@ use {
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
 
-pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 11;
+pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 12;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct NnsConfig {
@@ -30,7 +30,6 @@ pub struct NnsConfig {
     pub two_year_neuron_id: u64,
     pub pooled_parent_memo: u64,
     pub pooled_parent_followee_id: u64,
-    pub minimum_parent_stake_e8s: u128,
     pub jupiter_account: Account,
     pub jupiter_staging: Account,
     pub stream_liquid_account: Account,
@@ -71,9 +70,6 @@ impl NnsConfig {
         }
         if self.two_year_neuron_id == 0 || self.pooled_parent_followee_id == 0 {
             return Err("protected neuron IDs must be non-zero".into());
-        }
-        if self.minimum_parent_stake_e8s <= self.expected_icp_fee_e8s {
-            return Err("minimum parent stake must exceed the ICP fee".into());
         }
         if self.pooled_parent_followee_id != self.two_year_neuron_id {
             return Err("pooled parent must follow the protected two-year neuron".into());
@@ -181,6 +177,9 @@ pub struct NnsStateV1 {
     pub active_operation: Option<NnsOperation>,
     pub pooled_parent_id: Option<u64>,
     pub pooled_parent_staking_account: Option<Account>,
+    pub claim_bearing_dynamic_principal_e8s: u128,
+    pub anchor_available_e8s: u128,
+    pub permanent_fee_shortfall_e8s: u128,
     pub live_cohorts: Vec<PassiveCohort>,
     pub last_completed_pool: Option<CompletedPoolCommand>,
     pub last_completed_unwind: Option<CompletedUnwindReconciliation>,
@@ -219,7 +218,6 @@ impl NnsStateV1 {
                 two_year_neuron_id: 0,
                 pooled_parent_memo: 0,
                 pooled_parent_followee_id: 0,
-                minimum_parent_stake_e8s: 0,
                 jupiter_account: account.clone(),
                 jupiter_staging: account.clone(),
                 stream_liquid_account: account,
@@ -234,6 +232,9 @@ impl NnsStateV1 {
             active_operation: None,
             pooled_parent_id: None,
             pooled_parent_staking_account: None,
+            claim_bearing_dynamic_principal_e8s: 0,
+            anchor_available_e8s: 0,
+            permanent_fee_shortfall_e8s: 0,
             live_cohorts: Vec::new(),
             last_completed_pool: None,
             last_completed_unwind: None,
@@ -256,6 +257,7 @@ fn validate_maturity_delivery(
     operation_sequence: u64,
     delivery: &crate::maturity::MaturityDeliveryOperation,
     config: &NnsConfig,
+    pooled_parent_id: Option<u64>,
     canister_self: Principal,
 ) -> Result<(), String> {
     use io_nns_types::{receipt::receipt_memo, transfer::NnsTransferAttempt};
@@ -264,12 +266,37 @@ fn validate_maturity_delivery(
         .pending
         .captured_e8s
         .ok_or("maturity delivery lacks frozen capture")?;
-    let split = io_nns_types::maturity::capture_40_60(
-        captured_e8s,
-        config.expected_icp_fee_e8s,
-        config.expected_icp_fee_e8s,
-    )
-    .map_err(|error| format!("maturity capture split failed: {error:?}"))?;
+    let (plan, split) = match kind {
+        crate::maturity::MaturityKind::TwoYear => {
+            let plan = delivery
+                .two_year_plan
+                .ok_or("two-year delivery lacks replenishment plan")?;
+            plan.validate(config.expected_icp_fee_e8s)?;
+            if plan.captured != captured_e8s {
+                return Err("two-year plan differs from frozen capture".into());
+            }
+            (Some(plan), plan.ordinary)
+        }
+        crate::maturity::MaturityKind::TwoWeek => {
+            if delivery.two_year_plan.is_some()
+                || delivery.anchor_reimbursement.is_some()
+                || delivery.permanent_reimbursement.is_some()
+            {
+                return Err("two-week delivery contains reimbursement state".into());
+            }
+            (
+                None,
+                Some(
+                    io_nns_types::maturity::capture_40_60(
+                        captured_e8s,
+                        config.expected_icp_fee_e8s,
+                        config.expected_icp_fee_e8s,
+                    )
+                    .map_err(|error| format!("maturity capture split failed: {error:?}"))?,
+                ),
+            )
+        }
+    };
     let source = crate::maturity_flow::staging_account(canister_self, kind)
         .canonical()?
         .subaccount;
@@ -283,12 +310,15 @@ fn validate_maturity_delivery(
         }
         Ok(())
     };
-    if let Some(credit) = &delivery.permanent_credit {
+    let validate_credit = |credit: &crate::maturity::PermanentCreditState,
+                           expected_amount: u128,
+                           expected_neuron_id: u64|
+     -> Result<(), String> {
         match credit {
             crate::maturity::PermanentCreditState::Prepared { before, transfer } => {
                 validate_transfer(transfer)?;
-                if before.neuron_id != config.two_year_neuron_id
-                    || transfer.intent.amount_e8s != split.permanent_credit
+                if before.neuron_id != expected_neuron_id
+                    || transfer.intent.amount_e8s != expected_amount
                     || transfer.intent.destination.owner != config.nns_governance
                     || transfer.intent.destination.canonical()?.subaccount
                         != before.staking_subaccount
@@ -297,19 +327,69 @@ fn validate_maturity_delivery(
                 }
             }
             crate::maturity::PermanentCreditState::RefreshSubmitted { before, .. } => {
-                if before.neuron_id != config.two_year_neuron_id || before.cached_stake_e8s == 0 {
+                if before.neuron_id != expected_neuron_id || before.cached_stake_e8s == 0 {
                     return Err("permanent-leg refresh evidence is inconsistent".into());
                 }
             }
             crate::maturity::PermanentCreditState::Proved(proof) => {
                 proof.validate()?;
-                if proof.neuron_id != config.two_year_neuron_id
-                    || proof.protocol_credit_e8s != split.permanent_credit
+                if proof.neuron_id != expected_neuron_id
+                    || proof.protocol_credit_e8s != expected_amount
                 {
                     return Err("permanent-leg effect proof is inconsistent".into());
                 }
             }
         }
+        Ok(())
+    };
+    if let Some(plan) = plan {
+        for (credit, amount, neuron_id) in [
+            (
+                delivery.anchor_reimbursement.as_ref(),
+                plan.anchor_reimbursement,
+                pooled_parent_id.ok_or("two-year reimbursement lacks Dynamic parent")?,
+            ),
+            (
+                delivery.permanent_reimbursement.as_ref(),
+                plan.permanent_reimbursement,
+                config.two_year_neuron_id,
+            ),
+        ] {
+            if let (Some(credit), amount) = (credit, amount) {
+                if amount == 0 {
+                    return Err("zero reimbursement contains neuron-credit state".into());
+                }
+                validate_credit(credit, amount, neuron_id)?;
+            }
+        }
+    }
+    if let Some(credit) = &delivery.permanent_credit {
+        validate_credit(
+            credit,
+            split
+                .ok_or("carried maturity contains permanent-credit state")?
+                .permanent_credit,
+            config.two_year_neuron_id,
+        )?;
+    }
+    let anchor_replenished = plan.is_none_or(|plan| {
+        plan.anchor_reimbursement == 0
+            || matches!(
+                delivery.anchor_reimbursement,
+                Some(crate::maturity::PermanentCreditState::Proved(_))
+            )
+    });
+    let permanent_replenished = plan.is_none_or(|plan| {
+        plan.permanent_reimbursement == 0
+            || matches!(
+                delivery.permanent_reimbursement,
+                Some(crate::maturity::PermanentCreditState::Proved(_))
+            )
+    });
+    if !anchor_replenished && delivery.permanent_reimbursement.is_some()
+        || !permanent_replenished && delivery.permanent_credit.is_some()
+    {
+        return Err("maturity neuron credits do not follow replenishment priority".into());
     }
     if !matches!(
         delivery.permanent_credit,
@@ -324,7 +404,10 @@ fn validate_maturity_delivery(
         }
         (crate::maturity::MaturityKind::TwoWeek, Some(permit))
             if permit.stream_operation_sequence > 0
-                && permit.amount_e8s == split.claim_credit
+                && permit.amount_e8s
+                    == split
+                        .ok_or("two-week delivery lacks ordinary split")?
+                        .claim_credit
                 && permit
                     .destination
                     .effective_eq(&config.stream_liquid_account)?
@@ -347,7 +430,10 @@ fn validate_maturity_delivery(
             .intent
             .destination
             .effective_eq(&config.stream_liquid_account)?
-            || transfer.intent.amount_e8s != split.claim_credit
+            || transfer.intent.amount_e8s
+                != split
+                    .ok_or("claim transfer exists without ordinary split")?
+                    .claim_credit
             || transfer.intent.memo != expected_memo
         {
             return Err("claim transfer differs from frozen maturity economics".into());
@@ -375,6 +461,14 @@ impl NnsStateV1 {
                 .is_some_and(|account| account.owner != self.config.nns_governance)
         {
             return Err("pooled parent identity evidence is inconsistent".into());
+        }
+        if self.anchor_available_e8s > io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S
+            || (self.pooled_parent_id.is_none()
+                && (self.claim_bearing_dynamic_principal_e8s != 0
+                    || self.anchor_available_e8s != 0))
+            || (self.lifecycle == Lifecycle::Ready && self.pooled_parent_id.is_none())
+        {
+            return Err("Dynamic parent anchor accounting is inconsistent".into());
         }
         if (self.pending_two_year_maturity.is_some()
             || self.last_two_year_maturity.is_some()
@@ -477,6 +571,7 @@ impl NnsStateV1 {
                             operation.operation_sequence,
                             delivery,
                             &self.config,
+                            self.pooled_parent_id,
                             canister_self,
                         )?;
                     }
@@ -523,15 +618,51 @@ impl NnsStateV1 {
             ),
         ] {
             let Some(completed) = completed else { continue };
+            let ordinary_present =
+                completed.permanent_credit_e8s > 0 && completed.claim_credit_e8s > 0;
+            let ordinary_captured = if ordinary_present {
+                completed
+                    .permanent_credit_e8s
+                    .checked_add(completed.claim_credit_e8s)
+                    .and_then(|value| {
+                        value.checked_add(self.config.expected_icp_fee_e8s.saturating_mul(2))
+                    })
+            } else if completed.permanent_credit_e8s == 0 && completed.claim_credit_e8s == 0 {
+                Some(0)
+            } else {
+                None
+            };
+            let reimbursement_count = u128::from(completed.anchor_reimbursement_e8s > 0)
+                + u128::from(completed.permanent_reimbursement_e8s > 0);
+            let exact_reimbursement_fees = self
+                .config
+                .expected_icp_fee_e8s
+                .checked_mul(reimbursement_count);
+            let accounted = ordinary_captured.and_then(|ordinary| {
+                completed
+                    .anchor_reimbursement_e8s
+                    .checked_add(completed.permanent_reimbursement_e8s)
+                    .and_then(|value| value.checked_add(completed.reimbursement_transfer_fees_e8s))
+                    .and_then(|value| value.checked_add(completed.carried_e8s))
+                    .and_then(|value| value.checked_add(ordinary))
+            });
             if completed.kind != kind
                 || completed.captured_e8s == 0
-                || completed.permanent_credit_e8s == 0
-                || completed.claim_credit_e8s == 0
                 || completed.completed_at_nanos == 0
+                || exact_reimbursement_fees != Some(completed.reimbursement_transfer_fees_e8s)
+                || accounted != Some(completed.captured_e8s)
                 || (kind == crate::maturity::MaturityKind::TwoWeek)
                     != completed.entitlement_batch_generation.is_some()
                 || (kind == crate::maturity::MaturityKind::TwoWeek)
                     != completed.two_week_target_e8s.is_some()
+                || (kind == crate::maturity::MaturityKind::TwoWeek
+                    && (!ordinary_present
+                        || completed.anchor_reimbursement_e8s != 0
+                        || completed.permanent_reimbursement_e8s != 0
+                        || completed.reimbursement_transfer_fees_e8s != 0
+                        || completed.carried_e8s != 0))
+                || (kind == crate::maturity::MaturityKind::TwoYear
+                    && ordinary_present == (completed.carried_e8s > 0))
             {
                 return Err("completed maturity result is inconsistent".into());
             }
@@ -688,6 +819,8 @@ pub fn write(state: NnsStateV1) {
             .expect("NNS state is not initialized")
             .set(StableNnsState::V1(state));
     });
+    #[cfg(target_family = "wasm")]
+    crate::recovery_timer::install_for_state();
 }
 
 impl StableNnsState {
@@ -794,7 +927,6 @@ pub(crate) mod tests {
                     two_year_neuron_id: 1,
                     pooled_parent_memo: 2,
                     pooled_parent_followee_id: 1,
-                    minimum_parent_stake_e8s: 100_000_000,
                     jupiter_account: Account {
                         owner: jupiter,
                         subaccount: None,
@@ -813,8 +945,11 @@ pub(crate) mod tests {
                 },
                 lifecycle: Lifecycle::Paused,
                 active_operation: None,
-                pooled_parent_id: None,
-                pooled_parent_staking_account: None,
+                pooled_parent_id: Some(2),
+                pooled_parent_staking_account: Some(account(principal(6), 9)),
+                claim_bearing_dynamic_principal_e8s: 0,
+                anchor_available_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+                permanent_fee_shortfall_e8s: 0,
                 live_cohorts: Vec::new(),
                 last_completed_pool: None,
                 last_completed_unwind: None,
@@ -957,11 +1092,13 @@ pub(crate) mod tests {
                     generation: 1,
                     operation_sequence: 1,
                     expected_parent_principal_e8s: 0,
+                    expected_parent_physical_e8s: 0,
                     destination: Account {
                         owner: state.config.nns_governance,
                         subaccount: Some(vec![9; 32]),
                     },
                     expected_credit_e8s: 100_000_000,
+                    claim_credit_e8s: 100_010_000,
                     fee_e8s: state.config.expected_icp_fee_e8s,
                     memo: vec![1; 32],
                     prepared_at_nanos: 1,
@@ -1137,6 +1274,18 @@ pub(crate) mod tests {
         let pending = pending_two_year_maturity(&state);
         let delivery = crate::maturity::MaturityDeliveryOperation {
             pending,
+            two_year_plan: Some(
+                io_nns_types::maturity::plan_two_year_replenishment(
+                    120_000_000,
+                    io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+                    io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+                    0,
+                    state.config.expected_icp_fee_e8s,
+                )
+                .unwrap(),
+            ),
+            anchor_reimbursement: None,
+            permanent_reimbursement: None,
             permit: Some(io_receipt_types::ClaimBackingReceiptPermit {
                 stream_operation_sequence: 1,
                 destination: state.config.stream_liquid_account.clone(),
@@ -1160,6 +1309,7 @@ pub(crate) mod tests {
             1,
             &delivery,
             &state.config,
+            state.pooled_parent_id,
             canister_self,
         )
         .unwrap_err()
@@ -1215,6 +1365,19 @@ pub(crate) mod tests {
             io_accounts::two_year_maturity_staging(canister_self)
         );
         assert!(state.validate(canister_self).is_ok());
+    }
+
+    #[test]
+    fn ready_state_may_exhaust_anchor_without_losing_dynamic_identity() {
+        let (canister_self, mut state) = valid_state();
+        state.lifecycle = Lifecycle::Ready;
+        state.two_year_maturity_baseline_reconciled = true;
+        state.anchor_available_e8s = 0;
+        assert!(state.validate(canister_self).is_ok());
+
+        state.pooled_parent_id = None;
+        state.pooled_parent_staking_account = None;
+        assert!(state.validate(canister_self).is_err());
     }
 
     #[test]
@@ -1336,6 +1499,9 @@ pub(crate) mod tests {
                     phase: crate::maturity::MaturityCommandPhase::Delivery(
                         crate::maturity::MaturityDeliveryOperation {
                             pending,
+                            two_year_plan: None,
+                            anchor_reimbursement: None,
+                            permanent_reimbursement: None,
                             permit: None,
                             permanent_credit: Some(permanent_credit),
                             claim_transfer: None,
@@ -1465,6 +1631,8 @@ pub(crate) mod tests {
             owner: state.config.nns_governance,
             subaccount: Some(vec![9; 32]),
         });
+        state.claim_bearing_dynamic_principal_e8s = 100_000_000;
+        state.anchor_available_e8s = io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S;
         state.latest_reconciliation_generation = 1;
         state.latest_pooled_target = Some(PooledTarget {
             target_e8s: 110_000_000,
@@ -1477,8 +1645,10 @@ pub(crate) mod tests {
                 generation: 1,
                 operation_sequence: 1,
                 expected_parent_principal_e8s: 100_000_000,
+                expected_parent_physical_e8s: 1_100_000_000,
                 destination: state.pooled_parent_staking_account.clone().unwrap(),
-                expected_credit_e8s: 10_000_000,
+                expected_credit_e8s: 9_990_000,
+                claim_credit_e8s: 10_000_000,
                 fee_e8s: state.config.expected_icp_fee_e8s,
                 memo: vec![1],
                 prepared_at_nanos: 1,
@@ -1505,7 +1675,7 @@ pub(crate) mod tests {
             target_e8s: 1,
             status: PooledTargetStatus::AtTarget,
         });
-        state.live_cohorts = (1..=io_nns_types::backing::MAX_LIVE_UNWIND_COHORTS as u64)
+        state.live_cohorts = (1..=64)
             .map(|generation| PassiveCohort {
                 generation,
                 reconciliation_request_fingerprint: vec![generation as u8; 32],

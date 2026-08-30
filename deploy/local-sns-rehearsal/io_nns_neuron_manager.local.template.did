@@ -9,7 +9,6 @@
     two_year_neuron_id = 1 : nat64;
     pooled_parent_memo = 42_001 : nat64;
     pooled_parent_followee_id = 1 : nat64;
-    minimum_parent_stake_e8s = 100_000_000 : nat;
     jupiter_account = record { owner = TODO_LOCAL_JUPITER; subaccount = null };
     jupiter_staging = record { owner = TODO_LOCAL_NNS_MANAGER_SELF; subaccount = null };
     stream_liquid_account = record { owner = TODO_LOCAL_STREAM_MANAGER; subaccount = opt TODO_LOCAL_LIQUID_SUBACCOUNT };

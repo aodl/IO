@@ -78,7 +78,7 @@ async fn claim_snapshot_once(config: &StreamConfig) -> Result<ClaimSnapshot, Str
     }
     let total_claim_backing_e8s = io_core_model::claim_backing(io_core_model::Backing {
         liquid,
-        pooled: nns_before.pooled_parent_principal_e8s,
+        pooled: nns_before.claim_bearing_dynamic_principal_e8s,
         unwinding: nns_before.live_child_net_backing_e8s,
         transit: transit_backing_e8s,
     })
@@ -100,7 +100,7 @@ async fn claim_snapshot_once(config: &StreamConfig) -> Result<ClaimSnapshot, Str
         excluded_io_balances,
         claim_supply_e8s,
         liquid_icp_e8s: liquid,
-        pooled_principal_e8s: nns_before.pooled_parent_principal_e8s,
+        pooled_principal_e8s: nns_before.claim_bearing_dynamic_principal_e8s,
         unwinding_net_backing_e8s: nns_before.live_child_net_backing_e8s,
         transit_backing_e8s,
         total_claim_backing_e8s,
@@ -109,8 +109,10 @@ async fn claim_snapshot_once(config: &StreamConfig) -> Result<ClaimSnapshot, Str
         last_completed_pool_operation_sequence: nns_before.last_completed_pool_operation_sequence,
         nns_fingerprint: nns_before.fingerprint,
         pool_staking_account: nns_before.pool_staking_account,
-        minimum_parent_stake_e8s: nns_before.minimum_parent_stake_e8s,
-        pooled_parent_exists: nns_before.parent.is_some(),
+        anchor_target_e8s: nns_before.anchor_target_e8s,
+        anchor_available_e8s: nns_before.anchor_available_e8s,
+        excluded_dynamic_surplus_e8s: nns_before.excluded_dynamic_surplus_e8s,
+        permanent_fee_shortfall_e8s: nns_before.permanent_fee_shortfall_e8s,
         stream_control_epoch: stream_snapshot.control_epoch,
         observation_fingerprint: sha2::Sha256::digest(observation_bytes).to_vec(),
         io_fee_e8s: io_fee,
@@ -151,10 +153,10 @@ fn stream_transit_backing(
             }
             TransferState::Succeeded { .. } => {
                 let before = operation.permit.expected_parent_principal_e8s;
-                let observed = nns.pooled_parent_principal_e8s;
+                let observed = nns.claim_bearing_dynamic_principal_e8s;
                 let remaining = io_nns_types::backing::remaining_parent_transit(
                     before,
-                    operation.permit.expected_credit_e8s,
+                    operation.permit.claim_credit_e8s,
                     observed,
                 )
                 .map_err(|error| format!("pool top-up transit failed: {error:?}"))?;
@@ -219,32 +221,6 @@ pub async fn fee(ledger: candid::Principal) -> Result<u128, String> {
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-struct AllowanceArgs {
-    account: Account,
-    spender: Account,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-struct Allowance {
-    allowance: Nat,
-    expires_at: Option<u64>,
-}
-
-pub async fn allowance(
-    ledger: candid::Principal,
-    account: Account,
-    spender: Account,
-) -> Result<(u128, Option<u64>), String> {
-    let value: Allowance = Call::bounded_wait(ledger, "icrc2_allowance")
-        .with_arg(AllowanceArgs { account, spender })
-        .await
-        .map_err(|error| format!("icrc2_allowance call failed: {error:?}"))?
-        .candid()
-        .map_err(|error| format!("icrc2_allowance decode failed: {error:?}"))?;
-    Ok((nat_to_u128(value.allowance)?, value.expires_at))
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
 pub struct SupportedStandard {
     pub name: String,
     pub url: String,
@@ -269,13 +245,23 @@ mod tests {
 
     fn observation() -> io_nns_types::backing::ClaimAssetObservation {
         io_nns_types::backing::ClaimAssetObservation {
-            parent: None,
+            parent: Some(io_nns_types::backing::ParentAssetObservation {
+                neuron_id: 1,
+                staking_account: Account {
+                    owner: candid::Principal::from_slice(&[1; 29]),
+                    subaccount: Some(vec![1; 32]),
+                },
+                physical_principal_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+            }),
             pool_staking_account: Account {
                 owner: candid::Principal::from_slice(&[1; 29]),
                 subaccount: Some(vec![1; 32]),
             },
-            minimum_parent_stake_e8s: 1,
-            pooled_parent_principal_e8s: 0,
+            claim_bearing_dynamic_principal_e8s: 0,
+            anchor_target_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+            anchor_available_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+            excluded_dynamic_surplus_e8s: 0,
+            permanent_fee_shortfall_e8s: 0,
             live_cohorts: vec![io_nns_types::backing::CohortObservation {
                 generation: 1,
                 child_neuron_id: 2,

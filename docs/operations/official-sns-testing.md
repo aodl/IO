@@ -51,7 +51,12 @@ official artifact lock remains Governance revision
 release adoption. Launch still requires a reviewed official release containing
 the capability and refreshed official artifact and DID pins.
 
-The issuance model under this layer is protocol reserve transfer. The standalone rehearsal proves reserve-to-user and direct user-to-reserve ledger mechanics. The launch stream manager separately uses an authenticated ICRC-2 pull from the caller Account directly into reserve. IO does not assume arbitrary post-launch minting or constant supply unless the final ledger fee mode proves it.
+The issuance model under this layer is protocol reserve transfer. The
+standalone rehearsal proves reserve-to-user and exact user-to-reserve ICRC-1
+push mechanics. The launch Stream Manager prepares the quote and proves the
+supplied push block before creating the ICP payout obligation; it has no
+allowance or spender authority. IO does not assume arbitrary post-launch
+minting or constant supply unless the final ledger fee mode proves it.
 
 ## Layer 4: Mainnet SNS Testflight
 

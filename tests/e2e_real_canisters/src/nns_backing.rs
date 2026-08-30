@@ -117,9 +117,14 @@ enum ManagerMaturityKind {
 struct ManagerCompletedMaturity {
     kind: ManagerMaturityKind,
     captured_e8s: u128,
+    anchor_reimbursement_e8s: u128,
+    permanent_reimbursement_e8s: u128,
+    reimbursement_transfer_fees_e8s: u128,
+    carried_e8s: u128,
     permanent_credit_e8s: u128,
     claim_credit_e8s: u128,
     entitlement_batch_generation: Option<u64>,
+    two_week_target_e8s: Option<u128>,
     completed_at_nanos: u64,
 }
 
@@ -163,7 +168,6 @@ struct ManagerConfig {
     two_year_neuron_id: u64,
     pooled_parent_memo: u64,
     pooled_parent_followee_id: u64,
-    minimum_parent_stake_e8s: u128,
     jupiter_account: ManagerAccount,
     jupiter_staging: ManagerAccount,
     stream_liquid_account: ManagerAccount,
@@ -916,6 +920,28 @@ fn fund_manager_staging(fixture: &ControlledNnsNeuron) {
         );
         transfer.unwrap();
     }
+    let dynamic_seed_account = IcpAccount::new(
+        fixture.governance,
+        Some(Subaccount(neuron_subaccount(fixture.controller, 0))),
+    )
+    .icp_account_identifier_bytes();
+    let seed: Result<u64, IcpTransferError> = icrc::update_one(
+        &fixture.pic,
+        fixture.ledger,
+        Principal::anonymous(),
+        "transfer",
+        IcpTransferArgs {
+            memo: 13,
+            amount: IcpTokens {
+                e8s: u64::try_from(io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S).unwrap(),
+            },
+            fee: IcpTokens { e8s: ICP_FEE_E8S },
+            from_subaccount: None,
+            to: dynamic_seed_account.to_vec(),
+            created_at_time: None,
+        },
+    );
+    seed.expect("external Dynamic anchor seed should reach the deterministic memo-0 Account");
 }
 
 fn run_jupiter_credit(
@@ -1121,9 +1147,8 @@ fn install_manager(
                 icp_ledger: fixture.ledger,
                 nns_governance: fixture.governance,
                 two_year_neuron_id: fixture.two_year_neuron_id,
-                pooled_parent_memo: PROTECTED_MEMO,
+                pooled_parent_memo: 0,
                 pooled_parent_followee_id: fixture.two_year_neuron_id,
-                minimum_parent_stake_e8s: 100_000_000,
                 jupiter_account: ManagerAccount {
                     owner: jupiter,
                     subaccount: None,
@@ -1255,7 +1280,7 @@ fn install_controlled_stream(
             encode_one(MockSnsNeuron {
                 neuron_id: 1,
                 staked_io_e8s: ACTIVE_IO_E8S,
-                dissolve_delay_seconds: io_core_model::TWO_WEEK_SECONDS,
+                dissolve_delay_seconds: io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
                 eligible_closed_proposals: 0,
                 voted_closed_proposals: 0,
                 is_genesis_governance_neuron: false,
@@ -1356,7 +1381,7 @@ fn install_real_sns_maturity_trigger(fixture: &ControlledNnsNeuron) -> RealSnsMa
     crate::sns_governance_setup::configure_increase_dissolve_delay(
         &governance,
         &neuron_id,
-        u32::try_from(io_core_model::TWO_WEEK_SECONDS).unwrap(),
+        u32::try_from(io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS).unwrap(),
     );
     RealSnsMaturityTrigger {
         governance,
@@ -1601,15 +1626,20 @@ fn settle_controlled_genesis_pool(
         let target = final_manager
             .latest_pooled_target
             .expect("completed Pool must retain its canonical target");
+        let accounted_physical = target
+            .target_e8s
+            .checked_add(backing.anchor_available_e8s)
+            .and_then(|value| value.checked_add(backing.excluded_dynamic_surplus_e8s))
+            .expect("Dynamic parent partition must fit u128");
         match target.status {
             ManagerPooledTargetStatus::AtTarget => {
-                assert_eq!(parent.physical_principal_e8s, target.target_e8s)
+                assert_eq!(parent.physical_principal_e8s, accounted_physical)
             }
             ManagerPooledTargetStatus::OverTarget => {
-                assert!(parent.physical_principal_e8s > target.target_e8s)
+                assert!(parent.physical_principal_e8s > accounted_physical)
             }
             ManagerPooledTargetStatus::AtTargetWithinUnwindTolerance => {
-                assert!(parent.physical_principal_e8s >= target.target_e8s)
+                assert!(parent.physical_principal_e8s >= accounted_physical)
             }
             ManagerPooledTargetStatus::UnderTarget => {
                 panic!("completed Pool remained under target: {parent:?} {target:?}")
@@ -1736,7 +1766,7 @@ fn install_combined_real_sns(fixture: &ControlledNnsNeuron) -> CombinedRealSns {
             crate::sns_governance_setup::configure_increase_dissolve_delay(
                 &governance_fixture,
                 &neuron,
-                u32::try_from(io_core_model::TWO_WEEK_SECONDS).unwrap(),
+                u32::try_from(io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS).unwrap(),
             );
             neuron
         })
@@ -1805,10 +1835,10 @@ mod tests {
     fn pooled_parent_and_permanent_delays_are_role_specific() {
         assert_eq!(u64::from(PERMANENT_DELAY_SECONDS), 63_115_200);
         assert_eq!(u64::from(POOLED_PARENT_DELAY_SECONDS), 1_209_600);
-        assert_eq!(io_core_model::TWO_WEEK_SECONDS, 1_209_600);
+        assert_eq!(io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS, 1_296_060);
 
         let manager = include_str!("../../../canisters/io_nns_neuron_manager/src/execution.rs");
-        assert!(manager.contains("POOLED_PARENT_DELAY_SECONDS"));
+        assert!(manager.contains("NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS"));
         let harness = include_str!("nns_backing.rs");
         assert!(harness.contains("POOLED_PARENT_DELAY_SECONDS"));
     }
@@ -1858,14 +1888,6 @@ mod tests {
         );
         super::fund_stream_liquidity(&fixture, stream, 0);
 
-        let stream_unpause: Result<(), io_stream_manager::ApiError> = super::update(
-            &fixture.pic,
-            stream,
-            controlled_stream.governance,
-            "set_paused",
-            false,
-        );
-        assert_eq!(stream_unpause, Ok(()));
         let manager_unpause: Result<(), ManagerApiError> = super::update(
             &fixture.pic,
             fixture.controller,
@@ -1874,6 +1896,14 @@ mod tests {
             false,
         );
         assert_eq!(manager_unpause, Ok(()));
+        let stream_unpause: Result<(), io_stream_manager::ApiError> = super::update(
+            &fixture.pic,
+            stream,
+            controlled_stream.governance,
+            "set_paused",
+            false,
+        );
+        assert_eq!(stream_unpause, Ok(()));
 
         let gross_e8s = 10 * 100_000_000_u64;
         let transfer = |caller: Principal, to: Vec<u8>, amount_e8s: u64, memo: u64| -> u64 {
@@ -2162,15 +2192,6 @@ mod tests {
         );
         super::register_real_two_year_function(&real_sns_trigger, fixture.controller);
         super::fund_stream_liquidity(&fixture, stream, 0);
-        let stream_unpause: Result<(), io_stream_manager::ApiError> = super::update(
-            &fixture.pic,
-            stream,
-            controlled_stream.governance,
-            "set_paused",
-            false,
-        );
-        assert_eq!(stream_unpause, Ok(()));
-
         let prior_staked_maturity = 0;
         let mut actual_mints = Vec::new();
         for cycle in 0..2 {
@@ -2182,6 +2203,16 @@ mod tests {
                 false,
             );
             assert_eq!(unpause, Ok(()));
+            if cycle == 0 {
+                let stream_unpause: Result<(), io_stream_manager::ApiError> = super::update(
+                    &fixture.pic,
+                    stream,
+                    controlled_stream.governance,
+                    "set_paused",
+                    false,
+                );
+                assert_eq!(stream_unpause, Ok(()));
+            }
             let pool_steps = super::settle_controlled_genesis_pool(
                 &fixture,
                 &real_sns_trigger,
@@ -2199,6 +2230,15 @@ mod tests {
                 maturity_validation.is_ok(),
                 "cycle={cycle} pool_steps={pool_steps:?} validation={maturity_validation:?}"
             );
+            let economics_before: io_nns_types::backing::ClaimAssetObservation =
+                super::update::<Result<_, ManagerApiError>>(
+                    &fixture.pic,
+                    fixture.controller,
+                    stream,
+                    "observe_claim_assets",
+                    (),
+                )
+                .unwrap();
             let ordinary_maturity = super::earn_maturity_for(&fixture, fixture.two_year_neuron_id);
             let before = super::neuron(
                 &fixture.pic,
@@ -2392,16 +2432,38 @@ mod tests {
                 }
                 assert!(phases.len() < 24, "cycle={cycle} {phases:?}");
             };
-            let split = io_nns_types::maturity::capture_40_60(
+            let plan = io_nns_types::maturity::plan_two_year_replenishment(
                 completed.captured_e8s,
-                u128::from(super::ICP_FEE_E8S),
+                economics_before.anchor_target_e8s,
+                economics_before.anchor_available_e8s,
+                economics_before.permanent_fee_shortfall_e8s,
                 u128::from(super::ICP_FEE_E8S),
             )
             .unwrap();
             assert_eq!(completed.kind, ManagerMaturityKind::TwoYear);
-            assert_eq!(completed.permanent_credit_e8s, split.permanent_credit);
-            assert_eq!(completed.claim_credit_e8s, split.claim_credit);
+            assert_eq!(
+                completed.anchor_reimbursement_e8s,
+                plan.anchor_reimbursement
+            );
+            assert_eq!(
+                completed.permanent_reimbursement_e8s,
+                plan.permanent_reimbursement
+            );
+            assert_eq!(
+                completed.reimbursement_transfer_fees_e8s,
+                plan.reimbursement_transfer_fees
+            );
+            assert_eq!(completed.carried_e8s, plan.carried);
+            assert_eq!(
+                completed.permanent_credit_e8s,
+                plan.ordinary.map_or(0, |split| split.permanent_credit)
+            );
+            assert_eq!(
+                completed.claim_credit_e8s,
+                plan.ordinary.map_or(0, |split| split.claim_credit)
+            );
             assert_eq!(completed.entitlement_batch_generation, None);
+            assert_eq!(completed.two_week_target_e8s, None);
             assert!(completed.captured_e8s > 0);
             assert!(completed.captured_e8s <= u128::from(ordinary_maturity));
             let after = super::neuron(
@@ -2416,7 +2478,9 @@ mod tests {
             );
             assert_eq!(
                 u128::from(after.cached_neuron_stake_e8s),
-                u128::from(before.cached_neuron_stake_e8s) + completed.permanent_credit_e8s
+                u128::from(before.cached_neuron_stake_e8s)
+                    + completed.permanent_reimbursement_e8s
+                    + completed.permanent_credit_e8s
             );
             let liquid_after: candid::Nat = super::query(
                 &fixture.pic,
@@ -2445,6 +2509,27 @@ mod tests {
             );
             assert_eq!(supply_after, supply_before);
             assert_eq!(reserve_after, reserve_before);
+            let economics_after: io_nns_types::backing::ClaimAssetObservation =
+                super::update::<Result<_, ManagerApiError>>(
+                    &fixture.pic,
+                    fixture.controller,
+                    stream,
+                    "observe_claim_assets",
+                    (),
+                )
+                .unwrap();
+            let ordinary_claim_fee = plan.ordinary.map_or(0, |split| split.claim_fee);
+            let ordinary_permanent_fee = plan.ordinary.map_or(0, |split| split.permanent_fee);
+            assert_eq!(
+                economics_after.anchor_available_e8s,
+                economics_before.anchor_available_e8s + plan.anchor_reimbursement
+                    - ordinary_claim_fee
+            );
+            assert_eq!(
+                economics_after.permanent_fee_shortfall_e8s,
+                economics_before.permanent_fee_shortfall_e8s - plan.permanent_reimbursement
+                    + ordinary_permanent_fee
+            );
             eprintln!(
                 "account_semantic_two_year cycle={} captured_e8s={} permanent_credit_e8s={} claim_credit_e8s={} no_issuance=true supply_unchanged=true reserve_unchanged=true",
                 cycle,
@@ -2556,8 +2641,9 @@ mod tests {
     ) {
         use candid::Nat;
         use io_stream_manager::{
-            ApiError as StreamApiError, RedeemArgs, RedemptionProgress, RewardBackingProgress,
-            RewardEventClassification, Status as StreamStatus, StreamProgress,
+            ApiError as StreamApiError, PreparedRedemption, RedeemArgs, RedemptionProgress,
+            RewardBackingProgress, RewardEventClassification, Status as StreamStatus,
+            StreamProgress,
         };
 
         let _guard = crate::lock_test_env();
@@ -2813,10 +2899,11 @@ mod tests {
                 "observe_claim_assets",
                 (),
             );
+        let backing = backing.unwrap();
         let parent = backing
-            .unwrap()
             .parent
-            .expect("lazy pooled parent must be proved");
+            .as_ref()
+            .expect("bootstrapped Dynamic parent must be proved");
         let manager_status: ManagerStatus = super::query(
             &fixture.pic,
             fixture.controller,
@@ -2824,13 +2911,14 @@ mod tests {
             "get_status",
             (),
         );
-        assert!(matches!(
-            manager_status.latest_pooled_target,
-            Some(ManagerPooledTarget {
-                status: ManagerPooledTargetStatus::OverTarget,
-                ..
-            })
-        ));
+        let target = manager_status
+            .latest_pooled_target
+            .expect("completed genesis Pool must retain its claim target");
+        assert_eq!(target.status, ManagerPooledTargetStatus::AtTarget);
+        assert_eq!(
+            parent.physical_principal_e8s,
+            target.target_e8s + backing.anchor_available_e8s + backing.excluded_dynamic_surplus_e8s
+        );
         if jupiter_before_maturity {
             let permanent_before_jupiter = super::neuron(
                 &fixture.pic,
@@ -2934,7 +3022,7 @@ mod tests {
             let expected_backed_io = io_core_model::backed_io(
                 first_jupiter.liquid_e8s,
                 liquid_before_jupiter
-                    + backing_before_jupiter.pooled_parent_principal_e8s
+                    + backing_before_jupiter.claim_bearing_dynamic_principal_e8s
                     + backing_before_jupiter.live_child_net_backing_e8s
                     + backing_before_jupiter.transit_backing_e8s,
                 supply_before_jupiter - reserve_before_jupiter,
@@ -3448,9 +3536,24 @@ mod tests {
         } else {
             0
         };
+        let staging_after_completion = u128::try_from(
+            super::query::<Nat>(
+                &fixture.pic,
+                fixture.ledger,
+                Principal::anonymous(),
+                "icrc1_balance_of",
+                ManagerAccount {
+                    owner: fixture.controller,
+                    subaccount: semantic_staging.subaccount.clone(),
+                },
+            )
+            .0,
+        )
+        .unwrap();
         assert_eq!(
-            completed.captured_e8s,
-            u128::from(actual_minted_e8s) + u128::from(staging_donation_e8s)
+            completed.captured_e8s + staging_after_completion,
+            u128::from(actual_minted_e8s) + u128::from(staging_donation_e8s),
+            "value arriving after the semantic capture must remain for the next operation"
         );
         let split = io_nns_types::maturity::capture_40_60(
             completed.captured_e8s,
@@ -3610,22 +3713,6 @@ mod tests {
         }
         let redemption_amount = 20_000_000_u64;
         let now = fixture.pic.get_time().as_nanos_since_unix_epoch();
-        icrc::icrc2_approve(
-            &fixture.pic,
-            sns.governance.ledger,
-            fixture.controller,
-            icrc::ApproveArgs {
-                from_subaccount: None,
-                spender: icrc::account(sns.stream, None),
-                amount: Nat::from(redemption_amount + ICP_FEE_E8S),
-                expected_allowance: Some(Nat::from(0_u8)),
-                expires_at: Some(now + 800_000_000_000),
-                fee: Some(Nat::from(ICP_FEE_E8S)),
-                memo: Some(b"combined-real-redemption".to_vec()),
-                created_at_time: Some(now),
-            },
-        )
-        .unwrap();
         let supply_before = u128::try_from(
             icrc::icrc1_total_supply(&fixture.pic, sns.governance.ledger)
                 .0
@@ -3669,7 +3756,7 @@ mod tests {
             io_core_model::EconomicState {
                 backing: io_core_model::Backing {
                     liquid: liquid_before,
-                    pooled: redemption_backing.pooled_parent_principal_e8s,
+                    pooled: redemption_backing.claim_bearing_dynamic_principal_e8s,
                     unwinding: redemption_backing.live_child_net_backing_e8s,
                     transit: redemption_backing.transit_backing_e8s,
                 },
@@ -3701,12 +3788,46 @@ mod tests {
             expires_at_nanos: now + 800_000_000_000,
             nonce: 0,
         };
+        let prepared: Result<PreparedRedemption, StreamApiError> = super::update(
+            &fixture.pic,
+            sns.stream,
+            fixture.controller,
+            "prepare_redemption",
+            redemption_args.clone(),
+        );
+        let prepared = prepared.expect("combined redemption prepares an exact push");
+        let push_block = icrc::icrc1_transfer(
+            &fixture.pic,
+            sns.governance.ledger,
+            fixture.controller,
+            icrc::transfer_arg(
+                prepared
+                    .account
+                    .subaccount
+                    .as_deref()
+                    .map(|value| value.try_into().unwrap()),
+                icrc::account(
+                    prepared.reserve.owner,
+                    prepared
+                        .reserve
+                        .subaccount
+                        .as_deref()
+                        .map(|value| value.try_into().unwrap()),
+                ),
+                prepared.request.io_amount_e8s.try_into().unwrap(),
+                Some(prepared.snapshot.io_fee_e8s.try_into().unwrap()),
+                Some(&prepared.push_memo),
+                Some(prepared.prepared_at_nanos),
+            ),
+        )
+        .expect("combined redemption sends its exact reserve push");
+        let push_block = u128::try_from(push_block.0).unwrap();
         let initial: Result<RedemptionProgress, StreamApiError> = super::update(
             &fixture.pic,
             sns.stream,
             fixture.controller,
-            "redeem",
-            redemption_args.clone(),
+            "settle_redemption",
+            push_block,
         );
         let mut redemption = match initial {
             Ok(RedemptionProgress::Completed(completed)) => {
@@ -3728,7 +3849,13 @@ mod tests {
                     "get_status",
                     (),
                 );
-                assert_eq!(status.operation_kind.as_deref(), Some("Redemption"));
+                assert!(
+                    matches!(
+                        status.operation_kind.as_deref(),
+                        Some("Redemption") | Some("BackingReconciliation")
+                    ),
+                    "a proved push may wait behind the one active reconciliation slot: {status:?}"
+                );
                 assert!(status.operation_phase.is_some());
                 None
             }
@@ -3738,35 +3865,111 @@ mod tests {
             .pic
             .upgrade_canister(sns.stream, stream_wasm, encode_one(()).unwrap(), None)
             .unwrap();
+        let mut redemption_recovery_steps = Vec::new();
         if redemption.is_none() {
-            for _ in 0..8 {
-                let progress: Result<StreamProgress, StreamApiError> = super::update(
+            for _ in 0..24 {
+                let status: StreamStatus = super::query(
                     &fixture.pic,
                     sns.stream,
                     Principal::anonymous(),
-                    "resume",
+                    "get_status",
                     (),
                 );
-                match progress {
-                    Ok(StreamProgress::Redemption(RedemptionProgress::Pending))
-                    | Err(StreamApiError::Pending(_)) => {}
-                    Ok(StreamProgress::Redemption(RedemptionProgress::Completed(completed))) => {
-                        redemption = Some(completed);
-                        break;
+                match status.operation_kind.as_deref() {
+                    Some("BackingReconciliation") => {
+                        let manager_progress: Result<ManagerNnsProgress, ManagerApiError> =
+                            super::update(
+                                &fixture.pic,
+                                fixture.controller,
+                                Principal::anonymous(),
+                                "resume",
+                                (),
+                            );
+                        let progress: Result<StreamProgress, StreamApiError> = super::update(
+                            &fixture.pic,
+                            sns.stream,
+                            Principal::anonymous(),
+                            "resume",
+                            (),
+                        );
+                        redemption_recovery_steps.push(format!(
+                            "backing manager={manager_progress:?} stream={progress:?}"
+                        ));
+                        assert!(
+                            matches!(
+                                manager_progress,
+                                Ok(ManagerNnsProgress::Pool(_))
+                                    | Ok(ManagerNnsProgress::Idle)
+                                    | Err(ManagerApiError::Pending(_))
+                                    | Err(ManagerApiError::Busy)
+                            ),
+                            "combined NNS backing recovery failed: {manager_progress:?}"
+                        );
+                        assert!(
+                            matches!(
+                                progress,
+                                Ok(StreamProgress::BackingReconciliation)
+                                    | Err(StreamApiError::Pending(_))
+                            ),
+                            "combined backing contention failed: {progress:?}"
+                        );
                     }
-                    other => panic!("combined pending redemption failed: {other:?}"),
+                    Some("Redemption") => {
+                        let progress: Result<StreamProgress, StreamApiError> = super::update(
+                            &fixture.pic,
+                            sns.stream,
+                            Principal::anonymous(),
+                            "resume",
+                            (),
+                        );
+                        redemption_recovery_steps.push(format!("redemption={progress:?}"));
+                        match progress {
+                            Ok(StreamProgress::Redemption(RedemptionProgress::Pending))
+                            | Err(StreamApiError::Pending(_)) => {}
+                            Ok(StreamProgress::Redemption(RedemptionProgress::Completed(
+                                completed,
+                            ))) => {
+                                redemption = Some(completed);
+                                break;
+                            }
+                            other => panic!("combined pending redemption failed: {other:?}"),
+                        }
+                    }
+                    None => {
+                        let progress: Result<RedemptionProgress, StreamApiError> = super::update(
+                            &fixture.pic,
+                            sns.stream,
+                            Principal::anonymous(),
+                            "resume_redemption",
+                            fixture.controller,
+                        );
+                        redemption_recovery_steps.push(format!("activate={progress:?}"));
+                        match progress {
+                            Ok(RedemptionProgress::Pending) | Err(StreamApiError::Pending(_)) => {}
+                            Ok(RedemptionProgress::Completed(completed)) => {
+                                redemption = Some(completed);
+                                break;
+                            }
+                            other => panic!("combined pushed redemption failed: {other:?}"),
+                        }
+                    }
+                    other => panic!("unrelated operation blocked redemption: {other:?}"),
                 }
             }
         }
-        let redemption = redemption.expect("combined redemption exceeded eight resume attempts");
+        let redemption = redemption.unwrap_or_else(|| {
+            panic!(
+                "combined redemption exceeded bounded recovery attempts: {redemption_recovery_steps:?}"
+            )
+        });
         assert_eq!(redemption.gross_icp_e8s, quote.gross_icp);
         assert_eq!(redemption.net_icp_e8s, quote.net_icp);
         let replay: Result<RedemptionProgress, StreamApiError> = super::update(
             &fixture.pic,
             sns.stream,
             fixture.controller,
-            "redeem",
-            redemption_args,
+            "settle_redemption",
+            push_block,
         );
         assert_eq!(
             replay,
@@ -3859,9 +4062,10 @@ mod tests {
         let top_up_created_at = fixture.pic.get_time().as_nanos_since_unix_epoch();
         let top_up_request = io_nns_types::backing::PreparePoolReconciliationArgs {
             generation: top_up_generation,
-            target_e8s: before_top_up.pooled_parent_principal_e8s + top_up_credit,
+            target_e8s: before_top_up.claim_bearing_dynamic_principal_e8s + top_up_credit,
             action: io_nns_types::backing::PoolReconciliationAction::TopUp {
-                expected_credit_e8s: top_up_credit,
+                expected_transfer_e8s: top_up_credit - u128::from(ICP_FEE_E8S),
+                expected_claim_credit_e8s: top_up_credit,
             },
             fee_e8s: ICP_FEE_E8S.into(),
             snapshot_fingerprint: before_top_up.fingerprint,
@@ -3906,7 +4110,18 @@ mod tests {
                 created_at_time: None,
             },
         );
-        donation_to_parent.unwrap();
+        let donation_block = u128::from(donation_to_parent.unwrap());
+        let rejected_donation: Result<ManagerNnsProgress, ManagerApiError> = super::update(
+            &fixture.pic,
+            fixture.controller,
+            Principal::anonymous(),
+            "prove_active_transfer",
+            donation_block,
+        );
+        assert!(
+            matches!(rejected_donation, Err(ManagerApiError::Invalid(_))),
+            "unattributed dust must not impersonate the exact top-up: {rejected_donation:?}"
+        );
         let transfer: Result<candid::Nat, io_ledger_types::IcrcTransferError> = super::update(
             &fixture.pic,
             fixture.ledger,
@@ -3918,7 +4133,7 @@ mod tests {
                     owner: permit.destination.owner,
                     subaccount: permit.destination.subaccount.clone(),
                 },
-                amount: candid::Nat::from(top_up_credit),
+                amount: candid::Nat::from(permit.expected_credit_e8s),
                 fee: Some(candid::Nat::from(ICP_FEE_E8S)),
                 memo: Some(permit.memo.clone()),
                 created_at_time: Some(permit.prepared_at_nanos),
@@ -3959,10 +4174,44 @@ mod tests {
         assert_eq!(
             completed_top_up,
             Some((
-                before_top_up.pooled_parent_principal_e8s + top_up_credit + top_up_donation,
-                io_nns_types::backing::PoolTargetResult::OverTarget,
+                before_top_up
+                    .parent
+                    .as_ref()
+                    .unwrap()
+                    .physical_principal_e8s
+                    + top_up_credit
+                    - u128::from(ICP_FEE_E8S)
+                    + top_up_donation,
+                io_nns_types::backing::PoolTargetResult::AtTarget,
             )),
             "{top_up_phases:?}"
+        );
+        let after_top_up: io_nns_types::backing::ClaimAssetObservation =
+            super::update::<Result<_, ManagerApiError>>(
+                &fixture.pic,
+                fixture.controller,
+                sns.stream,
+                "observe_claim_assets",
+                (),
+            )
+            .unwrap();
+        assert_eq!(
+            after_top_up.claim_bearing_dynamic_principal_e8s,
+            before_top_up.claim_bearing_dynamic_principal_e8s + top_up_credit
+        );
+        assert_eq!(
+            after_top_up.anchor_available_e8s,
+            before_top_up.anchor_available_e8s - u128::from(ICP_FEE_E8S)
+        );
+        assert_eq!(
+            after_top_up.excluded_dynamic_surplus_e8s,
+            before_top_up.excluded_dynamic_surplus_e8s + top_up_donation
+        );
+        assert_eq!(
+            after_top_up.parent.as_ref().unwrap().physical_principal_e8s,
+            after_top_up.claim_bearing_dynamic_principal_e8s
+                + after_top_up.anchor_available_e8s
+                + after_top_up.excluded_dynamic_surplus_e8s
         );
         super::update::<Result<(), ManagerApiError>>(
             &fixture.pic,
@@ -3991,7 +4240,7 @@ mod tests {
             recipient_after.len(),
             redemption.gross_icp_e8s,
             redemption.net_icp_e8s,
-            before_top_up.pooled_parent_principal_e8s,
+            before_top_up.claim_bearing_dynamic_principal_e8s,
             top_up_credit,
             top_up_donation,
         );

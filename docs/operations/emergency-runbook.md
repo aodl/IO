@@ -15,9 +15,15 @@ contract.
 
 ## Redemption phases
 
-- `Preparing`: the exact normalized request owns the one operation slot. No monetary effect exists. A failed canonical read may clear only this matching preparation.
-- `IoPullSubmitted`: the immutable IO `transfer_from` intent is Submitted. A rejection or timeout is `Pending`/ambiguous while the intent remains inside its deduplication window.
-- `IoInReserve`: the exact IO pull succeeded. IO is in reserve and no ICP payout intent existed before this point.
+- A caller's prepared intent freezes the source Account, IO principal and fee,
+  exact quote, expiry, nonce, redemption ID, and ICRC-1 memo. Preparation owns
+  no monetary slot and creates no payout debt.
+- The wallet performs the exact ICRC-1 push. Until the named ledger block is
+  proved, the prepared intent remains caller state rather than an active
+  monetary operation.
+- `PayoutOwed`: the exact timely push is proved, IO is in reserve, and the
+  immutable ICP payout is an unconditional durable obligation. Missing liquid
+  ICP is an invariant-recovery condition, never cancellation of the claim.
 - `PayoutSubmitted`: the immutable ICP payout was created at its first submission. Retry only the identical intent within its deduplication window.
 - `PayoutSucceeded`: the canonical payout block is persisted and conservative postconditions still require confirmation.
 - `Stuck`: automated retry is not safe. Keep Paused and prove the exact named block through the ledger's canonical current/archive interface or ship a reviewed forward fix.
@@ -32,7 +38,7 @@ Never mark completion by assertion, change a payout destination, recreate an int
 
 ## Exact transfer proof
 
-For an IO pull, use the pinned SNS ledger current/archive transaction and require the exact `transfer_from` spender, source, reserve destination, amount, fee, memo and timestamp. For an ICP payout or receipt, use official `query_blocks` and exactly the archive callback returned for the requested block. Require the exact account identifiers, amount, fee, ICRC-1 memo/timestamp and no spender.
+For an IO redemption push, use the pinned SNS ledger current/archive transaction and require the prepared source Account, reserve destination, principal amount, fee, deterministic memo, creation window, and absence of a spender. For an ICP payout or receipt, use official `query_blocks` and exactly the archive callback returned for the requested block. Require the exact account identifiers, amount, fee, ICRC-1 memo/timestamp and no spender.
 
 No proof of absence exists. If the exact effect cannot be proved, retain Paused and prepare a governance-reviewed upgrade.
 

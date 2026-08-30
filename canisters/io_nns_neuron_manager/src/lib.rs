@@ -7,6 +7,7 @@ pub mod lifecycle;
 mod maturity_flow;
 mod permanent_credit;
 mod pool_flow;
+mod recovery_timer;
 pub mod state;
 mod two_week_binding;
 mod unwind_flow;
@@ -100,6 +101,9 @@ pub fn init(args: InitArgs) {
             active_operation: None,
             pooled_parent_id: None,
             pooled_parent_staking_account: None,
+            claim_bearing_dynamic_principal_e8s: 0,
+            anchor_available_e8s: 0,
+            permanent_fee_shortfall_e8s: 0,
             live_cohorts: Vec::new(),
             last_completed_pool: None,
             last_completed_unwind: None,
@@ -122,6 +126,7 @@ pub fn init(args: InitArgs) {
 #[cfg_attr(target_family = "wasm", ic_cdk::post_upgrade)]
 pub fn post_upgrade() {
     state::reopen(ic_cdk::api::canister_self());
+    recovery_timer::install_for_state();
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]

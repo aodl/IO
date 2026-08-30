@@ -61,12 +61,12 @@ records for their own source. They do not define this replacement.
 | TwoWeek maturity | NNS maturity state/flow and Stream paired receipt | Retain semantic staging and paired issuance; make its claim-leg fee consume anchor and its permanent-leg fee create permanent shortfall. |
 | TwoYear maturity | NNS maturity state/flow | Replace direct whole-capture 40/60 with replenish-anchor, replenish-permanent, then 40/60. Retain no-IO issuance and semantic capture. |
 | Split, child, and disbursement | NNS `unwind_flow`; `io-nns-types::{pool,backing}` | Retain sticky exact commands/proofs. Consume Split and committed future-disbursement fee capacity once at the sticky boundary. |
-| SNS timing/eligibility | `io-core-model::TWO_WEEK_SECONDS`; governance/reward boundaries; Stream timer | Split NNS and SNS constants. Retain prospective reward eligibility. Freeze the SNS delay only after the timing gate is resolved. |
+| SNS timing/eligibility | Separate core-model constants; governance/reward boundaries; Stream scheduler | NNS delay is 1,209,600 seconds and SNS user delay is 1,296,060 seconds after the 12-hour timing proof. |
 | Cohort lifecycle | NNS stable state/API; `MAX_LIVE_UNWIND_COHORTS`; `CapacityPending` | Delete the product cap/variant. Retain one aggregate child per generation and prioritize ready-child service before another Split. |
 | Redemption | Stream state/API/redemption; ledger boundary/types | Replace allowance, pull intent, and `transfer_from` with prepared ICRC-1 push proof and a durable payout obligation. Retain bounded caller nonce/replay. |
 | Frontend redemption | `frontend/web/src/app/redemption.js` and redemption UI/tests | Replace approval/allowance UX with prepare, explicit push, block settlement, and resume. |
 | Historian/status | Historian raw adapters/model/DID and frontend projection | Retain layered observation; add anchor partition, deficits, push obligation, and cohort-priority representations only where operationally necessary. |
-| Stable schemas | Stream marker 8; NNS marker 11; strict fixtures | Replace the pre-launch encoded shapes, bump strict markers, regenerate fixtures, and reject old markers without migration. |
+| Stable schemas | Stream marker 9; NNS marker 12; strict launch fixtures | The replacement encoded shapes reject markers 8/11 without migration. |
 | Bootstrap/rehearsal tooling | install args, production wiring, local SNS runbook/evidence validators | Replace lazy-parent fixtures and pull-redemption phases with preseeded anchor, dust, push, replenishment, timing, and >32 historical-generation evidence. |
 | Normative documentation | pooled-backing, fees, maturity, scheduler, redemption, readiness docs | Mark superseded decisions explicitly. Preserve historical package descriptions. |
 
@@ -123,7 +123,7 @@ scanner, second monetary slot, or second scheduler is introduced.
 All realised maturity of the Dynamic neuron follows the ordinary pooled /
 TwoWeek reward path. Principal provenance does not partition neuron maturity.
 
-## Authoritative invariants
+## Executable invariant details
 
 The executable test-only model in `tests/economics` checks these rules after
 every representative transition.

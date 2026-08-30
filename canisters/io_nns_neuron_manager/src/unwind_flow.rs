@@ -20,7 +20,10 @@ pub async fn resume(operation: UnwindOperation) -> Result<UnwindProgress, ApiErr
         UnwindPhase::StartDissolvingSubmitted => recover_start(operation, true).await,
         UnwindPhase::StartDissolvingProved => prove_start(operation).await,
         UnwindPhase::DisbursementPrepared => submit_disbursement(operation).await,
-        UnwindPhase::DisbursementSubmitted => Ok(UnwindProgress::AwaitingTransferProof),
+        UnwindPhase::DisbursementSubmitted => match operation.expected_block_index {
+            Some(block_index) => prove(operation, block_index).await,
+            None => Ok(UnwindProgress::AwaitingTransferProof),
+        },
         UnwindPhase::PrincipalReturned => observe_cleanup(operation).await,
         UnwindPhase::DelayIncreaseSubmitted => recover_delay(operation, true).await,
         UnwindPhase::DelayIncreaseProved | UnwindPhase::MergePrepared => {
@@ -105,7 +108,7 @@ async fn submit_split(mut operation: UnwindOperation) -> Result<UnwindProgress, 
             )
             .map_err(|_| ApiError::Invalid("Split gross cannot cover the fee".into()))?;
             operation.phase = UnwindPhase::ChildIdentified;
-            replace(&submitted, operation.clone())?;
+            commit_identified_split(&submitted, operation.clone())?;
             prove_split(operation).await
         }
         execution::SplitCallOutcome::RejectedNoEffect(reason) => {
@@ -170,7 +173,7 @@ async fn recover_split(operation: UnwindOperation) -> Result<UnwindProgress, Api
         || candidate.physical_principal_e8s != expected_principal
         || candidate.dissolve_state
             != Some(DissolveState::DissolveDelaySeconds(
-                io_nns_types::backing::POOLED_PARENT_DELAY_SECONDS,
+                io_nns_types::backing::NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS,
             ))
     {
         return fail_split_recovery(
@@ -194,8 +197,31 @@ async fn recover_split(operation: UnwindOperation) -> Result<UnwindProgress, Api
     identified.child_neuron_id = candidate.neuron_id;
     identified.principal_e8s = expected_principal;
     identified.phase = UnwindPhase::ChildIdentified;
-    replace(&expected, identified.clone())?;
+    commit_identified_split(&expected, identified.clone())?;
     prove_split(identified).await
+}
+
+fn commit_identified_split(
+    expected: &UnwindOperation,
+    identified: UnwindOperation,
+) -> Result<(), ApiError> {
+    let required_anchor = identified
+        .split_fee_e8s
+        .checked_add(identified.committed_disbursement_fee_e8s)
+        .ok_or_else(|| ApiError::Invalid("unwind fee capacity overflow".into()))?;
+    let mut latest = state::read();
+    clear_active(&mut latest, expected)?;
+    identified
+        .validate(latest.next_operation_sequence)
+        .map_err(ApiError::Invalid)?;
+    latest.anchor_available_e8s = latest
+        .anchor_available_e8s
+        .checked_sub(required_anchor)
+        .ok_or_else(|| ApiError::Invalid("Dynamic anchor fee capacity underflow".into()))?;
+    latest.claim_bearing_dynamic_principal_e8s = identified.target_e8s;
+    latest.active_operation = Some(NnsOperation::Unwind(identified));
+    state::write(latest);
+    Ok(())
 }
 
 #[derive(CandidType, Deserialize)]
@@ -694,11 +720,9 @@ fn replace(expected: &UnwindOperation, replacement: UnwindOperation) -> Result<(
 fn move_to_passive(expected: &UnwindOperation, cohort: PassiveCohort) -> Result<(), ApiError> {
     let mut latest = state::read();
     clear_active(&mut latest, expected)?;
-    if latest.live_cohorts.len() >= io_nns_types::backing::MAX_LIVE_UNWIND_COHORTS
-        || latest.live_cohorts.iter().any(|item| {
-            item.generation == cohort.generation || item.child_neuron_id == cohort.child_neuron_id
-        })
-    {
+    if latest.live_cohorts.iter().any(|item| {
+        item.generation == cohort.generation || item.child_neuron_id == cohort.child_neuron_id
+    }) {
         return Err(ApiError::Busy);
     }
     latest.live_cohorts.push(cohort);

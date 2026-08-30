@@ -183,13 +183,11 @@ fi
 sed -i -E "s/(two_year_neuron_id = )[0-9_]+/\1${two_year_neuron_id}/" "$nns_args"
 sed -i -E "s/(pooled_parent_memo = )[0-9_]+/\1${pooled_parent_memo}/" "$nns_args"
 sed -i -E "s/(pooled_parent_followee_id = )[0-9_]+/\1${two_year_neuron_id}/" "$nns_args"
-sed -i -E "s/(minimum_parent_stake_e8s = )[0-9_]+/\1${minimum_parent_stake}/" "$nns_args"
 sed -i -E "s/(jupiter_activation_block_floor = )[0-9_]+/\1${jupiter_activation_block_floor}/" "$nns_args"
 sed -i -E "s/(audited_permanent_principal_e8s = )[0-9_]+/\1${two_year_stake}/" "$nns_args"
 grep -Fq "two_year_neuron_id = ${two_year_neuron_id}" "$nns_args"
 grep -Fq "pooled_parent_memo = ${pooled_parent_memo}" "$nns_args"
 grep -Fq "pooled_parent_followee_id = ${two_year_neuron_id}" "$nns_args"
-grep -Fq "minimum_parent_stake_e8s = ${minimum_parent_stake}" "$nns_args"
 grep -Fq "jupiter_activation_block_floor = ${jupiter_activation_block_floor}" "$nns_args"
 grep -Fq "audited_permanent_principal_e8s = ${two_year_stake}" "$nns_args"
 

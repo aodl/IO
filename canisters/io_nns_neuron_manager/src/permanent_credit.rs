@@ -2,7 +2,7 @@ use crate::{
     api::{ApiError, MaturityProgress},
     execution,
     jupiter::{NeuronSnapshot, PermanentNeuronCreditProof},
-    maturity::{MaturityCommandOperation, PermanentCreditState},
+    maturity::{MaturityCommandOperation, NeuronCreditRole, PermanentCreditState},
     maturity_flow, state,
     transfer::{NnsTransferAttempt, NnsTransferIntent},
 };
@@ -37,6 +37,7 @@ pub(crate) fn observe_credit(
 
 pub(crate) async fn prepare(
     operation: MaturityCommandOperation,
+    role: NeuronCreditRole,
     before: NeuronSnapshot,
     amount: u128,
     fee_e8s: u128,
@@ -55,44 +56,38 @@ pub(crate) async fn prepare(
         amount_e8s: amount,
         fee_e8s,
         memo: maturity_flow::maturity_transfer_memo(
-            b"io-pooled-maturity-permanent-v1",
+            credit_memo_domain(role),
             operation.operation_sequence,
         ),
         created_at_time_nanos: maturity_flow::now_nanos()?,
     })
     .map_err(ApiError::Invalid)?;
     let mut replacement = operation.clone();
-    maturity_flow::delivery_mut(&mut replacement).permanent_credit =
+    maturity_flow::set_credit_state(
+        maturity_flow::delivery_mut(&mut replacement),
+        role,
         Some(PermanentCreditState::Prepared {
             before,
             transfer: Box::new(transfer),
-        });
+        }),
+    );
     maturity_flow::write_exact(&operation, replacement.clone(), false)?;
-    Box::pin(maturity_flow::resume_active(replacement)).await
+    Ok(MaturityProgress::Pending)
 }
 
 pub(crate) async fn refresh(
     operation: MaturityCommandOperation,
-    before: NeuronSnapshot,
-    transfer_block: u128,
-    protocol_credit_e8s: u128,
+    neuron_id: u64,
 ) -> Result<MaturityProgress, ApiError> {
-    let neuron_id = before.neuron_id;
     let result = execution::refresh_neuron(&state::read().config, neuron_id).await;
     maturity_flow::ensure_exact(&operation)?;
     result?;
-    Box::pin(prove_or_refresh(
-        operation,
-        before,
-        transfer_block,
-        protocol_credit_e8s,
-        false,
-    ))
-    .await
+    Ok(MaturityProgress::Pending)
 }
 
 pub(crate) async fn prove_or_refresh(
     operation: MaturityCommandOperation,
+    role: NeuronCreditRole,
     before: NeuronSnapshot,
     transfer_block: u128,
     protocol_credit_e8s: u128,
@@ -101,16 +96,27 @@ pub(crate) async fn prove_or_refresh(
     let after = execution::query_neuron(&state::read().config, before.neuron_id).await?;
     maturity_flow::ensure_exact(&operation)?;
     let Some(proof) = observe_credit(&before, transfer_block, protocol_credit_e8s, &after)? else {
-        if !retry_missing {
-            return Err(ApiError::Pending(
-                "permanent-leg ClaimOrRefresh awaits canonical stake reflection".into(),
-            ));
+        if retry_missing {
+            return refresh(operation, before.neuron_id).await;
         }
-        return refresh(operation, before, transfer_block, protocol_credit_e8s).await;
+        return Err(ApiError::Pending(
+            "permanent-leg ClaimOrRefresh awaits canonical stake reflection".into(),
+        ));
     };
     let mut replacement = operation.clone();
-    maturity_flow::delivery_mut(&mut replacement).permanent_credit =
-        Some(PermanentCreditState::Proved(proof));
-    maturity_flow::write_exact(&operation, replacement.clone(), false)?;
-    Box::pin(maturity_flow::resume_active(replacement)).await
+    maturity_flow::set_credit_state(
+        maturity_flow::delivery_mut(&mut replacement),
+        role,
+        Some(PermanentCreditState::Proved(proof)),
+    );
+    maturity_flow::write_exact_credit_proof(&operation, replacement, role, protocol_credit_e8s)?;
+    Ok(MaturityProgress::Pending)
+}
+
+fn credit_memo_domain(role: NeuronCreditRole) -> &'static [u8] {
+    match role {
+        NeuronCreditRole::AnchorReimbursement => b"io-two-year-anchor-reimbursement-v1",
+        NeuronCreditRole::PermanentReimbursement => b"io-two-year-permanent-reimbursement-v1",
+        NeuronCreditRole::OrdinaryPermanent => b"io-pooled-maturity-permanent-v1",
+    }
 }

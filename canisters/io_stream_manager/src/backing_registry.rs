@@ -27,6 +27,25 @@ pub fn reconcile(
             .binary_search_by(|record| record.sns_neuron_id.cmp(&stake.sns_neuron_id))
             .ok()
             .map(|index| &existing[index]);
+        let reward_eligible_through_event = match stake.state {
+            StructuralStakeState::Active | StructuralStakeState::IneligibleActive => {
+                prior.and_then(|record| record.reward_eligible_through_event)
+            }
+            StructuralStakeState::Dissolving | StructuralStakeState::LiquidOrDissolved => {
+                let was_eligible = prior.is_some_and(|record| {
+                    matches!(
+                        record.status,
+                        BackingRewardStatus::ActiveEligible { eligible_from_event }
+                            if eligible_from_event <= event_marker
+                    )
+                });
+                prior
+                    .and_then(|record| record.reward_eligible_through_event)
+                    .into_iter()
+                    .chain((was_eligible && event_marker > 0).then_some(event_marker))
+                    .max()
+            }
+        };
         let status = match (stake.state, prior.map(|record| &record.status)) {
             (_, Some(BackingRewardStatus::ExitCommitted { generation }))
                 if live.contains(generation) =>
@@ -74,6 +93,7 @@ pub fn reconcile(
                 sns_neuron_id: stake.sns_neuron_id.clone(),
                 staking_account: stake.staking_account.clone(),
                 accumulated_eligible_credit: credit,
+                reward_eligible_through_event,
                 latest_structural_state: stake.state,
                 status,
             });
@@ -84,6 +104,9 @@ pub fn reconcile(
             .binary_search_by(|record| record.sns_neuron_id.cmp(&prior.sns_neuron_id))
             .is_err()
             && (prior.accumulated_eligible_credit > 0
+                || prior
+                    .reward_eligible_through_event
+                    .is_some_and(|through| through >= event_marker)
                 || prior
                     .status
                     .generation()
@@ -169,12 +192,15 @@ pub fn reward_eligible_ids(
     records
         .iter()
         .filter(|record| {
-            record.latest_structural_state == StructuralStakeState::Active
+            (record.latest_structural_state == StructuralStakeState::Active
                 && matches!(
                     record.status,
                     BackingRewardStatus::ActiveEligible { eligible_from_event }
                         if eligible_from_event <= event_marker
-                )
+                ))
+                || record
+                    .reward_eligible_through_event
+                    .is_some_and(|through| event_marker <= through)
         })
         .map(|record| record.sns_neuron_id.clone())
         .collect()
@@ -305,6 +331,7 @@ mod tests {
                 subaccount: Some(vec![id; 32]),
             },
             accumulated_eligible_credit: 0,
+            reward_eligible_through_event: None,
             latest_structural_state: state,
             status,
         }
@@ -315,13 +342,23 @@ mod tests {
         live: Vec<u64>,
     ) -> DailyStakeObservation {
         let mut assets = ClaimAssetObservation {
-            parent: None,
+            parent: Some(io_nns_types::backing::ParentAssetObservation {
+                neuron_id: 1,
+                staking_account: crate::state::Account {
+                    owner: principal(9),
+                    subaccount: Some(vec![10; 32]),
+                },
+                physical_principal_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+            }),
             pool_staking_account: crate::state::Account {
                 owner: principal(9),
                 subaccount: Some(vec![10; 32]),
             },
-            minimum_parent_stake_e8s: 100,
-            pooled_parent_principal_e8s: 0,
+            claim_bearing_dynamic_principal_e8s: 0,
+            anchor_target_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+            anchor_available_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+            excluded_dynamic_surplus_e8s: 0,
+            permanent_fee_shortfall_e8s: 0,
             live_cohorts: live
                 .into_iter()
                 .map(|generation| io_nns_types::backing::CohortObservation {
@@ -511,6 +548,54 @@ mod tests {
                 eligible_from_event: 11
             }
         );
+    }
+
+    #[test]
+    fn exit_after_a_completed_event_retains_only_that_event_credit() {
+        let prior = record(
+            1,
+            StructuralStakeState::Active,
+            BackingRewardStatus::ActiveEligible {
+                eligible_from_event: 4,
+            },
+        );
+        let updated = reconcile(
+            std::slice::from_ref(&prior),
+            &daily(
+                vec![stake(&prior, StructuralStakeState::Dissolving)],
+                Vec::new(),
+            ),
+            7,
+            &config(),
+        )
+        .unwrap();
+        assert_eq!(updated[0].reward_eligible_through_event, Some(7));
+        assert_eq!(reward_eligible_ids(&updated, 7).len(), 1);
+        assert!(reward_eligible_ids(&updated, 8).is_empty());
+    }
+
+    #[test]
+    fn ineligible_or_prospective_exit_never_gains_a_reward_fence() {
+        for status in [
+            BackingRewardStatus::ActiveIneligible,
+            BackingRewardStatus::ReentryPending {
+                eligible_from_event: 8,
+            },
+        ] {
+            let prior = record(1, StructuralStakeState::Active, status);
+            let updated = reconcile(
+                std::slice::from_ref(&prior),
+                &daily(
+                    vec![stake(&prior, StructuralStakeState::Dissolving)],
+                    Vec::new(),
+                ),
+                7,
+                &config(),
+            )
+            .unwrap();
+            assert_eq!(updated[0].reward_eligible_through_event, None);
+            assert!(reward_eligible_ids(&updated, 7).is_empty());
+        }
     }
 
     #[test]

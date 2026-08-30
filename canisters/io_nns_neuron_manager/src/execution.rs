@@ -9,7 +9,7 @@ use candid::{CandidType, Nat, Principal, Reserved};
 use ic_cdk::call::Call;
 use io_ledger_boundary::{IcrcTransferArg, IcrcTransferError, IcrcTransferResult};
 pub use io_nns_types::backing::split_child_subaccount;
-use io_nns_types::backing::{FollowPolicy, POOLED_PARENT_DELAY_SECONDS};
+use io_nns_types::backing::{FollowPolicy, NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS};
 pub use io_receipt_types::ClaimBackingReceiptProgress as StreamLiquidProgress;
 use io_receipt_types::{
     ClaimBackingReceiptKind, ClaimBackingReceiptPermit, PrepareClaimBackingReceiptArgs,
@@ -134,7 +134,7 @@ pub fn validate_parent_configuration(
     if !observation.auto_stake_maturity
         && observation.dissolve_state
             == Some(DissolveState::DissolveDelaySeconds(
-                POOLED_PARENT_DELAY_SECONDS,
+                NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS,
             ))
         && exact_following
     {

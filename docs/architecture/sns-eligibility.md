@@ -9,7 +9,7 @@ Inputs include SNS neurons, protocol-owned neuron IDs, Jupiter governance neuron
 Eligibility rules:
 
 - user-owned neurons can be eligible;
-- dissolve delay must be at least two weeks;
+- dissolve delay must equal the approved 1,296,060-second user delay;
 - strict mode excludes dissolving neurons;
 - Jupiter governance neurons are excluded;
 - protocol-owned neurons are excluded;
@@ -21,7 +21,8 @@ The pure allocator owns only its tiny canonical SNS neuron-ID value. The SNS
 boundary owns narrow pinned DTOs for latest reward events, paginated neurons,
 exact-neuron reads, Root module-hash evidence, and reward parameters. The stream
 manager excludes protocol-owned and Jupiter-governance staking Accounts, zero
-stake, every delay other than exactly 1,209,600 seconds, and dissolving neurons.
+stake, every delay other than exactly 1,296,060 seconds, and dissolving neurons.
+The separate NNS Dynamic parent/child delay remains exactly 1,209,600 seconds.
 
 Stream-manager governance snapshot tests fetch local/mock SNS governance-shaped
 neuron pages through `SnsGovernanceClient`, apply this policy, and report
@@ -46,3 +47,10 @@ than credit-bearing and makes active records eligible prospectively from round
 one. Sequence-span metadata is required to prove an advancing event or gap, not
 to prove an exact replay. A changed timestamp at the same round remains invalid,
 and no credit-bearing observation or entitlement batch may use round zero.
+
+Structural membership observation is independent of reward credit and runs on
+the 12-hour synchronization cadence. It may promptly prepare backing exit for a
+dissolving neuron without deciding whether a daily reward event credits that
+neuron. Reward event identity fences prospective eligibility: activation before
+an event and activation after an already completed event cannot be confused by
+structural/reward call order or upgrade retry.

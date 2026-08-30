@@ -5,6 +5,7 @@ use io_nns_neuron_manager::{
 };
 use pocket_ic::PocketIc;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 
 const CYCLES: u128 = 2_000_000_000_000;
@@ -41,6 +42,18 @@ fn install(pic: &PocketIc, name: &str, arg: Vec<u8>) -> Principal {
     pic.add_cycles(canister, CYCLES);
     pic.install_canister(canister, wasm(name), arg, None);
     canister
+}
+
+fn dynamic_staking_account(nns_governance: Principal, controller: Principal, memo: u64) -> Account {
+    let mut hasher = Sha256::new();
+    hasher.update([0x0c]);
+    hasher.update(b"neuron-stake");
+    hasher.update(controller.as_slice());
+    hasher.update(memo.to_be_bytes());
+    Account {
+        owner: nns_governance,
+        subaccount: Some(hasher.finalize().to_vec()),
+    }
 }
 
 fn update<A: CandidType, R: for<'de> Deserialize<'de> + CandidType>(
@@ -106,7 +119,6 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
                 two_year_neuron_id: 1,
                 pooled_parent_memo: 2,
                 pooled_parent_followee_id: 1,
-                minimum_parent_stake_e8s: 100_000_000,
                 jupiter_account: Account {
                     owner: Principal::from_slice(&[4; 29]),
                     subaccount: None,
@@ -265,6 +277,16 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
         Principal::anonymous(),
         "debug_mint_account",
         DebugMintAccountArgs {
+            to: dynamic_staking_account(governance, manager, 0),
+            amount_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+        },
+    );
+    let _: u64 = update(
+        &pic,
+        ledger,
+        Principal::anonymous(),
+        "debug_mint_account",
+        DebugMintAccountArgs {
             to: jupiter_account.clone(),
             amount_e8s: 10_000_000,
         },
@@ -284,7 +306,7 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
         },
     );
     let old_block: u128 = old_block.unwrap().0.try_into().unwrap();
-    assert_eq!(old_block, 1);
+    assert_eq!(old_block, 2);
     let _: u64 = update(
         &pic,
         ledger,
@@ -315,9 +337,8 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
         icp_ledger: ledger,
         nns_governance: governance,
         two_year_neuron_id: 41,
-        pooled_parent_memo: 42,
+        pooled_parent_memo: 0,
         pooled_parent_followee_id: 41,
-        minimum_parent_stake_e8s: 100_000_000,
         jupiter_account,
         jupiter_staging: staging(0),
         stream_liquid_account: Account {

@@ -130,7 +130,8 @@ fn submit_canonical_motion(pic: &PocketIc, governance: Principal) -> u64 {
                 command: Some(Command::MakeProposal(Proposal {
                     url: "https://forum.dfinity.org/t/io-local-rehearsal/0".into(),
                     title: "Prospective IO reward eligibility observation".into(),
-                    summary: "Local-only proposal after exact lazy-parent reconciliation.".into(),
+                    summary: "Local-only proposal after exact Dynamic-parent reconciliation."
+                        .into(),
                     action: Some(Action::Motion(Motion {
                         motion_text: "Observe one proposal-bearing eligible IO reward event."
                             .into(),

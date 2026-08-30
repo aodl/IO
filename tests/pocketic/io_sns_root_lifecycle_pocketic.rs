@@ -26,7 +26,6 @@ struct NnsConfig {
     two_year_neuron_id: u64,
     pooled_parent_memo: u64,
     pooled_parent_followee_id: u64,
-    minimum_parent_stake_e8s: u128,
     jupiter_account: io_stream_manager::Account,
     jupiter_staging: io_stream_manager::Account,
     stream_liquid_account: io_stream_manager::Account,
@@ -182,7 +181,6 @@ fn setup() -> Fixture {
                 two_year_neuron_id: 42,
                 pooled_parent_memo: 43,
                 pooled_parent_followee_id: 42,
-                minimum_parent_stake_e8s: 100_000_000,
                 jupiter_account: io_stream_manager::Account {
                     owner: jupiter,
                     subaccount: None,

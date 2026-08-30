@@ -1,4 +1,4 @@
-import { consentAndSubmitRedemption, prepareRedemption, progressLabel, resumeRedemption } from "../app/redemption.js";
+import { consentPushAndSettleRedemption, prepareRedemption, progressLabel, resumeRedemption } from "../app/redemption.js";
 
 function text(node, value) {
   if (node) node.textContent = value;
@@ -11,8 +11,8 @@ export function mountRedemptionForm(document, actors, session) {
   const proof = document.querySelector("[data-redemption-proof]");
   if (!form) return;
   if (!actors || !session?.identity || !(session.selectedSubaccount instanceof Uint8Array)
-      || typeof session.requestApprovalConsent !== "function") {
-    text(status, "Connect a wallet that supplies one canonical subaccount. Direct IO transfers are unsupported and will not start redemption.");
+      || typeof session.requestTransferConsent !== "function") {
+    text(status, "Connect a wallet that supplies one canonical subaccount and explicit ICRC-1 transfer consent.");
     form.querySelector("button").disabled = true;
     resume.disabled = true;
     proof.disabled = true;
@@ -21,8 +21,8 @@ export function mountRedemptionForm(document, actors, session) {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     try {
-      text(status, "Querying exact fee, allowance and caller nonce");
-      const request = await prepareRedemption({
+      text(status, "Preparing an exact push-redemption quote");
+      const prepared = await prepareRedemption({
         ...actors,
         owner: session.identity.getPrincipal(),
         selectedSubaccount: session.selectedSubaccount,
@@ -31,10 +31,10 @@ export function mountRedemptionForm(document, actors, session) {
         maxIcpFeeE8s: BigInt(form.elements.maxIcpFee.value),
         nowNanos: BigInt(Date.now()) * 1_000_000n,
       });
-      text(status, "Awaiting wallet consent for the exact approval and redemption terms");
-      const result = await consentAndSubmitRedemption({
+      text(status, "Awaiting consent to push the exact IO amount to the reserve");
+      const result = await consentPushAndSettleRedemption({
         ...actors,
-        request,
+        prepared,
         session,
       });
       if ("Err" in result) throw new Error(JSON.stringify(result.Err));
@@ -44,8 +44,8 @@ export function mountRedemptionForm(document, actors, session) {
     }
   });
   resume.addEventListener("click", async () => {
-    const result = await resumeRedemption(actors.stream);
-    text(status, "Ok" in result && "Redemption" in result.Ok ? progressLabel(result.Ok.Redemption) : JSON.stringify(result));
+    const result = await resumeRedemption(actors.stream, session.identity.getPrincipal());
+    text(status, "Ok" in result ? progressLabel(result.Ok) : JSON.stringify(result.Err));
   });
   proof.addEventListener("click", async () => {
     const block = form.elements.proofBlock.value;

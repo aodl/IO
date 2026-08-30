@@ -4,7 +4,9 @@
   maturity/provenance machinery described historically is superseded by
   [`account-semantic-maturity.md`](account-semantic-maturity.md). Numerical
   ceilings in this ADR are no longer launch correctness conditions; executable
-  semantic architecture checks remain mandatory.
+  semantic architecture checks remain mandatory. Lazy bootstrap, Policy A,
+  the 32-cohort branch, shared delay, and pull redemption are superseded by
+  [`adr-anchored-dynamic-backing.md`](adr-anchored-dynamic-backing.md).
 - Date: 2026-08-23
 - Baseline commit: `44c37cf7222b343dda9b7f63ac128a02614bcda7`
 - Final-correction baseline: `221d8c7703d4ad4cf58c7c30ca07ed056663b369`

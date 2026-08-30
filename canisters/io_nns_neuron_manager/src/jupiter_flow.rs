@@ -63,6 +63,11 @@ pub async fn notify_jupiter_deposit(
     if current.active_operation.is_some() {
         return Err(ApiError::Busy);
     }
+    if current.anchor_available_e8s < current.config.expected_icp_fee_e8s {
+        return Err(ApiError::Pending(
+            "Dynamic anchor cannot fund the Jupiter claim-leg fee".into(),
+        ));
+    }
 
     lookup_and_begin(current, args.block_index).await
 }
@@ -385,6 +390,11 @@ async fn submit_jupiter_transfer(
         }
     };
     attempt.state = TransferState::Succeeded { block };
+    let fee_class = if liquid.is_some() {
+        ExactFeeClass::Claim
+    } else {
+        ExactFeeClass::Permanent
+    };
     operation.phase = match liquid {
         Some((proof, permit)) => JupiterPhase::LiquidTransferSucceeded(LiquidTransferSucceeded {
             proof,
@@ -396,7 +406,7 @@ async fn submit_jupiter_transfer(
             block_index: block,
         }),
     };
-    replace_jupiter(&submitted, operation.clone())?;
+    replace_jupiter_with_fee(&submitted, operation.clone(), fee_class)?;
     Box::pin(resume(operation)).await
 }
 
@@ -655,6 +665,11 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<JupiterProgress,
             "exact ICP block does not match the stuck intent".into(),
         ));
     }
+    let fee_class = if context.is_some() {
+        ExactFeeClass::Claim
+    } else {
+        ExactFeeClass::Permanent
+    };
     operation.phase = match context {
         None => JupiterPhase::StakeTransferSucceeded(StakeTransferSucceeded {
             before: attempt.0,
@@ -666,7 +681,7 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<JupiterProgress,
             block_index,
         }),
     };
-    replace_jupiter(&expected, operation.clone())?;
+    replace_jupiter_with_fee(&expected, operation.clone(), fee_class)?;
     resume(operation).await
 }
 
@@ -701,6 +716,49 @@ fn replace_jupiter(
     replacement
         .validate(latest.config.icp_ledger, latest.config.nns_governance)
         .map_err(ApiError::Invalid)?;
+    latest.active_operation = Some(NnsOperation::Jupiter(Box::new(replacement)));
+    state::write(latest);
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum ExactFeeClass {
+    Claim,
+    Permanent,
+}
+
+fn replace_jupiter_with_fee(
+    expected: &JupiterOperation,
+    replacement: JupiterOperation,
+    class: ExactFeeClass,
+) -> Result<(), ApiError> {
+    let mut latest = state::read();
+    match &latest.active_operation {
+        Some(NnsOperation::Jupiter(active)) if **active == *expected => {}
+        _ => return Err(ApiError::Busy),
+    }
+    replacement
+        .validate(latest.config.icp_ledger, latest.config.nns_governance)
+        .map_err(ApiError::Invalid)?;
+    let fee = expected.deposit.fee_e8s;
+    match class {
+        ExactFeeClass::Claim => {
+            latest.anchor_available_e8s = latest
+                .anchor_available_e8s
+                .checked_sub(fee)
+                .ok_or_else(|| ApiError::Invalid("Dynamic anchor fee capacity underflow".into()))?;
+            latest.claim_bearing_dynamic_principal_e8s = latest
+                .claim_bearing_dynamic_principal_e8s
+                .checked_add(fee)
+                .ok_or_else(|| ApiError::Invalid("Dynamic claim principal overflow".into()))?;
+        }
+        ExactFeeClass::Permanent => {
+            latest.permanent_fee_shortfall_e8s = latest
+                .permanent_fee_shortfall_e8s
+                .checked_add(fee)
+                .ok_or_else(|| ApiError::Invalid("permanent fee shortfall overflow".into()))?;
+        }
+    }
     latest.active_operation = Some(NnsOperation::Jupiter(Box::new(replacement)));
     state::write(latest);
     Ok(())
@@ -752,7 +810,6 @@ mod tests {
                     two_year_neuron_id: 1,
                     pooled_parent_memo: 2,
                     pooled_parent_followee_id: 1,
-                    minimum_parent_stake_e8s: 100_000_000,
                     jupiter_account: crate::state::Account {
                         owner: Principal::from_slice(&[3; 29]),
                         subaccount: None,
@@ -774,8 +831,14 @@ mod tests {
                 },
                 lifecycle: Lifecycle::Ready,
                 active_operation: None,
-                pooled_parent_id: None,
-                pooled_parent_staking_account: None,
+                pooled_parent_id: Some(2),
+                pooled_parent_staking_account: Some(crate::state::Account {
+                    owner: Principal::from_slice(&[5; 29]),
+                    subaccount: Some(vec![2; 32]),
+                }),
+                claim_bearing_dynamic_principal_e8s: 0,
+                anchor_available_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+                permanent_fee_shortfall_e8s: 0,
                 live_cohorts: Vec::new(),
                 last_completed_pool: None,
                 last_completed_unwind: None,
@@ -826,8 +889,8 @@ mod tests {
         enforce_activation_floor(&state, 50).unwrap();
         enforce_activation_floor(&state, 51).unwrap();
 
-        // A later balance change cannot affect this local immutable boundary.
-        state.config.minimum_parent_stake_e8s = u128::MAX;
+        // An unrelated later configuration change cannot affect this local immutable boundary.
+        state.config.audited_permanent_principal_e8s = u128::MAX;
         assert!(matches!(
             enforce_activation_floor(&state, 49),
             Err(ApiError::Invalid(_))

@@ -7,7 +7,11 @@ pub(crate) fn is_readiness_resumable_operation(operation: &Option<StreamOperatio
     operation.is_none()
         || matches!(operation, Some(StreamOperation::Redemption(redemption))
             if matches!(redemption.as_ref(), RedemptionStreamOperation::Active(active)
-                if active.phase == RedemptionPhase::PayoutSucceeded))
+                if matches!(active.phase,
+                    RedemptionPhase::PayoutOwed
+                    | RedemptionPhase::PayoutSubmitted
+                    | RedemptionPhase::PayoutSucceeded
+                    | RedemptionPhase::Stuck)))
 }
 
 pub async fn readiness_preflight(
@@ -48,7 +52,7 @@ pub async fn readiness_preflight(
     let io_standards = crate::canonical::supported_standards(snapshot.config.io_ledger)
         .await
         .map_err(crate::api::ApiError::Ledger)?;
-    for required in ["ICRC-1", "ICRC-2", "ICRC-3"] {
+    for required in ["ICRC-1", "ICRC-3"] {
         if !io_standards
             .iter()
             .any(|standard| standard.name == required)
@@ -166,13 +170,6 @@ pub fn begin_control_request() -> Result<u64, String> {
 pub fn set_paused() {
     let mut state = state::read();
     state.lifecycle = Lifecycle::Paused;
-    if matches!(
-        &state.active_operation,
-        Some(crate::state::StreamOperation::Redemption(operation))
-            if matches!(operation.as_ref(), crate::state::RedemptionStreamOperation::Preparing(_))
-    ) {
-        state.active_operation = None;
-    }
     state::write(state);
 }
 

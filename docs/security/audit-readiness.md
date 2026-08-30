@@ -23,16 +23,19 @@ This is the handoff index for an independent auditor. It is not a self-audit and
 - Dependency/tooling evidence: `Cargo.lock`, `package-lock.json`, `deny.toml`, and `docs/security/dependency-and-supply-chain.md`.
 - Source-open package: `LICENSE` and `docs/security/source-open-package.md`.
 
-Those hashes remain the last immutable recorded release/evidence identity. The
-pooled-parent identity hardening and execution/API simplification on this branch
-postdate it. They deliberately do not regenerate or rebind artifacts or the
-canonical package; a new exact source-finalization, artifact-only child, and
-fresh rehearsal/evidence tail are required after this source is accepted.
+Those hashes remain an immutable historical release/evidence identity. The
+anchored Dynamic-neuron, independent structural scheduler, replenish-first
+TwoYear maturity, natural-cohort, and prepared-push source on this branch
+postdate it. This source-development work does not regenerate or rebind
+artifacts or the canonical package; a new exact source-finalization,
+artifact-only child, and fresh rehearsal/evidence tail are required.
 
 ## Normative architecture and invariants
 
 - Simplicity and authority: `docs/architecture/simplicity-constitution.md`, `canister-roles.md`, and `api-surface.md`.
-- Accepted ADRs: `adr-pooled-claim-backing-allocation.md`,
+- Accepted replacement ADR: `adr-anchored-dynamic-backing.md`. The pooled
+  allocation and complexity ADRs are retained as explicitly superseded history.
+  Other accepted ADRs include
   `adr-daily-sns-entitlement-events.md`,
   `adr-io-ledger-fee-and-supply-authority.md`, and
   `adr-nns-authority-location.md`. The separate-endowment ADR is superseded.
@@ -43,7 +46,8 @@ fresh rehearsal/evidence tail are required after this source is accepted.
   ambiguity or an absent required postcondition stops dependent work. Public
   progress exposes real action boundaries rather than internal phases.
 - Jupiter activation/replay boundary and residual lookup risk, the permanent
-  launch baseline, lazy pooled parent, maturity, and bounded passive unwind:
+  launch baseline, pre-Ready Dynamic parent, replenish-first maturity, and
+  generation-based passive unwind with ready-child priority:
   `jupiter-integration-contract.md`,
   `nns-neuron-manager.md`, and the composition evidence.
 - Availability and stable growth: `docs/operations/cycles-management.md`,

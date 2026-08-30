@@ -946,7 +946,28 @@ mod anchored_dynamic_backing {
         let natural_bound = natural_live_bound(STRUCTURAL_CADENCE_SECONDS);
         assert_eq!(natural_bound, 29);
         assert!(natural_bound < 32);
-        assert!(64u64 > 32); // Historical generations have no product cap.
+    }
+
+    #[test]
+    fn more_than_thirty_two_historical_generations_retire_without_a_product_cap() {
+        use std::collections::VecDeque;
+
+        let natural_bound = natural_live_bound(STRUCTURAL_CADENCE_SECONDS);
+        let mut live = VecDeque::new();
+        let mut maximum_live = 0usize;
+        for generation in 1_u64..=64 {
+            while live.front().is_some_and(|created_generation| {
+                generation.saturating_sub(*created_generation) >= natural_bound
+            }) {
+                live.pop_front();
+            }
+            live.push_back(generation);
+            maximum_live = maximum_live.max(live.len());
+        }
+
+        assert_eq!(live.back(), Some(&64));
+        assert!(live.back().copied().unwrap_or_default() > 32);
+        assert!(maximum_live <= natural_bound as usize);
     }
 
     #[test]

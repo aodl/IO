@@ -1,9 +1,9 @@
 # IO NNS Neuron Manager
 
 `io_nns_neuron_manager` is the narrow effect-recovery owner of the permanent
-NNS neuron, lazy pooled claim-backing parent, Jupiter staging, two fixed semantic
-maturity staging Accounts, one immediate NNS command, and at most 32 passive
-unwind cohorts.
+NNS neuron, the launch-bootstrapped Dynamic 14-day IO neuron, Jupiter staging,
+two fixed semantic maturity staging Accounts, one immediate NNS command, and
+generation-aggregated passive unwind cohorts.
 
 The permanent neuron retains its audited principal and exact post-Mission-70
 two-year maximum-delay configuration. Its maturity path disburses 100% into the
@@ -15,38 +15,37 @@ operationally expected to follow alpha-vote neuron `2_947_465_672_511_369`.
 This remains subject to separately authorized mainnet verification; this
 component never changes the permanent neuron's followees.
 
-The pooled parent is created only from existing Stream liquid claim backing
-when the canonical target reaches the NNS minimum. It uses one fixed memo,
-exact 1,209,600-second delay, auto-stake off, and one fixed following policy.
-Production uses memo `0` solely as the fixed deterministic NNS staking nonce;
-it carries no application metadata. The parent follows the protected two-year
-neuron, never alpha-vote directly, and configuration validation requires the
-followee ID to equal `two_year_neuron_id`. Before any bootstrap permit exists,
-readiness and runtime derive the candidate Account and prove it differs from
-the permanent neuron's canonical staking Account. Unsolicited ICP at a
-non-colliding candidate Account is harmless surplus: parent creation proves the
-exact Stream transfer and records the canonical actual principal as
-`OverTarget` when necessary. It then proves the claimed neuron ID, cached
-stake, delay, following, dissolve state, and auto-stake state before recording
-the parent.
+The Dynamic parent must exist before Ready. Production memo `0` is solely its
+fixed deterministic NNS staking nonce and carries no application metadata.
+Bootstrap derives that staking Account, proves it differs from the permanent
+neuron Account, observes at least the 10-ICP protocol seed, claims or refreshes
+the neuron, and proves its exact 1,209,600-second delay, non-dissolving state,
+fixed protected-neuron followee, and auto-stake policy. The first 10 ICP is the
+excluded anchor; unsolicited excess is excluded surplus. Neither seed nor
+surplus issues IO, enters claim backing, enlarges anchor entitlement, or blocks
+bootstrap.
 
 Stream owns under-target source transfers. NNS freezes a typed permit bound to
 the reconciliation generation, expected parent principal, destination, credit,
 fee, operation sequence, memo, time, and canonical fingerprint. It proves the
 exact Ledger block and a monotone cached-principal increase before completion.
-The expected IO credit must be fully reflected; unsolicited excess is recorded
-as actual favourable backing and reported `OverTarget`, never attributed to
-IO's transfer.
+The expected claim credit must be fully reflected. Physical parent principal is
+partitioned into claim-bearing principal, anchor available, and excluded
+surplus; unexplained positive residual defaults to surplus and never becomes a
+claim by subtraction.
 
 Over-target work separates Split and StartDissolving submission/proof. The
 split fee is recognized when physical child principal is proved, and the
 unavoidable future disbursement fee is recognized once at sticky commitment.
 Only a
-canonically dissolving child enters the sorted bounded passive collection.
+canonically dissolving child enters the sorted passive collection.
 Postcommit cancellation never stops or merges the child. The earliest ready
 cohort returns principal to Stream liquid, then proves zero maturity or merges
 zero-principal maturity into the parent before retiring. Pending member reward
-re-entry never retains the child slot.
+re-entry never retains the child slot. A one-shot recovery timer is derived
+from the active recovery boundary and earliest `ready_at_seconds`; ready-child
+return takes priority over creating another child. There is no 32-cohort
+product limit or `CapacityPending` result.
 
 Two-week maturity disburses 100% ordinary maturity into its distinct fixed
 staging Account. Its complete unprocessed balance, including value left after
@@ -54,13 +53,18 @@ an earlier capture and any donation received before the next capture, uses the
 same checked 40/60 paired-inflow algebra as Jupiter. Stream
 freezes backed IO for the frozen entitlement generation before the claim leg
 can become redeemable. Neither maturity path accepts or stores a Mint block.
+Two-year maturity first uses its complete semantic Account capture to restore
+the Dynamic anchor deficit and permanent-capital fee shortfall, paying those
+reimbursement-transfer fees from fresh maturity without creating recursive
+debt. Only the valid remainder receives the ordinary 40/60 allocation, and no
+TwoYear path issues IO.
 
 Production methods cover Jupiter notify, maturity start/prepare/resume,
 pooled reconciliation/resume/proof, claim-backing observation, lifecycle, and
 status. Callers cannot choose a neuron, destination, amount, memo, followee, or
 vote. The daily pool-policy observation makes independent best-effort
-`RefreshVotingPower` attempts for the permanent neuron and, when it exists, the
-pooled parent. Either attempt may fail without blocking the other or any
+`RefreshVotingPower` attempts for the permanent neuron and Dynamic parent.
+Either attempt may fail without blocking the other or any
 monetary path. Neither changes followees, and there is no extra scheduler.
 
 SNS custom-proposal validation is a pure submission-time preflight, not a

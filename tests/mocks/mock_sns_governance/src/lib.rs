@@ -355,7 +355,7 @@ pub fn debug_close_proposal(proposal_id: u64) -> Result<(), String> {
             .latest_reward_event
             .end_timestamp_seconds
             .unwrap_or(1)
-            .saturating_add(io_core_model::TWO_WEEK_SECONDS);
+            .saturating_add(io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS);
         state.latest_reward_event.end_timestamp_seconds = Some(end);
         state.latest_reward_event.actual_timestamp_seconds = end;
         state.latest_reward_event.settled_proposals = vec![SnsProposalIdRecord { id: proposal_id }];
@@ -374,7 +374,7 @@ pub fn debug_advance_reward_event(settled_proposal_ids: Vec<u64>) {
             .latest_reward_event
             .end_timestamp_seconds
             .unwrap_or(1)
-            .saturating_add(io_core_model::TWO_WEEK_SECONDS);
+            .saturating_add(io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS);
         state.latest_reward_event.end_timestamp_seconds = Some(end);
         state.latest_reward_event.actual_timestamp_seconds = end;
         state.latest_reward_event.settled_proposals = settled_proposal_ids
@@ -995,7 +995,7 @@ mod tests {
         debug_add_neuron(MockSnsNeuron {
             neuron_id: 1,
             staked_io_e8s: 100,
-            dissolve_delay_seconds: io_core_model::TWO_WEEK_SECONDS,
+            dissolve_delay_seconds: io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
             eligible_closed_proposals: 0,
             voted_closed_proposals: 0,
             is_genesis_governance_neuron: false,
@@ -1018,7 +1018,7 @@ mod tests {
         debug_add_neuron(MockSnsNeuron {
             neuron_id: 1,
             staked_io_e8s: 100,
-            dissolve_delay_seconds: io_core_model::TWO_WEEK_SECONDS,
+            dissolve_delay_seconds: io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
             eligible_closed_proposals: 0,
             voted_closed_proposals: 0,
             is_genesis_governance_neuron: false,

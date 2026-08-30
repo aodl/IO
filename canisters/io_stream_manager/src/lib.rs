@@ -22,7 +22,7 @@ pub use io_receipt_types::{
     ClaimBackingReceiptPermit, ClaimBackingReceiptProgress, PrepareClaimBackingReceiptArgs,
     ProveClaimBackingReceiptArgs,
 };
-pub use redemption::RedeemArgs;
+pub use redemption::{PreparedRedemption, RedeemArgs};
 pub use rewards::RewardBackingProgress;
 pub use state::CallerRedemptionState;
 pub use state::{
@@ -71,6 +71,7 @@ pub fn init(args: InitArgs) {
         pending_entitlement_batch: None,
         neuron_registry: Vec::new(),
         stake_observation_due: true,
+        structural_reconciliation_due: false,
         latest_reconciliation_checkpoint: None,
         prepared_exit_reconciliation: None,
         latest_reconciliation_generation: 0,
@@ -89,8 +90,18 @@ pub fn post_upgrade() {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn redeem(args: RedeemArgs) -> Result<RedemptionProgress, ApiError> {
-    api::redeem(ic_cdk::api::msg_caller(), args, ic_cdk::api::time()).await
+pub async fn prepare_redemption(args: RedeemArgs) -> Result<PreparedRedemption, ApiError> {
+    api::prepare_redemption(ic_cdk::api::msg_caller(), args, ic_cdk::api::time()).await
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn settle_redemption(block_index: u128) -> Result<RedemptionProgress, ApiError> {
+    api::settle_redemption(ic_cdk::api::msg_caller(), block_index, ic_cdk::api::time()).await
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn resume_redemption(caller: candid::Principal) -> Result<RedemptionProgress, ApiError> {
+    api::resume_redemption(caller, ic_cdk::api::time()).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]

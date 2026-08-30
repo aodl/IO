@@ -1319,7 +1319,9 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
         stream_production_path,
         &stream_production,
         &[
-            "  redeem :",
+            "  prepare_redemption :",
+            "  settle_redemption :",
+            "  resume_redemption :",
             "  prepare_claim_backing_receipt :",
             "  prove_claim_backing_receipt :",
             "  resume :",
@@ -6493,10 +6495,12 @@ fn validate_account_semantic_evidence(
             "latest_pooled_target: Some",
         ],
     )?;
-    if require_simple_string(&scenario_path, &scenario, "evidence", "schema")?
-        != "account-semantic-v1"
-        || require_simple_string(&scenario_path, &scenario, "backing", "identity")?
-            != "B = L + P + U + T"
+    let evidence_schema = require_simple_string(&scenario_path, &scenario, "evidence", "schema")?;
+    if !matches!(
+        evidence_schema.as_str(),
+        "account-semantic-v1" | "anchored-dynamic-v1"
+    ) || require_simple_string(&scenario_path, &scenario, "backing", "identity")?
+        != "B = L + P + U + T"
     {
         return Err(format!(
             "{scenario_path}: account-semantic schema or backing identity mismatch"
@@ -6509,7 +6513,6 @@ fn validate_account_semantic_evidence(
         ("backing", "identity_checked"),
         ("backing", "liquid_first"),
         ("backing", "ordinary_reconciliation"),
-        ("backing", "lazy_pooled_parent"),
         ("jupiter", "authorized_source_block_required"),
         ("jupiter", "unauthorized_rejected"),
         ("jupiter", "paired_settlement"),
@@ -6530,6 +6533,29 @@ fn validate_account_semantic_evidence(
             return Err(format!("{scenario_path}: {section}.{key} must be true"));
         }
     }
+    let schema_specific_true = if evidence_schema == "account-semantic-v1" {
+        vec![("backing", "lazy_pooled_parent")]
+    } else {
+        vec![
+            ("backing", "dynamic_parent_bootstrapped"),
+            ("backing", "anchor_partition_checked"),
+            ("backing", "claim_rate_floor_checked"),
+            ("backing", "claim_rate_monotonicity_checked"),
+            ("scheduler", "structural_twelve_hour_cadence"),
+            ("scheduler", "reward_independence_checked"),
+            ("scheduler", "ready_child_wakeup_checked"),
+            ("cohorts", "more_than_32_generations_checked"),
+            ("cohorts", "capacity_pending_absent"),
+            ("redemption", "prepared_icrc1_push"),
+            ("redemption", "durable_payout_obligation"),
+            ("redemption", "icrc2_pull_absent"),
+        ]
+    };
+    for (section, key) in schema_specific_true {
+        if !require_simple_bool(&scenario_path, &scenario, section, key)? {
+            return Err(format!("{scenario_path}: {section}.{key} must be true"));
+        }
+    }
     if require_simple_bool(
         &scenario_path,
         &scenario,
@@ -6537,12 +6563,13 @@ fn validate_account_semantic_evidence(
         "provenance_after_custody",
     )? || require_simple_bool(&scenario_path, &scenario, "two_year", "paired_receipt")?
         || require_simple_bool(&scenario_path, &scenario, "two_year", "io_issuance")?
-        || require_simple_bool(
-            &scenario_path,
-            &scenario,
-            "liveness",
-            "liquidity_shortfall_pulls_io",
-        )?
+        || (evidence_schema == "account-semantic-v1"
+            && require_simple_bool(
+                &scenario_path,
+                &scenario,
+                "liveness",
+                "liquidity_shortfall_pulls_io",
+            )?)
         || require_simple_u64(
             &scenario_path,
             &scenario,
@@ -7767,7 +7794,7 @@ fn check_live_stream_manager_pocketic_gate_at(root: &Path) -> Result<(), String>
     let script_path = "tools/scripts/run-io-stream-manager-live-pocketic";
     let docs_path = "docs/testing/current-test-inventory.md";
     let script = require_file(root, script_path)?;
-    let required_tests = ["installed_stream_real_sns_icrc2_redemption"];
+    let required_tests = ["installed_stream_real_sns_icrc1_push_redemption"];
     require_present(
         script_path,
         &script,
@@ -7859,8 +7886,8 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
         &[
             "real_sns_ledger_index_smoke",
             "real_sns_ledger_index_same_wasm_upgrade_preserves_balances_history_and_duplicates",
-            "real_sns_icrc2_direct_reserve_pull",
-            "installed_stream_real_sns_icrc2_redemption",
+            "real_sns_icrc1_direct_reserve_push",
+            "installed_stream_real_sns_icrc1_push_redemption",
             "real_sns_governance_staking_smoke",
             "real_canister_e2e_icp_to_io_stake_reward_redemption",
             "framework",
@@ -7951,7 +7978,8 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
             "deploy_io_test_sns_through_sns_w",
             "CreateServiceNervousSystemDtoMissing",
             "real_sns_lifecycle_deploys_sns_via_sns_w_is_blocked_on_sns_init_dto",
-            "real_sns_dissolve_delay_above_two_weeks_cannot_be_applied_after_finalization",
+            "real_sns_dissolve_delay_at_product_threshold_is_eligible_after_finalization",
+            "real_sns_dissolve_delay_below_product_threshold_is_ineligible_after_finalization",
         ],
     )?;
     let brief_blockers = require_file(root, "tests/e2e_real_canisters/src/brief_blockers.rs")?;
@@ -7983,7 +8011,7 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
         &ledger_index,
         &[
             "create_sns_canister",
-            "run_icrc2_direct_reserve_pull",
+            "run_icrc1_direct_reserve_push",
             "run_installed_stream_redemption",
         ],
     )?;
@@ -9201,11 +9229,11 @@ fn main() -> ExitCode {
                     ]),
                 );
                 ok &= run(
-                    "real-framework: finalized SNS above-two-week delay cannot be applied",
+                    "real-framework: finalized SNS exact product delay is eligible",
                     cargo_test(&[
                         "-p",
                         "e2e-real-canisters",
-                        "real_sns_dissolve_delay_above_two_weeks_cannot_be_applied_after_finalization",
+                        "real_sns_dissolve_delay_at_product_threshold_is_eligible_after_finalization",
                         "--",
                         "--ignored",
                         "--nocapture",
