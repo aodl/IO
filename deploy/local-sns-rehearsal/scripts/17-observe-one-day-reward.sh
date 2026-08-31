@@ -128,6 +128,12 @@ if ! grep -Fq 'pre_margin_pending_proved_after_attempt=' "$observation_log" && \
     'one-day reward observation lacks a safe pre-margin Pending or zero-credit StructuralOnly result'
   exit 2
 fi
+if ! grep -Fq 'warmup_reward_processed_by_timer=true' "$observation_log" && \
+   ! grep -Fq 'warmup_reward_processed_after_attempt=' "$observation_log"; then
+  record_blocker \
+    'one-day reward observation lacks a canonical timer or bounded keeper warmup commit'
+  exit 2
+fi
 for expected in \
   'historian_settle_seconds=60' \
   'freshness: Fresh' \
