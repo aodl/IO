@@ -15,7 +15,7 @@ Implemented canonical adapters, in refresh order:
 Frozen-cohort, proposal-ratio, generic ingestion and scanner presentation fields are deleted from the current model. Mainnet configuration/activation remains separate authorized work.
 
 Current completion evidence is the selector-bound schema-v2
-`deploy/local-sns-rehearsal/evidence/2026-08-31-b6a26f2-anchored-dynamic`
+`deploy/local-sns-rehearsal/evidence/2026-08-31-e727d68-anchored-dynamic`
 package. It records the current historian configuration/module identity,
 canonical Account map, fresh ledger/index/Governance/Root observations, and
 convergence with `L=50,000,149,899,251`, `P=49,999,750,101,249`, `U=0`,
