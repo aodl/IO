@@ -163,13 +163,15 @@ if [ "$durable_redemption_complete" -ne 1 ]; then
     transfer_args=(
       --network "$network_url"
       transfer-icp
-      --amount "$liquid_tokens"
-      --to-principal "$stream"
-      "$liquid_hex"
     )
     if [ -n "${IO_LOCAL_SNS_ICP_TREASURY_IDENTITY:-}" ]; then
       transfer_args+=(--icp-treasury-identity "$IO_LOCAL_SNS_ICP_TREASURY_IDENTITY")
     fi
+    transfer_args+=(
+      --amount "$liquid_tokens"
+      --to-principal "$stream"
+      "$liquid_hex"
+    )
     run_logged "$log_file" "$sns_testing" "${transfer_args[@]}"
   fi
   mark_phase_done 15-liquid-icp-funded "target_e8s=${liquid_amount} observed_before_e8s=${liquid_balance}"
