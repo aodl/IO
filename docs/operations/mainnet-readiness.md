@@ -28,12 +28,13 @@ local release gates and exact-head hosted workflows remain required. Every
 earlier package remains immutable historical evidence for its own release and
 was not rebound.
 
-The exact `b6a26f2` → `af7e079` → `dd0de91` history must remain intact. After
-hosted exact-head CI and explicit integration authorization, use a direct
-fast-forward only; do not squash or rebase this release tail. The sole permitted
-pre-integration merge is the machine-proved, zero-tree ancestry reconciliation
-defined in the release checklist; ordinary or content-bearing base merges remain
-forbidden.
+The exact `b6a26f2` → `af7e079` → `dd0de91` history remains immutable historical
+evidence. A machine-proved zero-tree ancestry reconciliation is a provenance
+operation only and must precede a new source-finalization, immediate artifact
+child and fresh evidence package; it cannot remain inside the selected release
+tail. Content-bearing base merges require normal source review. After hosted
+exact-head CI and explicit integration authorization, integration remains a
+direct fast-forward only, without squash or rebase.
 
 ## Remaining launch blockers
 
