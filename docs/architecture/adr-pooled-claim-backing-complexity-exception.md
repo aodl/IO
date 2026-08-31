@@ -13,7 +13,7 @@
 - Cross-flow correction baseline: `0e7299eb43503351d80cbee933cfdab15f3b4f6b`
 - Source-local completion baseline: `4f56e48afa62dc1b775e85f420c3b71a376d2db2`
 - Production-final baseline: `7100aa4`
-- Current release source: `9462a1a0df602f06fa845bd31f9fcd0adf80067a`
+- Current release source: `92113419eb2eecacd2d4064b30e091c644c4cb71`
 
 ## Context
 
@@ -175,11 +175,11 @@ lines, and 14,485 combined lines as review ceilings. Its recorded measurements
 were 5,416, 5,977 and 14,162, leaving 104 lines (~1.88%), 148 lines (~2.42%),
 and 323 lines (~2.23%) of historical review headroom.
 
-The source-only pooled-parent hardening and execution simplification that
-postdate that release measure 5,390 Stream Manager lines, 6,020 NNS Manager
-lines, and 14,177 combined lines. Relative to the hardened pre-refactor
-worktree (5,416 / 6,002 / 14,187), the execution simplification changes those
-counts by -26 / +18 / -10. It also removes two durable redemption phases, one
+The recorded anchored Dynamic-parent replacement and execution simplification
+measure 5,215 Stream Manager lines, 7,073 NNS Manager lines, and 15,196
+combined lines. Relative to the hardened pre-refactor worktree
+(5,416 / 6,002 / 14,187), the complete replacement changes those counts by
+-201 / +1,071 / +1,009. It also removes two durable redemption phases, one
 stable field, and 21 public progress variants without adding a timer, stable
 scheduler, or active-operation slot.
 

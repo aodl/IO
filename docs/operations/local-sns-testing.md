@@ -3,12 +3,12 @@
 Required CI uses SNS-shaped mock/PocketIC tests. The maintained official SNS
 launch rehearsal is an optional local operator layer. The current local
 authority is the schema-v2 package
-`2026-08-26-9462a1a-account-semantic`, selected only by
+`2026-08-31-9211341-anchored-dynamic`, selected only by
 `deploy/local-sns-rehearsal/evidence/current-canonical.toml` and bound to source
-`9462a1a0df602f06fa845bd31f9fcd0adf80067a` and immediate artifact child
-`46713f8499cf9a63a6cd4879b1fff9c1f9ef0be5`. It records completed official
+`92113419eb2eecacd2d4064b30e091c644c4cb71` and immediate artifact child
+`3f03ae7e9a3b85ee7824f50375ec58e70b9e0879`. It records completed official
 source-built SNS launch/wiring, exact proposal-143660 NNS evidence and current
-IO account-semantic orchestration. The intermediate
+anchored IO orchestration. The intermediate
 `2026-08-26-716d51e-account-semantic` package and all 2026-08-11 through
 2026-08-14 packages remain immutable historical evidence for their recorded
 releases. In particular, the early packages that queried the Governance

@@ -1,29 +1,30 @@
 # Local SNS evidence disposition
 
 The sole current local authority is the schema-v2 package
-`deploy/local-sns-rehearsal/evidence/2026-08-26-9462a1a-account-semantic`.
+`deploy/local-sns-rehearsal/evidence/2026-08-31-9211341-anchored-dynamic`.
 `deploy/local-sns-rehearsal/evidence/current-canonical.toml` is the sole
 selector and binds:
 
 - source-finalization commit
-  `9462a1a0df602f06fa845bd31f9fcd0adf80067a`;
+  `92113419eb2eecacd2d4064b30e091c644c4cb71`;
 - immediate artifact-recording commit
-  `46713f8499cf9a63a6cd4879b1fff9c1f9ef0be5`;
+  `3f03ae7e9a3b85ee7824f50375ec58e70b9e0879`;
 - canonical evidence commit
-  `1ed1399130358ed5788cae99f3d65d82cbbc70a9`;
+  `3de6d473504ed418aa28408c94e6e08bd23521ec`;
 - release-manifest SHA-256
-  `011113d83510e66976f5d3eabefc57ef30ba44fc49a8973fad29be043b374431`;
+  `6315bf85b944c36d90d8dd22c375618db3566150bb56c23d24ae74b033bedfa1`;
 - package-manifest SHA-256
-  `254e8866394d62ba9fbe2b0290709d2c9dbaeb8ed84c8b3446b9a1912af0eb78`;
+  `35fbc6a145f18af1bc33d83a43abd5071869ff4285f857e7d48d5d5118acf5dc`;
 - package `SHA256SUMS` SHA-256
-  `a1915cef319b569955c5d75ad88c4a3715af8483573d2cf9b3a2af108d6bea29`.
+  `9e4a45920a869b900c86913ff1288b12ab3aadb059ab17c2cd49466fce044750`.
 
-That package is current evidence for `B=L+P+U+T`, the exact 14-day pooled
-parent, bounded cohorts, fixed TwoWeek and TwoYear semantic Accounts, paired
-Jupiter/TwoWeek settlement, TwoYear no issuance, donation carry-forward,
-liquidity-shortfall recovery and same-release upgrade/restart. No earlier
-package has been deleted, rewritten, rebound or reinterpreted as proof of this
-release.
+That package is current evidence for `B=L+P+U+T`, the pre-Ready memo-0 Dynamic
+parent, the exact 10 ICP anchor and excluded-surplus partition, exact fee
+accounting and replenish-first TwoYear maturity, the 12-hour structural
+scheduler, 15-day-plus-one-minute SNS eligibility, natural cohorts with
+ready-child priority, prepared ICRC-1 push redemption, durable owed-payout
+recovery, and same-release upgrade/restart. No earlier package has been
+deleted, rewritten, rebound or reinterpreted as proof of this release.
 
 Its evidence layers are intentionally distinct:
 
@@ -89,6 +90,14 @@ The immutable
 `2026-08-26-716d51e-account-semantic` package is a non-current intermediate
 package from the final rehearsal/tooling closure. It remains historical
 evidence for its recorded source/artifact pair and is not selected or rebound.
+
+The later `2026-08-31-916ee88-anchored-dynamic` package is likewise an
+immutable non-current record. Its rehearsal completed, but a subsequent static
+validator audit found that its reward-proof guard recognized only one of two
+valid zero-credit structural outcomes. Source `916ee8808c32305e2980cd9fe785475eab6bc57e`,
+artifact `31ec98653394e67c93f639163a9752b54b5e58f9`, and evidence commit
+`59b00eb448fb069c4f36944d20b07e9c713a27b5` remain historical and were not
+rebound.
 
 Package names and local fixture values are not production configuration,
 candidate upstream is not an official release, and no local package is mainnet

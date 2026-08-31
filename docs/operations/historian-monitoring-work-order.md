@@ -15,11 +15,11 @@ Implemented canonical adapters, in refresh order:
 Frozen-cohort, proposal-ratio, generic ingestion and scanner presentation fields are deleted from the current model. Mainnet configuration/activation remains separate authorized work.
 
 Current completion evidence is the selector-bound schema-v2
-`deploy/local-sns-rehearsal/evidence/2026-08-26-9462a1a-account-semantic`
+`deploy/local-sns-rehearsal/evidence/2026-08-31-9211341-anchored-dynamic`
 package. It records the current historian configuration/module identity,
 canonical Account map, fresh ledger/index/Governance/Root observations, and
-convergence with `L=25,000,274,858,627`, `P=74,999,625,131,873`, `U=0`,
-`T=0`, `B=99,999,899,990,500`, and `C=14,999,999,990,000`, while preserving
+convergence with `L=50,000,149,899,251`, `P=49,999,750,101,249`, `U=0`,
+`T=0`, `B=99,999,900,000,500`, and `C=20,000,079,960,000`, while preserving
 production DID/debug separation and passing historian, stable-storage and
 committed-evidence validators. The immutable
 `2026-08-12-4320fdf-monitoring` package remains secondary historical evidence

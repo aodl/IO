@@ -58,10 +58,10 @@ publication, CreateServiceNervousSystem, swap participation/finalization,
 canister discovery, Governance treasury funding, ledger/index evidence and
 controller handoff all succeeded locally. The current immutable sanitized
 package is
-`deploy/local-sns-rehearsal/evidence/2026-08-26-9462a1a-account-semantic`.
-It is bound to source `9462a1a0df602f06fa845bd31f9fcd0adf80067a`,
-immediate artifact child `46713f8499cf9a63a6cd4879b1fff9c1f9ef0be5`, and
-canonical evidence commit `1ed1399130358ed5788cae99f3d65d82cbbc70a9`.
+`deploy/local-sns-rehearsal/evidence/2026-08-31-9211341-anchored-dynamic`.
+It is bound to source `92113419eb2eecacd2d4064b30e091c644c4cb71`,
+immediate artifact child `3f03ae7e9a3b85ee7824f50375ec58e70b9e0879`, and
+canonical evidence commit `3de6d473504ed418aa28408c94e6e08bd23521ec`.
 Earlier packages remain historical as described in
 `local-sns-evidence-disposition.md`.
 
@@ -183,12 +183,12 @@ The local rehearsal must prove:
 
 ## What Remains Unproven
 
-The schema-v2 `2026-08-26-9462a1a-account-semantic` package closes the current
+The schema-v2 `2026-08-31-9211341-anchored-dynamic` package closes the current
 local rehearsal item. Layer A proves source-built official SNS launch/wiring;
 Layer B proves the exact proposal-143660 NNS boundary; Layer C proves current IO
-account-semantic orchestration and controlled recovery. The intermediate
-`2026-08-26-716d51e-account-semantic` package and all earlier packages remain
-historical and were not rebound.
+anchored economics, structural/reward scheduling, prepared-push redemption and
+controlled recovery. All earlier packages remain historical and were not
+rebound.
 
 Completed local proof does not prove official SNS reward-share release adoption.
 Source-built revision `4320fdf2e613844eabae1927b1a23b98da3a7bc6`

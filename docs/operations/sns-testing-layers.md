@@ -60,9 +60,9 @@ What it does not prove:
 This layer is optional/manual and local-only. It follows the current official ICP/DFINITY SNS testing documentation as the source of truth and must use the source-built `sns` CLI with `sns-testing` to create a real local SNS root, governance, ledger, index, swap, and archive stack from a local `sns_init` candidate. The historical standalone `dfinity/sns-testing` repository is deprecated; if the official docs reference successor tooling or a new repository/location, use that current official location.
 
 The current release completed this layer in schema-v2 package
-`deploy/local-sns-rehearsal/evidence/2026-08-26-9462a1a-account-semantic`,
-bound to source `9462a1a0df602f06fa845bd31f9fcd0adf80067a` and immediate
-artifact child `46713f8499cf9a63a6cd4879b1fff9c1f9ef0be5`. The run used
+`deploy/local-sns-rehearsal/evidence/2026-08-31-9211341-anchored-dynamic`,
+bound to source `92113419eb2eecacd2d4064b30e091c644c4cb71` and immediate
+artifact child `3f03ae7e9a3b85ee7824f50375ec58e70b9e0879`. The run used
 source-built revision `4320fdf2e613844eabae1927b1a23b98da3a7bc6` from an
 isolated clean checkout. The package and instructions below remain the process
 for producing a future replacement package; they do not imply current evidence
