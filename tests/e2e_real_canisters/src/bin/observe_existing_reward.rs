@@ -13,6 +13,22 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const REWARD_OBSERVATION_MARGIN_SECONDS: u64 = 300;
 const REWARD_SCHEDULER_WAKE_EPSILON_SECONDS: u64 = 1;
 
+fn is_valid_warmup_classification(classification: RewardEventClassification) -> bool {
+    matches!(
+        classification,
+        RewardEventClassification::NoProposalFallback
+            | RewardEventClassification::ZeroEligibleParticipation
+    )
+}
+
+fn warmup_reward_is_committed(status: &Status) -> bool {
+    status.processed_reward_event_count == 1
+        && status.accumulated_policy_credit == io_reward_policy::DAILY_EVENT_CREDIT
+        && status
+            .latest_reward_event_classification
+            .is_some_and(is_valid_warmup_classification)
+}
+
 fn reward_margin_wait_seconds(now_seconds: u64, event_end_seconds: u64) -> u64 {
     event_end_seconds
         .checked_add(REWARD_OBSERVATION_MARGIN_SECONDS)
@@ -414,11 +430,7 @@ fn main() {
             advance_to_reward_observation_margin(&pic, stream, &warmup_event);
             let post_margin = stream_status(&pic, stream);
             println!("stream_status_after_warmup_margin={post_margin:#?}");
-            if canonical_two_event
-                && post_margin.processed_reward_event_count == 1
-                && post_margin.latest_reward_event_classification
-                    == Some(RewardEventClassification::ZeroEligibleParticipation)
-            {
+            if canonical_two_event && warmup_reward_is_committed(&post_margin) {
                 println!("warmup_reward_processed_by_timer=true");
             } else {
                 let mut warmup_processed = false;
@@ -431,10 +443,10 @@ fn main() {
                     }
                     match result {
                         Ok(RewardEventObservation {
-                            classification:
-                                RewardEventClassification::ZeroEligibleParticipation,
+                            classification,
+                            policy_credit: io_reward_policy::DAILY_EVENT_CREDIT,
                             ..
-                        }) => {
+                        }) if is_valid_warmup_classification(classification) => {
                             println!("warmup_reward_processed_after_attempt={attempt}");
                             warmup_processed = true;
                             break;
@@ -447,11 +459,14 @@ fn main() {
                             ..
                         })
                         | Err(ApiError::Pending(_)) => {
-                            assert_eq!(
-                                stream_status(&pic, stream).processed_reward_event_count,
-                                0,
-                                "post-margin structural continuation must not consume the warmup reward event"
-                            );
+                            let status = stream_status(&pic, stream);
+                            if warmup_reward_is_committed(&status) {
+                                println!("warmup_reward_processed_after_attempt={attempt}");
+                                warmup_processed = true;
+                                break;
+                            }
+                            assert_eq!(status.processed_reward_event_count, 0,
+                                "post-margin structural continuation must not consume the warmup reward event without recording its canonical result");
                             drive_reconciliation(&pic, stream);
                         }
                         other => panic!(
@@ -466,11 +481,16 @@ fn main() {
             }
             if canonical_two_event {
                 let committed = stream_status(&pic, stream);
-                assert_eq!(committed.processed_reward_event_count, 1);
-                assert!(matches!(
-                    committed.latest_reward_event_classification,
-                    Some(RewardEventClassification::ZeroEligibleParticipation)
-                ));
+                assert!(
+                    warmup_reward_is_committed(&committed),
+                    "warmup reward event did not record exactly one canonical policy-credit unit: {committed:#?}"
+                );
+                println!(
+                    "warmup_reward_classification={:?}",
+                    committed
+                        .latest_reward_event_classification
+                        .expect("validated warmup classification")
+                );
             }
         }
 
@@ -620,5 +640,24 @@ mod tests {
     #[should_panic(expected = "reward boundary already elapsed")]
     fn reward_boundary_advance_rejects_an_elapsed_round() {
         let _ = reward_boundary_advance_seconds(1_301, 1_000, 300);
+    }
+
+    #[test]
+    fn warmup_accepts_only_canonical_non_proposal_or_zero_eligible_results() {
+        assert!(is_valid_warmup_classification(
+            RewardEventClassification::NoProposalFallback
+        ));
+        assert!(is_valid_warmup_classification(
+            RewardEventClassification::ZeroEligibleParticipation
+        ));
+        assert!(!is_valid_warmup_classification(
+            RewardEventClassification::ProposalBearing
+        ));
+        assert!(!is_valid_warmup_classification(
+            RewardEventClassification::MissedSkipped
+        ));
+        assert!(!is_valid_warmup_classification(
+            RewardEventClassification::StructuralOnly
+        ));
     }
 }

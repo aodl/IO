@@ -108,7 +108,7 @@ for expected in \
   'stream_status_after_warmup_margin=' \
   "id: ${proposal_id}," \
   'reward_shares: Some' \
-  'ZeroEligibleParticipation' \
+  'warmup_reward_classification=' \
   'canonical_reconciliation_idle_after_attempt=' \
   'canonical_structural_refresh=Ok' \
   'canonical_reward_proposal_id=' \
@@ -122,6 +122,13 @@ for expected in \
     exit 2
   fi
 done
+if ! grep -Eq \
+  '^warmup_reward_classification=(NoProposalFallback|ZeroEligibleParticipation)$' \
+  "$observation_log"; then
+  record_blocker \
+    'warmup reward event is not a canonical no-proposal fallback or zero-eligible event'
+  exit 2
+fi
 if ! grep -Fq 'pre_margin_pending_proved_after_attempt=' "$observation_log" && \
    ! grep -Fq 'pre_margin_structural_only_attempt=' "$observation_log"; then
   record_blocker \
