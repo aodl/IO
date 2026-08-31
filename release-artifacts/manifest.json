@@ -2,7 +2,7 @@
   "schema_version": 1,
   "build_profile": "release",
   "target": "wasm32-unknown-unknown",
-  "git_commit": "92113419eb2eecacd2d4064b30e091c644c4cb71",
+  "git_commit": "b6a26f223b4c37f021ea398f3003b4d149683ee9",
   "artifacts": [
     {
       "canister": "io_stream_manager",
@@ -14,19 +14,19 @@
       "gz_wasm_bytes": 750394,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "92113419eb2eecacd2d4064b30e091c644c4cb71"
+      "git_commit": "b6a26f223b4c37f021ea398f3003b4d149683ee9"
     },
     {
       "canister": "io_nns_neuron_manager",
       "raw_wasm_path": "release-artifacts/io_nns_neuron_manager.wasm",
-      "raw_wasm_sha256": "d31001b1edbbbbd67d99a8667ef5e21ab072fefed65e307d769b6b1a34a0d12d",
-      "raw_wasm_bytes": 3500518,
+      "raw_wasm_sha256": "e3db48f362b3a8a31dd9764f4f97219745622485beba0dbe4b6f7f88ccf43b0d",
+      "raw_wasm_bytes": 3500617,
       "gz_wasm_path": "release-artifacts/io_nns_neuron_manager.wasm.gz",
-      "gz_wasm_sha256": "9e5725163e0c039740be66b689a4470b48edaf85d65eb9b8a2beef1fba0504cb",
-      "gz_wasm_bytes": 891432,
+      "gz_wasm_sha256": "f337265f725e0c918e86d8e253af90374a2b81cce13721c4eb012e90df060e3d",
+      "gz_wasm_bytes": 892443,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "92113419eb2eecacd2d4064b30e091c644c4cb71"
+      "git_commit": "b6a26f223b4c37f021ea398f3003b4d149683ee9"
     },
     {
       "canister": "io_historian",
@@ -38,7 +38,7 @@
       "gz_wasm_bytes": 466149,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "92113419eb2eecacd2d4064b30e091c644c4cb71"
+      "git_commit": "b6a26f223b4c37f021ea398f3003b4d149683ee9"
     },
     {
       "canister": "frontend",
@@ -50,7 +50,7 @@
       "gz_wasm_bytes": 12743963,
       "build_profile": "release",
       "target": "wasm32-unknown-unknown",
-      "git_commit": "92113419eb2eecacd2d4064b30e091c644c4cb71"
+      "git_commit": "b6a26f223b4c37f021ea398f3003b4d149683ee9"
     }
   ]
 }
