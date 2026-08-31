@@ -1,0 +1,19 @@
+[local]
+fallback_controller_principal = "ykqk6-rh72i-elyzo-ipyfz-oowrh-cuoyr-crk2b-vtow3-kxpo6-zu5qu-yae"
+io_stream_manager_canister = "lxzze-o7777-77777-aaaaa-cai"
+io_nns_neuron_manager_canister = "lqy7q-dh777-77777-aaaaq-cai"
+io_historian_canister = "lz3um-vp777-77777-aaaba-cai"
+frontend_canister = "l62sy-yx777-77777-aaabq-cai"
+developer_neuron_principal = "ykqk6-rh72i-elyzo-ipyfz-oowrh-cuoyr-crk2b-vtow3-kxpo6-zu5qu-yae"
+logo_path = "assets/io-local-logo.svg"
+logo_sha256 = "241b04223fe83bfe8dfc6f5ef3de168cc4ef8b24107402773166566bf6ed962e"
+token_logo_path = "assets/io-local-token-logo.svg"
+token_logo_sha256 = "61ce92c31189e825ce0f277c73bb09d8905d0ab161f60f2bebedae802bbb48d8"
+
+[expected_local_sns_config]
+token_symbol = "IOLO"
+transaction_fee_e8s = 10_000
+total_supply_e8s = 100_000_000_000_000
+treasury_initial_balance_e8s = 80_000_000_000_000
+protocol_reserve_funding_amount_e8s = 10_000_000_000
+minimum_remaining_treasury_e8s = 79_989_999_990_000
