@@ -30,8 +30,10 @@ was not rebound.
 
 The exact `b6a26f2` → `af7e079` → `dd0de91` history must remain intact. After
 hosted exact-head CI and explicit integration authorization, use a direct
-fast-forward only; do not squash, rebase or create a merge commit for this
-release tail.
+fast-forward only; do not squash or rebase this release tail. The sole permitted
+pre-integration merge is the machine-proved, zero-tree ancestry reconciliation
+defined in the release checklist; ordinary or content-bearing base merges remain
+forbidden.
 
 ## Remaining launch blockers
 
