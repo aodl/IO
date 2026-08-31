@@ -364,17 +364,48 @@ fn main() {
             {
                 println!("warmup_reward_processed_by_timer=true");
             } else {
-                let result = resume_reward(&pic, stream);
-                println!("resume_reward_work={result:#?}");
-                if canonical_two_event {
-                    assert!(matches!(
-                        result,
+                let mut warmup_processed = false;
+                for attempt in 0..8 {
+                    let result = resume_reward(&pic, stream);
+                    println!("resume_reward_work[{attempt}]={result:#?}");
+                    if !canonical_two_event {
+                        warmup_processed = true;
+                        break;
+                    }
+                    match result {
                         Ok(RewardEventObservation {
-                            classification: RewardEventClassification::ZeroEligibleParticipation,
+                            classification:
+                                RewardEventClassification::ZeroEligibleParticipation,
+                            ..
+                        }) => {
+                            println!("warmup_reward_processed_after_attempt={attempt}");
+                            warmup_processed = true;
+                            break;
+                        }
+                        Ok(RewardEventObservation {
+                            classification: RewardEventClassification::StructuralOnly,
+                            proposal_count: 0,
+                            policy_credit: 0,
+                            eligible_credit_total: 0,
                             ..
                         })
-                    ));
+                        | Err(ApiError::Pending(_)) => {
+                            assert_eq!(
+                                stream_status(&pic, stream).processed_reward_event_count,
+                                0,
+                                "post-margin structural continuation must not consume the warmup reward event"
+                            );
+                            drive_reconciliation(&pic, stream);
+                        }
+                        other => panic!(
+                            "warmup reward processing returned an unexpected post-margin result: {other:#?}"
+                        ),
+                    }
                 }
+                assert!(
+                    warmup_processed,
+                    "warmup reward event did not commit within the bounded post-margin continuation"
+                );
             }
             if canonical_two_event {
                 let committed = stream_status(&pic, stream);

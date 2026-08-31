@@ -99,11 +99,13 @@ unresolved reconciliation generation is not required to manufacture a
 `Pending` reply merely to prove the reward boundary. It then recomputes and
 advances the exact remaining simulated margin plus one second so the one-shot
 timer can wake. The proof accepts either the timer or the permissionless keeper
-as the winner but requires the same one-time committed checkpoint. Structural
-work does not consume the reward event or increment reward credit. If it
-legitimately occupies the NNS Manager's single immediate slot, the maintained
-order does not suppress, cancel, or preempt Pool. The two-year maturity
-validator must reject proposal submission while Pool is visible. After bounded
+as the winner. The first post-margin invocation may still finish an exact
+zero-credit structural continuation; the observer boundedly settles that same
+generation and continues until it proves the one-time reward checkpoint.
+Structural work does not consume the reward event or increment reward credit.
+If it legitimately occupies the NNS Manager's single immediate slot, the
+maintained order does not suppress, cancel, or preempt Pool. The two-year
+maturity validator must reject proposal submission while Pool is visible. After bounded
 production `resume_reward_backing`, Stream `resume`, NNS `resume`, and any exact
 transfer proof settle the canonical target, a fresh proposal is submitted and
 must be recorded executed only when exact TwoYear work is actually durable.
