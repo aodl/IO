@@ -8,19 +8,19 @@ identities remain outside this local release closure.
 The completed anchored-dynamic release is bound to:
 
 - source-finalization commit
-  `92113419eb2eecacd2d4064b30e091c644c4cb71`;
+  `b6a26f223b4c37f021ea398f3003b4d149683ee9`;
 - immediate artifact-recording commit
-  `3f03ae7e9a3b85ee7824f50375ec58e70b9e0879`;
+  `af7e0791384808b1f8304e7048b86ade9a328306`;
 - canonical evidence commit
-  `3de6d473504ed418aa28408c94e6e08bd23521ec`;
+  `dd0de91ec1388da13da9c4598b9a4df82f894cca`;
 - schema-v2 package
-  `deploy/local-sns-rehearsal/evidence/2026-08-31-9211341-anchored-dynamic`;
+  `deploy/local-sns-rehearsal/evidence/2026-08-31-b6a26f2-anchored-dynamic`;
 - release-manifest SHA-256
-  `6315bf85b944c36d90d8dd22c375618db3566150bb56c23d24ae74b033bedfa1`;
+  `70e843404812cd0955b20ccb586e8a4760990c944146a55708ebb00649600fd2`;
 - package-manifest SHA-256
-  `35fbc6a145f18af1bc33d83a43abd5071869ff4285f857e7d48d5d5118acf5dc`;
+  `4e1eacb9d94c381dd93161243e8405df6021ef05639595518cb5367561554a29`;
 - package `SHA256SUMS` SHA-256
-  `9e4a45920a869b900c86913ff1288b12ab3aadb059ab17c2cd49466fce044750`.
+  `61b727deca1e8c98b1435ca333c0b88b7e81b30ce7d981ca8d208c2a8bba173b`.
 
 Local source validation, repeated exact-source reproducible builds, and a
 fresh canonical Layer A/B/C rehearsal are complete for this exact pair. Final
@@ -28,7 +28,7 @@ local release gates and exact-head hosted workflows remain required. Every
 earlier package remains immutable historical evidence for its own release and
 was not rebound.
 
-The exact `9211341` → `3f03ae7` → `3de6d47` history must remain intact. After
+The exact `b6a26f2` → `af7e079` → `dd0de91` history must remain intact. After
 hosted exact-head CI and explicit integration authorization, use a direct
 fast-forward only; do not squash, rebase or create a merge commit for this
 release tail.

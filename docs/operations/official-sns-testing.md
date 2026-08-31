@@ -6,7 +6,7 @@ We do not currently run the official SNS launch locally in required CI.
 
 Official SNS testing is optional and heavier. The current official ICP/DFINITY SNS testing documentation is the source of truth. The historical standalone `dfinity/sns-testing` repository is deprecated; if the official docs reference successor tooling or a new repository/location, use that current official location.
 
-The maintained official local SNS flow uses the source-built `sns` CLI; this is optional/manual, local-only for the local rehearsal layer, and not part of required IO workflows. The selected schema-v2 package `2026-08-31-9211341-anchored-dynamic` records completed candidate Governance/Root launch compatibility, Stream and NNS-manager activation, prepared-push redemption and exact reward/structural observations for source `92113419eb2eecacd2d4064b30e091c644c4cb71` and artifact child `3f03ae7e9a3b85ee7824f50375ec58e70b9e0879`. SNS testflight remains a separately authorized mainnet rehearsal.
+The maintained official local SNS flow uses the source-built `sns` CLI; this is optional/manual, local-only for the local rehearsal layer, and not part of required IO workflows. The selected schema-v2 package `2026-08-31-b6a26f2-anchored-dynamic` records completed candidate Governance/Root launch compatibility, Stream and NNS-manager activation, prepared-push redemption and exact reward/structural observations for source `b6a26f223b4c37f021ea398f3003b4d149683ee9` and artifact child `af7e0791384808b1f8304e7048b86ade9a328306`. SNS testflight remains a separately authorized mainnet rehearsal.
 
 IO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical.
 
