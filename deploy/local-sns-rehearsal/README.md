@@ -60,6 +60,11 @@ All operator scripts require:
 IO_LOCAL_SNS_REHEARSAL_ACK=local-only
 ```
 
+Fresh isolated runs may also set
+`IO_LOCAL_SNS_ICP_TREASURY_IDENTITY=<fresh-local-identity>`. The maintained
+swap-finalization and liquid-ICP funding phases pass that local identity to
+`sns-testing`; the value is fixture-only and never defines production custody.
+
 They reject mainnet-like arguments, protected IO asset IDs, and `--network ic`/`-n ic` use. The scripts are optional/manual and not required CI.
 
 ## Official Local Flow
@@ -75,7 +80,7 @@ Manual sequence:
 3. Run `runbook.sh render-sns-init` to produce ignored `sns_init.local.yaml`.
 4. Run `runbook.sh bootstrap-official-network` against an isolated pinned clean `dfinity/ic` checkout and loopback endpoint.
 5. Write ignored `install-args.local/io_stream_manager.did` and `install-args.local/io_nns_neuron_manager.did` for the reviewed local Accounts. The thin lifecycle adapter reads the uniquely owned `sns-testing-init` `topology.json`, rewrites only its isolated input copies with that topology's NNS/SNS allocation IDs, and derives the canonical Governance-owned treasury distribution subaccount for nonce `0`. Phase 12 re-derives and renders that one exact excluded Account plus the reviewed bundle's compressed/source Governance hash before installation. Manual runs use the same helper and fail if the excluded assignment is missing or duplicated. Run `runbook.sh build-local-io-canisters` to verify the exact release provenance and hashes.
-6. Set `IO_LOCAL_SNS_BUNDLE_DIR` to the reviewed same-source Governance/Root resolver output, then run the restartable `deploy-local-dapps`, `propose-and-finalize-sns`, and `discover-sns-canisters` phases.
+6. Set `IO_LOCAL_SNS_BUNDLE_DIR` to the reviewed same-source Governance/Root resolver output and, when the fresh topology uses a dedicated local treasury identity, set `IO_LOCAL_SNS_ICP_TREASURY_IDENTITY`. Then run the restartable `deploy-local-dapps`, `propose-and-finalize-sns`, and `discover-sns-canisters` phases.
 7. Run `exercise-ledger` once to establish reserve, user and liquid-ICP funding, then run `exercise-index-and-archives` and `exercise-governance-and-controllers`. Run `exercise-ledger` again after both managers are Ready so the production prepared-push redemption completes, and only then run `observe-one-day-reward`. The governance phase submits the current exact raw historian Wasm inline through the signed SNS Governance proposal and Root execution path. The inline payload avoids only the unavailable chunk-store upload path and does not bypass Governance. The strict pre-launch schema is exercised through a same-release upgrade: before and after module hashes must equal the release-manifest raw hash, and the post-upgrade public status must confirm that the typed observation configuration was applied. The larger NNS Manager same-release restart uses its deterministic release `.wasm.gz`; the evidence binds the pre-upgrade raw module hash, gzip proposal/module hash, and release-manifest raw hash before proving that the manager reopens Paused.
 8. Run `runbook.sh record-ids` and record the canonically discovered IDs in ignored `canister-ids.local.toml`.
 9. Run `runbook.sh capture-evidence` and the command templates in `commands.local.example.md`.

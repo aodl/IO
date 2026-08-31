@@ -177,9 +177,9 @@ fn submit_canonical_motion(pic: &PocketIc, governance: Principal) -> u64 {
     }
 }
 
-fn print_reward_state(pic: &PocketIc, governance: Principal, label: &str) -> SnsRewardEvent {
+fn latest_reward_event(pic: &PocketIc, governance: Principal) -> SnsRewardEvent {
     let caller = Principal::anonymous();
-    let event: SnsRewardEvent = decode_one(
+    decode_one(
         &pic.query_call(
             governance,
             caller,
@@ -188,7 +188,12 @@ fn print_reward_state(pic: &PocketIc, governance: Principal, label: &str) -> Sns
         )
         .expect("query latest reward event"),
     )
-    .expect("decode latest reward event");
+    .expect("decode latest reward event")
+}
+
+fn print_reward_state(pic: &PocketIc, governance: Principal, label: &str) -> SnsRewardEvent {
+    let caller = Principal::anonymous();
+    let event = latest_reward_event(pic, governance);
     println!("{label}_latest_reward_event={event:#?}");
 
     let neurons: ListNeuronsResponse = decode_one(
@@ -220,6 +225,58 @@ fn print_reward_state(pic: &PocketIc, governance: Principal, label: &str) -> Sns
         );
     }
     event
+}
+
+fn reward_boundary_advance_seconds(now: u64, initial_end: u64, round_seconds: u64) -> u64 {
+    let expected_next_end = initial_end
+        .checked_add(round_seconds)
+        .expect("next canonical reward end overflow");
+    expected_next_end.checked_sub(now).unwrap_or_else(|| {
+        panic!(
+            "fresh canonical reward boundary already elapsed before the controlled advance: now={now} expected_next_end={expected_next_end}"
+        )
+    })
+}
+
+fn advance_until_reward_event_changes(
+    pic: &PocketIc,
+    governance: Principal,
+    initial: &SnsRewardEvent,
+    round_seconds: u64,
+) -> u64 {
+    let initial_end = initial
+        .end_timestamp_seconds
+        .expect("canonical reward event lacks an end timestamp");
+    let now = pic.get_time().as_nanos_since_unix_epoch() / 1_000_000_000;
+    let mut advanced = reward_boundary_advance_seconds(now, initial_end, round_seconds);
+    assert!(
+        advanced > 0,
+        "fresh canonical reward boundary must remain ahead of the controlled topology time"
+    );
+    pic.advance_time(Duration::from_secs(advanced));
+    for _ in 0..20 {
+        pic.tick();
+    }
+
+    // Governance may need a small number of deterministic timer ticks after the
+    // exact round boundary. Stop as soon as the identity changes so Stream can
+    // still prove its required +300-second pre-margin behavior.
+    for _ in 0..60 {
+        let observed = latest_reward_event(pic, governance);
+        if observed.round != initial.round
+            || observed.end_timestamp_seconds != initial.end_timestamp_seconds
+        {
+            return advanced;
+        }
+        pic.advance_time(Duration::from_secs(1));
+        advanced = advanced
+            .checked_add(1)
+            .expect("canonical reward advance overflow");
+        for _ in 0..20 {
+            pic.tick();
+        }
+    }
+    panic!("canonical SNS reward event did not advance within 60 seconds of its exact boundary")
 }
 
 fn advance_to_reward_observation_margin(pic: &PocketIc, stream: Principal, event: &SnsRewardEvent) {
@@ -323,11 +380,11 @@ fn main() {
             .parse::<u64>()
             .expect("invalid IO_LOCAL_REWARD_ADVANCE_SECONDS");
         if !canonical_two_event || initial_status.processed_reward_event_count == 0 {
-            pic.advance_time(Duration::from_secs(seconds));
-            for _ in 0..20 {
-                pic.tick();
-            }
+            let initial_event = latest_reward_event(&pic, governance);
+            let actual_advance =
+                advance_until_reward_event_changes(&pic, governance, &initial_event, seconds);
             println!("advanced_pocketic_seconds={seconds}");
+            println!("warmup_actual_advance_seconds={actual_advance}");
         } else {
             println!("canonical_reward_warmup_reused=true");
         }
@@ -551,5 +608,17 @@ mod tests {
         assert_eq!(reward_scheduler_advance_seconds(1_220, 1_000), 81);
         assert_eq!(reward_scheduler_advance_seconds(1_300, 1_000), 1);
         assert_eq!(reward_scheduler_advance_seconds(1_301, 1_000), 0);
+    }
+
+    #[test]
+    fn reward_boundary_advance_excludes_elapsed_setup_time() {
+        assert_eq!(reward_boundary_advance_seconds(1_125, 1_000, 300), 175);
+        assert_eq!(reward_boundary_advance_seconds(1_299, 1_000, 300), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "reward boundary already elapsed")]
+    fn reward_boundary_advance_rejects_an_elapsed_round() {
+        let _ = reward_boundary_advance_seconds(1_301, 1_000, 300);
     }
 }
