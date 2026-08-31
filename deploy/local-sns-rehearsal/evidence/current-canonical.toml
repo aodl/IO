@@ -2,9 +2,9 @@
 version = 2
 
 [current]
-package = "2026-08-26-9462a1a-account-semantic"
-io_release_source_commit = "9462a1a0df602f06fa845bd31f9fcd0adf80067a"
-io_artifact_recording_commit = "46713f8499cf9a63a6cd4879b1fff9c1f9ef0be5"
-release_manifest_sha256 = "011113d83510e66976f5d3eabefc57ef30ba44fc49a8973fad29be043b374431"
-package_manifest_sha256 = "254e8866394d62ba9fbe2b0290709d2c9dbaeb8ed84c8b3446b9a1912af0eb78"
-package_sha256s_sha256 = "a1915cef319b569955c5d75ad88c4a3715af8483573d2cf9b3a2af108d6bea29"
+package = "2026-08-31-916ee88-anchored-dynamic"
+io_release_source_commit = "916ee8808c32305e2980cd9fe785475eab6bc57e"
+io_artifact_recording_commit = "31ec98653394e67c93f639163a9752b54b5e58f9"
+release_manifest_sha256 = "0a141097054c6cf74c7f3e968a61ef386d439f90c463e5f8355334ec09d272a1"
+package_manifest_sha256 = "e20d0959646af8f506a4e6477fe939d076ec92f387562f7a80386f925235bc4c"
+package_sha256s_sha256 = "8cb2142d956bc557150363d81b7aee547fc9ef326195091ca43c8d1f58e136e2"
