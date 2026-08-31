@@ -60,9 +60,9 @@ fn install(deadline_seconds: Option<u64>) {
     let Some(deadline_seconds) = deadline_seconds else {
         return;
     };
-    let now = ic_cdk::api::time() / 1_000_000_000;
+    let now_nanos = ic_cdk::api::time();
     let timer = set_timer(
-        Duration::from_secs(deadline_seconds.saturating_sub(now)),
+        Duration::from_secs(representable_delay_seconds(deadline_seconds, now_nanos)),
         async move {
             ACTIVE_RECOVERY_TIMER.with(|slot| {
                 slot.borrow_mut().take();
@@ -84,6 +84,12 @@ fn install(deadline_seconds: Option<u64>) {
     ACTIVE_RECOVERY_TIMER.with(|slot| {
         *slot.borrow_mut() = Some((timer, deadline_seconds));
     });
+}
+
+fn representable_delay_seconds(deadline_seconds: u64, now_nanos: u64) -> u64 {
+    let requested = deadline_seconds.saturating_sub(now_nanos / 1_000_000_000);
+    let representable = (u64::MAX - now_nanos) / 1_000_000_000;
+    requested.min(representable)
 }
 
 #[cfg(test)]
@@ -130,5 +136,15 @@ mod tests {
             },
         ));
         assert_eq!(next_deadline(&state, 10), Some(70));
+    }
+
+    #[test]
+    fn timer_delay_is_clamped_to_the_ic_time_horizon() {
+        assert_eq!(representable_delay_seconds(200, 10_000_000_000), 190);
+        assert_eq!(
+            representable_delay_seconds(u64::MAX, 10_000_000_000),
+            (u64::MAX - 10_000_000_000) / 1_000_000_000
+        );
+        assert_eq!(representable_delay_seconds(u64::MAX, u64::MAX), 0);
     }
 }

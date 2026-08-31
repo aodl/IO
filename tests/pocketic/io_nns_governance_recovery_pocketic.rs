@@ -770,8 +770,9 @@ fn pool_operation(
     credit_e8s: u128,
     phase: PoolCommandPhase,
 ) -> PoolCommand {
+    let bootstrap = parent_e8s == 0;
     PoolCommand {
-        kind: if parent_e8s == 0 {
+        kind: if bootstrap {
             PoolCommandKind::Bootstrap
         } else {
             PoolCommandKind::TopUp
@@ -780,13 +781,17 @@ fn pool_operation(
             generation: 1,
             operation_sequence: 1,
             expected_parent_principal_e8s: parent_e8s,
-            expected_parent_physical_e8s: parent_e8s,
+            expected_parent_physical_e8s: if bootstrap {
+                io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S
+            } else {
+                parent_e8s
+            },
             destination: Account {
                 owner: state.config.nns_governance,
                 subaccount: Some(vec![9; 32]),
             },
-            expected_credit_e8s: credit_e8s - 10_000,
-            claim_credit_e8s: credit_e8s,
+            expected_credit_e8s: if bootstrap { 0 } else { credit_e8s - 10_000 },
+            claim_credit_e8s: if bootstrap { 0 } else { credit_e8s },
             fee_e8s: 10_000,
             memo: vec![1; 32],
             prepared_at_nanos: 1,
@@ -806,21 +811,38 @@ fn pool_state(
     phase: PoolCommandPhase,
 ) -> NnsStateV1 {
     let mut state = fixture.state();
-    state.latest_reconciliation_generation = 1;
-    state.latest_pooled_target = Some(PooledTarget {
-        target_e8s: parent_e8s + credit_e8s,
-        status: PooledTargetStatus::UnderTarget,
-    });
-    if parent_e8s > 0 {
+    if parent_e8s == 0 {
+        state.lifecycle = Lifecycle::Paused;
+        state.pooled_parent_id = None;
+        state.pooled_parent_staking_account = None;
+        state.claim_bearing_dynamic_principal_e8s = 0;
+        state.anchor_available_e8s = 0;
+        state.latest_reconciliation_generation = 0;
+        state.latest_pooled_target = None;
+    } else {
+        state.latest_reconciliation_generation = 1;
+        state.latest_pooled_target = Some(PooledTarget {
+            target_e8s: parent_e8s + credit_e8s,
+            status: PooledTargetStatus::UnderTarget,
+        });
         state.pooled_parent_id = Some(parent_id);
         state.pooled_parent_staking_account = Some(Account {
             owner: fixture.governance,
             subaccount: Some(vec![9; 32]),
         });
     }
-    state.active_operation = Some(NnsOperation::Pool(pool_operation(
-        &state, parent_id, parent_e8s, credit_e8s, phase,
-    )));
+    let mut operation = pool_operation(&state, parent_id, parent_e8s, credit_e8s, phase);
+    if parent_e8s == 0 {
+        operation.permit.destination = Account {
+            owner: fixture.governance,
+            subaccount: Some(parent_staking_subaccount(
+                fixture.manager,
+                state.config.pooled_parent_memo,
+            )),
+        };
+        operation.transfer_block_index = None;
+    }
+    state.active_operation = Some(NnsOperation::Pool(operation));
     state
 }
 
@@ -888,6 +910,10 @@ fn cleanup_unwind_state(
     child_neuron_id: u64,
 ) -> NnsStateV1 {
     let mut state = unwind_state(fixture, phase, child_neuron_id);
+    let Some(NnsOperation::Unwind(operation)) = state.active_operation.as_mut() else {
+        unreachable!()
+    };
+    operation.parent_principal_e8s = io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S + 1_000_000;
     state.live_cohorts = vec![PassiveCohort {
         generation: 1,
         reconciliation_request_fingerprint: vec![3; 32],
@@ -1086,9 +1112,10 @@ fn account_policy_voting_power_housekeeping_is_best_effort_and_never_gates_pool_
     assert_eq!(ready, Ok(()));
     assert_eq!(
         absent.governance_calls().refresh_voting_power,
-        calls_before + 1,
-        "parent absence permits only the permanent housekeeping attempt"
+        calls_before + 2,
+        "anchored readiness bootstraps the Dynamic parent before refreshing both neurons"
     );
+    assert!(absent.state_from_canister().pooled_parent_id.is_some());
 }
 
 #[test]
@@ -1565,12 +1592,12 @@ fn every_persisted_governance_phase_recovers_and_exact_replay_is_effect_safe() {
     );
     assert_eq!(fixture.governance_calls().claim_or_refresh, 2);
 
-    fixture.create_neuron(101, 100_000_000, 0);
+    fixture.create_neuron(101, io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S, 0);
     fixture.replace(pool_state(
         &fixture,
         101,
         0,
-        100_000_000,
+        0,
         PoolCommandPhase::DelaySubmitted {
             expected_delay_seconds: NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS,
         },
@@ -1589,13 +1616,17 @@ fn every_persisted_governance_phase_recovers_and_exact_replay_is_effect_safe() {
         calls + 2
     );
 
-    fixture.create_neuron(102, 100_000_000, NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS);
+    fixture.create_neuron(
+        102,
+        io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+        NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS,
+    );
     fixture.followee(102, None);
     fixture.replace(pool_state(
         &fixture,
         102,
         0,
-        100_000_000,
+        0,
         PoolCommandPhase::FollowingSubmitted,
     ));
     fixture.control(ControlledCommand::SetFollowing, 1, 0);
@@ -1709,6 +1740,16 @@ fn every_persisted_governance_phase_recovers_and_exact_replay_is_effect_safe() {
     for kind in [MaturityKind::TwoWeek, MaturityKind::TwoYear] {
         let mut state = fixture.state();
         let pending = delivering_maturity(&state, kind);
+        let two_year_plan = (kind == MaturityKind::TwoYear).then(|| {
+            io_nns_types::maturity::plan_two_year_replenishment(
+                pending.captured_e8s.unwrap(),
+                io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+                state.anchor_available_e8s,
+                state.permanent_fee_shortfall_e8s,
+                state.config.expected_icp_fee_e8s,
+            )
+            .unwrap()
+        });
         if kind == MaturityKind::TwoWeek {
             state.pooled_parent_id = Some(42);
             state.pooled_parent_staking_account = Some(Account {
@@ -1729,7 +1770,7 @@ fn every_persisted_governance_phase_recovers_and_exact_replay_is_effect_safe() {
             kind,
             phase: MaturityCommandPhase::Delivery(MaturityDeliveryOperation {
                 pending,
-                two_year_plan: None,
+                two_year_plan,
                 anchor_reimbursement: None,
                 permanent_reimbursement: None,
                 permit: None,
