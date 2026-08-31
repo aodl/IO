@@ -2,9 +2,9 @@
 version = 2
 
 [current]
-package = "2026-08-31-916ee88-anchored-dynamic"
-io_release_source_commit = "916ee8808c32305e2980cd9fe785475eab6bc57e"
-io_artifact_recording_commit = "31ec98653394e67c93f639163a9752b54b5e58f9"
-release_manifest_sha256 = "0a141097054c6cf74c7f3e968a61ef386d439f90c463e5f8355334ec09d272a1"
-package_manifest_sha256 = "e20d0959646af8f506a4e6477fe939d076ec92f387562f7a80386f925235bc4c"
-package_sha256s_sha256 = "8cb2142d956bc557150363d81b7aee547fc9ef326195091ca43c8d1f58e136e2"
+package = "2026-08-31-9211341-anchored-dynamic"
+io_release_source_commit = "92113419eb2eecacd2d4064b30e091c644c4cb71"
+io_artifact_recording_commit = "3f03ae7e9a3b85ee7824f50375ec58e70b9e0879"
+release_manifest_sha256 = "6315bf85b944c36d90d8dd22c375618db3566150bb56c23d24ae74b033bedfa1"
+package_manifest_sha256 = "35fbc6a145f18af1bc33d83a43abd5071869ff4285f857e7d48d5d5118acf5dc"
+package_sha256s_sha256 = "9e4a45920a869b900c86913ff1288b12ab3aadb059ab17c2cd49466fce044750"
