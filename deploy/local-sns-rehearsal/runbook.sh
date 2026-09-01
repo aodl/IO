@@ -73,13 +73,13 @@ Local-only official SNS rehearsal flow:
 1. Run runbook.sh check.
 2. Copy local-vars.example.toml to local-vars.toml and fill only local principals.
 3. Run runbook.sh render-sns-init.
-4. Run guarded phases 10-19 only against a loopback maintained official SNS testing environment.
+4. Run guarded phases 10-19 only against a loopback maintained official SNS testing environment. Run `exercise-ledger` before lifecycle activation to establish funding, then again after `exercise-governance-and-controllers` to complete prepared-push redemption.
 5. Run runbook.sh record-ids, then fill canister-ids.local.toml with local SNS and IO dapp IDs.
 6. Run runbook.sh capture-evidence to print local ledger/index/governance/root calls.
 7. Paste observed evidence into canister-ids.local.toml.
 8. Run runbook.sh validate and cargo run -p xtask -- validate_local_sns_ledger.
 9. Run `exercise-account-semantic-protocol` to execute the exact proposal-143660
-   and controlled account-semantic PocketIC evidence layers.
+   and controlled anchored-dynamic PocketIC evidence layers.
 10. Run `package-evidence` only after every official and controlled phase has an
     exact successful checkpoint.
 

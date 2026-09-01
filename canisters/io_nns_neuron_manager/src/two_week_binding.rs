@@ -87,14 +87,9 @@ pub async fn prepare(caller: Principal, args: PrepareTwoWeekMaturityArgs) -> Res
             "expected two-week maturity generation {expected_generation}"
         )));
     }
-    maturity_flow::start_observed(snapshot, MaturityKind::TwoWeek, Some(args)).await?;
-    let operation = match state::read().active_operation {
-        Some(NnsOperation::Maturity(operation)) if operation.kind == MaturityKind::TwoWeek => {
-            *operation
-        }
-        _ => return Err(ApiError::Busy),
-    };
-    maturity_flow::resume_active(operation).await.map(|_| ())
+    maturity_flow::start_observed(snapshot, MaturityKind::TwoWeek, Some(args))
+        .await
+        .map(|_| ())
 }
 
 fn replay_matches(state: &NnsStateV1, args: &PrepareTwoWeekMaturityArgs) -> bool {

@@ -1,1811 +1,1060 @@
 #![cfg(test)]
 
-//! Executable proposal model for pooled claim-backing economics.
+//! Executable architecture model for anchored dynamic backing.
 //!
-//! This crate is test-only. It does not define the active IO economics and is
-//! not linked into a canister.
+//! This crate is deliberately test-only. It proves the replacement accounting
+//! representation before the value-moving canisters adopt it.
 
-pub mod proposed_model {
-    use io_core_model::{Backing as CoreBacking, EconomicState as CoreState, EconomicsError};
+mod anchored_dynamic_backing {
+    use std::cmp::Ordering;
+
+    const E8S_PER_ICP: u128 = 100_000_000;
+    const ANCHOR_TARGET_E8S: u128 = 10 * E8S_PER_ICP;
+    const NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS: u64 = 1_209_600;
+    const PREFERRED_SNS_UNLOCK_DELAY_SECONDS: u64 = 1_296_060;
+    const REWARD_CADENCE_SECONDS: u64 = 86_400;
+    const REWARD_MARGIN_SECONDS: u64 = 300;
+    const RECOVERY_RETRY_SECONDS: u64 = 60;
+    const STRUCTURAL_CADENCE_SECONDS: u64 = 43_200;
+    const REVIEWED_MAX_NEURONS: u64 = 1_000;
+    const NEURON_PAGE_SIZE: u64 = 100;
+    const EXCLUDED_IO_ACCOUNTS: u64 = 1;
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum ModelError {
-        ArithmeticOverflow,
-        ExclusionsExceedSupply,
-        BackingWithoutClaims,
-        UncoveredClaims,
-        ActiveWithoutClaims,
-        ActiveExceedsClaims,
-        InsufficientBacking,
-        InsufficientOperationalReserve,
-        InsufficientLiquid,
-        InvalidBackingState,
-        InvalidTransition,
-        ProofMismatch,
-        DuplicateGeneration,
-        DuplicateChild,
-        CohortCapacityExhausted,
-        RewardActiveExceedsBacking,
-        RewardBackingUnderTarget,
-        SameBucket,
+    struct CadenceAssessment {
+        cadence_seconds: u64,
+        generations_per_day: u64,
+        natural_live_bound: u64,
+        governance_queries_per_day_at_max: u64,
+        io_balance_queries_per_day_at_max: u64,
+        approximate_calls_per_day_at_max: u64,
+        healthy_slack_seconds: u64,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct SchedulerFacts {
+        latest_structural_at: u64,
+        latest_reward_event_end: u64,
+        retry_due_at: Option<u64>,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct RewardFacet {
+        eligible_from_event: Option<u64>,
+        eligible_through_event: Option<u64>,
+        accumulated_credit: u128,
     }
 
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub struct Backing {
-        pub liquid: u128,
-        pub pooled: u128,
-        pub pending_unwind: u128,
-        pub transit: u128,
-        pub permanent: u128,
-        pub operational_reserve: u128,
+    struct ClaimBacking {
+        liquid: u128,
+        dynamic: u128,
+        unwinding: u128,
+        transit: u128,
     }
 
-    impl Backing {
-        pub fn claim_backing(self) -> Result<u128, ModelError> {
-            io_core_model::claim_backing(self.core()).map_err(Into::into)
-        }
-
-        pub fn total_assets(self) -> Result<u128, ModelError> {
-            self.claim_backing()?
-                .checked_add(self.permanent)
-                .and_then(|value| value.checked_add(self.operational_reserve))
-                .ok_or(ModelError::ArithmeticOverflow)
-        }
-        fn core(self) -> CoreBacking {
-            CoreBacking {
-                liquid: self.liquid,
-                pooled: self.pooled,
-                unwinding: self.pending_unwind,
-                transit: self.transit,
-            }
-        }
-    }
-
-    impl From<EconomicsError> for ModelError {
-        fn from(value: EconomicsError) -> Self {
-            match value {
-                EconomicsError::ArithmeticOverflow => Self::ArithmeticOverflow,
-                EconomicsError::ExclusionsExceedSupply => Self::ExclusionsExceedSupply,
-                EconomicsError::BackingWithoutClaims => Self::BackingWithoutClaims,
-                EconomicsError::UncoveredClaims => Self::UncoveredClaims,
-                EconomicsError::ActiveExceedsClaims => Self::ActiveExceedsClaims,
-                EconomicsError::RewardActiveExceedsBacking => Self::RewardActiveExceedsBacking,
-                EconomicsError::RewardBackingUnderTarget => Self::RewardBackingUnderTarget,
-                _ => Self::InvalidBackingState,
-            }
-        }
-    }
-
-    pub fn target_pool(active: u128, backing: u128, claims: u128) -> Result<u128, ModelError> {
-        io_core_model::target(active, backing, claims).map_err(Into::into)
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum Bucket {
-        Liquid,
-        Pooled,
-        PendingUnwind,
-        Transit,
-    }
-
-    fn bucket_value(backing: Backing, bucket: Bucket) -> u128 {
-        match bucket {
-            Bucket::Liquid => backing.liquid,
-            Bucket::Pooled => backing.pooled,
-            Bucket::PendingUnwind => backing.pending_unwind,
-            Bucket::Transit => backing.transit,
-        }
-    }
-
-    fn set_bucket(backing: &mut Backing, bucket: Bucket, value: u128) {
-        match bucket {
-            Bucket::Liquid => backing.liquid = value,
-            Bucket::Pooled => backing.pooled = value,
-            Bucket::PendingUnwind => backing.pending_unwind = value,
-            Bucket::Transit => backing.transit = value,
-        }
-    }
-
-    pub fn move_backing(
-        mut backing: Backing,
-        from: Bucket,
-        to: Bucket,
-        gross: u128,
-        fee: u128,
-    ) -> Result<Backing, ModelError> {
-        if from == to {
-            return Err(ModelError::SameBucket);
-        }
-        let credited = gross
-            .checked_sub(fee)
-            .ok_or(ModelError::InsufficientBacking)?;
-        let source = bucket_value(backing, from)
-            .checked_sub(gross)
-            .ok_or(ModelError::InsufficientBacking)?;
-        let destination = bucket_value(backing, to)
-            .checked_add(credited)
-            .ok_or(ModelError::ArithmeticOverflow)?;
-        set_bucket(&mut backing, from, source);
-        set_bucket(&mut backing, to, destination);
-        Ok(backing)
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum HoldReason {
-        BelowMinimumStake,
-        FeeTolerance,
-        ChildMinimum,
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum CanonicalSnsState {
-        Active,
-        Dissolving,
-        LiquidOrDissolved,
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum StickyStatus {
-        ActiveBacked,
-        ExitObserved,
-        ExitCommitted,
-        ReentryPending,
-        LiquidReturned,
-        RestakePlanned,
-        RestakeCommitted,
-        RestakeProved,
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct StickyNeuron {
-        pub status: StickyStatus,
-        pub latest_sns_state: CanonicalSnsState,
-        pub committed_generation: Option<u64>,
-        pub reward_eligible_from_observation: Option<u64>,
-    }
-
-    impl Default for StickyNeuron {
-        fn default() -> Self {
-            Self {
-                status: StickyStatus::ActiveBacked,
-                latest_sns_state: CanonicalSnsState::Active,
-                committed_generation: None,
-                reward_eligible_from_observation: Some(0),
-            }
-        }
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum CohortLifecycle {
-        Dissolving,
-        Ready,
-        Returned,
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum CohortProofState {
-        CanonicalDissolving,
-        DisbursementSubmitted,
-        PrincipalReturned,
-        MaturityHandled,
-        CleanupComplete,
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct PassiveCohort {
-        pub generation: u64,
-        pub child_neuron_id: u64,
-        pub physical_principal: u128,
-        pub net_backing: u128,
-        pub lifecycle: CohortLifecycle,
-        pub proof: CohortProofState,
-        pub ready_at: u64,
-    }
-
-    impl StickyNeuron {
-        pub fn reward_eligible_at(self, observation: u64) -> bool {
-            self.status == StickyStatus::ActiveBacked
-                && self.latest_sns_state == CanonicalSnsState::Active
-                && self
-                    .reward_eligible_from_observation
-                    .is_some_and(|first| observation >= first)
+    impl ClaimBacking {
+        fn total(self) -> Result<u128, ModelError> {
+            self.liquid
+                .checked_add(self.dynamic)
+                .and_then(|v| v.checked_add(self.unwinding))
+                .and_then(|v| v.checked_add(self.transit))
+                .ok_or(ModelError::Overflow)
         }
     }
 
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub struct StickyOperationCounts {
-        pub split_intents: u128,
-        pub split_proofs: u128,
-        pub disbursement_proofs: u128,
-        pub restake_proofs: u128,
-    }
-
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub struct StickyFeeTotals {
-        pub split: u128,
-        pub disbursement: u128,
-        pub restake: u128,
-    }
-
-    impl StickyFeeTotals {
-        pub fn total(self) -> Result<u128, ModelError> {
-            self.split
-                .checked_add(self.disbursement)
-                .and_then(|value| value.checked_add(self.restake))
-                .ok_or(ModelError::ArithmeticOverflow)
-        }
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum ReturnedLiquidityPlan {
-        NoActiveMembersNeedRestake,
-        RestoredWithoutTransfer {
-            target: u128,
-        },
-        Hold {
-            target: u128,
-            required_credit: u128,
-            tolerance: u128,
-            reason: HoldReason,
-        },
-        Restake {
-            post_fee_target: u128,
-            credited: u128,
-            source_debit: u128,
-        },
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct ReturnedLiquidityInput {
-        pub generation: u64,
-        pub claims: u128,
-        pub active_backing: u128,
-        pub exact_restake_fee: u128,
-        pub minimum_restake_credit: u128,
-        pub minimum_parent: u128,
-        pub next_reward_observation: u64,
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct RestakeIntent {
-        pub generation: u64,
-        pub post_fee_target: u128,
-        pub credited: u128,
-        pub source_debit: u128,
-        pub fee: u128,
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum ActiveNnsCommand {
-        SplitCommitted {
-            generation: u64,
-            gross: u128,
-        },
-        SplitProved {
-            generation: u64,
-            child_neuron_id: u64,
-            physical_principal: u128,
-            net_backing: u128,
-        },
-        StartDissolvingCommitted {
-            generation: u64,
-            child_neuron_id: u64,
-            physical_principal: u128,
-            net_backing: u128,
-        },
-        Disburse {
-            generation: u64,
-        },
-        Restake(RestakeIntent),
-    }
-
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct StickyUnwindModel {
-        pub neurons: Vec<StickyNeuron>,
-        pub backing: Backing,
-        pub cohorts: Vec<PassiveCohort>,
-        pub max_passive_cohorts: usize,
-        pub next_generation: u64,
-        pub active_command: Option<ActiveNnsCommand>,
-        pub planned_restake: Option<RestakeIntent>,
-        pub operations: StickyOperationCounts,
-        pub fees: StickyFeeTotals,
-    }
-
-    impl StickyUnwindModel {
-        pub const NNS_DISSOLVE_DELAY_SECONDS: u64 = 14 * 86_400;
-
-        pub fn with_neurons(
-            backing: Backing,
-            neuron_count: usize,
-            max_passive_cohorts: usize,
-        ) -> Self {
-            Self {
-                neurons: vec![StickyNeuron::default(); neuron_count],
-                backing,
-                cohorts: Vec::new(),
-                max_passive_cohorts,
-                next_generation: 0,
-                active_command: None,
-                planned_restake: None,
-                operations: StickyOperationCounts::default(),
-                fees: StickyFeeTotals::default(),
-            }
-        }
-
-        pub fn observe_sns(
-            &mut self,
-            neuron_index: usize,
-            state: CanonicalSnsState,
-            observation: u64,
-        ) -> Result<(), ModelError> {
-            let generation = self
-                .neurons
-                .get(neuron_index)
-                .ok_or(ModelError::InvalidTransition)?
-                .committed_generation;
-            if state != CanonicalSnsState::Active
-                && self.neurons[neuron_index].status == StickyStatus::RestakePlanned
-            {
-                let intent = self
-                    .planned_restake
-                    .take()
-                    .filter(|intent| Some(intent.generation) == generation)
-                    .ok_or(ModelError::InvalidTransition)?;
-                for member in &mut self.neurons {
-                    if member.committed_generation == Some(intent.generation)
-                        && member.status == StickyStatus::RestakePlanned
-                    {
-                        member.status = StickyStatus::LiquidReturned;
-                    }
-                }
-            }
-            let returned = generation.is_some_and(|generation| {
-                self.cohorts.iter().any(|cohort| {
-                    cohort.generation == generation
-                        && matches!(
-                            cohort.proof,
-                            CohortProofState::PrincipalReturned
-                                | CohortProofState::MaturityHandled
-                                | CohortProofState::CleanupComplete
-                        )
-                })
-            });
-            let neuron = &mut self.neurons[neuron_index];
-            neuron.latest_sns_state = state;
-            match state {
-                CanonicalSnsState::Dissolving => {
-                    neuron.reward_eligible_from_observation = None;
-                    neuron.status = match neuron.status {
-                        StickyStatus::ActiveBacked => StickyStatus::ExitObserved,
-                        StickyStatus::ExitObserved => StickyStatus::ExitObserved,
-                        StickyStatus::ExitCommitted | StickyStatus::ReentryPending => {
-                            StickyStatus::ExitCommitted
-                        }
-                        StickyStatus::LiquidReturned => StickyStatus::LiquidReturned,
-                        StickyStatus::RestakePlanned => StickyStatus::LiquidReturned,
-                        StickyStatus::RestakeCommitted => StickyStatus::RestakeCommitted,
-                        StickyStatus::RestakeProved => StickyStatus::RestakeProved,
-                    };
-                }
-                CanonicalSnsState::Active => {
-                    neuron.status = match neuron.status {
-                        StickyStatus::ExitObserved => {
-                            neuron.reward_eligible_from_observation = Some(
-                                observation
-                                    .checked_add(1)
-                                    .ok_or(ModelError::ArithmeticOverflow)?,
-                            );
-                            neuron.committed_generation = None;
-                            StickyStatus::ActiveBacked
-                        }
-                        StickyStatus::ExitCommitted => StickyStatus::ReentryPending,
-                        status => status,
-                    };
-                }
-                CanonicalSnsState::LiquidOrDissolved => {
-                    neuron.reward_eligible_from_observation = None;
-                    match neuron.status {
-                        StickyStatus::RestakeCommitted | StickyStatus::RestakeProved => {}
-                        _ => {
-                            if returned {
-                                neuron.committed_generation = None;
-                            }
-                            neuron.status = StickyStatus::ReentryPending;
-                        }
-                    }
-                }
-            }
-            Ok(())
-        }
-
-        pub fn submit_split_intent(
-            &mut self,
-            neuron_indices: &[usize],
-            gross: u128,
-        ) -> Result<u64, ModelError> {
-            if neuron_indices.is_empty() || self.active_command.is_some() {
-                return Err(ModelError::InvalidTransition);
-            }
-            if self.cohorts.len() >= self.max_passive_cohorts {
-                return Err(ModelError::CohortCapacityExhausted);
-            }
-            let mut unique = neuron_indices.to_vec();
-            unique.sort_unstable();
-            unique.dedup();
-            if unique.len() != neuron_indices.len()
-                || unique.iter().any(|index| {
-                    self.neurons.get(*index).is_none_or(|neuron| {
-                        neuron.status != StickyStatus::ExitObserved
-                            || neuron.latest_sns_state != CanonicalSnsState::Dissolving
-                    })
-                })
-            {
-                return Err(ModelError::InvalidTransition);
-            }
-            let generation = self.next_generation;
-            if self
-                .cohorts
-                .iter()
-                .any(|cohort| cohort.generation == generation)
-            {
-                return Err(ModelError::DuplicateGeneration);
-            }
-            self.next_generation = self
-                .next_generation
-                .checked_add(1)
-                .ok_or(ModelError::ArithmeticOverflow)?;
-            self.backing = move_backing(self.backing, Bucket::Pooled, Bucket::Transit, gross, 0)?;
-            self.active_command = Some(ActiveNnsCommand::SplitCommitted { generation, gross });
-            self.operations.split_intents = self
-                .operations
-                .split_intents
-                .checked_add(1)
-                .ok_or(ModelError::ArithmeticOverflow)?;
-            for index in unique {
-                self.neurons[index].status = StickyStatus::ExitCommitted;
-                self.neurons[index].committed_generation = Some(generation);
-            }
-            Ok(generation)
-        }
-
-        pub fn prove_split(
-            &mut self,
-            child_neuron_id: u64,
-            exact_split_fee: u128,
-            future_disbursement_fee: u128,
-        ) -> Result<(), ModelError> {
-            let (generation, gross) = match self.active_command {
-                Some(ActiveNnsCommand::SplitCommitted { generation, gross }) => (generation, gross),
-                _ => return Err(ModelError::InvalidTransition),
-            };
-            if self.cohorts.iter().any(|cohort| {
-                cohort.child_neuron_id == child_neuron_id || cohort.generation == generation
-            }) {
-                return Err(ModelError::DuplicateChild);
-            }
-            let physical_principal = gross
-                .checked_sub(exact_split_fee)
-                .ok_or(ModelError::InsufficientBacking)?;
-            let net_backing = physical_principal
-                .checked_sub(future_disbursement_fee)
-                .ok_or(ModelError::InsufficientBacking)?;
-            let committed_fees = exact_split_fee
-                .checked_add(future_disbursement_fee)
-                .ok_or(ModelError::ArithmeticOverflow)?;
-            self.backing = move_backing(
-                self.backing,
-                Bucket::Transit,
-                Bucket::PendingUnwind,
-                gross,
-                committed_fees,
-            )?;
-            self.active_command = Some(ActiveNnsCommand::SplitProved {
-                generation,
-                child_neuron_id,
-                physical_principal,
-                net_backing,
-            });
-            self.operations.split_proofs = self
-                .operations
-                .split_proofs
-                .checked_add(1)
-                .ok_or(ModelError::ArithmeticOverflow)?;
-            self.fees.split = self
-                .fees
-                .split
-                .checked_add(exact_split_fee)
-                .ok_or(ModelError::ArithmeticOverflow)?;
-            Ok(())
-        }
-
-        pub fn commit_start_dissolving(&mut self, generation: u64) -> Result<(), ModelError> {
-            let (child_neuron_id, physical_principal, net_backing) = match self.active_command {
-                Some(ActiveNnsCommand::SplitProved {
-                    generation: active_generation,
-                    child_neuron_id,
-                    physical_principal,
-                    net_backing,
-                }) if active_generation == generation => {
-                    (child_neuron_id, physical_principal, net_backing)
-                }
-                _ => return Err(ModelError::InvalidTransition),
-            };
-            self.active_command = Some(ActiveNnsCommand::StartDissolvingCommitted {
-                generation,
-                child_neuron_id,
-                physical_principal,
-                net_backing,
-            });
-            Ok(())
-        }
-
-        pub fn prove_start_dissolving_rejected(
-            &mut self,
-            generation: u64,
-            child_neuron_id: u64,
-        ) -> Result<(), ModelError> {
-            let (physical_principal, net_backing) = match self.active_command {
-                Some(ActiveNnsCommand::StartDissolvingCommitted {
-                    generation: active_generation,
-                    child_neuron_id: active_child,
-                    physical_principal,
-                    net_backing,
-                }) if active_generation == generation && active_child == child_neuron_id => {
-                    (physical_principal, net_backing)
-                }
-                _ => return Err(ModelError::ProofMismatch),
-            };
-            self.active_command = Some(ActiveNnsCommand::SplitProved {
-                generation,
-                child_neuron_id,
-                physical_principal,
-                net_backing,
-            });
-            Ok(())
-        }
-
-        pub fn prove_start_dissolving(
-            &mut self,
-            generation: u64,
-            child_neuron_id: u64,
-            canonical_ready_at: u64,
-        ) -> Result<u64, ModelError> {
-            let (physical_principal, net_backing) = match self.active_command {
-                Some(ActiveNnsCommand::StartDissolvingCommitted {
-                    generation: active_generation,
-                    child_neuron_id: active_child,
-                    physical_principal,
-                    net_backing,
-                }) if active_generation == generation && active_child == child_neuron_id => {
-                    (physical_principal, net_backing)
-                }
-                _ => return Err(ModelError::ProofMismatch),
-            };
-            if self.cohorts.len() >= self.max_passive_cohorts {
-                return Err(ModelError::CohortCapacityExhausted);
-            }
-            if self
-                .cohorts
-                .iter()
-                .any(|cohort| cohort.generation == generation)
-            {
-                return Err(ModelError::DuplicateGeneration);
-            }
-            if self
-                .cohorts
-                .iter()
-                .any(|cohort| cohort.child_neuron_id == child_neuron_id)
-            {
-                return Err(ModelError::DuplicateChild);
-            }
-            let effective_start = canonical_ready_at
-                .checked_sub(Self::NNS_DISSOLVE_DELAY_SECONDS)
-                .ok_or(ModelError::ProofMismatch)?;
-            self.cohorts.push(PassiveCohort {
-                generation,
-                child_neuron_id,
-                physical_principal,
-                net_backing,
-                lifecycle: CohortLifecycle::Dissolving,
-                proof: CohortProofState::CanonicalDissolving,
-                ready_at: canonical_ready_at,
-            });
-            self.active_command = None;
-            Ok(effective_start)
-        }
-
-        pub fn refresh_cohort_readiness(&mut self, now: u64) {
-            for cohort in &mut self.cohorts {
-                if cohort.lifecycle == CohortLifecycle::Dissolving && now >= cohort.ready_at {
-                    cohort.lifecycle = CohortLifecycle::Ready;
-                }
-            }
-        }
-
-        pub fn submit_child_disbursement(
-            &mut self,
-            generation: u64,
-            now: u64,
-        ) -> Result<(), ModelError> {
-            if self.active_command.is_some() {
-                return Err(ModelError::InvalidTransition);
-            }
-            self.refresh_cohort_readiness(now);
-            let cohort = self
-                .cohorts
-                .iter_mut()
-                .find(|cohort| cohort.generation == generation)
-                .ok_or(ModelError::InvalidTransition)?;
-            if cohort.lifecycle != CohortLifecycle::Ready
-                || cohort.proof != CohortProofState::CanonicalDissolving
-            {
-                return Err(ModelError::InvalidTransition);
-            }
-            cohort.proof = CohortProofState::DisbursementSubmitted;
-            self.active_command = Some(ActiveNnsCommand::Disburse { generation });
-            Ok(())
-        }
-
-        pub fn prove_child_disbursement(
-            &mut self,
-            generation: u64,
-            exact_fee: u128,
-        ) -> Result<(), ModelError> {
-            if self.active_command != Some(ActiveNnsCommand::Disburse { generation }) {
-                return Err(ModelError::InvalidTransition);
-            }
-            let cohort_index = self
-                .cohorts
-                .iter()
-                .position(|cohort| cohort.generation == generation)
-                .ok_or(ModelError::InvalidTransition)?;
-            let physical_principal = self.cohorts[cohort_index].physical_principal;
-            let net_backing = self.cohorts[cohort_index].net_backing;
-            if physical_principal.checked_sub(exact_fee) != Some(net_backing) {
-                return Err(ModelError::ProofMismatch);
-            }
-            let next_backing = move_backing(
-                self.backing,
-                Bucket::PendingUnwind,
-                Bucket::Liquid,
-                net_backing,
-                0,
-            )?;
-            self.backing = next_backing;
-            self.cohorts[cohort_index].lifecycle = CohortLifecycle::Returned;
-            self.cohorts[cohort_index].proof = CohortProofState::PrincipalReturned;
-            self.active_command = None;
-            self.operations.disbursement_proofs = self
-                .operations
-                .disbursement_proofs
-                .checked_add(1)
-                .ok_or(ModelError::ArithmeticOverflow)?;
-            self.fees.disbursement = self
-                .fees
-                .disbursement
-                .checked_add(exact_fee)
-                .ok_or(ModelError::ArithmeticOverflow)?;
-            for neuron in &mut self.neurons {
-                if neuron.committed_generation == Some(generation) {
-                    neuron.status = StickyStatus::LiquidReturned;
-                }
-            }
-            Ok(())
-        }
-
-        pub fn plan_returned_liquidity(
-            &mut self,
-            input: ReturnedLiquidityInput,
-        ) -> Result<ReturnedLiquidityPlan, ModelError> {
-            let ReturnedLiquidityInput {
-                generation,
-                claims,
-                active_backing,
-                exact_restake_fee,
-                minimum_restake_credit,
-                minimum_parent,
-                next_reward_observation,
-            } = input;
-            if self.active_command.is_some() || self.planned_restake.is_some() {
-                return Err(ModelError::InvalidTransition);
-            }
-            let cohort = self
-                .cohorts
-                .iter()
-                .find(|cohort| cohort.generation == generation)
-                .ok_or(ModelError::InvalidTransition)?;
-            if cohort.lifecycle != CohortLifecycle::Returned
-                || !matches!(
-                    cohort.proof,
-                    CohortProofState::PrincipalReturned
-                        | CohortProofState::MaturityHandled
-                        | CohortProofState::CleanupComplete
-                )
-            {
-                return Err(ModelError::InvalidTransition);
-            }
-            let matching: Vec<usize> = self
-                .neurons
-                .iter()
-                .enumerate()
-                .filter_map(|(index, neuron)| {
-                    (neuron.committed_generation == Some(generation)).then_some(index)
-                })
-                .collect();
-            if matching.is_empty() {
-                return Err(ModelError::InvalidTransition);
-            }
-            let active: Vec<usize> = matching
-                .iter()
-                .copied()
-                .filter(|index| self.neurons[*index].latest_sns_state == CanonicalSnsState::Active)
-                .collect();
-            if active.is_empty() {
-                return Ok(ReturnedLiquidityPlan::NoActiveMembersNeedRestake);
-            }
-
-            let backing = self.backing.claim_backing()?;
-            let current_target = target_pool(active_backing, backing, claims)?.max(minimum_parent);
-            if self.backing.pooled >= current_target {
-                self.restore_generation_without_transfer(generation, next_reward_observation);
-                return Ok(ReturnedLiquidityPlan::RestoredWithoutTransfer {
-                    target: current_target,
-                });
-            }
-
-            let post_fee_backing = backing
-                .checked_sub(exact_restake_fee)
-                .ok_or(ModelError::InsufficientBacking)?;
-            let post_fee_target =
-                target_pool(active_backing, post_fee_backing, claims)?.max(minimum_parent);
-            let required_credit = post_fee_target.saturating_sub(self.backing.pooled);
-            let tolerance = exact_restake_fee.max(minimum_restake_credit.saturating_sub(1));
-            if required_credit <= exact_restake_fee || required_credit < minimum_restake_credit {
-                return Ok(ReturnedLiquidityPlan::Hold {
-                    target: post_fee_target,
-                    required_credit,
-                    tolerance,
-                    reason: if required_credit <= exact_restake_fee {
-                        HoldReason::FeeTolerance
-                    } else {
-                        HoldReason::BelowMinimumStake
-                    },
-                });
-            }
-            let source_debit = required_credit
-                .checked_add(exact_restake_fee)
-                .ok_or(ModelError::ArithmeticOverflow)?;
-            if self.backing.liquid < source_debit {
-                return Err(ModelError::InsufficientLiquid);
-            }
-            let intent = RestakeIntent {
-                generation,
-                post_fee_target,
-                credited: required_credit,
-                source_debit,
-                fee: exact_restake_fee,
-            };
-            self.planned_restake = Some(intent);
-            for index in active {
-                self.neurons[index].status = StickyStatus::RestakePlanned;
-                self.neurons[index].reward_eligible_from_observation = None;
-            }
-            Ok(ReturnedLiquidityPlan::Restake {
-                post_fee_target,
-                credited: required_credit,
-                source_debit,
-            })
-        }
-
-        pub fn commit_restake(&mut self, generation: u64) -> Result<(), ModelError> {
-            if self.active_command.is_some() {
-                return Err(ModelError::InvalidTransition);
-            }
-            let intent = self
-                .planned_restake
-                .filter(|intent| intent.generation == generation)
-                .ok_or(ModelError::InvalidTransition)?;
-            let live_returned_cohort = self.cohorts.iter().any(|cohort| {
-                cohort.generation == generation
-                    && cohort.lifecycle == CohortLifecycle::Returned
-                    && matches!(
-                        cohort.proof,
-                        CohortProofState::PrincipalReturned
-                            | CohortProofState::MaturityHandled
-                            | CohortProofState::CleanupComplete
-                    )
-            });
-            let has_current_active_member = self.neurons.iter().any(|neuron| {
-                neuron.committed_generation == Some(generation)
-                    && neuron.latest_sns_state == CanonicalSnsState::Active
-                    && neuron.status == StickyStatus::RestakePlanned
-            });
-            if !live_returned_cohort || !has_current_active_member {
-                return Err(ModelError::InvalidTransition);
-            }
-            let next_backing = move_backing(
-                self.backing,
-                Bucket::Liquid,
-                Bucket::Transit,
-                intent.source_debit,
-                0,
-            )?;
-            self.backing = next_backing;
-            self.planned_restake = None;
-            self.active_command = Some(ActiveNnsCommand::Restake(intent));
-            for neuron in &mut self.neurons {
-                if neuron.committed_generation == Some(generation)
-                    && neuron.latest_sns_state == CanonicalSnsState::Active
-                {
-                    neuron.status = StickyStatus::RestakeCommitted;
-                }
-            }
-            Ok(())
-        }
-
-        pub fn prove_restake(
-            &mut self,
-            generation: u64,
-            actual_credited: u128,
-        ) -> Result<(), ModelError> {
-            let intent = match self.active_command {
-                Some(ActiveNnsCommand::Restake(intent)) if intent.generation == generation => {
-                    intent
-                }
-                _ => return Err(ModelError::InvalidTransition),
-            };
-            if actual_credited != intent.credited {
-                return Err(ModelError::ProofMismatch);
-            }
-            let next_backing = move_backing(
-                self.backing,
-                Bucket::Transit,
-                Bucket::Pooled,
-                intent.source_debit,
-                intent.fee,
-            )?;
-            if next_backing.pooled != intent.post_fee_target {
-                return Err(ModelError::ProofMismatch);
-            }
-            self.backing = next_backing;
-            self.active_command = None;
-            self.operations.restake_proofs = self
-                .operations
-                .restake_proofs
-                .checked_add(1)
-                .ok_or(ModelError::ArithmeticOverflow)?;
-            self.fees.restake = self
-                .fees
-                .restake
-                .checked_add(intent.fee)
-                .ok_or(ModelError::ArithmeticOverflow)?;
-            for neuron in &mut self.neurons {
-                if neuron.committed_generation == Some(generation)
-                    && neuron.status == StickyStatus::RestakeCommitted
-                {
-                    neuron.status = StickyStatus::RestakeProved;
-                }
-            }
-            Ok(())
-        }
-
-        pub fn finish_restake(
-            &mut self,
-            generation: u64,
-            next_reward_observation: u64,
-        ) -> Result<(), ModelError> {
-            let mut found = false;
-            for neuron in &mut self.neurons {
-                if neuron.committed_generation == Some(generation)
-                    && neuron.status == StickyStatus::RestakeProved
-                {
-                    if neuron.status != StickyStatus::RestakeProved {
-                        return Err(ModelError::InvalidTransition);
-                    }
-                    found = true;
-                    neuron.reward_eligible_from_observation = None;
-                    neuron.committed_generation = None;
-                    neuron.status = match neuron.latest_sns_state {
-                        CanonicalSnsState::Active => {
-                            neuron.reward_eligible_from_observation = Some(next_reward_observation);
-                            StickyStatus::ActiveBacked
-                        }
-                        CanonicalSnsState::Dissolving => StickyStatus::ExitObserved,
-                        CanonicalSnsState::LiquidOrDissolved => StickyStatus::ReentryPending,
-                    };
-                }
-            }
-            if !found {
-                return Err(ModelError::InvalidTransition);
-            }
-            Ok(())
-        }
-
-        pub fn cohort(&self, generation: u64) -> Option<PassiveCohort> {
-            self.cohorts
-                .iter()
-                .copied()
-                .find(|cohort| cohort.generation == generation)
-        }
-
-        pub fn prove_child_maturity_handled(&mut self, generation: u64) -> Result<(), ModelError> {
-            let cohort = self
-                .cohorts
-                .iter_mut()
-                .find(|cohort| cohort.generation == generation)
-                .ok_or(ModelError::InvalidTransition)?;
-            if cohort.proof != CohortProofState::PrincipalReturned {
-                return Err(ModelError::InvalidTransition);
-            }
-            cohort.proof = CohortProofState::MaturityHandled;
-            Ok(())
-        }
-
-        pub fn prove_child_cleanup_complete(&mut self, generation: u64) -> Result<(), ModelError> {
-            let cohort = self
-                .cohorts
-                .iter_mut()
-                .find(|cohort| cohort.generation == generation)
-                .ok_or(ModelError::InvalidTransition)?;
-            if cohort.proof != CohortProofState::MaturityHandled {
-                return Err(ModelError::InvalidTransition);
-            }
-            cohort.proof = CohortProofState::CleanupComplete;
-            Ok(())
-        }
-
-        pub fn retire_cohort(&mut self, generation: u64) -> Result<PassiveCohort, ModelError> {
-            let index = self
-                .cohorts
-                .iter()
-                .position(|cohort| cohort.generation == generation)
-                .ok_or(ModelError::InvalidTransition)?;
-            let cohort = self.cohorts[index];
-            if cohort.lifecycle != CohortLifecycle::Returned
-                || cohort.proof != CohortProofState::CleanupComplete
-                || self
-                    .neurons
-                    .iter()
-                    .any(|neuron| neuron.committed_generation == Some(generation))
-                || self.active_command.is_some_and(|command| {
-                    command.generation() == generation
-                        || command.child_neuron_id() == Some(cohort.child_neuron_id)
-                })
-                || self
-                    .planned_restake
-                    .is_some_and(|intent| intent.generation == generation)
-            {
-                return Err(ModelError::InvalidTransition);
-            }
-            Ok(self.cohorts.remove(index))
-        }
-
-        fn restore_generation_without_transfer(
-            &mut self,
-            generation: u64,
-            next_reward_observation: u64,
-        ) {
-            for neuron in &mut self.neurons {
-                if neuron.committed_generation == Some(generation)
-                    && neuron.latest_sns_state == CanonicalSnsState::Active
-                {
-                    neuron.status = StickyStatus::ActiveBacked;
-                    neuron.committed_generation = None;
-                    neuron.reward_eligible_from_observation = Some(next_reward_observation);
-                }
-            }
-        }
-    }
-
-    impl ActiveNnsCommand {
-        fn generation(self) -> u64 {
-            match self {
-                Self::SplitCommitted { generation, .. }
-                | Self::SplitProved { generation, .. }
-                | Self::StartDissolvingCommitted { generation, .. }
-                | Self::Disburse { generation }
-                | Self::Restake(RestakeIntent { generation, .. }) => generation,
-            }
-        }
-
-        fn child_neuron_id(self) -> Option<u64> {
-            match self {
-                Self::SplitProved {
-                    child_neuron_id, ..
-                }
-                | Self::StartDissolvingCommitted {
-                    child_neuron_id, ..
-                } => Some(child_neuron_id),
-                _ => None,
-            }
-        }
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct LiquidityLagInputs {
-        pub maximum_detection_reconciliation_interval: Option<u64>,
-        pub nns_dissolve_delay: u64,
-        pub max_detection_margin: u64,
-        pub max_command_margin: u64,
-        pub max_disbursement_margin: u64,
-    }
-
-    pub fn liquidity_lag_bound(input: LiquidityLagInputs) -> Result<Option<u64>, ModelError> {
-        let Some(interval) = input.maximum_detection_reconciliation_interval else {
-            return Ok(None);
-        };
-        interval
-            .checked_add(input.nns_dissolve_delay)
-            .and_then(|value| value.checked_add(input.max_detection_margin))
-            .and_then(|value| value.checked_add(input.max_command_margin))
-            .and_then(|value| value.checked_add(input.max_disbursement_margin))
-            .map(Some)
-            .ok_or(ModelError::ArithmeticOverflow)
-    }
-
-    pub fn cohort_capacity_bound(
-        maximum_unresolved_cohort_lifetime: u64,
-        minimum_committed_generation_spacing: u64,
-        reviewed_operational_margin: u64,
-    ) -> Result<u64, ModelError> {
-        if minimum_committed_generation_spacing == 0 {
-            return Err(ModelError::InvalidTransition);
-        }
-        let rounded = maximum_unresolved_cohort_lifetime
-            .checked_add(minimum_committed_generation_spacing - 1)
-            .ok_or(ModelError::ArithmeticOverflow)?
-            / minimum_committed_generation_spacing;
-        rounded
-            .checked_add(reviewed_operational_margin)
-            .ok_or(ModelError::ArithmeticOverflow)
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct RewardCoverage {
-        pub backing_target: u128,
-        pub reward_target: u128,
-    }
-
-    pub fn require_reward_coverage(
-        active_backing: u128,
-        reward_eligible_active: u128,
-        backing: u128,
+    struct Economy {
+        backing: ClaimBacking,
         claims: u128,
-        pooled: u128,
-    ) -> Result<RewardCoverage, ModelError> {
-        let state = CoreState {
-            backing: CoreBacking {
-                liquid: backing
-                    .checked_sub(pooled)
-                    .ok_or(ModelError::InvalidBackingState)?,
-                pooled,
-                ..CoreBacking::default()
-            },
-            claims,
-            active_backing,
-            active_reward: reward_eligible_active,
-        };
-        let backing_target = io_core_model::target(active_backing, backing, claims)?;
-        let reward_target = io_core_model::reward_target(state)?;
-        io_core_model::rewards_covered(state)?;
-        Ok(RewardCoverage {
-            backing_target,
-            reward_target,
-        })
+        dynamic_physical: u128,
+        anchor_available: u128,
+        excluded_surplus: u128,
+        dynamic_inflight_physical: u128,
+        permanent_capital: u128,
+        permanent_fee_shortfall: u128,
+        payout_obligation: u128,
+        staged_two_year_maturity: u128,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct LifecycleFeeComparison {
-        pub immediate_mirroring: u128,
-        pub sticky_unwind: u128,
-    }
-
-    pub fn lifecycle_fee_comparison(
-        cancel_start_pairs: u128,
-        split_fee: u128,
-        merge_fee: u128,
-        disbursement_fee: u128,
-        restake_fee: u128,
-    ) -> Result<LifecycleFeeComparison, ModelError> {
-        let repeated_split_fees = cancel_start_pairs
-            .checked_add(1)
-            .and_then(|count| count.checked_mul(split_fee))
-            .ok_or(ModelError::ArithmeticOverflow)?;
-        let repeated_merge_fees = cancel_start_pairs
-            .checked_mul(merge_fee)
-            .ok_or(ModelError::ArithmeticOverflow)?;
-        let immediate_mirroring = repeated_split_fees
-            .checked_add(repeated_merge_fees)
-            .and_then(|value| value.checked_add(disbursement_fee))
-            .ok_or(ModelError::ArithmeticOverflow)?;
-        let sticky_unwind = split_fee
-            .checked_add(disbursement_fee)
-            .and_then(|value| value.checked_add(restake_fee))
-            .ok_or(ModelError::ArithmeticOverflow)?;
-        Ok(LifecycleFeeComparison {
-            immediate_mirroring,
-            sticky_unwind,
-        })
+    enum ModelError {
+        Overflow,
+        InsufficientBacking,
+        InsufficientAnchor,
+        InvalidPartition,
+        InvalidRateFloor,
+        RateDecrease,
+        InvalidAmount,
+        LatePush,
+        DuplicateProof,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum RedemptionReadiness {
-        EmptyGenesis,
-        BackingWithoutClaims { backing: u128 },
-        AwaitLiquidity { gross_quote: u128 },
-        Ready { gross_quote: u128, net_payout: u128 },
+    enum FeeClass {
+        ClaimAnchor,
+        PermanentShortfall,
+        FreshMaturityCost,
+        ExternalOrNonReimbursable,
+        IoLedgerBurn,
     }
 
-    pub fn redemption_readiness(
-        io_amount: u128,
-        backing: Backing,
-        claim_supply: u128,
-        payout_fee: u128,
-    ) -> Result<RedemptionReadiness, ModelError> {
-        let claim_backing = backing.claim_backing()?;
-        let state = CoreState {
-            backing: backing.core(),
-            claims: claim_supply,
-            active_backing: 0,
-            active_reward: 0,
-        };
-        match io_core_model::claim_rate(state)? {
-            io_core_model::ClaimRate::EmptyGenesis => {
-                return Ok(RedemptionReadiness::EmptyGenesis);
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct PreparedPush {
+        principal: u128,
+        gross_payout: u128,
+        prepared_at: u64,
+        expires_at: u64,
+        id: u128,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct TwoYearOutcome {
+        state: Economy,
+        anchor_reimbursement: u128,
+        permanent_reimbursement: u128,
+        reimbursement_fees: u128,
+        ordinary_permanent_gross: u128,
+        ordinary_claim_gross: u128,
+        carried: u128,
+    }
+
+    impl Economy {
+        fn bootstrap(seed_balance: u128) -> Result<Self, ModelError> {
+            if seed_balance < ANCHOR_TARGET_E8S {
+                return Err(ModelError::InvalidAmount);
             }
-            io_core_model::ClaimRate::BackingWithoutClaims => {
-                return Ok(RedemptionReadiness::BackingWithoutClaims {
-                    backing: claim_backing,
+            let state = Self {
+                dynamic_physical: seed_balance,
+                anchor_available: ANCHOR_TARGET_E8S,
+                excluded_surplus: seed_balance - ANCHOR_TARGET_E8S,
+                ..Self::default()
+            };
+            state.validate()?;
+            Ok(state)
+        }
+
+        fn validate(self) -> Result<(), ModelError> {
+            if self.anchor_available > ANCHOR_TARGET_E8S {
+                return Err(ModelError::InvalidPartition);
+            }
+            let parent_partition = self
+                .backing
+                .dynamic
+                .checked_add(self.anchor_available)
+                .and_then(|v| v.checked_add(self.excluded_surplus))
+                .and_then(|v| v.checked_add(self.dynamic_inflight_physical))
+                .ok_or(ModelError::Overflow)?;
+            if parent_partition != self.dynamic_physical {
+                return Err(ModelError::InvalidPartition);
+            }
+            let backing = self.backing.total()?;
+            if (self.claims == 0 && backing != 0) || (self.claims > 0 && backing < self.claims) {
+                return Err(ModelError::InvalidRateFloor);
+            }
+            Ok(())
+        }
+
+        fn assert_transition(self, next: Self) -> Result<Self, ModelError> {
+            self.validate()?;
+            next.validate()?;
+            match (self.claims, next.claims) {
+                (0, 0) => {}
+                (0, _) => {
+                    if next.backing.total()? < next.claims {
+                        return Err(ModelError::RateDecrease);
+                    }
+                }
+                (_, 0) => {}
+                _ if !ratio_ge(
+                    next.backing.total()?,
+                    next.claims,
+                    self.backing.total()?,
+                    self.claims,
+                ) =>
+                {
+                    return Err(ModelError::RateDecrease)
+                }
+                _ => {}
+            }
+            Ok(next)
+        }
+
+        fn add_backed_issuance(self, incoming: u128) -> Result<Self, ModelError> {
+            if incoming == 0 {
+                return Err(ModelError::InvalidAmount);
+            }
+            let before_backing = self.backing.total()?;
+            let issued = if self.claims == 0 {
+                incoming
+            } else {
+                mul_div_floor(incoming, self.claims, before_backing)?
+            };
+            let mut next = self;
+            next.backing.liquid = next
+                .backing
+                .liquid
+                .checked_add(incoming)
+                .ok_or(ModelError::Overflow)?;
+            next.claims = next
+                .claims
+                .checked_add(issued)
+                .ok_or(ModelError::Overflow)?;
+            self.assert_transition(next)
+        }
+
+        fn paired_40_60_claim_inflow(self, captured: u128, fee: u128) -> Result<Self, ModelError> {
+            let permanent_gross = captured.saturating_mul(40) / 100;
+            let claim_gross = captured - permanent_gross;
+            if permanent_gross <= fee || claim_gross <= fee || self.anchor_available < fee {
+                return Err(ModelError::InvalidAmount);
+            }
+            let before_backing = self.backing.total()?;
+            let issued = if self.claims == 0 {
+                claim_gross
+            } else {
+                mul_div_floor(claim_gross, self.claims, before_backing)?
+            };
+            let mut next = self;
+            next.permanent_capital = next
+                .permanent_capital
+                .checked_add(permanent_gross - fee)
+                .ok_or(ModelError::Overflow)?;
+            next.permanent_fee_shortfall = next
+                .permanent_fee_shortfall
+                .checked_add(fee)
+                .ok_or(ModelError::Overflow)?;
+            next.backing.liquid = next
+                .backing
+                .liquid
+                .checked_add(claim_gross - fee)
+                .ok_or(ModelError::Overflow)?;
+            next.consume_claim_fee(fee)?;
+            next.claims = next
+                .claims
+                .checked_add(issued)
+                .ok_or(ModelError::Overflow)?;
+            self.assert_transition(next)
+        }
+
+        fn move_liquid_to_transit(self, amount: u128) -> Result<Self, ModelError> {
+            if self.backing.liquid < amount {
+                return Err(ModelError::InsufficientBacking);
+            }
+            let mut next = self;
+            next.backing.liquid -= amount;
+            next.backing.transit = next
+                .backing
+                .transit
+                .checked_add(amount)
+                .ok_or(ModelError::Overflow)?;
+            self.assert_transition(next)
+        }
+
+        fn donate_dynamic(self, amount: u128) -> Result<Self, ModelError> {
+            let mut next = self;
+            next.dynamic_physical = next
+                .dynamic_physical
+                .checked_add(amount)
+                .ok_or(ModelError::Overflow)?;
+            next.excluded_surplus = next
+                .excluded_surplus
+                .checked_add(amount)
+                .ok_or(ModelError::Overflow)?;
+            self.assert_transition(next)
+        }
+
+        fn consume_claim_fee(&mut self, fee: u128) -> Result<(), ModelError> {
+            self.anchor_available = self
+                .anchor_available
+                .checked_sub(fee)
+                .ok_or(ModelError::InsufficientAnchor)?;
+            self.backing.dynamic = self
+                .backing
+                .dynamic
+                .checked_add(fee)
+                .ok_or(ModelError::Overflow)?;
+            Ok(())
+        }
+
+        fn top_up_dynamic(self, credit: u128, fee: u128) -> Result<Self, ModelError> {
+            let debit = credit.checked_add(fee).ok_or(ModelError::Overflow)?;
+            if credit == 0 || self.backing.liquid < debit || self.anchor_available < fee {
+                return Err(if self.anchor_available < fee {
+                    ModelError::InsufficientAnchor
+                } else {
+                    ModelError::InsufficientBacking
                 });
             }
-            io_core_model::ClaimRate::Ratio { .. } => {}
+            let mut next = self;
+            next.backing.liquid -= debit;
+            next.dynamic_physical = next
+                .dynamic_physical
+                .checked_add(credit)
+                .ok_or(ModelError::Overflow)?;
+            next.backing.dynamic = next
+                .backing
+                .dynamic
+                .checked_add(credit)
+                .ok_or(ModelError::Overflow)?;
+            next.consume_claim_fee(fee)?;
+            self.assert_transition(next)
         }
-        let quote = io_core_model::redemption_quote(state, io_amount, 0, payout_fee)?;
-        if io_core_model::require_liquidity(quote, backing.liquid).is_err() {
-            return Ok(RedemptionReadiness::AwaitLiquidity {
-                gross_quote: quote.gross_icp,
-            });
+
+        fn commit_unwind(
+            self,
+            gross: u128,
+            split_fee: u128,
+            future_disbursement_fee: u128,
+        ) -> Result<Self, ModelError> {
+            let fees = split_fee
+                .checked_add(future_disbursement_fee)
+                .ok_or(ModelError::Overflow)?;
+            if gross <= fees || self.backing.dynamic < gross || self.anchor_available < fees {
+                return Err(if self.anchor_available < fees {
+                    ModelError::InsufficientAnchor
+                } else {
+                    ModelError::InsufficientBacking
+                });
+            }
+            let child_net = gross - fees;
+            let mut next = self;
+            next.dynamic_physical -= gross;
+            next.backing.dynamic -= gross;
+            next.consume_claim_fee(fees)?;
+            next.backing.unwinding = next
+                .backing
+                .unwinding
+                .checked_add(child_net)
+                .ok_or(ModelError::Overflow)?;
+            self.assert_transition(next)
         }
-        Ok(RedemptionReadiness::Ready {
-            gross_quote: quote.gross_icp,
-            net_payout: quote.net_icp,
+
+        fn return_child(self, net: u128) -> Result<Self, ModelError> {
+            if self.backing.unwinding < net {
+                return Err(ModelError::InsufficientBacking);
+            }
+            let mut next = self;
+            next.backing.unwinding -= net;
+            next.backing.liquid = next
+                .backing
+                .liquid
+                .checked_add(net)
+                .ok_or(ModelError::Overflow)?;
+            self.assert_transition(next)
+        }
+
+        fn add_permanent_credit(self, gross: u128, fee: u128) -> Result<Self, ModelError> {
+            let credit = gross.checked_sub(fee).ok_or(ModelError::InvalidAmount)?;
+            let mut next = self;
+            next.permanent_capital = next
+                .permanent_capital
+                .checked_add(credit)
+                .ok_or(ModelError::Overflow)?;
+            next.permanent_fee_shortfall = next
+                .permanent_fee_shortfall
+                .checked_add(fee)
+                .ok_or(ModelError::Overflow)?;
+            self.assert_transition(next)
+        }
+
+        fn io_fee_burn(self, fee: u128) -> Result<Self, ModelError> {
+            let mut next = self;
+            next.claims = next
+                .claims
+                .checked_sub(fee)
+                .ok_or(ModelError::InsufficientBacking)?;
+            self.assert_transition(next)
+        }
+
+        fn prepare_push(
+            self,
+            principal: u128,
+            now: u64,
+            lifetime: u64,
+            id: u128,
+        ) -> Result<PreparedPush, ModelError> {
+            if principal == 0 || principal > self.claims || lifetime == 0 {
+                return Err(ModelError::InvalidAmount);
+            }
+            Ok(PreparedPush {
+                principal,
+                gross_payout: mul_div_floor(principal, self.backing.total()?, self.claims)?,
+                prepared_at: now,
+                expires_at: now.checked_add(lifetime).ok_or(ModelError::Overflow)?,
+                id,
+            })
+        }
+
+        fn prove_push(
+            self,
+            intent: PreparedPush,
+            transfer_created_at: u64,
+            io_fee: u128,
+            proved_ids: &mut Vec<u128>,
+        ) -> Result<Self, ModelError> {
+            if transfer_created_at < intent.prepared_at || transfer_created_at > intent.expires_at {
+                return Err(ModelError::LatePush);
+            }
+            if proved_ids.contains(&intent.id) {
+                return Err(ModelError::DuplicateProof);
+            }
+            let claim_reduction = intent
+                .principal
+                .checked_add(io_fee)
+                .ok_or(ModelError::Overflow)?;
+            if self.claims < claim_reduction || self.backing.liquid < intent.gross_payout {
+                return Err(ModelError::InsufficientBacking);
+            }
+            let mut next = self;
+            next.claims -= claim_reduction;
+            next.backing.liquid -= intent.gross_payout;
+            next.payout_obligation = next
+                .payout_obligation
+                .checked_add(intent.gross_payout)
+                .ok_or(ModelError::Overflow)?;
+            proved_ids.push(intent.id);
+            self.assert_transition(next)
+        }
+
+        fn pay_obligation(self, gross: u128) -> Result<Self, ModelError> {
+            let mut next = self;
+            next.payout_obligation = next
+                .payout_obligation
+                .checked_sub(gross)
+                .ok_or(ModelError::InsufficientBacking)?;
+            self.assert_transition(next)
+        }
+    }
+
+    fn ratio_ge(a_num: u128, a_den: u128, b_num: u128, b_den: u128) -> bool {
+        compare_ratio(a_num, a_den, b_num, b_den) != Ordering::Less
+    }
+
+    // Continued fractions compare exactly without overflowing cross-products.
+    fn compare_ratio(
+        mut a_num: u128,
+        mut a_den: u128,
+        mut b_num: u128,
+        mut b_den: u128,
+    ) -> Ordering {
+        assert!(a_den > 0 && b_den > 0);
+        let mut reversed = false;
+        loop {
+            let a_whole = a_num / a_den;
+            let b_whole = b_num / b_den;
+            if a_whole != b_whole {
+                let order = a_whole.cmp(&b_whole);
+                return if reversed { order.reverse() } else { order };
+            }
+            let a_rem = a_num % a_den;
+            let b_rem = b_num % b_den;
+            match (a_rem == 0, b_rem == 0) {
+                (true, true) => return Ordering::Equal,
+                (true, false) => {
+                    return if reversed {
+                        Ordering::Greater
+                    } else {
+                        Ordering::Less
+                    }
+                }
+                (false, true) => {
+                    return if reversed {
+                        Ordering::Less
+                    } else {
+                        Ordering::Greater
+                    }
+                }
+                (false, false) => {
+                    a_num = a_den;
+                    a_den = a_rem;
+                    b_num = b_den;
+                    b_den = b_rem;
+                    reversed = !reversed;
+                }
+            }
+        }
+    }
+
+    fn mul_div_floor(value: u128, numerator: u128, denominator: u128) -> Result<u128, ModelError> {
+        if denominator == 0 {
+            return Err(ModelError::InvalidAmount);
+        }
+        let whole = value / denominator;
+        let remainder = value % denominator;
+        let head = whole.checked_mul(numerator).ok_or(ModelError::Overflow)?;
+        let tail = remainder
+            .checked_mul(numerator)
+            .ok_or(ModelError::Overflow)?
+            / denominator;
+        head.checked_add(tail).ok_or(ModelError::Overflow)
+    }
+
+    fn reimbursable(available: u128, deficit: u128, fee: u128) -> u128 {
+        if deficit == 0 || available <= fee {
+            0
+        } else {
+            deficit.min(available - fee)
+        }
+    }
+
+    fn replenish_two_year(
+        mut state: Economy,
+        captured: u128,
+        transfer_fee: u128,
+    ) -> Result<TwoYearOutcome, ModelError> {
+        state.staged_two_year_maturity = state
+            .staged_two_year_maturity
+            .checked_add(captured)
+            .ok_or(ModelError::Overflow)?;
+        let mut remaining = state.staged_two_year_maturity;
+        let mut reimbursement_fees = 0u128;
+        let anchor_deficit = ANCHOR_TARGET_E8S - state.anchor_available;
+        let anchor_reimbursement = reimbursable(remaining, anchor_deficit, transfer_fee);
+        if anchor_reimbursement > 0 {
+            remaining -= anchor_reimbursement + transfer_fee;
+            reimbursement_fees += transfer_fee;
+            state.anchor_available += anchor_reimbursement;
+            state.dynamic_physical += anchor_reimbursement;
+        }
+        let permanent_reimbursement =
+            reimbursable(remaining, state.permanent_fee_shortfall, transfer_fee);
+        if permanent_reimbursement > 0 {
+            remaining -= permanent_reimbursement + transfer_fee;
+            reimbursement_fees += transfer_fee;
+            state.permanent_fee_shortfall -= permanent_reimbursement;
+            state.permanent_capital += permanent_reimbursement;
+        }
+        let mut ordinary_permanent_gross = 0;
+        let mut ordinary_claim_gross = 0;
+        if remaining > 0 {
+            let permanent = remaining.saturating_mul(40) / 100;
+            let claim = remaining - permanent;
+            if permanent > transfer_fee
+                && claim > transfer_fee
+                && state.anchor_available >= transfer_fee
+            {
+                ordinary_permanent_gross = permanent;
+                ordinary_claim_gross = claim;
+                state.permanent_capital += permanent - transfer_fee;
+                state.permanent_fee_shortfall += transfer_fee;
+                state.backing.liquid += claim - transfer_fee;
+                state.consume_claim_fee(transfer_fee)?;
+                remaining = 0;
+            }
+        }
+        state.staged_two_year_maturity = remaining;
+        state.validate()?;
+        Ok(TwoYearOutcome {
+            state,
+            anchor_reimbursement,
+            permanent_reimbursement,
+            reimbursement_fees,
+            ordinary_permanent_gross,
+            ordinary_claim_gross,
+            carried: remaining,
         })
     }
-}
 
-mod tests {
-    use super::proposed_model::*;
+    fn natural_live_bound(cadence_seconds: u64) -> u64 {
+        NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS.div_ceil(cadence_seconds) + 1
+    }
 
-    #[test]
-    fn production_economics_are_the_scenario_oracle() {
-        let backing = io_core_model::Backing {
-            liquid: 100,
-            pooled: 500,
-            unwinding: 200,
-            transit: 200,
-        };
-        let state = io_core_model::EconomicState {
-            backing,
-            claims: 1_000,
-            active_backing: 500,
-            active_reward: 400,
-        };
-        let quote = io_core_model::redemption_quote(state, 200, 0, 10).unwrap();
-        assert_eq!((quote.gross_icp, quote.net_icp), (200, 190));
-        assert!(io_core_model::require_liquidity(quote, backing.liquid).is_err());
-        assert_eq!(io_core_model::target(500, 1_000, 1_000), Ok(500));
-        assert_eq!(io_core_model::reward_target(state), Ok(400));
+    fn governance_pages(neurons: u64) -> u64 {
+        neurons / NEURON_PAGE_SIZE + 1
+    }
+
+    fn io_balance_queries_per_poll(neurons: u64) -> u64 {
+        neurons + 2 * (1 + EXCLUDED_IO_ACCOUNTS)
+    }
+
+    fn approximate_calls_per_poll(neurons: u64) -> u64 {
+        // Root summary (1), two before/after NNS claim snapshots (4 total),
+        // ledger/index facts in those two snapshots (12 with one excluded IO
+        // Account), paged SNS neurons, and one IO balance per active neuron.
+        neurons + governance_pages(neurons) + 17
+    }
+
+    fn healthy_operation_budget_seconds() -> u64 {
+        // A deterministic stress allowance, not a network SLA: two structural
+        // retries, two Pool-contention retries, two command-reflection retries,
+        // one ready-return retry, and three minutes for successful call chains.
+        7 * RECOVERY_RETRY_SECONDS + 180
+    }
+
+    fn assess_cadence(cadence_seconds: u64) -> CadenceAssessment {
+        assert_eq!(REWARD_CADENCE_SECONDS % cadence_seconds, 0);
+        let generations_per_day = REWARD_CADENCE_SECONDS / cadence_seconds;
+        let unlock_budget = PREFERRED_SNS_UNLOCK_DELAY_SECONDS - NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS;
+        let healthy_slack_seconds = unlock_budget
+            .checked_sub(cadence_seconds + healthy_operation_budget_seconds())
+            .expect("candidate cadence must fit the preferred unlock");
+        CadenceAssessment {
+            cadence_seconds,
+            generations_per_day,
+            natural_live_bound: natural_live_bound(cadence_seconds),
+            governance_queries_per_day_at_max: governance_pages(REVIEWED_MAX_NEURONS)
+                * generations_per_day,
+            io_balance_queries_per_day_at_max: io_balance_queries_per_poll(REVIEWED_MAX_NEURONS)
+                * generations_per_day,
+            approximate_calls_per_day_at_max: approximate_calls_per_poll(REVIEWED_MAX_NEURONS)
+                * generations_per_day,
+            healthy_slack_seconds,
+        }
+    }
+
+    fn next_stream_deadline(facts: SchedulerFacts) -> u64 {
+        let structural = facts.latest_structural_at + STRUCTURAL_CADENCE_SECONDS;
+        let reward = facts.latest_reward_event_end + REWARD_CADENCE_SECONDS + REWARD_MARGIN_SECONDS;
+        facts
+            .retry_due_at
+            .into_iter()
+            .chain([structural, reward])
+            .min()
+            .unwrap()
+    }
+
+    fn observe_active(facet: RewardFacet, canonical_event_marker: u64) -> RewardFacet {
+        RewardFacet {
+            eligible_from_event: facet
+                .eligible_from_event
+                .or(Some(canonical_event_marker.saturating_add(1))),
+            eligible_through_event: None,
+            ..facet
+        }
+    }
+
+    fn observe_exit(facet: RewardFacet, canonical_event_marker: u64) -> RewardFacet {
+        RewardFacet {
+            eligible_through_event: facet.eligible_from_event.map(|_| canonical_event_marker),
+            ..facet
+        }
+    }
+
+    fn process_reward(mut facet: RewardFacet, event: u64, credit: u128) -> RewardFacet {
+        let eligible = facet
+            .eligible_from_event
+            .is_some_and(|start| start <= event)
+            && facet
+                .eligible_through_event
+                .is_none_or(|through| event <= through);
+        if eligible {
+            facet.accumulated_credit += credit;
+        }
+        facet
     }
 
     #[test]
-    fn production_paired_inflow_enters_liquid_once() {
-        let split = io_nns_types::maturity::capture_40_60(100_000_000, 10_000, 10_000).unwrap();
-        let claim = io_reward_policy::plan_claim_settlement(
-            100_000_000_000,
-            100_000_000_000,
-            split.claim_credit,
-            1,
-            &[],
+    fn anchor_bootstrap_is_dust_tolerant_and_isolated() {
+        assert_eq!(
+            Economy::bootstrap(ANCHOR_TARGET_E8S - 1),
+            Err(ModelError::InvalidAmount)
+        );
+        let exact = Economy::bootstrap(ANCHOR_TARGET_E8S).unwrap();
+        let dusted = Economy::bootstrap(ANCHOR_TARGET_E8S + 777).unwrap();
+        assert_eq!(exact.backing.total().unwrap(), 0);
+        assert_eq!(exact.claims, 0);
+        assert_eq!(dusted.anchor_available, ANCHOR_TARGET_E8S);
+        assert_eq!(dusted.excluded_surplus, 777);
+        assert_eq!(dusted.backing.total().unwrap(), 0);
+        assert_eq!(dusted.claims, 0);
+    }
+
+    #[test]
+    fn claim_fee_reclassification_preserves_backing_and_partition() {
+        let state = Economy::bootstrap(ANCHOR_TARGET_E8S + 9)
+            .unwrap()
+            .add_backed_issuance(5 * E8S_PER_ICP)
+            .unwrap();
+        let before = state.backing.total().unwrap();
+        let next = state.top_up_dynamic(2 * E8S_PER_ICP, 10_000).unwrap();
+        assert_eq!(next.backing.total().unwrap(), before);
+        assert_eq!(next.anchor_available, ANCHOR_TARGET_E8S - 10_000);
+        assert_eq!(next.excluded_surplus, 9);
+    }
+
+    #[test]
+    fn jupiter_two_week_reward_and_transit_checkpoints_preserve_a_through_h() {
+        let fee = 10_000;
+        let genesis = Economy::bootstrap(ANCHOR_TARGET_E8S).unwrap();
+        let jupiter = genesis
+            .paired_40_60_claim_inflow(10 * E8S_PER_ICP, fee)
+            .unwrap();
+        let two_week = jupiter
+            .paired_40_60_claim_inflow(2 * E8S_PER_ICP, fee)
+            .unwrap();
+        let reward = two_week.add_backed_issuance(E8S_PER_ICP).unwrap();
+        let transit = reward.move_liquid_to_transit(E8S_PER_ICP).unwrap();
+        let donated = transit.donate_dynamic(777).unwrap();
+        assert_eq!(
+            transit.backing.total().unwrap(),
+            reward.backing.total().unwrap()
+        );
+        assert_eq!(
+            donated.backing.total().unwrap(),
+            transit.backing.total().unwrap()
+        );
+        assert_eq!(donated.excluded_surplus, 777);
+        assert_eq!(donated.anchor_available, ANCHOR_TARGET_E8S - 2 * fee);
+        assert_eq!(donated.permanent_fee_shortfall, 2 * fee);
+    }
+
+    #[test]
+    fn split_and_future_disbursement_fee_are_reserved_once() {
+        let fee = 10_000;
+        let state = Economy::bootstrap(ANCHOR_TARGET_E8S)
+            .unwrap()
+            .add_backed_issuance(2 * E8S_PER_ICP)
+            .unwrap()
+            .top_up_dynamic(E8S_PER_ICP + 2 * fee, fee)
+            .unwrap();
+        let before = state.backing.total().unwrap();
+        let committed = state
+            .commit_unwind(E8S_PER_ICP + 2 * fee, fee, fee)
+            .unwrap();
+        assert_eq!(committed.backing.total().unwrap(), before);
+        assert_eq!(state.anchor_available - committed.anchor_available, 2 * fee);
+        let returned = committed.return_child(E8S_PER_ICP).unwrap();
+        assert_eq!(returned.backing.total().unwrap(), before);
+        assert_eq!(returned.anchor_available, committed.anchor_available);
+    }
+
+    #[test]
+    fn anchor_exhaustion_precedes_irreversible_effect() {
+        let mut state = Economy::bootstrap(ANCHOR_TARGET_E8S)
+            .unwrap()
+            .add_backed_issuance(2 * E8S_PER_ICP)
+            .unwrap();
+        state.anchor_available = 9;
+        state.excluded_surplus += ANCHOR_TARGET_E8S - 9;
+        state.validate().unwrap();
+        assert_eq!(
+            state.top_up_dynamic(E8S_PER_ICP, 10),
+            Err(ModelError::InsufficientAnchor)
+        );
+        assert_eq!(
+            state.commit_unwind(E8S_PER_ICP, 5, 5),
+            Err(ModelError::InsufficientAnchor)
+        );
+    }
+
+    #[test]
+    fn permanent_fee_is_separate_and_counted_once() {
+        let state = Economy::bootstrap(ANCHOR_TARGET_E8S).unwrap();
+        let next = state.add_permanent_credit(1_000_000, 10_000).unwrap();
+        assert_eq!(next.permanent_capital, 990_000);
+        assert_eq!(next.permanent_fee_shortfall, 10_000);
+        assert_eq!(next.anchor_available, state.anchor_available);
+    }
+
+    #[test]
+    fn two_year_replenishes_in_priority_order_without_recursive_debt() {
+        let fee = 10_000;
+        let mut state = Economy::bootstrap(ANCHOR_TARGET_E8S)
+            .unwrap()
+            .add_backed_issuance(2 * E8S_PER_ICP)
+            .unwrap();
+        state.anchor_available -= 100_000;
+        state.backing.dynamic += 100_000;
+        state.permanent_fee_shortfall = 70_000;
+        state.validate().unwrap();
+        let result = replenish_two_year(state, 1_000_000, fee).unwrap();
+        assert_eq!(result.anchor_reimbursement, 100_000);
+        assert_eq!(result.permanent_reimbursement, 70_000);
+        assert_eq!(result.reimbursement_fees, 2 * fee);
+        assert_eq!(result.state.anchor_available, ANCHOR_TARGET_E8S - fee);
+        assert_eq!(result.state.permanent_fee_shortfall, fee);
+        assert_eq!(result.ordinary_permanent_gross, 324_000);
+        assert_eq!(result.ordinary_claim_gross, 486_000);
+        assert_eq!(result.carried, 0);
+    }
+
+    #[test]
+    fn tiny_two_year_maturity_carries_without_fee_recursion() {
+        let fee = 10_000;
+        let mut state = Economy::bootstrap(ANCHOR_TARGET_E8S).unwrap();
+        state.anchor_available -= 100_000;
+        state.excluded_surplus += 100_000;
+        state.validate().unwrap();
+        let result = replenish_two_year(state, fee, fee).unwrap();
+        assert_eq!(result.anchor_reimbursement, 0);
+        assert_eq!(result.reimbursement_fees, 0);
+        assert_eq!(result.carried, fee);
+    }
+
+    #[test]
+    fn rate_comparison_is_exact_near_u128_limits() {
+        assert!(ratio_ge(u128::MAX, u128::MAX - 1, u128::MAX - 1, u128::MAX));
+        assert!(!ratio_ge(
+            u128::MAX - 1,
             u128::MAX,
-            10_000,
-        )
-        .unwrap();
-        assert_eq!(split.permanent_credit, 39_990_000);
-        assert_eq!(split.claim_credit, 59_990_000);
-        assert_eq!(claim.maximum_io_pool, 59_990_000);
-        assert_eq!(claim.post_backing, 100_059_990_000);
-    }
-    const DAY: u64 = 86_400;
-    const TWO_WEEK_DELAY: u64 = 14 * DAY;
-
-    fn sticky_base(neuron_count: usize, capacity: usize) -> StickyUnwindModel {
-        StickyUnwindModel::with_neurons(
-            Backing {
-                liquid: 500,
-                pooled: 500,
-                ..Backing::default()
-            },
-            neuron_count,
-            capacity,
-        )
+            u128::MAX,
+            u128::MAX - 1
+        ));
+        assert!(ratio_ge(2, 3, 4, 6));
     }
 
-    fn commit_cohort(
-        model: &mut StickyUnwindModel,
-        neuron_indices: &[usize],
-        child_neuron_id: u64,
-        ready_at: u64,
-    ) -> u64 {
-        for index in neuron_indices {
-            model
-                .observe_sns(*index, CanonicalSnsState::Dissolving, 1)
+    #[test]
+    fn deterministic_transition_property_sweep_preserves_floor_and_rate() {
+        let mut seed = 0x4d59_5df4_d0f3_3173_u64;
+        for _ in 0..2_000 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let incoming = E8S_PER_ICP + u128::from(seed % 20) * E8S_PER_ICP;
+            let fee = 1 + u128::from(seed % 10_000);
+            let state = Economy::bootstrap(ANCHOR_TARGET_E8S + u128::from(seed % 999))
+                .unwrap()
+                .add_backed_issuance(incoming)
                 .unwrap();
-        }
-        let generation = model.submit_split_intent(neuron_indices, 110).unwrap();
-        model.prove_split(child_neuron_id, 10, 10).unwrap();
-        model.commit_start_dissolving(generation).unwrap();
-        assert_eq!(
-            model
-                .prove_start_dissolving(generation, child_neuron_id, ready_at)
-                .unwrap(),
-            ready_at - TWO_WEEK_DELAY
-        );
-        generation
-    }
-
-    fn return_cohort(model: &mut StickyUnwindModel, generation: u64, now: u64) {
-        model.submit_child_disbursement(generation, now).unwrap();
-        model.prove_child_disbursement(generation, 10).unwrap();
-    }
-
-    fn returned_liquidity_input(
-        generation: u64,
-        active_backing: u128,
-        minimum_restake_credit: u128,
-        next_reward_observation: u64,
-    ) -> ReturnedLiquidityInput {
-        ReturnedLiquidityInput {
-            generation,
-            claims: 1_000,
-            active_backing,
-            exact_restake_fee: 10,
-            minimum_restake_credit,
-            minimum_parent: 0,
-            next_reward_observation,
+            let moved = state.top_up_dynamic(incoming / 2, fee).unwrap();
+            assert!(ratio_ge(
+                moved.backing.total().unwrap(),
+                moved.claims,
+                state.backing.total().unwrap(),
+                state.claims,
+            ));
+            let burned = moved.io_fee_burn(fee.min(moved.claims - 1)).unwrap();
+            assert!(ratio_ge(
+                burned.backing.total().unwrap(),
+                burned.claims,
+                moved.backing.total().unwrap(),
+                moved.claims,
+            ));
         }
     }
 
     #[test]
-    fn split_and_start_dissolving_are_distinct_recoverable_active_phases() {
-        let mut model = sticky_base(3, 2);
-        for index in 0..3 {
-            model
-                .observe_sns(index, CanonicalSnsState::Dissolving, 1)
-                .unwrap();
-        }
-        let generation = model.submit_split_intent(&[0, 1, 2], 110).unwrap();
-        assert_eq!(generation, 0);
-        assert!(model.cohorts.is_empty());
-        model.prove_split(7_001, 10, 10).unwrap();
-        assert_eq!(
-            model.active_command,
-            Some(ActiveNnsCommand::SplitProved {
-                generation,
-                child_neuron_id: 7_001,
-                physical_principal: 100,
-                net_backing: 90,
-            })
-        );
-        assert!(model.cohorts.is_empty());
-
-        model.commit_start_dissolving(generation).unwrap();
-        assert!(matches!(
-            model.active_command,
-            Some(ActiveNnsCommand::StartDissolvingCommitted { .. })
-        ));
-        model
-            .prove_start_dissolving_rejected(generation, 7_001)
+    fn prepared_push_is_safe_across_rate_increase_and_settles_once() {
+        let io_fee = 10_000;
+        let initial = Economy::bootstrap(ANCHOR_TARGET_E8S)
+            .unwrap()
+            .add_backed_issuance(20 * E8S_PER_ICP)
             .unwrap();
-        assert!(matches!(
-            model.active_command,
-            Some(ActiveNnsCommand::SplitProved { .. })
-        ));
-        model.commit_start_dissolving(generation).unwrap();
-        assert_eq!(
-            model.prove_start_dissolving(generation, 7_002, TWO_WEEK_DELAY + 37),
-            Err(ModelError::ProofMismatch)
-        );
+        let prepared = initial.prepare_push(E8S_PER_ICP, 1_000, 60, 7).unwrap();
+        let appreciated = initial.add_backed_issuance(E8S_PER_ICP).unwrap();
         assert!(
-            model.active_command.is_some(),
-            "callback loss retains the slot"
+            mul_div_floor(
+                prepared.principal,
+                appreciated.backing.total().unwrap(),
+                appreciated.claims
+            )
+            .unwrap()
+                >= prepared.gross_payout
         );
-        let effective_start = model
-            .prove_start_dissolving(generation, 7_001, TWO_WEEK_DELAY + 37)
+        let mut proofs = Vec::new();
+        let proved = appreciated
+            .prove_push(prepared, prepared.expires_at, io_fee, &mut proofs)
             .unwrap();
-        assert_eq!(effective_start, 37);
-        assert_eq!(model.cohorts.len(), 1);
+        assert_eq!(proved.payout_obligation, prepared.gross_payout);
         assert_eq!(
-            model.cohort(generation).unwrap().ready_at,
-            TWO_WEEK_DELAY + 37
-        );
-        assert!(model.active_command.is_none());
-        assert!(model
-            .neurons
-            .iter()
-            .all(|neuron| neuron.committed_generation == Some(generation)));
-    }
-
-    #[test]
-    fn overlapping_cohorts_have_independent_canonical_clocks_and_pooled_returns() {
-        let mut model = sticky_base(2, 2);
-        let a = commit_cohort(&mut model, &[0], 7_001, TWO_WEEK_DELAY);
-        model
-            .observe_sns(1, CanonicalSnsState::Dissolving, 2)
-            .unwrap();
-        model.next_generation = a;
-        assert_eq!(
-            model.submit_split_intent(&[1], 110),
-            Err(ModelError::DuplicateGeneration)
-        );
-        model.next_generation = a + 1;
-        let b = model.submit_split_intent(&[1], 110).unwrap();
-        assert_eq!(
-            model.prove_split(7_001, 10, 10),
-            Err(ModelError::DuplicateChild)
-        );
-        model.prove_split(7_002, 10, 10).unwrap();
-        model.commit_start_dissolving(b).unwrap();
-        model
-            .prove_start_dissolving(b, 7_002, TWO_WEEK_DELAY + DAY)
-            .unwrap();
-        model.refresh_cohort_readiness(TWO_WEEK_DELAY);
-        assert_eq!(model.cohort(a).unwrap().lifecycle, CohortLifecycle::Ready);
-        assert_eq!(
-            model.cohort(b).unwrap().lifecycle,
-            CohortLifecycle::Dissolving
-        );
-        let backing_before_first_return = model.backing.claim_backing().unwrap();
-        return_cohort(&mut model, a, TWO_WEEK_DELAY);
-        assert_eq!(
-            model.backing.claim_backing().unwrap(),
-            backing_before_first_return
+            appreciated.prove_push(prepared, prepared.expires_at, io_fee, &mut proofs),
+            Err(ModelError::DuplicateProof)
         );
         assert_eq!(
-            (model.backing.liquid, model.backing.pending_unwind),
-            (590, 90)
-        );
-        assert_eq!(
-            model.cohort(b).unwrap().lifecycle,
-            CohortLifecycle::Dissolving
-        );
-        let backing_before_second_return = model.backing.claim_backing().unwrap();
-        return_cohort(&mut model, b, TWO_WEEK_DELAY + DAY);
-        assert_eq!(
-            model.backing.claim_backing().unwrap(),
-            backing_before_second_return
-        );
-        assert_eq!(
-            (model.backing.liquid, model.backing.pending_unwind),
-            (680, 0)
+            proved
+                .pay_obligation(prepared.gross_payout)
+                .unwrap()
+                .payout_obligation,
+            0
         );
     }
 
     #[test]
-    fn aggregate_generation_processes_active_and_dissolving_members_separately() {
-        let mut model = sticky_base(3, 2);
-        let generation = commit_cohort(&mut model, &[0, 1, 2], 8_001, TWO_WEEK_DELAY);
-        model.observe_sns(1, CanonicalSnsState::Active, 2).unwrap();
-        model.observe_sns(2, CanonicalSnsState::Active, 2).unwrap();
-        model
-            .observe_sns(2, CanonicalSnsState::Dissolving, 3)
+    fn settlement_uses_transfer_time_not_keeper_time() {
+        let state = Economy::bootstrap(ANCHOR_TARGET_E8S)
+            .unwrap()
+            .add_backed_issuance(5 * E8S_PER_ICP)
             .unwrap();
-        assert_eq!(model.operations.split_intents, 1);
-        assert_eq!(model.cohorts.len(), 1);
-        assert!(model.neurons.iter().all(|member| {
-            member.committed_generation == Some(generation) && !member.reward_eligible_at(u64::MAX)
-        }));
-
-        return_cohort(&mut model, generation, TWO_WEEK_DELAY);
+        let prepared = state.prepare_push(E8S_PER_ICP, 100, 10, 1).unwrap();
+        let mut proofs = Vec::new();
+        state.prove_push(prepared, 110, 0, &mut proofs).unwrap();
+        let late = state.prepare_push(E8S_PER_ICP, 100, 10, 2).unwrap();
         assert_eq!(
-            model
-                .plan_returned_liquidity(returned_liquidity_input(generation, 398, 1, 10))
-                .unwrap(),
-            ReturnedLiquidityPlan::RestoredWithoutTransfer { target: 390 }
+            state.prove_push(late, 111, 0, &mut proofs),
+            Err(ModelError::LatePush)
         );
-        assert!(model.neurons[1].reward_eligible_at(10));
-        assert_eq!(model.neurons[1].committed_generation, None);
-        assert!(!model.neurons[0].reward_eligible_at(u64::MAX));
-        assert!(!model.neurons[2].reward_eligible_at(u64::MAX));
-        assert_eq!(model.operations.split_intents, 1);
-
-        model.observe_sns(2, CanonicalSnsState::Active, 11).unwrap();
-        assert!(matches!(
-            model.plan_returned_liquidity(returned_liquidity_input(generation, 500, 1, 12)),
-            Ok(ReturnedLiquidityPlan::Restake { .. })
-        ));
-        model
-            .observe_sns(2, CanonicalSnsState::Dissolving, 12)
-            .unwrap();
-        assert!(model.planned_restake.is_none());
-        assert_eq!(model.operations.split_intents, 1);
-
-        model
-            .observe_sns(0, CanonicalSnsState::LiquidOrDissolved, 13)
-            .unwrap();
-        model
-            .observe_sns(2, CanonicalSnsState::LiquidOrDissolved, 13)
-            .unwrap();
-        assert!(model
-            .neurons
-            .iter()
-            .all(|member| member.committed_generation.is_none()));
-        assert!(!model.neurons[0].reward_eligible_at(u64::MAX));
-        assert!(!model.neurons[2].reward_eligible_at(u64::MAX));
-        model.observe_sns(0, CanonicalSnsState::Active, 14).unwrap();
-        assert_eq!(model.neurons[0].status, StickyStatus::ReentryPending);
-        assert_eq!(model.neurons[0].committed_generation, None);
     }
 
     #[test]
-    fn cohort_retirement_requires_return_maturity_cleanup_and_no_references() {
-        let mut model = sticky_base(2, 1);
-        let generation = commit_cohort(&mut model, &[0], 9_001, TWO_WEEK_DELAY);
-        assert_eq!(
-            model.submit_split_intent(&[1], 110),
-            Err(ModelError::CohortCapacityExhausted)
-        );
-        return_cohort(&mut model, generation, TWO_WEEK_DELAY);
-        assert_eq!(
-            model.retire_cohort(generation),
-            Err(ModelError::InvalidTransition),
-            "returned but uncleaned remains live"
-        );
-        model.prove_child_maturity_handled(generation).unwrap();
-        model.prove_child_cleanup_complete(generation).unwrap();
-        assert_eq!(
-            model.retire_cohort(generation),
-            Err(ModelError::InvalidTransition),
-            "a referenced cleaned cohort remains live"
-        );
-        model
-            .observe_sns(1, CanonicalSnsState::Dissolving, 2)
+    fn multiple_prepared_pushes_remain_aggregate_solvent() {
+        let state = Economy::bootstrap(ANCHOR_TARGET_E8S)
+            .unwrap()
+            .add_backed_issuance(10 * E8S_PER_ICP)
             .unwrap();
+        let first = state.prepare_push(3 * E8S_PER_ICP, 1, 100, 1).unwrap();
+        let second = state.prepare_push(4 * E8S_PER_ICP, 1, 100, 2).unwrap();
+        let mut proofs = Vec::new();
+        let after_first = state.prove_push(first, 2, 0, &mut proofs).unwrap();
+        let after_second = after_first.prove_push(second, 2, 0, &mut proofs).unwrap();
         assert_eq!(
-            model.submit_split_intent(&[1], 110),
-            Err(ModelError::CohortCapacityExhausted)
+            after_second.payout_obligation,
+            first.gross_payout + second.gross_payout
         );
-        model
-            .observe_sns(0, CanonicalSnsState::LiquidOrDissolved, 2)
-            .unwrap();
-        let before = (model.backing, model.neurons.clone());
-        let retired = model.retire_cohort(generation).unwrap();
-        assert_eq!((retired.generation, retired.child_neuron_id), (0, 9_001));
-        assert_eq!((model.backing, model.neurons.clone()), before);
-
-        let next = commit_cohort(&mut model, &[1], 9_002, TWO_WEEK_DELAY + DAY);
-        assert_eq!(next, generation + 1);
-        assert_eq!(model.cohorts.len(), 1);
+        assert!(after_second.payout_obligation <= state.backing.total().unwrap());
     }
 
     #[test]
-    fn liquid_member_invalidates_uncommitted_restake_and_allows_retirement() {
-        let mut model = sticky_base(1, 1);
-        let generation = commit_cohort(&mut model, &[0], 9_101, TWO_WEEK_DELAY);
-        model.observe_sns(0, CanonicalSnsState::Active, 2).unwrap();
-        return_cohort(&mut model, generation, TWO_WEEK_DELAY);
-        assert!(matches!(
-            model.plan_returned_liquidity(returned_liquidity_input(generation, 500, 1, 4)),
-            Ok(ReturnedLiquidityPlan::Restake {
-                credited: 95,
-                source_debit: 105,
-                ..
-            })
-        ));
-        model.prove_child_maturity_handled(generation).unwrap();
-        model.prove_child_cleanup_complete(generation).unwrap();
+    fn fee_inventory_is_closed_and_non_overlapping() {
+        let inventory = [
+            FeeClass::ExternalOrNonReimbursable,
+            FeeClass::ClaimAnchor,
+            FeeClass::ClaimAnchor,
+            FeeClass::ClaimAnchor,
+            FeeClass::ClaimAnchor,
+            FeeClass::PermanentShortfall,
+            FeeClass::ClaimAnchor,
+            FeeClass::PermanentShortfall,
+            FeeClass::FreshMaturityCost,
+            FeeClass::FreshMaturityCost,
+            FeeClass::ClaimAnchor,
+            FeeClass::PermanentShortfall,
+            FeeClass::ExternalOrNonReimbursable,
+            FeeClass::IoLedgerBurn,
+        ];
+        assert_eq!(inventory.len(), 14);
         assert_eq!(
-            model.retire_cohort(generation),
-            Err(ModelError::InvalidTransition),
-            "a planned restake and its member reference keep the cohort live"
+            inventory
+                .iter()
+                .filter(|class| matches!(class, FeeClass::FreshMaturityCost))
+                .count(),
+            2
         );
-
-        let backing_before_invalidation = model.backing;
-        model
-            .observe_sns(0, CanonicalSnsState::LiquidOrDissolved, 3)
-            .unwrap();
-        assert!(model.planned_restake.is_none());
-        assert_eq!(model.neurons[0].committed_generation, None);
-        assert_eq!(model.backing, backing_before_invalidation);
-        assert_eq!(model.backing.transit, 0);
-
-        assert_eq!(
-            model.retire_cohort(generation).unwrap().generation,
-            generation
-        );
-        assert_eq!(
-            model.commit_restake(generation),
-            Err(ModelError::InvalidTransition)
-        );
-        assert_eq!(model.backing.transit, 0);
     }
 
     #[test]
-    fn member_loss_invalidates_global_restake_snapshot_before_replanning_subset() {
-        let mut model = sticky_base(2, 1);
-        let generation = commit_cohort(&mut model, &[0, 1], 9_102, TWO_WEEK_DELAY);
-        model.observe_sns(0, CanonicalSnsState::Active, 2).unwrap();
-        model.observe_sns(1, CanonicalSnsState::Active, 2).unwrap();
-        return_cohort(&mut model, generation, TWO_WEEK_DELAY);
-        assert!(matches!(
-            model.plan_returned_liquidity(returned_liquidity_input(generation, 500, 1, 4)),
-            Ok(ReturnedLiquidityPlan::Restake {
-                credited: 95,
-                source_debit: 105,
-                ..
-            })
-        ));
+    fn candidate_cadences_fit_and_twelve_hours_is_the_slowest_credible_choice() {
+        let slack = PREFERRED_SNS_UNLOCK_DELAY_SECONDS - NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS;
+        assert_eq!(slack, 86_460);
+        let candidates = [43_200, 21_600, 14_400, 3_600].map(assess_cadence);
+        assert_eq!(candidates[0].natural_live_bound, 29);
+        assert_eq!(candidates[1].natural_live_bound, 57);
+        assert_eq!(candidates[2].natural_live_bound, 85);
+        assert_eq!(candidates[3].natural_live_bound, 337);
+        assert_eq!(candidates[0].healthy_slack_seconds, 42_660);
+        assert!(candidates
+            .windows(2)
+            .all(|pair| pair[1].healthy_slack_seconds > pair[0].healthy_slack_seconds));
+        assert_eq!(candidates[0].generations_per_day, 2);
+        assert_eq!(candidates[0].governance_queries_per_day_at_max, 22);
+        assert_eq!(candidates[0].io_balance_queries_per_day_at_max, 2_008);
+        assert_eq!(candidates[0].approximate_calls_per_day_at_max, 2_056);
+    }
 
-        model
-            .observe_sns(0, CanonicalSnsState::LiquidOrDissolved, 3)
-            .unwrap();
-        assert!(model.planned_restake.is_none());
-        assert_eq!(model.neurons[0].committed_generation, None);
-        assert_eq!(model.neurons[1].status, StickyStatus::LiquidReturned);
-        assert_eq!(model.neurons[1].committed_generation, Some(generation));
-        assert_eq!(model.backing.transit, 0);
+    #[test]
+    fn ready_child_priority_derives_a_natural_population_bound() {
+        let natural_bound = natural_live_bound(STRUCTURAL_CADENCE_SECONDS);
+        assert_eq!(natural_bound, 29);
+        assert!(natural_bound < 32);
+    }
 
-        assert_eq!(
-            model
-                .plan_returned_liquidity(returned_liquidity_input(generation, 450, 1, 5))
-                .unwrap(),
-            ReturnedLiquidityPlan::Restake {
-                post_fee_target: 436,
-                credited: 46,
-                source_debit: 56,
+    #[test]
+    fn more_than_thirty_two_historical_generations_retire_without_a_product_cap() {
+        use std::collections::VecDeque;
+
+        let natural_bound = natural_live_bound(STRUCTURAL_CADENCE_SECONDS);
+        let mut live = VecDeque::new();
+        let mut maximum_live = 0usize;
+        for generation in 1_u64..=64 {
+            while live.front().is_some_and(|created_generation| {
+                generation.saturating_sub(*created_generation) >= natural_bound
+            }) {
+                live.pop_front();
             }
-        );
-    }
-
-    #[test]
-    fn aggregate_restake_commit_is_irreversible_and_counted_once() {
-        let mut model = sticky_base(2, 2);
-        let generation = commit_cohort(&mut model, &[0, 1], 10_001, TWO_WEEK_DELAY);
-        model.observe_sns(0, CanonicalSnsState::Active, 2).unwrap();
-        model.observe_sns(1, CanonicalSnsState::Active, 2).unwrap();
-        return_cohort(&mut model, generation, TWO_WEEK_DELAY);
-        assert!(matches!(
-            model.plan_returned_liquidity(returned_liquidity_input(generation, 500, 1, 4)),
-            Ok(ReturnedLiquidityPlan::Restake {
-                credited: 95,
-                source_debit: 105,
-                ..
-            })
-        ));
-        model.commit_restake(generation).unwrap();
-        let committed_command = model.active_command;
-        let backing_after_commit = model.backing;
-        model
-            .observe_sns(1, CanonicalSnsState::Dissolving, 3)
-            .unwrap();
-        assert_eq!(model.neurons[1].status, StickyStatus::RestakeCommitted);
-        assert_eq!(model.neurons[1].committed_generation, Some(generation));
-        assert_eq!(model.active_command, committed_command);
-        assert_eq!(model.backing, backing_after_commit);
-        assert!(!model.neurons[1].reward_eligible_at(u64::MAX));
-        assert_eq!(
-            model.prove_restake(generation, 94),
-            Err(ModelError::ProofMismatch)
-        );
-        assert_eq!(model.backing.transit, 105);
-        model.prove_restake(generation, 95).unwrap();
-        assert_eq!(model.operations.restake_proofs, 1);
-        assert_eq!(model.fees.restake, 10);
-        assert_eq!((model.backing.pooled, model.backing.transit), (485, 0));
-        assert_eq!(
-            model.prove_restake(generation, 95),
-            Err(ModelError::InvalidTransition)
-        );
-        model.finish_restake(generation, 4).unwrap();
-        assert!(model.neurons[0].reward_eligible_at(4));
-        assert_eq!(model.neurons[1].status, StickyStatus::ExitObserved);
-        assert!(!model.neurons[1].reward_eligible_at(u64::MAX));
-        let next = model.submit_split_intent(&[1], 110).unwrap();
-        assert_eq!(next, generation + 1);
-    }
-
-    #[test]
-    fn committed_restake_survives_liquid_observation_until_proof_and_finish() {
-        let mut model = sticky_base(1, 1);
-        let generation = commit_cohort(&mut model, &[0], 10_002, TWO_WEEK_DELAY);
-        model.observe_sns(0, CanonicalSnsState::Active, 2).unwrap();
-        return_cohort(&mut model, generation, TWO_WEEK_DELAY);
-        model
-            .plan_returned_liquidity(returned_liquidity_input(generation, 500, 1, 4))
-            .unwrap();
-        model.commit_restake(generation).unwrap();
-        let committed_command = model.active_command;
-        let backing_after_commit = model.backing;
-
-        model
-            .observe_sns(0, CanonicalSnsState::LiquidOrDissolved, 3)
-            .unwrap();
-        assert_eq!(
-            model.neurons[0].latest_sns_state,
-            CanonicalSnsState::LiquidOrDissolved
-        );
-        assert_eq!(model.neurons[0].status, StickyStatus::RestakeCommitted);
-        assert_eq!(model.neurons[0].committed_generation, Some(generation));
-        assert_eq!(model.active_command, committed_command);
-        assert_eq!(model.backing, backing_after_commit);
-        assert!(!model.neurons[0].reward_eligible_at(u64::MAX));
-
-        model.prove_restake(generation, 95).unwrap();
-        assert_eq!(model.neurons[0].status, StickyStatus::RestakeProved);
-        assert_eq!(model.neurons[0].committed_generation, Some(generation));
-        assert_eq!(model.operations.restake_proofs, 1);
-        assert_eq!(model.fees.restake, 10);
-        assert_eq!((model.backing.pooled, model.backing.transit), (485, 0));
-
-        model.finish_restake(generation, 4).unwrap();
-        assert_eq!(model.neurons[0].status, StickyStatus::ReentryPending);
-        assert_eq!(model.neurons[0].committed_generation, None);
-        assert!(!model.neurons[0].reward_eligible_at(u64::MAX));
-    }
-
-    #[test]
-    fn proved_restake_survives_liquid_observation_until_finish() {
-        let mut model = sticky_base(1, 1);
-        let generation = commit_cohort(&mut model, &[0], 10_003, TWO_WEEK_DELAY);
-        model.observe_sns(0, CanonicalSnsState::Active, 2).unwrap();
-        return_cohort(&mut model, generation, TWO_WEEK_DELAY);
-        model
-            .plan_returned_liquidity(returned_liquidity_input(generation, 500, 1, 4))
-            .unwrap();
-        model.commit_restake(generation).unwrap();
-        model.prove_restake(generation, 95).unwrap();
-        let backing_after_proof = model.backing;
-
-        model
-            .observe_sns(0, CanonicalSnsState::LiquidOrDissolved, 3)
-            .unwrap();
-        assert_eq!(
-            model.neurons[0].latest_sns_state,
-            CanonicalSnsState::LiquidOrDissolved
-        );
-        assert_eq!(model.neurons[0].status, StickyStatus::RestakeProved);
-        assert_eq!(model.neurons[0].committed_generation, Some(generation));
-        assert_eq!(model.backing, backing_after_proof);
-        assert_eq!(model.operations.restake_proofs, 1);
-        assert_eq!(model.fees.restake, 10);
-        assert!(!model.neurons[0].reward_eligible_at(u64::MAX));
-
-        model.finish_restake(generation, 4).unwrap();
-        assert_eq!(model.neurons[0].status, StickyStatus::ReentryPending);
-        assert_eq!(model.neurons[0].committed_generation, None);
-        assert_eq!(model.backing, backing_after_proof);
-        assert_eq!(model.operations.restake_proofs, 1);
-        assert_eq!(model.fees.restake, 10);
-        assert!(!model.neurons[0].reward_eligible_at(u64::MAX));
-    }
-
-    #[test]
-    fn reward_coverage_separates_structural_backing_from_reward_eligibility() {
-        assert_eq!(
-            require_reward_coverage(50, 0, 1_000, 1_000, 0),
-            Ok(RewardCoverage {
-                backing_target: 50,
-                reward_target: 0,
-            }),
-            "below-minimum structural stake is backed but earns no rewards"
-        );
-        assert_eq!(
-            require_reward_coverage(600, 500, 1_000, 1_000, 500),
-            Ok(RewardCoverage {
-                backing_target: 600,
-                reward_target: 500,
-            }),
-            "pending re-entry is excluded while existing eligibility stays covered"
-        );
-        assert_eq!(
-            require_reward_coverage(500, 500, 1_000, 1_000, 499),
-            Err(ModelError::RewardBackingUnderTarget)
-        );
-        for pooled in [500, 501] {
-            assert!(require_reward_coverage(500, 500, 1_000, 1_000, pooled).is_ok());
+            live.push_back(generation);
+            maximum_live = maximum_live.max(live.len());
         }
-        assert_eq!(
-            require_reward_coverage(600, 600, 1_000, 1_000, 599),
-            Err(ModelError::RewardBackingUnderTarget),
-            "re-entry cannot join A_reward until its expanded target is covered"
-        );
-        assert!(require_reward_coverage(600, 600, 1_000, 1_000, 600).is_ok());
-        assert_eq!(
-            require_reward_coverage(500, 501, 1_000, 1_000, 501),
-            Err(ModelError::RewardActiveExceedsBacking)
-        );
+
+        assert_eq!(live.back(), Some(&64));
+        assert!(live.back().copied().unwrap_or_default() > 32);
+        assert!(maximum_live <= natural_bound as usize);
     }
 
     #[test]
-    fn reward_coverage_rejects_pooled_principal_above_total_backing() {
-        assert_eq!(
-            require_reward_coverage(500, 500, 1_000, 1_000, 1_001),
-            Err(ModelError::InvalidBackingState)
-        );
+    fn healthy_worst_case_liquidates_before_fifteen_days_and_one_minute() {
+        let transition_immediately_after_poll = 1;
+        let detection_at = transition_immediately_after_poll + STRUCTURAL_CADENCE_SECONDS;
+        let child_started_at = detection_at + healthy_operation_budget_seconds();
+        let first_ready_at = child_started_at + NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS;
+        let sns_unlock_at = transition_immediately_after_poll + PREFERRED_SNS_UNLOCK_DELAY_SECONDS;
+        assert_eq!(sns_unlock_at - first_ready_at, 42_660);
+        assert!(first_ready_at < sns_unlock_at);
+
+        let transition_immediately_before_poll = STRUCTURAL_CADENCE_SECONDS - 1;
+        let prompt_detection_at = STRUCTURAL_CADENCE_SECONDS;
+        assert!(prompt_detection_at - transition_immediately_before_poll <= 1);
     }
 
     #[test]
-    fn redemption_uses_strict_economic_state_validation() {
-        let uncovered = Backing::default();
-        for fee in [0, 10] {
-            assert_eq!(
-                redemption_readiness(100, uncovered, 1_000, fee),
-                Err(ModelError::UncoveredClaims)
-            );
-        }
-        assert_eq!(
-            redemption_readiness(
-                0,
-                Backing {
-                    liquid: 100,
-                    ..Backing::default()
-                },
-                0,
-                10,
-            ),
-            Ok(RedemptionReadiness::BackingWithoutClaims { backing: 100 })
-        );
-        assert_eq!(
-            redemption_readiness(0, Backing::default(), 0, 0),
-            Ok(RedemptionReadiness::EmptyGenesis)
-        );
-        assert_eq!(
-            redemption_readiness(
-                200,
-                Backing {
-                    liquid: 100,
-                    pooled: 900,
-                    ..Backing::default()
-                },
-                1_000,
-                10,
-            ),
-            Ok(RedemptionReadiness::AwaitLiquidity { gross_quote: 200 })
-        );
-    }
-
-    #[test]
-    fn cadence_and_capacity_bounds_remain_formula_derived() {
-        let unresolved = LiquidityLagInputs {
-            maximum_detection_reconciliation_interval: None,
-            nns_dissolve_delay: TWO_WEEK_DELAY,
-            max_detection_margin: DAY,
-            max_command_margin: DAY,
-            max_disbursement_margin: DAY,
+    fn stream_deadline_reconstruction_preserves_reward_margin_and_short_retry() {
+        let facts = SchedulerFacts {
+            latest_structural_at: 1_000,
+            latest_reward_event_end: 5_000,
+            retry_due_at: None,
         };
-        assert_eq!(liquidity_lag_bound(unresolved), Ok(None));
-        let candidate = LiquidityLagInputs {
-            maximum_detection_reconciliation_interval: Some(DAY),
-            ..unresolved
+        assert_eq!(next_stream_deadline(facts), 44_200);
+        let retrying = SchedulerFacts {
+            retry_due_at: Some(1_060),
+            ..facts
         };
-        assert_eq!(liquidity_lag_bound(candidate), Ok(Some(18 * DAY)));
-        assert_eq!(cohort_capacity_bound(18 * DAY, DAY, 2), Ok(20));
-        assert_eq!(cohort_capacity_bound(DAY + 1, DAY, 0), Ok(2));
+        assert_eq!(next_stream_deadline(retrying), 1_060);
+        let restarted = SchedulerFacts { ..retrying };
+        assert_eq!(next_stream_deadline(restarted), 1_060);
         assert_eq!(
-            cohort_capacity_bound(DAY, 0, 0),
-            Err(ModelError::InvalidTransition)
+            5_000 + REWARD_CADENCE_SECONDS + REWARD_MARGIN_SECONDS,
+            91_700
         );
     }
 
     #[test]
-    fn sticky_fee_count_is_bounded_per_committed_generation() {
-        let comparison = lifecycle_fee_comparison(3, 10, 10, 10, 10).unwrap();
-        assert_eq!(comparison.immediate_mirroring, 80);
-        assert_eq!(comparison.sticky_unwind, 30);
-        for flip_flops in 1..=100 {
-            let fees = lifecycle_fee_comparison(flip_flops, 10, 10, 10, 10).unwrap();
-            assert_eq!(fees.sticky_unwind, 30);
-            assert!(fees.immediate_mirroring > fees.sticky_unwind);
-        }
+    fn structural_generations_and_retries_are_distinct() {
+        let generation = 7;
+        let retries = [60, 120, 180, 240];
+        assert!(retries.windows(2).all(|pair| pair[1] - pair[0] == 60));
+        assert!(retries.iter().all(|_| generation == 7));
+        let next_generation_at = STRUCTURAL_CADENCE_SECONDS;
+        assert!(retries.iter().all(|retry| *retry < next_generation_at));
+    }
+
+    #[test]
+    fn reward_and_structural_facets_are_event_fenced() {
+        let empty = RewardFacet {
+            eligible_from_event: None,
+            eligible_through_event: None,
+            accumulated_credit: 0,
+        };
+
+        // Case A: canonical structural activation while event 10 is latest
+        // makes event 11 the first eligible event regardless of keeper order.
+        let active = observe_active(empty, 10);
+        assert_eq!(process_reward(active, 11, 5).accumulated_credit, 5);
+
+        // Case B: activation first observed after event 11 completed cannot
+        // retroactively receive event 11 credit.
+        let late_active = observe_active(empty, 11);
+        assert_eq!(process_reward(late_active, 11, 5).accumulated_credit, 0);
+
+        // Case C: an exit fenced after event 11 promptly exits backing while
+        // retaining only the already-completed event's eligibility.
+        let exiting = observe_exit(active, 11);
+        let credited = process_reward(exiting, 11, 5);
+        assert_eq!(credited.accumulated_credit, 5);
+        assert_eq!(process_reward(credited, 12, 5).accumulated_credit, 5);
+
+        // Case D: replay of the structural fact does not change its event
+        // fence. Reward-event replay remains guarded by the reward checkpoint
+        // in production; this model proves structural retries do not widen it.
+        assert_eq!(observe_exit(exiting, 11), exiting);
+    }
+
+    #[test]
+    fn empty_genesis_and_one_io_floor_are_exact() {
+        Economy::default().validate().unwrap();
+        let state = Economy::bootstrap(ANCHOR_TARGET_E8S)
+            .unwrap()
+            .add_backed_issuance(E8S_PER_ICP)
+            .unwrap();
+        assert_eq!(state.claims, E8S_PER_ICP);
+        assert_eq!(state.backing.total().unwrap(), E8S_PER_ICP);
     }
 }

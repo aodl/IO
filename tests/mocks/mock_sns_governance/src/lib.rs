@@ -355,7 +355,7 @@ pub fn debug_close_proposal(proposal_id: u64) -> Result<(), String> {
             .latest_reward_event
             .end_timestamp_seconds
             .unwrap_or(1)
-            .saturating_add(io_core_model::TWO_WEEK_SECONDS);
+            .saturating_add(io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS);
         state.latest_reward_event.end_timestamp_seconds = Some(end);
         state.latest_reward_event.actual_timestamp_seconds = end;
         state.latest_reward_event.settled_proposals = vec![SnsProposalIdRecord { id: proposal_id }];
@@ -374,7 +374,7 @@ pub fn debug_advance_reward_event(settled_proposal_ids: Vec<u64>) {
             .latest_reward_event
             .end_timestamp_seconds
             .unwrap_or(1)
-            .saturating_add(io_core_model::TWO_WEEK_SECONDS);
+            .saturating_add(io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS);
         state.latest_reward_event.end_timestamp_seconds = Some(end);
         state.latest_reward_event.actual_timestamp_seconds = end;
         state.latest_reward_event.settled_proposals = settled_proposal_ids
@@ -388,11 +388,18 @@ pub fn debug_advance_reward_event(settled_proposal_ids: Vec<u64>) {
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn debug_set_latest_reward_event(fixture: LatestRewardEventFixture) -> Result<(), String> {
+    if fixture.end_timestamp_seconds == 0 {
+        return Err("reward-event fixture end timestamp must be nonzero".into());
+    }
     if fixture.round == 0
-        || fixture.rounds_since_last_distribution == 0
-        || fixture.end_timestamp_seconds == 0
+        && (fixture.rounds_since_last_distribution != 0
+            || !fixture.settled_proposal_ids.is_empty()
+            || !fixture.neuron_reward_shares.is_empty())
     {
-        return Err("reward-event fixture identifiers must be nonzero".into());
+        return Err("round-zero reward-event fixture must be the zero-credit genesis event".into());
+    }
+    if fixture.round > 0 && fixture.rounds_since_last_distribution == 0 {
+        return Err("advancing reward-event fixture span must be nonzero".into());
     }
     let mut shares = BTreeMap::new();
     for (neuron_id, reward_shares) in fixture.neuron_reward_shares {
@@ -988,7 +995,7 @@ mod tests {
         debug_add_neuron(MockSnsNeuron {
             neuron_id: 1,
             staked_io_e8s: 100,
-            dissolve_delay_seconds: io_core_model::TWO_WEEK_SECONDS,
+            dissolve_delay_seconds: io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
             eligible_closed_proposals: 0,
             voted_closed_proposals: 0,
             is_genesis_governance_neuron: false,
@@ -1011,7 +1018,7 @@ mod tests {
         debug_add_neuron(MockSnsNeuron {
             neuron_id: 1,
             staked_io_e8s: 100,
-            dissolve_delay_seconds: io_core_model::TWO_WEEK_SECONDS,
+            dissolve_delay_seconds: io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
             eligible_closed_proposals: 0,
             voted_closed_proposals: 0,
             is_genesis_governance_neuron: false,

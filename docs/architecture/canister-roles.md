@@ -1,13 +1,15 @@
 # Canister roles
 
 `io_stream_manager` owns claim-rate snapshots, spendable liquid backing,
-reserve issuance, direct redemption, the bounded backing/reward registry, one
-pending entitlement batch, and one serialized monetary operation.
+reserve issuance, prepared-push redemption, the bounded backing/reward
+registry, one pending entitlement batch, and one serialized monetary operation.
 
-`io_nns_neuron_manager` owns permanent and pooled NNS governance effects, lazy
-pooled-parent creation, one immediate command, and at most 32 passive unwind
-children. Its production execution identity is the existing protected-neuron
-controller `oae4c-3iaaa-aaaar-qb5qq-cai`.
+`io_nns_neuron_manager` owns permanent and Dynamic-neuron NNS governance
+effects, pre-Ready Dynamic bootstrap, anchor/permanent fee accounting, one
+immediate command, and naturally bounded generation-based passive unwind
+children. Ready-child priority prevents growth behind an unresolved return.
+Its production execution identity is the existing protected-neuron controller
+`oae4c-3iaaa-aaaar-qb5qq-cai`.
 
 `io_historian` owns rebuildable observation and alerts. `frontend` presents
 that advisory model. Neither can authorize or calculate monetary effects.

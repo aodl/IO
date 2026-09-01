@@ -22,7 +22,8 @@ two Accounts cannot satisfy each other's work.
 
 ## Economics
 
-For captured ICP `M`, one checked production function computes:
+For Jupiter and TwoWeek captured ICP `M`, one checked production function
+computes the ordinary gross legs:
 
 ```text
 permanent_gross = floor(M * 40 / 100)
@@ -36,8 +37,14 @@ inflows: Stream freezes the pre-inflow `B/C` economics before `claim_credit`
 becomes redeemable and releases at most `floor(claim_credit * C0 / B0)` IO.
 Jupiter selects its configured recipient; two-week maturity selects one frozen
 entitlement generation. Two-year maturity issues no IO and needs no paired
-receipt; its claim credit is ordinary liquid yield. Every claim increment enters
-liquid before ordinary pool reconciliation.
+receipt. It does not apply 40/60 to the complete capture immediately. In
+priority order it restores the Dynamic anchor deficit, restores
+permanent-capital fee shortfall, and pays the exact restoration-transfer fees
+from fresh maturity. A too-small usable amount remains in the semantic staging
+Account. Only the valid remainder receives the ordinary gross 40/60 split.
+Restoration fees do not create recursive debt; ordinary new claim/permanent
+delivery fees use anchor/permanent accounting for a later cycle. Every delivered
+claim increment enters liquid before ordinary pool reconciliation.
 
 If the maximum backed IO for a two-week capture exceeds the available protocol
 reserve, receipt preparation returns `InsufficientIoReserve`. No IO is issued,
@@ -58,7 +65,7 @@ recipient set, or decode an incompatible monetary state.
 
 | Mechanism | Result | Concrete safety purpose |
 | --- | --- | --- |
-| Redemption request hash and exact transfer proofs | Keep | Bind a caller replay compactly and prevent ambiguous IO pull or ICP payout retries from transferring twice. |
+| Prepared redemption hash, exact incoming block and payout proof | Keep | Bind a caller replay, prove one memo-bound ICRC-1 push, and prevent ambiguous ICP payout retries from transferring twice. |
 | Generic outgoing Ledger transfer proof | Keep | An ambiguous retry without the exact block can send controlled ICP or IO twice. |
 | Jupiter source proof | Keep | Preserve the external faucet authorization boundary before its ICP enters custody. |
 | Parent refresh proof | Keep | Prevent crediting a stake transfer until canonical cached stake reflects it. |
@@ -83,3 +90,5 @@ B = L + P + U + T
 
 where permanent capital is excluded and paired claim credit remains quarantined
 until Stream has frozen its matching IO obligation.
+For the Dynamic parent, `P` is only its accounted claim-bearing component;
+anchor available and unexplained positive surplus are excluded.

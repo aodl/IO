@@ -1,7 +1,7 @@
 use io_ledger_boundary::{exact_icp_transfer, icp_account_identifier};
 use io_nns_types::backing::{
     CompletedPoolCommand, FollowPolicy, PoolCommand, PoolCommandKind, PoolCommandPhase,
-    PoolTargetResult, POOLED_PARENT_DELAY_SECONDS,
+    PoolTargetResult, NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS,
 };
 
 use crate::{
@@ -35,7 +35,7 @@ pub async fn prove_transfer(
         || transfer.amount_e8s != operation.permit.expected_credit_e8s
         || transfer.fee_e8s != operation.permit.fee_e8s
         || transfer.icrc1_memo.as_deref() != Some(operation.permit.memo.as_slice())
-        || transfer.created_at_time != operation.permit.prepared_at_nanos
+        || transfer.created_at_time < operation.permit.prepared_at_nanos
         || transfer.spender.is_some()
     {
         return Err(ApiError::Invalid(
@@ -45,39 +45,37 @@ pub async fn prove_transfer(
     operation.phase = PoolCommandPhase::TransferProved { block_index };
     operation.transfer_block_index = Some(block_index);
     replace(operation.clone())?;
-    Ok(progress(&operation))
+    Box::pin(resume(operation)).await
 }
 
 pub async fn resume(mut operation: PoolCommand) -> Result<PoolProgress, ApiError> {
     match operation.phase.clone() {
-        PoolCommandPhase::AwaitingTransfer => Ok(progress(&operation)),
-        PoolCommandPhase::TransferProved { block_index } => match operation.kind {
-            PoolCommandKind::Bootstrap => {
-                let parent_id = execution::claim_parent(
-                    &state::read().config,
-                    state::read().config.pooled_parent_memo,
-                )
-                .await?;
-                ensure(&operation)?;
-                if validate_follow_target(parent_id, state::read().config.pooled_parent_followee_id)
-                    .is_err()
-                {
-                    return fail_self_follow(operation, parent_id);
-                }
-                operation.parent_neuron_id = Some(parent_id);
-                operation.phase = PoolCommandPhase::ClaimSubmitted { block_index };
-                replace(operation.clone())?;
-                Ok(progress(&operation))
+        PoolCommandPhase::SeedObserved => {
+            let parent_id = execution::claim_parent(
+                &state::read().config,
+                state::read().config.pooled_parent_memo,
+            )
+            .await?;
+            ensure(&operation)?;
+            if validate_follow_target(parent_id, state::read().config.pooled_parent_followee_id)
+                .is_err()
+            {
+                return fail_self_follow(operation, parent_id);
             }
-            PoolCommandKind::TopUp => submit_refresh(operation).await,
-        },
-        PoolCommandPhase::ClaimSubmitted { .. } => prove_parent(operation).await,
+            operation.parent_neuron_id = Some(parent_id);
+            operation.phase = PoolCommandPhase::ClaimSubmitted;
+            replace(operation.clone())?;
+            prove_parent(operation).await
+        }
+        PoolCommandPhase::AwaitingTransfer => Ok(progress(&operation)),
+        PoolCommandPhase::TransferProved { .. } => submit_refresh(operation).await,
+        PoolCommandPhase::ClaimSubmitted => prove_parent(operation).await,
         PoolCommandPhase::ParentIdentified => configure_delay(operation).await,
         PoolCommandPhase::DelaySubmitted {
             expected_delay_seconds,
-        } => prove_delay(operation, expected_delay_seconds).await,
-        PoolCommandPhase::FollowingSubmitted => prove_following(operation).await,
-        PoolCommandPhase::RefreshSubmitted => complete_refresh(operation).await,
+        } => prove_delay(operation, expected_delay_seconds, true).await,
+        PoolCommandPhase::FollowingSubmitted => prove_following(operation, true).await,
+        PoolCommandPhase::RefreshSubmitted => complete_refresh(operation, true).await,
     }
 }
 
@@ -85,7 +83,7 @@ async fn prove_parent(mut operation: PoolCommand) -> Result<PoolProgress, ApiErr
     let parent_id = operation.parent_neuron_id.ok_or(ApiError::Busy)?;
     let observed = execution::query_neuron_observation(&state::read().config, parent_id).await?;
     ensure(&operation)?;
-    if observed.snapshot.cached_stake_e8s < operation.permit.expected_credit_e8s
+    if observed.snapshot.cached_stake_e8s < operation.permit.expected_parent_physical_e8s
         || execution::staking_account(&state::read().config, &observed.snapshot)
             != operation.permit.destination
     {
@@ -95,7 +93,7 @@ async fn prove_parent(mut operation: PoolCommand) -> Result<PoolProgress, ApiErr
     }
     operation.phase = PoolCommandPhase::ParentIdentified;
     replace(operation.clone())?;
-    Ok(progress(&operation))
+    configure_delay(operation).await
 }
 
 async fn configure_delay(mut operation: PoolCommand) -> Result<PoolProgress, ApiError> {
@@ -111,13 +109,13 @@ async fn configure_delay(mut operation: PoolCommand) -> Result<PoolProgress, Api
             "new pooled parent is not non-dissolving".into(),
         ));
     };
-    let additional = POOLED_PARENT_DELAY_SECONDS
+    let additional = NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS
         .checked_sub(delay)
         .ok_or_else(|| ApiError::Invalid("new pooled parent delay exceeds 14 days".into()))?;
     let additional = u32::try_from(additional)
         .map_err(|_| ApiError::Invalid("pooled parent delay increase does not fit u32".into()))?;
     operation.phase = PoolCommandPhase::DelaySubmitted {
-        expected_delay_seconds: POOLED_PARENT_DELAY_SECONDS,
+        expected_delay_seconds: NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS,
     };
     replace(operation.clone())?;
     let result = if additional == 0 {
@@ -126,15 +124,14 @@ async fn configure_delay(mut operation: PoolCommand) -> Result<PoolProgress, Api
         execution::increase_delay(&current.config, parent_id, additional).await
     };
     ensure(&operation)?;
-    Err(execution::command_pending(
-        "pooled parent delay submission",
-        result,
-    ))
+    result?;
+    prove_delay(operation, NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS, false).await
 }
 
 async fn prove_delay(
-    mut operation: PoolCommand,
+    operation: PoolCommand,
     expected_delay_seconds: u64,
+    retry_missing: bool,
 ) -> Result<PoolProgress, ApiError> {
     let parent_id = operation.parent_neuron_id.ok_or(ApiError::Busy)?;
     let current = state::read();
@@ -158,26 +155,39 @@ async fn prove_delay(
         );
     }
     if delay < expected_delay_seconds {
+        if !retry_missing {
+            return Err(ApiError::Pending(
+                "pooled parent delay command awaits canonical reflection".into(),
+            ));
+        }
         let remaining = u32::try_from(expected_delay_seconds - delay)
             .map_err(|_| ApiError::Invalid("pooled parent delay retry does not fit u32".into()))?;
         let result = execution::increase_delay(&current.config, parent_id, remaining).await;
         ensure(&operation)?;
-        return Err(execution::command_pending(
-            "pooled parent delay retry",
-            result,
-        ));
+        result?;
+        return Box::pin(prove_delay(operation, expected_delay_seconds, false)).await;
     }
+    submit_following(operation, follow_policy).await
+}
+
+async fn submit_following(
+    mut operation: PoolCommand,
+    follow_policy: FollowPolicy,
+) -> Result<PoolProgress, ApiError> {
+    let parent_id = operation.parent_neuron_id.ok_or(ApiError::Busy)?;
+    let current = state::read();
     operation.phase = PoolCommandPhase::FollowingSubmitted;
     replace(operation.clone())?;
     let result = execution::set_following(&current.config, parent_id, follow_policy).await;
     ensure(&operation)?;
-    Err(execution::command_pending(
-        "pooled parent following submission",
-        result,
-    ))
+    result?;
+    prove_following(operation, false).await
 }
 
-async fn prove_following(operation: PoolCommand) -> Result<PoolProgress, ApiError> {
+async fn prove_following(
+    operation: PoolCommand,
+    retry_missing: bool,
+) -> Result<PoolProgress, ApiError> {
     let parent_id = operation.parent_neuron_id.ok_or(ApiError::Busy)?;
     let current = state::read();
     let observed = execution::query_neuron_observation(&current.config, parent_id).await?;
@@ -187,12 +197,15 @@ async fn prove_following(operation: PoolCommand) -> Result<PoolProgress, ApiErro
     if execution::has_follow_policy(&observed, policy) {
         return submit_refresh(operation).await;
     }
+    if !retry_missing {
+        return Err(ApiError::Pending(
+            "pooled parent following command awaits canonical reflection".into(),
+        ));
+    }
     let result = execution::set_following(&current.config, parent_id, policy).await;
     ensure(&operation)?;
-    Err(execution::command_pending(
-        "pooled parent following retry",
-        result,
-    ))
+    result?;
+    Box::pin(prove_following(operation, false)).await
 }
 
 async fn submit_refresh(mut operation: PoolCommand) -> Result<PoolProgress, ApiError> {
@@ -201,30 +214,44 @@ async fn submit_refresh(mut operation: PoolCommand) -> Result<PoolProgress, ApiE
     replace(operation.clone())?;
     let result = execution::refresh_neuron(&state::read().config, parent_id).await;
     ensure(&operation)?;
-    Err(execution::command_pending(
-        "pooled parent ClaimOrRefresh submission",
-        result,
-    ))
+    result?;
+    complete_refresh(operation, false).await
 }
 
-async fn complete_refresh(operation: PoolCommand) -> Result<PoolProgress, ApiError> {
+async fn complete_refresh(
+    operation: PoolCommand,
+    retry_missing: bool,
+) -> Result<PoolProgress, ApiError> {
     let parent_id = operation.parent_neuron_id.ok_or(ApiError::Busy)?;
     let current = state::read();
     let observed = execution::query_neuron_observation(&current.config, parent_id).await?;
     ensure(&operation)?;
-    let expected = operation
+    let expected_physical = operation
         .permit
-        .expected_parent_principal_e8s
+        .expected_parent_physical_e8s
         .checked_add(operation.permit.expected_credit_e8s)
         .ok_or_else(|| ApiError::Invalid("pooled parent proof overflow".into()))?;
-    if observed.snapshot.cached_stake_e8s < expected {
+    if observed.snapshot.cached_stake_e8s < expected_physical {
+        if !retry_missing {
+            return Err(ApiError::Pending(
+                "pooled parent ClaimOrRefresh awaits canonical stake reflection".into(),
+            ));
+        }
         let result = execution::refresh_neuron(&current.config, parent_id).await;
         ensure(&operation)?;
-        return Err(execution::command_pending(
-            "pooled parent ClaimOrRefresh retry",
-            result,
-        ));
+        result?;
+        return Box::pin(complete_refresh(operation, false)).await;
     }
+    finish_refresh(operation, observed, expected_physical)
+}
+
+fn finish_refresh(
+    operation: PoolCommand,
+    observed: execution::NeuronObservation,
+    expected_physical: u128,
+) -> Result<PoolProgress, ApiError> {
+    let parent_id = operation.parent_neuron_id.ok_or(ApiError::Busy)?;
+    let current = state::read();
     if operation.kind == PoolCommandKind::Bootstrap {
         execution::validate_parent_configuration(
             &observed,
@@ -241,23 +268,51 @@ async fn complete_refresh(operation: PoolCommand) -> Result<PoolProgress, ApiErr
     }
     latest.pooled_parent_id = Some(parent_id);
     latest.pooled_parent_staking_account = Some(operation.permit.destination.clone());
+    if operation.kind == PoolCommandKind::Bootstrap {
+        if actual_bootstrap_principal(&observed) < io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S
+        {
+            return Err(ApiError::Invalid(
+                "Dynamic bootstrap principal fell below the anchor target".into(),
+            ));
+        }
+        latest.claim_bearing_dynamic_principal_e8s = 0;
+        latest.anchor_available_e8s = io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S;
+        latest.active_operation = None;
+        let actual = actual_bootstrap_principal(&observed);
+        state::write(latest);
+        return Ok(PoolProgress::Completed {
+            parent_neuron_id: parent_id,
+            principal_e8s: actual,
+            target_status: PoolTargetResult::AtTarget,
+        });
+    }
     let target = latest
         .latest_pooled_target
         .as_mut()
         .ok_or_else(|| ApiError::Invalid("completed pool command lacks its target".into()))?;
-    if target.target_e8s != expected {
+    let expected_claim = operation
+        .permit
+        .expected_parent_principal_e8s
+        .checked_add(operation.permit.claim_credit_e8s)
+        .ok_or_else(|| ApiError::Invalid("Dynamic claim principal overflow".into()))?;
+    if target.target_e8s != expected_claim {
         return Err(ApiError::Invalid(
             "completed pool command did not reach its exact target".into(),
         ));
     }
     let actual = observed.snapshot.cached_stake_e8s;
-    let target_status = if actual == expected {
-        target.status = crate::state::PooledTargetStatus::AtTarget;
-        PoolTargetResult::AtTarget
-    } else {
-        target.status = crate::state::PooledTargetStatus::OverTarget;
-        PoolTargetResult::OverTarget
-    };
+    if actual < expected_physical {
+        return Err(ApiError::Pending(
+            "Dynamic top-up awaits canonical physical principal".into(),
+        ));
+    }
+    latest.claim_bearing_dynamic_principal_e8s = expected_claim;
+    latest.anchor_available_e8s = latest
+        .anchor_available_e8s
+        .checked_sub(operation.permit.fee_e8s)
+        .ok_or_else(|| ApiError::Invalid("Dynamic anchor fee capacity underflow".into()))?;
+    target.status = crate::state::PooledTargetStatus::AtTarget;
+    let target_status = PoolTargetResult::AtTarget;
     latest.last_completed_pool = Some(CompletedPoolCommand {
         permit: operation.permit.clone(),
         transfer_block_index: operation
@@ -279,6 +334,10 @@ async fn complete_refresh(operation: PoolCommand) -> Result<PoolProgress, ApiErr
     })
 }
 
+fn actual_bootstrap_principal(observed: &execution::NeuronObservation) -> u128 {
+    observed.snapshot.cached_stake_e8s
+}
+
 fn fail_self_follow(operation: PoolCommand, parent_id: u64) -> Result<PoolProgress, ApiError> {
     let mut latest = state::read();
     if matches!(&latest.active_operation, Some(NnsOperation::Pool(active)) if active == &operation)
@@ -287,7 +346,7 @@ fn fail_self_follow(operation: PoolCommand, parent_id: u64) -> Result<PoolProgre
         state::write(latest);
     }
     Err(ApiError::Invalid(format!(
-        "pooled parent {parent_id} equals the configured followee; choose a different pre-launch memo or followee"
+        "pooled parent {parent_id} collides with the fixed protected followee; production identity audit failed"
     )))
 }
 
@@ -305,7 +364,7 @@ fn stuck(operation: &PoolCommand, reason: &str) -> Result<PoolProgress, ApiError
 fn validate_follow_target(parent_id: u64, followee_id: u64) -> Result<(), String> {
     if parent_id == followee_id {
         Err(format!(
-            "pooled parent {parent_id} equals the configured followee; choose a different pre-launch memo or followee"
+            "pooled parent {parent_id} collides with the fixed protected followee; production identity audit failed"
         ))
     } else {
         Ok(())
@@ -357,7 +416,7 @@ mod tests {
     fn pooled_parent_self_follow_is_rejected_before_following() {
         assert!(validate_follow_target(42, 42)
             .unwrap_err()
-            .contains("different pre-launch memo or followee"));
+            .contains("production identity audit failed"));
         assert_eq!(validate_follow_target(42, 43), Ok(()));
     }
 

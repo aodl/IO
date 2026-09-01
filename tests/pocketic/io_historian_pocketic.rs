@@ -1,9 +1,11 @@
-use candid::{decode_one, encode_one, Principal};
+use candid::{decode_one, encode_one, CandidType, Principal};
 use io_historian::{
-    CanisterRole, ExpectedModule, NamedAccount, ObservationConfig, ObservationFreshness,
+    CanisterRole, ExpectedModule, Lifecycle, NamedAccount, ObservationConfig, ObservationFreshness,
+    RewardEventId, StreamStatus,
 };
 use io_ledger_types::{Account, Subaccount};
 use pocket_ic::PocketIc;
+use serde::Deserialize;
 
 const CYCLES: u128 = 2_000_000_000_000;
 
@@ -61,6 +63,88 @@ fn config(historian: Principal) -> ObservationConfig {
         reward_share_capable_governance_sha256: Some(vec![3; 32]),
         refresh_interval_seconds: 60,
     }
+}
+
+#[derive(Clone, Copy, Debug, CandidType, Deserialize)]
+enum RawRewardEventClassification {
+    StructuralOnly,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct RawStructuralStreamStatus {
+    lifecycle: Lifecycle,
+    operation_kind: Option<String>,
+    operation_phase: Option<String>,
+    latest_entitlement_batch_generation: u64,
+    latest_processed_reward_event: Option<RewardEventId>,
+    latest_reward_event_classification: Option<RawRewardEventClassification>,
+    accumulated_eligible_credit: u128,
+    accumulated_policy_credit: u128,
+    processed_reward_event_count: u64,
+    missed_reward_event_count: u64,
+    reward_work_due: bool,
+    reward_processing_paused: bool,
+    governance_parameters_fresh: bool,
+    pending_entitlement_batch_eligible_credit: Option<u128>,
+    pending_entitlement_batch_policy_credit: Option<u128>,
+    latest_reconciliation_checkpoint: Option<io_historian::ReconciliationProjection>,
+}
+
+#[test]
+fn pocketic_historian_decodes_structural_stream_status_without_discarding_it() {
+    if !pocketic_available() {
+        eprintln!("skipping historian structural decode because POCKET_IC_BIN is not set");
+        return;
+    }
+    let wasm = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/wasm32-unknown-unknown/debug/io_historian.wasm"),
+    )
+    .expect("build historian debug Wasm before this required regression");
+    let pic = PocketIc::new();
+    let historian = pic.create_canister();
+    pic.add_cycles(historian, CYCLES);
+    pic.install_canister(
+        historian,
+        wasm,
+        encode_one(None::<ObservationConfig>).unwrap(),
+        None,
+    );
+    let raw = RawStructuralStreamStatus {
+        lifecycle: Lifecycle::Ready,
+        operation_kind: Some("Redemption".into()),
+        operation_phase: Some("PayoutSucceeded".into()),
+        latest_entitlement_batch_generation: 0,
+        latest_processed_reward_event: Some(RewardEventId {
+            end_timestamp_seconds: 1,
+            round: 0,
+        }),
+        latest_reward_event_classification: Some(RawRewardEventClassification::StructuralOnly),
+        accumulated_eligible_credit: 0,
+        accumulated_policy_credit: 0,
+        processed_reward_event_count: 0,
+        missed_reward_event_count: 0,
+        reward_work_due: false,
+        reward_processing_paused: false,
+        governance_parameters_fresh: true,
+        pending_entitlement_batch_eligible_credit: None,
+        pending_entitlement_batch_policy_credit: None,
+        latest_reconciliation_checkpoint: None,
+    };
+    let decoded: Result<StreamStatus, String> = decode_one(
+        &pic.update_call(
+            historian,
+            Principal::anonymous(),
+            "debug_decode_stream_status",
+            encode_one(encode_one(raw).unwrap()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let decoded = decoded.expect("StructuralOnly must not discard the Stream observation");
+    assert_eq!(decoded.latest_processed_reward_event.unwrap().round, 0);
+    assert_eq!(decoded.operation_phase.as_deref(), Some("PayoutSucceeded"));
+    assert_eq!(decoded.latest_reward_event_classification, None);
 }
 
 #[test]

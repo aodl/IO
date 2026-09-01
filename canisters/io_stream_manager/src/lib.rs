@@ -22,7 +22,7 @@ pub use io_receipt_types::{
     ClaimBackingReceiptPermit, ClaimBackingReceiptProgress, PrepareClaimBackingReceiptArgs,
     ProveClaimBackingReceiptArgs,
 };
-pub use redemption::RedeemArgs;
+pub use redemption::{PreparedRedemption, RedeemArgs};
 pub use rewards::RewardBackingProgress;
 pub use state::CallerRedemptionState;
 pub use state::{
@@ -30,6 +30,29 @@ pub use state::{
     RewardEventCredit, RewardEventId, RewardEventObservation, SkippedRewardEvent, StreamConfig,
     StreamStateV1,
 };
+
+fn validate_set_paused_state(snapshot: &StreamStateV1, paused: bool) -> Result<String, String> {
+    let changes_lifecycle = paused != (snapshot.lifecycle == Lifecycle::Paused);
+    if changes_lifecycle && snapshot.control_epoch == u64::MAX {
+        return Err("stream control epoch is exhausted".into());
+    }
+    if !paused && snapshot.lifecycle == Lifecycle::Paused {
+        if !lifecycle::is_readiness_resumable_operation(&snapshot.active_operation) {
+            return Err("IO stream has an active operation that blocks readiness".into());
+        }
+        if snapshot.prepared_exit_reconciliation.is_some() {
+            return Err("IO stream has a prepared exit reconciliation".into());
+        }
+    }
+    Ok(format!(
+        "Set IO stream paused: {paused}. Current lifecycle: {:?}",
+        snapshot.lifecycle
+    ))
+}
+
+fn sns_reject(action: &str, reason: impl std::fmt::Display) -> ! {
+    ic_cdk::trap(format!("SNS {action} not accepted: {reason}"))
+}
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 pub struct InitArgs {
@@ -48,6 +71,7 @@ pub fn init(args: InitArgs) {
         pending_entitlement_batch: None,
         neuron_registry: Vec::new(),
         stake_observation_due: true,
+        structural_reconciliation_due: false,
         latest_reconciliation_checkpoint: None,
         prepared_exit_reconciliation: None,
         latest_reconciliation_generation: 0,
@@ -66,8 +90,18 @@ pub fn post_upgrade() {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn redeem(args: RedeemArgs) -> Result<RedemptionProgress, ApiError> {
-    api::redeem(ic_cdk::api::msg_caller(), args, ic_cdk::api::time()).await
+pub async fn prepare_redemption(args: RedeemArgs) -> Result<PreparedRedemption, ApiError> {
+    api::prepare_redemption(ic_cdk::api::msg_caller(), args, ic_cdk::api::time()).await
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn settle_redemption(block_index: u128) -> Result<RedemptionProgress, ApiError> {
+    api::settle_redemption(ic_cdk::api::msg_caller(), block_index, ic_cdk::api::time()).await
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn resume_redemption(caller: candid::Principal) -> Result<RedemptionProgress, ApiError> {
+    api::resume_redemption(caller, ic_cdk::api::time()).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -106,14 +140,28 @@ pub async fn resume_reward_backing() -> Result<RewardBackingProgress, ApiError> 
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn validate_set_paused(paused: bool) -> Result<String, String> {
-    Ok(format!("Set IO stream paused: {paused}"))
+    validate_set_paused_state(&state::read(), paused)
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub async fn set_paused(paused: bool) -> Result<(), ApiError> {
-    let state = state::read();
-    if ic_cdk::api::msg_caller() != state.config.sns_governance {
+    let caller = ic_cdk::api::msg_caller();
+    let snapshot = state::read();
+    if caller != snapshot.config.sns_governance {
         return Err(ApiError::Unauthorized);
+    }
+    // SNS Governance runs the validator before proposal creation, but conditions can change
+    // before execution. The reviewed SNS implementation counts any target-method reply as
+    // success without decoding Candid Err, so a lifecycle request that was not accepted must
+    // reject at the transport boundary. A normal reply is reserved for the requested durable
+    // lifecycle state.
+    if (paused && snapshot.lifecycle == Lifecycle::Paused)
+        || (!paused && snapshot.lifecycle == Lifecycle::Ready)
+    {
+        return Ok(());
+    }
+    if let Err(reason) = validate_set_paused_state(&snapshot, paused) {
+        sns_reject("stream lifecycle action", reason);
     }
     let control_epoch = lifecycle::begin_control_request().map_err(ApiError::Invalid)?;
     if paused {
@@ -121,9 +169,20 @@ pub async fn set_paused(paused: bool) -> Result<(), ApiError> {
         reward_timer::install(None);
         Ok(())
     } else {
-        lifecycle::readiness_preflight(ic_cdk::api::canister_self(), control_epoch).await?;
-        reward_timer::install_for_ready_state();
-        Ok(())
+        let result =
+            lifecycle::readiness_preflight(ic_cdk::api::canister_self(), control_epoch).await;
+        if state::read().lifecycle == Lifecycle::Ready {
+            reward_timer::install_for_ready_state();
+            result
+        } else {
+            match result {
+                Ok(()) => sns_reject(
+                    "stream lifecycle action",
+                    "readiness returned without durable Ready state",
+                ),
+                Err(error) => sns_reject("stream lifecycle action", format!("{error:?}")),
+            }
+        }
     }
 }
 
@@ -152,6 +211,12 @@ pub fn debug_fail_malformed_prepare_after_persist(enabled: bool) {
     receipt::debug_fail_malformed_prepare_after_persist(enabled);
 }
 
+#[cfg(debug_assertions)]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_trap_after_caller_result_write(enabled: bool) {
+    api::debug_trap_after_caller_result_write(enabled);
+}
+
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn get_caller_redemption_state() -> Result<CallerRedemptionState, ApiError> {
     let caller = ic_cdk::api::msg_caller();
@@ -168,18 +233,6 @@ ic_cdk::export_candid!();
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn lifecycle_validator_renders_both_exact_payloads() {
-        assert_eq!(
-            validate_set_paused(true).unwrap(),
-            "Set IO stream paused: true"
-        );
-        assert_eq!(
-            validate_set_paused(false).unwrap(),
-            "Set IO stream paused: false"
-        );
-    }
 
     #[test]
     fn candid_surface_is_exportable() {

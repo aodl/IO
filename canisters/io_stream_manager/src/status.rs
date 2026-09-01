@@ -7,9 +7,6 @@ pub fn get_status() -> Status {
     let state = state::read();
     let (operation_kind, operation_phase) = match state.active_operation {
         Some(StreamOperation::Redemption(operation)) => match *operation {
-            RedemptionStreamOperation::Preparing(_) => {
-                (Some("Redemption".into()), Some("Preparing".into()))
-            }
             RedemptionStreamOperation::Active(operation) => (
                 Some("Redemption".into()),
                 Some(format!("{:?}", operation.phase)),
@@ -20,7 +17,7 @@ pub fn get_status() -> Status {
             Some(if operation.liquid_block.is_none() {
                 "AwaitingLiquidProof".into()
             } else {
-                "SettlingRecipients".into()
+                "RecipientSettlement".into()
             }),
         ),
         Some(StreamOperation::PoolTopUp(_)) => {

@@ -105,7 +105,7 @@ fn eligible_destination(
     nonredeemable_governance_io_accounts: &[Account],
     neuron: &Neuron,
 ) -> Result<Option<Account>, ApiError> {
-    if !neuron.is_non_dissolving_for(io_core_model::TWO_WEEK_SECONDS) {
+    if !neuron.is_non_dissolving_for(io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS) {
         return Ok(None);
     }
     if neuron.id.len() != 32 {
@@ -328,9 +328,9 @@ mod tests {
     fn no_proposal_equal_and_unequal_stakes_receive_full_credit() {
         let governance = principal(1);
         let equal = vec![
-            neuron(1, 100, io_core_model::TWO_WEEK_SECONDS, None),
-            neuron(2, 100, io_core_model::TWO_WEEK_SECONDS, None),
-            neuron(3, 100, io_core_model::TWO_WEEK_SECONDS, None),
+            neuron(1, 100, io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS, None),
+            neuron(2, 100, io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS, None),
+            neuron(3, 100, io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS, None),
         ];
         let (classification, weights) =
             event_credits(governance, &no_exclusions(), &event(1, 10, 0), &equal).unwrap();
@@ -347,9 +347,9 @@ mod tests {
         );
 
         let unequal = vec![
-            neuron(1, 100, io_core_model::TWO_WEEK_SECONDS, None),
-            neuron(2, 200, io_core_model::TWO_WEEK_SECONDS, None),
-            neuron(3, 300, io_core_model::TWO_WEEK_SECONDS, None),
+            neuron(1, 100, io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS, None),
+            neuron(2, 200, io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS, None),
+            neuron(3, 300, io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS, None),
         ];
         let (_, weights) =
             event_credits(governance, &no_exclusions(), &event(2, 20, 0), &unequal).unwrap();
@@ -372,7 +372,7 @@ mod tests {
             neuron(
                 1,
                 100,
-                io_core_model::TWO_WEEK_SECONDS,
+                io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
                 Some((
                     10,
                     Some(Uint128 {
@@ -381,7 +381,7 @@ mod tests {
                     }),
                 )),
             ),
-            neuron(2, 200, io_core_model::TWO_WEEK_SECONDS, None),
+            neuron(2, 200, io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS, None),
         ];
         let (_, weights) =
             event_credits(principal(1), &no_exclusions(), &event(2, 20, 0), &neurons).unwrap();
@@ -397,17 +397,17 @@ mod tests {
     #[test]
     fn proposals_with_no_current_eligible_shares_do_not_fallback() {
         let neurons = vec![
-            neuron(1, 100, io_core_model::TWO_WEEK_SECONDS, None),
+            neuron(1, 100, io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS, None),
             neuron(
                 2,
                 200,
-                io_core_model::TWO_WEEK_SECONDS,
+                io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
                 Some((10, Some(Uint128 { high: 0, low: 900 }))),
             ),
             neuron(
                 3,
                 300,
-                io_core_model::TWO_WEEK_SECONDS,
+                io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
                 Some((20, Some(Uint128 { high: 0, low: 0 }))),
             ),
         ];
@@ -433,16 +433,26 @@ mod tests {
                 subaccount: Some(vec![2; 32]),
             },
         ];
-        let mut dissolving = neuron(3, 100, io_core_model::TWO_WEEK_SECONDS, None);
+        let mut dissolving = neuron(3, 100, io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS, None);
         dissolving.dissolve_state = DissolveState::Dissolving;
         let neurons = vec![
-            neuron(1, 100, io_core_model::TWO_WEEK_SECONDS, None),
-            neuron(2, 100, io_core_model::TWO_WEEK_SECONDS, None),
+            neuron(1, 100, io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS, None),
+            neuron(2, 100, io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS, None),
             dissolving,
-            neuron(4, 100, io_core_model::TWO_WEEK_SECONDS - 1, None),
-            neuron(5, 100, io_core_model::TWO_WEEK_SECONDS + 1, None),
-            neuron(6, 0, io_core_model::TWO_WEEK_SECONDS, None),
-            neuron(7, 700, io_core_model::TWO_WEEK_SECONDS, None),
+            neuron(
+                4,
+                100,
+                io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS - 1,
+                None,
+            ),
+            neuron(
+                5,
+                100,
+                io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS + 1,
+                None,
+            ),
+            neuron(6, 0, io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS, None),
+            neuron(7, 700, io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS, None),
         ];
         let (_, weights) =
             event_credits(governance, &nonredeemable, &event(1, 10, 0), &neurons).unwrap();
@@ -456,7 +466,12 @@ mod tests {
 
     #[test]
     fn no_eligible_neurons_consumes_as_zero_weight_without_a_denominator() {
-        let neurons = vec![neuron(1, 0, io_core_model::TWO_WEEK_SECONDS, None)];
+        let neurons = vec![neuron(
+            1,
+            0,
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
+            None,
+        )];
         let (classification, weights) =
             event_credits(principal(1), &no_exclusions(), &event(1, 10, 0), &neurons).unwrap();
         assert_eq!(
@@ -468,7 +483,12 @@ mod tests {
 
     #[test]
     fn current_malformed_shares_fail_closed_but_stale_malformed_shares_are_zero() {
-        let malformed = neuron(1, 100, io_core_model::TWO_WEEK_SECONDS, Some((20, None)));
+        let malformed = neuron(
+            1,
+            100,
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
+            Some((20, None)),
+        );
         assert!(event_credits(
             principal(1),
             &no_exclusions(),
@@ -476,7 +496,12 @@ mod tests {
             &[malformed],
         )
         .is_err());
-        let stale = neuron(1, 100, io_core_model::TWO_WEEK_SECONDS, Some((10, None)));
+        let stale = neuron(
+            1,
+            100,
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
+            Some((10, None)),
+        );
         let (_, weights) =
             event_credits(principal(1), &no_exclusions(), &event(2, 20, 1), &[stale]).unwrap();
         assert!(weights.is_empty());
@@ -539,10 +564,10 @@ mod tests {
                     neuron(
                         1,
                         100,
-                        io_core_model::TWO_WEEK_SECONDS,
+                        io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
                         Some((10, Some(Uint128 { high: 0, low: 100 }))),
                     ),
-                    neuron(2, 200, io_core_model::TWO_WEEK_SECONDS, None),
+                    neuron(2, 200, io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS, None),
                 ],
                 [io_reward_policy::DAILY_EVENT_CREDIT, 0],
             ),
@@ -552,10 +577,10 @@ mod tests {
                     neuron(
                         1,
                         100,
-                        io_core_model::TWO_WEEK_SECONDS,
+                        io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
                         Some((10, Some(Uint128 { high: 0, low: 100 }))),
                     ),
-                    neuron(2, 200, io_core_model::TWO_WEEK_SECONDS, None),
+                    neuron(2, 200, io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS, None),
                 ],
                 [
                     io_reward_policy::DAILY_EVENT_CREDIT + daily_fraction(1, 3),
@@ -568,13 +593,13 @@ mod tests {
                     neuron(
                         1,
                         100,
-                        io_core_model::TWO_WEEK_SECONDS,
+                        io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
                         Some((10, Some(Uint128 { high: 0, low: 100 }))),
                     ),
                     neuron(
                         2,
                         200,
-                        io_core_model::TWO_WEEK_SECONDS,
+                        io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
                         Some((30, Some(Uint128 { high: 0, low: 200 }))),
                     ),
                 ],
@@ -606,8 +631,8 @@ mod tests {
                 &no_exclusions(),
                 &event(day, day * 10, 0),
                 &[
-                    neuron(1, 100, io_core_model::TWO_WEEK_SECONDS, None),
-                    neuron(2, 200, io_core_model::TWO_WEEK_SECONDS, None),
+                    neuron(1, 100, io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS, None),
+                    neuron(2, 200, io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS, None),
                 ],
             )
             .unwrap();
@@ -642,16 +667,16 @@ mod tests {
             neuron(
                 1,
                 100,
-                io_core_model::TWO_WEEK_SECONDS,
+                io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
                 Some((10, Some(Uint128 { high: 0, low: 100 }))),
             ),
-            neuron(2, 100, io_core_model::TWO_WEEK_SECONDS, None),
+            neuron(2, 100, io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS, None),
         ];
         let day_two = vec![
             neuron(
                 1,
                 100,
-                io_core_model::TWO_WEEK_SECONDS,
+                io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
                 Some((
                     20,
                     Some(Uint128 {
@@ -663,7 +688,7 @@ mod tests {
             neuron(
                 2,
                 100,
-                io_core_model::TWO_WEEK_SECONDS,
+                io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
                 Some((
                     20,
                     Some(Uint128 {
@@ -722,13 +747,13 @@ mod tests {
             neuron(
                 1,
                 100,
-                io_core_model::TWO_WEEK_SECONDS,
+                io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
                 Some((10, Some(Uint128 { high: 0, low: 50 }))),
             ),
             neuron(
                 9,
                 100,
-                io_core_model::TWO_WEEK_SECONDS,
+                io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
                 Some((10, Some(Uint128 { high: 0, low: 50 }))),
             ),
         ];
@@ -764,7 +789,7 @@ mod tests {
             &[neuron(
                 1,
                 100,
-                io_core_model::TWO_WEEK_SECONDS,
+                io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
                 Some((70, Some(Uint128 { high: 0, low: 100 }))),
             )],
         )

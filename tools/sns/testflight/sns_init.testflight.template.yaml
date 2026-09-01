@@ -16,7 +16,7 @@ governance:
   proposal_rejection_fee_e8s: 10_000_000_000
   initial_reward_rate_basis_points: 0
   final_reward_rate_basis_points: 0
-  max_dissolve_delay_seconds: 1_209_600
+  max_dissolve_delay_seconds: 1_296_060
   max_dissolve_delay_bonus_percentage: 0
   max_neuron_age_for_age_bonus: 0
   max_age_bonus_percentage: 0

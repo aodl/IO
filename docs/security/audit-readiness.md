@@ -2,38 +2,50 @@
 
 This is the handoff index for an independent auditor. It is not a self-audit and does not claim external approval. IO remains prelaunch, Paused/inert where applicable, and not live.
 
-## Release identity
+## Recorded release identity
 
 - Source-finalization commit:
-  `9462a1a0df602f06fa845bd31f9fcd0adf80067a`.
+  `e727d688b3aec0e6dace6a499a4979bf66cad2c8`.
 - Immediate artifact-recording commit:
-  `46713f8499cf9a63a6cd4879b1fff9c1f9ef0be5`.
+  `d8e45b27e9b12d19542ea4220616f3828896c41a`.
 - Canonical evidence commit:
-  `1ed1399130358ed5788cae99f3d65d82cbbc70a9`.
+  `61c1a7fb0cda3ef743a8f68c1488cdf57e3dc264`.
 - Current schema-v2 package:
-  `deploy/local-sns-rehearsal/evidence/2026-08-26-9462a1a-account-semantic`.
+  `deploy/local-sns-rehearsal/evidence/2026-08-31-e727d68-anchored-dynamic`.
 - Release-manifest SHA-256:
-  `011113d83510e66976f5d3eabefc57ef30ba44fc49a8973fad29be043b374431`.
+  `13d258958bee84e20934627f66707ca6ba336c26cb9e7ff6d140918a4465a382`.
 - Package-manifest SHA-256:
-  `254e8866394d62ba9fbe2b0290709d2c9dbaeb8ed84c8b3446b9a1912af0eb78`.
+  `a4fb737b0b0101284ac6cdc00aab0f484d4a2ccd3942adf6f28cf1b98f6a6af1`.
 - Package `SHA256SUMS` SHA-256:
-  `a1915cef319b569955c5d75ad88c4a3715af8483573d2cf9b3a2af108d6bea29`.
+  `6e035df94a0410fa733a09cf35e557e0d6e072e98bbfcb5edf506ef8117409a1`.
 - Raw/gzip Wasm hashes and exact-source equality: `release-artifacts/manifest.json` and `docs/operations/reproducible-builds.md`.
 - Production interfaces: the four production DIDs under `canisters/`.
 - Dependency/tooling evidence: `Cargo.lock`, `package-lock.json`, `deny.toml`, and `docs/security/dependency-and-supply-chain.md`.
 - Source-open package: `LICENSE` and `docs/security/source-open-package.md`.
 
+Those hashes identify the selected release/evidence authority. The package
+records the anchored Dynamic neuron, independent structural scheduler,
+replenish-first TwoYear maturity, natural cohorts, and prepared push. Older
+release pairs and packages remain immutable evidence for their own releases.
+
 ## Normative architecture and invariants
 
 - Simplicity and authority: `docs/architecture/simplicity-constitution.md`, `canister-roles.md`, and `api-surface.md`.
-- Accepted ADRs: `adr-pooled-claim-backing-allocation.md`,
+- Accepted replacement ADR: `adr-anchored-dynamic-backing.md`. The pooled
+  allocation and complexity ADRs are retained as explicitly superseded history.
+  Other accepted ADRs include
   `adr-daily-sns-entitlement-events.md`,
   `adr-io-ledger-fee-and-supply-authority.md`, and
   `adr-nns-authority-location.md`. The separate-endowment ADR is superseded.
 - Monetary policy: `monetary-policy.md`, `fee-dust-accounting.md`, `reward-allocation.md`, and `sns-eligibility.md`.
 - Redemption/idempotency/ambiguity: `stream-manager.md`, `docs/operations/p0-simplified-composition-evidence.md`, and `docs/security/threat-model.md`.
+- Effect ordering: immutable intent precedes every potentially irreversible
+  effect; definite success is canonically re-observed and may continue;
+  ambiguity or an absent required postcondition stops dependent work. Public
+  progress exposes real action boundaries rather than internal phases.
 - Jupiter activation/replay boundary and residual lookup risk, the permanent
-  launch baseline, lazy pooled parent, maturity, and bounded passive unwind:
+  launch baseline, pre-Ready Dynamic parent, replenish-first maturity, and
+  generation-based passive unwind with ready-child priority:
   `jupiter-integration-contract.md`,
   `nns-neuron-manager.md`, and the composition evidence.
 - Availability and stable growth: `docs/operations/cycles-management.md`,
@@ -42,6 +54,17 @@ This is the handoff index for an independent auditor. It is not a self-audit and
 - Reward settlement: the Stream Manager README and daily-entitlement ADR
   distinguish exact IO ledger delivery from one bounded, observable,
   best-effort SNS `ClaimOrRefresh` attempt.
+- Reward activation: official SNS Governance's round-zero dummy genesis event
+  is frozen as a zero-credit baseline. Its exact replay is structural only;
+  advancing and credit-bearing events require the ordinary positive-span and
+  nonzero-round proofs. Redemption remains available before round one.
+- SNS generic execution: validators are pure submission preflight and do not
+  reserve the serialized NNS slot. The reviewed SNS implementation treats any
+  normal target reply as execution success, so Stream/NNS lifecycle and
+  two-year maturity targets transport-reject nonacceptance, retain an exact
+  durable Paused/Stuck safety response, and return normal `Pending` only after
+  exact continuation state exists. A legitimate genesis Pool is settled rather
+  than suppressed or preempted before a fresh maturity proposal.
 - Timers/upgrades: `scheduler.md`, `upgrades.md`, `stable-storage.md`, and `journal-compaction.md`.
 - SNS authority/controllers: `sns-root-lifecycle.md`, `docs/security/controller-and-recovery.md`, and `docs/operations/production-wiring.md`.
 - Historian non-authority: `historian.md`, `historian-ingestion.md`, and `docs/operations/historian-freshness.md`.
@@ -50,27 +73,29 @@ This is the handoff index for an independent auditor. It is not a self-audit and
 
 | Classification | Evidence |
 | --- | --- |
-| Proved locally | The current selector-bound `2026-08-26-9462a1a-account-semantic` package first: Layer A source-built official SNS launch/wiring and live-local observations, Layer B exact proposal-143660 NNS mechanics, and Layer C current IO account semantics and controlled recovery. `docs/testing/e2e-coverage-matrix.md`, exact-source release verification, and the package's manifest/checksum inventory provide the cross-checks. Earlier 2026-08-11, 2026-08-12, 2026-08-14 and intermediate `2026-08-26-716d51e-account-semantic` packages are secondary immutable historical evidence for their own releases only. |
+| Proved locally | The current selector-bound `2026-08-31-e727d68-anchored-dynamic` package: Layer A source-built official SNS launch/wiring and live-local observations, Layer B exact proposal-143660 NNS mechanics, and Layer C current anchored IO economics, scheduling, push redemption, and controlled recovery. `docs/testing/e2e-coverage-matrix.md`, exact-source release verification, and the package's manifest/checksum inventory provide the cross-checks. All earlier packages are immutable historical evidence for their own releases only. |
 | Candidate-only | Same-source SNS Governance/Root at IC `4320fdf2e613844eabae1927b1a23b98da3a7bc6`, including reward-share capability and Governance → Root compatibility. The separately reviewed official lock remains `b904c9dd1bdef8841bd12f03efbc71180a015e25`; local source proof does not establish official adoption. |
 | Officially available | Pinned official baseline artifacts/tooling in `tests/e2e_real_canisters/wasms.example.toml`; these do not imply official reward-share adoption. |
 | External fixture gaps | Real transport-fault injection and non-1.0 maturity modulation, classified in `docs/operations/remaining-work.md`. |
 | Not yet audited | Final source/artifacts, launch configuration, dependencies/licenses, controller recovery, and all local evidence require independent review. |
 | Mainnet-only | Protected-position audit, production IDs/config, testflight, install/controller handoff, funding, and activation; each requires separate authorization. |
 
-## Current simplicity criterion
+## Current simplicity diagnostics
 
-The active executable ceilings are:
+The selected source measures:
 
-| Component | Measured | Ceiling | Headroom |
+| Component | Hardened pre-refactor | Current | Change |
 | --- | ---: | ---: | ---: |
-| Stream Manager | 5,416 | 5,520 | 104 lines / ~1.88% |
-| NNS Manager | 5,977 | 6,125 | 148 lines / ~2.42% |
-| Combined governed production | 14,162 | 14,485 | 323 lines / ~2.23% |
+| Stream Manager | 5,416 | 5,215 | -201 |
+| NNS Manager | 6,002 | 7,073 | +1,071 |
+| Combined governed production | 14,187 | 15,196 | +1,009 |
 
 `docs/architecture/adr-pooled-claim-backing-complexity-exception.md` and
-`cargo run -p xtask -- simplicity_check` are current authority. The older
-11,100-line recalibration ADR remains a historical decision record and is not
-the current audit criterion.
+`cargo run -p xtask -- simplicity_check` are current authority. The command
+prints raw LOC as diagnostic review information and continues to enforce
+semantic architecture boundaries. The former 5,520 / 6,125 / 14,485 ceilings
+and older 11,100-line recalibration ADR remain historical review records, not
+launch correctness criteria.
 
 Auditors should run `docs/operations/release-checklist.md`, independently
 rebuild the recorded source, run the executable simplicity check, verify all

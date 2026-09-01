@@ -43,7 +43,7 @@ pub struct ClaimBackingReceiptResult {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum ClaimBackingReceiptProgress {
     AwaitingLiquidProof(ClaimBackingReceiptPermit),
-    SettlingRecipients,
+    Pending,
     Completed(ClaimBackingReceiptResult),
     Stuck(String),
 }

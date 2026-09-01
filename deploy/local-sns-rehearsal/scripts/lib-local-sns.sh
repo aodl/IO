@@ -378,7 +378,6 @@ render_local_account_map() {
   {
     printf '[protocol_reserve_io]\nowner = "%s"\nsubaccount_hex = "%s"\nledger = "sns"\n\n' "$stream" "$reserve"
     printf '[liquid_icp_reserve]\nowner = "%s"\nsubaccount_hex = "%s"\nledger = "icp"\n\n' "$stream" "$liquid"
-    printf '[redemption_spender]\nowner = "%s"\nsubaccount = "none"\nledger = "sns"\n\n' "$stream"
     printf '[jupiter_io]\nowner = "%s"\nsubaccount_hex = "%s"\nledger = "sns"\n\n' "$jupiter" "$jupiter_io"
     printf '[jupiter_icp_staging]\nowner = "%s"\nsubaccount = "none"\nledger = "icp"\n\n' "$nns_manager"
     printf '[two_week_maturity_staging]\nowner = "%s"\nsubaccount_hex = "%s"\nledger = "icp"\n\n' "$nns_manager" "$two_week"

@@ -39,7 +39,7 @@ Voting:
   minimum_dissolve_delay: "1209599 seconds"
   MaximumVotingPowerBonuses:
     DissolveDelay:
-      duration: "14 days"
+      duration: "1296060 seconds"
       bonus: "0%"
     Age:
       duration: "0 seconds"

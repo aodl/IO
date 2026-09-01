@@ -7,9 +7,8 @@ use crate::{
     daily_stake::DailyStakeObservation,
     reward_evidence::{classify_sequence, event_credits_for, event_id},
     state::{
-        self, BackingRewardRecord, BackingRewardStatus, Lifecycle, PendingEntitlementBatch,
-        RewardEventClassification, RewardEventId, RewardEventObservation, SkippedRewardEvent,
-        StructuralStakeState,
+        self, BackingRewardRecord, Lifecycle, PendingEntitlementBatch, RewardEventClassification,
+        RewardEventId, RewardEventObservation, SkippedRewardEvent,
     },
 };
 use io_nns_types::reward_boundary::{self as reward_nns, CallError};
@@ -38,26 +37,103 @@ pub async fn observe(now_nanos: u64) -> Result<RewardEventObservation, ApiError>
     if initial.prepared_exit_reconciliation.is_some() {
         return Err(ApiError::Busy);
     }
-    if !initial.reward_checkpoint.reward_work_due && !initial.stake_observation_due {
+    let reward_due = initial.reward_checkpoint.reward_work_due;
+    let structural_due = initial.stake_observation_due;
+    if !reward_due && !structural_due {
+        if initial.structural_reconciliation_due {
+            drive_reconciliation().await?;
+            return structural_progress_observation(&state::read(), now_nanos);
+        }
         return Err(ApiError::Pending(
-            "daily stake observation is not due".into(),
+            "neither structural nor reward observation is due".into(),
         ));
     }
-    initial.reward_checkpoint.reward_work_due = false;
-    initial.stake_observation_due = false;
+    if reward_due {
+        initial.reward_checkpoint.reward_work_due = false;
+    }
+    if structural_due {
+        initial.stake_observation_due = false;
+    }
     state::write(initial.clone());
-    let result = observe_due(&initial, now_nanos).await;
+    let result = if reward_due {
+        observe_due(&initial, now_nanos).await
+    } else {
+        observe_structural_due(&initial, now_nanos).await
+    };
     if let Err(error) = &result {
         handle_error(&initial, error);
     }
     result
 }
 
+fn structural_progress_observation(
+    current: &state::StreamStateV1,
+    now_nanos: u64,
+) -> Result<RewardEventObservation, ApiError> {
+    let event = current
+        .reward_checkpoint
+        .last_processed_event
+        .or_else(|| {
+            current
+                .latest_reconciliation_checkpoint
+                .as_ref()
+                .map(|checkpoint| RewardEventId {
+                    end_timestamp_seconds: checkpoint.observed_at_nanos / 1_000_000_000,
+                    round: checkpoint.event_marker,
+                })
+        })
+        .ok_or_else(|| ApiError::Pending("structural event marker is absent".into()))?;
+    Ok(RewardEventObservation {
+        event,
+        proposal_count: 0,
+        classification: RewardEventClassification::StructuralOnly,
+        policy_credit: 0,
+        eligible_credit_total: 0,
+        observed_at_nanos: now_nanos,
+    })
+}
+
+async fn observe_structural_due(
+    expected: &state::StreamStateV1,
+    now_nanos: u64,
+) -> Result<RewardEventObservation, ApiError> {
+    let daily = crate::daily_stake::observe(&expected.config, &expected.neuron_registry).await?;
+    let event = event_id(&daily.reward_event)?;
+    let mut records = backing_registry::reconcile(
+        &expected.neuron_registry,
+        &daily,
+        event.round,
+        &expected.config,
+    )
+    .map_err(ApiError::Invalid)?;
+    backing_registry::promote_pending(
+        &mut records,
+        event.round,
+        daily.claim.pooled_principal_e8s,
+        daily.claim.total_claim_backing_e8s,
+        daily.claim.claim_supply_e8s,
+        daily.active_backing_io_e8s,
+    )
+    .map_err(ApiError::Invalid)?;
+    let active_reward = active_reward_total(&records, &daily, event.round)?;
+    validate_coverage(&daily, active_reward)?;
+    commit_structural(expected, daily, records, event, now_nanos)?;
+    drive_reconciliation().await?;
+    Ok(RewardEventObservation {
+        event,
+        proposal_count: 0,
+        classification: RewardEventClassification::StructuralOnly,
+        policy_credit: 0,
+        eligible_credit_total: 0,
+        observed_at_nanos: now_nanos,
+    })
+}
+
 async fn observe_due(
     expected: &state::StreamStateV1,
     now_nanos: u64,
 ) -> Result<RewardEventObservation, ApiError> {
-    let daily = crate::daily_stake::observe(&expected.config).await?;
+    let daily = crate::daily_stake::observe(&expected.config, &expected.neuron_registry).await?;
     let event = event_id(&daily.reward_event)?;
     let sequence = classify_sequence(
         expected.reward_checkpoint.last_processed_event,
@@ -70,7 +146,7 @@ async fn observe_due(
         &expected.config,
     )
     .map_err(ApiError::Invalid)?;
-    let active_reward = active_reward_total(&records, &daily)?;
+    let active_reward = active_reward_total(&records, &daily, event.round)?;
     validate_coverage(&daily, active_reward)?;
     let proposal_count = daily
         .reward_event
@@ -147,31 +223,23 @@ async fn observe_due(
         skipped,
         sequence,
     )?;
-    if let Err(error) = crate::pool_reconciliation::ensure_latest().await {
-        ic_cdk::api::debug_print(format!(
-            "daily pool reconciliation remains pending after observation: {error:?}"
-        ));
-    }
-    crate::reward_timer::install_after(event);
+    drive_reconciliation().await?;
     Ok(observation)
 }
 
 fn active_reward_total(
     records: &[BackingRewardRecord],
     daily: &DailyStakeObservation,
+    event_marker: u64,
 ) -> Result<u128, ApiError> {
+    // SNS round zero is the canonical activation baseline. It may establish the
+    // structural backing set, but it is never a credit-bearing eligibility event.
+    if event_marker == 0 {
+        return Ok(0);
+    }
+    let eligible = backing_registry::reward_eligible_ids(records, event_marker);
     daily.stakes.iter().try_fold(0u128, |sum, stake| {
-        let eligible = stake.state == StructuralStakeState::Active
-            && records
-                .binary_search_by(|record| record.sns_neuron_id.cmp(&stake.sns_neuron_id))
-                .ok()
-                .is_some_and(|index| {
-                    matches!(
-                        records[index].status,
-                        BackingRewardStatus::ActiveEligible { .. }
-                    )
-                });
-        if eligible {
+        if eligible.contains(&stake.sns_neuron_id) {
             sum.checked_add(stake.ledger_balance_e8s)
                 .ok_or_else(|| ApiError::Invalid("active reward stake overflow".into()))
         } else {
@@ -200,6 +268,89 @@ fn validate_coverage(daily: &DailyStakeObservation, active_reward: u128) -> Resu
     io_core_model::claim_rate(economics)
         .and_then(|_| io_core_model::rewards_covered(economics))
         .map_err(|error| ApiError::Invalid(format!("reward coverage failed: {error:?}")))
+}
+
+fn commit_structural(
+    expected: &state::StreamStateV1,
+    daily: DailyStakeObservation,
+    records: Vec<BackingRewardRecord>,
+    event: RewardEventId,
+    observed_at_nanos: u64,
+) -> Result<(), ApiError> {
+    let mut latest = state::read();
+    if latest.config != expected.config
+        || latest.control_epoch != expected.control_epoch
+        || latest.lifecycle != Lifecycle::Ready
+        || latest.active_operation.is_some()
+        || latest.prepared_exit_reconciliation.is_some()
+        || latest.reward_checkpoint.last_processed_event
+            != expected.reward_checkpoint.last_processed_event
+        || latest.stake_observation_due
+    {
+        return Err(ApiError::Busy);
+    }
+    if event.is_canonical_sns_genesis_baseline()
+        && latest.reward_checkpoint.last_processed_event == Some(event)
+        && latest.reward_checkpoint.latest_observation.is_none()
+    {
+        latest.reward_checkpoint.latest_observation = Some(RewardEventObservation {
+            event,
+            proposal_count: 0,
+            classification: RewardEventClassification::StructuralOnly,
+            policy_credit: 0,
+            eligible_credit_total: 0,
+            observed_at_nanos,
+        });
+    }
+    apply_structural_checkpoint(&mut latest, daily, records, event, observed_at_nanos)?;
+    latest
+        .validate(ic_cdk::api::canister_self())
+        .map_err(ApiError::Invalid)?;
+    state::write(latest);
+    Ok(())
+}
+
+fn apply_structural_checkpoint(
+    latest: &mut state::StreamStateV1,
+    daily: DailyStakeObservation,
+    records: Vec<BackingRewardRecord>,
+    event: RewardEventId,
+    observed_at_nanos: u64,
+) -> Result<(), ApiError> {
+    latest.neuron_registry = records;
+    let target = io_core_model::target(
+        daily.active_backing_io_e8s,
+        daily.claim.total_claim_backing_e8s,
+        daily.claim.claim_supply_e8s,
+    )
+    .map_err(|error| ApiError::Invalid(format!("pooled target failed: {error:?}")))?;
+    let active_reward = active_reward_total(&latest.neuron_registry, &daily, event.round)?;
+    let generation = latest
+        .latest_reconciliation_generation
+        .checked_add(1)
+        .ok_or_else(|| ApiError::Invalid("reconciliation generation overflow".into()))?;
+    latest.latest_reconciliation_generation = generation;
+    latest.latest_reconciliation_checkpoint = Some(state::ReconciliationCheckpoint {
+        generation,
+        event_marker: event.round,
+        observed_at_nanos,
+        claim_supply_e8s: daily.claim.claim_supply_e8s,
+        liquid_backing_e8s: daily.claim.liquid_icp_e8s,
+        pooled_backing_e8s: daily.claim.pooled_principal_e8s,
+        unwinding_backing_e8s: daily.claim.unwinding_net_backing_e8s,
+        transit_backing_e8s: daily.claim.transit_backing_e8s,
+        total_claim_backing_e8s: daily.claim.total_claim_backing_e8s,
+        active_backing_io_e8s: daily.active_backing_io_e8s,
+        active_reward_io_e8s: active_reward,
+        live_cohort_count: u32::try_from(daily.assets.live_cohorts.len())
+            .map_err(|_| ApiError::Invalid("live cohort count overflow".into()))?,
+        oldest_ready_at_seconds: daily.assets.oldest_ready_at_seconds,
+        pooled_target_e8s: target,
+        observed_pooled_e8s: daily.claim.pooled_principal_e8s,
+        snapshot_fingerprint: daily.claim.observation_fingerprint,
+    });
+    latest.structural_reconciliation_due = true;
+    Ok(())
 }
 
 fn commit(
@@ -248,43 +399,71 @@ fn commit(
     }
     latest.reward_checkpoint.latest_observation = Some(observation.clone());
     latest.reward_checkpoint.governance_parameters_fresh = true;
-    latest.neuron_registry = records;
-    let target = io_core_model::target(
-        daily.active_backing_io_e8s,
-        daily.claim.total_claim_backing_e8s,
-        daily.claim.claim_supply_e8s,
-    )
-    .map_err(|error| ApiError::Invalid(format!("pooled target failed: {error:?}")))?;
-    let active_reward = active_reward_total(&latest.neuron_registry, &daily)?;
-    let generation = latest
-        .latest_reconciliation_generation
-        .checked_add(1)
-        .ok_or_else(|| ApiError::Invalid("reconciliation generation overflow".into()))?;
-    latest.latest_reconciliation_generation = generation;
-    latest.latest_reconciliation_checkpoint = Some(state::ReconciliationCheckpoint {
-        generation,
-        event_marker: observation.event.round,
-        observed_at_nanos: observation.observed_at_nanos,
-        claim_supply_e8s: daily.claim.claim_supply_e8s,
-        liquid_backing_e8s: daily.claim.liquid_icp_e8s,
-        pooled_backing_e8s: daily.claim.pooled_principal_e8s,
-        unwinding_backing_e8s: daily.claim.unwinding_net_backing_e8s,
-        transit_backing_e8s: daily.claim.transit_backing_e8s,
-        total_claim_backing_e8s: daily.claim.total_claim_backing_e8s,
-        active_backing_io_e8s: daily.active_backing_io_e8s,
-        active_reward_io_e8s: active_reward,
-        live_cohort_count: u32::try_from(daily.assets.live_cohorts.len())
-            .map_err(|_| ApiError::Invalid("live cohort count overflow".into()))?,
-        oldest_ready_at_seconds: daily.assets.oldest_ready_at_seconds,
-        pooled_target_e8s: target,
-        observed_pooled_e8s: daily.claim.pooled_principal_e8s,
-        snapshot_fingerprint: daily.claim.observation_fingerprint,
-    });
+    apply_structural_checkpoint(
+        &mut latest,
+        daily,
+        records,
+        observation.event,
+        observation.observed_at_nanos,
+    )?;
     latest
-        .reward_checkpoint
-        .validate(&latest.config)
+        .validate(ic_cdk::api::canister_self())
         .map_err(ApiError::Invalid)?;
     state::write(latest);
+    Ok(())
+}
+
+async fn drive_reconciliation() -> Result<(), ApiError> {
+    match crate::pool_reconciliation::ensure_latest().await {
+        Ok(true) => finish_reconciliation().await,
+        Ok(false) | Err(ApiError::Busy) | Err(ApiError::Pending(_)) => {
+            crate::reward_timer::install_retry();
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+async fn finish_reconciliation() -> Result<(), ApiError> {
+    let expected = state::read();
+    let checkpoint = expected
+        .latest_reconciliation_checkpoint
+        .clone()
+        .ok_or_else(|| ApiError::Pending("structural checkpoint is absent".into()))?;
+    let claim = crate::canonical::claim_snapshot(&expected.config)
+        .await
+        .map_err(ApiError::Ledger)?;
+    let mut latest = state::read();
+    if latest != expected {
+        return Err(ApiError::Busy);
+    }
+    backing_registry::promote_pending(
+        &mut latest.neuron_registry,
+        checkpoint.event_marker,
+        claim.pooled_principal_e8s,
+        claim.total_claim_backing_e8s,
+        claim.claim_supply_e8s,
+        checkpoint.active_backing_io_e8s,
+    )
+    .map_err(ApiError::Invalid)?;
+    let checkpoint = latest
+        .latest_reconciliation_checkpoint
+        .as_mut()
+        .ok_or_else(|| ApiError::Pending("structural checkpoint disappeared".into()))?;
+    checkpoint.claim_supply_e8s = claim.claim_supply_e8s;
+    checkpoint.liquid_backing_e8s = claim.liquid_icp_e8s;
+    checkpoint.pooled_backing_e8s = claim.pooled_principal_e8s;
+    checkpoint.unwinding_backing_e8s = claim.unwinding_net_backing_e8s;
+    checkpoint.transit_backing_e8s = claim.transit_backing_e8s;
+    checkpoint.total_claim_backing_e8s = claim.total_claim_backing_e8s;
+    checkpoint.observed_pooled_e8s = claim.pooled_principal_e8s;
+    checkpoint.snapshot_fingerprint = claim.observation_fingerprint;
+    latest.structural_reconciliation_due = false;
+    latest
+        .validate(ic_cdk::api::canister_self())
+        .map_err(ApiError::Invalid)?;
+    state::write(latest);
+    crate::reward_timer::install_for_ready_state();
     Ok(())
 }
 

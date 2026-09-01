@@ -4,7 +4,7 @@ Status: Accepted
 
 The SNS ledger is the canonical IO supply authority. Launch configuration requires a positive explicit transfer fee and no fee collector; ordinary transfer fees therefore burn IO and reduce `icrc1_total_supply`.
 
-The stream manager never reconstructs global supply from transactions. It reads canonical total supply, reserve balance and the bounded configured excluded Accounts when pricing an authenticated redemption or settling a receipt. A redemption pulls IO directly from the caller Account into reserve with ICRC-2. Reserve issuance and rewards use explicit ICRC-1 intents and account for the sender-paid fee burn.
+The stream manager never reconstructs global supply from transactions. It reads canonical total supply, reserve balance and the bounded configured excluded Accounts when pricing an authenticated redemption or settling a receipt. The anchored-dynamic-backing ADR supersedes this ADR's former ICRC-2 pull decision: redemption prepares an exact quote, the caller performs one ICRC-1 push into reserve, and settlement proves that exact block before creating a payout obligation. Reserve issuance and rewards use explicit ICRC-1 intents and account for the sender-paid fee burn.
 
 Historian ledger/index/archive ingestion may explain fee burns and supply history, but it cannot provide a monetary input or complete an operation. Any intentional fee-policy change requires pause, drain, governance approval, configuration update, validation and an audited forward upgrade.
 

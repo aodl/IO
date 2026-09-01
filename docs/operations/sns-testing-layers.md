@@ -60,9 +60,9 @@ What it does not prove:
 This layer is optional/manual and local-only. It follows the current official ICP/DFINITY SNS testing documentation as the source of truth and must use the source-built `sns` CLI with `sns-testing` to create a real local SNS root, governance, ledger, index, swap, and archive stack from a local `sns_init` candidate. The historical standalone `dfinity/sns-testing` repository is deprecated; if the official docs reference successor tooling or a new repository/location, use that current official location.
 
 The current release completed this layer in schema-v2 package
-`deploy/local-sns-rehearsal/evidence/2026-08-26-9462a1a-account-semantic`,
-bound to source `9462a1a0df602f06fa845bd31f9fcd0adf80067a` and immediate
-artifact child `46713f8499cf9a63a6cd4879b1fff9c1f9ef0be5`. The run used
+`deploy/local-sns-rehearsal/evidence/2026-08-31-e727d68-anchored-dynamic`,
+bound to source `e727d688b3aec0e6dace6a499a4979bf66cad2c8` and immediate
+artifact child `d8e45b27e9b12d19542ea4220616f3828896c41a`. The run used
 source-built revision `4320fdf2e613844eabae1927b1a23b98da3a7bc6` from an
 isolated clean checkout. The package and instructions below remain the process
 for producing a future replacement package; they do not imply current evidence
@@ -102,7 +102,7 @@ candidate-package validation passes, and the selector is reviewed against its
 exact source/artifact/checksum identity. Historical packages remain bound to
 their own runs.
 
-Done criteria for this layer are intentionally concrete: official local SNS tooling must run locally; local SNS root/governance/ledger/index/swap IDs must be recorded; ledger fee disposition, total-supply deltas, reserve balance, reserve-to-user transfer, user-to-redemption transfer, redemption-to-reserve transfer, bad fee, insufficient funds, duplicate proof, and index account history must be observed; governance/root/swap availability and dapp controller state must be checked; exact NNS and controlled account-semantic cases must pass serially; and the candidate and selected committed evidence validators must both pass.
+Done criteria for this layer are intentionally concrete: official local SNS tooling must run locally; local SNS root/governance/ledger/index/swap IDs must be recorded; ledger fee disposition, total-supply deltas, reserve balance, reserve-to-user issuance, the exact prepared user-to-reserve redemption push, bad fee, insufficient funds, duplicate proof, and index account history must be observed; governance/root/swap availability and dapp controller state must be checked; exact NNS and controlled anchored-dynamic cases must pass serially; and the candidate and selected committed evidence validators must both pass.
 
 ## Layer 4: Mainnet SNS Testflight
 

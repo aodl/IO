@@ -1,0 +1,68 @@
+[evidence]
+schema = "anchored-dynamic-v1"
+source_commit = "e727d688b3aec0e6dace6a499a4979bf66cad2c8"
+artifact_commit = "d8e45b27e9b12d19542ea4220616f3828896c41a"
+release_manifest_sha256 = "13d258958bee84e20934627f66707ca6ba336c26cb9e7ff6d140918a4465a382"
+official_sns_layer_complete = true
+exact_nns_boundary_layer_complete = true
+controlled_orchestration_layer_complete = true
+
+[backing]
+identity = "B = L + P + U + T"
+identity_checked = true
+liquid_first = true
+ordinary_reconciliation = true
+dynamic_parent_bootstrapped = true
+anchor_partition_checked = true
+claim_rate_floor_checked = true
+claim_rate_monotonicity_checked = true
+
+[scheduler]
+structural_twelve_hour_cadence = true
+reward_independence_checked = true
+ready_child_wakeup_checked = true
+
+[cohorts]
+more_than_32_generations_checked = true
+capacity_pending_absent = true
+
+[redemption]
+prepared_icrc1_push = true
+durable_payout_obligation = true
+icrc2_pull_absent = true
+
+[jupiter]
+authorized_source_block_required = true
+unauthorized_rejected = true
+paired_settlement = true
+empty_genesis_one_to_one = true
+provenance_after_custody = false
+
+[two_week]
+fixed_semantic_account = true
+paired_settlement = true
+mint_provenance_api_absent = true
+frozen_staker_settlement = true
+
+[two_year]
+fixed_semantic_account = true
+paired_receipt = false
+io_issuance = false
+claim_credit_increases_backing = true
+
+[carry_forward]
+g1_capture_units = 100
+late_units = 20
+g2_maturity_units = 50
+g2_capture_units = 70
+two_week_final_staging_e8s = 0
+two_year_final_staging_e8s = 0
+cross_account_isolation = true
+
+[liveness]
+no_effect_retry_exactly_once = true
+ambiguous_effect_never_resubmitted = true
+request_retryable = true
+cohort_unwind_complete = true
+upgrade_restart_exact = true
+receipt_replay_exact = true

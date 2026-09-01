@@ -15,7 +15,7 @@ evidence = "tools/sns/sns_init.io.template.yaml exists and the maintained source
 
 [local_sns_testing_rehearsal]
 status = "complete"
-evidence = "The schema-v2 canonical package deploy/local-sns-rehearsal/evidence/2026-08-26-9462a1a-account-semantic completed official source-built SNS launch/wiring evidence, exact NNS proposal-143660 evidence, current IO account-semantic orchestration, restart-safe packaging, and committed-evidence validation. It is bound to source 9462a1a0df602f06fa845bd31f9fcd0adf80067a, immediate artifact child 46713f8499cf9a63a6cd4879b1fff9c1f9ef0be5, release manifest 011113d83510e66976f5d3eabefc57ef30ba44fc49a8973fad29be043b374431, package manifest 254e8866394d62ba9fbe2b0290709d2c9dbaeb8ed84c8b3446b9a1912af0eb78, and package SHA256SUMS a1915cef319b569955c5d75ad88c4a3715af8483573d2cf9b3a2af108d6bea29. Earlier packages remain immutable historical evidence and were not rebound."
+evidence = "The schema-v2 canonical package deploy/local-sns-rehearsal/evidence/2026-08-31-e727d68-anchored-dynamic completed official source-built SNS launch/wiring evidence, exact NNS proposal-143660 evidence, anchored IO economics and scheduling, prepared-push redemption, restart-safe packaging, and committed-evidence validation. It is bound to source e727d688b3aec0e6dace6a499a4979bf66cad2c8, immediate artifact child d8e45b27e9b12d19542ea4220616f3828896c41a, release manifest 13d258958bee84e20934627f66707ca6ba336c26cb9e7ff6d140918a4465a382, package manifest a4fb737b0b0101284ac6cdc00aab0f484d4a2ccd3942adf6f28cf1b98f6a6af1, and package SHA256SUMS 6e035df94a0410fa733a09cf35e557e0d6e072e98bbfcb5edf506ef8117409a1. Earlier packages remain immutable historical evidence and were not rebound."
 
 [mainnet_testflight]
 status = "incomplete"
@@ -27,7 +27,7 @@ evidence = "Non-destructive exact-source verification preserves the checked-in a
 
 [hosted_github_ci]
 status = "incomplete"
-evidence = "Local test_ci and verify_release are green, and the exact release branch/head through canonical evidence commit 1ed1399130358ed5788cae99f3d65d82cbbc70a9 is available remotely. PR-triggered hosted test, security, and reproducible-build runs are still required on the final documentation-tail head before fast-forward-only integration."
+evidence = "The exact release branch includes canonical evidence commit 61c1a7fb0cda3ef743a8f68c1488cdf57e3dc264. Complete local test_ci and verify_release, then require PR-triggered hosted test, security, and reproducible-build runs on the exact final documentation-tail head before fast-forward-only integration."
 
 [app_canisters_stable_on_mainnet]
 status = "incomplete"

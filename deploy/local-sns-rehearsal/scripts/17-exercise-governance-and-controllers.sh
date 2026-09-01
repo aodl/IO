@@ -189,18 +189,6 @@ if ! phase_is_done 17-excluded-account-preflight; then
   mark_phase_done 17-excluded-account-preflight \
     "name=sns-treasury owner=${governance} subaccount_hex=${treasury_subaccount} balance_e8s=${treasury_balance}"
 fi
-if ! phase_is_done 17-stream-activated; then
-  function_id="$(runtime_value governance stream_lifecycle_function_id)"
-  action="variant { ExecuteGenericNervousSystemFunction = record { function_id = ${function_id} : nat64; payload = blob \"DIDL\\00\\01~\\00\" } }"
-  proposal_id="$(submit_sns_proposal "$log_file" 'Activate IO stream' 'Local-only authenticated transition from Paused to Ready.' "$action")"
-  wait_sns_proposal "$log_file" "$proposal_id"
-  status="$(dfx canister call --network "$network_url" --identity "$identity" --query --candid \
-    "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" get_status '()')"
-  printf '%s\n' "$status" >> "$log_file"
-  printf '%s' "$status" | grep -q Ready || { record_blocker 'stream did not enter Ready through SNS Governance'; exit 2; }
-  mark_phase_done 17-stream-activated "function_id=${function_id} proposal_id=${proposal_id}"
-fi
-
 if ! phase_is_done 17-nns-function-registered; then
   function_id="$(runtime_value governance nns_lifecycle_function_id)"
   action="variant { AddGenericNervousSystemFunction = record { id = ${function_id} : nat64; name = \"Set IO NNS manager lifecycle\"; description = opt \"Pause or unpause the local IO NNS manager through authenticated SNS Governance.\"; function_type = opt variant { GenericNervousSystemFunction = record { validator_canister_id = opt principal \"${nns_manager}\"; target_canister_id = opt principal \"${nns_manager}\"; validator_method_name = opt \"validate_set_paused\"; target_method_name = opt \"set_paused\"; topic = opt variant { CriticalDappOperations } } } } }"
@@ -213,11 +201,27 @@ if ! phase_is_done 17-nns-activated; then
   action="variant { ExecuteGenericNervousSystemFunction = record { function_id = ${function_id} : nat64; payload = blob \"DIDL\\00\\01~\\00\" } }"
   proposal_id="$(submit_sns_proposal "$log_file" 'Activate IO NNS manager' 'Local-only authenticated transition from Paused to Ready.' "$action")"
   wait_sns_proposal "$log_file" "$proposal_id"
-  status="$(dfx canister call --network "$network_url" --identity "$identity" --query --candid \
-    "${REPO_ROOT}/canisters/io_nns_neuron_manager/io_nns_neuron_manager.did" "$nns_manager" get_status '()')"
-  printf '%s\n' "$status" >> "$log_file"
+  activation_proposals="${proposal_id}"
+  status=''
+  for _attempt in $(seq 1 12); do
+    status="$(dfx canister call --network "$network_url" --identity "$identity" --query --candid \
+      "${REPO_ROOT}/canisters/io_nns_neuron_manager/io_nns_neuron_manager.did" "$nns_manager" get_status '()')"
+    printf '%s\n' "$status" >> "$log_file"
+    if printf '%s' "$status" | grep -q Ready; then
+      break
+    fi
+    if printf '%s' "$status" | grep -q 'active_operation = opt "Pool"'; then
+      run_logged "$log_file" dfx canister call --network "$network_url" --identity "$identity" \
+        --candid "${REPO_ROOT}/canisters/io_nns_neuron_manager/io_nns_neuron_manager.did" \
+        "$nns_manager" resume '()'
+      continue
+    fi
+    retry_proposal="$(submit_sns_proposal "$log_file" 'Complete IO NNS manager activation' 'Local-only authenticated completion after durable Dynamic-parent bootstrap.' "$action")"
+    wait_sns_proposal "$log_file" "$retry_proposal"
+    activation_proposals="${activation_proposals},${retry_proposal}"
+  done
   printf '%s' "$status" | grep -q Ready || {
-    record_blocker 'NNS manager activation proposal executed through SNS Governance but readiness remained Paused despite the source-shaped staging and protected-neuron fixture; inspect the canonical readiness error'
+    record_blocker 'NNS manager did not reach Ready after bounded Dynamic-parent bootstrap recovery and authenticated readiness retries'
     exit 2
   }
   printf '%s' "$status" | grep -q 'two_year_maturity_baseline_reconciled = true' || {
@@ -226,15 +230,48 @@ if ! phase_is_done 17-nns-activated; then
   }
   fixture="${GENERATED_DIR}/nns-readiness-fixture.toml"
   require_file "$fixture"
-  grep -Fq 'exists = false' "$fixture" || {
-    record_blocker 'source-shaped NNS readiness fixture unexpectedly created a pooled parent'
-    exit 2
-  }
+  anchor_target="$(toml_number "$fixture" dynamic_parent_seed anchor_target_e8s)"
+  expected_surplus="$(toml_number "$fixture" dynamic_parent_seed expected_excluded_surplus_e8s)"
+  expected_followee="$(toml_number "$fixture" dynamic_parent_seed followee_neuron_id)"
+  dynamic_backing="$(dfx canister call --network "$network_url" --identity "$identity" \
+    --candid "${REPO_ROOT}/canisters/io_nns_neuron_manager/io_nns_neuron_manager.did" \
+    "$nns_manager" observe_dynamic_backing_status '()')"
+  printf 'dynamic_backing_status=%s\n' "$dynamic_backing" >> "$log_file"
+  dynamic_compact="$(printf '%s' "$dynamic_backing" | tr -d '_[:space:]')"
+  printf '%s' "$dynamic_compact" | grep -q 'parent=optrecord' \
+    && printf '%s' "$dynamic_compact" | grep -q 'claimbearingdynamicprincipale8s=0' \
+    && printf '%s' "$dynamic_compact" | grep -q "anchortargete8s=${anchor_target}" \
+    && printf '%s' "$dynamic_compact" | grep -q "anchoravailablee8s=${anchor_target}" \
+    && printf '%s' "$dynamic_compact" | grep -q "excludeddynamicsurpluse8s=${expected_surplus}" || {
+      record_blocker 'NNS manager Ready state lacks the exact Dynamic anchor/surplus partition'
+      exit 2
+    }
+  printf '%s' "$dynamic_compact" | grep -q 'dissolvedelayseconds=1209600' \
+    && printf '%s' "$dynamic_compact" | grep -q 'autostakematurity=false' \
+    && printf '%s' "$dynamic_compact" | grep -q "followeeneuronid=${expected_followee}" || {
+      record_blocker 'NNS manager Ready state lacks the exact Dynamic delay/follow/auto-stake policy'
+      exit 2
+    }
   printf '%s' "$status" | grep -q 'latest_pooled_target = null' || {
-    record_blocker 'NNS manager unexpectedly recorded a pooled target before existing liquid backing bootstrapped it'
+    record_blocker 'NNS manager unexpectedly recorded a claim target during anchor-only bootstrap'
     exit 2
   }
-  mark_phase_done 17-nns-activated "function_id=${function_id} proposal_id=${proposal_id} lifecycle=Ready permanent_baseline_reconciled=true pooled_parent=absent"
+  mark_phase_done 17-nns-activated "function_id=${function_id} proposal_ids=${activation_proposals} lifecycle=Ready permanent_baseline_reconciled=true dynamic_parent=present anchor_available_e8s=${anchor_target} excluded_dynamic_surplus_e8s=${expected_surplus}"
+fi
+
+# Stream readiness observes the NNS Manager's canonical claim assets and policy.
+# Activate it only after authenticated NNS readiness has established the Dynamic
+# parent and permanent-neuron baseline; otherwise the SNS target must reject.
+if ! phase_is_done 17-stream-activated; then
+  function_id="$(runtime_value governance stream_lifecycle_function_id)"
+  action="variant { ExecuteGenericNervousSystemFunction = record { function_id = ${function_id} : nat64; payload = blob \"DIDL\\00\\01~\\00\" } }"
+  proposal_id="$(submit_sns_proposal "$log_file" 'Activate IO stream' 'Local-only authenticated transition from Paused to Ready after NNS readiness.' "$action")"
+  wait_sns_proposal "$log_file" "$proposal_id"
+  status="$(dfx canister call --network "$network_url" --identity "$identity" --query --candid \
+    "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" get_status '()')"
+  printf '%s\n' "$status" >> "$log_file"
+  printf '%s' "$status" | grep -q Ready || { record_blocker 'stream did not enter Ready through SNS Governance after NNS readiness'; exit 2; }
+  mark_phase_done 17-stream-activated "function_id=${function_id} proposal_id=${proposal_id} nns_ready_first=true"
 fi
 
 mark_phase_done 17-exercise-governance-and-controllers "controllers checked; upgrade result and authenticated lifecycle proposals recorded"

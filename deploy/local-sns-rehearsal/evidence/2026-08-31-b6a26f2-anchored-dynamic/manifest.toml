@@ -1,0 +1,13 @@
+[provenance]
+evidence_schema = "anchored-dynamic-v1"
+official_ic_repository = "dfinity/ic"
+official_ic_source_commit = "4320fdf2e613844eabae1927b1a23b98da3a7bc6"
+sns_testing_source_path = "rs/sns/testing"
+io_release_source_commit = "b6a26f223b4c37f021ea398f3003b4d149683ee9"
+io_artifact_recording_commit = "af7e0791384808b1f8304e7048b86ade9a328306"
+release_manifest_sha256 = "70e843404812cd0955b20ccb586e8a4760990c944146a55708ebb00649600fd2"
+complete = true
+monitoring = true
+canonical_redemption_economics = true
+account_semantic_economics = true
+network = "local"

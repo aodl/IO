@@ -1,11 +1,27 @@
-use crate::state::{self, Lifecycle};
+use crate::{
+    redemption::RedemptionPhase,
+    state::{self, Lifecycle, RedemptionStreamOperation, StreamOperation},
+};
+
+pub(crate) fn is_readiness_resumable_operation(operation: &Option<StreamOperation>) -> bool {
+    operation.is_none()
+        || matches!(operation, Some(StreamOperation::Redemption(redemption))
+            if matches!(redemption.as_ref(), RedemptionStreamOperation::Active(active)
+                if matches!(active.phase,
+                    RedemptionPhase::PayoutOwed
+                    | RedemptionPhase::PayoutSubmitted
+                    | RedemptionPhase::PayoutSucceeded
+                    | RedemptionPhase::Stuck)))
+}
 
 pub async fn readiness_preflight(
     canister_self: candid::Principal,
     captured_control_epoch: u64,
 ) -> Result<(), crate::api::ApiError> {
     let snapshot = state::read();
-    if snapshot.active_operation.is_some() || snapshot.prepared_exit_reconciliation.is_some() {
+    if !is_readiness_resumable_operation(&snapshot.active_operation)
+        || snapshot.prepared_exit_reconciliation.is_some()
+    {
         return Err(crate::api::ApiError::Busy);
     }
     snapshot
@@ -36,7 +52,7 @@ pub async fn readiness_preflight(
     let io_standards = crate::canonical::supported_standards(snapshot.config.io_ledger)
         .await
         .map_err(crate::api::ApiError::Ledger)?;
-    for required in ["ICRC-1", "ICRC-2", "ICRC-3"] {
+    for required in ["ICRC-1", "ICRC-3"] {
         if !io_standards
             .iter()
             .any(|standard| standard.name == required)
@@ -92,7 +108,8 @@ pub async fn readiness_preflight(
         ));
     }
     let mut latest = state::read();
-    if latest.active_operation.is_some()
+    if latest.active_operation != snapshot.active_operation
+        || !is_readiness_resumable_operation(&latest.active_operation)
         || latest.prepared_exit_reconciliation.is_some()
         || latest.lifecycle != Lifecycle::Paused
         || latest.control_epoch != captured_control_epoch
@@ -109,6 +126,9 @@ pub async fn readiness_preflight(
     latest.reward_checkpoint.reward_work_due = activation_baseline.is_none();
     latest.reward_checkpoint.governance_parameters_fresh = true;
     latest.stake_observation_due = true;
+    latest
+        .validate(canister_self)
+        .map_err(crate::api::ApiError::Invalid)?;
     state::write(latest);
     Ok(())
 }
@@ -150,13 +170,6 @@ pub fn begin_control_request() -> Result<u64, String> {
 pub fn set_paused() {
     let mut state = state::read();
     state.lifecycle = Lifecycle::Paused;
-    if matches!(
-        &state.active_operation,
-        Some(crate::state::StreamOperation::Redemption(operation))
-            if matches!(operation.as_ref(), crate::state::RedemptionStreamOperation::Preparing(_))
-    ) {
-        state.active_operation = None;
-    }
     state::write(state);
 }
 

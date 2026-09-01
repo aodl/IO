@@ -45,13 +45,13 @@ mod tests {
 
     #[test]
     #[ignore = "requires pinned real SNS ledger Wasm and POCKET_IC_BIN"]
-    fn real_sns_icrc2_direct_reserve_pull() {
-        crate::sns_ledger_index::run_icrc2_direct_reserve_pull(false);
+    fn real_sns_icrc1_direct_reserve_push() {
+        crate::sns_ledger_index::run_icrc1_direct_reserve_push(false);
     }
 
     #[test]
     #[ignore = "requires pinned real SNS ledger Wasm, stream Wasm, and POCKET_IC_BIN"]
-    fn installed_stream_real_sns_icrc2_redemption() {
+    fn installed_stream_real_sns_icrc1_push_redemption() {
         crate::sns_ledger_index::run_installed_stream_redemption(false);
     }
 
@@ -78,6 +78,12 @@ mod tests {
     #[ignore = "requires candidate Governance, SNS Root/ledger, stream/mock NNS Wasms, and POCKET_IC_BIN"]
     fn candidate_reward_shares_drive_io_rewards() {
         crate::sns_governance_setup::run_candidate_reward_shares_drive_io_rewards(true).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires reviewed SNS Governance/Root/Ledger Wasms, stream/mock NNS Wasms, and POCKET_IC_BIN"]
+    fn real_sns_genesis_round_stream_regression() {
+        crate::sns_governance_setup::run_real_sns_genesis_round_stream_regression(true).unwrap();
     }
 
     #[test]

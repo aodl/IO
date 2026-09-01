@@ -378,7 +378,12 @@ mod frontend_honesty {
         assert!(source.contains("io_stream_manager"));
         assert!(repo_path("canisters/frontend/web/declarations/io_stream_manager").exists());
         assert!(source.contains("get_caller_redemption_state"));
-        assert!(source.contains("icrc2_approve"));
+        assert!(source.contains("prepare_redemption"));
+        assert!(source.contains("icrc1_transfer"));
+        assert!(source.contains("settle_redemption"));
+        assert!(!source.contains("icrc2_approve"));
+        assert!(!source.contains("icrc2_allowance"));
+        assert!(!source.contains("icrc2_transfer_from"));
         assert!(!source.contains("debug_"));
     }
 
@@ -481,17 +486,23 @@ mod frontend_honesty {
     }
 
     #[test]
-    fn frontend_exposes_only_the_simplified_redemption_action() {
+    fn frontend_exposes_only_the_prepared_push_redemption_action() {
         let source = web_source();
         let template = read("canisters/frontend/web/index.template.html");
         let combined = format!("{source}\n{template}");
 
         assert!(combined.contains("<form"));
         assert!(combined.contains("type=\"submit\""));
-        assert!(combined.contains("Sending IO directly is unsupported"));
+        assert!(combined.contains("arbitrary unprepared transfers remain unsupported"));
+        assert!(combined.contains("protocol reserve with the prepared memo"));
         assert!(combined.contains("canonicalSubaccount"));
+        assert!(combined.contains("icrc1_transfer"));
+        assert!(combined.contains("prepare_redemption"));
+        assert!(combined.contains("settle_redemption"));
         for forbidden in [
-            "icrc1_transfer(",
+            "icrc2_approve",
+            "icrc2_allowance",
+            "icrc2_transfer_from",
             ".transfer(",
             "stake(",
             "claim(",

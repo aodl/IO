@@ -1,0 +1,21 @@
+(record {
+  config = record {
+    io_ledger = principal "75lp5-u7777-77776-qaaba-cai";
+    icp_ledger = principal "ryjl3-tyaaa-aaaaa-aaaba-cai";
+    nns_manager = principal "lqy7q-dh777-77777-aaaaq-cai";
+    jupiter_io_account = record { owner = principal "ykqk6-rh72i-elyzo-ipyfz-oowrh-cuoyr-crk2b-vtow3-kxpo6-zu5qu-yae"; subaccount = opt blob "\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04\04" };
+    sns_governance = principal "7uieb-cx777-77776-qaaaq-cai";
+    sns_root = principal "7tjcv-pp777-77776-qaaaa-cai";
+    expected_sns_governance_module_hash = blob "\e6\3b\fd\47\6b\d5\78\49\fd\0c\8c\10\12\ba\de\22\72\64\ab\07\9e\9e\bc\61\79\5b\96\9e\16\df\0a\a4";
+    approved_reward_event_duration_seconds = 86_400 : nat64;
+    io_reserve = record { owner = principal "lxzze-o7777-77777-aaaaa-cai"; subaccount = opt blob "\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01" };
+    liquid_icp = record { owner = principal "lxzze-o7777-77777-aaaaa-cai"; subaccount = opt blob "\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02\02" };
+    nonredeemable_governance_io_accounts = vec { record { owner = principal "7uieb-cx777-77776-qaaaq-cai"; subaccount = opt blob "\f6\e6\61\a6\92\e3\37\ba\89\9c\f0\b9\a3\61\08\69\cf\8a\72\8e\b5\98\9f\ce\f7\bb\7e\eb\8a\00\40\a1" } };
+    minimum_redemption_io_e8s = 20_000 : nat;
+    expected_io_fee_e8s = 10_000 : nat;
+    expected_icp_fee_e8s = 10_000 : nat;
+    maximum_request_lifetime_nanos = 900_000_000_000 : nat64;
+    retry_delay_nanos = 1_000_000_000 : nat64;
+    ledger_deduplication_window_nanos = 86_400_000_000_000 : nat64;
+  };
+})

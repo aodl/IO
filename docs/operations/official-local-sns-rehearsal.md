@@ -58,14 +58,61 @@ publication, CreateServiceNervousSystem, swap participation/finalization,
 canister discovery, Governance treasury funding, ledger/index evidence and
 controller handoff all succeeded locally. The current immutable sanitized
 package is
-`deploy/local-sns-rehearsal/evidence/2026-08-26-9462a1a-account-semantic`.
-It is bound to source `9462a1a0df602f06fa845bd31f9fcd0adf80067a`,
-immediate artifact child `46713f8499cf9a63a6cd4879b1fff9c1f9ef0be5`, and
-canonical evidence commit `1ed1399130358ed5788cae99f3d65d82cbbc70a9`.
+`deploy/local-sns-rehearsal/evidence/2026-08-31-e727d68-anchored-dynamic`.
+It is bound to source `e727d688b3aec0e6dace6a499a4979bf66cad2c8`,
+immediate artifact child `d8e45b27e9b12d19542ea4220616f3828896c41a`, and
+canonical evidence commit `61c1a7fb0cda3ef743a8f68c1488cdf57e3dc264`.
 Earlier packages remain historical as described in
 `local-sns-evidence-disposition.md`.
 
 The maintained package includes a renderable local `sns_init` candidate, per-run runtime inputs, evidence capture helpers, no-network validators, and restartable phases 10–19. Those phases verify exact IO release provenance, install Paused dapps, provision canonical staging fee floats and source-shaped local NNS neurons, publish a reviewed Governance/Root bundle through executed local NNS Governance proposals into SNS-W, verify exact compressed hashes, finalize and discover the SNS, submit real treasury and lifecycle proposals, exercise production redemption, capture index/archive/controller evidence, observe one reward event, run the layered account-semantic protocol cases and package evidence fail closed. The prior one-component candidate-Governance/official-Root `unit_variant` incompatibility is historical; same-source candidate Governance/Root compatibility is proved. If the maintained chunk-store CLI route fails before execution, phase 17 submits the exact release Wasm inline through a signed SNS Governance proposal and Root. The inline payload avoids only the unavailable upload store; it does not bypass Governance. Same-release manager upgrades must reopen Paused and resume exact retained operations after authenticated readiness restoration. The current package records one coherent fresh run and restart-safe phase recovery; the thin lifecycle source profile is separate runner coverage and does not retroactively qualify or invalidate any package.
+
+The maintained phase order intentionally activates Stream while SNS Governance
+still exposes its canonical dummy genesis reward event: round zero, nonzero end
+timestamp, zero span, no proposals, and zero distributed reward. Readiness
+freezes that event as a zero-credit baseline; the immediate observation is
+structural and may record reconciliation marker zero. Production redemption is
+then exercised before the first real distribution. If preparation observes the
+legitimate genesis Pool as Busy, phase 15 boundedly continues that same
+structural generation through Stream `resume`, `resume_reward_backing`, and NNS
+`resume` before retrying; it never suppresses the observation or creates a new
+generation merely for redemption. Only after that proof does the reward phase
+raise its locally controlled proposer from the SNS fixture's initial delay to
+the exact product eligibility duration of 1,296,060 seconds. The rendered local
+SNS config sets the Governance maximum dissolve-delay duration to that same
+value; retaining a 14-day maximum would silently cap the adjustment below the
+product eligibility boundary. Round one records
+prospective eligibility without retroactive credit; the phase then submits a
+new proposal and requires round two to add exactly one eligible reward credit.
+No rehearsal phase fabricates a reward round or delays activation to avoid the
+genesis event.
+
+That structural observation also runs ordinary pooled reconciliation. It may
+commit the next structural event marker before reward credit is due; the reward
+observer boundedly resolves that exact reconciliation generation before testing
+the reward deadline, so an unrelated `Busy` result cannot stand in for the
+deadline proof. A remaining same-baseline structural pass is accepted only when
+it is exactly zero-credit and leaves the processed-event count unchanged. The
+observer requires either that exact zero-credit structural result or `Pending`
+while the clock is still before the canonical event-end `+300s` margin; an
+unresolved reconciliation generation is not required to manufacture a
+`Pending` reply merely to prove the reward boundary. It then recomputes and
+advances the exact remaining simulated margin plus one second so the one-shot
+timer can wake. The proof accepts either the timer or the permissionless keeper
+as the winner. The first post-margin invocation may still finish an exact
+zero-credit structural continuation; the observer boundedly settles that same
+generation and continues until it proves the one-time reward checkpoint.
+Structural work does not consume the reward event or increment reward credit.
+If it legitimately occupies the NNS Manager's single immediate slot, the
+maintained order does not suppress, cancel, or preempt Pool. The two-year
+maturity validator must reject proposal submission while Pool is visible. After bounded
+production `resume_reward_backing`, Stream `resume`, NNS `resume`, and any exact
+transfer proof settle the canonical target, a fresh proposal is submitted and
+must be recorded executed only when exact TwoYear work is actually durable.
+Execution repeats the same acceptance checks to cover a validator/execution
+race. The reviewed SNS target boundary regards any normal reply as success, so
+an unaccepted IO generic action must reject at transport level rather than rely
+on a Candid `Err` payload.
 
 ## Manual Flow
 
@@ -119,7 +166,12 @@ Run local canister calls against the local SNS ledger/index principals recorded 
 
 IO issuance is resolved conservatively as a transfer from a protocol reserve account/subaccount funded after SNS finalization and before activation by an executed SNS-governance treasury-transfer proposal.
 
-Redemption uses an authenticated ICRC-2 pull directly into the protocol reserve. IO must not assume arbitrary post-launch minting unless final SNS ledger configuration and governance policy explicitly support it and a later audited milestone changes this model.
+Redemption uses an exact prepared ICRC-1 push into the protocol reserve. The
+caller sends the prepared amount and memo, then supplies the block for exact
+proof; no allowance or spender authority exists. A proved push creates a
+durable ICP payout obligation. IO must not assume arbitrary post-launch minting
+unless final SNS ledger configuration and governance policy explicitly support
+it and a later audited milestone changes this model.
 
 The local rehearsal must prove:
 
@@ -131,12 +183,12 @@ The local rehearsal must prove:
 
 ## What Remains Unproven
 
-The schema-v2 `2026-08-26-9462a1a-account-semantic` package closes the current
+The schema-v2 `2026-08-31-e727d68-anchored-dynamic` package closes the current
 local rehearsal item. Layer A proves source-built official SNS launch/wiring;
 Layer B proves the exact proposal-143660 NNS boundary; Layer C proves current IO
-account-semantic orchestration and controlled recovery. The intermediate
-`2026-08-26-716d51e-account-semantic` package and all earlier packages remain
-historical and were not rebound.
+anchored economics, structural/reward scheduling, prepared-push redemption and
+controlled recovery. All earlier packages remain historical and were not
+rebound.
 
 Completed local proof does not prove official SNS reward-share release adoption.
 Source-built revision `4320fdf2e613844eabae1927b1a23b98da3a7bc6`

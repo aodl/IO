@@ -11,6 +11,45 @@ use pocket_ic::PocketIc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const REWARD_OBSERVATION_MARGIN_SECONDS: u64 = 300;
+const REWARD_SCHEDULER_WAKE_EPSILON_SECONDS: u64 = 1;
+
+fn is_valid_warmup_classification(classification: RewardEventClassification) -> bool {
+    matches!(
+        classification,
+        RewardEventClassification::NoProposalFallback
+            | RewardEventClassification::ZeroEligibleParticipation
+    )
+}
+
+fn warmup_reward_is_committed(status: &Status) -> bool {
+    status.processed_reward_event_count == 1
+        && status.accumulated_policy_credit == io_reward_policy::DAILY_EVENT_CREDIT
+        && status
+            .latest_reward_event_classification
+            .is_some_and(is_valid_warmup_classification)
+}
+
+fn reward_margin_wait_seconds(now_seconds: u64, event_end_seconds: u64) -> u64 {
+    event_end_seconds
+        .checked_add(REWARD_OBSERVATION_MARGIN_SECONDS)
+        .expect("canonical reward observation deadline overflow")
+        .saturating_sub(now_seconds)
+}
+
+fn reward_scheduler_advance_seconds(now_seconds: u64, event_end_seconds: u64) -> u64 {
+    let wait = reward_margin_wait_seconds(now_seconds, event_end_seconds);
+    if wait > 0
+        || now_seconds
+            == event_end_seconds
+                .checked_add(REWARD_OBSERVATION_MARGIN_SECONDS)
+                .expect("canonical reward observation deadline overflow")
+    {
+        wait.checked_add(REWARD_SCHEDULER_WAKE_EPSILON_SECONDS)
+            .expect("canonical reward scheduler advance overflow")
+    } else {
+        0
+    }
+}
 
 fn required(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("{name} must be set"))
@@ -130,7 +169,8 @@ fn submit_canonical_motion(pic: &PocketIc, governance: Principal) -> u64 {
                 command: Some(Command::MakeProposal(Proposal {
                     url: "https://forum.dfinity.org/t/io-local-rehearsal/0".into(),
                     title: "Prospective IO reward eligibility observation".into(),
-                    summary: "Local-only proposal after exact lazy-parent reconciliation.".into(),
+                    summary: "Local-only proposal after exact Dynamic-parent reconciliation."
+                        .into(),
                     action: Some(Action::Motion(Motion {
                         motion_text: "Observe one proposal-bearing eligible IO reward event."
                             .into(),
@@ -153,9 +193,9 @@ fn submit_canonical_motion(pic: &PocketIc, governance: Principal) -> u64 {
     }
 }
 
-fn print_reward_state(pic: &PocketIc, governance: Principal, label: &str) -> SnsRewardEvent {
+fn latest_reward_event(pic: &PocketIc, governance: Principal) -> SnsRewardEvent {
     let caller = Principal::anonymous();
-    let event: SnsRewardEvent = decode_one(
+    decode_one(
         &pic.query_call(
             governance,
             caller,
@@ -164,7 +204,12 @@ fn print_reward_state(pic: &PocketIc, governance: Principal, label: &str) -> Sns
         )
         .expect("query latest reward event"),
     )
-    .expect("decode latest reward event");
+    .expect("decode latest reward event")
+}
+
+fn print_reward_state(pic: &PocketIc, governance: Principal, label: &str) -> SnsRewardEvent {
+    let caller = Principal::anonymous();
+    let event = latest_reward_event(pic, governance);
     println!("{label}_latest_reward_event={event:#?}");
 
     let neurons: ListNeuronsResponse = decode_one(
@@ -196,6 +241,124 @@ fn print_reward_state(pic: &PocketIc, governance: Principal, label: &str) -> Sns
         );
     }
     event
+}
+
+fn reward_boundary_advance_seconds(now: u64, initial_end: u64, round_seconds: u64) -> u64 {
+    let expected_next_end = initial_end
+        .checked_add(round_seconds)
+        .expect("next canonical reward end overflow");
+    expected_next_end.checked_sub(now).unwrap_or_else(|| {
+        panic!(
+            "fresh canonical reward boundary already elapsed before the controlled advance: now={now} expected_next_end={expected_next_end}"
+        )
+    })
+}
+
+fn advance_until_reward_event_changes(
+    pic: &PocketIc,
+    governance: Principal,
+    initial: &SnsRewardEvent,
+    round_seconds: u64,
+) -> u64 {
+    let initial_end = initial
+        .end_timestamp_seconds
+        .expect("canonical reward event lacks an end timestamp");
+    let now = pic.get_time().as_nanos_since_unix_epoch() / 1_000_000_000;
+    let mut advanced = reward_boundary_advance_seconds(now, initial_end, round_seconds);
+    assert!(
+        advanced > 0,
+        "fresh canonical reward boundary must remain ahead of the controlled topology time"
+    );
+    pic.advance_time(Duration::from_secs(advanced));
+    for _ in 0..20 {
+        pic.tick();
+    }
+
+    // Governance may need a small number of deterministic timer ticks after the
+    // exact round boundary. Stop as soon as the identity changes so Stream can
+    // still prove its required +300-second pre-margin behavior.
+    for _ in 0..60 {
+        let observed = latest_reward_event(pic, governance);
+        if observed.round != initial.round
+            || observed.end_timestamp_seconds != initial.end_timestamp_seconds
+        {
+            return advanced;
+        }
+        pic.advance_time(Duration::from_secs(1));
+        advanced = advanced
+            .checked_add(1)
+            .expect("canonical reward advance overflow");
+        for _ in 0..20 {
+            pic.tick();
+        }
+    }
+    panic!("canonical SNS reward event did not advance within 60 seconds of its exact boundary")
+}
+
+fn advance_to_reward_observation_margin(pic: &PocketIc, stream: Principal, event: &SnsRewardEvent) {
+    let event_end = event
+        .end_timestamp_seconds
+        .expect("canonical reward event lacks an end timestamp");
+    let deadline = event_end
+        .checked_add(REWARD_OBSERVATION_MARGIN_SECONDS)
+        .expect("canonical reward observation deadline overflow");
+    let now = pic.get_time().as_nanos_since_unix_epoch() / 1_000_000_000;
+    let wait_seconds = reward_margin_wait_seconds(now, event_end);
+
+    if wait_seconds > 0 {
+        let processed_before = stream_status(pic, stream).processed_reward_event_count;
+        let mut safe_pre_margin_result_proved = false;
+        for attempt in 0..4 {
+            let before_call = pic.get_time().as_nanos_since_unix_epoch() / 1_000_000_000;
+            assert!(
+                before_call < deadline,
+                "pre-margin probe reached the canonical reward deadline unexpectedly"
+            );
+            let early = resume_reward(pic, stream);
+            println!("pre_margin_resume_reward_work={early:#?}");
+            match early {
+                Err(ApiError::Pending(_)) => {
+                    println!("pre_margin_pending_proved_after_attempt={attempt}");
+                    safe_pre_margin_result_proved = true;
+                    break;
+                }
+                Ok(RewardEventObservation {
+                    classification: RewardEventClassification::StructuralOnly,
+                    proposal_count: 0,
+                    policy_credit: 0,
+                    eligible_credit_total: 0,
+                    ..
+                }) => {
+                    let status = stream_status(pic, stream);
+                    assert_eq!(
+                        status.processed_reward_event_count, processed_before,
+                        "pre-margin structural work must not consume a reward event"
+                    );
+                    println!("pre_margin_structural_only_attempt={attempt}");
+                    safe_pre_margin_result_proved = true;
+                }
+                other => panic!(
+                    "reward processing must remain zero-credit structural or Pending before the canonical event margin: {other:#?}"
+                ),
+            }
+        }
+        assert!(
+            safe_pre_margin_result_proved,
+            "reward processing did not prove a safe zero-credit result before the canonical event margin"
+        );
+    }
+    let after_probe = pic.get_time().as_nanos_since_unix_epoch() / 1_000_000_000;
+    let advance_seconds = reward_scheduler_advance_seconds(after_probe, event_end);
+    if advance_seconds > 0 {
+        pic.advance_time(Duration::from_secs(advance_seconds));
+        for _ in 0..20 {
+            pic.tick();
+        }
+    }
+
+    println!("warmup_reward_margin_wait_seconds={wait_seconds}");
+    println!("warmup_reward_scheduler_epsilon_seconds={REWARD_SCHEDULER_WAKE_EPSILON_SECONDS}");
+    println!("warmup_reward_observation_deadline_seconds={deadline}");
 }
 
 fn main() {
@@ -233,17 +396,17 @@ fn main() {
             .parse::<u64>()
             .expect("invalid IO_LOCAL_REWARD_ADVANCE_SECONDS");
         if !canonical_two_event || initial_status.processed_reward_event_count == 0 {
-            pic.advance_time(Duration::from_secs(seconds));
-            for _ in 0..20 {
-                pic.tick();
-            }
+            let initial_event = latest_reward_event(&pic, governance);
+            let actual_advance =
+                advance_until_reward_event_changes(&pic, governance, &initial_event, seconds);
             println!("advanced_pocketic_seconds={seconds}");
+            println!("warmup_actual_advance_seconds={actual_advance}");
         } else {
             println!("canonical_reward_warmup_reused=true");
         }
     }
 
-    print_reward_state(&pic, governance, "warmup");
+    let warmup_event = print_reward_state(&pic, governance, "warmup");
 
     let before = stream_status(&pic, stream);
     println!("stream_status_before={before:#?}");
@@ -253,16 +416,81 @@ fn main() {
             restore_stream_readiness(&pic, stream, governance);
         }
         if !canonical_two_event || before.processed_reward_event_count == 0 {
-            let result = resume_reward(&pic, stream);
-            println!("resume_reward_work={result:#?}");
+            // A structural observation is allowed to start ordinary backing
+            // reconciliation independently of reward credit. Resolve that exact
+            // generation first so the pre-margin call proves the reward deadline,
+            // rather than merely observing an unrelated Busy operation.
+            drive_reconciliation(&pic, stream);
+            let margin_ready = stream_status(&pic, stream);
+            assert_eq!(
+                margin_ready.operation_kind, None,
+                "reward-margin proof requires canonical structural reconciliation to be idle"
+            );
+            println!("stream_status_before_reward_margin={margin_ready:#?}");
+            advance_to_reward_observation_margin(&pic, stream, &warmup_event);
+            let post_margin = stream_status(&pic, stream);
+            println!("stream_status_after_warmup_margin={post_margin:#?}");
+            if canonical_two_event && warmup_reward_is_committed(&post_margin) {
+                println!("warmup_reward_processed_by_timer=true");
+            } else {
+                let mut warmup_processed = false;
+                for attempt in 0..8 {
+                    let result = resume_reward(&pic, stream);
+                    println!("resume_reward_work[{attempt}]={result:#?}");
+                    if !canonical_two_event {
+                        warmup_processed = true;
+                        break;
+                    }
+                    match result {
+                        Ok(RewardEventObservation {
+                            classification,
+                            policy_credit: io_reward_policy::DAILY_EVENT_CREDIT,
+                            ..
+                        }) if is_valid_warmup_classification(classification) => {
+                            println!("warmup_reward_processed_after_attempt={attempt}");
+                            warmup_processed = true;
+                            break;
+                        }
+                        Ok(RewardEventObservation {
+                            classification: RewardEventClassification::StructuralOnly,
+                            proposal_count: 0,
+                            policy_credit: 0,
+                            eligible_credit_total: 0,
+                            ..
+                        })
+                        | Err(ApiError::Pending(_)) => {
+                            let status = stream_status(&pic, stream);
+                            if warmup_reward_is_committed(&status) {
+                                println!("warmup_reward_processed_after_attempt={attempt}");
+                                warmup_processed = true;
+                                break;
+                            }
+                            assert_eq!(status.processed_reward_event_count, 0,
+                                "post-margin structural continuation must not consume the warmup reward event without recording its canonical result");
+                            drive_reconciliation(&pic, stream);
+                        }
+                        other => panic!(
+                            "warmup reward processing returned an unexpected post-margin result: {other:#?}"
+                        ),
+                    }
+                }
+                assert!(
+                    warmup_processed,
+                    "warmup reward event did not commit within the bounded post-margin continuation"
+                );
+            }
             if canonical_two_event {
-                assert!(matches!(
-                    result,
-                    Ok(RewardEventObservation {
-                        classification: RewardEventClassification::ZeroEligibleParticipation,
-                        ..
-                    })
-                ));
+                let committed = stream_status(&pic, stream);
+                assert!(
+                    warmup_reward_is_committed(&committed),
+                    "warmup reward event did not record exactly one canonical policy-credit unit: {committed:#?}"
+                );
+                println!(
+                    "warmup_reward_classification={:?}",
+                    committed
+                        .latest_reward_event_classification
+                        .expect("validated warmup classification")
+                );
             }
         }
 
@@ -385,5 +613,51 @@ fn main() {
             .is_some_and(|status| !status.accounts.is_empty()));
         println!("historian_settle_seconds={settle_seconds}");
         println!("historian_dashboard={dashboard:#?}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reward_margin_waits_only_for_the_exact_remaining_margin() {
+        assert_eq!(reward_margin_wait_seconds(1_220, 1_000), 80);
+        assert_eq!(reward_margin_wait_seconds(1_300, 1_000), 0);
+        assert_eq!(reward_margin_wait_seconds(1_301, 1_000), 0);
+        assert_eq!(reward_scheduler_advance_seconds(1_220, 1_000), 81);
+        assert_eq!(reward_scheduler_advance_seconds(1_300, 1_000), 1);
+        assert_eq!(reward_scheduler_advance_seconds(1_301, 1_000), 0);
+    }
+
+    #[test]
+    fn reward_boundary_advance_excludes_elapsed_setup_time() {
+        assert_eq!(reward_boundary_advance_seconds(1_125, 1_000, 300), 175);
+        assert_eq!(reward_boundary_advance_seconds(1_299, 1_000, 300), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "reward boundary already elapsed")]
+    fn reward_boundary_advance_rejects_an_elapsed_round() {
+        let _ = reward_boundary_advance_seconds(1_301, 1_000, 300);
+    }
+
+    #[test]
+    fn warmup_accepts_only_canonical_non_proposal_or_zero_eligible_results() {
+        assert!(is_valid_warmup_classification(
+            RewardEventClassification::NoProposalFallback
+        ));
+        assert!(is_valid_warmup_classification(
+            RewardEventClassification::ZeroEligibleParticipation
+        ));
+        assert!(!is_valid_warmup_classification(
+            RewardEventClassification::ProposalBearing
+        ));
+        assert!(!is_valid_warmup_classification(
+            RewardEventClassification::MissedSkipped
+        ));
+        assert!(!is_valid_warmup_classification(
+            RewardEventClassification::StructuralOnly
+        ));
     }
 }

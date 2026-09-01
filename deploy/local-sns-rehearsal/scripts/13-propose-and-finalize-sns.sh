@@ -76,10 +76,18 @@ if [ "$metadata_ready" -ne 1 ]; then
 fi
 
 developer_principal="$(toml_string "$(local_vars_file)" local developer_neuron_principal)"
+swap_args=(
+  --network "$network_url"
+  swap-complete
+  --sns-name 'IO Local Rehearsal'
+  --follow-principal-neurons "$developer_principal"
+)
+if [ -n "${IO_LOCAL_SNS_ICP_TREASURY_IDENTITY:-}" ]; then
+  swap_args+=(--icp-treasury-identity "$IO_LOCAL_SNS_ICP_TREASURY_IDENTITY")
+fi
 swap_completed=0
 for _attempt in 1 2 3 4 5; do
-  if run_logged "$log_file" "$sns_testing" --network "$network_url" swap-complete \
-    --sns-name 'IO Local Rehearsal' --follow-principal-neurons "$developer_principal"; then
+  if run_logged "$log_file" "$sns_testing" "${swap_args[@]}"; then
     swap_completed=1
     break
   fi

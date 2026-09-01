@@ -99,10 +99,14 @@ Pull-request jobs check out the PR head directly and require the PR base commit
 to be an ancestor of that head. After every required workflow passes on the
 exact final release-tail head and explicit authorization is given, integration
 may occur only by a direct fast-forward of `master`. Squash merge, rebase merge,
-an added merge commit, and ordinary GitHub merge-button integration are
-forbidden. If branch protection prevents a direct fast-forward, do not merge or
-weaken provenance; return for an explicit integration decision and, if build
-inputs must change, create and validate a new source-finalization/artifact-recording pair.
+an ordinary added merge commit, and ordinary GitHub merge-button integration are
+forbidden. A release-checklist graph reconciliation whose reviewed base tree is
+byte-identical to an existing ancestor may occur only before a newly selected
+source-finalization boundary. It changes graph provenance, not release contents,
+and requires a new immediate artifact child and fresh evidence package so the
+merge is outside the selected release tail. Content-bearing bases require normal
+source review. If branch protection prevents a direct fast-forward, do not merge
+or weaken provenance; return for an explicit integration decision.
 
 Detached worktrees live outside the repository under one portable temporary
 root selected in this order: `IO_RELEASE_BUILD_TMPDIR`, `RUNNER_TEMP`, `TMPDIR`,

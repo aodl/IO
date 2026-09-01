@@ -20,6 +20,7 @@ checkout="$(official_checkout)"
 ledger="$(sns_canister_id ledger)"
 icp_ledger="$(runtime_value nns icp_ledger)"
 stream="$(toml_string "$(local_vars_file)" local io_stream_manager_canister)"
+nns_manager="$(toml_string "$(local_vars_file)" local io_nns_neuron_manager_canister)"
 operator="$(runtime_value accounts operator_principal)"
 governance="$(sns_canister_id governance)"
 treasury_hex="$(sns_treasury_subaccount_hex "$governance")"
@@ -159,8 +160,19 @@ if [ "$durable_redemption_complete" -ne 1 ]; then
     sns_testing="$(sns_testing_cli)"
     liquid_delta="$((liquid_amount - liquid_balance))"
     liquid_tokens="$(e8s_to_decimal_tokens "$liquid_delta")"
-    run_logged "$log_file" "$sns_testing" --network "$network_url" transfer-icp --amount "$liquid_tokens" \
-      --to-principal "$stream" "$liquid_hex"
+    transfer_args=(
+      --network "$network_url"
+      transfer-icp
+    )
+    if [ -n "${IO_LOCAL_SNS_ICP_TREASURY_IDENTITY:-}" ]; then
+      transfer_args+=(--icp-treasury-identity "$IO_LOCAL_SNS_ICP_TREASURY_IDENTITY")
+    fi
+    transfer_args+=(
+      --amount "$liquid_tokens"
+      --to-principal "$stream"
+      "$liquid_hex"
+    )
+    run_logged "$log_file" "$sns_testing" "${transfer_args[@]}"
   fi
   mark_phase_done 15-liquid-icp-funded "target_e8s=${liquid_amount} observed_before_e8s=${liquid_balance}"
 fi
@@ -187,19 +199,11 @@ if ! phase_is_done 15-redemption-complete; then
     if [ ! -f "$pre_snapshot" ]; then
       now_nanos="$(date +%s%N)"
       expires_nanos="$((now_nanos + 800000000000))"
-      allowance="$((redeem_amount + 10000))"
-      approval_response="$(dfx canister call --network "$network_url" --identity "$identity" \
-        --candid "$ledger_did" "$ledger" icrc2_approve \
-        "(record { from_subaccount = null; spender = record { owner = principal \"${stream}\"; subaccount = null }; amount = ${allowance} : nat; expected_allowance = null; expires_at = opt (${expires_nanos} : nat64); fee = opt (10000 : nat); memo = opt blob \"IO redemption\"; created_at_time = opt (${now_nanos} : nat64) })")"
-      printf 'approval_response=%s\n' "$approval_response" >> "$log_file"
-      approval_block="$(printf '%s' "$approval_response" | tr '\n' ' ' | sed -n 's/.*Ok = \([0-9_][0-9_]*\).*/\1/p' | tr -d '_')"
-      require_nat "approval block" "$approval_block"
-
-      pre_total="$(query_nat "$ledger_did" "$ledger" icrc1_total_supply '()' pre_pull_total_supply_e8s)"
-      pre_reserve="$(sns_balance "$stream" "$reserve_hex" pre_pull_protocol_reserve_e8s)"
-      pre_excluded="$(sns_balance "$governance" "$treasury_hex" pre_pull_sns_treasury_e8s)"
+      pre_total="$(query_nat "$ledger_did" "$ledger" icrc1_total_supply '()' pre_push_total_supply_e8s)"
+      pre_reserve="$(sns_balance "$stream" "$reserve_hex" pre_push_protocol_reserve_e8s)"
+      pre_excluded="$(sns_balance "$governance" "$treasury_hex" pre_push_sns_treasury_e8s)"
       pre_liquid="$(icp_balance "$stream" "$liquid_hex" pre_payout_liquid_icp_e8s)"
-      pre_user_io="$(sns_balance "$operator" none pre_pull_user_io_e8s)"
+      pre_user_io="$(sns_balance "$operator" none pre_push_user_io_e8s)"
       pre_user_icp="$(icp_balance "$operator" none pre_payout_user_icp_e8s)"
       formula="$(cargo run --quiet -p xtask --manifest-path "${REPO_ROOT}/Cargo.toml" -- \
         calculate_redemption_economics "$pre_total" "$pre_reserve" "$pre_excluded" \
@@ -212,7 +216,7 @@ if ! phase_is_done 15-redemption-complete; then
       done
       cat > "$pre_snapshot" <<EOF
 [redemption]
-approval_block = ${approval_block}
+push_block = 0
 expires_at_nanos = ${expires_nanos}
 total_io_supply_e8s = ${pre_total}
 protocol_reserve_io_e8s = ${pre_reserve}
@@ -227,16 +231,69 @@ EOF
     fi
     expires_nanos="$(toml_number "$pre_snapshot" redemption expires_at_nanos)"
     redeem_args="(record { from_subaccount = null; io_amount_e8s = ${redeem_amount} : nat; min_icp_out_e8s = 0 : nat; max_io_fee_e8s = 10000 : nat; max_icp_fee_e8s = 10000 : nat; expires_at_nanos = ${expires_nanos} : nat64; nonce = 0 : nat64 })"
-    initial_redeem_response="$(dfx canister call --network "$network_url" --identity "$identity" \
-      --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" redeem "$redeem_args")"
-    printf 'initial_redeem_response=%s\n' "$initial_redeem_response" >> "$log_file"
+    push_block="$(toml_number "$pre_snapshot" redemption push_block)"
+    if [ "$push_block" -eq 0 ]; then
+      prepare_response=''
+      for _prepare_attempt in $(seq 1 32); do
+        prepare_response="$(dfx canister call --network "$network_url" --identity "$identity" \
+          --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" prepare_redemption "$redeem_args")"
+        printf 'prepare_redemption_attempt=%s response=%s\n' \
+          "$_prepare_attempt" "$prepare_response" >> "$log_file"
+        if printf '%s' "$prepare_response" | grep -q 'Ok = record'; then
+          break
+        fi
+        if ! printf '%s' "$prepare_response" | grep -q 'Err = variant { Busy }'; then
+          record_blocker "prepared redemption was rejected before durable acceptance: ${prepare_response}"
+          exit 2
+        fi
+        # A canonical genesis structural observation may legitimately start Pool
+        # reconciliation before this phase prepares redemption. Continue that exact
+        # generation through the production permissionless recovery endpoints; do
+        # not suppress the observation, cancel Pool, or manufacture a new generation.
+        run_logged "$log_file" dfx canister call --network "$network_url" --identity "$identity" \
+          --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" \
+          "$stream" resume '()'
+        run_logged "$log_file" dfx canister call --network "$network_url" --identity "$identity" \
+          --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" \
+          "$stream" resume_reward_backing '()'
+        run_logged "$log_file" dfx canister call --network "$network_url" --identity "$identity" \
+          --candid "${REPO_ROOT}/canisters/io_nns_neuron_manager/io_nns_neuron_manager.did" \
+          "$nns_manager" resume '()'
+      done
+      if ! printf '%s' "$prepare_response" | grep -q 'Ok = record'; then
+        record_blocker 'prepared redemption remained Busy after bounded production reconciliation recovery'
+        exit 2
+      fi
+      prepare_compact="$(printf '%s' "$prepare_response" | tr '\n' ' ')"
+      prepared_at_nanos="$(printf '%s' "$prepare_compact" | sed -n 's/.*prepared_at_nanos = \([0-9_][0-9_]*\).*/\1/p' | tr -d '_')"
+      push_memo="$(printf '%s' "$prepare_compact" | sed -n 's/.*push_memo = blob "\([^"]*\)".*/\1/p')"
+      require_nat "prepared redemption timestamp" "$prepared_at_nanos"
+      if [ -z "$push_memo" ]; then
+        record_blocker 'prepared redemption response lacks the exact push memo'
+        exit 2
+      fi
+      push_response="$(dfx canister call --network "$network_url" --identity "$identity" \
+        --candid "$ledger_did" "$ledger" icrc1_transfer \
+        "(record { from_subaccount = null; to = record { owner = principal \"${stream}\"; subaccount = opt blob \"$(hex_blob_literal "$reserve_hex")\" }; amount = ${redeem_amount} : nat; fee = opt (10000 : nat); memo = opt blob \"${push_memo}\"; created_at_time = opt (${prepared_at_nanos} : nat64) })")"
+      printf 'prepared_push_response=%s\n' "$push_response" >> "$log_file"
+      push_block="$(printf '%s' "$push_response" | tr '\n' ' ' | sed -n 's/.*Ok = \([0-9_][0-9_]*\).*/\1/p' | tr -d '_')"
+      if [ -z "$push_block" ]; then
+        push_block="$(printf '%s' "$push_response" | tr '\n' ' ' | sed -n 's/.*duplicate_of = \([0-9_][0-9_]*\).*/\1/p' | tr -d '_')"
+      fi
+      require_nat "prepared IO push block" "$push_block"
+      sed -i "s/^push_block = 0$/push_block = ${push_block}/" "$pre_snapshot"
+    fi
+    settle_response="$(dfx canister call --network "$network_url" --identity "$identity" \
+      --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" settle_redemption \
+      "(${push_block} : nat)")"
+    printf 'initial_settle_redemption_response=%s\n' "$settle_response" >> "$log_file"
     for _attempt in 1 2; do
       run_logged "$log_file" dfx canister call --network "$network_url" --identity "$identity" \
         --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" resume '()'
     done
   fi
   require_file "$pre_snapshot"
-  approval_block="$(toml_number "$pre_snapshot" redemption approval_block)"
+  push_block="$(toml_number "$pre_snapshot" redemption push_block)"
   expires_nanos="$(toml_number "$pre_snapshot" redemption expires_at_nanos)"
   pre_total="$(toml_number "$pre_snapshot" redemption total_io_supply_e8s)"
   pre_reserve="$(toml_number "$pre_snapshot" redemption protocol_reserve_io_e8s)"
@@ -247,9 +304,9 @@ EOF
   expected_d="$(toml_number "$pre_snapshot" redemption redeemable_io_supply_e8s)"
   expected_gross="$(toml_number "$pre_snapshot" redemption gross_icp_e8s)"
   expected_net="$(toml_number "$pre_snapshot" redemption net_icp_e8s)"
-  redeem_args="(record { from_subaccount = null; io_amount_e8s = ${redeem_amount} : nat; min_icp_out_e8s = 0 : nat; max_io_fee_e8s = 10000 : nat; max_icp_fee_e8s = 10000 : nat; expires_at_nanos = ${expires_nanos} : nat64; nonce = 0 : nat64 })"
   replay_response="$(dfx canister call --network "$network_url" --identity "$identity" \
-    --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" redeem "$redeem_args")"
+    --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" settle_redemption \
+    "(${push_block} : nat)")"
   printf 'identical_replay_response=%s\n' "$replay_response" >> "$log_file"
   caller_state="$(dfx canister call --network "$network_url" --identity "$identity" --query \
     --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" get_caller_redemption_state '()')"
@@ -281,11 +338,11 @@ EOF
       exit 2
     fi
   done
-  post_total="$(query_nat "$ledger_did" "$ledger" icrc1_total_supply '()' post_pull_total_supply_e8s)"
-  post_reserve="$(sns_balance "$stream" "$reserve_hex" post_pull_protocol_reserve_e8s)"
-  post_excluded="$(sns_balance "$governance" "$treasury_hex" post_pull_sns_treasury_e8s)"
+  post_total="$(query_nat "$ledger_did" "$ledger" icrc1_total_supply '()' post_push_total_supply_e8s)"
+  post_reserve="$(sns_balance "$stream" "$reserve_hex" post_push_protocol_reserve_e8s)"
+  post_excluded="$(sns_balance "$governance" "$treasury_hex" post_push_sns_treasury_e8s)"
   post_liquid="$(icp_balance "$stream" "$liquid_hex" post_payout_liquid_icp_e8s)"
-  post_user_io="$(sns_balance "$operator" none post_pull_user_io_e8s)"
+  post_user_io="$(sns_balance "$operator" none post_push_user_io_e8s)"
   post_user_icp="$(icp_balance "$operator" none post_payout_user_icp_e8s)"
   if [ "$post_reserve" -ne "$((pre_reserve + redeem_amount))" ] \
     || [ "$post_total" -ne "$((pre_total - 10000))" ] \
@@ -318,7 +375,7 @@ balance_e8s = ${pre_excluded}
 expected_nonzero = true
 
 [stream_result]
-approval_block = ${approval_block}
+push_block = ${push_block}
 io_block = ${stream_io_block}
 icp_block = ${stream_icp_block}
 gross_icp_e8s = ${stream_gross}
@@ -349,5 +406,5 @@ EOF
     --candid "$ledger_did" "$icp_ledger" icrc1_balance_of \
     "(record { owner = principal \"${operator}\"; subaccount = null })"
   mark_phase_done 15-redemption-complete \
-    "approval_block=${approval_block} io_block=${stream_io_block} icp_block=${stream_icp_block} gross_icp_e8s=${stream_gross} net_icp_e8s=${stream_net} economics=${economics}"
+    "push_block=${push_block} io_block=${stream_io_block} icp_block=${stream_icp_block} gross_icp_e8s=${stream_gross} net_icp_e8s=${stream_net} economics=${economics}"
 fi

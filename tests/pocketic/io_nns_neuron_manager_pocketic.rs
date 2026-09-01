@@ -1,10 +1,11 @@
 use candid::{decode_one, encode_one, CandidType, Principal};
 use io_nns_neuron_manager::{
-    state::Account, ApiError, InitArgs, JupiterProgress, Lifecycle, NnsConfig,
-    PrepareTwoWeekMaturityArgs, Status,
+    api::DynamicBackingStatus, state::Account, ApiError, InitArgs, JupiterProgress, Lifecycle,
+    NnsConfig, PrepareTwoWeekMaturityArgs, Status,
 };
 use pocket_ic::PocketIc;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 
 const CYCLES: u128 = 2_000_000_000_000;
@@ -41,6 +42,18 @@ fn install(pic: &PocketIc, name: &str, arg: Vec<u8>) -> Principal {
     pic.add_cycles(canister, CYCLES);
     pic.install_canister(canister, wasm(name), arg, None);
     canister
+}
+
+fn dynamic_staking_account(nns_governance: Principal, controller: Principal, memo: u64) -> Account {
+    let mut hasher = Sha256::new();
+    hasher.update([0x0c]);
+    hasher.update(b"neuron-stake");
+    hasher.update(controller.as_slice());
+    hasher.update(memo.to_be_bytes());
+    Account {
+        owner: nns_governance,
+        subaccount: Some(hasher.finalize().to_vec()),
+    }
 }
 
 fn update<A: CandidType, R: for<'de> Deserialize<'de> + CandidType>(
@@ -105,8 +118,7 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
                 nns_governance: Principal::from_slice(&[5; 29]),
                 two_year_neuron_id: 1,
                 pooled_parent_memo: 2,
-                pooled_parent_followee_id: 3,
-                minimum_parent_stake_e8s: 100_000_000,
+                pooled_parent_followee_id: 1,
                 jupiter_account: Account {
                     owner: Principal::from_slice(&[4; 29]),
                     subaccount: None,
@@ -151,7 +163,9 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(rendered.unwrap(), "Set IO NNS manager paused: true");
+    let rendered = rendered.unwrap();
+    assert!(rendered.contains("Set IO NNS manager paused: true"));
+    assert!(rendered.contains("Current lifecycle: Paused"));
     assert!(pic
         .query_call(
             canister,
@@ -183,10 +197,40 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(
-        rendered_after_upgrade.unwrap(),
-        "Set IO NNS manager paused: false"
-    );
+    let rendered_after_upgrade = rendered_after_upgrade.unwrap();
+    assert!(rendered_after_upgrade.contains("Set IO NNS manager paused: false"));
+    assert!(rendered_after_upgrade.contains("Current lifecycle: Paused"));
+    let unauthorized: Result<(), ApiError> = decode_one(
+        &pic.update_call(
+            canister,
+            principal,
+            "set_paused",
+            encode_one(false).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(unauthorized, Err(ApiError::Unauthorized));
+    let rejected = pic
+        .update_call(
+            canister,
+            Principal::from_slice(&[2; 29]),
+            "set_paused",
+            encode_one(false).unwrap(),
+        )
+        .expect_err("SNS readiness with unavailable dependencies must reject");
+    assert!(format!("{rejected:?}").contains("NNS lifecycle action not accepted"));
+    let still_paused: Status = decode_one(
+        &pic.query_call(
+            canister,
+            Principal::anonymous(),
+            "get_status",
+            encode_one(()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(still_paused.lifecycle, Lifecycle::Paused);
     let result: Result<(), ApiError> = decode_one(
         &pic.update_call(
             canister,
@@ -233,6 +277,16 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
         Principal::anonymous(),
         "debug_mint_account",
         DebugMintAccountArgs {
+            to: dynamic_staking_account(governance, manager, 0),
+            amount_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+        },
+    );
+    let _: u64 = update(
+        &pic,
+        ledger,
+        Principal::anonymous(),
+        "debug_mint_account",
+        DebugMintAccountArgs {
             to: jupiter_account.clone(),
             amount_e8s: 10_000_000,
         },
@@ -252,7 +306,7 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
         },
     );
     let old_block: u128 = old_block.unwrap().0.try_into().unwrap();
-    assert_eq!(old_block, 1);
+    assert_eq!(old_block, 2);
     let _: u64 = update(
         &pic,
         ledger,
@@ -283,9 +337,8 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
         icp_ledger: ledger,
         nns_governance: governance,
         two_year_neuron_id: 41,
-        pooled_parent_memo: 42,
-        pooled_parent_followee_id: 43,
-        minimum_parent_stake_e8s: 100_000_000,
+        pooled_parent_memo: 0,
+        pooled_parent_followee_id: 41,
         jupiter_account,
         jupiter_staging: staging(0),
         stream_liquid_account: Account {
@@ -312,6 +365,25 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
     ready.unwrap();
     let ready_status: Status = query(&pic, manager, "get_status");
     assert!(ready_status.two_year_maturity_baseline_reconciled);
+
+    let public_dynamic: Result<DynamicBackingStatus, ApiError> = update(
+        &pic,
+        manager,
+        Principal::anonymous(),
+        "observe_dynamic_backing_status",
+        (),
+    );
+    let public_dynamic = public_dynamic.unwrap();
+    let parent = public_dynamic.parent.unwrap();
+    assert_eq!(parent.physical_principal_e8s, 1_000_000_000);
+    assert_eq!(parent.dissolve_delay_seconds, 1_209_600);
+    assert!(!parent.auto_stake_maturity);
+    assert_eq!(parent.followee_neuron_id, 41);
+    assert_eq!(public_dynamic.claim_bearing_dynamic_principal_e8s, 0);
+    assert_eq!(public_dynamic.anchor_target_e8s, 1_000_000_000);
+    assert_eq!(public_dynamic.anchor_available_e8s, 1_000_000_000);
+    assert_eq!(public_dynamic.excluded_dynamic_surplus_e8s, 0);
+    assert_eq!(public_dynamic.permanent_fee_shortfall_e8s, 0);
 
     let governance_calls_before_unauthorized: u64 =
         query(&pic, governance, "debug_get_full_neuron_call_count");
@@ -455,7 +527,13 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
             block_index: valid_block,
         },
     );
-    assert_eq!(legitimate, Ok(JupiterProgress::DepositProved));
+    assert!(
+        matches!(
+            legitimate,
+            Err(ApiError::Pending(_)) | Ok(JupiterProgress::Pending)
+        ),
+        "valid deposit did not stop at a real canonical or Stream boundary: {legitimate:?}"
+    );
     assert_eq!(
         query::<LedgerCallCounters>(&pic, ledger, "debug_get_call_counters").query_blocks,
         after_public + 2

@@ -8,7 +8,7 @@ governance canisters remain the sources of truth, while the Historian and
 frontend provide a rebuildable public view.
 
 IO exists to keep the monetary path small and reviewable: reserve transfers,
-checked integer economics, explicit authority, serialized external effects,
+checked integer economics, explicit authority, proof-ordered external effects,
 and exact ledger/governance proof when a callback is ambiguous. The governing
 constraints are enforced by the implementation and by the
 [simplicity check](docs/architecture/simplicity-constitution.md), not by this
@@ -33,7 +33,7 @@ duplicating transient commit or CI identities here.
 
 | Area | Status |
 | --- | --- |
-| Protocol implementation | Frozen audit candidate except for demonstrated defects |
+| Protocol implementation | Anchored dynamic-backing replacement under source validation |
 | Product and launch configuration | Partly open; local fixtures do not imply final production values |
 | Official SNS reward-share capability | External dependency until an accepted official release supplies it |
 | External audit | Required |
@@ -44,24 +44,26 @@ duplicating transient commit or CI identities here.
 The production model has four IO canisters around canonical SNS, ICP, Index,
 Root, and Governance services:
 
-1. An authenticated user gives the Stream Manager a short-lived ICRC-2
-   allowance on the SNS IO Ledger and submits an exact redemption intent.
+1. An authenticated user asks the Stream Manager to prepare a short-lived,
+   exact redemption quote and deterministic ICRC-1 push memo.
 2. The Stream Manager reads canonical supply, reserve, excluded-account,
-   liquid-ICP, and fee values. It pulls the user's IO into the protocol reserve
-   and then re-reads the canonical economics before creating any payout. An
-   adverse supply, exclusion, fee, reserve-reflection, or liquid-backing change
-   pauses before ICP can be sent.
+   backing, and fee values. The user pushes IO to the protocol reserve, and the
+   manager exact-proves that ledger block before creating an immutable ICP
+   payout obligation. If liquid ICP is unexpectedly late, the obligation waits
+   durably and pays exactly once after recovery.
 3. Once per exact SNS reward event, the Stream Manager converts eligible
    proposal-bearing reward shares into policy credit. A genuinely
    no-proposal event uses the defined eligible-stake fallback; an ambiguous
    skipped sequence earns no credit.
-4. Before freezing reward entitlements, the Stream Manager reconciles the
-   required two-week backing target with the NNS Manager. Credits stay live
-   while the protected backing position is under target or unwinding.
+4. A separate 12-hour structural observation cadence promptly reconciles active
+   and dissolving SNS positions with the NNS Manager. Daily reward-event
+   processing remains independently fenced by the event deadline and margin.
 5. The NNS Manager disburses maturity into one of two fixed semantic staging
    Accounts and freezes the complete post-finalization Account balance. Two-week maturity
    and Jupiter share the checked 40% permanent / 60% claim paired-inflow path;
-   two-year maturity uses the same physical split but issues no IO.
+   two-year maturity first replenishes the Dynamic-neuron anchor and permanent
+   fee shortfall, then applies the same physical split to the remainder; it
+   issues no IO.
    Permissionless Jupiter notification additionally requires an exact routed
    ICP block at or above the immutable launch activation floor and not already
    present in permanent replay state.
@@ -80,8 +82,8 @@ automatically refunded.
 
 | Component | Role | Canonical dependencies | Authority |
 | --- | --- | --- | --- |
-| [Stream Manager](canisters/io_stream_manager/README.md) | Direct ICRC-2 redemption, IO/liquid-ICP reserves, daily entitlement accounting, proof-bound NNS receipts, and backed settlement | SNS IO Ledger, ICP Ledger, SNS Root/Governance, NNS Manager | SNS Governance controls lifecycle; users authorize only their exact redemption Account |
-| [NNS Neuron Manager](canisters/io_nns_neuron_manager/README.md) | Protected-neuron commands, Jupiter 40/60 processing, direct maturity, staging Accounts, and one unwind child | NNS Governance, ICP Ledger, Stream Manager, Jupiter source Account | Executes as the existing protected-neuron controller; SNS Governance controls reviewed entry points and Stream Manager controls the two-week path |
+| [Stream Manager](canisters/io_stream_manager/README.md) | Prepared ICRC-1 push redemption, IO/liquid-ICP reserves, structural synchronization, daily entitlement accounting, proof-bound NNS receipts, and backed settlement | SNS IO Ledger, ICP Ledger, SNS Root/Governance, NNS Manager | SNS Governance controls lifecycle; users authorize only their exact source Account push |
+| [NNS Neuron Manager](canisters/io_nns_neuron_manager/README.md) | Bootstrapped Dynamic-neuron partition, protected-neuron commands, Jupiter/TwoYear replenishment, semantic maturity Accounts, and generation-based unwind children | NNS Governance, ICP Ledger, Stream Manager, Jupiter source Account | Executes as the existing protected-neuron controller; SNS Governance controls reviewed entry points and Stream Manager controls reconciliation/two-week paths |
 | [Historian](canisters/io_historian/README.md) | Bounded monitoring, module/controller topology, account histories, reconciliation, and public read models | Ledgers, Index, SNS Root/Governance, both managers, public NNS neuron info | Install/upgrade configuration only; production API is read-only and non-authoritative |
 | [Frontend](canisters/frontend/README.md) | Certified dashboard assets and authenticated redemption UX | Historian for dashboard reads; IO Ledger and Stream Manager for redemption | Advisory client only; canisters recompute all monetary facts |
 
@@ -93,12 +95,12 @@ observation only. The Historian never fills a missing observation with zero.
 
 ## Frozen design, launch constraints, and open configuration
 
-The frozen monetary design includes authenticated direct ICRC-2 redemption,
+The replacement monetary design includes authenticated prepared ICRC-1 push redemption,
 canonical-ledger supply and balance authority, `B=L+P+U+T` claim backing with
-liquid ICP as the independent payout limit, Jupiter/two-week shared 40/60,
+an excluded 10-ICP Dynamic-neuron anchor, Jupiter/two-week shared 40/60,
 semantic Account balances as custody authority, exact proof of immutable
 outgoing effects, one active monetary operation, daily canonical
-SNS participation-based entitlement, and one live accumulator plus at most one
+SNS participation-based entitlement, 12-hour structural synchronization, and one live accumulator plus at most one
 immutable pending batch. Ambiguity pauses for exact proof; it does not trigger
 global absence reconstruction.
 
@@ -107,7 +109,8 @@ The following are deliberate launch constraints, not missing features:
 - serialization can return `Busy`;
 - unsolicited/direct monetary paths are unsupported and are not automatically
   recovered;
-- passive unwind supports one child rather than a general queue;
+- passive unwind is generation-aggregated, services ready children first, and
+  has no product capacity branch;
 - missed reward events receive no fabricated credit; and
 - Historian observation can never authorize monetary completion.
 
@@ -156,35 +159,37 @@ Canonical claim accounting is:
 
 ```text
 C = total_io_supply - protocol_reserve_io - nonredeemable_governance_io
-B = liquid_icp + pooled_parent_principal + net_live_child_backing + net_in_transit_backing
+B = liquid_icp + claim_bearing_dynamic_principal + net_live_child_backing + net_in_transit_backing
 gross_icp = redeemed_io * B / C
 net_icp = gross_icp - current_icp_payout_fee
 pooled_target = floor(A_backing * B / C)
 reward_target = floor(A_reward * B / C)
 ```
 
-Permanent capital, uncaptured maturity, cycles, and
-operational balances are outside `B`. Live-child and committed active-unwind
+The Dynamic parent's excluded anchor and unexplained positive surplus,
+permanent capital, uncaptured maturity, cycles, and operational balances are
+outside `B`. Its physical principal is exactly partitioned into claim-bearing
+principal, anchor available, excluded surplus, and any explicit physical
+in-flight adjustment. Live-child and committed active-unwind
 values are net of their exactly derived unavoidable future disbursement fees;
 physical principal remains separate for Governance commands and transfer
 proof. Each e8s of claim backing exists in exactly one of its four buckets.
-Exact internal fees reduce backing once. IO issuance is an explicit reserve
+Qualifying claim fees consume anchor capacity without lowering `B`; permanent
+fees increase a separate exact shortfall. IO issuance is an explicit reserve
 transfer, not application minting.
 
-Redemption uses `B/C` for its immutable quote and spendable liquid ICP for the
-independent availability check. An illiquid quote is not discounted: the
-caller receives a typed shortfall before IO is pulled or its nonce consumed.
-
-After the IO pull, a fresh pre-payout snapshot must still support the persisted
-quote: fees and excluded Account identities are unchanged, reserve and supply
-reflect the pull conservatively, no excluded balance fell, and liquid ICP did
-not fall. Favorable drift may make the user's fixed quote more conservative;
-adverse drift cannot make IO overpay.
+Redemption freezes a `B/C` quote without reserving ICP. Claim-rate
+monotonicity keeps an earlier valid quote economically conservative. The user
+then performs one exact ICRC-1 push to reserve. Canonical proof of that block
+removes the IO from claim-bearing circulation and creates a durable payout
+obligation. Unexpectedly missing liquid ICP is an invariant-breach recovery
+state after the push, not a normal admission failure or cancellation.
 
 `A_backing` is structurally active ordinary SNS IO; `A_reward` is its currently
 prospective reward-eligible subset. Rewards require pooled principal to cover
-`reward_target`. The lazily created pooled parent has an exact 1,209,600-second
-delay, auto-stake off, and a fixed configured following policy. Daily
+`reward_target`. The memo-0 Dynamic parent exists before Ready, has an exact
+1,209,600-second delay, a fixed configured following policy, and an excluded
+10-ICP anchor. Daily
 proposal-bearing allocations normalize canonical current-event shares;
 ineligible shares are forfeited, not redistributed. A true no-proposal event
 uses eligible stake, and ambiguous skipped events receive no synthetic credit.
@@ -212,11 +217,20 @@ in [launch readiness](tools/sns/launch-readiness.toml),
 
 ## Failure, recovery, and exact proof
 
-Each value-moving invocation attempts at most one external ledger or governance
-effect. Before that call, the canister persists the exact accounts, amount,
-fee, memo, timestamp, sequence, and operation fingerprint. A definitive reject
-can be retried according to the ledger deduplication window. An ambiguous
-transport outcome becomes `Stuck` rather than guessing whether value moved.
+Before every potentially irreversible external effect, the canister persists
+its exact immutable intent. It never submits a later dependent effect while an
+earlier effect is ambiguous or lacks its required canonical postcondition.
+Once success is definitive and canonically proved, a fixed-size flow may
+continue to its next step in the same invocation. A definitive no-effect result
+is retried or aborted under that operation's rules and is never treated as
+success. Variable fan-out, including recipient settlement, remains explicitly
+bounded across invocations.
+
+Transport ambiguity retains the exact submitted phase and stops dependent
+effects until canonical proof or safe recovery is available. Other real stop
+boundaries include a postcondition not yet visible after one immediate reread,
+ledger retry delay, maturity finalization time, external exact-block proof,
+an owed payout waiting for invariant recovery, and durable `Stuck` state.
 
 `resume` advances an existing operation idempotently. `prove_active_transfer`
 accepts only an exact canonical ledger block for the active proof slot; it is
@@ -238,11 +252,13 @@ only as the NNS Manager authority target. Any inspection, installation,
 upgrade, controller change, or neuron action requires a separate audit and
 explicit mainnet authorization.
 
-The two-year protected neuron is distinct from the lazy pooled claim-backing
-parent. The pooled parent is created only from existing liquid backing, uses an
-exact `1209600`-second non-dissolving delay, has auto-stake off, and follows one
-fixed configured neuron. Ordinary eligible IO SNS neurons have positive ledger
-stake, are non-dissolving, and have the same exact eligibility delay.
+The two-year protected neuron is distinct from the Dynamic 14-day IO neuron.
+The Dynamic parent is claimed from its externally seeded deterministic memo-0
+Account before Ready, accepts canonical balance at or above 10 ICP, classifies
+excess as excluded surplus, uses an exact `1209600`-second non-dissolving delay,
+and follows the protected neuron. Ordinary eligible IO SNS neurons use the
+separate `1296060`-second (15 days + 1 minute) delay. Structural synchronization
+does not wait for the daily reward event.
 
 | Role | Identifier | Status |
 | --- | --- | --- |

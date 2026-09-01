@@ -503,7 +503,7 @@ pub fn install_real_sns_governance_empty_state(
             mode: 1,
             parameters: Some(NervousSystemParameters {
                 default_followees: Some(DefaultFollowees { followees: vec![] }),
-                max_dissolve_delay_seconds: Some(io_core_model::TWO_WEEK_SECONDS),
+                max_dissolve_delay_seconds: Some(io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS),
                 max_dissolve_delay_bonus_percentage: Some(0),
                 max_followees_per_function: Some(15),
                 neuron_claimer_permissions: Some(NeuronPermissionList {
@@ -513,7 +513,7 @@ pub fn install_real_sns_governance_empty_state(
                 max_neuron_age_for_age_bonus: Some(0),
                 initial_voting_period_seconds: Some(86_400),
                 neuron_minimum_dissolve_delay_to_vote_seconds: Some(
-                    io_core_model::TWO_WEEK_SECONDS - 1,
+                    io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS - 1,
                 ),
                 reject_cost_e8s: Some(10_000_000_000),
                 max_proposals_to_keep_per_action: Some(100),
@@ -648,9 +648,16 @@ pub fn install_real_sns_governance_and_observe_dissolve_delay_boundaries(
     let initial_neuron = listed_neuron(&fixture, &neuron_id);
     assert_eq!(dissolve_delay_seconds(&initial_neuron), 0);
 
-    configure_increase_dissolve_delay(&fixture, &neuron_id, 1_209_600);
+    configure_increase_dissolve_delay(
+        &fixture,
+        &neuron_id,
+        u32::try_from(io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS).unwrap(),
+    );
     let eligible_neuron = listed_neuron(&fixture, &neuron_id);
-    assert_eq!(dissolve_delay_seconds(&eligible_neuron), 1_209_600);
+    assert_eq!(
+        dissolve_delay_seconds(&eligible_neuron),
+        io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS
+    );
     Ok(())
 }
 
@@ -681,7 +688,7 @@ pub fn run_candidate_reward_event_participation_contract(
                 configure_increase_dissolve_delay(
                     &fixture,
                     &id,
-                    u32::try_from(io_core_model::TWO_WEEK_SECONDS).unwrap(),
+                    u32::try_from(io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS).unwrap(),
                 );
             }
             id
@@ -1166,14 +1173,392 @@ fn find_neuron<'a>(neurons: &'a [SnsNeuronRecord], id: &NeuronId) -> &'a SnsNeur
         .expect("expected neuron in paginated result")
 }
 
+pub fn run_real_sns_genesis_round_stream_regression(
+    required: bool,
+) -> Result<(), SnsGovernanceSetupError> {
+    use crate::sns_root_setup::SnsRootCanister;
+    use candid::{decode_one, encode_one, Nat};
+    use io_stream_manager::{
+        Account as StreamAccount, ApiError, InitArgs, PreparedRedemption, RedeemArgs,
+        RedemptionProgress, RewardEventClassification, RewardEventObservation, Status,
+        StreamConfig,
+    };
+    use pocket_ic::CanisterSettings;
+
+    let artifacts = match resolve_from_env(required) {
+        Ok(ArtifactStatus::Ready(set)) => set,
+        Ok(ArtifactStatus::Skipped(message)) => {
+            return Err(SnsGovernanceSetupError::Artifact(message));
+        }
+        Err(error) => return Err(SnsGovernanceSetupError::Artifact(error)),
+    };
+    if !pocketic_env::pocketic_available() {
+        return Err(SnsGovernanceSetupError::PocketIcMissing);
+    }
+    let governance_wasm = artifacts
+        .load_required("sns_governance")
+        .map_err(SnsGovernanceSetupError::Artifact)?;
+    let root_wasm = artifacts
+        .load_required("sns_root")
+        .map_err(SnsGovernanceSetupError::Artifact)?;
+    let ledger_wasm = artifacts
+        .load_required("sns_ledger")
+        .map_err(SnsGovernanceSetupError::Artifact)?;
+    let stream_wasm = local_debug_wasm("io_stream_manager")?;
+    let nns_wasm = local_debug_wasm("mock_nns_governance")?;
+    let governance_hash = Sha256::digest(&governance_wasm).to_vec();
+
+    let pic = std::rc::Rc::new(pocketic_env::new_pic_with_icp_sns_features());
+    let sns_subnet = pic.topology().get_sns().expect("SNS subnet exists");
+    let root = pic.create_canister_on_subnet(None, None, sns_subnet);
+    pic.add_cycles(root, 2_000_000_000_000);
+    let governance = pic.create_canister_on_subnet(
+        None,
+        Some(CanisterSettings {
+            controllers: Some(vec![root]),
+            ..Default::default()
+        }),
+        sns_subnet,
+    );
+    pic.add_cycles(governance, 2_000_000_000_000);
+    let auxiliary = CanisterSettings {
+        controllers: Some(vec![root]),
+        ..Default::default()
+    };
+    let index = pic.create_canister_on_subnet(None, Some(auxiliary.clone()), sns_subnet);
+    let swap = pic.create_canister_on_subnet(None, Some(auxiliary), sns_subnet);
+    let stream = pocketic_env::create_empty_application_canister(&pic);
+    let nns_manager = pocketic_env::create_application_canister(&pic, nns_wasm, Vec::new());
+    let _: () = decode_one(
+        &pic.update_call(
+            nns_manager,
+            Principal::anonymous(),
+            "debug_set_pooled_principal",
+            encode_one(10_000_000_000_u128).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let controller = Principal::from_slice(&[81; 29]);
+    let reserve_subaccount = icrc::subaccount("genesis-round-reserve");
+    let liquid_subaccount = icrc::subaccount("genesis-round-liquid");
+    let reserve = icrc::account(stream, Some(reserve_subaccount));
+    let io_ledger = pocketic_env::create_sns_canister(
+        &pic,
+        ledger_wasm,
+        icrc::ledger_init_arg(
+            Principal::anonymous(),
+            icrc::account(Principal::from_slice(&[82; 29]), None),
+            vec![
+                (icrc::account(controller, None), 2_000_000_000),
+                (reserve.clone(), 8_000_000_000),
+            ],
+        ),
+    );
+    let icp_ledger = Principal::from_text(crate::nns_setup::install_nns_ledger().canister_id)
+        .expect("official ICP ledger ID should parse");
+    icrc::icrc1_transfer(
+        &pic,
+        icp_ledger,
+        Principal::anonymous(),
+        icrc::transfer_arg(
+            None,
+            icrc::account(stream, Some(liquid_subaccount)),
+            10_000_000_000,
+            Some(FEE_E8S),
+            Some(b"fund-genesis-round-liquid"),
+            None,
+        ),
+    )
+    .expect("default ICP ledger account funds genesis-round liquid backing");
+    pic.install_canister(
+        root,
+        root_wasm,
+        encode_one(SnsRootCanister {
+            dapp_canister_ids: vec![stream],
+            extensions: None,
+            testflight: true,
+            archive_canister_ids: vec![],
+            governance_canister_id: Some(governance),
+            index_canister_id: Some(index),
+            swap_canister_id: Some(swap),
+            ledger_canister_id: Some(io_ledger),
+            timers: None,
+        })
+        .unwrap(),
+        None,
+    );
+    pic.install_canister(
+        governance,
+        governance_wasm,
+        governance_init_arg(Some(io_ledger), Some(root)),
+        Some(root),
+    );
+    for _ in 0..5 {
+        pic.tick();
+    }
+    let fixture = GovernanceLedgerFixture {
+        pic: pic.clone(),
+        governance,
+        ledger: io_ledger,
+        controller,
+    };
+    let neuron_id = stake_and_claim_neuron(&fixture, 200_000_000, 1, b"genesis-round")
+        .expect("genesis-round neuron claim succeeds");
+    configure_increase_dissolve_delay(
+        &fixture,
+        &neuron_id,
+        u32::try_from(io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS).unwrap(),
+    );
+    let genesis = latest_reward_event(&fixture);
+    assert_eq!(genesis.round, 0);
+    assert_eq!(genesis.rounds_since_last_distribution, Some(0));
+    assert!(genesis.end_timestamp_seconds.is_some_and(|value| value > 0));
+    assert!(genesis.settled_proposals.is_empty());
+    assert_eq!(genesis.distributed_e8s_equivalent, 0);
+
+    pic.install_canister(
+        stream,
+        stream_wasm,
+        encode_one(InitArgs {
+            config: StreamConfig {
+                io_ledger,
+                icp_ledger,
+                nns_manager,
+                jupiter_io_account: StreamAccount {
+                    owner: controller,
+                    subaccount: Some(vec![10; 32]),
+                },
+                sns_governance: governance,
+                sns_root: root,
+                expected_sns_governance_module_hash: governance_hash,
+                approved_reward_event_duration_seconds: 86_400,
+                io_reserve: StreamAccount {
+                    owner: stream,
+                    subaccount: Some(reserve_subaccount.to_vec()),
+                },
+                liquid_icp: StreamAccount {
+                    owner: stream,
+                    subaccount: Some(liquid_subaccount.to_vec()),
+                },
+                nonredeemable_governance_io_accounts: Vec::new(),
+                minimum_redemption_io_e8s: 20_000,
+                expected_io_fee_e8s: u128::from(FEE_E8S),
+                expected_icp_fee_e8s: u128::from(FEE_E8S),
+                maximum_request_lifetime_nanos: 900_000_000_000,
+                retry_delay_nanos: 1_000_000_000,
+                ledger_deduplication_window_nanos: 86_400_000_000_000,
+            },
+        })
+        .unwrap(),
+        None,
+    );
+    let ready: Result<(), ApiError> = decode_one(
+        &pic.update_call(stream, governance, "set_paused", encode_one(false).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(ready, Ok(()));
+    let structural: Result<RewardEventObservation, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            Principal::anonymous(),
+            "resume_reward_work",
+            encode_one(()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    match structural {
+        Ok(observation) => {
+            assert_eq!(observation.event.round, 0);
+            assert_eq!(
+                observation.classification,
+                RewardEventClassification::StructuralOnly
+            );
+            assert_eq!(observation.policy_credit, 0);
+            assert_eq!(observation.eligible_credit_total, 0);
+        }
+        Err(ApiError::Pending(message)) if message == "SNS reward event has not advanced" => {}
+        other => panic!("genesis structural observation failed: {other:?}"),
+    }
+    let baseline: Status = icrc::query_one(&pic, stream, "get_status", ());
+    assert_eq!(
+        baseline
+            .latest_processed_reward_event
+            .map(|event| event.round),
+        Some(0)
+    );
+    assert_eq!(baseline.processed_reward_event_count, 0);
+    assert_eq!(baseline.accumulated_policy_credit, 0);
+    assert_eq!(
+        baseline
+            .latest_reconciliation_checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.event_marker),
+        Some(0)
+    );
+
+    let amount = 20_000_000_u64;
+    let now = pic.get_time().as_nanos_since_unix_epoch();
+    let args = RedeemArgs {
+        from_subaccount: None,
+        io_amount_e8s: u128::from(amount),
+        min_icp_out_e8s: 1,
+        max_io_fee_e8s: u128::from(FEE_E8S),
+        max_icp_fee_e8s: u128::from(FEE_E8S),
+        expires_at_nanos: now + 800_000_000_000,
+        nonce: 0,
+    };
+    let io_before = icrc::icrc1_balance_of(&pic, io_ledger, icrc::account(controller, None));
+    let icp_before = icrc::icrc1_balance_of(&pic, icp_ledger, icrc::account(controller, None));
+    let prepared: Result<PreparedRedemption, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            controller,
+            "prepare_redemption",
+            encode_one(args).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let prepared = prepared.expect("pre-round-one redemption prepares an exact push");
+    let pushed = icrc::icrc1_transfer(
+        &pic,
+        io_ledger,
+        controller,
+        icrc::transfer_arg(
+            prepared
+                .account
+                .subaccount
+                .as_deref()
+                .map(|value| value.try_into().unwrap()),
+            icrc::account(
+                prepared.reserve.owner,
+                prepared
+                    .reserve
+                    .subaccount
+                    .as_deref()
+                    .map(|value| value.try_into().unwrap()),
+            ),
+            prepared.request.io_amount_e8s.try_into().unwrap(),
+            Some(prepared.snapshot.io_fee_e8s.try_into().unwrap()),
+            Some(&prepared.push_memo),
+            Some(prepared.prepared_at_nanos),
+        ),
+    )
+    .expect("controller sends the exact pre-round-one redemption push");
+    let push_block = u128::try_from(pushed.0).unwrap();
+    let completed: Result<RedemptionProgress, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            controller,
+            "settle_redemption",
+            encode_one(push_block).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let result = match &completed {
+        Ok(RedemptionProgress::Completed(result)) => result,
+        other => panic!("pre-round-one redemption did not complete: {other:?}"),
+    };
+    let io_after = icrc::icrc1_balance_of(&pic, io_ledger, icrc::account(controller, None));
+    let icp_after = icrc::icrc1_balance_of(&pic, icp_ledger, icrc::account(controller, None));
+    assert_eq!(io_after, io_before - Nat::from(amount + FEE_E8S));
+    assert_eq!(
+        icp_after,
+        icp_before + Nat::from(result.net_icp_e8s),
+        "the real ICP payout must match the completed result"
+    );
+    let replay: Result<RedemptionProgress, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            controller,
+            "settle_redemption",
+            encode_one(push_block).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(replay, completed);
+    assert_eq!(
+        icrc::icrc1_balance_of(&pic, io_ledger, icrc::account(controller, None)),
+        io_after,
+        "completed replay must not repeat the IO pull"
+    );
+    assert_eq!(
+        icrc::icrc1_balance_of(&pic, icp_ledger, icrc::account(controller, None)),
+        icp_after,
+        "completed replay must not repeat the ICP payout"
+    );
+
+    let first = advance_until_reward_event(&fixture, 0, 0);
+    assert_eq!(first.round, 1);
+    for _ in 0..20 {
+        let status: Status = icrc::query_one(&pic, stream, "get_status", ());
+        if status
+            .latest_processed_reward_event
+            .is_some_and(|event| event.round == 1)
+        {
+            break;
+        }
+        let _: Result<RewardEventObservation, ApiError> = decode_one(
+            &pic.update_call(
+                stream,
+                Principal::anonymous(),
+                "resume_reward_work",
+                encode_one(()).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        pic.advance_time(Duration::from_secs(60));
+        pic.tick();
+    }
+    let credited: Status = icrc::query_one(&pic, stream, "get_status", ());
+    assert_eq!(
+        credited
+            .latest_processed_reward_event
+            .map(|event| event.round),
+        Some(1)
+    );
+    assert_eq!(credited.processed_reward_event_count, 1);
+    assert_eq!(
+        credited.latest_reward_event_classification,
+        Some(RewardEventClassification::NoProposalFallback)
+    );
+    assert_eq!(
+        credited.accumulated_policy_credit,
+        io_reward_policy::DAILY_EVENT_CREDIT
+    );
+    let credited_once = credited.accumulated_eligible_credit;
+    assert!(credited_once > 0);
+    let _: Result<RewardEventObservation, ApiError> = decode_one(
+        &pic.update_call(
+            stream,
+            Principal::anonymous(),
+            "resume_reward_work",
+            encode_one(()).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let replay_status: Status = icrc::query_one(&pic, stream, "get_status", ());
+    assert_eq!(replay_status.processed_reward_event_count, 1);
+    assert_eq!(replay_status.accumulated_eligible_credit, credited_once);
+    Ok(())
+}
+
 pub fn run_candidate_reward_shares_drive_io_rewards(
     required: bool,
 ) -> Result<(), SnsGovernanceSetupError> {
     use crate::sns_root_setup::SnsRootCanister;
     use candid::{decode_one, encode_one, Nat};
     use io_stream_manager::{
-        Account as StreamAccount, ApiError, InitArgs, Lifecycle, RedeemArgs, RedemptionProgress,
-        RewardEventClassification, RewardEventObservation, Status, StreamConfig, StreamProgress,
+        Account as StreamAccount, ApiError, InitArgs, Lifecycle, PreparedRedemption, RedeemArgs,
+        RedemptionProgress, RewardEventClassification, RewardEventObservation, Status,
+        StreamConfig, StreamProgress,
     };
     use pocket_ic::CanisterSettings;
 
@@ -1223,6 +1608,17 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     pic.add_cycles(swap, 2_000_000_000_000);
     let stream = pocketic_env::create_empty_application_canister(&pic);
     let nns_manager = pocketic_env::create_application_canister(&pic, nns_wasm, Vec::new());
+    let pooled_principal_e8s = 10_000_000_000_u128;
+    let _: () = decode_one(
+        &pic.update_call(
+            nns_manager,
+            Principal::anonymous(),
+            "debug_set_pooled_principal",
+            encode_one(pooled_principal_e8s).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let controller = Principal::from_slice(&[71; 29]);
     let reserve_subaccount = icrc::subaccount("candidate-reward-reserve");
     let liquid_subaccount = icrc::subaccount("candidate-reward-liquid");
@@ -1322,9 +1718,9 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             )
             .expect("candidate neuron claim succeeds");
             let delay = if index == 4 {
-                io_core_model::TWO_WEEK_SECONDS - 1
+                io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS - 1
             } else {
-                io_core_model::TWO_WEEK_SECONDS
+                io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS
             };
             configure_increase_dissolve_delay(&fixture, &id, u32::try_from(delay).unwrap());
             id
@@ -1423,14 +1819,64 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         .unwrap(),
     )
     .unwrap();
+    match pre_activation {
+        Ok(observation) => {
+            assert_eq!(observation.event.round, event_2.round);
+            assert_eq!(
+                observation.classification,
+                RewardEventClassification::StructuralOnly
+            );
+            assert_eq!(observation.policy_credit, 0);
+            assert_eq!(observation.eligible_credit_total, 0);
+        }
+        Err(ApiError::Pending(message)) if message == "SNS reward event has not advanced" => {
+            // The one-shot timer may win the baseline structural observation.
+        }
+        other => panic!("candidate baseline observation did not settle safely: {other:?}"),
+    }
+    let post_activation_status: Status = decode_one(
+        &pic.query_call(stream, controller, "get_status", encode_one(()).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(
-        pre_activation,
-        Err(ApiError::Pending(
-            "SNS reward event has not advanced".into()
-        ))
+        post_activation_status
+            .latest_processed_reward_event
+            .map(|event| event.round),
+        Some(event_2.round)
     );
+    assert_eq!(post_activation_status.processed_reward_event_count, 0);
+    assert_eq!(post_activation_status.accumulated_policy_credit, 0);
+    assert!(post_activation_status.accumulated_entitlements.is_empty());
+    let allow_reward_observation_margin = || {
+        pic.advance_time(Duration::from_secs(301));
+    };
+    let wait_for_reward_event = |expected_round| {
+        let mut latest = None;
+        for _ in 0..1_000 {
+            let status: Status = decode_one(
+                &pic.query_call(stream, controller, "get_status", encode_one(()).unwrap())
+                    .unwrap(),
+            )
+            .unwrap();
+            if status
+                .latest_processed_reward_event
+                .is_some_and(|event| event.round >= expected_round)
+            {
+                return;
+            }
+            latest = Some(status);
+            pic.advance_time(Duration::from_secs(1));
+            pic.tick();
+        }
+        panic!(
+            "Stream did not consume reward event round {expected_round}; time={:?}; status={latest:?}",
+            pic.get_time()
+        );
+    };
 
     let fallback_event = advance_until_reward_event(&fixture, 0, event_2.round);
+    allow_reward_observation_margin();
 
     let observation: Result<RewardEventObservation, ApiError> = decode_one(
         &pic.update_call(
@@ -1442,17 +1888,39 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         .unwrap(),
     )
     .unwrap();
-    let observation = observation.expect("stream consumes the no-proposal event");
-    assert_eq!(
-        observation.classification,
-        RewardEventClassification::NoProposalFallback
-    );
-    assert_eq!(observation.event.round, fallback_event.round);
+    match observation {
+        Ok(observation) => {
+            assert_eq!(observation.event.round, fallback_event.round);
+            assert_eq!(
+                observation.classification,
+                RewardEventClassification::NoProposalFallback
+            );
+        }
+        Err(ApiError::Pending(message))
+            if message == "SNS reward event has not advanced"
+                || message == "daily stake observation is not due" =>
+        {
+            // The one-shot timer consumed the exact event before this keeper call.
+        }
+        other => panic!("stream did not consume the no-proposal event: {other:?}"),
+    }
+    wait_for_reward_event(fallback_event.round);
     let observed_status: Status = decode_one(
         &pic.query_call(stream, controller, "get_status", encode_one(()).unwrap())
             .unwrap(),
     )
     .unwrap();
+    assert_eq!(
+        observed_status
+            .latest_processed_reward_event
+            .map(|event| event.round),
+        Some(fallback_event.round)
+    );
+    assert_eq!(
+        observed_status.latest_reward_event_classification,
+        Some(RewardEventClassification::NoProposalFallback)
+    );
+    let fallback_eligible_total = observed_status.accumulated_eligible_credit;
     let observed_weights = observed_status
         .accumulated_entitlements
         .iter()
@@ -1464,20 +1932,26 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         })
         .collect::<std::collections::BTreeMap<_, _>>();
     let eligible_stake_total = stakes[..3].iter().map(|stake| u128::from(*stake)).sum();
+    let observed_event_count = u128::from(observed_status.processed_reward_event_count);
+    let mut expected_daily_credit_total = 0;
     for (id, stake) in neuron_ids[..3].iter().zip(stakes[..3].iter()) {
+        let daily_credit = io_reward_policy::mul_div_floor(
+            io_reward_policy::DAILY_EVENT_CREDIT,
+            u128::from(*stake),
+            eligible_stake_total,
+        )
+        .unwrap();
+        expected_daily_credit_total += daily_credit;
         assert_eq!(
             observed_weights[&id.id],
-            io_reward_policy::mul_div_floor(
-                io_reward_policy::DAILY_EVENT_CREDIT,
-                u128::from(*stake),
-                eligible_stake_total,
-            )
-            .unwrap()
+            daily_credit * observed_event_count
         );
     }
     assert!(!observed_weights.contains_key(&neuron_ids[3].id));
 
     let ready_event = advance_until_reward_event(&fixture, 0, fallback_event.round);
+    assert_eq!(ready_event.round, fallback_event.round + 1);
+    allow_reward_observation_margin();
     let later_observation: Result<RewardEventObservation, ApiError> = decode_one(
         &pic.update_call(
             stream,
@@ -1488,9 +1962,37 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         .unwrap(),
     )
     .unwrap();
+    match later_observation {
+        Ok(observation) => {
+            assert_eq!(observation.event.round, ready_event.round);
+            assert_eq!(
+                observation.eligible_credit_total,
+                expected_daily_credit_total
+            );
+        }
+        Err(ApiError::Pending(message))
+            if message == "SNS reward event has not advanced"
+                || message == "daily stake observation is not due" =>
+        {
+            // The one-shot timer consumed the exact event before this keeper call.
+        }
+        other => panic!("stream did not consume the ready event: {other:?}"),
+    }
+    wait_for_reward_event(ready_event.round);
+    let ready_status: Status = decode_one(
+        &pic.query_call(stream, controller, "get_status", encode_one(()).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(
-        later_observation.unwrap().eligible_credit_total,
-        observation.eligible_credit_total
+        ready_status
+            .latest_processed_reward_event
+            .map(|event| event.round),
+        Some(ready_event.round)
+    );
+    assert_eq!(
+        ready_status.accumulated_eligible_credit - fallback_eligible_total,
+        expected_daily_credit_total
     );
 
     let zero_share_proposal = make_motion(
@@ -1499,6 +2001,9 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         "excluded-only proposal has zero eligible current-event shares",
     );
     let event_3 = advance_until_reward_event(&fixture, 1, ready_event.round);
+    assert_eq!(event_3.round, ready_event.round + 1);
+    let before_zero = ready_status.accumulated_entitlements;
+    allow_reward_observation_margin();
     assert_eq!(event_3.settled_proposals[0].id, zero_share_proposal);
     let zero_observation: Result<RewardEventObservation, ApiError> = decode_one(
         &pic.update_call(
@@ -1518,29 +2023,27 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             );
             assert_eq!(observation.eligible_credit_total, 0);
         }
-        Err(ApiError::Pending(message)) if message == "SNS reward event has not advanced" => {
+        Err(ApiError::Pending(message))
+            if message == "SNS reward event has not advanced"
+                || message == "daily stake observation is not due" =>
+        {
             // The one-shot timer is deliberately allowed to win the race with a
-            // permissionless keeper. Prove that it consumed this exact event
-            // with no entitlement instead of requiring the keeper call to win.
-            let status: Status = decode_one(
-                &pic.query_call(stream, controller, "get_status", encode_one(()).unwrap())
-                    .unwrap(),
-            )
-            .unwrap();
-            assert_eq!(
-                status
-                    .latest_processed_reward_event
-                    .map(|event| event.round),
-                Some(event_3.round)
-            );
-            assert_eq!(
-                status.latest_reward_event_classification,
-                Some(RewardEventClassification::ZeroEligibleParticipation)
-            );
-            assert_eq!(status.accumulated_eligible_credit, 0);
+            // permissionless keeper. The committed status below proves that
+            // whichever path won consumed this exact event with no entitlement.
         }
         other => panic!("zero-share proposal event is not consumed: {other:?}"),
     }
+    wait_for_reward_event(event_3.round);
+    let zero_status: Status = decode_one(
+        &pic.query_call(stream, controller, "get_status", encode_one(()).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        zero_status.latest_reward_event_classification,
+        Some(RewardEventClassification::ZeroEligibleParticipation)
+    );
+    assert_eq!(zero_status.accumulated_entitlements, before_zero);
 
     let set_stream_paused = |paused: bool| {
         let result: Result<(), ApiError> = decode_one(
@@ -1585,10 +2088,11 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         "configure installed accumulation follower",
     );
     let mut previous_round = event_3.round;
-    let mut expected_live = std::collections::BTreeMap::<Vec<u8>, u128>::new();
+    let mut expected_live = entry_map(&zero_status);
+    let mut expected_processed_event_count = zero_status.processed_reward_event_count;
     let frozen_batch_total: Option<u128> = None;
     let mut redemption = None;
-    let mut redemption_icp_before = None;
+    let mut redemption_result = None;
     for day in 4_u64..=15 {
         let (expected_settled, expected_weights, expected_classification) = match day {
             4 => {
@@ -1638,12 +2142,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                 configure_increase_dissolve_delay(&fixture, &neuron_ids[4], 1);
                 (
                     0,
-                    vec![
-                        (0, stakes[0]),
-                        (1, stakes[1]),
-                        (2, stakes[2]),
-                        (4, stakes[4]),
-                    ],
+                    vec![(0, stakes[0]), (1, stakes[1]), (2, stakes[2])],
                     RewardEventClassification::NoProposalFallback,
                 )
             }
@@ -1679,6 +2178,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             _ => unreachable!(),
         };
         let event = advance_until_reward_event(&fixture, expected_settled, previous_round);
+        allow_reward_observation_margin();
         assert_eq!(event.round, previous_round + 1);
         assert_eq!(event.rounds_since_last_distribution, Some(1));
         let observation: Result<RewardEventObservation, ApiError> = decode_one(
@@ -1777,16 +2277,21 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                     "unexpected canonical candidate eligible total on installed day {day}"
                 );
             }
-            Err(ApiError::Pending(message)) if message == "SNS reward event has not advanced" => {
+            Err(ApiError::Pending(message))
+                if message == "SNS reward event has not advanced"
+                    || message == "daily stake observation is not due" =>
+            {
                 // The single one-shot timer is allowed to consume the event before
                 // the permissionless keeper. The exact accumulator delta below
                 // proves that it consumed this event once with canonical weights.
             }
             other => panic!("installed daily event {day} was not consumed: {other:?}"),
         }
+        wait_for_reward_event(event.round);
         for (id, weight) in expected_event_credits {
             *expected_live.entry(id).or_default() += weight;
         }
+        expected_processed_event_count += 1;
         let status = stream_status();
         assert_eq!(
             status
@@ -1799,10 +2304,14 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             Some(expected_classification)
         );
         assert_eq!(
-            status.processed_reward_event_count, day,
-            "stream must consume events 2 through {day} exactly once"
+            status.processed_reward_event_count, expected_processed_event_count,
+            "stream must consume installed daily event {day} exactly once"
         );
-        assert_eq!(entry_map(&status), expected_live);
+        assert_eq!(
+            entry_map(&status),
+            expected_live,
+            "installed daily event {day}"
+        );
         assert_eq!(
             status.pending_entitlement_batch_eligible_credit,
             frozen_batch_total
@@ -1831,22 +2340,6 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         if day == 10 {
             let amount = 20_000_000_u64;
             let now = pic.get_time().as_nanos_since_unix_epoch();
-            icrc::icrc2_approve(
-                &pic,
-                io_ledger,
-                controller,
-                icrc::ApproveArgs {
-                    from_subaccount: None,
-                    spender: icrc::account(stream, None),
-                    amount: Nat::from(amount + FEE_E8S),
-                    expected_allowance: Some(Nat::from(0_u8)),
-                    expires_at: Some(now + 800_000_000_000),
-                    fee: Some(Nat::from(FEE_E8S)),
-                    memo: Some(b"pending-batch-redemption".to_vec()),
-                    created_at_time: Some(now),
-                },
-            )
-            .expect("controller approves redemption while backing is pending");
             let total_supply = u128::try_from(icrc::icrc1_total_supply(&pic, io_ledger).0).unwrap();
             let reserve_balance =
                 u128::try_from(icrc::icrc1_balance_of(&pic, io_ledger, reserve.clone()).0).unwrap();
@@ -1869,6 +2362,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                 io_core_model::EconomicState {
                     backing: io_core_model::Backing {
                         liquid: liquid_balance,
+                        pooled: pooled_principal_e8s,
                         ..Default::default()
                     },
                     claims: total_supply - reserve_balance - excluded_balance,
@@ -1889,72 +2383,117 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                 expires_at_nanos: now + 800_000_000_000,
                 nonce: 0,
             };
-            redemption_icp_before = Some(icrc::icrc1_balance_of(
+            let redemption_icp_before =
+                icrc::icrc1_balance_of(&pic, icp_ledger, icrc::account(controller, None));
+            let prepared: Result<PreparedRedemption, ApiError> = decode_one(
+                &pic.update_call(
+                    stream,
+                    controller,
+                    "prepare_redemption",
+                    encode_one(args).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let prepared = prepared.expect("pending-batch redemption prepares an exact push");
+            let push_block = icrc::icrc1_transfer(
                 &pic,
-                icp_ledger,
-                icrc::account(controller, None),
-            ));
-            let pulled: Result<RedemptionProgress, ApiError> = decode_one(
-                &pic.update_call(stream, controller, "redeem", encode_one(args).unwrap())
-                    .unwrap(),
+                io_ledger,
+                controller,
+                icrc::transfer_arg(
+                    prepared
+                        .account
+                        .subaccount
+                        .as_deref()
+                        .map(|value| value.try_into().unwrap()),
+                    icrc::account(
+                        prepared.reserve.owner,
+                        prepared
+                            .reserve
+                            .subaccount
+                            .as_deref()
+                            .map(|value| value.try_into().unwrap()),
+                    ),
+                    prepared.request.io_amount_e8s.try_into().unwrap(),
+                    Some(prepared.snapshot.io_fee_e8s.try_into().unwrap()),
+                    Some(&prepared.push_memo),
+                    Some(prepared.prepared_at_nanos),
+                ),
             )
-            .unwrap();
-            assert_eq!(pulled, Ok(RedemptionProgress::IoInReserve));
-            assert_eq!(
-                stream_status().operation_kind.as_deref(),
-                Some("Redemption")
-            );
-            redemption = Some(quote);
-        }
-        if day == 11 {
-            let paid: Result<StreamProgress, ApiError> = decode_one(
+            .expect("controller sends the exact pending-batch redemption push");
+            let push_block = u128::try_from(push_block.0).unwrap();
+            let initial: Result<RedemptionProgress, ApiError> = decode_one(
                 &pic.update_call(
                     stream,
-                    Principal::anonymous(),
-                    "resume",
-                    encode_one(()).unwrap(),
+                    controller,
+                    "settle_redemption",
+                    encode_one(push_block).unwrap(),
                 )
                 .unwrap(),
             )
             .unwrap();
-            assert_eq!(
-                paid,
-                Ok(StreamProgress::Redemption(
-                    RedemptionProgress::PayoutSucceeded
-                ))
-            );
-        }
-        if day == 12 {
-            let completed: Result<StreamProgress, ApiError> = decode_one(
-                &pic.update_call(
-                    stream,
-                    Principal::anonymous(),
-                    "resume",
-                    encode_one(()).unwrap(),
-                )
-                .unwrap(),
-            )
-            .unwrap();
-            let result = match completed {
-                Ok(StreamProgress::Redemption(RedemptionProgress::Completed(result))) => result,
-                other => panic!("pending-batch redemption did not complete: {other:?}"),
+            let result = match initial {
+                Ok(RedemptionProgress::Completed(result)) => {
+                    assert!(stream_status().operation_kind.is_none());
+                    result
+                }
+                Ok(RedemptionProgress::Pending) => {
+                    let pending_status = stream_status();
+                    assert_eq!(pending_status.operation_kind.as_deref(), Some("Redemption"));
+                    assert!(pending_status.operation_phase.is_some());
+                    let mut completed = None;
+                    for _ in 0..8 {
+                        let progress: Result<StreamProgress, ApiError> = decode_one(
+                            &pic.update_call(
+                                stream,
+                                Principal::anonymous(),
+                                "resume",
+                                encode_one(()).unwrap(),
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap();
+                        match progress {
+                            Ok(StreamProgress::Redemption(RedemptionProgress::Pending))
+                            | Err(ApiError::Pending(_)) => {}
+                            Ok(StreamProgress::Redemption(RedemptionProgress::Completed(
+                                result,
+                            ))) => {
+                                completed = Some(result);
+                                break;
+                            }
+                            other => {
+                                panic!("pending-batch redemption failed to progress: {other:?}")
+                            }
+                        }
+                    }
+                    completed.expect("pending-batch redemption exceeded eight resume attempts")
+                }
+                other => panic!("pending-batch redemption failed initially: {other:?}"),
             };
-            let quote = redemption.expect("redemption quote was captured");
             assert_eq!(result.gross_icp_e8s, quote.gross_icp);
             assert_eq!(result.net_icp_e8s, quote.net_icp);
             assert_eq!(
                 icrc::icrc1_balance_of(&pic, icp_ledger, icrc::account(controller, None)),
-                redemption_icp_before.as_ref().unwrap().clone() + Nat::from(quote.net_icp)
+                redemption_icp_before + Nat::from(quote.net_icp)
             );
             assert_eq!(
                 stream_status().pending_entitlement_batch_eligible_credit,
                 frozen_batch_total
             );
+            assert!(stream_status().operation_kind.is_none());
+            redemption = Some(quote);
+            redemption_result = Some(result);
         }
         previous_round = event.round;
     }
+    assert!(redemption.is_some());
+    assert!(redemption_result.is_some());
     let after_fifteen = stream_status();
-    assert_eq!(after_fifteen.processed_reward_event_count, 15);
+    assert_eq!(
+        after_fifteen.processed_reward_event_count,
+        expected_processed_event_count
+    );
     assert_eq!(entry_map(&after_fifteen), expected_live);
 
     set_stream_paused(true);
@@ -1979,7 +2518,10 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     );
     assert_eq!(skipped.eligible_credit_total, 0);
     let after_skip = stream_status();
-    assert_eq!(after_skip.processed_reward_event_count, 15);
+    assert_eq!(
+        after_skip.processed_reward_event_count,
+        expected_processed_event_count
+    );
     assert_eq!(after_skip.missed_reward_event_count, 2);
     assert_eq!(entry_map(&after_skip), expected_live);
     let replay: Result<RewardEventObservation, ApiError> = decode_one(
@@ -1992,11 +2534,14 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(
-        replay,
-        Err(ApiError::Pending(
-            "SNS reward event has not advanced".into()
-        ))
+    assert!(
+        matches!(
+            &replay,
+            Err(ApiError::Pending(message))
+                if message == "SNS reward event has not advanced"
+                    || message == "daily stake observation is not due"
+        ),
+        "reward replay must remain a non-effecting Pending boundary: {replay:?}"
     );
 
     set_stream_paused(true);
@@ -2056,7 +2601,10 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             })
             .collect()
     );
-    assert_eq!(recovered_status.processed_reward_event_count, 16);
+    assert_eq!(
+        recovered_status.processed_reward_event_count,
+        expected_processed_event_count + 1
+    );
     assert_eq!(recovered_status.missed_reward_event_count, 2);
     assert_eq!(
         recovered_status.pending_entitlement_batch_eligible_credit,
@@ -2129,7 +2677,7 @@ pub fn run_official_to_candidate_reward_participation_upgrade(
     configure_increase_dissolve_delay(
         &fixture,
         &neuron_id,
-        u32::try_from(io_core_model::TWO_WEEK_SECONDS).unwrap(),
+        u32::try_from(io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS).unwrap(),
     );
     assert_eq!(
         listed_neuron(&fixture, &neuron_id).latest_reward_event_participation,
@@ -2401,7 +2949,7 @@ pub fn governance_init_arg(ledger: Option<Principal>, root: Option<Principal>) -
 pub fn test_nervous_system_parameters() -> NervousSystemParameters {
     NervousSystemParameters {
         default_followees: Some(DefaultFollowees { followees: vec![] }),
-        max_dissolve_delay_seconds: Some(io_core_model::TWO_WEEK_SECONDS),
+        max_dissolve_delay_seconds: Some(io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS),
         max_dissolve_delay_bonus_percentage: Some(0),
         max_followees_per_function: Some(15),
         neuron_claimer_permissions: Some(NeuronPermissionList {
@@ -2410,7 +2958,9 @@ pub fn test_nervous_system_parameters() -> NervousSystemParameters {
         neuron_minimum_stake_e8s: Some(100_000_000),
         max_neuron_age_for_age_bonus: Some(0),
         initial_voting_period_seconds: Some(86_400),
-        neuron_minimum_dissolve_delay_to_vote_seconds: Some(io_core_model::TWO_WEEK_SECONDS - 1),
+        neuron_minimum_dissolve_delay_to_vote_seconds: Some(
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS - 1,
+        ),
         reject_cost_e8s: Some(100_000_000),
         max_proposals_to_keep_per_action: Some(100),
         wait_for_quiet_deadline_increase_seconds: Some(1),

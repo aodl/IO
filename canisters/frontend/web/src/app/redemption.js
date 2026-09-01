@@ -1,4 +1,3 @@
-const APPROVAL_LIFETIME_NANOS = 300_000_000_000n;
 const REDEEM_LIFETIME_NANOS = 120_000_000_000n;
 
 export function canonicalSubaccount(value) {
@@ -11,22 +10,15 @@ export function canonicalSubaccount(value) {
 export function progressLabel(progress) {
   const key = Object.keys(progress ?? {})[0];
   return ({
-    Preparing: "Preparing canonical snapshot",
-    IoPullSubmitted: "IO pull submitted",
-    IoInReserve: "IO in reserve",
-    PayoutSubmitted: "ICP payout submitted",
-    PayoutSucceeded: "ICP payout succeeded",
-    Completing: "Committing canonical result",
+    Pending: "Payout owed — waiting for exact recovery",
     Completed: "Completed",
-    Stuck: "Stuck — submit the exact transfer block proof",
+    Stuck: "Stuck — submit the exact payout block proof",
   })[key] ?? key ?? "Unknown";
 }
 
 export async function prepareRedemption({
   ledger,
   stream,
-  owner,
-  streamCanister,
   selectedSubaccount,
   ioAmountE8s,
   minIcpOutE8s,
@@ -34,81 +26,61 @@ export async function prepareRedemption({
   nowNanos,
 }) {
   const subaccount = canonicalSubaccount(selectedSubaccount);
-  const source = { owner, subaccount: [subaccount] };
-  const spender = { owner: streamCanister, subaccount: [] };
-  const [fee, allowance, callerState] = await Promise.all([
+  const [fee, callerState] = await Promise.all([
     ledger.icrc1_fee(),
-    ledger.icrc2_allowance({ account: source, spender }),
     stream.get_caller_redemption_state(),
   ]);
-  if (!("Ok" in callerState)) throw new Error(`nonce query failed: ${JSON.stringify(callerState.Err)}`);
-  const amount = BigInt(ioAmountE8s);
-  const requiredAllowance = amount + BigInt(fee);
-  const createdAt = BigInt(nowNanos);
-  const approvalExpires = createdAt + APPROVAL_LIFETIME_NANOS;
-  const approvalMemo = new TextEncoder().encode(`IO:redeem:${callerState.Ok.next_nonce}`);
-  return {
-    approval: {
-      from_subaccount: [subaccount],
-      spender,
-      amount: requiredAllowance,
-      expected_allowance: [BigInt(allowance.allowance)],
-      expires_at: [approvalExpires],
-      fee: [BigInt(fee)],
-      memo: [approvalMemo],
-      created_at_time: [createdAt],
-    },
-    redeem: {
-      from_subaccount: [subaccount],
-      io_amount_e8s: amount,
-      min_icp_out_e8s: BigInt(minIcpOutE8s),
-      max_io_fee_e8s: BigInt(fee),
-      max_icp_fee_e8s: BigInt(maxIcpFeeE8s),
-      expires_at_nanos: createdAt + REDEEM_LIFETIME_NANOS,
-      nonce: BigInt(callerState.Ok.next_nonce),
-    },
-  };
-}
-
-export async function submitRedemption({ ledger, stream, request }) {
-  const approval = await ledger.icrc2_approve(request.approval);
-  if (!("Ok" in approval)) throw new Error("ICRC-2 approval failed");
-  return stream.redeem(request.redeem);
-}
-
-export function redemptionConsentTerms(request, network) {
-  const approvalSource = canonicalSubaccount(request.approval.from_subaccount[0]);
-  const redeemSource = canonicalSubaccount(request.redeem.from_subaccount[0]);
-  if (!approvalSource.every((value, index) => value === redeemSource[index])) {
-    throw new Error("approval and redemption source subaccounts differ");
+  if (!("Ok" in callerState)) {
+    throw new Error(`nonce query failed: ${JSON.stringify(callerState.Err)}`);
   }
+  const args = {
+    from_subaccount: [subaccount],
+    io_amount_e8s: BigInt(ioAmountE8s),
+    min_icp_out_e8s: BigInt(minIcpOutE8s),
+    max_io_fee_e8s: BigInt(fee),
+    max_icp_fee_e8s: BigInt(maxIcpFeeE8s),
+    expires_at_nanos: BigInt(nowNanos) + REDEEM_LIFETIME_NANOS,
+    nonce: BigInt(callerState.Ok.next_nonce),
+  };
+  const result = await stream.prepare_redemption(args);
+  if (!("Ok" in result)) throw new Error(`quote preparation failed: ${JSON.stringify(result.Err)}`);
+  return result.Ok;
+}
+
+export function redemptionConsentTerms(prepared, network) {
   return Object.freeze({
-    action: "icrc2_approve_for_io_redemption",
+    action: "icrc1_push_for_io_redemption",
     network,
-    ioAmountE8s: request.redeem.io_amount_e8s,
-    spender: request.approval.spender,
-    selectedSourceSubaccount: redeemSource,
-    exactAllowanceE8s: request.approval.amount,
-    currentIoFeeE8s: request.approval.fee[0],
-    expectedExistingAllowanceE8s: request.approval.expected_allowance[0],
-    approvalExpiresAtNanos: request.approval.expires_at[0],
-    approvalMemo: new Uint8Array(request.approval.memo[0]),
-    approvalCreatedAtNanos: request.approval.created_at_time[0],
-    redemptionNonce: request.redeem.nonce,
-    minimumIcpOutputE8s: request.redeem.min_icp_out_e8s,
-    maximumIcpFeeE8s: request.redeem.max_icp_fee_e8s,
-    redemptionExpiresAtNanos: request.redeem.expires_at_nanos,
+    ioAmountE8s: prepared.request.io_amount_e8s,
+    sourceSubaccount: canonicalSubaccount(prepared.account.subaccount[0]),
+    reserveDestination: prepared.reserve,
+    exactIoFeeE8s: prepared.snapshot.io_fee_e8s,
+    exactMemo: new Uint8Array(prepared.push_memo),
+    exactGrossIcpE8s: prepared.gross_icp_e8s,
+    exactNetIcpE8s: prepared.net_icp_e8s,
+    exactIcpFeeE8s: prepared.snapshot.icp_fee_e8s,
+    redemptionNonce: prepared.request.nonce,
+    transferExpiresAtNanos: prepared.request.expires_at_nanos,
   });
 }
 
-export async function consentAndSubmitRedemption({ ledger, stream, request, session }) {
-  const consent = await session.requestApprovalConsent(
-    redemptionConsentTerms(request, session.network),
+export async function consentPushAndSettleRedemption({ ledger, stream, prepared, session }) {
+  const consent = await session.requestTransferConsent(
+    redemptionConsentTerms(prepared, session.network),
   );
-  if (consent !== true) throw new Error("Wallet approval consent was not granted");
-  return submitRedemption({ ledger, stream, request });
+  if (consent !== true) throw new Error("Wallet transfer consent was not granted");
+  const transfer = await ledger.icrc1_transfer({
+    from_subaccount: prepared.account.subaccount,
+    to: prepared.reserve,
+    amount: prepared.request.io_amount_e8s,
+    fee: [prepared.snapshot.io_fee_e8s],
+    memo: [prepared.push_memo],
+    created_at_time: [prepared.prepared_at_nanos],
+  });
+  if (!("Ok" in transfer)) throw new Error("ICRC-1 redemption push failed");
+  return stream.settle_redemption(transfer.Ok);
 }
 
-export async function resumeRedemption(stream) {
-  return stream.resume();
+export async function resumeRedemption(stream, caller) {
+  return stream.resume_redemption(caller);
 }

@@ -28,17 +28,17 @@ execution canister `oae4c-3iaaa-aaaar-qb5qq-cai` or the two-year protected NNS n
 - `scripts/11-build-local-io-canisters.sh`: verifies every exact-source release artifact and hash used by the rehearsal.
 - `scripts/12-deploy-local-dapps.sh`: creates the per-run planned local dapp IDs, installs exact release Wasms Paused, and adds NNS Root through the maintained SNS CLI.
 - `scripts/12-provision-local-nns-readiness.sh`: claims and shapes the permanent
-  local NNS neuron, records a deterministic local pooled-parent memo/followee,
-  and leaves the pooled parent absent for lazy creation from Stream liquid
-  claim backing.
+  local NNS neuron and seeds the deterministic Dynamic 14-day IO staking
+  Account. Authenticated manager readiness performs ClaimOrRefresh and proves
+  the local memo, fixed followee, dissolve delay and anchor partition.
 - `scripts/13-propose-and-finalize-sns.sh`: publishes the reviewed same-source candidate Governance/Root bundle through executed local NNS Governance proposals into SNS-W, verifies the exact compressed hashes, submits CreateServiceNervousSystem, and completes the swap.
 - `scripts/14-discover-sns-canisters.sh`: discovers the real SNS canonically and rejects any mismatch with the per-run plan.
-- `scripts/15-exercise-ledger.sh`: submits signed treasury proposals, records duplicate/negative ledger behavior, funds liquid ICP, and runs the production ICRC-2 redemption after activation.
+- `scripts/15-exercise-ledger.sh`: submits signed treasury proposals, records duplicate/negative ledger behavior, funds liquid ICP, and runs the production prepared ICRC-1 push redemption after activation.
 - `scripts/16-exercise-index-and-archives.sh`: captures index synchronization, exact Account histories and canonical ledger/Root archive discovery.
-- `scripts/17-exercise-governance-and-controllers.sh`: records controller and hash-changing upgrade evidence, registers lifecycle functions, and requires both managers to activate through signed SNS Governance proposals.
-- `scripts/17-observe-one-day-reward.sh`: advances only the attached local PocketIC instance by exactly one day and records the proposal-bearing production reward observation and permissionless keeper result.
+- `scripts/17-exercise-governance-and-controllers.sh`: records controller and hash-changing upgrade evidence, registers lifecycle functions, establishes Dynamic-parent/NNS readiness first, and then requires Stream readiness through signed SNS Governance proposals.
+- `scripts/17-observe-one-day-reward.sh`: advances only the attached local PocketIC instance by one reward day, proves that an independently committed structural marker does not make reward credit due before the canonical event-end `+300s` margin, advances the exact remaining simulated margin plus one scheduler-wake second, and records the proposal-bearing result whether the one-shot timer or permissionless keeper wins.
 - `scripts/18-exercise-account-semantic-protocol.sh`: serially executes the
-  exact proposal-143660 boundary and controlled current-IO account-semantic,
+  exact proposal-143660 boundary and controlled current-IO anchored-dynamic,
   carry-forward, liquidity and irreversible-effect recovery cases.
 - `scripts/18-package-evidence.sh`: packages a new immutable layered evidence
   directory only after every required official and controlled checkpoint,
@@ -60,6 +60,11 @@ All operator scripts require:
 IO_LOCAL_SNS_REHEARSAL_ACK=local-only
 ```
 
+Fresh isolated runs may also set
+`IO_LOCAL_SNS_ICP_TREASURY_IDENTITY=<fresh-local-identity>`. The maintained
+swap-finalization and liquid-ICP funding phases pass that local identity to
+`sns-testing`; the value is fixture-only and never defines production custody.
+
 They reject mainnet-like arguments, protected IO asset IDs, and `--network ic`/`-n ic` use. The scripts are optional/manual and not required CI.
 
 ## Official Local Flow
@@ -75,8 +80,8 @@ Manual sequence:
 3. Run `runbook.sh render-sns-init` to produce ignored `sns_init.local.yaml`.
 4. Run `runbook.sh bootstrap-official-network` against an isolated pinned clean `dfinity/ic` checkout and loopback endpoint.
 5. Write ignored `install-args.local/io_stream_manager.did` and `install-args.local/io_nns_neuron_manager.did` for the reviewed local Accounts. The thin lifecycle adapter reads the uniquely owned `sns-testing-init` `topology.json`, rewrites only its isolated input copies with that topology's NNS/SNS allocation IDs, and derives the canonical Governance-owned treasury distribution subaccount for nonce `0`. Phase 12 re-derives and renders that one exact excluded Account plus the reviewed bundle's compressed/source Governance hash before installation. Manual runs use the same helper and fail if the excluded assignment is missing or duplicated. Run `runbook.sh build-local-io-canisters` to verify the exact release provenance and hashes.
-6. Set `IO_LOCAL_SNS_BUNDLE_DIR` to the reviewed same-source Governance/Root resolver output, then run the restartable `deploy-local-dapps`, `propose-and-finalize-sns`, and `discover-sns-canisters` phases.
-7. Run `exercise-ledger`, `exercise-index-and-archives`, `exercise-governance-and-controllers`, and `observe-one-day-reward` after their canonical prerequisites exist. The governance phase submits the current exact raw historian Wasm inline through the signed SNS Governance proposal and Root execution path. The inline payload avoids only the unavailable chunk-store upload path and does not bypass Governance. The strict pre-launch schema is exercised through a same-release upgrade: before and after module hashes must equal the release-manifest raw hash, and the post-upgrade public status must confirm that the typed observation configuration was applied. The larger NNS Manager same-release restart uses its deterministic release `.wasm.gz`; the evidence binds the pre-upgrade raw module hash, gzip proposal/module hash, and release-manifest raw hash before proving that the manager reopens Paused.
+6. Set `IO_LOCAL_SNS_BUNDLE_DIR` to the reviewed same-source Governance/Root resolver output and, when the fresh topology uses a dedicated local treasury identity, set `IO_LOCAL_SNS_ICP_TREASURY_IDENTITY`. Then run the restartable `deploy-local-dapps`, `propose-and-finalize-sns`, and `discover-sns-canisters` phases.
+7. Run `exercise-ledger` once to establish reserve, user and liquid-ICP funding, then run `exercise-index-and-archives` and `exercise-governance-and-controllers`. Run `exercise-ledger` again after both managers are Ready so the production prepared-push redemption completes, and only then run `observe-one-day-reward`. The governance phase submits the current exact raw historian Wasm inline through the signed SNS Governance proposal and Root execution path. The inline payload avoids only the unavailable chunk-store upload path and does not bypass Governance. The strict pre-launch schema is exercised through a same-release upgrade: before and after module hashes must equal the release-manifest raw hash, and the post-upgrade public status must confirm that the typed observation configuration was applied. The larger NNS Manager same-release restart uses its deterministic release `.wasm.gz`; the evidence binds the pre-upgrade raw module hash, gzip proposal/module hash, and release-manifest raw hash before proving that the manager reopens Paused.
 8. Run `runbook.sh record-ids` and record the canonically discovered IDs in ignored `canister-ids.local.toml`.
 9. Run `runbook.sh capture-evidence` and the command templates in `commands.local.example.md`.
 10. Observe the treasury-transfer fee burn and capture the canonical activation baseline after the real SNS-governance reserve-funding proposal.
@@ -132,7 +137,7 @@ The current canonical shape additionally preserves exact Stream/NNS/historian Ca
 module/controller, lifecycle, Governance, index and archive observations to be
 fresh and complete. No completed package may contain blocker/placeholder text.
 
-The account-semantic shape adds a fixed Account map, source-built official SNS
+The anchored-dynamic shape adds a fixed Account map, source-built official SNS
 binary hashes, exact NNS boundary identity, phase inventory, structured
 scenario results, controlled PocketIC log and explicit proof-layer map. It
 requires distinct fixed TwoWeek and TwoYear maturity Accounts, no maturity
@@ -162,15 +167,14 @@ rather than the committed-evidence contract.
 IO issuance is modelled as reserve transfer, not arbitrary minting:
 
 - reserve-to-user transfer for issuance;
-- user-to-redemption transfer for the incoming redemption IO;
-- redemption-to-reserve transfer for the protocol IO return;
+- exact prepared user-to-reserve push for incoming redemption IO;
 - observed fee disposition and total-supply deltas for each transfer.
 
-Under standard 10,000 e8s fee-burn evidence with no hidden top-up, the rehearsal amounts are `100_000_000`, `99_990_000`, and `99_980_000`. The preceding SNS-governance reserve-funding transfer is a separate detailed record. For genesis supply `S`, reserve funding fee `f₀`, and later observed transfer fees `fᵢ`, final supply is `S - f₀ - sum(fᵢ)`.
+Under standard 10,000 e8s fee-burn evidence with no hidden top-up, the rehearsal observes a `100_000_000` reserve-to-user issuance and an exact prepared user-to-reserve redemption push. The preceding SNS-governance reserve-funding transfer is a separate detailed record. For genesis supply `S`, reserve funding fee `f₀`, and later observed transfer fees `fᵢ`, final supply is `S - f₀ - sum(fᵢ)`.
 
 The protocol reserve account/subaccount is funded after finalization and before activation by an SNS-governance treasury-transfer proposal. For desired reserve `R`, remaining treasury `T`, and transfer fee `f`, genesis treasury must contain at least `R + T + f`. Evidence must prove treasury decrease `R + f`, reserve increase `R`, and supply decrease `f`. The first reserve-to-user supply and reserve pre-balances must equal the reserve-funding post-balances.
 
-The reserve owner is the local `io_stream_manager` canister and its exact configured non-default subaccount distinguishes the reserve. The redemption Account may have that same owner but must use a distinct exact subaccount. Canister-role IDs remain mutually distinct; Accounts are validated separately from role uniqueness.
+The reserve owner is the local `io_stream_manager` canister and its exact configured non-default subaccount distinguishes the reserve. A valid redemption push goes directly from the prepared caller Account to that reserve Account; no intermediate redemption Account exists. Canister-role IDs remain mutually distinct; Accounts are validated separately from role uniqueness.
 
 Proof records use closed `ProofSource` values (`SnsLedgerBlock`, `SnsIndexAccountHistory`, `SnsLedgerArchive`) and closed `ProofMethod` values (`Icrc3GetBlocks`, `IcrcIndexGetAccountTransactions`, `ArchiveGetBlocks`). Source principals must match the recorded ledger/index/archive role. Archive proofs must be within a ledger/root-discovered archive range. Duplicate replay evidence is recorded separately and must point to the exact original successful block; each ordinary successful transfer does not need its own duplicate replay.
 
@@ -181,14 +185,14 @@ The local SNS rehearsal is complete only when:
 - official local SNS tooling was run locally;
 - local SNS root/governance/ledger/index/swap IDs were recorded;
 - local SNS ledger fee disposition, total-supply deltas, and reserve balance were observed;
-- reserve-to-user, user-to-redemption, and redemption-to-reserve transfers were observed separately;
+- reserve-to-user issuance and the exact prepared user-to-reserve redemption push were observed separately;
 - bad fee, insufficient funds, and duplicate behavior were observed;
 - duplicate block was verified;
 - index account history was observed;
 - SNS governance/root/swap availability was observed;
 - dapp controller state was checked;
 - `cargo run -p xtask -- validate_local_sns_ledger` passes against the filled local evidence file.
-- the account-semantic driver has passed all Layer B/C cases against the exact
+- the anchored-dynamic driver has passed all Layer B/C cases against the exact
   recorded release;
 - the new package validates before and after its exact selector binding;
 - no maturity Mint block or provenance endpoint was used.

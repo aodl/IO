@@ -18,16 +18,6 @@ pub enum OwnTransferIntent {
         memo: Vec<u8>,
         created_at_time: u64,
     },
-    Icrc2TransferFrom {
-        ledger: Principal,
-        spender_subaccount: [u8; 32],
-        from: Account,
-        to: Account,
-        amount: u128,
-        fee: u128,
-        memo: Vec<u8>,
-        created_at_time: u64,
-    },
 }
 
 impl OwnTransferIntent {
@@ -53,16 +43,6 @@ impl OwnTransferIntent {
                 memo,
                 created_at_time,
             ),
-            Self::Icrc2TransferFrom {
-                ledger,
-                from,
-                to,
-                amount,
-                fee,
-                memo,
-                created_at_time,
-                ..
-            } => (ledger, from.clone(), to, amount, fee, memo, created_at_time),
         };
         if *ledger == Principal::anonymous() || *ledger == Principal::management_canister() {
             return Err("transfer ledger principal is forbidden".into());
@@ -75,24 +55,18 @@ impl OwnTransferIntent {
         if memo.len() > MAX_MEMO_BYTES {
             return Err("memo exceeds launch bound".into());
         }
-        if matches!(self, Self::Icrc2TransferFrom { .. }) && source.effective_eq(to)? {
-            return Err("transfer source and destination must differ".into());
-        }
         Ok(())
     }
 
     pub fn ledger(&self) -> Principal {
         match self {
-            Self::Icrc1 { ledger, .. } | Self::Icrc2TransferFrom { ledger, .. } => *ledger,
+            Self::Icrc1 { ledger, .. } => *ledger,
         }
     }
 
     pub fn created_at_time(&self) -> u64 {
         match self {
             Self::Icrc1 {
-                created_at_time, ..
-            }
-            | Self::Icrc2TransferFrom {
                 created_at_time, ..
             } => *created_at_time,
         }
@@ -174,22 +148,10 @@ pub struct IcrcTransferArg {
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
-pub struct IcrcTransferFromArg {
-    pub spender_subaccount: Option<Vec<u8>>,
-    pub from: Account,
-    pub to: Account,
-    pub amount: Nat,
-    pub fee: Option<Nat>,
-    pub memo: Option<Vec<u8>>,
-    pub created_at_time: Option<u64>,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
 pub enum TransferError {
     BadFee { expected_fee: Nat },
     BadBurn { min_burn_amount: Nat },
     InsufficientFunds { balance: Nat },
-    InsufficientAllowance { allowance: Nat },
     TooOld,
     CreatedInFuture { ledger_time: u64 },
     Duplicate { duplicate_of: Nat },
@@ -222,7 +184,7 @@ pub fn classify_result(result: TransferResult) -> Result<ClassifiedResult, Strin
             error @ (TransferError::BadFee { .. }
             | TransferError::BadBurn { .. }
             | TransferError::InsufficientFunds { .. }
-            | TransferError::InsufficientAllowance { .. }
+            | TransferError::TooOld
             | TransferError::CreatedInFuture { .. }),
         ) => ClassifiedResult::NoEffect(format!("{error:?}")),
         Err(error) => ClassifiedResult::Ambiguous(format!("{error:?}")),
@@ -259,6 +221,14 @@ mod tests {
             }))
             .unwrap(),
             ClassifiedResult::Succeeded(9)
+        ));
+    }
+
+    #[test]
+    fn too_old_is_a_definite_no_effect_response() {
+        assert!(matches!(
+            classify_result(Err(TransferError::TooOld)).unwrap(),
+            ClassifiedResult::NoEffect(reason) if reason == "TooOld"
         ));
     }
 }

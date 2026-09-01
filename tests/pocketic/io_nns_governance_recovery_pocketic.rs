@@ -2,7 +2,8 @@ use candid::{decode_one, encode_one, CandidType, Principal};
 use io_nns_neuron_manager::{
     api::{MaturityProgress, PrepareTwoWeekMaturityArgs, UnwindProgress},
     jupiter::{
-        JupiterDeposit, JupiterOperation, JupiterPhase, NeuronSnapshot, StakeTransferSucceeded,
+        JupiterDeposit, JupiterOperation, JupiterPauseReason, JupiterPhase, JupiterStuckTransfer,
+        NeuronSnapshot, StakeTransferSucceeded,
     },
     maturity::{
         MaturityCommandOperation, MaturityCommandPhase, MaturityDeliveryOperation, MaturityKind,
@@ -10,18 +11,91 @@ use io_nns_neuron_manager::{
     },
     pool::{PassiveCohort, UnwindOperation, UnwindPhase},
     state::{Account, NnsOperation, NnsStateV1, PooledTarget},
+    transfer::{NnsTransferAttempt, NnsTransferIntent, TransferState},
     ApiError, InitArgs, JupiterProgress, Lifecycle, NnsConfig, NnsProgress, PooledTargetStatus,
 };
 use io_nns_types::backing::{
     ClaimAssetObservation, CohortProofState, CompletedPoolCommand, PoolCommand, PoolCommandKind,
     PoolCommandPhase, PoolProgress, PoolReconciliationAction, PreparePoolReconciliationArgs,
-    TopUpPermit, TransitComponentKind, POOLED_PARENT_DELAY_SECONDS,
+    TopUpPermit, NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS,
 };
-use pocket_ic::PocketIc;
+use pocket_ic::{PocketIc, PocketIcBuilder};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::{
+    process::{Child, Command, Stdio},
+    sync::{Mutex, MutexGuard, OnceLock},
+    thread,
+    time::{Duration, Instant},
+};
 
 const CYCLES: u128 = 2_000_000_000_000;
+
+struct RecoveryServer {
+    url: String,
+    _child: Mutex<Child>,
+}
+
+fn recovery_server() -> &'static RecoveryServer {
+    static SERVER: OnceLock<RecoveryServer> = OnceLock::new();
+    SERVER.get_or_init(|| {
+        let binary = std::env::var_os("POCKET_IC_BIN")
+            .expect("POCKET_IC_BIN must be set for live Governance recovery tests");
+        let port_file = std::env::temp_dir().join(format!(
+            "io_nns_governance_recovery_{}.port",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&port_file);
+        let mut command = Command::new(binary);
+        command
+            .args(["--ttl", "120", "--hard-ttl", "1800", "--port-file"])
+            .arg(&port_file);
+        if std::env::var_os("POCKET_IC_MUTE_SERVER").is_some() {
+            command.stdout(Stdio::null()).stderr(Stdio::null());
+        }
+        let mut child = command
+            .spawn()
+            .expect("failed to start the dedicated Governance recovery PocketIC server");
+        let started = Instant::now();
+        let port = loop {
+            if let Ok(value) = std::fs::read_to_string(&port_file) {
+                if let Ok(port) = value.trim().parse::<u16>() {
+                    break port;
+                }
+            }
+            if let Some(status) = child.try_wait().expect("failed to inspect PocketIC server") {
+                panic!("Governance recovery PocketIC server exited early: {status}");
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "Governance recovery PocketIC server did not publish its port"
+            );
+            thread::sleep(Duration::from_millis(20));
+        };
+        let _ = std::fs::remove_file(port_file);
+        RecoveryServer {
+            url: format!("http://127.0.0.1:{port}/"),
+            _child: Mutex::new(child),
+        }
+    })
+}
+
+fn recovery_pocket_ic() -> PocketIc {
+    PocketIcBuilder::new()
+        .with_application_subnet()
+        .with_server_url(
+            recovery_server()
+                .url
+                .parse()
+                .expect("dedicated PocketIC URL must parse"),
+        )
+        .build()
+}
+
+fn lock_recovery_test() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 struct CreateNeuronArgs {
@@ -71,6 +145,20 @@ struct DebugMintAccountArgs {
     amount_e8s: u128,
 }
 
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct DebugLedgerTransaction {
+    from: String,
+    to: String,
+    from_account: Option<Account>,
+    to_account: Option<Account>,
+    amount_e8s: u128,
+    memo: String,
+    memo_bytes: Option<Vec<u8>>,
+    block_index: u64,
+    timestamp: u64,
+    native_memo_u64: u64,
+}
+
 #[derive(Clone, Copy, Debug, CandidType, Deserialize)]
 struct SetNextDisburseBlockArgs {
     block_index: u64,
@@ -82,14 +170,35 @@ struct SetFolloweeArgs {
     followee: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, CandidType, Deserialize)]
+struct SetVotingPowerTimestampArgs {
+    neuron_id: u64,
+    timestamp_seconds: u64,
+}
+
+#[derive(Clone, Copy, Debug, CandidType)]
+struct NeuronIdArgs {
+    neuron_id: u64,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct MockNeuronObservation {
+    followee_id: Option<u64>,
+    voting_power_refreshed_timestamp_seconds: u64,
+}
+
+#[derive(Clone, Copy, Debug, CandidType, Deserialize)]
+struct MockNeuronAmounts {
+    principal_e8s: u128,
+    maturity_e8s: u128,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
 struct LedgerCallCounters {
     fee: u64,
     total_supply: u64,
     balance: u64,
-    allowance: u64,
     transfer: u64,
-    transfer_from: u64,
     query_blocks: u64,
 }
 
@@ -166,6 +275,20 @@ fn query<R: for<'de> Deserialize<'de> + CandidType>(
     .unwrap()
 }
 
+fn rejected_update<A: CandidType>(
+    pic: &PocketIc,
+    canister: Principal,
+    caller: Principal,
+    method: &str,
+    arg: A,
+) -> String {
+    format!(
+        "{:?}",
+        pic.update_call(canister, caller, method, encode_one(arg).unwrap())
+            .expect_err("SNS target call must reject at the transport boundary")
+    )
+}
+
 fn parent_staking_subaccount(manager: Principal, memo: u64) -> Vec<u8> {
     let mut hasher = Sha256::new();
     hasher.update([0x0c]);
@@ -186,7 +309,11 @@ struct RecoveryFixture {
 
 impl RecoveryFixture {
     fn new() -> Self {
-        let pic = PocketIc::new();
+        Self::new_with_policy(42, false)
+    }
+
+    fn new_with_policy(pooled_parent_memo: u64, permanent_collision: bool) -> Self {
+        let pic = recovery_pocket_ic();
         let install = |name: &str| {
             let canister = pic.create_canister();
             pic.add_cycles(canister, CYCLES);
@@ -200,6 +327,20 @@ impl RecoveryFixture {
         let sns_governance = Principal::from_slice(&[31; 29]);
         let stream = Principal::from_slice(&[32; 29]);
         let jupiter = Principal::from_slice(&[33; 29]);
+        let dynamic_staking_account = Account {
+            owner: governance,
+            subaccount: Some(parent_staking_subaccount(manager, pooled_parent_memo)),
+        };
+        let _: u64 = update(
+            &pic,
+            ledger,
+            Principal::anonymous(),
+            "debug_mint_account",
+            DebugMintAccountArgs {
+                to: dynamic_staking_account,
+                amount_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+            },
+        );
         let staging = |byte| Account {
             owner: manager,
             subaccount: (byte != 0).then(|| vec![byte; 32]),
@@ -215,9 +356,8 @@ impl RecoveryFixture {
                     icp_ledger: ledger,
                     nns_governance: governance,
                     two_year_neuron_id: 41,
-                    pooled_parent_memo: 42,
-                    pooled_parent_followee_id: 43,
-                    minimum_parent_stake_e8s: 100_000_000,
+                    pooled_parent_memo,
+                    pooled_parent_followee_id: 41,
                     jupiter_account: Account {
                         owner: jupiter,
                         subaccount: None,
@@ -246,8 +386,22 @@ impl RecoveryFixture {
             stream,
             sns_governance,
         };
-        fixture.create_neuron(41, 1_000_000, 63_115_200);
-        fixture.create_staking_neuron(42, 1_000_000, POOLED_PARENT_DELAY_SECONDS, 42);
+        if permanent_collision {
+            fixture.create_staking_neuron(41, 1_000_000, 63_115_200, pooled_parent_memo);
+        } else {
+            fixture.create_neuron(41, 1_000_000, 63_115_200);
+        }
+        if pooled_parent_memo == 42 {
+            fixture.create_staking_neuron(
+                42,
+                io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S + 1_000_000,
+                NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS,
+                42,
+            );
+        }
+        if pooled_parent_memo == 42 {
+            fixture.followee(42, Some(41));
+        }
         fixture
     }
 
@@ -256,8 +410,17 @@ impl RecoveryFixture {
         state.lifecycle = Lifecycle::Ready;
         state.two_year_maturity_baseline_reconciled = true;
         state.active_operation = None;
-        state.pooled_parent_id = None;
-        state.pooled_parent_staking_account = None;
+        state.pooled_parent_id = Some(42);
+        state.pooled_parent_staking_account = Some(Account {
+            owner: self.governance,
+            subaccount: Some(parent_staking_subaccount(
+                self.manager,
+                state.config.pooled_parent_memo,
+            )),
+        });
+        state.claim_bearing_dynamic_principal_e8s = 1_000_000;
+        state.anchor_available_e8s = io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S;
+        state.permanent_fee_shortfall_e8s = 0;
         state.live_cohorts.clear();
         state.last_completed_pool = None;
         state.last_completed_unwind = None;
@@ -365,6 +528,20 @@ impl RecoveryFixture {
         .unwrap();
     }
 
+    fn set_principal(&self, neuron_id: u64, principal_e8s: u128) {
+        update::<_, Result<(), String>>(
+            &self.pic,
+            self.governance,
+            Principal::anonymous(),
+            "debug_set_principal",
+            NeuronAmountArgs {
+                neuron_id,
+                amount_e8s: principal_e8s,
+            },
+        )
+        .unwrap();
+    }
+
     fn mint_account(&self, account: Account, amount_e8s: u128) {
         let _: u64 = update(
             &self.pic,
@@ -389,16 +566,17 @@ impl RecoveryFixture {
         balance.0.try_into().unwrap()
     }
 
-    fn debit_maturity_capture(&self, kind: MaturityKind, captured_e8s: u128) {
+    fn debit_remaining_maturity_capture(&self, kind: MaturityKind, captured_e8s: u128) {
         let split = io_nns_types::maturity::capture_40_60(captured_e8s, 10_000, 10_000)
             .expect("captured balance covers both fees");
         let source = match kind {
             MaturityKind::TwoYear => io_accounts::two_year_maturity_staging(self.manager),
             MaturityKind::TwoWeek => io_accounts::two_week_maturity_staging(self.manager),
         };
-        // This mock Ledger models the transfer argument as the entire source
-        // debit; use the two frozen gross legs to simulate completed delivery.
-        for (index, amount) in [split.permanent_gross, split.claim_gross]
+        // Debit both exact net legs plus their real Ledger fees to simulate
+        // completion of the frozen capture without depending on how many safe
+        // delivery phases one resume invocation advances.
+        for (index, amount) in [split.permanent_credit, split.claim_credit]
             .into_iter()
             .enumerate()
         {
@@ -464,6 +642,36 @@ impl RecoveryFixture {
             },
         )
         .unwrap();
+    }
+
+    fn voting_power_timestamp(&self, neuron_id: u64, timestamp_seconds: u64) {
+        update::<_, Result<(), String>>(
+            &self.pic,
+            self.governance,
+            Principal::anonymous(),
+            "debug_set_voting_power_timestamp",
+            SetVotingPowerTimestampArgs {
+                neuron_id,
+                timestamp_seconds,
+            },
+        )
+        .unwrap();
+    }
+
+    fn neuron(&self, neuron_id: u64) -> MockNeuronObservation {
+        decode_one::<Option<MockNeuronObservation>>(
+            &self
+                .pic
+                .query_call(
+                    self.governance,
+                    Principal::anonymous(),
+                    "debug_get_neuron",
+                    encode_one(NeuronIdArgs { neuron_id }).unwrap(),
+                )
+                .unwrap(),
+        )
+        .unwrap()
+        .unwrap()
     }
 
     fn control(&self, command: ControlledCommand, reject: u64, malformed: u64) {
@@ -562,8 +770,9 @@ fn pool_operation(
     credit_e8s: u128,
     phase: PoolCommandPhase,
 ) -> PoolCommand {
+    let bootstrap = parent_e8s == 0;
     PoolCommand {
-        kind: if parent_e8s == 0 {
+        kind: if bootstrap {
             PoolCommandKind::Bootstrap
         } else {
             PoolCommandKind::TopUp
@@ -572,11 +781,17 @@ fn pool_operation(
             generation: 1,
             operation_sequence: 1,
             expected_parent_principal_e8s: parent_e8s,
+            expected_parent_physical_e8s: if bootstrap {
+                io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S
+            } else {
+                parent_e8s
+            },
             destination: Account {
                 owner: state.config.nns_governance,
                 subaccount: Some(vec![9; 32]),
             },
-            expected_credit_e8s: credit_e8s,
+            expected_credit_e8s: if bootstrap { 0 } else { credit_e8s - 10_000 },
+            claim_credit_e8s: if bootstrap { 0 } else { credit_e8s },
             fee_e8s: 10_000,
             memo: vec![1; 32],
             prepared_at_nanos: 1,
@@ -596,21 +811,38 @@ fn pool_state(
     phase: PoolCommandPhase,
 ) -> NnsStateV1 {
     let mut state = fixture.state();
-    state.latest_reconciliation_generation = 1;
-    state.latest_pooled_target = Some(PooledTarget {
-        target_e8s: parent_e8s + credit_e8s,
-        status: PooledTargetStatus::UnderTarget,
-    });
-    if parent_e8s > 0 {
+    if parent_e8s == 0 {
+        state.lifecycle = Lifecycle::Paused;
+        state.pooled_parent_id = None;
+        state.pooled_parent_staking_account = None;
+        state.claim_bearing_dynamic_principal_e8s = 0;
+        state.anchor_available_e8s = 0;
+        state.latest_reconciliation_generation = 0;
+        state.latest_pooled_target = None;
+    } else {
+        state.latest_reconciliation_generation = 1;
+        state.latest_pooled_target = Some(PooledTarget {
+            target_e8s: parent_e8s + credit_e8s,
+            status: PooledTargetStatus::UnderTarget,
+        });
         state.pooled_parent_id = Some(parent_id);
         state.pooled_parent_staking_account = Some(Account {
             owner: fixture.governance,
             subaccount: Some(vec![9; 32]),
         });
     }
-    state.active_operation = Some(NnsOperation::Pool(pool_operation(
-        &state, parent_id, parent_e8s, credit_e8s, phase,
-    )));
+    let mut operation = pool_operation(&state, parent_id, parent_e8s, credit_e8s, phase);
+    if parent_e8s == 0 {
+        operation.permit.destination = Account {
+            owner: fixture.governance,
+            subaccount: Some(parent_staking_subaccount(
+                fixture.manager,
+                state.config.pooled_parent_memo,
+            )),
+        };
+        operation.transfer_block_index = None;
+    }
+    state.active_operation = Some(NnsOperation::Pool(operation));
     state
 }
 
@@ -672,9 +904,32 @@ fn unwind_state(fixture: &RecoveryFixture, phase: UnwindPhase, child_neuron_id: 
     state
 }
 
+fn cleanup_unwind_state(
+    fixture: &RecoveryFixture,
+    phase: UnwindPhase,
+    child_neuron_id: u64,
+) -> NnsStateV1 {
+    let mut state = unwind_state(fixture, phase, child_neuron_id);
+    let Some(NnsOperation::Unwind(operation)) = state.active_operation.as_mut() else {
+        unreachable!()
+    };
+    operation.parent_principal_e8s = io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S + 1_000_000;
+    state.live_cohorts = vec![PassiveCohort {
+        generation: 1,
+        reconciliation_request_fingerprint: vec![3; 32],
+        child_neuron_id,
+        principal_e8s: 110_000,
+        committed_fee_e8s: 10_000,
+        child_staking_subaccount: vec![4; 32],
+        ready_at_seconds: 1,
+        proof: CohortProofState::PrincipalReturned,
+        disbursement_block: Some(9),
+    }];
+    state
+}
+
 fn split_state(fixture: &RecoveryFixture, phase: UnwindPhase) -> NnsStateV1 {
     let mut state = unwind_state(fixture, phase, 0);
-    state.config.minimum_parent_stake_e8s = 10_001;
     state.pooled_parent_staking_account = Some(Account {
         owner: fixture.governance,
         subaccount: Some(parent_staking_subaccount(fixture.manager, 42)),
@@ -734,8 +989,305 @@ fn uncaptured_maturity(
     }
 }
 
+fn claim_assets(fixture: &RecoveryFixture) -> ClaimAssetObservation {
+    update::<_, Result<ClaimAssetObservation, ApiError>>(
+        &fixture.pic,
+        fixture.manager,
+        fixture.stream,
+        "observe_claim_assets",
+        (),
+    )
+    .unwrap()
+}
+
+fn reconciliation_args(
+    observation: &ClaimAssetObservation,
+    action: PoolReconciliationAction,
+    target_e8s: u128,
+) -> PreparePoolReconciliationArgs {
+    PreparePoolReconciliationArgs {
+        generation: 1,
+        target_e8s,
+        action,
+        fee_e8s: 10_000,
+        snapshot_fingerprint: observation.fingerprint.clone(),
+        memo: vec![1; 32],
+        created_at_time_nanos: 1,
+    }
+}
+
+#[test]
+fn account_policy_voting_power_housekeeping_is_best_effort_and_never_gates_pool_policy() {
+    let _serial = lock_recovery_test();
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        return;
+    }
+    let fixture = RecoveryFixture::new();
+    let mut recorded = fixture.state();
+    recorded.pooled_parent_id = Some(42);
+    recorded.pooled_parent_staking_account = Some(Account {
+        owner: fixture.governance,
+        subaccount: Some(parent_staking_subaccount(fixture.manager, 42)),
+    });
+    recorded.latest_pooled_target = Some(PooledTarget {
+        target_e8s: 1_000_000,
+        status: PooledTargetStatus::AtTarget,
+    });
+    fixture.replace(recorded);
+    fixture.voting_power_timestamp(41, 0);
+    fixture.voting_power_timestamp(42, u64::MAX);
+    let permanent_followee = fixture.neuron(41).followee_id;
+    let parent_followee = fixture.neuron(42).followee_id;
+    fixture.control(ControlledCommand::RefreshVotingPower, 1, 0);
+    let calls_before = fixture.governance_calls().refresh_voting_power;
+
+    let observation: Result<io_nns_types::backing::PoolPolicyObservation, ApiError> = update(
+        &fixture.pic,
+        fixture.manager,
+        fixture.stream,
+        "observe_pool_policy",
+        (),
+    );
+    assert!(observation.unwrap().parent.is_some());
+    assert_eq!(
+        fixture.governance_calls().refresh_voting_power,
+        calls_before + 2,
+        "a rejected permanent refresh must not suppress the parent attempt"
+    );
+    assert_eq!(fixture.neuron(41).followee_id, permanent_followee);
+    assert_eq!(fixture.neuron(42).followee_id, parent_followee);
+
+    fixture.control(ControlledCommand::RefreshVotingPower, 0, 1);
+    let calls_before = fixture.governance_calls().refresh_voting_power;
+    let malformed: Result<io_nns_types::backing::PoolPolicyObservation, ApiError> = update(
+        &fixture.pic,
+        fixture.manager,
+        fixture.stream,
+        "observe_pool_policy",
+        (),
+    );
+    assert!(malformed.is_ok(), "{malformed:?}");
+    assert_eq!(
+        fixture.governance_calls().refresh_voting_power,
+        calls_before + 2
+    );
+
+    let claim = claim_assets(&fixture);
+    let hold = reconciliation_args(
+        &claim,
+        PoolReconciliationAction::Hold,
+        claim.claim_bearing_dynamic_principal_e8s,
+    );
+    fixture.control(ControlledCommand::RefreshVotingPower, 1, 0);
+    let refreshes_before_hold = fixture.governance_calls().refresh_voting_power;
+    assert_eq!(
+        update::<_, Result<PoolProgress, ApiError>>(
+            &fixture.pic,
+            fixture.manager,
+            fixture.stream,
+            "prepare_pool_reconciliation",
+            hold,
+        ),
+        Ok(PoolProgress::Held {
+            principal_e8s: claim.claim_bearing_dynamic_principal_e8s,
+        })
+    );
+    assert_eq!(
+        fixture.governance_calls().refresh_voting_power,
+        refreshes_before_hold,
+        "monetary reconciliation uses pure policy validation"
+    );
+
+    let absent = RecoveryFixture::new();
+    absent.voting_power_timestamp(41, u64::MAX);
+    absent.control(ControlledCommand::RefreshVotingPower, 1, 0);
+    let calls_before = absent.governance_calls().refresh_voting_power;
+    let ready = update::<_, Result<(), ApiError>>(
+        &absent.pic,
+        absent.manager,
+        absent.sns_governance,
+        "set_paused",
+        false,
+    );
+    assert_eq!(ready, Ok(()));
+    assert_eq!(
+        absent.governance_calls().refresh_voting_power,
+        calls_before + 2,
+        "anchored readiness bootstraps the Dynamic parent before refreshing both neurons"
+    );
+    assert!(absent.state_from_canister().pooled_parent_id.is_some());
+}
+
+#[test]
+fn account_policy_zero_memo_rejects_permanent_collision_and_accepts_candidate_dust() {
+    let _serial = lock_recovery_test();
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        return;
+    }
+    let collision = RecoveryFixture::new_with_policy(0, true);
+    let readiness = rejected_update(
+        &collision.pic,
+        collision.manager,
+        collision.sns_governance,
+        "set_paused",
+        false,
+    );
+    assert!(readiness.contains("collides"), "{readiness}");
+    assert!(collision.state_from_canister().active_operation.is_none());
+
+    const CREDIT_E8S: u128 = 100_000_000;
+    const UNSOLICITED_E8S: u128 = 50_000_000;
+    let occupied = RecoveryFixture::new_with_policy(0, false);
+    let candidate = Account {
+        owner: occupied.governance,
+        subaccount: Some(parent_staking_subaccount(occupied.manager, 0)),
+    };
+    occupied.mint_account(candidate.clone(), UNSOLICITED_E8S);
+    occupied.create_staking_neuron(
+        42,
+        io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S + UNSOLICITED_E8S,
+        604_800,
+        0,
+    );
+    let readiness = update::<_, Result<(), ApiError>>(
+        &occupied.pic,
+        occupied.manager,
+        occupied.sns_governance,
+        "set_paused",
+        false,
+    );
+    readiness.expect("publicly derivable candidate-account dust must not block readiness");
+    let observation = claim_assets(&occupied);
+    assert_eq!(observation.claim_bearing_dynamic_principal_e8s, 0);
+    assert_eq!(
+        observation.anchor_available_e8s,
+        io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S
+    );
+    assert_eq!(observation.excluded_dynamic_surplus_e8s, UNSOLICITED_E8S);
+    let mut args = reconciliation_args(
+        &observation,
+        PoolReconciliationAction::TopUp {
+            expected_transfer_e8s: CREDIT_E8S - 10_000,
+            expected_claim_credit_e8s: CREDIT_E8S,
+        },
+        CREDIT_E8S,
+    );
+    args.created_at_time_nanos = occupied.pic.get_time().as_nanos_since_unix_epoch();
+    let progress = update::<_, Result<PoolProgress, ApiError>>(
+        &occupied.pic,
+        occupied.manager,
+        occupied.stream,
+        "prepare_pool_reconciliation",
+        args.clone(),
+    )
+    .unwrap();
+    let PoolProgress::AwaitingTransfer(permit) = progress else {
+        panic!("expected bootstrap permit, got {progress:?}")
+    };
+    assert_eq!(permit.expected_credit_e8s, CREDIT_E8S - permit.fee_e8s);
+    assert_eq!(permit.claim_credit_e8s, CREDIT_E8S);
+    assert_eq!(permit.destination, candidate);
+    assert_eq!(occupied.state_from_canister().config.pooled_parent_memo, 0);
+
+    let stream_liquid = occupied.state_from_canister().config.stream_liquid_account;
+    occupied.mint_account(
+        stream_liquid.clone(),
+        permit.expected_credit_e8s + permit.fee_e8s,
+    );
+    let transfer: io_ledger_boundary::IcrcTransferResult = update(
+        &occupied.pic,
+        occupied.ledger,
+        occupied.stream,
+        "icrc1_transfer",
+        io_ledger_boundary::IcrcTransferArg {
+            from_subaccount: stream_liquid.subaccount,
+            to: permit.destination.clone(),
+            amount: candid::Nat::from(permit.expected_credit_e8s),
+            fee: Some(candid::Nat::from(permit.fee_e8s)),
+            memo: Some(permit.memo.clone()),
+            created_at_time: Some(permit.prepared_at_nanos),
+        },
+    );
+    let transfer_block: u128 = transfer.unwrap().0.try_into().unwrap();
+    let transactions: Vec<DebugLedgerTransaction> = update(
+        &occupied.pic,
+        occupied.ledger,
+        Principal::anonymous(),
+        "debug_get_transactions",
+        (),
+    );
+    assert_eq!(
+        transactions[transfer_block as usize].timestamp,
+        permit.prepared_at_nanos
+    );
+    occupied.refresh_credit(42, permit.expected_credit_e8s);
+    let proved = update::<_, Result<NnsProgress, ApiError>>(
+        &occupied.pic,
+        occupied.manager,
+        occupied.stream,
+        "prove_active_transfer",
+        transfer_block,
+    )
+    .unwrap();
+    let NnsProgress::Pool(PoolProgress::Completed {
+        parent_neuron_id,
+        principal_e8s,
+        target_status,
+    }) = proved
+    else {
+        panic!("definite bootstrap effects did not continue to completion: {proved:?}")
+    };
+    let completed = (parent_neuron_id, principal_e8s, target_status);
+    let expected_physical = io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S
+        + UNSOLICITED_E8S
+        + permit.expected_credit_e8s;
+    assert_eq!(completed.0, 42);
+    assert_eq!(completed.1, expected_physical);
+    assert_eq!(
+        completed.2,
+        io_nns_types::backing::PoolTargetResult::AtTarget
+    );
+    let final_state = occupied.state_from_canister();
+    assert!(final_state.active_operation.is_none());
+    assert_eq!(
+        final_state.latest_pooled_target,
+        Some(PooledTarget {
+            target_e8s: CREDIT_E8S,
+            status: PooledTargetStatus::AtTarget,
+        })
+    );
+    assert_eq!(final_state.claim_bearing_dynamic_principal_e8s, CREDIT_E8S);
+    assert_eq!(
+        final_state.anchor_available_e8s,
+        io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S - permit.fee_e8s
+    );
+    assert_eq!(occupied.balance(candidate), expected_physical);
+    let ledger_calls: LedgerCallCounters =
+        query(&occupied.pic, occupied.ledger, "debug_get_call_counters");
+    assert_eq!(ledger_calls.transfer, 1);
+
+    assert_eq!(
+        update::<_, Result<PoolProgress, ApiError>>(
+            &occupied.pic,
+            occupied.manager,
+            occupied.stream,
+            "prepare_pool_reconciliation",
+            args,
+        ),
+        Ok(PoolProgress::Completed {
+            parent_neuron_id: 42,
+            principal_e8s: expected_physical,
+            target_status: io_nns_types::backing::PoolTargetResult::AtTarget,
+        })
+    );
+    let replay_calls: LedgerCallCounters =
+        query(&occupied.pic, occupied.ledger, "debug_get_call_counters");
+    assert_eq!(replay_calls.transfer, ledger_calls.transfer);
+}
+
 #[test]
 fn semantic_staging_carries_late_value_into_the_next_cycle_for_both_roles() {
+    let _serial = lock_recovery_test();
     if std::env::var_os("POCKET_IC_BIN").is_none() {
         return;
     }
@@ -772,14 +1324,12 @@ fn semantic_staging_carries_late_value_into_the_next_cycle_for_both_roles() {
         fixture.replace(state);
         assert_eq!(
             fixture.resume(),
-            Ok(NnsProgress::Maturity(MaturityProgress::Captured {
-                captured_e8s: first_capture,
-            }))
+            Ok(NnsProgress::Maturity(MaturityProgress::Pending))
         );
 
         let late_donation = 20 * UNIT;
         fixture.mint_account(staging.clone(), late_donation);
-        fixture.debit_maturity_capture(kind, first_capture);
+        fixture.debit_remaining_maturity_capture(kind, first_capture);
         assert_eq!(fixture.balance(staging.clone()), late_donation);
 
         let split = io_nns_types::maturity::capture_40_60(first_capture, 10_000, 10_000).unwrap();
@@ -788,6 +1338,10 @@ fn semantic_staging_carries_late_value_into_the_next_cycle_for_both_roles() {
         let completed = io_nns_neuron_manager::maturity::CompletedMaturity {
             kind,
             captured_e8s: first_capture,
+            anchor_reimbursement_e8s: 0,
+            permanent_reimbursement_e8s: 0,
+            reimbursement_transfer_fees_e8s: 0,
+            carried_e8s: 0,
             permanent_credit_e8s: split.permanent_credit,
             claim_credit_e8s: split.claim_credit,
             entitlement_batch_generation: (kind == MaturityKind::TwoWeek).then_some(1),
@@ -821,11 +1375,9 @@ fn semantic_staging_carries_late_value_into_the_next_cycle_for_both_roles() {
         fixture.replace(next);
         assert_eq!(
             fixture.resume(),
-            Ok(NnsProgress::Maturity(MaturityProgress::Captured {
-                captured_e8s: expected_second_capture,
-            }))
+            Ok(NnsProgress::Maturity(MaturityProgress::Pending))
         );
-        fixture.debit_maturity_capture(kind, expected_second_capture);
+        fixture.debit_remaining_maturity_capture(kind, expected_second_capture);
         assert_eq!(fixture.balance(staging), 0);
         assert_eq!(fixture.balance(other_staging), 33 * UNIT);
         eprintln!(
@@ -837,6 +1389,7 @@ fn semantic_staging_carries_late_value_into_the_next_cycle_for_both_roles() {
 
 #[test]
 fn ambiguous_split_is_discovered_after_upgrade_without_a_second_call() {
+    let _serial = lock_recovery_test();
     if std::env::var_os("POCKET_IC_BIN").is_none() {
         eprintln!("skipping Governance recovery PocketIC test because POCKET_IC_BIN is not set");
         return;
@@ -861,11 +1414,16 @@ fn ambiguous_split_is_discovered_after_upgrade_without_a_second_call() {
     fixture.upgrade();
     assert_eq!(
         fixture.resume(),
-        Ok(NnsProgress::Unwind(UnwindProgress::Waiting))
+        Ok(NnsProgress::Unwind(UnwindProgress::Pending))
     );
     let identified = fixture.state_from_canister();
-    assert_eq!(unwind_phase(&identified), &UnwindPhase::ChildIdentified);
+    assert!(identified.active_operation.is_none());
+    assert!(identified
+        .live_cohorts
+        .iter()
+        .any(|cohort| cohort.proof == CohortProofState::Dissolving));
     assert_eq!(fixture.governance_calls().split, 1);
+    assert_eq!(fixture.governance_calls().start_dissolving, 1);
 
     let observation: ClaimAssetObservation = update::<_, Result<_, ApiError>>(
         &fixture.pic,
@@ -876,17 +1434,18 @@ fn ambiguous_split_is_discovered_after_upgrade_without_a_second_call() {
     )
     .unwrap();
     let child = observation
-        .transit_components
+        .live_cohorts
         .iter()
-        .find(|component| component.kind == TransitComponentKind::ActiveUnwind)
-        .expect("identified child must contribute active unwind transit");
-    assert_eq!(child.backing_e8s, 100_000);
-    assert_eq!(child.fee_basis_e8s, Some(10_000));
-    assert_eq!(observation.pooled_parent_principal_e8s, 880_000);
+        .find(|cohort| cohort.proof == CohortProofState::Dissolving)
+        .expect("recovered child must contribute passive unwind transit");
+    assert_eq!(child.net_backing_e8s, 100_000);
+    assert_eq!(child.committed_fee_e8s, 10_000);
+    assert_eq!(observation.claim_bearing_dynamic_principal_e8s, 880_000);
 }
 
 #[test]
 fn decoded_split_rejection_releases_intent_for_one_safe_retry() {
+    let _serial = lock_recovery_test();
     if std::env::var_os("POCKET_IC_BIN").is_none() {
         eprintln!("skipping Governance recovery PocketIC test because POCKET_IC_BIN is not set");
         return;
@@ -903,17 +1462,19 @@ fn decoded_split_rejection_releases_intent_for_one_safe_retry() {
 
     assert_eq!(
         fixture.resume(),
-        Ok(NnsProgress::Unwind(UnwindProgress::Waiting))
+        Ok(NnsProgress::Unwind(UnwindProgress::Pending))
     );
-    assert_eq!(
-        unwind_phase(&fixture.state_from_canister()),
-        &UnwindPhase::ChildIdentified
-    );
+    let completed = fixture.state_from_canister();
+    assert!(completed.active_operation.is_none());
+    assert!(completed.live_cohorts.iter().any(|cohort| {
+        cohort.child_neuron_id != 0 && cohort.proof == CohortProofState::Dissolving
+    }));
     assert_eq!(fixture.governance_calls().split, 2);
 }
 
 #[test]
 fn split_transport_ambiguity_and_duplicate_candidates_fail_closed() {
+    let _serial = lock_recovery_test();
     if std::env::var_os("POCKET_IC_BIN").is_none() {
         eprintln!("skipping Governance recovery PocketIC test because POCKET_IC_BIN is not set");
         return;
@@ -927,14 +1488,14 @@ fn split_transport_ambiguity_and_duplicate_candidates_fail_closed() {
         &UnwindPhase::SplitSubmitted
     );
     fixture.set_split_transport_rejection(false);
-    fixture.create_controlled_neuron(901, 109_999, POOLED_PARENT_DELAY_SECONDS);
+    fixture.create_controlled_neuron(901, 109_999, NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS);
     fixture.assert_pending();
     assert_eq!(fixture.governance_calls().split, 0);
 
     fixture.replace(split_state(&fixture, UnwindPhase::SplitPrepared));
     fixture.control(ControlledCommand::Split, 0, 1);
     fixture.assert_pending();
-    fixture.create_split_child(902, 110_000, POOLED_PARENT_DELAY_SECONDS, 1);
+    fixture.create_split_child(902, 110_000, NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS, 1);
     let conflicting = fixture.resume();
     assert!(
         matches!(conflicting, Err(ApiError::Stuck(_))),
@@ -949,6 +1510,7 @@ fn split_transport_ambiguity_and_duplicate_candidates_fail_closed() {
 
 #[test]
 fn split_fee_drift_pauses_before_effect_and_is_resumable() {
+    let _serial = lock_recovery_test();
     if std::env::var_os("POCKET_IC_BIN").is_none() {
         eprintln!("skipping Governance recovery PocketIC test because POCKET_IC_BIN is not set");
         return;
@@ -969,13 +1531,14 @@ fn split_fee_drift_pauses_before_effect_and_is_resumable() {
     fixture.replace(reviewed);
     assert_eq!(
         fixture.resume(),
-        Ok(NnsProgress::Unwind(UnwindProgress::Waiting))
+        Ok(NnsProgress::Unwind(UnwindProgress::Pending))
     );
     assert_eq!(fixture.governance_calls().split, 1);
 }
 
 #[test]
-fn every_persisted_governance_phase_recovers_and_exact_replay_is_call_free() {
+fn every_persisted_governance_phase_recovers_and_exact_replay_is_effect_safe() {
+    let _serial = lock_recovery_test();
     if std::env::var_os("POCKET_IC_BIN").is_none() {
         eprintln!("skipping Governance recovery PocketIC test because POCKET_IC_BIN is not set");
         return;
@@ -1014,53 +1577,70 @@ fn every_persisted_governance_phase_recovers_and_exact_replay_is_call_free() {
     fixture.refresh_credit(41, 30_000);
     fixture.control(ControlledCommand::ClaimOrRefresh, 1, 0);
     fixture.upgrade();
-    fixture.assert_pending();
-    fixture.assert_pending();
-    assert_eq!(
-        fixture.resume(),
-        Ok(NnsProgress::Jupiter(JupiterProgress::StakeIncreaseProved))
+    let rejected = fixture.resume();
+    assert!(
+        matches!(rejected, Err(ApiError::Invalid(ref reason)) if reason.contains("rejected")),
+        "definitive ClaimOrRefresh rejection was disguised: {rejected:?}"
+    );
+    let resumed = fixture.resume();
+    assert!(
+        matches!(
+            resumed,
+            Ok(NnsProgress::Jupiter(JupiterProgress::Pending)) | Err(ApiError::Pending(_))
+        ),
+        "proved permanent credit did not stop at the real Stream boundary: {resumed:?}"
     );
     assert_eq!(fixture.governance_calls().claim_or_refresh, 2);
 
-    fixture.create_neuron(101, 100_000_000, 0);
+    fixture.create_neuron(101, io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S, 0);
     fixture.replace(pool_state(
         &fixture,
         101,
         0,
-        100_000_000,
+        0,
         PoolCommandPhase::DelaySubmitted {
-            expected_delay_seconds: POOLED_PARENT_DELAY_SECONDS,
+            expected_delay_seconds: NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS,
         },
     ));
     fixture.control(ControlledCommand::IncreaseDissolveDelay, 1, 0);
     let calls = fixture.governance_calls().increase_dissolve_delay;
     fixture.upgrade();
-    fixture.assert_pending();
-    fixture.assert_pending();
-    fixture.assert_pending();
+    let rejected = fixture.resume();
+    assert!(
+        matches!(rejected, Err(ApiError::Invalid(ref reason)) if reason.contains("rejected")),
+        "definitive delay rejection was disguised: {rejected:?}"
+    );
+    assert!(matches!(fixture.resume(), Ok(NnsProgress::Pool(_))));
     assert_eq!(
         fixture.governance_calls().increase_dissolve_delay,
         calls + 2
     );
 
-    fixture.create_neuron(102, 100_000_000, POOLED_PARENT_DELAY_SECONDS);
+    fixture.create_neuron(
+        102,
+        io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+        NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS,
+    );
     fixture.followee(102, None);
     fixture.replace(pool_state(
         &fixture,
         102,
         0,
-        100_000_000,
+        0,
         PoolCommandPhase::FollowingSubmitted,
     ));
     fixture.control(ControlledCommand::SetFollowing, 1, 0);
     let calls = fixture.governance_calls().set_following;
     fixture.upgrade();
-    fixture.assert_pending();
-    fixture.assert_pending();
-    fixture.assert_pending();
+    let rejected = fixture.resume();
+    assert!(
+        matches!(rejected, Err(ApiError::Invalid(ref reason)) if reason.contains("rejected")),
+        "definitive following rejection was disguised: {rejected:?}"
+    );
+    assert!(matches!(fixture.resume(), Ok(NnsProgress::Pool(_))));
     assert_eq!(fixture.governance_calls().set_following, calls + 2);
 
-    fixture.create_neuron(103, 100_000_000, POOLED_PARENT_DELAY_SECONDS);
+    fixture.create_neuron(103, 100_000_000, NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS);
     fixture.refresh_credit(103, 10_000_000);
     fixture.replace(pool_state(
         &fixture,
@@ -1072,8 +1652,11 @@ fn every_persisted_governance_phase_recovers_and_exact_replay_is_call_free() {
     fixture.control(ControlledCommand::ClaimOrRefresh, 1, 0);
     let calls = fixture.governance_calls().claim_or_refresh;
     fixture.upgrade();
-    fixture.assert_pending();
-    fixture.assert_pending();
+    let rejected = fixture.resume();
+    assert!(
+        matches!(rejected, Err(ApiError::Invalid(ref reason)) if reason.contains("rejected")),
+        "definitive pooled refresh rejection was disguised: {rejected:?}"
+    );
     assert!(matches!(
         fixture.resume(),
         Ok(NnsProgress::Pool(PoolProgress::Completed { .. }))
@@ -1090,7 +1673,11 @@ fn every_persisted_governance_phase_recovers_and_exact_replay_is_call_free() {
     let calls = fixture.governance_calls().start_dissolving;
     fixture.upgrade();
     fixture.assert_pending();
-    assert!(matches!(fixture.resume(), Ok(NnsProgress::Unwind(_))));
+    let resumed = fixture.resume();
+    assert!(
+        matches!(resumed, Ok(NnsProgress::Unwind(_))),
+        "ambiguous StartDissolving did not recover: {resumed:?}"
+    );
     assert_eq!(fixture.governance_calls().start_dissolving, calls + 1);
 
     fixture.create_neuron(202, 110_000, 100);
@@ -1101,14 +1688,18 @@ fn every_persisted_governance_phase_recovers_and_exact_replay_is_call_free() {
     ));
     fixture.control(ControlledCommand::StartDissolving, 1, 0);
     let calls = fixture.governance_calls().start_dissolving;
-    fixture.assert_pending();
-    fixture.assert_pending();
+    let rejected = fixture.resume();
+    assert!(
+        matches!(rejected, Err(ApiError::Invalid(ref reason)) if reason.contains("rejected")),
+        "definitive StartDissolving rejection was disguised: {rejected:?}"
+    );
     assert!(matches!(fixture.resume(), Ok(NnsProgress::Unwind(_))));
     assert_eq!(fixture.governance_calls().start_dissolving, calls + 2);
 
     fixture.create_neuron(203, 0, 0);
     fixture.add_maturity(203, 50_000);
-    fixture.replace(unwind_state(
+    fixture.add_maturity(42, 20_000);
+    fixture.replace(cleanup_unwind_state(
         &fixture,
         UnwindPhase::DelayIncreaseSubmitted,
         203,
@@ -1116,9 +1707,16 @@ fn every_persisted_governance_phase_recovers_and_exact_replay_is_call_free() {
     fixture.control(ControlledCommand::IncreaseDissolveDelay, 1, 0);
     let calls = fixture.governance_calls().increase_dissolve_delay;
     fixture.upgrade();
-    fixture.assert_pending();
-    fixture.assert_pending();
-    assert!(matches!(fixture.resume(), Ok(NnsProgress::Unwind(_))));
+    let rejected = fixture.resume();
+    assert!(
+        matches!(rejected, Err(ApiError::Invalid(ref reason)) if reason.contains("rejected")),
+        "definitive zero-principal delay rejection was disguised: {rejected:?}"
+    );
+    let resumed = fixture.resume();
+    assert!(
+        matches!(resumed, Ok(NnsProgress::Unwind(_))),
+        "zero-principal cleanup did not resume: {resumed:?}"
+    );
     assert_eq!(
         fixture.governance_calls().increase_dissolve_delay,
         calls + 2
@@ -1126,8 +1724,12 @@ fn every_persisted_governance_phase_recovers_and_exact_replay_is_call_free() {
 
     fixture.create_neuron(204, 0, 1);
     fixture.add_maturity(204, 50_000);
-    fixture.add_maturity(42, 20_000);
-    fixture.replace(unwind_state(&fixture, UnwindPhase::MergeSubmitted, 204));
+    let mut merge_state = cleanup_unwind_state(&fixture, UnwindPhase::MergeSubmitted, 204);
+    let Some(NnsOperation::Unwind(operation)) = merge_state.active_operation.as_mut() else {
+        unreachable!()
+    };
+    operation.parent_maturity_e8s = 70_000;
+    fixture.replace(merge_state);
     fixture.control(ControlledCommand::Merge, 0, 1);
     let calls = fixture.governance_calls().merge;
     fixture.upgrade();
@@ -1138,6 +1740,16 @@ fn every_persisted_governance_phase_recovers_and_exact_replay_is_call_free() {
     for kind in [MaturityKind::TwoWeek, MaturityKind::TwoYear] {
         let mut state = fixture.state();
         let pending = delivering_maturity(&state, kind);
+        let two_year_plan = (kind == MaturityKind::TwoYear).then(|| {
+            io_nns_types::maturity::plan_two_year_replenishment(
+                pending.captured_e8s.unwrap(),
+                io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+                state.anchor_available_e8s,
+                state.permanent_fee_shortfall_e8s,
+                state.config.expected_icp_fee_e8s,
+            )
+            .unwrap()
+        });
         if kind == MaturityKind::TwoWeek {
             state.pooled_parent_id = Some(42);
             state.pooled_parent_staking_account = Some(Account {
@@ -1158,6 +1770,9 @@ fn every_persisted_governance_phase_recovers_and_exact_replay_is_call_free() {
             kind,
             phase: MaturityCommandPhase::Delivery(MaturityDeliveryOperation {
                 pending,
+                two_year_plan,
+                anchor_reimbursement: None,
+                permanent_reimbursement: None,
                 permit: None,
                 permanent_credit: None,
                 claim_transfer: None,
@@ -1181,16 +1796,12 @@ fn every_persisted_governance_phase_recovers_and_exact_replay_is_call_free() {
     fixture.replace(state);
     fixture.control(ControlledCommand::RefreshVotingPower, 1, 0);
     let governance_before_replay = fixture.governance_calls();
-    let queries_before_replay: u64 = query(
-        &fixture.pic,
-        fixture.governance,
-        "debug_get_full_neuron_call_count",
-    );
     let replay_args = PreparePoolReconciliationArgs {
         generation: 1,
         target_e8s: 110_000_000,
         action: PoolReconciliationAction::TopUp {
-            expected_credit_e8s: 10_000_000,
+            expected_transfer_e8s: 9_990_000,
+            expected_claim_credit_e8s: 10_000_000,
         },
         fee_e8s: 10_000,
         snapshot_fingerprint: vec![2; 32],
@@ -1279,21 +1890,142 @@ fn every_persisted_governance_phase_recovers_and_exact_replay_is_call_free() {
             principal_e8s: 110_000,
         })
     );
-    assert_eq!(fixture.governance_calls(), governance_before_replay);
+    let governance_after_replay = fixture.governance_calls();
     assert_eq!(
-        query::<u64>(
-            &fixture.pic,
-            fixture.governance,
-            "debug_get_full_neuron_call_count"
-        ),
-        queries_before_replay,
-        "prepared and passive exact replay must make zero Governance calls"
+        governance_after_replay.split,
+        governance_before_replay.split
+    );
+    assert_eq!(
+        governance_after_replay.claim_or_refresh,
+        governance_before_replay.claim_or_refresh
+    );
+    assert_eq!(
+        governance_after_replay.increase_dissolve_delay,
+        governance_before_replay.increase_dissolve_delay
+    );
+    assert_eq!(
+        governance_after_replay.set_following,
+        governance_before_replay.set_following
+    );
+    assert_eq!(
+        governance_after_replay.start_dissolving,
+        governance_before_replay.start_dissolving
+    );
+    assert_eq!(
+        governance_after_replay.merge,
+        governance_before_replay.merge
+    );
+    assert_eq!(
+        governance_after_replay.disburse,
+        governance_before_replay.disburse
+    );
+    assert_eq!(
+        governance_after_replay.disburse_maturity,
+        governance_before_replay.disburse_maturity
     );
 
     let monetary_after: LedgerCallCounters =
         query(&fixture.pic, fixture.ledger, "debug_get_call_counters");
     assert_eq!(monetary_after.transfer, monetary_before.transfer);
-    assert_eq!(monetary_after.transfer_from, monetary_before.transfer_from);
+}
+
+#[test]
+fn exact_jupiter_stake_transfer_proof_immediately_reaches_the_stream_boundary() {
+    let _serial = lock_recovery_test();
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        return;
+    }
+    let fixture = RecoveryFixture::new();
+    let staking_subaccount = {
+        let mut value = [0; 32];
+        value[24..].copy_from_slice(&41_u64.to_be_bytes());
+        value
+    };
+    let created_at_time_nanos = fixture.pic.get_time().as_nanos_since_unix_epoch();
+    let intent = NnsTransferIntent {
+        ledger: fixture.ledger,
+        source_subaccount: [0; 32],
+        destination: Account {
+            owner: fixture.governance,
+            subaccount: Some(staking_subaccount.to_vec()),
+        },
+        amount_e8s: 30_000,
+        fee_e8s: 10_000,
+        memo: b"IO:JUPITER:STAKE".to_vec(),
+        created_at_time_nanos,
+    };
+    let mut attempt = NnsTransferAttempt::prepared(intent.clone()).unwrap();
+    attempt.state = TransferState::Stuck {
+        reason: "controlled ambiguous transfer".into(),
+    };
+    let mut state = fixture.state();
+    state.active_operation = Some(NnsOperation::Jupiter(Box::new(JupiterOperation {
+        operation_sequence: 1,
+        dispatch_epoch: 1,
+        captured_control_epoch: 1,
+        deposit: JupiterDeposit {
+            block_index: 2,
+            gross_e8s: 100_000,
+            stake_e8s: 30_000,
+            liquid_e8s: 50_000,
+            fee_e8s: 10_000,
+            created_at_time_nanos,
+        },
+        phase: JupiterPhase::Stuck {
+            reason: "controlled ambiguous transfer".into(),
+            pause_reason: JupiterPauseReason::AmbiguousPossibleEffect,
+            transfer: Some(JupiterStuckTransfer::Stake {
+                before: NeuronSnapshot {
+                    neuron_id: 41,
+                    staking_subaccount,
+                    cached_stake_e8s: 1_000_000,
+                },
+                attempt,
+            }),
+        },
+    })));
+    fixture.replace(state);
+    fixture.mint_account(
+        Account {
+            owner: fixture.manager,
+            subaccount: None,
+        },
+        40_000,
+    );
+    let transfer: io_ledger_boundary::IcrcTransferResult = update(
+        &fixture.pic,
+        fixture.ledger,
+        fixture.manager,
+        "icrc1_transfer",
+        io_ledger_boundary::IcrcTransferArg {
+            from_subaccount: None,
+            to: intent.destination,
+            amount: candid::Nat::from(intent.amount_e8s),
+            fee: Some(candid::Nat::from(intent.fee_e8s)),
+            memo: Some(intent.memo),
+            created_at_time: Some(intent.created_at_time_nanos),
+        },
+    );
+    let block: u128 = transfer.unwrap().0.try_into().unwrap();
+    fixture.refresh_credit(41, 30_000);
+
+    let proved = update::<_, Result<NnsProgress, ApiError>>(
+        &fixture.pic,
+        fixture.manager,
+        Principal::anonymous(),
+        "prove_active_transfer",
+        block,
+    );
+    assert!(
+        matches!(proved, Err(ApiError::Pending(_))),
+        "exact proof did not reach the real Stream boundary: {proved:?}"
+    );
+    assert_eq!(fixture.governance_calls().claim_or_refresh, 1);
+    assert!(matches!(
+        fixture.state_from_canister().active_operation,
+        Some(NnsOperation::Jupiter(operation))
+            if matches!(operation.phase, JupiterPhase::StakeIncreaseProved(_))
+    ));
 }
 
 fn ready_two_week_state(fixture: &RecoveryFixture) -> NnsStateV1 {
@@ -1326,8 +2058,59 @@ fn child_disbursement_state(fixture: &RecoveryFixture, child_neuron_id: u64) -> 
     state
 }
 
+fn submitted_child_disbursement_state(
+    fixture: &RecoveryFixture,
+    child_neuron_id: u64,
+    block_index: u128,
+) -> NnsStateV1 {
+    let mut state = child_disbursement_state(fixture, child_neuron_id);
+    let Some(NnsOperation::Unwind(operation)) = state.active_operation.as_mut() else {
+        unreachable!()
+    };
+    operation.phase = UnwindPhase::DisbursementSubmitted;
+    operation.expected_block_index = Some(block_index);
+    state.live_cohorts[0].proof = CohortProofState::DisbursementSubmitted;
+    state
+}
+
+fn assert_unwind_retired(fixture: &RecoveryFixture, child_neuron_id: u64) {
+    let state = fixture.state_from_canister();
+    assert!(state.active_operation.is_none());
+    assert!(state.live_cohorts.is_empty());
+    assert_eq!(
+        state.last_completed_unwind,
+        Some(
+            io_nns_neuron_manager::state::CompletedUnwindReconciliation {
+                generation: 1,
+                reconciliation_request_fingerprint: vec![3; 32],
+                child_neuron_id,
+                physical_principal_e8s: 110_000,
+            }
+        )
+    );
+    let child: Option<MockNeuronAmounts> = decode_one(
+        &fixture
+            .pic
+            .query_call(
+                fixture.governance,
+                Principal::anonymous(),
+                "debug_get_neuron",
+                encode_one(NeuronIdArgs {
+                    neuron_id: child_neuron_id,
+                })
+                .unwrap(),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    let child = child.expect("retired child remains canonically observable in the mock");
+    assert_eq!(child.principal_e8s, 0);
+    assert_eq!(child.maturity_e8s, 0);
+}
+
 #[test]
 fn child_disburse_decoded_rejection_retries_and_proves_exact_block() {
+    let _serial = lock_recovery_test();
     if std::env::var_os("POCKET_IC_BIN").is_none() {
         return;
     }
@@ -1337,7 +2120,7 @@ fn child_disburse_decoded_rejection_retries_and_proves_exact_block() {
     fixture.control(ControlledCommand::Disburse, 1, 0);
     assert_eq!(
         fixture.resume(),
-        Ok(NnsProgress::Unwind(UnwindProgress::Waiting))
+        Ok(NnsProgress::Unwind(UnwindProgress::Pending))
     );
     assert_eq!(
         unwind_phase(&fixture.state_from_canister()),
@@ -1359,15 +2142,17 @@ fn child_disburse_decoded_rejection_retries_and_proves_exact_block() {
             "prove_active_transfer",
             block,
         ),
-        Ok(NnsProgress::Unwind(UnwindProgress::Completed {
-            block_index,
-            liquid_e8s: 100_000,
-        })) if block_index == block
+        Ok(NnsProgress::Unwind(UnwindProgress::Completed))
     ));
+    assert_unwind_retired(&fixture, 501);
+    let calls = fixture.governance_calls();
+    assert_eq!(fixture.resume(), Ok(NnsProgress::Idle));
+    assert_eq!(fixture.governance_calls(), calls);
 }
 
 #[test]
 fn child_disburse_malformed_after_effect_never_resubmits() {
+    let _serial = lock_recovery_test();
     if std::env::var_os("POCKET_IC_BIN").is_none() {
         return;
     }
@@ -1390,13 +2175,86 @@ fn child_disburse_malformed_after_effect_never_resubmits() {
             "prove_active_transfer",
             block,
         ),
-        Ok(NnsProgress::Unwind(UnwindProgress::Completed { .. }))
+        Ok(NnsProgress::Unwind(UnwindProgress::Completed))
     ));
     assert_eq!(fixture.governance_calls().disburse, 1);
+    assert_unwind_retired(&fixture, 502);
+}
+
+#[test]
+fn principal_return_proof_waits_for_zero_reflection_then_retires_exactly_once() {
+    let _serial = lock_recovery_test();
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        return;
+    }
+    let fixture = RecoveryFixture::new();
+    fixture.create_controlled_neuron(504, 110_000, 0);
+    let block = fixture.record_child_disbursement(vec![4; 32], 100_000);
+    fixture.replace(submitted_child_disbursement_state(&fixture, 504, block));
+    let calls_before = fixture.governance_calls();
+
+    let proof = update::<_, Result<NnsProgress, ApiError>>(
+        &fixture.pic,
+        fixture.manager,
+        Principal::anonymous(),
+        "prove_active_transfer",
+        block,
+    );
+    assert!(matches!(
+        proof,
+        Err(ApiError::Pending(ref reason)) if reason.contains("principal has not reached zero")
+    ));
+    let pending = fixture.state_from_canister();
+    assert_eq!(unwind_phase(&pending), &UnwindPhase::PrincipalReturned);
+    assert_eq!(
+        pending.live_cohorts[0].proof,
+        CohortProofState::PrincipalReturned
+    );
+    assert!(pending.last_completed_unwind.is_none());
+
+    fixture.set_principal(504, 0);
+    assert_eq!(
+        fixture.resume(),
+        Ok(NnsProgress::Unwind(UnwindProgress::Completed))
+    );
+    assert_unwind_retired(&fixture, 504);
+    assert_eq!(fixture.governance_calls(), calls_before);
+}
+
+#[test]
+fn principal_return_proof_continues_through_immediate_maturity_cleanup() {
+    let _serial = lock_recovery_test();
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        return;
+    }
+    let fixture = RecoveryFixture::new();
+    fixture.create_controlled_neuron(505, 110_000, 0);
+    fixture.add_maturity(505, 50_000);
+    let block = fixture.record_child_disbursement(vec![4; 32], 100_000);
+    fixture.set_principal(505, 0);
+    fixture.replace(submitted_child_disbursement_state(&fixture, 505, block));
+
+    assert_eq!(
+        update::<_, Result<NnsProgress, ApiError>>(
+            &fixture.pic,
+            fixture.manager,
+            Principal::anonymous(),
+            "prove_active_transfer",
+            block,
+        ),
+        Ok(NnsProgress::Unwind(UnwindProgress::Completed))
+    );
+    assert_unwind_retired(&fixture, 505);
+    let calls = fixture.governance_calls();
+    assert_eq!(calls.increase_dissolve_delay, 1);
+    assert_eq!(calls.merge, 1);
+    assert_eq!(fixture.resume(), Ok(NnsProgress::Idle));
+    assert_eq!(fixture.governance_calls(), calls);
 }
 
 #[test]
 fn child_disburse_checks_governance_and_ledger_fees_before_effect() {
+    let _serial = lock_recovery_test();
     if std::env::var_os("POCKET_IC_BIN").is_none() {
         return;
     }
@@ -1420,7 +2278,89 @@ fn child_disburse_checks_governance_and_ledger_fees_before_effect() {
 }
 
 #[test]
+fn passive_child_timer_reconstructs_after_upgrade_and_services_exact_ready_boundary() {
+    let _serial = lock_recovery_test();
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        return;
+    }
+    let fixture = RecoveryFixture::new();
+    let child_neuron_id = 506;
+    fixture.create_controlled_neuron(child_neuron_id, 110_000, 0);
+    let block = fixture.record_child_disbursement(vec![4; 32], 100_000);
+    let now = fixture.pic.get_time().as_nanos_since_unix_epoch() / 1_000_000_000;
+    let ready_at_seconds = now + 120;
+    let mut state = fixture.state();
+    state.live_cohorts = vec![PassiveCohort {
+        generation: 1,
+        reconciliation_request_fingerprint: vec![3; 32],
+        child_neuron_id,
+        principal_e8s: 110_000,
+        committed_fee_e8s: 10_000,
+        child_staking_subaccount: vec![4; 32],
+        ready_at_seconds,
+        proof: CohortProofState::Dissolving,
+        disbursement_block: None,
+    }];
+    fixture.replace(state);
+    let calls_before = fixture.governance_calls();
+
+    fixture.pic.advance_time(Duration::from_secs(119));
+    for _ in 0..3 {
+        fixture.pic.tick();
+    }
+    assert_eq!(fixture.governance_calls(), calls_before);
+    assert_eq!(fixture.state_from_canister().live_cohorts.len(), 1);
+
+    fixture.upgrade();
+    assert_eq!(fixture.state_from_canister().lifecycle, Lifecycle::Paused);
+    fixture.pic.advance_time(Duration::from_secs(1));
+    for _ in 0..5 {
+        fixture.pic.tick();
+    }
+
+    let calls_after = fixture.governance_calls();
+    assert_eq!(calls_after.disburse, calls_before.disburse + 1);
+    assert!(matches!(
+        fixture.state_from_canister().active_operation,
+        Some(NnsOperation::Unwind(ref operation))
+            if operation.phase == UnwindPhase::DisbursementSubmitted
+                && operation.expected_block_index == Some(block)
+    ));
+
+    fixture.pic.advance_time(Duration::from_secs(60));
+    for _ in 0..5 {
+        fixture.pic.tick();
+    }
+    assert_unwind_retired(&fixture, child_neuron_id);
+    assert_eq!(
+        fixture.resume(),
+        Ok(NnsProgress::Idle),
+        "completed passive recovery must not repeat the payout"
+    );
+    assert_eq!(fixture.governance_calls(), calls_after);
+    let ledger_transactions: Vec<DebugLedgerTransaction> = update(
+        &fixture.pic,
+        fixture.ledger,
+        Principal::anonymous(),
+        "debug_get_transactions",
+        (),
+    );
+    assert_eq!(
+        ledger_transactions
+            .iter()
+            .filter(|transaction| u128::from(transaction.block_index) == block)
+            .count(),
+        1
+    );
+    eprintln!(
+        "anchored_ready_child_timer ready_at_seconds={} disburse_calls=1 exact_transfer_count=1 retired=true",
+        ready_at_seconds
+    );
+}
+
+#[test]
 fn two_week_maturity_captures_canonical_amount_after_intervening_reward_events() {
+    let _serial = lock_recovery_test();
     if std::env::var_os("POCKET_IC_BIN").is_none() {
         return;
     }
@@ -1441,6 +2381,11 @@ fn two_week_maturity_captures_canonical_amount_after_intervening_reward_events()
             ),
             Ok(())
         );
+        assert_eq!(fixture.governance_calls().disburse_maturity, 1);
+        assert!(fixture
+            .state_from_canister()
+            .pending_two_week_maturity
+            .is_some());
         for _ in 0..reward_events {
             fixture.add_maturity(42, 10_000_000);
         }
@@ -1449,7 +2394,7 @@ fn two_week_maturity_captures_canonical_amount_after_intervening_reward_events()
         }
         assert_eq!(
             fixture.resume(),
-            Ok(NnsProgress::Maturity(MaturityProgress::AwaitingCapture))
+            Ok(NnsProgress::Maturity(MaturityProgress::Pending))
         );
         let state = fixture.state_from_canister();
         let pending = state
@@ -1462,7 +2407,8 @@ fn two_week_maturity_captures_canonical_amount_after_intervening_reward_events()
 }
 
 #[test]
-fn two_year_maturity_uses_realised_disbursement_across_reward_accrual() {
+fn two_year_maturity_starts_immediately_and_freezes_realised_disbursement() {
+    let _serial = lock_recovery_test();
     if std::env::var_os("POCKET_IC_BIN").is_none() {
         return;
     }
@@ -1477,29 +2423,200 @@ fn two_year_maturity_uses_realised_disbursement_across_reward_accrual() {
             "start_maturity",
             MaturityKind::TwoYear,
         ),
-        Ok(MaturityProgress::Observed)
+        Ok(MaturityProgress::Pending)
     );
+    assert_eq!(fixture.governance_calls().disburse_maturity, 1);
+    assert!(fixture
+        .state_from_canister()
+        .pending_two_year_maturity
+        .is_some());
     fixture.add_maturity(41, 25_000_000);
     assert_eq!(
         fixture.resume(),
-        Ok(NnsProgress::Maturity(
-            MaturityProgress::DisburseMaturitySucceeded
-        ))
+        Ok(NnsProgress::Maturity(MaturityProgress::Pending))
     );
     assert_eq!(
         fixture.resume(),
-        Ok(NnsProgress::Maturity(MaturityProgress::AwaitingCapture))
+        Ok(NnsProgress::Maturity(MaturityProgress::Pending))
     );
     let pending = fixture
         .state_from_canister()
         .pending_two_year_maturity
         .expect("two-year maturity must become passive");
-    assert_eq!(pending.nominal_disbursed_e8s, 225_000_000);
+    assert_eq!(pending.nominal_disbursed_e8s, 200_000_000);
     assert_eq!(fixture.governance_calls().disburse_maturity, 1);
 }
 
 #[test]
+fn sns_two_year_target_rejects_nonacceptance_and_preserves_competing_pool() {
+    let _serial = lock_recovery_test();
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        return;
+    }
+    let fixture = RecoveryFixture::new();
+    let active_pool = pool_state(
+        &fixture,
+        42,
+        1_000_000,
+        100_000_000,
+        PoolCommandPhase::RefreshSubmitted,
+    );
+    fixture.replace(active_pool.clone());
+
+    let validation: Result<String, String> = decode_one(
+        &fixture
+            .pic
+            .query_call(
+                fixture.manager,
+                Principal::anonymous(),
+                "validate_start_maturity",
+                encode_one(MaturityKind::TwoYear).unwrap(),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(validation, Err(message) if message.contains("busy with Pool")));
+    let calls_before = fixture.governance_calls();
+    let rejection = rejected_update(
+        &fixture.pic,
+        fixture.manager,
+        fixture.sns_governance,
+        "start_maturity",
+        MaturityKind::TwoYear,
+    );
+    assert!(rejection.contains("busy with Pool"), "{rejection}");
+    assert_eq!(fixture.state_from_canister(), active_pool);
+    assert_eq!(
+        fixture.governance_calls().disburse_maturity,
+        calls_before.disburse_maturity,
+        "rejected maturity must submit no NNS maturity command"
+    );
+
+    let mut paused_pool = active_pool.clone();
+    paused_pool.lifecycle = Lifecycle::Paused;
+    fixture.replace(paused_pool.clone());
+    let lifecycle_validation: Result<String, String> = decode_one(
+        &fixture
+            .pic
+            .query_call(
+                fixture.manager,
+                Principal::anonymous(),
+                "validate_set_paused",
+                encode_one(false).unwrap(),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(lifecycle_validation, Err(message) if message.contains("busy with Pool")));
+    let lifecycle_rejection = rejected_update(
+        &fixture.pic,
+        fixture.manager,
+        fixture.sns_governance,
+        "set_paused",
+        false,
+    );
+    assert!(lifecycle_rejection.contains("busy with Pool"));
+    assert_eq!(fixture.state_from_canister(), paused_pool);
+
+    fixture.replace(active_pool);
+
+    fixture.refresh_credit(42, 100_000_000);
+    assert!(matches!(
+        fixture.resume(),
+        Ok(NnsProgress::Pool(PoolProgress::Completed { .. }))
+    ));
+    let accepted_validation: Result<String, String> = decode_one(
+        &fixture
+            .pic
+            .query_call(
+                fixture.manager,
+                Principal::anonymous(),
+                "validate_start_maturity",
+                encode_one(MaturityKind::TwoYear).unwrap(),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(accepted_validation.is_ok(), "{accepted_validation:?}");
+    fixture.add_maturity(41, 200_000_000);
+    let accepted: Result<MaturityProgress, ApiError> = update(
+        &fixture.pic,
+        fixture.manager,
+        fixture.sns_governance,
+        "start_maturity",
+        MaturityKind::TwoYear,
+    );
+    assert_eq!(accepted, Ok(MaturityProgress::Pending));
+    assert!(
+        matches!(
+            fixture.state_from_canister().active_operation,
+            Some(NnsOperation::Maturity(operation)) if operation.kind == MaturityKind::TwoYear
+        ) || fixture
+            .state_from_canister()
+            .pending_two_year_maturity
+            .is_some()
+    );
+}
+
+#[test]
+fn sns_two_year_target_rejects_below_threshold_and_validation_is_not_a_lock() {
+    let _serial = lock_recovery_test();
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        return;
+    }
+    let fixture = RecoveryFixture::new();
+    let idle = fixture.state();
+    fixture.replace(idle.clone());
+    let validation: Result<String, String> = decode_one(
+        &fixture
+            .pic
+            .query_call(
+                fixture.manager,
+                Principal::anonymous(),
+                "validate_start_maturity",
+                encode_one(MaturityKind::TwoYear).unwrap(),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(validation.is_ok());
+    let calls_before = fixture.governance_calls();
+    let rejection = rejected_update(
+        &fixture.pic,
+        fixture.manager,
+        fixture.sns_governance,
+        "start_maturity",
+        MaturityKind::TwoYear,
+    );
+    assert!(rejection.contains("BelowMaturityThreshold"), "{rejection}");
+    assert_eq!(fixture.state_from_canister(), idle);
+    assert_eq!(
+        fixture.governance_calls().disburse_maturity,
+        calls_before.disburse_maturity
+    );
+
+    let competing = pool_state(
+        &fixture,
+        42,
+        1_000_000,
+        100_000_000,
+        PoolCommandPhase::RefreshSubmitted,
+    );
+    fixture.replace(competing.clone());
+    let raced = rejected_update(
+        &fixture.pic,
+        fixture.manager,
+        fixture.sns_governance,
+        "start_maturity",
+        MaturityKind::TwoYear,
+    );
+    assert!(raced.contains("busy with Pool"), "{raced}");
+    assert_eq!(fixture.state_from_canister(), competing);
+}
+
+#[test]
 fn disburse_maturity_decoded_rejection_retries_but_ambiguity_never_resubmits() {
+    let _serial = lock_recovery_test();
     if std::env::var_os("POCKET_IC_BIN").is_none() {
         return;
     }
@@ -1521,11 +2638,16 @@ fn disburse_maturity_decoded_rejection_retries_but_ambiguity_never_resubmits() {
         ),
         Err(ApiError::Pending(_))
     ));
-    assert!(matches!(
-        fixture.state_from_canister().active_operation,
-        Some(NnsOperation::Maturity(operation))
-            if matches!(operation.phase, MaturityCommandPhase::Observed(_))
-    ));
+    let retryable_state = fixture.state_from_canister();
+    assert!(
+        matches!(
+            retryable_state.active_operation,
+            Some(NnsOperation::Maturity(ref operation))
+                if matches!(operation.phase, MaturityCommandPhase::Observed(_))
+        ),
+        "unexpected retryable maturity state: {retryable_state:?}; governance calls: {:?}",
+        fixture.governance_calls()
+    );
     assert_eq!(
         update::<_, Result<(), ApiError>>(
             &fixture.pic,
@@ -1541,21 +2663,21 @@ fn disburse_maturity_decoded_rejection_retries_but_ambiguity_never_resubmits() {
     let ambiguous = RecoveryFixture::new();
     ambiguous.replace(ambiguous.state());
     ambiguous.add_maturity(41, 200_000_000);
-    let _: Result<MaturityProgress, ApiError> = update(
-        &ambiguous.pic,
-        ambiguous.manager,
-        ambiguous.sns_governance,
-        "start_maturity",
-        MaturityKind::TwoYear,
-    );
     ambiguous.control(ControlledCommand::DisburseMaturity, 0, 1);
-    assert!(matches!(ambiguous.resume(), Err(ApiError::Pending(_))));
+    assert!(matches!(
+        update::<_, Result<MaturityProgress, ApiError>>(
+            &ambiguous.pic,
+            ambiguous.manager,
+            ambiguous.sns_governance,
+            "start_maturity",
+            MaturityKind::TwoYear,
+        ),
+        Err(ApiError::Pending(_))
+    ));
     ambiguous.upgrade();
     assert!(matches!(
         ambiguous.resume(),
-        Ok(NnsProgress::Maturity(
-            MaturityProgress::DisburseMaturitySucceeded
-        ))
+        Ok(NnsProgress::Maturity(MaturityProgress::Pending))
     ));
     assert_eq!(ambiguous.governance_calls().disburse_maturity, 1);
 }

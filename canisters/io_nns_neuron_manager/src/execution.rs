@@ -9,7 +9,7 @@ use candid::{CandidType, Nat, Principal, Reserved};
 use ic_cdk::call::Call;
 use io_ledger_boundary::{IcrcTransferArg, IcrcTransferError, IcrcTransferResult};
 pub use io_nns_types::backing::split_child_subaccount;
-use io_nns_types::backing::{FollowPolicy, POOLED_PARENT_DELAY_SECONDS};
+use io_nns_types::backing::{FollowPolicy, NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS};
 pub use io_receipt_types::ClaimBackingReceiptProgress as StreamLiquidProgress;
 use io_receipt_types::{
     ClaimBackingReceiptKind, ClaimBackingReceiptPermit, PrepareClaimBackingReceiptArgs,
@@ -46,6 +46,19 @@ pub fn parent_staking_account(config: &NnsConfig, memo: u64) -> Account {
         owner: config.nns_governance,
         subaccount: Some(hasher.finalize().to_vec()),
     }
+}
+
+pub fn validate_candidate_parent_staking_account(
+    config: &NnsConfig,
+    permanent: &NeuronObservation,
+) -> Result<Account, String> {
+    let candidate = parent_staking_account(config, config.pooled_parent_memo);
+    if candidate == staking_account(config, &permanent.snapshot) {
+        return Err(
+            "pooled-parent staking Account collides with the protected two-year neuron".into(),
+        );
+    }
+    Ok(candidate)
 }
 
 pub fn classify_transfer(
@@ -89,7 +102,6 @@ pub struct NeuronObservation {
     pub maturity_disbursements: Vec<MaturityDisbursement>,
     pub dissolve_state: Option<DissolveState>,
     pub followees: Vec<(i32, Vec<u64>)>,
-    pub voting_power_refreshed_timestamp_seconds: Option<u64>,
 }
 
 pub const APPROVED_PERMANENT_DISSOLVE_DELAY_SECONDS: u64 = 63_115_200;
@@ -122,21 +134,17 @@ pub fn validate_parent_configuration(
     if !observation.auto_stake_maturity
         && observation.dissolve_state
             == Some(DissolveState::DissolveDelaySeconds(
-                POOLED_PARENT_DELAY_SECONDS,
+                NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS,
             ))
         && exact_following
-        && observation
-            .voting_power_refreshed_timestamp_seconds
-            .is_some_and(|timestamp| timestamp > 0)
     {
         Ok(())
     } else {
         Err(format!(
-            "pooled parent configuration drifted: dissolve_state={:?}, auto_stake={}, followees={:?}, voting_power_refreshed_at={:?}",
+            "pooled parent configuration drifted: dissolve_state={:?}, auto_stake={}, followees={:?}",
             observation.dissolve_state,
             observation.auto_stake_maturity,
-            observation.followees,
-            observation.voting_power_refreshed_timestamp_seconds
+            observation.followees
         ))
     }
 }
@@ -175,7 +183,6 @@ struct Neuron {
     maturity_disbursements_in_progress: Option<Vec<MaturityDisbursement>>,
     dissolve_state: Option<DissolveState>,
     followees: Vec<(i32, Followees)>,
-    voting_power_refreshed_timestamp_seconds: Option<u64>,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -404,7 +411,6 @@ pub async fn query_neuron_observation(
                 )
             })
             .collect(),
-        voting_power_refreshed_timestamp_seconds: neuron.voting_power_refreshed_timestamp_seconds,
     })
 }
 
@@ -424,9 +430,9 @@ pub async fn claim_parent(config: &NnsConfig, memo: u64) -> Result<u64, ApiError
         Some(CommandResponse::ClaimOrRefresh(value)) => value
             .refreshed_neuron_id
             .map(|id| id.id)
-            .ok_or_else(|| ApiError::Invalid("ClaimOrRefresh returned no parent ID".into())),
+            .ok_or_else(|| ApiError::Pending("ClaimOrRefresh returned no parent ID".into())),
         Some(CommandResponse::Error(error)) => Err(governance_error("ClaimOrRefresh", error)),
-        _ => Err(ApiError::Invalid(
+        _ => Err(ApiError::Pending(
             "parent claim returned the wrong response".into(),
         )),
     }
@@ -472,7 +478,7 @@ pub async fn set_following(
     {
         Some(CommandResponse::SetFollowing(_)) => Ok(()),
         Some(CommandResponse::Error(error)) => Err(governance_error("SetFollowing", error)),
-        _ => Err(ApiError::Invalid(
+        _ => Err(ApiError::Pending(
             "SetFollowing returned the wrong response".into(),
         )),
     }
@@ -482,7 +488,7 @@ pub async fn refresh_voting_power(config: &NnsConfig, neuron_id: u64) -> Result<
     match manage(config, neuron_id, Command::RefreshVotingPower(Empty {})).await? {
         Some(CommandResponse::RefreshVotingPower(_)) => Ok(()),
         Some(CommandResponse::Error(error)) => Err(governance_error("RefreshVotingPower", error)),
-        _ => Err(ApiError::Invalid(
+        _ => Err(ApiError::Pending(
             "RefreshVotingPower returned the wrong response".into(),
         )),
     }
@@ -503,10 +509,10 @@ pub async fn refresh_neuron(config: &NnsConfig, neuron_id: u64) -> Result<(), Ap
             "claim/refresh rejected ({}): {}",
             error.error_type, error.error_message
         ))),
-        Some(_) => Err(ApiError::Invalid(
+        Some(_) => Err(ApiError::Pending(
             "claim/refresh returned the wrong command result".into(),
         )),
-        None => Err(ApiError::Invalid(
+        None => Err(ApiError::Pending(
             "claim/refresh returned no command result".into(),
         )),
     }
@@ -660,7 +666,7 @@ async fn configure(
     {
         Some(CommandResponse::Configure(_)) => Ok(()),
         Some(CommandResponse::Error(error)) => Err(governance_error("Configure", error)),
-        _ => Err(ApiError::Invalid(
+        _ => Err(ApiError::Pending(
             "Configure returned the wrong command response".into(),
         )),
     }
@@ -684,7 +690,7 @@ pub async fn merge_neuron(
     {
         Some(CommandResponse::Merge(_)) => Ok(()),
         Some(CommandResponse::Error(error)) => Err(governance_error("Merge", error)),
-        _ => Err(ApiError::Invalid(
+        _ => Err(ApiError::Pending(
             "Merge returned the wrong command response".into(),
         )),
     }
@@ -756,19 +762,15 @@ async fn manage(
         .map_err(|error| ApiError::Pending(format!("NNS governance command ambiguous: {error:?}")))?
         .candid::<ManageNeuronResponse>()
         .map(|response| response.command)
-        .map_err(|error| ApiError::Invalid(format!("NNS governance decode failed: {error:?}")))
+        .map_err(|error| {
+            ApiError::Pending(format!("NNS governance response is ambiguous: {error:?}"))
+        })
 }
 
 fn governance_error(method: &str, error: GovernanceError) -> ApiError {
     ApiError::Invalid(format!(
         "{method} rejected ({}): {}",
         error.error_type, error.error_message
-    ))
-}
-
-pub fn command_pending(label: &str, result: Result<(), ApiError>) -> ApiError {
-    ApiError::Pending(format!(
-        "{label} awaits canonical proof after command result {result:?}"
     ))
 }
 
@@ -1044,7 +1046,6 @@ mod tests {
                 APPROVED_PERMANENT_DISSOLVE_DELAY_SECONDS,
             )),
             followees: vec![],
-            voting_power_refreshed_timestamp_seconds: None,
         }
     }
 

@@ -5,6 +5,8 @@
 - Supersedes: pre-execution monetary DIDs, ledger/index intent inference,
   redemption intake and return, automatic complete-absence recovery, and
   prelaunch stable migration compatibility
+- Partially superseded by: `adr-anchored-dynamic-backing.md` for redemption
+  transport, Dynamic-parent bootstrap/accounting, cohorts, and scheduling
 
 ## Context
 
@@ -25,10 +27,11 @@ destination. Callers never choose arbitrary monetary destinations and never mark
 work complete.
 
 The stream manager serializes all monetary work in one typed active operation:
-`Redemption` or `LiquidReceipt`. Redemption uses ICRC-2 to pull IO from
-`Account { owner = caller, subaccount = from_subaccount }` directly into the
-reserve, then pays ICP to the same account. There is no intake account, IO return
-leg, redemption scanner, or rejected-redemption refund.
+`Redemption` or `LiquidReceipt`. The replacement redemption prepares an exact
+caller/source/amount/fee/memo quote, proves the caller's ICRC-1 push directly
+into reserve, then persists an unconditional at-most-once ICP payout obligation
+to the same Account. There is no allowance, `transfer_from`, scanner, intake
+Account, IO return leg, or rejected-redemption refund.
 
 The NNS manager owns NNS commands and proof. It serializes immediate work and has
 fixed slots for two-year maturity, two-week maturity, and one unwind child. The
@@ -40,6 +43,14 @@ Retry uses the identical request inside the ledger deduplication window. An
 unresolved result outside that window becomes `Stuck` and pauses execution.
 Permissionless proof accepts only an exact block matching the persisted intent.
 No global absence proof is attempted.
+
+The same ordering applies to Governance effects: exact immutable intent is
+durable before submission, and a later dependent irreversible effect is never
+submitted while the earlier outcome is ambiguous or lacks its required
+canonical postcondition. Definite success is immediately re-observed once and
+fixed-size work may continue when proved. `Pending` denotes a real external or
+bounded-work boundary, not an arbitrary per-invocation call count. Variable
+fan-out remains explicitly bounded.
 
 Exact current/archive retrieval is limited to external Jupiter deposits,
 NNS-generated receipts, and proof of a stuck active transfer. Index scanning and
@@ -64,10 +75,8 @@ DTOs and method names come from these paths:
 - ICRC accounts and transfers:
   `packages/icrc-ledger-types/src/icrc1/account.rs`,
   `packages/icrc-ledger-types/src/icrc1/transfer.rs`
-- ICRC-2 approve, allowance, and transfer-from:
-  `packages/icrc-ledger-types/src/icrc2/approve.rs`,
-  `packages/icrc-ledger-types/src/icrc2/allowance.rs`,
-  `packages/icrc-ledger-types/src/icrc2/transfer_from.rs`
+- ICRC-1 transfer fields used for the exact caller push:
+  `packages/icrc-ledger-types/src/icrc1/transfer.rs`
 - ICRC-3 current/archive block DTOs:
   `packages/icrc-ledger-types/src/icrc3/blocks.rs`,
   `packages/icrc-ledger-types/src/icrc3/archive.rs`,

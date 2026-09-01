@@ -118,9 +118,22 @@ run_case paired-receipt-replay cargo test -p io-stream-manager \
   --test io_paired_receipt_recovery_pocketic \
   malformed_prepare_after_persistence_replays_and_quarantines_redemption \
   -- --exact --nocapture --test-threads=1
-run_case liquidity-shortfall cargo test -p io-stream-manager \
+run_case prepared-push-without-liquidity-gate cargo test -p io-stream-manager \
   --test io_stream_manager_pocketic \
-  liquidity_shortfall_uses_only_scalar_claim_reads_and_pulls_no_io \
+  preparation_uses_scalar_claim_reads_without_requiring_liquid_icp \
+  -- --exact --nocapture --test-threads=1
+run_case structural-reward-independence cargo test -p io-stream-manager \
+  --test io_stream_manager_pocketic \
+  reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once \
+  -- --exact --nocapture --test-threads=1
+run_case ready-child-recovery-timer cargo test -p io-nns-neuron-manager \
+  --test io_nns_governance_recovery_pocketic \
+  passive_child_timer_reconstructs_after_upgrade_and_services_exact_ready_boundary \
+  -- --exact --nocapture --test-threads=1
+run_case anchored-economics cargo test -p io-proposed-economics-tests \
+  -- --nocapture --test-threads=1
+run_case unbounded-historical-generations cargo test -p io-nns-types \
+  pool::tests::historical_generations_are_not_a_product_capacity_limit \
   -- --exact --nocapture --test-threads=1
 
 for candidate in \
@@ -150,7 +163,11 @@ for marker in \
   'account_semantic_two_year cycle=0' \
   'account_semantic_two_year cycle=1' \
   'account_semantic_combined ' \
-  'account_semantic_liquidity_shortfall ' \
+  'prepared_push_without_liquidity ' \
+  'anchored_structural_scheduler cadence_seconds=43200' \
+  'anchored_ready_child_timer ' \
+  'more_than_thirty_two_historical_generations_retire_without_a_product_cap ... ok' \
+  'historical_generations_are_not_a_product_capacity_limit ... ok' \
   'account_semantic_receipt_recovery '; do
   if ! grep -Fq "$marker" "$log_file"; then
     record_blocker "account-semantic validation log lacks required successful marker: ${marker}"
@@ -169,7 +186,7 @@ fi
 
 cat > "$result_file" <<EOF
 [evidence]
-schema = "account-semantic-v1"
+schema = "anchored-dynamic-v1"
 source_commit = "${source_commit}"
 artifact_commit = "${artifact_commit}"
 release_manifest_sha256 = "${manifest_sha256}"
@@ -182,7 +199,24 @@ identity = "B = L + P + U + T"
 identity_checked = true
 liquid_first = true
 ordinary_reconciliation = true
-lazy_pooled_parent = true
+dynamic_parent_bootstrapped = true
+anchor_partition_checked = true
+claim_rate_floor_checked = true
+claim_rate_monotonicity_checked = true
+
+[scheduler]
+structural_twelve_hour_cadence = true
+reward_independence_checked = true
+ready_child_wakeup_checked = true
+
+[cohorts]
+more_than_32_generations_checked = true
+capacity_pending_absent = true
+
+[redemption]
+prepared_icrc1_push = true
+durable_payout_obligation = true
+icrc2_pull_absent = true
 
 [jupiter]
 authorized_source_block_required = true
@@ -215,7 +249,6 @@ cross_account_isolation = true
 [liveness]
 no_effect_retry_exactly_once = true
 ambiguous_effect_never_resubmitted = true
-liquidity_shortfall_pulls_io = false
 request_retryable = true
 cohort_unwind_complete = true
 upgrade_restart_exact = true

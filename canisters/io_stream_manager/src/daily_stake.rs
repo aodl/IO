@@ -2,7 +2,7 @@ use crate::{
     api::ApiError,
     canonical,
     redemption::{ClaimSnapshot, StructuralStakeObservation},
-    state::{Account, StreamConfig, StructuralStakeState},
+    state::{Account, BackingRewardRecord, StreamConfig, StructuralStakeState},
 };
 
 pub struct DailyStakeObservation {
@@ -14,7 +14,10 @@ pub struct DailyStakeObservation {
     pub assets: io_nns_types::backing::ClaimAssetObservation,
 }
 
-pub async fn observe(config: &StreamConfig) -> Result<DailyStakeObservation, ApiError> {
+pub async fn observe(
+    config: &StreamConfig,
+    existing: &[BackingRewardRecord],
+) -> Result<DailyStakeObservation, ApiError> {
     let installed =
         crate::reward_evidence::installed_governance(config.sns_root, config.sns_governance)
             .await?;
@@ -23,6 +26,8 @@ pub async fn observe(config: &StreamConfig) -> Result<DailyStakeObservation, Api
         .await
         .map_err(ApiError::Ledger)?;
     let event_before = crate::reward_evidence::latest_reward_event(config.sns_governance).await?;
+    let event_marker = crate::reward_evidence::event_id(&event_before)?.round;
+    let reward_eligible = crate::backing_registry::reward_eligible_ids(existing, event_marker);
     let neurons = crate::reward_evidence::list_all_neurons(config.sns_governance).await?;
     let mut ids = std::collections::BTreeSet::new();
     let mut accounts = std::collections::BTreeSet::new();
@@ -57,7 +62,7 @@ pub async fn observe(config: &StreamConfig) -> Result<DailyStakeObservation, Api
         let structural = match neuron.dissolve_state {
             io_sns_reward_boundary::DissolveState::NotDissolving {
                 dissolve_delay_seconds,
-            } if dissolve_delay_seconds == io_core_model::TWO_WEEK_SECONDS => {
+            } if dissolve_delay_seconds == io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS => {
                 StructuralStakeState::Active
             }
             io_sns_reward_boundary::DissolveState::NotDissolving { .. } => {
@@ -68,13 +73,14 @@ pub async fn observe(config: &StreamConfig) -> Result<DailyStakeObservation, Api
                 StructuralStakeState::LiquidOrDissolved
             }
         };
-        let balance = if structural == StructuralStakeState::Active {
-            canonical::balance(config.io_ledger, account.clone())
-                .await
-                .map_err(ApiError::Ledger)?
-        } else {
-            0
-        };
+        let balance =
+            if structural == StructuralStakeState::Active || reward_eligible.contains(&neuron.id) {
+                canonical::balance(config.io_ledger, account.clone())
+                    .await
+                    .map_err(ApiError::Ledger)?
+            } else {
+                0
+            };
         if structural == StructuralStakeState::Active {
             active_backing = active_backing
                 .checked_add(balance)

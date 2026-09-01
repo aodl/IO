@@ -1,4 +1,4 @@
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", test, debug_assertions))]
 mod adapters;
 mod model;
 
@@ -354,6 +354,12 @@ pub fn export_state_for_tests() -> StableState {
 pub async fn debug_refresh_now() {
     #[cfg(target_family = "wasm")]
     refresh_once().await;
+}
+
+#[cfg(debug_assertions)]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_decode_stream_status(bytes: Vec<u8>) -> Result<StreamStatus, String> {
+    adapters::debug_decode_stream_status(&bytes, ic_cdk::api::time())
 }
 
 #[cfg(target_family = "wasm")]

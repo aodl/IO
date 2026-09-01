@@ -44,7 +44,7 @@ impl PoolTopUpOperation {
                 && *amount == self.permit.expected_credit_e8s
                 && *fee == self.permit.fee_e8s
                 && *memo == self.permit.memo
-                && *created_at_time == self.permit.prepared_at_nanos =>
+                && *created_at_time >= self.permit.prepared_at_nanos =>
             {
                 Ok(())
             }
@@ -89,8 +89,8 @@ pub async fn ensure_latest() -> Result<bool, ApiError> {
             active_reward: checkpoint.active_reward_io_e8s,
         },
         canonical.icp_fee_e8s,
-        canonical.minimum_parent_stake_e8s,
-        io_nns_types::maturity::MINIMUM_DISBURSEMENT_E8S as u128 + canonical.icp_fee_e8s,
+        canonical.anchor_available_e8s,
+        io_nns_types::maturity::MINIMUM_DISBURSEMENT_E8S as u128,
     )
     .map_err(|error| ApiError::Invalid(format!("pool reconciliation failed: {error:?}")))?;
     match plan {
@@ -139,10 +139,10 @@ pub async fn ensure_latest() -> Result<bool, ApiError> {
         }
         io_core_model::ReconcilePlan::TopUp {
             target,
-            credit,
-            debit,
+            transfer,
+            claim_credit,
         } => {
-            if debit > canonical.liquid_icp_e8s {
+            if claim_credit > canonical.liquid_icp_e8s {
                 return Ok(false);
             }
             let result = prepare_initial_reconciliation(
@@ -151,7 +151,8 @@ pub async fn ensure_latest() -> Result<bool, ApiError> {
                     generation: checkpoint.generation,
                     target_e8s: target,
                     action: PoolReconciliationAction::TopUp {
-                        expected_credit_e8s: credit,
+                        expected_transfer_e8s: transfer,
+                        expected_claim_credit_e8s: claim_credit,
                     },
                     fee_e8s: canonical.icp_fee_e8s,
                     snapshot_fingerprint: canonical.nns_fingerprint,
@@ -288,10 +289,6 @@ async fn resolve_prepared_exit(
             commit_exit_generation(generation)?;
             Ok(true)
         }
-        PoolProgress::CapacityPending => {
-            rollback_exit_generation(generation)?;
-            Ok(false)
-        }
         PoolProgress::Held { .. } => {
             rollback_exit_generation(generation)?;
             Ok(true)
@@ -374,10 +371,7 @@ pub async fn prove_transfer(block_index: u128) -> Result<(), ApiError> {
         memo,
         created_at_time,
         ..
-    } = &operation.transfer.intent
-    else {
-        return Err(ApiError::Invalid("pool top-up intent is not ICP".into()));
-    };
+    } = &operation.transfer.intent;
     let source = crate::state::Account {
         owner: ic_cdk::api::canister_self(),
         subaccount: Some(from_subaccount.to_vec()),
@@ -388,6 +382,7 @@ pub async fn prove_transfer(block_index: u128) -> Result<(), ApiError> {
         || exact.fee_e8s != *fee
         || exact.icrc1_memo.as_deref() != Some(memo.as_slice())
         || exact.created_at_time != *created_at_time
+        || exact.created_at_time < operation.permit.prepared_at_nanos
         || exact.spender.is_some()
     {
         return Err(ApiError::Invalid(
@@ -417,9 +412,25 @@ async fn submit(mut operation: PoolTopUpOperation, now: u64) -> Result<(), ApiEr
                 Ok(())
             }
             ClassifiedResult::NoEffect(reason) => {
-                clear(operation)?;
+                // A decoded ledger rejection is canonical proof that this exact
+                // attempt created no block. The callback may therefore replace
+                // only its deduplication timestamp and retry the same permit;
+                // an ambiguous callback remains Submitted and never reaches
+                // this branch. NNS still exact-matches the eventual block's
+                // economics and requires its timestamp to be no earlier than
+                // the original permit boundary.
+                let mut retry = operation.clone();
+                match &mut retry.transfer.intent {
+                    OwnTransferIntent::Icrc1 {
+                        created_at_time, ..
+                    } => {
+                        *created_at_time = now.max(operation.permit.prepared_at_nanos);
+                    }
+                }
+                retry.transfer.state = TransferState::Prepared;
+                persist(&operation, retry)?;
                 Err(ApiError::Pending(format!(
-                    "pool top-up had no effect and may be prepared again: {reason}"
+                    "pool top-up had no effect and has a fresh exact retry intent: {reason}"
                 )))
             }
             ClassifiedResult::Ambiguous(reason) => Err(ApiError::Pending(reason)),
@@ -481,13 +492,14 @@ fn replay_request(
     let target_e8s = operation
         .permit
         .expected_parent_principal_e8s
-        .checked_add(operation.permit.expected_credit_e8s)
+        .checked_add(operation.permit.claim_credit_e8s)
         .ok_or_else(|| ApiError::Invalid("pool top-up replay target overflow".into()))?;
     Ok(PreparePoolReconciliationArgs {
         generation: operation.permit.generation,
         target_e8s,
         action: PoolReconciliationAction::TopUp {
-            expected_credit_e8s: operation.permit.expected_credit_e8s,
+            expected_transfer_e8s: operation.permit.expected_credit_e8s,
+            expected_claim_credit_e8s: operation.permit.claim_credit_e8s,
         },
         fee_e8s: operation.permit.fee_e8s,
         snapshot_fingerprint: operation.permit.snapshot_fingerprint.clone(),
@@ -533,7 +545,7 @@ async fn nns_progress_call<A: CandidType>(
         Jupiter(Reserved),
         Maturity(Reserved),
         Unwind(Reserved),
-        Pool(PoolProgress),
+        Pool(Box<PoolProgress>),
         Idle,
     }
     let result: Result<NnsProgress, Reserved> = Call::bounded_wait(nns, method)
@@ -543,7 +555,7 @@ async fn nns_progress_call<A: CandidType>(
         .candid()
         .map_err(|error| ApiError::Invalid(format!("NNS {method} decode failed: {error:?}")))?;
     match result.map_err(|_| ApiError::Invalid(format!("NNS {method} rejected")))? {
-        NnsProgress::Pool(progress) => Ok(progress),
+        NnsProgress::Pool(progress) => Ok(*progress),
         NnsProgress::Jupiter(_)
         | NnsProgress::Maturity(_)
         | NnsProgress::Unwind(_)
@@ -627,8 +639,10 @@ mod tests {
             generation: 7,
             operation_sequence: 9,
             expected_parent_principal_e8s: 400_000_000,
+            expected_parent_physical_e8s: 1_400_000_000,
             destination: destination.clone(),
-            expected_credit_e8s: 100_000_000,
+            expected_credit_e8s: 99_990_000,
+            claim_credit_e8s: 100_000_000,
             fee_e8s: 10_000,
             memo: b"exact-pool-replay".to_vec(),
             prepared_at_nanos: 123_000_000_000,
@@ -657,7 +671,8 @@ mod tests {
         assert_eq!(
             request.action,
             PoolReconciliationAction::TopUp {
-                expected_credit_e8s: permit.expected_credit_e8s,
+                expected_transfer_e8s: permit.expected_credit_e8s,
+                expected_claim_credit_e8s: permit.claim_credit_e8s,
             }
         );
         assert_eq!(request.fee_e8s, permit.fee_e8s);

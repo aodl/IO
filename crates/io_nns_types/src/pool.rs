@@ -1,7 +1,7 @@
 use candid::CandidType;
 use serde::Deserialize;
 
-use crate::backing::{CohortProofState, MAX_LIVE_UNWIND_COHORTS};
+use crate::backing::CohortProofState;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum UnwindPhase {
@@ -71,6 +71,9 @@ impl UnwindOperation {
         let cleanup_with_maturity = self.phase == UnwindPhase::CleanupProved
             && self.child_maturity_e8s > 0
             && self.parent_principal_e8s > 0;
+        let stuck_with_maturity = matches!(self.phase, UnwindPhase::Stuck(_))
+            && self.child_maturity_e8s > 0
+            && self.parent_principal_e8s > 0;
         let no_maturity_evidence = self.child_maturity_e8s == 0
             && self.parent_maturity_e8s == 0
             && self.parent_principal_e8s == 0;
@@ -101,7 +104,10 @@ impl UnwindOperation {
             || (!before_child && !identified && self.child_staking_subaccount.len() != 32)
             || (maturity_cleanup
                 && (self.child_maturity_e8s == 0 || self.parent_principal_e8s == 0))
-            || (!maturity_cleanup && !cleanup_with_maturity && !no_maturity_evidence)
+            || (!maturity_cleanup
+                && !cleanup_with_maturity
+                && !stuck_with_maturity
+                && !no_maturity_evidence)
         {
             return Err("unwind command evidence is inconsistent".into());
         }
@@ -123,9 +129,6 @@ pub struct PassiveCohort {
 }
 
 pub fn validate_cohorts(cohorts: &[PassiveCohort]) -> Result<(), String> {
-    if cohorts.len() > MAX_LIVE_UNWIND_COHORTS {
-        return Err("live unwind cohort capacity exceeded".into());
-    }
     let mut previous = None;
     for cohort in cohorts {
         if cohort.generation == 0
@@ -165,13 +168,40 @@ mod tests {
     }
 
     #[test]
-    fn live_cohorts_are_sorted_unique_and_bounded() {
-        let mut cohorts = (1..=MAX_LIVE_UNWIND_COHORTS as u64)
-            .map(cohort)
-            .collect::<Vec<_>>();
+    fn historical_generations_are_not_a_product_capacity_limit() {
+        let mut cohorts = (1..=64).map(cohort).collect::<Vec<_>>();
         assert_eq!(validate_cohorts(&cohorts), Ok(()));
-        cohorts.push(cohort(33));
-        assert!(validate_cohorts(&cohorts).is_err());
+        cohorts.push(cohort(65));
+        assert_eq!(validate_cohorts(&cohorts), Ok(()));
         assert!(validate_cohorts(&[cohort(2), cohort(1)]).is_err());
+    }
+
+    #[test]
+    fn cleanup_contradiction_can_retain_exact_evidence_in_stuck_state() {
+        let mut operation = UnwindOperation {
+            operation_sequence: 1,
+            generation: 1,
+            reconciliation_request_fingerprint: vec![1; 32],
+            target_e8s: 1_000_000,
+            gross_e8s: 120_000,
+            split_fee_e8s: 10_000,
+            committed_disbursement_fee_e8s: 10_000,
+            parent_principal_before_split_e8s: 1_120_000,
+            child_neuron_id: 2,
+            principal_e8s: 110_000,
+            child_staking_subaccount: vec![2; 32],
+            submitted_at_seconds: 1,
+            expected_block_index: None,
+            child_maturity_e8s: 50_000,
+            parent_maturity_e8s: 20_000,
+            parent_principal_e8s: 1_001_000_000,
+            phase: UnwindPhase::MergeProved,
+        };
+        assert_eq!(operation.validate(2), Ok(()));
+        operation.phase = UnwindPhase::Stuck("cleanup conservation contradicted".into());
+        assert_eq!(operation.validate(2), Ok(()));
+
+        operation.parent_principal_e8s = 0;
+        assert!(operation.validate(2).is_err());
     }
 }

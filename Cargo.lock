@@ -1121,6 +1121,7 @@ version = "0.1.0"
 dependencies = [
  "candid",
  "ic-cdk",
+ "ic-cdk-timers",
  "ic-stable-structures",
  "io-accounts",
  "io-build-support",
@@ -1160,11 +1161,6 @@ dependencies = [
 [[package]]
 name = "io-proposed-economics-tests"
 version = "0.1.0"
-dependencies = [
- "io-core-model",
- "io-nns-types",
- "io-reward-policy",
-]
 
 [[package]]
 name = "io-receipt-types"

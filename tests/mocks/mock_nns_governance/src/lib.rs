@@ -88,6 +88,12 @@ pub struct SetFolloweeArgs {
     pub followee: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct SetVotingPowerTimestampArgs {
+    pub neuron_id: u64,
+    pub timestamp_seconds: u64,
+}
+
 #[derive(Default)]
 struct GovernanceState {
     now_seconds: u64,
@@ -96,8 +102,11 @@ struct GovernanceState {
     two_week_target: Option<SetTargetArgs>,
     maturity_preparation: Option<PrepareTwoWeekMaturityArgs>,
     reconcile_calls: u64,
+    reconcile_rejections_remaining: u64,
     get_full_neuron_calls: u64,
     pooled_principal_e8s: u128,
+    anchor_available_e8s: u128,
+    live_cohort: Option<io_nns_types::backing::CohortObservation>,
     claim_asset_observation_calls: u64,
     pool_policy_observation_calls: u64,
     pool_policy_valid: bool,
@@ -109,7 +118,15 @@ struct GovernanceState {
 }
 
 thread_local! {
-    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new(), two_week_target: None, maturity_preparation: None, reconcile_calls: 0, get_full_neuron_calls: 0, pooled_principal_e8s: 0, claim_asset_observation_calls: 0, pool_policy_observation_calls: 0, pool_policy_valid: true, command_controls: Vec::new(), command_calls: GovernanceCommandCounters::ZERO, split_trap_before_effect: false, transaction_fee_e8s: 10_000, next_disburse_block: None }) };
+    static STATE: RefCell<GovernanceState> = const { RefCell::new(GovernanceState { now_seconds: 0, next_neuron_id: 10_000, neurons: Vec::new(), two_week_target: None, maturity_preparation: None, reconcile_calls: 0, reconcile_rejections_remaining: 0, get_full_neuron_calls: 0, pooled_principal_e8s: 0, anchor_available_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S, live_cohort: None, claim_asset_observation_calls: 0, pool_policy_observation_calls: 0, pool_policy_valid: true, command_controls: Vec::new(), command_calls: GovernanceCommandCounters::ZERO, split_trap_before_effect: false, transaction_fee_e8s: 10_000, next_disburse_block: None }) };
+}
+
+fn canonical_now_seconds(state: &GovernanceState) -> u64 {
+    if state.now_seconds == 0 {
+        ic_cdk::api::time() / 1_000_000_000
+    } else {
+        state.now_seconds
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -212,52 +229,71 @@ pub fn observe_claim_assets() -> Result<io_nns_types::backing::ClaimAssetObserva
         owner,
         subaccount: Some(vec![2; 32]),
     };
-    let pooled_principal_e8s = STATE.with(|cell| cell.borrow().pooled_principal_e8s);
+    let (pooled_principal_e8s, anchor_available_e8s, live_cohort) = STATE.with(|cell| {
+        let state = cell.borrow();
+        (
+            state.pooled_principal_e8s,
+            state.anchor_available_e8s,
+            state.live_cohort.clone(),
+        )
+    });
+    let physical_principal_e8s = pooled_principal_e8s
+        .checked_add(anchor_available_e8s)
+        .ok_or_else(|| NnsError::Invalid("mock Dynamic parent principal overflow".into()))?;
     Ok(ClaimAssetObservation {
-        parent: (pooled_principal_e8s > 0).then(|| ParentAssetObservation {
+        parent: Some(ParentAssetObservation {
             neuron_id: 1,
             staking_account: pool_staking_account.clone(),
-            physical_principal_e8s: pooled_principal_e8s,
+            physical_principal_e8s,
         }),
         pool_staking_account,
-        minimum_parent_stake_e8s: 1,
-        pooled_parent_principal_e8s: pooled_principal_e8s,
-        live_cohorts: Vec::new(),
-        live_child_physical_principal_e8s: 0,
-        live_child_net_backing_e8s: 0,
-        live_child_committed_fee_liability_e8s: 0,
+        claim_bearing_dynamic_principal_e8s: pooled_principal_e8s,
+        anchor_target_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+        anchor_available_e8s,
+        excluded_dynamic_surplus_e8s: 0,
+        permanent_fee_shortfall_e8s: 0,
+        live_cohorts: live_cohort.iter().cloned().collect(),
+        live_child_physical_principal_e8s: live_cohort
+            .as_ref()
+            .map_or(0, |cohort| cohort.physical_principal_e8s),
+        live_child_net_backing_e8s: live_cohort
+            .as_ref()
+            .map_or(0, |cohort| cohort.net_backing_e8s),
+        live_child_committed_fee_liability_e8s: live_cohort
+            .as_ref()
+            .map_or(0, |cohort| cohort.committed_fee_e8s),
         transit_components: Vec::new(),
         transit_backing_e8s: 0,
         active_operation_sequence: 0,
         last_completed_pool_operation_sequence: None,
         control_epoch: 1,
         fingerprint: vec![42; 32],
-        oldest_ready_at_seconds: None,
+        oldest_ready_at_seconds: live_cohort.as_ref().map(|cohort| cohort.ready_at_seconds),
     })
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn observe_pool_policy() -> Result<io_nns_types::backing::PoolPolicyObservation, NnsError> {
     use io_nns_types::backing::{
-        FollowPolicy, ParentPolicyObservation, PoolPolicyObservation, POOLED_PARENT_DELAY_SECONDS,
+        FollowPolicy, ParentPolicyObservation, PoolPolicyObservation,
+        NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS,
     };
-    let pooled = STATE.with(|cell| {
+    STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         state.pool_policy_observation_calls = state.pool_policy_observation_calls.saturating_add(1);
         if !state.pool_policy_valid {
             return Err(NnsError::Invalid("mock pooled-parent policy drift".into()));
         }
-        Ok(state.pooled_principal_e8s > 0)
+        Ok(())
     })?;
     Ok(PoolPolicyObservation {
-        parent: pooled.then_some(ParentPolicyObservation {
+        parent: Some(ParentPolicyObservation {
             neuron_id: 1,
-            dissolve_delay_seconds: POOLED_PARENT_DELAY_SECONDS,
+            dissolve_delay_seconds: NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS,
             auto_stake_maturity: false,
             follow_policy: FollowPolicy {
                 followee_neuron_id: 2,
             },
-            voting_power_refreshed_at_seconds: 1,
         }),
         control_epoch: 1,
         active_operation_sequence: 0,
@@ -289,7 +325,17 @@ pub fn debug_set_pool_policy_valid(valid: bool) {
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn debug_set_pooled_principal(pooled_principal_e8s: u128) {
-    STATE.with(|cell| cell.borrow_mut().pooled_principal_e8s = pooled_principal_e8s);
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        state.pooled_principal_e8s = pooled_principal_e8s;
+        state.anchor_available_e8s = io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S;
+        state.live_cohort = None;
+    });
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_reject_next_reconciliations(count: u64) {
+    STATE.with(|cell| cell.borrow_mut().reconcile_rejections_remaining = count);
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -300,23 +346,77 @@ pub fn prepare_pool_reconciliation(
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         state.reconcile_calls = state.reconcile_calls.saturating_add(1);
-    });
-    if args.generation == 0
-        || args.snapshot_fingerprint != vec![42; 32]
-        || !matches!(args.action, PoolReconciliationAction::Hold)
-    {
+        if state.reconcile_rejections_remaining > 0 {
+            state.reconcile_rejections_remaining -= 1;
+            return Err(NnsError::Invalid(
+                "controlled reconciliation contention".into(),
+            ));
+        }
+        Ok(())
+    })?;
+    if args.generation == 0 || args.snapshot_fingerprint != vec![42; 32] {
         return Err(NnsError::Invalid(
-            "mock accepts only a bounded absent-parent hold".into(),
+            "mock reconciliation identity is invalid".into(),
         ));
     }
-    STATE.with(|cell| {
+    let result = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         state.two_week_target = Some(SetTargetArgs {
             target_e8s: args.target_e8s,
             generation: args.generation,
         });
-    });
-    Ok(PoolProgress::Held { principal_e8s: 0 })
+        match args.action {
+            PoolReconciliationAction::Hold if args.target_e8s == state.pooled_principal_e8s => {
+                Ok(PoolProgress::Held {
+                    principal_e8s: state.pooled_principal_e8s,
+                })
+            }
+            PoolReconciliationAction::Unwind { expected_gross_e8s } => {
+                let claim_return = state
+                    .pooled_principal_e8s
+                    .checked_sub(args.target_e8s)
+                    .ok_or_else(|| {
+                        NnsError::Invalid("mock unwind target exceeds principal".into())
+                    })?;
+                let required_anchor = args
+                    .fee_e8s
+                    .checked_mul(2)
+                    .ok_or_else(|| NnsError::Invalid("mock unwind fee overflow".into()))?;
+                if expected_gross_e8s != claim_return.saturating_add(required_anchor)
+                    || state.anchor_available_e8s < required_anchor
+                    || state.live_cohort.is_some()
+                {
+                    return Err(NnsError::Invalid(
+                        "mock unwind amount or anchor capacity is invalid".into(),
+                    ));
+                }
+                let child_physical = claim_return
+                    .checked_add(args.fee_e8s)
+                    .ok_or_else(|| NnsError::Invalid("mock child principal overflow".into()))?;
+                state.pooled_principal_e8s = args.target_e8s;
+                state.anchor_available_e8s -= required_anchor;
+                state.live_cohort = Some(io_nns_types::backing::CohortObservation {
+                    generation: args.generation,
+                    child_neuron_id: 10_000 + args.generation,
+                    physical_principal_e8s: child_physical,
+                    net_backing_e8s: claim_return,
+                    committed_fee_e8s: args.fee_e8s,
+                    ready_at_seconds: state
+                        .now_seconds
+                        .saturating_add(io_nns_types::backing::NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS),
+                    proof: io_nns_types::backing::CohortProofState::Dissolving,
+                });
+                Ok(PoolProgress::UnwindCommitted {
+                    generation: args.generation,
+                    principal_e8s: child_physical,
+                })
+            }
+            _ => Err(NnsError::Invalid(
+                "mock reconciliation action is unsupported".into(),
+            )),
+        }
+    })?;
+    Ok(result)
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -706,7 +806,36 @@ pub fn manage_neuron(request: ManageNeuron) -> ManageNeuronResponse {
             }
             ManageCommand::ClaimOrRefresh(claim) => {
                 let id = match claim.by {
-                    Some(ClaimBy::MemoAndController(from)) => from.memo,
+                    Some(ClaimBy::MemoAndController(from)) => {
+                        let controller = from.controller.unwrap_or(caller);
+                        let account = staking_subaccount(controller, from.memo);
+                        match state
+                            .neurons
+                            .iter()
+                            .position(|neuron| neuron.account == account)
+                        {
+                            Some(index) => state.neurons[index].neuron_id,
+                            None => {
+                                let id = state.next_neuron_id;
+                                state.next_neuron_id = state.next_neuron_id.saturating_add(1);
+                                state.neurons.push(MockNeuron {
+                                    neuron_id: id,
+                                    account,
+                                    principal_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+                                    maturity_e8s: 0,
+                                    dissolve_delay_seconds: 604_800,
+                                    is_dissolving: false,
+                                    dissolve_started_at_seconds: None,
+                                    followee_id: None,
+                                    pending_refresh_credit_e8s: 0,
+                                    maturity_disbursements: Vec::new(),
+                                    voting_power_refreshed_timestamp_seconds: 1,
+                                    controller,
+                                });
+                                id
+                            }
+                        }
+                    }
                     _ => neuron_id,
                 };
                 if let Ok(neuron) = neuron_mut(&mut state, id) {
@@ -721,7 +850,7 @@ pub fn manage_neuron(request: ManageNeuron) -> ManageNeuronResponse {
             }
             ManageCommand::Configure(Configure { operation }) => {
                 if let Some(operation) = operation {
-                    let now = state.now_seconds;
+                    let now = canonical_now_seconds(&state);
                     if let Ok(neuron) = neuron_mut(&mut state, neuron_id) {
                         match operation {
                             ConfigureOperation::IncreaseDissolveDelay(increase) => {
@@ -755,7 +884,7 @@ pub fn manage_neuron(request: ManageNeuron) -> ManageNeuronResponse {
                 ManageCommandResponse::SetFollowing(candid::Reserved)
             }
             ManageCommand::RefreshVotingPower(_) => {
-                let now = state.now_seconds;
+                let now = canonical_now_seconds(&state);
                 if let Ok(neuron) = neuron_mut(&mut state, neuron_id) {
                     neuron.voting_power_refreshed_timestamp_seconds = now;
                 }
@@ -796,7 +925,10 @@ fn full_neuron(neuron: &MockNeuron) -> FullNeuron {
         maturity_disbursements_in_progress: Some(neuron.maturity_disbursements.clone()),
         dissolve_state: Some(if neuron.is_dissolving {
             NnsDissolveState::WhenDissolvedTimestampSeconds(
-                neuron.dissolve_started_at_seconds.unwrap_or_default(),
+                neuron
+                    .dissolve_started_at_seconds
+                    .unwrap_or_default()
+                    .saturating_add(neuron.dissolve_delay_seconds),
             )
         } else {
             NnsDissolveState::DissolveDelaySeconds(neuron.dissolve_delay_seconds)
@@ -959,6 +1091,15 @@ pub fn debug_set_followee(args: SetFolloweeArgs) -> Result<(), String> {
     })
 }
 
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_voting_power_timestamp(args: SetVotingPowerTimestampArgs) -> Result<(), String> {
+    STATE.with(|cell| {
+        neuron_mut(&mut cell.borrow_mut(), args.neuron_id)?
+            .voting_power_refreshed_timestamp_seconds = args.timestamp_seconds;
+        Ok(())
+    })
+}
+
 fn neuron_mut(state: &mut GovernanceState, id: u64) -> Result<&mut MockNeuron, String> {
     state
         .neurons
@@ -1040,6 +1181,15 @@ pub fn debug_add_maturity(args: NeuronAmountArgs) -> Result<u128, String> {
         let neuron = neuron_mut(&mut state, args.neuron_id)?;
         neuron.maturity_e8s = neuron.maturity_e8s.saturating_add(args.amount_e8s);
         Ok(neuron.maturity_e8s)
+    })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_principal(args: NeuronAmountArgs) -> Result<(), String> {
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        neuron_mut(&mut state, args.neuron_id)?.principal_e8s = args.amount_e8s;
+        Ok(())
     })
 }
 

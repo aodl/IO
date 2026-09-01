@@ -71,5 +71,8 @@ jobs:
       - name: Provision pinned security tools
         run: tools/scripts/provision-security-tools
 
+      - name: Build Historian debug Wasm required by unit gate
+        run: cargo build -p io-historian --target wasm32-unknown-unknown
+
       - name: Canonical repository CI
         run: cargo run -p xtask -- test_ci

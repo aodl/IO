@@ -1,0 +1,21 @@
+[mode]
+network = "local"
+source = "official-local-sns-rehearsal"
+io_protocol_live = true
+
+[provenance]
+io_release_source_commit = "b6a26f223b4c37f021ea398f3003b4d149683ee9"
+io_artifact_recording_commit = "af7e0791384808b1f8304e7048b86ade9a328306"
+
+[sns_canisters]
+root = "7tjcv-pp777-77776-qaaaa-cai"
+governance = "7uieb-cx777-77776-qaaaq-cai"
+ledger = "75lp5-u7777-77776-qaaba-cai"
+index = "7pnye-yp777-77776-qaaca-cai"
+swap = "72kjj-zh777-77776-qaabq-cai"
+
+[io_dapp_canisters]
+io_stream_manager = "lxzze-o7777-77777-aaaaa-cai"
+io_nns_neuron_manager = "lqy7q-dh777-77777-aaaaq-cai"
+io_historian = "lz3um-vp777-77777-aaaba-cai"
+frontend = "l62sy-yx777-77777-aaabq-cai"

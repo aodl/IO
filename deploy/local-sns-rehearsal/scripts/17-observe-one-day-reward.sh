@@ -30,28 +30,44 @@ if ! phase_is_done 17-reward-neuron-eligible; then
   neuron_hex="$(runtime_value governance sns_neuron_subaccount_hex)"
   require_hex_32_bytes "SNS reward proposer neuron subaccount" "$neuron_hex"
   governance_did="$(official_checkout)/rs/sns/governance/canister/governance.did"
-  eligibility_args="$(mktemp "${GENERATED_DIR}/reward-neuron-eligibility.XXXXXX.did")"
-  printf '(record { subaccount = blob "%s"; command = opt variant { Configure = record { operation = opt variant { IncreaseDissolveDelay = record { additional_dissolve_delay_seconds = 1 : nat32 } } } } })\n' \
-    "$(hex_blob_literal "$neuron_hex")" > "$eligibility_args"
-  run_logged "$proposal_log" dfx canister call --network "$(local_network_url)" \
-    --identity "$(local_identity_name)" --candid "$governance_did" "$governance" \
-    manage_neuron --argument-file "$eligibility_args"
-  tail -20 "$proposal_log" | grep -q 'Configure' || {
-    record_blocker 'SNS reward proposer dissolve-delay adjustment did not return Configure success'
-    exit 2
-  }
+  sns_eligibility_delay_seconds=1296060
   neuron_state="$(dfx canister call --network "$(local_network_url)" \
     --identity "$(local_identity_name)" --query --candid "$governance_did" \
     "$governance" get_neuron \
     "(record { neuron_id = opt record { id = blob \"$(hex_blob_literal "$neuron_hex")\" } })")"
   printf '%s\n' "$neuron_state" >> "$proposal_log"
+  current_delay_seconds="$(printf '%s' "$neuron_state" | tr -d '_' | \
+    sed -n 's/.*DissolveDelaySeconds = \([0-9][0-9]*\) : nat64.*/\1/p' | head -1)"
+  require_nat "SNS reward proposer current dissolve delay" "$current_delay_seconds"
+  if ((current_delay_seconds > sns_eligibility_delay_seconds)); then
+    record_blocker 'SNS reward proposer already exceeds the exact 15-day-plus-one-minute eligibility duration'
+    exit 2
+  fi
+  additional_delay_seconds=$((sns_eligibility_delay_seconds - current_delay_seconds))
+  if ((additional_delay_seconds > 0)); then
+    eligibility_args="$(mktemp "${GENERATED_DIR}/reward-neuron-eligibility.XXXXXX.did")"
+    printf '(record { subaccount = blob "%s"; command = opt variant { Configure = record { operation = opt variant { IncreaseDissolveDelay = record { additional_dissolve_delay_seconds = %s : nat32 } } } } })\n' \
+      "$(hex_blob_literal "$neuron_hex")" "$additional_delay_seconds" > "$eligibility_args"
+    run_logged "$proposal_log" dfx canister call --network "$(local_network_url)" \
+      --identity "$(local_identity_name)" --candid "$governance_did" "$governance" \
+      manage_neuron --argument-file "$eligibility_args"
+    tail -20 "$proposal_log" | grep -q 'Configure' || {
+      record_blocker 'SNS reward proposer dissolve-delay adjustment did not return Configure success'
+      exit 2
+    }
+    neuron_state="$(dfx canister call --network "$(local_network_url)" \
+      --identity "$(local_identity_name)" --query --candid "$governance_did" \
+      "$governance" get_neuron \
+      "(record { neuron_id = opt record { id = blob \"$(hex_blob_literal "$neuron_hex")\" } })")"
+    printf '%s\n' "$neuron_state" >> "$proposal_log"
+  fi
   printf '%s' "$neuron_state" | tr -d '_' | grep -q \
-    'DissolveDelaySeconds = 1209600 : nat64' || {
-    record_blocker 'SNS reward proposer is not at the exact frozen two-week eligibility duration'
+    'DissolveDelaySeconds = 1296060 : nat64' || {
+    record_blocker 'SNS reward proposer is not at the exact 15-day-plus-one-minute eligibility duration'
     exit 2
   }
   mark_phase_done 17-reward-neuron-eligible \
-    "neuron=${neuron_hex} dissolve_delay_seconds=1209600 additional_seconds=1"
+    "neuron=${neuron_hex} dissolve_delay_seconds=${sns_eligibility_delay_seconds} additional_seconds=${additional_delay_seconds}"
 fi
 
 if ! phase_is_done 17-reward-event-setup; then
@@ -85,9 +101,14 @@ require_nat "reward proposal ID" "$proposal_id"
 
 for expected in \
   'advanced_pocketic_seconds=86400' \
+  'pre_margin_resume_reward_work=' \
+  'warmup_reward_margin_wait_seconds=' \
+  'warmup_reward_scheduler_epsilon_seconds=1' \
+  'warmup_reward_observation_deadline_seconds=' \
+  'stream_status_after_warmup_margin=' \
   "id: ${proposal_id}," \
   'reward_shares: Some' \
-  'ZeroEligibleParticipation' \
+  'warmup_reward_classification=' \
   'canonical_reconciliation_idle_after_attempt=' \
   'canonical_structural_refresh=Ok' \
   'canonical_reward_proposal_id=' \
@@ -101,6 +122,25 @@ for expected in \
     exit 2
   fi
 done
+if ! grep -Eq \
+  '^warmup_reward_classification=(NoProposalFallback|ZeroEligibleParticipation)$' \
+  "$observation_log"; then
+  record_blocker \
+    'warmup reward event is not a canonical no-proposal fallback or zero-eligible event'
+  exit 2
+fi
+if ! grep -Fq 'pre_margin_pending_proved_after_attempt=' "$observation_log" && \
+   ! grep -Fq 'pre_margin_structural_only_attempt=' "$observation_log"; then
+  record_blocker \
+    'one-day reward observation lacks a safe pre-margin Pending or zero-credit StructuralOnly result'
+  exit 2
+fi
+if ! grep -Fq 'warmup_reward_processed_by_timer=true' "$observation_log" && \
+   ! grep -Fq 'warmup_reward_processed_after_attempt=' "$observation_log"; then
+  record_blocker \
+    'one-day reward observation lacks a canonical timer or bounded keeper warmup commit'
+  exit 2
+fi
 for expected in \
   'historian_settle_seconds=60' \
   'freshness: Fresh' \
@@ -116,4 +156,4 @@ done
 event_round="$(sed -n 's/^[[:space:]]*round: \([0-9][0-9]*\),/\1/p' "$observation_log" | head -1)"
 require_nat "reward event round" "$event_round"
 mark_phase_done 17-one-day-reward-observed \
-  "warmup_proposal_id=${proposal_id} event_round=${event_round} classification=ProposalBearing processed_count=2 accumulated_policy_credit=2000000000000000000 prospective_reentry=true lazy_parent_reconciled=true historian_fresh=true monitoring_settle_seconds=60; see ${observation_log}"
+  "warmup_proposal_id=${proposal_id} event_round=${event_round} classification=ProposalBearing processed_count=2 accumulated_policy_credit=2000000000000000000 prospective_reentry=true dynamic_parent_reconciled=true historian_fresh=true monitoring_settle_seconds=60; see ${observation_log}"

@@ -3,16 +3,16 @@
 (record {
   config = record {
     io_ledger = TODO_IO_LEDGER_PRINCIPAL;
-    icp_ledger = TODO_ICP_LEDGER_PRINCIPAL;
-    nns_manager = TODO_EXISTING_NNS_CONTROLLER_PRINCIPAL;
-    jupiter_io_account = record { owner = TODO_JUPITER_PRINCIPAL; subaccount = opt TODO_JUPITER_IO_SUBACCOUNT };
+    icp_ledger = principal "ryjl3-tyaaa-aaaaa-aaaba-cai";
+    nns_manager = principal "oae4c-3iaaa-aaaar-qb5qq-cai";
+    jupiter_io_account = record { owner = principal "acjuz-liaaa-aaaar-qb4qq-cai"; subaccount = opt TODO_JUPITER_IO_SUBACCOUNT };
     sns_governance = TODO_SNS_GOVERNANCE_PRINCIPAL;
-    io_reserve = record { owner = TODO_STREAM_MANAGER_SELF; subaccount = opt TODO_IO_RESERVE_SUBACCOUNT };
-    liquid_icp = record { owner = TODO_STREAM_MANAGER_SELF; subaccount = opt TODO_STREAM_LIQUID_SUBACCOUNT };
+    io_reserve = record { owner = principal "thset-pqaaa-aaaar-qb7wa-cai"; subaccount = opt TODO_IO_RESERVE_SUBACCOUNT };
+    liquid_icp = record { owner = principal "thset-pqaaa-aaaar-qb7wa-cai"; subaccount = opt TODO_STREAM_LIQUID_SUBACCOUNT };
     nonredeemable_governance_io_accounts = vec { TODO_NONREDEEMABLE_GOVERNANCE_ACCOUNTS };
     minimum_redemption_io_e8s = TODO_MINIMUM : nat;
     expected_io_fee_e8s = TODO_IO_FEE : nat;
-    expected_icp_fee_e8s = TODO_ICP_FEE : nat;
+    expected_icp_fee_e8s = 10_000 : nat;
     maximum_request_lifetime_nanos = 900_000_000_000 : nat64;
     retry_delay_nanos = TODO_RETRY_DELAY : nat64;
     ledger_deduplication_window_nanos = TODO_DEDUP_WINDOW : nat64;

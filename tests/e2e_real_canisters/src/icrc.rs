@@ -154,67 +154,6 @@ pub struct SupportedStandard {
     pub url: String,
 }
 
-#[derive(Clone, Debug, CandidType, Deserialize)]
-pub struct ApproveArgs {
-    pub from_subaccount: Option<Vec<u8>>,
-    pub spender: IcrcAccount,
-    pub amount: Nat,
-    pub expected_allowance: Option<Nat>,
-    pub expires_at: Option<u64>,
-    pub fee: Option<Nat>,
-    pub memo: Option<Vec<u8>>,
-    pub created_at_time: Option<u64>,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-pub enum ApproveError {
-    BadFee { expected_fee: Nat },
-    InsufficientFunds { balance: Nat },
-    AllowanceChanged { current_allowance: Nat },
-    Expired { ledger_time: u64 },
-    TooOld,
-    CreatedInFuture { ledger_time: u64 },
-    Duplicate { duplicate_of: Nat },
-    TemporarilyUnavailable,
-    GenericError { error_code: Nat, message: String },
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-pub struct AllowanceArgs {
-    pub account: IcrcAccount,
-    pub spender: IcrcAccount,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-pub struct Allowance {
-    pub allowance: Nat,
-    pub expires_at: Option<u64>,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-pub struct TransferFromArgs {
-    pub spender_subaccount: Option<Vec<u8>>,
-    pub from: IcrcAccount,
-    pub to: IcrcAccount,
-    pub amount: Nat,
-    pub fee: Option<Nat>,
-    pub memo: Option<Vec<u8>>,
-    pub created_at_time: Option<u64>,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-pub enum TransferFromError {
-    BadFee { expected_fee: Nat },
-    BadBurn { min_burn_amount: Nat },
-    InsufficientFunds { balance: Nat },
-    InsufficientAllowance { allowance: Nat },
-    TooOld,
-    CreatedInFuture { ledger_time: u64 },
-    Duplicate { duplicate_of: Nat },
-    TemporarilyUnavailable,
-    GenericError { error_code: Nat, message: String },
-}
-
 pub fn account(owner: Principal, subaccount: Option<[u8; 32]>) -> IcrcAccount {
     IcrcAccount {
         owner,
@@ -356,28 +295,6 @@ pub fn icrc1_balance_of(pic: &PocketIc, ledger: Principal, account: IcrcAccount)
 
 pub fn supported_standards(pic: &PocketIc, ledger: Principal) -> Vec<SupportedStandard> {
     query_one(pic, ledger, "icrc1_supported_standards", ())
-}
-
-pub fn icrc2_approve(
-    pic: &PocketIc,
-    ledger: Principal,
-    caller: Principal,
-    args: ApproveArgs,
-) -> Result<Nat, ApproveError> {
-    update_one(pic, ledger, caller, "icrc2_approve", args)
-}
-
-pub fn icrc2_allowance(pic: &PocketIc, ledger: Principal, args: AllowanceArgs) -> Allowance {
-    query_one(pic, ledger, "icrc2_allowance", args)
-}
-
-pub fn icrc2_transfer_from(
-    pic: &PocketIc,
-    ledger: Principal,
-    caller: Principal,
-    args: TransferFromArgs,
-) -> Result<Nat, TransferFromError> {
-    update_one(pic, ledger, caller, "icrc2_transfer_from", args)
 }
 
 pub fn icrc1_transfer(

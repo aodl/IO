@@ -3,7 +3,7 @@ use io_nns_types::backing::{
     ClaimAssetObservation, CohortObservation, CohortProofState, FollowPolicy,
     ParentAssetObservation, ParentPolicyObservation, PoolCommand, PoolCommandKind,
     PoolCommandPhase, PoolPolicyObservation, PoolReconciliationAction, TopUpPermit,
-    POOLED_PARENT_DELAY_SECONDS,
+    NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS,
 };
 pub use io_nns_types::backing::{PoolProgress, PreparePoolReconciliationArgs};
 use serde::Deserialize;
@@ -16,8 +16,6 @@ use crate::{
     pool::{UnwindOperation, UnwindPhase},
     state::{self, Lifecycle, NnsOperation, PooledTarget, PooledTargetStatus},
 };
-
-pub const MAX_VOTING_POWER_REFRESH_AGE_SECONDS: u64 = 7 * 24 * 60 * 60;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum ApiError {
@@ -46,39 +44,23 @@ pub struct PrepareTwoWeekMaturityArgs {
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum JupiterProgress {
-    DepositProved,
-    StakeTransferPrepared,
-    StakeTransferSubmitted,
-    StakeTransferSucceeded,
-    RefreshSubmitted,
-    StakeIncreaseProved,
-    ReceiptPermitPrepared,
-    LiquidTransferPrepared,
-    LiquidTransferSubmitted,
-    LiquidTransferSucceeded,
-    ReceiptCompletionSubmitted,
-    AwaitingStreamSettlement,
+    Pending,
     Completed(JupiterCompleted),
     Stuck(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum MaturityProgress {
-    Observed,
-    DisburseMaturitySubmitted,
-    DisburseMaturitySucceeded,
-    AwaitingCapture,
-    Captured { captured_e8s: u128 },
-    Delivering,
+    Pending,
     Completed(Box<CompletedMaturity>),
     Stuck(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum UnwindProgress {
-    Waiting,
+    Pending,
     AwaitingTransferProof,
-    Completed { block_index: u128, liquid_e8s: u128 },
+    Completed,
     Stuck(String),
 }
 
@@ -102,6 +84,26 @@ pub struct Status {
     pub live_child_physical_principal_e8s: u128,
     pub live_child_net_backing_e8s: u128,
     pub live_child_committed_fee_liability_e8s: u128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct DynamicParentStatus {
+    pub neuron_id: u64,
+    pub staking_account: io_accounts::Account,
+    pub physical_principal_e8s: u128,
+    pub dissolve_delay_seconds: u64,
+    pub auto_stake_maturity: bool,
+    pub followee_neuron_id: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+pub struct DynamicBackingStatus {
+    pub parent: Option<DynamicParentStatus>,
+    pub claim_bearing_dynamic_principal_e8s: u128,
+    pub anchor_target_e8s: u128,
+    pub anchor_available_e8s: u128,
+    pub excluded_dynamic_surplus_e8s: u128,
+    pub permanent_fee_shortfall_e8s: u128,
 }
 
 pub(crate) fn ready() -> Result<crate::state::NnsStateV1, ApiError> {
@@ -150,7 +152,7 @@ async fn resume_passive_work(snapshot: crate::state::NnsStateV1) -> Result<NnsPr
     }
     if let Some((kind, waiting)) = select_passive_maturity(&snapshot, now) {
         if waiting {
-            return Ok(NnsProgress::Maturity(MaturityProgress::AwaitingCapture));
+            return Ok(NnsProgress::Maturity(MaturityProgress::Pending));
         }
         return crate::maturity_flow::resume_kind(kind)
             .await
@@ -159,7 +161,7 @@ async fn resume_passive_work(snapshot: crate::state::NnsStateV1) -> Result<NnsPr
     if snapshot.live_cohorts.is_empty() {
         Ok(NnsProgress::Idle)
     } else {
-        Ok(NnsProgress::Unwind(UnwindProgress::Waiting))
+        Ok(NnsProgress::Unwind(UnwindProgress::Pending))
     }
 }
 
@@ -224,16 +226,7 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<NnsProgress, Api
                 Ok(NnsProgress::Pool(PoolProgress::Completed {
                     parent_neuron_id: completed.parent_neuron_id,
                     principal_e8s: completed.principal_e8s,
-                    target_status: if completed.principal_e8s
-                        == completed
-                            .permit
-                            .expected_parent_principal_e8s
-                            .saturating_add(completed.permit.expected_credit_e8s)
-                    {
-                        io_nns_types::backing::PoolTargetResult::AtTarget
-                    } else {
-                        io_nns_types::backing::PoolTargetResult::OverTarget
-                    },
+                    target_status: io_nns_types::backing::PoolTargetResult::AtTarget,
                 }))
             }
             _ => Err(ApiError::Invalid("no active transfer proof slot".into())),
@@ -340,11 +333,9 @@ pub async fn prepare_pool_reconciliation(
         return Ok(PoolProgress::Completed {
             parent_neuron_id: completed.parent_neuron_id,
             principal_e8s: completed.principal_e8s,
-            target_status: if completed.principal_e8s == args.target_e8s {
-                io_nns_types::backing::PoolTargetResult::AtTarget
-            } else {
-                io_nns_types::backing::PoolTargetResult::OverTarget
-            },
+            // Completion proves the exact claim-bearing target. Physical
+            // principal may additionally contain excluded anchor or surplus.
+            target_status: io_nns_types::backing::PoolTargetResult::AtTarget,
         });
     }
     if let Some(NnsOperation::Unwind(operation)) = &snapshot.active_operation {
@@ -415,12 +406,12 @@ pub async fn prepare_pool_reconciliation(
             "pool reconciliation snapshot or intent is invalid".into(),
         ));
     }
-    refresh_parent_for_reconciliation(&snapshot).await?;
+    observe_permanent_policy(&snapshot).await?;
     require_pool_policy(&snapshot).await?;
-    let actual = observation.pooled_parent_principal_e8s;
+    let actual = observation.claim_bearing_dynamic_principal_e8s;
     match args.action {
         PoolReconciliationAction::Hold => {
-            validate_hold(&snapshot, actual, args.target_e8s, args.fee_e8s)?;
+            validate_hold(actual, args.target_e8s, args.fee_e8s)?;
             commit_reconciliation_generation(
                 &snapshot,
                 args.generation,
@@ -434,30 +425,59 @@ pub async fn prepare_pool_reconciliation(
             })
         }
         PoolReconciliationAction::TopUp {
-            expected_credit_e8s,
+            expected_transfer_e8s,
+            expected_claim_credit_e8s,
         } => {
-            let expected_credit = args
+            let expected_claim_credit = args
                 .target_e8s
                 .checked_sub(actual)
                 .ok_or_else(|| ApiError::Invalid("pool reconciliation is not a top-up".into()))?;
-            if expected_credit == 0 || expected_credit != expected_credit_e8s {
+            if expected_claim_credit == 0
+                || expected_claim_credit != expected_claim_credit_e8s
+                || expected_transfer_e8s.checked_add(args.fee_e8s) != Some(expected_claim_credit)
+            {
                 return Err(ApiError::Invalid(
-                    "pool top-up credit does not match the target".into(),
+                    "Dynamic top-up transfer and anchor credit do not match the target".into(),
                 ));
             }
-            prepare_top_up(snapshot, observation, args, expected_credit)
+            prepare_top_up(
+                snapshot,
+                observation,
+                args,
+                expected_transfer_e8s,
+                expected_claim_credit,
+            )
         }
         PoolReconciliationAction::Unwind { expected_gross_e8s } => {
-            let expected_gross = actual
+            let expected_claim_return = actual
                 .checked_sub(args.target_e8s)
                 .ok_or_else(|| ApiError::Invalid("pool reconciliation is not an unwind".into()))?;
+            let required_anchor = args
+                .fee_e8s
+                .checked_mul(2)
+                .ok_or_else(|| ApiError::Invalid("unwind fee capacity overflow".into()))?;
+            let expected_gross = expected_claim_return
+                .checked_add(required_anchor)
+                .ok_or_else(|| ApiError::Invalid("unwind gross overflow".into()))?;
             if expected_gross == 0 || expected_gross != expected_gross_e8s {
                 return Err(ApiError::Invalid(
                     "pool unwind gross does not match the target".into(),
                 ));
             }
-            if snapshot.live_cohorts.len() >= io_nns_types::backing::MAX_LIVE_UNWIND_COHORTS {
-                return Ok(PoolProgress::CapacityPending);
+            if snapshot.anchor_available_e8s < required_anchor {
+                return Err(ApiError::Pending(
+                    "Dynamic anchor cannot fund Split and committed Disburse fees".into(),
+                ));
+            }
+            let now_seconds = ic_cdk::api::time() / 1_000_000_000;
+            if snapshot
+                .live_cohorts
+                .iter()
+                .any(|cohort| cohort.ready_at_seconds <= now_seconds)
+            {
+                return Err(ApiError::Pending(
+                    "a ready unwind child must be serviced before another Split".into(),
+                ));
             }
             let mut latest = state::read();
             if latest != snapshot || latest.active_operation.is_some() {
@@ -521,12 +541,15 @@ fn pool_permit_matches(permit: &TopUpPermit, args: &PreparePoolReconciliationArg
         && permit.snapshot_fingerprint == args.snapshot_fingerprint
         && permit
             .expected_parent_principal_e8s
-            .checked_add(permit.expected_credit_e8s)
+            .checked_add(permit.claim_credit_e8s)
             == Some(args.target_e8s)
         && matches!(
             args.action,
-            PoolReconciliationAction::TopUp { expected_credit_e8s }
-                if expected_credit_e8s == permit.expected_credit_e8s
+            PoolReconciliationAction::TopUp {
+                expected_transfer_e8s,
+                expected_claim_credit_e8s,
+            } if expected_transfer_e8s == permit.expected_credit_e8s
+                && expected_claim_credit_e8s == permit.claim_credit_e8s
         )
 }
 
@@ -534,24 +557,24 @@ fn prepare_top_up(
     snapshot: crate::state::NnsStateV1,
     observation: ClaimAssetObservation,
     args: PreparePoolReconciliationArgs,
-    expected_credit: u128,
+    expected_transfer: u128,
+    expected_claim_credit: u128,
 ) -> Result<PoolProgress, ApiError> {
-    let kind = if snapshot.pooled_parent_id.is_some() {
-        PoolCommandKind::TopUp
-    } else {
-        if expected_credit < snapshot.config.minimum_parent_stake_e8s {
-            return Err(ApiError::Pending(
-                "pooled parent minimum is not reached".into(),
-            ));
-        }
-        PoolCommandKind::Bootstrap
-    };
+    if snapshot.pooled_parent_id.is_none() || snapshot.pooled_parent_staking_account.is_none() {
+        return Err(ApiError::Invalid(
+            "Dynamic parent must be launch-bootstrapped before reconciliation".into(),
+        ));
+    }
+    if snapshot.anchor_available_e8s < args.fee_e8s {
+        return Err(ApiError::Pending(
+            "Dynamic anchor fee capacity is exhausted".into(),
+        ));
+    }
+    let kind = PoolCommandKind::TopUp;
     let destination = snapshot
         .pooled_parent_staking_account
         .clone()
-        .unwrap_or_else(|| {
-            execution::parent_staking_account(&snapshot.config, snapshot.config.pooled_parent_memo)
-        });
+        .expect("Dynamic parent presence checked");
     let mut latest = state::read();
     if latest != snapshot || latest.active_operation.is_some() {
         return Err(ApiError::Busy);
@@ -563,9 +586,14 @@ fn prepare_top_up(
     let permit = TopUpPermit {
         generation: args.generation,
         operation_sequence,
-        expected_parent_principal_e8s: observation.pooled_parent_principal_e8s,
+        expected_parent_principal_e8s: observation.claim_bearing_dynamic_principal_e8s,
+        expected_parent_physical_e8s: observation
+            .parent
+            .as_ref()
+            .map_or(0, |parent| parent.physical_principal_e8s),
         destination,
-        expected_credit_e8s: expected_credit,
+        expected_credit_e8s: expected_transfer,
+        claim_credit_e8s: expected_claim_credit,
         fee_e8s: args.fee_e8s,
         memo: args.memo,
         prepared_at_nanos: args.created_at_time_nanos,
@@ -592,16 +620,19 @@ fn prepare_top_up(
     Ok(PoolProgress::AwaitingTransfer(permit))
 }
 
-async fn refresh_parent_for_reconciliation(
+pub(crate) async fn observe_permanent_policy(
     snapshot: &crate::state::NnsStateV1,
-) -> Result<(), ApiError> {
-    if let Some(parent) = snapshot.pooled_parent_id {
-        execution::refresh_voting_power(&snapshot.config, parent).await?;
-        if state::read() != *snapshot {
-            return Err(ApiError::Busy);
-        }
+) -> Result<execution::NeuronObservation, ApiError> {
+    let observation =
+        execution::query_neuron_observation(&snapshot.config, snapshot.config.two_year_neuron_id)
+            .await?;
+    execution::validate_permanent_configuration(&observation).map_err(ApiError::Invalid)?;
+    execution::validate_candidate_parent_staking_account(&snapshot.config, &observation)
+        .map_err(ApiError::Invalid)?;
+    if state::read() != *snapshot {
+        return Err(ApiError::Busy);
     }
-    Ok(())
+    Ok(observation)
 }
 
 fn commit_reconciliation_generation(
@@ -636,18 +667,10 @@ fn commit_reconciliation_generation(
     Ok(())
 }
 
-fn validate_hold(
-    snapshot: &crate::state::NnsStateV1,
-    actual_e8s: u128,
-    target_e8s: u128,
-    fee_e8s: u128,
-) -> Result<(), ApiError> {
+fn validate_hold(actual_e8s: u128, target_e8s: u128, fee_e8s: u128) -> Result<(), ApiError> {
     let delta = actual_e8s.abs_diff(target_e8s);
     let valid = actual_e8s == target_e8s
-        || (actual_e8s < target_e8s
-            && (delta <= fee_e8s
-                || (snapshot.pooled_parent_id.is_none()
-                    && target_e8s < snapshot.config.minimum_parent_stake_e8s)))
+        || (actual_e8s < target_e8s && delta <= fee_e8s)
         || (actual_e8s > target_e8s && delta <= hold_excess_tolerance(fee_e8s)?);
     if valid {
         Ok(())
@@ -670,6 +693,53 @@ pub async fn observe_claim_assets(caller: Principal) -> Result<ClaimAssetObserva
         return Err(ApiError::Unauthorized);
     }
     claim_asset_observation().await
+}
+
+pub async fn observe_dynamic_backing_status() -> Result<DynamicBackingStatus, ApiError> {
+    let before = state::read();
+    let assets = claim_asset_observation().await?;
+    if state::read() != before {
+        return Err(ApiError::Busy);
+    }
+    let policy = pool_policy_observation(&before).await?;
+    if state::read() != before {
+        return Err(ApiError::Busy);
+    }
+    dynamic_backing_status(&assets, &policy)
+}
+
+fn dynamic_backing_status(
+    assets: &ClaimAssetObservation,
+    policy: &PoolPolicyObservation,
+) -> Result<DynamicBackingStatus, ApiError> {
+    assets.validate().map_err(ApiError::Invalid)?;
+    policy.validate().map_err(ApiError::Invalid)?;
+    let parent = match (assets.parent.as_ref(), policy.parent.as_ref()) {
+        (Some(asset), Some(policy)) if asset.neuron_id == policy.neuron_id => {
+            Some(DynamicParentStatus {
+                neuron_id: asset.neuron_id,
+                staking_account: asset.staking_account.clone(),
+                physical_principal_e8s: asset.physical_principal_e8s,
+                dissolve_delay_seconds: policy.dissolve_delay_seconds,
+                auto_stake_maturity: policy.auto_stake_maturity,
+                followee_neuron_id: policy.follow_policy.followee_neuron_id,
+            })
+        }
+        (None, None) => None,
+        _ => {
+            return Err(ApiError::Invalid(
+                "Dynamic parent asset and policy observations disagree".into(),
+            ));
+        }
+    };
+    Ok(DynamicBackingStatus {
+        parent,
+        claim_bearing_dynamic_principal_e8s: assets.claim_bearing_dynamic_principal_e8s,
+        anchor_target_e8s: assets.anchor_target_e8s,
+        anchor_available_e8s: assets.anchor_available_e8s,
+        excluded_dynamic_surplus_e8s: assets.excluded_dynamic_surplus_e8s,
+        permanent_fee_shortfall_e8s: assets.permanent_fee_shortfall_e8s,
+    })
 }
 
 pub(crate) async fn claim_asset_observation() -> Result<ClaimAssetObservation, ApiError> {
@@ -765,11 +835,13 @@ pub(crate) async fn claim_asset_observation() -> Result<ClaimAssetObservation, A
     let live_child_committed_fee_liability_e8s = live_child_physical_principal_e8s
         .checked_sub(live_child_net_backing_e8s)
         .ok_or_else(|| ApiError::Invalid("cohort fee liability underflow".into()))?;
-    let pooled_parent_principal_e8s = parent
+    let dynamic_parent_physical_e8s = parent
         .as_ref()
         .map_or(0, |value| value.physical_principal_e8s);
-    let transit_components =
-        crate::claim_assets::transit_components(&snapshot, pooled_parent_principal_e8s)?;
+    let transit_components = crate::claim_assets::transit_components(
+        &snapshot,
+        snapshot.claim_bearing_dynamic_principal_e8s,
+    )?;
     let transit_backing_e8s = transit_components
         .iter()
         .try_fold(0u128, |total, component| {
@@ -785,8 +857,9 @@ pub(crate) async fn claim_asset_observation() -> Result<ClaimAssetObservation, A
     let encoded = candid::encode_one((
         &parent,
         &pool_staking_account,
-        snapshot.config.minimum_parent_stake_e8s,
-        pooled_parent_principal_e8s,
+        snapshot.claim_bearing_dynamic_principal_e8s,
+        snapshot.anchor_available_e8s,
+        snapshot.permanent_fee_shortfall_e8s,
         &live_cohorts,
         live_child_physical_principal_e8s,
         live_child_net_backing_e8s,
@@ -801,11 +874,25 @@ pub(crate) async fn claim_asset_observation() -> Result<ClaimAssetObservation, A
         snapshot.control_epoch,
     ))
     .map_err(|error| ApiError::Invalid(format!("observation fingerprint failed: {error}")))?;
+    let accounted_parent = snapshot
+        .claim_bearing_dynamic_principal_e8s
+        .checked_add(snapshot.anchor_available_e8s)
+        .ok_or_else(|| ApiError::Invalid("Dynamic parent accounting overflow".into()))?;
+    let excluded_dynamic_surplus_e8s = dynamic_parent_physical_e8s
+        .checked_sub(accounted_parent)
+        .ok_or_else(|| {
+            ApiError::Invalid(
+                "Dynamic parent physical principal is below claim plus anchor accounting".into(),
+            )
+        })?;
     let result = ClaimAssetObservation {
         parent,
         pool_staking_account,
-        minimum_parent_stake_e8s: snapshot.config.minimum_parent_stake_e8s,
-        pooled_parent_principal_e8s,
+        claim_bearing_dynamic_principal_e8s: snapshot.claim_bearing_dynamic_principal_e8s,
+        anchor_target_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+        anchor_available_e8s: snapshot.anchor_available_e8s,
+        excluded_dynamic_surplus_e8s,
+        permanent_fee_shortfall_e8s: snapshot.permanent_fee_shortfall_e8s,
         live_cohorts,
         live_child_physical_principal_e8s,
         live_child_net_backing_e8s,
@@ -830,7 +917,9 @@ pub async fn observe_pool_policy(caller: Principal) -> Result<PoolPolicyObservat
         return Err(ApiError::Unauthorized);
     }
     let snapshot = state::read();
-    pool_policy_observation(&snapshot).await
+    let observation = pool_policy_observation(&snapshot).await?;
+    best_effort_voting_power_maintenance(&snapshot).await?;
+    Ok(observation)
 }
 
 async fn require_pool_policy(snapshot: &crate::state::NnsStateV1) -> Result<(), ApiError> {
@@ -852,8 +941,7 @@ async fn pool_policy_observation(
 ) -> Result<PoolPolicyObservation, ApiError> {
     let parent = match snapshot.pooled_parent_id {
         Some(parent_id) => {
-            let mut observed =
-                execution::query_neuron_observation(&snapshot.config, parent_id).await?;
+            let observed = execution::query_neuron_observation(&snapshot.config, parent_id).await?;
             execution::validate_parent_configuration(
                 &observed,
                 FollowPolicy {
@@ -861,41 +949,13 @@ async fn pool_policy_observation(
                 },
             )
             .map_err(ApiError::Invalid)?;
-            let now = ic_cdk::api::time() / 1_000_000_000;
-            if !observed
-                .voting_power_refreshed_timestamp_seconds
-                .is_some_and(|refreshed_at| voting_power_refresh_is_current(refreshed_at, now))
-            {
-                execution::refresh_voting_power(&snapshot.config, parent_id).await?;
-                if state::read() != *snapshot {
-                    return Err(ApiError::Busy);
-                }
-                observed = execution::query_neuron_observation(&snapshot.config, parent_id).await?;
-                execution::validate_parent_configuration(
-                    &observed,
-                    FollowPolicy {
-                        followee_neuron_id: snapshot.config.pooled_parent_followee_id,
-                    },
-                )
-                .map_err(ApiError::Invalid)?;
-            }
-            let refreshed_at = observed
-                .voting_power_refreshed_timestamp_seconds
-                .filter(|timestamp| *timestamp > 0)
-                .ok_or_else(|| ApiError::Pending("pooled parent voting power is stale".into()))?;
-            if !voting_power_refresh_is_current(refreshed_at, now) {
-                return Err(ApiError::Pending(format!(
-                    "pooled parent voting power refresh is older than {MAX_VOTING_POWER_REFRESH_AGE_SECONDS} seconds"
-                )));
-            }
             Some(ParentPolicyObservation {
                 neuron_id: parent_id,
-                dissolve_delay_seconds: POOLED_PARENT_DELAY_SECONDS,
+                dissolve_delay_seconds: NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS,
                 auto_stake_maturity: observed.auto_stake_maturity,
                 follow_policy: FollowPolicy {
                     followee_neuron_id: snapshot.config.pooled_parent_followee_id,
                 },
-                voting_power_refreshed_at_seconds: refreshed_at,
             })
         }
         None => None,
@@ -916,10 +976,26 @@ async fn pool_policy_observation(
     Ok(result)
 }
 
-fn voting_power_refresh_is_current(refreshed_at: u64, now: u64) -> bool {
-    refreshed_at > 0
-        && refreshed_at <= now
-        && now - refreshed_at <= MAX_VOTING_POWER_REFRESH_AGE_SECONDS
+pub(crate) async fn best_effort_voting_power_maintenance(
+    snapshot: &crate::state::NnsStateV1,
+) -> Result<(), ApiError> {
+    for neuron_id in [
+        Some(snapshot.config.two_year_neuron_id),
+        snapshot.pooled_parent_id,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Err(error) = execution::refresh_voting_power(&snapshot.config, neuron_id).await {
+            ic_cdk::println!(
+                "best-effort RefreshVotingPower({neuron_id}) did not complete: {error:?}"
+            );
+        }
+        if state::read() != *snapshot {
+            return Err(ApiError::Busy);
+        }
+    }
+    Ok(())
 }
 
 fn active_operation_sequence(snapshot: &crate::state::NnsStateV1) -> u64 {
@@ -1002,21 +1078,6 @@ mod tests {
     }
 
     #[test]
-    fn voting_power_refresh_age_is_conservatively_bounded() {
-        let now = 10 * 24 * 60 * 60;
-        assert!(voting_power_refresh_is_current(
-            now - MAX_VOTING_POWER_REFRESH_AGE_SECONDS,
-            now
-        ));
-        assert!(!voting_power_refresh_is_current(
-            now - MAX_VOTING_POWER_REFRESH_AGE_SECONDS - 1,
-            now
-        ));
-        assert!(!voting_power_refresh_is_current(0, now));
-        assert!(!voting_power_refresh_is_current(now + 1, now));
-    }
-
-    #[test]
     fn paired_capture_is_quarantined_but_two_year_yield_is_not() {
         assert_eq!(
             maturity_ingress_transit(MaturityKind::TwoWeek, 200_000, 10_000, false),
@@ -1024,11 +1085,11 @@ mod tests {
         );
         assert_eq!(
             maturity_ingress_transit(MaturityKind::TwoWeek, 200_000, 10_000, true),
-            Ok(110_000)
+            Ok(120_000)
         );
         assert_eq!(
             maturity_ingress_transit(MaturityKind::TwoYear, 200_000, 10_000, false),
-            Ok(110_000)
+            Ok(120_000)
         );
     }
 
@@ -1149,5 +1210,87 @@ mod tests {
         assert_eq!(body.matches("query_neuron_observation").count(), 1);
         assert!(!body.contains("cohort.child_neuron_id).await"));
         assert!(body.contains("Vec::with_capacity(snapshot.live_cohorts.len())"));
+    }
+
+    fn dynamic_observations(
+        policy_neuron_id: u64,
+    ) -> (ClaimAssetObservation, PoolPolicyObservation) {
+        let staking_account = io_accounts::Account {
+            owner: Principal::from_slice(&[1; 29]),
+            subaccount: Some(vec![2; 32]),
+        };
+        (
+            ClaimAssetObservation {
+                parent: Some(ParentAssetObservation {
+                    neuron_id: 7,
+                    staking_account: staking_account.clone(),
+                    physical_principal_e8s: 1_000_012_345,
+                }),
+                pool_staking_account: staking_account,
+                claim_bearing_dynamic_principal_e8s: 0,
+                anchor_target_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+                anchor_available_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+                excluded_dynamic_surplus_e8s: 12_345,
+                permanent_fee_shortfall_e8s: 0,
+                live_cohorts: Vec::new(),
+                live_child_physical_principal_e8s: 0,
+                live_child_net_backing_e8s: 0,
+                live_child_committed_fee_liability_e8s: 0,
+                transit_components: Vec::new(),
+                transit_backing_e8s: 0,
+                active_operation_sequence: 0,
+                last_completed_pool_operation_sequence: None,
+                control_epoch: 1,
+                fingerprint: vec![3; 32],
+                oldest_ready_at_seconds: None,
+            },
+            PoolPolicyObservation {
+                parent: Some(ParentPolicyObservation {
+                    neuron_id: policy_neuron_id,
+                    dissolve_delay_seconds: NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS,
+                    auto_stake_maturity: false,
+                    follow_policy: FollowPolicy {
+                        followee_neuron_id: 9,
+                    },
+                }),
+                control_epoch: 1,
+                active_operation_sequence: 0,
+                fingerprint: vec![4; 32],
+            },
+        )
+    }
+
+    #[test]
+    fn public_dynamic_status_is_a_redacted_exact_partition_and_policy() {
+        let (assets, policy) = dynamic_observations(7);
+        assert_eq!(
+            dynamic_backing_status(&assets, &policy).unwrap(),
+            DynamicBackingStatus {
+                parent: Some(DynamicParentStatus {
+                    neuron_id: 7,
+                    staking_account: assets.pool_staking_account.clone(),
+                    physical_principal_e8s: 1_000_012_345,
+                    dissolve_delay_seconds: NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS,
+                    auto_stake_maturity: false,
+                    followee_neuron_id: 9,
+                }),
+                claim_bearing_dynamic_principal_e8s: 0,
+                anchor_target_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+                anchor_available_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+                excluded_dynamic_surplus_e8s: 12_345,
+                permanent_fee_shortfall_e8s: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn public_dynamic_status_rejects_asset_policy_identity_disagreement() {
+        let (assets, policy) = dynamic_observations(8);
+        assert_eq!(
+            dynamic_backing_status(&assets, &policy),
+            Err(ApiError::Invalid(
+                "Dynamic parent asset and policy observations disagree".into()
+            ))
+        );
     }
 }

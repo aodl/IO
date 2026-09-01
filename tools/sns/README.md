@@ -44,6 +44,10 @@ This is a future manual/mainnet rehearsal using a mock SNS. It tests governance 
 - `testflight/`: proposal and handoff planning package for the future manual testflight.
 
 The templates intentionally contain placeholder principals because final controllers and canister IDs are not locked.
+Their Governance maximum dissolve delay is nevertheless fixed at the reviewed
+1,296,060-second IO user-neuron duration so the local, testflight-planning, and
+production-shape inputs cannot cap an eligible neuron at the separate 14-day
+NNS Dynamic-neuron duration.
 
 IO's canonical IO ledger should be the SNS ledger; any IO_TEST ledger is non-canonical and only useful for local/mock compatibility tests.
 

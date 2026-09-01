@@ -2,15 +2,16 @@
 
 > Historical evidence for the superseded separate-endowment economics. This
 > document is immutable in meaning and is not an active production requirement
-> or corrected-economics readiness claim. A fresh pooled claim-backing rehearsal
-> and evidence package are still required.
+> or corrected-economics readiness claim. The selected anchored-dynamic
+> rehearsal and evidence package supersede this history for current release
+> authority.
 
 This document records the deterministic composition defects reproduced from the simplified-execution baseline and the launch invariant that replaces each defect. It is normative for the simplified protocol; scanner-era recovery remains non-normative research history.
 
 | Item | Baseline reproduction | Positive invariant and regression |
 | --- | --- | --- |
 | A | Canonical pricing ran before any active-operation reservation, so two `redeem` messages could interleave and an older callback could install its operation after a newer redemption. | Caller balance and allowance are read first; the exact caller nonce and fingerprint are re-read; `RedemptionPreparation` then exclusively reserves the one operation slot before global pricing. Only the byte-for-byte matching preparation may become executable. |
-| B | Completion wrote `CallerRedemptionState` before rechecking the active sequence, permitting two completion callbacks to advance caller state. | `CompletionPrepared` durably stores the exact result. Caller state accepts only `nonce` once or the exact already-applied `nonce + 1` replay. `CallerResultApplied` is persisted before the exact operation is cleared. |
+| B | Completion wrote `CallerRedemptionState` before rechecking the active sequence, permitting two completion callbacks to advance caller state. | The historical correction introduced `CompletionPrepared` and `CallerResultApplied` so the exact result and caller replay application survived separate messages. The current prelaunch source supersedes those phases as described below. |
 | C | A failed postcondition callback called an unconditional persistence helper and could overwrite a newer operation. | The callback compares sequence, variant, phase and request fingerprint after the await and before mutation. A stale callback returns `Busy` without writing. |
 | D | The ICP payout intent inherited the initial `redeem` timestamp and could be `TooOld` before its first submission. | Preparation creates only the IO pull. The ICP intent and checked deduplication deadline are created with the current time only on the first resume from `IoInReserve`. |
 | E | The request fingerprint encoded the caller's raw optional subaccount, so `null` and 32 zero bytes differed. | `CanonicalRedeemRequestV1` fingerprints one fixed effective `[u8; 32]` subaccount under a domain-separated hash. `null_and_zero_subaccounts_have_one_request_identity` proves equality. |
@@ -21,8 +22,23 @@ This document records the deterministic composition defects reproduced from the 
 | J | Clearing a completed receipt discarded all exact replay evidence. | `LastCompletedReceipt` stores the request fingerprint, permit, exact ICP block, settlement result and completion time. Exact preparation replay returns the durable permit; a conflicting sequence is rejected. |
 | K | `two_week_target` returned eligible IO e8s directly. | The pure target is `floor(active eligible IO * liquid ICP / redeemable IO supply)`, without subtracting a payout fee. Tests cover backing rates below, equal to and above one. |
 | L | Stable reopening validated only configuration and accepted inconsistent active work. | `StreamStateV1::validate` and `NnsStateV1::validate` validate typed active work, transfer attempts, fingerprints, bounded fields and pending maturity identities before reopening. Caller replay records validate whenever read or written. |
-| M | `progress_for` mapped durable `Stuck` to `PayoutSubmitted`. | Public progress has an explicit `Stuck(text)` state and preparation has explicit `Preparing`. |
+| M | `progress_for` mapped durable `Stuck` to `PayoutSubmitted`. | The historical correction exposed the internal preparation/submission phases and explicit `Stuck(text)`. The current prelaunch API retains `Stuck(text)` but collapses non-actionable choreography to coarse `Pending`. |
 | N | A transport rejection returned `ApiError::Stuck` while the durable transfer remained safely retryable `Submitted`. | Transport and ledger ambiguity return `ApiError::Pending`; only an explicit durable transition may report `Stuck` and pause.
+
+### Current prepared-push redemption completion
+
+The marker-9 Stream state replaces the pull preparation and allowance phases
+with a per-caller prepared ICRC-1 push intent. The caller transfers the exact
+prepared amount directly to the protocol reserve using the exact memo, then
+`settle_redemption` proves that immutable ledger block before creating the ICP
+payout obligation. After payout proof, the implementation rechecks the exact
+operation and caller replay state, constructs and validates both complete
+replacement states, then writes the caller result and clears the active
+operation without an `await` or fallible return between the writes. An
+installed debug-only trap between those writes proves message rollback leaves
+the caller record unchanged and the payout obligation intact; retry completes
+once without another ledger transfer. This supersedes the earlier pull and
+local-phase mechanisms without changing their historical evidence.
 
 ## Remaining stream composition reproductions
 
@@ -40,7 +56,7 @@ This document records the deterministic composition defects reproduced from the 
 
 ## Installed composition evidence
 
-`installed_stream_real_sns_icrc2_redemption` installs the stream-manager debug Wasm with the pinned real SNS ledger as IO and PocketIC's official ICP ledger canister as ICP. It proves Paused installation, readiness, excluded/reserve Account rejection, ICRC-2 approval/pull, exact IO fee burn, upgrade after the pull, a delayed first payout whose timestamp is not inherited from the redeem request, exact ICP movement, upgrade after payout, a separate canonical commit, null/zero normalization, durable exact redemption replay, and conflicting-nonce rejection.
+`installed_stream_real_sns_icrc1_push_redemption` installs the stream-manager debug Wasm with the pinned real SNS ledger as IO and PocketIC's official ICP ledger canister as ICP. It proves Paused installation, readiness, excluded/reserve Account rejection, exact prepared ICRC-1 push into reserve, exact IO fee burn, upgrade after push proof, a durable delayed-liquidity payout obligation, exact ICP movement, upgrade after payout, atomic canonical completion, null/zero normalization, durable exact redemption replay, and conflicting-nonce rejection.
 
 The same installed test prepares a Jupiter receipt, transfers ICP from the exact configured NNS source, proves that block through the official ledger's `query_blocks` shape, settles backed IO from reserve to the fixed Jupiter Account, checks the exact fee burn, upgrades, and replays the durable receipt permit while Paused. The test therefore composes both payout and receipt proof against the production-shaped ICP interface rather than a second SNS ledger substitute.
 
@@ -96,7 +112,12 @@ policy total; excluded, ineligible, zero-share, no-eligible, and fixed-point
 remainder fractions are forfeited and remain in reserve.
 
 First readiness stores the already completed event only as a zero-credit
-baseline. A new batch cannot freeze until authenticated no-effect NNS evidence
+baseline. For the official SNS dummy genesis event this means the exact
+round-zero, nonzero-end-timestamp identity. Re-observing it is structural and
+non-crediting; positive span metadata is required only after the event advances,
+and the first round-one event can be credited exactly once. Production
+redemption is valid between activation and that first distribution. A new batch
+cannot freeze until authenticated no-effect NNS evidence
 says the exact target is ready and its liquid 60% leg meets the canonical
 minimum. An exact recipient transfer is monetary completion; one persisted
 best-effort refresh attempt cannot strand the active monetary slot. Governance
@@ -167,10 +188,17 @@ phase. The observed Mints were 6,031,272,089 e8s and 8,672,771,618 e8s under
 the fixture's 1.0 modulation. Retained staked maturity compounds canonically;
 SNS IO total supply and reserve remain unchanged while liquid ICP and the
 redemption rate increase. An ordinary caller is rejected and configured
-Governance replay during the active operation is Busy. Pinned real SNS
-Governance registers the production manager's `validate_start_maturity` query
-and `start_maturity` update as one generic function, executes the TwoYear
-payload by proposal, and cannot create a second operation by a replay proposal.
+Governance replay during active or passive accepted work is rejected at the
+target transport boundary, and a replay proposal is rejected by validation.
+Pinned real SNS Governance registers the production manager's
+`validate_start_maturity` query and `start_maturity` update as one generic
+function. The canonical genesis structural observation may first start a
+legitimate Pool operation; validation rejects a maturity proposal during that
+contention, production resume/proof paths settle Pool without preemption, and a
+fresh TwoYear proposal records execution success only after exact maturity work
+is durable. A later `Pending` remains recoverable continuation and cannot create
+a second operation. This distinguishes SNS's any-normal-reply success rule from
+IO's application-level `Result`.
 
 ## Combined candidate-SNS, pinned-NNS, and IO lifecycle result
 
