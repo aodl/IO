@@ -116,7 +116,6 @@ pub(crate) async fn prove_or_refresh(
 fn credit_memo_domain(role: NeuronCreditRole) -> &'static [u8] {
     match role {
         NeuronCreditRole::AnchorReimbursement => b"io-two-year-anchor-reimbursement-v1",
-        NeuronCreditRole::PermanentReimbursement => b"io-two-year-permanent-reimbursement-v1",
         NeuronCreditRole::OrdinaryPermanent => b"io-pooled-maturity-permanent-v1",
     }
 }

@@ -152,7 +152,7 @@ pub(crate) fn active_maturity_claim_transit(
             .two_year_plan
             .ok_or_else(|| ApiError::Invalid("two-year maturity lacks frozen economics".into()))?
             .ordinary
-            .map_or(0, |split| split.claim_gross)),
+            .map_or(0, |split| split.claim_credit)),
         MaturityKind::TwoWeek => {
             maturity_claim_transit(command.kind, &delivery.pending, fee_e8s, true)
         }
@@ -307,13 +307,17 @@ pub(crate) fn maturity_ingress_transit(
     paired_permitted: bool,
 ) -> Result<u128, ApiError> {
     match kind {
+        // A captured TwoYear balance is fresh value, not claim backing. Until
+        // activation freezes the anchor-restoration plan, no exact ordinary
+        // claim credit exists to include in T.
+        MaturityKind::TwoYear => Ok(0),
         MaturityKind::TwoWeek if !paired_permitted => Ok(0),
-        MaturityKind::TwoYear | MaturityKind::TwoWeek => {
+        MaturityKind::TwoWeek => {
             let claim = io_nns_types::maturity::capture_40_60(captured_e8s, fee_e8s, fee_e8s)
                 .map_err(|error| {
                     ApiError::Invalid(format!("maturity transit split failed: {error:?}"))
                 })?
-                .claim_gross;
+                .claim_credit;
             Ok(claim)
         }
     }
@@ -333,11 +337,6 @@ pub(crate) fn maturity_delivery_has_unpaid_fee(
     };
     if let Some(plan) = delivery.two_year_plan {
         if plan.anchor_reimbursement > 0 && transfer_unpaid(delivery.anchor_reimbursement.as_ref())
-        {
-            return true;
-        }
-        if plan.permanent_reimbursement > 0
-            && transfer_unpaid(delivery.permanent_reimbursement.as_ref())
         {
             return true;
         }
@@ -437,20 +436,18 @@ mod tests {
             dispatch_epoch: 1,
             kind,
             phase: MaturityCommandPhase::Delivery(MaturityDeliveryOperation {
-                permit: Some(permit(state, 59_990_000)),
+                permit: (kind == MaturityKind::TwoWeek).then(|| permit(state, 59_990_000)),
                 pending: value,
                 two_year_plan: (kind == MaturityKind::TwoYear).then(|| {
                     io_nns_types::maturity::plan_two_year_replenishment(
                         100_000_000,
                         io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
                         state.anchor_available_e8s,
-                        state.permanent_fee_shortfall_e8s,
                         state.config.expected_icp_fee_e8s,
                     )
                     .unwrap()
                 }),
                 anchor_reimbursement: None,
-                permanent_reimbursement: None,
                 permanent_credit: None,
                 claim_transfer: None,
             }),
@@ -469,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn two_year_yield_is_composed_with_each_independent_active_owner() {
+    fn pending_two_year_is_excluded_beside_each_independent_active_owner() {
         let (_, base) = crate::state::tests::valid_state();
         let permanent = pending(&base, MaturityKind::TwoYear);
 
@@ -478,10 +475,7 @@ mod tests {
         state.active_operation = Some(jupiter(&state));
         assert_eq!(
             component_values(&state, 0),
-            vec![
-                (TransitComponentKind::ActiveJupiter, 50),
-                (TransitComponentKind::PendingTwoYearMaturity, 60_000_000),
-            ]
+            vec![(TransitComponentKind::ActiveJupiter, 50)]
         );
 
         let mut state = base.clone();
@@ -491,10 +485,7 @@ mod tests {
         state.active_operation = Some(active_maturity(&state, MaturityKind::TwoWeek, pooled));
         assert_eq!(
             component_values(&state, 0),
-            vec![
-                (TransitComponentKind::ActiveMaturity, 60_000_000),
-                (TransitComponentKind::PendingTwoYearMaturity, 60_000_000),
-            ]
+            vec![(TransitComponentKind::ActiveMaturity, 59_990_000)]
         );
 
         let mut state = base.clone();
@@ -523,10 +514,7 @@ mod tests {
         }));
         assert_eq!(
             component_values(&state, 100),
-            vec![
-                (TransitComponentKind::PoolTopUp, 60),
-                (TransitComponentKind::PendingTwoYearMaturity, 60_000_000),
-            ]
+            vec![(TransitComponentKind::PoolTopUp, 60)]
         );
 
         let mut state = base;
@@ -552,10 +540,7 @@ mod tests {
         }));
         assert_eq!(
             component_values(&state, 100),
-            vec![
-                (TransitComponentKind::ActiveUnwind, 100),
-                (TransitComponentKind::PendingTwoYearMaturity, 60_000_000),
-            ]
+            vec![(TransitComponentKind::ActiveUnwind, 100)]
         );
     }
 
@@ -564,25 +549,65 @@ mod tests {
         let (_, mut state) = crate::state::tests::valid_state();
         state.pending_two_year_maturity = Some(pending(&state, MaturityKind::TwoYear));
         state.pending_two_week_maturity = Some(pending(&state, MaturityKind::TwoWeek));
-        assert_eq!(
-            component_values(&state, 0),
-            vec![(TransitComponentKind::PendingTwoYearMaturity, 60_000_000)]
-        );
+        assert_eq!(component_values(&state, 0), Vec::new());
 
         let pooled = state.pending_two_week_maturity.clone().unwrap();
         state.active_operation = Some(active_maturity(&state, MaturityKind::TwoWeek, pooled));
         let values = component_values(&state, 0);
         assert_eq!(
             values,
-            vec![
-                (TransitComponentKind::ActiveMaturity, 60_000_000),
-                (TransitComponentKind::PendingTwoYearMaturity, 60_000_000),
-            ]
+            vec![(TransitComponentKind::ActiveMaturity, 59_990_000)]
         );
         assert_eq!(
             values.iter().map(|(_, value)| value).sum::<u128>(),
-            120_000_000
+            59_990_000
         );
+    }
+
+    #[test]
+    fn pending_two_year_plan_freeze_cannot_lower_claim_rate() {
+        let (_, mut pending_state) = crate::state::tests::valid_state();
+        let capture = pending(&pending_state, MaturityKind::TwoYear);
+        pending_state.anchor_available_e8s =
+            io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S - 100_000;
+        pending_state.pending_two_year_maturity = Some(capture.clone());
+        pending_state.active_operation = Some(jupiter(&pending_state));
+
+        let fixed_backing = 1_000_000_u128;
+        let claims = 500_000_u128;
+        let pending_transit = component_values(&pending_state, 0)
+            .into_iter()
+            .map(|(_, value)| value)
+            .sum::<u128>();
+        assert_eq!(pending_transit, 50);
+
+        // The occupying Jupiter operation completes before the serialized
+        // TwoYear delivery becomes active, moving its exact 50 from T to L.
+        let mut active_state = pending_state;
+        active_state.active_operation = Some(active_maturity(
+            &active_state,
+            MaturityKind::TwoYear,
+            capture,
+        ));
+        let frozen_transit = component_values(&active_state, 0)
+            .into_iter()
+            .map(|(_, value)| value)
+            .sum::<u128>();
+        let plan = match active_state.active_operation.as_ref() {
+            Some(NnsOperation::Maturity(operation)) => match &operation.phase {
+                MaturityCommandPhase::Delivery(delivery) => delivery.two_year_plan.unwrap(),
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        };
+        assert_eq!(frozen_transit, plan.ordinary.unwrap().claim_credit);
+        assert_eq!(frozen_transit, 59_924_000);
+        assert!(frozen_transit < 59_990_000);
+
+        let before_backing = fixed_backing + pending_transit;
+        let after_backing = fixed_backing + 50 + frozen_transit;
+        assert!(after_backing >= before_backing);
+        assert!(after_backing * claims >= before_backing * claims);
     }
 
     #[test]

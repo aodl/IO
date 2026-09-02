@@ -112,7 +112,6 @@ async fn claim_snapshot_once(config: &StreamConfig) -> Result<ClaimSnapshot, Str
         anchor_target_e8s: nns_before.anchor_target_e8s,
         anchor_available_e8s: nns_before.anchor_available_e8s,
         excluded_dynamic_surplus_e8s: nns_before.excluded_dynamic_surplus_e8s,
-        permanent_fee_shortfall_e8s: nns_before.permanent_fee_shortfall_e8s,
         stream_control_epoch: stream_snapshot.control_epoch,
         observation_fingerprint: sha2::Sha256::digest(observation_bytes).to_vec(),
         io_fee_e8s: io_fee,
@@ -261,7 +260,6 @@ mod tests {
             anchor_target_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
             anchor_available_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
             excluded_dynamic_surplus_e8s: 0,
-            permanent_fee_shortfall_e8s: 0,
             live_cohorts: vec![io_nns_types::backing::CohortObservation {
                 generation: 1,
                 child_neuron_id: 2,

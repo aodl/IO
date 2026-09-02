@@ -17,10 +17,11 @@ not authorize mainnet work.
 4. Two-week maturity captures its complete fixed semantic Account balance,
    including donations, then uses the shared Jupiter 40/60 paired path with
    partial forfeiture/dust and sequential IO recipient settlement.
-5. Two-year maturity captures only its own semantic Account, restores anchor
-   deficit then permanent fee shortfall without recursive debt, applies 40/60
-   only to the usable remainder, routes claim yield to Stream liquid, and
-   issues no IO or paired receipt.
+5. Two-year maturity captures only its own semantic Account, restores any
+   anchor deficit plus the restoration fee from fresh capture, applies gross
+   40/60 only to the usable remainder, credits both ordinary legs net of their
+   own fees without reducing anchor again, routes claim yield to Stream liquid,
+   and issues no IO or paired receipt.
 6. Dissolve/cancellation proves precommit netting, sticky postcommit lifecycle,
    exact readiness, principal return, maturity cleanup, prospective re-entry,
    and no duplicate child or retroactive reward.

@@ -116,7 +116,6 @@ type ClaimAssetObservation = record {
   anchor_target_e8s : nat;
   anchor_available_e8s : nat;
   excluded_dynamic_surplus_e8s : nat;
-  permanent_fee_shortfall_e8s : nat;
   live_cohorts : vec CohortObservation;
   live_child_physical_principal_e8s : nat;
   live_child_net_backing_e8s : nat;
@@ -149,7 +148,6 @@ type DynamicBackingStatus = record {
   anchor_target_e8s : nat;
   anchor_available_e8s : nat;
   excluded_dynamic_surplus_e8s : nat;
-  permanent_fee_shortfall_e8s : nat;
 };
 type PooledTargetStatus = variant {
   UnderTarget;
@@ -190,8 +188,7 @@ type CompletedMaturity = record {
   kind : MaturityKind;
   captured_e8s : nat;
   anchor_reimbursement_e8s : nat;
-  permanent_reimbursement_e8s : nat;
-  reimbursement_transfer_fees_e8s : nat;
+  anchor_reimbursement_fee_e8s : nat;
   carried_e8s : nat;
   permanent_credit_e8s : nat;
   claim_credit_e8s : nat;

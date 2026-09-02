@@ -5,9 +5,10 @@ reserve issuance, prepared-push redemption, the bounded backing/reward
 registry, one pending entitlement batch, and one serialized monetary operation.
 
 `io_nns_neuron_manager` owns permanent and Dynamic-neuron NNS governance
-effects, pre-Ready Dynamic bootstrap, anchor/permanent fee accounting, one
-immediate command, and naturally bounded generation-based passive unwind
-children. Ready-child priority prevents growth behind an unresolved return.
+effects, pre-Ready Dynamic bootstrap, existing-backing anchor protection,
+fresh-value net-credit delivery, one immediate command, and naturally bounded
+generation-based passive unwind children. Ready-child priority prevents growth
+behind an unresolved return.
 Its production execution identity is the existing protected-neuron controller
 `oae4c-3iaaa-aaaar-qb5qq-cai`.
 

@@ -63,12 +63,6 @@ pub async fn notify_jupiter_deposit(
     if current.active_operation.is_some() {
         return Err(ApiError::Busy);
     }
-    if current.anchor_available_e8s < current.config.expected_icp_fee_e8s {
-        return Err(ApiError::Pending(
-            "Dynamic anchor cannot fund the Jupiter claim-leg fee".into(),
-        ));
-    }
-
     lookup_and_begin(current, args.block_index).await
 }
 
@@ -390,11 +384,6 @@ async fn submit_jupiter_transfer(
         }
     };
     attempt.state = TransferState::Succeeded { block };
-    let fee_class = if liquid.is_some() {
-        ExactFeeClass::Claim
-    } else {
-        ExactFeeClass::Permanent
-    };
     operation.phase = match liquid {
         Some((proof, permit)) => JupiterPhase::LiquidTransferSucceeded(LiquidTransferSucceeded {
             proof,
@@ -406,7 +395,7 @@ async fn submit_jupiter_transfer(
             block_index: block,
         }),
     };
-    replace_jupiter_with_fee(&submitted, operation.clone(), fee_class)?;
+    replace_jupiter(&submitted, operation.clone())?;
     Box::pin(resume(operation)).await
 }
 
@@ -665,11 +654,6 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<JupiterProgress,
             "exact ICP block does not match the stuck intent".into(),
         ));
     }
-    let fee_class = if context.is_some() {
-        ExactFeeClass::Claim
-    } else {
-        ExactFeeClass::Permanent
-    };
     operation.phase = match context {
         None => JupiterPhase::StakeTransferSucceeded(StakeTransferSucceeded {
             before: attempt.0,
@@ -681,7 +665,7 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<JupiterProgress,
             block_index,
         }),
     };
-    replace_jupiter_with_fee(&expected, operation.clone(), fee_class)?;
+    replace_jupiter(&expected, operation.clone())?;
     resume(operation).await
 }
 
@@ -716,49 +700,6 @@ fn replace_jupiter(
     replacement
         .validate(latest.config.icp_ledger, latest.config.nns_governance)
         .map_err(ApiError::Invalid)?;
-    latest.active_operation = Some(NnsOperation::Jupiter(Box::new(replacement)));
-    state::write(latest);
-    Ok(())
-}
-
-#[derive(Clone, Copy)]
-enum ExactFeeClass {
-    Claim,
-    Permanent,
-}
-
-fn replace_jupiter_with_fee(
-    expected: &JupiterOperation,
-    replacement: JupiterOperation,
-    class: ExactFeeClass,
-) -> Result<(), ApiError> {
-    let mut latest = state::read();
-    match &latest.active_operation {
-        Some(NnsOperation::Jupiter(active)) if **active == *expected => {}
-        _ => return Err(ApiError::Busy),
-    }
-    replacement
-        .validate(latest.config.icp_ledger, latest.config.nns_governance)
-        .map_err(ApiError::Invalid)?;
-    let fee = expected.deposit.fee_e8s;
-    match class {
-        ExactFeeClass::Claim => {
-            latest.anchor_available_e8s = latest
-                .anchor_available_e8s
-                .checked_sub(fee)
-                .ok_or_else(|| ApiError::Invalid("Dynamic anchor fee capacity underflow".into()))?;
-            latest.claim_bearing_dynamic_principal_e8s = latest
-                .claim_bearing_dynamic_principal_e8s
-                .checked_add(fee)
-                .ok_or_else(|| ApiError::Invalid("Dynamic claim principal overflow".into()))?;
-        }
-        ExactFeeClass::Permanent => {
-            latest.permanent_fee_shortfall_e8s = latest
-                .permanent_fee_shortfall_e8s
-                .checked_add(fee)
-                .ok_or_else(|| ApiError::Invalid("permanent fee shortfall overflow".into()))?;
-        }
-    }
     latest.active_operation = Some(NnsOperation::Jupiter(Box::new(replacement)));
     state::write(latest);
     Ok(())
@@ -838,7 +779,6 @@ mod tests {
                 }),
                 claim_bearing_dynamic_principal_e8s: 0,
                 anchor_available_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
-                permanent_fee_shortfall_e8s: 0,
                 live_cohorts: Vec::new(),
                 last_completed_pool: None,
                 last_completed_unwind: None,

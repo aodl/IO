@@ -251,7 +251,6 @@ pub fn observe_claim_assets() -> Result<io_nns_types::backing::ClaimAssetObserva
         anchor_target_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
         anchor_available_e8s,
         excluded_dynamic_surplus_e8s: 0,
-        permanent_fee_shortfall_e8s: 0,
         live_cohorts: live_cohort.iter().cloned().collect(),
         live_child_physical_principal_e8s: live_cohort
             .as_ref()

@@ -35,16 +35,24 @@ claim_credit = claim_gross - claim_fee
 The two gross debits sum exactly to `M`. Jupiter and two-week maturity are paired
 inflows: Stream freezes the pre-inflow `B/C` economics before `claim_credit`
 becomes redeemable and releases at most `floor(claim_credit * C0 / B0)` IO.
+Each delivery fee is paid from its own fresh gross leg. The net credits are the
+actual new economic additions; neither fee consumes Dynamic-anchor capacity or
+creates a later reimbursement entitlement.
 Jupiter selects its configured recipient; two-week maturity selects one frozen
 entitlement generation. Two-year maturity issues no IO and needs no paired
 receipt. It does not apply 40/60 to the complete capture immediately. In
-priority order it restores the Dynamic anchor deficit, restores
-permanent-capital fee shortfall, and pays the exact restoration-transfer fees
-from fresh maturity. A too-small usable amount remains in the semantic staging
-Account. Only the valid remainder receives the ordinary gross 40/60 split.
-Restoration fees do not create recursive debt; ordinary new claim/permanent
-delivery fees use anchor/permanent accounting for a later cycle. Every delivered
-claim increment enters liquid before ordinary pool reconciliation.
+priority order it restores the Dynamic anchor deficit and pays that exact
+restoration-transfer fee from fresh maturity. A too-small usable amount remains
+in the semantic staging Account. Only the valid remainder receives the ordinary
+gross 40/60 split; each leg again contributes only its post-fee net credit.
+Restoration fees do not create recursive debt. Every delivered claim increment
+enters liquid before ordinary pool reconciliation.
+
+A captured but unplanned TwoYear balance contributes zero to claim transit
+`T`: it is still fresh staging value, and its eventual claim credit depends on
+the anchor deficit when the serialized delivery plan is frozen. Once frozen,
+only `plan.ordinary.claim_credit` enters `T`. This conservative boundary keeps
+the pending-to-active transition from retracting speculative claim backing.
 
 If the maximum backed IO for a two-week capture exceeds the available protocol
 reserve, receipt preparation returns `InsufficientIoReserve`. No IO is issued,
