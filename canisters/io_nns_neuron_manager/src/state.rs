@@ -18,7 +18,7 @@ use {
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
 
-pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 12;
+pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 13;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct NnsConfig {
@@ -179,7 +179,6 @@ pub struct NnsStateV1 {
     pub pooled_parent_staking_account: Option<Account>,
     pub claim_bearing_dynamic_principal_e8s: u128,
     pub anchor_available_e8s: u128,
-    pub permanent_fee_shortfall_e8s: u128,
     pub live_cohorts: Vec<PassiveCohort>,
     pub last_completed_pool: Option<CompletedPoolCommand>,
     pub last_completed_unwind: Option<CompletedUnwindReconciliation>,
@@ -234,7 +233,6 @@ impl NnsStateV1 {
             pooled_parent_staking_account: None,
             claim_bearing_dynamic_principal_e8s: 0,
             anchor_available_e8s: 0,
-            permanent_fee_shortfall_e8s: 0,
             live_cohorts: Vec::new(),
             last_completed_pool: None,
             last_completed_unwind: None,
@@ -278,10 +276,7 @@ fn validate_maturity_delivery(
             (Some(plan), plan.ordinary)
         }
         crate::maturity::MaturityKind::TwoWeek => {
-            if delivery.two_year_plan.is_some()
-                || delivery.anchor_reimbursement.is_some()
-                || delivery.permanent_reimbursement.is_some()
-            {
+            if delivery.two_year_plan.is_some() || delivery.anchor_reimbursement.is_some() {
                 return Err("two-week delivery contains reimbursement state".into());
             }
             (
@@ -343,24 +338,15 @@ fn validate_maturity_delivery(
         Ok(())
     };
     if let Some(plan) = plan {
-        for (credit, amount, neuron_id) in [
-            (
-                delivery.anchor_reimbursement.as_ref(),
+        if let Some(credit) = delivery.anchor_reimbursement.as_ref() {
+            if plan.anchor_reimbursement == 0 {
+                return Err("zero anchor reimbursement contains neuron-credit state".into());
+            }
+            validate_credit(
+                credit,
                 plan.anchor_reimbursement,
                 pooled_parent_id.ok_or("two-year reimbursement lacks Dynamic parent")?,
-            ),
-            (
-                delivery.permanent_reimbursement.as_ref(),
-                plan.permanent_reimbursement,
-                config.two_year_neuron_id,
-            ),
-        ] {
-            if let (Some(credit), amount) = (credit, amount) {
-                if amount == 0 {
-                    return Err("zero reimbursement contains neuron-credit state".into());
-                }
-                validate_credit(credit, amount, neuron_id)?;
-            }
+            )?;
         }
     }
     if let Some(credit) = &delivery.permanent_credit {
@@ -379,16 +365,7 @@ fn validate_maturity_delivery(
                 Some(crate::maturity::PermanentCreditState::Proved(_))
             )
     });
-    let permanent_replenished = plan.is_none_or(|plan| {
-        plan.permanent_reimbursement == 0
-            || matches!(
-                delivery.permanent_reimbursement,
-                Some(crate::maturity::PermanentCreditState::Proved(_))
-            )
-    });
-    if !anchor_replenished && delivery.permanent_reimbursement.is_some()
-        || !permanent_replenished && delivery.permanent_credit.is_some()
-    {
+    if !anchor_replenished && delivery.permanent_credit.is_some() {
         return Err("maturity neuron credits do not follow replenishment priority".into());
     }
     if !matches!(
@@ -632,24 +609,21 @@ impl NnsStateV1 {
             } else {
                 None
             };
-            let reimbursement_count = u128::from(completed.anchor_reimbursement_e8s > 0)
-                + u128::from(completed.permanent_reimbursement_e8s > 0);
-            let exact_reimbursement_fees = self
+            let exact_reimbursement_fee = self
                 .config
                 .expected_icp_fee_e8s
-                .checked_mul(reimbursement_count);
+                .checked_mul(u128::from(completed.anchor_reimbursement_e8s > 0));
             let accounted = ordinary_captured.and_then(|ordinary| {
                 completed
                     .anchor_reimbursement_e8s
-                    .checked_add(completed.permanent_reimbursement_e8s)
-                    .and_then(|value| value.checked_add(completed.reimbursement_transfer_fees_e8s))
+                    .checked_add(completed.anchor_reimbursement_fee_e8s)
                     .and_then(|value| value.checked_add(completed.carried_e8s))
                     .and_then(|value| value.checked_add(ordinary))
             });
             if completed.kind != kind
                 || completed.captured_e8s == 0
                 || completed.completed_at_nanos == 0
-                || exact_reimbursement_fees != Some(completed.reimbursement_transfer_fees_e8s)
+                || exact_reimbursement_fee != Some(completed.anchor_reimbursement_fee_e8s)
                 || accounted != Some(completed.captured_e8s)
                 || (kind == crate::maturity::MaturityKind::TwoWeek)
                     != completed.entitlement_batch_generation.is_some()
@@ -658,8 +632,7 @@ impl NnsStateV1 {
                 || (kind == crate::maturity::MaturityKind::TwoWeek
                     && (!ordinary_present
                         || completed.anchor_reimbursement_e8s != 0
-                        || completed.permanent_reimbursement_e8s != 0
-                        || completed.reimbursement_transfer_fees_e8s != 0
+                        || completed.anchor_reimbursement_fee_e8s != 0
                         || completed.carried_e8s != 0))
                 || (kind == crate::maturity::MaturityKind::TwoYear
                     && ordinary_present == (completed.carried_e8s > 0))
@@ -949,7 +922,6 @@ pub(crate) mod tests {
                 pooled_parent_staking_account: Some(account(principal(6), 9)),
                 claim_bearing_dynamic_principal_e8s: 0,
                 anchor_available_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
-                permanent_fee_shortfall_e8s: 0,
                 live_cohorts: Vec::new(),
                 last_completed_pool: None,
                 last_completed_unwind: None,
@@ -1279,13 +1251,11 @@ pub(crate) mod tests {
                     120_000_000,
                     io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
                     io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
-                    0,
                     state.config.expected_icp_fee_e8s,
                 )
                 .unwrap(),
             ),
             anchor_reimbursement: None,
-            permanent_reimbursement: None,
             permit: Some(io_receipt_types::ClaimBackingReceiptPermit {
                 stream_operation_sequence: 1,
                 destination: state.config.stream_liquid_account.clone(),
@@ -1501,7 +1471,6 @@ pub(crate) mod tests {
                             pending,
                             two_year_plan: None,
                             anchor_reimbursement: None,
-                            permanent_reimbursement: None,
                             permit: None,
                             permanent_credit: Some(permanent_credit),
                             claim_transfer: None,

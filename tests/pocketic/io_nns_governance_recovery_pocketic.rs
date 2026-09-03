@@ -17,7 +17,7 @@ use io_nns_neuron_manager::{
 use io_nns_types::backing::{
     ClaimAssetObservation, CohortProofState, CompletedPoolCommand, PoolCommand, PoolCommandKind,
     PoolCommandPhase, PoolProgress, PoolReconciliationAction, PreparePoolReconciliationArgs,
-    TopUpPermit, NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS,
+    TopUpPermit, TransitComponentKind, NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS,
 };
 use pocket_ic::{PocketIc, PocketIcBuilder};
 use serde::Deserialize;
@@ -420,7 +420,6 @@ impl RecoveryFixture {
         });
         state.claim_bearing_dynamic_principal_e8s = 1_000_000;
         state.anchor_available_e8s = io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S;
-        state.permanent_fee_shortfall_e8s = 0;
         state.live_cohorts.clear();
         state.last_completed_pool = None;
         state.last_completed_unwind = None;
@@ -660,6 +659,22 @@ impl RecoveryFixture {
 
     fn neuron(&self, neuron_id: u64) -> MockNeuronObservation {
         decode_one::<Option<MockNeuronObservation>>(
+            &self
+                .pic
+                .query_call(
+                    self.governance,
+                    Principal::anonymous(),
+                    "debug_get_neuron",
+                    encode_one(NeuronIdArgs { neuron_id }).unwrap(),
+                )
+                .unwrap(),
+        )
+        .unwrap()
+        .unwrap()
+    }
+
+    fn neuron_amounts(&self, neuron_id: u64) -> MockNeuronAmounts {
+        decode_one::<Option<MockNeuronAmounts>>(
             &self
                 .pic
                 .query_call(
@@ -1016,6 +1031,56 @@ fn reconciliation_args(
     }
 }
 
+fn apply_top_up_effect_without_callback(
+    fixture: &RecoveryFixture,
+    claim_credit_e8s: u128,
+) -> (PreparePoolReconciliationArgs, TopUpPermit, u128) {
+    let observation = claim_assets(fixture);
+    let mut args = reconciliation_args(
+        &observation,
+        PoolReconciliationAction::TopUp {
+            expected_transfer_e8s: claim_credit_e8s - 10_000,
+            expected_claim_credit_e8s: claim_credit_e8s,
+        },
+        observation.claim_bearing_dynamic_principal_e8s + claim_credit_e8s,
+    );
+    args.created_at_time_nanos = fixture.pic.get_time().as_nanos_since_unix_epoch();
+    let prepared = update::<_, Result<PoolProgress, ApiError>>(
+        &fixture.pic,
+        fixture.manager,
+        fixture.stream,
+        "prepare_pool_reconciliation",
+        args.clone(),
+    )
+    .unwrap();
+    let PoolProgress::AwaitingTransfer(permit) = prepared else {
+        panic!("expected a top-up transfer permit, got {prepared:?}")
+    };
+    let source = fixture.state_from_canister().config.stream_liquid_account;
+    fixture.mint_account(source.clone(), permit.expected_credit_e8s + permit.fee_e8s);
+    let transfer: io_ledger_boundary::IcrcTransferResult = update(
+        &fixture.pic,
+        fixture.ledger,
+        fixture.stream,
+        "icrc1_transfer",
+        io_ledger_boundary::IcrcTransferArg {
+            from_subaccount: source.subaccount,
+            to: permit.destination.clone(),
+            amount: candid::Nat::from(permit.expected_credit_e8s),
+            fee: Some(candid::Nat::from(permit.fee_e8s)),
+            memo: Some(permit.memo.clone()),
+            created_at_time: Some(permit.prepared_at_nanos),
+        },
+    );
+    let block_index = transfer.unwrap().0.try_into().unwrap();
+    let parent_id = fixture
+        .state_from_canister()
+        .pooled_parent_id
+        .expect("ready fixture has a Dynamic parent");
+    fixture.refresh_credit(parent_id, permit.expected_credit_e8s);
+    (args, permit, block_index)
+}
+
 #[test]
 fn account_policy_voting_power_housekeeping_is_best_effort_and_never_gates_pool_policy() {
     let _serial = lock_recovery_test();
@@ -1286,6 +1351,248 @@ fn account_policy_zero_memo_rejects_permanent_collision_and_accepts_candidate_du
 }
 
 #[test]
+fn ambiguous_top_up_effect_is_proved_after_upgrade_and_charges_anchor_once() {
+    let _serial = lock_recovery_test();
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        return;
+    }
+    let fixture = RecoveryFixture::new();
+    fixture.replace(fixture.state());
+    let anchor_before = fixture.state_from_canister().anchor_available_e8s;
+    let (args, permit, block_index) = apply_top_up_effect_without_callback(&fixture, 100_000_000);
+    assert_eq!(
+        fixture.state_from_canister().anchor_available_e8s,
+        anchor_before,
+        "an unproved ambiguous effect cannot consume anchor"
+    );
+    let transfer_calls: LedgerCallCounters =
+        query(&fixture.pic, fixture.ledger, "debug_get_call_counters");
+    assert_eq!(transfer_calls.transfer, 1);
+
+    fixture.upgrade();
+    let proved = update::<_, Result<NnsProgress, ApiError>>(
+        &fixture.pic,
+        fixture.manager,
+        fixture.stream,
+        "prove_active_transfer",
+        block_index,
+    )
+    .unwrap();
+    assert!(matches!(
+        proved,
+        NnsProgress::Pool(PoolProgress::Completed { .. })
+    ));
+    assert_eq!(
+        fixture.state_from_canister().anchor_available_e8s,
+        anchor_before - permit.fee_e8s
+    );
+
+    fixture.upgrade();
+    assert_eq!(
+        update::<_, Result<PoolProgress, ApiError>>(
+            &fixture.pic,
+            fixture.manager,
+            fixture.stream,
+            "prepare_pool_reconciliation",
+            args,
+        ),
+        Ok(PoolProgress::Completed {
+            parent_neuron_id: 42,
+            principal_e8s: 1_000_000 + anchor_before + permit.expected_credit_e8s,
+            target_status: io_nns_types::backing::PoolTargetResult::AtTarget,
+        })
+    );
+    assert_eq!(
+        fixture.state_from_canister().anchor_available_e8s,
+        anchor_before - permit.fee_e8s,
+        "upgrade and completed-command replay cannot charge anchor twice"
+    );
+    let replay_calls: LedgerCallCounters =
+        query(&fixture.pic, fixture.ledger, "debug_get_call_counters");
+    assert_eq!(replay_calls.transfer, transfer_calls.transfer);
+}
+
+#[test]
+fn two_year_restores_real_top_up_anchor_deficit_once_before_ordinary_delivery() {
+    let _serial = lock_recovery_test();
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        return;
+    }
+    const CAPTURED_E8S: u128 = 1_000_000;
+    let fixture = RecoveryFixture::new();
+    fixture.replace(fixture.state());
+
+    let (_, top_up_permit, top_up_block) =
+        apply_top_up_effect_without_callback(&fixture, 100_000_000);
+    assert!(matches!(
+        update::<_, Result<NnsProgress, ApiError>>(
+            &fixture.pic,
+            fixture.manager,
+            fixture.stream,
+            "prove_active_transfer",
+            top_up_block,
+        )
+        .unwrap(),
+        NnsProgress::Pool(PoolProgress::Completed { .. })
+    ));
+    let anchor_before = fixture.state_from_canister().anchor_available_e8s;
+    assert_eq!(
+        anchor_before,
+        io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S - top_up_permit.fee_e8s,
+        "a real existing-backing top-up must create the restoration deficit"
+    );
+
+    let dynamic_before = fixture.neuron_amounts(42).principal_e8s;
+    let permanent_before = fixture.neuron_amounts(41).principal_e8s;
+    let liquid_account = fixture.state_from_canister().config.stream_liquid_account;
+    let liquid_before = fixture.balance(liquid_account.clone());
+    let staging = io_accounts::two_year_maturity_staging(fixture.manager);
+    fixture.mint_account(staging.clone(), CAPTURED_E8S);
+    let mut pending_state = fixture.state_from_canister();
+    pending_state.pending_two_year_maturity = Some(PendingMaturityDisbursement {
+        nominal_disbursed_e8s: 100_000_000,
+        initiated_at_seconds: 1,
+        scheduled_finalization_timestamp_seconds: 604_801,
+        entitlement_batch_generation: None,
+        two_week_target_e8s: None,
+        captured_e8s: Some(CAPTURED_E8S),
+    });
+    fixture.replace(pending_state);
+    let pending_assets = claim_assets(&fixture);
+    assert!(pending_assets
+        .transit_components
+        .iter()
+        .all(|component| component.kind != TransitComponentKind::PendingTwoYearMaturity));
+
+    assert_eq!(
+        fixture.resume(),
+        Ok(NnsProgress::Maturity(MaturityProgress::Pending))
+    );
+    let frozen = fixture.state_from_canister();
+    let plan = match frozen.active_operation.as_ref() {
+        Some(NnsOperation::Maturity(operation)) => match &operation.phase {
+            MaturityCommandPhase::Delivery(delivery) => {
+                assert!(
+                    delivery.permit.is_none(),
+                    "TwoYear must not issue paired IO"
+                );
+                delivery.two_year_plan.unwrap()
+            }
+            phase => panic!("expected frozen delivery, got {phase:?}"),
+        },
+        operation => panic!("expected active TwoYear delivery, got {operation:?}"),
+    };
+    let split = plan.ordinary.expect("capture funds restoration and 40/60");
+    assert_eq!(plan.anchor_reimbursement, top_up_permit.fee_e8s);
+    assert_eq!(plan.anchor_reimbursement_fee, top_up_permit.fee_e8s);
+    assert_eq!(plan.anchor_reimbursement, 10_000);
+    assert_eq!(split.permanent_credit, 382_000);
+    assert_eq!(split.claim_credit, 578_000);
+    assert_eq!(
+        plan.anchor_reimbursement
+            + plan.anchor_reimbursement_fee
+            + split.permanent_credit
+            + split.permanent_fee
+            + split.claim_credit
+            + split.claim_fee
+            + plan.carried,
+        CAPTURED_E8S,
+        "fresh capture conservation must be exact"
+    );
+    fixture.refresh_credit(42, plan.anchor_reimbursement);
+    fixture.refresh_credit(41, split.permanent_credit);
+    let maturity_calls_before: LedgerCallCounters =
+        query(&fixture.pic, fixture.ledger, "debug_get_call_counters");
+
+    let mut upgraded_after_restoration = false;
+    let completed = loop {
+        let progress = fixture.resume();
+        let snapshot = fixture.state_from_canister();
+        if let Some(NnsOperation::Maturity(operation)) = snapshot.active_operation.as_ref() {
+            if let MaturityCommandPhase::Delivery(delivery) = &operation.phase {
+                assert!(
+                    delivery.permit.is_none(),
+                    "TwoYear must never prepare paired IO"
+                );
+            }
+        }
+        if !upgraded_after_restoration
+            && snapshot.anchor_available_e8s == io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S
+            && snapshot.active_operation.is_some()
+        {
+            assert_eq!(
+                fixture.neuron_amounts(42).principal_e8s,
+                dynamic_before + plan.anchor_reimbursement
+            );
+            assert_eq!(fixture.neuron_amounts(41).principal_e8s, permanent_before);
+            fixture.upgrade();
+            assert_eq!(
+                fixture.state_from_canister().anchor_available_e8s,
+                io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S
+            );
+            upgraded_after_restoration = true;
+        }
+        if let Ok(NnsProgress::Maturity(MaturityProgress::Completed(completed))) = progress {
+            break *completed;
+        }
+    };
+    assert!(upgraded_after_restoration);
+    assert_eq!(
+        completed.anchor_reimbursement_e8s,
+        plan.anchor_reimbursement
+    );
+    assert_eq!(
+        completed.anchor_reimbursement_fee_e8s,
+        plan.anchor_reimbursement_fee
+    );
+    assert_eq!(completed.permanent_credit_e8s, split.permanent_credit);
+    assert_eq!(completed.claim_credit_e8s, split.claim_credit);
+    assert_eq!(completed.carried_e8s, plan.carried);
+    assert_eq!(completed.entitlement_batch_generation, None);
+    assert_eq!(completed.two_week_target_e8s, None);
+    assert_eq!(
+        fixture.neuron_amounts(42).principal_e8s,
+        dynamic_before + plan.anchor_reimbursement
+    );
+    assert_eq!(
+        fixture.neuron_amounts(41).principal_e8s,
+        permanent_before + split.permanent_credit
+    );
+    assert_eq!(
+        fixture.balance(liquid_account) - liquid_before,
+        split.claim_credit
+    );
+    assert_eq!(fixture.balance(staging), plan.carried);
+    assert_eq!(
+        fixture.state_from_canister().anchor_available_e8s,
+        io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
+        "ordinary fresh delivery fees cannot undo anchor restoration"
+    );
+    let maturity_calls_after: LedgerCallCounters =
+        query(&fixture.pic, fixture.ledger, "debug_get_call_counters");
+    assert_eq!(
+        maturity_calls_after.transfer,
+        maturity_calls_before.transfer + 3,
+        "restoration, permanent, and claim are the only maturity transfers"
+    );
+
+    let final_state = fixture.state_from_canister();
+    let dynamic_after = fixture.neuron_amounts(42).principal_e8s;
+    let permanent_after = fixture.neuron_amounts(41).principal_e8s;
+    fixture.upgrade();
+    assert_eq!(fixture.resume(), Ok(NnsProgress::Idle));
+    assert_eq!(
+        fixture.state_from_canister().anchor_available_e8s,
+        final_state.anchor_available_e8s
+    );
+    assert_eq!(fixture.neuron_amounts(42).principal_e8s, dynamic_after);
+    assert_eq!(fixture.neuron_amounts(41).principal_e8s, permanent_after);
+    let replay_calls: LedgerCallCounters =
+        query(&fixture.pic, fixture.ledger, "debug_get_call_counters");
+    assert_eq!(replay_calls.transfer, maturity_calls_after.transfer);
+}
+
+#[test]
 fn semantic_staging_carries_late_value_into_the_next_cycle_for_both_roles() {
     let _serial = lock_recovery_test();
     if std::env::var_os("POCKET_IC_BIN").is_none() {
@@ -1339,8 +1646,7 @@ fn semantic_staging_carries_late_value_into_the_next_cycle_for_both_roles() {
             kind,
             captured_e8s: first_capture,
             anchor_reimbursement_e8s: 0,
-            permanent_reimbursement_e8s: 0,
-            reimbursement_transfer_fees_e8s: 0,
+            anchor_reimbursement_fee_e8s: 0,
             carried_e8s: 0,
             permanent_credit_e8s: split.permanent_credit,
             claim_credit_e8s: split.claim_credit,
@@ -1441,6 +1747,11 @@ fn ambiguous_split_is_discovered_after_upgrade_without_a_second_call() {
     assert_eq!(child.net_backing_e8s, 100_000);
     assert_eq!(child.committed_fee_e8s, 10_000);
     assert_eq!(observation.claim_bearing_dynamic_principal_e8s, 880_000);
+    assert_eq!(
+        observation.anchor_available_e8s,
+        io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S - 20_000,
+        "ambiguous Split recovery must charge Split and future Disburse fees exactly once"
+    );
 }
 
 #[test]
@@ -1745,7 +2056,6 @@ fn every_persisted_governance_phase_recovers_and_exact_replay_is_effect_safe() {
                 pending.captured_e8s.unwrap(),
                 io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
                 state.anchor_available_e8s,
-                state.permanent_fee_shortfall_e8s,
                 state.config.expected_icp_fee_e8s,
             )
             .unwrap()
@@ -1772,7 +2082,6 @@ fn every_persisted_governance_phase_recovers_and_exact_replay_is_effect_safe() {
                 pending,
                 two_year_plan,
                 anchor_reimbursement: None,
-                permanent_reimbursement: None,
                 permit: None,
                 permanent_credit: None,
                 claim_transfer: None,

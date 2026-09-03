@@ -58,10 +58,10 @@ publication, CreateServiceNervousSystem, swap participation/finalization,
 canister discovery, Governance treasury funding, ledger/index evidence and
 controller handoff all succeeded locally. The current immutable sanitized
 package is
-`deploy/local-sns-rehearsal/evidence/2026-08-31-e727d68-anchored-dynamic`.
-It is bound to source `e727d688b3aec0e6dace6a499a4979bf66cad2c8`,
-immediate artifact child `d8e45b27e9b12d19542ea4220616f3828896c41a`, and
-canonical evidence commit `61c1a7fb0cda3ef743a8f68c1488cdf57e3dc264`.
+`deploy/local-sns-rehearsal/evidence/2026-09-03-270dcf3-anchored-dynamic`.
+It is bound to source `270dcf3dc71fc8e7b63c3177b0e3f58fc9246b35`,
+immediate artifact child `dc548f555a808f59e6a6c69759cc41fbb7f1f54d`, and
+canonical evidence commit `608baa58425389827acf3a5c051d71160cd829f7`.
 Earlier packages remain historical as described in
 `local-sns-evidence-disposition.md`.
 
@@ -183,7 +183,7 @@ The local rehearsal must prove:
 
 ## What Remains Unproven
 
-The schema-v2 `2026-08-31-e727d68-anchored-dynamic` package closes the current
+The schema-v2 `2026-09-03-270dcf3-anchored-dynamic` package closes the current
 local rehearsal item. Layer A proves source-built official SNS launch/wiring;
 Layer B proves the exact proposal-143660 NNS boundary; Layer C proves current IO
 anchored economics, structural/reward scheduling, prepared-push redemption and

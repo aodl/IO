@@ -11,19 +11,18 @@ older development, future, or corrupt state traps. No production canister
 contains a pre-launch migration or fallback decode path.
 
 Stream V1 and NNS V1 include required scalar launch-schema markers,
-respectively 9 and 12. Stream marker 9 replaces pull redemption with prepared
-push/pushed-block/payout-obligation state and separates structural scheduling
-facts from reward credit. NNS marker 12 adds the mandatory Dynamic identity,
-claim-bearing parent principal, anchor capacity, permanent fee shortfall, and
-replenishment phases while deleting lazy-bootstrap/cap semantics. Markers 8
-and 11 are deliberately rejected; there is no migration or fallback decoder.
+respectively 10 and 13. Stream marker 10 removes the obsolete NNS fee-liability
+projection from stable claim snapshots. NNS marker 13 removes that liability
+and its maturity reimbursement phase while retaining the mandatory Dynamic
+identity, claim-bearing parent principal, and anchor capacity. Markers 9 and 12
+are deliberately rejected; there is no migration or fallback decoder.
 
-Marker 9 contains the fields needed for the canonical SNS genesis
+Marker 10 contains the fields needed for the canonical SNS genesis
 baseline. A round-zero last event is valid only as a zero-credit activation
 baseline, optionally with its exact `StructuralOnly` observation and a
 fingerprinted reconciliation checkpoint whose event marker is zero. No new
 stable field is needed. Both baseline forms round-trip and reopen Paused without
-loss; malformed marker-9 states and marker 8 remain
+loss; malformed marker-10 states and marker 9 remain
 rejected. Pending entitlement batches and credit-bearing observations still
 require a nonzero event round.
 

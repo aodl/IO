@@ -23,8 +23,7 @@ pub struct CaptureSplit {
 pub struct TwoYearReplenishmentPlan {
     pub captured: u128,
     pub anchor_reimbursement: u128,
-    pub permanent_reimbursement: u128,
-    pub reimbursement_transfer_fees: u128,
+    pub anchor_reimbursement_fee: u128,
     pub ordinary: Option<CaptureSplit>,
     pub carried: u128,
 }
@@ -34,15 +33,13 @@ impl TwoYearReplenishmentPlan {
         if self.captured == 0 || transfer_fee == 0 {
             return Err("two-year replenishment plan is empty".into());
         }
-        let reimbursement_count = u128::from(self.anchor_reimbursement > 0)
-            + u128::from(self.permanent_reimbursement > 0);
-        if self.reimbursement_transfer_fees
+        if self.anchor_reimbursement_fee
             != transfer_fee
-                .checked_mul(reimbursement_count)
-                .ok_or("reimbursement fee overflow")?
+                .checked_mul(u128::from(self.anchor_reimbursement > 0))
+                .ok_or("anchor reimbursement fee overflow")?
             || (self.ordinary.is_some() && self.carried > 0)
         {
-            return Err("two-year reimbursement fee or carry policy is inconsistent".into());
+            return Err("two-year anchor reimbursement fee or carry policy is inconsistent".into());
         }
         if let Some(ordinary) = self.ordinary {
             if ordinary.captured == 0
@@ -57,8 +54,7 @@ impl TwoYearReplenishmentPlan {
         }
         let accounted = self
             .anchor_reimbursement
-            .checked_add(self.permanent_reimbursement)
-            .and_then(|value| value.checked_add(self.reimbursement_transfer_fees))
+            .checked_add(self.anchor_reimbursement_fee)
             .and_then(|value| {
                 value.checked_add(self.ordinary.map_or(0, |ordinary| ordinary.captured))
             })
@@ -83,7 +79,6 @@ pub fn plan_two_year_replenishment(
     captured: u128,
     anchor_target: u128,
     anchor_available: u128,
-    permanent_shortfall: u128,
     transfer_fee: u128,
 ) -> Result<TwoYearReplenishmentPlan, io_core_model::EconomicsError> {
     use io_core_model::{checked_add, EconomicsError};
@@ -93,24 +88,14 @@ pub fn plan_two_year_replenishment(
     let mut remaining = captured;
     let anchor_reimbursement =
         reimbursable(remaining, anchor_target - anchor_available, transfer_fee);
-    let mut reimbursement_transfer_fees = 0;
+    let mut anchor_reimbursement_fee = 0;
     if anchor_reimbursement > 0 {
         remaining = remaining
             .checked_sub(checked_add(anchor_reimbursement, transfer_fee)?)
             .ok_or(EconomicsError::InsufficientBacking)?;
-        reimbursement_transfer_fees = transfer_fee;
+        anchor_reimbursement_fee = transfer_fee;
     }
-    let permanent_reimbursement = reimbursable(remaining, permanent_shortfall, transfer_fee);
-    if permanent_reimbursement > 0 {
-        remaining = remaining
-            .checked_sub(checked_add(permanent_reimbursement, transfer_fee)?)
-            .ok_or(EconomicsError::InsufficientBacking)?;
-        reimbursement_transfer_fees = checked_add(reimbursement_transfer_fees, transfer_fee)?;
-    }
-    let replenished_anchor = anchor_available
-        .checked_add(anchor_reimbursement)
-        .ok_or(EconomicsError::ArithmeticOverflow)?;
-    let ordinary = if remaining > 0 && replenished_anchor >= transfer_fee {
+    let ordinary = if remaining > 0 {
         capture_40_60(remaining, transfer_fee, transfer_fee).ok()
     } else {
         None
@@ -119,8 +104,7 @@ pub fn plan_two_year_replenishment(
     Ok(TwoYearReplenishmentPlan {
         captured,
         anchor_reimbursement,
-        permanent_reimbursement,
-        reimbursement_transfer_fees,
+        anchor_reimbursement_fee,
         ordinary,
         carried,
     })
@@ -206,7 +190,6 @@ pub enum PermanentCreditState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub enum NeuronCreditRole {
     AnchorReimbursement,
-    PermanentReimbursement,
     OrdinaryPermanent,
 }
 
@@ -215,7 +198,6 @@ pub struct MaturityDeliveryOperation {
     pub pending: PendingMaturityDisbursement,
     pub two_year_plan: Option<TwoYearReplenishmentPlan>,
     pub anchor_reimbursement: Option<PermanentCreditState>,
-    pub permanent_reimbursement: Option<PermanentCreditState>,
     pub permit: Option<ClaimBackingReceiptPermit>,
     pub permanent_credit: Option<PermanentCreditState>,
     pub claim_transfer: Option<NnsTransferAttempt>,
@@ -250,8 +232,7 @@ pub struct CompletedMaturity {
     pub kind: MaturityKind,
     pub captured_e8s: u128,
     pub anchor_reimbursement_e8s: u128,
-    pub permanent_reimbursement_e8s: u128,
-    pub reimbursement_transfer_fees_e8s: u128,
+    pub anchor_reimbursement_fee_e8s: u128,
     pub carried_e8s: u128,
     pub permanent_credit_e8s: u128,
     pub claim_credit_e8s: u128,
@@ -393,34 +374,32 @@ mod tests {
     }
 
     #[test]
-    fn two_year_replenishes_anchor_then_permanent_then_splits() {
+    fn two_year_replenishes_anchor_then_splits_fresh_remainder() {
         let plan =
-            super::plan_two_year_replenishment(1_000_000, 1_000_000, 900_000, 70_000, 10_000)
-                .unwrap();
+            super::plan_two_year_replenishment(1_000_000, 1_000_000, 900_000, 10_000).unwrap();
         assert_eq!(plan.anchor_reimbursement, 100_000);
-        assert_eq!(plan.permanent_reimbursement, 70_000);
-        assert_eq!(plan.reimbursement_transfer_fees, 20_000);
+        assert_eq!(plan.anchor_reimbursement_fee, 10_000);
         let ordinary = plan.ordinary.unwrap();
-        assert_eq!(ordinary.captured, 810_000);
-        assert_eq!(ordinary.permanent_gross, 324_000);
-        assert_eq!(ordinary.claim_gross, 486_000);
+        assert_eq!(ordinary.captured, 890_000);
+        assert_eq!(ordinary.permanent_gross, 356_000);
+        assert_eq!(ordinary.claim_gross, 534_000);
+        assert_eq!(ordinary.permanent_credit, 346_000);
+        assert_eq!(ordinary.claim_credit, 524_000);
         assert_eq!(plan.carried, 0);
     }
 
     #[test]
     fn two_year_partial_and_tiny_replenishment_never_recurses() {
         let partial =
-            super::plan_two_year_replenishment(60_000, 1_000_000, 900_000, 70_000, 10_000).unwrap();
+            super::plan_two_year_replenishment(60_000, 1_000_000, 900_000, 10_000).unwrap();
         assert_eq!(partial.anchor_reimbursement, 50_000);
-        assert_eq!(partial.permanent_reimbursement, 0);
-        assert_eq!(partial.reimbursement_transfer_fees, 10_000);
+        assert_eq!(partial.anchor_reimbursement_fee, 10_000);
         assert!(partial.ordinary.is_none());
         assert_eq!(partial.carried, 0);
 
-        let tiny =
-            super::plan_two_year_replenishment(10_000, 1_000_000, 900_000, 70_000, 10_000).unwrap();
+        let tiny = super::plan_two_year_replenishment(10_000, 1_000_000, 900_000, 10_000).unwrap();
         assert_eq!(tiny.anchor_reimbursement, 0);
-        assert_eq!(tiny.reimbursement_transfer_fees, 0);
+        assert_eq!(tiny.anchor_reimbursement_fee, 0);
         assert_eq!(tiny.carried, 10_000);
     }
 
@@ -429,59 +408,49 @@ mod tests {
         const TARGET: u128 = 100;
         const FEE: u128 = 10;
 
-        let no_deficits = super::plan_two_year_replenishment(100, TARGET, TARGET, 0, FEE).unwrap();
+        let no_deficits = super::plan_two_year_replenishment(100, TARGET, TARGET, FEE).unwrap();
         assert_eq!(no_deficits.anchor_reimbursement, 0);
-        assert_eq!(no_deficits.permanent_reimbursement, 0);
+        assert_eq!(no_deficits.anchor_reimbursement_fee, 0);
         assert_eq!(no_deficits.ordinary.unwrap().captured, 100);
 
-        let only_anchor = super::plan_two_year_replenishment(100, TARGET, 60, 0, FEE).unwrap();
+        let ordinary_too_small =
+            super::plan_two_year_replenishment(20, TARGET, TARGET, FEE).unwrap();
+        assert!(ordinary_too_small.ordinary.is_none());
+        assert_eq!(ordinary_too_small.carried, 20);
+
+        let only_anchor = super::plan_two_year_replenishment(100, TARGET, 60, FEE).unwrap();
         assert_eq!(only_anchor.anchor_reimbursement, 40);
-        assert_eq!(only_anchor.reimbursement_transfer_fees, FEE);
+        assert_eq!(only_anchor.anchor_reimbursement_fee, FEE);
         assert_eq!(only_anchor.ordinary.unwrap().captured, 50);
 
-        let only_permanent =
-            super::plan_two_year_replenishment(100, TARGET, TARGET, 30, FEE).unwrap();
-        assert_eq!(only_permanent.permanent_reimbursement, 30);
-        assert_eq!(only_permanent.reimbursement_transfer_fees, FEE);
-        assert_eq!(only_permanent.ordinary.unwrap().captured, 60);
-
-        let both = super::plan_two_year_replenishment(100, TARGET, 80, 30, FEE).unwrap();
-        assert_eq!(both.anchor_reimbursement, 20);
-        assert_eq!(both.permanent_reimbursement, 30);
-        assert_eq!(both.reimbursement_transfer_fees, 2 * FEE);
-        assert_eq!(both.ordinary.unwrap().captured, 30);
-
-        let exact = super::plan_two_year_replenishment(70, TARGET, 80, 30, FEE).unwrap();
+        let exact = super::plan_two_year_replenishment(30, TARGET, 80, FEE).unwrap();
         assert_eq!(exact.anchor_reimbursement, 20);
-        assert_eq!(exact.permanent_reimbursement, 30);
+        assert_eq!(exact.anchor_reimbursement_fee, FEE);
         assert!(exact.ordinary.is_none());
         assert_eq!(exact.carried, 0);
 
-        let partial_anchor = super::plan_two_year_replenishment(25, TARGET, 80, 30, FEE).unwrap();
+        let partial_anchor = super::plan_two_year_replenishment(25, TARGET, 80, FEE).unwrap();
         assert_eq!(partial_anchor.anchor_reimbursement, 15);
-        assert_eq!(partial_anchor.permanent_reimbursement, 0);
+        assert_eq!(partial_anchor.anchor_reimbursement_fee, FEE);
         assert_eq!(partial_anchor.carried, 0);
 
-        let partial_permanent =
-            super::plan_two_year_replenishment(50, TARGET, 80, 30, FEE).unwrap();
-        assert_eq!(partial_permanent.anchor_reimbursement, 20);
-        assert_eq!(partial_permanent.permanent_reimbursement, 10);
-        assert!(partial_permanent.ordinary.is_none());
+        let full_plus_split = super::plan_two_year_replenishment(100, TARGET, 80, FEE).unwrap();
+        assert_eq!(full_plus_split.anchor_reimbursement, 20);
+        assert_eq!(full_plus_split.anchor_reimbursement_fee, FEE);
+        assert_eq!(full_plus_split.ordinary.unwrap().captured, 70);
 
-        let unusable = super::plan_two_year_replenishment(FEE, TARGET, 80, 30, FEE).unwrap();
+        let unusable = super::plan_two_year_replenishment(FEE, TARGET, 80, FEE).unwrap();
         assert_eq!(unusable.anchor_reimbursement, 0);
-        assert_eq!(unusable.permanent_reimbursement, 0);
-        assert_eq!(unusable.reimbursement_transfer_fees, 0);
+        assert_eq!(unusable.anchor_reimbursement_fee, 0);
         assert_eq!(unusable.carried, FEE);
 
         for plan in [
             no_deficits,
+            ordinary_too_small,
             only_anchor,
-            only_permanent,
-            both,
             exact,
             partial_anchor,
-            partial_permanent,
+            full_plus_split,
             unusable,
         ] {
             plan.validate(FEE).unwrap();

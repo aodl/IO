@@ -1,0 +1,12 @@
+[governance]
+proposal = 143660
+source_commit = "c748b8e76b90ceef329c055e6f7b38a00aae8745"
+compressed_wasm_sha256 = "e4e9e99730dbee3a6fb9a95b40b10b512ad4831c9d2f6efb51d3f0a5d243b503"
+raw_wasm_sha256 = "573af1cde5bf55a5e4dbf2d47f8dd340f7a73a107eebbc645fe1202b97f61e85"
+did_sha256 = "6e9a397f4bf0adc913980ef6c176e765534617d0ce59d52e7bcc66add2b0cd71"
+checked_through_proposal = 143685
+checked_on = "2026-08-26"
+exact_candidate_passed = true
+
+[ledger]
+pin_scope = "independent"
