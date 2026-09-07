@@ -1,7 +1,7 @@
 # Canister roles
 
 `io_stream_manager` owns claim-rate snapshots, spendable liquid backing,
-reserve issuance, prepared-push redemption, the bounded backing/reward
+reserve issuance, semantic-staging redemption with canonical ledger proof, the bounded backing/reward
 registry, one pending entitlement batch, and one serialized monetary operation.
 
 `io_nns_neuron_manager` owns permanent and Dynamic-neuron NNS governance

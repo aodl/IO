@@ -300,6 +300,7 @@ mod tests {
         };
         StreamConfig {
             io_ledger: principal(2),
+            io_index: principal(8),
             icp_ledger: principal(3),
             nns_manager: nns,
             jupiter_io_account: account(principal(7), 2),
@@ -313,7 +314,7 @@ mod tests {
             minimum_redemption_io_e8s: 100,
             expected_io_fee_e8s: 10,
             expected_icp_fee_e8s: 10,
-            maximum_request_lifetime_nanos: 1_000,
+            redemption_poll_interval_seconds: 60,
             retry_delay_nanos: 10,
             ledger_deduplication_window_nanos: 2_000,
         }

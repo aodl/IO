@@ -1,4 +1,9 @@
-import { consentPushAndSettleRedemption, prepareRedemption, progressLabel, resumeRedemption } from "../app/redemption.js";
+import {
+  checkRedemptionReceipt,
+  consentStageAndProcessRedemption,
+  progressLabel,
+  safeCandidText,
+} from "../app/redemption.js";
 
 function text(node, value) {
   if (node) node.textContent = value;
@@ -7,50 +12,108 @@ function text(node, value) {
 export function mountRedemptionForm(document, actors, session) {
   const form = document.querySelector("[data-redemption-form]");
   const status = document.querySelector("[data-redemption-status]");
-  const resume = document.querySelector("[data-redemption-resume]");
-  const proof = document.querySelector("[data-redemption-proof]");
+  const process = document.querySelector("[data-redemption-process]");
   if (!form) return;
   if (!actors || !session?.identity || !(session.selectedSubaccount instanceof Uint8Array)
       || typeof session.requestTransferConsent !== "function") {
     text(status, "Connect a wallet that supplies one canonical subaccount and explicit ICRC-1 transfer consent.");
     form.querySelector("button").disabled = true;
-    resume.disabled = true;
-    proof.disabled = true;
+    process.disabled = true;
     return;
   }
+  const submit = form.querySelector("button");
+  const storage = session.redemptionStorage;
+  const renderReceipt = (result) => {
+    if (!result.hasReceipt) {
+      if (result.workerError) {
+        text(status, `Global redemption worker unavailable: ${result.workerError.message || String(result.workerError)}`);
+      } else if (result.workerResult?.Err) {
+        text(status, `Global redemption worker: ${safeCandidText(result.workerResult.Err)}`);
+      } else if (result.workerResult?.Ok) {
+        text(status, `Global redemption worker: ${progressLabel(result.workerResult.Ok)}`);
+      }
+      return;
+    }
+    if (!result.processingPending) {
+      text(status, "Completed");
+      return;
+    }
+    let message = result.reviewRequired
+      ? "IO staging effect uncertain; review wallet or ledger history"
+      : result.submissionUncertain
+        ? "IO staging response unavailable; safe retry will reuse the same transfer"
+        : "IO staged; processing pending";
+    if (result.workerError) {
+      message += ` — global worker unavailable: ${result.workerError.message || String(result.workerError)}`;
+    } else if (result.workerResult?.Err) {
+      message += ` — global worker: ${safeCandidText(result.workerResult.Err)}`;
+    } else if (result.workerResult?.Ok
+      && !("Pending" in result.workerResult.Ok)) {
+      message += ` — global worker: ${progressLabel(result.workerResult.Ok)}`;
+    } else if (result.statusError) {
+      message += ` — completion status unavailable: ${result.statusError.message || String(result.statusError)}`;
+    }
+    text(status, message);
+  };
+  const checkLocalReceipt = (promptWorker) => checkRedemptionReceipt({
+    stream: actors.stream,
+    selectedSubaccount: session.selectedSubaccount,
+    session,
+    storage,
+    promptWorker,
+  });
+  let submitting = false;
+  let viewOwner = 0;
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (submitting) return;
+    submitting = true;
+    const ownedView = ++viewOwner;
+    submit.disabled = true;
+    process.disabled = true;
     try {
-      text(status, "Preparing an exact push-redemption quote");
-      const prepared = await prepareRedemption({
+      text(status, "Awaiting consent to transfer IO into redemption staging");
+      const result = await consentStageAndProcessRedemption({
         ...actors,
-        owner: session.identity.getPrincipal(),
         selectedSubaccount: session.selectedSubaccount,
         ioAmountE8s: BigInt(form.elements.ioAmount.value),
-        minIcpOutE8s: BigInt(form.elements.minIcpOut.value),
-        maxIcpFeeE8s: BigInt(form.elements.maxIcpFee.value),
-        nowNanos: BigInt(Date.now()) * 1_000_000n,
-      });
-      text(status, "Awaiting consent to push the exact IO amount to the reserve");
-      const result = await consentPushAndSettleRedemption({
-        ...actors,
-        prepared,
         session,
+        storage,
       });
-      if ("Err" in result) throw new Error(JSON.stringify(result.Err));
-      text(status, progressLabel(result.Ok));
+      if (ownedView === viewOwner) renderReceipt(result);
     } catch (error) {
-      text(status, error?.message || String(error));
+      if (ownedView === viewOwner) {
+        text(status, error?.transferAttemptPending
+          ? "IO staging response unavailable; safe retry will reuse the same transfer"
+          : error?.message || String(error));
+      }
+    } finally {
+      submitting = false;
+      submit.disabled = false;
+      process.disabled = false;
     }
   });
-  resume.addEventListener("click", async () => {
-    const result = await resumeRedemption(actors.stream, session.identity.getPrincipal());
-    text(status, "Ok" in result ? progressLabel(result.Ok) : JSON.stringify(result.Err));
+  process.addEventListener("click", async () => {
+    if (submitting) return;
+    const ownedView = ++viewOwner;
+    try {
+      const result = await checkLocalReceipt(true);
+      if (ownedView === viewOwner) renderReceipt(result);
+    } catch (error) {
+      if (ownedView === viewOwner) {
+        text(status, `Unable to check staged redemption: ${error?.message || String(error)}`);
+      }
+    }
   });
-  proof.addEventListener("click", async () => {
-    const block = form.elements.proofBlock.value;
-    if (!/^\d+$/.test(block)) return text(status, "Enter the exact ledger block index for a Stuck transfer.");
-    const result = await actors.stream.prove_active_transfer(BigInt(block));
-    text(status, "Ok" in result ? "Exact transfer proof accepted; resume the operation." : JSON.stringify(result.Err));
-  });
+  const restoreView = viewOwner;
+  const ready = checkLocalReceipt(false)
+    .then((result) => {
+      if (restoreView === viewOwner) renderReceipt(result);
+    })
+    .catch((error) => {
+      if (restoreView === viewOwner) {
+        text(status, `Unable to restore staged receipt: ${error?.message || String(error)}`);
+      }
+    });
+  return { ready };
 }

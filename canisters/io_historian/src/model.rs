@@ -291,6 +291,7 @@ pub struct ProtocolSnapshotInput<'a> {
     pub reserve: u128,
     pub nonredeemable: &'a [u128],
     pub liquid: u128,
+    pub paid_unswept_redemption_io_e8s: Option<u128>,
     pub reconciliation: Option<&'a ReconciliationProjection>,
     pub permanent_productive_capital_e8s: Option<u128>,
     pub observed_at: u64,
@@ -308,13 +309,21 @@ pub fn coherent_protocol_snapshot(
         .reserve
         .checked_add(nonredeemable_total)
         .ok_or_else(|| "non-redeemable IO balance sum overflow".to_string())?;
-    let claims = input.total.checked_sub(non_redeemable).ok_or_else(|| {
+    let physical_claims = input.total.checked_sub(non_redeemable).ok_or_else(|| {
         "total IO supply is less than protocol reserve plus nonredeemable governance balances"
             .to_string()
     })?;
+    let claims = input
+        .paid_unswept_redemption_io_e8s
+        .map(|paid| {
+            physical_claims.checked_sub(paid).ok_or_else(|| {
+                "paid-but-unswept redemption exceeds physical claim supply".to_string()
+            })
+        })
+        .transpose()?;
     let projection = input
         .reconciliation
-        .filter(|value| value.claim_supply_e8s == claims);
+        .filter(|value| Some(value.claim_supply_e8s) == claims);
     let rate = projection.and_then(|value| {
         (value.claim_supply_e8s > 0).then_some(ClaimRateSnapshot {
             backing_numerator_e8s: value.total_claim_backing_e8s,
@@ -337,7 +346,7 @@ pub fn coherent_protocol_snapshot(
         total_io_supply_e8s: Some(input.total),
         protocol_reserve_io_e8s: Some(input.reserve),
         nonredeemable_governance_io_e8s: Some(nonredeemable_total),
-        claim_io_supply_e8s: Some(claims),
+        claim_io_supply_e8s: claims,
         liquid_claim_backing_e8s: projection.map(|value| value.liquid_backing_e8s),
         pooled_parent_principal_e8s: projection.map(|value| value.pooled_backing_e8s),
         live_child_net_backing_e8s: projection.map(|value| value.unwinding_backing_e8s),
@@ -356,7 +365,7 @@ pub fn coherent_protocol_snapshot(
             total_io_supply: true,
             protocol_reserve_io: true,
             nonredeemable_governance_io: true,
-            claim_io_supply: true,
+            claim_io_supply: claims.is_some(),
             claim_backing: projection.is_some(),
             active_backing_io: projection.is_some(),
             active_reward_io: projection.is_some(),
@@ -390,6 +399,7 @@ pub struct StreamStatus {
     pub lifecycle: Lifecycle,
     pub operation_kind: Option<String>,
     pub operation_phase: Option<String>,
+    pub paid_unswept_redemption_io_e8s: Option<u128>,
     pub latest_entitlement_batch_generation: u64,
     pub latest_processed_reward_event: Option<RewardEventId>,
     pub latest_reward_event_classification: Option<RewardEventClassification>,

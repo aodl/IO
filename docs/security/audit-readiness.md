@@ -25,13 +25,16 @@ This is the handoff index for an independent auditor. It is not a self-audit and
 
 Those hashes identify the selected release/evidence authority. The package
 records the anchored Dynamic neuron, independent structural scheduler,
-replenish-first TwoYear maturity, natural cohorts, and prepared push. Older
+replenish-first TwoYear maturity, natural cohorts, and the redemption transport
+of that immutable source revision. Semantic-staging redemption in the supplied
+source requires a fresh separately authorized evidence package. Older
 release pairs and packages remain immutable evidence for their own releases.
 
 ## Normative architecture and invariants
 
 - Simplicity and authority: `docs/architecture/simplicity-constitution.md`, `canister-roles.md`, and `api-surface.md`.
-- Accepted replacement ADR: `adr-anchored-dynamic-backing.md`. The pooled
+- Accepted replacement ADRs: `adr-anchored-dynamic-backing.md` and
+  `adr-semantic-redemption-staging.md`. The pooled
   allocation and complexity ADRs are retained as explicitly superseded history.
   Other accepted ADRs include
   `adr-daily-sns-entitlement-events.md`,
@@ -73,7 +76,7 @@ release pairs and packages remain immutable evidence for their own releases.
 
 | Classification | Evidence |
 | --- | --- |
-| Proved locally | The current selector-bound `2026-09-03-270dcf3-anchored-dynamic` package: Layer A source-built official SNS launch/wiring and live-local observations, Layer B exact proposal-143660 NNS mechanics, and Layer C current simplified anchored IO economics, scheduling, push redemption, and controlled recovery. `docs/testing/e2e-coverage-matrix.md`, exact-source release verification, and the package's manifest/checksum inventory provide the cross-checks. All earlier packages are immutable historical evidence for their own releases only. |
+| Proved locally | The selector-bound `2026-09-03-270dcf3-anchored-dynamic` package proves its exact source revision: Layer A source-built official SNS launch/wiring and live-local observations, Layer B exact proposal-143660 NNS mechanics, and Layer C that revision's anchored IO economics and controlled recovery. It is immutable historical evidence, not staging-redemption evidence for this source. `docs/testing/e2e-coverage-matrix.md` identifies the current executable coverage pending a fresh stateful rehearsal. |
 | Candidate-only | Same-source SNS Governance/Root at IC `4320fdf2e613844eabae1927b1a23b98da3a7bc6`, including reward-share capability and Governance → Root compatibility. The separately reviewed official lock remains `b904c9dd1bdef8841bd12f03efbc71180a015e25`; local source proof does not establish official adoption. |
 | Officially available | Pinned official baseline artifacts/tooling in `tests/e2e_real_canisters/wasms.example.toml`; these do not imply official reward-share adoption. |
 | External fixture gaps | Real transport-fault injection and non-1.0 maturity modulation, classified in `docs/operations/remaining-work.md`. |

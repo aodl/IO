@@ -504,7 +504,7 @@ mod tests {
             active_backing: 0,
             active_reward: 0,
         };
-        let frozen = io_core_model::redemption_quote(before, 100, 0, fee).unwrap();
+        let frozen = io_core_model::redemption_quote(before, 100, fee).unwrap();
         assert!(before.backing.liquid < frozen.gross_icp);
 
         // The immutable push quote is still valid when the committed physical child
@@ -523,7 +523,7 @@ mod tests {
             io_core_model::claim_backing(after_return.backing)
         );
         assert_eq!(
-            io_core_model::redemption_quote(after_return, 100, 0, fee),
+            io_core_model::redemption_quote(after_return, 100, fee),
             Ok(frozen)
         );
         assert!(after_return.backing.liquid >= frozen.gross_icp);

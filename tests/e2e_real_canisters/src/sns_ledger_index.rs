@@ -289,54 +289,10 @@ pub fn run_ledger_index_same_wasm_upgrade(required: bool) {
     assert_error_paths(&fixture, block, created_at_time);
 }
 
-pub fn run_icrc1_direct_reserve_push(required: bool) {
-    let Some(fixture) = setup(required) else {
-        return;
-    };
-    let standard_names = icrc::supported_standards(&fixture.pic, fixture.ledger)
-        .into_iter()
-        .map(|standard| standard.name)
-        .collect::<std::collections::BTreeSet<_>>();
-    for required_standard in ["ICRC-1", "ICRC-2", "ICRC-3"] {
-        assert!(standard_names.contains(required_standard));
-    }
-
-    let (_funding_block, funding_time) = transfer_reserve_to_user(&fixture);
-
-    let reserve_before =
-        icrc::icrc1_balance_of(&fixture.pic, fixture.ledger, fixture.reserve.clone());
-    let supply_before = icrc::icrc1_total_supply(&fixture.pic, fixture.ledger);
-    let push_amount = 20_000_000u64;
-    let push_block = icrc::icrc1_transfer(
-        &fixture.pic,
-        fixture.ledger,
-        fixture.user_owner,
-        icrc::transfer_arg(
-            None,
-            fixture.reserve.clone(),
-            push_amount,
-            Some(icrc::FEE_E8S),
-            Some(b"direct-reserve-redemption-push"),
-            Some(funding_time + 1),
-        ),
-    )
-    .expect("real SNS ledger ICRC-1 reserve push should succeed");
-    assert!(push_block > 0_u8);
-    assert_eq!(
-        icrc::icrc1_balance_of(&fixture.pic, fixture.ledger, fixture.reserve.clone()),
-        reserve_before + Nat::from(push_amount)
-    );
-    assert_eq!(
-        icrc::icrc1_total_supply(&fixture.pic, fixture.ledger),
-        supply_before - Nat::from(icrc::FEE_E8S)
-    );
-}
-
 pub fn run_installed_stream_redemption(required: bool) {
     use candid::{decode_one, encode_one};
     use io_stream_manager::{
-        Account, ApiError, InitArgs, Lifecycle, PreparedRedemption, RedeemArgs, RedemptionProgress,
-        Status, StreamConfig,
+        Account, ApiError, InitArgs, Lifecycle, RedemptionProgress, Status, StreamConfig,
     };
 
     let Some(artifacts) = maybe_artifacts(required) else {
@@ -361,6 +317,7 @@ pub fn run_installed_stream_redemption(required: bool) {
             .unwrap_or_else(|error| panic!("build {name} debug Wasm before this test: {error}"))
     };
     let ledger_wasm = artifacts.load_required("sns_ledger").unwrap();
+    let index_wasm = artifacts.load_required("sns_index").unwrap();
     let pic = pocketic_env::new_pic_with_icp_sns_features();
     let stream = pocketic_env::create_empty_application_canister(&pic);
     let user = Principal::from_slice(&[21; 29]);
@@ -421,6 +378,8 @@ pub fn run_installed_stream_redemption(required: bool) {
             ],
         ),
     );
+    let io_index =
+        pocketic_env::create_sns_canister(&pic, index_wasm, icrc::index_init_arg(io_ledger));
     let icp_ledger = Principal::from_text(crate::nns_setup::install_nns_ledger().canister_id)
         .expect("official ICP ledger ID should parse");
     icrc::icrc1_transfer(
@@ -440,6 +399,7 @@ pub fn run_installed_stream_redemption(required: bool) {
     let init = InitArgs {
         config: StreamConfig {
             io_ledger,
+            io_index,
             icp_ledger,
             nns_manager,
             jupiter_io_account: Account {
@@ -465,7 +425,7 @@ pub fn run_installed_stream_redemption(required: bool) {
             minimum_redemption_io_e8s: 20_000,
             expected_io_fee_e8s: icrc::FEE_E8S as u128,
             expected_icp_fee_e8s: icrc::FEE_E8S as u128,
-            maximum_request_lifetime_nanos: 900_000_000_000,
+            redemption_poll_interval_seconds: 60,
             retry_delay_nanos: 1_000_000_000,
             ledger_deduplication_window_nanos: 86_400_000_000_000,
         },
@@ -484,48 +444,9 @@ pub fn run_installed_stream_redemption(required: bool) {
     .unwrap();
     assert_eq!(unpause, Ok(()));
 
-    let now = pic.get_time().as_nanos_since_unix_epoch();
     let amount = 20_000_000u64;
-    let rejected_excluded: Result<PreparedRedemption, ApiError> = decode_one(
-        &pic.update_call(
-            stream,
-            excluded_user,
-            "prepare_redemption",
-            encode_one(RedeemArgs {
-                from_subaccount: None,
-                io_amount_e8s: amount as u128,
-                min_icp_out_e8s: 0,
-                max_io_fee_e8s: icrc::FEE_E8S as u128,
-                max_icp_fee_e8s: icrc::FEE_E8S as u128,
-                expires_at_nanos: now + 800_000_000_000,
-                nonce: 0,
-            })
-            .unwrap(),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert!(matches!(rejected_excluded, Err(ApiError::Invalid(_))));
-    let rejected_reserve: Result<PreparedRedemption, ApiError> = decode_one(
-        &pic.update_call(
-            stream,
-            stream,
-            "prepare_redemption",
-            encode_one(RedeemArgs {
-                from_subaccount: Some(reserve_subaccount.to_vec()),
-                io_amount_e8s: amount as u128,
-                min_icp_out_e8s: 0,
-                max_io_fee_e8s: icrc::FEE_E8S as u128,
-                max_icp_fee_e8s: icrc::FEE_E8S as u128,
-                expires_at_nanos: now + 800_000_000_000,
-                nonce: 0,
-            })
-            .unwrap(),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert!(matches!(rejected_reserve, Err(ApiError::Invalid(_))));
+    let staging: Account = icrc::query_one(&pic, stream, "get_redemption_staging_account", ());
+    assert_eq!(staging, io_accounts::redemption_staging(stream));
     let supply_before: u128 = icrc::icrc1_total_supply(&pic, io_ledger)
         .0
         .try_into()
@@ -538,38 +459,58 @@ pub fn run_installed_stream_redemption(required: bool) {
         .0
         .try_into()
         .unwrap();
+    let staged_block = icrc::icrc1_transfer(
+        &pic,
+        io_ledger,
+        user,
+        icrc::transfer_arg(
+            None,
+            icrc::account(
+                staging.owner,
+                staging
+                    .subaccount
+                    .as_deref()
+                    .map(|value| value.try_into().unwrap()),
+            ),
+            amount,
+            Some(icrc::FEE_E8S),
+            None,
+            None,
+        ),
+    )
+    .expect("ordinary transfer to semantic redemption staging should succeed");
+    assert!(staged_block > 0_u8);
+    let supply_after_staging: u128 = icrc::icrc1_total_supply(&pic, io_ledger)
+        .0
+        .try_into()
+        .unwrap();
+    let excluded_balance: u128 = icrc::icrc1_balance_of(&pic, io_ledger, excluded_account.clone())
+        .0
+        .try_into()
+        .unwrap();
+    let claims_after_staging = supply_after_staging - reserve_before - excluded_balance;
     let quote = io_core_model::redemption_quote(
         io_core_model::EconomicState {
             backing: io_core_model::Backing {
                 liquid: liquid_before,
                 ..Default::default()
             },
-            claims: supply_before - reserve_before - user_io_e8s as u128,
+            claims: claims_after_staging,
             active_backing: 0,
             active_reward: 0,
         },
         amount as u128,
         icrc::FEE_E8S as u128,
-        icrc::FEE_E8S as u128,
     )
     .unwrap();
-    let args = RedeemArgs {
-        from_subaccount: None,
-        io_amount_e8s: amount as u128,
-        min_icp_out_e8s: quote.net_icp,
-        max_io_fee_e8s: icrc::FEE_E8S as u128,
-        max_icp_fee_e8s: icrc::FEE_E8S as u128,
-        expires_at_nanos: now + 800_000_000_000,
-        nonce: 0,
-    };
     let assert_final_balances = || {
         assert_eq!(
             icrc::icrc1_balance_of(&pic, io_ledger, reserve.clone()),
-            Nat::from(io_reserve_e8s + amount),
+            Nat::from(io_reserve_e8s + amount - icrc::FEE_E8S),
         );
         assert_eq!(
             icrc::icrc1_total_supply(&pic, io_ledger),
-            Nat::from(supply_before - icrc::FEE_E8S as u128)
+            Nat::from(supply_before - 2 * icrc::FEE_E8S as u128)
         );
         assert_eq!(
             icrc::icrc1_balance_of(&pic, icp_ledger, user_account.clone()),
@@ -580,71 +521,45 @@ pub fn run_installed_stream_redemption(required: bool) {
             Nat::from(liquid_before - quote.gross_icp)
         );
     };
-    let prepared: Result<PreparedRedemption, ApiError> = decode_one(
-        &pic.update_call(
-            stream,
-            user,
-            "prepare_redemption",
-            encode_one(args.clone()).unwrap(),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let prepared = prepared.expect("push quote should prepare");
-    assert_eq!(prepared.gross_icp_e8s, quote.gross_icp);
-    assert_eq!(prepared.net_icp_e8s, quote.net_icp);
-    let push_block = icrc::icrc1_transfer(
-        &pic,
-        io_ledger,
-        user,
-        icrc::transfer_arg(
-            None,
-            reserve.clone(),
-            amount,
-            Some(icrc::FEE_E8S),
-            Some(&prepared.push_memo),
-            Some(prepared.prepared_at_nanos),
-        ),
-    )
-    .expect("prepared ICRC-1 reserve push should succeed");
-    let push_block: u128 = push_block.0.try_into().unwrap();
-    pocketic_env::upgrade_canister(&pic, stream, stream_wasm.clone(), encode_one(()).unwrap());
-    let paused_after_upgrade: Status = decode_one(
-        &pic.query_call(stream, user, "get_status", encode_one(()).unwrap())
+    for _ in 0..10 {
+        pic.tick();
+    }
+    let mut progress: Result<RedemptionProgress, ApiError> = decode_one(
+        &pic.update_call(stream, user, "process_redemptions", encode_one(()).unwrap())
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(paused_after_upgrade.lifecycle, Lifecycle::Paused);
-    pic.advance_time(Duration::from_secs(2 * 60 * 60));
-    assert!(pic.get_time().as_nanos_since_unix_epoch() > args.expires_at_nanos);
-    let mut progress: Result<RedemptionProgress, ApiError> = decode_one(
-        &pic.update_call(
-            stream,
-            user,
-            "settle_redemption",
-            encode_one(push_block).unwrap(),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    for _ in 0..8 {
+    for _ in 0..20 {
         if matches!(progress, Ok(RedemptionProgress::Completed(_))) {
             break;
         }
+        pic.advance_time(Duration::from_secs(10));
+        pic.tick();
         progress = decode_one(
             &pic.update_call(
                 stream,
                 Principal::anonymous(),
-                "resume_redemption",
-                encode_one(user).unwrap(),
+                "process_redemptions",
+                encode_one(()).unwrap(),
             )
             .unwrap(),
         )
         .unwrap();
     }
     let Ok(RedemptionProgress::Completed(result)) = progress else {
-        panic!("pushed redemption did not complete within eight resume attempts: {progress:?}");
+        panic!("staged redemption did not complete within bounded attempts: {progress:?}");
     };
+    assert_eq!(
+        result.source_io_block,
+        u128::try_from(staged_block.0).unwrap()
+    );
+    assert_eq!(
+        result.source_account,
+        Account {
+            owner: user,
+            subaccount: None
+        }
+    );
     assert_eq!(result.gross_icp_e8s, quote.gross_icp);
     assert_eq!(result.net_icp_e8s, quote.net_icp);
     assert_final_balances();
@@ -655,32 +570,7 @@ pub fn run_installed_stream_redemption(required: bool) {
     .unwrap();
     assert!(completed_status.operation_kind.is_none());
     assert!(completed_status.operation_phase.is_none());
-    let replay: Result<RedemptionProgress, ApiError> = decode_one(
-        &pic.update_call(
-            stream,
-            user,
-            "settle_redemption",
-            encode_one(push_block).unwrap(),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(replay, Ok(RedemptionProgress::Completed(result.clone())));
-    let reused_nonce: Result<PreparedRedemption, ApiError> = decode_one(
-        &pic.update_call(
-            stream,
-            user,
-            "prepare_redemption",
-            encode_one(RedeemArgs {
-                from_subaccount: Some(vec![0; 32]),
-                ..args.clone()
-            })
-            .unwrap(),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(reused_nonce, Err(ApiError::Paused));
+    assert_eq!(completed_status.last_completed_redemption, Some(result));
     // Jupiter receipt replay is exercised by the installed NNS/Stream harness,
     // where the receipt can bind to an exact NNS claim-backing fingerprint.
 }

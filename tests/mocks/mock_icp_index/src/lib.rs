@@ -34,6 +34,7 @@ thread_local! {
     static PAGE_LIMIT: std::cell::RefCell<Option<u64>> = const { std::cell::RefCell::new(None) };
     static DESCENDING: std::cell::RefCell<bool> = const { std::cell::RefCell::new(false) };
     static UNREADABLE: std::cell::RefCell<bool> = const { std::cell::RefCell::new(false) };
+    static ACCOUNT_TRANSACTION_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::init)]
@@ -43,6 +44,9 @@ pub fn init(args: InitArgs) {
         .as_deref()
         .and_then(|text| Principal::from_text(text).ok());
     LEDGER.with(|cell| *cell.borrow_mut() = ledger);
+    if env!("CARGO_PKG_NAME") == "mock-io-index" {
+        DESCENDING.with(|cell| *cell.borrow_mut() = true);
+    }
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -117,6 +121,9 @@ fn account_from_icrc(account: io_ledger_types::IcrcAccount) -> Option<Account> {
 
 fn mock_label_from_account(account: &Account) -> String {
     if let Some(subaccount) = account.subaccount.as_ref() {
+        if subaccount.0.iter().all(|byte| *byte == 0) {
+            return account.owner.to_text();
+        }
         if subaccount.0[..24].iter().all(|byte| *byte == 0) {
             let mut id = [0_u8; 8];
             id.copy_from_slice(&subaccount.0[24..]);
@@ -126,11 +133,17 @@ fn mock_label_from_account(account: &Account) -> String {
             }
         }
     }
-    account
-        .subaccount
-        .as_ref()
-        .and_then(mock_label_from_subaccount)
-        .unwrap_or_else(|| account.owner.to_text())
+    match account.subaccount.as_ref() {
+        Some(subaccount) => mock_label_from_subaccount(subaccount).unwrap_or_else(|| {
+            let bytes = subaccount
+                .0
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            format!("{}:{bytes}", account.owner.to_text())
+        }),
+        None => account.owner.to_text(),
+    }
 }
 
 fn tx_to_block(tx: LedgerTransaction) -> LedgerBlock {
@@ -172,6 +185,7 @@ fn nat_to_u64(value: &Nat) -> Result<u64, IcrcIndexError> {
 pub async fn get_account_transactions(
     args: IcrcIndexGetAccountTransactionsArgs,
 ) -> Result<IcrcIndexGetAccountTransactionsResult, IcrcIndexError> {
+    ACCOUNT_TRANSACTION_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
     if UNREADABLE.with(|cell| *cell.borrow()) {
         return Err(IcrcIndexError::TemporarilyUnavailable);
     }
@@ -215,7 +229,7 @@ pub async fn get_account_transactions(
     let transactions = matching
         .into_iter()
         .filter(|tx| match (descending, start) {
-            (true, Some(start)) => tx.block_index <= start,
+            (true, Some(start)) => tx.block_index < start,
             (true, None) => true,
             (false, Some(start)) => tx.block_index >= start,
             (false, None) => true,
@@ -242,6 +256,11 @@ pub async fn get_account_transactions(
         tip: visible_tip_nat,
         archive_required: false,
     })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn debug_get_account_transaction_call_count() -> u64 {
+    ACCOUNT_TRANSACTION_CALLS.with(std::cell::Cell::get)
 }
 
 fn mock_account_identifier(label: &str) -> String {

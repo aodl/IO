@@ -3,6 +3,7 @@
 (record {
   config = record {
     io_ledger = TODO_IO_LEDGER_PRINCIPAL;
+    io_index = TODO_IO_INDEX_PRINCIPAL;
     icp_ledger = principal "ryjl3-tyaaa-aaaaa-aaaba-cai";
     nns_manager = principal "oae4c-3iaaa-aaaar-qb5qq-cai";
     jupiter_io_account = record { owner = principal "acjuz-liaaa-aaaar-qb4qq-cai"; subaccount = opt TODO_JUPITER_IO_SUBACCOUNT };
@@ -13,7 +14,7 @@
     minimum_redemption_io_e8s = TODO_MINIMUM : nat;
     expected_io_fee_e8s = TODO_IO_FEE : nat;
     expected_icp_fee_e8s = 10_000 : nat;
-    maximum_request_lifetime_nanos = 900_000_000_000 : nat64;
+    redemption_poll_interval_seconds = 60 : nat64;
     retry_delay_nanos = TODO_RETRY_DELAY : nat64;
     ledger_deduplication_window_nanos = TODO_DEDUP_WINDOW : nat64;
     sns_root = TODO_SNS_ROOT_PRINCIPAL;

@@ -1179,9 +1179,8 @@ pub fn run_real_sns_genesis_round_stream_regression(
     use crate::sns_root_setup::SnsRootCanister;
     use candid::{decode_one, encode_one, Nat};
     use io_stream_manager::{
-        Account as StreamAccount, ApiError, InitArgs, PreparedRedemption, RedeemArgs,
-        RedemptionProgress, RewardEventClassification, RewardEventObservation, Status,
-        StreamConfig,
+        Account as StreamAccount, ApiError, InitArgs, RedemptionProgress,
+        RewardEventClassification, RewardEventObservation, Status, StreamConfig,
     };
     use pocket_ic::CanisterSettings;
 
@@ -1203,6 +1202,9 @@ pub fn run_real_sns_genesis_round_stream_regression(
         .map_err(SnsGovernanceSetupError::Artifact)?;
     let ledger_wasm = artifacts
         .load_required("sns_ledger")
+        .map_err(SnsGovernanceSetupError::Artifact)?;
+    let index_wasm = artifacts
+        .load_required("sns_index")
         .map_err(SnsGovernanceSetupError::Artifact)?;
     let stream_wasm = local_debug_wasm("io_stream_manager")?;
     let nns_wasm = local_debug_wasm("mock_nns_governance")?;
@@ -1255,6 +1257,7 @@ pub fn run_real_sns_genesis_round_stream_regression(
             ],
         ),
     );
+    pic.install_canister(index, index_wasm, icrc::index_init_arg(io_ledger), None);
     let icp_ledger = Principal::from_text(crate::nns_setup::install_nns_ledger().canister_id)
         .expect("official ICP ledger ID should parse");
     icrc::icrc1_transfer(
@@ -1323,6 +1326,7 @@ pub fn run_real_sns_genesis_round_stream_regression(
         encode_one(InitArgs {
             config: StreamConfig {
                 io_ledger,
+                io_index: index,
                 icp_ledger,
                 nns_manager,
                 jupiter_io_account: StreamAccount {
@@ -1345,7 +1349,7 @@ pub fn run_real_sns_genesis_round_stream_regression(
                 minimum_redemption_io_e8s: 20_000,
                 expected_io_fee_e8s: u128::from(FEE_E8S),
                 expected_icp_fee_e8s: u128::from(FEE_E8S),
-                maximum_request_lifetime_nanos: 900_000_000_000,
+                redemption_poll_interval_seconds: 60,
                 retry_delay_nanos: 1_000_000_000,
                 ledger_deduplication_window_nanos: 86_400_000_000_000,
             },
@@ -1400,69 +1404,50 @@ pub fn run_real_sns_genesis_round_stream_regression(
     );
 
     let amount = 20_000_000_u64;
-    let now = pic.get_time().as_nanos_since_unix_epoch();
-    let args = RedeemArgs {
-        from_subaccount: None,
-        io_amount_e8s: u128::from(amount),
-        min_icp_out_e8s: 1,
-        max_io_fee_e8s: u128::from(FEE_E8S),
-        max_icp_fee_e8s: u128::from(FEE_E8S),
-        expires_at_nanos: now + 800_000_000_000,
-        nonce: 0,
-    };
     let io_before = icrc::icrc1_balance_of(&pic, io_ledger, icrc::account(controller, None));
     let icp_before = icrc::icrc1_balance_of(&pic, icp_ledger, icrc::account(controller, None));
-    let prepared: Result<PreparedRedemption, ApiError> = decode_one(
-        &pic.update_call(
-            stream,
-            controller,
-            "prepare_redemption",
-            encode_one(args).unwrap(),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let prepared = prepared.expect("pre-round-one redemption prepares an exact push");
-    let pushed = icrc::icrc1_transfer(
+    let staging: StreamAccount =
+        icrc::query_one(&pic, stream, "get_redemption_staging_account", ());
+    icrc::icrc1_transfer(
         &pic,
         io_ledger,
         controller,
         icrc::transfer_arg(
-            prepared
-                .account
-                .subaccount
-                .as_deref()
-                .map(|value| value.try_into().unwrap()),
+            None,
             icrc::account(
-                prepared.reserve.owner,
-                prepared
-                    .reserve
+                staging.owner,
+                staging
                     .subaccount
                     .as_deref()
                     .map(|value| value.try_into().unwrap()),
             ),
-            prepared.request.io_amount_e8s.try_into().unwrap(),
-            Some(prepared.snapshot.io_fee_e8s.try_into().unwrap()),
-            Some(&prepared.push_memo),
-            Some(prepared.prepared_at_nanos),
+            amount,
+            Some(FEE_E8S),
+            None,
+            None,
         ),
     )
-    .expect("controller sends the exact pre-round-one redemption push");
-    let push_block = u128::try_from(pushed.0).unwrap();
-    let completed: Result<RedemptionProgress, ApiError> = decode_one(
-        &pic.update_call(
-            stream,
-            controller,
-            "settle_redemption",
-            encode_one(push_block).unwrap(),
+    .expect("controller stages the pre-round-one redemption");
+    let mut completed = None;
+    for _ in 0..20 {
+        pic.tick();
+        let progress: Result<RedemptionProgress, ApiError> = decode_one(
+            &pic.update_call(
+                stream,
+                controller,
+                "process_redemptions",
+                encode_one(()).unwrap(),
+            )
+            .unwrap(),
         )
-        .unwrap(),
-    )
-    .unwrap();
-    let result = match &completed {
-        Ok(RedemptionProgress::Completed(result)) => result,
-        other => panic!("pre-round-one redemption did not complete: {other:?}"),
-    };
+        .unwrap();
+        if let Ok(RedemptionProgress::Completed(result)) = progress {
+            completed = Some(result);
+            break;
+        }
+        pic.advance_time(Duration::from_secs(10));
+    }
+    let result = completed.expect("pre-round-one staged redemption completes");
     let io_after = icrc::icrc1_balance_of(&pic, io_ledger, icrc::account(controller, None));
     let icp_after = icrc::icrc1_balance_of(&pic, icp_ledger, icrc::account(controller, None));
     assert_eq!(io_after, io_before - Nat::from(amount + FEE_E8S));
@@ -1475,13 +1460,13 @@ pub fn run_real_sns_genesis_round_stream_regression(
         &pic.update_call(
             stream,
             controller,
-            "settle_redemption",
-            encode_one(push_block).unwrap(),
+            "process_redemptions",
+            encode_one(()).unwrap(),
         )
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(replay, completed);
+    assert!(matches!(replay, Ok(RedemptionProgress::RateLimited { .. })));
     assert_eq!(
         icrc::icrc1_balance_of(&pic, io_ledger, icrc::account(controller, None)),
         io_after,
@@ -1556,9 +1541,8 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     use crate::sns_root_setup::SnsRootCanister;
     use candid::{decode_one, encode_one, Nat};
     use io_stream_manager::{
-        Account as StreamAccount, ApiError, InitArgs, Lifecycle, PreparedRedemption, RedeemArgs,
-        RedemptionProgress, RewardEventClassification, RewardEventObservation, Status,
-        StreamConfig, StreamProgress,
+        Account as StreamAccount, ApiError, InitArgs, Lifecycle, RedemptionProgress,
+        RewardEventClassification, RewardEventObservation, Status, StreamConfig,
     };
     use pocket_ic::CanisterSettings;
 
@@ -1580,6 +1564,9 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         .map_err(SnsGovernanceSetupError::Artifact)?;
     let ledger_wasm = artifacts
         .load_required("sns_ledger")
+        .map_err(SnsGovernanceSetupError::Artifact)?;
+    let index_wasm = artifacts
+        .load_required("sns_index")
         .map_err(SnsGovernanceSetupError::Artifact)?;
     let stream_wasm = local_debug_wasm("io_stream_manager")?;
     let nns_wasm = local_debug_wasm("mock_nns_governance")?;
@@ -1635,6 +1622,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             ],
         ),
     );
+    pic.install_canister(index, index_wasm, icrc::index_init_arg(io_ledger), None);
     let maturity_subaccount = [9_u8; 32];
     let icp_ledger = Principal::from_text(crate::nns_setup::install_nns_ledger().canister_id)
         .expect("official ICP ledger ID should parse");
@@ -1758,6 +1746,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         encode_one(InitArgs {
             config: StreamConfig {
                 io_ledger,
+                io_index: index,
                 icp_ledger,
                 nns_manager,
                 jupiter_io_account: StreamAccount {
@@ -1780,7 +1769,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                 minimum_redemption_io_e8s: 20_000,
                 expected_io_fee_e8s: FEE_E8S as u128,
                 expected_icp_fee_e8s: FEE_E8S as u128,
-                maximum_request_lifetime_nanos: 900_000_000_000,
+                redemption_poll_interval_seconds: 60,
                 retry_delay_nanos: 1_000_000_000,
                 ledger_deduplication_window_nanos: 86_400_000_000_000,
             },
@@ -2339,7 +2328,6 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         }
         if day == 10 {
             let amount = 20_000_000_u64;
-            let now = pic.get_time().as_nanos_since_unix_epoch();
             let total_supply = u128::try_from(icrc::icrc1_total_supply(&pic, io_ledger).0).unwrap();
             let reserve_balance =
                 u128::try_from(icrc::icrc1_balance_of(&pic, io_ledger, reserve.clone()).0).unwrap();
@@ -2371,106 +2359,52 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                 },
                 u128::from(amount),
                 u128::from(FEE_E8S),
-                u128::from(FEE_E8S),
             )
             .unwrap();
-            let args = RedeemArgs {
-                from_subaccount: None,
-                io_amount_e8s: u128::from(amount),
-                min_icp_out_e8s: quote.net_icp,
-                max_io_fee_e8s: u128::from(FEE_E8S),
-                max_icp_fee_e8s: u128::from(FEE_E8S),
-                expires_at_nanos: now + 800_000_000_000,
-                nonce: 0,
-            };
             let redemption_icp_before =
                 icrc::icrc1_balance_of(&pic, icp_ledger, icrc::account(controller, None));
-            let prepared: Result<PreparedRedemption, ApiError> = decode_one(
-                &pic.update_call(
-                    stream,
-                    controller,
-                    "prepare_redemption",
-                    encode_one(args).unwrap(),
-                )
-                .unwrap(),
-            )
-            .unwrap();
-            let prepared = prepared.expect("pending-batch redemption prepares an exact push");
-            let push_block = icrc::icrc1_transfer(
+            let staging: StreamAccount =
+                icrc::query_one(&pic, stream, "get_redemption_staging_account", ());
+            icrc::icrc1_transfer(
                 &pic,
                 io_ledger,
                 controller,
                 icrc::transfer_arg(
-                    prepared
-                        .account
-                        .subaccount
-                        .as_deref()
-                        .map(|value| value.try_into().unwrap()),
+                    None,
                     icrc::account(
-                        prepared.reserve.owner,
-                        prepared
-                            .reserve
+                        staging.owner,
+                        staging
                             .subaccount
                             .as_deref()
                             .map(|value| value.try_into().unwrap()),
                     ),
-                    prepared.request.io_amount_e8s.try_into().unwrap(),
-                    Some(prepared.snapshot.io_fee_e8s.try_into().unwrap()),
-                    Some(&prepared.push_memo),
-                    Some(prepared.prepared_at_nanos),
+                    amount,
+                    Some(FEE_E8S),
+                    None,
+                    None,
                 ),
             )
-            .expect("controller sends the exact pending-batch redemption push");
-            let push_block = u128::try_from(push_block.0).unwrap();
-            let initial: Result<RedemptionProgress, ApiError> = decode_one(
-                &pic.update_call(
-                    stream,
-                    controller,
-                    "settle_redemption",
-                    encode_one(push_block).unwrap(),
+            .expect("controller stages the pending-batch redemption");
+            let mut completed = None;
+            for _ in 0..20 {
+                pic.tick();
+                let progress: Result<RedemptionProgress, ApiError> = decode_one(
+                    &pic.update_call(
+                        stream,
+                        controller,
+                        "process_redemptions",
+                        encode_one(()).unwrap(),
+                    )
+                    .unwrap(),
                 )
-                .unwrap(),
-            )
-            .unwrap();
-            let result = match initial {
-                Ok(RedemptionProgress::Completed(result)) => {
-                    assert!(stream_status().operation_kind.is_none());
-                    result
+                .unwrap();
+                if let Ok(RedemptionProgress::Completed(result)) = progress {
+                    completed = Some(result);
+                    break;
                 }
-                Ok(RedemptionProgress::Pending) => {
-                    let pending_status = stream_status();
-                    assert_eq!(pending_status.operation_kind.as_deref(), Some("Redemption"));
-                    assert!(pending_status.operation_phase.is_some());
-                    let mut completed = None;
-                    for _ in 0..8 {
-                        let progress: Result<StreamProgress, ApiError> = decode_one(
-                            &pic.update_call(
-                                stream,
-                                Principal::anonymous(),
-                                "resume",
-                                encode_one(()).unwrap(),
-                            )
-                            .unwrap(),
-                        )
-                        .unwrap();
-                        match progress {
-                            Ok(StreamProgress::Redemption(RedemptionProgress::Pending))
-                            | Err(ApiError::Pending(_)) => {}
-                            Ok(StreamProgress::Redemption(RedemptionProgress::Completed(
-                                result,
-                            ))) => {
-                                completed = Some(result);
-                                break;
-                            }
-                            other => {
-                                panic!("pending-batch redemption failed to progress: {other:?}")
-                            }
-                        }
-                    }
-                    completed.expect("pending-batch redemption exceeded eight resume attempts")
-                }
-                other => panic!("pending-batch redemption failed initially: {other:?}"),
-            };
+                pic.advance_time(Duration::from_secs(10));
+            }
+            let result = completed.expect("pending-batch staged redemption completes");
             assert_eq!(result.gross_icp_e8s, quote.gross_icp);
             assert_eq!(result.net_icp_e8s, quote.net_icp);
             assert_eq!(

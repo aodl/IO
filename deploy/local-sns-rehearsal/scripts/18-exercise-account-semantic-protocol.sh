@@ -116,11 +116,11 @@ run_case child-disburse-lost-callback cargo test -p io-nns-neuron-manager \
   -- --exact --nocapture --test-threads=1
 run_case paired-receipt-replay cargo test -p io-stream-manager \
   --test io_paired_receipt_recovery_pocketic \
-  malformed_prepare_after_persistence_replays_and_quarantines_redemption \
+  malformed_receipt_prepare_replays_and_survives_same_schema_restart \
   -- --exact --nocapture --test-threads=1
-run_case prepared-push-without-liquidity-gate cargo test -p io-stream-manager \
+run_case semantic-staging-redemption cargo test -p io-stream-manager \
   --test io_stream_manager_pocketic \
-  preparation_uses_scalar_claim_reads_without_requiring_liquid_icp \
+  staging_waits_claim_bearing_for_liquidity_and_manual_work_is_globally_throttled \
   -- --exact --nocapture --test-threads=1
 run_case structural-reward-independence cargo test -p io-stream-manager \
   --test io_stream_manager_pocketic \

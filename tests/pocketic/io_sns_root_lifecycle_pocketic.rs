@@ -141,6 +141,7 @@ fn setup() -> Fixture {
         encode_one(io_stream_manager::InitArgs {
             config: io_stream_manager::StreamConfig {
                 io_ledger,
+                io_index: Principal::from_slice(&[8; 29]),
                 icp_ledger,
                 nns_manager,
                 jupiter_io_account: io_stream_manager::Account {
@@ -160,7 +161,7 @@ fn setup() -> Fixture {
                 minimum_redemption_io_e8s: 20_000,
                 expected_io_fee_e8s: 10_000,
                 expected_icp_fee_e8s: 10_000,
-                maximum_request_lifetime_nanos: 900_000_000_000,
+                redemption_poll_interval_seconds: 60,
                 retry_delay_nanos: 1_000_000_000,
                 ledger_deduplication_window_nanos: 86_400_000_000_000,
             },

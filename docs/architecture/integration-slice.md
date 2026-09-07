@@ -1,16 +1,21 @@
 # Simplified integration slice
 
-The launch slice is explicit: a user prepares an exact frozen quote, performs
-one memo-bound ICRC-1 push into the Stream reserve, and supplies the resulting
-block to `settle_redemption`. Canonical proof creates the durable ICP payout
-obligation; permissionless recovery pays it exactly once. No allowance,
-spender authority, `transfer_from`, or ledger scanner participates.
+The launch slice is explicit: a user performs one ordinary ICRC-1 transfer into
+the fixed Stream redemption staging Account. Staging remains claim-bearing.
+The single bounded account-filtered scanner discovers candidates, and the
+canonical ledger exact-proves each block before Stream derives the source
+Account and amount. A fresh `B/C` quote is frozen only when liquid ICP covers
+the gross. Exact payout retires the staged IO economically; exact
+staging-to-reserve sweep makes that retirement physical. There is no allowance,
+spender authority, pull, special memo, nonce, expiry, or caller-supplied block.
 
 Jupiter and maturity use authenticated or proof-carrying commands and exact
 liquid-receipt permits. The NNS Manager owns the preseeded Dynamic-neuron anchor,
 fee capacity, replenishment, and generation-based unwind recovery. Structural
 SNS synchronization is independent of daily reward credit.
 
-No value-moving canister discovers intent from index history. Local tests
+No generic monetary scanner exists. The sole discovery exception observes one
+semantic redemption Account, authorizes nothing from index data, and is bounded
+and globally rate-limited. Local tests
 install command canisters and canonical ledgers and exercise separate effect,
 ambiguity, restart, timer, and exact-proof boundaries.

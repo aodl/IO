@@ -92,6 +92,9 @@ struct LedgerState {
     transactions: Vec<LedgerTransaction>,
     rejected_to_accounts: Vec<String>,
     duplicate_response: Option<u64>,
+    commit_then_unavailable_to_accounts: Vec<String>,
+    return_too_old_next: bool,
+    delay_next_transfer_yields: u32,
     fee_e8s: Option<u128>,
     call_counters: LedgerCallCounters,
 }
@@ -334,11 +337,14 @@ pub fn icrc1_balance_of(account: IcrcAccount) -> Nat {
     })
 }
 
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn icrc1_transfer(args: IcrcTransferArg) -> Result<Nat, IcrcTransferError> {
+fn icrc1_transfer_impl(args: IcrcTransferArg) -> Result<Nat, IcrcTransferError> {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         state.call_counters.transfer += 1;
+        if state.return_too_old_next {
+            state.return_too_old_next = false;
+            return Err(IcrcTransferError::TooOld);
+        }
         if let Some(duplicate_of) = state.duplicate_response {
             state.duplicate_response = None;
             return Err(IcrcTransferError::Duplicate {
@@ -403,11 +409,11 @@ pub fn icrc1_transfer(args: IcrcTransferArg) -> Result<Nat, IcrcTransferError> {
         let to_balance = balance_of(&state, &to);
         set_balance(&mut state, &from, from_balance - debit_e8s);
         set_balance(&mut state, &to, to_balance.saturating_add(amount_e8s));
-        Ok(Nat::from(record(
+        let block = record(
             &mut state,
             RecordTransfer {
                 from,
-                to,
+                to: to.clone(),
                 from_account: Some(from_account),
                 to_account: Some(to_account),
                 amount_e8s,
@@ -417,8 +423,38 @@ pub fn icrc1_transfer(args: IcrcTransferArg) -> Result<Nat, IcrcTransferError> {
                 native_memo_u64: 0,
                 created_at_time,
             },
-        )))
+        );
+        if let Some(position) = state
+            .commit_then_unavailable_to_accounts
+            .iter()
+            .position(|account| account == &to)
+        {
+            state.commit_then_unavailable_to_accounts.remove(position);
+            Err(IcrcTransferError::TemporarilyUnavailable)
+        } else {
+            Ok(Nat::from(block))
+        }
     })
+}
+
+#[cfg(target_family = "wasm")]
+#[ic_cdk::update]
+pub async fn icrc1_transfer(args: IcrcTransferArg) -> Result<Nat, IcrcTransferError> {
+    let delay_yields = STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let delay = state.delay_next_transfer_yields;
+        state.delay_next_transfer_yields = 0;
+        delay
+    });
+    for _ in 0..delay_yields {
+        let _ = ic_cdk::call::Call::bounded_wait(ic_cdk::api::canister_self(), "icrc1_fee").await;
+    }
+    icrc1_transfer_impl(args)
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub fn icrc1_transfer(args: IcrcTransferArg) -> Result<Nat, IcrcTransferError> {
+    icrc1_transfer_impl(args)
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -445,6 +481,30 @@ pub fn debug_set_transfer_failure(args: DebugTransferFailureArgs) {
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn debug_set_duplicate_response(args: DebugDuplicateResponseArgs) {
     STATE.with(|cell| cell.borrow_mut().duplicate_response = Some(args.duplicate_of));
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_commit_then_unavailable_to(args: DebugRejectAccountArgs) {
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        if !state
+            .commit_then_unavailable_to_accounts
+            .iter()
+            .any(|account| account == &args.account)
+        {
+            state.commit_then_unavailable_to_accounts.push(args.account);
+        }
+    });
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_return_too_old_next() {
+    STATE.with(|cell| cell.borrow_mut().return_too_old_next = true);
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_delay_next_transfer(yields: u32) {
+    STATE.with(|cell| cell.borrow_mut().delay_next_transfer_yields = yields);
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]

@@ -1,7 +1,7 @@
 # Stream Manager
 
-The Stream Manager owns the IO reserve, spendable liquid ICP backing, prepared
-ICRC-1 push redemption, canonical SNS structural/reward observation, one pending
+The Stream Manager owns the IO reserve, spendable liquid ICP backing, semantic
+redemption staging, canonical SNS structural/reward observation, one pending
 entitlement batch, and one serialized monetary operation.
 
 Its canonical snapshot brackets IO/ICP ledger and SNS reads with two identical
@@ -19,14 +19,15 @@ deadline timer wakes structural, reward, or 60-second retry work. There is no
 target queue or second monetary scheduler. Reward allocation is allowed only
 when Dynamic claim principal covers `floor(A_reward*B/C)`.
 
-Redemption prepares `floor(user_io*B/C)` without reserving ICP. The user pushes
-the exact IO principal to reserve through ICRC-1; Stream exact-proves source,
-subaccount, destination, amount, fee, memo, creation window, no spender, and
-non-replay. That proof creates a durable payout obligation. Missing liquid ICP
-after proof pauses as `PayoutOwed`, survives upgrade/restart, and later pays at
-most once. Claim-rate monotonicity keeps prepared quotes supportable across
-intervening protocol work; caller replay and active-operation clearing remain
-one atomic no-`await` completion.
+The user transfers IO into one fixed staging Account, which is deliberately not
+reserve and therefore remains in `C`. A bounded account-filtered index scan
+discovers candidates, but only canonical ledger proof authorizes the amount and
+source Account. Stream waits without debt until a fresh coherent `B/C` quote,
+matching fees, and sufficient liquid ICP exist. Exact payout success retires
+the staged amount economically; the following exact staging-to-reserve sweep
+replaces that temporary `C` exclusion with physical ledger accounting. The
+permissionless no-argument endpoint and timer share the same bounded worker,
+monetary slot, and scheduler.
 
 Jupiter and two-week maturity enter through one paired-backing receipt. The
 receipt is identified by the authenticated NNS Manager's operation sequence,

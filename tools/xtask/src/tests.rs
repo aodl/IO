@@ -496,7 +496,7 @@ fn write_local_sns_rehearsal_fixture(root: &Path) {
     write(
             root,
             "deploy/local-sns-rehearsal/README.md",
-            "local-only real SNS-created IO ledger/index/governance/root stack not final tokenomics not a mainnet SNS proposal not required CI Do not use `--network ic` protocol reserve reserve-to-user transfer prepared user-to-reserve redemption push validate_local_sns_rehearsal validate_local_sns_ledger validate_local_sns_scripts Human-readable local evidence-derived wiring Not accepted by production wiring validators Do not use as install args\n",
+            "local-only real SNS-created IO ledger/index/governance/root stack not final tokenomics not a mainnet SNS proposal not required CI Do not use `--network ic` protocol reserve reserve-to-user transfer user-to-staging transfer staging-to-reserve sweep validate_local_sns_rehearsal validate_local_sns_ledger validate_local_sns_scripts Human-readable local evidence-derived wiring Not accepted by production wiring validators Do not use as install args\n",
         );
     write(
             root,
@@ -570,7 +570,7 @@ fn write_local_sns_rehearsal_fixture(root: &Path) {
     write(
             root,
             "deploy/local-sns-rehearsal/scripts/15-exercise-ledger.sh",
-            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\nprepare_response=\"$(dfx canister call \"$stream\" prepare_redemption \"$redeem_args\")\"\n# Err = variant { Busy }\ndfx canister call --candid io_stream_manager.did \"$stream\" resume '()'\ndfx canister call --candid io_stream_manager.did \"$stream\" resume_reward_backing '()'\ndfx canister call --candid io_nns_neuron_manager.did \"$nns_manager\" resume '()'\n# prepared redemption remained Busy after bounded production reconciliation recovery\n",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\nstaging_response=\"$(dfx canister call \"$stream\" get_redemption_staging_account '()')\"\n# memo = null\n# semantic staging transfer did not remain claim-bearing\n# reserve_sweep_block\ndfx canister call --candid io_stream_manager.did \"$stream\" process_redemptions '()'\ndfx canister call --candid io_stream_manager.did \"$stream\" resume_reward_backing '()'\ndfx canister call --candid io_nns_neuron_manager.did \"$nns_manager\" resume '()'\n",
         );
     write(
             root,
@@ -665,7 +665,7 @@ fn write_did_surface_fixture(root: &Path) {
     write(
             root,
             "canisters/io_stream_manager/io_stream_manager.did",
-            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  prepare_redemption : () -> ();\n  settle_redemption : () -> ();\n  resume_redemption : () -> ();\n  prepare_claim_backing_receipt : () -> ();\n  prove_claim_backing_receipt : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;\n  get_status : () -> () query;\n}\n",
+            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  get_redemption_staging_account : () -> () query;\n  process_redemptions : () -> ();\n  prepare_claim_backing_receipt : () -> ();\n  prove_claim_backing_receipt : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;\n  get_status : () -> () query;\n}\n",
         );
     write(
             root,

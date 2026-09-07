@@ -56,30 +56,36 @@ API.
 
 ## Authenticated redemption path
 
-For the connected principal and selected subaccount, the client queries in
-parallel:
+For the connected principal and selected subaccount, the client queries the IO
+Ledger fee and balance plus Stream Manager's configured minimum and fixed
+semantic redemption staging Account. Invalid, below-minimum, or unfunded input
+is rejected before consent. The
+wallet sees the IO amount, source subaccount, staging destination, ordinary IO
+fee, exact network, the canonical ICP-fee policy, and the fact that the final
+quote is not frozen until Stream accepts the staged transfer. Only affirmative
+consent permits one ordinary `icrc1_transfer` to staging. It has no special
+memo, canister nonce, expiry, allowance, or spender authority. The client keeps
+one immutable `created_at_time` across an ambiguous transport retry and treats
+ledger `Duplicate` as the original receipt. A later age, fee, or availability
+error cannot erase an earlier ambiguous effect; the client retains a
+review-required receipt and stops blind retransmission. A definitive rejection
+of a live first dispatch may still be cleared. The possibly-effective dispatch
+state is persisted before calling the ledger, and callbacks merge by immutable
+intent after rereading storage so stale observations cannot regress newer work.
 
-- IO Ledger `icrc1_fee`;
-- Stream Manager `get_caller_redemption_state` for the next nonce, last request
-  fingerprint, and last completed result.
-
-The Stream Manager prepares an exact frozen quote and deterministic memo before
-consent. The wallet receives the IO amount, selected source subaccount, reserve
-destination, exact IO fee, memo, gross/net ICP quote, request nonce, transfer
-expiry, and exact network. Only affirmative consent permits one `icrc1_transfer`
-to the reserve. Its returned block index is then exact-matched by
-`settle_redemption`; no allowance or spender authority exists. Denial performs
-no monetary call.
-
-The public UI renders coarse `Pending`, `Completed`, and `Stuck` workflow
-progress. Detailed durable phase names remain operator diagnostics exposed by
-status rather than public workflow compatibility variants. Anyone may call the
-canister's permissionless `resume`; the connected UI exposes that operation.
-For a `Stuck` own transfer, the user may submit the exact canonical ledger block
-to `prove_active_transfer`, then resume.
-The canister exact-matches the active persisted intent. An arbitrary IO transfer
-without a matching prepared memo/window is unsupported and cannot create a
-redemption intent.
+After recording the transfer block the client optionally calls permissionless, no-argument
+`process_redemptions()` once. That call cannot select the block, amount, payout
+Account, quote, or fee; the canonical ledger block supplies them. The UI renders
+`Idle`, `Pending`, `RateLimited`, `Completed`, and `Stuck`, explains the roughly
+one-minute automatic cadence, and never asks the user to send the IO again.
+Worker failure is reported as staged/pending, and a returned completion is
+shown only when its source block and Account match the locally retained receipt.
+The same match applies to the manual worker button and the bounded
+`get_status().last_completed_redemption` observation used after reload or timer
+completion. Confirmed completion is cached locally; a later deliberate
+same-amount submission receives a distinct client identity and consent.
+Staged IO remains claim-bearing until canonical payout success. Fee drift or
+insufficient liquid ICP can delay acceptance without creating payout debt.
 
 ## Certified assets, initialization, and cache policy
 

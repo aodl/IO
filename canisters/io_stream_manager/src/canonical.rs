@@ -65,8 +65,10 @@ async fn claim_snapshot_once(config: &StreamConfig) -> Result<ClaimSnapshot, Str
         .iter()
         .try_fold(0u128, |total, (_, balance)| total.checked_add(*balance))
         .ok_or("nonredeemable balance overflow")?;
-    let claim_supply_e8s = io_core_model::claim_supply(total_supply, reserve, &[excluded])
-        .map_err(|error| format!("claim supply failed: {error:?}"))?;
+    let paid_unswept_redemption = stream_snapshot.paid_unswept_redemption_io_e8s()?;
+    let claim_supply_e8s =
+        io_core_model::claim_supply(total_supply, reserve, &[excluded, paid_unswept_redemption])
+            .map_err(|error| format!("claim supply failed: {error:?}"))?;
     let stream_transit = stream_transit_backing(&stream_snapshot, &nns_before)?;
     let transit_backing_e8s = nns_before
         .transit_backing_e8s
@@ -87,6 +89,7 @@ async fn claim_snapshot_once(config: &StreamConfig) -> Result<ClaimSnapshot, Str
         total_supply,
         reserve,
         &excluded_io_balances,
+        paid_unswept_redemption,
         claim_supply_e8s,
         liquid,
         total_claim_backing_e8s,

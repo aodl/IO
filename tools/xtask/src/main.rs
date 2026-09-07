@@ -1097,6 +1097,15 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
             }
             for needle in FORBIDDEN {
                 if text.contains(needle) {
+                    let narrow_redemption_scanner = directory.contains("io_stream_manager")
+                        && matches!(
+                            (*needle, path.file_name().and_then(|name| name.to_str())),
+                            ("LedgerIndexClient", Some("api.rs"))
+                                | ("AccountHistoryScanState", Some("state.rs"))
+                        );
+                    if narrow_redemption_scanner {
+                        continue;
+                    }
                     return Err(format!("{} contains forbidden {needle:?}", path.display()));
                 }
             }
@@ -1159,6 +1168,11 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
         let text = require_file(root, manifest)?;
         for dependency in ["io-ledger-types", "io-governance-types"] {
             if text.contains(dependency) {
+                if manifest == "canisters/io_stream_manager/Cargo.toml"
+                    && dependency == "io-ledger-types"
+                {
+                    continue;
+                }
                 return Err(format!(
                     "{manifest} contains forbidden production dependency {dependency}"
                 ));
@@ -1319,9 +1333,8 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
         stream_production_path,
         &stream_production,
         &[
-            "  prepare_redemption :",
-            "  settle_redemption :",
-            "  resume_redemption :",
+            "  get_redemption_staging_account :",
+            "  process_redemptions :",
             "  prepare_claim_backing_receipt :",
             "  prove_claim_backing_receipt :",
             "  resume :",
@@ -1329,6 +1342,18 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
             "  set_paused :",
             "  validate_set_paused :",
             "  get_status :",
+        ],
+    )?;
+    require_absent(
+        stream_production_path,
+        &stream_production,
+        &[
+            "prepare_redemption",
+            "settle_redemption",
+            "resume_redemption",
+            "get_caller_redemption_state",
+            "PreparedRedemption",
+            "CallerRedemptionState",
         ],
     )?;
     require_present(
@@ -2780,7 +2805,8 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
             "Do not use `--network ic`",
             "protocol reserve",
             "reserve-to-user transfer",
-            "prepared user-to-reserve redemption push",
+            "user-to-staging transfer",
+            "staging-to-reserve sweep",
             "validate_local_sns_rehearsal",
             "validate_local_sns_ledger",
             "validate_local_sns_scripts",
@@ -3097,24 +3123,20 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
         "deploy/local-sns-rehearsal/scripts/15-exercise-ledger.sh",
         &ledger_phase,
         &[
-            "Err = variant { Busy }",
+            "get_redemption_staging_account",
+            "process_redemptions '()'",
+            "memo = null",
+            "semantic staging transfer did not remain claim-bearing",
+            "reserve_sweep_block",
             "resume_reward_backing",
             "io_nns_neuron_manager.did",
-            "prepared redemption remained Busy after bounded production reconciliation recovery",
         ],
     )?;
-    let prepare_call = ledger_phase
-        .find("prepare_redemption \"$redeem_args\"")
-        .ok_or_else(|| "ledger rehearsal omits production redemption preparation".to_string())?;
-    let backing_recovery = ledger_phase
-        .find("\"$stream\" resume_reward_backing '()'")
-        .ok_or_else(|| "ledger rehearsal omits transient Pool recovery".to_string())?;
-    if prepare_call >= backing_recovery {
-        return Err(
-            "ledger rehearsal must observe prepare Busy before driving the same structural reconciliation generation"
-                .to_string(),
-        );
-    }
+    require_absent(
+        "deploy/local-sns-rehearsal/scripts/15-exercise-ledger.sh",
+        &ledger_phase,
+        &["prepare_redemption", "settle_redemption", "push_memo"],
+    )?;
     require_present(
         "deploy/local-sns-rehearsal/scripts/17-exercise-governance-and-controllers.sh",
         &governance_phase,
@@ -7758,7 +7780,7 @@ fn check_live_stream_manager_pocketic_gate_at(root: &Path) -> Result<(), String>
     let script_path = "tools/scripts/run-io-stream-manager-live-pocketic";
     let docs_path = "docs/testing/current-test-inventory.md";
     let script = require_file(root, script_path)?;
-    let required_tests = ["installed_stream_real_sns_icrc1_push_redemption"];
+    let required_tests = ["installed_stream_real_sns_semantic_staging_redemption"];
     require_present(
         script_path,
         &script,
@@ -7850,8 +7872,7 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
         &[
             "real_sns_ledger_index_smoke",
             "real_sns_ledger_index_same_wasm_upgrade_preserves_balances_history_and_duplicates",
-            "real_sns_icrc1_direct_reserve_push",
-            "installed_stream_real_sns_icrc1_push_redemption",
+            "installed_stream_real_sns_semantic_staging_redemption",
             "real_sns_governance_staking_smoke",
             "real_canister_e2e_icp_to_io_stake_reward_redemption",
             "framework",
@@ -7973,11 +7994,7 @@ fn check_real_canister_harness_at(root: &Path) -> Result<(), String> {
     require_present(
         "tests/e2e_real_canisters/src/sns_ledger_index.rs",
         &ledger_index,
-        &[
-            "create_sns_canister",
-            "run_icrc1_direct_reserve_push",
-            "run_installed_stream_redemption",
-        ],
+        &["create_sns_canister", "run_installed_stream_redemption"],
     )?;
     require_absent(harness_path, &harness, &["--network ic", "dfx "])?;
     for path in [

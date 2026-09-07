@@ -8,9 +8,11 @@ pub(crate) fn is_readiness_resumable_operation(operation: &Option<StreamOperatio
         || matches!(operation, Some(StreamOperation::Redemption(redemption))
             if matches!(redemption.as_ref(), RedemptionStreamOperation::Active(active)
                 if matches!(active.phase,
-                    RedemptionPhase::PayoutOwed
+                    RedemptionPhase::PayoutPrepared
                     | RedemptionPhase::PayoutSubmitted
                     | RedemptionPhase::PayoutSucceeded
+                    | RedemptionPhase::SweepPrepared
+                    | RedemptionPhase::SweepSubmitted
                     | RedemptionPhase::Stuck)))
 }
 
@@ -190,6 +192,7 @@ mod tests {
         let governance = principal(5);
         crate::state::StreamConfig {
             io_ledger: principal(2),
+            io_index: principal(8),
             icp_ledger: principal(3),
             nns_manager: principal(4),
             jupiter_io_account: account(principal(7), 3),
@@ -203,7 +206,7 @@ mod tests {
             minimum_redemption_io_e8s: 20_000,
             expected_io_fee_e8s: 10_000,
             expected_icp_fee_e8s: 10_000,
-            maximum_request_lifetime_nanos: 1_000_000,
+            redemption_poll_interval_seconds: 60,
             retry_delay_nanos: 1,
             ledger_deduplication_window_nanos: 2_000_000,
         }

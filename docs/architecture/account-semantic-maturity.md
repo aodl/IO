@@ -64,7 +64,7 @@ dilute existing claims.
 ## Proof budget
 
 IO proves ambiguous irreversible effects, not fungible-asset provenance after
-custody. Exact outgoing Ledger transfer recovery, redemption replay, Jupiter
+custody. Exact outgoing Ledger transfer recovery, staged redemption payout/sweep, Jupiter
 authorization, parent cached-stake reflection, NNS Split recovery, child
 Disburse recovery, entitlement-generation binding, bounded recipient settlement,
 and strict same-schema upgrade validation remain. Without those mechanisms an
@@ -73,7 +73,7 @@ recipient set, or decode an incompatible monetary state.
 
 | Mechanism | Result | Concrete safety purpose |
 | --- | --- | --- |
-| Prepared redemption hash, exact incoming block and payout proof | Keep | Bind a caller replay, prove one memo-bound ICRC-1 push, and prevent ambiguous ICP payout retries from transferring twice. |
+| Staged redemption block plus exact payout/sweep proof | Keep | Canonically prove one transfer into the fixed staging Account and prevent ambiguous outgoing retries from paying or sweeping twice. |
 | Generic outgoing Ledger transfer proof | Keep | An ambiguous retry without the exact block can send controlled ICP or IO twice. |
 | Jupiter source proof | Keep | Preserve the external faucet authorization boundary before its ICP enters custody. |
 | Parent refresh proof | Keep | Prevent crediting a stake transfer until canonical cached stake reflects it. |

@@ -22,9 +22,7 @@ pub use io_receipt_types::{
     ClaimBackingReceiptPermit, ClaimBackingReceiptProgress, PrepareClaimBackingReceiptArgs,
     ProveClaimBackingReceiptArgs,
 };
-pub use redemption::{PreparedRedemption, RedeemArgs};
 pub use rewards::RewardBackingProgress;
-pub use state::CallerRedemptionState;
 pub use state::{
     Account, Lifecycle, PendingEntitlementBatch, RewardCheckpoint, RewardEventClassification,
     RewardEventCredit, RewardEventId, RewardEventObservation, SkippedRewardEvent, StreamConfig,
@@ -79,6 +77,10 @@ pub fn init(args: InitArgs) {
         next_operation_sequence: state::OperationSequence(1),
         control_epoch: 0,
         last_completed_claim_receipt: None,
+        redemption_scan_state: Default::default(),
+        last_redemption_poll_started_at_nanos: 0,
+        last_manual_redemption_work_started_at_nanos: 0,
+        last_completed_redemption: None,
     };
     state::initialize(state, ic_cdk::api::canister_self())
         .unwrap_or_else(|error| ic_cdk::trap(&error));
@@ -89,19 +91,19 @@ pub fn post_upgrade() {
     state::reopen(ic_cdk::api::canister_self());
 }
 
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn prepare_redemption(args: RedeemArgs) -> Result<PreparedRedemption, ApiError> {
-    api::prepare_redemption(ic_cdk::api::msg_caller(), args, ic_cdk::api::time()).await
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn get_redemption_staging_account() -> Account {
+    api::redemption_staging_account()
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn get_minimum_redemption_io_e8s() -> u128 {
+    state::read().config.minimum_redemption_io_e8s
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn settle_redemption(block_index: u128) -> Result<RedemptionProgress, ApiError> {
-    api::settle_redemption(ic_cdk::api::msg_caller(), block_index, ic_cdk::api::time()).await
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn resume_redemption(caller: candid::Principal) -> Result<RedemptionProgress, ApiError> {
-    api::resume_redemption(caller, ic_cdk::api::time()).await
+pub async fn process_redemptions() -> Result<RedemptionProgress, ApiError> {
+    api::process_redemptions(ic_cdk::api::time()).await
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -206,26 +208,27 @@ pub fn debug_replace_state(replacement: StreamStateV1) -> Result<(), String> {
 }
 
 #[cfg(debug_assertions)]
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn debug_fail_malformed_prepare_after_persist(enabled: bool) {
-    receipt::debug_fail_malformed_prepare_after_persist(enabled);
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn debug_get_scheduler_status() -> reward_timer::DebugSchedulerStatus {
+    reward_timer::debug_status()
 }
 
 #[cfg(debug_assertions)]
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub fn debug_trap_after_caller_result_write(enabled: bool) {
-    api::debug_trap_after_caller_result_write(enabled);
+pub fn debug_install_scheduler() {
+    reward_timer::install_for_ready_state();
 }
 
-#[cfg_attr(target_family = "wasm", ic_cdk::query)]
-pub fn get_caller_redemption_state() -> Result<CallerRedemptionState, ApiError> {
-    let caller = ic_cdk::api::msg_caller();
-    if caller == candid::Principal::anonymous() {
-        return Err(ApiError::Anonymous);
-    }
-    let state = state::caller_state(caller);
-    state.validate().map_err(ApiError::Invalid)?;
-    Ok(state)
+#[cfg(debug_assertions)]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_install_scheduler_at(deadline_seconds: u64) {
+    reward_timer::debug_install_at(deadline_seconds);
+}
+
+#[cfg(debug_assertions)]
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_fail_malformed_prepare_after_persist(enabled: bool) {
+    receipt::debug_fail_malformed_prepare_after_persist(enabled);
 }
 
 ic_cdk::export_candid!();

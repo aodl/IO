@@ -5,6 +5,7 @@ use crate::{
 
 pub fn get_status() -> Status {
     let state = state::read();
+    let paid_unswept_redemption_io_e8s = state.paid_unswept_redemption_io_e8s().ok();
     let (operation_kind, operation_phase) = match state.active_operation {
         Some(StreamOperation::Redemption(operation)) => match *operation {
             RedemptionStreamOperation::Active(operation) => (
@@ -37,6 +38,11 @@ pub fn get_status() -> Status {
         operation_kind,
         operation_phase,
         next_operation_sequence: state.next_operation_sequence.0,
+        redemption_staging_account: io_accounts::redemption_staging(ic_cdk::api::canister_self()),
+        pending_redemption_candidates: state::redemption_candidate_count(),
+        redemption_scan_status: state.redemption_scan_state.status.clone(),
+        paid_unswept_redemption_io_e8s,
+        last_completed_redemption: state.last_completed_redemption.clone(),
         latest_entitlement_batch_generation: state.latest_entitlement_batch_generation,
         latest_processed_reward_event: state.reward_checkpoint.last_processed_event,
         latest_reward_event_classification: state
