@@ -1,0 +1,11 @@
+[phases]
+official_bootstrap = true
+release_identity = true
+sns_finalized = true
+canisters_discovered = true
+ledger_redemption = true
+index_archive = true
+governance_controllers = true
+manager_upgrade_restart = true
+daily_reward = true
+account_semantic_protocol = true

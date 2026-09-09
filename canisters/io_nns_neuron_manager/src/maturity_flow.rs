@@ -375,7 +375,6 @@ pub(crate) async fn start_delivery(
                 pending.captured_e8s.expect("checked frozen capture"),
                 io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
                 latest.anchor_available_e8s,
-                latest.permanent_fee_shortfall_e8s,
                 latest.config.expected_icp_fee_e8s,
             )
             .map_err(|error| {
@@ -392,7 +391,6 @@ pub(crate) async fn start_delivery(
             pending: pending.clone(),
             two_year_plan,
             anchor_reimbursement: None,
-            permanent_reimbursement: None,
             permit: None,
             permanent_credit: None,
             claim_transfer: None,
@@ -429,22 +427,16 @@ async fn resume_delivery(
     }
     let (plan, split) = delivery_economics(operation.kind, &delivery, config.expected_icp_fee_e8s)?;
     if let Some(plan) = plan {
-        for (role, amount) in [
-            (
+        if plan.anchor_reimbursement > 0 {
+            if let Some(progress) = resume_neuron_credit(
+                operation.clone(),
+                &delivery,
                 NeuronCreditRole::AnchorReimbursement,
                 plan.anchor_reimbursement,
-            ),
-            (
-                NeuronCreditRole::PermanentReimbursement,
-                plan.permanent_reimbursement,
-            ),
-        ] {
-            if amount > 0 {
-                if let Some(progress) =
-                    resume_neuron_credit(operation.clone(), &delivery, role, amount).await?
-                {
-                    return Ok(progress);
-                }
+            )
+            .await?
+            {
+                return Ok(progress);
             }
         }
     }
@@ -600,9 +592,7 @@ async fn resume_neuron_credit(
                 NeuronCreditRole::AnchorReimbursement => state::read()
                     .pooled_parent_id
                     .ok_or_else(|| ApiError::Invalid("Dynamic parent is absent".into()))?,
-                NeuronCreditRole::PermanentReimbursement | NeuronCreditRole::OrdinaryPermanent => {
-                    config.two_year_neuron_id
-                }
+                NeuronCreditRole::OrdinaryPermanent => config.two_year_neuron_id,
             };
             let observation = execution::query_neuron_observation(&config, neuron_id).await?;
             ensure_exact(&operation)?;
@@ -613,7 +603,7 @@ async fn resume_neuron_credit(
                         followee_neuron_id: config.pooled_parent_followee_id,
                     },
                 ),
-                NeuronCreditRole::PermanentReimbursement | NeuronCreditRole::OrdinaryPermanent => {
+                NeuronCreditRole::OrdinaryPermanent => {
                     execution::validate_permanent_configuration(&observation)
                 }
             };
@@ -680,11 +670,6 @@ async fn prepare_claim_transfer(
     memo: Vec<u8>,
 ) -> Result<MaturityProgress, ApiError> {
     let config = state::read().config;
-    if state::read().anchor_available_e8s < config.expected_icp_fee_e8s {
-        return Err(ApiError::Pending(
-            "Dynamic anchor cannot fund the maturity claim-leg fee".into(),
-        ));
-    }
     let attempt = NnsTransferAttempt::prepared(NnsTransferIntent {
         ledger: config.icp_ledger,
         source_subaccount: staging_account(ic_cdk::api::canister_self(), operation.kind)
@@ -763,22 +748,7 @@ async fn submit_maturity_transfer(
     match execution::classify_transfer(result)? {
         execution::ExactTransferOutcome::Succeeded(block) => {
             attempt.state = TransferState::Succeeded { block };
-            match leg {
-                MaturityTransferLeg::Credit(NeuronCreditRole::AnchorReimbursement)
-                | MaturityTransferLeg::Credit(NeuronCreditRole::PermanentReimbursement) => {
-                    write_exact(&operation, replacement.clone(), false)?;
-                }
-                MaturityTransferLeg::Credit(NeuronCreditRole::OrdinaryPermanent) => {
-                    write_exact_with_fee(
-                        &operation,
-                        replacement.clone(),
-                        ExactFeeClass::Permanent,
-                    )?;
-                }
-                MaturityTransferLeg::Claim => {
-                    write_exact_with_fee(&operation, replacement.clone(), ExactFeeClass::Claim)?;
-                }
-            }
+            write_exact(&operation, replacement.clone(), false)?;
             Ok(MaturityProgress::Pending)
         }
         execution::ExactTransferOutcome::Paused(classification, reason) => {
@@ -804,13 +774,6 @@ pub async fn prove_active_transfer(
         (
             MaturityTransferLeg::Credit(NeuronCreditRole::AnchorReimbursement),
             match delivery.anchor_reimbursement.as_ref() {
-                Some(PermanentCreditState::Prepared { transfer, .. }) => Some(transfer.as_ref()),
-                _ => None,
-            },
-        ),
-        (
-            MaturityTransferLeg::Credit(NeuronCreditRole::PermanentReimbursement),
-            match delivery.permanent_reimbursement.as_ref() {
                 Some(PermanentCreditState::Prepared { transfer, .. }) => Some(transfer.as_ref()),
                 _ => None,
             },
@@ -868,18 +831,7 @@ pub async fn prove_active_transfer(
     let mut replacement = operation.clone();
     transfer_mut(delivery_mut(&mut replacement), leg)?.state =
         TransferState::Succeeded { block: block_index };
-    match leg {
-        MaturityTransferLeg::Credit(NeuronCreditRole::AnchorReimbursement)
-        | MaturityTransferLeg::Credit(NeuronCreditRole::PermanentReimbursement) => {
-            write_exact(&operation, replacement.clone(), false)?;
-        }
-        MaturityTransferLeg::Credit(NeuronCreditRole::OrdinaryPermanent) => {
-            write_exact_with_fee(&operation, replacement.clone(), ExactFeeClass::Permanent)?;
-        }
-        MaturityTransferLeg::Claim => {
-            write_exact_with_fee(&operation, replacement.clone(), ExactFeeClass::Claim)?;
-        }
-    }
+    write_exact(&operation, replacement.clone(), false)?;
     Ok(MaturityProgress::Pending)
 }
 
@@ -917,26 +869,15 @@ fn finish_inflow(
     let config = state::read().config;
     let (plan, split) = delivery_economics(operation.kind, delivery, config.expected_icp_fee_e8s)?;
     if let Some(plan) = plan {
-        for (role, amount) in [
-            (
-                NeuronCreditRole::AnchorReimbursement,
-                plan.anchor_reimbursement,
-            ),
-            (
-                NeuronCreditRole::PermanentReimbursement,
-                plan.permanent_reimbursement,
-            ),
-        ] {
-            if amount > 0
-                && !matches!(
-                    credit_state(delivery, role),
-                    Some(PermanentCreditState::Proved(_))
-                )
-            {
-                return Err(ApiError::Invalid(
-                    "completed two-year maturity lacks replenishment proof".into(),
-                ));
-            }
+        if plan.anchor_reimbursement > 0
+            && !matches!(
+                credit_state(delivery, NeuronCreditRole::AnchorReimbursement),
+                Some(PermanentCreditState::Proved(_))
+            )
+        {
+            return Err(ApiError::Invalid(
+                "completed two-year maturity lacks anchor replenishment proof".into(),
+            ));
         }
     }
     if split.is_some()
@@ -986,8 +927,7 @@ fn finish_inflow(
     let plan = plan.unwrap_or(io_nns_types::maturity::TwoYearReplenishmentPlan {
         captured: captured_e8s,
         anchor_reimbursement: 0,
-        permanent_reimbursement: 0,
-        reimbursement_transfer_fees: 0,
+        anchor_reimbursement_fee: 0,
         ordinary: split,
         carried: 0,
     });
@@ -995,8 +935,7 @@ fn finish_inflow(
         kind: operation.kind,
         captured_e8s,
         anchor_reimbursement_e8s: plan.anchor_reimbursement,
-        permanent_reimbursement_e8s: plan.permanent_reimbursement,
-        reimbursement_transfer_fees_e8s: plan.reimbursement_transfer_fees,
+        anchor_reimbursement_fee_e8s: plan.anchor_reimbursement_fee,
         carried_e8s: plan.carried,
         permanent_credit_e8s: split.map_or(0, |value| value.permanent_credit),
         claim_credit_e8s: split.map_or(0, |value| value.claim_credit),
@@ -1054,7 +993,6 @@ pub(crate) fn credit_state(
 ) -> Option<&PermanentCreditState> {
     match role {
         NeuronCreditRole::AnchorReimbursement => delivery.anchor_reimbursement.as_ref(),
-        NeuronCreditRole::PermanentReimbursement => delivery.permanent_reimbursement.as_ref(),
         NeuronCreditRole::OrdinaryPermanent => delivery.permanent_credit.as_ref(),
     }
 }
@@ -1066,7 +1004,6 @@ pub(crate) fn set_credit_state(
 ) {
     match role {
         NeuronCreditRole::AnchorReimbursement => delivery.anchor_reimbursement = state,
-        NeuronCreditRole::PermanentReimbursement => delivery.permanent_reimbursement = state,
         NeuronCreditRole::OrdinaryPermanent => delivery.permanent_credit = state,
     }
 }
@@ -1078,7 +1015,6 @@ fn transfer_mut(
     match leg {
         MaturityTransferLeg::Credit(role) => match role {
             NeuronCreditRole::AnchorReimbursement => delivery.anchor_reimbursement.as_mut(),
-            NeuronCreditRole::PermanentReimbursement => delivery.permanent_reimbursement.as_mut(),
             NeuronCreditRole::OrdinaryPermanent => delivery.permanent_credit.as_mut(),
         }
         .and_then(|state| match state {
@@ -1133,49 +1069,6 @@ pub(crate) fn write_exact(
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-enum ExactFeeClass {
-    Claim,
-    Permanent,
-}
-
-fn write_exact_with_fee(
-    expected: &MaturityCommandOperation,
-    replacement: MaturityCommandOperation,
-    class: ExactFeeClass,
-) -> Result<(), ApiError> {
-    let mut latest = state::read();
-    if !matches!(&latest.active_operation, Some(NnsOperation::Maturity(active)) if **active == *expected)
-    {
-        return Err(ApiError::Busy);
-    }
-    replacement
-        .validate(latest.next_operation_sequence)
-        .map_err(ApiError::Invalid)?;
-    let fee = latest.config.expected_icp_fee_e8s;
-    match class {
-        ExactFeeClass::Claim => {
-            latest.anchor_available_e8s = latest
-                .anchor_available_e8s
-                .checked_sub(fee)
-                .ok_or_else(|| ApiError::Invalid("Dynamic anchor fee capacity underflow".into()))?;
-            latest.claim_bearing_dynamic_principal_e8s = latest
-                .claim_bearing_dynamic_principal_e8s
-                .checked_add(fee)
-                .ok_or_else(|| ApiError::Invalid("Dynamic claim principal overflow".into()))?;
-        }
-        ExactFeeClass::Permanent => {
-            latest.permanent_fee_shortfall_e8s = latest
-                .permanent_fee_shortfall_e8s
-                .checked_add(fee)
-                .ok_or_else(|| ApiError::Invalid("permanent fee shortfall overflow".into()))?;
-        }
-    }
-    latest.active_operation = Some(NnsOperation::Maturity(Box::new(replacement)));
-    state::write(latest);
-    Ok(())
-}
-
 pub(crate) fn write_exact_credit_proof(
     expected: &MaturityCommandOperation,
     replacement: MaturityCommandOperation,
@@ -1197,14 +1090,6 @@ pub(crate) fn write_exact_credit_proof(
                 .checked_add(amount_e8s)
                 .filter(|value| *value <= io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S)
                 .ok_or_else(|| ApiError::Invalid("Dynamic anchor reimbursement overflow".into()))?;
-        }
-        NeuronCreditRole::PermanentReimbursement => {
-            latest.permanent_fee_shortfall_e8s = latest
-                .permanent_fee_shortfall_e8s
-                .checked_sub(amount_e8s)
-                .ok_or_else(|| {
-                    ApiError::Invalid("permanent reimbursement exceeds shortfall".into())
-                })?;
         }
         NeuronCreditRole::OrdinaryPermanent => {}
     }

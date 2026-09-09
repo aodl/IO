@@ -5,19 +5,19 @@ This is the handoff index for an independent auditor. It is not a self-audit and
 ## Recorded release identity
 
 - Source-finalization commit:
-  `e727d688b3aec0e6dace6a499a4979bf66cad2c8`.
+  `270dcf3dc71fc8e7b63c3177b0e3f58fc9246b35`.
 - Immediate artifact-recording commit:
-  `d8e45b27e9b12d19542ea4220616f3828896c41a`.
+  `dc548f555a808f59e6a6c69759cc41fbb7f1f54d`.
 - Canonical evidence commit:
-  `61c1a7fb0cda3ef743a8f68c1488cdf57e3dc264`.
+  `608baa58425389827acf3a5c051d71160cd829f7`.
 - Current schema-v2 package:
-  `deploy/local-sns-rehearsal/evidence/2026-08-31-e727d68-anchored-dynamic`.
+  `deploy/local-sns-rehearsal/evidence/2026-09-03-270dcf3-anchored-dynamic`.
 - Release-manifest SHA-256:
-  `13d258958bee84e20934627f66707ca6ba336c26cb9e7ff6d140918a4465a382`.
+  `6d666a69d3d74a30f45510a23facd2cbc6d0790043dbbea49f96874620428637`.
 - Package-manifest SHA-256:
-  `a4fb737b0b0101284ac6cdc00aab0f484d4a2ccd3942adf6f28cf1b98f6a6af1`.
+  `023a8f10893f94e871012397d901d0e7e3632690b55269df123fd741f9b30f3c`.
 - Package `SHA256SUMS` SHA-256:
-  `6e035df94a0410fa733a09cf35e557e0d6e072e98bbfcb5edf506ef8117409a1`.
+  `4ac11006cace6ef74a762fed9d8a4ff55cdfc5c619dc7d2df4156a265d8543c8`.
 - Raw/gzip Wasm hashes and exact-source equality: `release-artifacts/manifest.json` and `docs/operations/reproducible-builds.md`.
 - Production interfaces: the four production DIDs under `canisters/`.
 - Dependency/tooling evidence: `Cargo.lock`, `package-lock.json`, `deny.toml`, and `docs/security/dependency-and-supply-chain.md`.
@@ -73,7 +73,7 @@ release pairs and packages remain immutable evidence for their own releases.
 
 | Classification | Evidence |
 | --- | --- |
-| Proved locally | The current selector-bound `2026-08-31-e727d68-anchored-dynamic` package: Layer A source-built official SNS launch/wiring and live-local observations, Layer B exact proposal-143660 NNS mechanics, and Layer C current anchored IO economics, scheduling, push redemption, and controlled recovery. `docs/testing/e2e-coverage-matrix.md`, exact-source release verification, and the package's manifest/checksum inventory provide the cross-checks. All earlier packages are immutable historical evidence for their own releases only. |
+| Proved locally | The current selector-bound `2026-09-03-270dcf3-anchored-dynamic` package: Layer A source-built official SNS launch/wiring and live-local observations, Layer B exact proposal-143660 NNS mechanics, and Layer C current simplified anchored IO economics, scheduling, push redemption, and controlled recovery. `docs/testing/e2e-coverage-matrix.md`, exact-source release verification, and the package's manifest/checksum inventory provide the cross-checks. All earlier packages are immutable historical evidence for their own releases only. |
 | Candidate-only | Same-source SNS Governance/Root at IC `4320fdf2e613844eabae1927b1a23b98da3a7bc6`, including reward-share capability and Governance → Root compatibility. The separately reviewed official lock remains `b904c9dd1bdef8841bd12f03efbc71180a015e25`; local source proof does not establish official adoption. |
 | Officially available | Pinned official baseline artifacts/tooling in `tests/e2e_real_canisters/wasms.example.toml`; these do not imply official reward-share adoption. |
 | External fixture gaps | Real transport-fault injection and non-1.0 maturity modulation, classified in `docs/operations/remaining-work.md`. |

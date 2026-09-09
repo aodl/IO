@@ -1,7 +1,8 @@
 use candid::{decode_one, encode_one, CandidType, Principal};
 use io_nns_neuron_manager::{
-    api::DynamicBackingStatus, state::Account, ApiError, InitArgs, JupiterProgress, Lifecycle,
-    NnsConfig, PrepareTwoWeekMaturityArgs, Status,
+    api::DynamicBackingStatus,
+    state::{Account, NnsStateV1},
+    ApiError, InitArgs, JupiterProgress, Lifecycle, NnsConfig, PrepareTwoWeekMaturityArgs, Status,
 };
 use pocket_ic::PocketIc;
 use serde::Deserialize;
@@ -383,7 +384,6 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
     assert_eq!(public_dynamic.anchor_target_e8s, 1_000_000_000);
     assert_eq!(public_dynamic.anchor_available_e8s, 1_000_000_000);
     assert_eq!(public_dynamic.excluded_dynamic_surplus_e8s, 0);
-    assert_eq!(public_dynamic.permanent_fee_shortfall_e8s, 0);
 
     let governance_calls_before_unauthorized: u64 =
         query(&pic, governance, "debug_get_full_neuron_call_count");
@@ -503,6 +503,19 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
         after_public + 1
     );
 
+    let mut exhausted_anchor: NnsStateV1 = query(&pic, manager, "debug_get_state");
+    exhausted_anchor.claim_bearing_dynamic_principal_e8s =
+        io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S;
+    exhausted_anchor.anchor_available_e8s = 0;
+    update::<_, Result<(), String>>(
+        &pic,
+        manager,
+        Principal::anonymous(),
+        "debug_replace_state",
+        exhausted_anchor,
+    )
+    .unwrap();
+
     let valid_block: io_ledger_boundary::IcrcTransferResult = update(
         &pic,
         ledger,
@@ -533,6 +546,12 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
             Err(ApiError::Pending(_)) | Ok(JupiterProgress::Pending)
         ),
         "valid deposit did not stop at a real canonical or Stream boundary: {legitimate:?}"
+    );
+    let after_jupiter: NnsStateV1 = query(&pic, manager, "debug_get_state");
+    assert_eq!(after_jupiter.anchor_available_e8s, 0);
+    assert_eq!(
+        after_jupiter.claim_bearing_dynamic_principal_e8s,
+        io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S
     );
     assert_eq!(
         query::<LedgerCallCounters>(&pic, ledger, "debug_get_call_counters").query_blocks,

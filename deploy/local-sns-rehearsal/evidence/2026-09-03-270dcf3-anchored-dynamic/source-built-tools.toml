@@ -1,0 +1,9 @@
+[source]
+repository = "dfinity/ic"
+commit = "4320fdf2e613844eabae1927b1a23b98da3a7bc6"
+clean = true
+
+[tools]
+sns_sha256 = "2f4777ba3fe90e46cbfecafc285d178833ceed5966fe1ede1b58db2aa71b5ed6"
+sns_testing_sha256 = "5c0736bb1b90e57ebaeee609adae65d770e87dd75206ed00450cbc950150876e"
+sns_testing_init_sha256 = "95bb2fee0f291759c2dd21dd7763562ac7a17b39693b838d34db9fc71203dc6f"

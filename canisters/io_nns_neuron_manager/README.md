@@ -54,10 +54,15 @@ same checked 40/60 paired-inflow algebra as Jupiter. Stream
 freezes backed IO for the frozen entitlement generation before the claim leg
 can become redeemable. Neither maturity path accepts or stores a Mint block.
 Two-year maturity first uses its complete semantic Account capture to restore
-the Dynamic anchor deficit and permanent-capital fee shortfall, paying those
-reimbursement-transfer fees from fresh maturity without creating recursive
-debt. Only the valid remainder receives the ordinary 40/60 allocation, and no
-TwoYear path issues IO.
+the Dynamic anchor deficit, paying that restoration-transfer fee from the same
+fresh capture without creating recursive debt. Only the valid remainder
+receives the ordinary gross 40/60 allocation. Each fresh leg contributes its
+post-fee net credit, and no TwoYear path issues IO.
+
+The anchor protects only fees caused by relocating existing claim backing:
+Stream-to-Dynamic top-up and the sticky Split plus future child-disbursement
+commitment. Jupiter, TwoWeek maturity, and ordinary TwoYear delivery are fresh
+value; their fees reduce their fresh net credits and do not consume anchor.
 
 Production methods cover Jupiter notify, maturity start/prepare/resume,
 pooled reconciliation/resume/proof, claim-backing observation, lifecycle, and

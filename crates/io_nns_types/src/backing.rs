@@ -151,7 +151,6 @@ pub struct ClaimAssetObservation {
     pub anchor_target_e8s: u128,
     pub anchor_available_e8s: u128,
     pub excluded_dynamic_surplus_e8s: u128,
-    pub permanent_fee_shortfall_e8s: u128,
     pub live_cohorts: Vec<CohortObservation>,
     pub live_child_physical_principal_e8s: u128,
     pub live_child_net_backing_e8s: u128,
@@ -638,7 +637,6 @@ mod tests {
             anchor_target_e8s: DYNAMIC_ANCHOR_TARGET_E8S,
             anchor_available_e8s: DYNAMIC_ANCHOR_TARGET_E8S,
             excluded_dynamic_surplus_e8s: 0,
-            permanent_fee_shortfall_e8s: 0,
             live_cohorts: vec![CohortObservation {
                 generation: 1,
                 child_neuron_id: 2,

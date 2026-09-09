@@ -17,10 +17,12 @@ the test-only `io-proposed-economics-tests` model.
 3. **Anchor isolation.** The replenishable entitlement is exactly 10 ICP.
    Anchor and unsolicited surplus are outside `B`; neither issues IO nor
    enlarges the entitlement.
-4. **Fee conservation.** Each internal ICP fee has exactly one class: claim
-   fee consumes anchor, permanent fee creates permanent shortfall,
-   reimbursement fee consumes fresh maturity, or external/non-reimbursable
-   fee creates no protocol debt. Replay cannot classify it twice.
+4. **Fee conservation.** A fee paid to relocate already-existing claim backing
+   consumes excluded anchor capacity exactly once. A fee paid to deliver fresh
+   value reduces that fresh net credit and creates no reimbursement entitlement.
+   An anchor-restoration fee is paid from fresh TwoYear maturity without
+   recursive debt. Redemption uses its frozen gross/net quote, and external
+   fees create no protocol debt. Replay cannot charge a fee twice.
 5. **Synchronization with economic fail-safe.** Healthy scheduling targets
    liquid claim backing before SNS unlock. Arbitrary distributed liveness is
    not assigned a finite bound. Delayed backing stays exactly in `B`, and an
@@ -57,16 +59,16 @@ records for their own source. They do not define this replacement.
 | Pooled-parent bootstrap and claim observation | NNS `api`, `pool_flow`, `lifecycle`, `claim_assets`; `io-nns-types::backing` | Replace optional/lazy bootstrap with a mandatory pre-Ready Dynamic-neuron bootstrap. Retain exact Governance observation and replay machinery. |
 | Target and reconciliation economics | `io-core-model::reconcile`; Stream `pool_reconciliation`; NNS pool permits | Replace fee-eroding target planning and the parent-minimum claim floor with claim-principal planning plus explicit anchor capacity. |
 | ICP fees | Core reconcile, Jupiter, maturity, unwind, and transfer phases | Replace implicit source-bucket erosion with the closed fee classification below. Retain immutable intents and canonical effect proof. |
-| Permanent-neuron credit | NNS `permanent_credit`, Jupiter, maturity | Retain exact neuron/subaccount proof; add one checked aggregate permanent-fee shortfall. |
-| TwoWeek maturity | NNS maturity state/flow and Stream paired receipt | Retain semantic staging and paired issuance; make its claim-leg fee consume anchor and its permanent-leg fee create permanent shortfall. |
-| TwoYear maturity | NNS maturity state/flow | Replace direct whole-capture 40/60 with replenish-anchor, replenish-permanent, then 40/60. Retain no-IO issuance and semantic capture. |
+| Permanent-neuron credit | NNS `permanent_credit`, Jupiter, maturity | Retain exact neuron/subaccount and cached-stake proof. Fresh permanent delivery is credited net of its fee and creates no liability. |
+| TwoWeek maturity | NNS maturity state/flow and Stream paired receipt | Retain semantic staging and paired issuance. Both fresh delivery legs are credited net of their own fee; paired IO uses the net claim credit. |
+| TwoYear maturity | NNS maturity state/flow | Restore only the Dynamic-anchor deficit from fresh capture, including its transfer fee, then apply ordinary gross 40/60 to the valid remainder. Retain no-IO issuance and semantic capture. |
 | Split, child, and disbursement | NNS `unwind_flow`; `io-nns-types::{pool,backing}` | Retain sticky exact commands/proofs. Consume Split and committed future-disbursement fee capacity once at the sticky boundary. |
 | SNS timing/eligibility | Separate core-model constants; governance/reward boundaries; Stream scheduler | NNS delay is 1,209,600 seconds and SNS user delay is 1,296,060 seconds after the 12-hour timing proof. |
 | Cohort lifecycle | NNS stable state/API; `MAX_LIVE_UNWIND_COHORTS`; `CapacityPending` | Delete the product cap/variant. Retain one aggregate child per generation and prioritize ready-child service before another Split. |
 | Redemption | Stream state/API/redemption; ledger boundary/types | Replace allowance, pull intent, and `transfer_from` with prepared ICRC-1 push proof and a durable payout obligation. Retain bounded caller nonce/replay. |
 | Frontend redemption | `frontend/web/src/app/redemption.js` and redemption UI/tests | Replace approval/allowance UX with prepare, explicit push, block settlement, and resume. |
 | Historian/status | Historian raw adapters/model/DID and frontend projection | Retain layered observation; add anchor partition, deficits, push obligation, and cohort-priority representations only where operationally necessary. |
-| Stable schemas | Stream marker 9; NNS marker 12; strict launch fixtures | The replacement encoded shapes reject markers 8/11 without migration. |
+| Stable schemas | Stream marker 10; NNS marker 13; strict launch fixtures | The replacement encoded shapes reject markers 9/12 without migration. |
 | Bootstrap/rehearsal tooling | install args, production wiring, local SNS runbook/evidence validators | Replace lazy-parent fixtures and pull-redemption phases with preseeded anchor, dust, push, replenishment, timing, and >32 historical-generation evidence. |
 | Normative documentation | pooled-backing, fees, maturity, scheduler, redemption, readiness docs | Mark superseded decisions explicitly. Preserve historical package descriptions. |
 
@@ -114,11 +116,10 @@ Claim-bearing `P = 0` is valid while the physical neuron retains protocol
 capital.
 
 The anchor target and maximum replenishment entitlement are both exactly 10
-ICP. `anchor_available_e8s` is the smallest required anchor scalar and is
-always in `0..=1_000_000_000`. `permanent_fee_shortfall_e8s` is the smallest
-aggregate proof of canonically established permanent-capital fee loss. No
-per-fee journal, donor provenance, per-user child accounting, generic queue,
-scanner, second monetary slot, or second scheduler is introduced.
+ICP. `anchor_available_e8s` is the only required fee-capacity scalar and is
+always in `0..=1_000_000_000`. No permanent fee liability, per-fee journal,
+donor provenance, per-user child accounting, generic queue, scanner, second
+monetary slot, or second scheduler is introduced.
 
 All realised maturity of the Dynamic neuron follows the ordinary pooled /
 TwoWeek reward path. Principal provenance does not partition neuron maturity.
@@ -152,9 +153,12 @@ increase the anchor target, and never increase the later replenishment claim.
 
 ### D. Exact fee conservation
 
-Every fee has exactly one class: claim fee consumes anchor, permanent fee
-increases permanent shortfall, reimbursement transfer fee consumes fresh
-TwoYear maturity, or external/non-reimbursable fee creates no entitlement.
+Every unavoidable ICP fee has exactly one economic treatment. A fee paid to
+relocate already-existing claim backing consumes excluded anchor capacity
+exactly once. A fee paid to deliver fresh value reduces that fresh net credit
+and creates no reimbursement entitlement. An anchor-restoration fee is paid
+from fresh TwoYear maturity and creates no recursive debt. A redemption fee
+belongs to the frozen gross/net quote. External fees create no protocol debt.
 Canonical replay is non-effecting.
 
 ### E. Synchronization target with economic fail-safe
@@ -191,31 +195,51 @@ pairwise disjoint; and the exact global claim partition is `B = L + P + U + T`.
 
 ## Fee inventory
 
-| Fee-bearing event | Source / destination | Economic owner and sticky point | Class |
-| --- | --- | --- | --- |
-| Operator anchor seed transfer | Operator to memo-0 staking Account | Operator before IO custody | External; ignored |
-| Unsolicited transfer to a public protocol Account | External sender to protocol Account | External sender | External; ignored |
-| Stream liquid to Dynamic top-up | Stream liquid to NNS staking Account | Claim backing when exact transfer becomes unavoidable | Claim fee; consume anchor once |
-| NNS Split | Dynamic parent to child | Claim backing when Split is canonically established | Claim fee; consume anchor once |
-| Future child disbursement | Child to Stream liquid | Claim backing when the child is sticky and exact liability is known | Claim fee; reserve/consume anchor once at sticky boundary |
-| Actual child disbursement | Child to Stream liquid | Liability already reserved | No new fee entitlement |
-| External Jupiter deposit | Jupiter sender to staging | External sender | External; ignored |
-| Jupiter claim delivery | Staging to Stream liquid | Claim allocation at immutable transfer intent | Claim fee; consume anchor once |
-| Jupiter permanent delivery | Staging to protected staking Account | Permanent capital after canonical transfer proof | Permanent fee; increment shortfall once |
-| TwoWeek claim delivery | Fixed TwoWeek staging to Stream liquid | Claim allocation at immutable transfer intent | Claim fee; consume anchor once |
-| TwoWeek permanent delivery | Fixed TwoWeek staging to protected staking Account | Permanent capital after canonical transfer proof | Permanent fee; increment shortfall once |
-| Maturity disbursement into a staging Account | NNS neuron to semantic staging | Newly realised yield before complete capture | Fresh-yield cost; captured `M` is already net |
-| TwoYear anchor reimbursement delivery | TwoYear staging to Dynamic Account | Fresh maturity at immutable reimbursement intent | Reimbursement cost; subtract fee from fresh `M`, no debt |
-| TwoYear permanent reimbursement delivery | TwoYear staging to protected Account | Fresh maturity at immutable reimbursement intent | Reimbursement cost; subtract fee from fresh `M`, no debt |
-| TwoYear ordinary claim delivery | TwoYear staging to Stream liquid | Claim allocation after replenishment | Claim fee; consume anchor once |
-| TwoYear ordinary permanent delivery | TwoYear staging to protected Account | Permanent allocation after replenishment | Permanent fee; increment shortfall once |
-| Redemption ICP payout | Stream liquid to redeemer | Redeemer's frozen gross quote | Non-reimbursable; gross includes payout fee |
-| IO push / reserve release fee | User or reserve on IO ledger | Ledger-defined IO supply burn | Not an ICP fee; no anchor or shortfall |
+| Event | Treatment |
+| --- | --- |
+| Operator seed transfer | External; ignored. |
+| Unsolicited external transfer | Excluded or surplus under the existing Account rules; no reimbursement entitlement. |
+| Stream liquid to Dynamic top-up | Existing claim backing; the fee consumes anchor exactly once after canonical proof. |
+| NNS Split | Existing claim backing; the fee consumes anchor exactly once at sticky child commitment. |
+| Future child Disburse fee | Existing claim backing; reserve and consume anchor once at sticky child commitment. |
+| Actual child Disburse | The fee was already economically accounted; no second charge. |
+| Jupiter 60% claim delivery | Fresh ingress; the fee reduces fresh claim credit. |
+| Jupiter 40% permanent delivery | Fresh ingress; the fee reduces fresh permanent credit. |
+| TwoWeek 60% claim delivery | Fresh maturity; the fee reduces fresh claim credit. |
+| TwoWeek 40% permanent delivery | Fresh maturity; the fee reduces fresh permanent credit. |
+| TwoYear anchor restoration | The fee is paid from fresh TwoYear capture and creates no recursive debt. |
+| TwoYear ordinary 60% claim delivery | Fresh maturity; the fee reduces the fresh claim addition. |
+| TwoYear ordinary 40% permanent delivery | Fresh maturity; the fee reduces the fresh permanent addition. |
+| Redemption ICP payout | The fee belongs to the redeemer's frozen gross/net quote. |
+| IO-ledger fees | Existing IO-ledger supply semantics; not an ICP anchor liability. |
 
-An ambiguous effect records no fee debt until canonical proof establishes the
-effect. Replay of that proof cannot classify the fee again.
+An ambiguous effect creates no second fee charge. Canonical proof of a
+fee-bearing existing-backing effect consumes anchor at most once. Canonical
+proof of a fresh-value delivery only advances its immutable transfer state.
 
-## TwoYear replenish-then-split
+## Why only existing-backing movement fees consume the anchor
+
+A ledger fee can have two economically different meanings. If IO already has
+`x` ICP of claim backing and merely moves it from one backing bucket to another,
+a transfer fee would destroy part of an already-existing claim. Repeated user
+staking and unstaking can cause those relocations repeatedly. The excluded
+Dynamic anchor therefore replaces such unavoidable losses so internal backing
+movement does not reduce `B/C`.
+
+If ICP has only just entered IO through Jupiter or has only just been realised
+as maturity, the transfer fee occurs before that value becomes new claim
+backing or permanent capital. The correct new credit is the post-fee amount. No
+existing claim has lost value. For paired fresh claim inflows, IO release is
+calculated against that same post-fee claim credit, so no dilution is
+introduced.
+
+Permanent capital is outside `B`, so a fee on a fresh permanent-capital
+delivery cannot reduce the IO claim rate. A persistent fee-shortfall balance
+for permanent capital and a later make-whole path therefore protect no required
+solvency invariant. They add stable state, transfer phases, proof branches,
+Candid surface, and audit burden. This architecture deliberately omits them.
+
+## TwoYear restore-then-split
 
 For a complete semantic capture `M`:
 
@@ -223,15 +247,19 @@ For a complete semantic capture `M`:
    `min(anchor_target - anchor_available, M - transfer_fee)` and deduct both
    principal and transfer fee from fresh maturity. Otherwise retain `M` in the
    staging Account.
-2. Apply the same rule to `permanent_fee_shortfall_e8s`.
-3. Apply the ordinary gross 40/60 allocation only to the valid remainder.
-4. The ordinary claim-leg fee consumes anchor; the ordinary permanent-leg fee
-   creates the next-cycle permanent shortfall. Reimbursement fees never create
-   debt.
-5. A remainder unable to fund its next required transfer remains in the fixed
+2. Apply the ordinary gross 40/60 allocation only to the valid remainder.
+   Each ordinary leg pays its delivery fee from its own fresh gross allocation,
+   so its economic addition is the net credit.
+3. A remainder unable to fund both ordinary transfers remains in the fixed
    TwoYear staging Account for a later complete capture.
 
 No TwoYear path issues IO.
+
+Captured but unplanned TwoYear value remains outside `B` and contributes zero
+to `T`. The exact ordinary claim credit cannot be known until the serialized
+plan freezes the then-current anchor deficit. After that boundary, only the
+frozen `ordinary.claim_credit` contributes to `T`; the transition therefore
+never removes a speculative full-capture claim estimate from backing.
 
 ## Prepared push pricing proof
 
@@ -399,9 +427,9 @@ pre-redemption liquidity gating.
 
 Source work proceeds as one replacement:
 
-- NNS state gains mandatory Dynamic identity, anchor availability, accounted
-  claim principal, and permanent shortfall; Stream gains exact prepared-push
-  and payout-obligation state.
+- NNS state retains mandatory Dynamic identity, anchor availability, and
+  accounted claim principal while deleting the obsolete fee liability; Stream
+  retains exact prepared-push and payout-obligation state.
 - strict pre-launch schema markers are bumped and prior markers rejected;
 - ready-child priority replaces capacity behavior;
 - normal pre-push liquidity gating is deleted; post-push missing liquidity is a

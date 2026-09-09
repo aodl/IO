@@ -1,0 +1,14 @@
+[official_sns]
+source = "source-built-official-sns"
+complete = true
+proves = "SNS launch, wiring, proposals, controllers, ledger, index, root, swap and reward observation"
+
+[exact_nns]
+source = "proposal-143660-pocketic"
+complete = true
+proves = "14-day threshold, following, maturity, minimum stake, split, dissolve and disburse mechanics"
+
+[orchestration]
+source = "controlled-current-io-pocketic"
+complete = true
+proves = "account semantics, paired issuance, no-issuance yield, carry-forward, liveness and recovery"

@@ -23,9 +23,9 @@ physical Dynamic principal
 
 An unexplained positive residual is excluded surplus; a negative residual is a
 fail-closed invariant violation. `anchor_available_e8s` never exceeds 10 ICP.
-Qualifying claim fees consume it exactly once, while exact permanent-capital
-fees increment `permanent_fee_shortfall_e8s`. Neither scalar is donor
-provenance, and neither excluded category enters `B = L + P + U + T`.
+Only fees paid while relocating already-existing claim backing consume it.
+Neither anchor nor surplus is donor provenance, and neither excluded category
+enters `B = L + P + U + T`.
 
 Under target, Stream owns the liquid-to-staking transfer and NNS freezes a
 permit bound to the reconciliation generation, operation sequence, exact
@@ -55,14 +55,16 @@ Maturity uses two fixed, domain-separated semantic Accounts. After canonical
 `DisburseMaturity(100%)` finalization, the complete positive role balance is
 captured once; late value remains for the next capture and the other role
 Account cannot satisfy the operation. Jupiter and TwoWeek keep checked gross
-40/60 semantics. Claim-leg fees consume anchor, permanent-leg fees create
-permanent shortfall, and their exact replays cannot classify a fee twice.
+40/60 semantics. Each fresh gross leg pays its own delivery fee, and only its
+net credit becomes new claim backing or permanent capital. These fees neither
+consume anchor nor create a durable liability; exact replays only advance the
+persisted transfer state.
 
-TwoYear maturity issues no IO. It restores the anchor deficit first, restores
-permanent shortfall second, charges those reimbursement-transfer fees directly
-to fresh maturity without creating recursive debt, and applies ordinary gross
-40/60 only to the valid remainder. A remainder too small for the next transfer
-stays in the semantic Account for a later capture.
+TwoYear maturity issues no IO. It restores the anchor deficit first, charges
+that restoration-transfer fee directly to fresh maturity without creating
+recursive debt, and applies ordinary gross 40/60 only to the valid remainder.
+A remainder too small for the next required transfer stays in the semantic
+Account for a later capture.
 
 Every persisted non-monetary Governance command is recovered by observing
 canonical state before a dependent command. Exact postcondition advances the
@@ -85,8 +87,9 @@ maintenance call is outside that replay correctness contract.
 Each committed unwind and passive cohort retains its exact ICP fee basis.
 Claim observation compares it with the canonical current fee and rejects new
 monetary quotes on drift while continuing to report physical child principal.
-The only fee-debt aggregate is exact permanent-capital shortfall; claim fees
-consume anchor and reimbursement-operation fees remain fresh maturity cost.
+There is no fee-debt aggregate. Existing-backing top-up and sticky unwind fees
+consume anchor; fresh Jupiter and maturity delivery fees reduce fresh credits;
+the anchor-restoration transfer fee remains a fresh TwoYear maturity cost.
 
 Before every potentially irreversible effect, the exact immutable intent is
 persisted. A later dependent effect is never submitted while an earlier effect

@@ -103,7 +103,6 @@ pub fn init(args: InitArgs) {
             pooled_parent_staking_account: None,
             claim_bearing_dynamic_principal_e8s: 0,
             anchor_available_e8s: 0,
-            permanent_fee_shortfall_e8s: 0,
             live_cohorts: Vec::new(),
             last_completed_pool: None,
             last_completed_unwind: None,

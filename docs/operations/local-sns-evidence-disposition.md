@@ -1,22 +1,22 @@
 # Local SNS evidence disposition
 
 The sole current local authority is the schema-v2 package
-`deploy/local-sns-rehearsal/evidence/2026-08-31-e727d68-anchored-dynamic`.
+`deploy/local-sns-rehearsal/evidence/2026-09-03-270dcf3-anchored-dynamic`.
 `deploy/local-sns-rehearsal/evidence/current-canonical.toml` is the sole
 selector and binds:
 
 - source-finalization commit
-  `e727d688b3aec0e6dace6a499a4979bf66cad2c8`;
+  `270dcf3dc71fc8e7b63c3177b0e3f58fc9246b35`;
 - immediate artifact-recording commit
-  `d8e45b27e9b12d19542ea4220616f3828896c41a`;
+  `dc548f555a808f59e6a6c69759cc41fbb7f1f54d`;
 - canonical evidence commit
-  `61c1a7fb0cda3ef743a8f68c1488cdf57e3dc264`;
+  `608baa58425389827acf3a5c051d71160cd829f7`;
 - release-manifest SHA-256
-  `13d258958bee84e20934627f66707ca6ba336c26cb9e7ff6d140918a4465a382`;
+  `6d666a69d3d74a30f45510a23facd2cbc6d0790043dbbea49f96874620428637`;
 - package-manifest SHA-256
-  `a4fb737b0b0101284ac6cdc00aab0f484d4a2ccd3942adf6f28cf1b98f6a6af1`;
+  `023a8f10893f94e871012397d901d0e7e3632690b55269df123fd741f9b30f3c`;
 - package `SHA256SUMS` SHA-256
-  `6e035df94a0410fa733a09cf35e557e0d6e072e98bbfcb5edf506ef8117409a1`.
+  `4ac11006cace6ef74a762fed9d8a4ff55cdfc5c619dc7d2df4156a265d8543c8`.
 
 That package is current evidence for `B=L+P+U+T`, the pre-Ready memo-0 Dynamic
 parent, the exact 10 ICP anchor and excluded-surplus partition, exact fee

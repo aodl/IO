@@ -1,0 +1,37 @@
+[protocol_reserve_io]
+owner = "lxzze-o7777-77777-aaaaa-cai"
+subaccount_hex = "0101010101010101010101010101010101010101010101010101010101010101"
+ledger = "sns"
+
+[liquid_icp_reserve]
+owner = "lxzze-o7777-77777-aaaaa-cai"
+subaccount_hex = "0202020202020202020202020202020202020202020202020202020202020202"
+ledger = "icp"
+
+[jupiter_io]
+owner = "i55lg-5valg-5pglu-2hb2h-g4e3d-6nk6b-uoaw6-7oveu-os7h7-iike5-eqe"
+subaccount_hex = "0404040404040404040404040404040404040404040404040404040404040404"
+ledger = "sns"
+
+[jupiter_icp_staging]
+owner = "lqy7q-dh777-77777-aaaaq-cai"
+subaccount = "none"
+ledger = "icp"
+
+[two_week_maturity_staging]
+owner = "lqy7q-dh777-77777-aaaaq-cai"
+subaccount_hex = "f2a8f595dfb105f2c3134b466f6e8b5102752ba2505b0ee5cb7d7e3de1d57266"
+ledger = "icp"
+
+[two_year_maturity_staging]
+owner = "lqy7q-dh777-77777-aaaaq-cai"
+subaccount_hex = "daa2f749bb8f8998f94ee65e1871dc84444db38965123889f3cad6bc521ba5a1"
+ledger = "icp"
+
+[excluded_sns_treasury]
+name = "sns-treasury"
+owner = "7uieb-cx777-77776-qaaaq-cai"
+subaccount_hex = "f6e661a692e337ba899cf0b9a3610869cf8a728eb5989fcef7bb7eeb8a0040a1"
+distribution_nonce = 0
+domain = "token-distribution"
+expected_nonzero = true

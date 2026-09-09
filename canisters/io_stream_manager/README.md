@@ -66,9 +66,10 @@ second scheduler. Reward allocation is prospective
 and requires `P >= reward_target`.
 
 Jupiter and two-week maturity use one narrow paired-backing receipt. Every
-paired claim credit enters Stream liquid first. A permit freezes exact
-pre-inflow economics, the net liquid credit, and one recipient vector. Its kind
-only selects the configured Jupiter Account or a frozen entitlement generation.
+paired claim credit enters Stream liquid after its fresh delivery fee. A permit
+freezes exact pre-inflow economics, that net liquid credit, and one recipient
+vector; matching IO is calculated from the same net credit. Its kind only
+selects the configured Jupiter Account or a frozen entitlement generation.
 Two-year maturity creates no matching IO and therefore uses no receipt.
 Completion marks ordinary target reconciliation due; any later liquid-to-parent
 transfer is determined only from a fresh global target.

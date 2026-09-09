@@ -358,7 +358,6 @@ mod tests {
             anchor_target_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
             anchor_available_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
             excluded_dynamic_surplus_e8s: 0,
-            permanent_fee_shortfall_e8s: 0,
             live_cohorts: live
                 .into_iter()
                 .map(|generation| io_nns_types::backing::CohortObservation {

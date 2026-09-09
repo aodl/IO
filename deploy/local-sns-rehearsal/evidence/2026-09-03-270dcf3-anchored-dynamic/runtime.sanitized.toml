@@ -1,0 +1,28 @@
+[planned_sns]
+root = "7tjcv-pp777-77776-qaaaa-cai"
+governance = "7uieb-cx777-77776-qaaaq-cai"
+ledger = "75lp5-u7777-77776-qaaba-cai"
+index = "7pnye-yp777-77776-qaaca-cai"
+swap = "72kjj-zh777-77776-qaabq-cai"
+
+[governance]
+sns_neuron_subaccount_hex = "4b5e9bf4accce8125737ee07918deed995879aeaa13c02b8c726d8e13b5c11d1"
+stream_lifecycle_function_id = "1000"
+nns_lifecycle_function_id = "1001"
+
+[accounts]
+operator_principal = "i55lg-5valg-5pglu-2hb2h-g4e3d-6nk6b-uoaw6-7oveu-os7h7-iike5-eqe"
+reserve_subaccount_hex = "0101010101010101010101010101010101010101010101010101010101010101"
+liquid_icp_subaccount_hex = "0202020202020202020202020202020202020202020202020202020202020202"
+jupiter_io_subaccount_hex = "0404040404040404040404040404040404040404040404040404040404040404"
+
+[nns]
+icp_ledger = "ryjl3-tyaaa-aaaaa-aaaba-cai"
+governance = "rrkah-fqaaa-aaaaa-aaaaq-cai"
+sns_wasm = "qaa6y-5yaaa-aaaaa-aaafa-cai"
+
+[amounts]
+reserve_funding_e8s = "10000000000"
+user_funding_e8s = "100000000"
+liquid_icp_funding_e8s = "100000000000000"
+redemption_io_e8s = "20000000"

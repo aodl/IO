@@ -118,8 +118,7 @@ struct ManagerCompletedMaturity {
     kind: ManagerMaturityKind,
     captured_e8s: u128,
     anchor_reimbursement_e8s: u128,
-    permanent_reimbursement_e8s: u128,
-    reimbursement_transfer_fees_e8s: u128,
+    anchor_reimbursement_fee_e8s: u128,
     carried_e8s: u128,
     permanent_credit_e8s: u128,
     claim_credit_e8s: u128,
@@ -1998,6 +1997,15 @@ mod tests {
             "icrc1_total_supply",
             (),
         );
+        let backing_before_jupiter: io_nns_types::backing::ClaimAssetObservation =
+            super::update::<Result<_, ManagerApiError>>(
+                &fixture.pic,
+                fixture.controller,
+                stream,
+                "observe_claim_assets",
+                (),
+            )
+            .unwrap();
 
         let notified: Result<ManagerJupiterProgress, ManagerApiError> = super::update(
             &fixture.pic,
@@ -2092,6 +2100,19 @@ mod tests {
         );
         assert_eq!(completed.stream_receipt_sequence, 1);
         assert_eq!(completed.io_fee_e8s, 10_000);
+        let backing_after_jupiter: io_nns_types::backing::ClaimAssetObservation =
+            super::update::<Result<_, ManagerApiError>>(
+                &fixture.pic,
+                fixture.controller,
+                stream,
+                "observe_claim_assets",
+                (),
+            )
+            .unwrap();
+        assert_eq!(
+            backing_after_jupiter.anchor_available_e8s, backing_before_jupiter.anchor_available_e8s,
+            "fresh Jupiter claim delivery fee must not consume anchor"
+        );
 
         let after_neuron = super::neuron(
             &fixture.pic,
@@ -2239,6 +2260,17 @@ mod tests {
                     (),
                 )
                 .unwrap();
+            let dynamic_parent_id = economics_before
+                .parent
+                .as_ref()
+                .expect("settled pool must expose the Dynamic parent")
+                .neuron_id;
+            let dynamic_before = super::neuron(
+                &fixture.pic,
+                fixture.governance,
+                fixture.controller,
+                dynamic_parent_id,
+            );
             let ordinary_maturity = super::earn_maturity_for(&fixture, fixture.two_year_neuron_id);
             let before = super::neuron(
                 &fixture.pic,
@@ -2436,7 +2468,6 @@ mod tests {
                 completed.captured_e8s,
                 economics_before.anchor_target_e8s,
                 economics_before.anchor_available_e8s,
-                economics_before.permanent_fee_shortfall_e8s,
                 u128::from(super::ICP_FEE_E8S),
             )
             .unwrap();
@@ -2446,12 +2477,8 @@ mod tests {
                 plan.anchor_reimbursement
             );
             assert_eq!(
-                completed.permanent_reimbursement_e8s,
-                plan.permanent_reimbursement
-            );
-            assert_eq!(
-                completed.reimbursement_transfer_fees_e8s,
-                plan.reimbursement_transfer_fees
+                completed.anchor_reimbursement_fee_e8s,
+                plan.anchor_reimbursement_fee
             );
             assert_eq!(completed.carried_e8s, plan.carried);
             assert_eq!(
@@ -2478,9 +2505,20 @@ mod tests {
             );
             assert_eq!(
                 u128::from(after.cached_neuron_stake_e8s),
-                u128::from(before.cached_neuron_stake_e8s)
-                    + completed.permanent_reimbursement_e8s
-                    + completed.permanent_credit_e8s
+                u128::from(before.cached_neuron_stake_e8s) + completed.permanent_credit_e8s,
+                "the Permanent neuron receives only the ordinary permanent credit"
+            );
+            let dynamic_after = super::neuron(
+                &fixture.pic,
+                fixture.governance,
+                fixture.controller,
+                dynamic_parent_id,
+            );
+            assert_eq!(
+                u128::from(dynamic_after.cached_neuron_stake_e8s),
+                u128::from(dynamic_before.cached_neuron_stake_e8s)
+                    + completed.anchor_reimbursement_e8s,
+                "anchor restoration is credited only to the Dynamic parent"
             );
             let liquid_after: candid::Nat = super::query(
                 &fixture.pic,
@@ -2518,17 +2556,9 @@ mod tests {
                     (),
                 )
                 .unwrap();
-            let ordinary_claim_fee = plan.ordinary.map_or(0, |split| split.claim_fee);
-            let ordinary_permanent_fee = plan.ordinary.map_or(0, |split| split.permanent_fee);
             assert_eq!(
                 economics_after.anchor_available_e8s,
                 economics_before.anchor_available_e8s + plan.anchor_reimbursement
-                    - ordinary_claim_fee
-            );
-            assert_eq!(
-                economics_after.permanent_fee_shortfall_e8s,
-                economics_before.permanent_fee_shortfall_e8s - plan.permanent_reimbursement
-                    + ordinary_permanent_fee
             );
             eprintln!(
                 "account_semantic_two_year cycle={} captured_e8s={} permanent_credit_e8s={} claim_credit_e8s={} no_issuance=true supply_unchanged=true reserve_unchanged=true",
@@ -3311,6 +3341,15 @@ mod tests {
             "get_status",
             (),
         );
+        let backing_before_maturity: io_nns_types::backing::ClaimAssetObservation =
+            super::update::<Result<_, ManagerApiError>>(
+                &fixture.pic,
+                fixture.controller,
+                sns.stream,
+                "observe_claim_assets",
+                (),
+            )
+            .unwrap();
         let prepared: Result<RewardBackingProgress, StreamApiError> = super::update(
             &fixture.pic,
             sns.stream,
@@ -3565,6 +3604,20 @@ mod tests {
         assert_eq!(completed.permanent_credit_e8s, split.permanent_credit);
         assert_eq!(completed.claim_credit_e8s, split.claim_credit);
         assert!(completed.entitlement_batch_generation.is_some());
+        let backing_after_maturity: io_nns_types::backing::ClaimAssetObservation =
+            super::update::<Result<_, ManagerApiError>>(
+                &fixture.pic,
+                fixture.controller,
+                sns.stream,
+                "observe_claim_assets",
+                (),
+            )
+            .unwrap();
+        assert_eq!(
+            backing_after_maturity.anchor_available_e8s,
+            backing_before_maturity.anchor_available_e8s,
+            "fresh TwoWeek claim delivery fee must not consume anchor"
+        );
         let permanent_after_maturity = super::neuron(
             &fixture.pic,
             fixture.governance,

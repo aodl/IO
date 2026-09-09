@@ -72,7 +72,6 @@ mod anchored_dynamic_backing {
         excluded_surplus: u128,
         dynamic_inflight_physical: u128,
         permanent_capital: u128,
-        permanent_fee_shortfall: u128,
         payout_obligation: u128,
         staged_two_year_maturity: u128,
     }
@@ -92,10 +91,11 @@ mod anchored_dynamic_backing {
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum FeeClass {
-        ClaimAnchor,
-        PermanentShortfall,
-        FreshMaturityCost,
-        ExternalOrNonReimbursable,
+        ExistingBackingMovement,
+        FreshValueDelivery,
+        AnchorRestorationFromFreshValue,
+        RedemptionQuote,
+        External,
         IoLedgerBurn,
     }
 
@@ -112,8 +112,7 @@ mod anchored_dynamic_backing {
     struct TwoYearOutcome {
         state: Economy,
         anchor_reimbursement: u128,
-        permanent_reimbursement: u128,
-        reimbursement_fees: u128,
+        anchor_reimbursement_fee: u128,
         ordinary_permanent_gross: u128,
         ordinary_claim_gross: u128,
         carried: u128,
@@ -206,30 +205,27 @@ mod anchored_dynamic_backing {
         fn paired_40_60_claim_inflow(self, captured: u128, fee: u128) -> Result<Self, ModelError> {
             let permanent_gross = captured.saturating_mul(40) / 100;
             let claim_gross = captured - permanent_gross;
-            if permanent_gross <= fee || claim_gross <= fee || self.anchor_available < fee {
+            if permanent_gross <= fee || claim_gross <= fee {
                 return Err(ModelError::InvalidAmount);
             }
+            let permanent_credit = permanent_gross - fee;
+            let claim_credit = claim_gross - fee;
             let before_backing = self.backing.total()?;
             let issued = if self.claims == 0 {
-                claim_gross
+                claim_credit
             } else {
-                mul_div_floor(claim_gross, self.claims, before_backing)?
+                mul_div_floor(claim_credit, self.claims, before_backing)?
             };
             let mut next = self;
             next.permanent_capital = next
                 .permanent_capital
-                .checked_add(permanent_gross - fee)
-                .ok_or(ModelError::Overflow)?;
-            next.permanent_fee_shortfall = next
-                .permanent_fee_shortfall
-                .checked_add(fee)
+                .checked_add(permanent_credit)
                 .ok_or(ModelError::Overflow)?;
             next.backing.liquid = next
                 .backing
                 .liquid
-                .checked_add(claim_gross - fee)
+                .checked_add(claim_credit)
                 .ok_or(ModelError::Overflow)?;
-            next.consume_claim_fee(fee)?;
             next.claims = next
                 .claims
                 .checked_add(issued)
@@ -264,7 +260,7 @@ mod anchored_dynamic_backing {
             self.assert_transition(next)
         }
 
-        fn consume_claim_fee(&mut self, fee: u128) -> Result<(), ModelError> {
+        fn protect_existing_backing_fee(&mut self, fee: u128) -> Result<(), ModelError> {
             self.anchor_available = self
                 .anchor_available
                 .checked_sub(fee)
@@ -297,7 +293,7 @@ mod anchored_dynamic_backing {
                 .dynamic
                 .checked_add(credit)
                 .ok_or(ModelError::Overflow)?;
-            next.consume_claim_fee(fee)?;
+            next.protect_existing_backing_fee(fee)?;
             self.assert_transition(next)
         }
 
@@ -321,7 +317,7 @@ mod anchored_dynamic_backing {
             let mut next = self;
             next.dynamic_physical -= gross;
             next.backing.dynamic -= gross;
-            next.consume_claim_fee(fees)?;
+            next.protect_existing_backing_fee(fees)?;
             next.backing.unwinding = next
                 .backing
                 .unwinding
@@ -344,16 +340,12 @@ mod anchored_dynamic_backing {
             self.assert_transition(next)
         }
 
-        fn add_permanent_credit(self, gross: u128, fee: u128) -> Result<Self, ModelError> {
+        fn add_fresh_permanent_credit(self, gross: u128, fee: u128) -> Result<Self, ModelError> {
             let credit = gross.checked_sub(fee).ok_or(ModelError::InvalidAmount)?;
             let mut next = self;
             next.permanent_capital = next
                 .permanent_capital
                 .checked_add(credit)
-                .ok_or(ModelError::Overflow)?;
-            next.permanent_fee_shortfall = next
-                .permanent_fee_shortfall
-                .checked_add(fee)
                 .ok_or(ModelError::Overflow)?;
             self.assert_transition(next)
         }
@@ -508,38 +500,28 @@ mod anchored_dynamic_backing {
             .checked_add(captured)
             .ok_or(ModelError::Overflow)?;
         let mut remaining = state.staged_two_year_maturity;
-        let mut reimbursement_fees = 0u128;
         let anchor_deficit = ANCHOR_TARGET_E8S - state.anchor_available;
         let anchor_reimbursement = reimbursable(remaining, anchor_deficit, transfer_fee);
+        let anchor_reimbursement_fee = if anchor_reimbursement > 0 {
+            transfer_fee
+        } else {
+            0
+        };
         if anchor_reimbursement > 0 {
             remaining -= anchor_reimbursement + transfer_fee;
-            reimbursement_fees += transfer_fee;
             state.anchor_available += anchor_reimbursement;
             state.dynamic_physical += anchor_reimbursement;
-        }
-        let permanent_reimbursement =
-            reimbursable(remaining, state.permanent_fee_shortfall, transfer_fee);
-        if permanent_reimbursement > 0 {
-            remaining -= permanent_reimbursement + transfer_fee;
-            reimbursement_fees += transfer_fee;
-            state.permanent_fee_shortfall -= permanent_reimbursement;
-            state.permanent_capital += permanent_reimbursement;
         }
         let mut ordinary_permanent_gross = 0;
         let mut ordinary_claim_gross = 0;
         if remaining > 0 {
             let permanent = remaining.saturating_mul(40) / 100;
             let claim = remaining - permanent;
-            if permanent > transfer_fee
-                && claim > transfer_fee
-                && state.anchor_available >= transfer_fee
-            {
+            if permanent > transfer_fee && claim > transfer_fee {
                 ordinary_permanent_gross = permanent;
                 ordinary_claim_gross = claim;
                 state.permanent_capital += permanent - transfer_fee;
-                state.permanent_fee_shortfall += transfer_fee;
                 state.backing.liquid += claim - transfer_fee;
-                state.consume_claim_fee(transfer_fee)?;
                 remaining = 0;
             }
         }
@@ -548,8 +530,7 @@ mod anchored_dynamic_backing {
         Ok(TwoYearOutcome {
             state,
             anchor_reimbursement,
-            permanent_reimbursement,
-            reimbursement_fees,
+            anchor_reimbursement_fee,
             ordinary_permanent_gross,
             ordinary_claim_gross,
             carried: remaining,
@@ -661,7 +642,7 @@ mod anchored_dynamic_backing {
     }
 
     #[test]
-    fn claim_fee_reclassification_preserves_backing_and_partition() {
+    fn existing_backing_fee_reclassification_preserves_backing_and_partition() {
         let state = Economy::bootstrap(ANCHOR_TARGET_E8S + 9)
             .unwrap()
             .add_backed_issuance(5 * E8S_PER_ICP)
@@ -695,8 +676,10 @@ mod anchored_dynamic_backing {
             transit.backing.total().unwrap()
         );
         assert_eq!(donated.excluded_surplus, 777);
-        assert_eq!(donated.anchor_available, ANCHOR_TARGET_E8S - 2 * fee);
-        assert_eq!(donated.permanent_fee_shortfall, 2 * fee);
+        assert_eq!(donated.anchor_available, ANCHOR_TARGET_E8S);
+        assert_eq!(jupiter.claims, 6 * E8S_PER_ICP - fee);
+        assert_eq!(jupiter.backing.liquid, 6 * E8S_PER_ICP - fee);
+        assert_eq!(jupiter.permanent_capital, 4 * E8S_PER_ICP - fee);
     }
 
     #[test]
@@ -720,6 +703,34 @@ mod anchored_dynamic_backing {
     }
 
     #[test]
+    fn repeated_stake_unstake_churn_preserves_claim_rate_with_exact_anchor_cost() {
+        let fee = 10_000;
+        let mut state = Economy::bootstrap(ANCHOR_TARGET_E8S)
+            .unwrap()
+            .add_backed_issuance(5 * E8S_PER_ICP)
+            .unwrap();
+        let initial_backing = state.backing.total().unwrap();
+        let initial_claims = state.claims;
+        for _ in 0..3 {
+            state = state.top_up_dynamic(E8S_PER_ICP + 2 * fee, fee).unwrap();
+            let committed = state
+                .commit_unwind(E8S_PER_ICP + 2 * fee, fee, fee)
+                .unwrap();
+            assert_eq!(committed.backing.total().unwrap(), initial_backing);
+            state = committed.return_child(E8S_PER_ICP).unwrap();
+            assert_eq!(state.backing.total().unwrap(), initial_backing);
+            assert_eq!(state.claims, initial_claims);
+        }
+        assert_eq!(state.anchor_available, ANCHOR_TARGET_E8S - 9 * fee);
+        assert!(ratio_ge(
+            state.backing.total().unwrap(),
+            state.claims,
+            initial_backing,
+            initial_claims,
+        ));
+    }
+
+    #[test]
     fn anchor_exhaustion_precedes_irreversible_effect() {
         let mut state = Economy::bootstrap(ANCHOR_TARGET_E8S)
             .unwrap()
@@ -739,16 +750,33 @@ mod anchored_dynamic_backing {
     }
 
     #[test]
-    fn permanent_fee_is_separate_and_counted_once() {
+    fn fresh_permanent_delivery_fee_changes_no_claim_economics() {
         let state = Economy::bootstrap(ANCHOR_TARGET_E8S).unwrap();
-        let next = state.add_permanent_credit(1_000_000, 10_000).unwrap();
+        let next = state.add_fresh_permanent_credit(1_000_000, 10_000).unwrap();
         assert_eq!(next.permanent_capital, 990_000);
-        assert_eq!(next.permanent_fee_shortfall, 10_000);
+        assert_eq!(next.backing, state.backing);
+        assert_eq!(next.claims, state.claims);
         assert_eq!(next.anchor_available, state.anchor_available);
     }
 
     #[test]
-    fn two_year_replenishes_in_priority_order_without_recursive_debt() {
+    fn fresh_jupiter_succeeds_with_zero_anchor_and_issues_against_net_credit() {
+        let fee = 10_000;
+        let mut state = Economy::bootstrap(ANCHOR_TARGET_E8S).unwrap();
+        state.anchor_available = 0;
+        state.excluded_surplus = ANCHOR_TARGET_E8S;
+        state.validate().unwrap();
+        let next = state
+            .paired_40_60_claim_inflow(10 * E8S_PER_ICP, fee)
+            .unwrap();
+        assert_eq!(next.anchor_available, 0);
+        assert_eq!(next.backing.liquid, 6 * E8S_PER_ICP - fee);
+        assert_eq!(next.claims, 6 * E8S_PER_ICP - fee);
+        assert_eq!(next.permanent_capital, 4 * E8S_PER_ICP - fee);
+    }
+
+    #[test]
+    fn two_year_restores_anchor_then_splits_without_recursive_debt() {
         let fee = 10_000;
         let mut state = Economy::bootstrap(ANCHOR_TARGET_E8S)
             .unwrap()
@@ -756,16 +784,14 @@ mod anchored_dynamic_backing {
             .unwrap();
         state.anchor_available -= 100_000;
         state.backing.dynamic += 100_000;
-        state.permanent_fee_shortfall = 70_000;
         state.validate().unwrap();
         let result = replenish_two_year(state, 1_000_000, fee).unwrap();
         assert_eq!(result.anchor_reimbursement, 100_000);
-        assert_eq!(result.permanent_reimbursement, 70_000);
-        assert_eq!(result.reimbursement_fees, 2 * fee);
-        assert_eq!(result.state.anchor_available, ANCHOR_TARGET_E8S - fee);
-        assert_eq!(result.state.permanent_fee_shortfall, fee);
-        assert_eq!(result.ordinary_permanent_gross, 324_000);
-        assert_eq!(result.ordinary_claim_gross, 486_000);
+        assert_eq!(result.anchor_reimbursement_fee, fee);
+        assert_eq!(result.state.anchor_available, ANCHOR_TARGET_E8S);
+        assert_eq!(result.ordinary_permanent_gross, 356_000);
+        assert_eq!(result.ordinary_claim_gross, 534_000);
+        assert_eq!(result.state.permanent_capital, 346_000);
         assert_eq!(result.carried, 0);
     }
 
@@ -778,7 +804,7 @@ mod anchored_dynamic_backing {
         state.validate().unwrap();
         let result = replenish_two_year(state, fee, fee).unwrap();
         assert_eq!(result.anchor_reimbursement, 0);
-        assert_eq!(result.reimbursement_fees, 0);
+        assert_eq!(result.anchor_reimbursement_fee, 0);
         assert_eq!(result.carried, fee);
     }
 
@@ -897,28 +923,28 @@ mod anchored_dynamic_backing {
     #[test]
     fn fee_inventory_is_closed_and_non_overlapping() {
         let inventory = [
-            FeeClass::ExternalOrNonReimbursable,
-            FeeClass::ClaimAnchor,
-            FeeClass::ClaimAnchor,
-            FeeClass::ClaimAnchor,
-            FeeClass::ClaimAnchor,
-            FeeClass::PermanentShortfall,
-            FeeClass::ClaimAnchor,
-            FeeClass::PermanentShortfall,
-            FeeClass::FreshMaturityCost,
-            FeeClass::FreshMaturityCost,
-            FeeClass::ClaimAnchor,
-            FeeClass::PermanentShortfall,
-            FeeClass::ExternalOrNonReimbursable,
+            FeeClass::External,
+            FeeClass::External,
+            FeeClass::ExistingBackingMovement,
+            FeeClass::ExistingBackingMovement,
+            FeeClass::ExistingBackingMovement,
+            FeeClass::FreshValueDelivery,
+            FeeClass::FreshValueDelivery,
+            FeeClass::FreshValueDelivery,
+            FeeClass::FreshValueDelivery,
+            FeeClass::AnchorRestorationFromFreshValue,
+            FeeClass::FreshValueDelivery,
+            FeeClass::FreshValueDelivery,
+            FeeClass::RedemptionQuote,
             FeeClass::IoLedgerBurn,
         ];
         assert_eq!(inventory.len(), 14);
         assert_eq!(
             inventory
                 .iter()
-                .filter(|class| matches!(class, FeeClass::FreshMaturityCost))
+                .filter(|class| matches!(class, FeeClass::FreshValueDelivery))
                 .count(),
-            2
+            6
         );
     }
 

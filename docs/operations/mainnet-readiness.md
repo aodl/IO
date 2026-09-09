@@ -8,25 +8,25 @@ identities remain outside this local release closure.
 The completed anchored-dynamic release is bound to:
 
 - source-finalization commit
-  `e727d688b3aec0e6dace6a499a4979bf66cad2c8`;
+  `270dcf3dc71fc8e7b63c3177b0e3f58fc9246b35`;
 - immediate artifact-recording commit
-  `d8e45b27e9b12d19542ea4220616f3828896c41a`;
+  `dc548f555a808f59e6a6c69759cc41fbb7f1f54d`;
 - canonical evidence commit
-  `61c1a7fb0cda3ef743a8f68c1488cdf57e3dc264`;
+  `608baa58425389827acf3a5c051d71160cd829f7`;
 - schema-v2 package
-  `deploy/local-sns-rehearsal/evidence/2026-08-31-e727d68-anchored-dynamic`;
+  `deploy/local-sns-rehearsal/evidence/2026-09-03-270dcf3-anchored-dynamic`;
 - release-manifest SHA-256
-  `13d258958bee84e20934627f66707ca6ba336c26cb9e7ff6d140918a4465a382`;
+  `6d666a69d3d74a30f45510a23facd2cbc6d0790043dbbea49f96874620428637`;
 - package-manifest SHA-256
-  `a4fb737b0b0101284ac6cdc00aab0f484d4a2ccd3942adf6f28cf1b98f6a6af1`;
+  `023a8f10893f94e871012397d901d0e7e3632690b55269df123fd741f9b30f3c`;
 - package `SHA256SUMS` SHA-256
-  `6e035df94a0410fa733a09cf35e557e0d6e072e98bbfcb5edf506ef8117409a1`.
+  `4ac11006cace6ef74a762fed9d8a4ff55cdfc5c619dc7d2df4156a265d8543c8`.
 
 Local source validation, repeated exact-source reproducible builds, and a
-fresh canonical Layer A/B/C rehearsal are complete for this exact pair. Final
-local release gates and exact-head hosted workflows remain required. Every
-earlier package remains immutable historical evidence for its own release and
-was not rebound.
+fresh canonical Layer A/B/C rehearsal are complete for this exact pair. Local
+release gates pass on the evidence commit; the exact documentation-tail head
+must retain those results and pass hosted workflows. Every earlier package
+remains immutable historical evidence for its own release and was not rebound.
 
 The exact `b6a26f2` → `af7e079` → `dd0de91` history remains immutable historical
 evidence. A machine-proved zero-tree ancestry reconciliation is a provenance

@@ -61,9 +61,9 @@ Root, and Governance services:
 5. The NNS Manager disburses maturity into one of two fixed semantic staging
    Accounts and freezes the complete post-finalization Account balance. Two-week maturity
    and Jupiter share the checked 40% permanent / 60% claim paired-inflow path;
-   two-year maturity first replenishes the Dynamic-neuron anchor and permanent
-   fee shortfall, then applies the same physical split to the remainder; it
-   issues no IO.
+   two-year maturity first replenishes any Dynamic-neuron anchor deficit, then
+   applies the ordinary 40/60 gross allocation to the remaining fresh maturity;
+   it issues no IO.
    Permissionless Jupiter notification additionally requires an exact routed
    ICP block at or above the immutable launch activation floor and not already
    present in permanent replay state.
@@ -174,9 +174,12 @@ in-flight adjustment. Live-child and committed active-unwind
 values are net of their exactly derived unavoidable future disbursement fees;
 physical principal remains separate for Governance commands and transfer
 proof. Each e8s of claim backing exists in exactly one of its four buckets.
-Qualifying claim fees consume anchor capacity without lowering `B`; permanent
-fees increase a separate exact shortfall. IO issuance is an explicit reserve
-transfer, not application minting.
+Fees incurred while relocating existing claim backing consume anchor capacity
+without lowering `B`. Fees incurred while delivering fresh Jupiter or maturity
+value reduce the corresponding fresh net credit; paired IO issuance uses that
+same net claim credit. Permanent capital is outside `B`, so its fresh delivery
+fee creates no liability. IO issuance is an explicit reserve transfer, not
+application minting.
 
 Redemption freezes a `B/C` quote without reserving ICP. Claim-rate
 monotonicity keeps an earlier valid quote economically conservative. The user

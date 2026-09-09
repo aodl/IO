@@ -13,7 +13,7 @@
 - Cross-flow correction baseline: `0e7299eb43503351d80cbee933cfdab15f3b4f6b`
 - Source-local completion baseline: `4f56e48afa62dc1b775e85f420c3b71a376d2db2`
 - Production-final baseline: `7100aa4`
-- Current release source: `e727d688b3aec0e6dace6a499a4979bf66cad2c8`
+- Current release source: `270dcf3dc71fc8e7b63c3177b0e3f58fc9246b35`
 
 ## Context
 

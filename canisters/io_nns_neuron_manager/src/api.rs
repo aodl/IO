@@ -103,7 +103,6 @@ pub struct DynamicBackingStatus {
     pub anchor_target_e8s: u128,
     pub anchor_available_e8s: u128,
     pub excluded_dynamic_surplus_e8s: u128,
-    pub permanent_fee_shortfall_e8s: u128,
 }
 
 pub(crate) fn ready() -> Result<crate::state::NnsStateV1, ApiError> {
@@ -738,7 +737,6 @@ fn dynamic_backing_status(
         anchor_target_e8s: assets.anchor_target_e8s,
         anchor_available_e8s: assets.anchor_available_e8s,
         excluded_dynamic_surplus_e8s: assets.excluded_dynamic_surplus_e8s,
-        permanent_fee_shortfall_e8s: assets.permanent_fee_shortfall_e8s,
     })
 }
 
@@ -859,7 +857,6 @@ pub(crate) async fn claim_asset_observation() -> Result<ClaimAssetObservation, A
         &pool_staking_account,
         snapshot.claim_bearing_dynamic_principal_e8s,
         snapshot.anchor_available_e8s,
-        snapshot.permanent_fee_shortfall_e8s,
         &live_cohorts,
         live_child_physical_principal_e8s,
         live_child_net_backing_e8s,
@@ -892,7 +889,6 @@ pub(crate) async fn claim_asset_observation() -> Result<ClaimAssetObservation, A
         anchor_target_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
         anchor_available_e8s: snapshot.anchor_available_e8s,
         excluded_dynamic_surplus_e8s,
-        permanent_fee_shortfall_e8s: snapshot.permanent_fee_shortfall_e8s,
         live_cohorts,
         live_child_physical_principal_e8s,
         live_child_net_backing_e8s,
@@ -1078,18 +1074,18 @@ mod tests {
     }
 
     #[test]
-    fn paired_capture_is_quarantined_but_two_year_yield_is_not() {
+    fn unplanned_maturity_capture_is_quarantined_until_exact_claim_credit_exists() {
         assert_eq!(
             maturity_ingress_transit(MaturityKind::TwoWeek, 200_000, 10_000, false),
             Ok(0)
         );
         assert_eq!(
             maturity_ingress_transit(MaturityKind::TwoWeek, 200_000, 10_000, true),
-            Ok(120_000)
+            Ok(110_000)
         );
         assert_eq!(
             maturity_ingress_transit(MaturityKind::TwoYear, 200_000, 10_000, false),
-            Ok(120_000)
+            Ok(0)
         );
     }
 
@@ -1231,7 +1227,6 @@ mod tests {
                 anchor_target_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
                 anchor_available_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
                 excluded_dynamic_surplus_e8s: 12_345,
-                permanent_fee_shortfall_e8s: 0,
                 live_cohorts: Vec::new(),
                 live_child_physical_principal_e8s: 0,
                 live_child_net_backing_e8s: 0,
@@ -1278,7 +1273,6 @@ mod tests {
                 anchor_target_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
                 anchor_available_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
                 excluded_dynamic_surplus_e8s: 12_345,
-                permanent_fee_shortfall_e8s: 0,
             }
         );
     }

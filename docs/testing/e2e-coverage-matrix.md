@@ -8,7 +8,7 @@
 | Structural scheduling | 12-hour independent structural observation, reward-event fencing, same-generation 60-second reconciliation retry, restart/upgrade reconstruction |
 | Following rewards | Exact candidate follow ballot, nonzero maturity, voting-power refresh |
 | Two-week paired maturity | Semantic balance capture, donation inclusion, 40/60 fees, pre-rate issuance, recipient settlement, Account isolation |
-| Two-year maturity | Semantic balance capture, anchor then permanent-shortfall replenishment, nonrecursive reimbursement fees, 40/60 remainder, no IO issuance |
+| Two-year maturity | Semantic balance capture, anchor-only restoration plus its fresh-capture fee, ordinary net-credit 40/60 remainder, no recursive debt, no IO issuance |
 | Sticky cohorts | Split/start separation, cancellation, readiness, return, maturity cleanup |
 | Cohorts | More than 32 historical generations, one aggregate child/generation, natural 29-live healthy bound, ready-child priority and exact return |
 | Redemption | Monotone `B/C` frozen quote, exact prepared ICRC-1 push proof, durable payout obligation, delayed-liquidity recovery and exact replay |
