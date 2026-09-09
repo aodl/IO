@@ -52,10 +52,10 @@ bound of 29 live generations. This is a sizing result, not a public capacity
 branch; historical generations may exceed 32 without `CapacityPending`.
 
 Install and upgrade reopen Paused. Automatic scheduling does not initiate new
-work while Paused. Already accepted recovery work follows the same reviewed
-Paused recovery rules as permissionless `resume`. Reviewed Ready reconstructs
-the next deadline without storing a timer ID or duplicate timer timestamp in
-stable state.
+work while Paused. Already accepted recovery work follows its flow-specific
+authorization while Paused; active Stream-redemption `resume` and exact proof
+require SNS Governance. Reviewed Ready reconstructs the next deadline without
+storing a timer ID or duplicate timer timestamp in stable state.
 
 ## Timing model
 

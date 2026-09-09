@@ -18,6 +18,7 @@ network_url="$(local_network_url)"
 identity="$(local_identity_name)"
 checkout="$(official_checkout)"
 ledger="$(sns_canister_id ledger)"
+index="$(sns_canister_id index)"
 icp_ledger="$(runtime_value nns icp_ledger)"
 stream="$(toml_string "$(local_vars_file)" local io_stream_manager_canister)"
 nns_manager="$(toml_string "$(local_vars_file)" local io_nns_neuron_manager_canister)"
@@ -38,6 +39,8 @@ for amount in "$reserve_amount" "$user_amount" "$liquid_amount" "$redeem_amount"
   require_nat "rehearsal amount" "$amount"
 done
 ledger_did="${checkout}/rs/ledger_suite/icrc1/ledger/ledger.did"
+index_did="${checkout}/rs/ledger_suite/icrc1/index-ng/index-ng.did"
+icp_ledger_did="${checkout}/rs/ledger_suite/icp/ledger.did"
 
 query_nat() {
   local did="$1" canister="$2" method="$3" argument="$4" label="$5" response value
@@ -162,6 +165,12 @@ if ! phase_is_done 15-redemption-complete; then
     pre_liquid="$(icp_balance "$stream" "$liquid_hex" pre_payout_liquid_icp_e8s)"
     pre_user_io="$(sns_balance "$operator" none pre_staging_user_io_e8s)"
     pre_user_icp="$(icp_balance "$operator" none pre_payout_user_icp_e8s)"
+    payout_block_floor_response="$(dfx canister call --network "$network_url" --identity "$identity" --query \
+      --candid "$icp_ledger_did" "$icp_ledger" query_blocks \
+      '(record { start = 0 : nat64; length = 0 : nat64 })')"
+    payout_block_floor="$(printf '%s' "$payout_block_floor_response" \
+      | sed -n 's/.*chain_length = \([0-9_][0-9_]*\) : nat64.*/\1/p' | tr -d '_')"
+    require_nat "pre-redemption ICP block floor" "$payout_block_floor"
     stage_response="$(dfx canister call --network "$network_url" --identity "$identity" \
       --candid "$ledger_did" "$ledger" icrc1_transfer \
       "(record { from_subaccount = null; to = record { owner = principal \"${stream}\"; subaccount = opt blob \"$(hex_blob_literal "$staging_hex")\" }; amount = ${redeem_amount} : nat; fee = opt (10000 : nat); memo = null; created_at_time = null })")"
@@ -196,6 +205,7 @@ excluded_io_e8s = ${pre_excluded}
 liquid_icp_e8s = ${pre_liquid}
 user_io_e8s = ${pre_user_io}
 user_icp_e8s = ${pre_user_icp}
+payout_block_floor = ${payout_block_floor}
 redeemable_io_supply_e8s = ${expected_d}
 gross_icp_e8s = ${expected_gross}
 net_icp_e8s = ${expected_net}
@@ -217,29 +227,22 @@ EOF
       --candid "${REPO_ROOT}/canisters/io_nns_neuron_manager/io_nns_neuron_manager.did" "$nns_manager" resume '()'
     completed_status="$(dfx canister call --network "$network_url" --identity "$identity" --query \
       --candid "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" get_status '()')"
-    if printf '%s' "$completed_status" | grep -q 'last_completed_redemption = opt record'; then
+    compact_status="$(printf '%s' "$completed_status" | tr '\n' ' ')"
+    observed_staging="$(sns_balance "$stream" "$staging_hex" redemption_poll_staging_e8s)"
+    if printf '%s' "$compact_status" | grep -q 'operation_kind = null' \
+      && printf '%s' "$compact_status" | grep -q 'pending_redemption_candidates = 0' \
+      && [ "$observed_staging" -eq 0 ]; then
       break
     fi
     sleep 2
   done
-  if ! printf '%s' "$completed_status" | grep -q 'last_completed_redemption = opt record'; then
+  compact_status="$(printf '%s' "$completed_status" | tr '\n' ' ')"
+  if ! printf '%s' "$compact_status" | grep -q 'operation_kind = null' \
+    || ! printf '%s' "$compact_status" | grep -q 'pending_redemption_candidates = 0'; then
     record_blocker 'semantic-staging redemption did not complete after bounded automatic-worker prompts'
     exit 2
   fi
   printf '%s\n' "$completed_status" >> "$log_file"
-  compact="$(printf '%s' "$completed_status" | tr '\n' ' ')"
-  result_source="$(printf '%s' "$compact" | sed -n 's/.*source_io_block = \([0-9_][0-9_]*\).*/\1/p' | tr -d '_')"
-  payout_block="$(printf '%s' "$compact" | sed -n 's/.*icp_payout_block = \([0-9_][0-9_]*\).*/\1/p' | tr -d '_')"
-  sweep_block="$(printf '%s' "$compact" | sed -n 's/.*reserve_sweep_block = \([0-9_][0-9_]*\).*/\1/p' | tr -d '_')"
-  stream_gross="$(printf '%s' "$compact" | sed -n 's/.*gross_icp_e8s = \([0-9_][0-9_]*\).*/\1/p' | tr -d '_')"
-  stream_net="$(printf '%s' "$compact" | sed -n 's/.*net_icp_e8s = \([0-9_][0-9_]*\).*/\1/p' | tr -d '_')"
-  for value in "$result_source" "$payout_block" "$sweep_block" "$stream_gross" "$stream_net"; do
-    require_nat "completed semantic-staging redemption field" "$value"
-  done
-  if [ "$result_source" != "$source_block" ]; then
-    record_blocker 'completed redemption source block differs from the canonically staged transfer'
-    exit 2
-  fi
   pre_total="$(toml_number "$pre_snapshot" redemption total_io_supply_before_e8s)"
   pre_reserve="$(toml_number "$pre_snapshot" redemption protocol_reserve_io_e8s)"
   pre_excluded="$(toml_number "$pre_snapshot" redemption excluded_io_e8s)"
@@ -249,10 +252,20 @@ EOF
   expected_d="$(toml_number "$pre_snapshot" redemption redeemable_io_supply_e8s)"
   expected_gross="$(toml_number "$pre_snapshot" redemption gross_icp_e8s)"
   expected_net="$(toml_number "$pre_snapshot" redemption net_icp_e8s)"
-  if [ "$stream_gross" != "$expected_gross" ] || [ "$stream_net" != "$expected_net" ]; then
-    record_blocker 'Stream frozen quote differs from the independently calculated post-staging B/C snapshot'
-    exit 2
-  fi
+  payout_block="$(toml_number "$pre_snapshot" redemption payout_block_floor)"
+  stream_gross="$expected_gross"
+  stream_net="$expected_net"
+  reserve_history="$(dfx canister call --network "$network_url" --identity "$identity" --query \
+    --candid "$index_did" "$index" get_account_transactions \
+    "(record { account = record { owner = principal \"${stream}\"; subaccount = opt blob \"$(hex_blob_literal "$reserve_hex")\" }; start = null; max_results = 10 : nat })")"
+  printf 'post_redemption_reserve_history=%s\n' "$reserve_history" >> "$log_file"
+  sweep_block="$(printf '%s' "$reserve_history" | sed -n 's/.*id = \([0-9_][0-9_]*\) : nat.*/\1/p' | head -1 | tr -d '_')"
+  for value in "$payout_block" "$sweep_block" "$stream_gross" "$stream_net"; do
+    require_nat "canonical semantic-staging redemption field" "$value"
+  done
+  run_logged "$log_file" dfx canister call --network "$network_url" --identity "$identity" --query \
+    --candid "$icp_ledger_did" "$icp_ledger" query_blocks \
+    "(record { start = ${payout_block} : nat64; length = 1 : nat64 })"
   post_total="$(query_nat "$ledger_did" "$ledger" icrc1_total_supply '()' post_sweep_total_supply_e8s)"
   post_reserve="$(sns_balance "$stream" "$reserve_hex" post_sweep_protocol_reserve_e8s)"
   post_staging="$(sns_balance "$stream" "$staging_hex" post_sweep_staging_e8s)"

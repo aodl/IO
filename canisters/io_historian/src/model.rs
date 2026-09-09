@@ -291,7 +291,7 @@ pub struct ProtocolSnapshotInput<'a> {
     pub reserve: u128,
     pub nonredeemable: &'a [u128],
     pub liquid: u128,
-    pub paid_unswept_redemption_io_e8s: Option<u128>,
+    pub redemption_in_progress: bool,
     pub reconciliation: Option<&'a ReconciliationProjection>,
     pub permanent_productive_capital_e8s: Option<u128>,
     pub observed_at: u64,
@@ -313,14 +313,7 @@ pub fn coherent_protocol_snapshot(
         "total IO supply is less than protocol reserve plus nonredeemable governance balances"
             .to_string()
     })?;
-    let claims = input
-        .paid_unswept_redemption_io_e8s
-        .map(|paid| {
-            physical_claims.checked_sub(paid).ok_or_else(|| {
-                "paid-but-unswept redemption exceeds physical claim supply".to_string()
-            })
-        })
-        .transpose()?;
+    let claims = (!input.redemption_in_progress).then_some(physical_claims);
     let projection = input
         .reconciliation
         .filter(|value| Some(value.claim_supply_e8s) == claims);
@@ -399,7 +392,6 @@ pub struct StreamStatus {
     pub lifecycle: Lifecycle,
     pub operation_kind: Option<String>,
     pub operation_phase: Option<String>,
-    pub paid_unswept_redemption_io_e8s: Option<u128>,
     pub latest_entitlement_batch_generation: u64,
     pub latest_processed_reward_event: Option<RewardEventId>,
     pub latest_reward_event_classification: Option<RewardEventClassification>,

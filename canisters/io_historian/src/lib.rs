@@ -455,7 +455,7 @@ mod tests {
             reserve,
             nonredeemable,
             liquid: 5,
-            paid_unswept_redemption_io_e8s: Some(0),
+            redemption_in_progress: false,
             reconciliation,
             permanent_productive_capital_e8s: None,
             observed_at: 99,
@@ -500,7 +500,7 @@ mod tests {
             reserve: 10,
             nonredeemable: &[10],
             liquid: 20,
-            paid_unswept_redemption_io_e8s: Some(0),
+            redemption_in_progress: false,
             reconciliation: Some(&projection),
             permanent_productive_capital_e8s: Some(400),
             observed_at: 99,
@@ -528,9 +528,9 @@ mod tests {
     }
 
     #[test]
-    fn ambiguous_redemption_effect_withholds_claim_supply_and_rate() {
+    fn active_redemption_withholds_claim_supply_and_rate() {
         let mut input = snapshot_input(120, 10, &[10], None);
-        input.paid_unswept_redemption_io_e8s = None;
+        input.redemption_in_progress = true;
         let snapshot = coherent_protocol_snapshot(input).unwrap();
         assert_eq!(snapshot.claim_io_supply_e8s, None);
         assert_eq!(snapshot.claim_rate, None);

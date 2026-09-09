@@ -56,6 +56,7 @@ pub struct LedgerCallCounters {
     pub balance: u64,
     pub transfer: u64,
     pub query_blocks: u64,
+    pub get_transactions: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -624,6 +625,7 @@ pub struct GetTransactionsResponse {
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn get_transactions(args: GetTransactionsRequest) -> GetTransactionsResponse {
+    STATE.with(|cell| cell.borrow_mut().call_counters.get_transactions += 1);
     let index = args.start.0.to_str_radix(10).parse::<usize>().ok();
     let requested = args.length != 0_u8;
     let transactions = STATE.with(|cell| {

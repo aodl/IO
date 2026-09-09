@@ -1097,15 +1097,6 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
             }
             for needle in FORBIDDEN {
                 if text.contains(needle) {
-                    let narrow_redemption_scanner = directory.contains("io_stream_manager")
-                        && matches!(
-                            (*needle, path.file_name().and_then(|name| name.to_str())),
-                            ("LedgerIndexClient", Some("api.rs"))
-                                | ("AccountHistoryScanState", Some("state.rs"))
-                        );
-                    if narrow_redemption_scanner {
-                        continue;
-                    }
                     return Err(format!("{} contains forbidden {needle:?}", path.display()));
                 }
             }
@@ -1168,11 +1159,6 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
         let text = require_file(root, manifest)?;
         for dependency in ["io-ledger-types", "io-governance-types"] {
             if text.contains(dependency) {
-                if manifest == "canisters/io_stream_manager/Cargo.toml"
-                    && dependency == "io-ledger-types"
-                {
-                    continue;
-                }
                 return Err(format!(
                     "{manifest} contains forbidden production dependency {dependency}"
                 ));

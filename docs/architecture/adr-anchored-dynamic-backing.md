@@ -69,8 +69,8 @@ records for their own source. They do not define this replacement.
 | Cohort lifecycle | NNS stable state/API; `MAX_LIVE_UNWIND_COHORTS`; `CapacityPending` | Delete the product cap/variant. Retain one aggregate child per generation and prioritize ready-child service before another Split. |
 | Redemption | Stream state/API/redemption; ledger boundary/types | Use one claim-bearing semantic staging Account, bounded index discovery, canonical block proof, fresh current quote/liquidity admission, exact payout, and exact reserve sweep. |
 | Frontend redemption | `frontend/web/src/app/redemption.js` and redemption UI/tests | Use one ordinary staging transfer and an optional no-argument worker prompt. |
-| Historian/status | Historian raw adapters/model/DID and frontend projection | Retain layered observation; add anchor partition, transient paid-unswept exclusion, and ambiguity barriers only where operationally necessary. |
-| Stable schemas | Stream marker 12; NNS marker 13; strict launch fixtures | The replacement encoded shapes reject Stream marker 11 and NNS marker 12 without migration. |
+| Historian/status | Historian raw adapters/model/DID and frontend projection | Retain layered observation and anchor partition; report claim supply/rate unavailable during an active two-ledger redemption settlement. |
+| Stable schemas | Stream marker 13; NNS marker 13; strict launch fixtures | The replacement encoded shapes reject Stream marker 12 and NNS marker 12 without migration. |
 | Bootstrap/rehearsal tooling | install args, production wiring, local SNS runbook/evidence validators | Retain preseeded anchor, dust, replenishment, timing, natural-generation, and semantic-staging evidence. |
 | Normative documentation | pooled-backing, fees, maturity, scheduler, redemption, readiness docs | Mark superseded decisions explicitly. Preserve historical package descriptions. |
 

@@ -159,7 +159,6 @@ export const idlFactory = ({ IDL }) => {
     'accumulated_policy_credit' : IDL.Nat,
     'operation_kind' : IDL.Opt(IDL.Text),
     'processed_reward_event_count' : IDL.Nat64,
-    'paid_unswept_redemption_io_e8s' : IDL.Opt(IDL.Nat),
     'pending_entitlement_batch_policy_credit' : IDL.Opt(IDL.Nat),
     'reward_work_due' : IDL.Bool,
     'operation_phase' : IDL.Opt(IDL.Text),

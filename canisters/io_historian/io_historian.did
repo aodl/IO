@@ -99,7 +99,6 @@ type StreamStatus = record {
   lifecycle : Lifecycle;
   operation_kind : opt text;
   operation_phase : opt text;
-  paid_unswept_redemption_io_e8s : opt nat;
   latest_entitlement_batch_generation : nat64;
   latest_processed_reward_event : opt RewardEventId;
   latest_reward_event_classification : opt RewardEventClassification;

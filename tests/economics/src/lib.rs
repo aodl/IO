@@ -13,7 +13,6 @@ mod anchored_dynamic_backing {
     const NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS: u64 = 1_209_600;
     const PREFERRED_SNS_UNLOCK_DELAY_SECONDS: u64 = 1_296_060;
     const REWARD_CADENCE_SECONDS: u64 = 86_400;
-    const REWARD_MARGIN_SECONDS: u64 = 300;
     const RECOVERY_RETRY_SECONDS: u64 = 60;
     const STRUCTURAL_CADENCE_SECONDS: u64 = 43_200;
     const REVIEWED_MAX_NEURONS: u64 = 1_000;
@@ -29,13 +28,6 @@ mod anchored_dynamic_backing {
         io_balance_queries_per_day_at_max: u64,
         approximate_calls_per_day_at_max: u64,
         healthy_slack_seconds: u64,
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    struct SchedulerFacts {
-        latest_structural_at: u64,
-        latest_reward_event_end: u64,
-        retry_due_at: Option<u64>,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -541,17 +533,6 @@ mod anchored_dynamic_backing {
         }
     }
 
-    fn next_stream_deadline(facts: SchedulerFacts) -> u64 {
-        let structural = facts.latest_structural_at + STRUCTURAL_CADENCE_SECONDS;
-        let reward = facts.latest_reward_event_end + REWARD_CADENCE_SECONDS + REWARD_MARGIN_SECONDS;
-        facts
-            .retry_due_at
-            .into_iter()
-            .chain([structural, reward])
-            .min()
-            .unwrap()
-    }
-
     fn observe_active(facet: RewardFacet, canonical_event_marker: u64) -> RewardFacet {
         RewardFacet {
             eligible_from_event: facet
@@ -855,15 +836,15 @@ mod anchored_dynamic_backing {
     }
 
     #[test]
-    fn reserve_sweep_replaces_temporary_retirement_without_changing_c() {
+    fn reserve_sweep_establishes_the_expected_final_claim_supply() {
         let supply_before = 50 * E8S_PER_ICP;
         let reserve_before = 10 * E8S_PER_ICP;
         let staged = E8S_PER_ICP;
         let sweep_fee = 10_000;
-        let economic_claims_before_sweep = supply_before - reserve_before - staged;
+        let expected_claims_after = supply_before - reserve_before - staged;
         let supply_after = supply_before - sweep_fee;
         let reserve_after = reserve_before + staged - sweep_fee;
-        assert_eq!(supply_after - reserve_after, economic_claims_before_sweep);
+        assert_eq!(supply_after - reserve_after, expected_claims_after);
     }
 
     #[test]
@@ -955,27 +936,6 @@ mod anchored_dynamic_backing {
         let transition_immediately_before_poll = STRUCTURAL_CADENCE_SECONDS - 1;
         let prompt_detection_at = STRUCTURAL_CADENCE_SECONDS;
         assert!(prompt_detection_at - transition_immediately_before_poll <= 1);
-    }
-
-    #[test]
-    fn stream_deadline_reconstruction_preserves_reward_margin_and_short_retry() {
-        let facts = SchedulerFacts {
-            latest_structural_at: 1_000,
-            latest_reward_event_end: 5_000,
-            retry_due_at: None,
-        };
-        assert_eq!(next_stream_deadline(facts), 44_200);
-        let retrying = SchedulerFacts {
-            retry_due_at: Some(1_060),
-            ..facts
-        };
-        assert_eq!(next_stream_deadline(retrying), 1_060);
-        let restarted = SchedulerFacts { ..retrying };
-        assert_eq!(next_stream_deadline(restarted), 1_060);
-        assert_eq!(
-            5_000 + REWARD_CADENCE_SECONDS + REWARD_MARGIN_SECONDS,
-            91_700
-        );
     }
 
     #[test]

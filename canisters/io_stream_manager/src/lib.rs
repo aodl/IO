@@ -6,6 +6,7 @@ pub mod lifecycle;
 mod pool_reconciliation;
 pub mod receipt;
 pub mod redemption;
+mod redemption_timer;
 mod reward_evidence;
 mod reward_timer;
 pub mod rewards;
@@ -36,7 +37,10 @@ fn validate_set_paused_state(snapshot: &StreamStateV1, paused: bool) -> Result<S
     }
     if !paused && snapshot.lifecycle == Lifecycle::Paused {
         if !lifecycle::is_readiness_resumable_operation(&snapshot.active_operation) {
-            return Err("IO stream has an active operation that blocks readiness".into());
+            return Err(
+                "Busy: IO stream must recover its active operation while Paused before readiness"
+                    .into(),
+            );
         }
         if snapshot.prepared_exit_reconciliation.is_some() {
             return Err("IO stream has a prepared exit reconciliation".into());
@@ -77,10 +81,8 @@ pub fn init(args: InitArgs) {
         next_operation_sequence: state::OperationSequence(1),
         control_epoch: 0,
         last_completed_claim_receipt: None,
-        redemption_scan_state: Default::default(),
-        last_redemption_poll_started_at_nanos: 0,
-        last_manual_redemption_work_started_at_nanos: 0,
-        last_completed_redemption: None,
+        redemption_scan_cursor: Default::default(),
+        pending_redemption_blocks: Vec::new(),
     };
     state::initialize(state, ic_cdk::api::canister_self())
         .unwrap_or_else(|error| ic_cdk::trap(&error));
@@ -102,8 +104,8 @@ pub fn get_minimum_redemption_io_e8s() -> u128 {
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn process_redemptions() -> Result<RedemptionProgress, ApiError> {
-    api::process_redemptions(ic_cdk::api::time()).await
+pub fn process_redemptions() -> Result<(), ApiError> {
+    api::process_redemptions()
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -169,12 +171,14 @@ pub async fn set_paused(paused: bool) -> Result<(), ApiError> {
     if paused {
         lifecycle::set_paused();
         reward_timer::install(None);
+        redemption_timer::cancel();
         Ok(())
     } else {
         let result =
             lifecycle::readiness_preflight(ic_cdk::api::canister_self(), control_epoch).await;
         if state::read().lifecycle == Lifecycle::Ready {
             reward_timer::install_for_ready_state();
+            redemption_timer::install_normal();
             result
         } else {
             match result {

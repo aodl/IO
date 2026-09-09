@@ -18,7 +18,8 @@ state dumps, generic voting, and debug methods.
 
 Public progress describes real caller action and blocking boundaries rather
 than durable internal choreography. Stream redemption and NNS Jupiter/maturity
-flows expose `Pending`, `Completed`, and `Stuck`; unwind additionally exposes
+flows expose `Pending`, `Completed`, and `Stuck`; the no-argument redemption
+wake returns only local acceptance and no global completion. Unwind additionally exposes
 `AwaitingTransferProof`. Claim receipts retain `AwaitingLiquidProof` because it
 carries the exact cross-canister permit, while bounded recipient settlement is
 coarse `Pending`. Detailed phase names remain diagnostic status text and are
@@ -32,4 +33,7 @@ reviewed SNS implementation treats every normal reply as execution success
 without decoding the target's application-level `Result`. Typed unauthorized
 responses remain part of the ordinary public API. Exact accepted work may
 return `Pending` and continue through the existing permissionless resume
-surface; no public governance queue or internal-choreography API is added.
+surface, except that an active Stream redemption requires SNS Governance for
+`resume` or exact proof. Its permissionless fast path is the bounded,
+external-call-free `process_redemptions` wake. No public governance queue or
+internal-choreography API is added.

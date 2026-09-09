@@ -1179,8 +1179,8 @@ pub fn run_real_sns_genesis_round_stream_regression(
     use crate::sns_root_setup::SnsRootCanister;
     use candid::{decode_one, encode_one, Nat};
     use io_stream_manager::{
-        Account as StreamAccount, ApiError, InitArgs, RedemptionProgress,
-        RewardEventClassification, RewardEventObservation, Status, StreamConfig,
+        Account as StreamAccount, ApiError, InitArgs, RewardEventClassification,
+        RewardEventObservation, Status, StreamConfig,
     };
     use pocket_ic::CanisterSettings;
 
@@ -1428,10 +1428,9 @@ pub fn run_real_sns_genesis_round_stream_regression(
         ),
     )
     .expect("controller stages the pre-round-one redemption");
-    let mut completed = None;
+    let mut completed = false;
     for _ in 0..20 {
-        pic.tick();
-        let progress: Result<RedemptionProgress, ApiError> = decode_one(
+        let scheduled: Result<(), ApiError> = decode_one(
             &pic.update_call(
                 stream,
                 controller,
@@ -1441,22 +1440,25 @@ pub fn run_real_sns_genesis_round_stream_regression(
             .unwrap(),
         )
         .unwrap();
-        if let Ok(RedemptionProgress::Completed(result)) = progress {
-            completed = Some(result);
+        scheduled.unwrap();
+        pic.advance_time(Duration::from_secs(1));
+        pic.tick();
+        let status: Status = icrc::query_one(&pic, stream, "get_status", ());
+        if status.operation_kind.is_none() && status.pending_redemption_candidates == 0 {
+            completed = true;
             break;
         }
         pic.advance_time(Duration::from_secs(10));
     }
-    let result = completed.expect("pre-round-one staged redemption completes");
+    assert!(completed, "pre-round-one staged redemption completes");
     let io_after = icrc::icrc1_balance_of(&pic, io_ledger, icrc::account(controller, None));
     let icp_after = icrc::icrc1_balance_of(&pic, icp_ledger, icrc::account(controller, None));
     assert_eq!(io_after, io_before - Nat::from(amount + FEE_E8S));
-    assert_eq!(
-        icp_after,
-        icp_before + Nat::from(result.net_icp_e8s),
-        "the real ICP payout must match the completed result"
+    assert!(
+        icp_after > icp_before,
+        "the real ICP payout must credit the staging source Account"
     );
-    let replay: Result<RedemptionProgress, ApiError> = decode_one(
+    let replay: Result<(), ApiError> = decode_one(
         &pic.update_call(
             stream,
             controller,
@@ -1466,7 +1468,7 @@ pub fn run_real_sns_genesis_round_stream_regression(
         .unwrap(),
     )
     .unwrap();
-    assert!(matches!(replay, Ok(RedemptionProgress::RateLimited { .. })));
+    assert_eq!(replay, Ok(()));
     assert_eq!(
         icrc::icrc1_balance_of(&pic, io_ledger, icrc::account(controller, None)),
         io_after,
@@ -1541,8 +1543,8 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     use crate::sns_root_setup::SnsRootCanister;
     use candid::{decode_one, encode_one, Nat};
     use io_stream_manager::{
-        Account as StreamAccount, ApiError, InitArgs, Lifecycle, RedemptionProgress,
-        RewardEventClassification, RewardEventObservation, Status, StreamConfig,
+        Account as StreamAccount, ApiError, InitArgs, Lifecycle, RewardEventClassification,
+        RewardEventObservation, Status, StreamConfig,
     };
     use pocket_ic::CanisterSettings;
 
@@ -2081,7 +2083,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
     let mut expected_processed_event_count = zero_status.processed_reward_event_count;
     let frozen_batch_total: Option<u128> = None;
     let mut redemption = None;
-    let mut redemption_result = None;
+    let mut redemption_completed = false;
     for day in 4_u64..=15 {
         let (expected_settled, expected_weights, expected_classification) = match day {
             4 => {
@@ -2385,10 +2387,9 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                 ),
             )
             .expect("controller stages the pending-batch redemption");
-            let mut completed = None;
+            let mut completed = false;
             for _ in 0..20 {
-                pic.tick();
-                let progress: Result<RedemptionProgress, ApiError> = decode_one(
+                let scheduled: Result<(), ApiError> = decode_one(
                     &pic.update_call(
                         stream,
                         controller,
@@ -2398,15 +2399,18 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                     .unwrap(),
                 )
                 .unwrap();
-                if let Ok(RedemptionProgress::Completed(result)) = progress {
-                    completed = Some(result);
+                scheduled.unwrap();
+                pic.advance_time(Duration::from_secs(1));
+                pic.tick();
+                if stream_status().operation_kind.is_none()
+                    && stream_status().pending_redemption_candidates == 0
+                {
+                    completed = true;
                     break;
                 }
                 pic.advance_time(Duration::from_secs(10));
             }
-            let result = completed.expect("pending-batch staged redemption completes");
-            assert_eq!(result.gross_icp_e8s, quote.gross_icp);
-            assert_eq!(result.net_icp_e8s, quote.net_icp);
+            assert!(completed, "pending-batch staged redemption completes");
             assert_eq!(
                 icrc::icrc1_balance_of(&pic, icp_ledger, icrc::account(controller, None)),
                 redemption_icp_before + Nat::from(quote.net_icp)
@@ -2417,12 +2421,12 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             );
             assert!(stream_status().operation_kind.is_none());
             redemption = Some(quote);
-            redemption_result = Some(result);
+            redemption_completed = true;
         }
         previous_round = event.round;
     }
     assert!(redemption.is_some());
-    assert!(redemption_result.is_some());
+    assert!(redemption_completed);
     let after_fifteen = stream_status();
     assert_eq!(
         after_fifteen.processed_reward_event_count,

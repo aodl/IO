@@ -1221,7 +1221,6 @@ dependencies = [
  "io-build-support",
  "io-core-model",
  "io-ledger-boundary",
- "io-ledger-types",
  "io-nns-types",
  "io-receipt-types",
  "io-reward-policy",

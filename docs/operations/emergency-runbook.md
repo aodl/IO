@@ -9,30 +9,34 @@ Pause through the reviewed governance command, preserve the exact active operati
 Inspect `get_status`, the caller-visible progress, the exact transfer intent and the canonical ledger block named by the operation. Historian output is observation only and cannot classify or complete monetary work.
 
 Caller-visible redemption progress is deliberately coarse: `Idle`, `Pending`,
-`RateLimited`, `Completed(result)`, or `Stuck(text)`. `get_status.operation_phase` supplies the
+`Completed`, or `Stuck(text)`. `process_redemptions()` returns only local wake
+acceptance. `get_status.operation_phase` supplies the
 diagnostic internal phase names below; those names are not a public workflow
-contract.
+contract. Permissionless wake admission is global, heap-only, and approximately
+once per ten seconds; callers cannot multiply admission by changing principals.
 
 ## Redemption phases
 
-- Before activation, an ordered candidate block remains in the bounded staging
+- Before activation, a candidate block remains in the bounded staging service
   queue. Its IO is claim-bearing. Index lag, fee drift, or insufficient liquid
-  ICP creates no payout intent or debt.
-- `PayoutPrepared`: the canonical staging block, fresh coherent `B/C`, matching
-  fees, and whole-gross liquidity have fixed one immutable payout to the exact
-  source Account.
-- `PayoutSubmitted`: the immutable ICP payout was created at its first submission. Retry only the identical intent within its deduplication window.
-- `PayoutSucceeded`: the canonical payout block is persisted; exactly the staged
-  amount is economically retired and temporarily excluded from `C`.
-- `SweepPrepared` / `SweepSubmitted`: the immutable staging-to-reserve transfer
-  debits the full staged amount by sending amount-minus-fee and paying the
-  canonical IO fee. Retry or prove only this exact intent.
+  ICP creates no payout intent or debt. Settlement is not FIFO: an illiquid
+  candidate is deferred behind other discovered candidates at coarse cadence.
+  Coarse discovery continues before service while the 64-block queue has room,
+  including through captured continuation pages. A completely full queue
+  deliberately backpressures newer discovery without advancing scanner
+  coverage or losing the claim-bearing staged transfer.
+- `PayoutSubmitted`: canonical staging proof, fresh coherent `B/C`, matching
+  fees, and whole-gross liquidity fixed an immutable ICP payout to the exact
+  source Account before the ledger call. Retry only the identical intent.
+- `SweepSubmitted`: canonical payout success fixed an immutable
+  staging-to-reserve transfer using the activation-time IO fee before the ledger
+  call. Retry or prove only this exact intent. Claim supply/rate are unavailable
+  while either redemption stage is active.
 - `Stuck`: automated retry is not safe. Keep Paused and prove the exact named block through the ledger's canonical current/archive interface or ship a reviewed forward fix.
 
-After sweep proof, the physical supply burn plus reserve credit replaces the
-temporary economic exclusion without changing post-payout `C`. The latest
-bounded result, active-operation clear, and candidate removal commit exactly
-once; ledger blocks remain the durable external history.
+After sweep proof, the physical supply burn plus reserve credit establishes the
+coherent post-redemption `C`. Active-operation clear and candidate removal
+commit together; ledger blocks remain the durable completion history.
 
 Never mark completion by assertion, change a payout destination, recreate an intent with a new timestamp, infer a user account from text, or attempt a global proof that a transfer is absent.
 
@@ -46,6 +50,12 @@ persisted intent through the canonical current/archive boundary, including
 accounts, amount, fee, memo, timestamp, and spender constraints.
 
 No proof of absence exists. If the exact effect cannot be proved, retain Paused and prepare a governance-reviewed upgrade.
+
+An upgrade with `PayoutSubmitted`, `SweepSubmitted`, or the corresponding Stuck
+state reopens Paused. Do not request ordinary readiness yet: resume the exact
+immutable transfer or prove its exact block as SNS Governance while Paused,
+confirm that the active operation cleared once, and only then request unpause.
+Successful readiness installs the normal reward and coarse redemption timers.
 
 ## Liquid receipts and rewards
 

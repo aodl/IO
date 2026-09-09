@@ -3865,7 +3865,7 @@ mod tests {
                 subaccount: None,
             },
         );
-        let mut redemption = None;
+        let mut redemption_completed = false;
         let mut redemption_recovery_steps = Vec::new();
         for _ in 0..24 {
             fixture.pic.tick();
@@ -3876,7 +3876,7 @@ mod tests {
                 "get_status",
                 (),
             );
-            let progress = match status.operation_kind.as_deref() {
+            match status.operation_kind.as_deref() {
                 Some("BackingReconciliation") | Some("Redemption") => {
                     let resumed: Result<StreamProgress, StreamApiError> = super::update(
                         &fixture.pic,
@@ -3887,33 +3887,45 @@ mod tests {
                     );
                     redemption_recovery_steps.push(format!("resume={resumed:?}"));
                     match resumed {
-                        Ok(StreamProgress::Redemption(progress)) => {
-                            Some(Ok::<RedemptionProgress, StreamApiError>(progress))
-                        }
+                        Ok(StreamProgress::Redemption(RedemptionProgress::Completed)) => {}
+                        Ok(StreamProgress::Redemption(_)) => {}
                         Ok(StreamProgress::BackingReconciliation)
                         | Err(StreamApiError::Pending(_))
-                        | Err(StreamApiError::Busy) => None,
+                        | Err(StreamApiError::Busy) => {}
                         other => panic!("combined redemption recovery failed: {other:?}"),
                     }
                 }
-                None => Some(super::update(
-                    &fixture.pic,
-                    sns.stream,
-                    fixture.controller,
-                    "process_redemptions",
-                    (),
-                )),
+                None => {
+                    let wake: Result<(), StreamApiError> = super::update(
+                        &fixture.pic,
+                        sns.stream,
+                        fixture.controller,
+                        "process_redemptions",
+                        (),
+                    );
+                    wake.unwrap();
+                }
                 other => panic!("unrelated operation blocked redemption: {other:?}"),
-            };
-            if let Some(Ok(RedemptionProgress::Completed(completed))) = progress {
-                redemption = Some(completed);
+            }
+            let observed_icp = super::query::<Nat>(
+                &fixture.pic,
+                fixture.ledger,
+                Principal::anonymous(),
+                "icrc1_balance_of",
+                ManagerAccount {
+                    owner: fixture.controller,
+                    subaccount: None,
+                },
+            );
+            redemption_completed = observed_icp == icp_before.clone() + Nat::from(quote.net_icp);
+            if redemption_completed {
                 break;
             }
-            fixture.pic.advance_time(Duration::from_secs(10));
+            fixture.pic.advance_time(Duration::from_secs(1));
         }
-        let redemption = redemption.unwrap_or_else(|| {
+        if !redemption_completed {
             panic!("combined staged redemption exceeded bounded recovery attempts: {redemption_recovery_steps:?}")
-        });
+        }
         fixture
             .pic
             .upgrade_canister(sns.stream, stream_wasm, encode_one(()).unwrap(), None)
@@ -3925,12 +3937,7 @@ mod tests {
             "get_status",
             (),
         );
-        assert_eq!(
-            upgraded_status.last_completed_redemption,
-            Some(redemption.clone())
-        );
-        assert_eq!(redemption.gross_icp_e8s, quote.gross_icp);
-        assert_eq!(redemption.net_icp_e8s, quote.net_icp);
+        assert!(upgraded_status.operation_kind.is_none());
         let resumed: Result<(), StreamApiError> = super::update(
             &fixture.pic,
             sns.stream,
@@ -4178,7 +4185,7 @@ mod tests {
         )
         .unwrap();
         eprintln!(
-            "combined_real_summary event_round={} ordinary_maturity={} actual_mint={} reward_recipients={} redemption={redemption:?} phases={maturity_phases:?}",
+            "combined_real_summary event_round={} ordinary_maturity={} actual_mint={} reward_recipients={} redemption_quote={quote:?} phases={maturity_phases:?}",
             event.round,
             ordinary_maturity,
             actual_minted_e8s,
@@ -4194,8 +4201,8 @@ mod tests {
             staging_donation_e8s,
             observed_permanent_donation_e8s,
             recipient_after.len(),
-            redemption.gross_icp_e8s,
-            redemption.net_icp_e8s,
+            quote.gross_icp,
+            quote.net_icp,
             before_top_up.claim_bearing_dynamic_principal_e8s,
             top_up_credit,
             top_up_donation,

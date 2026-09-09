@@ -11,7 +11,7 @@
 | Two-year maturity | Semantic balance capture, anchor-only restoration plus its fresh-capture fee, ordinary net-credit 40/60 remainder, no recursive debt, no IO issuance |
 | Sticky cohorts | Split/start separation, cancellation, readiness, return, maturity cleanup |
 | Cohorts | More than 32 historical generations, one aggregate child/generation, natural 29-live healthy bound, ready-child priority and exact return |
-| Redemption | Claim-bearing semantic staging, bounded index discovery, canonical transfer proof, current monotone `B/C` quote after whole-gross liquidity, exact source-Account payout, paid-unswept exclusion, exact reserve sweep, global manual throttle, and timer processing |
+| Redemption | Claim-bearing semantic staging, bounded lossless index discovery, canonical transfer proof, current monotone `B/C` quote after whole-gross liquidity, exact source-Account payout, exact reserve sweep, unavailable mid-settlement snapshot, coalesced wake hints, and coarse timer processing |
 | Refresh lag | Ledger stake authoritative despite ancillary refresh failure |
 | Failure/upgrade | Submitted/proved phases, ambiguous effects, expired deduplication, exact proof |
 | Boundary | Independent Governance/Ledger pins and exact candidate behavior |

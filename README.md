@@ -47,11 +47,11 @@ Root, and Governance services:
 1. A user makes an ordinary ICRC-1 transfer to the Stream Manager's fixed
    semantic redemption staging Account. The transfer is explicit intent but
    does not retire the claim: staged IO remains in `C`.
-2. The single scheduler's bounded account-filtered index scan discovers the
+2. A dedicated coarse timer's bounded account-filtered index scan discovers the
    transfer, then the canonical IO ledger exact-proves it. Once current liquid
    ICP covers the whole fresh `B/C` quote, Stream pays the exact source Account,
    economically retires the staged IO, and exact-sweeps it into the formal
-   reserve. A no-argument permissionless call prompts the same worker.
+   reserve. A no-argument permissionless call only coalesces a near-term wake.
 3. Once per exact SNS reward event, the Stream Manager converts eligible
    proposal-bearing reward shares into policy credit. A genuinely
    no-proposal event uses the defined eligible-stake fallback; an ambiguous
@@ -243,7 +243,9 @@ an owed payout waiting for invariant recovery, and durable `Stuck` state.
 accepts only an exact canonical ledger block for the active proof slot; it is
 not a manual balance rewrite or debug completion path. Stream proof slots cover
 redemption, the paired liquid claim receipt, pooled top-up, and reward
-transfers. The NNS Manager similarly proves exact outgoing maturity, parent,
+transfers. Redemption proof is restricted to SNS Governance as reviewed
+emergency recovery; existing flow-specific proof authorization remains narrow.
+The NNS Manager similarly proves exact outgoing maturity, parent,
 and cohort effects. It does not prove the provenance of fungible ICP already
 held in a semantic Account. Upgrades preserve durable operation state and force
 reviewed reactivation while allowing immutable work to resume.

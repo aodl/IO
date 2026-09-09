@@ -64,26 +64,18 @@ wallet sees the IO amount, source subaccount, staging destination, ordinary IO
 fee, exact network, the canonical ICP-fee policy, and the fact that the final
 quote is not frozen until Stream accepts the staged transfer. Only affirmative
 consent permits one ordinary `icrc1_transfer` to staging. It has no special
-memo, canister nonce, expiry, allowance, or spender authority. The client keeps
-one immutable `created_at_time` across an ambiguous transport retry and treats
-ledger `Duplicate` as the original receipt. A later age, fee, or availability
-error cannot erase an earlier ambiguous effect; the client retains a
-review-required receipt and stops blind retransmission. A definitive rejection
-of a live first dispatch may still be cleared. The possibly-effective dispatch
-state is persisted before calling the ledger, and callbacks merge by immutable
-intent after rereading storage so stale observations cannot regress newer work.
+memo, canister nonce, expiry, allowance, or spender authority. The application
+submits once and never automatically retries an ambiguous response. A transport
+failure states that the transfer may have succeeded and directs the user to
+wallet or ledger history before another explicitly authorized transfer.
 
-After recording the transfer block the client optionally calls permissionless, no-argument
-`process_redemptions()` once. That call cannot select the block, amount, payout
-Account, quote, or fee; the canonical ledger block supplies them. The UI renders
-`Idle`, `Pending`, `RateLimited`, `Completed`, and `Stuck`, explains the roughly
-one-minute automatic cadence, and never asks the user to send the IO again.
-Worker failure is reported as staged/pending, and a returned completion is
-shown only when its source block and Account match the locally retained receipt.
-The same match applies to the manual worker button and the bounded
-`get_status().last_completed_redemption` observation used after reload or timer
-completion. Confirmed completion is cached locally; a later deliberate
-same-amount submission receives a distinct client identity and consent.
+After a definite staging receipt the client calls permissionless, no-argument
+`process_redemptions()` once as a best-effort wake hint. That call performs no
+external work itself and cannot select the block, amount, payout Account, quote,
+or fee; the canonical ledger block supplies them. Wake failure is reported as
+staged work that automatic processing will continue. The normal UI has no
+manual Check button, local receipt database, completion claim, or application
+retry path.
 Staged IO remains claim-bearing until canonical payout success. Fee drift or
 insufficient liquid ICP can delay acceptance without creating payout debt.
 

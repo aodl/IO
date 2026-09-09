@@ -56,9 +56,9 @@ pub async fn protocol(
         reserve,
         nonredeemable: &nonredeemable,
         liquid,
-        paid_unswept_redemption_io_e8s: stream
+        redemption_in_progress: stream
             .as_ref()
-            .and_then(|value| value.paid_unswept_redemption_io_e8s),
+            .is_none_or(|value| value.operation_kind.as_deref() == Some("Redemption")),
         reconciliation: stream
             .as_ref()
             .and_then(|value| value.latest_reconciliation_checkpoint.as_ref()),
@@ -79,7 +79,6 @@ struct RawStreamStatus {
     lifecycle: Lifecycle,
     operation_kind: Option<String>,
     operation_phase: Option<String>,
-    paid_unswept_redemption_io_e8s: Option<u128>,
     latest_entitlement_batch_generation: u64,
     latest_processed_reward_event: Option<RewardEventId>,
     latest_reward_event_classification: Option<RawRewardEventClassification>,
@@ -132,7 +131,6 @@ impl RawStreamStatus {
             lifecycle: self.lifecycle,
             operation_kind: self.operation_kind,
             operation_phase: self.operation_phase,
-            paid_unswept_redemption_io_e8s: self.paid_unswept_redemption_io_e8s,
             latest_entitlement_batch_generation: self.latest_entitlement_batch_generation,
             latest_processed_reward_event: self.latest_processed_reward_event,
             latest_reward_event_classification: self
@@ -594,8 +592,7 @@ mod tests {
         let encoded = encode_one(RawStreamStatus {
             lifecycle: Lifecycle::Ready,
             operation_kind: Some("Redemption".into()),
-            operation_phase: Some("PayoutSucceeded".into()),
-            paid_unswept_redemption_io_e8s: Some(100),
+            operation_phase: Some("SweepSubmitted".into()),
             latest_entitlement_batch_generation: 0,
             latest_processed_reward_event: Some(RewardEventId {
                 end_timestamp_seconds: 123,
@@ -626,8 +623,7 @@ mod tests {
             })
         );
         assert_eq!(public.latest_reward_event_classification, None);
-        assert_eq!(public.operation_phase.as_deref(), Some("PayoutSucceeded"));
-        assert_eq!(public.paid_unswept_redemption_io_e8s, Some(100));
+        assert_eq!(public.operation_phase.as_deref(), Some("SweepSubmitted"));
         assert_eq!(public.observed_at_timestamp_nanos, 456);
     }
 }

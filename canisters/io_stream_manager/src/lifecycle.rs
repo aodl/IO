@@ -1,19 +1,7 @@
-use crate::{
-    redemption::RedemptionPhase,
-    state::{self, Lifecycle, RedemptionStreamOperation, StreamOperation},
-};
+use crate::state::{self, Lifecycle, StreamOperation};
 
 pub(crate) fn is_readiness_resumable_operation(operation: &Option<StreamOperation>) -> bool {
     operation.is_none()
-        || matches!(operation, Some(StreamOperation::Redemption(redemption))
-            if matches!(redemption.as_ref(), RedemptionStreamOperation::Active(active)
-                if matches!(active.phase,
-                    RedemptionPhase::PayoutPrepared
-                    | RedemptionPhase::PayoutSubmitted
-                    | RedemptionPhase::PayoutSucceeded
-                    | RedemptionPhase::SweepPrepared
-                    | RedemptionPhase::SweepSubmitted
-                    | RedemptionPhase::Stuck)))
 }
 
 pub async fn readiness_preflight(

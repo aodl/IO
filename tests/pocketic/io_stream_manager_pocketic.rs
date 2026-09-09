@@ -1,10 +1,7 @@
 use candid::{decode_one, encode_one, CandidType, Principal};
 use io_stream_manager::{
-    redemption::{RedemptionOperation, RedemptionPhase},
-    state::{RedemptionStreamOperation, StreamOperation},
-    transfer::{deterministic_memo, OwnTransferIntent, TransferAttempt, TransferState},
-    Account, ApiError, InitArgs, Lifecycle, RedemptionProgress, RewardEventClassification,
-    RewardEventObservation, Status, StreamConfig, StreamProgress, StreamStateV1,
+    Account, ApiError, InitArgs, Lifecycle, RewardEventClassification, RewardEventObservation,
+    Status, StreamConfig, StreamStateV1,
 };
 use pocket_ic::PocketIc;
 use serde::Deserialize;
@@ -21,6 +18,24 @@ struct DebugMintAccountArgs {
 #[derive(Clone, Debug, CandidType, Deserialize)]
 struct MockIndexInitArgs {
     ledger_principal_text: Option<String>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct DebugRejectAccountArgs {
+    account: String,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct DebugUnreadableArgs {
+    unreadable: bool,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize)]
+struct DebugNnsDisbursementArgs {
+    from: Account,
+    to: Account,
+    amount_e8s: u128,
+    native_memo_u64: u64,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -65,11 +80,7 @@ struct LedgerCallCounters {
     balance: u64,
     transfer: u64,
     query_blocks: u64,
-}
-
-#[derive(Clone, Debug, CandidType, Deserialize)]
-struct DebugRejectAccountArgs {
-    account: String,
+    get_transactions: u64,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
@@ -136,8 +147,1085 @@ fn query<R: for<'de> Deserialize<'de> + CandidType>(
     .unwrap()
 }
 
-fn nat_u128(value: candid::Nat) -> u128 {
-    value.0.to_str_radix(10).parse().unwrap()
+struct RedemptionFixture {
+    pic: PocketIc,
+    io_ledger: Principal,
+    io_index: Principal,
+    icp_ledger: Principal,
+    nns: Principal,
+    stream: Principal,
+    governance: Principal,
+    user: Principal,
+    user_account: Account,
+    reserve: Account,
+    staging: Account,
+}
+
+fn redemption_fixture() -> RedemptionFixture {
+    let pic = PocketIc::new();
+    let io_ledger = install(&pic, "mock_io_ledger");
+    let io_index = pic.create_canister();
+    pic.add_cycles(io_index, CYCLES);
+    pic.install_canister(
+        io_index,
+        debug_wasm("mock_io_index"),
+        encode_one(MockIndexInitArgs {
+            ledger_principal_text: Some(io_ledger.to_text()),
+        })
+        .unwrap(),
+        None,
+    );
+    let icp_ledger = install(&pic, "mock_icp_ledger");
+    let nns = install(&pic, "mock_nns_governance");
+    let sns_root = install(&pic, "mock_sns_root");
+    let governance = install(&pic, "mock_sns_governance");
+    let governance_hash = pic
+        .canister_status(governance, None)
+        .unwrap()
+        .module_hash
+        .unwrap();
+    let _: () = update(
+        &pic,
+        sns_root,
+        Principal::anonymous(),
+        "debug_set_governance_principal",
+        governance,
+    );
+    update::<_, Result<(), String>>(
+        &pic,
+        sns_root,
+        Principal::anonymous(),
+        "debug_set_governance_module_hash",
+        governance_hash.clone(),
+    )
+    .unwrap();
+    let _: () = update(
+        &pic,
+        governance,
+        Principal::anonymous(),
+        "debug_set_io_ledger_principal",
+        io_ledger,
+    );
+    update::<_, Result<(), String>>(
+        &pic,
+        governance,
+        Principal::anonymous(),
+        "debug_set_latest_reward_event",
+        LatestRewardEventFixture {
+            round: 0,
+            rounds_since_last_distribution: 0,
+            end_timestamp_seconds: 1,
+            settled_proposal_ids: Vec::new(),
+            neuron_reward_shares: Vec::new(),
+        },
+    )
+    .unwrap();
+    let stream = pic.create_canister();
+    pic.add_cycles(stream, CYCLES);
+    let user = Principal::from_slice(&[88; 29]);
+    let user_account = Account {
+        owner: user,
+        subaccount: None,
+    };
+    let reserve = Account {
+        owner: stream,
+        subaccount: None,
+    };
+    let liquid = Account {
+        owner: stream,
+        subaccount: Some(vec![1; 32]),
+    };
+    for (ledger, to, amount) in [
+        (io_ledger, reserve.clone(), 900_000_000_u128),
+        (io_ledger, user_account.clone(), 300_030_000),
+        (icp_ledger, liquid.clone(), 400_000_000),
+    ] {
+        let _: u64 = update(
+            &pic,
+            ledger,
+            Principal::anonymous(),
+            "debug_mint_account",
+            DebugMintAccountArgs {
+                to,
+                amount_e8s: amount,
+            },
+        );
+    }
+    pic.install_canister(
+        stream,
+        debug_wasm("io_stream_manager"),
+        encode_one(InitArgs {
+            config: StreamConfig {
+                io_ledger,
+                io_index,
+                icp_ledger,
+                nns_manager: nns,
+                jupiter_io_account: Account {
+                    owner: Principal::from_slice(&[77; 29]),
+                    subaccount: None,
+                },
+                sns_governance: governance,
+                sns_root,
+                expected_sns_governance_module_hash: governance_hash,
+                approved_reward_event_duration_seconds: 86_400,
+                io_reserve: reserve.clone(),
+                liquid_icp: liquid,
+                nonredeemable_governance_io_accounts: Vec::new(),
+                minimum_redemption_io_e8s: 20_000,
+                expected_io_fee_e8s: 10_000,
+                expected_icp_fee_e8s: 10_000,
+                redemption_poll_interval_seconds: 60,
+                retry_delay_nanos: 1_000_000_000,
+                ledger_deduplication_window_nanos: 86_400_000_000_000,
+            },
+        })
+        .unwrap(),
+        None,
+    );
+    let mut ready: StreamStateV1 = query(&pic, stream, "debug_get_state");
+    ready.lifecycle = Lifecycle::Ready;
+    ready.reward_checkpoint.reward_work_due = false;
+    ready.stake_observation_due = false;
+    ready.structural_reconciliation_due = false;
+    update::<_, Result<(), String>>(
+        &pic,
+        stream,
+        Principal::anonymous(),
+        "debug_replace_state",
+        ready,
+    )
+    .unwrap();
+    let staging = query(&pic, stream, "get_redemption_staging_account");
+    RedemptionFixture {
+        pic,
+        io_ledger,
+        io_index,
+        icp_ledger,
+        nns,
+        stream,
+        governance,
+        user,
+        user_account,
+        reserve,
+        staging,
+    }
+}
+
+fn stage_redemption(fixture: &RedemptionFixture, amount: u128) -> u128 {
+    stage_redemption_from(fixture, fixture.user, amount)
+}
+
+fn stage_redemption_from(fixture: &RedemptionFixture, caller: Principal, amount: u128) -> u128 {
+    let result: io_ledger_boundary::IcrcTransferResult = update(
+        &fixture.pic,
+        fixture.io_ledger,
+        caller,
+        "icrc1_transfer",
+        io_ledger_boundary::IcrcTransferArg {
+            from_subaccount: None,
+            to: fixture.staging.clone(),
+            amount: candid::Nat::from(amount),
+            fee: Some(candid::Nat::from(10_000_u128)),
+            memo: None,
+            created_at_time: None,
+        },
+    );
+    result.unwrap().0.try_into().unwrap()
+}
+
+fn mint_io(fixture: &RedemptionFixture, account: Account, amount_e8s: u128) {
+    let _: u64 = update(
+        &fixture.pic,
+        fixture.io_ledger,
+        Principal::anonymous(),
+        "debug_mint_account",
+        DebugMintAccountArgs {
+            to: account,
+            amount_e8s,
+        },
+    );
+}
+
+fn set_pooled_principal(fixture: &RedemptionFixture, amount_e8s: u128) {
+    let _: () = update(
+        &fixture.pic,
+        fixture.nns,
+        Principal::anonymous(),
+        "debug_set_pooled_principal",
+        amount_e8s,
+    );
+}
+
+fn advance_and_tick(fixture: &RedemptionFixture, seconds: u64) {
+    fixture.pic.advance_time(Duration::from_secs(seconds));
+    for _ in 0..40 {
+        fixture.pic.tick();
+    }
+}
+
+fn transfers_to(fixture: &RedemptionFixture, account: &Account) -> usize {
+    update::<_, Vec<DebugLedgerTransaction>>(
+        &fixture.pic,
+        fixture.icp_ledger,
+        Principal::anonymous(),
+        "debug_get_transactions",
+        (),
+    )
+    .into_iter()
+    .filter(|tx| tx.to_account.as_ref() == Some(account))
+    .count()
+}
+
+fn reserve_sweeps(fixture: &RedemptionFixture) -> usize {
+    update::<_, Vec<DebugLedgerTransaction>>(
+        &fixture.pic,
+        fixture.io_ledger,
+        Principal::anonymous(),
+        "debug_get_transactions",
+        (),
+    )
+    .into_iter()
+    .filter(|tx| {
+        tx.from_account.as_ref() == Some(&fixture.staging)
+            && tx.to_account.as_ref() == Some(&fixture.reserve)
+    })
+    .count()
+}
+
+fn wake_and_tick(fixture: &RedemptionFixture) {
+    let wake: Result<(), ApiError> = update(
+        &fixture.pic,
+        fixture.stream,
+        fixture.user,
+        "process_redemptions",
+        (),
+    );
+    wake.unwrap();
+    fixture.pic.advance_time(Duration::from_secs(1));
+    for _ in 0..20 {
+        fixture.pic.tick();
+    }
+}
+
+fn tick_until_index_calls(fixture: &RedemptionFixture, expected: u64) {
+    for _ in 0..30 {
+        fixture.pic.tick();
+        if query::<u64>(
+            &fixture.pic,
+            fixture.io_index,
+            "debug_get_account_transaction_call_count",
+        ) >= expected
+        {
+            return;
+        }
+    }
+    panic!("redemption worker did not reach index call {expected}");
+}
+
+fn index_call_times(fixture: &RedemptionFixture) -> Vec<u64> {
+    query(
+        &fixture.pic,
+        fixture.io_index,
+        "debug_get_account_transaction_call_times",
+    )
+}
+
+fn index_max_results(fixture: &RedemptionFixture) -> Vec<u64> {
+    query(
+        &fixture.pic,
+        fixture.io_index,
+        "debug_get_account_transaction_max_results",
+    )
+}
+
+fn replace_stream_state(fixture: &RedemptionFixture, replacement: StreamStateV1) {
+    update::<_, Result<(), String>>(
+        &fixture.pic,
+        fixture.stream,
+        Principal::anonymous(),
+        "debug_replace_state",
+        replacement,
+    )
+    .unwrap();
+}
+
+#[test]
+fn sustained_sybil_wake_spam_is_globally_bounded_across_time() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping staged-redemption PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = redemption_fixture();
+    let index_before: u64 = query(
+        &fixture.pic,
+        fixture.io_index,
+        "debug_get_account_transaction_call_count",
+    );
+    let io_before: LedgerCallCounters =
+        query(&fixture.pic, fixture.io_ledger, "debug_get_call_counters");
+    let icp_before: LedgerCallCounters =
+        query(&fixture.pic, fixture.icp_ledger, "debug_get_call_counters");
+
+    for caller in 1..=100_u8 {
+        assert_eq!(
+            update::<_, Result<(), ApiError>>(
+                &fixture.pic,
+                fixture.stream,
+                Principal::from_slice(&[caller; 29]),
+                "process_redemptions",
+                (),
+            ),
+            Ok(())
+        );
+    }
+    fixture.pic.advance_time(Duration::from_secs(1));
+    tick_until_index_calls(&fixture, index_before + 1);
+
+    for caller in 101..=200_u8 {
+        assert_eq!(
+            update::<_, Result<(), ApiError>>(
+                &fixture.pic,
+                fixture.stream,
+                Principal::from_slice(&[caller; 29]),
+                "process_redemptions",
+                (),
+            ),
+            Ok(())
+        );
+    }
+    fixture.pic.advance_time(Duration::from_secs(8));
+    for _ in 0..10 {
+        fixture.pic.tick();
+    }
+    assert_eq!(
+        query::<u64>(
+            &fixture.pic,
+            fixture.io_index,
+            "debug_get_account_transaction_call_count"
+        ),
+        index_before + 1,
+        "Sybil callers cannot add a worker before the global cooldown expires"
+    );
+
+    fixture.pic.advance_time(Duration::from_secs(1));
+    assert_eq!(
+        update::<_, Result<(), ApiError>>(
+            &fixture.pic,
+            fixture.stream,
+            Principal::from_slice(&[201; 29]),
+            "process_redemptions",
+            (),
+        ),
+        Ok(())
+    );
+    fixture.pic.advance_time(Duration::from_secs(1));
+    tick_until_index_calls(&fixture, index_before + 2);
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.io_ledger, "debug_get_call_counters")
+            .get_transactions,
+        io_before.get_transactions,
+        "two empty workers make no canonical IO-ledger proof calls"
+    );
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.icp_ledger, "debug_get_call_counters"),
+        icp_before,
+        "two empty workers make no ICP-ledger calls"
+    );
+    eprintln!(
+        "sustained_wake_evidence admitted_workers=2 index_calls=2 canonical_io_calls=0 icp_calls=0"
+    );
+}
+
+#[test]
+fn scanner_filters_thirty_one_tiny_transfers_before_canonical_proof() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping staged-redemption PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = redemption_fixture();
+    let mut oldest_tiny = 0_u128;
+    for _ in 0..31 {
+        let block = stage_redemption(&fixture, 1);
+        if oldest_tiny == 0 {
+            oldest_tiny = block;
+        }
+    }
+    let valid = stage_redemption(&fixture, 100_000_000);
+    let index_before: u64 = query(
+        &fixture.pic,
+        fixture.io_index,
+        "debug_get_account_transaction_call_count",
+    );
+    let io_before: LedgerCallCounters =
+        query(&fixture.pic, fixture.io_ledger, "debug_get_call_counters");
+    let icp_before: LedgerCallCounters =
+        query(&fixture.pic, fixture.icp_ledger, "debug_get_call_counters");
+
+    wake_and_tick(&fixture);
+
+    let state: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    assert!(state.pending_redemption_blocks.is_empty());
+    assert_eq!(
+        state.redemption_scan_cursor.captured_head,
+        Some(valid as u64)
+    );
+    assert_eq!(
+        state.redemption_scan_cursor.resume_before,
+        Some(oldest_tiny as u64)
+    );
+    assert_eq!(
+        query::<u64>(
+            &fixture.pic,
+            fixture.io_index,
+            "debug_get_account_transaction_call_count"
+        ),
+        index_before + 1
+    );
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.io_ledger, "debug_get_call_counters")
+            .get_transactions,
+        io_before.get_transactions + 1,
+        "only the valid hint consumes canonical IO-ledger proof"
+    );
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.icp_ledger, "debug_get_call_counters")
+            .transfer,
+        icp_before.transfer + 1
+    );
+}
+
+#[test]
+fn scanner_skips_own_reserve_sweep_and_queues_new_incoming_transfer() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping staged-redemption PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = redemption_fixture();
+    let own_sweep: u64 = update(
+        &fixture.pic,
+        fixture.io_ledger,
+        Principal::anonymous(),
+        "debug_record_nns_disbursement",
+        DebugNnsDisbursementArgs {
+            from: fixture.staging.clone(),
+            to: fixture.reserve.clone(),
+            amount_e8s: 50_000,
+            native_memo_u64: 0,
+        },
+    );
+    let valid = stage_redemption(&fixture, 100_000_000);
+    let io_before: LedgerCallCounters =
+        query(&fixture.pic, fixture.io_ledger, "debug_get_call_counters");
+
+    wake_and_tick(&fixture);
+
+    let state: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    assert!(state.pending_redemption_blocks.is_empty());
+    assert_eq!(
+        state.redemption_scan_cursor.committed_head,
+        Some(valid as u64)
+    );
+    assert!(valid > u128::from(own_sweep));
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.io_ledger, "debug_get_call_counters")
+            .get_transactions,
+        io_before.get_transactions + 1,
+        "the outgoing sweep never enters the canonical-proof queue"
+    );
+}
+
+#[test]
+fn canonical_proof_discards_a_valid_hint_with_forbidden_source() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping staged-redemption PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = redemption_fixture();
+    let anonymous = Account {
+        owner: Principal::anonymous(),
+        subaccount: None,
+    };
+    let _: u64 = update(
+        &fixture.pic,
+        fixture.io_ledger,
+        Principal::anonymous(),
+        "debug_mint_account",
+        DebugMintAccountArgs {
+            to: anonymous,
+            amount_e8s: 100_010_000,
+        },
+    );
+    let hinted: io_ledger_boundary::IcrcTransferResult = update(
+        &fixture.pic,
+        fixture.io_ledger,
+        Principal::anonymous(),
+        "icrc1_transfer",
+        io_ledger_boundary::IcrcTransferArg {
+            from_subaccount: None,
+            to: fixture.staging.clone(),
+            amount: candid::Nat::from(100_000_000_u128),
+            fee: Some(candid::Nat::from(10_000_u128)),
+            memo: None,
+            created_at_time: None,
+        },
+    );
+    hinted.unwrap();
+    let io_before: LedgerCallCounters =
+        query(&fixture.pic, fixture.io_ledger, "debug_get_call_counters");
+    let icp_before: LedgerCallCounters =
+        query(&fixture.pic, fixture.icp_ledger, "debug_get_call_counters");
+
+    wake_and_tick(&fixture);
+
+    assert_eq!(
+        query::<Status>(&fixture.pic, fixture.stream, "get_status").pending_redemption_candidates,
+        0
+    );
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.io_ledger, "debug_get_call_counters")
+            .get_transactions,
+        io_before.get_transactions + 1
+    );
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.icp_ledger, "debug_get_call_counters")
+            .transfer,
+        icp_before.transfer,
+        "a contradictory canonical proof authorizes zero payout"
+    );
+}
+
+#[test]
+fn discovered_valid_backlog_drains_near_term_without_extra_index_polls() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping staged-redemption PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = redemption_fixture();
+    for _ in 0..3 {
+        stage_redemption(&fixture, 50_000_000);
+    }
+    let index_before: u64 = query(
+        &fixture.pic,
+        fixture.io_index,
+        "debug_get_account_transaction_call_count",
+    );
+    let io_before: LedgerCallCounters =
+        query(&fixture.pic, fixture.io_ledger, "debug_get_call_counters");
+    let icp_before: LedgerCallCounters =
+        query(&fixture.pic, fixture.icp_ledger, "debug_get_call_counters");
+
+    wake_and_tick(&fixture);
+    for _ in 0..2 {
+        fixture.pic.advance_time(Duration::from_secs(1));
+        for _ in 0..20 {
+            fixture.pic.tick();
+        }
+    }
+
+    assert_eq!(
+        query::<Status>(&fixture.pic, fixture.stream, "get_status").pending_redemption_candidates,
+        0
+    );
+    assert_eq!(
+        query::<u64>(
+            &fixture.pic,
+            fixture.io_index,
+            "debug_get_account_transaction_call_count"
+        ),
+        index_before + 1,
+        "the already-discovered backlog does not multiply index polling"
+    );
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.io_ledger, "debug_get_call_counters")
+            .get_transactions,
+        io_before.get_transactions + 3
+    );
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.icp_ledger, "debug_get_call_counters")
+            .transfer,
+        icp_before.transfer + 3
+    );
+}
+
+#[test]
+fn illiquid_head_rotates_and_does_not_block_later_payable_candidate() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping staged-redemption PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = redemption_fixture();
+    set_pooled_principal(&fixture, 2_000_000_000);
+    let later_user = Principal::from_slice(&[89; 29]);
+    let later_account = Account {
+        owner: later_user,
+        subaccount: None,
+    };
+    mint_io(&fixture, later_account.clone(), 20_010_000);
+    let oversized = stage_redemption(&fixture, 80_000_000) as u64;
+    let payable = stage_redemption_from(&fixture, later_user, 20_000_000) as u64;
+    let proofs_before =
+        query::<LedgerCallCounters>(&fixture.pic, fixture.io_ledger, "debug_get_call_counters")
+            .get_transactions;
+
+    wake_and_tick(&fixture);
+
+    let rotated: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    assert_eq!(rotated.pending_redemption_blocks, vec![payable, oversized]);
+    assert!(rotated.active_operation.is_none());
+    assert_eq!(transfers_to(&fixture, &fixture.user_account), 0);
+    assert_eq!(transfers_to(&fixture, &later_account), 0);
+    assert_eq!(reserve_sweeps(&fixture), 0);
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.io_ledger, "debug_get_call_counters")
+            .get_transactions,
+        proofs_before + 1
+    );
+
+    advance_and_tick(&fixture, 60);
+
+    let completed: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    assert_eq!(completed.pending_redemption_blocks, vec![oversized]);
+    assert!(completed.active_operation.is_none());
+    assert_eq!(transfers_to(&fixture, &fixture.user_account), 0);
+    assert_eq!(transfers_to(&fixture, &later_account), 1);
+    assert_eq!(reserve_sweeps(&fixture), 1);
+}
+
+#[test]
+fn all_illiquid_candidates_rotate_only_at_coarse_poll_cadence() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping staged-redemption PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = redemption_fixture();
+    set_pooled_principal(&fixture, 2_000_000_000);
+    let blocks = (0..3)
+        .map(|_| stage_redemption(&fixture, 80_000_000) as u64)
+        .collect::<Vec<_>>();
+    let io_before: LedgerCallCounters =
+        query(&fixture.pic, fixture.io_ledger, "debug_get_call_counters");
+    let icp_before: LedgerCallCounters =
+        query(&fixture.pic, fixture.icp_ledger, "debug_get_call_counters");
+
+    wake_and_tick(&fixture);
+    assert_eq!(
+        query::<StreamStateV1>(&fixture.pic, fixture.stream, "debug_get_state")
+            .pending_redemption_blocks,
+        vec![blocks[1], blocks[2], blocks[0]]
+    );
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.io_ledger, "debug_get_call_counters")
+            .get_transactions,
+        io_before.get_transactions + 1
+    );
+
+    advance_and_tick(&fixture, 10);
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.io_ledger, "debug_get_call_counters")
+            .get_transactions,
+        io_before.get_transactions + 1,
+        "illiquidity must not install a one-second proof loop"
+    );
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.icp_ledger, "debug_get_call_counters")
+            .transfer,
+        icp_before.transfer
+    );
+
+    advance_and_tick(&fixture, 50);
+    assert_eq!(
+        query::<StreamStateV1>(&fixture.pic, fixture.stream, "debug_get_state")
+            .pending_redemption_blocks,
+        vec![blocks[2], blocks[0], blocks[1]]
+    );
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.io_ledger, "debug_get_call_counters")
+            .get_transactions,
+        io_before.get_transactions + 2,
+        "one ordinary poll retries only one service head"
+    );
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.icp_ledger, "debug_get_call_counters")
+            .transfer,
+        icp_before.transfer
+    );
+}
+
+#[test]
+fn payable_candidate_after_three_illiquid_candidates_is_reached_by_coarse_rotations() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping staged-redemption PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = redemption_fixture();
+    set_pooled_principal(&fixture, 2_000_000_000);
+    let later_user = Principal::from_slice(&[90; 29]);
+    let later_account = Account {
+        owner: later_user,
+        subaccount: None,
+    };
+    mint_io(&fixture, later_account.clone(), 10_010_000);
+    let illiquid = [80_000_000, 70_000_000, 60_000_000]
+        .into_iter()
+        .map(|amount| stage_redemption(&fixture, amount) as u64)
+        .collect::<Vec<_>>();
+    let payable = stage_redemption_from(&fixture, later_user, 10_000_000) as u64;
+
+    wake_and_tick(&fixture);
+    assert_eq!(
+        query::<StreamStateV1>(&fixture.pic, fixture.stream, "debug_get_state")
+            .pending_redemption_blocks,
+        vec![illiquid[1], illiquid[2], payable, illiquid[0]]
+    );
+    advance_and_tick(&fixture, 60);
+    advance_and_tick(&fixture, 60);
+    assert_eq!(transfers_to(&fixture, &later_account), 0);
+    advance_and_tick(&fixture, 60);
+
+    let completed: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    assert_eq!(completed.pending_redemption_blocks, illiquid);
+    assert!(completed.active_operation.is_none());
+    assert_eq!(transfers_to(&fixture, &later_account), 1);
+    assert_eq!(reserve_sweeps(&fixture), 1);
+}
+
+#[test]
+fn rotated_service_queue_survives_upgrade_and_keeps_payable_candidate_reachable() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping staged-redemption PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = redemption_fixture();
+    set_pooled_principal(&fixture, 2_000_000_000);
+    let later_user = Principal::from_slice(&[91; 29]);
+    let later_account = Account {
+        owner: later_user,
+        subaccount: None,
+    };
+    mint_io(&fixture, later_account.clone(), 20_010_000);
+    let oversized = stage_redemption(&fixture, 80_000_000) as u64;
+    let payable = stage_redemption_from(&fixture, later_user, 20_000_000) as u64;
+    wake_and_tick(&fixture);
+    assert_eq!(
+        query::<StreamStateV1>(&fixture.pic, fixture.stream, "debug_get_state")
+            .pending_redemption_blocks,
+        vec![payable, oversized]
+    );
+
+    fixture
+        .pic
+        .upgrade_canister(
+            fixture.stream,
+            debug_wasm("io_stream_manager"),
+            encode_one(()).unwrap(),
+            None,
+        )
+        .unwrap();
+    let restored: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    assert_eq!(restored.lifecycle, Lifecycle::Paused);
+    assert_eq!(restored.pending_redemption_blocks, vec![payable, oversized]);
+    assert!(restored.active_operation.is_none());
+
+    assert_eq!(
+        update::<_, Result<(), ApiError>>(
+            &fixture.pic,
+            fixture.stream,
+            fixture.governance,
+            "set_paused",
+            false,
+        ),
+        Ok(())
+    );
+    let mut ready: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    ready.reward_checkpoint.reward_work_due = false;
+    ready.stake_observation_due = false;
+    ready.structural_reconciliation_due = false;
+    update::<_, Result<(), String>>(
+        &fixture.pic,
+        fixture.stream,
+        Principal::anonymous(),
+        "debug_replace_state",
+        ready,
+    )
+    .unwrap();
+    advance_and_tick(&fixture, 60);
+
+    let completed: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    assert_eq!(completed.pending_redemption_blocks, vec![oversized]);
+    assert_eq!(transfers_to(&fixture, &fixture.user_account), 0);
+    assert_eq!(transfers_to(&fixture, &later_account), 1);
+    assert_eq!(reserve_sweeps(&fixture), 1);
+}
+
+#[test]
+fn first_payout_definitive_no_effect_defers_candidate_at_coarse_cadence() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping staged-redemption PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = redemption_fixture();
+    let later_user = Principal::from_slice(&[92; 29]);
+    let later_account = Account {
+        owner: later_user,
+        subaccount: None,
+    };
+    mint_io(&fixture, later_account.clone(), 20_010_000);
+    let first = stage_redemption(&fixture, 20_000_000) as u64;
+    let later = stage_redemption_from(&fixture, later_user, 20_000_000) as u64;
+    let _: () = update(
+        &fixture.pic,
+        fixture.icp_ledger,
+        Principal::anonymous(),
+        "debug_return_too_old_next",
+        (),
+    );
+
+    wake_and_tick(&fixture);
+    assert_eq!(
+        query::<StreamStateV1>(&fixture.pic, fixture.stream, "debug_get_state")
+            .pending_redemption_blocks,
+        vec![later, first]
+    );
+    assert_eq!(transfers_to(&fixture, &fixture.user_account), 0);
+    assert_eq!(transfers_to(&fixture, &later_account), 0);
+    advance_and_tick(&fixture, 60);
+
+    let completed: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    assert_eq!(completed.pending_redemption_blocks, vec![first]);
+    assert_eq!(transfers_to(&fixture, &fixture.user_account), 0);
+    assert_eq!(transfers_to(&fixture, &later_account), 1);
+    assert_eq!(reserve_sweeps(&fixture), 1);
+}
+
+#[test]
+fn coarse_poll_discovers_later_payable_candidate_behind_retained_illiquid_head() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping staged-redemption PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = redemption_fixture();
+    set_pooled_principal(&fixture, 2_000_000_000);
+    let later_user = Principal::from_slice(&[93; 29]);
+    let later_account = Account {
+        owner: later_user,
+        subaccount: None,
+    };
+    mint_io(&fixture, later_account.clone(), 20_010_000);
+    let oversized = stage_redemption(&fixture, 80_000_000) as u64;
+    wake_and_tick(&fixture);
+    assert_eq!(
+        query::<StreamStateV1>(&fixture.pic, fixture.stream, "debug_get_state")
+            .pending_redemption_blocks,
+        vec![oversized]
+    );
+
+    let payable = stage_redemption_from(&fixture, later_user, 20_000_000) as u64;
+    let index_before = index_call_times(&fixture).len();
+    advance_and_tick(&fixture, 60);
+
+    let rotated: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    assert_eq!(index_call_times(&fixture).len(), index_before + 1);
+    assert_eq!(rotated.pending_redemption_blocks, vec![payable, oversized]);
+    assert_eq!(transfers_to(&fixture, &later_account), 0);
+    advance_and_tick(&fixture, 60);
+
+    let completed: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    assert_eq!(completed.pending_redemption_blocks, vec![oversized]);
+    assert_eq!(transfers_to(&fixture, &fixture.user_account), 0);
+    assert_eq!(transfers_to(&fixture, &later_account), 1);
+    assert_eq!(reserve_sweeps(&fixture), 1);
+}
+
+#[test]
+fn retained_illiquid_candidate_does_not_freeze_captured_scanner_continuation() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping staged-redemption PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = redemption_fixture();
+    set_pooled_principal(&fixture, 2_000_000_000);
+    let earlier_user = Principal::from_slice(&[94; 29]);
+    let earlier_account = Account {
+        owner: earlier_user,
+        subaccount: None,
+    };
+    mint_io(&fixture, earlier_account.clone(), 20_010_000);
+    let payable = stage_redemption_from(&fixture, earlier_user, 20_000_000) as u64;
+    for _ in 0..31 {
+        stage_redemption(&fixture, 1);
+    }
+    let oversized = stage_redemption(&fixture, 80_000_000) as u64;
+
+    wake_and_tick(&fixture);
+    let captured: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    assert_eq!(captured.pending_redemption_blocks, vec![oversized]);
+    assert!(captured.redemption_scan_cursor.resume_before.is_some());
+    let index_before = index_call_times(&fixture).len();
+    advance_and_tick(&fixture, 60);
+
+    let continued: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    assert_eq!(index_call_times(&fixture).len(), index_before + 1);
+    assert_eq!(continued.redemption_scan_cursor.resume_before, None);
+    assert_eq!(
+        continued.pending_redemption_blocks,
+        vec![payable, oversized]
+    );
+    assert_eq!(transfers_to(&fixture, &earlier_account), 0);
+    advance_and_tick(&fixture, 60);
+    assert_eq!(transfers_to(&fixture, &earlier_account), 1);
+    assert_eq!(reserve_sweeps(&fixture), 1);
+    assert_eq!(
+        query::<StreamStateV1>(&fixture.pic, fixture.stream, "debug_get_state")
+            .pending_redemption_blocks,
+        vec![oversized]
+    );
+}
+
+#[test]
+fn scanner_outage_does_not_block_already_discovered_payable_candidate() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping staged-redemption PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = redemption_fixture();
+    set_pooled_principal(&fixture, 2_000_000_000);
+    let payable = stage_redemption(&fixture, 80_000_000) as u64;
+    wake_and_tick(&fixture);
+    assert_eq!(
+        query::<StreamStateV1>(&fixture.pic, fixture.stream, "debug_get_state")
+            .pending_redemption_blocks,
+        vec![payable]
+    );
+    set_pooled_principal(&fixture, 0);
+    let _: () = update(
+        &fixture.pic,
+        fixture.io_index,
+        Principal::anonymous(),
+        "debug_set_unreadable",
+        DebugUnreadableArgs { unreadable: true },
+    );
+    let index_before = index_call_times(&fixture).len();
+    advance_and_tick(&fixture, 60);
+
+    let completed: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    assert_eq!(index_call_times(&fixture).len(), index_before + 1);
+    assert!(completed.redemption_scan_cursor.last_error.is_some());
+    assert!(completed.pending_redemption_blocks.is_empty());
+    assert_eq!(transfers_to(&fixture, &fixture.user_account), 1);
+    assert_eq!(reserve_sweeps(&fixture), 1);
+}
+
+#[test]
+fn capacity_limited_page_uses_available_slots_and_preserves_continuation() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping staged-redemption PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = redemption_fixture();
+    set_pooled_principal(&fixture, 2_000_000_000);
+    let oversized = stage_redemption(&fixture, 80_000_000) as u64;
+    wake_and_tick(&fixture);
+    let dust = (0..59)
+        .map(|_| stage_redemption(&fixture, 1) as u64)
+        .collect::<Vec<_>>();
+    let candidates = (0..6)
+        .map(|_| stage_redemption(&fixture, 20_000) as u64)
+        .collect::<Vec<_>>();
+    let mut prepopulated: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    prepopulated.pending_redemption_blocks.extend(dust.clone());
+    replace_stream_state(&fixture, prepopulated);
+    let index_before = index_call_times(&fixture).len();
+    let limit_before = index_max_results(&fixture).len();
+
+    advance_and_tick(&fixture, 60);
+
+    let full: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    assert_eq!(index_call_times(&fixture).len(), index_before + 1);
+    assert_eq!(index_max_results(&fixture)[limit_before], 4);
+    assert_eq!(full.pending_redemption_blocks.len(), 64);
+    for block in &candidates[2..] {
+        assert!(full.pending_redemption_blocks.contains(block));
+    }
+    assert_eq!(
+        full.redemption_scan_cursor.captured_head,
+        candidates.last().copied()
+    );
+    assert_eq!(
+        full.redemption_scan_cursor.resume_before,
+        Some(candidates[2])
+    );
+    assert!(full
+        .redemption_scan_cursor
+        .committed_head
+        .is_some_and(|head| head < candidates[0]));
+
+    advance_and_tick(&fixture, 60);
+    let slot_open: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    assert_eq!(slot_open.pending_redemption_blocks.len(), 63);
+    assert_eq!(index_call_times(&fixture).len(), index_before + 1);
+    advance_and_tick(&fixture, 1);
+
+    let continued: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    assert_eq!(index_max_results(&fixture).len(), limit_before + 2);
+    assert_eq!(index_max_results(&fixture)[limit_before + 1], 1);
+    assert!(continued.pending_redemption_blocks.contains(&candidates[1]));
+    assert_eq!(
+        continued.redemption_scan_cursor.resume_before,
+        Some(candidates[1])
+    );
+    assert_eq!(
+        continued.redemption_scan_cursor.captured_head,
+        candidates.last().copied()
+    );
+    assert_eq!(continued.pending_redemption_blocks.len(), 63);
+    assert!(continued.pending_redemption_blocks.contains(&oversized));
+}
+
+#[test]
+fn full_service_queue_backpressures_discovery_but_still_services_one_head() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping staged-redemption PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = redemption_fixture();
+    set_pooled_principal(&fixture, 2_000_000_000);
+    let oversized = stage_redemption(&fixture, 80_000_000) as u64;
+    wake_and_tick(&fixture);
+    let dust = (0..63)
+        .map(|_| stage_redemption(&fixture, 1) as u64)
+        .collect::<Vec<_>>();
+    let later_user = Principal::from_slice(&[95; 29]);
+    let later_account = Account {
+        owner: later_user,
+        subaccount: None,
+    };
+    mint_io(&fixture, later_account.clone(), 20_010_000);
+    let undiscovered = stage_redemption_from(&fixture, later_user, 20_000_000) as u64;
+    let mut full: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    full.pending_redemption_blocks.extend(dust.clone());
+    replace_stream_state(&fixture, full.clone());
+    let cursor_before = full.redemption_scan_cursor;
+    let index_before = index_call_times(&fixture).len();
+    let proofs_before =
+        query::<LedgerCallCounters>(&fixture.pic, fixture.io_ledger, "debug_get_call_counters")
+            .get_transactions;
+
+    advance_and_tick(&fixture, 60);
+
+    let rotated: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    assert_eq!(index_call_times(&fixture).len(), index_before);
+    assert_eq!(rotated.redemption_scan_cursor, cursor_before);
+    assert_eq!(rotated.pending_redemption_blocks.len(), 64);
+    assert_eq!(rotated.pending_redemption_blocks.first(), dust.first());
+    assert_eq!(rotated.pending_redemption_blocks.last(), Some(&oversized));
+    assert!(!rotated.pending_redemption_blocks.contains(&undiscovered));
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.io_ledger, "debug_get_call_counters")
+            .get_transactions,
+        proofs_before + 1
+    );
+    assert_eq!(transfers_to(&fixture, &later_account), 0);
+    assert_eq!(reserve_sweeps(&fixture), 0);
 }
 
 #[test]
@@ -290,7 +1378,7 @@ fn simplified_stream_installs_paused_and_rejects_anonymous_before_funds_move() {
     )
     .unwrap();
     assert_eq!(still_paused.lifecycle, Lifecycle::Paused);
-    let result: Result<RedemptionProgress, ApiError> = decode_one(
+    let result: Result<(), ApiError> = decode_one(
         &pic.update_call(
             canister,
             Principal::anonymous(),
@@ -301,95 +1389,12 @@ fn simplified_stream_installs_paused_and_rejects_anonymous_before_funds_move() {
     )
     .unwrap();
     assert_eq!(result, Err(ApiError::Paused));
-
-    let now_nanos = pic.get_time().as_nanos_since_unix_epoch();
-    let mut paused_due: StreamStateV1 = query(&pic, canister, "debug_get_state");
-    paused_due.lifecycle = Lifecycle::Ready;
-    paused_due.reward_checkpoint.reward_processing_paused = true;
-    paused_due.reward_checkpoint.reward_work_due = false;
-    paused_due.stake_observation_due = false;
-    paused_due.structural_reconciliation_due = true;
-    paused_due.last_redemption_poll_started_at_nanos = now_nanos.saturating_sub(100_000_000_000);
-    update::<_, Result<(), String>>(
-        &pic,
-        canister,
-        Principal::anonymous(),
-        "debug_replace_state",
-        paused_due,
-    )
-    .unwrap();
-    update::<_, ()>(
-        &pic,
-        canister,
-        Principal::anonymous(),
-        "debug_install_scheduler",
-        (),
-    );
-    let installed: DebugSchedulerStatus = query(&pic, canister, "debug_get_scheduler_status");
-    let deadline = installed.active_deadline_seconds.unwrap();
-    let now_seconds = now_nanos / 1_000_000_000;
-    assert!(deadline > now_seconds);
-    let seconds_until_deadline = deadline - now_seconds;
-    pic.advance_time(Duration::from_secs(seconds_until_deadline - 1));
-    for _ in 0..3 {
-        pic.tick();
-    }
-    assert_eq!(
-        query::<DebugSchedulerStatus>(&pic, canister, "debug_get_scheduler_status")
-            .callback_invocations,
-        installed.callback_invocations
-    );
-    pic.advance_time(Duration::from_secs(1));
-    for _ in 0..3 {
-        pic.tick();
-    }
-    let rearmed: DebugSchedulerStatus = query(&pic, canister, "debug_get_scheduler_status");
-    assert_eq!(
-        rearmed.callback_invocations,
-        installed.callback_invocations + 1
-    );
-    assert_eq!(rearmed.recovery_deferrals, installed.recovery_deferrals);
-    assert!(rearmed.active_deadline_seconds.unwrap() > deadline);
-    for _ in 0..3 {
-        pic.tick();
-    }
-    assert_eq!(
-        query::<DebugSchedulerStatus>(&pic, canister, "debug_get_scheduler_status")
-            .callback_invocations,
-        rearmed.callback_invocations,
-        "paused retained due work must not rearm a zero-delay timer"
-    );
-
-    let mut fully_paused: StreamStateV1 = query(&pic, canister, "debug_get_state");
-    fully_paused.lifecycle = Lifecycle::Paused;
-    update::<_, Result<(), String>>(
-        &pic,
-        canister,
-        Principal::anonymous(),
-        "debug_replace_state",
-        fully_paused,
-    )
-    .unwrap();
-    update::<_, ()>(
-        &pic,
-        canister,
-        Principal::anonymous(),
-        "debug_install_scheduler",
-        (),
-    );
-    assert_eq!(
-        query::<DebugSchedulerStatus>(&pic, canister, "debug_get_scheduler_status")
-            .active_deadline_seconds,
-        None
-    );
 }
 
 #[test]
-fn staging_waits_claim_bearing_for_liquidity_and_manual_work_is_globally_throttled() {
+fn staged_redemption_wake_is_local_coalesced_and_economically_exact_once() {
     if std::env::var_os("POCKET_IC_BIN").is_none() {
-        eprintln!(
-            "skipping Stream staged-redemption PocketIC test because POCKET_IC_BIN is not set"
-        );
+        eprintln!("skipping staged-redemption PocketIC test because POCKET_IC_BIN is not set");
         return;
     }
     let pic = PocketIc::new();
@@ -406,12 +1411,14 @@ fn staging_waits_claim_bearing_for_liquidity_and_manual_work_is_globally_throttl
         None,
     );
     let icp_ledger = install(&pic, "mock_icp_ledger");
-    let root = install(&pic, "mock_sns_root");
-    let governance = install(&pic, "mock_sns_governance");
     let nns = install(&pic, "mock_nns_governance");
     let stream = pic.create_canister();
     pic.add_cycles(stream, CYCLES);
     let user = Principal::from_slice(&[88; 29]);
+    let user_account = Account {
+        owner: user,
+        subaccount: None,
+    };
     let reserve = Account {
         owner: stream,
         subaccount: None,
@@ -420,34 +1427,10 @@ fn staging_waits_claim_bearing_for_liquidity_and_manual_work_is_globally_throttl
         owner: stream,
         subaccount: Some(vec![1; 32]),
     };
-    let user_account = Account {
-        owner: user,
-        subaccount: None,
-    };
-    let governance_hash = pic
-        .canister_status(governance, None)
-        .unwrap()
-        .module_hash
-        .unwrap();
-    let _: () = update(
-        &pic,
-        root,
-        Principal::anonymous(),
-        "debug_set_governance_principal",
-        governance,
-    );
-    update::<_, Result<(), String>>(
-        &pic,
-        root,
-        Principal::anonymous(),
-        "debug_set_governance_module_hash",
-        governance_hash.clone(),
-    )
-    .unwrap();
     for (ledger, to, amount) in [
         (io_ledger, reserve.clone(), 900_000_000_u128),
-        (io_ledger, user_account.clone(), 100_030_000),
-        (icp_ledger, liquid.clone(), 10_000),
+        (io_ledger, user_account.clone(), 100_010_000),
+        (icp_ledger, liquid.clone(), 200_000_000),
     ] {
         let _: u64 = update(
             &pic,
@@ -460,29 +1443,6 @@ fn staging_waits_claim_bearing_for_liquidity_and_manual_work_is_globally_throttl
             },
         );
     }
-    let _: () = update(
-        &pic,
-        governance,
-        Principal::anonymous(),
-        "debug_add_neuron",
-        MockSnsNeuron {
-            neuron_id: 99,
-            staked_io_e8s: 10_000_000,
-            dissolve_delay_seconds: io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS + 1,
-            eligible_closed_proposals: 0,
-            voted_closed_proposals: 0,
-            is_genesis_governance_neuron: false,
-            is_protocol_owned: false,
-            is_dissolving: false,
-        },
-    );
-    let _: () = update(
-        &pic,
-        nns,
-        Principal::anonymous(),
-        "debug_set_pooled_principal",
-        100_020_000_u128,
-    );
     pic.install_canister(
         stream,
         debug_wasm("io_stream_manager"),
@@ -496,12 +1456,12 @@ fn staging_waits_claim_bearing_for_liquidity_and_manual_work_is_globally_throttl
                     owner: Principal::from_slice(&[77; 29]),
                     subaccount: None,
                 },
-                sns_governance: governance,
-                sns_root: root,
-                expected_sns_governance_module_hash: governance_hash,
+                sns_governance: Principal::from_slice(&[5; 29]),
+                sns_root: Principal::from_slice(&[6; 29]),
+                expected_sns_governance_module_hash: vec![8; 32],
                 approved_reward_event_duration_seconds: 86_400,
                 io_reserve: reserve.clone(),
-                liquid_icp: liquid.clone(),
+                liquid_icp: liquid,
                 nonredeemable_governance_io_accounts: Vec::new(),
                 minimum_redemption_io_e8s: 20_000,
                 expected_io_fee_e8s: 10_000,
@@ -514,74 +1474,20 @@ fn staging_waits_claim_bearing_for_liquidity_and_manual_work_is_globally_throttl
         .unwrap(),
         None,
     );
-    update::<_, Result<(), ApiError>>(&pic, stream, governance, "set_paused", false).unwrap();
-    update::<_, Result<RewardEventObservation, ApiError>>(
+    let mut ready: StreamStateV1 = query(&pic, stream, "debug_get_state");
+    ready.lifecycle = Lifecycle::Ready;
+    ready.reward_checkpoint.reward_work_due = false;
+    ready.stake_observation_due = false;
+    ready.structural_reconciliation_due = true;
+    update::<_, Result<(), String>>(
         &pic,
         stream,
         Principal::anonymous(),
-        "resume_reward_work",
-        (),
+        "debug_replace_state",
+        ready,
     )
-    .expect("genesis structural/reward safety work should complete before redemption");
-    for _ in 0..16 {
-        let current: StreamStateV1 = query(&pic, stream, "debug_get_state");
-        if !current.reward_checkpoint.reward_work_due
-            && !current.stake_observation_due
-            && !current.structural_reconciliation_due
-            && current.active_operation.is_none()
-        {
-            break;
-        }
-        pic.advance_time(Duration::from_secs(1));
-        if current.active_operation.is_some() {
-            let _: Result<StreamProgress, ApiError> =
-                update(&pic, stream, Principal::anonymous(), "resume", ());
-        } else {
-            let _: Result<RewardEventObservation, ApiError> = update(
-                &pic,
-                stream,
-                Principal::anonymous(),
-                "resume_reward_work",
-                (),
-            );
-        }
-    }
-    let safety_state: StreamStateV1 = query(&pic, stream, "debug_get_state");
-    assert!(
-        !safety_state.reward_checkpoint.reward_work_due
-            && !safety_state.stake_observation_due
-            && !safety_state.structural_reconciliation_due
-            && safety_state.active_operation.is_none(),
-        "redemption fixture must finish higher-priority safety work first: {safety_state:?}"
-    );
+    .unwrap();
     let staging: Account = query(&pic, stream, "get_redemption_staging_account");
-    assert_eq!(
-        query::<candid::Nat>(&pic, stream, "get_minimum_redemption_io_e8s"),
-        candid::Nat::from(20_000_u64)
-    );
-    let supply_before = nat_u128(query::<candid::Nat>(&pic, io_ledger, "icrc1_total_supply"));
-    let reserve_before = nat_u128(update::<_, candid::Nat>(
-        &pic,
-        io_ledger,
-        Principal::anonymous(),
-        "icrc1_balance_of",
-        reserve.clone(),
-    ));
-    let tiny: io_ledger_boundary::IcrcTransferResult = update(
-        &pic,
-        io_ledger,
-        user,
-        "icrc1_transfer",
-        io_ledger_boundary::IcrcTransferArg {
-            from_subaccount: None,
-            to: staging.clone(),
-            amount: candid::Nat::from(10_000_u128),
-            fee: Some(candid::Nat::from(10_000_u128)),
-            memo: None,
-            created_at_time: None,
-        },
-    );
-    tiny.expect("below-minimum staging transfer should remain ordinary ledger traffic");
     let staged: io_ledger_boundary::IcrcTransferResult = update(
         &pic,
         io_ledger,
@@ -596,285 +1502,71 @@ fn staging_waits_claim_bearing_for_liquidity_and_manual_work_is_globally_throttl
             created_at_time: None,
         },
     );
-    let staged_block: u128 = staged.unwrap().0.try_into().unwrap();
-    let supply_after_stage = nat_u128(query::<candid::Nat>(&pic, io_ledger, "icrc1_total_supply"));
-    let reserve_after_stage = nat_u128(update::<_, candid::Nat>(
-        &pic,
-        io_ledger,
-        Principal::anonymous(),
-        "icrc1_balance_of",
-        reserve.clone(),
-    ));
-    assert_eq!(supply_after_stage, supply_before - 20_000);
-    assert_eq!(reserve_after_stage, reserve_before);
-    assert_eq!(
-        supply_after_stage - reserve_after_stage,
-        supply_before - reserve_before - 20_000,
-        "staging is claim-bearing; only the user's two ordinary transfer fees leave C"
-    );
-
-    let payout_calls_before: LedgerCallCounters =
-        query(&pic, icp_ledger, "debug_get_call_counters");
-    let awaiting_liquidity: Result<RedemptionProgress, ApiError> =
-        update(&pic, stream, user, "process_redemptions", ());
-    assert_eq!(awaiting_liquidity, Ok(RedemptionProgress::Pending));
-    let index_calls_after_discovery: u64 =
-        query(&pic, io_index, "debug_get_account_transaction_call_count");
-    let waiting = query::<Status>(&pic, stream, "get_status");
-    assert_eq!(
-        index_calls_after_discovery, 1,
-        "one bounded scan must discover the pending candidate: {waiting:?}"
-    );
-    assert_eq!(waiting.lifecycle, Lifecycle::Ready);
-    assert!(waiting.operation_kind.is_none());
-    assert_eq!(waiting.pending_redemption_candidates, 1);
-    assert_eq!(waiting.paid_unswept_redemption_io_e8s, Some(0));
-    assert_eq!(
-        query::<u64>(&pic, io_index, "debug_get_account_transaction_call_count"),
-        index_calls_after_discovery,
-        "the accepted discovery attempt performs exactly one index call"
-    );
-    assert_eq!(
-        query::<LedgerCallCounters>(&pic, icp_ledger, "debug_get_call_counters").transfer,
-        payout_calls_before.transfer,
-        "illiquidity must not create or submit a payout obligation"
-    );
-
-    for _ in 0..100 {
-        let throttled: Result<RedemptionProgress, ApiError> =
-            update(&pic, stream, user, "process_redemptions", ());
-        assert!(matches!(
-            throttled,
-            Ok(RedemptionProgress::RateLimited { .. })
-        ));
-    }
-    assert_eq!(
-        query::<u64>(&pic, io_index, "debug_get_account_transaction_call_count"),
-        index_calls_after_discovery,
-        "100 calls by one principal inside the global cooldown perform no index discovery"
-    );
-
-    for caller_number in 0..100_u8 {
-        let caller = Principal::from_slice(&[caller_number.saturating_add(1); 29]);
-        let throttled: Result<RedemptionProgress, ApiError> =
-            update(&pic, stream, caller, "process_redemptions", ());
-        assert!(matches!(
-            throttled,
-            Ok(RedemptionProgress::RateLimited { .. })
-        ));
-    }
-    assert_eq!(
-        query::<u64>(&pic, io_index, "debug_get_account_transaction_call_count"),
-        index_calls_after_discovery,
-        "100 distinct principals cannot bypass the global discovery cooldown"
-    );
-    assert_eq!(
-        query::<LedgerCallCounters>(&pic, icp_ledger, "debug_get_call_counters").transfer,
-        payout_calls_before.transfer,
-        "Sybil callers inside the global cooldown perform no payout work"
-    );
-
-    let _: () = update(
-        &pic,
-        nns,
-        Principal::anonymous(),
-        "debug_set_pooled_principal",
-        0_u128,
-    );
-    let _: u64 = update(
-        &pic,
-        icp_ledger,
-        Principal::anonymous(),
-        "debug_mint_account",
-        DebugMintAccountArgs {
-            to: liquid.clone(),
-            amount_e8s: 100_000_000,
-        },
-    );
-    pic.advance_time(Duration::from_secs(10));
-    let mut completed = None;
-    for _ in 0..20 {
-        let progress = update::<_, Result<RedemptionProgress, ApiError>>(
+    staged.unwrap();
+    let index_before: u64 = query(&pic, io_index, "debug_get_account_transaction_call_count");
+    let payout_before: LedgerCallCounters = query(&pic, icp_ledger, "debug_get_call_counters");
+    for caller in 1..=100_u8 {
+        let result: Result<(), ApiError> = update(
             &pic,
             stream,
-            Principal::anonymous(),
+            Principal::from_slice(&[caller; 29]),
             "process_redemptions",
             (),
         );
-        if let Ok(RedemptionProgress::Completed(result)) = progress {
-            completed = Some(result);
-            break;
-        }
-        let _: Result<StreamProgress, ApiError> =
-            update(&pic, stream, Principal::anonymous(), "resume", ());
-        pic.advance_time(Duration::from_secs(1));
-        pic.tick();
+        assert_eq!(result, Ok(()));
     }
-    let result = completed.unwrap_or_else(|| {
-        let stalled: StreamStateV1 = query(&pic, stream, "debug_get_state");
-        panic!("staged redemption must complete after exact liquidity arrives: {stalled:?}")
-    });
-    assert_eq!(result.source_io_block, staged_block);
-    assert_eq!(result.source_account, user_account);
     assert_eq!(
-        query::<LedgerCallCounters>(&pic, icp_ledger, "debug_get_call_counters").transfer,
-        payout_calls_before.transfer + 1
-    );
-    let final_status: Status = query(&pic, stream, "get_status");
-    assert_eq!(final_status.last_completed_redemption, Some(result.clone()));
-    assert_eq!(final_status.pending_redemption_candidates, 0);
-    assert_eq!(final_status.paid_unswept_redemption_io_e8s, Some(0));
-    assert_eq!(
-        nat_u128(update::<_, candid::Nat>(
-            &pic,
-            io_ledger,
-            Principal::anonymous(),
-            "icrc1_balance_of",
-            staging.clone(),
-        )),
-        10_000,
-        "the unsupported tiny transfer remains claim-bearing in staging without blocking the valid redemption"
+        query::<u64>(&pic, io_index, "debug_get_account_transaction_call_count"),
+        index_before
     );
     assert_eq!(
         query::<LedgerCallCounters>(&pic, icp_ledger, "debug_get_call_counters").transfer,
-        payout_calls_before.transfer + 1,
-        "completed staging block must not repeat its payout"
-    );
-
-    let second_user = Principal::from_slice(&[89; 29]);
-    let second_subaccount = vec![42; 32];
-    let _: u64 = update(
-        &pic,
-        io_ledger,
-        Principal::anonymous(),
-        "debug_mint_account",
-        DebugMintAccountArgs {
-            to: Account {
-                owner: second_user,
-                subaccount: Some(second_subaccount.clone()),
-            },
-            amount_e8s: 50_010_000,
-        },
-    );
-    let _: u64 = update(
-        &pic,
-        icp_ledger,
-        Principal::anonymous(),
-        "debug_mint_account",
-        DebugMintAccountArgs {
-            to: liquid,
-            amount_e8s: 50_000_000,
-        },
-    );
-    let _: io_ledger_boundary::IcrcTransferResult = update(
-        &pic,
-        io_ledger,
-        second_user,
-        "icrc1_transfer",
-        io_ledger_boundary::IcrcTransferArg {
-            from_subaccount: Some(second_subaccount.clone()),
-            to: staging,
-            amount: candid::Nat::from(50_000_000_u128),
-            fee: Some(candid::Nat::from(10_000_u128)),
-            memo: None,
-            created_at_time: None,
-        },
-    );
-    let installed_cadence: DebugSchedulerStatus = query(&pic, stream, "debug_get_scheduler_status");
-    let now_seconds = pic.get_time().as_nanos_since_unix_epoch() / 1_000_000_000;
-    let seconds_until_due = installed_cadence
-        .active_deadline_seconds
-        .expect("automatic redemption cadence timer is installed")
-        .saturating_sub(now_seconds);
-    assert!(seconds_until_due > 0);
-    pic.advance_time(Duration::from_secs(seconds_until_due - 1));
-    for _ in 0..3 {
-        pic.tick();
-    }
-    assert_eq!(
-        query::<Status>(&pic, stream, "get_status").last_completed_redemption,
-        Some(result.clone()),
-        "automatic discovery must not run before its configured deadline"
+        payout_before.transfer,
+        "wake hints perform no external work in their own invocation"
     );
     pic.advance_time(Duration::from_secs(1));
     for _ in 0..10 {
         pic.tick();
     }
-    let automatic = query::<Status>(&pic, stream, "get_status")
-        .last_completed_redemption
-        .expect("the shared scheduler automatically processes the next staged transfer");
     assert_eq!(
-        automatic.source_account,
-        Account {
-            owner: second_user,
-            subaccount: Some(second_subaccount),
+        query::<u64>(&pic, io_index, "debug_get_account_transaction_call_count"),
+        index_before,
+        "higher-priority structural work delays redemption without external scan work"
+    );
+    let mut unblocked: StreamStateV1 = query(&pic, stream, "debug_get_state");
+    unblocked.structural_reconciliation_due = false;
+    update::<_, Result<(), String>>(
+        &pic,
+        stream,
+        Principal::anonymous(),
+        "debug_replace_state",
+        unblocked,
+    )
+    .unwrap();
+    let wake: Result<(), ApiError> = update(&pic, stream, user, "process_redemptions", ());
+    wake.unwrap();
+    pic.advance_time(Duration::from_secs(1));
+    for _ in 0..30 {
+        pic.tick();
+        if query::<Status>(&pic, stream, "get_status").pending_redemption_candidates == 0
+            && query::<Status>(&pic, stream, "get_status")
+                .operation_kind
+                .is_none()
+            && query::<u64>(&pic, io_index, "debug_get_account_transaction_call_count")
+                > index_before
+        {
+            break;
         }
-    );
-
-    let recovery_user = Principal::from_slice(&[90; 29]);
-    let recovery_account = Account {
-        owner: recovery_user,
-        subaccount: None,
-    };
-    let _: u64 = update(
-        &pic,
-        io_ledger,
-        Principal::anonymous(),
-        "debug_mint_account",
-        DebugMintAccountArgs {
-            to: recovery_account.clone(),
-            amount_e8s: 30_010_000,
-        },
-    );
-    let _: u64 = update(
-        &pic,
-        icp_ledger,
-        Principal::anonymous(),
-        "debug_mint_account",
-        DebugMintAccountArgs {
-            to: Account {
-                owner: stream,
-                subaccount: Some(vec![1; 32]),
-            },
-            amount_e8s: 30_000_000,
-        },
-    );
-    let recovery_staging: Account = query(&pic, stream, "get_redemption_staging_account");
-    let staged_recovery: io_ledger_boundary::IcrcTransferResult = update(
-        &pic,
-        io_ledger,
-        recovery_user,
-        "icrc1_transfer",
-        io_ledger_boundary::IcrcTransferArg {
-            from_subaccount: None,
-            to: recovery_staging.clone(),
-            amount: candid::Nat::from(30_000_000_u128),
-            fee: Some(candid::Nat::from(10_000_u128)),
-            memo: None,
-            created_at_time: None,
-        },
-    );
-    let recovery_source_block: u128 = staged_recovery.unwrap().0.try_into().unwrap();
-    let _: () = update(
-        &pic,
-        io_ledger,
-        Principal::anonymous(),
-        "debug_commit_then_unavailable_to",
-        DebugRejectAccountArgs {
-            account: stream.to_text(),
-        },
-    );
-    pic.advance_time(Duration::from_secs(10));
-    let ambiguous: Result<RedemptionProgress, ApiError> =
-        update(&pic, stream, recovery_user, "process_redemptions", ());
-    assert!(matches!(ambiguous, Err(ApiError::Pending(_))));
-    let ambiguous_status: Status = query(&pic, stream, "get_status");
-    assert_eq!(ambiguous_status.paid_unswept_redemption_io_e8s, None);
+    }
+    let final_status: Status = query(&pic, stream, "get_status");
+    assert_eq!(final_status.pending_redemption_candidates, 0);
+    assert!(final_status.operation_kind.is_none());
     assert_eq!(
-        ambiguous_status.operation_phase.as_deref(),
-        Some("SweepSubmitted")
+        query::<LedgerCallCounters>(&pic, icp_ledger, "debug_get_call_counters").transfer,
+        payout_before.transfer + 1,
+        "one staging block causes one ICP payout"
     );
-    let sweep_block = update::<_, Vec<DebugLedgerTransaction>>(
+    let sweeps = update::<_, Vec<DebugLedgerTransaction>>(
         &pic,
         io_ledger,
         Principal::anonymous(),
@@ -883,688 +1575,627 @@ fn staging_waits_claim_bearing_for_liquidity_and_manual_work_is_globally_throttl
     )
     .into_iter()
     .filter(|tx| {
-        tx.from_account.as_ref() == Some(&recovery_staging)
-            && tx.to_account.as_ref() == Some(&reserve)
+        tx.from_account.as_ref() == Some(&staging) && tx.to_account.as_ref() == Some(&reserve)
     })
-    .map(|tx| tx.block_index)
-    .max()
-    .expect("committed reserve sweep is visible in the canonical IO ledger");
+    .collect::<Vec<_>>();
+    assert_eq!(
+        sweeps.len(),
+        1,
+        "one staging block causes one reserve sweep"
+    );
+    assert_eq!(sweeps[0].amount_e8s, 99_990_000);
+    assert_eq!(sweeps[0].fee_e8s, Some(10_000));
+}
+
+#[test]
+fn ambiguous_payout_survives_upgrade_and_exact_retry_pays_once() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping staged-redemption PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = redemption_fixture();
     let _: () = update(
-        &pic,
-        io_ledger,
+        &fixture.pic,
+        fixture.icp_ledger,
+        Principal::anonymous(),
+        "debug_commit_then_unavailable_to",
+        DebugRejectAccountArgs {
+            account: fixture.user.to_text(),
+        },
+    );
+    stage_redemption(&fixture, 100_000_000);
+    wake_and_tick(&fixture);
+    let ambiguous: Status = query(&fixture.pic, fixture.stream, "get_status");
+    assert_eq!(
+        ambiguous.operation_phase.as_deref(),
+        Some("PayoutSubmitted")
+    );
+    let io_before_upgrade: LedgerCallCounters =
+        query(&fixture.pic, fixture.io_ledger, "debug_get_call_counters");
+    let icp_before_upgrade: LedgerCallCounters =
+        query(&fixture.pic, fixture.icp_ledger, "debug_get_call_counters");
+
+    fixture
+        .pic
+        .upgrade_canister(
+            fixture.stream,
+            debug_wasm("io_stream_manager"),
+            encode_one(()).unwrap(),
+            None,
+        )
+        .unwrap();
+    let unpause_rejected = fixture
+        .pic
+        .update_call(
+            fixture.stream,
+            fixture.governance,
+            "set_paused",
+            encode_one(false).unwrap(),
+        )
+        .expect_err("active redemption must block ordinary readiness");
+    assert!(format!("{unpause_rejected:?}").contains("Busy"));
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.io_ledger, "debug_get_call_counters"),
+        io_before_upgrade,
+        "readiness rejects before IO monetary reads"
+    );
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.icp_ledger, "debug_get_call_counters"),
+        icp_before_upgrade,
+        "readiness rejects before ICP monetary reads"
+    );
+    let immutable_before: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    for caller in 1..=100_u8 {
+        assert_eq!(
+            update::<_, Result<io_stream_manager::StreamProgress, ApiError>>(
+                &fixture.pic,
+                fixture.stream,
+                Principal::from_slice(&[caller; 29]),
+                "resume",
+                (),
+            ),
+            Err(ApiError::Unauthorized)
+        );
+    }
+    assert_eq!(
+        query::<StreamStateV1>(&fixture.pic, fixture.stream, "debug_get_state"),
+        immutable_before,
+        "unauthorized resume calls cannot change the submitted operation"
+    );
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.io_ledger, "debug_get_call_counters"),
+        io_before_upgrade,
+        "unauthorized resume calls make no IO-ledger calls"
+    );
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.icp_ledger, "debug_get_call_counters"),
+        icp_before_upgrade,
+        "unauthorized resume calls make no ICP-ledger calls"
+    );
+    fixture.pic.advance_time(Duration::from_secs(1));
+    let resumed: Result<io_stream_manager::StreamProgress, ApiError> = update(
+        &fixture.pic,
+        fixture.stream,
+        fixture.governance,
+        "resume",
+        (),
+    );
+    assert!(matches!(
+        resumed,
+        Ok(io_stream_manager::StreamProgress::Redemption(
+            io_stream_manager::RedemptionProgress::Completed
+        ))
+    ));
+    let io_after_resume: LedgerCallCounters =
+        query(&fixture.pic, fixture.io_ledger, "debug_get_call_counters");
+    let icp_after_resume: LedgerCallCounters =
+        query(&fixture.pic, fixture.icp_ledger, "debug_get_call_counters");
+    assert_eq!(io_after_resume.transfer, io_before_upgrade.transfer + 1);
+    assert_eq!(icp_after_resume.transfer, icp_before_upgrade.transfer + 1);
+    eprintln!(
+        "redemption_resume_auth_evidence unauthorized_callers=100 unauthorized_io_calls=0 unauthorized_icp_calls=0 governance_icp_retry_calls=1 governance_io_sweep_calls=1"
+    );
+    let payouts = update::<_, Vec<DebugLedgerTransaction>>(
+        &fixture.pic,
+        fixture.icp_ledger,
+        Principal::anonymous(),
+        "debug_get_transactions",
+        (),
+    )
+    .into_iter()
+    .filter(|tx| tx.to_account.as_ref() == Some(&fixture.user_account))
+    .collect::<Vec<_>>();
+    assert_eq!(payouts.len(), 1, "ambiguous retry must not pay twice");
+    let complete: Status = query(&fixture.pic, fixture.stream, "get_status");
+    assert!(complete.operation_kind.is_none());
+    assert_eq!(complete.pending_redemption_candidates, 0);
+
+    let unpaused: Result<(), ApiError> = update(
+        &fixture.pic,
+        fixture.stream,
+        fixture.governance,
+        "set_paused",
+        false,
+    );
+    assert_eq!(unpaused, Ok(()));
+    assert_eq!(
+        query::<Status>(&fixture.pic, fixture.stream, "get_status").lifecycle,
+        Lifecycle::Ready
+    );
+    assert!(
+        query::<DebugSchedulerStatus>(&fixture.pic, fixture.stream, "debug_get_scheduler_status")
+            .active_deadline_seconds
+            .is_some(),
+        "ordinary readiness installs the reward timer"
+    );
+    let mut ready: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    ready.reward_checkpoint.reward_work_due = false;
+    ready.stake_observation_due = false;
+    ready.structural_reconciliation_due = false;
+    update::<_, Result<(), String>>(
+        &fixture.pic,
+        fixture.stream,
+        Principal::anonymous(),
+        "debug_replace_state",
+        ready,
+    )
+    .unwrap();
+    stage_redemption(&fixture, 50_000_000);
+    fixture.pic.advance_time(Duration::from_secs(60));
+    for _ in 0..30 {
+        fixture.pic.tick();
+        if query::<Status>(&fixture.pic, fixture.stream, "get_status").pending_redemption_candidates
+            == 0
+            && update::<_, Vec<DebugLedgerTransaction>>(
+                &fixture.pic,
+                fixture.icp_ledger,
+                Principal::anonymous(),
+                "debug_get_transactions",
+                (),
+            )
+            .into_iter()
+            .filter(|tx| tx.to_account.as_ref() == Some(&fixture.user_account))
+            .count()
+                == 2
+        {
+            break;
+        }
+    }
+    assert_eq!(
+        update::<_, Vec<DebugLedgerTransaction>>(
+            &fixture.pic,
+            fixture.icp_ledger,
+            Principal::anonymous(),
+            "debug_get_transactions",
+            (),
+        )
+        .into_iter()
+        .filter(|tx| tx.to_account.as_ref() == Some(&fixture.user_account))
+        .count(),
+        2,
+        "ordinary readiness reinstalls the coarse redemption timer"
+    );
+}
+
+#[test]
+fn first_definitive_no_effect_requeues_for_a_fresh_safe_attempt() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping staged-redemption PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = redemption_fixture();
+    let _: () = update(
+        &fixture.pic,
+        fixture.icp_ledger,
         Principal::anonymous(),
         "debug_return_too_old_next",
         (),
     );
-    pic.advance_time(Duration::from_secs(1));
-    let stuck_progress: Result<StreamProgress, ApiError> =
-        update(&pic, stream, recovery_user, "resume", ());
-    assert!(matches!(stuck_progress, Err(ApiError::Stuck(_))));
-    let stuck_status: Status = query(&pic, stream, "get_status");
-    assert_eq!(stuck_status.lifecycle, Lifecycle::Paused);
-    assert_eq!(stuck_status.operation_phase.as_deref(), Some("Stuck"));
-    let transfer_calls_before_proof =
-        query::<LedgerCallCounters>(&pic, io_ledger, "debug_get_call_counters").transfer;
-    update::<_, Result<(), ApiError>>(
-        &pic,
-        stream,
-        recovery_user,
-        "prove_active_transfer",
-        u128::from(sweep_block),
-    )
-    .expect("the exact public proof completes the stuck committed sweep");
-    let recovered: Status = query(&pic, stream, "get_status");
-    assert!(recovered.operation_kind.is_none());
-    assert_eq!(recovered.pending_redemption_candidates, 0);
-    assert_eq!(recovered.paid_unswept_redemption_io_e8s, Some(0));
-    assert_eq!(
-        recovered
-            .last_completed_redemption
-            .as_ref()
-            .map(|value| value.source_io_block),
-        Some(recovery_source_block)
-    );
-    assert_eq!(
-        query::<LedgerCallCounters>(&pic, io_ledger, "debug_get_call_counters").transfer,
-        transfer_calls_before_proof,
-        "proof observes the committed effect without another reserve transfer"
-    );
-    update::<_, Result<(), ApiError>>(
-        &pic,
-        stream,
-        recovery_user,
-        "prove_active_transfer",
-        u128::from(sweep_block),
-    )
-    .expect("the exact completed proof is an idempotent no-op");
-    assert_eq!(
-        query::<LedgerCallCounters>(&pic, io_ledger, "debug_get_call_counters").transfer,
-        transfer_calls_before_proof,
-        "duplicate proof cannot repeat an economic effect"
-    );
-
-    let concurrent_amount = 1_000_000_u128;
-    let _: u64 = update(
-        &pic,
-        io_ledger,
-        Principal::anonymous(),
-        "debug_mint_account",
-        DebugMintAccountArgs {
-            to: recovery_staging.clone(),
-            amount_e8s: concurrent_amount,
-        },
-    );
-    let mut concurrent_state: StreamStateV1 = query(&pic, stream, "debug_get_state");
-    let sequence = concurrent_state.next_operation_sequence;
-    concurrent_state.next_operation_sequence.0 += 1;
-    concurrent_state.lifecycle = Lifecycle::Ready;
-    concurrent_state.active_operation = Some(StreamOperation::Redemption(Box::new(
-        RedemptionStreamOperation::Active(Box::new(RedemptionOperation {
-            sequence,
-            source_io_block: 999,
-            source_account: recovery_account.clone(),
-            staged_io_amount_e8s: concurrent_amount,
-            gross_icp_e8s: concurrent_amount,
-            net_icp_e8s: concurrent_amount - 10_000,
-            icp_fee_e8s: 10_000,
-            io_sweep_fee_e8s: 10_000,
-            icp_payout: TransferAttempt {
-                intent: OwnTransferIntent::Icrc1 {
-                    ledger: icp_ledger,
-                    from_subaccount: [1; 32],
-                    to: recovery_account,
-                    amount: concurrent_amount - 10_000,
-                    fee: 10_000,
-                    memo: deterministic_memo(
-                        b"io-redemption-pay-v2",
-                        Principal::from_slice(&999_u128.to_be_bytes()),
-                        sequence.0,
-                    ),
-                    created_at_time: pic.get_time().as_nanos_since_unix_epoch(),
-                },
-                state: TransferState::Succeeded { block: 1 },
-            },
-            reserve_sweep: None,
-            last_external_call_started_at_nanos: 0,
-            phase: RedemptionPhase::PayoutSucceeded,
-        })),
-    )));
-    update::<_, Result<(), String>>(
-        &pic,
-        stream,
-        Principal::anonymous(),
-        "debug_replace_state",
-        concurrent_state,
-    )
-    .unwrap();
-    let counters_before_race: LedgerCallCounters =
-        query(&pic, io_ledger, "debug_get_call_counters");
-    let staging_before_race = nat_u128(update::<_, candid::Nat>(
-        &pic,
-        io_ledger,
-        Principal::anonymous(),
-        "icrc1_balance_of",
-        recovery_staging.clone(),
-    ));
-    let reserve_before_race = nat_u128(update::<_, candid::Nat>(
-        &pic,
-        io_ledger,
-        Principal::anonymous(),
-        "icrc1_balance_of",
-        reserve.clone(),
-    ));
-    let reserve_transfers_before_race = update::<_, Vec<DebugLedgerTransaction>>(
-        &pic,
-        io_ledger,
+    stage_redemption(&fixture, 100_000_000);
+    wake_and_tick(&fixture);
+    let requeued: Status = query(&fixture.pic, fixture.stream, "get_status");
+    assert!(requeued.operation_kind.is_none());
+    assert_eq!(requeued.pending_redemption_candidates, 1);
+    assert!(update::<_, Vec<DebugLedgerTransaction>>(
+        &fixture.pic,
+        fixture.icp_ledger,
         Principal::anonymous(),
         "debug_get_transactions",
         (),
     )
     .into_iter()
-    .filter(|tx| {
-        tx.from_account.as_ref() == Some(&recovery_staging)
-            && tx.to_account.as_ref() == Some(&reserve)
-    })
+    .all(|tx| tx.to_account.as_ref() != Some(&fixture.user_account)));
+
+    wake_and_tick(&fixture);
+    let complete: Status = query(&fixture.pic, fixture.stream, "get_status");
+    assert!(complete.operation_kind.is_none());
+    assert_eq!(complete.pending_redemption_candidates, 0);
+    let payouts = update::<_, Vec<DebugLedgerTransaction>>(
+        &fixture.pic,
+        fixture.icp_ledger,
+        Principal::anonymous(),
+        "debug_get_transactions",
+        (),
+    )
+    .into_iter()
+    .filter(|tx| tx.to_account.as_ref() == Some(&fixture.user_account))
     .count();
-    let first_resume = pic
-        .submit_call(
-            stream,
-            Principal::anonymous(),
-            "resume",
-            encode_one(()).unwrap(),
-        )
-        .unwrap();
-    let second_resume = pic
-        .submit_call(
-            stream,
-            Principal::anonymous(),
-            "resume",
-            encode_one(()).unwrap(),
-        )
-        .unwrap();
-    pic.tick();
-    let first: Result<StreamProgress, ApiError> =
-        decode_one(&pic.await_call(first_resume).unwrap()).unwrap();
-    let second: Result<StreamProgress, ApiError> =
-        decode_one(&pic.await_call(second_resume).unwrap()).unwrap();
-    let resume_results = [first, second];
-    assert_eq!(
-        resume_results
-            .iter()
-            .filter(|result| matches!(
-                result,
-                Ok(StreamProgress::Redemption(RedemptionProgress::Completed(_)))
-            ))
-            .count(),
-        1
-    );
-    assert_eq!(
-        resume_results
-            .iter()
-            .filter(|result| matches!(result, Err(ApiError::Busy)))
-            .count(),
-        1
-    );
-    let counters_after_race: LedgerCallCounters = query(&pic, io_ledger, "debug_get_call_counters");
-    assert_eq!(
-        counters_after_race.transfer,
-        counters_before_race.transfer + 1
-    );
-    assert_eq!(
-        nat_u128(update::<_, candid::Nat>(
-            &pic,
-            io_ledger,
-            Principal::anonymous(),
-            "icrc1_balance_of",
-            recovery_staging.clone(),
-        )),
-        staging_before_race - concurrent_amount
-    );
-    assert_eq!(
-        nat_u128(update::<_, candid::Nat>(
-            &pic,
-            io_ledger,
-            Principal::anonymous(),
-            "icrc1_balance_of",
-            reserve.clone(),
-        )),
-        reserve_before_race + concurrent_amount - 10_000
-    );
-    let reserve_transfers_after_race = update::<_, Vec<DebugLedgerTransaction>>(
-        &pic,
-        io_ledger,
-        Principal::anonymous(),
-        "debug_get_transactions",
-        (),
-    )
-    .into_iter()
-    .filter(|tx| {
-        tx.from_account.as_ref() == Some(&recovery_staging)
-            && tx.to_account.as_ref() == Some(&reserve)
-    })
-    .collect::<Vec<_>>();
-    assert_eq!(
-        reserve_transfers_after_race.len(),
-        reserve_transfers_before_race + 1
-    );
-    let concurrent_sweep = reserve_transfers_after_race.last().unwrap();
-    assert_eq!(concurrent_sweep.amount_e8s, concurrent_amount - 10_000);
-    assert_eq!(concurrent_sweep.fee_e8s, Some(10_000));
-    assert_eq!(
-        concurrent_sweep.memo_bytes.as_deref(),
-        Some(
-            deterministic_memo(
-                b"io-redemption-sweep-v1",
-                Principal::from_slice(&999_u128.to_be_bytes()),
-                sequence.0,
-            )
-            .as_slice()
-        )
-    );
+    assert_eq!(payouts, 1);
+}
 
-    let committed_before_burst = query::<StreamStateV1>(&pic, stream, "debug_get_state")
-        .redemption_scan_state
-        .cursor
-        .latest_cursor;
-    for _ in 0..70 {
-        let _: u64 = update(
-            &pic,
-            io_ledger,
-            Principal::anonymous(),
-            "debug_mint_account",
-            DebugMintAccountArgs {
-                to: recovery_staging.clone(),
-                amount_e8s: 100_000,
-            },
-        );
+#[test]
+fn newest_first_multi_page_scan_survives_queue_drain_upgrade_and_new_arrival() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping staged-redemption PocketIC test because POCKET_IC_BIN is not set");
+        return;
     }
-    pic.advance_time(Duration::from_secs(10));
-    let first_burst_page: Result<RedemptionProgress, ApiError> = update(
-        &pic,
-        stream,
-        Principal::anonymous(),
-        "process_redemptions",
-        (),
+    let fixture = redemption_fixture();
+    let mut newest_tiny_block = 0_u128;
+    for _ in 0..70 {
+        newest_tiny_block = stage_redemption(&fixture, 1);
+    }
+    let index_before: u64 = query(
+        &fixture.pic,
+        fixture.io_index,
+        "debug_get_account_transaction_call_count",
     );
-    assert_eq!(first_burst_page, Ok(RedemptionProgress::Idle));
-    let mid_scan: StreamStateV1 = query(&pic, stream, "debug_get_state");
+    let io_before: LedgerCallCounters =
+        query(&fixture.pic, fixture.io_ledger, "debug_get_call_counters");
+    wake_and_tick(&fixture);
+    let before_upgrade: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    assert!(before_upgrade.pending_redemption_blocks.is_empty());
+    assert_eq!(before_upgrade.redemption_scan_cursor.committed_head, None);
     assert_eq!(
-        mid_scan.redemption_scan_state.cursor.latest_cursor,
-        committed_before_burst
+        before_upgrade.redemption_scan_cursor.captured_head,
+        Some(newest_tiny_block.try_into().unwrap())
     );
-    assert!(!mid_scan.redemption_scan_state.cursor.backfill_complete);
-    assert!(mid_scan
-        .redemption_scan_state
-        .cursor
-        .oldest_cursor
+    assert!(before_upgrade
+        .redemption_scan_cursor
+        .resume_before
         .is_some());
-    pic.upgrade_canister(
-        stream,
-        debug_wasm("io_stream_manager"),
-        encode_one(()).unwrap(),
-        None,
-    )
-    .unwrap();
-    let mut restarted: StreamStateV1 = query(&pic, stream, "debug_get_state");
+
+    fixture
+        .pic
+        .upgrade_canister(
+            fixture.stream,
+            debug_wasm("io_stream_manager"),
+            encode_one(()).unwrap(),
+            None,
+        )
+        .unwrap();
+    let mut restored: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
     assert_eq!(
-        restarted.redemption_scan_state.cursor,
-        mid_scan.redemption_scan_state.cursor
+        restored.redemption_scan_cursor,
+        before_upgrade.redemption_scan_cursor
     );
-    restarted.lifecycle = Lifecycle::Ready;
+    restored.lifecycle = Lifecycle::Ready;
+    restored.reward_checkpoint.reward_work_due = false;
+    restored.stake_observation_due = false;
+    restored.structural_reconciliation_due = false;
     update::<_, Result<(), String>>(
-        &pic,
-        stream,
+        &fixture.pic,
+        fixture.stream,
         Principal::anonymous(),
         "debug_replace_state",
-        restarted,
+        restored,
     )
     .unwrap();
-    for _ in 0..5 {
-        let _: u64 = update(
-            &pic,
-            io_ledger,
-            Principal::anonymous(),
-            "debug_mint_account",
-            DebugMintAccountArgs {
-                to: recovery_staging.clone(),
-                amount_e8s: 100_000,
-            },
-        );
-    }
-    for _ in 0..4 {
-        pic.advance_time(Duration::from_secs(10));
-        assert_eq!(
-            update::<_, Result<RedemptionProgress, ApiError>>(
-                &pic,
-                stream,
-                Principal::anonymous(),
-                "process_redemptions",
-                (),
-            ),
-            Ok(RedemptionProgress::Idle)
-        );
-    }
-    let latest_account_block = update::<_, Vec<DebugLedgerTransaction>>(
-        &pic,
-        io_ledger,
-        Principal::anonymous(),
-        "debug_get_transactions",
-        (),
-    )
-    .into_iter()
-    .filter(|tx| {
-        tx.from_account.as_ref() == Some(&recovery_staging)
-            || tx.to_account.as_ref() == Some(&recovery_staging)
-    })
-    .map(|tx| tx.block_index)
-    .max()
-    .unwrap();
-    let caught_up: StreamStateV1 = query(&pic, stream, "debug_get_state");
-    assert_eq!(
-        caught_up.redemption_scan_state.cursor.latest_cursor,
-        Some(io_ledger_types::BlockIndex(latest_account_block))
-    );
-    assert!(caught_up.redemption_scan_state.cursor.backfill_complete);
 
-    let bulk_user = Principal::from_slice(&[91; 29]);
-    let bulk_account = Account {
-        owner: bulk_user,
-        subaccount: None,
-    };
-    const BULK_DEPOSITS: usize = 65;
-    const BULK_AMOUNT: u128 = 100_000;
-    let _: u64 = update(
-        &pic,
-        io_ledger,
-        Principal::anonymous(),
-        "debug_mint_account",
-        DebugMintAccountArgs {
-            to: bulk_account.clone(),
-            amount_e8s: BULK_DEPOSITS as u128 * (BULK_AMOUNT + 10_000),
-        },
-    );
-    let _: u64 = update(
-        &pic,
-        icp_ledger,
-        Principal::anonymous(),
-        "debug_mint_account",
-        DebugMintAccountArgs {
-            to: Account {
-                owner: stream,
-                subaccount: Some(vec![1; 32]),
-            },
-            amount_e8s: 100_000_000,
-        },
-    );
-    let staging_before_bulk = nat_u128(update::<_, candid::Nat>(
-        &pic,
-        io_ledger,
-        Principal::anonymous(),
-        "icrc1_balance_of",
-        recovery_staging.clone(),
-    ));
-    let reserve_before_bulk = nat_u128(update::<_, candid::Nat>(
-        &pic,
-        io_ledger,
-        Principal::anonymous(),
-        "icrc1_balance_of",
-        reserve.clone(),
-    ));
-    let payout_calls_before_bulk =
-        query::<LedgerCallCounters>(&pic, icp_ledger, "debug_get_call_counters").transfer;
-    let sweep_calls_before_bulk =
-        query::<LedgerCallCounters>(&pic, io_ledger, "debug_get_call_counters").transfer;
-    let reserve_sweeps_before_bulk = reserve_transfers_after_race.len();
-    let mut bulk_sources = std::collections::BTreeSet::new();
-    for _ in 0..BULK_DEPOSITS {
-        let result: io_ledger_boundary::IcrcTransferResult = update(
-            &pic,
-            io_ledger,
-            bulk_user,
-            "icrc1_transfer",
-            io_ledger_boundary::IcrcTransferArg {
-                from_subaccount: None,
-                to: recovery_staging.clone(),
-                amount: candid::Nat::from(BULK_AMOUNT),
-                fee: Some(candid::Nat::from(10_000_u128)),
-                memo: None,
-                created_at_time: None,
-            },
-        );
-        let source_block: u128 = result.unwrap().0.try_into().unwrap();
-        assert!(bulk_sources.insert(source_block));
-    }
-    let mut bulk_completed = std::collections::BTreeSet::new();
-    let mut restarted_with_queued_candidates = false;
-    let mut final_bulk_account_head = None;
-    for _ in 0..180 {
-        pic.advance_time(Duration::from_secs(10));
-        let progress: Result<RedemptionProgress, ApiError> =
-            update(&pic, stream, bulk_user, "process_redemptions", ());
-        match progress {
-            Ok(RedemptionProgress::Completed(result)) => {
-                assert!(bulk_sources.contains(&result.source_io_block));
-                assert!(
-                    bulk_completed.insert(result.source_io_block),
-                    "a staged source block completed more than once"
-                );
-            }
-            Ok(RedemptionProgress::Idle | RedemptionProgress::Pending) => {}
-            other => panic!("bulk staged redemption failed: {other:?}"),
-        }
-        let bulk_state: StreamStateV1 = query(&pic, stream, "debug_get_state");
-        if !restarted_with_queued_candidates
-            && !bulk_completed.is_empty()
-            && query::<Status>(&pic, stream, "get_status").pending_redemption_candidates > 0
+    for _ in 0..4 {
+        wake_and_tick(&fixture);
+        let state: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+        if state.pending_redemption_blocks.is_empty()
+            && state.redemption_scan_cursor.resume_before.is_none()
+            && state.redemption_scan_cursor.committed_head
+                == Some(newest_tiny_block.try_into().unwrap())
         {
-            let cursor_before_upgrade = bulk_state.redemption_scan_state.cursor.clone();
-            pic.upgrade_canister(
-                stream,
-                debug_wasm("io_stream_manager"),
-                encode_one(()).unwrap(),
-                None,
-            )
-            .unwrap();
-            let mut after_upgrade: StreamStateV1 = query(&pic, stream, "debug_get_state");
-            assert_eq!(
-                after_upgrade.redemption_scan_state.cursor,
-                cursor_before_upgrade
-            );
-            after_upgrade.lifecycle = Lifecycle::Ready;
-            update::<_, Result<(), String>>(
-                &pic,
-                stream,
-                Principal::anonymous(),
-                "debug_replace_state",
-                after_upgrade,
-            )
-            .unwrap();
-            restarted_with_queued_candidates = true;
-            continue;
+            break;
         }
-        if bulk_completed.len() == BULK_DEPOSITS {
-            let head = *final_bulk_account_head.get_or_insert_with(|| {
-                update::<_, Vec<DebugLedgerTransaction>>(
-                    &pic,
-                    io_ledger,
-                    Principal::anonymous(),
-                    "debug_get_transactions",
-                    (),
-                )
-                .into_iter()
-                .filter(|tx| {
-                    tx.from_account.as_ref() == Some(&recovery_staging)
-                        || tx.to_account.as_ref() == Some(&recovery_staging)
-                })
-                .map(|tx| tx.block_index)
-                .max()
-                .unwrap()
-            });
-            if bulk_state.redemption_scan_state.cursor.backfill_complete
-                && bulk_state.redemption_scan_state.cursor.latest_cursor
-                    == Some(io_ledger_types::BlockIndex(head))
-            {
-                break;
-            }
-        }
+        fixture.pic.advance_time(Duration::from_secs(9));
     }
-    assert!(restarted_with_queued_candidates);
-    assert_eq!(bulk_completed, bulk_sources);
+    let caught_up: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    assert!(caught_up.pending_redemption_blocks.is_empty());
+    assert_eq!(caught_up.redemption_scan_cursor.resume_before, None);
     assert_eq!(
-        query::<LedgerCallCounters>(&pic, icp_ledger, "debug_get_call_counters").transfer,
-        payout_calls_before_bulk + BULK_DEPOSITS as u64
+        caught_up.redemption_scan_cursor.committed_head,
+        Some(newest_tiny_block.try_into().unwrap())
+    );
+
+    let valid_block = stage_redemption(&fixture, 100_000_000);
+    assert!(valid_block > newest_tiny_block);
+    fixture.pic.advance_time(Duration::from_secs(9));
+    wake_and_tick(&fixture);
+    let completed: Status = query(&fixture.pic, fixture.stream, "get_status");
+    assert!(completed.operation_kind.is_none());
+    assert_eq!(completed.pending_redemption_candidates, 0);
+    assert_eq!(
+        update::<_, Vec<DebugLedgerTransaction>>(
+            &fixture.pic,
+            fixture.icp_ledger,
+            Principal::anonymous(),
+            "debug_get_transactions",
+            (),
+        )
+        .into_iter()
+        .filter(|tx| tx.to_account.as_ref() == Some(&fixture.user_account))
+        .count(),
+        1
     );
     assert_eq!(
-        query::<LedgerCallCounters>(&pic, io_ledger, "debug_get_call_counters").transfer,
-        sweep_calls_before_bulk + (BULK_DEPOSITS as u64 * 2)
+        query::<u64>(
+            &fixture.pic,
+            fixture.io_index,
+            "debug_get_account_transaction_call_count"
+        ),
+        index_before + 4,
+        "three all-ID pages plus one new-head page preserve coverage"
+    );
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.io_ledger, "debug_get_call_counters")
+            .get_transactions,
+        io_before.get_transactions + 1,
+        "seventy filtered tiny transfers consume no canonical proof slots"
+    );
+}
+
+#[test]
+fn buried_valid_redemption_drains_captured_filtered_pages_without_public_followup() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping staged-redemption PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = redemption_fixture();
+    let valid_block = stage_redemption(&fixture, 100_000_000);
+    let mut newest_tiny_block = 0_u128;
+    for _ in 0..70 {
+        newest_tiny_block = stage_redemption(&fixture, 1);
+    }
+    let index_before = index_call_times(&fixture).len();
+    let io_before: LedgerCallCounters =
+        query(&fixture.pic, fixture.io_ledger, "debug_get_call_counters");
+    let icp_before: LedgerCallCounters =
+        query(&fixture.pic, fixture.icp_ledger, "debug_get_call_counters");
+
+    assert_eq!(
+        update::<_, Result<(), ApiError>>(
+            &fixture.pic,
+            fixture.stream,
+            fixture.user,
+            "process_redemptions",
+            (),
+        ),
+        Ok(())
+    );
+    for expected in 1..=3 {
+        fixture.pic.advance_time(Duration::from_secs(1));
+        tick_until_index_calls(&fixture, index_before as u64 + expected);
+    }
+    for _ in 0..50 {
+        fixture.pic.tick();
+        let status: Status = query(&fixture.pic, fixture.stream, "get_status");
+        if status.operation_kind.is_none() && status.pending_redemption_candidates == 0 {
+            break;
+        }
+    }
+
+    let state: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    assert_eq!(state.redemption_scan_cursor.resume_before, None);
+    assert_eq!(
+        state.redemption_scan_cursor.committed_head,
+        Some(newest_tiny_block as u64),
+        "all 71 returned IDs advance the captured interval to its head"
+    );
+    assert!(valid_block < newest_tiny_block);
+    let times = index_call_times(&fixture);
+    let continuation_times = &times[index_before..];
+    assert_eq!(
+        continuation_times.len(),
+        3,
+        "71 entries require three pages"
+    );
+    for pair in continuation_times.windows(2) {
+        assert!(
+            pair[1].saturating_sub(pair[0]) < 60_000_000_000,
+            "captured-page continuation must run before the coarse poll"
+        );
+    }
+    let continuation_gaps_nanos = continuation_times
+        .windows(2)
+        .map(|pair| pair[1].saturating_sub(pair[0]))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.io_ledger, "debug_get_call_counters")
+            .get_transactions,
+        io_before.get_transactions + 1,
+        "seventy filtered transfers consume zero canonical proofs"
+    );
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.icp_ledger, "debug_get_call_counters")
+            .transfer,
+        icp_before.transfer + 1,
+        "the buried valid transfer receives exactly one payout"
+    );
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.io_ledger, "debug_get_call_counters")
+            .transfer,
+        io_before.transfer + 1,
+        "the buried valid transfer receives exactly one reserve sweep"
     );
     assert_eq!(
         update::<_, Vec<DebugLedgerTransaction>>(
-            &pic,
-            io_ledger,
+            &fixture.pic,
+            fixture.icp_ledger,
+            Principal::anonymous(),
+            "debug_get_transactions",
+            (),
+        )
+        .into_iter()
+        .filter(|tx| tx.to_account.as_ref() == Some(&fixture.user_account))
+        .count(),
+        1
+    );
+    assert_eq!(
+        update::<_, Vec<DebugLedgerTransaction>>(
+            &fixture.pic,
+            fixture.io_ledger,
             Principal::anonymous(),
             "debug_get_transactions",
             (),
         )
         .into_iter()
         .filter(|tx| {
-            tx.from_account.as_ref() == Some(&recovery_staging)
-                && tx.to_account.as_ref() == Some(&reserve)
+            tx.from_account.as_ref() == Some(&fixture.staging)
+                && tx.to_account.as_ref() == Some(&fixture.reserve)
         })
         .count(),
-        reserve_sweeps_before_bulk + BULK_DEPOSITS
+        1
     );
-    assert_eq!(
-        nat_u128(update::<_, candid::Nat>(
-            &pic,
-            io_ledger,
-            Principal::anonymous(),
-            "icrc1_balance_of",
-            recovery_staging.clone(),
-        )),
-        staging_before_bulk
+    eprintln!(
+        "buried_redemption_evidence index_pages=3 continuation_gaps_nanos={continuation_gaps_nanos:?} irrelevant_canonical_proofs=0 valid_canonical_proofs=1 payouts=1 sweeps=1 public_followup_wakes=0"
     );
-    assert_eq!(
-        nat_u128(update::<_, candid::Nat>(
-            &pic,
-            io_ledger,
-            Principal::anonymous(),
-            "icrc1_balance_of",
-            reserve.clone(),
-        )),
-        reserve_before_bulk + BULK_DEPOSITS as u128 * (BULK_AMOUNT - 10_000)
-    );
+}
 
-    let _: u64 = update(
-        &pic,
-        io_ledger,
+#[test]
+fn scanner_error_during_catch_up_returns_to_coarse_polling() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping staged-redemption PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = redemption_fixture();
+    for _ in 0..70 {
+        stage_redemption(&fixture, 1);
+    }
+    let index_before = index_call_times(&fixture).len();
+    assert_eq!(
+        update::<_, Result<(), ApiError>>(
+            &fixture.pic,
+            fixture.stream,
+            fixture.user,
+            "process_redemptions",
+            (),
+        ),
+        Ok(())
+    );
+    fixture.pic.advance_time(Duration::from_secs(1));
+    tick_until_index_calls(&fixture, index_before as u64 + 1);
+    assert!(
+        query::<StreamStateV1>(&fixture.pic, fixture.stream, "debug_get_state")
+            .redemption_scan_cursor
+            .resume_before
+            .is_some()
+    );
+    let _: () = update(
+        &fixture.pic,
+        fixture.io_index,
         Principal::anonymous(),
-        "debug_mint_account",
-        DebugMintAccountArgs {
-            to: recovery_staging.clone(),
-            amount_e8s: concurrent_amount,
+        "debug_set_unreadable",
+        DebugUnreadableArgs { unreadable: true },
+    );
+    fixture.pic.advance_time(Duration::from_secs(1));
+    tick_until_index_calls(&fixture, index_before as u64 + 2);
+    fixture.pic.advance_time(Duration::from_secs(59));
+    for _ in 0..20 {
+        fixture.pic.tick();
+    }
+    assert_eq!(
+        index_call_times(&fixture).len(),
+        index_before + 2,
+        "a failed continuation cannot create a near-term error loop"
+    );
+    fixture.pic.advance_time(Duration::from_secs(1));
+    tick_until_index_calls(&fixture, index_before as u64 + 3);
+    let times = index_call_times(&fixture);
+    let observed = &times[index_before..];
+    assert!(observed[1].saturating_sub(observed[0]) < 60_000_000_000);
+    assert!(
+        observed[2].saturating_sub(observed[1]) >= 60_000_000_000,
+        "index failure must restore the configured coarse retry"
+    );
+    eprintln!(
+        "scanner_error_backoff_evidence near_term_gap_nanos={} post_error_gap_nanos={}",
+        observed[1].saturating_sub(observed[0]),
+        observed[2].saturating_sub(observed[1])
+    );
+}
+
+#[test]
+fn committed_ambiguous_sweep_is_completed_by_exact_proof_without_retransfer() {
+    if std::env::var_os("POCKET_IC_BIN").is_none() {
+        eprintln!("skipping staged-redemption PocketIC test because POCKET_IC_BIN is not set");
+        return;
+    }
+    let fixture = redemption_fixture();
+    let _: () = update(
+        &fixture.pic,
+        fixture.io_ledger,
+        Principal::anonymous(),
+        "debug_commit_then_unavailable_to",
+        DebugRejectAccountArgs {
+            account: fixture.stream.to_text(),
         },
     );
-    let mut held_state: StreamStateV1 = query(&pic, stream, "debug_get_state");
-    let held_sequence = held_state.next_operation_sequence;
-    held_state.next_operation_sequence.0 += 1;
-    held_state.lifecycle = Lifecycle::Ready;
-    held_state.reward_checkpoint.reward_work_due = false;
-    held_state.stake_observation_due = false;
-    held_state.structural_reconciliation_due = false;
-    let held_now = pic.get_time().as_nanos_since_unix_epoch();
-    let held_intent = OwnTransferIntent::Icrc1 {
-        ledger: io_ledger,
-        from_subaccount: io_accounts::REDEMPTION_STAGING_SUBACCOUNT,
-        to: reserve.clone(),
-        amount: concurrent_amount - 10_000,
-        fee: 10_000,
-        memo: deterministic_memo(
-            b"io-redemption-sweep-v1",
-            Principal::from_slice(&1_001_u128.to_be_bytes()),
-            held_sequence.0,
-        ),
-        created_at_time: held_now.saturating_sub(2_000_000_000),
-    };
-    held_state.active_operation = Some(StreamOperation::Redemption(Box::new(
-        RedemptionStreamOperation::Active(Box::new(RedemptionOperation {
-            sequence: held_sequence,
-            source_io_block: 1_001,
-            source_account: bulk_account,
-            staged_io_amount_e8s: concurrent_amount,
-            gross_icp_e8s: concurrent_amount,
-            net_icp_e8s: concurrent_amount - 10_000,
-            icp_fee_e8s: 10_000,
-            io_sweep_fee_e8s: 10_000,
-            icp_payout: TransferAttempt {
-                intent: OwnTransferIntent::Icrc1 {
-                    ledger: icp_ledger,
-                    from_subaccount: [1; 32],
-                    to: Account {
-                        owner: bulk_user,
-                        subaccount: None,
-                    },
-                    amount: concurrent_amount - 10_000,
-                    fee: 10_000,
-                    memo: deterministic_memo(
-                        b"io-redemption-pay-v2",
-                        Principal::from_slice(&1_001_u128.to_be_bytes()),
-                        held_sequence.0,
-                    ),
-                    created_at_time: held_now.saturating_sub(3_000_000_000),
-                },
-                state: TransferState::Succeeded { block: 1 },
-            },
-            reserve_sweep: Some(TransferAttempt {
-                intent: held_intent,
-                state: TransferState::Submitted {
-                    epoch: io_stream_manager::state::DispatchEpoch(1),
-                    first_submitted_at: held_now.saturating_sub(2_000_000_000),
-                    last_submitted_at: held_now.saturating_sub(2_000_000_000),
-                },
-            }),
-            last_external_call_started_at_nanos: 0,
-            phase: RedemptionPhase::SweepSubmitted,
-        })),
-    )));
-    update::<_, Result<(), String>>(
-        &pic,
-        stream,
+    stage_redemption(&fixture, 100_000_000);
+    wake_and_tick(&fixture);
+    let ambiguous: Status = query(&fixture.pic, fixture.stream, "get_status");
+    assert_eq!(ambiguous.operation_phase.as_deref(), Some("SweepSubmitted"));
+    let sweep_block = update::<_, Vec<DebugLedgerTransaction>>(
+        &fixture.pic,
+        fixture.io_ledger,
         Principal::anonymous(),
-        "debug_replace_state",
-        held_state,
+        "debug_get_transactions",
+        (),
     )
-    .unwrap();
-    update::<_, ()>(
-        &pic,
-        io_ledger,
+    .into_iter()
+    .find(|tx| {
+        tx.from_account.as_ref() == Some(&fixture.staging)
+            && tx.to_account.as_ref() == Some(&fixture.reserve)
+    })
+    .expect("committed sweep is visible in canonical ledger")
+    .block_index;
+    let _: () = update(
+        &fixture.pic,
+        fixture.io_ledger,
         Principal::anonymous(),
-        "debug_delay_next_transfer",
-        10_000_u32,
+        "debug_return_too_old_next",
+        (),
     );
-    let held_resume = pic
-        .submit_call(
-            stream,
-            Principal::anonymous(),
-            "resume",
-            encode_one(()).unwrap(),
-        )
-        .unwrap();
-    for _ in 0..3 {
-        pic.tick();
-    }
-    update::<_, ()>(
-        &pic,
-        stream,
-        Principal::anonymous(),
-        "debug_install_scheduler_at",
-        pic.get_time().as_nanos_since_unix_epoch() / 1_000_000_000 + 2,
+    fixture.pic.advance_time(Duration::from_secs(1));
+    let stuck: Result<io_stream_manager::StreamProgress, ApiError> = update(
+        &fixture.pic,
+        fixture.stream,
+        fixture.governance,
+        "resume",
+        (),
     );
-    let before_guard_timer: DebugSchedulerStatus =
-        query(&pic, stream, "debug_get_scheduler_status");
-    pic.advance_time(Duration::from_secs(2));
-    for _ in 0..10 {
-        pic.tick();
-        if query::<DebugSchedulerStatus>(&pic, stream, "debug_get_scheduler_status")
-            .recovery_deferrals
-            > before_guard_timer.recovery_deferrals
-        {
-            break;
-        }
-    }
-    let after_guard_timer: DebugSchedulerStatus = query(&pic, stream, "debug_get_scheduler_status");
+    assert!(matches!(stuck, Err(ApiError::Stuck(_))));
+    let transfer_calls =
+        query::<LedgerCallCounters>(&fixture.pic, fixture.io_ledger, "debug_get_call_counters")
+            .transfer;
+    let proof: Result<(), ApiError> = update(
+        &fixture.pic,
+        fixture.stream,
+        fixture.governance,
+        "prove_active_transfer",
+        u128::from(sweep_block),
+    );
+    assert_eq!(proof, Ok(()));
     assert_eq!(
-        after_guard_timer.recovery_deferrals,
-        before_guard_timer.recovery_deferrals + 1
+        query::<LedgerCallCounters>(&fixture.pic, fixture.io_ledger, "debug_get_call_counters")
+            .transfer,
+        transfer_calls,
+        "exact proof observes the committed sweep without another transfer"
     );
-    assert_eq!(
-        after_guard_timer.callback_invocations,
-        before_guard_timer.callback_invocations + 1
+    let repeated: Result<(), ApiError> = update(
+        &fixture.pic,
+        fixture.stream,
+        fixture.governance,
+        "prove_active_transfer",
+        u128::from(sweep_block),
     );
-    assert!(
-        after_guard_timer.active_deadline_seconds.unwrap()
-            > pic.get_time().as_nanos_since_unix_epoch() / 1_000_000_000
-    );
-    let held_after_timer: StreamStateV1 = query(&pic, stream, "debug_get_state");
-    let Some(StreamOperation::Redemption(held_after_timer)) = held_after_timer.active_operation
-    else {
-        panic!("held redemption must remain active")
-    };
-    let RedemptionStreamOperation::Active(held_after_timer) = held_after_timer.as_ref();
-    assert!(matches!(
-        held_after_timer
-            .reserve_sweep
-            .as_ref()
-            .map(|attempt| &attempt.state),
-        Some(TransferState::Submitted {
-            epoch: io_stream_manager::state::DispatchEpoch(2),
-            ..
-        })
-    ));
-    let _ = held_resume;
-    eprintln!(
-        "semantic_staging block={staged_block} claim_bearing_before_payout=true global_manual_throttle=true low_liquidity_debt=false recovered_once=true automatic_sixty_second_poll=true stuck_sweep_public_proof_once=true concurrent_resumes_completed=1 concurrent_resumes_busy=1 concurrent_sweep_transfers=1 burst_account_transactions=75 restart_between_pages=true captured_head_caught_up=true bulk_valid_sources=65 bulk_paid_once=65 queue_restart=true interspersed_sweeps=65 held_guard_timer_deferrals=1 held_guard_dispatch_epoch=2"
-    );
+    assert!(matches!(repeated, Err(ApiError::Invalid(_))));
+    let complete: Status = query(&fixture.pic, fixture.stream, "get_status");
+    assert!(complete.operation_kind.is_none());
+    assert_eq!(complete.pending_redemption_candidates, 0);
 }
 
 #[test]

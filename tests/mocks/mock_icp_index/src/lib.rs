@@ -3,9 +3,9 @@ use io_ledger_types::{
     Account, IcpIndexGetAccountIdentifierTransactionsArgs,
     IcpIndexGetAccountIdentifierTransactionsResponse,
     IcpIndexGetAccountIdentifierTransactionsResult, IcpIndexOperation, IcpIndexTimeStamp,
-    IcpIndexTokens, IcpIndexTransaction, IcpIndexTransactionWithId, IcrcIndexError,
-    IcrcIndexGetAccountTransactionsArgs, IcrcIndexGetAccountTransactionsResult,
-    IcrcIndexTransaction, LedgerBlock, LedgerOperationKind, Memo, Subaccount,
+    IcpIndexTokens, IcpIndexTransaction, IcpIndexTransactionWithId,
+    IcrcIndexGetAccountTransactionsArgs, IcrcIndexNgGetTransactionsResult, IcrcIndexNgTransaction,
+    IcrcIndexNgTransactionWithId, IcrcIndexNgTransfer, Memo, Subaccount,
 };
 use serde::Deserialize;
 
@@ -35,6 +35,8 @@ thread_local! {
     static DESCENDING: std::cell::RefCell<bool> = const { std::cell::RefCell::new(false) };
     static UNREADABLE: std::cell::RefCell<bool> = const { std::cell::RefCell::new(false) };
     static ACCOUNT_TRANSACTION_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static ACCOUNT_TRANSACTION_CALL_TIMES: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
+    static ACCOUNT_TRANSACTION_MAX_RESULTS: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::init)]
@@ -146,66 +148,33 @@ fn mock_label_from_account(account: &Account) -> String {
     }
 }
 
-fn tx_to_block(tx: LedgerTransaction) -> LedgerBlock {
-    LedgerBlock {
-        block_index: io_ledger_types::BlockIndex(tx.block_index),
-        timestamp_nanos: tx.timestamp,
-        created_at_time: None,
-        from: tx.from_account.or_else(|| {
-            Some(Account::new(
-                Principal::anonymous(),
-                Some(mock_subaccount(&tx.from)),
-            ))
-        }),
-        to: tx.to_account.or_else(|| {
-            Some(Account::new(
-                Principal::anonymous(),
-                Some(mock_subaccount(&tx.to)),
-            ))
-        }),
-        amount_e8s: tx.amount_e8s,
-        fee_e8s: Some(10_000),
-        memo: Some(Memo(tx.memo_bytes.unwrap_or_else(|| tx.memo.into_bytes()))),
-        operation_kind: LedgerOperationKind::Transfer,
-    }
-}
-
-fn nat_to_u64(value: &Nat) -> Result<u64, IcrcIndexError> {
+fn nat_to_u64(value: &Nat) -> Result<u64, String> {
     value
         .0
         .to_str_radix(10)
         .parse::<u64>()
-        .map_err(|err| IcrcIndexError::GenericError {
-            error_code: Nat::from(1_u64),
-            message: format!("nat does not fit in u64: {err}"),
-        })
+        .map_err(|err| format!("nat does not fit in u64: {err}"))
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub async fn get_account_transactions(
     args: IcrcIndexGetAccountTransactionsArgs,
-) -> Result<IcrcIndexGetAccountTransactionsResult, IcrcIndexError> {
+) -> Result<IcrcIndexNgGetTransactionsResult, String> {
     ACCOUNT_TRANSACTION_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
+    ACCOUNT_TRANSACTION_CALL_TIMES.with(|times| times.borrow_mut().push(ic_cdk::api::time()));
     if UNREADABLE.with(|cell| *cell.borrow()) {
-        return Err(IcrcIndexError::TemporarilyUnavailable);
+        return Err("temporarily unavailable".into());
     }
 
     if ARCHIVE_REQUIRED.with(|cell| *cell.borrow()) {
-        return Ok(IcrcIndexGetAccountTransactionsResult {
-            transactions: Vec::new(),
-            oldest_tx_id: None,
-            tip: debug_get_tip(),
-            archive_required: true,
-        });
+        return Err("archive history required".into());
     }
 
-    let account = account_from_icrc(args.account).ok_or_else(|| IcrcIndexError::GenericError {
-        error_code: Nat::from(1_u64),
-        message: "invalid account".to_string(),
-    })?;
+    let account = account_from_icrc(args.account).ok_or("invalid account")?;
     let label = mock_label_from_account(&account);
     let start = args.start.as_ref().map(nat_to_u64).transpose()?;
     let requested_limit = nat_to_u64(&args.max_results)?;
+    ACCOUNT_TRANSACTION_MAX_RESULTS.with(|limits| limits.borrow_mut().push(requested_limit));
     let page_limit = PAGE_LIMIT.with(|cell| (*cell.borrow()).unwrap_or(requested_limit));
     let limit = requested_limit.min(page_limit) as usize;
     let descending = DESCENDING.with(|cell| *cell.borrow());
@@ -215,8 +184,6 @@ pub async fn get_account_transactions(
         .map(|tx| tx.block_index)
         .max()
         .map(|tip| tip.saturating_sub(LAG.with(|cell| *cell.borrow())));
-    let visible_tip_nat = visible_tip.map(Nat::from);
-
     let mut matching = all_transactions
         .into_iter()
         .filter(|tx| visible_tip.map(|tip| tx.block_index <= tip).unwrap_or(true))
@@ -236,31 +203,55 @@ pub async fn get_account_transactions(
         })
         .take(limit)
         .map(|tx| {
-            let mut block = tx_to_block(tx.clone());
+            let mut from = tx.from_account.clone();
+            let mut to = tx.to_account.clone();
             if tx.from == label {
-                block.from = Some(account.clone());
+                from = Some(account.clone());
             }
             if tx.to == label {
-                block.to = Some(account.clone());
+                to = Some(account.clone());
             }
-            IcrcIndexTransaction {
+            let transfer = from.zip(to).map(|(from, to)| IcrcIndexNgTransfer {
+                from: from.to_icrc_account(),
+                to: to.to_icrc_account(),
+                amount: Nat::from(tx.amount_e8s),
+                fee: Some(Nat::from(10_000_u64)),
+                memo: tx.memo_bytes.clone(),
+                created_at_time: Some(tx.timestamp.max(1)),
+            });
+            IcrcIndexNgTransactionWithId {
                 id: Nat::from(tx.block_index),
-                transaction: block,
+                transaction: IcrcIndexNgTransaction {
+                    burn: None,
+                    mint: None,
+                    approve: None,
+                    transfer,
+                    timestamp: tx.timestamp,
+                },
             }
         })
         .collect::<Vec<_>>();
 
-    Ok(IcrcIndexGetAccountTransactionsResult {
+    Ok(IcrcIndexNgGetTransactionsResult {
+        balance: Nat::from(0_u8),
         oldest_tx_id: transactions.first().map(|tx| tx.id.clone()),
         transactions,
-        tip: visible_tip_nat,
-        archive_required: false,
     })
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn debug_get_account_transaction_call_count() -> u64 {
     ACCOUNT_TRANSACTION_CALLS.with(std::cell::Cell::get)
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn debug_get_account_transaction_call_times() -> Vec<u64> {
+    ACCOUNT_TRANSACTION_CALL_TIMES.with(|times| times.borrow().clone())
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
+pub fn debug_get_account_transaction_max_results() -> Vec<u64> {
+    ACCOUNT_TRANSACTION_MAX_RESULTS.with(|limits| limits.borrow().clone())
 }
 
 fn mock_account_identifier(label: &str) -> String {
@@ -390,6 +381,9 @@ pub fn debug_clear() {
     PAGE_LIMIT.with(|cell| *cell.borrow_mut() = None);
     DESCENDING.with(|cell| *cell.borrow_mut() = false);
     UNREADABLE.with(|cell| *cell.borrow_mut() = false);
+    ACCOUNT_TRANSACTION_CALLS.with(|calls| calls.set(0));
+    ACCOUNT_TRANSACTION_CALL_TIMES.with(|times| times.borrow_mut().clear());
+    ACCOUNT_TRANSACTION_MAX_RESULTS.with(|limits| limits.borrow_mut().clear());
 }
 
 #[cfg(test)]

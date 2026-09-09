@@ -291,9 +291,7 @@ pub fn run_ledger_index_same_wasm_upgrade(required: bool) {
 
 pub fn run_installed_stream_redemption(required: bool) {
     use candid::{decode_one, encode_one};
-    use io_stream_manager::{
-        Account, ApiError, InitArgs, Lifecycle, RedemptionProgress, Status, StreamConfig,
-    };
+    use io_stream_manager::{Account, ApiError, InitArgs, Lifecycle, Status, StreamConfig};
 
     let Some(artifacts) = maybe_artifacts(required) else {
         return;
@@ -521,47 +519,23 @@ pub fn run_installed_stream_redemption(required: bool) {
             Nat::from(liquid_before - quote.gross_icp)
         );
     };
-    for _ in 0..10 {
+    pic.advance_time(Duration::from_secs(60));
+    for _ in 0..20 {
         pic.tick();
     }
-    let mut progress: Result<RedemptionProgress, ApiError> = decode_one(
-        &pic.update_call(stream, user, "process_redemptions", encode_one(()).unwrap())
+    let automatic_status: Status = decode_one(
+        &pic.query_call(stream, user, "get_status", encode_one(()).unwrap())
             .unwrap(),
     )
     .unwrap();
-    for _ in 0..20 {
-        if matches!(progress, Ok(RedemptionProgress::Completed(_))) {
-            break;
-        }
-        pic.advance_time(Duration::from_secs(10));
-        pic.tick();
-        progress = decode_one(
-            &pic.update_call(
-                stream,
-                Principal::anonymous(),
-                "process_redemptions",
-                encode_one(()).unwrap(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    }
-    let Ok(RedemptionProgress::Completed(result)) = progress else {
-        panic!("staged redemption did not complete within bounded attempts: {progress:?}");
-    };
-    assert_eq!(
-        result.source_io_block,
-        u128::try_from(staged_block.0).unwrap()
+    assert!(
+        automatic_status.operation_kind.is_none()
+            && automatic_status.pending_redemption_candidates == 0
+            && u128::try_from(icrc::icrc1_balance_of(&pic, icp_ledger, user_account.clone()).0,)
+                .unwrap()
+                == quote.net_icp,
+        "coarse automatic timer did not complete the staged redemption"
     );
-    assert_eq!(
-        result.source_account,
-        Account {
-            owner: user,
-            subaccount: None
-        }
-    );
-    assert_eq!(result.gross_icp_e8s, quote.gross_icp);
-    assert_eq!(result.net_icp_e8s, quote.net_icp);
     assert_final_balances();
     let completed_status: Status = decode_one(
         &pic.query_call(stream, user, "get_status", encode_one(()).unwrap())
@@ -570,7 +544,6 @@ pub fn run_installed_stream_redemption(required: bool) {
     .unwrap();
     assert!(completed_status.operation_kind.is_none());
     assert!(completed_status.operation_phase.is_none());
-    assert_eq!(completed_status.last_completed_redemption, Some(result));
     // Jupiter receipt replay is exercised by the installed NNS/Stream harness,
     // where the receipt can bind to an exact NNS claim-backing fingerprint.
 }

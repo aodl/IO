@@ -32,7 +32,6 @@ ic-stable-structures.workspace = true
 io-accounts = { version = "0.1.0", path = "../../crates/io_accounts" }
 io-core-model.workspace = true
 io-ledger-boundary.workspace = true
-io-ledger-types.workspace = true
 io-nns-types.workspace = true
 io-reward-policy.workspace = true
 io-sns-reward-boundary.workspace = true

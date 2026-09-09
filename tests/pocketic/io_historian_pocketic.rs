@@ -113,7 +113,7 @@ fn pocketic_historian_decodes_structural_stream_status_without_discarding_it() {
     let raw = RawStructuralStreamStatus {
         lifecycle: Lifecycle::Ready,
         operation_kind: Some("Redemption".into()),
-        operation_phase: Some("PayoutSucceeded".into()),
+        operation_phase: Some("SweepSubmitted".into()),
         latest_entitlement_batch_generation: 0,
         latest_processed_reward_event: Some(RewardEventId {
             end_timestamp_seconds: 1,
@@ -143,7 +143,7 @@ fn pocketic_historian_decodes_structural_stream_status_without_discarding_it() {
     .unwrap();
     let decoded = decoded.expect("StructuralOnly must not discard the Stream observation");
     assert_eq!(decoded.latest_processed_reward_event.unwrap().round, 0);
-    assert_eq!(decoded.operation_phase.as_deref(), Some("PayoutSucceeded"));
+    assert_eq!(decoded.operation_phase.as_deref(), Some("SweepSubmitted"));
     assert_eq!(decoded.latest_reward_event_classification, None);
 }
 
